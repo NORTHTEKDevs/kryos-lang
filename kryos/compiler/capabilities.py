@@ -51,7 +51,24 @@ class CapabilityTier(Enum):
     ENTERPRISE = auto()   # Full — quantum, raw memory, syscall
 
 
-# All capability categories
+# Import tier mapping from licensing module (single source of truth)
+def _get_capability_tier(capability: str) -> CapabilityTier:
+    """Get the required tier for a capability, using licensing module as source of truth."""
+    from kryos.compiler.licensing import CAPABILITY_TIERS, LicenseTier
+    lt = CAPABILITY_TIERS.get(capability)
+    if lt is None:
+        base = capability.split(":")[0] if ":" in capability else capability
+        lt = CAPABILITY_TIERS.get(base, LicenseTier.COMMUNITY)
+    # Map LicenseTier to CapabilityTier
+    return {
+        LicenseTier.COMMUNITY: CapabilityTier.COMMUNITY,
+        LicenseTier.PRO: CapabilityTier.PRO,
+        LicenseTier.ENTERPRISE: CapabilityTier.ENTERPRISE,
+        LicenseTier.CLOUD: CapabilityTier.PRO,
+    }[lt]
+
+
+# All capability categories with full tier structure
 CAPABILITY_TREE = {
     "compute": {
         "description": "Pure computation — always available",
@@ -62,6 +79,10 @@ CAPABILITY_TREE = {
         "description": "Network access (TCP/UDP/HTTP)",
         "tier": CapabilityTier.COMMUNITY,
         "children": {
+            "http": {
+                "description": "HTTP client/server",
+                "tier": CapabilityTier.COMMUNITY,
+            },
             "raw_socket": {
                 "description": "Raw socket access",
                 "tier": CapabilityTier.PRO,
@@ -88,19 +109,37 @@ CAPABILITY_TREE = {
         "children": {
             "raw": {
                 "description": "Raw/unsafe memory access",
-                "tier": CapabilityTier.PRO,
+                "tier": CapabilityTier.ENTERPRISE,
             },
         },
     },
     "gpu": {
         "description": "GPU compute access",
         "tier": CapabilityTier.COMMUNITY,
-        "children": {},
+        "children": {
+            "compute": {
+                "description": "Basic GPU compute",
+                "tier": CapabilityTier.COMMUNITY,
+            },
+            "optimize": {
+                "description": "Optimizing GPU codegen (kernel fusion, auto-tiling)",
+                "tier": CapabilityTier.PRO,
+            },
+        },
     },
     "quantum": {
         "description": "Quantum compute access",
         "tier": CapabilityTier.ENTERPRISE,
-        "children": {},
+        "children": {
+            "simulate": {
+                "description": "Quantum circuit simulation",
+                "tier": CapabilityTier.ENTERPRISE,
+            },
+            "hardware": {
+                "description": "Real QPU targeting (IBM Q, IonQ, Azure Quantum)",
+                "tier": CapabilityTier.ENTERPRISE,
+            },
+        },
     },
     "syscall": {
         "description": "Direct system calls",
@@ -115,7 +154,56 @@ CAPABILITY_TREE = {
     "ffi": {
         "description": "Foreign function interface",
         "tier": CapabilityTier.COMMUNITY,
+        "children": {
+            "python": {
+                "description": "Python FFI (community)",
+                "tier": CapabilityTier.COMMUNITY,
+            },
+            "native": {
+                "description": "C/C++ native FFI",
+                "tier": CapabilityTier.PRO,
+            },
+        },
+    },
+    "agent": {
+        "description": "Agent primitives",
+        "tier": CapabilityTier.PRO,
+        "children": {
+            "autonomous": {
+                "description": "Autonomous agent execution",
+                "tier": CapabilityTier.PRO,
+            },
+        },
+    },
+    "self_modify": {
+        "description": "Self-modifying code",
+        "tier": CapabilityTier.ENTERPRISE,
+        "children": {
+            "any": {
+                "description": "Full self-modification (sandboxed, audited)",
+                "tier": CapabilityTier.ENTERPRISE,
+            },
+        },
+    },
+    "formal_verify": {
+        "description": "Formal verification passes",
+        "tier": CapabilityTier.ENTERPRISE,
         "children": {},
+    },
+    "real_time": {
+        "description": "Real-time deadline enforcement",
+        "tier": CapabilityTier.ENTERPRISE,
+        "children": {},
+    },
+    "crypto": {
+        "description": "Cryptographic primitives",
+        "tier": CapabilityTier.COMMUNITY,
+        "children": {
+            "fips": {
+                "description": "FIPS-certified crypto",
+                "tier": CapabilityTier.ENTERPRISE,
+            },
+        },
     },
 }
 
@@ -145,26 +233,44 @@ BUILTIN_CAPABILITIES: dict[str, set[str]] = {
     "assert": set(),
     "push": set(),
     "pop": set(),
-    # I/O functions (would require filesystem in real impl)
+    # I/O functions (require filesystem)
     "input": {"filesystem"},
-    # Network functions (future)
-    "http_get": {"network"},
-    "http_post": {"network"},
+    # Network functions
+    "http_get": {"network", "network:http"},
+    "http_post": {"network", "network:http"},
     "tcp_connect": {"network"},
     "tcp_listen": {"network"},
-    "raw_socket": {"network", "network:raw_socket"},
-    # Filesystem functions (future)
+    "raw_socket": {"network", "network:raw_socket"},       # PRO
+    # Filesystem functions
     "file_read": {"filesystem", "filesystem:read"},
     "file_write": {"filesystem", "filesystem:write"},
     "file_delete": {"filesystem", "filesystem:write"},
-    # System functions (future)
-    "exec": {"syscall"},
-    "spawn_process": {"syscall"},
-    "eval": {"syscall"},
-    # Memory functions (future)
+    # System functions
+    "exec": {"syscall", "syscall:direct"},                  # ENTERPRISE
+    "spawn_process": {"syscall"},                            # ENTERPRISE
+    "eval": {"self_modify"},                                 # ENTERPRISE
+    # Memory functions
     "alloc": {"memory"},
     "dealloc": {"memory"},
-    "raw_ptr": {"memory", "memory:raw"},
+    "raw_ptr": {"memory", "memory:raw"},                     # ENTERPRISE
+    # GPU functions
+    "gpu_dispatch": {"gpu", "gpu:compute"},
+    "gpu_kernel": {"gpu", "gpu:compute"},
+    "gpu_optimize": {"gpu", "gpu:optimize"},                 # PRO
+    # Quantum functions
+    "qubit_new": {"quantum"},                                # ENTERPRISE
+    "quantum_gate": {"quantum"},                             # ENTERPRISE
+    "quantum_measure": {"quantum"},                          # ENTERPRISE
+    "qpu_submit": {"quantum", "quantum:hardware"},           # ENTERPRISE
+    # Agent functions
+    "agent_spawn": {"agent"},                                # PRO
+    "agent_autonomous": {"agent", "agent:autonomous"},       # PRO
+    # FFI functions
+    "ffi_call_c": {"ffi", "ffi:native"},                     # PRO
+    "ffi_call_python": {"ffi", "ffi:python"},                # COMMUNITY
+    # Crypto functions
+    "crypto_encrypt": {"crypto"},
+    "crypto_fips": {"crypto", "crypto:fips"},                # ENTERPRISE
 }
 
 

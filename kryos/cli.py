@@ -137,9 +137,18 @@ def cmd_check(args: argparse.Namespace) -> None:
     tokens = _tokenize_source(source, args.file)
     module = _parse_tokens(tokens)
 
-    # Run capability analysis
+    # Get active license tier
+    from kryos.compiler.licensing import get_license_manager
     from kryos.compiler.capabilities import CapabilityAnalyzer, CapabilityTier
-    analyzer = CapabilityAnalyzer(tier=CapabilityTier.COMMUNITY)
+    mgr = get_license_manager()
+    # Map LicenseTier to CapabilityTier
+    tier_map = {"COMMUNITY": CapabilityTier.COMMUNITY, "PRO": CapabilityTier.PRO,
+                "ENTERPRISE": CapabilityTier.ENTERPRISE, "CLOUD": CapabilityTier.PRO}
+    cap_tier = tier_map.get(mgr.tier.name, CapabilityTier.COMMUNITY)
+    print(_dim(f"License: {mgr.tier.display_name}\n"))
+
+    # Run capability analysis
+    analyzer = CapabilityAnalyzer(tier=cap_tier)
     report = analyzer.analyze(module)
 
     if report["errors"]:
@@ -344,9 +353,41 @@ def cmd_heal_report(args: argparse.Namespace) -> None:
     print(_bold("\n" + interp.get_heal_report()))
 
 
+def cmd_license(args: argparse.Namespace) -> None:
+    """Manage Kryos license."""
+    from kryos.compiler.licensing import get_license_manager
+
+    mgr = get_license_manager()
+
+    if hasattr(args, "activate_key") and args.activate_key:
+        success, msg = mgr.activate(args.activate_key)
+        if success:
+            print(_green(msg))
+        else:
+            print(_red(msg))
+        return
+
+    if hasattr(args, "deactivate") and args.deactivate:
+        msg = mgr.deactivate()
+        print(_yellow(msg))
+        return
+
+    if hasattr(args, "tiers") and args.tiers:
+        print(mgr.get_tier_comparison())
+        return
+
+    # Default: show status
+    print(_bold("Kryos License Status"))
+    print("=" * 50)
+    print(mgr.get_status())
+
+
 def cmd_version(args: argparse.Namespace) -> None:
     """Show version information."""
+    from kryos.compiler.licensing import get_license_manager
+    mgr = get_license_manager()
     print(f"{__language__} v{__version__}")
+    print(f"License: {mgr.tier.display_name}")
 
 
 # ---------------------------------------------------------------------------
@@ -395,8 +436,14 @@ def main() -> None:
     heal_parser = subparsers.add_parser("heal-report", help="Run file and show self-healing report")
     heal_parser.add_argument("file", help="Path to .kry source file")
 
+    # license
+    license_parser = subparsers.add_parser("license", help="Manage Kryos license")
+    license_parser.add_argument("--activate", dest="activate_key", help="Activate a license key")
+    license_parser.add_argument("--deactivate", action="store_true", help="Deactivate current license")
+    license_parser.add_argument("--tiers", action="store_true", help="Show all tier details")
+
     # version
-    subparsers.add_parser("version", help="Show version")
+    subparsers.add_parser("version", help="Show version and license")
 
     args = parser.parse_args()
 
@@ -413,6 +460,7 @@ def main() -> None:
         "migrate": cmd_migrate,
         "validate": cmd_validate,
         "heal-report": cmd_heal_report,
+        "license": cmd_license,
         "version": cmd_version,
     }
 
