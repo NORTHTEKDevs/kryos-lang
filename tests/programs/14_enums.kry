@@ -1,0 +1,31 @@
+// expect: Color::Red
+// expect: 78.53250000000001
+// expect: true
+
+enum Color {
+    Red,
+    Green,
+    Blue
+}
+
+let c = Color.Red
+println(c)
+
+enum Shape {
+    Circle(f64),
+    Rect(f64, f64)
+}
+
+struct MathHelper {
+    pi: f64
+}
+
+impl MathHelper {
+    fn circle_area(self: MathHelper, r: f64) -> f64 {
+        return self.pi * r * r
+    }
+}
+
+let math = MathHelper { pi: 3.1413 }
+println(math.circle_area(5.0))
+println(Color.Red == Color.Red)

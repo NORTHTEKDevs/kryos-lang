@@ -1,0 +1,218 @@
+// ============================================================
+// Kryos Bootstrap -- Self-Hosting Lexer Subset
+//
+// This file implements a basic tokenizer for Kryos, written IN
+// Kryos itself.  It proves the language is expressive enough to
+// build its own compiler components.
+// ============================================================
+
+// --- Token kinds ----------------------------------------------------------
+
+struct Token {
+    kind: i32,
+    value: str,
+    line: i32,
+    col: i32
+}
+
+// Token kind constants
+let TK_INT    = 1
+let TK_IDENT  = 2
+let TK_PLUS   = 3
+let TK_MINUS  = 4
+let TK_STAR   = 5
+let TK_SLASH  = 6
+let TK_LPAREN = 7
+let TK_RPAREN = 8
+let TK_EOF    = 9
+let TK_ERROR  = 10
+
+fn token_kind_name(kind: i32) -> str {
+    if kind == 1 { return "INT" }
+    if kind == 2 { return "IDENT" }
+    if kind == 3 { return "PLUS" }
+    if kind == 4 { return "MINUS" }
+    if kind == 5 { return "STAR" }
+    if kind == 6 { return "SLASH" }
+    if kind == 7 { return "LPAREN" }
+    if kind == 8 { return "RPAREN" }
+    if kind == 9 { return "EOF" }
+    return "ERROR"
+}
+
+// --- Character classification ---------------------------------------------
+
+fn is_digit(ch: str) -> bool {
+    let c = char_code(ch)
+    return c >= 48 and c <= 57
+}
+
+fn is_alpha(ch: str) -> bool {
+    let c = char_code(ch)
+    return (c >= 65 and c <= 90) or (c >= 97 and c <= 122) or c == 95
+}
+
+fn is_alnum(ch: str) -> bool {
+    return is_digit(ch) or is_alpha(ch)
+}
+
+fn is_whitespace(ch: str) -> bool {
+    return ch == " " or ch == "\t" or ch == "\n" or ch == "\r"
+}
+
+// --- Lexer ----------------------------------------------------------------
+
+struct Lexer {
+    source: str,
+    pos: i32,
+    line: i32,
+    col: i32
+}
+
+fn lexer_new(source: str) -> Lexer {
+    return Lexer { source: source, pos: 0, line: 1, col: 1 }
+}
+
+fn lexer_at_end(lex: Lexer) -> bool {
+    return lex.pos >= len(lex.source)
+}
+
+fn lexer_current(lex: Lexer) -> str {
+    if lexer_at_end(lex) {
+        return ""
+    }
+    return lex.source[lex.pos]
+}
+
+fn lexer_advance(lex: Lexer) -> Lexer {
+    let mut new_line = lex.line
+    let mut new_col = lex.col
+    if lex.source[lex.pos] == "\n" {
+        new_line = new_line + 1
+        new_col = 1
+    } else {
+        new_col = new_col + 1
+    }
+    return Lexer {
+        source: lex.source,
+        pos: lex.pos + 1,
+        line: new_line,
+        col: new_col
+    }
+}
+
+fn lexer_skip_whitespace(lex: Lexer) -> Lexer {
+    let mut l = lex
+    while not lexer_at_end(l) and is_whitespace(lexer_current(l)) {
+        l = lexer_advance(l)
+    }
+    return l
+}
+
+fn lexer_read_integer(lex: Lexer) -> Token {
+    let start = lex.pos
+    let start_col = lex.col
+    let mut l = lex
+    while not lexer_at_end(l) and is_digit(lexer_current(l)) {
+        l = lexer_advance(l)
+    }
+    let value = substr(lex.source, start, l.pos)
+    return Token { kind: TK_INT, value: value, line: lex.line, col: start_col }
+}
+
+fn lexer_read_identifier(lex: Lexer) -> Token {
+    let start = lex.pos
+    let start_col = lex.col
+    let mut l = lex
+    while not lexer_at_end(l) and is_alnum(lexer_current(l)) {
+        l = lexer_advance(l)
+    }
+    let value = substr(lex.source, start, l.pos)
+    return Token { kind: TK_IDENT, value: value, line: lex.line, col: start_col }
+}
+
+fn lexer_next_token(lex: Lexer) -> Token {
+    let l = lexer_skip_whitespace(lex)
+
+    if lexer_at_end(l) {
+        return Token { kind: TK_EOF, value: "", line: l.line, col: l.col }
+    }
+
+    let ch = lexer_current(l)
+
+    // Integer literals
+    if is_digit(ch) {
+        return lexer_read_integer(l)
+    }
+
+    // Identifiers
+    if is_alpha(ch) {
+        return lexer_read_identifier(l)
+    }
+
+    // Single-character operators
+    if ch == "+" { return Token { kind: TK_PLUS, value: "+", line: l.line, col: l.col } }
+    if ch == "-" { return Token { kind: TK_MINUS, value: "-", line: l.line, col: l.col } }
+    if ch == "*" { return Token { kind: TK_STAR, value: "*", line: l.line, col: l.col } }
+    if ch == "/" { return Token { kind: TK_SLASH, value: "/", line: l.line, col: l.col } }
+    if ch == "(" { return Token { kind: TK_LPAREN, value: "(", line: l.line, col: l.col } }
+    if ch == ")" { return Token { kind: TK_RPAREN, value: ")", line: l.line, col: l.col } }
+
+    return Token { kind: TK_ERROR, value: ch, line: l.line, col: l.col }
+}
+
+// Advance the lexer past the token we just read
+fn lexer_consume(lex: Lexer, tok: Token) -> Lexer {
+    let mut l = lexer_skip_whitespace(lex)
+    let tok_len = len(tok.value)
+    let mut i = 0
+    while i < tok_len {
+        l = lexer_advance(l)
+        i = i + 1
+    }
+    return l
+}
+
+// --- Tokenize and print ---------------------------------------------------
+
+fn tokenize_and_print(source: str) -> i32 {
+    let mut lex = lexer_new(source)
+    let mut count = 0
+
+    println("Tokenizing: " + source)
+    println("---")
+
+    let mut done = false
+    while not done {
+        let tok = lexer_next_token(lex)
+        let kind_name = token_kind_name(tok.kind)
+        println(kind_name + "  " + tok.value)
+        count = count + 1
+
+        if tok.kind == TK_EOF {
+            done = true
+        } else {
+            lex = lexer_consume(lex, tok)
+        }
+    }
+
+    println("---")
+    println("Total tokens: " + to_string(count))
+    return count
+}
+
+// --- Main -----------------------------------------------------------------
+
+println("=== Kryos Bootstrap Lexer ===")
+println("")
+
+// Tokenize a simple arithmetic expression
+tokenize_and_print("2 + 3 * (4 - 1)")
+
+println("")
+
+// Tokenize something with identifiers
+tokenize_and_print("foo + bar * 42")
+
+println("")
+println("=== Bootstrap lexer complete ===")

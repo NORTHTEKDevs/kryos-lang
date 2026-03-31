@@ -7,6 +7,12 @@ Usage:
     kryos repl                   # interactive REPL
     kryos test <dir>             # run test files
     kryos version                # show version
+    kryos init [path]            # create new project
+    kryos add <package>          # add dependency
+    kryos remove <package>       # remove dependency
+    kryos deps                   # list dependencies
+    kryos install                # install dependencies
+    kryos publish                # publish to local registry
 """
 
 from __future__ import annotations
@@ -124,11 +130,33 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 
 def cmd_build(args: argparse.Namespace) -> None:
-    """Compile a .kry file (stub)."""
+    """Compile a .kry file to LLVM IR (and optionally to native binary)."""
     source = _read_file(args.file)
     tokens = _tokenize_source(source, args.file)
-    _parse_tokens(tokens)  # validate it parses
-    print(_yellow("Compilation coming soon. Source parsed successfully."))
+    module = _parse_tokens(tokens)
+
+    from kryos.compiler.codegen import CodeGenerator, compile_and_run
+
+    gen = CodeGenerator()
+    ir = gen.generate(module)
+
+    # Determine output paths
+    src_path = Path(args.file)
+    ll_path = src_path.with_suffix(".ll")
+    bin_path = src_path.with_suffix("") if os.name != "nt" else src_path.with_suffix(".exe")
+
+    # Write the .ll file
+    ll_path.write_text(ir, encoding="utf-8")
+    print(_green(f"LLVM IR written to {ll_path}"))
+
+    # Try to compile to native binary
+    output = str(bin_path)
+    ok, msg = compile_and_run(ir, output)
+    if ok:
+        print(_green(f"Native binary: {output}"))
+    else:
+        print(_yellow(f"Note: {msg}"))
+        print(_dim(f"You can compile manually: llc -filetype=obj {ll_path} -o out.o && clang out.o -o out"))
 
 
 def cmd_check(args: argparse.Namespace) -> None:
@@ -382,6 +410,12 @@ def cmd_license(args: argparse.Namespace) -> None:
     print(mgr.get_status())
 
 
+def cmd_lsp(args: argparse.Namespace) -> None:
+    """Start the Language Server Protocol server."""
+    from kryos.lsp.server import main as lsp_main
+    lsp_main()
+
+
 def cmd_version(args: argparse.Namespace) -> None:
     """Show version information."""
     from kryos.compiler.licensing import get_license_manager
@@ -407,8 +441,9 @@ def main() -> None:
     run_parser.add_argument("--no-heal", action="store_true", help="Disable self-healing")
 
     # build
-    build_parser = subparsers.add_parser("build", help="Compile a .kry file")
+    build_parser = subparsers.add_parser("build", help="Compile a .kry file to LLVM IR / native")
     build_parser.add_argument("file", help="Path to .kry source file")
+    build_parser.add_argument("--emit-ir", action="store_true", help="Only emit LLVM IR (no native compile)")
 
     # check
     check_parser = subparsers.add_parser("check", help="Type-check and audit a .kry file")
@@ -445,6 +480,13 @@ def main() -> None:
     # version
     subparsers.add_parser("version", help="Show version and license")
 
+    # lsp
+    subparsers.add_parser("lsp", help="Start the Language Server Protocol server")
+
+    # Package management commands (init, add, remove, deps, install, publish)
+    from kryos.cli_commands.package_cmds import register_package_commands
+    pkg_commands = register_package_commands(subparsers)
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -461,7 +503,9 @@ def main() -> None:
         "validate": cmd_validate,
         "heal-report": cmd_heal_report,
         "license": cmd_license,
+        "lsp": cmd_lsp,
         "version": cmd_version,
+        **pkg_commands,
     }
 
     cmd_fn = commands.get(args.command)

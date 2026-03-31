@@ -7,4 +7,4 @@ meaning they work with the interpreter today and will be optimized
 when we add LLVM codegen.
 """
 
-__all__ = ["probable", "agents", "streams", "inference", "lineage", "cost"]
+__all__ = ["probable", "agents", "streams", "inference", "lineage", "cost", "tensor"]

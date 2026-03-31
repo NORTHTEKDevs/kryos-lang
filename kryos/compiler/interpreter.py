@@ -11,7 +11,8 @@ from typing import Any, Callable, Optional
 from kryos.compiler.ast_nodes import (
     ASTNode, Module,
     # Declarations
-    FnDecl, StructDecl, LetStmt, AssignStmt, ReturnStmt,
+    FnDecl, StructDecl, EnumDecl, TraitDecl, ImplBlock,
+    LetStmt, AssignStmt, ReturnStmt,
     IfStmt, ElifClause, ForStmt, WhileStmt, BreakStmt, ContinueStmt,
     ExprStmt, BlockStmt,
     # Expressions
@@ -128,6 +129,51 @@ class KryosInstance:
         return f"{self.struct.name} {{ {pairs} }}"
 
 
+class KryosEnum:
+    """A Kryos enum type."""
+
+    def __init__(self, name: str, variants: dict[str, int]) -> None:
+        self.name = name
+        # variant_name -> field_count
+        self.variants = variants
+
+    def __repr__(self) -> str:
+        return f"<enum {self.name}>"
+
+
+class KryosEnumValue:
+    """An instance of a Kryos enum variant."""
+
+    def __init__(self, enum: KryosEnum, variant_name: str, fields: list[Any] | None = None) -> None:
+        self.enum = enum
+        self.variant_name = variant_name
+        self.fields = fields or []
+
+    def __repr__(self) -> str:
+        if self.fields:
+            inner = ", ".join(_format_value(f) for f in self.fields)
+            return f"{self.enum.name}::{self.variant_name}({inner})"
+        return f"{self.enum.name}::{self.variant_name}"
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, KryosEnumValue):
+            return (self.enum.name == other.enum.name
+                    and self.variant_name == other.variant_name
+                    and self.fields == other.fields)
+        return NotImplemented
+
+
+class KryosTrait:
+    """A Kryos trait definition."""
+
+    def __init__(self, name: str, method_names: list[str]) -> None:
+        self.name = name
+        self.method_names = method_names
+
+    def __repr__(self) -> str:
+        return f"<trait {self.name}>"
+
+
 def _format_value(value: Any) -> str:
     """Format a Kryos value for printing."""
     if value is None:
@@ -151,6 +197,8 @@ def _format_value(value: Any) -> str:
         inner = ", ".join(_format_value(v) for v in value)
         return f"[{inner}]"
     if isinstance(value, KryosInstance):
+        return repr(value)
+    if isinstance(value, KryosEnumValue):
         return repr(value)
     if isinstance(value, KryosFunction):
         return repr(value)
@@ -178,6 +226,10 @@ class Interpreter:
             from kryos.compiler.self_heal import SelfHealingEngine
             self._heal_engine = SelfHealingEngine()
         self._fn_intents: dict[str, Any] = {}  # function name -> Intent
+        # type_name -> {method_name: KryosFunction}
+        self._impl_methods: dict[str, dict[str, KryosFunction]] = {}
+        # type_name -> [trait_name, ...]
+        self._impl_traits: dict[str, list[str]] = {}
         self._setup_builtins()
 
     def _setup_builtins(self) -> None:
@@ -228,6 +280,8 @@ class Interpreter:
                 return "array"
             if isinstance(val, KryosInstance):
                 return val.struct.name
+            if isinstance(val, KryosEnumValue):
+                return val.enum.name
             if val is None:
                 return "none"
             return "unknown"
@@ -252,6 +306,66 @@ class Interpreter:
             if len(arr) == 0:
                 raise KryosRuntimeError("pop() on empty array")
             return arr.pop()
+
+        def _char_code(ch: Any) -> int:
+            if isinstance(ch, str) and len(ch) == 1:
+                return ord(ch)
+            if isinstance(ch, str) and len(ch) > 1:
+                return ord(ch[0])
+            return int(ch)
+
+        def _char_from(code: Any) -> str:
+            return chr(int(code))
+
+        def _char_at(s: Any, idx: Any) -> str:
+            return str(s)[int(idx)]
+
+        def _substr(s: Any, start: Any, end: Any = None) -> str:
+            s = str(s)
+            if end is None:
+                return s[int(start):]
+            return s[int(start):int(end)]
+
+        def _contains(s: Any, sub: Any) -> bool:
+            return str(sub) in str(s)
+
+        def _starts_with(s: Any, prefix: Any) -> bool:
+            return str(s).startswith(str(prefix))
+
+        def _ends_with(s: Any, suffix: Any) -> bool:
+            return str(s).endswith(str(suffix))
+
+        def _upper(s: Any) -> str:
+            return str(s).upper()
+
+        def _lower(s: Any) -> str:
+            return str(s).lower()
+
+        def _trim(s: Any) -> str:
+            return str(s).strip()
+
+        def _split(s: Any, sep: Any = " ") -> list:
+            return str(s).split(str(sep))
+
+        def _join(sep: Any, arr: Any) -> str:
+            return str(sep).join(str(x) for x in arr)
+
+        def _replace(s: Any, old: Any, new: Any) -> str:
+            return str(s).replace(str(old), str(new))
+
+        self.globals.define("char_code", _char_code)
+        self.globals.define("char_from", _char_from)
+        self.globals.define("char_at", _char_at)
+        self.globals.define("substr", _substr)
+        self.globals.define("contains", _contains)
+        self.globals.define("starts_with", _starts_with)
+        self.globals.define("ends_with", _ends_with)
+        self.globals.define("upper", _upper)
+        self.globals.define("lower", _lower)
+        self.globals.define("trim", _trim)
+        self.globals.define("split", _split)
+        self.globals.define("join", _join)
+        self.globals.define("replace", _replace)
 
         import math as _math
 
@@ -389,6 +503,65 @@ class Interpreter:
         self.globals.define("Budget", _budget)
         self.globals.define("CostTracker", _cost_tracker)
 
+        # Tensor primitives — foundation for LLM ops
+        from kryos.runtime.tensor import (
+            KryosTensor, GradTensor,
+            tensor_from_list, tensor_zeros, tensor_ones, tensor_rand,
+            tensor_randn, tensor_eye, tensor_arange, tensor_matmul,
+            tensor_softmax, tensor_relu, tensor_reshape, tensor_cat,
+            tensor_sum, tensor_mean,
+        )
+
+        self.globals.define("Tensor", tensor_from_list)
+        self.globals.define("tensor_zeros", tensor_zeros)
+        self.globals.define("tensor_ones", tensor_ones)
+        self.globals.define("tensor_rand", tensor_rand)
+        self.globals.define("tensor_randn", tensor_randn)
+        self.globals.define("tensor_eye", tensor_eye)
+        self.globals.define("tensor_arange", tensor_arange)
+        self.globals.define("tensor_matmul", tensor_matmul)
+        self.globals.define("tensor_softmax", tensor_softmax)
+        self.globals.define("tensor_relu", tensor_relu)
+        self.globals.define("tensor_reshape", tensor_reshape)
+        self.globals.define("tensor_cat", tensor_cat)
+        self.globals.define("tensor_sum", tensor_sum)
+        self.globals.define("tensor_mean", tensor_mean)
+        self.globals.define("GradTensor", GradTensor.wrap)
+
+        # ---- FFI — Foreign Function Interface ----
+        self._setup_ffi_runtime()
+
+    def _setup_ffi_runtime(self) -> None:
+        """Register FFI builtins (Python & C interop)."""
+        from kryos.runtime.ffi import get_registry
+
+        registry = get_registry()
+
+        # Python FFI (Community tier — ffi:python)
+        def _py_import(module_name: str) -> Any:
+            return registry.py_import(module_name)
+
+        def _py_call(module: Any, fn_name: str, *args: Any) -> Any:
+            return registry.py_call(module, fn_name, *args)
+
+        def _py_attr(module: Any, attr_name: str) -> Any:
+            return registry.py_attr(module, attr_name)
+
+        # Native FFI (Pro tier — ffi:native)
+        def _c_load(path: str) -> Any:
+            return registry.c_load(path)
+
+        def _c_call(lib: Any, fn_name: str, arg_types: Any, return_type: str, *args: Any) -> Any:
+            if not isinstance(arg_types, list):
+                arg_types = list(arg_types)
+            return registry.c_call(lib, fn_name, arg_types, return_type, *args)
+
+        self.globals.define("py_import", _py_import)
+        self.globals.define("py_call", _py_call)
+        self.globals.define("py_attr", _py_attr)
+        self.globals.define("c_load", _c_load)
+        self.globals.define("c_call", _c_call)
+
     def run(self, module: Module) -> None:
         """Execute a parsed module."""
         for decl in module.declarations:
@@ -436,6 +609,65 @@ class Interpreter:
         field_names = [f.name for f in node.fields]
         struct = KryosStruct(node.name, field_names)
         env.define(node.name, struct)
+
+    def _exec_EnumDecl(self, node: EnumDecl, env: Environment) -> None:
+        variants: dict[str, int] = {}
+        for v in node.variants:
+            variants[v.name] = len(v.fields)
+
+        enum = KryosEnum(node.name, variants)
+        env.define(node.name, enum)
+
+        # Create variant constructors / values in the environment
+        for v_name, field_count in variants.items():
+            if field_count == 0:
+                # Unit variant -- store directly as a KryosEnumValue
+                env.define(f"{node.name}::{v_name}", KryosEnumValue(enum, v_name))
+            else:
+                # Variant with fields -- store a callable constructor
+                def _make_constructor(_enum: KryosEnum, _vname: str, _fc: int) -> Callable:
+                    def _constructor(*args: Any) -> KryosEnumValue:
+                        if len(args) != _fc:
+                            raise KryosRuntimeError(
+                                f"enum variant '{_enum.name}::{_vname}' expects "
+                                f"{_fc} fields, got {len(args)}"
+                            )
+                        return KryosEnumValue(_enum, _vname, list(args))
+                    return _constructor
+                env.define(
+                    f"{node.name}::{v_name}",
+                    _make_constructor(enum, v_name, field_count),
+                )
+
+    def _exec_TraitDecl(self, node: TraitDecl, env: Environment) -> None:
+        method_names = [m.name for m in node.methods]
+        trait = KryosTrait(node.name, method_names)
+        env.define(node.name, trait)
+
+    def _exec_ImplBlock(self, node: ImplBlock, env: Environment) -> None:
+        # Resolve target type name from the TypeNode
+        target_name = getattr(node.target_type, "name", None)
+        if target_name is None:
+            raise KryosRuntimeError("impl block has no valid target type")
+
+        if target_name not in self._impl_methods:
+            self._impl_methods[target_name] = {}
+
+        # Register each method as a KryosFunction
+        for method_decl in node.methods:
+            fn = KryosFunction(
+                method_decl.name, method_decl.params, method_decl.body,
+                env, method_decl.attributes,
+            )
+            self._impl_methods[target_name][method_decl.name] = fn
+
+        # Track trait implementations
+        if node.trait_type is not None:
+            trait_name = getattr(node.trait_type, "name", None)
+            if trait_name:
+                if target_name not in self._impl_traits:
+                    self._impl_traits[target_name] = []
+                self._impl_traits[target_name].append(trait_name)
 
     # ------------------------------------------------------------------
     # Statements
@@ -724,8 +956,8 @@ class Interpreter:
         callee = self._eval(node.callee, env)
         args = [self._eval(a, env) for a in node.args]
 
-        if callable(callee) and not isinstance(callee, (KryosFunction, KryosStruct)):
-            # Built-in Python function
+        if callable(callee) and not isinstance(callee, (KryosFunction, KryosStruct, KryosEnum)):
+            # Built-in Python function (includes enum variant constructors)
             return callee(*args)
 
         if isinstance(callee, KryosStruct):
@@ -805,6 +1037,21 @@ class Interpreter:
                         f"unknown array method '{node.method}'"
                     )
 
+        # Impl'd methods on struct/enum instances
+        if isinstance(obj, KryosInstance):
+            type_name = obj.struct.name
+            methods = self._impl_methods.get(type_name, {})
+            if node.method in methods:
+                fn = methods[node.method]
+                return self._call_function(fn, [obj] + args)
+
+        if isinstance(obj, KryosEnumValue):
+            type_name = obj.enum.name
+            methods = self._impl_methods.get(type_name, {})
+            if node.method in methods:
+                fn = methods[node.method]
+                return self._call_function(fn, [obj] + args)
+
         raise KryosRuntimeError(
             f"cannot call method '{node.method}' on {type(obj).__name__}"
         )
@@ -816,6 +1063,13 @@ class Interpreter:
                 return obj.fields[node.field]
             raise KryosRuntimeError(
                 f"struct '{obj.struct.name}' has no field '{node.field}'"
+            )
+        # Enum namespace access: Color.Red -> lookup Color::Red
+        if isinstance(obj, KryosEnum):
+            if node.field in obj.variants:
+                return env.get(f"{obj.name}::{node.field}")
+            raise KryosRuntimeError(
+                f"enum '{obj.name}' has no variant '{node.field}'"
             )
         raise KryosRuntimeError("field access on non-struct value")
 
