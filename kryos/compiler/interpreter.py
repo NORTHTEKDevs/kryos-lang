@@ -317,6 +317,78 @@ class Interpreter:
         self.globals.define("max", _max)
         self.globals.define("assert", _assert)
 
+        # ---- AI-native runtime ----
+        self._setup_ai_runtime()
+
+    def _setup_ai_runtime(self) -> None:
+        """Register AI-native runtime modules as builtins."""
+        from kryos.runtime.probable import Probable, Ensemble
+        from kryos.runtime.agents import Agent, AgentSwarm, AlignmentMode
+        from kryos.runtime.streams import Stream
+        from kryos.runtime.lineage import Tracked
+        from kryos.runtime.cost import CostTracker, Budget, ComputeCost
+
+        # Probable<T> — probability type
+        def _probable(value: Any, confidence: float = 1.0) -> Probable:
+            return Probable(value=value, confidence=confidence)
+
+        def _probable_from(options: Any) -> Probable:
+            if isinstance(options, list):
+                return Probable.uncertain([(v, p) for v, p in options])
+            return Probable.certain(options)
+
+        def _ensemble_vote(predictions: Any) -> Probable:
+            return Ensemble.majority_vote(predictions)
+
+        def _ensemble_weighted(predictions: Any) -> Probable:
+            return Ensemble.weighted_average(predictions)
+
+        # Agent — autonomous agent
+        def _agent(name: str, goal: str = "", alignment: str = "unrestricted") -> Agent:
+            mode_map = {
+                "unrestricted": AlignmentMode.UNRESTRICTED,
+                "minimal": AlignmentMode.MINIMAL,
+                "standard": AlignmentMode.STANDARD,
+                "strict": AlignmentMode.STRICT,
+            }
+            mode = mode_map.get(alignment.lower(), AlignmentMode.UNRESTRICTED)
+            return Agent(name=name, goal=goal, alignment=mode)
+
+        def _agent_swarm(name: str = "swarm") -> AgentSwarm:
+            return AgentSwarm(name=name)
+
+        # Stream
+        def _stream(data: Any) -> Stream:
+            if isinstance(data, list):
+                return Stream.from_list(data)
+            return Stream(data)
+
+        def _stream_range(start: int, end: int) -> Stream:
+            return Stream.from_range(start, end)
+
+        # Lineage tracking
+        def _tracked(value: Any, source: str = "user") -> Tracked:
+            return Tracked.source(value, source)
+
+        # Cost tracking
+        def _budget(max_usd: float = 100.0, max_tokens: int = 1000000) -> Budget:
+            return Budget(max_usd=max_usd, max_tokens=max_tokens)
+
+        def _cost_tracker(budget: Any = None) -> CostTracker:
+            return CostTracker(budget=budget)
+
+        self.globals.define("Probable", _probable)
+        self.globals.define("probable_from", _probable_from)
+        self.globals.define("ensemble_vote", _ensemble_vote)
+        self.globals.define("ensemble_weighted", _ensemble_weighted)
+        self.globals.define("Agent", _agent)
+        self.globals.define("AgentSwarm", _agent_swarm)
+        self.globals.define("Stream", _stream)
+        self.globals.define("stream_range", _stream_range)
+        self.globals.define("Tracked", _tracked)
+        self.globals.define("Budget", _budget)
+        self.globals.define("CostTracker", _cost_tracker)
+
     def run(self, module: Module) -> None:
         """Execute a parsed module."""
         for decl in module.declarations:
