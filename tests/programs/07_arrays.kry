@@ -1,0 +1,13 @@
+// expect: [1, 2, 3]
+// expect: 3
+// expect: 2
+// expect: [10, 20, 30, 40]
+
+let arr = [1, 2, 3]
+println(arr)
+println(len(arr))
+println(arr[1])
+
+let mut nums = [10, 20, 30]
+push(nums, 40)
+println(nums)

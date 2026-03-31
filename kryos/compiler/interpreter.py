@@ -1,0 +1,735 @@
+"""
+Kryos Language - Tree-Walking Interpreter
+Evaluates the AST produced by the parser.
+"""
+
+from __future__ import annotations
+
+import sys
+from typing import Any, Callable, Optional
+
+from kryos.compiler.ast_nodes import (
+    ASTNode, Module,
+    # Declarations
+    FnDecl, StructDecl, LetStmt, AssignStmt, ReturnStmt,
+    IfStmt, ElifClause, ForStmt, WhileStmt, BreakStmt, ContinueStmt,
+    ExprStmt, BlockStmt,
+    # Expressions
+    Expression, IntLiteral, FloatLiteral, StringLiteral, CharLiteral,
+    BoolLiteral, NoneLiteral, Identifier,
+    BinaryOp, UnaryOp, FnCall, MethodCall, FieldAccess, IndexAccess,
+    ArrayLiteral, StructLiteral, Lambda, Parameter,
+    RangeExpr, Attribute,
+)
+
+
+class KryosRuntimeError(Exception):
+    """Raised when a runtime error occurs during interpretation."""
+
+    def __init__(self, message: str, line: int = 0, column: int = 0) -> None:
+        self.line = line
+        self.column = column
+        super().__init__(message)
+
+
+class ReturnSignal(Exception):
+    """Internal signal for return statements."""
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+
+class BreakSignal(Exception):
+    """Internal signal for break statements."""
+
+
+class ContinueSignal(Exception):
+    """Internal signal for continue statements."""
+
+
+class Environment:
+    """A scope containing variable bindings."""
+
+    def __init__(self, parent: Optional[Environment] = None) -> None:
+        self._vars: dict[str, Any] = {}
+        self._mutables: set[str] = set()
+        self.parent = parent
+
+    def define(self, name: str, value: Any, mutable: bool = False) -> None:
+        self._vars[name] = value
+        if mutable:
+            self._mutables.add(name)
+
+    def get(self, name: str) -> Any:
+        if name in self._vars:
+            return self._vars[name]
+        if self.parent is not None:
+            return self.parent.get(name)
+        raise KryosRuntimeError(f"undefined variable '{name}'")
+
+    def set(self, name: str, value: Any) -> None:
+        if name in self._vars:
+            if name not in self._mutables:
+                raise KryosRuntimeError(
+                    f"cannot assign to immutable variable '{name}'"
+                )
+            self._vars[name] = value
+            return
+        if self.parent is not None:
+            self.parent.set(name, value)
+            return
+        raise KryosRuntimeError(f"undefined variable '{name}'")
+
+    def has(self, name: str) -> bool:
+        if name in self._vars:
+            return True
+        if self.parent is not None:
+            return self.parent.has(name)
+        return False
+
+
+class KryosFunction:
+    """A user-defined Kryos function."""
+
+    def __init__(
+        self, name: str, params: list[Parameter], body: BlockStmt,
+        closure: Environment, attributes: list[Attribute] | None = None,
+    ) -> None:
+        self.name = name
+        self.params = params
+        self.body = body
+        self.closure = closure
+        self.attributes = attributes or []
+
+    def __repr__(self) -> str:
+        return f"<fn {self.name}>"
+
+
+class KryosStruct:
+    """A Kryos struct type."""
+
+    def __init__(self, name: str, field_names: list[str]) -> None:
+        self.name = name
+        self.field_names = field_names
+
+    def __repr__(self) -> str:
+        return f"<struct {self.name}>"
+
+
+class KryosInstance:
+    """An instance of a Kryos struct."""
+
+    def __init__(self, struct: KryosStruct, fields: dict[str, Any]) -> None:
+        self.struct = struct
+        self.fields = fields
+
+    def __repr__(self) -> str:
+        pairs = ", ".join(f"{k}: {_format_value(v)}" for k, v in self.fields.items())
+        return f"{self.struct.name} {{ {pairs} }}"
+
+
+def _format_value(value: Any) -> str:
+    """Format a Kryos value for printing."""
+    if value is None:
+        return "none"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        # Print floats without trailing zeros when they're integers, but keep decimal
+        if value == int(value) and not ("e" in str(value) or "E" in str(value)):
+            formatted = f"{value:.2f}"
+            # Strip trailing zeros but keep at least one decimal
+            if "." in formatted:
+                formatted = formatted.rstrip("0")
+                if formatted.endswith("."):
+                    formatted += "0"
+            return formatted
+        return str(value)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        inner = ", ".join(_format_value(v) for v in value)
+        return f"[{inner}]"
+    if isinstance(value, KryosInstance):
+        return repr(value)
+    if isinstance(value, KryosFunction):
+        return repr(value)
+    return str(value)
+
+
+class Interpreter:
+    """
+    Tree-walking interpreter for the Kryos AST.
+
+    Usage::
+
+        interp = Interpreter()
+        interp.run(module)        # module: ast_nodes.Module
+        output = interp.output    # list of printed strings
+    """
+
+    def __init__(self, output_fn: Callable[[str], None] | None = None) -> None:
+        self.globals = Environment()
+        self.output: list[str] = []
+        self._output_fn = output_fn or (lambda s: print(s))
+        self._setup_builtins()
+
+    def _setup_builtins(self) -> None:
+        """Register built-in functions."""
+
+        def _println(*args: Any) -> None:
+            text = " ".join(_format_value(a) for a in args)
+            self.output.append(text)
+            self._output_fn(text)
+
+        def _print(*args: Any) -> None:
+            text = " ".join(_format_value(a) for a in args)
+            self.output.append(text)
+            self._output_fn(text)
+
+        def _len(val: Any) -> int:
+            if isinstance(val, (str, list)):
+                return len(val)
+            raise KryosRuntimeError(f"len() not supported for {type(val).__name__}")
+
+        def _range(*args: Any) -> list[int]:
+            if len(args) == 1:
+                return list(range(int(args[0])))
+            elif len(args) == 2:
+                return list(range(int(args[0]), int(args[1])))
+            elif len(args) == 3:
+                return list(range(int(args[0]), int(args[1]), int(args[2])))
+            raise KryosRuntimeError("range() takes 1 to 3 arguments")
+
+        def _to_string(val: Any) -> str:
+            return _format_value(val)
+
+        def _abs(val: Any) -> Any:
+            if isinstance(val, (int, float)):
+                return abs(val)
+            raise KryosRuntimeError(f"abs() not supported for {type(val).__name__}")
+
+        def _type_of(val: Any) -> str:
+            if isinstance(val, bool):
+                return "bool"
+            if isinstance(val, int):
+                return "i32"
+            if isinstance(val, float):
+                return "f64"
+            if isinstance(val, str):
+                return "str"
+            if isinstance(val, list):
+                return "array"
+            if isinstance(val, KryosInstance):
+                return val.struct.name
+            if val is None:
+                return "none"
+            return "unknown"
+
+        def _int(val: Any) -> int:
+            return int(val)
+
+        def _float(val: Any) -> float:
+            return float(val)
+
+        def _str(val: Any) -> str:
+            return _format_value(val)
+
+        def _push(arr: Any, val: Any) -> None:
+            if not isinstance(arr, list):
+                raise KryosRuntimeError("push() requires an array")
+            arr.append(val)
+
+        def _pop(arr: Any) -> Any:
+            if not isinstance(arr, list):
+                raise KryosRuntimeError("pop() requires an array")
+            if len(arr) == 0:
+                raise KryosRuntimeError("pop() on empty array")
+            return arr.pop()
+
+        import math as _math
+
+        def _sqrt(x: Any) -> float:
+            return _math.sqrt(float(x))
+
+        def _sin(x: Any) -> float:
+            return _math.sin(float(x))
+
+        def _cos(x: Any) -> float:
+            return _math.cos(float(x))
+
+        def _tan(x: Any) -> float:
+            return _math.tan(float(x))
+
+        def _log(x: Any) -> float:
+            return _math.log(float(x))
+
+        def _pow(x: Any, y: Any) -> float:
+            return _math.pow(float(x), float(y))
+
+        def _floor(x: Any) -> int:
+            return int(_math.floor(float(x)))
+
+        def _ceil(x: Any) -> int:
+            return int(_math.ceil(float(x)))
+
+        def _min(*args: Any) -> Any:
+            if len(args) == 1 and isinstance(args[0], list):
+                return min(args[0])
+            return min(args)
+
+        def _max(*args: Any) -> Any:
+            if len(args) == 1 and isinstance(args[0], list):
+                return max(args[0])
+            return max(args)
+
+        def _assert(condition: Any, msg: str = "assertion failed") -> None:
+            if not condition:
+                raise KryosRuntimeError(f"Assertion failed: {msg}")
+
+        self.globals.define("println", _println)
+        self.globals.define("print", _print)
+        self.globals.define("len", _len)
+        self.globals.define("range", _range)
+        self.globals.define("to_string", _to_string)
+        self.globals.define("abs", _abs)
+        self.globals.define("type_of", _type_of)
+        self.globals.define("int", _int)
+        self.globals.define("float", _float)
+        self.globals.define("str", _str)
+        self.globals.define("push", _push)
+        self.globals.define("pop", _pop)
+        self.globals.define("sqrt", _sqrt)
+        self.globals.define("sin", _sin)
+        self.globals.define("cos", _cos)
+        self.globals.define("tan", _tan)
+        self.globals.define("log", _log)
+        self.globals.define("pow", _pow)
+        self.globals.define("floor", _floor)
+        self.globals.define("ceil", _ceil)
+        self.globals.define("min", _min)
+        self.globals.define("max", _max)
+        self.globals.define("assert", _assert)
+
+    def run(self, module: Module) -> None:
+        """Execute a parsed module."""
+        for decl in module.declarations:
+            self._exec(decl, self.globals)
+
+    def interpret(self, module: Module) -> None:
+        """Alias for run()."""
+        return self.run(module)
+
+    def _exec(self, node: ASTNode, env: Environment) -> Any:
+        """Execute a statement or declaration."""
+        method_name = f"_exec_{type(node).__name__}"
+        method = getattr(self, method_name, None)
+        if method is None:
+            raise KryosRuntimeError(
+                f"unsupported AST node: {type(node).__name__}",
+                getattr(node, "span", (0, 0, 0, 0))[0],
+            )
+        return method(node, env)
+
+    def _eval(self, node: ASTNode, env: Environment) -> Any:
+        """Evaluate an expression."""
+        method_name = f"_eval_{type(node).__name__}"
+        method = getattr(self, method_name, None)
+        if method is None:
+            raise KryosRuntimeError(
+                f"unsupported expression: {type(node).__name__}",
+                getattr(node, "span", (0, 0, 0, 0))[0],
+            )
+        return method(node, env)
+
+    # ------------------------------------------------------------------
+    # Declarations
+    # ------------------------------------------------------------------
+
+    def _exec_FnDecl(self, node: FnDecl, env: Environment) -> None:
+        fn = KryosFunction(node.name, node.params, node.body, env, node.attributes)
+        env.define(node.name, fn)
+
+    def _exec_StructDecl(self, node: StructDecl, env: Environment) -> None:
+        field_names = [f.name for f in node.fields]
+        struct = KryosStruct(node.name, field_names)
+        env.define(node.name, struct)
+
+    # ------------------------------------------------------------------
+    # Statements
+    # ------------------------------------------------------------------
+
+    def _exec_ExprStmt(self, node: ExprStmt, env: Environment) -> Any:
+        return self._eval(node.expression, env)
+
+    def _exec_BlockStmt(self, node: BlockStmt, env: Environment) -> Any:
+        block_env = Environment(parent=env)
+        result = None
+        for stmt in node.statements:
+            result = self._exec(stmt, block_env)
+        return result
+
+    def _exec_LetStmt(self, node: LetStmt, env: Environment) -> None:
+        value = self._eval(node.value, env) if node.value else None
+        env.define(node.name, value, mutable=node.mutable)
+
+    def _exec_AssignStmt(self, node: AssignStmt, env: Environment) -> None:
+        value = self._eval(node.value, env)
+
+        if isinstance(node.target, Identifier):
+            if node.operator == "=":
+                env.set(node.target.name, value)
+            else:
+                current = env.get(node.target.name)
+                value = self._apply_compound_op(node.operator, current, value)
+                env.set(node.target.name, value)
+        elif isinstance(node.target, FieldAccess):
+            obj = self._eval(node.target.object, env)
+            if isinstance(obj, KryosInstance):
+                if node.operator == "=":
+                    obj.fields[node.target.field] = value
+                else:
+                    current = obj.fields[node.target.field]
+                    obj.fields[node.target.field] = self._apply_compound_op(
+                        node.operator, current, value
+                    )
+            else:
+                raise KryosRuntimeError("cannot assign to field of non-struct")
+        elif isinstance(node.target, IndexAccess):
+            obj = self._eval(node.target.object, env)
+            idx = self._eval(node.target.index, env)
+            if isinstance(obj, list):
+                if node.operator == "=":
+                    obj[int(idx)] = value
+                else:
+                    current = obj[int(idx)]
+                    obj[int(idx)] = self._apply_compound_op(
+                        node.operator, current, value
+                    )
+            else:
+                raise KryosRuntimeError("cannot index into non-array")
+        else:
+            raise KryosRuntimeError("invalid assignment target")
+
+    def _apply_compound_op(self, op: str, left: Any, right: Any) -> Any:
+        match op:
+            case "+=":
+                return left + right
+            case "-=":
+                return left - right
+            case "*=":
+                return left * right
+            case "/=":
+                return left / right
+            case "%=":
+                return left % right
+            case _:
+                raise KryosRuntimeError(f"unsupported compound operator: {op}")
+
+    def _exec_ReturnStmt(self, node: ReturnStmt, env: Environment) -> None:
+        value = self._eval(node.value, env) if node.value else None
+        raise ReturnSignal(value)
+
+    def _exec_IfStmt(self, node: IfStmt, env: Environment) -> None:
+        condition = self._eval(node.condition, env)
+        if self._is_truthy(condition):
+            self._exec(node.body, env)
+            return
+
+        for elif_clause in node.elif_clauses:
+            condition = self._eval(elif_clause.condition, env)
+            if self._is_truthy(condition):
+                self._exec(elif_clause.body, env)
+                return
+
+        if node.else_body:
+            self._exec(node.else_body, env)
+
+    def _exec_WhileStmt(self, node: WhileStmt, env: Environment) -> None:
+        while self._is_truthy(self._eval(node.condition, env)):
+            try:
+                self._exec(node.body, env)
+            except BreakSignal:
+                break
+            except ContinueSignal:
+                continue
+
+    def _exec_ForStmt(self, node: ForStmt, env: Environment) -> None:
+        iterable = self._eval(node.iterable, env)
+        if not hasattr(iterable, "__iter__"):
+            raise KryosRuntimeError("for loop target is not iterable")
+
+        for item in iterable:
+            loop_env = Environment(parent=env)
+            loop_env.define(node.variable, item, mutable=True)
+            try:
+                self._exec_block_in_env(node.body, loop_env)
+            except BreakSignal:
+                break
+            except ContinueSignal:
+                continue
+
+    def _exec_block_in_env(self, block: BlockStmt, env: Environment) -> Any:
+        """Execute block statements in the given env (no new scope)."""
+        result = None
+        for stmt in block.statements:
+            result = self._exec(stmt, env)
+        return result
+
+    def _exec_BreakStmt(self, node: BreakStmt, env: Environment) -> None:
+        raise BreakSignal()
+
+    def _exec_ContinueStmt(self, node: ContinueStmt, env: Environment) -> None:
+        raise ContinueSignal()
+
+    # ------------------------------------------------------------------
+    # Expressions
+    # ------------------------------------------------------------------
+
+    def _eval_IntLiteral(self, node: IntLiteral, env: Environment) -> int:
+        return node.value
+
+    def _eval_FloatLiteral(self, node: FloatLiteral, env: Environment) -> float:
+        return node.value
+
+    def _eval_StringLiteral(self, node: StringLiteral, env: Environment) -> str:
+        return node.value
+
+    def _eval_CharLiteral(self, node: CharLiteral, env: Environment) -> str:
+        return node.value
+
+    def _eval_BoolLiteral(self, node: BoolLiteral, env: Environment) -> bool:
+        return node.value
+
+    def _eval_NoneLiteral(self, node: NoneLiteral, env: Environment) -> None:
+        return None
+
+    def _eval_Identifier(self, node: Identifier, env: Environment) -> Any:
+        return env.get(node.name)
+
+    def _eval_BinaryOp(self, node: BinaryOp, env: Environment) -> Any:
+        # Short-circuit for logical operators
+        if node.operator == "and":
+            left = self._eval(node.left, env)
+            if not self._is_truthy(left):
+                return left
+            return self._eval(node.right, env)
+        if node.operator == "or":
+            left = self._eval(node.left, env)
+            if self._is_truthy(left):
+                return left
+            return self._eval(node.right, env)
+
+        left = self._eval(node.left, env)
+        right = self._eval(node.right, env)
+
+        match node.operator:
+            case "+":
+                return left + right
+            case "-":
+                return left - right
+            case "*":
+                return left * right
+            case "/":
+                if right == 0:
+                    raise KryosRuntimeError("division by zero")
+                if isinstance(left, int) and isinstance(right, int):
+                    return left // right
+                return left / right
+            case "%":
+                if right == 0:
+                    raise KryosRuntimeError("modulo by zero")
+                return left % right
+            case "**":
+                return left ** right
+            case "==":
+                return left == right
+            case "!=":
+                return left != right
+            case "<":
+                return left < right
+            case ">":
+                return left > right
+            case "<=":
+                return left <= right
+            case ">=":
+                return left >= right
+            case "&":
+                return left & right
+            case "|":
+                return left | right
+            case "^":
+                return left ^ right
+            case "<<":
+                return left << right
+            case ">>":
+                return left >> right
+            case _:
+                raise KryosRuntimeError(f"unknown operator: {node.operator}")
+
+    def _eval_UnaryOp(self, node: UnaryOp, env: Environment) -> Any:
+        operand = self._eval(node.operand, env)
+        match node.operator:
+            case "-":
+                return -operand
+            case "not" | "!":
+                return not self._is_truthy(operand)
+            case "~":
+                return ~operand
+            case _:
+                raise KryosRuntimeError(f"unknown unary operator: {node.operator}")
+
+    def _eval_FnCall(self, node: FnCall, env: Environment) -> Any:
+        callee = self._eval(node.callee, env)
+        args = [self._eval(a, env) for a in node.args]
+
+        if callable(callee) and not isinstance(callee, (KryosFunction, KryosStruct)):
+            # Built-in Python function
+            return callee(*args)
+
+        if isinstance(callee, KryosStruct):
+            # Struct constructor call -- shouldn't normally happen via FnCall
+            # but handle it gracefully
+            fields = {}
+            for i, name in enumerate(callee.field_names):
+                if i < len(args):
+                    fields[name] = args[i]
+            return KryosInstance(callee, fields)
+
+        if isinstance(callee, KryosFunction):
+            return self._call_function(callee, args)
+
+        raise KryosRuntimeError(
+            f"'{_format_value(callee)}' is not callable"
+        )
+
+    def _call_function(self, fn: KryosFunction, args: list[Any]) -> Any:
+        if len(args) != len(fn.params):
+            raise KryosRuntimeError(
+                f"function '{fn.name}' expects {len(fn.params)} arguments, "
+                f"got {len(args)}"
+            )
+
+        call_env = Environment(parent=fn.closure)
+        for param, arg in zip(fn.params, args):
+            call_env.define(param.name, arg, mutable=True)
+
+        try:
+            self._exec_block_in_env(fn.body, call_env)
+        except ReturnSignal as ret:
+            return ret.value
+
+        return None
+
+    def _eval_MethodCall(self, node: MethodCall, env: Environment) -> Any:
+        obj = self._eval(node.object, env)
+        args = [self._eval(a, env) for a in node.args]
+
+        # String methods
+        if isinstance(obj, str):
+            match node.method:
+                case "len":
+                    return len(obj)
+                case "upper":
+                    return obj.upper()
+                case "lower":
+                    return obj.lower()
+                case "trim":
+                    return obj.strip()
+                case "contains":
+                    return args[0] in obj if args else False
+                case "split":
+                    return obj.split(args[0]) if args else obj.split()
+                case _:
+                    raise KryosRuntimeError(
+                        f"unknown string method '{node.method}'"
+                    )
+
+        # Array methods
+        if isinstance(obj, list):
+            match node.method:
+                case "len":
+                    return len(obj)
+                case "push":
+                    obj.append(args[0])
+                    return None
+                case "pop":
+                    return obj.pop()
+                case "contains":
+                    return args[0] in obj if args else False
+                case _:
+                    raise KryosRuntimeError(
+                        f"unknown array method '{node.method}'"
+                    )
+
+        raise KryosRuntimeError(
+            f"cannot call method '{node.method}' on {type(obj).__name__}"
+        )
+
+    def _eval_FieldAccess(self, node: FieldAccess, env: Environment) -> Any:
+        obj = self._eval(node.object, env)
+        if isinstance(obj, KryosInstance):
+            if node.field in obj.fields:
+                return obj.fields[node.field]
+            raise KryosRuntimeError(
+                f"struct '{obj.struct.name}' has no field '{node.field}'"
+            )
+        raise KryosRuntimeError("field access on non-struct value")
+
+    def _eval_IndexAccess(self, node: IndexAccess, env: Environment) -> Any:
+        obj = self._eval(node.object, env)
+        idx = self._eval(node.index, env)
+        if isinstance(obj, (list, str)):
+            try:
+                return obj[int(idx)]
+            except IndexError:
+                raise KryosRuntimeError("index out of bounds")
+        raise KryosRuntimeError("index access on non-indexable value")
+
+    def _eval_ArrayLiteral(self, node: ArrayLiteral, env: Environment) -> list:
+        return [self._eval(e, env) for e in node.elements]
+
+    def _eval_StructLiteral(self, node: StructLiteral, env: Environment) -> KryosInstance:
+        struct = env.get(node.type_name)
+        if not isinstance(struct, KryosStruct):
+            raise KryosRuntimeError(f"'{node.type_name}' is not a struct")
+        fields = {}
+        for name, expr in node.field_values:
+            fields[name] = self._eval(expr, env)
+        return KryosInstance(struct, fields)
+
+    def _eval_Lambda(self, node: Lambda, env: Environment) -> KryosFunction:
+        body = node.body
+        if not isinstance(body, BlockStmt):
+            # Wrap expression body in a return + block
+            from kryos.compiler.ast_nodes import ReturnStmt as RetNode, BlockStmt as BStmt
+            ret = RetNode(value=body, span=node.span)
+            body = BStmt(statements=[ret], span=node.span)
+        return KryosFunction("<lambda>", node.params, body, env)
+
+    def _eval_RangeExpr(self, node: RangeExpr, env: Environment) -> list[int]:
+        start = self._eval(node.start, env) if node.start else 0
+        end = self._eval(node.end, env)
+        if node.inclusive:
+            return list(range(int(start), int(end) + 1))
+        return list(range(int(start), int(end)))
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_truthy(value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            return value != 0
+        if isinstance(value, float):
+            return value != 0.0
+        if isinstance(value, str):
+            return len(value) > 0
+        if isinstance(value, list):
+            return len(value) > 0
+        return True

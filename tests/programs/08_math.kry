@@ -1,0 +1,13 @@
+// expect: 15
+// expect: 8
+// expect: 1
+// expect: 5
+// expect: true
+// expect: false
+
+println(5 + 10)
+println(2 ** 3)
+println(7 % 3)
+println(abs(-5))
+println(10 > 5)
+println(3 == 4)

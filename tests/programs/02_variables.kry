@@ -1,0 +1,18 @@
+// expect: 10
+// expect: hello
+// expect: 25
+// expect: updated
+
+let x = 10
+println(x)
+
+let name = "hello"
+println(name)
+
+let mut y = 20
+y = 25
+println(y)
+
+let mut s = "original"
+s = "updated"
+println(s)

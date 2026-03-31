@@ -1,0 +1,13 @@
+// expect: 15
+// expect: 25
+
+fn make_adder(x: i32) -> fn {
+    fn adder(y: i32) -> i32 {
+        return x + y
+    }
+    return adder
+}
+
+let add5 = make_adder(5)
+println(add5(10))
+println(add5(20))

@@ -1,0 +1,10 @@
+// expect: processed
+// expect: 42
+
+@capabilities(compute)
+fn process(x: i32) -> i32 {
+    return x * 2
+}
+
+println("processed")
+println(process(21))
