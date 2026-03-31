@@ -168,10 +168,16 @@ class Interpreter:
         output = interp.output    # list of printed strings
     """
 
-    def __init__(self, output_fn: Callable[[str], None] | None = None) -> None:
+    def __init__(self, output_fn: Callable[[str], None] | None = None, self_healing: bool = True) -> None:
         self.globals = Environment()
         self.output: list[str] = []
         self._output_fn = output_fn or (lambda s: print(s))
+        self.self_healing = self_healing
+        self._heal_engine = None
+        if self_healing:
+            from kryos.compiler.self_heal import SelfHealingEngine
+            self._heal_engine = SelfHealingEngine()
+        self._fn_intents: dict[str, Any] = {}  # function name -> Intent
         self._setup_builtins()
 
     def _setup_builtins(self) -> None:
@@ -350,6 +356,10 @@ class Interpreter:
         fn = KryosFunction(node.name, node.params, node.body, env, node.attributes)
         env.define(node.name, fn)
 
+        # Extract self-healing metadata from attributes
+        if self.self_healing and node.attributes:
+            self._register_fn_intent(node.name, node.attributes, env)
+
     def _exec_StructDecl(self, node: StructDecl, env: Environment) -> None:
         field_names = [f.name for f in node.fields]
         struct = KryosStruct(node.name, field_names)
@@ -523,7 +533,16 @@ class Interpreter:
         left = self._eval(node.left, env)
         right = self._eval(node.right, env)
 
-        match node.operator:
+        try:
+            return self._binary_op(node.operator, left, right)
+        except (TypeError, KryosRuntimeError) as e:
+            if self.self_healing and self._heal_engine:
+                return self._heal_binary_op(node.operator, left, right, e)
+            raise
+
+    def _binary_op(self, op: str, left: Any, right: Any) -> Any:
+        """Core binary operation logic."""
+        match op:
             case "+":
                 return left + right
             case "-":
@@ -565,7 +584,57 @@ class Interpreter:
             case ">>":
                 return left >> right
             case _:
-                raise KryosRuntimeError(f"unknown operator: {node.operator}")
+                raise KryosRuntimeError(f"unknown operator: {op}")
+
+    def _heal_binary_op(self, op: str, left: Any, right: Any, error: Exception) -> Any:
+        """Self-heal a failed binary operation."""
+        from kryos.compiler.self_heal import HealAction
+
+        # Division/modulo by zero → return 0
+        if op in ("/", "%") and right == 0:
+            self._heal_engine._log_heal(
+                HealAction.SUBSTITUTE, f"binary '{op}'",
+                str(error), "substituted 0 for division by zero", 0,
+            )
+            return 0
+
+        # Type mismatch → try coercion
+        if isinstance(left, str) and isinstance(right, (int, float)):
+            try:
+                result = self._binary_op(op, left, str(right))
+                self._heal_engine._log_heal(
+                    HealAction.COERCE, f"binary '{op}'",
+                    str(error), f"coerced right operand to str", result,
+                )
+                return result
+            except Exception:
+                pass
+
+        if isinstance(right, str) and isinstance(left, (int, float)):
+            try:
+                result = self._binary_op(op, str(left), right)
+                self._heal_engine._log_heal(
+                    HealAction.COERCE, f"binary '{op}'",
+                    str(error), f"coerced left operand to str", result,
+                )
+                return result
+            except Exception:
+                pass
+
+        # Number string + number → numeric operation
+        if isinstance(left, str) and op in ("+", "-", "*", "/"):
+            try:
+                left_num = float(left) if "." in left else int(left)
+                result = self._binary_op(op, left_num, right)
+                self._heal_engine._log_heal(
+                    HealAction.COERCE, f"binary '{op}'",
+                    str(error), f"coerced string '{left}' to number", result,
+                )
+                return result
+            except (ValueError, KryosRuntimeError):
+                pass
+
+        raise error
 
     def _eval_UnaryOp(self, node: UnaryOp, env: Environment) -> Any:
         operand = self._eval(node.operand, env)
@@ -597,6 +666,8 @@ class Interpreter:
             return KryosInstance(callee, fields)
 
         if isinstance(callee, KryosFunction):
+            if self.self_healing and callee.name in self._fn_intents:
+                return self._call_with_healing(callee, args)
             return self._call_function(callee, args)
 
         raise KryosRuntimeError(
@@ -683,6 +754,17 @@ class Interpreter:
             try:
                 return obj[int(idx)]
             except IndexError:
+                if self.self_healing and self._heal_engine:
+                    from kryos.compiler.self_heal import HealAction
+                    # Clamp index to valid range
+                    clamped = max(0, min(int(idx), len(obj) - 1))
+                    self._heal_engine._log_heal(
+                        HealAction.CLAMP, "index_access",
+                        f"index {idx} out of bounds (len={len(obj)})",
+                        f"clamped to {clamped}",
+                        obj[clamped],
+                    )
+                    return obj[clamped]
                 raise KryosRuntimeError("index out of bounds")
         raise KryosRuntimeError("index access on non-indexable value")
 
@@ -733,3 +815,75 @@ class Interpreter:
         if isinstance(value, list):
             return len(value) > 0
         return True
+
+    # ------------------------------------------------------------------
+    # Self-Healing Integration
+    # ------------------------------------------------------------------
+
+    def _register_fn_intent(self, name: str, attributes: list[Attribute], env: Environment) -> None:
+        """Extract @intent, @constraint, @fallback from function attributes."""
+        from kryos.compiler.self_heal import Intent
+        intent_desc = ""
+        constraints = []
+        fallback_names = []
+
+        for attr in attributes:
+            if attr.name == "intent" and attr.args:
+                # @intent("description")
+                intent_desc = self._eval(attr.args[0], env) if attr.args else ""
+            elif attr.name == "constraint" and attr.args:
+                # @constraint(">= 0", "<= 100")
+                for arg in attr.args:
+                    constraints.append(self._eval(arg, env))
+            elif attr.name == "fallback" and attr.args:
+                # @fallback(other_fn)
+                for arg in attr.args:
+                    fallback_names.append(self._eval(arg, env))
+
+        if intent_desc or constraints:
+            intent = Intent(
+                description=intent_desc,
+                constraints=constraints,
+            )
+            self._fn_intents[name] = intent
+            self._heal_engine.register_intent(name, intent)
+
+    def _call_with_healing(self, fn: KryosFunction, args: list[Any]) -> Any:
+        """Call a function with self-healing active."""
+        intent = self._fn_intents.get(fn.name)
+
+        if not intent:
+            return self._call_function(fn, args)
+
+        # Save pre-call state
+        self._heal_engine.snapshot(fn.name, args)
+
+        try:
+            result = self._call_function(fn, args)
+        except Exception as e:
+            # Try self-healing
+            fixed = self._heal_engine._try_auto_fix(e, lambda *a: self._call_function(fn, list(a)), args, fn.name)
+            if fixed is not None:
+                result = fixed
+            else:
+                raise
+
+        # Enforce constraints on result
+        if intent.constraints:
+            for constraint in intent.constraints:
+                result = self._heal_engine._enforce_constraint(result, constraint, fn.name)
+
+        return result
+
+    def get_heal_report(self) -> str:
+        """Get a report of all self-healing actions taken during execution."""
+        if self._heal_engine:
+            return self._heal_engine.get_heal_report()
+        return "Self-healing disabled."
+
+    @property
+    def heal_count(self) -> int:
+        """Number of self-healing actions taken."""
+        if self._heal_engine:
+            return len(self._heal_engine.heal_log)
+        return 0

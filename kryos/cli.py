@@ -105,13 +105,22 @@ def cmd_run(args: argparse.Namespace) -> None:
     tokens = _tokenize_source(source, args.file)
     module = _parse_tokens(tokens)
 
-    interp = Interpreter()
+    no_heal = getattr(args, "no_heal", False)
+    interp = Interpreter(self_healing=not no_heal)
     try:
         interp.run(module)
     except KryosRuntimeError as e:
         loc = f":{e.line}" if e.line else ""
         print(_red(f"Runtime error{loc}: {e}"), file=sys.stderr)
+        # Show error explanation
+        from kryos.compiler.ai_assist import ErrorExplainer
+        explanation = ErrorExplainer().explain(str(e))
+        print(_yellow(f"\n  Explanation: {explanation['explanation']}"), file=sys.stderr)
+        print(_cyan(f"  Suggestion:  {explanation['suggestion']}"), file=sys.stderr)
         sys.exit(1)
+    finally:
+        if interp.heal_count > 0:
+            print(_dim(f"\n[Kryos self-healed {interp.heal_count} issue(s) during execution]"), file=sys.stderr)
 
 
 def cmd_build(args: argparse.Namespace) -> None:
@@ -123,11 +132,39 @@ def cmd_build(args: argparse.Namespace) -> None:
 
 
 def cmd_check(args: argparse.Namespace) -> None:
-    """Type-check a .kry file."""
+    """Type-check and capability-audit a .kry file."""
     source = _read_file(args.file)
     tokens = _tokenize_source(source, args.file)
     module = _parse_tokens(tokens)
-    print(_green(f"OK: {args.file} parsed and checked successfully."))
+
+    # Run capability analysis
+    from kryos.compiler.capabilities import CapabilityAnalyzer, CapabilityTier
+    analyzer = CapabilityAnalyzer(tier=CapabilityTier.COMMUNITY)
+    report = analyzer.analyze(module)
+
+    if report["errors"]:
+        print(_red(f"CAPABILITY VIOLATIONS in {args.file}:\n"))
+        for err in report["errors"]:
+            print(f"  {_red('ERROR')}: {err}")
+        print()
+
+    if report["warnings"]:
+        for warn in report["warnings"]:
+            print(f"  {_yellow('WARN')}: {warn}")
+
+    # Print capability map
+    if report["functions"]:
+        print(_bold("Capability Map:"))
+        for fn_name, info in report["functions"].items():
+            caps = info["declared"]
+            cap_str = ", ".join(caps) if caps else "compute (default)"
+            print(f"  {_cyan(fn_name)}: [{cap_str}]")
+
+    if not report["errors"]:
+        print(_green(f"\nOK: {args.file} — all capability checks passed."))
+    else:
+        print(_red(f"\nFAILED: {len(report['errors'])} capability violation(s) found."))
+        sys.exit(1)
 
 
 def cmd_repl(args: argparse.Namespace) -> None:
@@ -226,6 +263,87 @@ def cmd_test(args: argparse.Namespace) -> None:
     sys.exit(exit_code)
 
 
+def cmd_migrate(args: argparse.Namespace) -> None:
+    """Migrate code from another language to Kryos."""
+    from kryos.compiler.ai_assist import MigrationEngine
+
+    source_path = Path(args.file)
+    if not source_path.exists():
+        print(_red(f"error: file not found: {args.file}"), file=sys.stderr)
+        sys.exit(1)
+
+    source = source_path.read_text(encoding="utf-8")
+    engine = MigrationEngine()
+
+    lang = args.lang or engine.detect_language(source)
+    print(_dim(f"Detected language: {lang}"))
+
+    result = engine.migrate(source, lang)
+
+    print(_bold(f"\nMigration Result (confidence: {result.confidence:.0%})"))
+    print("=" * 60)
+    print(result.kryos_code)
+
+    if result.notes:
+        print(_yellow("\nNotes:"))
+        for note in result.notes:
+            print(f"  - {note}")
+
+    if result.unmigrated:
+        print(_red(f"\nUnmigrated ({len(result.unmigrated)} lines):"))
+        for line in result.unmigrated[:10]:
+            print(f"  - {line}")
+
+    # Optionally write output
+    if args.output:
+        out_path = Path(args.output)
+        out_path.write_text(result.kryos_code, encoding="utf-8")
+        print(_green(f"\nWritten to {args.output}"))
+
+
+def cmd_validate(args: argparse.Namespace) -> None:
+    """Validate Kryos source code (AI-assist mode)."""
+    from kryos.compiler.ai_assist import CodeValidator
+
+    source = _read_file(args.file)
+    validator = CodeValidator()
+    result = validator.validate(source)
+
+    if result.valid:
+        print(_green(f"VALID: {args.file}"))
+    else:
+        print(_red(f"INVALID: {args.file}"))
+        for err in result.errors:
+            print(f"  {_red('ERROR')}: {err}")
+
+    for warn in result.warnings:
+        print(f"  {_yellow('WARN')}:  {warn}")
+
+    for sug in result.suggestions:
+        print(f"  {_cyan('HINT')}:  {sug}")
+
+    if result.fixed_code:
+        print(_green("\nAuto-fix available. Run with --fix to apply."))
+        if getattr(args, "fix", False):
+            Path(args.file).write_text(result.fixed_code, encoding="utf-8")
+            print(_green(f"Fixed code written to {args.file}"))
+
+
+def cmd_heal_report(args: argparse.Namespace) -> None:
+    """Run a file and show the self-healing report."""
+    source = _read_file(args.file)
+    tokens = _tokenize_source(source, args.file)
+    module = _parse_tokens(tokens)
+
+    interp = Interpreter(self_healing=True)
+    try:
+        interp.run(module)
+    except KryosRuntimeError as e:
+        print(_red(f"Runtime error: {e}"), file=sys.stderr)
+
+    print(_bold("\n" + interp.get_heal_report()))
+
+
 def cmd_version(args: argparse.Namespace) -> None:
     """Show version information."""
     print(f"{__language__} v{__version__}")
@@ -245,13 +363,14 @@ def main() -> None:
     # run
     run_parser = subparsers.add_parser("run", help="Run a .kry file")
     run_parser.add_argument("file", help="Path to .kry source file")
+    run_parser.add_argument("--no-heal", action="store_true", help="Disable self-healing")
 
     # build
     build_parser = subparsers.add_parser("build", help="Compile a .kry file")
     build_parser.add_argument("file", help="Path to .kry source file")
 
     # check
-    check_parser = subparsers.add_parser("check", help="Type-check a .kry file")
+    check_parser = subparsers.add_parser("check", help="Type-check and audit a .kry file")
     check_parser.add_argument("file", help="Path to .kry source file")
 
     # repl
@@ -260,6 +379,21 @@ def main() -> None:
     # test
     test_parser = subparsers.add_parser("test", help="Run test files")
     test_parser.add_argument("dir", nargs="?", default=None, help="Test directory")
+
+    # migrate
+    migrate_parser = subparsers.add_parser("migrate", help="Convert code from another language to Kryos")
+    migrate_parser.add_argument("file", help="Source file to migrate")
+    migrate_parser.add_argument("--lang", help="Source language (auto-detected if omitted)")
+    migrate_parser.add_argument("--output", "-o", help="Output .kry file")
+
+    # validate
+    validate_parser = subparsers.add_parser("validate", help="Validate Kryos code (AI-assist)")
+    validate_parser.add_argument("file", help="Path to .kry source file")
+    validate_parser.add_argument("--fix", action="store_true", help="Auto-fix issues")
+
+    # heal-report
+    heal_parser = subparsers.add_parser("heal-report", help="Run file and show self-healing report")
+    heal_parser.add_argument("file", help="Path to .kry source file")
 
     # version
     subparsers.add_parser("version", help="Show version")
@@ -276,6 +410,9 @@ def main() -> None:
         "check": cmd_check,
         "repl": cmd_repl,
         "test": cmd_test,
+        "migrate": cmd_migrate,
+        "validate": cmd_validate,
+        "heal-report": cmd_heal_report,
         "version": cmd_version,
     }
 

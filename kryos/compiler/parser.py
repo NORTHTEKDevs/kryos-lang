@@ -281,12 +281,58 @@ class Parser:
                 name = self._ATTR_TOKENS[start.type]
             args: list[Expression] = []
             if self._match(_TT.LPAREN):
-                args = self._expr_list(_TT.RPAREN)
+                args = self._parse_attr_args()
                 self._expect(_TT.RPAREN, "to close attribute arguments")
             attrs.append(Attribute(
                 span=self._span_from(start), name=name, args=args,
             ))
         return attrs
+
+    # Keyword tokens that should be treated as identifiers in attribute arguments
+    _KEYWORD_AS_IDENT = {
+        _TT.QUANTUM, _TT.PARALLEL, _TT.ACTOR, _TT.SPAWN, _TT.COMPTIME,
+        _TT.FN, _TT.STRUCT, _TT.ENUM, _TT.TRAIT, _TT.IMPL, _TT.PUB,
+        _TT.MOD, _TT.TYPE, _TT.MUT, _TT.USE, _TT.EXTERN, _TT.AS,
+        _TT.TRUE, _TT.FALSE, _TT.NONE, _TT.AND, _TT.OR, _TT.NOT,
+        _TT.LET, _TT.IF, _TT.ELSE, _TT.ELIF, _TT.FOR, _TT.WHILE,
+        _TT.IN, _TT.BREAK, _TT.CONTINUE, _TT.RETURN,
+    }
+
+    def _parse_attr_args(self) -> list[Expression]:
+        """Parse attribute arguments, treating keywords as identifiers."""
+        args: list[Expression] = []
+        while not self._at(_TT.RPAREN, _TT.EOF):
+            tok = self._cur()
+            if tok.type == _TT.STRING:
+                # String literal argument
+                self._advance()
+                args.append(StringLiteral(span=self._span(tok), value=tok.value))
+            elif tok.type == _TT.INTEGER:
+                self._advance()
+                args.append(IntLiteral(span=self._span(tok), value=int(tok.value)))
+            elif tok.type == _TT.FLOAT:
+                self._advance()
+                args.append(FloatLiteral(span=self._span(tok), value=float(tok.value)))
+            elif tok.type in (_TT.IDENTIFIER, _TT.TYPE_IDENT) or tok.type in self._KEYWORD_AS_IDENT:
+                # Identifier or keyword-as-identifier
+                self._advance()
+                node = Identifier(span=self._span(tok), name=tok.value)
+                # Check for colon sub-capability: network:raw_socket
+                if self._match(_TT.COLON):
+                    sub_tok = self._cur()
+                    if sub_tok.type in (_TT.IDENTIFIER, _TT.TYPE_IDENT) or sub_tok.type in self._KEYWORD_AS_IDENT:
+                        self._advance()
+                        node = FieldAccess(
+                            span=self._span(tok), object=node, field=sub_tok.value,
+                        )
+                args.append(node)
+            else:
+                # Fall back to expression parsing
+                args.append(self._expression())
+
+            if not self._match(_TT.COMMA):
+                break
+        return args
 
     # -------------------------------------------------------------------
     # fn_decl
