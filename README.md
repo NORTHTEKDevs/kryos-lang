@@ -736,7 +736,7 @@ Capability categories:
 | `network:raw_socket` | Pro | Raw socket access |
 | `memory:raw` | Pro | Raw/unsafe memory |
 | `syscall` | Pro | Direct system calls |
-| `quantum` | Enterprise | Quantum compute access |
+| `gpu:advanced` | Enterprise | Advanced GPU compute access |
 
 The audit command exports a full report of every capability used by every function in a program:
 
@@ -943,5 +943,5 @@ Proprietary. Copyright FrostByte Digital. All rights reserved.
 |------|-------|-----------------|
 | **Community** | Free | Full language, CPU/WASM, basic GPU, Python FFI, self-healing |
 | **Pro** | $499/mo | Optimizing compiler, GPU codegen, C FFI, autonomous agents, raw sockets |
-| **Enterprise** | $50K-$500K/yr | Quantum, raw memory, syscall, formal verification, FIPS crypto |
+| **Enterprise** | $50K-$500K/yr | Raw memory, syscall, formal verification, FIPS crypto, priority support |
 | **Cloud** | Usage-based | Managed infrastructure, all Pro features, per-compile pricing |
