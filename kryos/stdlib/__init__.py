@@ -13,6 +13,9 @@ from kryos.stdlib.io_module import register_io_builtins
 from kryos.stdlib.crypto_module import register_crypto_builtins
 from kryos.stdlib.term_module import register_term_builtins
 from kryos.stdlib.net_module import register_net_builtins
+from kryos.stdlib.map_module import register_map_builtins
+from kryos.stdlib.process_module import register_process_builtins
+from kryos.stdlib.string_ext_module import register_string_ext_builtins
 
 
 def register_all_stdlib(interpreter) -> None:
@@ -25,3 +28,6 @@ def register_all_stdlib(interpreter) -> None:
     register_crypto_builtins(interpreter)
     register_term_builtins(interpreter)
     register_net_builtins(interpreter)
+    register_map_builtins(interpreter)
+    register_process_builtins(interpreter)
+    register_string_ext_builtins(interpreter)
