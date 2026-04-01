@@ -9,6 +9,10 @@ from kryos.stdlib.string_utils import register_string_builtins
 from kryos.stdlib.math_ext import register_math_builtins
 from kryos.stdlib.collections import register_collection_builtins
 from kryos.stdlib.json_module import register_json_builtins
+from kryos.stdlib.io_module import register_io_builtins
+from kryos.stdlib.crypto_module import register_crypto_builtins
+from kryos.stdlib.term_module import register_term_builtins
+from kryos.stdlib.net_module import register_net_builtins
 
 
 def register_all_stdlib(interpreter) -> None:
@@ -17,3 +21,7 @@ def register_all_stdlib(interpreter) -> None:
     register_math_builtins(interpreter)
     register_collection_builtins(interpreter)
     register_json_builtins(interpreter)
+    register_io_builtins(interpreter)
+    register_crypto_builtins(interpreter)
+    register_term_builtins(interpreter)
+    register_net_builtins(interpreter)
