@@ -25,7 +25,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from kryos.compiler.ast_nodes import (
     Module,
     # Declarations
-    FnDecl, StructDecl, StructField, EnumDecl, TraitDecl, ImplBlock,
+    FnDecl, StructDecl, StructField, EnumDecl, EnumVariant, TraitDecl, ImplBlock,
+    GenericParam,
     # Statements
     Statement, BlockStmt, LetStmt, AssignStmt, ReturnStmt,
     IfStmt, ElifClause, ForStmt, WhileStmt, BreakStmt, ContinueStmt,
@@ -36,6 +37,7 @@ from kryos.compiler.ast_nodes import (
     BinaryOp, UnaryOp, FnCall, MethodCall, FieldAccess, IndexAccess,
     ArrayLiteral, StructLiteral, Lambda, Parameter,
     RangeExpr, IfExpr, PipeExpr,
+    MatchExpr, MatchArm,
     # Types
     TypeNode, SimpleType, GenericType, ArrayType, FnType,
     Attribute,
@@ -122,6 +124,13 @@ class CodeGenerator:
         self._functions: dict[str, FnDecl] = {}
         self._struct_types: dict[str, StructDecl] = {}
         self._declared_externs: set[str] = set()
+        # Extended codegen state
+        self._lambda_counter: int = 0
+        self._enum_types: dict[str, EnumDecl] = {}
+        self._enum_variant_tags: dict[str, int] = {}  # "EnumName::Variant" -> tag
+        self._impl_methods: dict[str, FnDecl] = {}    # "Type_method" -> FnDecl
+        self._trait_decls: dict[str, TraitDecl] = {}
+        self._generated_functions: set[str] = set()
 
     # -- helpers --
 
@@ -228,6 +237,12 @@ class CodeGenerator:
         self._functions = {}
         self._struct_types = {}
         self._declared_externs = set()
+        self._lambda_counter = 0
+        self._enum_types = {}
+        self._enum_variant_tags = {}
+        self._impl_methods = {}
+        self._trait_decls = {}
+        self._generated_functions = set()
 
         fn_irs: list[str] = []
         top_level_stmts: list[Statement] = []
@@ -238,6 +253,12 @@ class CodeGenerator:
                 self._functions[decl.name] = decl
             elif isinstance(decl, StructDecl):
                 self._struct_types[decl.name] = decl
+            elif isinstance(decl, EnumDecl):
+                self._enum_types[decl.name] = decl
+                for i, variant in enumerate(decl.variants):
+                    self._enum_variant_tags[f"{decl.name}::{variant.name}"] = i
+            elif isinstance(decl, TraitDecl):
+                self._trait_decls[decl.name] = decl
 
         # Second pass -- generate code
         for decl in module.declarations:
@@ -245,6 +266,13 @@ class CodeGenerator:
                 fn_irs.append(self._gen_function(decl))
             elif isinstance(decl, StructDecl):
                 self._globals.append(self._gen_struct_type(decl))
+            elif isinstance(decl, EnumDecl):
+                self._globals.append(self._gen_enum_type(decl))
+            elif isinstance(decl, TraitDecl):
+                self._globals.append(self._gen_trait_vtable_type(decl))
+            elif isinstance(decl, ImplBlock):
+                for ir in self._gen_impl_block(decl):
+                    fn_irs.append(ir)
             elif isinstance(decl, (LetStmt, ExprStmt, AssignStmt, IfStmt,
                                    WhileStmt, ForStmt, ReturnStmt)):
                 top_level_stmts.append(decl)
@@ -689,6 +717,15 @@ class CodeGenerator:
         if isinstance(expr, StructLiteral):
             return self._gen_struct_literal(expr)
 
+        if isinstance(expr, Lambda):
+            return self._gen_lambda_expr(expr)
+
+        if isinstance(expr, MatchExpr):
+            return self._gen_match_expr(expr)
+
+        if isinstance(expr, MethodCall):
+            return self._gen_method_call(expr)
+
         # Fallback
         return [f"  ; TODO: unhandled expression {type(expr).__name__}"], "0"
 
@@ -897,6 +934,13 @@ class CodeGenerator:
         # TODO: Implement push() once dynamic array metadata (length + capacity) is added
         if callee_name == "push":
             return [f"  ; TODO: push() requires dynamic array support (length + capacity tracking)"], "0"
+
+        # Generic function instantiation -- if the function is generic and
+        # type arguments are provided, generate a specialized version.
+        fn_decl = self._functions.get(callee_name)
+        if fn_decl and fn_decl.generics and expr.type_args:
+            type_arg_names = [_kryos_type_name(ta) for ta in expr.type_args]
+            callee_name = self._gen_generic_instantiation(fn_decl, type_arg_names)
 
         # Generate argument values
         arg_regs: list[tuple[str, str]] = []  # (llvm_type, register)
@@ -1254,6 +1298,407 @@ class CodeGenerator:
         return [f"  ; TODO: struct literal {sname}"], "0"
 
     # -----------------------------------------------------------------------
+    # Enum types
+    # -----------------------------------------------------------------------
+
+    def _gen_enum_type(self, decl: EnumDecl) -> str:
+        """Generate LLVM IR type for an enum (tagged union).
+
+        Layout: { i8 tag, [max_payload x i8] payload }
+        Each variant gets a sequential tag number starting at 0.
+        """
+        max_payload = 0
+        for variant in decl.variants:
+            if variant.fields:
+                size = sum(self._sizeof_type(f) for f in variant.fields)
+                max_payload = max(max_payload, size)
+
+        type_name = f"%enum.{decl.name}"
+        if max_payload > 0:
+            return f"{type_name} = type {{ i8, [{max_payload} x i8] }}"
+        else:
+            return f"{type_name} = type {{ i8 }}"
+
+    def _sizeof_type(self, ty: TypeNode) -> int:
+        """Return the size in bytes for a Kryos type node (for enum payload sizing)."""
+        llty = _llvm_type(ty)
+        return self._sizeof_llvm_type(llty)
+
+    # -----------------------------------------------------------------------
+    # Trait vtable types
+    # -----------------------------------------------------------------------
+
+    def _gen_trait_vtable_type(self, decl: TraitDecl) -> str:
+        """Generate LLVM IR type for a trait vtable (struct of function pointers).
+
+        Each trait method becomes a function pointer in the vtable struct.
+        For MVP, this establishes the vtable layout without dynamic dispatch.
+        """
+        fn_ptr_types: list[str] = []
+        for method in decl.methods:
+            ret_ty = _llvm_type(method.return_type)
+            # self is passed as i8* (opaque pointer)
+            param_types = ["i8*"]
+            for p in method.params:
+                if p.name != "self":
+                    param_types.append(_llvm_type(p.type_annotation))
+            params_str = ", ".join(param_types)
+            fn_ptr_types.append(f"{ret_ty} ({params_str})*")
+
+        if fn_ptr_types:
+            fields = ", ".join(fn_ptr_types)
+        else:
+            fields = "i8"  # empty trait placeholder
+        return f"%vtable.{decl.name} = type {{ {fields} }}"
+
+    # -----------------------------------------------------------------------
+    # Impl blocks
+    # -----------------------------------------------------------------------
+
+    def _gen_impl_block(self, node: ImplBlock) -> list[str]:
+        """Generate methods from an impl block as mangled-name functions.
+
+        Methods are emitted as top-level functions with the naming convention
+        ``TypeName_methodName``.  The ``self`` parameter is compiled as a
+        pointer to the target struct type.
+        """
+        results: list[str] = []
+        target_name = _kryos_type_name(node.target_type)
+        for method in node.methods:
+            # Mangle the name: StructName_method_name
+            mangled = f"{target_name}_{method.name}"
+            original_name = method.name
+            method.name = mangled
+
+            # If first param is "self", adjust its type to be a pointer to the struct
+            original_params = list(method.params)
+            if method.params and method.params[0].name == "self":
+                self_param = method.params[0]
+                if self_param.type_annotation is None:
+                    self_param.type_annotation = SimpleType(name=f"%struct.{target_name}*")
+
+            ir = self._gen_function(method)
+            results.append(ir)
+
+            # Register the method so it can be found later
+            self._functions[mangled] = method
+            self._impl_methods[mangled] = method
+
+            # Restore original state
+            method.name = original_name
+            method.params = original_params
+
+        return results
+
+    # -----------------------------------------------------------------------
+    # Lambda expressions
+    # -----------------------------------------------------------------------
+
+    def _gen_lambda_expr(self, node: Lambda) -> tuple[list[str], str]:
+        """Generate a lambda as a top-level function and return its function pointer.
+
+        For MVP, lambdas are compiled as regular top-level functions with
+        mangled names.  No environment capture is performed yet.
+
+        TODO: Implement closure environment capture -- allocate an env struct
+        on the heap containing captured free variables, and pass it as an
+        extra parameter to the generated function.
+        """
+        name = f"__lambda_{self._lambda_counter}"
+        self._lambda_counter += 1
+
+        # Convert the lambda body to a BlockStmt if it's a bare expression
+        if isinstance(node.body, BlockStmt):
+            body = node.body
+        else:
+            # Wrap a bare expression in a return statement inside a block
+            from kryos.compiler.ast_nodes import ReturnStmt as RetStmt
+            ret = RetStmt(value=node.body, span=node.span)
+            body = BlockStmt(statements=[ret], span=node.span)
+
+        fn_decl = FnDecl(
+            name=name,
+            params=node.params,
+            return_type=node.return_type,
+            body=body,
+            span=node.span,
+        )
+        self._functions[name] = fn_decl
+        ir = self._gen_function(fn_decl)
+        self._globals.append(ir)
+
+        # Return the function pointer as the expression value
+        return [], f"@{name}"
+
+    # -----------------------------------------------------------------------
+    # Match expressions
+    # -----------------------------------------------------------------------
+
+    def _gen_match_expr(self, node: MatchExpr) -> tuple[list[str], str]:
+        """Generate LLVM IR for a match expression.
+
+        For integer/bool subjects, generates a chain of compare-and-branch.
+        For enum subjects, extracts the tag and uses an LLVM switch instruction.
+        Each arm's body is generated as a separate basic block, and the
+        match result is collected via a phi node at the end.
+        """
+        lines: list[str] = []
+
+        # Evaluate the subject expression
+        subj_lines, subj_reg = self._gen_expr(node.value)
+        lines.extend(subj_lines)
+
+        subj_type = self._infer_llvm_type(node.value)
+
+        # Determine if this is an enum match
+        is_enum_match = subj_type.startswith("%enum.")
+
+        end_label = self._next_label("match.end")
+
+        if is_enum_match:
+            return self._gen_enum_match(node, subj_reg, subj_type, end_label, lines)
+        else:
+            return self._gen_value_match(node, subj_reg, subj_type, end_label, lines)
+
+    def _gen_value_match(
+        self,
+        node: MatchExpr,
+        subj_reg: str,
+        subj_type: str,
+        end_label: str,
+        lines: list[str],
+    ) -> tuple[list[str], str]:
+        """Generate a match over integer/bool values using compare-and-branch."""
+        arm_labels: list[str] = []
+        arm_results: list[tuple[str, str]] = []  # (result_reg, label)
+
+        for i, arm in enumerate(node.arms):
+            arm_labels.append(self._next_label(f"match.arm.{i}"))
+
+        default_label = self._next_label("match.default")
+
+        # Generate condition checks and branches
+        for i, arm in enumerate(node.arms):
+            if arm.pattern is not None:
+                # Check if this is a wildcard/default arm (identifier "_")
+                if isinstance(arm.pattern, Identifier) and arm.pattern.name == "_":
+                    lines.append(f"  br label %{arm_labels[i]}")
+                else:
+                    pat_lines, pat_reg = self._gen_expr(arm.pattern)
+                    lines.extend(pat_lines)
+                    cmp_reg = self._next_reg()
+                    if subj_type in ("float", "double"):
+                        lines.append(f"  {cmp_reg} = fcmp oeq {subj_type} {subj_reg}, {pat_reg}")
+                    else:
+                        lines.append(f"  {cmp_reg} = icmp eq {subj_type} {subj_reg}, {pat_reg}")
+                    next_check = arm_labels[i + 1] if i + 1 < len(arm_labels) else default_label
+                    lines.append(f"  br i1 {cmp_reg}, label %{arm_labels[i]}, label %{next_check}")
+            else:
+                lines.append(f"  br label %{arm_labels[i]}")
+
+        # Generate arm bodies
+        for i, arm in enumerate(node.arms):
+            lines.append(f"{arm_labels[i]}:")
+            if arm.body is not None:
+                body_lines, body_reg = self._gen_expr(arm.body)
+                lines.extend(body_lines)
+                arm_results.append((body_reg, arm_labels[i]))
+            else:
+                arm_results.append(("0", arm_labels[i]))
+            lines.append(f"  br label %{end_label}")
+
+        # Default arm (unreachable)
+        lines.append(f"{default_label}:")
+        arm_results.append(("0", default_label))
+        lines.append(f"  br label %{end_label}")
+
+        # End block -- merge results with phi
+        lines.append(f"{end_label}:")
+        if arm_results:
+            result_type = self._infer_llvm_type(node.arms[0].body) if node.arms and node.arms[0].body else "i32"
+            result = self._next_reg()
+            phi_entries = ", ".join(f"[{reg}, %{label}]" for reg, label in arm_results)
+            lines.append(f"  {result} = phi {result_type} {phi_entries}")
+            return lines, result
+
+        return lines, "0"
+
+    def _gen_enum_match(
+        self,
+        node: MatchExpr,
+        subj_reg: str,
+        subj_type: str,
+        end_label: str,
+        lines: list[str],
+    ) -> tuple[list[str], str]:
+        """Generate a match over enum tags using LLVM switch."""
+        # Extract the tag (field 0 of the enum struct)
+        tag_reg = self._next_reg()
+        lines.append(f"  {tag_reg} = extractvalue {subj_type} {subj_reg}, 0")
+
+        arm_labels: list[str] = []
+        arm_results: list[tuple[str, str]] = []
+
+        for i in range(len(node.arms)):
+            arm_labels.append(self._next_label(f"match.arm.{i}"))
+
+        default_label = self._next_label("match.default")
+
+        # Build switch instruction
+        cases: list[str] = []
+        for i, arm in enumerate(node.arms):
+            if isinstance(arm.pattern, Identifier) and arm.pattern.name == "_":
+                # Wildcard -- this becomes the default
+                default_label = arm_labels[i]
+            else:
+                cases.append(f"i8 {i}, label %{arm_labels[i]}")
+
+        cases_str = " ".join(cases)
+        lines.append(f"  switch i8 {tag_reg}, label %{default_label} [{cases_str}]")
+
+        # Generate arm bodies
+        for i, arm in enumerate(node.arms):
+            lines.append(f"{arm_labels[i]}:")
+            if arm.body is not None:
+                body_lines, body_reg = self._gen_expr(arm.body)
+                lines.extend(body_lines)
+                arm_results.append((body_reg, arm_labels[i]))
+            else:
+                arm_results.append(("0", arm_labels[i]))
+            lines.append(f"  br label %{end_label}")
+
+        # If default wasn't claimed by a wildcard arm, emit it
+        if not any(isinstance(a.pattern, Identifier) and a.pattern.name == "_" for a in node.arms):
+            lines.append(f"{default_label}:")
+            arm_results.append(("0", default_label))
+            lines.append(f"  br label %{end_label}")
+
+        lines.append(f"{end_label}:")
+        if arm_results:
+            result = self._next_reg()
+            phi_entries = ", ".join(f"[{reg}, %{label}]" for reg, label in arm_results)
+            lines.append(f"  {result} = phi i32 {phi_entries}")
+            return lines, result
+
+        return lines, "0"
+
+    # -----------------------------------------------------------------------
+    # Method calls (dispatching to impl block methods)
+    # -----------------------------------------------------------------------
+
+    def _gen_method_call(self, expr: MethodCall) -> tuple[list[str], str]:
+        """Generate IR for a method call by dispatching to the mangled impl method.
+
+        ``obj.method(args)`` is compiled as ``Type_method(obj_ptr, args)``.
+        """
+        lines: list[str] = []
+
+        # Infer the type of the object to find the mangled method name
+        struct_name = self._infer_struct_name(expr.object)
+        if struct_name:
+            mangled = f"{struct_name}_{expr.method}"
+        else:
+            mangled = expr.method
+
+        # Get the object pointer (not loaded -- we need the address for self)
+        if isinstance(expr.object, Identifier) and expr.object.name in self._env:
+            obj_ptr = self._env[expr.object.name][0]
+            obj_llty = self._env[expr.object.name][1]
+        else:
+            obj_lines, obj_ptr = self._gen_expr(expr.object)
+            lines.extend(obj_lines)
+            obj_llty = self._infer_llvm_type(expr.object)
+
+        # Build argument list: self pointer + remaining args
+        arg_regs: list[tuple[str, str]] = []
+        if struct_name and struct_name in self._struct_types:
+            arg_regs.append((f"%struct.{struct_name}*", obj_ptr))
+        else:
+            arg_regs.append((f"{obj_llty}*" if not obj_llty.endswith("*") else obj_llty, obj_ptr))
+
+        for arg in expr.args:
+            arg_lines, arg_reg = self._gen_expr(arg)
+            lines.extend(arg_lines)
+            arg_ty = self._infer_llvm_type(arg)
+            arg_regs.append((arg_ty, arg_reg))
+
+        # Determine return type
+        fn_decl = self._functions.get(mangled)
+        if fn_decl:
+            ret_type = _llvm_type(fn_decl.return_type)
+        else:
+            ret_type = "i32"
+
+        args_str = ", ".join(f"{ty} {reg}" for ty, reg in arg_regs)
+
+        if ret_type == "void":
+            lines.append(f"  call void @{mangled}({args_str})")
+            return lines, "0"
+        else:
+            result = self._next_reg()
+            lines.append(f"  {result} = call {ret_type} @{mangled}({args_str})")
+            return lines, result
+
+    # -----------------------------------------------------------------------
+    # Generic instantiation (monomorphization)
+    # -----------------------------------------------------------------------
+
+    def _gen_generic_instantiation(self, fn_decl: FnDecl, type_args: list[str]) -> str:
+        """Generate a specialized version of a generic function.
+
+        Mangles the function name with the concrete type arguments and
+        generates a new version of the function with all generic type
+        parameters substituted.  Caches the result so each specialization
+        is emitted only once.
+
+        Returns the mangled function name for the specialized version.
+        """
+        mangled = fn_decl.name + "_" + "_".join(type_args)
+        if mangled in self._generated_functions:
+            return mangled
+
+        # Build type parameter mapping: generic_name -> concrete_type
+        type_map: dict[str, str] = {}
+        for i, gp in enumerate(fn_decl.generics):
+            if i < len(type_args):
+                type_map[gp.name] = type_args[i]
+
+        # Clone the function and substitute types
+        specialized = self._substitute_types(fn_decl, type_map)
+        specialized.name = mangled
+        self._functions[mangled] = specialized
+        self._generated_functions.add(mangled)
+        ir = self._gen_function(specialized)
+        self._globals.append(ir)
+        return mangled
+
+    def _substitute_types(self, fn_decl: FnDecl, type_map: dict[str, str]) -> FnDecl:
+        """Create a copy of a FnDecl with generic type parameters substituted.
+
+        Returns a new FnDecl with all SimpleType references that match
+        generic parameter names replaced with the concrete types.
+        """
+        import copy
+        fn = copy.deepcopy(fn_decl)
+
+        def subst(ty: Optional[TypeNode]) -> Optional[TypeNode]:
+            if ty is None:
+                return None
+            if isinstance(ty, SimpleType) and ty.name in type_map:
+                return SimpleType(name=type_map[ty.name], span=ty.span)
+            if isinstance(ty, ArrayType):
+                ty.element_type = subst(ty.element_type)
+            if isinstance(ty, GenericType):
+                ty.type_params = [subst(p) for p in ty.type_params]  # type: ignore[misc]
+            return ty
+
+        fn.return_type = subst(fn.return_type)
+        for p in fn.params:
+            p.type_annotation = subst(p.type_annotation)
+        fn.generics = []  # no longer generic
+        return fn
+
+    # -----------------------------------------------------------------------
     # Type inference helpers
     # -----------------------------------------------------------------------
 
@@ -1314,6 +1759,24 @@ class CodeGenerator:
             sname = expr.type_name
             if sname in self._struct_types:
                 return f"%struct.{sname}"
+            return "i32"
+        if isinstance(expr, Lambda):
+            # A lambda expression evaluates to a function pointer
+            ret = _llvm_type(expr.return_type)
+            ptypes = ", ".join(_llvm_type(p.type_annotation) for p in expr.params)
+            return f"{ret} ({ptypes})*"
+        if isinstance(expr, MatchExpr):
+            # Infer type from the first arm's body
+            if expr.arms and expr.arms[0].body:
+                return self._infer_llvm_type(expr.arms[0].body)
+            return "i32"
+        if isinstance(expr, MethodCall):
+            struct_name = self._infer_struct_name(expr.object)
+            if struct_name:
+                mangled = f"{struct_name}_{expr.method}"
+                fn = self._functions.get(mangled)
+                if fn:
+                    return _llvm_type(fn.return_type)
             return "i32"
         return "i32"
 
