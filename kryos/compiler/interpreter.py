@@ -232,6 +232,10 @@ class Interpreter:
         self._impl_traits: dict[str, list[str]] = {}
         self._setup_builtins()
 
+        # Register standard library modules (string, math, collections, JSON)
+        from kryos.stdlib import register_all_stdlib
+        register_all_stdlib(self)
+
     def _setup_builtins(self) -> None:
         """Register built-in functions."""
 
