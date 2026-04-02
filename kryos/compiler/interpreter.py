@@ -16,7 +16,7 @@ from kryos.compiler.ast_nodes import (
     ImportDecl, ImportPath,
     LetStmt, AssignStmt, ReturnStmt,
     IfStmt, ElifClause, ForStmt, WhileStmt, BreakStmt, ContinueStmt,
-    ExprStmt, BlockStmt, SpawnStmt, TryCatchStmt, ThrowStmt,
+    ExprStmt, BlockStmt, SpawnStmt, SelectStmt, SelectBranch, TryCatchStmt, ThrowStmt,
     # Expressions
     Expression, IntLiteral, FloatLiteral, StringLiteral, CharLiteral,
     BoolLiteral, NoneLiteral, Identifier,
@@ -453,6 +453,28 @@ class Interpreter:
         self.globals.define("min", _min)
         self.globals.define("max", _max)
         self.globals.define("assert", _assert)
+
+        # ---- Actor model / channels ----
+        import queue as _queue
+
+        def _chan() -> _queue.Queue:
+            return _queue.Queue()
+
+        def _send(ch: Any, val: Any) -> None:
+            ch.put(val)
+
+        def _recv(ch: Any) -> Any:
+            return ch.get()
+
+        def _ask(ch: Any, data: Any) -> Any:
+            reply = _queue.Queue()
+            ch.put({"data": data, "reply": reply})
+            return reply.get()
+
+        self.globals.define("chan", _chan)
+        self.globals.define("send", _send)
+        self.globals.define("recv", _recv)
+        self.globals.define("ask", _ask)
 
         # ---- AI-native runtime ----
         self._setup_ai_runtime()
@@ -1030,6 +1052,21 @@ class Interpreter:
         with self._spawn_lock:
             self._spawned_threads.append(t)
         return t
+
+    def _exec_SelectStmt(self, node: SelectStmt, env: Environment) -> None:
+        """Execute a select statement -- poll channels until one is ready."""
+        import time
+        import queue as _queue
+        while True:
+            for branch in node.branches:
+                ch = self._eval(branch.channel, env)
+                try:
+                    val = ch.get_nowait()
+                    self._exec_block_in_env(branch.body, Environment(parent=env))
+                    return
+                except _queue.Empty:
+                    continue
+            time.sleep(0.001)
 
     # ------------------------------------------------------------------
     # Expressions

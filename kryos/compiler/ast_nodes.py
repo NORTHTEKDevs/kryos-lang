@@ -472,6 +472,20 @@ class SpawnStmt(Statement):
 
 
 @dataclass
+class SelectBranch:
+    """A single branch in a select statement."""
+    channel: Expression = None
+    body: BlockStmt = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class SelectStmt(Statement):
+    """select { ch => { body } }"""
+    branches: list = field(default_factory=list)
+
+
+@dataclass
 class ParallelForStmt(Statement):
     """``parallel for x in iterable { ... }``"""
     variable: str = ""

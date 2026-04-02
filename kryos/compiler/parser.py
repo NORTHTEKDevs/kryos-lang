@@ -24,7 +24,7 @@ from kryos.compiler.ast_nodes import (
     # Statements
     Statement, BlockStmt, LetStmt, AssignStmt, ReturnStmt,
     IfStmt, ElifClause, ForStmt, WhileStmt, BreakStmt, ContinueStmt,
-    ExprStmt, SpawnStmt, TryCatchStmt, ThrowStmt,
+    ExprStmt, SpawnStmt, SelectStmt, SelectBranch, TryCatchStmt, ThrowStmt,
     # Expressions
     Expression, IntLiteral, FloatLiteral, StringLiteral, CharLiteral,
     BoolLiteral, NoneLiteral, Identifier,
@@ -78,6 +78,7 @@ _SYNC_TOKENS = frozenset({
     _TT.STRUCT, _TT.ENUM, _TT.TRAIT, _TT.IMPL, _TT.ACTOR,
     _TT.USE, _TT.TYPE, _TT.BREAK, _TT.CONTINUE, _TT.AT,
     _TT.PUB, _TT.RBRACE, _TT.EOF, _TT.TRY, _TT.THROW, _TT.MATCH,
+    _TT.SELECT,
 })
 
 # Compound-assignment operators
@@ -272,10 +273,15 @@ class Parser:
         attrs: list[Attribute] = []
         while self._at(_TT.AT, *self._ATTR_TOKENS.keys()):
             if self._at(_TT.AT):
-                # Generic @identifier attribute
+                # Generic @identifier attribute (also accept keywords as attr names)
                 start = self._advance()  # consume '@'
-                name_tok = self._expect(_TT.IDENTIFIER, "after '@'")
-                name = name_tok.value
+                tok = self._cur()
+                if tok.type == _TT.IDENTIFIER or tok.type in self._KEYWORD_AS_IDENT:
+                    name_tok = self._advance()
+                    name = name_tok.value
+                else:
+                    name_tok = self._expect(_TT.IDENTIFIER, "after '@'")
+                    name = name_tok.value
             else:
                 # Compound AT_* token (e.g., AT_CAPABILITIES)
                 start = self._advance()
@@ -291,13 +297,14 @@ class Parser:
 
     # Keyword tokens that should be treated as identifiers in attribute arguments
     _KEYWORD_AS_IDENT = {
-        _TT.QUANTUM, _TT.PARALLEL, _TT.ACTOR, _TT.SPAWN, _TT.COMPTIME,
+        _TT.QUANTUM, _TT.PARALLEL, _TT.ACTOR, _TT.SPAWN, _TT.SELECT, _TT.COMPTIME,
         _TT.FN, _TT.STRUCT, _TT.ENUM, _TT.TRAIT, _TT.IMPL, _TT.PUB,
         _TT.MOD, _TT.TYPE, _TT.MUT, _TT.USE, _TT.EXTERN, _TT.AS,
         _TT.TRUE, _TT.FALSE, _TT.NONE, _TT.AND, _TT.OR, _TT.NOT,
         _TT.LET, _TT.IF, _TT.ELSE, _TT.ELIF, _TT.FOR, _TT.WHILE,
         _TT.IN, _TT.BREAK, _TT.CONTINUE, _TT.RETURN,
         _TT.TRY, _TT.CATCH, _TT.THROW, _TT.MATCH,
+        _TT.SEND, _TT.RECV, _TT.ASK, _TT.CHAN,
     }
 
     def _parse_attr_args(self) -> list[Expression]:
@@ -319,13 +326,20 @@ class Parser:
                 # Identifier or keyword-as-identifier
                 self._advance()
                 node = Identifier(span=self._span(tok), name=tok.value)
-                # Check for colon sub-capability: network:raw_socket
+                # Check for colon: sub-capability (network:raw_socket) or
+                # named parameter (max_cpu: "10s", paths: [...])
                 if self._match(_TT.COLON):
                     sub_tok = self._cur()
                     if sub_tok.type in (_TT.IDENTIFIER, _TT.TYPE_IDENT) or sub_tok.type in self._KEYWORD_AS_IDENT:
                         self._advance()
                         node = FieldAccess(
                             span=self._span(tok), object=node, field=sub_tok.value,
+                        )
+                    elif sub_tok.type in (_TT.STRING, _TT.INTEGER, _TT.FLOAT, _TT.LBRACKET):
+                        # Named parameter with literal value: key: "value" / key: 42 / key: [...]
+                        val_expr = self._expression()
+                        node = FieldAccess(
+                            span=self._span(tok), object=node, field=str(getattr(val_expr, 'value', val_expr)),
                         )
                 args.append(node)
             else:
@@ -755,6 +769,8 @@ class Parser:
             return ContinueStmt(span=self._span(start))
         if self._at(_TT.SPAWN):
             return self._spawn_stmt()
+        if self._at(_TT.SELECT):
+            return self._select_stmt()
         if self._at(_TT.TRY):
             return self._try_catch_stmt()
         if self._at(_TT.THROW):
@@ -871,6 +887,22 @@ class Parser:
             target=target,
             body=body,
         )
+
+    # -------------------------------------------------------------------
+    # select_stmt
+    # -------------------------------------------------------------------
+
+    def _select_stmt(self) -> SelectStmt:
+        start = self._advance()  # consume 'select'
+        self._expect(_TT.LBRACE)
+        branches: list[SelectBranch] = []
+        while not self._at(_TT.RBRACE) and not self._at(_TT.EOF):
+            ch_expr = self._expression()
+            self._expect(_TT.FAT_ARROW)
+            body = self._block()
+            branches.append(SelectBranch(channel=ch_expr, body=body, span=self._span_from(start)))
+        self._expect(_TT.RBRACE)
+        return SelectStmt(span=self._span_from(start), branches=branches)
 
     # -------------------------------------------------------------------
     # try_catch_stmt
@@ -1297,6 +1329,11 @@ class Parser:
                 span=self._span_from(tok),
                 body=body_block.statements,
             )
+
+        # Channel keywords used as function calls: chan(), send(), recv(), ask()
+        if tok.type in (_TT.SEND, _TT.RECV, _TT.ASK, _TT.CHAN):
+            self._advance()
+            return Identifier(span=self._span(tok), name=tok.value)
 
         # Nothing matched -- error
         self._error(f"Unexpected token {_tok_name(tok.type)} ({tok.value!r})")

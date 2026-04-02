@@ -52,6 +52,11 @@ class TokenType(Enum):
     TYPE = auto()
     ACTOR = auto()
     SPAWN = auto()
+    SELECT = auto()
+    SEND = auto()
+    RECV = auto()
+    ASK = auto()
+    CHAN = auto()
     PARALLEL = auto()
     QUANTUM = auto()
     COMPTIME = auto()
@@ -177,6 +182,7 @@ KEYWORDS: dict[str, TokenType] = {
     "none":     TokenType.NONE,
     "actor":    TokenType.ACTOR,
     "spawn":    TokenType.SPAWN,
+    "select":   TokenType.SELECT,
     "parallel": TokenType.PARALLEL,
     "quantum":  TokenType.QUANTUM,
     "comptime": TokenType.COMPTIME,
