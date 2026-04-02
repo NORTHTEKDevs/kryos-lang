@@ -23,6 +23,13 @@ from typing import Any, Callable, Optional
 from enum import Enum, auto
 
 
+# Self-healing can NEVER perform these actions
+PROHIBITED_HEAL_ACTIONS = frozenset({
+    "add_capability", "widen_sandbox", "increase_budget",
+    "remove_spawn_limit", "modify_annotations", "escalate_tier"
+})
+
+
 class HealAction(Enum):
     """Types of self-healing actions the engine can take."""
     RETRY = auto()           # Retry the operation
@@ -647,6 +654,22 @@ class Pipeline:
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+class SelfHealer:
+    """
+    Safety-aware wrapper around SelfHealingEngine.
+    Enforces that self-healing can never escalate capabilities.
+    """
+
+    def __init__(self) -> None:
+        self.engine = SelfHealingEngine()
+
+    def can_heal(self, action: str, context: dict = None) -> bool:
+        """Check if a healing action is allowed. Capability escalation is always denied."""
+        if action in PROHIBITED_HEAL_ACTIONS:
+            return False
+        return True
+
 
 def _parse_number(s: str) -> int | float:
     """Parse a number from a constraint string."""

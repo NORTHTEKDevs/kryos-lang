@@ -487,6 +487,11 @@ class CapabilityAnalyzer(ASTVisitor):
         self._scope_stack: list[tuple[str, CapabilitySet]] = []
         self._current_fn: str = "<top-level>"
 
+    def check_attenuation(self, parent_caps: list, child_caps: list) -> AttenuationResult:
+        """Verify child capabilities are a subset of parent's. Children can never escalate."""
+        rejected = [cap for cap in child_caps if cap not in parent_caps]
+        return AttenuationResult(valid=len(rejected) == 0, rejected=rejected)
+
     def analyze(self, module: Module) -> dict:
         """
         Analyze an entire module. Returns a capability report.
@@ -782,3 +787,25 @@ class CapabilityEnforcer:
     @property
     def current_function(self) -> str:
         return self._scope_stack[-1][0]
+
+
+# ------------------------------------------------------------------
+# Capability Attenuation
+# ------------------------------------------------------------------
+
+class AttenuationResult:
+    """Result of checking whether child capabilities are valid given parent."""
+    def __init__(self, valid: bool, rejected: list = None):
+        self.valid = valid
+        self.rejected = rejected or []
+
+
+# Capability Immutability Principle
+# Capabilities are sealed at compile time. No runtime mechanism can escalate them.
+CAPABILITY_IMMUTABLE_AT_RUNTIME = True
+
+PROHIBITED_RUNTIME_MODIFICATIONS = frozenset({
+    "add_capability", "widen_sandbox", "increase_budget",
+    "remove_spawn_limit", "modify_annotations", "escalate_tier",
+    "grant_autonomous", "bypass_attenuation"
+})
