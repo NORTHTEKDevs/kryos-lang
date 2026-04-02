@@ -1,0 +1,1201 @@
+//! Type checking pass — walks the AST and validates types.
+//!
+//! Resolves `TypeExpr` → `Type`, infers types for unannotated let bindings,
+//! checks function bodies, binary ops, calls, field access, etc.
+//! Reports mismatches as `Diagnostic` errors.
+
+use kryos_ast::{
+    BinOp, Block, Decl, Expr, Module, Stmt, TypeExpr, UnOp,
+};
+use kryos_errors::{Diagnostic, Span};
+
+use crate::env::{EnumDef, FunctionSig, StructDef, TypeEnv};
+use crate::infer::InferenceEngine;
+use crate::ty::Type;
+
+/// The main type checker.
+pub struct TypeChecker {
+    pub env: TypeEnv,
+    pub engine: InferenceEngine,
+    pub diagnostics: Vec<Diagnostic>,
+    /// The expected return type of the function currently being checked.
+    current_return_type: Option<Type>,
+}
+
+impl Default for TypeChecker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TypeChecker {
+    pub fn new() -> Self {
+        Self {
+            env: TypeEnv::new(),
+            engine: InferenceEngine::new(),
+            diagnostics: Vec::new(),
+            current_return_type: None,
+        }
+    }
+
+    /// Report an error diagnostic.
+    fn error(&mut self, msg: impl Into<String>, span: Span) {
+        self.diagnostics
+            .push(Diagnostic::error(msg).with_label(span, "here"));
+    }
+
+    // ── TypeExpr → Type resolution ───────────────────────────────────
+
+    /// Resolve an AST TypeExpr to a concrete Type.
+    pub fn resolve_type_expr(&mut self, te: &TypeExpr) -> Type {
+        match te {
+            TypeExpr::Simple { name, span } => {
+                if let Some(ty) = Type::from_name(name) {
+                    ty
+                } else {
+                    // Check if it's a known struct or enum name.
+                    if self.env.lookup_struct(name).is_some() {
+                        Type::Struct {
+                            name: name.clone(),
+                            generics: vec![],
+                        }
+                    } else if self.env.lookup_enum(name).is_some() {
+                        Type::Enum {
+                            name: name.clone(),
+                            generics: vec![],
+                        }
+                    } else {
+                        self.error(format!("unknown type `{name}`"), *span);
+                        Type::Error
+                    }
+                }
+            }
+            TypeExpr::Generic { name, args, span } => {
+                let resolved_args: Vec<Type> =
+                    args.iter().map(|a| self.resolve_type_expr(a)).collect();
+
+                // Handle well-known generic types.
+                match name.as_str() {
+                    "Option" => {
+                        if resolved_args.len() == 1 {
+                            Type::Option {
+                                inner: Box::new(resolved_args[0].clone()),
+                            }
+                        } else {
+                            self.error("Option expects exactly 1 type argument", *span);
+                            Type::Error
+                        }
+                    }
+                    "Result" => {
+                        if resolved_args.len() == 2 {
+                            Type::Result {
+                                ok: Box::new(resolved_args[0].clone()),
+                                err: Box::new(resolved_args[1].clone()),
+                            }
+                        } else {
+                            self.error("Result expects exactly 2 type arguments", *span);
+                            Type::Error
+                        }
+                    }
+                    "Map" => {
+                        if resolved_args.len() == 2 {
+                            Type::Map {
+                                key: Box::new(resolved_args[0].clone()),
+                                value: Box::new(resolved_args[1].clone()),
+                            }
+                        } else {
+                            self.error("Map expects exactly 2 type arguments", *span);
+                            Type::Error
+                        }
+                    }
+                    "Set" => {
+                        if resolved_args.len() == 1 {
+                            Type::Set {
+                                element: Box::new(resolved_args[0].clone()),
+                            }
+                        } else {
+                            self.error("Set expects exactly 1 type argument", *span);
+                            Type::Error
+                        }
+                    }
+                    _ => {
+                        // User-defined generic struct or enum.
+                        if self.env.lookup_struct(name).is_some() {
+                            Type::Struct {
+                                name: name.clone(),
+                                generics: resolved_args,
+                            }
+                        } else if self.env.lookup_enum(name).is_some() {
+                            Type::Enum {
+                                name: name.clone(),
+                                generics: resolved_args,
+                            }
+                        } else {
+                            // Treat as struct by default (forward reference).
+                            Type::Struct {
+                                name: name.clone(),
+                                generics: resolved_args,
+                            }
+                        }
+                    }
+                }
+            }
+            TypeExpr::Array {
+                element,
+                size,
+                span: _,
+            } => Type::Array {
+                element: Box::new(self.resolve_type_expr(element)),
+                size: *size,
+            },
+            TypeExpr::Tuple {
+                elements,
+                span: _,
+            } => Type::Tuple {
+                elements: elements.iter().map(|e| self.resolve_type_expr(e)).collect(),
+            },
+            TypeExpr::Function {
+                params,
+                ret,
+                span: _,
+            } => Type::Function {
+                params: params.iter().map(|p| self.resolve_type_expr(p)).collect(),
+                ret: Box::new(self.resolve_type_expr(ret)),
+            },
+            TypeExpr::Optional { inner, span: _ } => Type::Option {
+                inner: Box::new(self.resolve_type_expr(inner)),
+            },
+            TypeExpr::Reference {
+                inner,
+                mutable,
+                span: _,
+            } => Type::Reference {
+                inner: Box::new(self.resolve_type_expr(inner)),
+                mutable: *mutable,
+            },
+            TypeExpr::Shared { inner, span: _ } => Type::Shared {
+                inner: Box::new(self.resolve_type_expr(inner)),
+            },
+            TypeExpr::Weak { inner, span: _ } => Type::Weak {
+                inner: Box::new(self.resolve_type_expr(inner)),
+            },
+            TypeExpr::Pointer {
+                inner,
+                mutable,
+                span: _,
+            } => Type::Pointer {
+                inner: Box::new(self.resolve_type_expr(inner)),
+                mutable: *mutable,
+            },
+            TypeExpr::Inferred { span: _ } => {
+                // Create a fresh type variable to be inferred.
+                self.engine.fresh_var()
+            }
+        }
+    }
+
+    // ── Declaration checking ─────────────────────────────────────────
+
+    /// Type-check an entire module.
+    pub fn check_module(&mut self, module: &Module) {
+        // First pass: register all type and function declarations.
+        for decl in &module.declarations {
+            self.register_decl(decl);
+        }
+        // Second pass: check function bodies and expressions.
+        for decl in &module.declarations {
+            self.check_decl(decl);
+        }
+    }
+
+    /// Register a declaration in the environment (forward declaration pass).
+    fn register_decl(&mut self, decl: &Decl) {
+        match decl {
+            Decl::Function {
+                name,
+                generics,
+                params,
+                ret_ty,
+                ..
+            } => {
+                let param_types: Vec<(String, Type)> = params
+                    .iter()
+                    .map(|p| {
+                        let ty = p
+                            .ty
+                            .as_ref()
+                            .map(|t| self.resolve_type_expr(t))
+                            .unwrap_or_else(|| self.engine.fresh_var());
+                        (p.name.clone(), ty)
+                    })
+                    .collect();
+
+                let ret = ret_ty
+                    .as_ref()
+                    .map(|t| self.resolve_type_expr(t))
+                    .unwrap_or(Type::Void);
+
+                let sig = FunctionSig {
+                    name: name.clone(),
+                    generic_params: generics.iter().map(|g| g.name.clone()).collect(),
+                    params: param_types,
+                    ret,
+                };
+                self.env.define_function(sig);
+            }
+            Decl::Struct {
+                name,
+                generics,
+                fields,
+                ..
+            } => {
+                let field_types: Vec<(String, Type)> = fields
+                    .iter()
+                    .map(|f| (f.name.clone(), self.resolve_type_expr(&f.ty)))
+                    .collect();
+                self.env.define_struct(StructDef {
+                    name: name.clone(),
+                    generic_params: generics.iter().map(|g| g.name.clone()).collect(),
+                    fields: field_types,
+                });
+            }
+            Decl::Enum {
+                name,
+                generics,
+                variants,
+                ..
+            } => {
+                let variant_types: Vec<(String, Vec<Type>)> = variants
+                    .iter()
+                    .map(|v| {
+                        let tys = v.fields.iter().map(|t| self.resolve_type_expr(t)).collect();
+                        (v.name.clone(), tys)
+                    })
+                    .collect();
+                self.env.define_enum(EnumDef {
+                    name: name.clone(),
+                    generic_params: generics.iter().map(|g| g.name.clone()).collect(),
+                    variants: variant_types,
+                });
+            }
+            Decl::Impl {
+                target,
+                trait_name,
+                methods,
+                ..
+            } => {
+                let method_sigs: Vec<FunctionSig> = methods
+                    .iter()
+                    .filter_map(|m| {
+                        if let Decl::Function {
+                            name,
+                            generics,
+                            params,
+                            ret_ty,
+                            ..
+                        } = m
+                        {
+                            let param_types: Vec<(String, Type)> = params
+                                .iter()
+                                .map(|p| {
+                                    let ty = p
+                                        .ty
+                                        .as_ref()
+                                        .map(|t| self.resolve_type_expr(t))
+                                        .unwrap_or_else(|| self.engine.fresh_var());
+                                    (p.name.clone(), ty)
+                                })
+                                .collect();
+                            let ret = ret_ty
+                                .as_ref()
+                                .map(|t| self.resolve_type_expr(t))
+                                .unwrap_or(Type::Void);
+                            Some(FunctionSig {
+                                name: name.clone(),
+                                generic_params: generics.iter().map(|g| g.name.clone()).collect(),
+                                params: param_types,
+                                ret,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                self.env
+                    .define_impl(target.clone(), trait_name.clone(), method_sigs);
+            }
+            Decl::Trait {
+                name,
+                generics,
+                methods,
+                ..
+            } => {
+                let method_sigs: Vec<FunctionSig> = methods
+                    .iter()
+                    .filter_map(|m| {
+                        if let Decl::Function {
+                            name,
+                            generics,
+                            params,
+                            ret_ty,
+                            ..
+                        } = m
+                        {
+                            let param_types: Vec<(String, Type)> = params
+                                .iter()
+                                .map(|p| {
+                                    let ty = p
+                                        .ty
+                                        .as_ref()
+                                        .map(|t| self.resolve_type_expr(t))
+                                        .unwrap_or_else(|| self.engine.fresh_var());
+                                    (p.name.clone(), ty)
+                                })
+                                .collect();
+                            let ret = ret_ty
+                                .as_ref()
+                                .map(|t| self.resolve_type_expr(t))
+                                .unwrap_or(Type::Void);
+                            Some(FunctionSig {
+                                name: name.clone(),
+                                generic_params: generics.iter().map(|g| g.name.clone()).collect(),
+                                params: param_types,
+                                ret,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                self.env.define_trait(crate::env::TraitDef {
+                    name: name.clone(),
+                    generic_params: generics.iter().map(|g| g.name.clone()).collect(),
+                    methods: method_sigs,
+                });
+            }
+            Decl::TypeAlias { name, ty, .. } => {
+                let resolved = self.resolve_type_expr(ty);
+                // Register as a variable in the type namespace for lookup.
+                self.env.define_var(name.clone(), resolved);
+            }
+            Decl::Import { .. } | Decl::Extern { .. } | Decl::Actor { .. } => {
+                // These don't introduce types we need to check yet.
+            }
+        }
+    }
+
+    /// Check a declaration's body (second pass).
+    fn check_decl(&mut self, decl: &Decl) {
+        match decl {
+            Decl::Function {
+                name,
+                params,
+                ret_ty,
+                body: Some(body),
+                span,
+                ..
+            } => {
+                self.env.push_scope();
+
+                // Bind parameters in function scope.
+                let sig = self.env.lookup_function(name).cloned();
+                if let Some(ref sig) = sig {
+                    for (pname, pty) in &sig.params {
+                        self.env.define_var(pname.clone(), pty.clone());
+                    }
+                    self.current_return_type = Some(sig.ret.clone());
+                } else {
+                    // Fallback: resolve params directly.
+                    for param in params {
+                        let ty = param
+                            .ty
+                            .as_ref()
+                            .map(|t| self.resolve_type_expr(t))
+                            .unwrap_or_else(|| self.engine.fresh_var());
+                        self.env.define_var(param.name.clone(), ty);
+                    }
+                    self.current_return_type = ret_ty
+                        .as_ref()
+                        .map(|t| self.resolve_type_expr(t));
+                }
+
+                self.check_block(body);
+
+                self.current_return_type = None;
+                self.env.pop_scope();
+
+                let _ = span; // suppress unused warning
+            }
+            Decl::Impl { methods, .. } => {
+                for method in methods {
+                    self.check_decl(method);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // ── Block / statement checking ───────────────────────────────────
+
+    pub fn check_block(&mut self, block: &Block) {
+        for stmt in &block.stmts {
+            self.check_stmt(stmt);
+        }
+    }
+
+    fn check_stmt(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Let {
+                name,
+                ty,
+                value,
+                span,
+                ..
+            } => {
+                let declared_ty = ty.as_ref().map(|t| self.resolve_type_expr(t));
+                let inferred_ty = value.as_ref().map(|v| self.infer_expr(v));
+
+                let final_ty = match (declared_ty, inferred_ty) {
+                    (Some(decl), Some(inferred)) => {
+                        // Both declared and inferred: unify them.
+                        if let Err(diag) = self.engine.unify(&decl, &inferred, *span) {
+                            self.diagnostics.push(diag);
+                        }
+                        decl
+                    }
+                    (Some(decl), None) => decl,
+                    (None, Some(inferred)) => inferred,
+                    (None, None) => {
+                        // No type info at all — create a fresh variable.
+                        self.engine.fresh_var()
+                    }
+                };
+
+                self.env.define_var(name.clone(), final_ty);
+            }
+            Stmt::Assign {
+                target,
+                value,
+                span,
+                ..
+            } => {
+                let target_ty = self.infer_expr(target);
+                let value_ty = self.infer_expr(value);
+                if let Err(diag) = self.engine.unify(&target_ty, &value_ty, *span) {
+                    self.diagnostics.push(diag);
+                }
+            }
+            Stmt::Return { value, span } => {
+                let ret_ty = value
+                    .as_ref()
+                    .map(|v| self.infer_expr(v))
+                    .unwrap_or(Type::Void);
+
+                if let Some(ref expected) = self.current_return_type {
+                    if let Err(diag) = self.engine.unify(expected, &ret_ty, *span) {
+                        self.diagnostics.push(diag);
+                    }
+                }
+            }
+            Stmt::If {
+                condition,
+                then_block,
+                elif_clauses,
+                else_block,
+                span,
+            } => {
+                let cond_ty = self.infer_expr(condition);
+                if let Err(diag) = self.engine.unify(&Type::Bool, &cond_ty, *span) {
+                    self.diagnostics.push(diag);
+                }
+                self.env.push_scope();
+                self.check_block(then_block);
+                self.env.pop_scope();
+                for (elif_cond, elif_block) in elif_clauses {
+                    let elif_ty = self.infer_expr(elif_cond);
+                    if let Err(diag) = self.engine.unify(&Type::Bool, &elif_ty, *span) {
+                        self.diagnostics.push(diag);
+                    }
+                    self.env.push_scope();
+                    self.check_block(elif_block);
+                    self.env.pop_scope();
+                }
+                if let Some(else_blk) = else_block {
+                    self.env.push_scope();
+                    self.check_block(else_blk);
+                    self.env.pop_scope();
+                }
+            }
+            Stmt::While {
+                condition,
+                body,
+                span,
+            } => {
+                let cond_ty = self.infer_expr(condition);
+                if let Err(diag) = self.engine.unify(&Type::Bool, &cond_ty, *span) {
+                    self.diagnostics.push(diag);
+                }
+                self.env.push_scope();
+                self.check_block(body);
+                self.env.pop_scope();
+            }
+            Stmt::For {
+                pattern: _,
+                iterable: _,
+                body,
+                ..
+            } => {
+                // TODO: check iterable implements iterator, bind pattern vars.
+                self.env.push_scope();
+                self.check_block(body);
+                self.env.pop_scope();
+            }
+            Stmt::Expr { expr, .. } => {
+                self.infer_expr(expr);
+            }
+            Stmt::Throw { expr, .. } => {
+                self.infer_expr(expr);
+            }
+            Stmt::TryCatch {
+                try_block,
+                catch_name,
+                catch_block,
+                ..
+            } => {
+                self.env.push_scope();
+                self.check_block(try_block);
+                self.env.pop_scope();
+                self.env.push_scope();
+                self.env.define_var(catch_name.clone(), Type::Error);
+                self.check_block(catch_block);
+                self.env.pop_scope();
+            }
+            Stmt::Spawn { expr, .. } => {
+                self.infer_expr(expr);
+            }
+            Stmt::Break { .. } | Stmt::Continue { .. } | Stmt::Select { .. } => {}
+        }
+    }
+
+    // ── Expression type inference ────────────────────────────────────
+
+    /// Infer the type of an expression.
+    pub fn infer_expr(&mut self, expr: &Expr) -> Type {
+        match expr {
+            // Literals.
+            Expr::IntLiteral { .. } => Type::I32,
+            Expr::FloatLiteral { .. } => Type::F64,
+            Expr::StringLiteral { .. } | Expr::InterpolatedString { .. } => Type::Str,
+            Expr::CharLiteral { .. } => Type::Char,
+            Expr::BoolLiteral { .. } => Type::Bool,
+            Expr::NoneLiteral { .. } => Type::Option {
+                inner: Box::new(self.engine.fresh_var()),
+            },
+
+            // Identifier lookup.
+            Expr::Identifier { name, span } => {
+                if let Some(ty) = self.env.lookup_var(name) {
+                    ty.clone()
+                } else if let Some(sig) = self.env.lookup_function(name) {
+                    // Function used as a value — return its function type.
+                    Type::Function {
+                        params: sig.params.iter().map(|(_, t)| t.clone()).collect(),
+                        ret: Box::new(sig.ret.clone()),
+                    }
+                } else {
+                    self.error(format!("undefined variable `{name}`"), *span);
+                    Type::Error
+                }
+            }
+
+            // Field access: object.field.
+            Expr::FieldAccess {
+                object,
+                field,
+                span,
+            } => {
+                let obj_ty = self.infer_expr(object);
+                let obj_ty = self.engine.resolve(&obj_ty);
+                match &obj_ty {
+                    Type::Struct { name, .. } => {
+                        if let Some(fty) = self.env.lookup_field(name, field) {
+                            fty.clone()
+                        } else {
+                            self.error(
+                                format!("no field `{field}` on type `{name}`"),
+                                *span,
+                            );
+                            Type::Error
+                        }
+                    }
+                    Type::Tuple { elements } => {
+                        // Tuple field access: t.0, t.1, etc.
+                        if let Ok(idx) = field.parse::<usize>() {
+                            if idx < elements.len() {
+                                elements[idx].clone()
+                            } else {
+                                self.error(
+                                    format!(
+                                        "tuple index {idx} out of bounds (length {})",
+                                        elements.len()
+                                    ),
+                                    *span,
+                                );
+                                Type::Error
+                            }
+                        } else {
+                            self.error(
+                                format!("no field `{field}` on tuple type"),
+                                *span,
+                            );
+                            Type::Error
+                        }
+                    }
+                    Type::Error => Type::Error,
+                    _ => {
+                        self.error(
+                            format!("cannot access field `{field}` on type `{obj_ty}`"),
+                            *span,
+                        );
+                        Type::Error
+                    }
+                }
+            }
+
+            // Index access: object[index].
+            Expr::IndexAccess {
+                object,
+                index,
+                span,
+            } => {
+                let obj_ty = self.infer_expr(object);
+                let idx_ty = self.infer_expr(index);
+                let obj_ty = self.engine.resolve(&obj_ty);
+                match &obj_ty {
+                    Type::Array { element, .. } => {
+                        // Index must be an integer.
+                        if !self.engine.resolve(&idx_ty).is_integer() {
+                            if let Err(diag) = self.engine.unify(&Type::I32, &idx_ty, *span) {
+                                self.diagnostics.push(diag);
+                            }
+                        }
+                        *element.clone()
+                    }
+                    Type::Map { key, value } => {
+                        if let Err(diag) = self.engine.unify(key, &idx_ty, *span) {
+                            self.diagnostics.push(diag);
+                        }
+                        *value.clone()
+                    }
+                    Type::Error => Type::Error,
+                    _ => {
+                        self.error(
+                            format!("type `{obj_ty}` is not indexable"),
+                            *span,
+                        );
+                        Type::Error
+                    }
+                }
+            }
+
+            // Binary operations.
+            Expr::BinaryOp {
+                op,
+                left,
+                right,
+                span,
+            } => self.check_binary_op(*op, left, right, *span),
+
+            // Unary operations.
+            Expr::UnaryOp {
+                op,
+                operand,
+                span,
+            } => {
+                let operand_ty = self.infer_expr(operand);
+                match op {
+                    UnOp::Neg => {
+                        let resolved = self.engine.resolve(&operand_ty);
+                        if resolved.is_numeric() || resolved.is_error() {
+                            operand_ty
+                        } else {
+                            self.error(
+                                format!("cannot negate type `{resolved}`"),
+                                *span,
+                            );
+                            Type::Error
+                        }
+                    }
+                    UnOp::Not => {
+                        if let Err(diag) = self.engine.unify(&Type::Bool, &operand_ty, *span) {
+                            self.diagnostics.push(diag);
+                        }
+                        Type::Bool
+                    }
+                    UnOp::BitNot => {
+                        let resolved = self.engine.resolve(&operand_ty);
+                        if resolved.is_integer() || resolved.is_error() {
+                            operand_ty
+                        } else {
+                            self.error(
+                                format!("cannot bitwise-not type `{resolved}`"),
+                                *span,
+                            );
+                            Type::Error
+                        }
+                    }
+                }
+            }
+
+            // Function call.
+            Expr::FnCall { callee, args, span } => {
+                let callee_ty = self.infer_expr(callee);
+                let callee_ty = self.engine.resolve(&callee_ty);
+
+                match &callee_ty {
+                    Type::Function { params, ret } => {
+                        if args.len() != params.len() {
+                            self.error(
+                                format!(
+                                    "expected {} arguments, found {}",
+                                    params.len(),
+                                    args.len()
+                                ),
+                                *span,
+                            );
+                        } else {
+                            for (arg, param_ty) in args.iter().zip(params.iter()) {
+                                let arg_ty = self.infer_expr(arg);
+                                if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span())
+                                {
+                                    self.diagnostics.push(diag);
+                                }
+                            }
+                        }
+                        *ret.clone()
+                    }
+                    Type::Error => Type::Error,
+                    _ => {
+                        self.error(
+                            format!("type `{callee_ty}` is not callable"),
+                            *span,
+                        );
+                        Type::Error
+                    }
+                }
+            }
+
+            // Method call.
+            Expr::MethodCall {
+                object,
+                method,
+                args,
+                span,
+            } => {
+                let obj_ty = self.infer_expr(object);
+                let obj_ty = self.engine.resolve(&obj_ty);
+
+                let type_name = match &obj_ty {
+                    Type::Struct { name, .. } => Some(name.clone()),
+                    Type::Enum { name, .. } => Some(name.clone()),
+                    Type::Error => return Type::Error,
+                    _ => None,
+                };
+
+                if let Some(ref tname) = type_name {
+                    if let Some(sig) = self.env.lookup_method(tname, method).cloned() {
+                        // Skip 'self' parameter (first param) if present.
+                        let expected_params: Vec<_> = if sig.params.first().map(|(n, _)| n.as_str())
+                            == Some("self")
+                        {
+                            sig.params[1..].to_vec()
+                        } else {
+                            sig.params.clone()
+                        };
+
+                        if args.len() != expected_params.len() {
+                            self.error(
+                                format!(
+                                    "method `{method}` expects {} arguments, found {}",
+                                    expected_params.len(),
+                                    args.len()
+                                ),
+                                *span,
+                            );
+                        } else {
+                            for (arg, (_, param_ty)) in args.iter().zip(expected_params.iter()) {
+                                let arg_ty = self.infer_expr(arg);
+                                if let Err(diag) =
+                                    self.engine.unify(param_ty, &arg_ty, arg.span())
+                                {
+                                    self.diagnostics.push(diag);
+                                }
+                            }
+                        }
+                        return sig.ret.clone();
+                    }
+                }
+
+                self.error(
+                    format!("no method `{method}` found for type `{obj_ty}`"),
+                    *span,
+                );
+                Type::Error
+            }
+
+            // Literals: array, tuple, map, struct.
+            Expr::ArrayLiteral { elements, span } => {
+                if elements.is_empty() {
+                    Type::Array {
+                        element: Box::new(self.engine.fresh_var()),
+                        size: Some(0),
+                    }
+                } else {
+                    let first_ty = self.infer_expr(&elements[0]);
+                    for elem in &elements[1..] {
+                        let elem_ty = self.infer_expr(elem);
+                        if let Err(diag) = self.engine.unify(&first_ty, &elem_ty, *span) {
+                            self.diagnostics.push(diag);
+                        }
+                    }
+                    Type::Array {
+                        element: Box::new(first_ty),
+                        size: Some(elements.len() as u64),
+                    }
+                }
+            }
+            Expr::TupleLiteral { elements, .. } => Type::Tuple {
+                elements: elements.iter().map(|e| self.infer_expr(e)).collect(),
+            },
+            Expr::MapLiteral { entries, span } => {
+                if entries.is_empty() {
+                    Type::Map {
+                        key: Box::new(self.engine.fresh_var()),
+                        value: Box::new(self.engine.fresh_var()),
+                    }
+                } else {
+                    let (first_key, first_val) = &entries[0];
+                    let key_ty = self.infer_expr(first_key);
+                    let val_ty = self.infer_expr(first_val);
+                    for (k, v) in &entries[1..] {
+                        let kt = self.infer_expr(k);
+                        let vt = self.infer_expr(v);
+                        if let Err(diag) = self.engine.unify(&key_ty, &kt, *span) {
+                            self.diagnostics.push(diag);
+                        }
+                        if let Err(diag) = self.engine.unify(&val_ty, &vt, *span) {
+                            self.diagnostics.push(diag);
+                        }
+                    }
+                    Type::Map {
+                        key: Box::new(key_ty),
+                        value: Box::new(val_ty),
+                    }
+                }
+            }
+            Expr::StructLiteral { name, fields, span } => {
+                if let Some(def) = self.env.lookup_struct(name).cloned() {
+                    for (fname, fexpr) in fields {
+                        let expr_ty = self.infer_expr(fexpr);
+                        if let Some((_, expected_ty)) =
+                            def.fields.iter().find(|(n, _)| n == fname)
+                        {
+                            if let Err(diag) =
+                                self.engine.unify(expected_ty, &expr_ty, fexpr.span())
+                            {
+                                self.diagnostics.push(diag);
+                            }
+                        } else {
+                            self.error(
+                                format!("no field `{fname}` on struct `{name}`"),
+                                *span,
+                            );
+                        }
+                    }
+                    Type::Struct {
+                        name: name.clone(),
+                        generics: def
+                            .generic_params
+                            .iter()
+                            .map(|_| self.engine.fresh_var())
+                            .collect(),
+                    }
+                } else {
+                    self.error(format!("unknown struct `{name}`"), *span);
+                    Type::Error
+                }
+            }
+
+            // Lambda.
+            Expr::Lambda {
+                params,
+                ret_ty,
+                body,
+                ..
+            } => {
+                let param_types: Vec<Type> = params
+                    .iter()
+                    .map(|p| {
+                        p.ty.as_ref()
+                            .map(|t| self.resolve_type_expr(t))
+                            .unwrap_or_else(|| self.engine.fresh_var())
+                    })
+                    .collect();
+
+                let ret = ret_ty
+                    .as_ref()
+                    .map(|t| self.resolve_type_expr(t))
+                    .unwrap_or_else(|| self.engine.fresh_var());
+
+                self.env.push_scope();
+                for (param, ty) in params.iter().zip(param_types.iter()) {
+                    self.env.define_var(param.name.clone(), ty.clone());
+                }
+                let body_ty = self.infer_expr(body);
+                self.env.pop_scope();
+
+                if let Err(diag) = self.engine.unify(&ret, &body_ty, body.span()) {
+                    self.diagnostics.push(diag);
+                }
+
+                Type::Function {
+                    params: param_types,
+                    ret: Box::new(ret),
+                }
+            }
+
+            // If expression.
+            Expr::IfExpr {
+                condition,
+                then_branch,
+                else_branch,
+                span,
+            } => {
+                let cond_ty = self.infer_expr(condition);
+                if let Err(diag) = self.engine.unify(&Type::Bool, &cond_ty, *span) {
+                    self.diagnostics.push(diag);
+                }
+                self.env.push_scope();
+                self.check_block(then_branch);
+                self.env.pop_scope();
+                if let Some(else_blk) = else_branch {
+                    self.env.push_scope();
+                    self.check_block(else_blk);
+                    self.env.pop_scope();
+                }
+                // If used as expression, type is unit for now.
+                Type::Void
+            }
+
+            // Match expression.
+            Expr::MatchExpr { subject, arms, span } => {
+                let _subject_ty = self.infer_expr(subject);
+                if arms.is_empty() {
+                    return Type::Void;
+                }
+                let first_ty = self.infer_expr(&arms[0].body);
+                for arm in &arms[1..] {
+                    let arm_ty = self.infer_expr(&arm.body);
+                    if let Err(diag) = self.engine.unify(&first_ty, &arm_ty, *span) {
+                        self.diagnostics.push(diag);
+                    }
+                }
+                first_ty
+            }
+
+            // Range expression.
+            Expr::RangeExpr {
+                start,
+                end,
+                span,
+                ..
+            } => {
+                let start_ty = start
+                    .as_ref()
+                    .map(|e| self.infer_expr(e))
+                    .unwrap_or(Type::I32);
+                let end_ty = end
+                    .as_ref()
+                    .map(|e| self.infer_expr(e))
+                    .unwrap_or(Type::I32);
+                if let Err(diag) = self.engine.unify(&start_ty, &end_ty, *span) {
+                    self.diagnostics.push(diag);
+                }
+                // Range type is a struct-like type.
+                Type::Struct {
+                    name: "Range".to_string(),
+                    generics: vec![start_ty],
+                }
+            }
+
+            // Pipe expression (left |> right).
+            Expr::PipeExpr { left, right, span } => {
+                let left_ty = self.infer_expr(left);
+                let right_ty = self.infer_expr(right);
+                let right_ty = self.engine.resolve(&right_ty);
+                match &right_ty {
+                    Type::Function { params, ret } => {
+                        if params.len() == 1 {
+                            if let Err(diag) = self.engine.unify(&params[0], &left_ty, *span) {
+                                self.diagnostics.push(diag);
+                            }
+                            *ret.clone()
+                        } else {
+                            self.error(
+                                "pipe target must be a function taking exactly 1 argument",
+                                *span,
+                            );
+                            Type::Error
+                        }
+                    }
+                    Type::Error => Type::Error,
+                    _ => {
+                        self.error(
+                            format!("pipe target must be a function, found `{right_ty}`"),
+                            *span,
+                        );
+                        Type::Error
+                    }
+                }
+            }
+
+            // Shared / Move / Weak expressions.
+            Expr::SharedExpr { inner, .. } => {
+                let inner_ty = self.infer_expr(inner);
+                Type::Shared {
+                    inner: Box::new(inner_ty),
+                }
+            }
+            Expr::MoveExpr { inner, .. } => self.infer_expr(inner),
+            Expr::WeakExpr { inner, .. } => {
+                let inner_ty = self.infer_expr(inner);
+                Type::Weak {
+                    inner: Box::new(inner_ty),
+                }
+            }
+
+            // Cast expression.
+            Expr::Cast { expr, ty, .. } => {
+                // Check the source expression, then return the target type.
+                self.infer_expr(expr);
+                self.resolve_type_expr(ty)
+            }
+
+            // Block expression — type is the type of the last expression.
+            Expr::Block { block, .. } => {
+                self.env.push_scope();
+                for stmt in &block.stmts {
+                    self.check_stmt(stmt);
+                }
+                self.env.pop_scope();
+                // Block type is Void unless last stmt is an expression.
+                if let Some(last) = block.stmts.last() {
+                    if let Stmt::Expr { expr, .. } = last {
+                        return self.infer_expr(expr);
+                    }
+                }
+                Type::Void
+            }
+
+            // Comptime and quantum blocks — check body, return void for now.
+            Expr::ComptimeBlock { body, .. } | Expr::QuantumBlock { body, .. } => {
+                self.env.push_scope();
+                self.check_block(body);
+                self.env.pop_scope();
+                Type::Void
+            }
+        }
+    }
+
+    // ── Binary operator type checking ────────────────────────────────
+
+    fn check_binary_op(&mut self, op: BinOp, left: &Expr, right: &Expr, span: Span) -> Type {
+        let left_ty = self.infer_expr(left);
+        let right_ty = self.infer_expr(right);
+
+        match op {
+            // Arithmetic: both sides must be the same numeric type.
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow => {
+                if let Err(diag) = self.engine.unify(&left_ty, &right_ty, span) {
+                    self.diagnostics.push(diag);
+                    return Type::Error;
+                }
+                let resolved = self.engine.resolve(&left_ty);
+                if !resolved.is_numeric() && !resolved.is_error() {
+                    // Special case: string concatenation with +.
+                    if op == BinOp::Add && resolved == Type::Str {
+                        return Type::Str;
+                    }
+                    self.error(
+                        format!("cannot apply `{:?}` to non-numeric type `{resolved}`", op),
+                        span,
+                    );
+                    return Type::Error;
+                }
+                resolved
+            }
+
+            // Comparison: both sides same type, result is bool.
+            BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => {
+                if let Err(diag) = self.engine.unify(&left_ty, &right_ty, span) {
+                    self.diagnostics.push(diag);
+                }
+                Type::Bool
+            }
+
+            // Logical: both sides bool, result bool.
+            BinOp::And | BinOp::Or => {
+                if let Err(diag) = self.engine.unify(&Type::Bool, &left_ty, span) {
+                    self.diagnostics.push(diag);
+                }
+                if let Err(diag) = self.engine.unify(&Type::Bool, &right_ty, span) {
+                    self.diagnostics.push(diag);
+                }
+                Type::Bool
+            }
+
+            // Bitwise: both sides same integer type.
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
+                if let Err(diag) = self.engine.unify(&left_ty, &right_ty, span) {
+                    self.diagnostics.push(diag);
+                    return Type::Error;
+                }
+                let resolved = self.engine.resolve(&left_ty);
+                if !resolved.is_integer() && !resolved.is_error() {
+                    self.error(
+                        format!(
+                            "cannot apply bitwise `{:?}` to non-integer type `{resolved}`",
+                            op
+                        ),
+                        span,
+                    );
+                    return Type::Error;
+                }
+                resolved
+            }
+
+            // Pipe is handled separately in infer_expr.
+            BinOp::Pipe => {
+                // Should not reach here — PipeExpr handles pipes.
+                self.engine.resolve(&right_ty)
+            }
+
+            // Matrix multiply — both sides numeric.
+            BinOp::MatMul => {
+                if let Err(diag) = self.engine.unify(&left_ty, &right_ty, span) {
+                    self.diagnostics.push(diag);
+                }
+                self.engine.resolve(&left_ty)
+            }
+        }
+    }
+}
+
+// ── Public API ───────────────────────────────────────────────────────
+
+/// Type-check a module, returning all diagnostics found.
+pub fn type_check(module: &Module) -> Vec<Diagnostic> {
+    let mut checker = TypeChecker::new();
+    checker.check_module(module);
+    checker.diagnostics
+}
