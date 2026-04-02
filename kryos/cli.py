@@ -4,6 +4,7 @@ Usage:
     kryos run <file.kry>         # interpret/run a Kryos file
     kryos build <file.kry>       # compile (stub)
     kryos check <file.kry>       # type check only
+    kryos bundle <file.kry>      # bundle into deployable package
     kryos repl                   # interactive REPL
     kryos test <dir>             # run test files
     kryos version                # show version
@@ -111,8 +112,14 @@ def cmd_run(args: argparse.Namespace) -> None:
     tokens = _tokenize_source(source, args.file)
     module = _parse_tokens(tokens)
 
+    # Make CLI script arguments available to the args() builtin
+    from kryos.stdlib.process_module import set_script_args
+    set_script_args(getattr(args, "script_args", None) or [])
+
     no_heal = getattr(args, "no_heal", False)
     interp = Interpreter(self_healing=not no_heal)
+    # Set the current file so relative imports resolve correctly
+    interp._current_file = os.path.abspath(args.file)
     try:
         interp.run(module)
     except KryosRuntimeError as e:
@@ -439,6 +446,7 @@ def main() -> None:
     run_parser = subparsers.add_parser("run", help="Run a .kry file")
     run_parser.add_argument("file", help="Path to .kry source file")
     run_parser.add_argument("--no-heal", action="store_true", help="Disable self-healing")
+    run_parser.add_argument("script_args", nargs="*", help="Arguments passed to the Kryos script")
 
     # build
     build_parser = subparsers.add_parser("build", help="Compile a .kry file to LLVM IR / native")
@@ -487,6 +495,10 @@ def main() -> None:
     from kryos.cli_commands.package_cmds import register_package_commands
     pkg_commands = register_package_commands(subparsers)
 
+    # Bundle command
+    from kryos.cli_commands.bundle_cmd import register_bundle_command
+    bundle_commands = register_bundle_command(subparsers)
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -506,6 +518,7 @@ def main() -> None:
         "lsp": cmd_lsp,
         "version": cmd_version,
         **pkg_commands,
+        **bundle_commands,
     }
 
     cmd_fn = commands.get(args.command)

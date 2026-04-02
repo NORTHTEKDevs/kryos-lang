@@ -5,6 +5,7 @@ Evaluates the AST produced by the parser.
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import Any, Callable, Optional
 
@@ -12,15 +13,16 @@ from kryos.compiler.ast_nodes import (
     ASTNode, Module,
     # Declarations
     FnDecl, StructDecl, EnumDecl, TraitDecl, ImplBlock,
+    ImportDecl, ImportPath,
     LetStmt, AssignStmt, ReturnStmt,
     IfStmt, ElifClause, ForStmt, WhileStmt, BreakStmt, ContinueStmt,
-    ExprStmt, BlockStmt,
+    ExprStmt, BlockStmt, SpawnStmt, TryCatchStmt, ThrowStmt,
     # Expressions
     Expression, IntLiteral, FloatLiteral, StringLiteral, CharLiteral,
     BoolLiteral, NoneLiteral, Identifier,
     BinaryOp, UnaryOp, FnCall, MethodCall, FieldAccess, IndexAccess,
-    ArrayLiteral, StructLiteral, Lambda, Parameter,
-    RangeExpr, Attribute,
+    ArrayLiteral, MapLiteral, StructLiteral, Lambda, Parameter,
+    RangeExpr, MatchExpr, MatchArm, Attribute,
 )
 
 
@@ -46,6 +48,14 @@ class BreakSignal(Exception):
 
 class ContinueSignal(Exception):
     """Internal signal for continue statements."""
+
+
+class ThrowSignal(Exception):
+    """Raised when a throw statement is executed."""
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+        super().__init__(str(value))
 
 
 class Environment:
@@ -230,6 +240,15 @@ class Interpreter:
         self._impl_methods: dict[str, dict[str, KryosFunction]] = {}
         # type_name -> [trait_name, ...]
         self._impl_traits: dict[str, list[str]] = {}
+        # Module import cache: absolute path -> Environment (avoids circular imports)
+        self._imported_modules: dict[str, Environment] = {}
+        # Track the file currently being executed (for relative imports)
+        self._current_file: str | None = None
+        # Track spawned threads for wait_all() — protected by lock
+        import threading as _threading
+        self._spawned_threads: list = []
+        self._spawn_lock = _threading.Lock()
+        self._output_lock = _threading.Lock()
         self._setup_builtins()
 
         # Register standard library modules (string, math, collections, JSON)
@@ -609,6 +628,161 @@ class Interpreter:
         if self.self_healing and node.attributes:
             self._register_fn_intent(node.name, node.attributes, env)
 
+    def _exec_ImportDecl(self, node: ImportDecl, env: Environment) -> None:
+        """Execute a ``use`` import declaration.
+
+        Resolves the module file, parses and executes it in an isolated
+        environment, then binds the exported names into *env*.
+
+        Supported forms (based on the parser)::
+
+            use math_utils               -> imports math_utils.kry, all names
+            use utils::helpers            -> imports utils/helpers.kry, all names
+            use utils::helpers as h       -> imports into namespace alias ``h``
+        """
+        if node.is_extern:
+            # Extern imports (FFI) are handled elsewhere; skip silently.
+            return
+
+        module_path = self._resolve_module_path(node)
+        module_env = self._load_module(module_path)
+
+        alias = node.path.alias if node.path else None
+
+        if alias:
+            # ``use foo::bar as baz`` -> create a namespace object
+            ns: dict[str, Any] = {}
+            for name, value in module_env._vars.items():
+                ns[name] = value
+            env.define(alias, ns)
+        else:
+            # ``use foo::bar`` -> import all exported names into current scope
+            for name, value in module_env._vars.items():
+                # Skip private names (start with underscore)
+                if not name.startswith("_"):
+                    env.define(name, value)
+
+    def _resolve_module_path(self, node: ImportDecl) -> str:
+        """Resolve an ImportDecl to an absolute .kry file path."""
+        if node.path is None:
+            raise KryosRuntimeError("import has no module path")
+
+        segments = node.path.segments
+        if not segments:
+            raise KryosRuntimeError("empty import path")
+
+        # Security: reject path traversal attempts
+        for seg in segments:
+            if seg in ("..", ".", "") or os.sep in seg or "/" in seg:
+                raise KryosRuntimeError(
+                    f"invalid module path segment: '{seg}' — path traversal not allowed"
+                )
+
+        # Convert segments to a relative file path:  foo::bar -> foo/bar.kry
+        rel_path = os.path.join(*segments) + ".kry"
+
+        # 1. Try relative to the current file being executed
+        if self._current_file:
+            base_dir = os.path.dirname(os.path.abspath(self._current_file))
+            candidate = os.path.join(base_dir, rel_path)
+            if os.path.isfile(candidate):
+                return os.path.abspath(candidate)
+            # Also try as directory with mod.kry
+            dir_candidate = os.path.join(base_dir, *segments, "mod.kry")
+            if os.path.isfile(dir_candidate):
+                return os.path.abspath(dir_candidate)
+
+        # 2. Try relative to cwd
+        cwd_candidate = os.path.join(os.getcwd(), rel_path)
+        if os.path.isfile(cwd_candidate):
+            return os.path.abspath(cwd_candidate)
+
+        # 3. Try project src/ directory (walk up from current file to find kryos.toml)
+        if self._current_file:
+            project_dir = self._find_project_root(os.path.dirname(os.path.abspath(self._current_file)))
+            if project_dir:
+                src_candidate = os.path.join(project_dir, "src", rel_path)
+                if os.path.isfile(src_candidate):
+                    return os.path.abspath(src_candidate)
+
+        # 4. Try the packages.resolve_module() system
+        from kryos.compiler.packages import resolve_module
+        dotted = ".".join(segments)
+        project_dir_str = None
+        if self._current_file:
+            project_dir_str = self._find_project_root(
+                os.path.dirname(os.path.abspath(self._current_file))
+            )
+        resolved = resolve_module(dotted, project_dir_str)
+        if resolved is not None:
+            return str(resolved)
+
+        # 5. Try the global packages directory directly
+        pkg_dir = os.path.expanduser("~/.kryos/packages")
+        pkg_candidate = os.path.join(pkg_dir, rel_path)
+        if os.path.isfile(pkg_candidate):
+            return os.path.abspath(pkg_candidate)
+
+        raise KryosRuntimeError(
+            f"module not found: {'::'.join(segments)}",
+            node.span[0] if node.span else 0,
+        )
+
+    def _find_project_root(self, start_dir: str) -> str | None:
+        """Walk up from *start_dir* looking for a directory containing kryos.toml."""
+        current = os.path.abspath(start_dir)
+        while True:
+            if os.path.isfile(os.path.join(current, "kryos.toml")):
+                return current
+            parent = os.path.dirname(current)
+            if parent == current:
+                return None
+            current = parent
+
+    def _load_module(self, module_path: str) -> Environment:
+        """Parse, execute, and cache a module file. Returns its Environment."""
+        abs_path = os.path.abspath(module_path)
+
+        # Return cached module if already loaded (avoids circular imports)
+        if abs_path in self._imported_modules:
+            return self._imported_modules[abs_path]
+
+        # Mark as loading (sentinel) to detect circular imports
+        sentinel = Environment(parent=self.globals)
+        self._imported_modules[abs_path] = sentinel
+
+        # Read and parse the module file
+        try:
+            with open(abs_path, "r", encoding="utf-8") as f:
+                source = f.read()
+        except OSError as e:
+            raise KryosRuntimeError(f"cannot read module file: {abs_path}: {e}")
+
+        from kryos.compiler.lexer import tokenize as _tokenize
+        from kryos.compiler.parser import parse as _parse
+
+        try:
+            tokens = _tokenize(source, abs_path)
+            module_ast = _parse(tokens)
+        except Exception as e:
+            raise KryosRuntimeError(f"error parsing module {abs_path}: {e}")
+
+        # Execute in a fresh environment (inherits globals for builtins)
+        module_env = Environment(parent=self.globals)
+
+        # Save and restore the current file context
+        prev_file = self._current_file
+        self._current_file = abs_path
+        try:
+            for decl in module_ast.declarations:
+                self._exec(decl, module_env)
+        finally:
+            self._current_file = prev_file
+
+        # Replace the sentinel with the real environment
+        self._imported_modules[abs_path] = module_env
+        return module_env
+
     def _exec_StructDecl(self, node: StructDecl, env: Environment) -> None:
         field_names = [f.name for f in node.fields]
         struct = KryosStruct(node.name, field_names)
@@ -711,6 +885,14 @@ class Interpreter:
                     obj.fields[node.target.field] = self._apply_compound_op(
                         node.operator, current, value
                     )
+            elif isinstance(obj, dict):
+                if node.operator == "=":
+                    obj[node.target.field] = value
+                else:
+                    current = obj.get(node.target.field, 0)
+                    obj[node.target.field] = self._apply_compound_op(
+                        node.operator, current, value
+                    )
             else:
                 raise KryosRuntimeError("cannot assign to field of non-struct")
         elif isinstance(node.target, IndexAccess):
@@ -799,6 +981,55 @@ class Interpreter:
 
     def _exec_ContinueStmt(self, node: ContinueStmt, env: Environment) -> None:
         raise ContinueSignal()
+
+    def _exec_TryCatchStmt(self, node: TryCatchStmt, env: Environment) -> None:
+        try:
+            self._exec_block_in_env(node.try_body, Environment(parent=env))
+        except ThrowSignal as e:
+            catch_env = Environment(parent=env)
+            catch_env.define(node.catch_name, e.value, mutable=False)
+            self._exec_block_in_env(node.catch_body, catch_env)
+        except KryosRuntimeError as e:
+            catch_env = Environment(parent=env)
+            catch_env.define(node.catch_name, str(e), mutable=False)
+            self._exec_block_in_env(node.catch_body, catch_env)
+        except (ReturnSignal, BreakSignal, ContinueSignal):
+            # Control-flow signals must not be caught by user code.
+            raise
+        except Exception as e:
+            # Catch Python-level errors too (from builtins like json_parse).
+            catch_env = Environment(parent=env)
+            catch_env.define(node.catch_name, str(e), mutable=False)
+            self._exec_block_in_env(node.catch_body, catch_env)
+
+    def _exec_ThrowStmt(self, node: ThrowStmt, env: Environment) -> None:
+        value = self._eval(node.value, env)
+        raise ThrowSignal(value)
+
+    def _exec_SpawnStmt(self, node: SpawnStmt, env: Environment) -> Any:
+        """Execute a spawn statement -- runs the body/target in a new thread."""
+        import threading
+
+        def thread_target() -> None:
+            try:
+                spawn_env = Environment(parent=env)
+                if node.body is not None:
+                    self._exec_block_in_env(node.body, spawn_env)
+                elif node.target is not None:
+                    self._eval(node.target, spawn_env)
+            except ReturnSignal:
+                pass  # return inside spawn just exits the thread
+            except Exception as e:
+                text = f"[spawn error] {e}"
+                with self._output_lock:
+                    self.output.append(text)
+                self._output_fn(text)
+
+        t = threading.Thread(target=thread_target, daemon=True)
+        t.start()
+        with self._spawn_lock:
+            self._spawned_threads.append(t)
+        return t
 
     # ------------------------------------------------------------------
     # Expressions
@@ -1041,6 +1272,36 @@ class Interpreter:
                         f"unknown array method '{node.method}'"
                     )
 
+        # Dict (map) methods — also supports module namespace calls (use X as ns)
+        if isinstance(obj, dict):
+            # First check if the method name resolves to a callable in the dict
+            # (module namespace access: ns.func(args))
+            if node.method in obj and callable(obj[node.method]):
+                return obj[node.method](*args)
+            if node.method in obj and isinstance(obj[node.method], KryosFunction):
+                return self._call_function(obj[node.method], args)
+            match node.method:
+                case "keys":
+                    return list(obj.keys())
+                case "values":
+                    return list(obj.values())
+                case "len":
+                    return len(obj)
+                case "contains":
+                    return args[0] in obj if args else False
+                case "get":
+                    if len(args) >= 2:
+                        return obj.get(args[0], args[1])
+                    return obj.get(args[0]) if args else None
+                case "remove":
+                    if args and args[0] in obj:
+                        return obj.pop(args[0])
+                    return None
+                case _:
+                    raise KryosRuntimeError(
+                        f"unknown map method '{node.method}'"
+                    )
+
         # Impl'd methods on struct/enum instances
         if isinstance(obj, KryosInstance):
             type_name = obj.struct.name
@@ -1075,6 +1336,11 @@ class Interpreter:
             raise KryosRuntimeError(
                 f"enum '{obj.name}' has no variant '{node.field}'"
             )
+        # Dict (map) field access: obj.field -> obj["field"]
+        if isinstance(obj, dict):
+            if node.field in obj:
+                return obj[node.field]
+            return None
         raise KryosRuntimeError("field access on non-struct value")
 
     def _eval_IndexAccess(self, node: IndexAccess, env: Environment) -> Any:
@@ -1101,6 +1367,15 @@ class Interpreter:
     def _eval_ArrayLiteral(self, node: ArrayLiteral, env: Environment) -> list:
         return [self._eval(e, env) for e in node.elements]
 
+    def _eval_MapLiteral(self, node: MapLiteral, env: Environment) -> dict:
+        """Evaluate a map literal into a Python dict."""
+        result: dict[str, Any] = {}
+        for key_node, value_node in node.pairs:
+            key = self._eval(key_node, env)
+            value = self._eval(value_node, env)
+            result[str(key)] = value
+        return result
+
     def _eval_StructLiteral(self, node: StructLiteral, env: Environment) -> KryosInstance:
         struct = env.get(node.type_name)
         if not isinstance(struct, KryosStruct):
@@ -1125,6 +1400,45 @@ class Interpreter:
         if node.inclusive:
             return list(range(int(start), int(end) + 1))
         return list(range(int(start), int(end)))
+
+    def _eval_MatchExpr(self, node: MatchExpr, env: Environment) -> Any:
+        """Evaluate a match expression."""
+        subject = self._eval(node.value, env)
+
+        for arm in node.arms:
+            if arm.pattern is None:
+                # Wildcard -- always matches
+                return self._eval_match_body(arm.body, env)
+
+            pattern_val = self._eval(arm.pattern, env)
+
+            # Compare subject to pattern
+            if self._values_equal(subject, pattern_val):
+                return self._eval_match_body(arm.body, env)
+
+        # No match found
+        return None
+
+    def _eval_match_body(self, body: Any, env: Environment) -> Any:
+        """Evaluate a match arm body (block or expression)."""
+        if isinstance(body, BlockStmt):
+            match_env = Environment(parent=env)
+            try:
+                self._exec_block_in_env(body, match_env)
+            except ReturnSignal as ret:
+                return ret.value
+            return None
+        else:
+            return self._eval(body, env)
+
+    @staticmethod
+    def _values_equal(a: Any, b: Any) -> bool:
+        """Check if two Kryos values are equal."""
+        if isinstance(a, KryosEnumValue) and isinstance(b, KryosEnumValue):
+            return (a.enum.name == b.enum.name
+                    and a.variant_name == b.variant_name
+                    and a.fields == b.fields)
+        return a == b
 
     # ------------------------------------------------------------------
     # Helpers

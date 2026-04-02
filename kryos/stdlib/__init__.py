@@ -16,6 +16,16 @@ from kryos.stdlib.net_module import register_net_builtins
 from kryos.stdlib.map_module import register_map_builtins
 from kryos.stdlib.process_module import register_process_builtins
 from kryos.stdlib.string_ext_module import register_string_ext_builtins
+from kryos.stdlib.db_module import register_db_builtins
+from kryos.stdlib.server_module import register_server_builtins
+from kryos.stdlib.auth_module import register_auth_builtins
+from kryos.stdlib.claude_module import register_claude_builtins
+from kryos.stdlib.stripe_module import register_stripe_builtins
+from kryos.stdlib.email_module import register_email_builtins
+from kryos.stdlib.config_module import register_config_builtins
+from kryos.stdlib.regex_module import register_regex_builtins
+from kryos.stdlib.datetime_module import register_datetime_builtins
+from kryos.stdlib.set_module import register_set_builtins
 
 
 def register_all_stdlib(interpreter) -> None:
@@ -31,3 +41,13 @@ def register_all_stdlib(interpreter) -> None:
     register_map_builtins(interpreter)
     register_process_builtins(interpreter)
     register_string_ext_builtins(interpreter)
+    register_db_builtins(interpreter)
+    register_server_builtins(interpreter)
+    register_auth_builtins(interpreter)
+    register_claude_builtins(interpreter)
+    register_stripe_builtins(interpreter)
+    register_email_builtins(interpreter)
+    register_config_builtins(interpreter)
+    register_regex_builtins(interpreter)
+    register_datetime_builtins(interpreter)
+    register_set_builtins(interpreter)

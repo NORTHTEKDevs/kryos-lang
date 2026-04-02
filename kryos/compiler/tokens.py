@@ -55,9 +55,13 @@ class TokenType(Enum):
     PARALLEL = auto()
     QUANTUM = auto()
     COMPTIME = auto()
+    MATCH = auto()
     AND = auto()
     OR = auto()
     NOT = auto()
+    TRY = auto()
+    CATCH = auto()
+    THROW = auto()
 
     # --- Attribute keywords ---
     AT_CAPABILITIES = auto()    # @capabilities
@@ -176,9 +180,13 @@ KEYWORDS: dict[str, TokenType] = {
     "parallel": TokenType.PARALLEL,
     "quantum":  TokenType.QUANTUM,
     "comptime": TokenType.COMPTIME,
+    "match":    TokenType.MATCH,
     "and":      TokenType.AND,
     "or":       TokenType.OR,
     "not":      TokenType.NOT,
+    "try":      TokenType.TRY,
+    "catch":    TokenType.CATCH,
+    "throw":    TokenType.THROW,
 }
 
 ATTRIBUTE_KEYWORDS: dict[str, TokenType] = {

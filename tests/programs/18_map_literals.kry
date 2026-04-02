@@ -1,0 +1,17 @@
+// expect: Alice
+// expect: 30
+// expect: 0
+// expect: 42
+
+// Test map literal syntax
+let m = {"name": "Alice", "age": 30}
+println(m.name)
+println(m.age)
+
+// Empty map
+let empty = {}
+println(len(map_keys(empty)))
+
+// Nested maps
+let nested = {"inner": {"value": 42}}
+println(nested.inner.value)

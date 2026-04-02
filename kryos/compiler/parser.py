@@ -24,13 +24,14 @@ from kryos.compiler.ast_nodes import (
     # Statements
     Statement, BlockStmt, LetStmt, AssignStmt, ReturnStmt,
     IfStmt, ElifClause, ForStmt, WhileStmt, BreakStmt, ContinueStmt,
-    ExprStmt, SpawnStmt,
+    ExprStmt, SpawnStmt, TryCatchStmt, ThrowStmt,
     # Expressions
     Expression, IntLiteral, FloatLiteral, StringLiteral, CharLiteral,
     BoolLiteral, NoneLiteral, Identifier,
     BinaryOp, UnaryOp, FnCall, MethodCall, FieldAccess, IndexAccess,
-    ArrayLiteral, StructLiteral, Lambda, Parameter,
-    RangeExpr, IfExpr, PipeExpr, QuantumBlock, ComptimeBlock,
+    ArrayLiteral, MapLiteral, StructLiteral, Lambda, Parameter,
+    RangeExpr, IfExpr, MatchExpr, MatchArm, PipeExpr,
+    QuantumBlock, ComptimeBlock,
     Attribute,
 )
 
@@ -76,7 +77,7 @@ _SYNC_TOKENS = frozenset({
     _TT.FN, _TT.LET, _TT.RETURN, _TT.IF, _TT.FOR, _TT.WHILE,
     _TT.STRUCT, _TT.ENUM, _TT.TRAIT, _TT.IMPL, _TT.ACTOR,
     _TT.USE, _TT.TYPE, _TT.BREAK, _TT.CONTINUE, _TT.AT,
-    _TT.PUB, _TT.RBRACE, _TT.EOF,
+    _TT.PUB, _TT.RBRACE, _TT.EOF, _TT.TRY, _TT.THROW, _TT.MATCH,
 })
 
 # Compound-assignment operators
@@ -219,7 +220,7 @@ class Parser:
 
         is_pub = bool(self._match(_TT.PUB))
 
-        if self._at(_TT.FN):
+        if self._at(_TT.FN) and self._at_ahead(1, _TT.IDENTIFIER):
             return self._fn_decl(attrs)
         if self._at(_TT.STRUCT):
             return self._struct_decl(attrs)
@@ -296,6 +297,7 @@ class Parser:
         _TT.TRUE, _TT.FALSE, _TT.NONE, _TT.AND, _TT.OR, _TT.NOT,
         _TT.LET, _TT.IF, _TT.ELSE, _TT.ELIF, _TT.FOR, _TT.WHILE,
         _TT.IN, _TT.BREAK, _TT.CONTINUE, _TT.RETURN,
+        _TT.TRY, _TT.CATCH, _TT.THROW, _TT.MATCH,
     }
 
     def _parse_attr_args(self) -> list[Expression]:
@@ -753,6 +755,10 @@ class Parser:
             return ContinueStmt(span=self._span(start))
         if self._at(_TT.SPAWN):
             return self._spawn_stmt()
+        if self._at(_TT.TRY):
+            return self._try_catch_stmt()
+        if self._at(_TT.THROW):
+            return self._throw_stmt()
         return self._expr_or_assign_stmt()
 
     # -------------------------------------------------------------------
@@ -865,6 +871,43 @@ class Parser:
             target=target,
             body=body,
         )
+
+    # -------------------------------------------------------------------
+    # try_catch_stmt
+    # -------------------------------------------------------------------
+
+    def _try_catch_stmt(self) -> TryCatchStmt:
+        """Parse: try { body } catch (name) { handler }"""
+        start = self._advance()  # consume 'try'
+        try_body = self._block()
+
+        self._expect(_TT.CATCH, "after try block")
+
+        # Optional: catch with error variable  --  catch (e)
+        catch_name = "error"  # default name if no parens
+        if self._match(_TT.LPAREN):
+            name_tok = self._expect(_TT.IDENTIFIER, "as error variable name")
+            catch_name = name_tok.value
+            self._expect(_TT.RPAREN, "after catch variable")
+
+        catch_body = self._block()
+
+        return TryCatchStmt(
+            span=self._span_from(start),
+            try_body=try_body,
+            catch_name=catch_name,
+            catch_body=catch_body,
+        )
+
+    # -------------------------------------------------------------------
+    # throw_stmt
+    # -------------------------------------------------------------------
+
+    def _throw_stmt(self) -> ThrowStmt:
+        """Parse: throw expression"""
+        start = self._advance()  # consume 'throw'
+        value = self._expression()
+        return ThrowStmt(span=self._span_from(start), value=value)
 
     # -------------------------------------------------------------------
     # expr_stmt / assign_stmt
@@ -1212,6 +1255,10 @@ class Parser:
             self._expect(_TT.RBRACKET, f"to close '[' at line {tok.line}")
             return ArrayLiteral(span=self._span_from(tok), elements=elements)
 
+        # Map literal  {"key": value, ...}  or  {}
+        if tok.type == _TT.LBRACE and self._is_map_literal():
+            return self._map_literal()
+
         # Block expression  { ... }
         if tok.type == _TT.LBRACE:
             blk = self._block()
@@ -1220,6 +1267,14 @@ class Parser:
         # If expression
         if tok.type == _TT.IF:
             return self._if_expr()
+
+        # Match expression
+        if tok.type == _TT.MATCH:
+            return self._match_expr()
+
+        # Anonymous function   fn(params) { body }  or  fn(params) -> T { body }
+        if tok.type == _TT.FN and self._at_ahead(1, _TT.LPAREN):
+            return self._anonymous_fn()
 
         # Lambda   |params| -> body   or   |params| { block }
         if tok.type == _TT.PIPE:
@@ -1286,6 +1341,46 @@ class Parser:
         )
 
     # -------------------------------------------------------------------
+    # Map literal lookahead
+    # -------------------------------------------------------------------
+
+    def _is_map_literal(self) -> bool:
+        """Heuristic: does '{' start a map literal?
+
+        A map literal is ``{"key": value, ...}``.  We recognise it when the
+        token immediately after ``{`` is a STRING followed by ``:``.  An
+        empty ``{}`` is also treated as an empty map (not an empty block)
+        when it appears in expression position that already reached here.
+        """
+        # { STRING : ...  ->  definitely a map literal
+        if (self._at_ahead(0, _TT.LBRACE)
+                and self._at_ahead(1, _TT.STRING)
+                and self._at_ahead(2, _TT.COLON)):
+            return True
+        # {} -> treat as empty map literal
+        if (self._at_ahead(0, _TT.LBRACE)
+                and self._at_ahead(1, _TT.RBRACE)):
+            return True
+        return False
+
+    def _map_literal(self) -> MapLiteral:
+        """Parse ``{"key": value, ...}`` map literal.  Supports trailing commas."""
+        start = self._advance()  # consume '{'
+        pairs: list[Tuple[Expression, Expression]] = []
+        while not self._at(_TT.RBRACE, _TT.EOF):
+            key = self._expression()
+            self._expect(_TT.COLON, "after map key")
+            value = self._expression()
+            pairs.append((key, value))
+            if not self._match(_TT.COMMA):
+                break
+        self._expect(
+            _TT.RBRACE,
+            f"to close map literal started at line {start.line}",
+        )
+        return MapLiteral(span=self._span_from(start), pairs=pairs)
+
+    # -------------------------------------------------------------------
     # If expression
     # -------------------------------------------------------------------
 
@@ -1301,6 +1396,104 @@ class Parser:
             condition=cond,
             then_expr=then_expr,
             else_expr=else_expr,
+        )
+
+    # -------------------------------------------------------------------
+    # Match expression   match expr { pattern => body, ... }
+    # -------------------------------------------------------------------
+
+    def _match_expr(self) -> MatchExpr:
+        """Parse: match expr { pattern => body, pattern => body, ... }"""
+        start = self._advance()  # consume 'match'
+        subject = self._expression()
+        self._expect(_TT.LBRACE, "after match expression")
+
+        arms: list[MatchArm] = []
+        while not self._at(_TT.RBRACE, _TT.EOF):
+            arm_start = self._cur()
+
+            # Parse pattern
+            pattern: Expression | None = None
+            if (self._at(_TT.IDENTIFIER) and self._cur().value == "_"
+                    and self._at_ahead(1, _TT.FAT_ARROW)):
+                # Wildcard: _
+                self._advance()  # consume '_'
+                pattern = None
+            else:
+                # Parse pattern as expression (literal, enum path, variable)
+                pattern = self._match_pattern()
+
+            self._expect(_TT.FAT_ARROW, "after match pattern")
+
+            # Parse body -- either a block { ... } or a single expression
+            body: Expression | BlockStmt
+            if self._at(_TT.LBRACE):
+                body = self._block()
+            else:
+                body = self._expression()
+
+            arms.append(MatchArm(
+                span=self._span_from(arm_start),
+                pattern=pattern,
+                body=body,  # type: ignore[arg-type]
+            ))
+
+            # Optional comma between arms
+            self._match(_TT.COMMA)
+
+        self._expect(
+            _TT.RBRACE,
+            f"to close match started at line {start.line}",
+        )
+        return MatchExpr(
+            span=self._span_from(start),
+            value=subject,
+            arms=arms,
+        )
+
+    def _match_pattern(self) -> Expression:
+        """Parse a match pattern: literal, Enum::Variant, or identifier."""
+        tok = self._cur()
+
+        # Handle Enum::Variant pattern: IDENTIFIER :: IDENTIFIER
+        if (tok.type == _TT.IDENTIFIER
+                and self._at_ahead(1, _TT.COLON_COLON)
+                and self._at_ahead(2, _TT.IDENTIFIER)):
+            enum_tok = self._advance()  # enum name
+            self._advance()  # ::
+            variant_tok = self._advance()  # variant name
+            # Return as an Identifier with the full path, since the interpreter
+            # stores enum variants as "EnumName::VariantName" in the environment
+            return Identifier(
+                span=self._span_from(enum_tok),
+                name=f"{enum_tok.value}::{variant_tok.value}",
+            )
+
+        # Fall back to normal expression parsing for literals, identifiers, etc.
+        return self._expression()
+
+    # -------------------------------------------------------------------
+    # Anonymous fn   fn(params) { body }   or   fn(params) -> T { body }
+    # -------------------------------------------------------------------
+
+    def _anonymous_fn(self) -> Lambda:
+        """Parse ``fn(params) { body }`` as an anonymous function expression."""
+        start = self._advance()  # consume 'fn'
+        self._expect(_TT.LPAREN, "to open parameter list")
+        params = self._param_list()
+        self._expect(_TT.RPAREN, "to close parameter list")
+
+        ret_type: TypeNode | None = None
+        if self._match(_TT.ARROW):
+            ret_type = self._type_expr()
+
+        body = self._block()
+
+        return Lambda(
+            span=self._span_from(start),
+            params=params,
+            return_type=ret_type,
+            body=body,
         )
 
     # -------------------------------------------------------------------

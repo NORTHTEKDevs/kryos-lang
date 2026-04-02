@@ -285,6 +285,12 @@ class TensorLiteral(Expression):
 
 
 @dataclass
+class MapLiteral(Expression):
+    """Map/dictionary literal: ``{"key": value, "key2": value2}``"""
+    pairs: List[Tuple[Expression, Expression]] = field(default_factory=list)
+
+
+@dataclass
 class StructLiteral(Expression):
     """``Point { x: 1, y: 2 }``"""
     type_name: str = ""
@@ -471,6 +477,20 @@ class ParallelForStmt(Statement):
     variable: str = ""
     iterable: Optional[Expression] = None
     body: Optional[BlockStmt] = None
+
+
+@dataclass
+class TryCatchStmt(Statement):
+    """``try { body } catch (name) { handler }``"""
+    try_body: Optional[BlockStmt] = None
+    catch_name: str = "error"
+    catch_body: Optional[BlockStmt] = None
+
+
+@dataclass
+class ThrowStmt(Statement):
+    """``throw expression``"""
+    value: Optional[Expression] = None
 
 
 # ===================================================================
