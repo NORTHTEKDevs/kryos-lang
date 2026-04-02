@@ -1,0 +1,9 @@
+[package]
+name = "kryos-stdlib-native"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ring.workspace = true
+regex.workspace = true
+crossterm.workspace = true

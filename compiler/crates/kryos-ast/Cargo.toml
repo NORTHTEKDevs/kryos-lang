@@ -1,0 +1,12 @@
+[package]
+name = "kryos-ast"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+kryos-errors.workspace = true
+serde = { workspace = true, optional = true }
+
+[features]
+default = []
+serialize = ["serde"]

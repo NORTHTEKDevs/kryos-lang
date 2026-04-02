@@ -1,0 +1,9 @@
+[package]
+name = "kryos-mir"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+kryos-errors.workspace = true
+kryos-ast.workspace = true
+kryos-types.workspace = true

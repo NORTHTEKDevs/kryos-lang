@@ -1,0 +1,8 @@
+[package]
+name = "kryos-types"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+kryos-errors.workspace = true
+kryos-ast.workspace = true

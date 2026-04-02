@@ -1,0 +1,7 @@
+[package]
+name = "kryos-lexer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+kryos-errors.workspace = true

@@ -1,0 +1,8 @@
+[package]
+name = "kryos-bindgen"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+kryos-errors.workspace = true
+kryos-ast.workspace = true

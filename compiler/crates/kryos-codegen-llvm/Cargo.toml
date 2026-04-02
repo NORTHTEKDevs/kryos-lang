@@ -1,0 +1,8 @@
+[package]
+name = "kryos-codegen-llvm"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+kryos-errors.workspace = true
+kryos-mir.workspace = true

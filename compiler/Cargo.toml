@@ -1,0 +1,63 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/kryos-errors",
+    "crates/kryos-ast",
+    "crates/kryos-lexer",
+    "crates/kryos-parser",
+    "crates/kryos-types",
+    "crates/kryos-ownership",
+    "crates/kryos-capabilities",
+    "crates/kryos-mir",
+    "crates/kryos-codegen-cranelift",
+    "crates/kryos-codegen-llvm",
+    "crates/kryos-linker",
+    "crates/kryos-bindgen",
+    "crates/kryos-stdlib-native",
+    "crates/kryos-driver",
+    "crates/kryos-cli",
+    "crates/kryos-lsp",
+    "crates/kryos-package",
+    "crates/kryos-rt",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/FrostbyteDevTeam/kryos-lang"
+
+[workspace.dependencies]
+# Internal crates
+kryos-errors = { path = "crates/kryos-errors" }
+kryos-ast = { path = "crates/kryos-ast" }
+kryos-lexer = { path = "crates/kryos-lexer" }
+kryos-parser = { path = "crates/kryos-parser" }
+kryos-types = { path = "crates/kryos-types" }
+kryos-ownership = { path = "crates/kryos-ownership" }
+kryos-capabilities = { path = "crates/kryos-capabilities" }
+kryos-mir = { path = "crates/kryos-mir" }
+kryos-codegen-cranelift = { path = "crates/kryos-codegen-cranelift" }
+kryos-codegen-llvm = { path = "crates/kryos-codegen-llvm" }
+kryos-linker = { path = "crates/kryos-linker" }
+kryos-bindgen = { path = "crates/kryos-bindgen" }
+kryos-stdlib-native = { path = "crates/kryos-stdlib-native" }
+kryos-driver = { path = "crates/kryos-driver" }
+kryos-cli = { path = "crates/kryos-cli" }
+kryos-lsp = { path = "crates/kryos-lsp" }
+kryos-package = { path = "crates/kryos-package" }
+kryos-rt = { path = "crates/kryos-rt" }
+
+# External dependencies
+cranelift-codegen = "0.116"
+cranelift-frontend = "0.116"
+cranelift-jit = "0.116"
+cranelift-module = "0.116"
+cranelift-native = "0.116"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ring = "0.17"
+regex = "1"
+crossterm = "0.28"
+toml = "0.8"

@@ -1,0 +1,10 @@
+C:\Users\Krist\projects\active\kryos-lang\compiler\target\debug\deps\cranelift_bforest-f9c4f2f4918e15ef.d: C:\Users\Krist\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cranelift-bforest-0.116.1\src\lib.rs C:\Users\Krist\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cranelift-bforest-0.116.1\src\map.rs C:\Users\Krist\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cranelift-bforest-0.116.1\src\node.rs C:\Users\Krist\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cranelift-bforest-0.116.1\src\path.rs C:\Users\Krist\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cranelift-bforest-0.116.1\src\pool.rs C:\Users\Krist\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cranelift-bforest-0.116.1\src\set.rs
+
+C:\Users\Krist\projects\active\kryos-lang\compiler\target\debug\deps\libcranelift_bforest-f9c4f2f4918e15ef.rmeta: C:\Users\Krist\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cranelift-bforest-0.116.1\src\lib.rs C:\Users\Krist\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cranelift-bforest-0.116.1\src\map.rs C:\Users\Krist\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cranelift-bforest-0.116.1\src\node.rs C:\Users\Krist\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cranelift-bforest-0.116.1\src\path.rs C:\Users\Krist\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cranelift-bforest-0.116.1\src\pool.rs C:\Users\Krist\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cranelift-bforest-0.116.1\src\set.rs
+
+C:\Users\Krist\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cranelift-bforest-0.116.1\src\lib.rs:
+C:\Users\Krist\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cranelift-bforest-0.116.1\src\map.rs:
+C:\Users\Krist\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cranelift-bforest-0.116.1\src\node.rs:
+C:\Users\Krist\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cranelift-bforest-0.116.1\src\path.rs:
+C:\Users\Krist\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cranelift-bforest-0.116.1\src\pool.rs:
+C:\Users\Krist\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cranelift-bforest-0.116.1\src\set.rs:

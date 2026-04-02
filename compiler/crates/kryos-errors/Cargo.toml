@@ -1,0 +1,4 @@
+[package]
+name = "kryos-errors"
+version.workspace = true
+edition.workspace = true

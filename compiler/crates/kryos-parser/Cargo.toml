@@ -1,0 +1,9 @@
+[package]
+name = "kryos-parser"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+kryos-errors.workspace = true
+kryos-ast.workspace = true
+kryos-lexer.workspace = true

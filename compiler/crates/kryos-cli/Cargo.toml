@@ -1,0 +1,16 @@
+[package]
+name = "kryos-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "kryos"
+path = "src/main.rs"
+
+[dependencies]
+kryos-driver.workspace = true
+kryos-errors.workspace = true
+kryos-bindgen.workspace = true
+kryos-package.workspace = true
+kryos-lsp.workspace = true
+clap.workspace = true
