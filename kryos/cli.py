@@ -107,33 +107,159 @@ def _parse_tokens(tokens: list):
 # ---------------------------------------------------------------------------
 
 def cmd_run(args: argparse.Namespace) -> None:
-    """Run a .kry file."""
+    """Run a .kry file on the Rust VM (with Python interpreter fallback)."""
     source = _read_file(args.file)
     tokens = _tokenize_source(source, args.file)
     module = _parse_tokens(tokens)
 
-    # Make CLI script arguments available to the args() builtin
-    from kryos.stdlib.process_module import set_script_args
-    set_script_args(getattr(args, "script_args", None) or [])
+    # Serialize AST to JSON for the Rust VM compiler
+    ast_json = _ast_to_json(module)
 
-    no_heal = getattr(args, "no_heal", False)
-    interp = Interpreter(self_healing=not no_heal)
-    # Set the current file so relative imports resolve correctly
-    interp._current_file = os.path.abspath(args.file)
-    try:
-        interp.run(module)
-    except KryosRuntimeError as e:
-        loc = f":{e.line}" if e.line else ""
-        print(_red(f"Runtime error{loc}: {e}"), file=sys.stderr)
-        # Show error explanation
-        from kryos.compiler.ai_assist import ErrorExplainer
-        explanation = ErrorExplainer().explain(str(e))
-        print(_yellow(f"\n  Explanation: {explanation['explanation']}"), file=sys.stderr)
-        print(_cyan(f"  Suggestion:  {explanation['suggestion']}"), file=sys.stderr)
-        sys.exit(1)
-    finally:
-        if interp.heal_count > 0:
-            print(_dim(f"\n[Kryos self-healed {interp.heal_count} issue(s) during execution]"), file=sys.stderr)
+    # Find kryos-runner binary
+    runner = _find_runner()
+
+    if runner:
+        # Execute on Rust VM (fast path)
+        import subprocess
+        result = subprocess.run(
+            [runner, "-"],
+            input=ast_json,
+            capture_output=False,
+            text=True,
+        )
+        sys.exit(result.returncode)
+    else:
+        # Fallback to Python interpreter (if Rust binary not built)
+        print(_yellow("Note: kryos-runner not found, using Python interpreter (slower)"), file=sys.stderr)
+        print(_dim("Build with: cd rust && cargo build --release -p kryos-runner"), file=sys.stderr)
+
+        from kryos.stdlib.process_module import set_script_args
+        set_script_args(getattr(args, "script_args", None) or [])
+
+        no_heal = getattr(args, "no_heal", False)
+        interp = Interpreter(self_healing=not no_heal)
+        interp._current_file = os.path.abspath(args.file)
+        try:
+            interp.run(module)
+        except KryosRuntimeError as e:
+            loc = f":{e.line}" if e.line else ""
+            print(_red(f"Runtime error{loc}: {e}"), file=sys.stderr)
+            from kryos.compiler.ai_assist import ErrorExplainer
+            explanation = ErrorExplainer().explain(str(e))
+            print(_yellow(f"\n  Explanation: {explanation['explanation']}"), file=sys.stderr)
+            print(_cyan(f"  Suggestion:  {explanation['suggestion']}"), file=sys.stderr)
+            sys.exit(1)
+        finally:
+            if interp.heal_count > 0:
+                print(_dim(f"\n[Kryos self-healed {interp.heal_count} issue(s) during execution]"), file=sys.stderr)
+
+
+def _ast_to_json(module) -> str:
+    """Serialize a parsed AST module to JSON for the Rust VM compiler.
+
+    Translates Python AST field names to the Rust compiler's expected format:
+    - ExprStmt.expression -> expr
+    - BinaryOp/UnaryOp.operator -> op
+    - IfStmt/WhileStmt/ForStmt/FnDecl body (BlockStmt) -> flattened array
+    - MapLiteral.pairs -> entries [{key, value}, ...]
+    - MatchExpr.value -> subject
+    """
+    import json
+    from dataclasses import fields, is_dataclass
+    from enum import Enum
+
+    # Field renames: (ClassName, old_field) -> new_field
+    FIELD_RENAMES = {
+        ("ExprStmt", "expression"): "expr",
+        ("BinaryOp", "operator"): "op",
+        ("UnaryOp", "operator"): "op",
+        ("MatchExpr", "value"): "subject",
+    }
+
+    # These node types have a body field that the Rust compiler reads as a
+    # plain array of statements, but Python stores as a BlockStmt object.
+    # We flatten BlockStmt -> its statements list.
+    FLATTEN_BODY_TYPES = {"IfStmt", "WhileStmt", "ForStmt", "FnDecl", "ElifClause"}
+
+    def to_dict(node):
+        if node is None:
+            return None
+        if isinstance(node, (int, float, str, bool)):
+            return node
+        if isinstance(node, list):
+            return [to_dict(item) for item in node]
+        if isinstance(node, dict):
+            return {k: to_dict(v) for k, v in node.items()}
+        if isinstance(node, Enum):
+            return node.value
+        if isinstance(node, tuple):
+            # Tuples are used in MapLiteral.pairs as (key, value)
+            return [to_dict(item) for item in node]
+        if is_dataclass(node):
+            class_name = type(node).__name__
+            result = {"type": class_name}
+
+            for f in fields(node):
+                field_name = f.name
+                value = getattr(node, field_name)
+
+                # Apply field renames
+                out_key = FIELD_RENAMES.get((class_name, field_name), field_name)
+
+                # Special handling: MapLiteral.pairs -> entries
+                if class_name == "MapLiteral" and field_name == "pairs":
+                    entries = []
+                    for pair in value:
+                        if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                            entries.append({
+                                "key": to_dict(pair[0]),
+                                "value": to_dict(pair[1]),
+                            })
+                    result["entries"] = entries
+                    continue
+
+                # Flatten BlockStmt body for types that expect array
+                if (class_name in FLATTEN_BODY_TYPES
+                        and field_name == "body"
+                        and value is not None
+                        and is_dataclass(value)
+                        and type(value).__name__ == "BlockStmt"):
+                    stmts = getattr(value, "statements", [])
+                    result[out_key] = [to_dict(s) for s in stmts]
+                    continue
+
+                result[out_key] = to_dict(value)
+
+            return result
+        return str(node)
+
+    return json.dumps(to_dict(module), separators=(",", ":"))
+
+
+def _find_runner() -> str | None:
+    """Find the kryos-runner binary."""
+    import shutil
+
+    # Check common locations relative to this file
+    base = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(base, "..", "..", "rust", "target", "release", "kryos-runner.exe"),
+        os.path.join(base, "..", "..", "rust", "target", "release", "kryos-runner"),
+        os.path.join(base, "..", "..", "rust", "target", "debug", "kryos-runner.exe"),
+        os.path.join(base, "..", "..", "rust", "target", "debug", "kryos-runner"),
+    ]
+
+    for candidate in candidates:
+        resolved = os.path.normpath(candidate)
+        if os.path.isfile(resolved):
+            return resolved
+
+    # Check PATH
+    found = shutil.which("kryos-runner")
+    if found:
+        return found
+
+    return None
 
 
 def cmd_build(args: argparse.Namespace) -> None:
