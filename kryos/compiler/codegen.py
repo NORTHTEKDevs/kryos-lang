@@ -83,7 +83,8 @@ def _llvm_type(ty: Optional[TypeNode]) -> str:
         return "i8*"
     if isinstance(ty, ArrayType):
         elem = _llvm_type(ty.element_type)
-        return f"{elem}*"
+        safe = elem.replace("*", "ptr").replace(" ", "_")
+        return f"%Array_{safe}*"
     return "i32"  # conservative fallback
 
 
@@ -131,6 +132,7 @@ class CodeGenerator:
         self._impl_methods: dict[str, FnDecl] = {}    # "Type_method" -> FnDecl
         self._trait_decls: dict[str, TraitDecl] = {}
         self._generated_functions: set[str] = set()
+        self._emitted_array_types: set[str] = set()  # e.g. {"i32", "double"}
 
     # -- helpers --
 
@@ -208,6 +210,56 @@ class CodeGenerator:
             self._globals.append("declare double @llvm.pow.f64(double, double)")
             self._declared_externs.add("llvm.pow.f64")
 
+    def _ensure_realloc_decl(self) -> None:
+        if "realloc" not in self._declared_externs:
+            self._globals.append("declare i8* @realloc(i8*, i64)")
+            self._declared_externs.add("realloc")
+
+    def _ensure_array_type_decl(self, elem_llty: str) -> str:
+        """Emit ``%Array_<elem> = type { i32, i32, <elem>* }`` once per element type.
+
+        Returns the struct type name (e.g. ``%Array_i32``).
+        """
+        # Normalise element type to a safe name fragment
+        safe = elem_llty.replace("*", "ptr").replace(" ", "_")
+        struct_name = f"%Array_{safe}"
+        if elem_llty not in self._emitted_array_types:
+            self._globals.append(
+                f"{struct_name} = type {{ i32, i32, {elem_llty}* }}"
+            )
+            self._emitted_array_types.add(elem_llty)
+        return struct_name
+
+    def _array_struct_name_for_expr(self, expr: Expression) -> str:
+        """Return the %Array_<elem> struct name for an array expression."""
+        # Look up the variable's type in _env
+        if isinstance(expr, Identifier) and expr.name in self._env:
+            _, llty = self._env[expr.name]
+            # llty should be "%Array_i32*" → extract "%Array_i32"
+            if llty.startswith("%Array_") and llty.endswith("*"):
+                return llty[:-1]
+        # Fallback: try to infer from the expression
+        if isinstance(expr, ArrayLiteral):
+            if expr.elements:
+                elem_llty = self._infer_llvm_type(expr.elements[0])
+            else:
+                elem_llty = "i32"
+            safe = elem_llty.replace("*", "ptr").replace(" ", "_")
+            return f"%Array_{safe}"
+        return "%Array_i32"  # conservative fallback
+
+    def _array_elem_type_for_expr(self, expr: Expression) -> str:
+        """Return the element LLVM type for an array expression."""
+        if isinstance(expr, Identifier) and expr.name in self._env:
+            _, llty = self._env[expr.name]
+            # llty is e.g. "%Array_i32*" → extract element type "i32"
+            if llty.startswith("%Array_") and llty.endswith("*"):
+                inner = llty[len("%Array_"):-1]  # e.g. "i32"
+                return inner.replace("ptr", "*").replace("_", " ")
+        if isinstance(expr, ArrayLiteral) and expr.elements:
+            return self._infer_llvm_type(expr.elements[0])
+        return "i32"
+
     def _ensure_sprintf_decl(self) -> None:
         if "sprintf" not in self._declared_externs:
             self._globals.append("declare i32 @sprintf(i8*, i8*, ...)")
@@ -243,6 +295,7 @@ class CodeGenerator:
         self._impl_methods = {}
         self._trait_decls = {}
         self._generated_functions = set()
+        self._emitted_array_types = set()
 
         fn_irs: list[str] = []
         top_level_stmts: list[Statement] = []
@@ -437,7 +490,7 @@ class CodeGenerator:
             self._env[stmt.name] = (val_reg, llty)
             return lines
 
-        # For array literals: _gen_array_literal returns a heap pointer (elem*).
+        # For array literals: _gen_array_literal returns a %Array_<elem>* pointer.
         # Store it in a local alloca so it can be loaded later.
         if isinstance(stmt.value, ArrayLiteral):
             val_lines, val_reg = self._gen_expr(stmt.value)
@@ -930,10 +983,13 @@ class CodeGenerator:
         if callee_name == "range":
             return [f"  ; range() is handled by for-loop codegen, not as a runtime call"], "0"
 
-        # Built-in: push(arr, val) -- requires dynamic arrays (resize + realloc)
-        # TODO: Implement push() once dynamic array metadata (length + capacity) is added
-        if callee_name == "push":
-            return [f"  ; TODO: push() requires dynamic array support (length + capacity tracking)"], "0"
+        # Built-in: push(arr, val)
+        if callee_name == "push" and len(expr.args) == 2:
+            return self._gen_builtin_push(expr.args[0], expr.args[1])
+
+        # Built-in: pop(arr)
+        if callee_name == "pop" and len(expr.args) == 1:
+            return self._gen_builtin_pop(expr.args[0])
 
         # Generic function instantiation -- if the function is generic and
         # type arguments are provided, generate a specialized version.
@@ -1034,7 +1090,7 @@ class CodeGenerator:
     # -- built-in functions -------------------------------------------------
 
     def _gen_builtin_len(self, arg: Expression) -> tuple[list[str], str]:
-        """Generate IR for len(x): strlen for strings, TODO for arrays."""
+        """Generate IR for len(x): strlen for strings, struct field 0 for arrays."""
         lines: list[str] = []
         arg_lines, arg_reg = self._gen_expr(arg)
         lines.extend(arg_lines)
@@ -1048,10 +1104,153 @@ class CodeGenerator:
             lines.append(f"  {result} = trunc i64 {len_reg} to i32")
             return lines, result
 
-        # For arrays, length is not stored alongside the pointer yet.
-        # Return 0 with a comment.
-        lines.append(f"  ; WARNING: len() on arrays requires runtime length metadata")
+        # For arrays: GEP into struct field 0 (length) and load it.
+        # The arg_reg is a %Array_<elem>* pointer.
+        struct_name = self._array_struct_name_for_expr(arg)
+        len_ptr = self._next_reg()
+        lines.append(f"  {len_ptr} = getelementptr inbounds {struct_name}, {struct_name}* {arg_reg}, i32 0, i32 0")
+        result = self._next_reg()
+        lines.append(f"  {result} = load i32, i32* {len_ptr}")
+        return lines, result
+
+    def _gen_builtin_push(self, arr_expr: Expression, val_expr: Expression) -> tuple[list[str], str]:
+        """Generate IR for push(arr, val): append value, resize if needed."""
+        lines: list[str] = []
+        self._ensure_realloc_decl()
+        self._ensure_malloc_decl()
+
+        # Generate the array struct pointer
+        arr_lines, arr_reg = self._gen_expr(arr_expr)
+        lines.extend(arr_lines)
+
+        struct_name = self._array_struct_name_for_expr(arr_expr)
+        elem_ty = self._array_elem_type_for_expr(arr_expr)
+        elem_size = self._sizeof_llvm_type(elem_ty)
+
+        # Load current length
+        len_ptr = self._next_reg()
+        lines.append(f"  {len_ptr} = getelementptr inbounds {struct_name}, {struct_name}* {arr_reg}, i32 0, i32 0")
+        cur_len = self._next_reg()
+        lines.append(f"  {cur_len} = load i32, i32* {len_ptr}")
+
+        # Load current capacity
+        cap_ptr = self._next_reg()
+        lines.append(f"  {cap_ptr} = getelementptr inbounds {struct_name}, {struct_name}* {arr_reg}, i32 0, i32 1")
+        cur_cap = self._next_reg()
+        lines.append(f"  {cur_cap} = load i32, i32* {cap_ptr}")
+
+        # Check if length == capacity (need to grow)
+        need_grow = self._next_reg()
+        lines.append(f"  {need_grow} = icmp eq i32 {cur_len}, {cur_cap}")
+
+        lbl_grow = self._next_label("push_grow")
+        lbl_no_grow = self._next_label("push_no_grow")
+        lbl_continue = self._next_label("push_cont")
+        lines.append(f"  br i1 {need_grow}, label %{lbl_grow}, label %{lbl_no_grow}")
+
+        # --- grow branch: double capacity and realloc ---
+        lines.append(f"{lbl_grow}:")
+        # New capacity = max(cur_cap * 2, 8)
+        doubled = self._next_reg()
+        lines.append(f"  {doubled} = mul i32 {cur_cap}, 2")
+        cmp_min = self._next_reg()
+        lines.append(f"  {cmp_min} = icmp slt i32 {doubled}, 8")
+        new_cap_grow = self._next_reg()
+        lines.append(f"  {new_cap_grow} = select i1 {cmp_min}, i32 8, i32 {doubled}")
+
+        # Load current data pointer
+        data_field_grow = self._next_reg()
+        lines.append(f"  {data_field_grow} = getelementptr inbounds {struct_name}, {struct_name}* {arr_reg}, i32 0, i32 2")
+        old_data_grow = self._next_reg()
+        lines.append(f"  {old_data_grow} = load {elem_ty}*, {elem_ty}** {data_field_grow}")
+
+        # Realloc
+        old_raw_grow = self._next_reg()
+        lines.append(f"  {old_raw_grow} = bitcast {elem_ty}* {old_data_grow} to i8*")
+        new_bytes = self._next_reg()
+        lines.append(f"  {new_bytes} = sext i32 {new_cap_grow} to i64")
+        new_total = self._next_reg()
+        lines.append(f"  {new_total} = mul i64 {new_bytes}, {elem_size}")
+        new_raw = self._next_reg()
+        lines.append(f"  {new_raw} = call i8* @realloc(i8* {old_raw_grow}, i64 {new_total})")
+        new_data_grow = self._next_reg()
+        lines.append(f"  {new_data_grow} = bitcast i8* {new_raw} to {elem_ty}*")
+
+        # Update data pointer and capacity in struct
+        lines.append(f"  store {elem_ty}* {new_data_grow}, {elem_ty}** {data_field_grow}")
+        cap_ptr_grow = self._next_reg()
+        lines.append(f"  {cap_ptr_grow} = getelementptr inbounds {struct_name}, {struct_name}* {arr_reg}, i32 0, i32 1")
+        lines.append(f"  store i32 {new_cap_grow}, i32* {cap_ptr_grow}")
+        lines.append(f"  br label %{lbl_continue}")
+
+        # --- no-grow branch ---
+        lines.append(f"{lbl_no_grow}:")
+        data_field_no = self._next_reg()
+        lines.append(f"  {data_field_no} = getelementptr inbounds {struct_name}, {struct_name}* {arr_reg}, i32 0, i32 2")
+        old_data_no = self._next_reg()
+        lines.append(f"  {old_data_no} = load {elem_ty}*, {elem_ty}** {data_field_no}")
+        lines.append(f"  br label %{lbl_continue}")
+
+        # --- continue: phi the data pointer ---
+        lines.append(f"{lbl_continue}:")
+        data_phi = self._next_reg()
+        lines.append(f"  {data_phi} = phi {elem_ty}* [{new_data_grow}, %{lbl_grow}], [{old_data_no}, %{lbl_no_grow}]")
+
+        # Generate the value to push
+        val_lines, val_reg = self._gen_expr(val_expr)
+        lines.extend(val_lines)
+
+        # Store value at data[length]
+        elem_ptr = self._next_reg()
+        lines.append(f"  {elem_ptr} = getelementptr {elem_ty}, {elem_ty}* {data_phi}, i32 {cur_len}")
+        lines.append(f"  store {elem_ty} {val_reg}, {elem_ty}* {elem_ptr}")
+
+        # Increment length
+        new_len = self._next_reg()
+        lines.append(f"  {new_len} = add i32 {cur_len}, 1")
+        len_ptr2 = self._next_reg()
+        lines.append(f"  {len_ptr2} = getelementptr inbounds {struct_name}, {struct_name}* {arr_reg}, i32 0, i32 0")
+        lines.append(f"  store i32 {new_len}, i32* {len_ptr2}")
+
         return lines, "0"
+
+    def _gen_builtin_pop(self, arr_expr: Expression) -> tuple[list[str], str]:
+        """Generate IR for pop(arr): decrement length and return the last element."""
+        lines: list[str] = []
+
+        # Generate the array struct pointer
+        arr_lines, arr_reg = self._gen_expr(arr_expr)
+        lines.extend(arr_lines)
+
+        struct_name = self._array_struct_name_for_expr(arr_expr)
+        elem_ty = self._array_elem_type_for_expr(arr_expr)
+
+        # Load current length
+        len_ptr = self._next_reg()
+        lines.append(f"  {len_ptr} = getelementptr inbounds {struct_name}, {struct_name}* {arr_reg}, i32 0, i32 0")
+        cur_len = self._next_reg()
+        lines.append(f"  {cur_len} = load i32, i32* {len_ptr}")
+
+        # Decrement length
+        new_len = self._next_reg()
+        lines.append(f"  {new_len} = sub i32 {cur_len}, 1")
+
+        # Store new length
+        lines.append(f"  store i32 {new_len}, i32* {len_ptr}")
+
+        # Load data pointer
+        data_field = self._next_reg()
+        lines.append(f"  {data_field} = getelementptr inbounds {struct_name}, {struct_name}* {arr_reg}, i32 0, i32 2")
+        data_ptr = self._next_reg()
+        lines.append(f"  {data_ptr} = load {elem_ty}*, {elem_ty}** {data_field}")
+
+        # Load value at data[new_length] (the old last element)
+        elem_ptr = self._next_reg()
+        lines.append(f"  {elem_ptr} = getelementptr {elem_ty}, {elem_ty}* {data_ptr}, i32 {new_len}")
+        result = self._next_reg()
+        lines.append(f"  {result} = load {elem_ty}, {elem_ty}* {elem_ptr}")
+
+        return lines, result
 
     def _gen_builtin_to_string(self, arg: Expression) -> tuple[list[str], str]:
         """Generate IR for to_string(x): use sprintf to convert int/float to string."""
@@ -1183,10 +1382,14 @@ class CodeGenerator:
     # -- index access -------------------------------------------------------
 
     def _gen_index_access(self, expr: IndexAccess) -> tuple[list[str], str]:
-        """Generate GEP + load for array index access (e.g. ``arr[i]``)."""
+        """Generate index access through array metadata struct.
+
+        Loads the data pointer from struct field 2, then GEPs into
+        ``data[index]`` and loads the value.
+        """
         lines: list[str] = []
 
-        # Generate the array pointer expression
+        # Generate the array struct pointer expression
         arr_lines, arr_reg = self._gen_expr(expr.object)
         lines.extend(arr_lines)
 
@@ -1194,20 +1397,23 @@ class CodeGenerator:
         idx_lines, idx_reg = self._gen_expr(expr.index)
         lines.extend(idx_lines)
 
-        # Infer element type from the array pointer
-        arr_llty = self._infer_llvm_type(expr.object)
-        if arr_llty.endswith("*"):
-            elem_ty = arr_llty[:-1]  # strip the trailing *
-        else:
-            elem_ty = "i32"  # fallback
+        # Determine struct name and element type
+        struct_name = self._array_struct_name_for_expr(expr.object)
+        elem_ty = self._array_elem_type_for_expr(expr.object)
 
-        # GEP to the indexed element
-        gep = self._next_reg()
-        lines.append(f"  {gep} = getelementptr {elem_ty}, {elem_ty}* {arr_reg}, i32 {idx_reg}")
+        # GEP to field 2 (data pointer) and load it
+        data_field_ptr = self._next_reg()
+        lines.append(f"  {data_field_ptr} = getelementptr inbounds {struct_name}, {struct_name}* {arr_reg}, i32 0, i32 2")
+        data_ptr = self._next_reg()
+        lines.append(f"  {data_ptr} = load {elem_ty}*, {elem_ty}** {data_field_ptr}")
+
+        # GEP into data[index]
+        elem_ptr = self._next_reg()
+        lines.append(f"  {elem_ptr} = getelementptr {elem_ty}, {elem_ty}* {data_ptr}, i32 {idx_reg}")
 
         # Load the value
         result = self._next_reg()
-        lines.append(f"  {result} = load {elem_ty}, {elem_ty}* {gep}")
+        lines.append(f"  {result} = load {elem_ty}, {elem_ty}* {elem_ptr}")
         return lines, result
 
     # -- if expression ------------------------------------------------------
@@ -1230,38 +1436,75 @@ class CodeGenerator:
     # -- array literal ------------------------------------------------------
 
     def _gen_array_literal(self, expr: ArrayLiteral) -> tuple[list[str], str]:
-        """Allocate an array on the heap via malloc, store all elements, return the pointer."""
+        """Allocate an array as a metadata struct on the heap.
+
+        The struct layout is ``{ i32 length, i32 capacity, elem* data }``.
+        Returns a pointer to the struct (``%Array_<elem>*``).
+        """
         lines: list[str] = []
-
-        if not expr.elements:
-            # Empty array -- return null pointer
-            return [], "null"
-
-        # Infer element type from the first element
-        elem_llty = self._infer_llvm_type(expr.elements[0])
-        count = len(expr.elements)
-
-        # Compute size: count * sizeof(element_type)
         self._ensure_malloc_decl()
-        size_bytes = self._sizeof_llvm_type(elem_llty) * count
 
-        # malloc
-        raw_ptr = self._next_reg()
-        lines.append(f"  {raw_ptr} = call i8* @malloc(i64 {size_bytes})")
+        # Determine element type
+        if expr.elements:
+            elem_llty = self._infer_llvm_type(expr.elements[0])
+        else:
+            elem_llty = "i32"  # default for empty arrays
 
-        # bitcast to element_type*
-        typed_ptr = self._next_reg()
-        lines.append(f"  {typed_ptr} = bitcast i8* {raw_ptr} to {elem_llty}*")
+        struct_name = self._ensure_array_type_decl(elem_llty)
+        count = len(expr.elements)
+        capacity = max(count, 8) if count > 0 else 0
+        elem_size = self._sizeof_llvm_type(elem_llty)
 
-        # Store each element via GEP
+        # --- allocate the struct (3 fields: i32, i32, ptr = 4+4+8 = 16 bytes) ---
+        struct_raw = self._next_reg()
+        lines.append(f"  {struct_raw} = call i8* @malloc(i64 16)")
+        struct_ptr = self._next_reg()
+        lines.append(f"  {struct_ptr} = bitcast i8* {struct_raw} to {struct_name}*")
+
+        if count == 0:
+            # Empty array: length=0, capacity=0, data=null
+            len_ptr = self._next_reg()
+            lines.append(f"  {len_ptr} = getelementptr inbounds {struct_name}, {struct_name}* {struct_ptr}, i32 0, i32 0")
+            lines.append(f"  store i32 0, i32* {len_ptr}")
+            cap_ptr = self._next_reg()
+            lines.append(f"  {cap_ptr} = getelementptr inbounds {struct_name}, {struct_name}* {struct_ptr}, i32 0, i32 1")
+            lines.append(f"  store i32 0, i32* {cap_ptr}")
+            data_ptr_field = self._next_reg()
+            lines.append(f"  {data_ptr_field} = getelementptr inbounds {struct_name}, {struct_name}* {struct_ptr}, i32 0, i32 2")
+            lines.append(f"  store {elem_llty}* null, {elem_llty}** {data_ptr_field}")
+            return lines, struct_ptr
+
+        # --- allocate data buffer (capacity * sizeof(elem)) ---
+        data_raw = self._next_reg()
+        data_bytes = capacity * elem_size
+        lines.append(f"  {data_raw} = call i8* @malloc(i64 {data_bytes})")
+        data_ptr = self._next_reg()
+        lines.append(f"  {data_ptr} = bitcast i8* {data_raw} to {elem_llty}*")
+
+        # Store each element into the data buffer
         for i, elem in enumerate(expr.elements):
             elem_lines, elem_reg = self._gen_expr(elem)
             lines.extend(elem_lines)
             gep = self._next_reg()
-            lines.append(f"  {gep} = getelementptr {elem_llty}, {elem_llty}* {typed_ptr}, i32 {i}")
+            lines.append(f"  {gep} = getelementptr {elem_llty}, {elem_llty}* {data_ptr}, i32 {i}")
             lines.append(f"  store {elem_llty} {elem_reg}, {elem_llty}* {gep}")
 
-        return lines, typed_ptr
+        # Store length into struct field 0
+        len_ptr = self._next_reg()
+        lines.append(f"  {len_ptr} = getelementptr inbounds {struct_name}, {struct_name}* {struct_ptr}, i32 0, i32 0")
+        lines.append(f"  store i32 {count}, i32* {len_ptr}")
+
+        # Store capacity into struct field 1
+        cap_ptr = self._next_reg()
+        lines.append(f"  {cap_ptr} = getelementptr inbounds {struct_name}, {struct_name}* {struct_ptr}, i32 0, i32 1")
+        lines.append(f"  store i32 {capacity}, i32* {cap_ptr}")
+
+        # Store data pointer into struct field 2
+        data_ptr_field = self._next_reg()
+        lines.append(f"  {data_ptr_field} = getelementptr inbounds {struct_name}, {struct_name}* {struct_ptr}, i32 0, i32 2")
+        lines.append(f"  store {elem_llty}* {data_ptr}, {elem_llty}** {data_ptr_field}")
+
+        return lines, struct_ptr
 
     @staticmethod
     def _sizeof_llvm_type(llty: str) -> int:
@@ -1746,6 +1989,12 @@ class CodeGenerator:
                     if expr.args and self._expr_is_float(expr.args[0]):
                         return "double"
                     return "i32"
+                if cname == "push":
+                    return "i32"
+                if cname == "pop":
+                    if expr.args:
+                        return self._array_elem_type_for_expr(expr.args[0])
+                    return "i32"
                 fn = self._functions.get(cname)
                 if fn:
                     return _llvm_type(fn.return_type)
@@ -1753,8 +2002,10 @@ class CodeGenerator:
         if isinstance(expr, ArrayLiteral):
             if expr.elements:
                 elem_ty = self._infer_llvm_type(expr.elements[0])
-                return f"{elem_ty}*"
-            return "i32*"
+            else:
+                elem_ty = "i32"
+            safe = elem_ty.replace("*", "ptr").replace(" ", "_")
+            return f"%Array_{safe}*"
         if isinstance(expr, StructLiteral):
             sname = expr.type_name
             if sname in self._struct_types:
