@@ -115,7 +115,8 @@ def _is_int_type(ty: Optional[TypeNode]) -> bool:
 class CodeGenerator:
     """Generates LLVM IR text from a Kryos AST."""
 
-    def __init__(self) -> None:
+    def __init__(self, target: str = "native") -> None:
+        self._target: str = target
         self._reg_counter: int = 0
         self._label_counter: int = 0
         self._globals: list[str] = []
@@ -166,6 +167,8 @@ class CodeGenerator:
             self._declared_externs.add("printf")
 
     def _ensure_puts_decl(self) -> None:
+        if self._is_wasm:
+            return  # No libc in WASM — use imported JS functions instead
         if "puts" not in self._declared_externs:
             self._globals.append("declare i32 @puts(i8*)")
             self._declared_externs.add("puts")
@@ -266,13 +269,19 @@ class CodeGenerator:
             self._declared_externs.add("sprintf")
 
     def _target_triple(self) -> str:
-        """Return the LLVM target triple for the current platform."""
+        """Return the LLVM target triple for the current platform or target."""
+        if self._target == "wasm32":
+            return "wasm32-unknown-unknown"
         system = platform.system()
         if system == "Windows":
             return "x86_64-pc-windows-msvc"
         elif system == "Darwin":
             return "x86_64-apple-macosx10.15.0"
         return "x86_64-pc-linux-gnu"
+
+    @property
+    def _is_wasm(self) -> bool:
+        return self._target == "wasm32"
 
     # -----------------------------------------------------------------------
     # Public API
@@ -375,7 +384,13 @@ class CodeGenerator:
             params.append(f"{llty} %{p.name}")
 
         param_str = ", ".join(params)
-        lines = [f"define {ret_type} @{fn.name}({param_str}) {{"]
+        # @export annotation means externally visible (important for WASM exports)
+        has_export = any(
+            getattr(a, "name", None) == "export"
+            for a in getattr(fn, "annotations", [])
+        )
+        linkage = "" if has_export or fn.name == "main" else ""
+        lines = [f"define {linkage}{ret_type} @{fn.name}({param_str}) {{"]
         lines.append("entry:")
 
         # Allocate and store parameters

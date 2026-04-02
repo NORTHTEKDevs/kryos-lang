@@ -288,7 +288,8 @@ def cmd_build(args: argparse.Namespace) -> None:
 
     from kryos.compiler.codegen import CodeGenerator, compile_and_run
 
-    gen = CodeGenerator()
+    target = getattr(args, "target", "native") or "native"
+    gen = CodeGenerator(target=target)
     ir = gen.generate(module)
 
     # Determine output paths
@@ -596,6 +597,8 @@ def main() -> None:
     build_parser = subparsers.add_parser("build", help="Compile a .kry file to LLVM IR / native")
     build_parser.add_argument("file", help="Path to .kry source file")
     build_parser.add_argument("--emit-ir", action="store_true", help="Only emit LLVM IR (no native compile)")
+    build_parser.add_argument("--target", choices=["native", "wasm32"], default="native",
+                              help="Target platform (default: native)")
 
     # check
     check_parser = subparsers.add_parser("check", help="Type-check and audit a .kry file")
