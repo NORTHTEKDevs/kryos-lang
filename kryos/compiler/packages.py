@@ -656,3 +656,136 @@ def _deep_copy_dict(d: dict) -> dict:
         else:
             out[k] = v
     return out
+
+
+# ===========================================================================
+# GitHub-backed package registry
+# ===========================================================================
+
+def parse_dependency_spec(spec: str) -> dict:
+    """Parse ``'github:user/pkg@^1.0.0'`` into components.
+
+    Returns a dict with keys: source, owner, repo, version.
+    """
+    match = re.match(r'^github:([^/]+)/([^@]+)@(.+)$', spec)
+    if not match:
+        raise ValueError(f"Invalid dependency spec: {spec}")
+    return {
+        "source": "github",
+        "owner": match.group(1),
+        "repo": match.group(2),
+        "version": match.group(3),
+    }
+
+
+def resolve_semver(range_str: str, version: str) -> bool:
+    """Check if *version* satisfies a semver range (``^``, ``~``, ``=``).
+
+    This is a simpler complement to :func:`version_satisfies` that handles
+    the ``^1.2.3``, ``~1.2.3``, and ``=1.2.3`` forms commonly used in
+    GitHub dependency specs.
+    """
+    parts = version.split(".")
+    if len(parts) != 3:
+        return False
+    try:
+        major, minor, patch = int(parts[0]), int(parts[1]), int(parts[2])
+    except ValueError:
+        return False
+
+    if range_str.startswith("^"):
+        # Compatible: same major, >= specified minor.patch
+        r = range_str[1:].split(".")
+        if len(r) != 3:
+            return False
+        r_major, r_minor, r_patch = int(r[0]), int(r[1]), int(r[2])
+        if major != r_major:
+            return False
+        if minor < r_minor:
+            return False
+        if minor == r_minor and patch < r_patch:
+            return False
+        return True
+
+    elif range_str.startswith("~"):
+        # Patch-level: same major.minor, >= specified patch
+        r = range_str[1:].split(".")
+        if len(r) != 3:
+            return False
+        r_major, r_minor, r_patch = int(r[0]), int(r[1]), int(r[2])
+        return major == r_major and minor == r_minor and patch >= r_patch
+
+    elif range_str.startswith("="):
+        # Exact match
+        return range_str[1:] == version
+
+    return False
+
+
+def generate_lock(deps: dict, resolved: dict) -> dict:
+    """Generate lock-file content from resolved dependencies.
+
+    Args:
+        deps: dict of ``{name: {"github": "user/repo", "version": "^1.0.0"}, ...}``
+        resolved: dict of ``{name: resolved_version_str, ...}``
+
+    Returns a lock dict suitable for serialization to ``kryos-lock.json``.
+    """
+    lock: Dict[str, Dict[str, str]] = {}
+    for name, info in deps.items():
+        lock[name] = {
+            "source": info.get("github", "local"),
+            "resolved": resolved.get(name, "unknown"),
+        }
+    return lock
+
+
+def fetch_github_package(owner: str, repo: str, version: str, dest: Optional[Path] = None) -> Path:
+    """Download a package tarball from GitHub and extract to the local cache.
+
+    This is a best-effort implementation that shells out to ``git clone``
+    when a tarball URL is not available.
+
+    Args:
+        owner: GitHub user or organization.
+        repo: Repository name.
+        version: Tag or branch to fetch (e.g. ``v1.2.3`` or ``main``).
+        dest: Destination directory. Defaults to ``~/.kryos/packages/<repo>/<version>/``.
+
+    Returns the path where the package was installed.
+    """
+    import subprocess
+    import tempfile
+
+    if dest is None:
+        dest = PACKAGES_DIR / repo / version
+    dest.mkdir(parents=True, exist_ok=True)
+
+    url = f"https://github.com/{owner}/{repo}.git"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            subprocess.run(
+                ["git", "clone", "--depth", "1", "--branch", version, url, tmp],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=True,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+            raise RuntimeError(f"Failed to fetch {owner}/{repo}@{version}: {e}") from e
+
+        # Copy relevant files (src/, kryos.toml)
+        tmp_path = Path(tmp)
+        src_src = tmp_path / "src"
+        if src_src.is_dir():
+            dest_src = dest / "src"
+            if dest_src.exists():
+                shutil.rmtree(dest_src)
+            shutil.copytree(str(src_src), str(dest_src))
+
+        cfg_file = tmp_path / CONFIG_FILE
+        if cfg_file.exists():
+            shutil.copy2(str(cfg_file), str(dest / CONFIG_FILE))
+
+    return dest
