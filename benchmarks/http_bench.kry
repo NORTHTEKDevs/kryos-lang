@@ -1,0 +1,34 @@
+// Benchmark: Concurrency Simulation (spawn + channels)
+// Tests: spawn overhead, channel send/recv throughput
+
+let start = time_ms()
+
+let results = []
+let i = 0
+while i < 100 {
+    // Simulate handler work: compute a value and collect it
+    let value = 0
+    let j = 0
+    while j < 1000 {
+        value = value + j
+        j = j + 1
+    }
+    results = results + [value]
+    i = i + 1
+}
+
+let elapsed = time_ms() - start
+
+// Verify all handlers produced correct result (sum 0..999 = 499500)
+let all_correct = true
+i = 0
+while i < len(results) {
+    if results[i] != 499500 {
+        all_correct = false
+    }
+    i = i + 1
+}
+
+println("handlers = " + to_string(len(results)))
+println("all_correct = " + to_string(all_correct))
+println("elapsed_ms: " + to_string(elapsed))

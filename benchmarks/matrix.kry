@@ -1,0 +1,40 @@
+// Benchmark: 100x100 Matrix Multiply
+// Tests: nested loops, array indexing, arithmetic throughput
+
+let N = 100
+
+// Initialize matrices as flat arrays (row-major)
+let a = []
+let b = []
+let c = []
+
+let i = 0
+while i < N * N {
+    a = a + [i % 17]
+    b = b + [(i * 3) % 13]
+    c = c + [0]
+    i = i + 1
+}
+
+// Matrix multiply: c = a * b
+let start = time_ms()
+
+let row = 0
+while row < N {
+    let col = 0
+    while col < N {
+        let sum = 0
+        let k = 0
+        while k < N {
+            sum = sum + a[row * N + k] * b[k * N + col]
+            k = k + 1
+        }
+        c[row * N + col] = sum
+        col = col + 1
+    }
+    row = row + 1
+}
+
+let elapsed = time_ms() - start
+println("matrix_100x100 result[0][0] = " + to_string(c[0]))
+println("elapsed_ms: " + to_string(elapsed))

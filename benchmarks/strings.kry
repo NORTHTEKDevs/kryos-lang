@@ -1,0 +1,15 @@
+// Benchmark: String Concatenation
+// Tests: string allocation, concatenation overhead
+
+let start = time_ms()
+
+let result = ""
+let i = 0
+while i < 10000 {
+    result = result + "x"
+    i = i + 1
+}
+
+let elapsed = time_ms() - start
+println("string_length = " + to_string(len(result)))
+println("elapsed_ms: " + to_string(elapsed))

@@ -5,6 +5,7 @@ Usage:
     kryos build <file.kry>       # compile (stub)
     kryos check <file.kry>       # type check only
     kryos bundle <file.kry>      # bundle into deployable package
+    kryos bench                  # run benchmark suite
     kryos repl                   # interactive REPL
     kryos test <dir>             # run test files
     kryos version                # show version
@@ -106,17 +107,53 @@ def _parse_tokens(tokens: list):
 # Commands
 # ---------------------------------------------------------------------------
 
+def _run_python_interpreter(module: object, args: argparse.Namespace) -> None:
+    """Run a parsed module on the Python interpreter."""
+    from kryos.stdlib.process_module import set_script_args
+    set_script_args(getattr(args, "script_args", None) or [])
+
+    no_heal = getattr(args, "no_heal", False)
+    interp = Interpreter(self_healing=not no_heal)
+    interp._current_file = os.path.abspath(args.file)
+    try:
+        interp.run(module)
+    except KryosRuntimeError as e:
+        loc = f":{e.line}" if e.line else ""
+        print(_red(f"Runtime error{loc}: {e}"), file=sys.stderr)
+        from kryos.compiler.ai_assist import ErrorExplainer
+        explanation = ErrorExplainer().explain(str(e))
+        print(_yellow(f"\n  Explanation: {explanation['explanation']}"), file=sys.stderr)
+        print(_cyan(f"  Suggestion:  {explanation['suggestion']}"), file=sys.stderr)
+        sys.exit(1)
+    finally:
+        if interp.heal_count > 0:
+            print(_dim(f"\n[Kryos self-healed {interp.heal_count} issue(s) during execution]"), file=sys.stderr)
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     """Run a .kry file on the Rust VM (with Python interpreter fallback)."""
     source = _read_file(args.file)
     tokens = _tokenize_source(source, args.file)
     module = _parse_tokens(tokens)
 
+    runtime = getattr(args, "runtime", "auto")
+
+    # Explicit Python runtime -- skip Rust VM entirely
+    if runtime == "python":
+        _run_python_interpreter(module, args)
+        return
+
     # Serialize AST to JSON for the Rust VM compiler
     ast_json = _ast_to_json(module)
 
     # Find kryos-runner binary
     runner = _find_runner()
+
+    # Explicit Rust runtime -- fail if runner not found
+    if runtime == "rust" and not runner:
+        print(_red("Error: --runtime rust specified but kryos-runner not found"), file=sys.stderr)
+        print(_dim("Build with: cd rust && cargo build --release -p kryos-runner"), file=sys.stderr)
+        sys.exit(1)
 
     if runner:
         # Execute on Rust VM (fast path)
@@ -132,26 +169,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         # Fallback to Python interpreter (if Rust binary not built)
         print(_yellow("Note: kryos-runner not found, using Python interpreter (slower)"), file=sys.stderr)
         print(_dim("Build with: cd rust && cargo build --release -p kryos-runner"), file=sys.stderr)
-
-        from kryos.stdlib.process_module import set_script_args
-        set_script_args(getattr(args, "script_args", None) or [])
-
-        no_heal = getattr(args, "no_heal", False)
-        interp = Interpreter(self_healing=not no_heal)
-        interp._current_file = os.path.abspath(args.file)
-        try:
-            interp.run(module)
-        except KryosRuntimeError as e:
-            loc = f":{e.line}" if e.line else ""
-            print(_red(f"Runtime error{loc}: {e}"), file=sys.stderr)
-            from kryos.compiler.ai_assist import ErrorExplainer
-            explanation = ErrorExplainer().explain(str(e))
-            print(_yellow(f"\n  Explanation: {explanation['explanation']}"), file=sys.stderr)
-            print(_cyan(f"  Suggestion:  {explanation['suggestion']}"), file=sys.stderr)
-            sys.exit(1)
-        finally:
-            if interp.heal_count > 0:
-                print(_dim(f"\n[Kryos self-healed {interp.heal_count} issue(s) during execution]"), file=sys.stderr)
+        _run_python_interpreter(module, args)
 
 
 def _ast_to_json(module) -> str:
@@ -625,6 +643,10 @@ def main() -> None:
     from kryos.cli_commands.bundle_cmd import register_bundle_command
     bundle_commands = register_bundle_command(subparsers)
 
+    # Bench command
+    from kryos.cli_commands.bench_cmd import register_bench_command
+    bench_commands = register_bench_command(subparsers)
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -645,6 +667,7 @@ def main() -> None:
         "version": cmd_version,
         **pkg_commands,
         **bundle_commands,
+        **bench_commands,
     }
 
     cmd_fn = commands.get(args.command)
