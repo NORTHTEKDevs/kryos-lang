@@ -3,7 +3,11 @@ name = "kryos-stdlib-native"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["crypto"]
+crypto = ["ring"]
+
 [dependencies]
-ring.workspace = true
+ring = { workspace = true, optional = true }
 regex.workspace = true
 crossterm.workspace = true

@@ -1,0 +1,220 @@
+//! Pretty-printing for MIR — useful for debugging and `--emit mir`.
+
+use std::fmt;
+
+use crate::ir::*;
+
+impl fmt::Display for MirModule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, func) in self.functions.iter().enumerate() {
+            if i > 0 {
+                writeln!(f)?;
+            }
+            write!(f, "{func}")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for MirFunction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Signature.
+        write!(f, "fn {}(", self.name)?;
+        for (i, p) in self.params.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}: {}", p.local, p.ty)?;
+        }
+        writeln!(f, ") -> {} {{", self.ret_ty)?;
+
+        // Locals.
+        for local in &self.locals {
+            let mutability = if local.mutable { "mut " } else { "" };
+            let name = local
+                .name
+                .as_deref()
+                .map(|n| format!(" // {n}"))
+                .unwrap_or_default();
+            writeln!(
+                f,
+                "    let {mutability}{}: {};{name}",
+                local.id, local.ty
+            )?;
+        }
+        if !self.locals.is_empty() {
+            writeln!(f)?;
+        }
+
+        // Blocks.
+        for block in &self.blocks {
+            writeln!(f, "    {}:", block.id)?;
+            for inst in &block.instructions {
+                writeln!(f, "        {inst}")?;
+            }
+            writeln!(f, "        {}", block.terminator)?;
+        }
+
+        writeln!(f, "}}")
+    }
+}
+
+impl fmt::Display for Instruction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Instruction::Assign { dest, value } => write!(f, "{dest} = {value}"),
+            Instruction::ArcRetain { ptr } => write!(f, "arc_retain({ptr})"),
+            Instruction::ArcRelease { ptr } => write!(f, "arc_release({ptr})"),
+            Instruction::Drop { local } => write!(f, "drop({local})"),
+            Instruction::Nop => write!(f, "nop"),
+        }
+    }
+}
+
+impl fmt::Display for RValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RValue::Use(op) => write!(f, "{op}"),
+            RValue::BinOp { op, left, right } => write!(f, "{op}({left}, {right})"),
+            RValue::UnOp { op, operand } => write!(f, "{op}({operand})"),
+            RValue::Call { func, args } => {
+                write!(f, "call {func}(")?;
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{a}")?;
+                }
+                write!(f, ")")
+            }
+            RValue::ConstInt(v) => write!(f, "const {v}_i64"),
+            RValue::ConstFloat(v) => write!(f, "const {v}_f64"),
+            RValue::ConstBool(v) => write!(f, "const {v}"),
+            RValue::ConstString(v) => write!(f, "const {:?}", v),
+            RValue::ConstNone => write!(f, "const none"),
+            RValue::Array(elems) => {
+                write!(f, "[")?;
+                for (i, e) in elems.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{e}")?;
+                }
+                write!(f, "]")
+            }
+            RValue::Tuple(elems) => {
+                write!(f, "(")?;
+                for (i, e) in elems.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{e}")?;
+                }
+                write!(f, ")")
+            }
+            RValue::Struct { name, fields } => {
+                write!(f, "{name} {{ ")?;
+                for (i, (n, v)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{n}: {v}")?;
+                }
+                write!(f, " }}")
+            }
+            RValue::Field { object, field } => write!(f, "{object}.{field}"),
+            RValue::Index { object, index } => write!(f, "{object}[{index}]"),
+            RValue::ArcAlloc { inner } => write!(f, "arc_alloc({inner})"),
+            RValue::Cast { operand, ty } => write!(f, "{operand} as {ty}"),
+        }
+    }
+}
+
+impl fmt::Display for Operand {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Operand::Local(id) => write!(f, "{id}"),
+            Operand::Constant(c) => write!(f, "{c}"),
+        }
+    }
+}
+
+impl fmt::Display for Constant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Constant::Int(v) => write!(f, "{v}"),
+            Constant::Float(v) => write!(f, "{v}"),
+            Constant::Bool(v) => write!(f, "{v}"),
+            Constant::Str(v) => write!(f, "{:?}", v),
+            Constant::None => write!(f, "none"),
+        }
+    }
+}
+
+impl fmt::Display for MirBinOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            MirBinOp::Add => "add",
+            MirBinOp::Sub => "sub",
+            MirBinOp::Mul => "mul",
+            MirBinOp::Div => "div",
+            MirBinOp::Mod => "mod",
+            MirBinOp::Pow => "pow",
+            MirBinOp::Eq => "eq",
+            MirBinOp::Neq => "neq",
+            MirBinOp::Lt => "lt",
+            MirBinOp::Gt => "gt",
+            MirBinOp::LtEq => "lteq",
+            MirBinOp::GtEq => "gteq",
+            MirBinOp::And => "and",
+            MirBinOp::Or => "or",
+            MirBinOp::BitAnd => "bitand",
+            MirBinOp::BitOr => "bitor",
+            MirBinOp::BitXor => "bitxor",
+            MirBinOp::Shl => "shl",
+            MirBinOp::Shr => "shr",
+        };
+        write!(f, "{s}")
+    }
+}
+
+impl fmt::Display for MirUnOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            MirUnOp::Neg => "neg",
+            MirUnOp::Not => "not",
+            MirUnOp::BitNot => "bitnot",
+        };
+        write!(f, "{s}")
+    }
+}
+
+impl fmt::Display for Terminator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Terminator::Return(None) => write!(f, "return"),
+            Terminator::Return(Some(op)) => write!(f, "return {op}"),
+            Terminator::Goto(target) => write!(f, "goto -> {target}"),
+            Terminator::Branch {
+                cond,
+                then_block,
+                else_block,
+            } => write!(f, "branch {cond} -> [{then_block}, {else_block}]"),
+            Terminator::Switch {
+                value,
+                targets,
+                default,
+            } => {
+                write!(f, "switch {value} [")?;
+                for (i, (val, bb)) in targets.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{val}: {bb}")?;
+                }
+                write!(f, ", otherwise: {default}]")
+            }
+            Terminator::Unreachable => write!(f, "unreachable"),
+        }
+    }
+}

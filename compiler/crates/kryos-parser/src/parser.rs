@@ -348,6 +348,7 @@ impl Parser {
     fn parse_param_list(&mut self) -> Vec<Param> {
         let mut params = Vec::new();
         while !self.check(TokenKind::RParen) && !self.at_end() {
+            let before = self.pos;
             // Handle `self` parameter
             if self.peek().text == "self" {
                 let tok = self.advance().clone();
@@ -379,6 +380,11 @@ impl Parser {
             }
             if !self.check(TokenKind::RParen) {
                 self.expect(TokenKind::Comma);
+            }
+            // Guard against infinite loops: if no progress was made, skip the
+            // offending token so we eventually reach RParen or Eof.
+            if self.pos == before {
+                self.advance();
             }
         }
         params
