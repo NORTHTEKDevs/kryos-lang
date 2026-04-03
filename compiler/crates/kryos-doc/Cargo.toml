@@ -1,0 +1,10 @@
+[package]
+name = "kryos-doc"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+kryos-ast.workspace = true
+kryos-lexer.workspace = true
+kryos-parser.workspace = true
+kryos-errors.workspace = true

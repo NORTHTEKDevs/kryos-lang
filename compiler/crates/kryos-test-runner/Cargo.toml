@@ -1,0 +1,8 @@
+[package]
+name = "kryos-test-runner"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+kryos-driver.workspace = true
+kryos-errors.workspace = true

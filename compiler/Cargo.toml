@@ -19,6 +19,9 @@ members = [
     "crates/kryos-lsp",
     "crates/kryos-package",
     "crates/kryos-rt",
+    "crates/kryos-doc",
+    "crates/kryos-test-runner",
+    "crates/kryos-fmt",
 ]
 
 [workspace.package]
@@ -47,6 +50,9 @@ kryos-cli = { path = "crates/kryos-cli" }
 kryos-lsp = { path = "crates/kryos-lsp" }
 kryos-package = { path = "crates/kryos-package" }
 kryos-rt = { path = "crates/kryos-rt" }
+kryos-doc = { path = "crates/kryos-doc" }
+kryos-test-runner = { path = "crates/kryos-test-runner" }
+kryos-fmt = { path = "crates/kryos-fmt" }
 
 # External dependencies
 cranelift-codegen = "0.116"

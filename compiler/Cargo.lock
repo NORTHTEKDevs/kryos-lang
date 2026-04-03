@@ -507,6 +507,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kryos-doc"
+version = "0.1.0"
+dependencies = [
+ "kryos-ast",
+ "kryos-errors",
+ "kryos-lexer",
+ "kryos-parser",
+]
+
+[[package]]
 name = "kryos-driver"
 version = "0.1.0"
 dependencies = [
@@ -527,6 +537,16 @@ dependencies = [
 [[package]]
 name = "kryos-errors"
 version = "0.1.0"
+
+[[package]]
+name = "kryos-fmt"
+version = "0.1.0"
+dependencies = [
+ "kryos-ast",
+ "kryos-errors",
+ "kryos-lexer",
+ "kryos-parser",
+]
 
 [[package]]
 name = "kryos-lexer"
@@ -602,6 +622,14 @@ dependencies = [
  "crossterm",
  "regex",
  "ring",
+]
+
+[[package]]
+name = "kryos-test-runner"
+version = "0.1.0"
+dependencies = [
+ "kryos-driver",
+ "kryos-errors",
 ]
 
 [[package]]
