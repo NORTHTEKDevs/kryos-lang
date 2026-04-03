@@ -1,0 +1,611 @@
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 27 tests
+test generator::tests::test_map_float ... ok
+test generator::tests::test_map_char_pointer ... ok
+test generator::tests::test_map_bool ... ok
+test generator::tests::test_map_int ... ok
+test generator::tests::test_map_void_pointer ... ok
+test generator::tests::test_map_double ... ok
+test generator::tests::test_map_long ... ok
+test generator::tests::test_map_long_long ... ok
+test generator::tests::test_map_named ... ok
+test generator::tests::test_map_short ... ok
+test c_parser::tests::test_parse_simple_function ... ok
+test c_parser::tests::test_void_pointer ... ok
+test generator::tests::test_generate_define ... ok
+test c_parser::tests::test_parse_typedef ... ok
+test generator::tests::test_generate_function ... ok
+test generator::tests::test_generate_struct ... ok
+test generator::tests::test_map_size_t ... ok
+test generator::tests::test_generate_enum ... ok
+test generator::tests::test_map_unsigned_int ... ok
+test c_parser::tests::test_ignores_include ... ok
+test c_parser::tests::test_variadic_function ... ok
+test c_parser::tests::test_parse_enum ... ok
+test c_parser::tests::test_parse_struct ... ok
+test c_parser::tests::test_ignores_comments ... ok
+test generator::tests::test_map_unsigned_long ... ok
+test generator::tests::test_map_void ... ok
+test c_parser::tests::test_parse_define ... ok
+
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 22 tests
+test define_hex_constant ... ok
+test define_string_constant ... ok
+test parse_define_exit_success ... ok
+test enum_without_values ... ok
+test parse_struct_timeval ... ok
+test parse_enum_color ... ok
+test struct_with_pointer_field ... ok
+test typedef_pointer ... ok
+test parse_typedef_uint32 ... ok
+test generate_enum_constants ... ok
+test size_t_param ... ok
+test ignore_comments_and_includes ... ok
+test variadic_function_drops_ellipsis ... ok
+test function_returning_void ... ok
+test bool_type ... ok
+test parse_function_puts ... ok
+test handle_const_pointer_types ... ok
+test multiple_functions_in_extern_block ... ok
+test generate_simple_function ... ok
+test handle_void_pointer_to_u8_ptr ... ok
+test generate_struct_repr_c ... ok
+test full_header_mixed_items ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 19 tests
+test model::tests::sandbox_from_annotations ... ok
+test model::tests::empty_set_has_nothing ... ok
+test model::tests::from_annotations_basic ... ok
+test model::tests::budget_from_annotations ... ok
+test model::tests::parse_capability_names ... ok
+test model::tests::escalation_detection ... ok
+test model::tests::subset_checks ... ok
+test model::tests::all_is_superset_of_everything ... ok
+test model::tests::required_capability_mapping ... ok
+test model::tests::all_grants_everything ... ok
+test checker::tests::no_capabilities_no_stdlib_no_errors ... ok
+test checker::tests::escalation_via_fn_call_is_error ... ok
+test checker::tests::attenuation_child_exceeds_parent ... ok
+test checker::tests::all_capability_grants_everything ... ok
+test model::tests::excess_over_reports_extras ... ok
+test checker::tests::using_net_with_capability_is_ok ... ok
+test checker::tests::unknown_capability_name_warns ... ok
+test checker::tests::escalation_via_method_call_is_error ... ok
+test checker::tests::using_net_without_capability_is_error ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 31 tests
+test all_prohibited_escalation_actions_detected ... ok
+test empty_capabilities_empty_set ... ok
+test normal_method_names_not_flagged_as_escalation ... ok
+test all_capability_grants_everything ... ok
+test parse_capabilities_from_annotations ... ok
+test extern_block_inside_ffi_scope_is_ok ... ok
+test budget_annotation_invalid_number_returns_none ... ok
+test budget_annotation_parsed_correctly ... ok
+test budget_annotation_missing_returns_none ... ok
+test multiple_capability_annotations_on_same_function ... ok
+test non_std_path_returns_none ... ok
+test sandbox_annotation_detected ... ok
+test sandbox_annotation_absent ... ok
+test subset_all_is_superset ... ok
+test function_using_io_without_capability_produces_error ... ok
+test stdlib_path_mapping ... ok
+test function_using_net_with_capability_no_error ... ok
+test self_heal_escalation_method_call_detected ... ok
+test spawn_with_capability_subset_is_valid ... ok
+test mixed_valid_and_invalid_calls ... ok
+test attenuation_child_subset_of_parent_no_error ... ok
+test function_with_all_can_use_any_stdlib ... ok
+test subset_strict_subset ... ok
+test function_using_net_without_capability_produces_error ... ok
+test union_combines_sets ... ok
+test escalation_combined_with_capability_violation ... ok
+test multiple_violations_reported ... ok
+test spawn_stdlib_call_exceeding_parent_capabilities_is_error ... ok
+test unknown_capability_name_produces_warning ... ok
+test subset_same_set ... ok
+test self_heal_escalation_fn_call_detected ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 13 tests
+test tests::parse_build_all_flags ... ok
+test tests::parse_lsp ... ok
+test tests::parse_fmt ... ok
+test tests::parse_repl ... ok
+test tests::parse_check ... ok
+test tests::parse_build_default ... ok
+test tests::parse_bindgen ... ok
+test tests::parse_test_with_filter ... ok
+test tests::parse_pkg_init ... ok
+test tests::parse_fmt_check ... ok
+test tests::parse_version ... ok
+test tests::parse_pkg_add ... ok
+test tests::parse_run ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 32 tests
+test test_arc_declarations_present_when_used ... ok
+test test_arc_declarations_absent_when_unused ... ok
+test test_comparison_operations ... ok
+test test_emit_return_value ... ok
+test test_goto_terminator ... ok
+test test_cast_int_to_float ... ok
+test test_different_opt_levels_compile ... ok
+test test_type_mapping_float ... ok
+test test_type_mapping_tuple ... ok
+test test_emit_return_void ... ok
+test test_const_bool ... ok
+test test_function_call ... ok
+test test_emit_add_function ... ok
+test test_module_header ... ok
+test test_multiple_functions ... ok
+test test_no_triple_when_unspecified ... ok
+test test_nop_instruction ... ok
+test test_string_constants_emitted_as_globals ... ok
+test test_target_triple_in_output ... ok
+test test_type_mapping_array ... ok
+test test_type_mapping_bool_char_str_void ... ok
+test test_drop_is_noop ... ok
+test test_type_mapping_integers ... ok
+test test_type_mapping_function ... ok
+test test_type_mapping_ptr_shared ... ok
+test test_type_mapping_struct ... ok
+test test_emit_branch ... ok
+test test_type_mapping_unsigned_to_signed ... ok
+test test_unreachable_terminator ... ok
+test test_unary_neg ... ok
+test test_float_operations ... ok
+test test_switch_terminator ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 14 tests
+test build_config_defaults ... ok
+test build_config_explicit_output_overrides_derived ... ok
+test check_syntax_error_returns_diagnostics ... ok
+test build_config_derive_output_mir ... ok
+test compile_nonexistent_file_fails ... ok
+test version_is_correct ... ok
+test check_valid_source_no_diagnostics ... ok
+test check_type_error_returns_diagnostics ... ok
+test build_config_derive_output_path ... ok
+test compile_source_valid ... ok
+test compile_source_with_binary_output_no_backend ... ok
+test compile_valid_source_succeeds ... ok
+test compile_syntax_error_fails ... ok
+test compile_type_error_fails ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 27 tests
+test parse_wasm32_wasi ... ok
+test command_without_optional_libs ... ok
+test parse_x86_64_linux_musl ... ok
+test is_wasm_false_for_aarch64 ... ok
+test parse_x86_64_windows_msvc ... ok
+test parse_wasm32_unknown_unknown ... ok
+test is_wasm_true_for_wasm32 ... ok
+test host_target_is_valid ... ok
+test is_wasm_false_for_x86_64 ... ok
+test link_error_display_no_object_files ... ok
+test invalid_triple_single_component ... ok
+test msvc_shared_lib_command_line ... ok
+test invalid_triple_too_many_parts ... ok
+test link_error_display_linker_not_found ... ok
+test invalid_triple_bad_arch ... ok
+test msvc_command_line ... ok
+test parse_x86_64_linux_gnu ... ok
+test parse_aarch64_apple_darwin ... ok
+test triple_roundtrip_linux_gnu ... ok
+test triple_roundtrip_wasm_unknown ... ok
+test triple_roundtrip_macos ... ok
+test unix_dynamic_command_line ... ok
+test triple_roundtrip_windows_msvc ... ok
+test unix_static_command_line ... ok
+test unix_shared_lib_command_line ... ok
+test wasm_command_line ... ok
+test find_system_linker_on_current_host ... ok
+
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 16 tests
+test type_lowering ... ok
+test block_successors ... ok
+test display_formatting ... ok
+test match_produces_switch ... ok
+test arc_retain_release_shared ... ok
+test nested_if_else_cfg ... ok
+test let_binding_assign ... ok
+test binary_op_rvalue ... ok
+test unary_op_lowering ... ok
+test simple_function_one_block_return ... ok
+test function_call_rvalue ... ok
+test while_loop_back_edge ... ok
+test if_else_produces_branch_merge ... ok
+test for_loop_desugars ... ok
+test drop_at_scope_exit ... ok
+test constants_lowered ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 21 tests
+test arc_summary_counts ... ok
+test reassignment_after_move_valid ... ok
+test closure_capture_mut_arc_insertion ... ok
+test weak_reference_no_move ... ok
+test actor_state_arc_boundary ... ok
+test bool_is_copy_type ... ok
+test copy_type_survives ... ok
+test multiple_shared_refs_valid ... ok
+test shared_wrapping_arc_insertion ... ok
+test literal_int_is_copy ... ok
+test clean_code_no_errors ... ok
+test spawn_moves_value ... ok
+test uninitialized_use_error ... ok
+test channel_send_moves_value ... ok
+test return_moves_ownership ... ok
+test move_on_function_call_error ... ok
+test conditional_move_warning ... ok
+test move_on_assignment_error ... ok
+test struct_partial_move ... ok
+test double_move_error ... ok
+test copy_struct_annotation ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 20 tests
+test lock::tests::set_checksum ... ok
+test lock::tests::lock_lookup ... ok
+test lock::tests::lock_from_resolved_graph ... ok
+test semver::tests::parse_version_basic ... ok
+test semver::tests::parse_version_with_pre ... ok
+test semver::tests::version_ordering ... ok
+test semver::tests::comparison_ranges ... ok
+test resolve::tests::resolve_package_not_found ... ok
+test semver::tests::tilde_range ... ok
+test semver::tests::caret_range ... ok
+test semver::tests::exact_range ... ok
+test semver::tests::display_roundtrip ... ok
+test resolve::tests::detect_circular_dependency ... ok
+test resolve::tests::resolve_simple ... ok
+test resolve::tests::resolve_transitive ... ok
+test resolve::tests::detect_version_conflict ... ok
+test lock::tests::lock_roundtrip ... ok
+test manifest::tests::parse_minimal_manifest ... ok
+test manifest::tests::parse_manifest_with_path_dep ... ok
+test manifest::tests::parse_basic_manifest ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 19 tests
+test semver_display ... ok
+test semver_parse_with_pre_release ... ok
+test caret_range_matches ... ok
+test comparison_ranges ... ok
+test tilde_range_matches ... ok
+test semver_parse_basic ... ok
+test exact_range_matches ... ok
+test resolve_picks_highest_matching ... ok
+test circular_dependency_detection ... ok
+test version_conflict_detection ... ok
+test resolve_transitive_deps ... ok
+test parse_manifest_minimal ... ok
+test dep_spec_path_table ... ok
+test dep_spec_github_string ... ok
+test dep_spec_version_ranges ... ok
+test parse_manifest_all_fields ... ok
+test parse_valid_manifest ... ok
+test lock_file_from_toml_string ... ok
+test lock_file_roundtrip ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 52 tests
+test test_array_type ... ok
+test test_cast ... ok
+test test_function_with_generics ... ok
+test test_actor_decl ... ok
+test test_generic_with_bound ... ok
+test test_assignment ... ok
+test test_impl_trait_for_type ... ok
+test test_lambda ... ok
+test test_compound_assignment ... ok
+test test_enum_decl ... ok
+test test_enum_with_fields ... ok
+test test_extern_block ... ok
+test test_for_loop ... ok
+test test_function_call ... ok
+test test_function_type ... ok
+test test_function_with_annotation ... ok
+test test_generic_type ... ok
+test test_and_or_precedence ... ok
+test test_hex_and_binary_literals ... ok
+test test_if_elif_else ... ok
+test test_impl_block ... ok
+test test_index_access ... ok
+test test_function_with_params_and_return ... ok
+test test_break_continue ... ok
+test test_annotation_with_args ... ok
+test test_let_binding ... ok
+test test_let_mut ... ok
+test test_error_recovery ... ok
+test test_field_access ... ok
+test test_array_literal ... ok
+test test_literals ... ok
+test test_grouped_import ... ok
+test test_binary_precedence_add_mul ... ok
+test test_match_expr ... ok
+test test_method_call ... ok
+test test_multiple_declarations ... ok
+test test_pointer_type ... ok
+test test_power_right_assoc ... ok
+test test_pub_function ... ok
+test test_reference_type ... ok
+test test_return_value ... ok
+test test_shared_expr ... ok
+test test_simple_function ... ok
+test test_simple_import ... ok
+test test_struct_decl ... ok
+test test_struct_literal ... ok
+test test_struct_with_generics ... ok
+test test_trait_decl ... ok
+test test_try_catch ... ok
+test test_type_alias ... ok
+test test_unary_negation ... ok
+test test_while_loop ... ok
+
+test result: ok. 52 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 25 tests
+test arc_null_ptr_operations_are_safe ... ok
+test actor_recv_from_non_actor_thread_fails ... ok
+test arc_alloc_returns_non_null ... ok
+test arc_retain_release_cycle ... ok
+test arc_multiple_retain_release ... ok
+test arc_user_data_is_writable ... ok
+test arc_drop_fn_called_on_final_release ... ok
+test realloc_grows_memory ... ok
+test arc_zero_size_returns_null ... ok
+test alloc_dealloc_roundtrip ... ok
+test dealloc_null_is_safe ... ok
+test panic_format_message ... ok
+test panic_format_empty_message ... ok
+test panic_format_with_location ... ok
+test realloc_null_acts_as_alloc ... ok
+test realloc_to_zero_frees ... ok
+test channel_wrong_size_returns_error ... ok
+test channel_send_recv_roundtrip ... ok
+test channel_multiple_send_recv ... ok
+test channel_close_returns_error_on_send ... ok
+test channel_close_recv_returns_zero ... ok
+test channel_multiple_messages ... ok
+test actor_send_to_invalid_id_fails ... ok
+test alloc_zero_size_returns_null ... ok
+test actor_spawn_returns_nonzero_id ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 11 tests
+test test_time_now_millis_greater_than_secs ... ok
+test test_time_now_secs_reasonable ... ok
+kryos stdout test
+test test_path_exists_current_dir ... ok
+test test_path_exists_nonexistent ... ok
+test test_stdout_write ... ok
+test test_mutex_lifecycle ... ok
+test test_random_bytes_non_zero ... ok
+test test_sha256_empty_string ... ok
+test test_env_get_path ... ok
+test test_file_roundtrip ... ok
+test test_regex_lifecycle ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 32 tests
+test type_is_numeric ... ok
+test type_has_vars ... ok
+test type_display_formatting ... ok
+test never_type_unifies_with_anything ... ok
+test env_function_lookup ... ok
+test unify_var_with_i32_resolves ... ok
+test env_scope_shadowing ... ok
+test unify_i32_with_i32_succeeds ... ok
+test unify_two_vars_chain ... ok
+test error_type_unifies_with_anything ... ok
+test unify_i32_with_f64_fails ... ok
+test resolve_array_type_i32_10 ... ok
+test infer_let_float_literal ... ok
+test infer_let_bool_literal ... ok
+test resolve_generic_type_vec_i32 ... ok
+test check_shared_expr_type ... ok
+test infer_let_int_literal ... ok
+test resolve_shared_type ... ok
+test resolve_function_type ... ok
+test infer_let_string_literal ... ok
+test resolve_weak_type ... ok
+test resolve_simple_type_i32 ... ok
+test resolve_reference_type ... ok
+test check_shared_expr_vec_type ... ok
+test resolve_option_type ... ok
+test resolve_tuple_type ... ok
+test resolve_pointer_type ... ok
+test check_binary_op_int_plus_int ... ok
+test check_binary_op_int_plus_float_error ... ok
+test check_return_type_mismatch ... ok
+test check_comparison_returns_bool ... ok
+test check_valid_add_function ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+test crates\kryos-bindgen\src\lib.rs - (line 10) ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
+
+
+running 1 test
+test crates\kryos-capabilities\src\lib.rs - (line 24) ... ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+test crates\kryos-codegen-llvm\src\lib.rs - (line 9) ... ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+DONE:0
