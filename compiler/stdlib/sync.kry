@@ -1,0 +1,360 @@
+// ============================================================
+// std.sync -- Synchronization primitives: Mutex, Atomic, Once,
+// WaitGroup
+//
+// Wraps the kryos-stdlib-native sync FFI (heap-allocated Mutex)
+// and provides higher-level synchronization abstractions built
+// in pure Kryos.
+// ============================================================
+
+// --- Native FFI declarations ------------------------------------------------
+
+extern {
+    fn kryos_mutex_new() -> ptr
+    fn kryos_mutex_lock(mutex: ptr) -> i32
+    fn kryos_mutex_unlock(mutex: ptr) -> i32
+    fn kryos_mutex_drop(mutex: ptr) -> i32
+    fn kryos_time_now_millis() -> i64
+}
+
+// --- Mutex ------------------------------------------------------------------
+
+struct Mutex {
+    handle: ptr,
+    locked: bool,
+    dropped: bool
+}
+
+impl Mutex {
+    // Acquire the mutex lock.  Blocks until the lock is available.
+    fn lock(self: Mutex) -> Mutex {
+        if self.dropped {
+            throw "sync error: lock on dropped mutex"
+        }
+        let result = kryos_mutex_lock(self.handle)
+        if result < 0 {
+            throw "sync error: mutex lock failed (poisoned or null)"
+        }
+        return Mutex { handle: self.handle, locked: true, dropped: false }
+    }
+
+    // Release the mutex lock.
+    fn unlock(self: Mutex) -> Mutex {
+        if self.dropped {
+            throw "sync error: unlock on dropped mutex"
+        }
+        if not self.locked {
+            throw "sync error: unlock on unlocked mutex"
+        }
+        let result = kryos_mutex_unlock(self.handle)
+        if result < 0 {
+            throw "sync error: mutex unlock failed"
+        }
+        return Mutex { handle: self.handle, locked: false, dropped: false }
+    }
+
+    // Execute a callback while holding the lock, then automatically unlock.
+    // Returns the callback's result.
+    fn with_lock(self: Mutex, callback: fn() -> str) -> str {
+        let locked = self.lock()
+        let mut result = ""
+        try {
+            result = callback()
+        } catch (e) {
+            locked.unlock()
+            throw e
+        }
+        locked.unlock()
+        return result
+    }
+
+    // Check if the mutex is currently locked.
+    fn is_locked(self: Mutex) -> bool {
+        return self.locked
+    }
+
+    // Drop (free) the mutex.  Must be called when the mutex is no longer needed
+    // to prevent memory leaks.  The mutex must be unlocked first.
+    fn drop(self: Mutex) -> Mutex {
+        if self.dropped {
+            return self
+        }
+        if self.locked {
+            // Unlock before dropping to prevent deadlocks
+            kryos_mutex_unlock(self.handle)
+        }
+        kryos_mutex_drop(self.handle)
+        return Mutex { handle: self.handle, locked: false, dropped: true }
+    }
+
+    // Check if the mutex has been dropped.
+    fn is_dropped(self: Mutex) -> bool {
+        return self.dropped
+    }
+}
+
+// Create a new Mutex.
+fn mutex_new() -> Mutex {
+    let handle = kryos_mutex_new()
+    if handle == null {
+        throw "sync error: could not allocate mutex"
+    }
+    return Mutex { handle: handle, locked: false, dropped: false }
+}
+
+// --- Atomic value (simulated with Mutex) ------------------------------------
+// True atomics require hardware CAS instructions.  This implementation
+// provides the Atomic API using a Mutex for thread-safe access.
+
+struct AtomicInt {
+    value: i64,
+    mu: Mutex
+}
+
+impl AtomicInt {
+    // Load the current value atomically.
+    fn load(self: AtomicInt) -> i64 {
+        let locked = self.mu.lock()
+        let v = self.value
+        locked.unlock()
+        return v
+    }
+
+    // Store a new value atomically.
+    fn store(self: AtomicInt, new_value: i64) -> AtomicInt {
+        let locked = self.mu.lock()
+        let result = AtomicInt { value: new_value, mu: locked.unlock() }
+        return result
+    }
+
+    // Add a value and return the previous value.
+    fn fetch_add(self: AtomicInt, delta: i64) -> i64 {
+        let locked = self.mu.lock()
+        let old = self.value
+        self = AtomicInt { value: old + delta, mu: locked.unlock() }
+        return old
+    }
+
+    // Subtract a value and return the previous value.
+    fn fetch_sub(self: AtomicInt, delta: i64) -> i64 {
+        let locked = self.mu.lock()
+        let old = self.value
+        self = AtomicInt { value: old - delta, mu: locked.unlock() }
+        return old
+    }
+
+    // Increment by 1 and return the new value.
+    fn increment(self: AtomicInt) -> i64 {
+        let locked = self.mu.lock()
+        let new_val = self.value + 1
+        self = AtomicInt { value: new_val, mu: locked.unlock() }
+        return new_val
+    }
+
+    // Decrement by 1 and return the new value.
+    fn decrement(self: AtomicInt) -> i64 {
+        let locked = self.mu.lock()
+        let new_val = self.value - 1
+        self = AtomicInt { value: new_val, mu: locked.unlock() }
+        return new_val
+    }
+
+    // Compare-and-swap: if current value == expected, set to new_value and return true.
+    fn compare_and_swap(self: AtomicInt, expected: i64, new_value: i64) -> bool {
+        let locked = self.mu.lock()
+        if self.value == expected {
+            self = AtomicInt { value: new_value, mu: locked.unlock() }
+            return true
+        }
+        locked.unlock()
+        return false
+    }
+
+    // Drop the underlying mutex.
+    fn drop(self: AtomicInt) -> AtomicInt {
+        return AtomicInt { value: self.value, mu: self.mu.drop() }
+    }
+}
+
+// Create a new AtomicInt with an initial value.
+fn atomic_int(initial: i64) -> AtomicInt {
+    return AtomicInt { value: initial, mu: mutex_new() }
+}
+
+struct AtomicBool {
+    value: bool,
+    mu: Mutex
+}
+
+impl AtomicBool {
+    fn load(self: AtomicBool) -> bool {
+        let locked = self.mu.lock()
+        let v = self.value
+        locked.unlock()
+        return v
+    }
+
+    fn store(self: AtomicBool, new_value: bool) -> AtomicBool {
+        let locked = self.mu.lock()
+        let result = AtomicBool { value: new_value, mu: locked.unlock() }
+        return result
+    }
+
+    fn toggle(self: AtomicBool) -> bool {
+        let locked = self.mu.lock()
+        let old = self.value
+        self = AtomicBool { value: not old, mu: locked.unlock() }
+        return old
+    }
+
+    fn drop(self: AtomicBool) -> AtomicBool {
+        return AtomicBool { value: self.value, mu: self.mu.drop() }
+    }
+}
+
+// Create a new AtomicBool with an initial value.
+fn atomic_bool(initial: bool) -> AtomicBool {
+    return AtomicBool { value: initial, mu: mutex_new() }
+}
+
+// --- WaitGroup --------------------------------------------------------------
+// A WaitGroup waits for a collection of tasks to finish.
+
+struct WaitGroup {
+    counter: AtomicInt,
+    target: i64
+}
+
+impl WaitGroup {
+    // Add `n` tasks to the wait group.
+    fn add(self: WaitGroup, n: i64) -> WaitGroup {
+        let new_counter = self.counter.store(self.counter.load() + n)
+        return WaitGroup { counter: new_counter, target: self.target }
+    }
+
+    // Signal that one task is done.
+    fn done(self: WaitGroup) -> WaitGroup {
+        let current = self.counter.load()
+        if current <= 0 {
+            throw "sync error: WaitGroup.done() called more times than Add()"
+        }
+        let new_counter = self.counter.store(current - 1)
+        return WaitGroup { counter: new_counter, target: self.target }
+    }
+
+    // Wait (busy-spin) until all tasks are done.
+    fn wait(self: WaitGroup) -> bool {
+        while self.counter.load() > 0 {
+            // Busy wait -- a proper implementation would use condition variables
+            // or a sleep-based backoff
+        }
+        return true
+    }
+
+    // Check if all tasks are complete without blocking.
+    fn is_done(self: WaitGroup) -> bool {
+        return self.counter.load() <= 0
+    }
+
+    // Get the current counter value.
+    fn pending(self: WaitGroup) -> i64 {
+        return self.counter.load()
+    }
+
+    // Drop the underlying resources.
+    fn drop(self: WaitGroup) -> WaitGroup {
+        return WaitGroup { counter: self.counter.drop(), target: self.target }
+    }
+}
+
+// Create a new WaitGroup.
+fn wait_group() -> WaitGroup {
+    return WaitGroup { counter: atomic_int(0), target: 0 }
+}
+
+// --- Once -------------------------------------------------------------------
+// A Once ensures a piece of code runs exactly once.
+
+struct Once {
+    executed: AtomicBool
+}
+
+impl Once {
+    // Execute the callback if it has not been executed yet.
+    // Returns true if the callback was executed, false if it was already run.
+    fn call_once(self: Once, callback: fn() -> str) -> bool {
+        let was_executed = self.executed.load()
+        if was_executed {
+            return false
+        }
+        // Use toggle to atomically check and set
+        let prev = self.executed.toggle()
+        if not prev {
+            // We were the first to toggle -- run the callback
+            callback()
+            return true
+        }
+        return false
+    }
+
+    // Check if the Once has been executed.
+    fn is_done(self: Once) -> bool {
+        return self.executed.load()
+    }
+
+    // Drop the underlying resources.
+    fn drop(self: Once) -> Once {
+        return Once { executed: self.executed.drop() }
+    }
+}
+
+// Create a new Once.
+fn once() -> Once {
+    return Once { executed: atomic_bool(false) }
+}
+
+// --- SpinLock (lightweight alternative to Mutex) ----------------------------
+
+struct SpinLock {
+    flag: AtomicBool
+}
+
+impl SpinLock {
+    // Acquire the spin lock (busy-wait).
+    fn lock(self: SpinLock) -> SpinLock {
+        while self.flag.load() {
+            // Spin until the flag is false
+        }
+        let new_flag = self.flag.store(true)
+        return SpinLock { flag: new_flag }
+    }
+
+    // Release the spin lock.
+    fn unlock(self: SpinLock) -> SpinLock {
+        let new_flag = self.flag.store(false)
+        return SpinLock { flag: new_flag }
+    }
+
+    // Execute a callback while holding the lock.
+    fn with_lock(self: SpinLock, callback: fn() -> str) -> str {
+        let locked = self.lock()
+        let mut result = ""
+        try {
+            result = callback()
+        } catch (e) {
+            locked.unlock()
+            throw e
+        }
+        locked.unlock()
+        return result
+    }
+
+    fn drop(self: SpinLock) -> SpinLock {
+        return SpinLock { flag: self.flag.drop() }
+    }
+}
+
+// Create a new SpinLock.
+fn spin_lock() -> SpinLock {
+    return SpinLock { flag: atomic_bool(false) }
+}

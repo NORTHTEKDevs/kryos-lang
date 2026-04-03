@@ -1,0 +1,302 @@
+// ============================================================
+// std.result -- Result type for error handling
+//
+// The Result type represents either success (Ok) or failure (Err).
+// Use it for recoverable errors instead of try/catch when you
+// want to propagate errors as values.
+//
+// Usage:
+//   let r = std.result.ok(42)
+//   let e = std.result.err("file not found")
+//   if std.result.is_ok(r) { ... }
+// ============================================================
+
+// --- Type definition ---------------------------------------------------------
+
+enum Result {
+    Ok(any),
+    Err(any)
+}
+
+// --- Constructors ------------------------------------------------------------
+
+/// Wrap a success value.
+fn ok(val: any) -> Result {
+    return Result.Ok(val)
+}
+
+/// Wrap an error value.
+fn err(msg: any) -> Result {
+    return Result.Err(msg)
+}
+
+// --- Querying ----------------------------------------------------------------
+
+/// True if the result is Ok.
+fn is_ok(r: Result) -> bool {
+    return match r {
+        Result.Ok(_) => true,
+        Result.Err(_) => false,
+    }
+}
+
+/// True if the result is Err.
+fn is_err(r: Result) -> bool {
+    return match r {
+        Result.Ok(_) => false,
+        Result.Err(_) => true,
+    }
+}
+
+/// True if the result is Ok and the value satisfies the predicate.
+fn is_ok_and(r: Result, pred: fn) -> bool {
+    return match r {
+        Result.Ok(v) => pred(v),
+        Result.Err(_) => false,
+    }
+}
+
+/// True if the result is Err and the error satisfies the predicate.
+fn is_err_and(r: Result, pred: fn) -> bool {
+    return match r {
+        Result.Ok(_) => false,
+        Result.Err(e) => pred(e),
+    }
+}
+
+// --- Extracting --------------------------------------------------------------
+
+/// Extract the Ok value. Throws if Err.
+fn unwrap(r: Result) -> any {
+    return match r {
+        Result.Ok(v) => v,
+        Result.Err(e) => throw "unwrap called on Err: " + to_string(e),
+    }
+}
+
+/// Extract the Err value. Throws if Ok.
+fn unwrap_err(r: Result) -> any {
+    return match r {
+        Result.Ok(v) => throw "unwrap_err called on Ok: " + to_string(v),
+        Result.Err(e) => e,
+    }
+}
+
+/// Extract Ok value, or return a default.
+fn unwrap_or(r: Result, default: any) -> any {
+    return match r {
+        Result.Ok(v) => v,
+        Result.Err(_) => default,
+    }
+}
+
+/// Extract Ok value, or compute a default from the error.
+fn unwrap_or_else(r: Result, f: fn) -> any {
+    return match r {
+        Result.Ok(v) => v,
+        Result.Err(e) => f(e),
+    }
+}
+
+/// Extract Ok value. Throws with a custom message if Err.
+fn expect(r: Result, msg: str) -> any {
+    return match r {
+        Result.Ok(v) => v,
+        Result.Err(e) => throw msg + ": " + to_string(e),
+    }
+}
+
+/// Extract Err value. Throws with a custom message if Ok.
+fn expect_err(r: Result, msg: str) -> any {
+    return match r {
+        Result.Ok(v) => throw msg + ": " + to_string(v),
+        Result.Err(e) => e,
+    }
+}
+
+// --- Transforming (Ok side) --------------------------------------------------
+
+/// Apply a function to the Ok value, leaving Err untouched.
+fn map(r: Result, f: fn) -> Result {
+    return match r {
+        Result.Ok(v) => Result.Ok(f(v)),
+        Result.Err(e) => Result.Err(e),
+    }
+}
+
+/// Apply f to Ok value, or return the default.
+fn map_or(r: Result, default: any, f: fn) -> any {
+    return match r {
+        Result.Ok(v) => f(v),
+        Result.Err(_) => default,
+    }
+}
+
+/// Apply f to Ok, or default_fn to Err.
+fn map_or_else(r: Result, default_fn: fn, f: fn) -> any {
+    return match r {
+        Result.Ok(v) => f(v),
+        Result.Err(e) => default_fn(e),
+    }
+}
+
+/// Chain a function that returns a Result. Flattens Result(Result(...)).
+fn and_then(r: Result, f: fn) -> Result {
+    return match r {
+        Result.Ok(v) => f(v),
+        Result.Err(e) => Result.Err(e),
+    }
+}
+
+// --- Transforming (Err side) -------------------------------------------------
+
+/// Apply a function to the Err value, leaving Ok untouched.
+fn map_err(r: Result, f: fn) -> Result {
+    return match r {
+        Result.Ok(v) => Result.Ok(v),
+        Result.Err(e) => Result.Err(f(e)),
+    }
+}
+
+/// If Err, call f to produce a fallback Result.
+fn or_else(r: Result, f: fn) -> Result {
+    return match r {
+        Result.Ok(v) => Result.Ok(v),
+        Result.Err(e) => f(e),
+    }
+}
+
+// --- Combining ---------------------------------------------------------------
+
+/// Logical AND: if both are Ok, return the second. Otherwise first Err.
+fn and_res(a: Result, b: Result) -> Result {
+    return match a {
+        Result.Ok(_) => b,
+        Result.Err(e) => Result.Err(e),
+    }
+}
+
+/// Logical OR: if either is Ok, return the first Ok. Otherwise last Err.
+fn or_res(a: Result, b: Result) -> Result {
+    return match a {
+        Result.Ok(v) => Result.Ok(v),
+        Result.Err(_) => b,
+    }
+}
+
+/// Flatten a nested Result(Result(T, E), E) into Result(T, E).
+fn flatten(r: Result) -> Result {
+    return match r {
+        Result.Ok(inner) => {
+            if is_ok(inner) {
+                return inner
+            }
+            if is_err(inner) {
+                return inner
+            }
+            return Result.Ok(inner)
+        },
+        Result.Err(e) => Result.Err(e),
+    }
+}
+
+// --- Conversion --------------------------------------------------------------
+
+/// Convert Ok to Some, Err to None.
+fn to_option(r: Result) -> any {
+    return match r {
+        Result.Ok(v) => {"tag": "Some", "value": v},
+        Result.Err(_) => {"tag": "None"},
+    }
+}
+
+/// Convert Err to Some, Ok to None (the error as an option).
+fn err_to_option(r: Result) -> any {
+    return match r {
+        Result.Ok(_) => {"tag": "None"},
+        Result.Err(e) => {"tag": "Some", "value": e},
+    }
+}
+
+/// Convert to an array: [value] for Ok, [] for Err.
+fn to_array(r: Result) -> [any] {
+    return match r {
+        Result.Ok(v) => [v],
+        Result.Err(_) => [],
+    }
+}
+
+// --- Inspection --------------------------------------------------------------
+
+/// Apply a function to the Ok value for side effects, return unchanged.
+fn inspect(r: Result, f: fn) -> Result {
+    match r {
+        Result.Ok(v) => f(v),
+        Result.Err(_) => {},
+    }
+    return r
+}
+
+/// Apply a function to the Err value for side effects, return unchanged.
+fn inspect_err(r: Result, f: fn) -> Result {
+    match r {
+        Result.Ok(_) => {},
+        Result.Err(e) => f(e),
+    }
+    return r
+}
+
+/// Convert to a human-readable string.
+fn display(r: Result) -> str {
+    return match r {
+        Result.Ok(v) => "Ok(" + to_string(v) + ")",
+        Result.Err(e) => "Err(" + to_string(e) + ")",
+    }
+}
+
+/// True if the result contains the given Ok value.
+fn contains(r: Result, val: any) -> bool {
+    return match r {
+        Result.Ok(v) => v == val,
+        Result.Err(_) => false,
+    }
+}
+
+/// True if the result contains the given Err value.
+fn contains_err(r: Result, val: any) -> bool {
+    return match r {
+        Result.Ok(_) => false,
+        Result.Err(e) => e == val,
+    }
+}
+
+// --- Try pattern -------------------------------------------------------------
+
+/// Execute a function, capturing the result or any thrown error as a Result.
+fn try_fn(f: fn) -> Result {
+    try {
+        let val = f()
+        return Result.Ok(val)
+    } catch (e) {
+        return Result.Err(e)
+    }
+}
+
+/// Collect an array of Results into a single Result.
+/// If all are Ok, returns Ok([values]). If any is Err, returns the first Err.
+fn collect(results: [Result]) -> Result {
+    let mut values = []
+    let rlen = len(results)
+    let mut i = 0
+    while i < rlen {
+        let r = results[i]
+        match r {
+            Result.Ok(v) => push(values, v),
+            Result.Err(e) => {
+                return Result.Err(e)
+            },
+        }
+        i = i + 1
+    }
+    return Result.Ok(values)
+}

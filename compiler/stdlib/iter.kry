@@ -1,0 +1,676 @@
+// ============================================================
+// std.iter -- Iteration and sequence utilities
+//
+// Functional-style operations on arrays: map, filter, reduce,
+// sort, grouping, and more. All functions take an array as the
+// first argument and return a new array (no mutation).
+//
+// Usage: std.iter.map(arr, fn(x) { return x * 2 })
+// ============================================================
+
+// --- Generators --------------------------------------------------------------
+
+/// Generate a range [start, end) as an array.
+fn range(start: i64, end: i64) -> [i64] {
+    let mut result = []
+    let mut i = start
+    if start <= end {
+        while i < end {
+            push(result, i)
+            i = i + 1
+        }
+    } else {
+        while i > end {
+            push(result, i)
+            i = i - 1
+        }
+    }
+    return result
+}
+
+/// Generate a range [start, end) with a custom step.
+fn range_step(start: i64, end: i64, step: i64) -> [i64] {
+    if step == 0 {
+        throw "range_step: step cannot be zero"
+    }
+    let mut result = []
+    let mut i = start
+    if step > 0 {
+        while i < end {
+            push(result, i)
+            i = i + step
+        }
+    } else {
+        while i > end {
+            push(result, i)
+            i = i + step
+        }
+    }
+    return result
+}
+
+// --- Indexing -----------------------------------------------------------------
+
+/// Pair each element with its index: [[0, a], [1, b], ...].
+fn enumerate(arr: [any]) -> [any] {
+    let mut result = []
+    let alen = len(arr)
+    let mut i = 0
+    while i < alen {
+        push(result, [i, arr[i]])
+        i = i + 1
+    }
+    return result
+}
+
+/// Zip two arrays into an array of pairs: [[a[0], b[0]], ...].
+/// Stops at the shorter array.
+fn zip(a: [any], b: [any]) -> [any] {
+    let mut result = []
+    let min_len = len(a)
+    if len(b) < min_len {
+        min_len = len(b)
+    }
+    let mut i = 0
+    while i < min_len {
+        push(result, [a[i], b[i]])
+        i = i + 1
+    }
+    return result
+}
+
+/// Unzip an array of pairs into two arrays.
+fn unzip(pairs: [any]) -> [any] {
+    let mut left = []
+    let mut right = []
+    let plen = len(pairs)
+    let mut i = 0
+    while i < plen {
+        let pair = pairs[i]
+        push(left, pair[0])
+        push(right, pair[1])
+        i = i + 1
+    }
+    return [left, right]
+}
+
+// --- Transforming ------------------------------------------------------------
+
+/// Apply f to each element, returning a new array.
+fn map(arr: [any], f: fn) -> [any] {
+    let mut result = []
+    let alen = len(arr)
+    let mut i = 0
+    while i < alen {
+        push(result, f(arr[i]))
+        i = i + 1
+    }
+    return result
+}
+
+/// Apply f to each element with its index: f(index, element).
+fn map_indexed(arr: [any], f: fn) -> [any] {
+    let mut result = []
+    let alen = len(arr)
+    let mut i = 0
+    while i < alen {
+        push(result, f(i, arr[i]))
+        i = i + 1
+    }
+    return result
+}
+
+/// Keep only elements where pred returns true.
+fn filter(arr: [any], pred: fn) -> [any] {
+    let mut result = []
+    let alen = len(arr)
+    let mut i = 0
+    while i < alen {
+        if pred(arr[i]) {
+            push(result, arr[i])
+        }
+        i = i + 1
+    }
+    return result
+}
+
+/// Map then flatten one level: flat_map(arr, f) == flatten(map(arr, f)).
+fn flat_map(arr: [any], f: fn) -> [any] {
+    let mut result = []
+    let alen = len(arr)
+    let mut i = 0
+    while i < alen {
+        let sub = f(arr[i])
+        let slen = len(sub)
+        let mut j = 0
+        while j < slen {
+            push(result, sub[j])
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return result
+}
+
+// --- Reducing ----------------------------------------------------------------
+
+/// Reduce an array to a single value using an accumulator.
+/// reduce([1,2,3], 0, fn(acc, x) { return acc + x }) => 6
+fn reduce(arr: [any], init: any, f: fn) -> any {
+    let mut acc = init
+    let alen = len(arr)
+    let mut i = 0
+    while i < alen {
+        acc = f(acc, arr[i])
+        i = i + 1
+    }
+    return acc
+}
+
+/// Alias for reduce.
+fn fold(arr: [any], init: any, f: fn) -> any {
+    return reduce(arr, init, f)
+}
+
+/// Reduce from right to left.
+fn fold_right(arr: [any], init: any, f: fn) -> any {
+    let mut acc = init
+    let mut i = len(arr) - 1
+    while i >= 0 {
+        acc = f(arr[i], acc)
+        i = i - 1
+    }
+    return acc
+}
+
+/// Execute f for each element (side effects only, returns nothing).
+fn for_each(arr: [any], f: fn) -> any {
+    let alen = len(arr)
+    let mut i = 0
+    while i < alen {
+        f(arr[i])
+        i = i + 1
+    }
+    return 0
+}
+
+// --- Searching ---------------------------------------------------------------
+
+/// True if any element satisfies pred.
+fn any(arr: [any], pred: fn) -> bool {
+    let alen = len(arr)
+    let mut i = 0
+    while i < alen {
+        if pred(arr[i]) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+/// True if all elements satisfy pred.
+fn all(arr: [any], pred: fn) -> bool {
+    let alen = len(arr)
+    let mut i = 0
+    while i < alen {
+        if not pred(arr[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+/// Find the first element satisfying pred, or None.
+fn find(arr: [any], pred: fn) -> any {
+    let alen = len(arr)
+    let mut i = 0
+    while i < alen {
+        if pred(arr[i]) {
+            return {"tag": "Some", "value": arr[i]}
+        }
+        i = i + 1
+    }
+    return {"tag": "None"}
+}
+
+/// Find the index of the first element satisfying pred, or -1.
+fn position(arr: [any], pred: fn) -> i64 {
+    let alen = len(arr)
+    let mut i = 0
+    while i < alen {
+        if pred(arr[i]) {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+/// Count the number of elements in the array.
+fn count(arr: [any]) -> i64 {
+    return len(arr)
+}
+
+/// Count elements satisfying pred.
+fn count_if(arr: [any], pred: fn) -> i64 {
+    let mut c = 0
+    let alen = len(arr)
+    let mut i = 0
+    while i < alen {
+        if pred(arr[i]) {
+            c = c + 1
+        }
+        i = i + 1
+    }
+    return c
+}
+
+// --- Slicing -----------------------------------------------------------------
+
+/// Flatten one level of nesting: [[1,2],[3]] => [1,2,3].
+fn flatten(arr: [any]) -> [any] {
+    let mut result = []
+    let alen = len(arr)
+    let mut i = 0
+    while i < alen {
+        let inner = arr[i]
+        if type_of(inner) == "array" {
+            let ilen = len(inner)
+            let mut j = 0
+            while j < ilen {
+                push(result, inner[j])
+                j = j + 1
+            }
+        } else {
+            push(result, inner)
+        }
+        i = i + 1
+    }
+    return result
+}
+
+/// Take the first n elements.
+fn take(arr: [any], n: i64) -> [any] {
+    let mut result = []
+    let limit = n
+    if limit > len(arr) {
+        limit = len(arr)
+    }
+    let mut i = 0
+    while i < limit {
+        push(result, arr[i])
+        i = i + 1
+    }
+    return result
+}
+
+/// Take elements while pred returns true.
+fn take_while(arr: [any], pred: fn) -> [any] {
+    let mut result = []
+    let alen = len(arr)
+    let mut i = 0
+    while i < alen {
+        if not pred(arr[i]) {
+            return result
+        }
+        push(result, arr[i])
+        i = i + 1
+    }
+    return result
+}
+
+/// Skip the first n elements.
+fn skip(arr: [any], n: i64) -> [any] {
+    let mut result = []
+    let alen = len(arr)
+    let mut i = n
+    if i < 0 {
+        i = 0
+    }
+    while i < alen {
+        push(result, arr[i])
+        i = i + 1
+    }
+    return result
+}
+
+/// Skip elements while pred returns true.
+fn skip_while(arr: [any], pred: fn) -> [any] {
+    let mut result = []
+    let alen = len(arr)
+    let mut i = 0
+    let mut skipping = true
+    while i < alen {
+        if skipping and pred(arr[i]) {
+            i = i + 1
+        } else {
+            skipping = false
+            push(result, arr[i])
+            i = i + 1
+        }
+    }
+    return result
+}
+
+/// Concatenate two arrays.
+fn chain(a: [any], b: [any]) -> [any] {
+    let mut result = []
+    let alen = len(a)
+    let blen = len(b)
+    let mut i = 0
+    while i < alen {
+        push(result, a[i])
+        i = i + 1
+    }
+    i = 0
+    while i < blen {
+        push(result, b[i])
+        i = i + 1
+    }
+    return result
+}
+
+// --- Ordering ----------------------------------------------------------------
+
+/// Reverse an array.
+fn rev(arr: [any]) -> [any] {
+    let mut result = []
+    let mut i = len(arr) - 1
+    while i >= 0 {
+        push(result, arr[i])
+        i = i - 1
+    }
+    return result
+}
+
+/// Sort an array in ascending order (insertion sort).
+fn sort(arr: [any]) -> [any] {
+    let alen = len(arr)
+    let mut result = []
+    let mut i = 0
+    while i < alen {
+        push(result, arr[i])
+        i = i + 1
+    }
+    // Insertion sort
+    i = 1
+    while i < alen {
+        let key = result[i]
+        let mut j = i - 1
+        while j >= 0 and result[j] > key {
+            result[j + 1] = result[j]
+            j = j - 1
+        }
+        result[j + 1] = key
+        i = i + 1
+    }
+    return result
+}
+
+/// Sort by a custom comparator. cmp(a, b) should return negative/zero/positive.
+fn sort_by(arr: [any], cmp: fn) -> [any] {
+    let alen = len(arr)
+    let mut result = []
+    let mut i = 0
+    while i < alen {
+        push(result, arr[i])
+        i = i + 1
+    }
+    // Insertion sort with comparator
+    i = 1
+    while i < alen {
+        let key = result[i]
+        let mut j = i - 1
+        while j >= 0 and cmp(result[j], key) > 0 {
+            result[j + 1] = result[j]
+            j = j - 1
+        }
+        result[j + 1] = key
+        i = i + 1
+    }
+    return result
+}
+
+/// Sort by a key function: sort_by_key(users, fn(u) { return u.age }).
+fn sort_by_key(arr: [any], key_fn: fn) -> [any] {
+    return sort_by(arr, fn(a, b) {
+        let ka = key_fn(a)
+        let kb = key_fn(b)
+        if ka < kb { return -1 }
+        if ka > kb { return 1 }
+        return 0
+    })
+}
+
+// --- Deduplication -----------------------------------------------------------
+
+/// Remove consecutive duplicates.
+fn dedup(arr: [any]) -> [any] {
+    let alen = len(arr)
+    if alen == 0 {
+        return []
+    }
+    let mut result = [arr[0]]
+    let mut i = 1
+    while i < alen {
+        if arr[i] != arr[i - 1] {
+            push(result, arr[i])
+        }
+        i = i + 1
+    }
+    return result
+}
+
+/// Remove all duplicates, preserving first occurrence order.
+fn unique(arr: [any]) -> [any] {
+    let mut result = []
+    let mut seen = {}
+    let alen = len(arr)
+    let mut i = 0
+    while i < alen {
+        let key = to_string(arr[i])
+        if not map_has(seen, key) {
+            push(result, arr[i])
+            map_set(seen, key, true)
+        }
+        i = i + 1
+    }
+    return result
+}
+
+// --- Aggregation -------------------------------------------------------------
+
+/// Sum all elements (assumes numeric).
+fn sum(arr: [any]) -> f64 {
+    let mut total = 0.0
+    let alen = len(arr)
+    let mut i = 0
+    while i < alen {
+        total = total + to_f64(arr[i])
+        i = i + 1
+    }
+    return total
+}
+
+/// Product of all elements.
+fn product(arr: [any]) -> f64 {
+    if len(arr) == 0 {
+        return 1.0
+    }
+    let mut result = 1.0
+    let alen = len(arr)
+    let mut i = 0
+    while i < alen {
+        result = result * to_f64(arr[i])
+        i = i + 1
+    }
+    return result
+}
+
+/// Minimum element in the array.
+fn min(arr: [any]) -> any {
+    let alen = len(arr)
+    if alen == 0 {
+        throw "min: empty array"
+    }
+    let mut best = arr[0]
+    let mut i = 1
+    while i < alen {
+        if arr[i] < best {
+            best = arr[i]
+        }
+        i = i + 1
+    }
+    return best
+}
+
+/// Maximum element in the array.
+fn max(arr: [any]) -> any {
+    let alen = len(arr)
+    if alen == 0 {
+        throw "max: empty array"
+    }
+    let mut best = arr[0]
+    let mut i = 1
+    while i < alen {
+        if arr[i] > best {
+            best = arr[i]
+        }
+        i = i + 1
+    }
+    return best
+}
+
+/// Minimum element by a key function.
+fn min_by_key(arr: [any], key_fn: fn) -> any {
+    let alen = len(arr)
+    if alen == 0 {
+        throw "min_by_key: empty array"
+    }
+    let mut best = arr[0]
+    let mut best_key = key_fn(arr[0])
+    let mut i = 1
+    while i < alen {
+        let k = key_fn(arr[i])
+        if k < best_key {
+            best = arr[i]
+            best_key = k
+        }
+        i = i + 1
+    }
+    return best
+}
+
+/// Maximum element by a key function.
+fn max_by_key(arr: [any], key_fn: fn) -> any {
+    let alen = len(arr)
+    if alen == 0 {
+        throw "max_by_key: empty array"
+    }
+    let mut best = arr[0]
+    let mut best_key = key_fn(arr[0])
+    let mut i = 1
+    while i < alen {
+        let k = key_fn(arr[i])
+        if k > best_key {
+            best = arr[i]
+            best_key = k
+        }
+        i = i + 1
+    }
+    return best
+}
+
+// --- Grouping ----------------------------------------------------------------
+
+/// Group elements by a key function. Returns a map of key => [elements].
+fn group_by(arr: [any], key_fn: fn) -> any {
+    let mut groups = {}
+    let alen = len(arr)
+    let mut i = 0
+    while i < alen {
+        let key = to_string(key_fn(arr[i]))
+        if not map_has(groups, key) {
+            map_set(groups, key, [])
+        }
+        let group = map_get(groups, key)
+        push(group, arr[i])
+        i = i + 1
+    }
+    return groups
+}
+
+/// Partition into two arrays: [matches, non_matches].
+fn partition(arr: [any], pred: fn) -> [any] {
+    let mut yes = []
+    let mut no = []
+    let alen = len(arr)
+    let mut i = 0
+    while i < alen {
+        if pred(arr[i]) {
+            push(yes, arr[i])
+        } else {
+            push(no, arr[i])
+        }
+        i = i + 1
+    }
+    return [yes, no]
+}
+
+/// Split an array into chunks of size n.
+fn chunks(arr: [any], n: i64) -> [any] {
+    if n <= 0 {
+        throw "chunks: size must be positive"
+    }
+    let mut result = []
+    let alen = len(arr)
+    let mut i = 0
+    while i < alen {
+        let mut chunk = []
+        let mut j = 0
+        while j < n and i + j < alen {
+            push(chunk, arr[i + j])
+            j = j + 1
+        }
+        push(result, chunk)
+        i = i + n
+    }
+    return result
+}
+
+/// Sliding windows of size n.
+fn windows(arr: [any], n: i64) -> [any] {
+    if n <= 0 {
+        throw "windows: size must be positive"
+    }
+    let mut result = []
+    let alen = len(arr)
+    let mut i = 0
+    while i + n <= alen {
+        let mut window = []
+        let mut j = 0
+        while j < n {
+            push(window, arr[i + j])
+            j = j + 1
+        }
+        push(result, window)
+        i = i + 1
+    }
+    return result
+}
+
+/// Create a running accumulation (scan / prefix sums).
+fn scan(arr: [any], init: any, f: fn) -> [any] {
+    let mut result = [init]
+    let mut acc = init
+    let alen = len(arr)
+    let mut i = 0
+    while i < alen {
+        acc = f(acc, arr[i])
+        push(result, acc)
+        i = i + 1
+    }
+    return result
+}

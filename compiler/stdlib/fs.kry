@@ -1,0 +1,337 @@
+// ============================================================
+// std.fs -- Filesystem operations
+//
+// Wraps the kryos-stdlib-native FFI layer and builds higher-
+// level helpers (copy, rename, walk_dir, etc.) on top of the
+// raw io/fs primitives.
+// ============================================================
+
+// --- Native FFI declarations ------------------------------------------------
+
+extern {
+    fn kryos_path_exists(path_ptr: ptr, path_len: i64) -> i32
+    fn kryos_dir_create(path_ptr: ptr, path_len: i64) -> i32
+    fn kryos_file_remove(path_ptr: ptr, path_len: i64) -> i32
+    fn kryos_file_open(path_ptr: ptr, path_len: i64, mode: i32) -> i64
+    fn kryos_file_read(fd: i64, buf: ptr, buf_len: i64) -> i64
+    fn kryos_file_write(fd: i64, data: ptr, data_len: i64) -> i64
+    fn kryos_file_close(fd: i64) -> i32
+}
+
+// --- Path existence and type ------------------------------------------------
+
+// Check if a path exists (file or directory).
+@capabilities(io)
+fn exists(path: str) -> bool {
+    let result = kryos_path_exists(str_to_ptr(path), len(path))
+    return result == 1
+}
+
+// Check if the path is a regular file.
+// Uses open-for-read as a heuristic: if we can open it, it is a file.
+@capabilities(io)
+fn is_file(path: str) -> bool {
+    if not exists(path) {
+        return false
+    }
+    let fd = kryos_file_open(str_to_ptr(path), len(path), 0)
+    if fd < 0 {
+        return false
+    }
+    kryos_file_close(fd)
+    return true
+}
+
+// Check if the path is a directory.
+// If the path exists but cannot be opened as a file, it is a directory.
+@capabilities(io)
+fn is_dir(path: str) -> bool {
+    if not exists(path) {
+        return false
+    }
+    // Attempt to read it as a file -- directories will fail
+    let fd = kryos_file_open(str_to_ptr(path), len(path), 0)
+    if fd >= 0 {
+        kryos_file_close(fd)
+        return false
+    }
+    return true
+}
+
+// --- Directory operations ---------------------------------------------------
+
+// Create a single directory.  Throws if the parent does not exist.
+@capabilities(io)
+fn create_dir(path: str) -> bool {
+    let result = kryos_dir_create(str_to_ptr(path), len(path))
+    if result < 0 {
+        throw "fs error: could not create directory: " + path
+    }
+    return true
+}
+
+// Create a directory and all parent directories.
+@capabilities(io)
+fn create_dir_all(path: str) -> bool {
+    let result = kryos_dir_create(str_to_ptr(path), len(path))
+    if result < 0 {
+        throw "fs error: could not create directory tree: " + path
+    }
+    return true
+}
+
+// Remove an empty directory.
+// Note: delegates to kryos_file_remove; the native layer calls remove_file.
+// For a directory-specific remove, this may need future native support.
+@capabilities(io)
+fn remove_dir(path: str) -> bool {
+    let result = kryos_file_remove(str_to_ptr(path), len(path))
+    if result < 0 {
+        throw "fs error: could not remove directory: " + path
+    }
+    return true
+}
+
+// --- File operations --------------------------------------------------------
+
+// Remove a file at the given path.
+@capabilities(io)
+fn remove_file(path: str) -> bool {
+    let result = kryos_file_remove(str_to_ptr(path), len(path))
+    if result < 0 {
+        throw "fs error: could not remove file: " + path
+    }
+    return true
+}
+
+// Read the entire contents of a file as a string.
+@capabilities(io)
+fn read_file(path: str) -> str {
+    let fd = kryos_file_open(str_to_ptr(path), len(path), 0)
+    if fd < 0 {
+        throw "fs error: could not open file for reading: " + path
+    }
+    let mut result = ""
+    let chunk_size = 8192
+    let buf = alloc(chunk_size)
+    let mut done = false
+    while not done {
+        let n = kryos_file_read(fd, buf, chunk_size)
+        if n < 0 {
+            kryos_file_close(fd)
+            throw "fs error: read failed on: " + path
+        }
+        if n == 0 {
+            done = true
+        } else {
+            result = result + buf_to_str(buf, n)
+        }
+    }
+    kryos_file_close(fd)
+    return result
+}
+
+// Write a string to a file (creates or truncates).
+@capabilities(io)
+fn write_file(path: str, data: str) -> i64 {
+    let fd = kryos_file_open(str_to_ptr(path), len(path), 1)
+    if fd < 0 {
+        throw "fs error: could not open file for writing: " + path
+    }
+    let data_ptr = str_to_ptr(data)
+    let data_len = len(data)
+    let mut offset = 0
+    while offset < data_len {
+        let remaining = substr(data, offset, data_len)
+        let written = kryos_file_write(fd, str_to_ptr(remaining), len(remaining))
+        if written < 0 {
+            kryos_file_close(fd)
+            throw "fs error: write failed on: " + path
+        }
+        offset = offset + written
+    }
+    kryos_file_close(fd)
+    return data_len
+}
+
+// Append a string to a file (creates if it does not exist).
+@capabilities(io)
+fn append_file(path: str, data: str) -> i64 {
+    let fd = kryos_file_open(str_to_ptr(path), len(path), 2)
+    if fd < 0 {
+        throw "fs error: could not open file for appending: " + path
+    }
+    let data_ptr = str_to_ptr(data)
+    let data_len = len(data)
+    let mut offset = 0
+    while offset < data_len {
+        let remaining = substr(data, offset, data_len)
+        let written = kryos_file_write(fd, str_to_ptr(remaining), len(remaining))
+        if written < 0 {
+            kryos_file_close(fd)
+            throw "fs error: append failed on: " + path
+        }
+        offset = offset + written
+    }
+    kryos_file_close(fd)
+    return data_len
+}
+
+// Copy a file from src to dst.  Reads src entirely and writes to dst.
+@capabilities(io)
+fn copy(src: str, dst: str) -> i64 {
+    let contents = read_file(src)
+    return write_file(dst, contents)
+}
+
+// Rename (move) a file from old_path to new_path.
+// Implemented as copy + remove since the native layer lacks a rename syscall.
+@capabilities(io)
+fn rename(old_path: str, new_path: str) -> bool {
+    copy(old_path, new_path)
+    remove_file(old_path)
+    return true
+}
+
+// Return the size of a file in bytes.
+@capabilities(io)
+fn file_size(path: str) -> i64 {
+    let contents = read_file(path)
+    return len(contents)
+}
+
+// --- Directory listing (via convention file) ---------------------------------
+// NOTE: Full directory listing requires native support (readdir).
+// Until then, these are provided as safe stubs that throw clear errors,
+// and `list_dir` / `walk_dir` are scaffolded for future native binding.
+
+struct DirEntry {
+    name: str,
+    path: str,
+    is_file: bool,
+    is_dir: bool
+}
+
+// List the contents of a directory.
+// Requires future native support: kryos_dir_list.
+@capabilities(io)
+fn list_dir(path: str) -> [DirEntry] {
+    if not exists(path) {
+        throw "fs error: directory does not exist: " + path
+    }
+    // TODO: bind to native kryos_dir_list when available
+    throw "fs error: list_dir requires native kryos_dir_list (not yet bound)"
+}
+
+// Walk a directory tree recursively, returning all entries.
+// Requires list_dir to be functional.
+@capabilities(io)
+fn walk_dir(path: str) -> [DirEntry] {
+    if not exists(path) {
+        throw "fs error: directory does not exist: " + path
+    }
+    // TODO: implement recursive walk once list_dir is available
+    throw "fs error: walk_dir requires native kryos_dir_list (not yet bound)"
+}
+
+// --- Path utilities ---------------------------------------------------------
+
+// Join two path segments with the platform separator.
+fn path_join(base: str, child: str) -> str {
+    let base_len = len(base)
+    if base_len == 0 {
+        return child
+    }
+    let last_char = base[base_len - 1]
+    if last_char == "/" or last_char == "\\" {
+        return base + child
+    }
+    return base + "/" + child
+}
+
+// Extract the file name from a path (everything after the last separator).
+fn path_basename(path: str) -> str {
+    let path_len = len(path)
+    let mut i = path_len - 1
+    while i >= 0 {
+        if path[i] == "/" or path[i] == "\\" {
+            return substr(path, i + 1, path_len)
+        }
+        i = i - 1
+    }
+    return path
+}
+
+// Extract the directory part of a path (everything before the last separator).
+fn path_dirname(path: str) -> str {
+    let path_len = len(path)
+    let mut i = path_len - 1
+    while i >= 0 {
+        if path[i] == "/" or path[i] == "\\" {
+            return substr(path, 0, i)
+        }
+        i = i - 1
+    }
+    return "."
+}
+
+// Extract the file extension (including the dot), or "" if none.
+fn path_extension(path: str) -> str {
+    let name = path_basename(path)
+    let name_len = len(name)
+    let mut i = name_len - 1
+    while i > 0 {
+        if name[i] == "." {
+            return substr(name, i, name_len)
+        }
+        i = i - 1
+    }
+    return ""
+}
+
+// Strip the file extension from a path.
+fn path_stem(path: str) -> str {
+    let ext = path_extension(path)
+    if len(ext) == 0 {
+        return path
+    }
+    let path_len = len(path)
+    let ext_len = len(ext)
+    return substr(path, 0, path_len - ext_len)
+}
+
+// Check if a path is absolute.
+fn is_absolute(path: str) -> bool {
+    if len(path) == 0 {
+        return false
+    }
+    // Unix absolute paths start with /
+    if path[0] == "/" {
+        return true
+    }
+    // Windows absolute paths: C:\ or C:/
+    if len(path) >= 3 {
+        let second = path[1]
+        let third = path[2]
+        if second == ":" and (third == "/" or third == "\\") {
+            return true
+        }
+    }
+    return false
+}
+
+// Normalize path separators to forward slashes.
+fn normalize_path(path: str) -> str {
+    let path_len = len(path)
+    let mut result = ""
+    let mut i = 0
+    while i < path_len {
+        if path[i] == "\\" {
+            result = result + "/"
+        } else {
+            result = result + path[i]
+        }
+        i = i + 1
+    }
+    return result
+}

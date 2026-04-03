@@ -1,0 +1,246 @@
+// ============================================================
+// std.option -- Optional values
+//
+// The Option type represents a value that may or may not exist.
+// Use it instead of null/nil to make absence explicit and safe.
+//
+// Usage:
+//   let x = std.option.some(42)
+//   let y = std.option.none()
+//   if std.option.is_some(x) { ... }
+// ============================================================
+
+// --- Type definition ---------------------------------------------------------
+
+enum Option {
+    Some(any),
+    None
+}
+
+// --- Constructors ------------------------------------------------------------
+
+/// Wrap a value in Some.
+fn some(val: any) -> Option {
+    return Option.Some(val)
+}
+
+/// Create a None value.
+fn none() -> Option {
+    return Option.None
+}
+
+// --- Querying ----------------------------------------------------------------
+
+/// True if the option contains a value.
+fn is_some(opt: Option) -> bool {
+    return match opt {
+        Option.Some(_) => true,
+        Option.None => false,
+    }
+}
+
+/// True if the option is empty.
+fn is_none(opt: Option) -> bool {
+    return match opt {
+        Option.Some(_) => false,
+        Option.None => true,
+    }
+}
+
+// --- Extracting --------------------------------------------------------------
+
+/// Extract the contained value. Throws if None.
+fn unwrap(opt: Option) -> any {
+    return match opt {
+        Option.Some(v) => v,
+        Option.None => throw "unwrap called on None",
+    }
+}
+
+/// Extract the contained value, or return the default.
+fn unwrap_or(opt: Option, default: any) -> any {
+    return match opt {
+        Option.Some(v) => v,
+        Option.None => default,
+    }
+}
+
+/// Extract the value, or compute a default with a function.
+fn unwrap_or_else(opt: Option, f: fn) -> any {
+    return match opt {
+        Option.Some(v) => v,
+        Option.None => f(),
+    }
+}
+
+// --- Transforming ------------------------------------------------------------
+
+/// Apply a function to the contained value, if present.
+/// Returns Some(f(val)) or None.
+fn map(opt: Option, f: fn) -> Option {
+    return match opt {
+        Option.Some(v) => Option.Some(f(v)),
+        Option.None => Option.None,
+    }
+}
+
+/// Apply a function that returns an Option to the contained value.
+/// Flattens the result (avoids Option(Option(...))).
+fn and_then(opt: Option, f: fn) -> Option {
+    return match opt {
+        Option.Some(v) => f(v),
+        Option.None => Option.None,
+    }
+}
+
+/// If the option is None, call f to produce a fallback Option.
+fn or_else(opt: Option, f: fn) -> Option {
+    return match opt {
+        Option.Some(v) => Option.Some(v),
+        Option.None => f(),
+    }
+}
+
+/// Keep the value only if the predicate returns true.
+fn filter(opt: Option, pred: fn) -> Option {
+    return match opt {
+        Option.Some(v) => {
+            if pred(v) {
+                return Option.Some(v)
+            }
+            return Option.None
+        },
+        Option.None => Option.None,
+    }
+}
+
+// --- Combining ---------------------------------------------------------------
+
+/// Return the inner option if self is Some, otherwise None.
+/// Flattens Option(Option(T)) to Option(T).
+fn flatten(opt: Option) -> Option {
+    return match opt {
+        Option.Some(inner) => {
+            if is_some(inner) {
+                return inner
+            }
+            if is_none(inner) {
+                return inner
+            }
+            // Not a nested Option -- wrap it back
+            return Option.Some(inner)
+        },
+        Option.None => Option.None,
+    }
+}
+
+/// Zip two Options together. Returns Some((a, b)) if both are Some.
+fn zip(a: Option, b: Option) -> Option {
+    if is_some(a) and is_some(b) {
+        return Option.Some([unwrap(a), unwrap(b)])
+    }
+    return Option.None
+}
+
+/// Replace the value inside Some, preserving Some/None status.
+fn replace(opt: Option, val: any) -> Option {
+    return match opt {
+        Option.Some(_) => Option.Some(val),
+        Option.None => Option.None,
+    }
+}
+
+// --- Conversion --------------------------------------------------------------
+
+/// Convert an Option to a single-element or empty array.
+fn to_array(opt: Option) -> [any] {
+    return match opt {
+        Option.Some(v) => [v],
+        Option.None => [],
+    }
+}
+
+/// Convert an Option to a Result. None becomes Err(err_msg).
+fn ok_or(opt: Option, err_msg: str) -> any {
+    return match opt {
+        Option.Some(v) => {
+            // Returns a value that can be used as Ok
+            return {"ok": true, "value": v}
+        },
+        Option.None => {
+            return {"ok": false, "error": err_msg}
+        },
+    }
+}
+
+// --- Inspection --------------------------------------------------------------
+
+/// Apply a function to the value for side effects, then return the option unchanged.
+fn inspect(opt: Option, f: fn) -> Option {
+    match opt {
+        Option.Some(v) => f(v),
+        Option.None => {},
+    }
+    return opt
+}
+
+/// Convert to a human-readable string.
+fn display(opt: Option) -> str {
+    return match opt {
+        Option.Some(v) => "Some(" + to_string(v) + ")",
+        Option.None => "None",
+    }
+}
+
+/// True if the option contains the given value.
+fn contains(opt: Option, val: any) -> bool {
+    return match opt {
+        Option.Some(v) => v == val,
+        Option.None => false,
+    }
+}
+
+/// Apply f to the value if Some, otherwise return the provided default.
+fn map_or(opt: Option, default: any, f: fn) -> any {
+    return match opt {
+        Option.Some(v) => f(v),
+        Option.None => default,
+    }
+}
+
+/// Apply f to the value if Some, otherwise call default_fn.
+fn map_or_else(opt: Option, default_fn: fn, f: fn) -> any {
+    return match opt {
+        Option.Some(v) => f(v),
+        Option.None => default_fn(),
+    }
+}
+
+/// Logical AND: return other if self is Some, else None.
+fn and_opt(a: Option, b: Option) -> Option {
+    return match a {
+        Option.Some(_) => b,
+        Option.None => Option.None,
+    }
+}
+
+/// Logical OR: return self if Some, else other.
+fn or_opt(a: Option, b: Option) -> Option {
+    return match a {
+        Option.Some(v) => Option.Some(v),
+        Option.None => b,
+    }
+}
+
+/// Exclusive OR: return Some if exactly one is Some.
+fn xor(a: Option, b: Option) -> Option {
+    let a_some = is_some(a)
+    let b_some = is_some(b)
+    if a_some and not b_some {
+        return a
+    }
+    if not a_some and b_some {
+        return b
+    }
+    return Option.None
+}

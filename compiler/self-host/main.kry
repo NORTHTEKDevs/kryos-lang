@@ -1,0 +1,371 @@
+// ============================================================
+// main.kry -- Entry point for the Kryos self-hosted compiler.
+//
+// Usage:  kryos self-host/main.kry <input.kry>
+//
+// Reads a .kry source file, tokenizes it, parses it into an AST,
+// and prints a summary of the result.  This is the first step
+// toward full self-hosting: once the compiler can parse itself,
+// we add type-checking and codegen phases to complete the loop.
+//
+// Dependencies (loaded via the Kryos module system):
+//   token.kry  -- Token struct, kind constants, keyword_lookup
+//   lexer.kry  -- tokenize(src) -> [Token]
+//   ast.kry    -- AST node structs and constructors
+//   parser.kry -- parse_module(parser) -> Module
+// ============================================================
+
+// -------------------------------------------------------------------
+// AST printing helpers
+// -------------------------------------------------------------------
+
+fn indent(depth: i32) -> str {
+    let mut s = ""
+    for i in range(0, depth) {
+        s = s + "  "
+    }
+    return s
+}
+
+fn print_type_expr(ty: TypeExpr, depth: i32) -> str {
+    if ty.kind == TYPE_SIMPLE {
+        return ty.name
+    }
+    if ty.kind == TYPE_GENERIC {
+        let mut s = ty.name + "<"
+        for i in range(0, len(ty.type_args)) {
+            if i > 0 {
+                s = s + ", "
+            }
+            s = s + print_type_expr(ty.type_args[i], depth)
+        }
+        return s + ">"
+    }
+    if ty.kind == TYPE_ARRAY {
+        if len(ty.element_type) > 0 {
+            let inner = print_type_expr(ty.element_type[0], depth)
+            if ty.array_size >= 0 {
+                return "[" + inner + "; " + to_string(ty.array_size) + "]"
+            }
+            return "[" + inner + "]"
+        }
+        return "[]"
+    }
+    if ty.kind == TYPE_FUNCTION {
+        let mut s = "fn("
+        for i in range(0, len(ty.param_types)) {
+            if i > 0 {
+                s = s + ", "
+            }
+            s = s + print_type_expr(ty.param_types[i], depth)
+        }
+        s = s + ")"
+        if len(ty.ret_type) > 0 {
+            s = s + " -> " + print_type_expr(ty.ret_type[0], depth)
+        }
+        return s
+    }
+    if ty.kind == TYPE_OPTIONAL {
+        if len(ty.inner_type) > 0 {
+            return "?" + print_type_expr(ty.inner_type[0], depth)
+        }
+        return "?"
+    }
+    if ty.kind == TYPE_REFERENCE {
+        let mut prefix = "&"
+        if ty.mutable {
+            prefix = "&mut "
+        }
+        if len(ty.inner_type) > 0 {
+            return prefix + print_type_expr(ty.inner_type[0], depth)
+        }
+        return prefix
+    }
+    if ty.kind == TYPE_SHARED {
+        if len(ty.inner_type) > 0 {
+            return "shared " + print_type_expr(ty.inner_type[0], depth)
+        }
+        return "shared"
+    }
+    return "<type>"
+}
+
+fn print_expr(e: Expr, depth: i32) {
+    let pad = indent(depth)
+    if e.kind == EXPR_INT_LIT {
+        println(pad + "IntLit(" + to_string(e.int_val) + ")")
+        return
+    }
+    if e.kind == EXPR_FLOAT_LIT {
+        println(pad + "FloatLit(" + to_string(e.float_val) + ")")
+        return
+    }
+    if e.kind == EXPR_STRING_LIT {
+        println(pad + "StringLit(\"" + e.str_val + "\")")
+        return
+    }
+    if e.kind == EXPR_BOOL_LIT {
+        println(pad + "BoolLit(" + to_string(e.bool_val) + ")")
+        return
+    }
+    if e.kind == EXPR_NONE_LIT {
+        println(pad + "NoneLit")
+        return
+    }
+    if e.kind == EXPR_IDENT {
+        println(pad + "Ident(" + e.name + ")")
+        return
+    }
+    if e.kind == EXPR_BINARY_OP {
+        println(pad + "BinaryOp(" + binop_name(e.op) + ")")
+        if len(e.left) > 0 {
+            print_expr(e.left[0], depth + 1)
+        }
+        if len(e.right) > 0 {
+            print_expr(e.right[0], depth + 1)
+        }
+        return
+    }
+    if e.kind == EXPR_UNARY_OP {
+        let mut op_name = "-"
+        if e.op == UNOP_NOT { op_name = "not" }
+        if e.op == UNOP_BIT_NOT { op_name = "~" }
+        println(pad + "UnaryOp(" + op_name + ")")
+        if len(e.left) > 0 {
+            print_expr(e.left[0], depth + 1)
+        }
+        return
+    }
+    if e.kind == EXPR_FN_CALL {
+        println(pad + "FnCall")
+        if len(e.left) > 0 {
+            print_expr(e.left[0], depth + 1)
+        }
+        for i in range(0, len(e.args)) {
+            print_expr(e.args[i], depth + 1)
+        }
+        return
+    }
+    if e.kind == EXPR_METHOD_CALL {
+        println(pad + "MethodCall(." + e.name + ")")
+        if len(e.left) > 0 {
+            print_expr(e.left[0], depth + 1)
+        }
+        for i in range(0, len(e.args)) {
+            print_expr(e.args[i], depth + 1)
+        }
+        return
+    }
+    if e.kind == EXPR_FIELD_ACCESS {
+        println(pad + "FieldAccess(." + e.name + ")")
+        if len(e.left) > 0 {
+            print_expr(e.left[0], depth + 1)
+        }
+        return
+    }
+    if e.kind == EXPR_INDEX_ACCESS {
+        println(pad + "IndexAccess")
+        if len(e.left) > 0 {
+            print_expr(e.left[0], depth + 1)
+        }
+        if len(e.right) > 0 {
+            print_expr(e.right[0], depth + 1)
+        }
+        return
+    }
+    if e.kind == EXPR_ARRAY_LIT {
+        println(pad + "ArrayLit(" + to_string(len(e.elements)) + " elements)")
+        return
+    }
+    if e.kind == EXPR_STRUCT_LIT {
+        println(pad + "StructLit(" + e.name + ")")
+        return
+    }
+    if e.kind == EXPR_MAP_LIT {
+        println(pad + "MapLit(" + to_string(len(e.left)) + " entries)")
+        return
+    }
+    if e.kind == EXPR_LAMBDA {
+        println(pad + "Lambda(" + to_string(len(e.params)) + " params)")
+        return
+    }
+    if e.kind == EXPR_IF {
+        println(pad + "IfExpr")
+        return
+    }
+    if e.kind == EXPR_MATCH {
+        println(pad + "MatchExpr(" + to_string(len(e.match_arms)) + " arms)")
+        return
+    }
+    if e.kind == EXPR_BLOCK {
+        println(pad + "BlockExpr(" + to_string(len(e.block_stmts)) + " stmts)")
+        return
+    }
+    println(pad + "Expr(kind=" + to_string(e.kind) + ")")
+}
+
+fn print_decl(d: Decl, depth: i32) {
+    let pad = indent(depth)
+    if d.kind == DECL_FUNCTION {
+        let mut sig = "fn " + d.name + "("
+        for i in range(0, len(d.params)) {
+            if i > 0 {
+                sig = sig + ", "
+            }
+            sig = sig + d.params[i].name
+            if len(d.params[i].ty) > 0 {
+                sig = sig + ": " + print_type_expr(d.params[i].ty[0], 0)
+            }
+        }
+        sig = sig + ")"
+        if len(d.ret_type) > 0 {
+            sig = sig + " -> " + print_type_expr(d.ret_type[0], 0)
+        }
+        if d.public {
+            sig = "pub " + sig
+        }
+        println(pad + sig + " {" + to_string(len(d.fn_body)) + " stmts}")
+        return
+    }
+    if d.kind == DECL_STRUCT {
+        let mut s = "struct " + d.name + " {"
+        for i in range(0, len(d.fields)) {
+            if i > 0 {
+                s = s + ", "
+            }
+            s = s + d.fields[i].name
+        }
+        s = s + "}"
+        println(pad + s)
+        return
+    }
+    if d.kind == DECL_ENUM {
+        let mut s = "enum " + d.name + " {"
+        for i in range(0, len(d.variants)) {
+            if i > 0 {
+                s = s + ", "
+            }
+            s = s + d.variants[i].name
+        }
+        s = s + "}"
+        println(pad + s)
+        return
+    }
+    if d.kind == DECL_IMPL {
+        let mut s = "impl " + d.target
+        if len(d.trait_name) > 0 {
+            s = "impl " + d.trait_name + " for " + d.target
+        }
+        s = s + " {" + to_string(len(d.methods)) + " methods}"
+        println(pad + s)
+        return
+    }
+    if d.kind == DECL_TRAIT {
+        println(pad + "trait " + d.name + " {" + to_string(len(d.methods)) + " methods}")
+        return
+    }
+    if d.kind == DECL_ACTOR {
+        println(pad + "actor " + d.name + " {" + to_string(len(d.handlers)) + " handlers}")
+        return
+    }
+    if d.kind == DECL_TYPE_ALIAS {
+        let mut s = "type " + d.name + " = "
+        if len(d.alias_type) > 0 {
+            s = s + print_type_expr(d.alias_type[0], 0)
+        }
+        println(pad + s)
+        return
+    }
+    if d.kind == DECL_IMPORT {
+        if len(d.import_path) > 0 {
+            let ip = d.import_path[0]
+            let mut s = "use "
+            for i in range(0, len(ip.segments)) {
+                if i > 0 {
+                    s = s + "::"
+                }
+                s = s + ip.segments[i]
+            }
+            println(pad + s)
+        }
+        return
+    }
+    if d.kind == DECL_EXTERN {
+        println(pad + "extern \"" + d.abi + "\" {" + to_string(len(d.extern_items)) + " items}")
+        return
+    }
+    // Top-level statement wrapper
+    println(pad + "<top-level statement>")
+}
+
+// -------------------------------------------------------------------
+// Main
+// -------------------------------------------------------------------
+
+fn main() {
+    let args = std.process.args()
+
+    if len(args) < 2 {
+        println("Usage: kryos self-host/main.kry <input.kry>")
+        println("")
+        println("  Reads a .kry file, lexes and parses it, then prints the AST.")
+        println("  This is the self-hosted Kryos compiler frontend.")
+        return
+    }
+
+    let filename = args[1]
+
+    // Read source file
+    let source = std.io.read_file(filename)
+    if len(source) == 0 {
+        println("Error: could not read file: " + filename)
+        return
+    }
+
+    println("=== Kryos Self-Hosted Compiler ===")
+    println("File: " + filename)
+    println("Size: " + to_string(len(source)) + " bytes")
+    println("")
+
+    // Phase 1: Lexing
+    println("--- Lexing ---")
+    let tokens = tokenize(source)
+    let mut real_count = 0
+    for i in range(0, len(tokens)) {
+        if tokens[i].kind != TK_EOF {
+            real_count = real_count + 1
+        }
+    }
+    println("Tokens: " + to_string(real_count))
+    println("")
+
+    // Phase 2: Parsing
+    println("--- Parsing ---")
+    let p = parser_new(tokens)
+    let module = parse_module(p)
+    println("Declarations: " + to_string(len(module.declarations)))
+    println("")
+
+    // Print AST summary
+    println("--- AST ---")
+    for i in range(0, len(module.declarations)) {
+        print_decl(module.declarations[i], 0)
+    }
+    println("")
+
+    // Report errors
+    if len(p.errors) > 0 {
+        println("--- Errors (" + to_string(len(p.errors)) + ") ---")
+        for i in range(0, len(p.errors)) {
+            println("  " + p.errors[i])
+        }
+    } else {
+        println("--- No errors ---")
+    }
+
+    println("")
+    println("=== Done ===")
+}
+
+// Run
+main()

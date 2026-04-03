@@ -1,0 +1,274 @@
+// ============================================================
+// std.crypto -- Cryptographic hashing, random generation, UUIDs
+//
+// Wraps the kryos-stdlib-native crypto FFI (ring-backed) and
+// provides safe Kryos wrappers for SHA-256, SHA-512, secure
+// random bytes, random integers, and UUID v4 generation.
+// ============================================================
+
+// --- Native FFI declarations ------------------------------------------------
+
+extern {
+    fn kryos_sha256(data: ptr, len: i64, out: ptr) -> i32
+    fn kryos_sha512(data: ptr, len: i64, out: ptr) -> i32
+    fn kryos_random_bytes(buf: ptr, len: i64) -> i32
+}
+
+// --- Internal hex encoding --------------------------------------------------
+
+fn _byte_to_hex(byte: i32) -> str {
+    let hex_chars = "0123456789abcdef"
+    let high = byte / 16
+    let low = byte % 16
+    return hex_chars[high] + hex_chars[low]
+}
+
+fn _bytes_to_hex(data: ptr, length: i64) -> str {
+    let mut result = ""
+    let mut i = 0
+    while i < length {
+        let byte = ptr_byte_at(data, i)
+        result = result + _byte_to_hex(byte)
+        i = i + 1
+    }
+    return result
+}
+
+// --- SHA-256 ----------------------------------------------------------------
+
+// Compute the SHA-256 hash of a string, returning 32 raw bytes.
+@capabilities(crypto)
+fn sha256_raw(data: str) -> ptr {
+    let out = alloc(32)
+    let result = kryos_sha256(str_to_ptr(data), len(data), out)
+    if result < 0 {
+        throw "crypto error: sha256 computation failed"
+    }
+    return out
+}
+
+// Compute the SHA-256 hash of a string, returning a 64-character hex string.
+@capabilities(crypto)
+fn sha256(data: str) -> str {
+    let out = alloc(32)
+    let result = kryos_sha256(str_to_ptr(data), len(data), out)
+    if result < 0 {
+        throw "crypto error: sha256 computation failed"
+    }
+    return _bytes_to_hex(out, 32)
+}
+
+// --- SHA-512 ----------------------------------------------------------------
+
+// Compute the SHA-512 hash of a string, returning 64 raw bytes.
+@capabilities(crypto)
+fn sha512_raw(data: str) -> ptr {
+    let out = alloc(64)
+    let result = kryos_sha512(str_to_ptr(data), len(data), out)
+    if result < 0 {
+        throw "crypto error: sha512 computation failed"
+    }
+    return out
+}
+
+// Compute the SHA-512 hash of a string, returning a 128-character hex string.
+@capabilities(crypto)
+fn sha512(data: str) -> str {
+    let out = alloc(64)
+    let result = kryos_sha512(str_to_ptr(data), len(data), out)
+    if result < 0 {
+        throw "crypto error: sha512 computation failed"
+    }
+    return _bytes_to_hex(out, 64)
+}
+
+// --- Random bytes -----------------------------------------------------------
+
+// Generate `n` bytes of cryptographically secure random data.
+@capabilities(crypto)
+fn random_bytes(n: i64) -> ptr {
+    if n <= 0 {
+        throw "crypto error: random_bytes requires n > 0"
+    }
+    let buf = alloc(n)
+    let result = kryos_random_bytes(buf, n)
+    if result < 0 {
+        throw "crypto error: random_bytes generation failed"
+    }
+    return buf
+}
+
+// Generate `n` random bytes and return as a hex string.
+@capabilities(crypto)
+fn random_hex(n: i64) -> str {
+    let buf = random_bytes(n)
+    return _bytes_to_hex(buf, n)
+}
+
+// --- Random integers --------------------------------------------------------
+
+// Generate a random integer in the range [min, max] (inclusive).
+// Uses rejection sampling on random bytes for uniform distribution.
+@capabilities(crypto)
+fn random_int(min: i64, max: i64) -> i64 {
+    if min > max {
+        throw "crypto error: random_int min > max"
+    }
+    if min == max {
+        return min
+    }
+
+    let range = max - min + 1
+
+    // Generate 8 random bytes to form a 64-bit unsigned integer
+    let buf = alloc(8)
+    let result = kryos_random_bytes(buf, 8)
+    if result < 0 {
+        throw "crypto error: random_int byte generation failed"
+    }
+
+    // Combine the 8 bytes into a positive integer
+    let mut value = 0
+    let mut i = 0
+    while i < 8 {
+        let byte = ptr_byte_at(buf, i)
+        value = value * 256 + byte
+        i = i + 1
+    }
+
+    // Make it positive
+    if value < 0 {
+        value = value * -1
+    }
+
+    return min + (value % range)
+}
+
+// Generate a random boolean.
+@capabilities(crypto)
+fn random_bool() -> bool {
+    let buf = alloc(1)
+    let result = kryos_random_bytes(buf, 1)
+    if result < 0 {
+        throw "crypto error: random_bool generation failed"
+    }
+    return ptr_byte_at(buf, 0) % 2 == 0
+}
+
+// Choose a random element from an array.
+@capabilities(crypto)
+fn random_choice(items: [str]) -> str {
+    let n = len(items)
+    if n == 0 {
+        throw "crypto error: random_choice on empty array"
+    }
+    let index = random_int(0, n - 1)
+    return items[index]
+}
+
+// Shuffle an array in-place using Fisher-Yates algorithm.
+@capabilities(crypto)
+fn shuffle(items: [str]) -> [str] {
+    let n = len(items)
+    let mut result = items
+    let mut i = n - 1
+    while i > 0 {
+        let j = random_int(0, i)
+        // Swap result[i] and result[j]
+        let temp = result[i]
+        result[i] = result[j]
+        result[j] = temp
+        i = i - 1
+    }
+    return result
+}
+
+// --- UUID v4 ----------------------------------------------------------------
+
+// Generate a random UUID v4 string (e.g. "550e8400-e29b-41d4-a716-446655440000").
+@capabilities(crypto)
+fn uuid_v4() -> str {
+    let buf = alloc(16)
+    let result = kryos_random_bytes(buf, 16)
+    if result < 0 {
+        throw "crypto error: uuid_v4 generation failed"
+    }
+
+    // Set version (4) in byte 6: high nibble = 0100
+    let byte6 = ptr_byte_at(buf, 6)
+    let new_byte6 = (byte6 % 16) + 64  // 0x40 | (byte6 & 0x0F)
+    ptr_set_byte(buf, 6, new_byte6)
+
+    // Set variant (10xx) in byte 8: high 2 bits = 10
+    let byte8 = ptr_byte_at(buf, 8)
+    let new_byte8 = (byte8 % 64) + 128  // 0x80 | (byte8 & 0x3F)
+    ptr_set_byte(buf, 8, new_byte8)
+
+    // Format as 8-4-4-4-12 hex string
+    let hex = _bytes_to_hex(buf, 16)
+    return substr(hex, 0, 8) + "-" +
+           substr(hex, 8, 12) + "-" +
+           substr(hex, 12, 16) + "-" +
+           substr(hex, 16, 20) + "-" +
+           substr(hex, 20, 32)
+}
+
+// --- HMAC (pure Kryos implementation using SHA-256) -------------------------
+
+// Compute HMAC-SHA256(key, message) and return as a hex string.
+// This is a pure-Kryos implementation of RFC 2104.
+@capabilities(crypto)
+fn hmac_sha256(key: str, message: str) -> str {
+    let block_size = 64
+
+    // If key is longer than block size, hash it first
+    let mut padded_key = key
+    if len(padded_key) > block_size {
+        padded_key = sha256(padded_key)
+    }
+
+    // Pad key to block_size with zeros
+    while len(padded_key) < block_size {
+        padded_key = padded_key + "\x00"
+    }
+
+    // Compute inner and outer pads
+    let mut inner_pad = ""
+    let mut outer_pad = ""
+    let mut i = 0
+    while i < block_size {
+        let key_byte = char_code(padded_key[i])
+        // XOR with 0x36 for inner pad, 0x5c for outer pad
+        let inner_byte = key_byte ^ 54   // 0x36
+        let outer_byte = key_byte ^ 92   // 0x5c
+        inner_pad = inner_pad + from_char_code(inner_byte)
+        outer_pad = outer_pad + from_char_code(outer_byte)
+        i = i + 1
+    }
+
+    // HMAC = H(outer_pad || H(inner_pad || message))
+    let inner_hash = sha256(inner_pad + message)
+    return sha256(outer_pad + inner_hash)
+}
+
+// --- Constant-time comparison -----------------------------------------------
+
+// Compare two strings in constant time to prevent timing attacks.
+fn constant_time_eq(a: str, b: str) -> bool {
+    let a_len = len(a)
+    let b_len = len(b)
+
+    // Always compare all bytes to avoid timing leak on length
+    let max_len = if a_len > b_len { a_len } else { b_len }
+
+    let mut diff = a_len ^ b_len  // Will be non-zero if lengths differ
+    let mut i = 0
+    while i < max_len {
+        let a_byte = if i < a_len { char_code(a[i]) } else { 0 }
+        let b_byte = if i < b_len { char_code(b[i]) } else { 0 }
+        diff = diff | (a_byte ^ b_byte)
+        i = i + 1
+    }
+
+    return diff == 0
+}

@@ -1,0 +1,491 @@
+// ============================================================
+// std.math -- Mathematical constants and functions
+//
+// Provides fundamental numeric operations, trigonometry,
+// logarithms, and number-theoretic utilities.
+//
+// Usage: std.math.sin(x), std.math.PI, etc.
+// ============================================================
+
+// --- Constants ---------------------------------------------------------------
+
+let PI      = 3.141592653589793
+let E       = 2.718281828459045
+let TAU     = 6.283185307179586
+let INF     = 1.0 / 0.0
+let NEG_INF = -1.0 / 0.0
+let NAN     = 0.0 / 0.0
+
+// --- Basic arithmetic --------------------------------------------------------
+
+/// Absolute value of a number.
+fn abs(x: f64) -> f64 {
+    if x < 0.0 {
+        return -x
+    }
+    return x
+}
+
+/// Return the smaller of two values.
+fn min(a: f64, b: f64) -> f64 {
+    if a <= b {
+        return a
+    }
+    return b
+}
+
+/// Return the larger of two values.
+fn max(a: f64, b: f64) -> f64 {
+    if a >= b {
+        return a
+    }
+    return b
+}
+
+/// Clamp a value to the range [lo, hi].
+fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
+    if x < lo {
+        return lo
+    }
+    if x > hi {
+        return hi
+    }
+    return x
+}
+
+/// Sign of a number: -1, 0, or 1.
+fn sign(x: f64) -> f64 {
+    if x > 0.0 {
+        return 1.0
+    }
+    if x < 0.0 {
+        return -1.0
+    }
+    return 0.0
+}
+
+// --- Rounding ----------------------------------------------------------------
+
+/// Floor: largest integer <= x.
+fn floor(x: f64) -> f64 {
+    let truncated = to_i64(x)
+    let f = to_f64(truncated)
+    if x < 0.0 and f != x {
+        return f - 1.0
+    }
+    return f
+}
+
+/// Ceiling: smallest integer >= x.
+fn ceil(x: f64) -> f64 {
+    let f = floor(x)
+    if f == x {
+        return x
+    }
+    return f + 1.0
+}
+
+/// Round to nearest integer (half rounds away from zero).
+fn round(x: f64) -> f64 {
+    if x >= 0.0 {
+        return floor(x + 0.5)
+    }
+    return ceil(x - 0.5)
+}
+
+// --- Powers and roots --------------------------------------------------------
+
+/// Square root via Newton's method.
+fn sqrt(x: f64) -> f64 {
+    if x < 0.0 {
+        return NAN
+    }
+    if x == 0.0 {
+        return 0.0
+    }
+    let mut guess = x / 2.0
+    let mut i = 0
+    while i < 64 {
+        let next = (guess + x / guess) / 2.0
+        if abs(next - guess) < 1.0e-15 {
+            return next
+        }
+        guess = next
+        i = i + 1
+    }
+    return guess
+}
+
+/// Cube root.
+fn cbrt(x: f64) -> f64 {
+    if x == 0.0 {
+        return 0.0
+    }
+    let negative = x < 0.0
+    let mut val = abs(x)
+    let mut guess = val / 3.0
+    let mut i = 0
+    while i < 64 {
+        let next = (2.0 * guess + val / (guess * guess)) / 3.0
+        if abs(next - guess) < 1.0e-15 {
+            if negative {
+                return -next
+            }
+            return next
+        }
+        guess = next
+        i = i + 1
+    }
+    if negative {
+        return -guess
+    }
+    return guess
+}
+
+/// Raise base to an integer or floating-point power.
+fn pow(base: f64, exponent: f64) -> f64 {
+    // Integer exponent fast path
+    if exponent == floor(exponent) and abs(exponent) < 1000.0 {
+        let mut result = 1.0
+        let mut exp = to_i64(abs(exponent))
+        let mut b = base
+        while exp > 0 {
+            if exp % 2 == 1 {
+                result = result * b
+            }
+            b = b * b
+            exp = exp / 2
+        }
+        if exponent < 0.0 {
+            return 1.0 / result
+        }
+        return result
+    }
+    // General case: base^exp = e^(exp * ln(base))
+    return exp(exponent * ln(base))
+}
+
+/// Euler's number raised to x: e^x via Taylor series.
+fn exp(x: f64) -> f64 {
+    // Range reduction: e^x = e^k * e^r where k = round(x), r = x - k
+    let k = round(x)
+    let r = x - k
+
+    // Compute e^r via Taylor series (converges fast for |r| <= 0.5)
+    let mut term = 1.0
+    let mut sum = 1.0
+    let mut i = 1
+    while i <= 30 {
+        term = term * r / to_f64(i)
+        sum = sum + term
+        if abs(term) < 1.0e-16 {
+            i = 31
+        }
+        i = i + 1
+    }
+
+    // Multiply by e^k using repeated squaring
+    let mut e_k = 1.0
+    let mut base = E
+    let mut exp_k = to_i64(abs(k))
+    while exp_k > 0 {
+        if exp_k % 2 == 1 {
+            e_k = e_k * base
+        }
+        base = base * base
+        exp_k = exp_k / 2
+    }
+    if k < 0.0 {
+        e_k = 1.0 / e_k
+    }
+
+    return sum * e_k
+}
+
+/// Natural logarithm via the AGM (arithmetic-geometric mean) method.
+fn ln(x: f64) -> f64 {
+    if x <= 0.0 {
+        if x == 0.0 {
+            return NEG_INF
+        }
+        return NAN
+    }
+    if x == 1.0 {
+        return 0.0
+    }
+
+    // Reduce to [0.5, 2.0) range: ln(x) = ln(m * 2^e) = ln(m) + e*ln(2)
+    let mut m = x
+    let mut e = 0.0
+    while m >= 2.0 {
+        m = m / 2.0
+        e = e + 1.0
+    }
+    while m < 0.5 {
+        m = m * 2.0
+        e = e - 1.0
+    }
+
+    // Series expansion: ln(m) using ln((1+t)/(1-t)) = 2*(t + t^3/3 + t^5/5 + ...)
+    // where t = (m-1)/(m+1)
+    let t = (m - 1.0) / (m + 1.0)
+    let t2 = t * t
+    let mut term = t
+    let mut sum = t
+    let mut k = 1
+    while k <= 40 {
+        term = term * t2
+        let denom = to_f64(2 * k + 1)
+        sum = sum + term / denom
+        k = k + 1
+    }
+
+    let LN2 = 0.6931471805599453
+    return 2.0 * sum + e * LN2
+}
+
+/// Base-2 logarithm.
+fn log2(x: f64) -> f64 {
+    let LN2 = 0.6931471805599453
+    return ln(x) / LN2
+}
+
+/// Base-10 logarithm.
+fn log10(x: f64) -> f64 {
+    let LN10 = 2.302585092994046
+    return ln(x) / LN10
+}
+
+// --- Trigonometry ------------------------------------------------------------
+
+/// Normalize angle to [-PI, PI] for better series convergence.
+fn _normalize_angle(x: f64) -> f64 {
+    let mut a = x
+    while a > PI {
+        a = a - TAU
+    }
+    while a < -PI {
+        a = a + TAU
+    }
+    return a
+}
+
+/// Sine via Taylor series.
+fn sin(x: f64) -> f64 {
+    let a = _normalize_angle(x)
+    let mut term = a
+    let mut sum = a
+    let a2 = a * a
+    let mut n = 1
+    while n <= 20 {
+        term = -term * a2 / to_f64((2 * n) * (2 * n + 1))
+        sum = sum + term
+        if abs(term) < 1.0e-16 {
+            return sum
+        }
+        n = n + 1
+    }
+    return sum
+}
+
+/// Cosine via Taylor series.
+fn cos(x: f64) -> f64 {
+    let a = _normalize_angle(x)
+    let mut term = 1.0
+    let mut sum = 1.0
+    let a2 = a * a
+    let mut n = 1
+    while n <= 20 {
+        term = -term * a2 / to_f64((2 * n - 1) * (2 * n))
+        sum = sum + term
+        if abs(term) < 1.0e-16 {
+            return sum
+        }
+        n = n + 1
+    }
+    return sum
+}
+
+/// Tangent: sin(x) / cos(x).
+fn tan(x: f64) -> f64 {
+    let c = cos(x)
+    if abs(c) < 1.0e-15 {
+        if sin(x) > 0.0 {
+            return INF
+        }
+        return NEG_INF
+    }
+    return sin(x) / c
+}
+
+/// Arcsine via Taylor series (valid for |x| <= 1).
+fn asin(x: f64) -> f64 {
+    if x < -1.0 or x > 1.0 {
+        return NAN
+    }
+    if abs(x) > 0.7 {
+        // Use identity: asin(x) = PI/2 - asin(sqrt(1 - x^2)) for |x| > 0.7
+        let s = sign(x)
+        return s * (PI / 2.0 - asin(sqrt(1.0 - x * x)))
+    }
+    // Taylor: x + x^3/6 + 3x^5/40 + ...
+    let x2 = x * x
+    let mut term = x
+    let mut sum = x
+    let mut n = 1
+    while n <= 40 {
+        term = term * x2 * to_f64(2 * n - 1) * to_f64(2 * n - 1) / (to_f64(2 * n) * to_f64(2 * n + 1))
+        sum = sum + term
+        if abs(term) < 1.0e-16 {
+            return sum
+        }
+        n = n + 1
+    }
+    return sum
+}
+
+/// Arccosine: PI/2 - asin(x).
+fn acos(x: f64) -> f64 {
+    return PI / 2.0 - asin(x)
+}
+
+/// Arctangent via Taylor-like series with range reduction.
+fn atan(x: f64) -> f64 {
+    // Handle large values: atan(x) = PI/2 - atan(1/x) for x > 1
+    if x > 1.0 {
+        return PI / 2.0 - atan(1.0 / x)
+    }
+    if x < -1.0 {
+        return -PI / 2.0 - atan(1.0 / x)
+    }
+    // Taylor series for |x| <= 1: x - x^3/3 + x^5/5 - ...
+    let x2 = x * x
+    let mut term = x
+    let mut sum = x
+    let mut n = 1
+    while n <= 50 {
+        term = -term * x2
+        sum = sum + term / to_f64(2 * n + 1)
+        if abs(term) < 1.0e-16 {
+            return sum
+        }
+        n = n + 1
+    }
+    return sum
+}
+
+/// Two-argument arctangent: angle of the vector (x, y).
+fn atan2(y: f64, x: f64) -> f64 {
+    if x > 0.0 {
+        return atan(y / x)
+    }
+    if x < 0.0 {
+        if y >= 0.0 {
+            return atan(y / x) + PI
+        }
+        return atan(y / x) - PI
+    }
+    // x == 0
+    if y > 0.0 {
+        return PI / 2.0
+    }
+    if y < 0.0 {
+        return -PI / 2.0
+    }
+    return 0.0
+}
+
+// --- Hyperbolic functions ----------------------------------------------------
+
+/// Hyperbolic sine: (e^x - e^-x) / 2.
+fn sinh(x: f64) -> f64 {
+    let ex = exp(x)
+    return (ex - 1.0 / ex) / 2.0
+}
+
+/// Hyperbolic cosine: (e^x + e^-x) / 2.
+fn cosh(x: f64) -> f64 {
+    let ex = exp(x)
+    return (ex + 1.0 / ex) / 2.0
+}
+
+/// Hyperbolic tangent: sinh(x) / cosh(x).
+fn tanh(x: f64) -> f64 {
+    if x > 20.0 {
+        return 1.0
+    }
+    if x < -20.0 {
+        return -1.0
+    }
+    let ex = exp(2.0 * x)
+    return (ex - 1.0) / (ex + 1.0)
+}
+
+// --- Angle conversion --------------------------------------------------------
+
+/// Convert radians to degrees.
+fn degrees(radians: f64) -> f64 {
+    return radians * 180.0 / PI
+}
+
+/// Convert degrees to radians.
+fn radians(degrees: f64) -> f64 {
+    return degrees * PI / 180.0
+}
+
+// --- Interpolation -----------------------------------------------------------
+
+/// Linear interpolation between a and b by factor t in [0, 1].
+fn lerp(a: f64, b: f64, t: f64) -> f64 {
+    return a + (b - a) * t
+}
+
+// --- Classification ----------------------------------------------------------
+
+/// Check if a value is NaN (NaN != NaN is always true).
+fn is_nan(x: f64) -> bool {
+    return x != x
+}
+
+/// Check if a value is positive or negative infinity.
+fn is_inf(x: f64) -> bool {
+    return x == INF or x == NEG_INF
+}
+
+// --- Number theory -----------------------------------------------------------
+
+/// Greatest common divisor (Euclidean algorithm).
+fn gcd(a: i64, b: i64) -> i64 {
+    let mut x = abs(to_f64(a))
+    let mut y = abs(to_f64(b))
+    while y > 0.0 {
+        let temp = y
+        y = x - floor(x / y) * y
+        x = temp
+    }
+    return to_i64(x)
+}
+
+/// Least common multiple.
+fn lcm(a: i64, b: i64) -> i64 {
+    if a == 0 or b == 0 {
+        return 0
+    }
+    let g = gcd(a, b)
+    let product = abs(to_f64(a)) * abs(to_f64(b))
+    return to_i64(product / to_f64(g))
+}
+
+/// Factorial of n (n must be >= 0).
+fn factorial(n: i64) -> i64 {
+    if n < 0 {
+        throw "factorial: negative argument"
+    }
+    let mut result = 1
+    let mut i = 2
+    while i <= n {
+        result = result * i
+        i = i + 1
+    }
+    return result
+}

@@ -1,0 +1,451 @@
+// ============================================================
+// std.chan -- Channel and concurrency primitives
+//
+// Wraps Kryos built-in concurrency primitives (chan, send, recv,
+// spawn, select) with higher-level abstractions: typed channels,
+// fan-out/fan-in patterns, wait groups, and semaphores.
+//
+// All channel operations are safe for concurrent use via Kryos
+// ARC-wrapped shared references.
+//
+// Usage:
+//   let ch = std.chan.new_channel()
+//   std.chan.send(ch, "hello")
+//   let msg = std.chan.receive(ch)
+// ============================================================
+
+// --- Channel struct ----------------------------------------------------------
+
+struct Channel {
+    raw: any,
+    capacity: i64,
+    is_closed: shared bool
+}
+
+/// Create an unbuffered channel (capacity 0 -- send blocks until recv).
+fn new_channel() -> Channel {
+    let raw = chan()
+    return Channel {
+        raw: raw,
+        capacity: 0,
+        is_closed: false
+    }
+}
+
+/// Create a buffered channel with the given capacity.
+fn buffered(capacity: i64) -> Channel {
+    if capacity < 0 {
+        throw "chan: capacity must be >= 0, got " + to_string(capacity)
+    }
+    let raw = chan(capacity)
+    return Channel {
+        raw: raw,
+        capacity: capacity,
+        is_closed: false
+    }
+}
+
+// --- Core operations ---------------------------------------------------------
+
+/// Send a value on the channel.  Blocks if the buffer is full.
+/// Throws if the channel is closed.
+fn send_val(ch: Channel, val: any) -> void {
+    if ch.is_closed {
+        throw "chan: send on closed channel"
+    }
+    send(ch.raw, val)
+}
+
+/// Receive a value from the channel.  Blocks if no value is available.
+/// Returns the received value.
+fn receive(ch: Channel) -> any {
+    return recv(ch.raw)
+}
+
+/// Try to receive a value without blocking.
+/// Returns {"ok": true, "value": val} or {"ok": false, "value": null}.
+fn try_receive(ch: Channel) -> any {
+    try {
+        let val = recv(ch.raw)
+        return {"ok": true, "value": val}
+    } catch (e) {
+        return {"ok": false, "value": null}
+    }
+}
+
+/// Close a channel.  No more values can be sent after this.
+/// Pending receivers will be unblocked with a close signal.
+fn close(ch: Channel) -> Channel {
+    if ch.is_closed {
+        throw "chan: channel already closed"
+    }
+    // Send close sentinel via builtin
+    close_chan(ch.raw)
+    return Channel {
+        raw: ch.raw,
+        capacity: ch.capacity,
+        is_closed: true
+    }
+}
+
+/// Check if the channel is closed.
+fn is_closed(ch: Channel) -> bool {
+    return ch.is_closed
+}
+
+// --- Select ------------------------------------------------------------------
+
+/// A case in a select statement.
+struct SelectCase {
+    channel: Channel,
+    handler: fn
+}
+
+/// Create a select case: when a value arrives on ch, call handler(value).
+fn on(ch: Channel, handler: fn) -> SelectCase {
+    return SelectCase { channel: ch, handler: handler }
+}
+
+/// Wait on multiple channels.  The first channel that has a value ready
+/// will have its handler invoked.  Returns the handler's return value.
+fn select_cases(cases: [SelectCase]) -> any {
+    let count = len(cases)
+    if count == 0 {
+        throw "chan: select called with no cases"
+    }
+
+    // Build arrays of raw channels for the builtin select
+    let mut raw_channels = []
+    let mut i = 0
+    while i < count {
+        push(raw_channels, cases[i].channel.raw)
+        i = i + 1
+    }
+
+    // Use builtin select to wait for the first ready channel
+    let result = select {
+        raw_channels[0] => {
+            let val = recv(cases[0].channel.raw)
+            return cases[0].handler(val)
+        }
+    }
+
+    // Fallback: poll each channel
+    while true {
+        let mut j = 0
+        while j < count {
+            let attempt = try_receive(cases[j].channel)
+            if attempt.ok {
+                return cases[j].handler(attempt.value)
+            }
+            j = j + 1
+        }
+    }
+}
+
+// --- Timeout -----------------------------------------------------------------
+
+/// Create a channel that receives a single value after the given duration
+/// in milliseconds.  Useful for timeouts in select statements.
+fn timeout(duration_ms: i64) -> Channel {
+    let ch = new_channel()
+    spawn {
+        sleep(duration_ms)
+        try {
+            send(ch.raw, "timeout")
+        } catch (e) {
+            // Channel was closed before timeout fired -- ignore
+        }
+    }
+    return ch
+}
+
+/// Create a channel that receives a tick every interval_ms milliseconds.
+/// Returns a channel that will keep producing values until closed.
+fn ticker(interval_ms: i64) -> Channel {
+    let ch = buffered(1)
+    spawn {
+        let mut tick_count = 0
+        while not ch.is_closed {
+            sleep(interval_ms)
+            tick_count = tick_count + 1
+            try {
+                send(ch.raw, tick_count)
+            } catch (e) {
+                return
+            }
+        }
+    }
+    return ch
+}
+
+// --- Fan-out / Fan-in --------------------------------------------------------
+
+/// Fan-out: distribute values from a source channel to N worker goroutines.
+/// Each worker calls handler(value) for each value it receives.
+/// Returns a channel that collects all handler results.
+fn fan_out(source: Channel, workers: i64, handler: fn) -> Channel {
+    if workers <= 0 {
+        throw "chan: fan_out requires at least 1 worker"
+    }
+    let result_ch = buffered(workers * 4)
+
+    let mut i = 0
+    while i < workers {
+        spawn {
+            while true {
+                let attempt = try_receive(source)
+                if not attempt.ok {
+                    return
+                }
+                let result = handler(attempt.value)
+                try {
+                    send(result_ch.raw, result)
+                } catch (e) {
+                    return
+                }
+            }
+        }
+        i = i + 1
+    }
+
+    return result_ch
+}
+
+/// Fan-in: merge multiple channels into a single output channel.
+/// Values from any input channel are forwarded to the merged channel.
+fn fan_in(channels: [Channel]) -> Channel {
+    let count = len(channels)
+    if count == 0 {
+        throw "chan: fan_in requires at least 1 channel"
+    }
+    let merged = buffered(count * 4)
+
+    let mut i = 0
+    while i < count {
+        let ch = channels[i]
+        spawn {
+            while true {
+                let attempt = try_receive(ch)
+                if not attempt.ok {
+                    return
+                }
+                try {
+                    send(merged.raw, attempt.value)
+                } catch (e) {
+                    return
+                }
+            }
+        }
+        i = i + 1
+    }
+
+    return merged
+}
+
+/// Pipe: forward all values from source to destination.
+/// Runs in a separate goroutine, returns immediately.
+fn pipe(source: Channel, dest: Channel) -> void {
+    spawn {
+        while true {
+            let attempt = try_receive(source)
+            if not attempt.ok {
+                return
+            }
+            try {
+                send(dest.raw, attempt.value)
+            } catch (e) {
+                return
+            }
+        }
+    }
+}
+
+// --- WaitGroup ---------------------------------------------------------------
+
+struct WaitGroup {
+    count: shared i64,
+    done_ch: Channel
+}
+
+/// Create a new WaitGroup.
+fn new_wait_group() -> WaitGroup {
+    return WaitGroup {
+        count: 0,
+        done_ch: buffered(1)
+    }
+}
+
+/// Add n to the WaitGroup counter.  Call before spawning work.
+fn wg_add(wg: WaitGroup, n: i64) -> WaitGroup {
+    let new_count = wg.count + n
+    return WaitGroup {
+        count: new_count,
+        done_ch: wg.done_ch
+    }
+}
+
+/// Signal that one unit of work is done.  Decrements the counter.
+/// When the counter reaches zero, all waiters are unblocked.
+fn wg_done(wg: WaitGroup) -> WaitGroup {
+    let new_count = wg.count - 1
+    if new_count < 0 {
+        throw "chan: WaitGroup counter went negative"
+    }
+    if new_count == 0 {
+        // Signal completion
+        try {
+            send(wg.done_ch.raw, true)
+        } catch (e) {
+            // Already signaled
+        }
+    }
+    return WaitGroup {
+        count: new_count,
+        done_ch: wg.done_ch
+    }
+}
+
+/// Block until the WaitGroup counter reaches zero.
+fn wg_wait(wg: WaitGroup) -> void {
+    if wg.count <= 0 {
+        return
+    }
+    recv(wg.done_ch.raw)
+}
+
+// --- Semaphore ---------------------------------------------------------------
+
+struct Semaphore {
+    ch: Channel
+}
+
+/// Create a semaphore with the given number of permits.
+/// At most `permits` goroutines can hold the semaphore simultaneously.
+fn new_semaphore(permits: i64) -> Semaphore {
+    if permits <= 0 {
+        throw "chan: semaphore requires at least 1 permit"
+    }
+    let ch = buffered(permits)
+    // Pre-fill the channel with permits
+    let mut i = 0
+    while i < permits {
+        send(ch.raw, true)
+        i = i + 1
+    }
+    return Semaphore { ch: ch }
+}
+
+/// Acquire a permit.  Blocks if all permits are currently held.
+fn acquire(sem: Semaphore) -> void {
+    recv(sem.ch.raw)
+}
+
+/// Release a permit back to the semaphore.
+fn release(sem: Semaphore) -> void {
+    send(sem.ch.raw, true)
+}
+
+/// Try to acquire a permit without blocking.
+/// Returns true if acquired, false if all permits are held.
+fn try_acquire(sem: Semaphore) -> bool {
+    let attempt = try_receive(sem.ch)
+    return attempt.ok
+}
+
+// --- Once (run-once primitive) -----------------------------------------------
+
+struct Once {
+    done: shared bool,
+    result: shared any
+}
+
+/// Create a new Once.
+fn new_once() -> Once {
+    return Once { done: false, result: null }
+}
+
+/// Execute a function exactly once, regardless of how many goroutines call it.
+/// Subsequent calls return the cached result.
+fn call_once(once: Once, f: fn) -> any {
+    if once.done {
+        return once.result
+    }
+    let result = f()
+    once.done = true
+    once.result = result
+    return result
+}
+
+// --- Producer/Consumer helpers -----------------------------------------------
+
+/// Create a producer that generates values and sends them on a channel.
+/// The generator function is called repeatedly; when it throws, production stops.
+fn produce(generator: fn) -> Channel {
+    let ch = buffered(16)
+    spawn {
+        try {
+            while true {
+                let val = generator()
+                send(ch.raw, val)
+            }
+        } catch (e) {
+            // Generator exhausted or threw -- close the channel
+            close_chan(ch.raw)
+        }
+    }
+    return ch
+}
+
+/// Consume all values from a channel, calling handler for each one.
+/// Blocks until the channel is closed or an error occurs.
+fn consume(ch: Channel, handler: fn) -> void {
+    while true {
+        let attempt = try_receive(ch)
+        if not attempt.ok {
+            return
+        }
+        handler(attempt.value)
+    }
+}
+
+/// Collect all values from a channel into an array.
+/// Blocks until the channel is closed.
+fn collect(ch: Channel) -> [any] {
+    let mut results = []
+    while true {
+        let attempt = try_receive(ch)
+        if not attempt.ok {
+            return results
+        }
+        push(results, attempt.value)
+    }
+    return results
+}
+
+// --- Channel utilities -------------------------------------------------------
+
+/// Send multiple values on a channel.
+fn send_all(ch: Channel, values: [any]) -> void {
+    let count = len(values)
+    let mut i = 0
+    while i < count {
+        send_val(ch, values[i])
+        i = i + 1
+    }
+}
+
+/// Receive up to n values from a channel.
+fn receive_n(ch: Channel, n: i64) -> [any] {
+    let mut results = []
+    let mut i = 0
+    while i < n {
+        let attempt = try_receive(ch)
+        if not attempt.ok {
+            return results
+        }
+        push(results, attempt.value)
+        i = i + 1
+    }
+    return results
+}

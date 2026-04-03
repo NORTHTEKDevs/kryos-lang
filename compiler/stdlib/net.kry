@@ -1,0 +1,380 @@
+// ============================================================
+// std.net -- TCP networking and simple HTTP client
+//
+// Wraps the kryos-stdlib-native FFI layer for TCP streams and
+// listeners.  Provides a minimal HTTP/1.1 client built on raw
+// TCP sockets.
+// ============================================================
+
+// --- Native FFI declarations ------------------------------------------------
+
+extern {
+    fn kryos_tcp_connect(host_ptr: ptr, host_len: i64, port: i32) -> i64
+    fn kryos_tcp_bind(host_ptr: ptr, host_len: i64, port: i32) -> i64
+    fn kryos_tcp_accept(listener_fd: i64) -> i64
+    fn kryos_tcp_send(fd: i64, data: ptr, len: i64) -> i64
+    fn kryos_tcp_recv(fd: i64, buf: ptr, buf_len: i64) -> i64
+    fn kryos_socket_close(fd: i64) -> i32
+}
+
+// --- TCP Stream -------------------------------------------------------------
+
+struct TcpStream {
+    fd: i64,
+    host: str,
+    port: i32,
+    closed: bool
+}
+
+impl TcpStream {
+    // Send data over the stream.  Returns the number of bytes sent.
+    @capabilities(net)
+    fn send(self: TcpStream, data: str) -> i64 {
+        if self.closed {
+            throw "net error: send on closed stream"
+        }
+        let ptr = str_to_ptr(data)
+        let n = kryos_tcp_send(self.fd, ptr, len(data))
+        if n < 0 {
+            throw "net error: send failed on " + self.host + ":" + to_string(self.port)
+        }
+        return n
+    }
+
+    // Send all data, retrying until everything is written.
+    @capabilities(net)
+    fn send_all(self: TcpStream, data: str) -> i64 {
+        if self.closed {
+            throw "net error: send_all on closed stream"
+        }
+        let total_len = len(data)
+        let mut offset = 0
+        while offset < total_len {
+            let remaining = substr(data, offset, total_len)
+            let ptr = str_to_ptr(remaining)
+            let n = kryos_tcp_send(self.fd, ptr, len(remaining))
+            if n < 0 {
+                throw "net error: send_all failed on " + self.host + ":" + to_string(self.port)
+            }
+            offset = offset + n
+        }
+        return total_len
+    }
+
+    // Receive up to `max_bytes` from the stream.
+    @capabilities(net)
+    fn recv(self: TcpStream, max_bytes: i64) -> str {
+        if self.closed {
+            throw "net error: recv on closed stream"
+        }
+        let buf = alloc(max_bytes)
+        let n = kryos_tcp_recv(self.fd, buf, max_bytes)
+        if n < 0 {
+            throw "net error: recv failed on " + self.host + ":" + to_string(self.port)
+        }
+        return buf_to_str(buf, n)
+    }
+
+    // Receive all data until the connection closes (EOF).
+    @capabilities(net)
+    fn recv_all(self: TcpStream) -> str {
+        if self.closed {
+            throw "net error: recv_all on closed stream"
+        }
+        let mut result = ""
+        let chunk_size = 8192
+        let buf = alloc(chunk_size)
+        let mut done = false
+        while not done {
+            let n = kryos_tcp_recv(self.fd, buf, chunk_size)
+            if n < 0 {
+                throw "net error: recv_all failed"
+            }
+            if n == 0 {
+                done = true
+            } else {
+                result = result + buf_to_str(buf, n)
+            }
+        }
+        return result
+    }
+
+    // Close the stream.
+    @capabilities(net)
+    fn close(self: TcpStream) -> TcpStream {
+        if not self.closed {
+            kryos_socket_close(self.fd)
+        }
+        return TcpStream { fd: self.fd, host: self.host, port: self.port, closed: true }
+    }
+
+    // Check if the stream is open.
+    fn is_open(self: TcpStream) -> bool {
+        return not self.closed
+    }
+}
+
+// Connect to a TCP server at host:port.
+@capabilities(net)
+fn connect(host: str, port: i32) -> TcpStream {
+    let fd = kryos_tcp_connect(str_to_ptr(host), len(host), port)
+    if fd < 0 {
+        throw "net error: could not connect to " + host + ":" + to_string(port)
+    }
+    return TcpStream { fd: fd, host: host, port: port, closed: false }
+}
+
+// --- TCP Listener -----------------------------------------------------------
+
+struct TcpListener {
+    fd: i64,
+    host: str,
+    port: i32,
+    closed: bool
+}
+
+impl TcpListener {
+    // Accept a single incoming connection.  Blocks until a client connects.
+    @capabilities(net)
+    fn accept(self: TcpListener) -> TcpStream {
+        if self.closed {
+            throw "net error: accept on closed listener"
+        }
+        let client_fd = kryos_tcp_accept(self.fd)
+        if client_fd < 0 {
+            throw "net error: accept failed on " + self.host + ":" + to_string(self.port)
+        }
+        return TcpStream {
+            fd: client_fd,
+            host: self.host,
+            port: self.port,
+            closed: false
+        }
+    }
+
+    // Close the listener.
+    @capabilities(net)
+    fn close(self: TcpListener) -> TcpListener {
+        if not self.closed {
+            kryos_socket_close(self.fd)
+        }
+        return TcpListener { fd: self.fd, host: self.host, port: self.port, closed: true }
+    }
+
+    // Check if the listener is open.
+    fn is_open(self: TcpListener) -> bool {
+        return not self.closed
+    }
+}
+
+// Bind a TCP listener to host:port.
+@capabilities(net)
+fn bind(host: str, port: i32) -> TcpListener {
+    let fd = kryos_tcp_bind(str_to_ptr(host), len(host), port)
+    if fd < 0 {
+        throw "net error: could not bind to " + host + ":" + to_string(port)
+    }
+    return TcpListener { fd: fd, host: host, port: port, closed: false }
+}
+
+// Convenience: bind and return a listener (alias).
+@capabilities(net)
+fn listen(host: str, port: i32) -> TcpListener {
+    return bind(host, port)
+}
+
+// --- HTTP types -------------------------------------------------------------
+
+struct HttpResponse {
+    status_code: i32,
+    status_text: str,
+    headers: str,
+    body: str,
+    raw: str
+}
+
+// --- HTTP response parsing --------------------------------------------------
+
+// Parse a raw HTTP/1.x response string into an HttpResponse struct.
+fn parse_http_response(raw: str) -> HttpResponse {
+    let raw_len = len(raw)
+
+    // Find end of status line (\r\n)
+    let mut status_end = 0
+    let mut i = 0
+    while i < raw_len - 1 {
+        if raw[i] == "\r" and raw[i + 1] == "\n" {
+            status_end = i
+            i = raw_len  // break
+        } else {
+            i = i + 1
+        }
+    }
+
+    let status_line = substr(raw, 0, status_end)
+
+    // Parse status code from "HTTP/1.x NNN reason"
+    // Find first space
+    let mut space1 = 0
+    i = 0
+    while i < len(status_line) {
+        if status_line[i] == " " {
+            space1 = i
+            i = len(status_line)
+        } else {
+            i = i + 1
+        }
+    }
+
+    // Find second space
+    let mut space2 = len(status_line)
+    i = space1 + 1
+    while i < len(status_line) {
+        if status_line[i] == " " {
+            space2 = i
+            i = len(status_line)
+        } else {
+            i = i + 1
+        }
+    }
+
+    let code_str = substr(status_line, space1 + 1, space2)
+    let status_code = to_int(code_str)
+    let status_text = substr(status_line, space2 + 1, len(status_line))
+
+    // Find header/body separator (\r\n\r\n)
+    let mut body_start = raw_len
+    let mut headers_end = status_end + 2
+    i = status_end + 2
+    while i < raw_len - 3 {
+        if raw[i] == "\r" and raw[i + 1] == "\n" and raw[i + 2] == "\r" and raw[i + 3] == "\n" {
+            headers_end = i
+            body_start = i + 4
+            i = raw_len
+        } else {
+            i = i + 1
+        }
+    }
+
+    let headers = substr(raw, status_end + 2, headers_end)
+    let body = substr(raw, body_start, raw_len)
+
+    return HttpResponse {
+        status_code: status_code,
+        status_text: status_text,
+        headers: headers,
+        body: body,
+        raw: raw
+    }
+}
+
+// --- HTTP client helpers ----------------------------------------------------
+
+// Parse a URL into host, port, and path.  Only supports http:// (not https).
+fn parse_url(url: str) -> [str] {
+    let url_len = len(url)
+
+    // Strip scheme
+    let mut start = 0
+    if url_len > 7 and substr(url, 0, 7) == "http://" {
+        start = 7
+    }
+
+    // Find path separator
+    let mut path_start = url_len
+    let mut i = start
+    while i < url_len {
+        if url[i] == "/" {
+            path_start = i
+            i = url_len
+        } else {
+            i = i + 1
+        }
+    }
+
+    let host_port = substr(url, start, path_start)
+    let path = if path_start < url_len {
+        substr(url, path_start, url_len)
+    } else {
+        "/"
+    }
+
+    // Check for port in host
+    let hp_len = len(host_port)
+    let mut colon_pos = -1
+    i = 0
+    while i < hp_len {
+        if host_port[i] == ":" {
+            colon_pos = i
+            i = hp_len
+        } else {
+            i = i + 1
+        }
+    }
+
+    if colon_pos >= 0 {
+        let host = substr(host_port, 0, colon_pos)
+        let port = substr(host_port, colon_pos + 1, hp_len)
+        return [host, port, path]
+    }
+
+    return [host_port, "80", path]
+}
+
+// Perform an HTTP GET request.  Returns an HttpResponse.
+// Only supports http:// (plain TCP, no TLS).
+@capabilities(net)
+fn http_get(url: str) -> HttpResponse {
+    let parts = parse_url(url)
+    let host = parts[0]
+    let port = to_int(parts[1])
+    let path = parts[2]
+
+    let stream = connect(host, port)
+
+    let request = "GET " + path + " HTTP/1.1\r\n" +
+                  "Host: " + host + "\r\n" +
+                  "Connection: close\r\n" +
+                  "User-Agent: Kryos/0.1\r\n" +
+                  "\r\n"
+
+    stream.send_all(request)
+    let raw = stream.recv_all()
+    stream.close()
+
+    return parse_http_response(raw)
+}
+
+// Perform an HTTP POST request with a body.
+// Only supports http:// (plain TCP, no TLS).
+@capabilities(net)
+fn http_post(url: str, body: str, content_type: str) -> HttpResponse {
+    let parts = parse_url(url)
+    let host = parts[0]
+    let port = to_int(parts[1])
+    let path = parts[2]
+
+    let stream = connect(host, port)
+
+    let body_len = to_string(len(body))
+    let request = "POST " + path + " HTTP/1.1\r\n" +
+                  "Host: " + host + "\r\n" +
+                  "Connection: close\r\n" +
+                  "Content-Type: " + content_type + "\r\n" +
+                  "Content-Length: " + body_len + "\r\n" +
+                  "User-Agent: Kryos/0.1\r\n" +
+                  "\r\n" +
+                  body
+
+    stream.send_all(request)
+    let raw = stream.recv_all()
+    stream.close()
+
+    return parse_http_response(raw)
+}
+
+// Convenience: HTTP POST with JSON body.
+@capabilities(net)
+fn http_post_json(url: str, json_body: str) -> HttpResponse {
+    return http_post(url, json_body, "application/json")
+}

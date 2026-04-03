@@ -1,0 +1,671 @@
+// ============================================================
+// ast.kry -- Abstract Syntax Tree types for the Kryos
+// self-hosted compiler.
+//
+// Mirrors the Rust kryos-ast crate.  Because Kryos enums are
+// simple (they cannot carry complex per-variant payloads that
+// work well as match discriminants), we use a "struct-per-variant"
+// pattern:
+//
+//   - Each AST node is a struct with a `kind` field (an integer
+//     constant) that identifies the variant.
+//   - Payload fields that do not apply to a variant are left at
+//     their zero/empty default value.
+//   - Helper constructors (`mk_*` functions) set the kind and
+//     relevant fields, making callsites readable.
+//
+// The main node types are:
+//   Expr      -- expressions (literals, binops, calls, etc.)
+//   Stmt      -- statements  (let, assign, if, for, etc.)
+//   Decl      -- declarations (fn, struct, enum, impl, etc.)
+//   TypeExpr  -- type annotations
+//   Pattern   -- destructuring patterns
+//   Module    -- top-level container for all declarations
+// ============================================================
+
+// ===================================================================
+// Node kind constants -- Expr
+// ===================================================================
+
+let EXPR_INT_LIT       = 1
+let EXPR_FLOAT_LIT     = 2
+let EXPR_STRING_LIT    = 3
+let EXPR_INTERP_STRING = 4
+let EXPR_CHAR_LIT      = 5
+let EXPR_BOOL_LIT      = 6
+let EXPR_NONE_LIT      = 7
+let EXPR_IDENT         = 8
+let EXPR_FIELD_ACCESS  = 9
+let EXPR_INDEX_ACCESS  = 10
+let EXPR_BINARY_OP     = 11
+let EXPR_UNARY_OP      = 12
+let EXPR_FN_CALL       = 13
+let EXPR_METHOD_CALL   = 14
+let EXPR_ARRAY_LIT     = 15
+let EXPR_TUPLE_LIT     = 16
+let EXPR_MAP_LIT       = 17
+let EXPR_STRUCT_LIT    = 18
+let EXPR_LAMBDA        = 19
+let EXPR_IF            = 20
+let EXPR_MATCH         = 21
+let EXPR_RANGE         = 22
+let EXPR_PIPE          = 23
+let EXPR_SHARED        = 24
+let EXPR_MOVE          = 25
+let EXPR_WEAK          = 26
+let EXPR_COMPTIME      = 27
+let EXPR_QUANTUM       = 28
+let EXPR_CAST          = 29
+let EXPR_BLOCK         = 30
+
+// ===================================================================
+// Binary operator constants
+// ===================================================================
+
+let BINOP_ADD     = 1
+let BINOP_SUB     = 2
+let BINOP_MUL     = 3
+let BINOP_DIV     = 4
+let BINOP_MOD     = 5
+let BINOP_POW     = 6
+let BINOP_EQ      = 7
+let BINOP_NEQ     = 8
+let BINOP_LT      = 9
+let BINOP_GT      = 10
+let BINOP_LT_EQ   = 11
+let BINOP_GT_EQ   = 12
+let BINOP_AND     = 13
+let BINOP_OR      = 14
+let BINOP_BIT_AND = 15
+let BINOP_BIT_OR  = 16
+let BINOP_BIT_XOR = 17
+let BINOP_SHL     = 18
+let BINOP_SHR     = 19
+
+// ===================================================================
+// Unary operator constants
+// ===================================================================
+
+let UNOP_NEG     = 1
+let UNOP_NOT     = 2
+let UNOP_BIT_NOT = 3
+
+// ===================================================================
+// Assignment operator constants
+// ===================================================================
+
+let ASSIGN_EQ     = 1
+let ASSIGN_ADD_EQ = 2
+let ASSIGN_SUB_EQ = 3
+let ASSIGN_MUL_EQ = 4
+let ASSIGN_DIV_EQ = 5
+
+// ===================================================================
+// Expr struct
+//
+// A single struct covers all expression variants.  The `kind` field
+// selects the variant, and only the relevant payload fields are set.
+// ===================================================================
+
+struct Expr {
+    kind: i32,
+    // Scalar payloads
+    int_val: i32,
+    float_val: f64,
+    str_val: str,
+    bool_val: bool,
+    name: str,
+    op: i32,
+    // Child expressions
+    left: [Expr],
+    right: [Expr],
+    args: [Expr],
+    elements: [Expr],
+    // For struct/map literals: parallel arrays for keys and values
+    field_names: [str],
+    field_exprs: [Expr],
+    // Lambda
+    params: [Param],
+    ret_type: [TypeExpr],
+    // If expression
+    then_block: [Stmt],
+    else_block: [Stmt],
+    // Match
+    match_arms: [MatchArm],
+    // Range
+    inclusive: bool,
+    // Cast
+    cast_type: [TypeExpr],
+    // Block
+    block_stmts: [Stmt],
+    // Interpolated string parts
+    string_parts: [StringPart],
+    // Source position
+    start: i32,
+    end: i32
+}
+
+// ===================================================================
+// StringPart -- a piece of an interpolated string
+// ===================================================================
+
+struct StringPart {
+    is_expr: bool,
+    text: str,
+    expr: [Expr]
+}
+
+// ===================================================================
+// Param -- function/lambda parameter
+// ===================================================================
+
+struct Param {
+    name: str,
+    ty: [TypeExpr],
+    default_val: [Expr],
+    start: i32,
+    end: i32
+}
+
+// ===================================================================
+// MatchArm -- a single arm in a match expression
+// ===================================================================
+
+struct MatchArm {
+    pattern: Pattern,
+    guard: [Expr],
+    body: [Expr],
+    start: i32,
+    end: i32
+}
+
+// ===================================================================
+// Pattern -- destructuring patterns
+// ===================================================================
+
+// Pattern kind constants
+let PAT_WILDCARD = 1
+let PAT_IDENT    = 2
+let PAT_LITERAL  = 3
+let PAT_TUPLE    = 4
+let PAT_STRUCT   = 5
+let PAT_ENUM     = 6
+let PAT_OR       = 7
+
+struct Pattern {
+    kind: i32,
+    name: str,
+    mutable: bool,
+    // Literal pattern: the expression
+    lit_expr: [Expr],
+    // Tuple, enum: sub-patterns
+    sub_patterns: [Pattern],
+    // Struct: field names + patterns
+    field_names: [str],
+    field_patterns: [Pattern],
+    // Enum variant info
+    variant: str,
+    // Or pattern
+    or_patterns: [Pattern],
+    start: i32,
+    end: i32
+}
+
+// ===================================================================
+// TypeExpr -- type annotations
+// ===================================================================
+
+// TypeExpr kind constants
+let TYPE_SIMPLE    = 1
+let TYPE_GENERIC   = 2
+let TYPE_ARRAY     = 3
+let TYPE_TUPLE     = 4
+let TYPE_FUNCTION  = 5
+let TYPE_OPTIONAL  = 6
+let TYPE_REFERENCE = 7
+let TYPE_SHARED    = 8
+let TYPE_WEAK      = 9
+let TYPE_POINTER   = 10
+let TYPE_INFERRED  = 11
+
+struct TypeExpr {
+    kind: i32,
+    name: str,
+    // Generic type arguments
+    type_args: [TypeExpr],
+    // Array element type (stored as single-element array)
+    element_type: [TypeExpr],
+    array_size: i32,
+    // Tuple elements
+    tuple_types: [TypeExpr],
+    // Function type: params and return
+    param_types: [TypeExpr],
+    ret_type: [TypeExpr],
+    // Inner type for Optional, Reference, Shared, Weak, Pointer
+    inner_type: [TypeExpr],
+    mutable: bool,
+    start: i32,
+    end: i32
+}
+
+// ===================================================================
+// Stmt -- statements
+// ===================================================================
+
+// Stmt kind constants
+let STMT_LET       = 1
+let STMT_ASSIGN    = 2
+let STMT_RETURN    = 3
+let STMT_IF        = 4
+let STMT_FOR       = 5
+let STMT_WHILE     = 6
+let STMT_BREAK     = 7
+let STMT_CONTINUE  = 8
+let STMT_EXPR      = 9
+let STMT_SPAWN     = 10
+let STMT_SELECT    = 11
+let STMT_TRY_CATCH = 12
+let STMT_THROW     = 13
+
+struct Stmt {
+    kind: i32,
+    // Let
+    name: str,
+    mutable: bool,
+    let_type: [TypeExpr],
+    let_value: [Expr],
+    let_pattern: [Pattern],
+    // Assign
+    assign_target: [Expr],
+    assign_op: i32,
+    assign_value: [Expr],
+    // Return
+    return_value: [Expr],
+    // If
+    condition: [Expr],
+    then_block: [Stmt],
+    elif_conditions: [Expr],
+    elif_blocks: [[Stmt]],
+    else_block: [Stmt],
+    // For
+    for_pattern: [Pattern],
+    iterable: [Expr],
+    for_body: [Stmt],
+    // While
+    while_cond: [Expr],
+    while_body: [Stmt],
+    // Expr
+    expr: [Expr],
+    // Spawn
+    spawn_expr: [Expr],
+    // Select
+    select_branches: [SelectBranch],
+    // Try/Catch
+    try_block: [Stmt],
+    catch_name: str,
+    catch_block: [Stmt],
+    // Throw
+    throw_expr: [Expr],
+    // Source position
+    start: i32,
+    end: i32
+}
+
+// ===================================================================
+// SelectBranch -- a branch in a select statement
+// ===================================================================
+
+struct SelectBranch {
+    pattern: str,
+    channel: [Expr],
+    body: [Stmt],
+    start: i32,
+    end: i32
+}
+
+// ===================================================================
+// Decl -- top-level declarations
+// ===================================================================
+
+// Decl kind constants
+let DECL_FUNCTION   = 1
+let DECL_STRUCT     = 2
+let DECL_ENUM       = 3
+let DECL_TRAIT      = 4
+let DECL_IMPL       = 5
+let DECL_ACTOR      = 6
+let DECL_TYPE_ALIAS = 7
+let DECL_IMPORT     = 8
+let DECL_EXTERN     = 9
+
+struct Annotation {
+    name: str,
+    args: [str],
+    start: i32,
+    end: i32
+}
+
+struct GenericParam {
+    name: str,
+    bounds: [str],
+    start: i32,
+    end: i32
+}
+
+struct StructField {
+    name: str,
+    ty: TypeExpr,
+    public: bool,
+    default_val: [Expr],
+    start: i32,
+    end: i32
+}
+
+struct EnumVariant {
+    name: str,
+    fields: [TypeExpr],
+    start: i32,
+    end: i32
+}
+
+struct MessageHandler {
+    name: str,
+    params: [Param],
+    ret_type: [TypeExpr],
+    body: [Stmt],
+    start: i32,
+    end: i32
+}
+
+struct ImportPath {
+    segments: [str],
+    alias: str,
+    items: [str],
+    start: i32,
+    end: i32
+}
+
+struct Decl {
+    kind: i32,
+    name: str,
+    public: bool,
+    annotations: [Annotation],
+    generics: [GenericParam],
+    // Function
+    params: [Param],
+    ret_type: [TypeExpr],
+    fn_body: [Stmt],
+    // Struct
+    fields: [StructField],
+    // Enum
+    variants: [EnumVariant],
+    // Trait / Impl
+    methods: [Decl],
+    target: str,
+    trait_name: str,
+    // Actor
+    state_fields: [StructField],
+    handlers: [MessageHandler],
+    // TypeAlias
+    alias_type: [TypeExpr],
+    // Import
+    import_path: [ImportPath],
+    // Extern
+    abi: str,
+    extern_items: [Decl],
+    // Source position
+    start: i32,
+    end: i32
+}
+
+// ===================================================================
+// Module -- the root of a parsed file
+// ===================================================================
+
+struct Module {
+    name: str,
+    declarations: [Decl],
+    start: i32,
+    end: i32
+}
+
+// ===================================================================
+// Expr constructors -- `mk_*` helpers to build AST nodes cleanly
+// ===================================================================
+
+fn mk_int_lit(value: i32, s: i32, e: i32) -> Expr {
+    return Expr {
+        kind: EXPR_INT_LIT, int_val: value, float_val: 0.0,
+        str_val: "", bool_val: false, name: "", op: 0,
+        left: [], right: [], args: [], elements: [],
+        field_names: [], field_exprs: [],
+        params: [], ret_type: [],
+        then_block: [], else_block: [],
+        match_arms: [], inclusive: false,
+        cast_type: [], block_stmts: [], string_parts: [],
+        start: s, end: e
+    }
+}
+
+fn mk_float_lit(value: f64, s: i32, e: i32) -> Expr {
+    return Expr {
+        kind: EXPR_FLOAT_LIT, int_val: 0, float_val: value,
+        str_val: "", bool_val: false, name: "", op: 0,
+        left: [], right: [], args: [], elements: [],
+        field_names: [], field_exprs: [],
+        params: [], ret_type: [],
+        then_block: [], else_block: [],
+        match_arms: [], inclusive: false,
+        cast_type: [], block_stmts: [], string_parts: [],
+        start: s, end: e
+    }
+}
+
+fn mk_string_lit(value: str, s: i32, e: i32) -> Expr {
+    return Expr {
+        kind: EXPR_STRING_LIT, int_val: 0, float_val: 0.0,
+        str_val: value, bool_val: false, name: "", op: 0,
+        left: [], right: [], args: [], elements: [],
+        field_names: [], field_exprs: [],
+        params: [], ret_type: [],
+        then_block: [], else_block: [],
+        match_arms: [], inclusive: false,
+        cast_type: [], block_stmts: [], string_parts: [],
+        start: s, end: e
+    }
+}
+
+fn mk_bool_lit(value: bool, s: i32, e: i32) -> Expr {
+    return Expr {
+        kind: EXPR_BOOL_LIT, int_val: 0, float_val: 0.0,
+        str_val: "", bool_val: value, name: "", op: 0,
+        left: [], right: [], args: [], elements: [],
+        field_names: [], field_exprs: [],
+        params: [], ret_type: [],
+        then_block: [], else_block: [],
+        match_arms: [], inclusive: false,
+        cast_type: [], block_stmts: [], string_parts: [],
+        start: s, end: e
+    }
+}
+
+fn mk_none_lit(s: i32, e: i32) -> Expr {
+    return Expr {
+        kind: EXPR_NONE_LIT, int_val: 0, float_val: 0.0,
+        str_val: "", bool_val: false, name: "", op: 0,
+        left: [], right: [], args: [], elements: [],
+        field_names: [], field_exprs: [],
+        params: [], ret_type: [],
+        then_block: [], else_block: [],
+        match_arms: [], inclusive: false,
+        cast_type: [], block_stmts: [], string_parts: [],
+        start: s, end: e
+    }
+}
+
+fn mk_ident(name: str, s: i32, e: i32) -> Expr {
+    return Expr {
+        kind: EXPR_IDENT, int_val: 0, float_val: 0.0,
+        str_val: "", bool_val: false, name: name, op: 0,
+        left: [], right: [], args: [], elements: [],
+        field_names: [], field_exprs: [],
+        params: [], ret_type: [],
+        then_block: [], else_block: [],
+        match_arms: [], inclusive: false,
+        cast_type: [], block_stmts: [], string_parts: [],
+        start: s, end: e
+    }
+}
+
+fn mk_binary_op(op: i32, left: Expr, right: Expr, s: i32, e: i32) -> Expr {
+    return Expr {
+        kind: EXPR_BINARY_OP, int_val: 0, float_val: 0.0,
+        str_val: "", bool_val: false, name: "", op: op,
+        left: [left], right: [right], args: [], elements: [],
+        field_names: [], field_exprs: [],
+        params: [], ret_type: [],
+        then_block: [], else_block: [],
+        match_arms: [], inclusive: false,
+        cast_type: [], block_stmts: [], string_parts: [],
+        start: s, end: e
+    }
+}
+
+fn mk_unary_op(op: i32, operand: Expr, s: i32, e: i32) -> Expr {
+    return Expr {
+        kind: EXPR_UNARY_OP, int_val: 0, float_val: 0.0,
+        str_val: "", bool_val: false, name: "", op: op,
+        left: [operand], right: [], args: [], elements: [],
+        field_names: [], field_exprs: [],
+        params: [], ret_type: [],
+        then_block: [], else_block: [],
+        match_arms: [], inclusive: false,
+        cast_type: [], block_stmts: [], string_parts: [],
+        start: s, end: e
+    }
+}
+
+fn mk_fn_call(callee: Expr, call_args: [Expr], s: i32, e: i32) -> Expr {
+    return Expr {
+        kind: EXPR_FN_CALL, int_val: 0, float_val: 0.0,
+        str_val: "", bool_val: false, name: "", op: 0,
+        left: [callee], right: [], args: call_args, elements: [],
+        field_names: [], field_exprs: [],
+        params: [], ret_type: [],
+        then_block: [], else_block: [],
+        match_arms: [], inclusive: false,
+        cast_type: [], block_stmts: [], string_parts: [],
+        start: s, end: e
+    }
+}
+
+fn mk_method_call(object: Expr, method: str, call_args: [Expr], s: i32, e: i32) -> Expr {
+    return Expr {
+        kind: EXPR_METHOD_CALL, int_val: 0, float_val: 0.0,
+        str_val: "", bool_val: false, name: method, op: 0,
+        left: [object], right: [], args: call_args, elements: [],
+        field_names: [], field_exprs: [],
+        params: [], ret_type: [],
+        then_block: [], else_block: [],
+        match_arms: [], inclusive: false,
+        cast_type: [], block_stmts: [], string_parts: [],
+        start: s, end: e
+    }
+}
+
+fn mk_field_access(object: Expr, field: str, s: i32, e: i32) -> Expr {
+    return Expr {
+        kind: EXPR_FIELD_ACCESS, int_val: 0, float_val: 0.0,
+        str_val: "", bool_val: false, name: field, op: 0,
+        left: [object], right: [], args: [], elements: [],
+        field_names: [], field_exprs: [],
+        params: [], ret_type: [],
+        then_block: [], else_block: [],
+        match_arms: [], inclusive: false,
+        cast_type: [], block_stmts: [], string_parts: [],
+        start: s, end: e
+    }
+}
+
+fn mk_index_access(object: Expr, index: Expr, s: i32, e: i32) -> Expr {
+    return Expr {
+        kind: EXPR_INDEX_ACCESS, int_val: 0, float_val: 0.0,
+        str_val: "", bool_val: false, name: "", op: 0,
+        left: [object], right: [index], args: [], elements: [],
+        field_names: [], field_exprs: [],
+        params: [], ret_type: [],
+        then_block: [], else_block: [],
+        match_arms: [], inclusive: false,
+        cast_type: [], block_stmts: [], string_parts: [],
+        start: s, end: e
+    }
+}
+
+fn mk_array_lit(elems: [Expr], s: i32, e: i32) -> Expr {
+    return Expr {
+        kind: EXPR_ARRAY_LIT, int_val: 0, float_val: 0.0,
+        str_val: "", bool_val: false, name: "", op: 0,
+        left: [], right: [], args: [], elements: elems,
+        field_names: [], field_exprs: [],
+        params: [], ret_type: [],
+        then_block: [], else_block: [],
+        match_arms: [], inclusive: false,
+        cast_type: [], block_stmts: [], string_parts: [],
+        start: s, end: e
+    }
+}
+
+fn mk_struct_lit(sname: str, fnames: [str], fexprs: [Expr], s: i32, e: i32) -> Expr {
+    return Expr {
+        kind: EXPR_STRUCT_LIT, int_val: 0, float_val: 0.0,
+        str_val: "", bool_val: false, name: sname, op: 0,
+        left: [], right: [], args: [], elements: [],
+        field_names: fnames, field_exprs: fexprs,
+        params: [], ret_type: [],
+        then_block: [], else_block: [],
+        match_arms: [], inclusive: false,
+        cast_type: [], block_stmts: [], string_parts: [],
+        start: s, end: e
+    }
+}
+
+fn mk_map_lit(keys: [Expr], vals: [Expr], s: i32, e: i32) -> Expr {
+    return Expr {
+        kind: EXPR_MAP_LIT, int_val: 0, float_val: 0.0,
+        str_val: "", bool_val: false, name: "", op: 0,
+        left: keys, right: vals, args: [], elements: [],
+        field_names: [], field_exprs: [],
+        params: [], ret_type: [],
+        then_block: [], else_block: [],
+        match_arms: [], inclusive: false,
+        cast_type: [], block_stmts: [], string_parts: [],
+        start: s, end: e
+    }
+}
+
+// ===================================================================
+// Binop name helper (for AST printing)
+// ===================================================================
+
+fn binop_name(op: i32) -> str {
+    if op == BINOP_ADD     { return "+" }
+    if op == BINOP_SUB     { return "-" }
+    if op == BINOP_MUL     { return "*" }
+    if op == BINOP_DIV     { return "/" }
+    if op == BINOP_MOD     { return "%" }
+    if op == BINOP_POW     { return "**" }
+    if op == BINOP_EQ      { return "==" }
+    if op == BINOP_NEQ     { return "!=" }
+    if op == BINOP_LT      { return "<" }
+    if op == BINOP_GT      { return ">" }
+    if op == BINOP_LT_EQ   { return "<=" }
+    if op == BINOP_GT_EQ   { return ">=" }
+    if op == BINOP_AND     { return "and" }
+    if op == BINOP_OR      { return "or" }
+    if op == BINOP_BIT_AND { return "&" }
+    if op == BINOP_BIT_OR  { return "|" }
+    if op == BINOP_BIT_XOR { return "^" }
+    if op == BINOP_SHL     { return "<<" }
+    if op == BINOP_SHR     { return ">>" }
+    return "?"
+}

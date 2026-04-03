@@ -1,0 +1,395 @@
+// ============================================================
+// std.string -- String manipulation functions
+//
+// All functions operate on immutable Kryos strings.
+// Strings are UTF-8 sequences; indexing is byte-based.
+//
+// Usage: std.string.trim(s), std.string.split(s, ","), etc.
+// ============================================================
+
+// --- Query -------------------------------------------------------------------
+
+/// Length of the string in characters.
+fn len(s: str) -> i64 {
+    return __builtin_len(s)
+}
+
+/// True if the string has zero length.
+fn is_empty(s: str) -> bool {
+    return len(s) == 0
+}
+
+/// True if haystack contains needle.
+fn contains(haystack: str, needle: str) -> bool {
+    let result = find(haystack, needle)
+    return result >= 0
+}
+
+/// True if s begins with prefix.
+fn starts_with(s: str, prefix: str) -> bool {
+    let plen = len(prefix)
+    if plen > len(s) {
+        return false
+    }
+    let mut i = 0
+    while i < plen {
+        if s[i] != prefix[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+/// True if s ends with suffix.
+fn ends_with(s: str, suffix: str) -> bool {
+    let slen = len(s)
+    let xlen = len(suffix)
+    if xlen > slen {
+        return false
+    }
+    let offset = slen - xlen
+    let mut i = 0
+    while i < xlen {
+        if s[offset + i] != suffix[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+/// Find the first occurrence of needle in haystack.
+/// Returns the index, or -1 if not found.
+fn find(haystack: str, needle: str) -> i64 {
+    let hlen = len(haystack)
+    let nlen = len(needle)
+    if nlen == 0 {
+        return 0
+    }
+    if nlen > hlen {
+        return -1
+    }
+    let mut i = 0
+    let limit = hlen - nlen
+    while i <= limit {
+        let mut matched = true
+        let mut j = 0
+        while j < nlen {
+            if haystack[i + j] != needle[j] {
+                matched = false
+                j = nlen
+            }
+            j = j + 1
+        }
+        if matched {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+/// Find the last occurrence of needle in haystack.
+/// Returns the index, or -1 if not found.
+fn rfind(haystack: str, needle: str) -> i64 {
+    let hlen = len(haystack)
+    let nlen = len(needle)
+    if nlen == 0 {
+        return hlen
+    }
+    if nlen > hlen {
+        return -1
+    }
+    let mut i = hlen - nlen
+    while i >= 0 {
+        let mut matched = true
+        let mut j = 0
+        while j < nlen {
+            if haystack[i + j] != needle[j] {
+                matched = false
+                j = nlen
+            }
+            j = j + 1
+        }
+        if matched {
+            return i
+        }
+        i = i - 1
+    }
+    return -1
+}
+
+// --- Case conversion ---------------------------------------------------------
+
+/// Convert every character to uppercase (ASCII).
+fn to_upper(s: str) -> str {
+    let mut result = ""
+    let slen = len(s)
+    let mut i = 0
+    while i < slen {
+        let ch = s[i]
+        let code = char_code(ch)
+        // a-z => A-Z
+        if code >= 97 and code <= 122 {
+            result = result + from_char_code(code - 32)
+        } else {
+            result = result + ch
+        }
+        i = i + 1
+    }
+    return result
+}
+
+/// Convert every character to lowercase (ASCII).
+fn to_lower(s: str) -> str {
+    let mut result = ""
+    let slen = len(s)
+    let mut i = 0
+    while i < slen {
+        let ch = s[i]
+        let code = char_code(ch)
+        // A-Z => a-z
+        if code >= 65 and code <= 90 {
+            result = result + from_char_code(code + 32)
+        } else {
+            result = result + ch
+        }
+        i = i + 1
+    }
+    return result
+}
+
+// --- Whitespace helpers ------------------------------------------------------
+
+fn _is_whitespace(ch: str) -> bool {
+    return ch == " " or ch == "\t" or ch == "\n" or ch == "\r"
+}
+
+/// Remove leading and trailing whitespace.
+fn trim(s: str) -> str {
+    let slen = len(s)
+    if slen == 0 {
+        return s
+    }
+    let mut start = 0
+    while start < slen and _is_whitespace(s[start]) {
+        start = start + 1
+    }
+    let mut end = slen - 1
+    while end >= start and _is_whitespace(s[end]) {
+        end = end - 1
+    }
+    if start > end {
+        return ""
+    }
+    return substring(s, start, end + 1)
+}
+
+/// Remove leading whitespace.
+fn trim_start(s: str) -> str {
+    let slen = len(s)
+    let mut start = 0
+    while start < slen and _is_whitespace(s[start]) {
+        start = start + 1
+    }
+    return substring(s, start, slen)
+}
+
+/// Remove trailing whitespace.
+fn trim_end(s: str) -> str {
+    let slen = len(s)
+    if slen == 0 {
+        return s
+    }
+    let mut end = slen - 1
+    while end >= 0 and _is_whitespace(s[end]) {
+        end = end - 1
+    }
+    return substring(s, 0, end + 1)
+}
+
+// --- Splitting and joining ---------------------------------------------------
+
+/// Split s by a delimiter string. Returns an array of substrings.
+fn split(s: str, delimiter: str) -> [str] {
+    let mut result = []
+    let slen = len(s)
+    let dlen = len(delimiter)
+
+    if dlen == 0 {
+        // Split into individual characters
+        let mut i = 0
+        while i < slen {
+            push(result, s[i])
+            i = i + 1
+        }
+        return result
+    }
+
+    let mut start = 0
+    let mut i = 0
+    while i <= slen - dlen {
+        let mut matched = true
+        let mut j = 0
+        while j < dlen {
+            if s[i + j] != delimiter[j] {
+                matched = false
+                j = dlen
+            }
+            j = j + 1
+        }
+        if matched {
+            push(result, substring(s, start, i))
+            start = i + dlen
+            i = start
+        } else {
+            i = i + 1
+        }
+    }
+    push(result, substring(s, start, slen))
+    return result
+}
+
+/// Join an array of strings with a separator.
+fn join(parts: [str], separator: str) -> str {
+    let plen = len(parts)
+    if plen == 0 {
+        return ""
+    }
+    let mut result = parts[0]
+    let mut i = 1
+    while i < plen {
+        result = result + separator + parts[i]
+        i = i + 1
+    }
+    return result
+}
+
+// --- Replacement -------------------------------------------------------------
+
+/// Replace all occurrences of old_str with new_str.
+fn replace(s: str, old_str: str, new_str: str) -> str {
+    let parts = split(s, old_str)
+    return join(parts, new_str)
+}
+
+// --- Repetition --------------------------------------------------------------
+
+/// Repeat a string n times.
+fn repeat(s: str, n: i64) -> str {
+    if n <= 0 {
+        return ""
+    }
+    let mut result = ""
+    let mut i = 0
+    while i < n {
+        result = result + s
+        i = i + 1
+    }
+    return result
+}
+
+// --- Reversal ----------------------------------------------------------------
+
+/// Reverse a string character by character.
+fn reverse(s: str) -> str {
+    let slen = len(s)
+    let mut result = ""
+    let mut i = slen - 1
+    while i >= 0 {
+        result = result + s[i]
+        i = i - 1
+    }
+    return result
+}
+
+// --- Character access --------------------------------------------------------
+
+/// Split a string into an array of single characters.
+fn chars(s: str) -> [str] {
+    let mut result = []
+    let slen = len(s)
+    let mut i = 0
+    while i < slen {
+        push(result, s[i])
+        i = i + 1
+    }
+    return result
+}
+
+/// Get the character at index i, or empty string if out of bounds.
+fn char_at(s: str, i: i64) -> str {
+    if i < 0 or i >= len(s) {
+        return ""
+    }
+    return s[i]
+}
+
+/// Extract a substring from start (inclusive) to end (exclusive).
+fn substring(s: str, start: i64, end: i64) -> str {
+    let slen = len(s)
+    let mut a = start
+    let mut b = end
+    if a < 0 {
+        a = 0
+    }
+    if b > slen {
+        b = slen
+    }
+    if a >= b {
+        return ""
+    }
+    return substr(s, a, b)
+}
+
+// --- Padding -----------------------------------------------------------------
+
+/// Pad a string on the left to reach the target width.
+fn pad_left(s: str, width: i64, fill: str) -> str {
+    let slen = len(s)
+    if slen >= width {
+        return s
+    }
+    let pad_amount = width - slen
+    let fill_char = if len(fill) > 0 { fill[0] } else { " " }
+    let mut padding = ""
+    let mut i = 0
+    while i < pad_amount {
+        padding = padding + fill_char
+        i = i + 1
+    }
+    return padding + s
+}
+
+/// Pad a string on the right to reach the target width.
+fn pad_right(s: str, width: i64, fill: str) -> str {
+    let slen = len(s)
+    if slen >= width {
+        return s
+    }
+    let pad_amount = width - slen
+    let fill_char = if len(fill) > 0 { fill[0] } else { " " }
+    let mut result = s
+    let mut i = 0
+    while i < pad_amount {
+        result = result + fill_char
+        i = i + 1
+    }
+    return result
+}
+
+// --- Formatting --------------------------------------------------------------
+
+/// Simple template formatting. Replaces {0}, {1}, ... with positional args.
+fn format(template: str, args: [str]) -> str {
+    let mut result = template
+    let argc = len(args)
+    let mut i = 0
+    while i < argc {
+        let placeholder = "{" + to_string(i) + "}"
+        result = replace(result, placeholder, args[i])
+        i = i + 1
+    }
+    return result
+}

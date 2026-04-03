@@ -1,0 +1,365 @@
+// ============================================================
+// std.datetime -- Time, timestamps, durations, and formatting
+//
+// Wraps the kryos-stdlib-native datetime FFI (SystemTime-backed)
+// and provides pure-Kryos date/time arithmetic and formatting.
+// ============================================================
+
+// --- Native FFI declarations ------------------------------------------------
+
+extern {
+    fn kryos_time_now_secs() -> i64
+    fn kryos_time_now_millis() -> i64
+}
+
+// --- Duration type ----------------------------------------------------------
+
+struct Duration {
+    millis: i64
+}
+
+impl Duration {
+    // Return the duration in whole seconds.
+    fn as_secs(self: Duration) -> i64 {
+        return self.millis / 1000
+    }
+
+    // Return the duration in milliseconds.
+    fn as_millis(self: Duration) -> i64 {
+        return self.millis
+    }
+
+    // Return the subsecond component in milliseconds (0-999).
+    fn subsec_millis(self: Duration) -> i64 {
+        return self.millis % 1000
+    }
+
+    // Add two durations.
+    fn add(self: Duration, other: Duration) -> Duration {
+        return Duration { millis: self.millis + other.millis }
+    }
+
+    // Subtract another duration from this one.
+    fn sub(self: Duration, other: Duration) -> Duration {
+        return Duration { millis: self.millis - other.millis }
+    }
+
+    // Multiply the duration by a scalar.
+    fn mul(self: Duration, factor: i64) -> Duration {
+        return Duration { millis: self.millis * factor }
+    }
+
+    // Check if this duration is zero.
+    fn is_zero(self: Duration) -> bool {
+        return self.millis == 0
+    }
+
+    // Format the duration as a human-readable string.
+    fn to_string(self: Duration) -> str {
+        let total_secs = self.millis / 1000
+        let ms = self.millis % 1000
+
+        if total_secs == 0 {
+            return to_string(ms) + "ms"
+        }
+
+        let hours = total_secs / 3600
+        let minutes = (total_secs % 3600) / 60
+        let seconds = total_secs % 60
+
+        let mut result = ""
+        if hours > 0 {
+            result = result + to_string(hours) + "h"
+        }
+        if minutes > 0 {
+            result = result + to_string(minutes) + "m"
+        }
+        if seconds > 0 or (hours == 0 and minutes == 0) {
+            result = result + to_string(seconds)
+            if ms > 0 {
+                result = result + "." + _pad_left(to_string(ms), 3, "0")
+            }
+            result = result + "s"
+        }
+        return result
+    }
+}
+
+// Create a Duration from milliseconds.
+fn from_millis(ms: i64) -> Duration {
+    return Duration { millis: ms }
+}
+
+// Create a Duration from seconds.
+fn from_secs(secs: i64) -> Duration {
+    return Duration { millis: secs * 1000 }
+}
+
+// Create a Duration from minutes.
+fn from_mins(mins: i64) -> Duration {
+    return Duration { millis: mins * 60 * 1000 }
+}
+
+// Create a Duration from hours.
+fn from_hours(hours: i64) -> Duration {
+    return Duration { millis: hours * 3600 * 1000 }
+}
+
+// A zero-length duration.
+fn zero() -> Duration {
+    return Duration { millis: 0 }
+}
+
+// --- Instant type (monotonic-ish timestamps) --------------------------------
+
+struct Instant {
+    epoch_millis: i64
+}
+
+impl Instant {
+    // Return the elapsed duration since this instant.
+    fn elapsed(self: Instant) -> Duration {
+        let current = kryos_time_now_millis()
+        return Duration { millis: current - self.epoch_millis }
+    }
+
+    // Return the duration between this instant and another.
+    fn duration_since(self: Instant, earlier: Instant) -> Duration {
+        return Duration { millis: self.epoch_millis - earlier.epoch_millis }
+    }
+
+    // Check if this instant is after another.
+    fn is_after(self: Instant, other: Instant) -> bool {
+        return self.epoch_millis > other.epoch_millis
+    }
+
+    // Check if this instant is before another.
+    fn is_before(self: Instant, other: Instant) -> bool {
+        return self.epoch_millis < other.epoch_millis
+    }
+
+    // Add a duration to this instant, producing a new instant.
+    fn add(self: Instant, dur: Duration) -> Instant {
+        return Instant { epoch_millis: self.epoch_millis + dur.millis }
+    }
+
+    // Subtract a duration from this instant.
+    fn sub(self: Instant, dur: Duration) -> Instant {
+        return Instant { epoch_millis: self.epoch_millis - dur.millis }
+    }
+
+    // Return the raw epoch milliseconds.
+    fn as_millis(self: Instant) -> i64 {
+        return self.epoch_millis
+    }
+
+    // Return the raw epoch seconds.
+    fn as_secs(self: Instant) -> i64 {
+        return self.epoch_millis / 1000
+    }
+}
+
+// Capture the current time as an Instant.
+fn now() -> Instant {
+    let ms = kryos_time_now_millis()
+    if ms < 0 {
+        throw "datetime error: system clock returned negative timestamp"
+    }
+    return Instant { epoch_millis: ms }
+}
+
+// Return the current Unix timestamp in seconds.
+fn timestamp() -> i64 {
+    let secs = kryos_time_now_secs()
+    if secs < 0 {
+        throw "datetime error: system clock returned negative timestamp"
+    }
+    return secs
+}
+
+// Return the current Unix timestamp in milliseconds.
+fn timestamp_millis() -> i64 {
+    let ms = kryos_time_now_millis()
+    if ms < 0 {
+        throw "datetime error: system clock returned negative timestamp"
+    }
+    return ms
+}
+
+// Measure the elapsed time of a callback (for benchmarking).
+fn measure(callback: fn() -> str) -> Duration {
+    let start = now()
+    callback()
+    return start.elapsed()
+}
+
+// --- Sleep ------------------------------------------------------------------
+
+// Sleep for the given duration.
+// Implemented as a busy-wait since the native layer lacks a sleep syscall.
+// For real applications, a native kryos_sleep binding is preferred.
+fn sleep(dur: Duration) -> bool {
+    let target = kryos_time_now_millis() + dur.millis
+    while kryos_time_now_millis() < target {
+        // busy wait
+    }
+    return true
+}
+
+// Sleep for the given number of milliseconds.
+fn sleep_millis(ms: i64) -> bool {
+    return sleep(from_millis(ms))
+}
+
+// Sleep for the given number of seconds.
+fn sleep_secs(secs: i64) -> bool {
+    return sleep(from_secs(secs))
+}
+
+// --- Date/time formatting ---------------------------------------------------
+
+// Internal: pad a string on the left with a character.
+fn _pad_left(s: str, width: i32, pad_char: str) -> str {
+    let mut result = s
+    while len(result) < width {
+        result = pad_char + result
+    }
+    return result
+}
+
+// Days in each month (non-leap year).
+fn _days_in_month(month: i32, is_leap: bool) -> i32 {
+    let days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    if month == 2 and is_leap {
+        return 29
+    }
+    return days[month - 1]
+}
+
+// Check if a year is a leap year.
+fn _is_leap_year(year: i32) -> bool {
+    if year % 400 == 0 {
+        return true
+    }
+    if year % 100 == 0 {
+        return false
+    }
+    if year % 4 == 0 {
+        return true
+    }
+    return false
+}
+
+struct DateTime {
+    year: i32,
+    month: i32,
+    day: i32,
+    hour: i32,
+    minute: i32,
+    second: i32
+}
+
+impl DateTime {
+    // Format as ISO 8601: "2026-04-02T14:30:00Z"
+    fn to_iso(self: DateTime) -> str {
+        let y = _pad_left(to_string(self.year), 4, "0")
+        let mo = _pad_left(to_string(self.month), 2, "0")
+        let d = _pad_left(to_string(self.day), 2, "0")
+        let h = _pad_left(to_string(self.hour), 2, "0")
+        let mi = _pad_left(to_string(self.minute), 2, "0")
+        let s = _pad_left(to_string(self.second), 2, "0")
+        return y + "-" + mo + "-" + d + "T" + h + ":" + mi + ":" + s + "Z"
+    }
+
+    // Format as "YYYY-MM-DD"
+    fn to_date_string(self: DateTime) -> str {
+        let y = _pad_left(to_string(self.year), 4, "0")
+        let mo = _pad_left(to_string(self.month), 2, "0")
+        let d = _pad_left(to_string(self.day), 2, "0")
+        return y + "-" + mo + "-" + d
+    }
+
+    // Format as "HH:MM:SS"
+    fn to_time_string(self: DateTime) -> str {
+        let h = _pad_left(to_string(self.hour), 2, "0")
+        let mi = _pad_left(to_string(self.minute), 2, "0")
+        let s = _pad_left(to_string(self.second), 2, "0")
+        return h + ":" + mi + ":" + s
+    }
+
+    // Format as human-readable: "Apr 02, 2026 14:30"
+    fn to_human(self: DateTime) -> str {
+        let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        let month_name = months[self.month - 1]
+        let d = _pad_left(to_string(self.day), 2, "0")
+        let h = _pad_left(to_string(self.hour), 2, "0")
+        let mi = _pad_left(to_string(self.minute), 2, "0")
+        return month_name + " " + d + ", " + to_string(self.year) + " " + h + ":" + mi
+    }
+}
+
+// Convert a Unix timestamp (seconds) to a DateTime (UTC).
+fn from_timestamp(epoch_secs: i64) -> DateTime {
+    let mut remaining = epoch_secs
+
+    // Calculate year
+    let mut year = 1970
+    let mut done = false
+    while not done {
+        let days_in_year = if _is_leap_year(year) { 366 } else { 365 }
+        let secs_in_year = days_in_year * 86400
+        if remaining < secs_in_year {
+            done = true
+        } else {
+            remaining = remaining - secs_in_year
+            year = year + 1
+        }
+    }
+
+    // Calculate month and day
+    let mut month = 1
+    done = false
+    while not done {
+        let dim = _days_in_month(month, _is_leap_year(year))
+        let secs_in_month = dim * 86400
+        if remaining < secs_in_month {
+            done = true
+        } else {
+            remaining = remaining - secs_in_month
+            month = month + 1
+        }
+    }
+
+    let day = (remaining / 86400) + 1
+    remaining = remaining % 86400
+    let hour = remaining / 3600
+    remaining = remaining % 3600
+    let minute = remaining / 60
+    let second = remaining % 60
+
+    return DateTime {
+        year: year,
+        month: month,
+        day: day,
+        hour: hour,
+        minute: minute,
+        second: second
+    }
+}
+
+// Get the current date and time as a DateTime (UTC).
+fn now_utc() -> DateTime {
+    return from_timestamp(timestamp())
+}
+
+// Format the current time as an ISO 8601 string.
+fn format_timestamp(epoch_secs: i64) -> str {
+    let dt = from_timestamp(epoch_secs)
+    return dt.to_iso()
+}
+
+// Format the current time as ISO 8601.
+fn now_iso() -> str {
+    return now_utc().to_iso()
+}

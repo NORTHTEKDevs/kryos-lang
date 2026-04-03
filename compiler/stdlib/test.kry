@@ -1,0 +1,592 @@
+// ============================================================
+// std.test -- Test framework for Kryos programs
+//
+// Provides assertions, test grouping (describe/it), hooks
+// (before_each/after_each), timing, and a test runner that
+// produces a structured TestReport.
+//
+// Usage:
+//   let suite = std.test.describe("math", [
+//       std.test.it("adds numbers", fn() {
+//           std.test.assert_eq(1 + 1, 2, "basic addition")
+//       })
+//   ])
+//   let report = std.test.run_suite(suite)
+//   std.test.print_report(report)
+// ============================================================
+
+// --- Assertions --------------------------------------------------------------
+
+/// Assert that a condition is true.  Throws with the message if false.
+fn assert(condition: bool, msg: str) -> void {
+    if not condition {
+        throw "assertion failed: " + msg
+    }
+}
+
+/// Assert that two values are equal.
+fn assert_eq(actual: any, expected: any, msg: str) -> void {
+    if actual != expected {
+        throw "assertion failed: " + msg + " -- expected " + to_string(expected) + " but got " + to_string(actual)
+    }
+}
+
+/// Assert that two values are not equal.
+fn assert_ne(actual: any, expected: any, msg: str) -> void {
+    if actual == expected {
+        throw "assertion failed: " + msg + " -- expected values to differ but both are " + to_string(actual)
+    }
+}
+
+/// Assert that a value is true.
+fn assert_true(val: bool) -> void {
+    if not val {
+        throw "assertion failed: expected true but got false"
+    }
+}
+
+/// Assert that a value is false.
+fn assert_false(val: bool) -> void {
+    if val {
+        throw "assertion failed: expected false but got true"
+    }
+}
+
+/// Assert that a value is null.
+fn assert_null(val: any) -> void {
+    if val != null {
+        throw "assertion failed: expected null but got " + to_string(val)
+    }
+}
+
+/// Assert that a value is not null.
+fn assert_not_null(val: any) -> void {
+    if val == null {
+        throw "assertion failed: expected non-null value"
+    }
+}
+
+/// Assert that a value is greater than another.
+fn assert_gt(actual: f64, expected: f64, msg: str) -> void {
+    if actual <= expected {
+        throw "assertion failed: " + msg + " -- expected " + to_string(actual) + " > " + to_string(expected)
+    }
+}
+
+/// Assert that a value is less than another.
+fn assert_lt(actual: f64, expected: f64, msg: str) -> void {
+    if actual >= expected {
+        throw "assertion failed: " + msg + " -- expected " + to_string(actual) + " < " + to_string(expected)
+    }
+}
+
+/// Assert that a value is greater than or equal to another.
+fn assert_gte(actual: f64, expected: f64, msg: str) -> void {
+    if actual < expected {
+        throw "assertion failed: " + msg + " -- expected " + to_string(actual) + " >= " + to_string(expected)
+    }
+}
+
+/// Assert that a value is less than or equal to another.
+fn assert_lte(actual: f64, expected: f64, msg: str) -> void {
+    if actual > expected {
+        throw "assertion failed: " + msg + " -- expected " + to_string(actual) + " <= " + to_string(expected)
+    }
+}
+
+/// Assert that two floats are approximately equal within an epsilon.
+fn assert_approx(actual: f64, expected: f64, epsilon: f64, msg: str) -> void {
+    let diff = actual - expected
+    let abs_diff = if diff < 0.0 { -diff } else { diff }
+    if abs_diff > epsilon {
+        throw "assertion failed: " + msg + " -- expected " + to_string(expected) + " +/- " + to_string(epsilon) + " but got " + to_string(actual)
+    }
+}
+
+/// Assert that a string contains a substring.
+fn assert_contains(haystack: str, needle: str, msg: str) -> void {
+    let hlen = len(haystack)
+    let nlen = len(needle)
+    if nlen == 0 {
+        return
+    }
+    if nlen > hlen {
+        throw "assertion failed: " + msg + " -- \"" + haystack + "\" does not contain \"" + needle + "\""
+    }
+    let mut i = 0
+    let limit = hlen - nlen
+    while i <= limit {
+        let mut matched = true
+        let mut j = 0
+        while j < nlen {
+            if haystack[i + j] != needle[j] {
+                matched = false
+                j = nlen
+            }
+            j = j + 1
+        }
+        if matched {
+            return
+        }
+        i = i + 1
+    }
+    throw "assertion failed: " + msg + " -- \"" + haystack + "\" does not contain \"" + needle + "\""
+}
+
+/// Assert that a function throws an error.
+/// If expected_msg is non-empty, the error message must contain it.
+fn assert_throws(f: fn, expected_msg: str) -> void {
+    let mut threw = false
+    let mut actual_msg = ""
+    try {
+        f()
+    } catch (e) {
+        threw = true
+        actual_msg = to_string(e)
+    }
+    if not threw {
+        throw "assertion failed: expected function to throw but it did not"
+    }
+    if len(expected_msg) > 0 {
+        // Check if actual message contains expected
+        let alen = len(actual_msg)
+        let elen = len(expected_msg)
+        if elen > alen {
+            throw "assertion failed: expected error containing \"" + expected_msg + "\" but got \"" + actual_msg + "\""
+        }
+        let mut found = false
+        let mut i = 0
+        let limit = alen - elen
+        while i <= limit {
+            let mut matched = true
+            let mut j = 0
+            while j < elen {
+                if actual_msg[i + j] != expected_msg[j] {
+                    matched = false
+                    j = elen
+                }
+                j = j + 1
+            }
+            if matched {
+                found = true
+                i = limit + 1
+            }
+            i = i + 1
+        }
+        if not found {
+            throw "assertion failed: expected error containing \"" + expected_msg + "\" but got \"" + actual_msg + "\""
+        }
+    }
+}
+
+/// Assert that a function does NOT throw.
+fn assert_no_throw(f: fn) -> void {
+    try {
+        f()
+    } catch (e) {
+        throw "assertion failed: expected no throw but got: " + to_string(e)
+    }
+}
+
+// --- Test result types -------------------------------------------------------
+
+enum TestStatus {
+    Passed,
+    Failed(str),
+    Skipped(str)
+}
+
+struct TestResult {
+    name: str,
+    status: TestStatus,
+    elapsed_ms: f64
+}
+
+struct TestReport {
+    suite_name: str,
+    results: [TestResult],
+    total: i64,
+    passed: i64,
+    failed: i64,
+    skipped: i64,
+    total_elapsed_ms: f64
+}
+
+// --- Test case definition ----------------------------------------------------
+
+struct TestCase {
+    name: str,
+    body: fn,
+    skip: bool,
+    skip_reason: str
+}
+
+/// Define a test case.
+fn it(name: str, body: fn) -> TestCase {
+    return TestCase {
+        name: name,
+        body: body,
+        skip: false,
+        skip_reason: ""
+    }
+}
+
+/// Define a test case that will be skipped.
+fn xit(name: str, reason: str) -> TestCase {
+    return TestCase {
+        name: name,
+        body: fn() {},
+        skip: true,
+        skip_reason: reason
+    }
+}
+
+// --- Test suite (describe/it grouping) ---------------------------------------
+
+struct TestSuite {
+    name: str,
+    tests: [TestCase],
+    before_each_hook: fn,
+    after_each_hook: fn,
+    before_all_hook: fn,
+    after_all_hook: fn
+}
+
+/// Create a test suite (describe block).
+fn describe(name: str, tests: [TestCase]) -> TestSuite {
+    return TestSuite {
+        name: name,
+        tests: tests,
+        before_each_hook: fn() {},
+        after_each_hook: fn() {},
+        before_all_hook: fn() {},
+        after_all_hook: fn() {}
+    }
+}
+
+/// Set the before_each hook on a suite.
+fn before_each(suite: TestSuite, hook: fn) -> TestSuite {
+    return TestSuite {
+        name: suite.name,
+        tests: suite.tests,
+        before_each_hook: hook,
+        after_each_hook: suite.after_each_hook,
+        before_all_hook: suite.before_all_hook,
+        after_all_hook: suite.after_all_hook
+    }
+}
+
+/// Set the after_each hook on a suite.
+fn after_each(suite: TestSuite, hook: fn) -> TestSuite {
+    return TestSuite {
+        name: suite.name,
+        tests: suite.tests,
+        before_each_hook: suite.before_each_hook,
+        after_each_hook: hook,
+        before_all_hook: suite.before_all_hook,
+        after_all_hook: suite.after_all_hook
+    }
+}
+
+/// Set the before_all hook (runs once before the entire suite).
+fn before_all(suite: TestSuite, hook: fn) -> TestSuite {
+    return TestSuite {
+        name: suite.name,
+        tests: suite.tests,
+        before_each_hook: suite.before_each_hook,
+        after_each_hook: suite.after_each_hook,
+        before_all_hook: hook,
+        after_all_hook: suite.after_all_hook
+    }
+}
+
+/// Set the after_all hook (runs once after the entire suite).
+fn after_all(suite: TestSuite, hook: fn) -> TestSuite {
+    return TestSuite {
+        name: suite.name,
+        tests: suite.tests,
+        before_each_hook: suite.before_each_hook,
+        after_each_hook: suite.after_each_hook,
+        before_all_hook: suite.before_all_hook,
+        after_all_hook: hook
+    }
+}
+
+// --- Test runner --------------------------------------------------------------
+
+/// Run a single test case.  Returns a TestResult.
+fn run_test(test: TestCase, before_hook: fn, after_hook: fn) -> TestResult {
+    if test.skip {
+        return TestResult {
+            name: test.name,
+            status: TestStatus.Skipped(test.skip_reason),
+            elapsed_ms: 0.0
+        }
+    }
+
+    let start = time_ms()
+    let mut status = TestStatus.Passed
+
+    try {
+        before_hook()
+    } catch (e) {
+        let elapsed = time_ms() - start
+        return TestResult {
+            name: test.name,
+            status: TestStatus.Failed("before_each hook failed: " + to_string(e)),
+            elapsed_ms: elapsed
+        }
+    }
+
+    try {
+        test.body()
+    } catch (e) {
+        status = TestStatus.Failed(to_string(e))
+    }
+
+    try {
+        after_hook()
+    } catch (e) {
+        // after_each failure doesn't override a test failure, but is noted
+        match status {
+            TestStatus.Passed => {
+                status = TestStatus.Failed("after_each hook failed: " + to_string(e))
+            },
+            _ => {}
+        }
+    }
+
+    let elapsed = time_ms() - start
+    return TestResult {
+        name: test.name,
+        status: status,
+        elapsed_ms: elapsed
+    }
+}
+
+/// Run a complete test suite.  Returns a TestReport.
+fn run_suite(suite: TestSuite) -> TestReport {
+    let suite_start = time_ms()
+    let mut results = []
+    let mut passed = 0
+    let mut failed = 0
+    let mut skipped = 0
+
+    // Run before_all
+    try {
+        suite.before_all_hook()
+    } catch (e) {
+        // If before_all fails, mark all tests as failed
+        let count = len(suite.tests)
+        let mut i = 0
+        while i < count {
+            let result = TestResult {
+                name: suite.tests[i].name,
+                status: TestStatus.Failed("before_all hook failed: " + to_string(e)),
+                elapsed_ms: 0.0
+            }
+            push(results, result)
+            failed = failed + 1
+            i = i + 1
+        }
+        let suite_elapsed = time_ms() - suite_start
+        return TestReport {
+            suite_name: suite.name,
+            results: results,
+            total: count,
+            passed: 0,
+            failed: count,
+            skipped: 0,
+            total_elapsed_ms: suite_elapsed
+        }
+    }
+
+    // Run each test
+    let count = len(suite.tests)
+    let mut i = 0
+    while i < count {
+        let result = run_test(suite.tests[i], suite.before_each_hook, suite.after_each_hook)
+        push(results, result)
+        match result.status {
+            TestStatus.Passed => { passed = passed + 1 },
+            TestStatus.Failed(_) => { failed = failed + 1 },
+            TestStatus.Skipped(_) => { skipped = skipped + 1 }
+        }
+        i = i + 1
+    }
+
+    // Run after_all
+    try {
+        suite.after_all_hook()
+    } catch (e) {
+        // Log but don't fail tests for after_all
+    }
+
+    let suite_elapsed = time_ms() - suite_start
+    return TestReport {
+        suite_name: suite.name,
+        results: results,
+        total: count,
+        passed: passed,
+        failed: failed,
+        skipped: skipped,
+        total_elapsed_ms: suite_elapsed
+    }
+}
+
+/// Run an array of test functions (simple mode, no suites).
+/// Each entry is {"name": str, "fn": fn}.
+fn run_tests(tests: [any]) -> TestReport {
+    let suite_start = time_ms()
+    let mut results = []
+    let mut passed = 0
+    let mut failed = 0
+    let count = len(tests)
+    let mut i = 0
+    while i < count {
+        let test = tests[i]
+        let name = test.name
+        let body = test.fn
+        let start = time_ms()
+        let mut status = TestStatus.Passed
+        try {
+            body()
+        } catch (e) {
+            status = TestStatus.Failed(to_string(e))
+        }
+        let elapsed = time_ms() - start
+        let result = TestResult {
+            name: name,
+            status: status,
+            elapsed_ms: elapsed
+        }
+        push(results, result)
+        match status {
+            TestStatus.Passed => { passed = passed + 1 },
+            TestStatus.Failed(_) => { failed = failed + 1 },
+            _ => {}
+        }
+        i = i + 1
+    }
+    let suite_elapsed = time_ms() - suite_start
+    return TestReport {
+        suite_name: "tests",
+        results: results,
+        total: count,
+        passed: passed,
+        failed: failed,
+        skipped: 0,
+        total_elapsed_ms: suite_elapsed
+    }
+}
+
+// --- Reporting ---------------------------------------------------------------
+
+/// Format a TestReport as a human-readable string.
+fn format_report(report: TestReport) -> str {
+    let mut output = ""
+    output = output + "\n"
+    output = output + "  " + report.suite_name + "\n"
+    output = output + "  " + _repeat("-", len(report.suite_name) + 4) + "\n"
+
+    let count = len(report.results)
+    let mut i = 0
+    while i < count {
+        let result = report.results[i]
+        let status_str = match result.status {
+            TestStatus.Passed => "PASS",
+            TestStatus.Failed(_) => "FAIL",
+            TestStatus.Skipped(_) => "SKIP"
+        }
+        let time_str = _format_ms(result.elapsed_ms)
+        let prefix = match result.status {
+            TestStatus.Passed => "  [PASS] ",
+            TestStatus.Failed(_) => "  [FAIL] ",
+            TestStatus.Skipped(_) => "  [SKIP] "
+        }
+        output = output + prefix + result.name + " (" + time_str + ")\n"
+
+        // Print failure/skip details
+        match result.status {
+            TestStatus.Failed(msg) => {
+                output = output + "         " + msg + "\n"
+            },
+            TestStatus.Skipped(reason) => {
+                if len(reason) > 0 {
+                    output = output + "         reason: " + reason + "\n"
+                }
+            },
+            _ => {}
+        }
+        i = i + 1
+    }
+
+    output = output + "\n"
+    output = output + "  " + to_string(report.total) + " tests, "
+    output = output + to_string(report.passed) + " passed, "
+    output = output + to_string(report.failed) + " failed"
+    if report.skipped > 0 {
+        output = output + ", " + to_string(report.skipped) + " skipped"
+    }
+    output = output + " (" + _format_ms(report.total_elapsed_ms) + ")\n"
+
+    return output
+}
+
+/// Print a test report to stdout.
+fn print_report(report: TestReport) -> void {
+    let output = format_report(report)
+    println(output)
+}
+
+/// Return true if the report has zero failures.
+fn all_passed(report: TestReport) -> bool {
+    return report.failed == 0
+}
+
+/// Return only the failed results from a report.
+fn failures(report: TestReport) -> [TestResult] {
+    let mut failed = []
+    let count = len(report.results)
+    let mut i = 0
+    while i < count {
+        match report.results[i].status {
+            TestStatus.Failed(_) => {
+                push(failed, report.results[i])
+            },
+            _ => {}
+        }
+        i = i + 1
+    }
+    return failed
+}
+
+// --- Internal helpers --------------------------------------------------------
+
+fn _repeat(s: str, n: i64) -> str {
+    let mut result = ""
+    let mut i = 0
+    while i < n {
+        result = result + s
+        i = i + 1
+    }
+    return result
+}
+
+fn _format_ms(ms: f64) -> str {
+    if ms < 1.0 {
+        return "<1ms"
+    }
+    if ms < 1000.0 {
+        return to_string(to_i64(ms)) + "ms"
+    }
+    let seconds = ms / 1000.0
+    // Format to 2 decimal places
+    let whole = to_i64(seconds)
+    let frac = to_i64((seconds - to_f64(whole)) * 100.0)
+    let mut frac_str = to_string(frac)
+    if frac < 10 {
+        frac_str = "0" + frac_str
+    }
+    return to_string(whole) + "." + frac_str + "s"
+}

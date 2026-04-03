@@ -1,0 +1,847 @@
+// ============================================================
+// std.collections -- Data structures
+//
+// Provides List, Map, Set, Stack, Queue, and Deque types
+// implemented in pure Kryos using arrays and maps as backing
+// storage.
+//
+// Usage:
+//   let list = std.collections.List.new()
+//   std.collections.List.push(list, 42)
+// ============================================================
+
+// =========================================================================
+// List -- Dynamic array with rich interface
+// =========================================================================
+
+struct List {
+    data: [any],
+    length: i64
+}
+
+impl List {
+    /// Create an empty list.
+    fn new() -> List {
+        return List { data: [], length: 0 }
+    }
+
+    /// Create a list from an existing array.
+    fn from(arr: [any]) -> List {
+        let mut data = []
+        let alen = len(arr)
+        let mut i = 0
+        while i < alen {
+            push(data, arr[i])
+            i = i + 1
+        }
+        return List { data: data, length: alen }
+    }
+
+    /// Append a value to the end.
+    fn push(self: List, val: any) -> List {
+        push(self.data, val)
+        return List { data: self.data, length: self.length + 1 }
+    }
+
+    /// Remove and return the last element. Throws if empty.
+    fn pop(self: List) -> any {
+        if self.length == 0 {
+            throw "List.pop: empty list"
+        }
+        let val = self.data[self.length - 1]
+        // Rebuild data without last element
+        let mut new_data = []
+        let mut i = 0
+        while i < self.length - 1 {
+            push(new_data, self.data[i])
+            i = i + 1
+        }
+        self.data = new_data
+        self.length = self.length - 1
+        return val
+    }
+
+    /// Get the element at index. Throws if out of bounds.
+    fn get(self: List, index: i64) -> any {
+        if index < 0 or index >= self.length {
+            throw "List.get: index " + to_string(index) + " out of bounds"
+        }
+        return self.data[index]
+    }
+
+    /// Set the element at index. Throws if out of bounds.
+    fn set(self: List, index: i64, val: any) -> List {
+        if index < 0 or index >= self.length {
+            throw "List.set: index " + to_string(index) + " out of bounds"
+        }
+        self.data[index] = val
+        return self
+    }
+
+    /// Number of elements.
+    fn len(self: List) -> i64 {
+        return self.length
+    }
+
+    /// True if the list has no elements.
+    fn is_empty(self: List) -> bool {
+        return self.length == 0
+    }
+
+    /// True if the list contains the given value.
+    fn contains(self: List, val: any) -> bool {
+        let mut i = 0
+        while i < self.length {
+            if self.data[i] == val {
+                return true
+            }
+            i = i + 1
+        }
+        return false
+    }
+
+    /// Find the first index of a value, or -1.
+    fn index_of(self: List, val: any) -> i64 {
+        let mut i = 0
+        while i < self.length {
+            if self.data[i] == val {
+                return i
+            }
+            i = i + 1
+        }
+        return -1
+    }
+
+    /// Insert a value at the given index, shifting elements right.
+    fn insert(self: List, index: i64, val: any) -> List {
+        if index < 0 or index > self.length {
+            throw "List.insert: index out of bounds"
+        }
+        let mut new_data = []
+        let mut i = 0
+        while i < index {
+            push(new_data, self.data[i])
+            i = i + 1
+        }
+        push(new_data, val)
+        while i < self.length {
+            push(new_data, self.data[i])
+            i = i + 1
+        }
+        return List { data: new_data, length: self.length + 1 }
+    }
+
+    /// Remove the element at the given index, shifting elements left.
+    fn remove(self: List, index: i64) -> List {
+        if index < 0 or index >= self.length {
+            throw "List.remove: index out of bounds"
+        }
+        let mut new_data = []
+        let mut i = 0
+        while i < self.length {
+            if i != index {
+                push(new_data, self.data[i])
+            }
+            i = i + 1
+        }
+        return List { data: new_data, length: self.length - 1 }
+    }
+
+    /// Extract a sub-list from start (inclusive) to end (exclusive).
+    fn slice(self: List, start: i64, end: i64) -> List {
+        let mut a = start
+        let mut b = end
+        if a < 0 { a = 0 }
+        if b > self.length { b = self.length }
+        if a >= b {
+            return List.new()
+        }
+        let mut new_data = []
+        let mut i = a
+        while i < b {
+            push(new_data, self.data[i])
+            i = i + 1
+        }
+        return List { data: new_data, length: b - a }
+    }
+
+    /// Remove all elements.
+    fn clear(self: List) -> List {
+        return List { data: [], length: 0 }
+    }
+
+    /// Sort the list in ascending order (returns new list).
+    fn sort(self: List) -> List {
+        let mut sorted = []
+        let mut i = 0
+        while i < self.length {
+            push(sorted, self.data[i])
+            i = i + 1
+        }
+        // Insertion sort
+        i = 1
+        while i < self.length {
+            let key = sorted[i]
+            let mut j = i - 1
+            while j >= 0 and sorted[j] > key {
+                sorted[j + 1] = sorted[j]
+                j = j - 1
+            }
+            sorted[j + 1] = key
+            i = i + 1
+        }
+        return List { data: sorted, length: self.length }
+    }
+
+    /// Reverse the list (returns new list).
+    fn reverse(self: List) -> List {
+        let mut reversed = []
+        let mut i = self.length - 1
+        while i >= 0 {
+            push(reversed, self.data[i])
+            i = i - 1
+        }
+        return List { data: reversed, length: self.length }
+    }
+
+    /// Apply f to each element, returning a new list.
+    fn map(self: List, f: fn) -> List {
+        let mut new_data = []
+        let mut i = 0
+        while i < self.length {
+            push(new_data, f(self.data[i]))
+            i = i + 1
+        }
+        return List { data: new_data, length: self.length }
+    }
+
+    /// Keep only elements where pred returns true.
+    fn filter(self: List, pred: fn) -> List {
+        let mut new_data = []
+        let mut i = 0
+        while i < self.length {
+            if pred(self.data[i]) {
+                push(new_data, self.data[i])
+            }
+            i = i + 1
+        }
+        return List { data: new_data, length: len(new_data) }
+    }
+
+    /// Return the underlying array for iteration.
+    fn iter(self: List) -> [any] {
+        return self.data
+    }
+
+    /// Convert to a display string.
+    fn to_string(self: List) -> str {
+        let mut parts = []
+        let mut i = 0
+        while i < self.length {
+            push(parts, to_string(self.data[i]))
+            i = i + 1
+        }
+        let mut result = "["
+        let mut j = 0
+        while j < len(parts) {
+            if j > 0 {
+                result = result + ", "
+            }
+            result = result + parts[j]
+            j = j + 1
+        }
+        return result + "]"
+    }
+}
+
+// =========================================================================
+// Map -- Key-value store with string keys
+// =========================================================================
+
+struct Map {
+    store: any,
+    length: i64
+}
+
+impl Map {
+    /// Create an empty map.
+    fn new() -> Map {
+        return Map { store: {}, length: 0 }
+    }
+
+    /// Create a map from an existing object.
+    fn from(obj: any) -> Map {
+        let keys = map_keys(obj)
+        let klen = len(keys)
+        let mut store = {}
+        let mut i = 0
+        while i < klen {
+            map_set(store, keys[i], map_get(obj, keys[i]))
+            i = i + 1
+        }
+        return Map { store: store, length: klen }
+    }
+
+    /// Set a key-value pair. Returns the map for chaining.
+    fn set(self: Map, key: str, val: any) -> Map {
+        let existed = map_has(self.store, key)
+        map_set(self.store, key, val)
+        if not existed {
+            return Map { store: self.store, length: self.length + 1 }
+        }
+        return self
+    }
+
+    /// Get the value for a key. Throws if key not found.
+    fn get(self: Map, key: str) -> any {
+        if not map_has(self.store, key) {
+            throw "Map.get: key not found: " + key
+        }
+        return map_get(self.store, key)
+    }
+
+    /// Get the value for a key, or return a default.
+    fn get_or(self: Map, key: str, default: any) -> any {
+        if map_has(self.store, key) {
+            return map_get(self.store, key)
+        }
+        return default
+    }
+
+    /// True if the key exists in the map.
+    fn has(self: Map, key: str) -> bool {
+        return map_has(self.store, key)
+    }
+
+    /// Remove a key. Returns the map for chaining.
+    fn delete(self: Map, key: str) -> Map {
+        if map_has(self.store, key) {
+            map_delete(self.store, key)
+            return Map { store: self.store, length: self.length - 1 }
+        }
+        return self
+    }
+
+    /// Get all keys as an array.
+    fn keys(self: Map) -> [str] {
+        return map_keys(self.store)
+    }
+
+    /// Get all values as an array.
+    fn values(self: Map) -> [any] {
+        let keys = map_keys(self.store)
+        let mut vals = []
+        let klen = len(keys)
+        let mut i = 0
+        while i < klen {
+            push(vals, map_get(self.store, keys[i]))
+            i = i + 1
+        }
+        return vals
+    }
+
+    /// Get all entries as an array of [key, value] pairs.
+    fn entries(self: Map) -> [any] {
+        let keys = map_keys(self.store)
+        let mut result = []
+        let klen = len(keys)
+        let mut i = 0
+        while i < klen {
+            push(result, [keys[i], map_get(self.store, keys[i])])
+            i = i + 1
+        }
+        return result
+    }
+
+    /// Number of key-value pairs.
+    fn len(self: Map) -> i64 {
+        return self.length
+    }
+
+    /// True if the map has no entries.
+    fn is_empty(self: Map) -> bool {
+        return self.length == 0
+    }
+
+    /// Remove all entries.
+    fn clear(self: Map) -> Map {
+        return Map { store: {}, length: 0 }
+    }
+
+    /// Merge another map into this one (other's values override).
+    fn merge(self: Map, other: Map) -> Map {
+        let keys = map_keys(other.store)
+        let klen = len(keys)
+        let mut new_store = self.store
+        let mut new_length = self.length
+        let mut i = 0
+        while i < klen {
+            let k = keys[i]
+            if not map_has(new_store, k) {
+                new_length = new_length + 1
+            }
+            map_set(new_store, k, map_get(other.store, k))
+            i = i + 1
+        }
+        return Map { store: new_store, length: new_length }
+    }
+
+    /// Convert to a display string.
+    fn to_string(self: Map) -> str {
+        let keys = map_keys(self.store)
+        let klen = len(keys)
+        let mut parts = []
+        let mut i = 0
+        while i < klen {
+            let k = keys[i]
+            let v = map_get(self.store, k)
+            push(parts, k + ": " + to_string(v))
+            i = i + 1
+        }
+        let mut result = "{"
+        let mut j = 0
+        while j < len(parts) {
+            if j > 0 {
+                result = result + ", "
+            }
+            result = result + parts[j]
+            j = j + 1
+        }
+        return result + "}"
+    }
+}
+
+// =========================================================================
+// Set -- Unique value collection
+// =========================================================================
+
+struct Set {
+    store: any,
+    length: i64
+}
+
+impl Set {
+    /// Create an empty set.
+    fn new() -> Set {
+        return Set { store: {}, length: 0 }
+    }
+
+    /// Create a set from an array.
+    fn from(arr: [any]) -> Set {
+        let mut store = {}
+        let mut count = 0
+        let alen = len(arr)
+        let mut i = 0
+        while i < alen {
+            let key = to_string(arr[i])
+            if not map_has(store, key) {
+                map_set(store, key, arr[i])
+                count = count + 1
+            }
+            i = i + 1
+        }
+        return Set { store: store, length: count }
+    }
+
+    /// Add a value to the set. Returns the set for chaining.
+    fn add(self: Set, val: any) -> Set {
+        let key = to_string(val)
+        if not map_has(self.store, key) {
+            map_set(self.store, key, val)
+            return Set { store: self.store, length: self.length + 1 }
+        }
+        return self
+    }
+
+    /// True if the value is in the set.
+    fn has(self: Set, val: any) -> bool {
+        return map_has(self.store, to_string(val))
+    }
+
+    /// Remove a value from the set.
+    fn delete(self: Set, val: any) -> Set {
+        let key = to_string(val)
+        if map_has(self.store, key) {
+            map_delete(self.store, key)
+            return Set { store: self.store, length: self.length - 1 }
+        }
+        return self
+    }
+
+    /// Number of elements.
+    fn len(self: Set) -> i64 {
+        return self.length
+    }
+
+    /// True if the set has no elements.
+    fn is_empty(self: Set) -> bool {
+        return self.length == 0
+    }
+
+    /// Union of two sets (all elements in either).
+    fn union(self: Set, other: Set) -> Set {
+        let mut result = Set.from(self.to_list())
+        let other_list = other.to_list()
+        let olen = len(other_list)
+        let mut i = 0
+        while i < olen {
+            result = result.add(other_list[i])
+            i = i + 1
+        }
+        return result
+    }
+
+    /// Intersection of two sets (elements in both).
+    fn intersection(self: Set, other: Set) -> Set {
+        let mut result = Set.new()
+        let self_list = self.to_list()
+        let slen = len(self_list)
+        let mut i = 0
+        while i < slen {
+            if other.has(self_list[i]) {
+                result = result.add(self_list[i])
+            }
+            i = i + 1
+        }
+        return result
+    }
+
+    /// Difference: elements in self but not in other.
+    fn difference(self: Set, other: Set) -> Set {
+        let mut result = Set.new()
+        let self_list = self.to_list()
+        let slen = len(self_list)
+        let mut i = 0
+        while i < slen {
+            if not other.has(self_list[i]) {
+                result = result.add(self_list[i])
+            }
+            i = i + 1
+        }
+        return result
+    }
+
+    /// Symmetric difference: elements in either but not both.
+    fn symmetric_difference(self: Set, other: Set) -> Set {
+        let a = self.difference(other)
+        let b = other.difference(self)
+        return a.union(b)
+    }
+
+    /// True if every element of self is in other.
+    fn is_subset(self: Set, other: Set) -> bool {
+        let self_list = self.to_list()
+        let slen = len(self_list)
+        let mut i = 0
+        while i < slen {
+            if not other.has(self_list[i]) {
+                return false
+            }
+            i = i + 1
+        }
+        return true
+    }
+
+    /// True if every element of other is in self.
+    fn is_superset(self: Set, other: Set) -> bool {
+        return other.is_subset(self)
+    }
+
+    /// Convert the set to an array of its values.
+    fn to_list(self: Set) -> [any] {
+        let keys = map_keys(self.store)
+        let mut result = []
+        let klen = len(keys)
+        let mut i = 0
+        while i < klen {
+            push(result, map_get(self.store, keys[i]))
+            i = i + 1
+        }
+        return result
+    }
+
+    /// Remove all elements.
+    fn clear(self: Set) -> Set {
+        return Set { store: {}, length: 0 }
+    }
+
+    /// Convert to a display string.
+    fn to_string(self: Set) -> str {
+        let items = self.to_list()
+        let ilen = len(items)
+        let mut result = "Set{"
+        let mut i = 0
+        while i < ilen {
+            if i > 0 {
+                result = result + ", "
+            }
+            result = result + to_string(items[i])
+            i = i + 1
+        }
+        return result + "}"
+    }
+}
+
+// =========================================================================
+// Stack -- LIFO (last-in, first-out)
+// =========================================================================
+
+struct Stack {
+    data: [any],
+    length: i64
+}
+
+impl Stack {
+    /// Create an empty stack.
+    fn new() -> Stack {
+        return Stack { data: [], length: 0 }
+    }
+
+    /// Push a value onto the top.
+    fn push(self: Stack, val: any) -> Stack {
+        push(self.data, val)
+        return Stack { data: self.data, length: self.length + 1 }
+    }
+
+    /// Pop the top value. Throws if empty.
+    fn pop(self: Stack) -> any {
+        if self.length == 0 {
+            throw "Stack.pop: empty stack"
+        }
+        let val = self.data[self.length - 1]
+        let mut new_data = []
+        let mut i = 0
+        while i < self.length - 1 {
+            push(new_data, self.data[i])
+            i = i + 1
+        }
+        self.data = new_data
+        self.length = self.length - 1
+        return val
+    }
+
+    /// View the top value without removing it.
+    fn peek(self: Stack) -> any {
+        if self.length == 0 {
+            throw "Stack.peek: empty stack"
+        }
+        return self.data[self.length - 1]
+    }
+
+    /// Number of elements.
+    fn len(self: Stack) -> i64 {
+        return self.length
+    }
+
+    /// True if the stack is empty.
+    fn is_empty(self: Stack) -> bool {
+        return self.length == 0
+    }
+
+    /// Remove all elements.
+    fn clear(self: Stack) -> Stack {
+        return Stack { data: [], length: 0 }
+    }
+
+    /// Convert to a display string (top element on the right).
+    fn to_string(self: Stack) -> str {
+        let mut result = "Stack["
+        let mut i = 0
+        while i < self.length {
+            if i > 0 {
+                result = result + ", "
+            }
+            result = result + to_string(self.data[i])
+            i = i + 1
+        }
+        return result + "]"
+    }
+}
+
+// =========================================================================
+// Queue -- FIFO (first-in, first-out)
+// =========================================================================
+
+struct Queue {
+    data: [any],
+    length: i64
+}
+
+impl Queue {
+    /// Create an empty queue.
+    fn new() -> Queue {
+        return Queue { data: [], length: 0 }
+    }
+
+    /// Add a value to the back of the queue.
+    fn enqueue(self: Queue, val: any) -> Queue {
+        push(self.data, val)
+        return Queue { data: self.data, length: self.length + 1 }
+    }
+
+    /// Remove and return the front value. Throws if empty.
+    fn dequeue(self: Queue) -> any {
+        if self.length == 0 {
+            throw "Queue.dequeue: empty queue"
+        }
+        let val = self.data[0]
+        let mut new_data = []
+        let mut i = 1
+        while i < self.length {
+            push(new_data, self.data[i])
+            i = i + 1
+        }
+        self.data = new_data
+        self.length = self.length - 1
+        return val
+    }
+
+    /// View the front value without removing it.
+    fn peek(self: Queue) -> any {
+        if self.length == 0 {
+            throw "Queue.peek: empty queue"
+        }
+        return self.data[0]
+    }
+
+    /// Number of elements.
+    fn len(self: Queue) -> i64 {
+        return self.length
+    }
+
+    /// True if the queue is empty.
+    fn is_empty(self: Queue) -> bool {
+        return self.length == 0
+    }
+
+    /// Remove all elements.
+    fn clear(self: Queue) -> Queue {
+        return Queue { data: [], length: 0 }
+    }
+
+    /// Convert to a display string (front on the left).
+    fn to_string(self: Queue) -> str {
+        let mut result = "Queue["
+        let mut i = 0
+        while i < self.length {
+            if i > 0 {
+                result = result + ", "
+            }
+            result = result + to_string(self.data[i])
+            i = i + 1
+        }
+        return result + "]"
+    }
+}
+
+// =========================================================================
+// Deque -- Double-ended queue
+// =========================================================================
+
+struct Deque {
+    data: [any],
+    length: i64
+}
+
+impl Deque {
+    /// Create an empty deque.
+    fn new() -> Deque {
+        return Deque { data: [], length: 0 }
+    }
+
+    /// Add a value to the front.
+    fn push_front(self: Deque, val: any) -> Deque {
+        let mut new_data = [val]
+        let mut i = 0
+        while i < self.length {
+            push(new_data, self.data[i])
+            i = i + 1
+        }
+        return Deque { data: new_data, length: self.length + 1 }
+    }
+
+    /// Add a value to the back.
+    fn push_back(self: Deque, val: any) -> Deque {
+        push(self.data, val)
+        return Deque { data: self.data, length: self.length + 1 }
+    }
+
+    /// Remove and return the front value. Throws if empty.
+    fn pop_front(self: Deque) -> any {
+        if self.length == 0 {
+            throw "Deque.pop_front: empty deque"
+        }
+        let val = self.data[0]
+        let mut new_data = []
+        let mut i = 1
+        while i < self.length {
+            push(new_data, self.data[i])
+            i = i + 1
+        }
+        self.data = new_data
+        self.length = self.length - 1
+        return val
+    }
+
+    /// Remove and return the back value. Throws if empty.
+    fn pop_back(self: Deque) -> any {
+        if self.length == 0 {
+            throw "Deque.pop_back: empty deque"
+        }
+        let val = self.data[self.length - 1]
+        let mut new_data = []
+        let mut i = 0
+        while i < self.length - 1 {
+            push(new_data, self.data[i])
+            i = i + 1
+        }
+        self.data = new_data
+        self.length = self.length - 1
+        return val
+    }
+
+    /// View the front value.
+    fn front(self: Deque) -> any {
+        if self.length == 0 {
+            throw "Deque.front: empty deque"
+        }
+        return self.data[0]
+    }
+
+    /// View the back value.
+    fn back(self: Deque) -> any {
+        if self.length == 0 {
+            throw "Deque.back: empty deque"
+        }
+        return self.data[self.length - 1]
+    }
+
+    /// Number of elements.
+    fn len(self: Deque) -> i64 {
+        return self.length
+    }
+
+    /// True if the deque is empty.
+    fn is_empty(self: Deque) -> bool {
+        return self.length == 0
+    }
+
+    /// Remove all elements.
+    fn clear(self: Deque) -> Deque {
+        return Deque { data: [], length: 0 }
+    }
+
+    /// Convert to a display string.
+    fn to_string(self: Deque) -> str {
+        let mut result = "Deque["
+        let mut i = 0
+        while i < self.length {
+            if i > 0 {
+                result = result + ", "
+            }
+            result = result + to_string(self.data[i])
+            i = i + 1
+        }
+        return result + "]"
+    }
+}

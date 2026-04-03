@@ -1,0 +1,295 @@
+// ============================================================
+// std.process -- Process management, environment, and commands
+//
+// Wraps kryos-stdlib-native process FFI.  Provides environment
+// variable access, process exit, argument parsing, and a
+// Command builder for subprocess execution.
+// ============================================================
+
+// --- Native FFI declarations ------------------------------------------------
+
+extern {
+    fn kryos_env_get(key_ptr: ptr, key_len: i64, val_buf: ptr, val_buf_len: i64) -> i64
+    fn kryos_process_exit(code: i32) -> !
+}
+
+// --- Environment variables --------------------------------------------------
+
+// Get an environment variable.  Returns the value or throws if not found.
+@capabilities(io)
+fn env_get(key: str) -> str {
+    let buf_size = 4096
+    let buf = alloc(buf_size)
+    let val_len = kryos_env_get(str_to_ptr(key), len(key), buf, buf_size)
+    if val_len < 0 {
+        throw "process error: environment variable not found: " + key
+    }
+    if val_len <= buf_size {
+        return buf_to_str(buf, val_len)
+    }
+    // Value is larger than our buffer -- retry with exact size
+    let big_buf = alloc(val_len)
+    let retry_len = kryos_env_get(str_to_ptr(key), len(key), big_buf, val_len)
+    if retry_len < 0 {
+        throw "process error: environment variable read failed: " + key
+    }
+    return buf_to_str(big_buf, retry_len)
+}
+
+// Get an environment variable with a default fallback.
+@capabilities(io)
+fn env_get_or(key: str, default: str) -> str {
+    let buf_size = 4096
+    let buf = alloc(buf_size)
+    let val_len = kryos_env_get(str_to_ptr(key), len(key), buf, buf_size)
+    if val_len < 0 {
+        return default
+    }
+    if val_len <= buf_size {
+        return buf_to_str(buf, val_len)
+    }
+    let big_buf = alloc(val_len)
+    let retry_len = kryos_env_get(str_to_ptr(key), len(key), big_buf, val_len)
+    if retry_len < 0 {
+        return default
+    }
+    return buf_to_str(big_buf, retry_len)
+}
+
+// Check if an environment variable is set.
+@capabilities(io)
+fn env_has(key: str) -> bool {
+    let buf = alloc(1)
+    let val_len = kryos_env_get(str_to_ptr(key), len(key), buf, 1)
+    return val_len >= 0
+}
+
+// --- Process exit -----------------------------------------------------------
+
+// Exit the process with the given status code.
+@capabilities(io)
+fn exit(code: i32) -> ! {
+    kryos_process_exit(code)
+}
+
+// Exit successfully (code 0).
+@capabilities(io)
+fn exit_ok() -> ! {
+    kryos_process_exit(0)
+}
+
+// Exit with failure (code 1) and an error message to stderr.
+@capabilities(io)
+fn exit_error(msg: str) -> ! {
+    let full = msg + "\n"
+    // We cannot call std.io functions here since this is std.process,
+    // so we use the raw FFI for stderr.
+    extern {
+        fn kryos_stderr_write(data: ptr, len: i64) -> i64
+    }
+    kryos_stderr_write(str_to_ptr(full), len(full))
+    kryos_process_exit(1)
+}
+
+// --- Process arguments (convention-based) -----------------------------------
+// NOTE: Full argv support requires a native kryos_process_args() binding.
+// Until then, args are typically passed via environment or stdin.
+
+struct Args {
+    items: [str],
+    count: i32
+}
+
+impl Args {
+    // Get the argument at the given index.  Throws on out-of-bounds.
+    fn get(self: Args, index: i32) -> str {
+        if index < 0 or index >= self.count {
+            throw "process error: argument index out of bounds: " + to_string(index)
+        }
+        return self.items[index]
+    }
+
+    // Get the argument at the given index, or return a default.
+    fn get_or(self: Args, index: i32, default: str) -> str {
+        if index < 0 or index >= self.count {
+            return default
+        }
+        return self.items[index]
+    }
+
+    // Check if a flag (e.g. "--verbose") is present in the arguments.
+    fn has_flag(self: Args, flag: str) -> bool {
+        let mut i = 0
+        while i < self.count {
+            if self.items[i] == flag {
+                return true
+            }
+            i = i + 1
+        }
+        return false
+    }
+
+    // Get the value following a flag (e.g. "--output file.txt" -> "file.txt").
+    fn get_flag_value(self: Args, flag: str) -> str {
+        let mut i = 0
+        while i < self.count - 1 {
+            if self.items[i] == flag {
+                return self.items[i + 1]
+            }
+            i = i + 1
+        }
+        throw "process error: flag value not found: " + flag
+    }
+
+    // Get the value following a flag, or a default.
+    fn get_flag_value_or(self: Args, flag: str, default: str) -> str {
+        let mut i = 0
+        while i < self.count - 1 {
+            if self.items[i] == flag {
+                return self.items[i + 1]
+            }
+            i = i + 1
+        }
+        return default
+    }
+}
+
+// Parse a space-separated argument string into an Args struct.
+fn parse_args(arg_string: str) -> Args {
+    let arg_len = len(arg_string)
+    let mut items = []
+    let mut current = ""
+    let mut in_quote = false
+    let mut i = 0
+
+    while i < arg_len {
+        let ch = arg_string[i]
+
+        if ch == "\"" {
+            in_quote = not in_quote
+        } else if ch == " " and not in_quote {
+            if len(current) > 0 {
+                items = push(items, current)
+                current = ""
+            }
+        } else {
+            current = current + ch
+        }
+        i = i + 1
+    }
+
+    if len(current) > 0 {
+        items = push(items, current)
+    }
+
+    return Args { items: items, count: len(items) }
+}
+
+// --- Command builder (subprocess execution) ---------------------------------
+// NOTE: Full subprocess execution requires native kryos_process_exec.
+// This builder pattern captures the intent; execution will work once
+// the native layer adds kryos_process_exec.
+
+struct Command {
+    program: str,
+    arguments: [str],
+    env_vars: [str],
+    working_dir: str,
+    stdin_data: str
+}
+
+impl Command {
+    // Add an argument to the command.
+    fn arg(self: Command, argument: str) -> Command {
+        let new_args = push(self.arguments, argument)
+        return Command {
+            program: self.program,
+            arguments: new_args,
+            env_vars: self.env_vars,
+            working_dir: self.working_dir,
+            stdin_data: self.stdin_data
+        }
+    }
+
+    // Add multiple arguments at once.
+    fn args(self: Command, new_args: [str]) -> Command {
+        let mut result = self
+        let mut i = 0
+        while i < len(new_args) {
+            result = result.arg(new_args[i])
+            i = i + 1
+        }
+        return result
+    }
+
+    // Set an environment variable for the subprocess.
+    fn env(self: Command, key: str, value: str) -> Command {
+        let new_env = push(self.env_vars, key + "=" + value)
+        return Command {
+            program: self.program,
+            arguments: self.arguments,
+            env_vars: new_env,
+            working_dir: self.working_dir,
+            stdin_data: self.stdin_data
+        }
+    }
+
+    // Set the working directory for the subprocess.
+    fn cwd(self: Command, dir: str) -> Command {
+        return Command {
+            program: self.program,
+            arguments: self.arguments,
+            env_vars: self.env_vars,
+            working_dir: dir,
+            stdin_data: self.stdin_data
+        }
+    }
+
+    // Pipe data to the subprocess's stdin.
+    fn stdin(self: Command, data: str) -> Command {
+        return Command {
+            program: self.program,
+            arguments: self.arguments,
+            env_vars: self.env_vars,
+            working_dir: self.working_dir,
+            stdin_data: data
+        }
+    }
+
+    // Build the full command string for display/debug.
+    fn to_string(self: Command) -> str {
+        let mut result = self.program
+        let mut i = 0
+        while i < len(self.arguments) {
+            result = result + " " + self.arguments[i]
+            i = i + 1
+        }
+        return result
+    }
+
+    // Execute the command.
+    // Requires future native support: kryos_process_exec.
+    @capabilities(io)
+    fn run(self: Command) -> CommandResult {
+        // TODO: bind to native kryos_process_exec when available
+        throw "process error: Command.run() requires native kryos_process_exec (not yet bound)"
+    }
+}
+
+struct CommandResult {
+    exit_code: i32,
+    stdout: str,
+    stderr: str,
+    success: bool
+}
+
+// Create a new Command builder for the given program.
+fn command(program: str) -> Command {
+    return Command {
+        program: program,
+        arguments: [],
+        env_vars: [],
+        working_dir: "",
+        stdin_data: ""
+    }
+}

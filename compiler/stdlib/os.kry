@@ -1,0 +1,357 @@
+// ============================================================
+// std.os -- Operating system detection and path utilities
+//
+// Provides runtime OS detection, architecture info, and
+// standard directory paths.  Uses environment variables via
+// the process FFI as the detection mechanism.
+// ============================================================
+
+// --- Native FFI declarations ------------------------------------------------
+
+extern {
+    fn kryos_env_get(key_ptr: ptr, key_len: i64, val_buf: ptr, val_buf_len: i64) -> i64
+    fn kryos_path_exists(path_ptr: ptr, path_len: i64) -> i32
+}
+
+// --- Internal helpers -------------------------------------------------------
+
+// Read an environment variable or return "" if not set.
+fn _env_or_empty(key: str) -> str {
+    let buf_size = 4096
+    let buf = alloc(buf_size)
+    let val_len = kryos_env_get(str_to_ptr(key), len(key), buf, buf_size)
+    if val_len < 0 {
+        return ""
+    }
+    if val_len <= buf_size {
+        return buf_to_str(buf, val_len)
+    }
+    return ""
+}
+
+fn _path_exists(path: str) -> bool {
+    let result = kryos_path_exists(str_to_ptr(path), len(path))
+    return result == 1
+}
+
+// --- OS detection -----------------------------------------------------------
+
+// Returns the operating system name: "windows", "linux", "macos", or "unknown".
+@capabilities(io)
+fn name() -> str {
+    // Windows sets WINDIR and OS
+    let windir = _env_or_empty("WINDIR")
+    if len(windir) > 0 {
+        return "windows"
+    }
+
+    // macOS sets __CFBundleIdentifier or we can check /System
+    if _path_exists("/System/Library") {
+        return "macos"
+    }
+
+    // Linux has /proc
+    if _path_exists("/proc") {
+        return "linux"
+    }
+
+    // Fallback: check uname-style env
+    let ostype = _env_or_empty("OSTYPE")
+    if len(ostype) > 0 {
+        if contains(ostype, "darwin") {
+            return "macos"
+        }
+        if contains(ostype, "linux") {
+            return "linux"
+        }
+        if contains(ostype, "msys") or contains(ostype, "cygwin") or contains(ostype, "win") {
+            return "windows"
+        }
+    }
+
+    return "unknown"
+}
+
+// Returns the CPU architecture: "x86_64", "aarch64", or "unknown".
+@capabilities(io)
+fn arch() -> str {
+    let processor = _env_or_empty("PROCESSOR_ARCHITECTURE")
+    if len(processor) > 0 {
+        if processor == "AMD64" or processor == "x86_64" {
+            return "x86_64"
+        }
+        if processor == "ARM64" or processor == "aarch64" {
+            return "aarch64"
+        }
+        if processor == "x86" {
+            return "x86"
+        }
+        return processor
+    }
+
+    // Unix: check HOSTTYPE
+    let hosttype = _env_or_empty("HOSTTYPE")
+    if len(hosttype) > 0 {
+        if contains(hosttype, "x86_64") or contains(hosttype, "amd64") {
+            return "x86_64"
+        }
+        if contains(hosttype, "aarch64") or contains(hosttype, "arm64") {
+            return "aarch64"
+        }
+        return hosttype
+    }
+
+    return "unknown"
+}
+
+// Returns the OS family: "unix" or "windows".
+@capabilities(io)
+fn family() -> str {
+    let os = name()
+    if os == "windows" {
+        return "windows"
+    }
+    return "unix"
+}
+
+// --- Boolean OS checks ------------------------------------------------------
+
+@capabilities(io)
+fn is_windows() -> bool {
+    return name() == "windows"
+}
+
+@capabilities(io)
+fn is_linux() -> bool {
+    return name() == "linux"
+}
+
+@capabilities(io)
+fn is_macos() -> bool {
+    return name() == "macos"
+}
+
+@capabilities(io)
+fn is_unix() -> bool {
+    return family() == "unix"
+}
+
+// --- Standard directories ---------------------------------------------------
+
+// Returns the user's home directory.
+@capabilities(io)
+fn home_dir() -> str {
+    // Windows: USERPROFILE or HOMEDRIVE + HOMEPATH
+    let userprofile = _env_or_empty("USERPROFILE")
+    if len(userprofile) > 0 {
+        return userprofile
+    }
+
+    let homedrive = _env_or_empty("HOMEDRIVE")
+    let homepath = _env_or_empty("HOMEPATH")
+    if len(homedrive) > 0 and len(homepath) > 0 {
+        return homedrive + homepath
+    }
+
+    // Unix: HOME
+    let home = _env_or_empty("HOME")
+    if len(home) > 0 {
+        return home
+    }
+
+    throw "os error: could not determine home directory"
+}
+
+// Returns the system temporary directory.
+@capabilities(io)
+fn temp_dir() -> str {
+    // Windows: TEMP or TMP
+    let temp = _env_or_empty("TEMP")
+    if len(temp) > 0 {
+        return temp
+    }
+
+    let tmp = _env_or_empty("TMP")
+    if len(tmp) > 0 {
+        return tmp
+    }
+
+    // Unix: TMPDIR or /tmp
+    let tmpdir = _env_or_empty("TMPDIR")
+    if len(tmpdir) > 0 {
+        return tmpdir
+    }
+
+    if _path_exists("/tmp") {
+        return "/tmp"
+    }
+
+    throw "os error: could not determine temp directory"
+}
+
+// Returns the current working directory.
+@capabilities(io)
+fn current_dir() -> str {
+    // PWD is set by most shells on Unix
+    let pwd = _env_or_empty("PWD")
+    if len(pwd) > 0 {
+        return pwd
+    }
+
+    // Windows: CD is sometimes available
+    let cd = _env_or_empty("CD")
+    if len(cd) > 0 {
+        return cd
+    }
+
+    throw "os error: could not determine current directory"
+}
+
+// --- Path separator ---------------------------------------------------------
+
+// Returns the platform path separator ("/" on Unix, "\\" on Windows).
+@capabilities(io)
+fn path_sep() -> str {
+    if is_windows() {
+        return "\\"
+    }
+    return "/"
+}
+
+// Returns the platform path list separator (":" on Unix, ";" on Windows).
+@capabilities(io)
+fn path_list_sep() -> str {
+    if is_windows() {
+        return ";"
+    }
+    return ":"
+}
+
+// Returns the platform line ending ("\r\n" on Windows, "\n" on Unix).
+@capabilities(io)
+fn line_ending() -> str {
+    if is_windows() {
+        return "\r\n"
+    }
+    return "\n"
+}
+
+// --- User info --------------------------------------------------------------
+
+// Returns the current user's username.
+@capabilities(io)
+fn username() -> str {
+    // Windows: USERNAME
+    let username = _env_or_empty("USERNAME")
+    if len(username) > 0 {
+        return username
+    }
+
+    // Unix: USER or LOGNAME
+    let user = _env_or_empty("USER")
+    if len(user) > 0 {
+        return user
+    }
+
+    let logname = _env_or_empty("LOGNAME")
+    if len(logname) > 0 {
+        return logname
+    }
+
+    return "unknown"
+}
+
+// Returns the hostname (machine name).
+@capabilities(io)
+fn hostname() -> str {
+    let computername = _env_or_empty("COMPUTERNAME")
+    if len(computername) > 0 {
+        return computername
+    }
+
+    let hostname = _env_or_empty("HOSTNAME")
+    if len(hostname) > 0 {
+        return hostname
+    }
+
+    return "unknown"
+}
+
+// --- Platform-specific paths ------------------------------------------------
+
+// Returns the user's config directory.
+// Windows: APPDATA, macOS: ~/Library/Application Support, Linux: ~/.config
+@capabilities(io)
+fn config_dir() -> str {
+    let appdata = _env_or_empty("APPDATA")
+    if len(appdata) > 0 {
+        return appdata
+    }
+
+    let home = home_dir()
+    let os = name()
+
+    if os == "macos" {
+        return home + "/Library/Application Support"
+    }
+
+    // Linux / other Unix
+    let xdg = _env_or_empty("XDG_CONFIG_HOME")
+    if len(xdg) > 0 {
+        return xdg
+    }
+
+    return home + "/.config"
+}
+
+// Returns the user's data directory.
+// Windows: LOCALAPPDATA, macOS: ~/Library/Application Support, Linux: ~/.local/share
+@capabilities(io)
+fn data_dir() -> str {
+    let localappdata = _env_or_empty("LOCALAPPDATA")
+    if len(localappdata) > 0 {
+        return localappdata
+    }
+
+    let home = home_dir()
+    let os = name()
+
+    if os == "macos" {
+        return home + "/Library/Application Support"
+    }
+
+    let xdg = _env_or_empty("XDG_DATA_HOME")
+    if len(xdg) > 0 {
+        return xdg
+    }
+
+    return home + "/.local/share"
+}
+
+// Returns the user's cache directory.
+// Windows: LOCALAPPDATA\Temp, macOS: ~/Library/Caches, Linux: ~/.cache
+@capabilities(io)
+fn cache_dir() -> str {
+    let os = name()
+
+    if os == "windows" {
+        let localappdata = _env_or_empty("LOCALAPPDATA")
+        if len(localappdata) > 0 {
+            return localappdata + "\\Temp"
+        }
+        return temp_dir()
+    }
+
+    let home = home_dir()
+
+    if os == "macos" {
+        return home + "/Library/Caches"
+    }
+
+    let xdg = _env_or_empty("XDG_CACHE_HOME")
+    if len(xdg) > 0 {
+        return xdg
+    }
+
+    return home + "/.cache"
+}

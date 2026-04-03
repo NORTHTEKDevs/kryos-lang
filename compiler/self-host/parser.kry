@@ -1,0 +1,2836 @@
+// ============================================================
+// parser.kry -- Recursive descent parser with Pratt expression
+// parsing for the Kryos self-hosted compiler.
+//
+// Mirrors the Rust kryos-parser crate.  The parser transforms a
+// flat token array (from lexer.kry) into an AST (from ast.kry).
+//
+// Architecture:
+//   - A `Parser` struct carries the token array, current position,
+//     and an error list.
+//   - Top-down recursive descent for declarations and statements.
+//   - Pratt (top-down operator precedence) for expressions.
+//   - Operator precedence levels match the Rust implementation
+//     exactly.
+//   - Error recovery: on unexpected tokens, skip to the next
+//     declaration/statement boundary and continue.
+//
+// Because Kryos structs are value types in bootstrap, every parser
+// method is a free function that takes `Parser` and returns the
+// updated `Parser` plus the parsed node via a wrapper struct.
+// ============================================================
+
+// -------------------------------------------------------------------
+// Parser struct
+// -------------------------------------------------------------------
+
+struct Parser {
+    tokens: [Token],
+    pos: i32,
+    errors: [str]
+}
+
+// -------------------------------------------------------------------
+// Result wrappers -- pairs of (Parser, parsed_node)
+//
+// Kryos does not have tuples with mixed types, so we use small
+// structs to return (updated parser, result).
+// -------------------------------------------------------------------
+
+struct ParseExprResult {
+    p: Parser,
+    expr: Expr
+}
+
+struct ParseStmtResult {
+    p: Parser,
+    stmt: Stmt,
+    ok: bool
+}
+
+struct ParseDeclResult {
+    p: Parser,
+    decl: Decl,
+    ok: bool
+}
+
+struct ParseTypeResult {
+    p: Parser,
+    ty: TypeExpr
+}
+
+struct ParsePatternResult {
+    p: Parser,
+    pattern: Pattern
+}
+
+struct ParseNameResult {
+    p: Parser,
+    name: str,
+    start: i32,
+    end: i32
+}
+
+// -------------------------------------------------------------------
+// Postfix binding power (field access, index, call)
+// -------------------------------------------------------------------
+
+let POSTFIX_BP = 28
+
+// -------------------------------------------------------------------
+// Constructor
+// -------------------------------------------------------------------
+
+fn parser_new(tokens: [Token]) -> Parser {
+    let errors: [str] = []
+    return Parser { tokens: tokens, pos: 0, errors: errors }
+}
+
+// -------------------------------------------------------------------
+// Token navigation
+// -------------------------------------------------------------------
+
+fn p_peek(p: Parser) -> Token {
+    let mut idx = p.pos
+    if idx >= len(p.tokens) {
+        idx = len(p.tokens) - 1
+    }
+    return p.tokens[idx]
+}
+
+fn p_peek_kind(p: Parser) -> i32 {
+    return p_peek(p).kind
+}
+
+fn p_peek_nth(p: Parser, n: i32) -> i32 {
+    let mut idx = p.pos + n
+    if idx >= len(p.tokens) {
+        idx = len(p.tokens) - 1
+    }
+    return p.tokens[idx].kind
+}
+
+fn p_at_end(p: Parser) -> bool {
+    return p_peek_kind(p) == TK_EOF
+}
+
+fn p_advance(p: Parser) -> Parser {
+    if p_at_end(p) {
+        return p
+    }
+    return Parser { tokens: p.tokens, pos: p.pos + 1, errors: p.errors }
+}
+
+fn p_check(p: Parser, kind: i32) -> bool {
+    return p_peek_kind(p) == kind
+}
+
+fn p_eat(p: Parser, kind: i32) -> Parser {
+    // If current token matches kind, advance.  Otherwise, return unchanged.
+    if p_check(p, kind) {
+        return p_advance(p)
+    }
+    return p
+}
+
+fn p_did_eat(p: Parser, kind: i32) -> bool {
+    // Helper: returns true if the token was consumed.
+    return p_check(p, kind)
+}
+
+fn p_expect(p: Parser, kind: i32) -> Parser {
+    if p_check(p, kind) {
+        return p_advance(p)
+    }
+    let tok = p_peek(p)
+    let msg = "expected " + token_kind_name(kind) + ", found " + token_kind_name(tok.kind) + " at " + to_string(tok.start)
+    let mut errors = p.errors
+    push(errors, msg)
+    return Parser { tokens: p.tokens, pos: p.pos, errors: errors }
+}
+
+fn p_error(p: Parser, msg: str) -> Parser {
+    let mut errors = p.errors
+    push(errors, msg)
+    return Parser { tokens: p.tokens, pos: p.pos, errors: errors }
+}
+
+fn p_expect_name(p: Parser) -> ParseNameResult {
+    let tok = p_peek(p)
+    if tok.kind == TK_IDENT or tok.kind == TK_TYPE_IDENT {
+        let np = p_advance(p)
+        return ParseNameResult { p: np, name: tok.text, start: tok.start, end: tok.end }
+    }
+    // Allow keywords as names in certain positions
+    if is_keyword(tok.kind) {
+        let np = p_advance(p)
+        return ParseNameResult { p: np, name: tok.text, start: tok.start, end: tok.end }
+    }
+    let np = p_error(p, "expected identifier, found " + token_kind_name(tok.kind))
+    return ParseNameResult { p: np, name: "<error>", start: tok.start, end: tok.end }
+}
+
+// -------------------------------------------------------------------
+// Synchronize -- skip tokens until a likely boundary
+// -------------------------------------------------------------------
+
+fn p_synchronize(p: Parser) -> Parser {
+    let mut pp = p
+    while not p_at_end(pp) {
+        let k = p_peek_kind(pp)
+        if k == TK_FN or k == TK_STRUCT or k == TK_ENUM or k == TK_TRAIT or
+           k == TK_IMPL or k == TK_ACTOR or k == TK_TYPE or k == TK_USE or
+           k == TK_EXTERN or k == TK_PUB or k == TK_AT or k == TK_LET or
+           k == TK_RETURN or k == TK_IF or k == TK_FOR or k == TK_WHILE or
+           k == TK_BREAK or k == TK_CONTINUE or k == TK_SPAWN or
+           k == TK_SELECT or k == TK_TRY or k == TK_THROW or k == TK_RBRACE {
+            return pp
+        }
+        pp = p_advance(pp)
+    }
+    return pp
+}
+
+// -------------------------------------------------------------------
+// Infix binding power
+// -------------------------------------------------------------------
+
+fn infix_bp_left(kind: i32, next_kind: i32) -> i32 {
+    // Returns the left binding power, or -1 if not an infix op.
+    // Pipe |>
+    if kind == TK_PIPE and next_kind == TK_GT { return 2 }
+    // or
+    if kind == TK_OR { return 4 }
+    // and
+    if kind == TK_AND { return 6 }
+    // == != < > <= >=
+    if kind == TK_EQ_EQ or kind == TK_BANG_EQ or kind == TK_LT or
+       kind == TK_GT or kind == TK_LT_EQ or kind == TK_GT_EQ { return 8 }
+    // | (bitwise)
+    if kind == TK_PIPE { return 10 }
+    // ^
+    if kind == TK_CARET { return 12 }
+    // &
+    if kind == TK_AMP { return 14 }
+    // << >>
+    if kind == TK_SHL or kind == TK_SHR { return 16 }
+    // + -
+    if kind == TK_PLUS or kind == TK_MINUS { return 18 }
+    // * / %
+    if kind == TK_STAR or kind == TK_SLASH or kind == TK_PERCENT { return 20 }
+    // ** (right-assoc)
+    if kind == TK_POWER { return 23 }
+    // as
+    if kind == TK_AS { return 25 }
+    // .. ..=
+    if kind == TK_DOT_DOT or kind == TK_DOT_DOT_EQ { return 1 }
+    return -1
+}
+
+fn infix_bp_right(kind: i32, next_kind: i32) -> i32 {
+    // Returns the right binding power.
+    if kind == TK_PIPE and next_kind == TK_GT { return 3 }
+    if kind == TK_OR { return 5 }
+    if kind == TK_AND { return 7 }
+    if kind == TK_EQ_EQ or kind == TK_BANG_EQ or kind == TK_LT or
+       kind == TK_GT or kind == TK_LT_EQ or kind == TK_GT_EQ { return 9 }
+    if kind == TK_PIPE { return 11 }
+    if kind == TK_CARET { return 13 }
+    if kind == TK_AMP { return 15 }
+    if kind == TK_SHL or kind == TK_SHR { return 17 }
+    if kind == TK_PLUS or kind == TK_MINUS { return 19 }
+    if kind == TK_STAR or kind == TK_SLASH or kind == TK_PERCENT { return 21 }
+    // ** right-assoc: right bp < left bp
+    if kind == TK_POWER { return 22 }
+    if kind == TK_AS { return 26 }
+    if kind == TK_DOT_DOT or kind == TK_DOT_DOT_EQ { return 1 }
+    return -1
+}
+
+// -------------------------------------------------------------------
+// Prefix binding power
+// -------------------------------------------------------------------
+
+fn prefix_bp(kind: i32) -> i32 {
+    // - not ~
+    if kind == TK_MINUS or kind == TK_NOT or kind == TK_TILDE { return 24 }
+    // shared move weak
+    if kind == TK_SHARED or kind == TK_MOVE or kind == TK_WEAK { return 3 }
+    return -1
+}
+
+// -------------------------------------------------------------------
+// Token to binary op
+// -------------------------------------------------------------------
+
+fn token_to_binop(kind: i32) -> i32 {
+    if kind == TK_PLUS     { return BINOP_ADD }
+    if kind == TK_MINUS    { return BINOP_SUB }
+    if kind == TK_STAR     { return BINOP_MUL }
+    if kind == TK_SLASH    { return BINOP_DIV }
+    if kind == TK_PERCENT  { return BINOP_MOD }
+    if kind == TK_POWER    { return BINOP_POW }
+    if kind == TK_EQ_EQ    { return BINOP_EQ }
+    if kind == TK_BANG_EQ  { return BINOP_NEQ }
+    if kind == TK_LT       { return BINOP_LT }
+    if kind == TK_GT       { return BINOP_GT }
+    if kind == TK_LT_EQ    { return BINOP_LT_EQ }
+    if kind == TK_GT_EQ    { return BINOP_GT_EQ }
+    if kind == TK_AND      { return BINOP_AND }
+    if kind == TK_OR       { return BINOP_OR }
+    if kind == TK_AMP      { return BINOP_BIT_AND }
+    if kind == TK_PIPE     { return BINOP_BIT_OR }
+    if kind == TK_CARET    { return BINOP_BIT_XOR }
+    if kind == TK_SHL      { return BINOP_SHL }
+    if kind == TK_SHR      { return BINOP_SHR }
+    return 0
+}
+
+// -------------------------------------------------------------------
+// Integer literal parsing (handles hex, bin, oct, underscores)
+// -------------------------------------------------------------------
+
+fn parse_int_literal(text: str) -> i32 {
+    // Remove underscores
+    let mut clean = ""
+    for i in range(0, len(text)) {
+        if text[i] != "_" {
+            clean = clean + text[i]
+        }
+    }
+    // Check prefixes
+    if len(clean) > 2 {
+        let prefix = clean[0] + clean[1]
+        if prefix == "0x" or prefix == "0X" {
+            // Hex parse -- manual since we have no stdlib hex parser
+            let mut val = 0
+            for i in range(2, len(clean)) {
+                let c = char_code(clean[i])
+                let mut digit = 0
+                if c >= 48 and c <= 57 {
+                    digit = c - 48
+                } elif c >= 65 and c <= 70 {
+                    digit = c - 55
+                } elif c >= 97 and c <= 102 {
+                    digit = c - 87
+                }
+                val = val * 16 + digit
+            }
+            return val
+        }
+        if prefix == "0b" or prefix == "0B" {
+            let mut val = 0
+            for i in range(2, len(clean)) {
+                val = val * 2 + (char_code(clean[i]) - 48)
+            }
+            return val
+        }
+        if prefix == "0o" or prefix == "0O" {
+            let mut val = 0
+            for i in range(2, len(clean)) {
+                val = val * 8 + (char_code(clean[i]) - 48)
+            }
+            return val
+        }
+    }
+    // Decimal
+    let mut val = 0
+    for i in range(0, len(clean)) {
+        val = val * 10 + (char_code(clean[i]) - 48)
+    }
+    return val
+}
+
+// -------------------------------------------------------------------
+// Helper: does a name look like a type name (starts uppercase)?
+// -------------------------------------------------------------------
+
+fn looks_like_type_name(name: str) -> bool {
+    if len(name) == 0 {
+        return false
+    }
+    return is_upper(name[0])
+}
+
+// ===================================================================
+// MODULE PARSING
+// ===================================================================
+
+fn parse_module(p: Parser) -> Module {
+    let mut pp = p
+    let mut decls: [Decl] = []
+    let start_pos = p_peek(pp).start
+
+    while not p_at_end(pp) {
+        let result = parse_declaration(pp)
+        if result.ok {
+            push(decls, result.decl)
+            pp = result.p
+        } else {
+            if not p_at_end(result.p) {
+                pp = p_error(result.p, "unexpected token " + token_kind_name(p_peek_kind(result.p)))
+                pp = p_synchronize(pp)
+            } else {
+                pp = result.p
+            }
+        }
+    }
+
+    let end_pos = p_peek(pp).start
+    return Module { name: "", declarations: decls, start: start_pos, end: end_pos }
+}
+
+// ===================================================================
+// DECLARATION PARSING
+// ===================================================================
+
+fn parse_declaration(p: Parser) -> ParseDeclResult {
+    let mut pp = p
+    // Collect annotations
+    let mut annotations: [Annotation] = []
+    while p_check(pp, TK_AT) {
+        let ann_result = parse_annotation(pp)
+        pp = ann_result.p
+        push(annotations, ann_result.decl)
+    }
+
+    // Check for pub modifier
+    let mut public = false
+    if p_check(pp, TK_PUB) {
+        public = true
+        pp = p_advance(pp)
+    }
+
+    let k = p_peek_kind(pp)
+
+    if k == TK_FN {
+        let result = parse_fn_decl(pp, public, annotations)
+        return ParseDeclResult { p: result.p, decl: result.decl, ok: true }
+    }
+    if k == TK_STRUCT {
+        let result = parse_struct_decl(pp, public, annotations)
+        return ParseDeclResult { p: result.p, decl: result.decl, ok: true }
+    }
+    if k == TK_ENUM {
+        let result = parse_enum_decl(pp, public, annotations)
+        return ParseDeclResult { p: result.p, decl: result.decl, ok: true }
+    }
+    if k == TK_TRAIT {
+        let result = parse_trait_decl(pp, public)
+        return ParseDeclResult { p: result.p, decl: result.decl, ok: true }
+    }
+    if k == TK_IMPL {
+        let result = parse_impl_decl(pp)
+        return ParseDeclResult { p: result.p, decl: result.decl, ok: true }
+    }
+    if k == TK_ACTOR {
+        let result = parse_actor_decl(pp, annotations)
+        return ParseDeclResult { p: result.p, decl: result.decl, ok: true }
+    }
+    if k == TK_TYPE {
+        let result = parse_type_alias(pp, public)
+        return ParseDeclResult { p: result.p, decl: result.decl, ok: true }
+    }
+    if k == TK_USE {
+        let result = parse_import(pp)
+        return ParseDeclResult { p: result.p, decl: result.decl, ok: true }
+    }
+    if k == TK_EXTERN {
+        let result = parse_extern(pp)
+        return ParseDeclResult { p: result.p, decl: result.decl, ok: true }
+    }
+
+    // Not a declaration -- try as a top-level statement wrapped in a
+    // "script decl" (implicit main).  For the self-hosting compiler
+    // this lets top-level `let`, expressions, etc. work.
+    if len(annotations) == 0 and not public {
+        // Try as statement -- we'll wrap it in a dummy function decl
+        let stmt_result = parse_statement(pp)
+        if stmt_result.ok {
+            let stmts: [Stmt] = [stmt_result.stmt]
+            let empty_ann: [Annotation] = []
+            let empty_gen: [GenericParam] = []
+            let empty_params: [Param] = []
+            let empty_ty: [TypeExpr] = []
+            let empty_decls: [Decl] = []
+            let empty_ip: [ImportPath] = []
+            let empty_sf: [StructField] = []
+            let empty_ev: [EnumVariant] = []
+            let empty_mh: [MessageHandler] = []
+            let decl = Decl {
+                kind: DECL_FUNCTION, name: "<top-level>", public: false,
+                annotations: empty_ann, generics: empty_gen,
+                params: empty_params, ret_type: empty_ty, fn_body: stmts,
+                fields: empty_sf, variants: empty_ev,
+                methods: empty_decls, target: "", trait_name: "",
+                state_fields: empty_sf, handlers: empty_mh,
+                alias_type: empty_ty, import_path: empty_ip,
+                abi: "", extern_items: empty_decls,
+                start: stmt_result.stmt.start, end: stmt_result.stmt.end
+            }
+            return ParseDeclResult { p: stmt_result.p, decl: decl, ok: true }
+        }
+    }
+
+    // Nothing worked
+    let empty_decl = make_empty_decl(0, 0)
+    return ParseDeclResult { p: pp, decl: empty_decl, ok: false }
+}
+
+// -------------------------------------------------------------------
+// Annotation parsing: @name or @name(arg1, arg2)
+// -------------------------------------------------------------------
+
+struct ParseAnnotationResult {
+    p: Parser,
+    decl: Annotation
+}
+
+fn parse_annotation(p: Parser) -> ParseAnnotationResult {
+    let mut pp = p_expect(p, TK_AT)
+    let start = p_peek(p).start
+    let nr = p_expect_name(pp)
+    pp = nr.p
+    let name = nr.name
+    let mut args: [str] = []
+    let mut end_pos = nr.end
+
+    if p_check(pp, TK_LPAREN) {
+        pp = p_advance(pp)
+        while not p_check(pp, TK_RPAREN) and not p_at_end(pp) {
+            let tok = p_peek(pp)
+            push(args, tok.text)
+            pp = p_advance(pp)
+            if not p_check(pp, TK_RPAREN) {
+                if p_check(pp, TK_COMMA) {
+                    pp = p_advance(pp)
+                }
+            }
+        }
+        end_pos = p_peek(pp).end
+        pp = p_expect(pp, TK_RPAREN)
+    }
+
+    let ann = Annotation { name: name, args: args, start: start, end: end_pos }
+    return ParseAnnotationResult { p: pp, decl: ann }
+}
+
+// -------------------------------------------------------------------
+// Generics parsing: <T, U: Bound>
+// -------------------------------------------------------------------
+
+struct ParseGenericsResult {
+    p: Parser,
+    generics: [GenericParam]
+}
+
+fn parse_generics(p: Parser) -> ParseGenericsResult {
+    let mut pp = p
+    let mut generics: [GenericParam] = []
+    if not p_check(pp, TK_LT) {
+        return ParseGenericsResult { p: pp, generics: generics }
+    }
+    pp = p_advance(pp) // eat <
+    while not p_check(pp, TK_GT) and not p_at_end(pp) {
+        let nr = p_expect_name(pp)
+        pp = nr.p
+        let mut bounds: [str] = []
+        if p_check(pp, TK_COLON) {
+            pp = p_advance(pp)
+            let br = p_expect_name(pp)
+            pp = br.p
+            push(bounds, br.name)
+            while p_check(pp, TK_PLUS) {
+                pp = p_advance(pp)
+                let br2 = p_expect_name(pp)
+                pp = br2.p
+                push(bounds, br2.name)
+            }
+        }
+        push(generics, GenericParam { name: nr.name, bounds: bounds, start: nr.start, end: nr.end })
+        if not p_check(pp, TK_GT) {
+            pp = p_expect(pp, TK_COMMA)
+        }
+    }
+    pp = p_expect(pp, TK_GT)
+    return ParseGenericsResult { p: pp, generics: generics }
+}
+
+// -------------------------------------------------------------------
+// Function declaration
+// -------------------------------------------------------------------
+
+fn parse_fn_decl(p: Parser, public: bool, annotations: [Annotation]) -> ParseDeclResult {
+    let mut pp = p_expect(p, TK_FN)
+    let start = p_peek(p).start
+    let nr = p_expect_name(pp)
+    pp = nr.p
+    let gr = parse_generics(pp)
+    pp = gr.p
+    pp = p_expect(pp, TK_LPAREN)
+    let params_result = parse_param_list(pp)
+    pp = params_result.p
+    pp = p_expect(pp, TK_RPAREN)
+
+    let mut ret_type: [TypeExpr] = []
+    if p_check(pp, TK_ARROW) {
+        pp = p_advance(pp)
+        let tr = parse_type(pp)
+        pp = tr.p
+        push(ret_type, tr.ty)
+    }
+
+    let mut fn_body: [Stmt] = []
+    if p_check(pp, TK_LBRACE) {
+        let block_result = parse_block(pp)
+        pp = block_result.p
+        fn_body = block_result.stmts
+    } else {
+        // Trait method signature -- no body
+        if p_check(pp, TK_SEMICOLON) {
+            pp = p_advance(pp)
+        }
+    }
+
+    let decl = make_fn_decl(nr.name, public, annotations, gr.generics,
+                            params_result.params, ret_type, fn_body, start, p_peek(pp).start)
+    return ParseDeclResult { p: pp, decl: decl, ok: true }
+}
+
+// -------------------------------------------------------------------
+// Parameter list parsing
+// -------------------------------------------------------------------
+
+struct ParseParamsResult {
+    p: Parser,
+    params: [Param]
+}
+
+fn parse_param_list(p: Parser) -> ParseParamsResult {
+    let mut pp = p
+    let mut params: [Param] = []
+    while not p_check(pp, TK_RPAREN) and not p_at_end(pp) {
+        let before = pp.pos
+        let tok = p_peek(pp)
+        if tok.text == "self" {
+            let empty_ty: [TypeExpr] = []
+            let empty_def: [Expr] = []
+            push(params, Param { name: "self", ty: empty_ty, default_val: empty_def, start: tok.start, end: tok.end })
+            pp = p_advance(pp)
+        } else {
+            let nr = p_expect_name(pp)
+            pp = nr.p
+            let mut ty: [TypeExpr] = []
+            if p_check(pp, TK_COLON) {
+                pp = p_advance(pp)
+                let tr = parse_type(pp)
+                pp = tr.p
+                push(ty, tr.ty)
+            }
+            let mut default_val: [Expr] = []
+            if p_check(pp, TK_EQ) {
+                pp = p_advance(pp)
+                let er = parse_expr(pp)
+                pp = er.p
+                push(default_val, er.expr)
+            }
+            push(params, Param { name: nr.name, ty: ty, default_val: default_val, start: nr.start, end: p_peek(pp).start })
+        }
+        if not p_check(pp, TK_RPAREN) {
+            pp = p_expect(pp, TK_COMMA)
+        }
+        // Guard against infinite loop
+        if pp.pos == before {
+            pp = p_advance(pp)
+        }
+    }
+    return ParseParamsResult { p: pp, params: params }
+}
+
+// -------------------------------------------------------------------
+// Struct declaration
+// -------------------------------------------------------------------
+
+fn parse_struct_decl(p: Parser, public: bool, annotations: [Annotation]) -> ParseDeclResult {
+    let mut pp = p_expect(p, TK_STRUCT)
+    let start = p_peek(p).start
+    let nr = p_expect_name(pp)
+    pp = nr.p
+    let gr = parse_generics(pp)
+    pp = gr.p
+    pp = p_expect(pp, TK_LBRACE)
+
+    let mut fields: [StructField] = []
+    while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
+        let mut field_public = false
+        if p_check(pp, TK_PUB) {
+            field_public = true
+            pp = p_advance(pp)
+        }
+        let fnr = p_expect_name(pp)
+        pp = fnr.p
+        pp = p_expect(pp, TK_COLON)
+        let tr = parse_type(pp)
+        pp = tr.p
+        let mut default_val: [Expr] = []
+        if p_check(pp, TK_EQ) {
+            pp = p_advance(pp)
+            let er = parse_expr(pp)
+            pp = er.p
+            push(default_val, er.expr)
+        }
+        push(fields, StructField {
+            name: fnr.name, ty: tr.ty, public: field_public,
+            default_val: default_val, start: fnr.start, end: p_peek(pp).start
+        })
+        if not p_check(pp, TK_RBRACE) {
+            if p_check(pp, TK_COMMA) {
+                pp = p_advance(pp)
+            }
+        }
+    }
+    pp = p_expect(pp, TK_RBRACE)
+    let decl = make_struct_decl(nr.name, public, annotations, gr.generics, fields, start, p_peek(pp).start)
+    return ParseDeclResult { p: pp, decl: decl, ok: true }
+}
+
+// -------------------------------------------------------------------
+// Enum declaration
+// -------------------------------------------------------------------
+
+fn parse_enum_decl(p: Parser, public: bool, annotations: [Annotation]) -> ParseDeclResult {
+    let mut pp = p_expect(p, TK_ENUM)
+    let start = p_peek(p).start
+    let nr = p_expect_name(pp)
+    pp = nr.p
+    let gr = parse_generics(pp)
+    pp = gr.p
+    pp = p_expect(pp, TK_LBRACE)
+
+    let mut variants: [EnumVariant] = []
+    while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
+        let vnr = p_expect_name(pp)
+        pp = vnr.p
+        let mut vfields: [TypeExpr] = []
+        if p_check(pp, TK_LPAREN) {
+            pp = p_advance(pp)
+            while not p_check(pp, TK_RPAREN) and not p_at_end(pp) {
+                let tr = parse_type(pp)
+                pp = tr.p
+                push(vfields, tr.ty)
+                if not p_check(pp, TK_RPAREN) {
+                    pp = p_expect(pp, TK_COMMA)
+                }
+            }
+            pp = p_expect(pp, TK_RPAREN)
+        }
+        push(variants, EnumVariant { name: vnr.name, fields: vfields, start: vnr.start, end: p_peek(pp).start })
+        if not p_check(pp, TK_RBRACE) {
+            if p_check(pp, TK_COMMA) {
+                pp = p_advance(pp)
+            }
+        }
+    }
+    pp = p_expect(pp, TK_RBRACE)
+    let decl = make_enum_decl(nr.name, public, annotations, gr.generics, variants, start, p_peek(pp).start)
+    return ParseDeclResult { p: pp, decl: decl, ok: true }
+}
+
+// -------------------------------------------------------------------
+// Trait declaration
+// -------------------------------------------------------------------
+
+fn parse_trait_decl(p: Parser, public: bool) -> ParseDeclResult {
+    let mut pp = p_expect(p, TK_TRAIT)
+    let start = p_peek(p).start
+    let nr = p_expect_name(pp)
+    pp = nr.p
+    let gr = parse_generics(pp)
+    pp = gr.p
+    pp = p_expect(pp, TK_LBRACE)
+
+    let mut methods: [Decl] = []
+    let empty_ann: [Annotation] = []
+    while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
+        let mr = parse_fn_decl(pp, false, empty_ann)
+        pp = mr.p
+        push(methods, mr.decl)
+    }
+    pp = p_expect(pp, TK_RBRACE)
+    let decl = make_trait_decl(nr.name, public, gr.generics, methods, start, p_peek(pp).start)
+    return ParseDeclResult { p: pp, decl: decl, ok: true }
+}
+
+// -------------------------------------------------------------------
+// Impl declaration
+// -------------------------------------------------------------------
+
+fn parse_impl_decl(p: Parser) -> ParseDeclResult {
+    let mut pp = p_expect(p, TK_IMPL)
+    let start = p_peek(p).start
+    let gr = parse_generics(pp)
+    pp = gr.p
+    let nr = p_expect_name(pp)
+    pp = nr.p
+
+    // Check for `impl Trait for Target`
+    let mut target = nr.name
+    let mut trait_name = ""
+    if p_check(pp, TK_FOR) {
+        pp = p_advance(pp)
+        let tnr = p_expect_name(pp)
+        pp = tnr.p
+        trait_name = target
+        target = tnr.name
+    }
+
+    pp = p_expect(pp, TK_LBRACE)
+    let mut methods: [Decl] = []
+    let empty_ann: [Annotation] = []
+    while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
+        let mut method_public = false
+        if p_check(pp, TK_PUB) {
+            method_public = true
+            pp = p_advance(pp)
+        }
+        let mr = parse_fn_decl(pp, method_public, empty_ann)
+        pp = mr.p
+        push(methods, mr.decl)
+    }
+    pp = p_expect(pp, TK_RBRACE)
+    let decl = make_impl_decl(target, trait_name, gr.generics, methods, start, p_peek(pp).start)
+    return ParseDeclResult { p: pp, decl: decl, ok: true }
+}
+
+// -------------------------------------------------------------------
+// Actor declaration
+// -------------------------------------------------------------------
+
+fn parse_actor_decl(p: Parser, annotations: [Annotation]) -> ParseDeclResult {
+    let mut pp = p_expect(p, TK_ACTOR)
+    let start = p_peek(p).start
+    let nr = p_expect_name(pp)
+    pp = nr.p
+    pp = p_expect(pp, TK_LBRACE)
+
+    let mut state_fields: [StructField] = []
+    let mut handlers: [MessageHandler] = []
+
+    while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
+        if p_check(pp, TK_FN) {
+            let fn_start = p_peek(pp).start
+            pp = p_expect(pp, TK_FN)
+            let hnr = p_expect_name(pp)
+            pp = hnr.p
+            pp = p_expect(pp, TK_LPAREN)
+            let hpr = parse_param_list(pp)
+            pp = hpr.p
+            pp = p_expect(pp, TK_RPAREN)
+            let mut hret: [TypeExpr] = []
+            if p_check(pp, TK_ARROW) {
+                pp = p_advance(pp)
+                let tr = parse_type(pp)
+                pp = tr.p
+                push(hret, tr.ty)
+            }
+            let block_result = parse_block(pp)
+            pp = block_result.p
+            push(handlers, MessageHandler {
+                name: hnr.name, params: hpr.params, ret_type: hret,
+                body: block_result.stmts, start: fn_start, end: p_peek(pp).start
+            })
+        } else {
+            // State field
+            let fnr = p_expect_name(pp)
+            pp = fnr.p
+            pp = p_expect(pp, TK_COLON)
+            let tr = parse_type(pp)
+            pp = tr.p
+            let empty_def: [Expr] = []
+            push(state_fields, StructField {
+                name: fnr.name, ty: tr.ty, public: false,
+                default_val: empty_def, start: fnr.start, end: p_peek(pp).start
+            })
+            if not p_check(pp, TK_RBRACE) and not p_check(pp, TK_FN) {
+                if p_check(pp, TK_COMMA) {
+                    pp = p_advance(pp)
+                }
+            }
+        }
+    }
+    pp = p_expect(pp, TK_RBRACE)
+    let decl = make_actor_decl(nr.name, annotations, state_fields, handlers, start, p_peek(pp).start)
+    return ParseDeclResult { p: pp, decl: decl, ok: true }
+}
+
+// -------------------------------------------------------------------
+// Type alias
+// -------------------------------------------------------------------
+
+fn parse_type_alias(p: Parser, public: bool) -> ParseDeclResult {
+    let mut pp = p_expect(p, TK_TYPE)
+    let start = p_peek(p).start
+    let nr = p_expect_name(pp)
+    pp = nr.p
+    let gr = parse_generics(pp)
+    pp = gr.p
+    pp = p_expect(pp, TK_EQ)
+    let tr = parse_type(pp)
+    pp = tr.p
+    let decl = make_type_alias_decl(nr.name, public, gr.generics, tr.ty, start, p_peek(pp).start)
+    return ParseDeclResult { p: pp, decl: decl, ok: true }
+}
+
+// -------------------------------------------------------------------
+// Import (use)
+// -------------------------------------------------------------------
+
+fn parse_import(p: Parser) -> ParseDeclResult {
+    let mut pp = p_expect(p, TK_USE)
+    let start = p_peek(p).start
+    let mut segments: [str] = []
+
+    let nr = p_expect_name(pp)
+    pp = nr.p
+    push(segments, nr.name)
+
+    while p_check(pp, TK_COLON_COLON) {
+        pp = p_advance(pp)
+        // Grouped imports: { Item1, Item2 }
+        if p_check(pp, TK_LBRACE) {
+            pp = p_advance(pp)
+            let mut items: [str] = []
+            while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
+                let inr = p_expect_name(pp)
+                pp = inr.p
+                push(items, inr.name)
+                if not p_check(pp, TK_RBRACE) {
+                    pp = p_expect(pp, TK_COMMA)
+                }
+            }
+            pp = p_expect(pp, TK_RBRACE)
+            let ip = ImportPath { segments: segments, alias: "", items: items, start: start, end: p_peek(pp).start }
+            let decl = make_import_decl(ip, start, p_peek(pp).start)
+            return ParseDeclResult { p: pp, decl: decl, ok: true }
+        }
+        let snr = p_expect_name(pp)
+        pp = snr.p
+        push(segments, snr.name)
+    }
+
+    let mut alias = ""
+    if p_check(pp, TK_AS) {
+        pp = p_advance(pp)
+        let anr = p_expect_name(pp)
+        pp = anr.p
+        alias = anr.name
+    }
+
+    let empty_items: [str] = []
+    let ip = ImportPath { segments: segments, alias: alias, items: empty_items, start: start, end: p_peek(pp).start }
+    let decl = make_import_decl(ip, start, p_peek(pp).start)
+    return ParseDeclResult { p: pp, decl: decl, ok: true }
+}
+
+// -------------------------------------------------------------------
+// Extern declaration
+// -------------------------------------------------------------------
+
+fn parse_extern(p: Parser) -> ParseDeclResult {
+    let mut pp = p_expect(p, TK_EXTERN)
+    let start = p_peek(p).start
+
+    let mut abi = "C"
+    if p_check(pp, TK_STRING) {
+        abi = p_peek(pp).text
+        pp = p_advance(pp)
+    }
+
+    pp = p_expect(pp, TK_LBRACE)
+    let mut items: [Decl] = []
+    let empty_ann: [Annotation] = []
+    while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
+        let fr = parse_fn_decl(pp, false, empty_ann)
+        pp = fr.p
+        push(items, fr.decl)
+    }
+    pp = p_expect(pp, TK_RBRACE)
+    let decl = make_extern_decl(abi, items, start, p_peek(pp).start)
+    return ParseDeclResult { p: pp, decl: decl, ok: true }
+}
+
+// ===================================================================
+// BLOCK PARSING
+// ===================================================================
+
+struct ParseBlockResult {
+    p: Parser,
+    stmts: [Stmt]
+}
+
+fn parse_block(p: Parser) -> ParseBlockResult {
+    let mut pp = p_expect(p, TK_LBRACE)
+    let mut stmts: [Stmt] = []
+
+    while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
+        let result = parse_statement(pp)
+        if result.ok {
+            push(stmts, result.stmt)
+            pp = result.p
+        } else {
+            if not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
+                pp = p_error(pp, "unexpected token in block: " + token_kind_name(p_peek_kind(pp)))
+                pp = p_advance(pp)
+            }
+        }
+    }
+    pp = p_expect(pp, TK_RBRACE)
+    return ParseBlockResult { p: pp, stmts: stmts }
+}
+
+// ===================================================================
+// STATEMENT PARSING
+// ===================================================================
+
+fn parse_statement(p: Parser) -> ParseStmtResult {
+    let k = p_peek_kind(p)
+    if k == TK_LET      { return parse_let(p) }
+    if k == TK_RETURN   { return parse_return(p) }
+    if k == TK_IF       { return parse_if_stmt(p) }
+    if k == TK_FOR      { return parse_for(p) }
+    if k == TK_WHILE    { return parse_while(p) }
+    if k == TK_BREAK {
+        let tok = p_peek(p)
+        let pp = p_advance(p)
+        let stmt = make_break_stmt(tok.start, tok.end)
+        return ParseStmtResult { p: pp, stmt: stmt, ok: true }
+    }
+    if k == TK_CONTINUE {
+        let tok = p_peek(p)
+        let pp = p_advance(p)
+        let stmt = make_continue_stmt(tok.start, tok.end)
+        return ParseStmtResult { p: pp, stmt: stmt, ok: true }
+    }
+    if k == TK_SPAWN    { return parse_spawn(p) }
+    if k == TK_SELECT   { return parse_select(p) }
+    if k == TK_TRY      { return parse_try_catch(p) }
+    if k == TK_THROW    { return parse_throw(p) }
+    if k == TK_RBRACE {
+        let empty = make_empty_stmt(0, 0)
+        return ParseStmtResult { p: p, stmt: empty, ok: false }
+    }
+    return parse_expr_or_assign(p)
+}
+
+fn parse_let(p: Parser) -> ParseStmtResult {
+    let mut pp = p_expect(p, TK_LET)
+    let start = p_peek(p).start
+    let mut mutable = false
+    if p_check(pp, TK_MUT) {
+        mutable = true
+        pp = p_advance(pp)
+    }
+
+    // Destructuring pattern: let (a, b) = ...
+    if p_check(pp, TK_LPAREN) {
+        let pr = parse_pattern(pp)
+        pp = pr.p
+        let mut ty: [TypeExpr] = []
+        if p_check(pp, TK_COLON) {
+            pp = p_advance(pp)
+            let tr = parse_type(pp)
+            pp = tr.p
+            push(ty, tr.ty)
+        }
+        let mut value: [Expr] = []
+        if p_check(pp, TK_EQ) {
+            pp = p_advance(pp)
+            let er = parse_expr(pp)
+            pp = er.p
+            push(value, er.expr)
+        }
+        let pat: [Pattern] = [pr.pattern]
+        let stmt = make_let_stmt("", mutable, ty, value, pat, start, p_peek(pp).start)
+        return ParseStmtResult { p: pp, stmt: stmt, ok: true }
+    }
+
+    let nr = p_expect_name(pp)
+    pp = nr.p
+    let mut ty: [TypeExpr] = []
+    if p_check(pp, TK_COLON) {
+        pp = p_advance(pp)
+        let tr = parse_type(pp)
+        pp = tr.p
+        push(ty, tr.ty)
+    }
+    let mut value: [Expr] = []
+    if p_check(pp, TK_EQ) {
+        pp = p_advance(pp)
+        let er = parse_expr(pp)
+        pp = er.p
+        push(value, er.expr)
+    }
+    let empty_pat: [Pattern] = []
+    let stmt = make_let_stmt(nr.name, mutable, ty, value, empty_pat, start, p_peek(pp).start)
+    return ParseStmtResult { p: pp, stmt: stmt, ok: true }
+}
+
+fn parse_return(p: Parser) -> ParseStmtResult {
+    let mut pp = p_expect(p, TK_RETURN)
+    let start = p_peek(p).start
+    let mut value: [Expr] = []
+    if not p_check(pp, TK_RBRACE) and not p_at_end(pp) and not p_check(pp, TK_SEMICOLON) {
+        let er = parse_expr(pp)
+        pp = er.p
+        push(value, er.expr)
+    }
+    let stmt = make_return_stmt(value, start, p_peek(pp).start)
+    return ParseStmtResult { p: pp, stmt: stmt, ok: true }
+}
+
+fn parse_if_stmt(p: Parser) -> ParseStmtResult {
+    let mut pp = p_expect(p, TK_IF)
+    let start = p_peek(p).start
+    let cond_result = parse_expr(pp)
+    pp = cond_result.p
+    let then_result = parse_block(pp)
+    pp = then_result.p
+
+    let mut elif_conds: [Expr] = []
+    let mut elif_blocks: [[Stmt]] = []
+    while p_check(pp, TK_ELIF) {
+        pp = p_advance(pp)
+        let ecr = parse_expr(pp)
+        pp = ecr.p
+        let ebr = parse_block(pp)
+        pp = ebr.p
+        push(elif_conds, ecr.expr)
+        push(elif_blocks, ebr.stmts)
+    }
+
+    let mut else_stmts: [Stmt] = []
+    if p_check(pp, TK_ELSE) {
+        pp = p_advance(pp)
+        let ebr = parse_block(pp)
+        pp = ebr.p
+        else_stmts = ebr.stmts
+    }
+
+    let stmt = make_if_stmt(cond_result.expr, then_result.stmts, elif_conds, elif_blocks, else_stmts, start, p_peek(pp).start)
+    return ParseStmtResult { p: pp, stmt: stmt, ok: true }
+}
+
+fn parse_for(p: Parser) -> ParseStmtResult {
+    let mut pp = p_expect(p, TK_FOR)
+    let start = p_peek(p).start
+    let pr = parse_pattern(pp)
+    pp = pr.p
+    pp = p_expect(pp, TK_IN)
+    let er = parse_expr(pp)
+    pp = er.p
+    let br = parse_block(pp)
+    pp = br.p
+    let pat: [Pattern] = [pr.pattern]
+    let iter: [Expr] = [er.expr]
+    let stmt = make_for_stmt(pat, iter, br.stmts, start, p_peek(pp).start)
+    return ParseStmtResult { p: pp, stmt: stmt, ok: true }
+}
+
+fn parse_while(p: Parser) -> ParseStmtResult {
+    let mut pp = p_expect(p, TK_WHILE)
+    let start = p_peek(p).start
+    let er = parse_expr(pp)
+    pp = er.p
+    let br = parse_block(pp)
+    pp = br.p
+    let cond: [Expr] = [er.expr]
+    let stmt = make_while_stmt(cond, br.stmts, start, p_peek(pp).start)
+    return ParseStmtResult { p: pp, stmt: stmt, ok: true }
+}
+
+fn parse_spawn(p: Parser) -> ParseStmtResult {
+    let mut pp = p_expect(p, TK_SPAWN)
+    let start = p_peek(p).start
+    let er = parse_expr(pp)
+    pp = er.p
+    let spawn_e: [Expr] = [er.expr]
+    let stmt = make_spawn_stmt(spawn_e, start, p_peek(pp).start)
+    return ParseStmtResult { p: pp, stmt: stmt, ok: true }
+}
+
+fn parse_select(p: Parser) -> ParseStmtResult {
+    let mut pp = p_expect(p, TK_SELECT)
+    let start = p_peek(p).start
+    pp = p_expect(pp, TK_LBRACE)
+    let mut branches: [SelectBranch] = []
+    while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
+        let tok = p_peek(pp)
+        let pattern = tok.text
+        pp = p_advance(pp)
+        let er = parse_expr(pp)
+        pp = er.p
+        pp = p_expect(pp, TK_FAT_ARROW)
+        let br = parse_block(pp)
+        pp = br.p
+        let ch: [Expr] = [er.expr]
+        push(branches, SelectBranch { pattern: pattern, channel: ch, body: br.stmts, start: tok.start, end: p_peek(pp).start })
+    }
+    pp = p_expect(pp, TK_RBRACE)
+    let stmt = make_select_stmt(branches, start, p_peek(pp).start)
+    return ParseStmtResult { p: pp, stmt: stmt, ok: true }
+}
+
+fn parse_try_catch(p: Parser) -> ParseStmtResult {
+    let mut pp = p_expect(p, TK_TRY)
+    let start = p_peek(p).start
+    let try_br = parse_block(pp)
+    pp = try_br.p
+    pp = p_expect(pp, TK_CATCH)
+    // catch (name)
+    let mut catch_name = "e"
+    if p_check(pp, TK_LPAREN) {
+        pp = p_advance(pp)
+        let nr = p_expect_name(pp)
+        pp = nr.p
+        catch_name = nr.name
+        pp = p_expect(pp, TK_RPAREN)
+    } else {
+        let nr = p_expect_name(pp)
+        pp = nr.p
+        catch_name = nr.name
+    }
+    let catch_br = parse_block(pp)
+    pp = catch_br.p
+    let stmt = make_try_catch_stmt(try_br.stmts, catch_name, catch_br.stmts, start, p_peek(pp).start)
+    return ParseStmtResult { p: pp, stmt: stmt, ok: true }
+}
+
+fn parse_throw(p: Parser) -> ParseStmtResult {
+    let mut pp = p_expect(p, TK_THROW)
+    let start = p_peek(p).start
+    let er = parse_expr(pp)
+    pp = er.p
+    let throw_e: [Expr] = [er.expr]
+    let stmt = make_throw_stmt(throw_e, start, p_peek(pp).start)
+    return ParseStmtResult { p: pp, stmt: stmt, ok: true }
+}
+
+fn parse_expr_or_assign(p: Parser) -> ParseStmtResult {
+    let er = parse_expr(p)
+    let mut pp = er.p
+    let start = er.expr.start
+
+    // Check for assignment operators
+    let k = p_peek_kind(pp)
+    let mut assign_op = -1
+    if k == TK_EQ       { assign_op = ASSIGN_EQ }
+    if k == TK_PLUS_EQ  { assign_op = ASSIGN_ADD_EQ }
+    if k == TK_MINUS_EQ { assign_op = ASSIGN_SUB_EQ }
+    if k == TK_STAR_EQ  { assign_op = ASSIGN_MUL_EQ }
+    if k == TK_SLASH_EQ { assign_op = ASSIGN_DIV_EQ }
+
+    if assign_op >= 0 {
+        pp = p_advance(pp)
+        let vr = parse_expr(pp)
+        pp = vr.p
+        let target: [Expr] = [er.expr]
+        let value: [Expr] = [vr.expr]
+        let stmt = make_assign_stmt(target, assign_op, value, start, p_peek(pp).start)
+        return ParseStmtResult { p: pp, stmt: stmt, ok: true }
+    }
+
+    let e: [Expr] = [er.expr]
+    let stmt = make_expr_stmt(e, start, p_peek(pp).start)
+    return ParseStmtResult { p: pp, stmt: stmt, ok: true }
+}
+
+// ===================================================================
+// EXPRESSION PARSING -- Pratt parser
+// ===================================================================
+
+fn parse_expr(p: Parser) -> ParseExprResult {
+    return parse_expr_bp(p, 0)
+}
+
+fn parse_expr_bp(p: Parser, min_bp: i32) -> ParseExprResult {
+    let prefix_result = parse_prefix(p)
+    let mut pp = prefix_result.p
+    let mut lhs = prefix_result.expr
+
+    let mut done = false
+    while not done {
+        if p_at_end(pp) {
+            break
+        }
+        let kind = p_peek_kind(pp)
+
+        // -- Postfix: .field, [index], (call) --
+        if kind == TK_DOT and POSTFIX_BP >= min_bp {
+            pp = p_advance(pp) // eat .
+            let nr = p_expect_name(pp)
+            pp = nr.p
+            // Method call: obj.method(args)
+            if p_check(pp, TK_LPAREN) {
+                pp = p_advance(pp) // eat (
+                let args_result = parse_arg_list(pp)
+                pp = args_result.p
+                pp = p_expect(pp, TK_RPAREN)
+                lhs = mk_method_call(lhs, nr.name, args_result.args, lhs.start, p_peek(pp).start)
+            } else {
+                lhs = mk_field_access(lhs, nr.name, lhs.start, nr.end)
+            }
+            continue
+        }
+
+        if kind == TK_LBRACKET and POSTFIX_BP >= min_bp {
+            pp = p_advance(pp) // eat [
+            let idx_result = parse_expr(pp)
+            pp = idx_result.p
+            pp = p_expect(pp, TK_RBRACKET)
+            lhs = mk_index_access(lhs, idx_result.expr, lhs.start, p_peek(pp).start)
+            continue
+        }
+
+        if kind == TK_LPAREN and POSTFIX_BP >= min_bp {
+            pp = p_advance(pp) // eat (
+            let args_result = parse_arg_list(pp)
+            pp = args_result.p
+            pp = p_expect(pp, TK_RPAREN)
+            lhs = mk_fn_call(lhs, args_result.args, lhs.start, p_peek(pp).start)
+            continue
+        }
+
+        // -- Range operators --
+        if (kind == TK_DOT_DOT or kind == TK_DOT_DOT_EQ) and min_bp <= 1 {
+            let incl = kind == TK_DOT_DOT_EQ
+            pp = p_advance(pp)
+            // Try to parse right side
+            let rk = p_peek_kind(pp)
+            let mut range_end: [Expr] = []
+            if not p_at_end(pp) and rk != TK_RBRACE and rk != TK_RBRACKET and
+               rk != TK_RPAREN and rk != TK_COMMA and rk != TK_SEMICOLON and rk != TK_LBRACE {
+                let rr = parse_expr_bp(pp, 2)
+                pp = rr.p
+                push(range_end, rr.expr)
+            }
+            let range_start: [Expr] = [lhs]
+            lhs = Expr {
+                kind: EXPR_RANGE, int_val: 0, float_val: 0.0,
+                str_val: "", bool_val: false, name: "", op: 0,
+                left: range_start, right: range_end, args: [], elements: [],
+                field_names: [], field_exprs: [],
+                params: [], ret_type: [],
+                then_block: [], else_block: [],
+                match_arms: [], inclusive: incl,
+                cast_type: [], block_stmts: [], string_parts: [],
+                start: lhs.start, end: p_peek(pp).start
+            }
+            continue
+        }
+
+        // -- Infix operators --
+        let next_kind = p_peek_nth(pp, 1)
+        let l_bp = infix_bp_left(kind, next_kind)
+        if l_bp < 0 {
+            break
+        }
+        if l_bp < min_bp {
+            break
+        }
+        let r_bp = infix_bp_right(kind, next_kind)
+
+        // Pipe |>
+        if kind == TK_PIPE and next_kind == TK_GT {
+            pp = p_advance(pp) // eat |
+            pp = p_advance(pp) // eat >
+            let rr = parse_expr_bp(pp, r_bp)
+            pp = rr.p
+            lhs = Expr {
+                kind: EXPR_PIPE, int_val: 0, float_val: 0.0,
+                str_val: "", bool_val: false, name: "", op: 0,
+                left: [lhs], right: [rr.expr], args: [], elements: [],
+                field_names: [], field_exprs: [],
+                params: [], ret_type: [],
+                then_block: [], else_block: [],
+                match_arms: [], inclusive: false,
+                cast_type: [], block_stmts: [], string_parts: [],
+                start: lhs.start, end: rr.expr.end
+            }
+            continue
+        }
+
+        // Cast: `expr as Type`
+        if kind == TK_AS {
+            pp = p_advance(pp)
+            let tr = parse_type(pp)
+            pp = tr.p
+            lhs = Expr {
+                kind: EXPR_CAST, int_val: 0, float_val: 0.0,
+                str_val: "", bool_val: false, name: "", op: 0,
+                left: [lhs], right: [], args: [], elements: [],
+                field_names: [], field_exprs: [],
+                params: [], ret_type: [],
+                then_block: [], else_block: [],
+                match_arms: [], inclusive: false,
+                cast_type: [tr.ty], block_stmts: [], string_parts: [],
+                start: lhs.start, end: p_peek(pp).start
+            }
+            continue
+        }
+
+        // Standard binary operator
+        pp = p_advance(pp)
+        let rr = parse_expr_bp(pp, r_bp)
+        pp = rr.p
+        let op = token_to_binop(kind)
+        lhs = mk_binary_op(op, lhs, rr.expr, lhs.start, rr.expr.end)
+        continue
+    }
+
+    return ParseExprResult { p: pp, expr: lhs }
+}
+
+// -------------------------------------------------------------------
+// Prefix expression parsing
+// -------------------------------------------------------------------
+
+fn parse_prefix(p: Parser) -> ParseExprResult {
+    let kind = p_peek_kind(p)
+    let bp = prefix_bp(kind)
+    if bp >= 0 {
+        let tok = p_peek(p)
+        let pp = p_advance(p)
+        let start = tok.start
+
+        if kind == TK_MINUS {
+            let rr = parse_expr_bp(pp, bp)
+            let expr = mk_unary_op(UNOP_NEG, rr.expr, start, rr.expr.end)
+            return ParseExprResult { p: rr.p, expr: expr }
+        }
+        if kind == TK_NOT {
+            let rr = parse_expr_bp(pp, bp)
+            let expr = mk_unary_op(UNOP_NOT, rr.expr, start, rr.expr.end)
+            return ParseExprResult { p: rr.p, expr: expr }
+        }
+        if kind == TK_TILDE {
+            let rr = parse_expr_bp(pp, bp)
+            let expr = mk_unary_op(UNOP_BIT_NOT, rr.expr, start, rr.expr.end)
+            return ParseExprResult { p: rr.p, expr: expr }
+        }
+        if kind == TK_SHARED {
+            let rr = parse_expr_bp(pp, bp)
+            let inner_e: [Expr] = [rr.expr]
+            let expr = Expr {
+                kind: EXPR_SHARED, int_val: 0, float_val: 0.0,
+                str_val: "", bool_val: false, name: "", op: 0,
+                left: inner_e, right: [], args: [], elements: [],
+                field_names: [], field_exprs: [],
+                params: [], ret_type: [],
+                then_block: [], else_block: [],
+                match_arms: [], inclusive: false,
+                cast_type: [], block_stmts: [], string_parts: [],
+                start: start, end: rr.expr.end
+            }
+            return ParseExprResult { p: rr.p, expr: expr }
+        }
+        if kind == TK_MOVE {
+            let rr = parse_expr_bp(pp, bp)
+            let inner_e: [Expr] = [rr.expr]
+            let expr = Expr {
+                kind: EXPR_MOVE, int_val: 0, float_val: 0.0,
+                str_val: "", bool_val: false, name: "", op: 0,
+                left: inner_e, right: [], args: [], elements: [],
+                field_names: [], field_exprs: [],
+                params: [], ret_type: [],
+                then_block: [], else_block: [],
+                match_arms: [], inclusive: false,
+                cast_type: [], block_stmts: [], string_parts: [],
+                start: start, end: rr.expr.end
+            }
+            return ParseExprResult { p: rr.p, expr: expr }
+        }
+        if kind == TK_WEAK {
+            let rr = parse_expr_bp(pp, bp)
+            let inner_e: [Expr] = [rr.expr]
+            let expr = Expr {
+                kind: EXPR_WEAK, int_val: 0, float_val: 0.0,
+                str_val: "", bool_val: false, name: "", op: 0,
+                left: inner_e, right: [], args: [], elements: [],
+                field_names: [], field_exprs: [],
+                params: [], ret_type: [],
+                then_block: [], else_block: [],
+                match_arms: [], inclusive: false,
+                cast_type: [], block_stmts: [], string_parts: [],
+                start: start, end: rr.expr.end
+            }
+            return ParseExprResult { p: rr.p, expr: expr }
+        }
+    }
+
+    // Not a prefix operator -- parse primary
+    return parse_primary(p)
+}
+
+// -------------------------------------------------------------------
+// Primary expression parsing
+// -------------------------------------------------------------------
+
+fn parse_primary(p: Parser) -> ParseExprResult {
+    let tok = p_peek(p)
+    let kind = tok.kind
+
+    // Integer literal
+    if kind == TK_INTEGER {
+        let pp = p_advance(p)
+        let value = parse_int_literal(tok.text)
+        let expr = mk_int_lit(value, tok.start, tok.end)
+        return ParseExprResult { p: pp, expr: expr }
+    }
+
+    // Float literal
+    if kind == TK_FLOAT {
+        let pp = p_advance(p)
+        // Simple float parse -- strip underscores and use to_float if available
+        let mut clean = ""
+        for i in range(0, len(tok.text)) {
+            if tok.text[i] != "_" {
+                clean = clean + tok.text[i]
+            }
+        }
+        let value = 0.0 // Placeholder: bootstrap runtime needs to_float()
+        let expr = mk_float_lit(value, tok.start, tok.end)
+        return ParseExprResult { p: pp, expr: expr }
+    }
+
+    // String literal
+    if kind == TK_STRING {
+        let pp = p_advance(p)
+        let expr = mk_string_lit(tok.text, tok.start, tok.end)
+        return ParseExprResult { p: pp, expr: expr }
+    }
+
+    // Character literal
+    if kind == TK_CHAR {
+        let pp = p_advance(p)
+        let expr = Expr {
+            kind: EXPR_CHAR_LIT, int_val: 0, float_val: 0.0,
+            str_val: tok.text, bool_val: false, name: "", op: 0,
+            left: [], right: [], args: [], elements: [],
+            field_names: [], field_exprs: [],
+            params: [], ret_type: [],
+            then_block: [], else_block: [],
+            match_arms: [], inclusive: false,
+            cast_type: [], block_stmts: [], string_parts: [],
+            start: tok.start, end: tok.end
+        }
+        return ParseExprResult { p: pp, expr: expr }
+    }
+
+    // Boolean literals
+    if kind == TK_TRUE {
+        let pp = p_advance(p)
+        let expr = mk_bool_lit(true, tok.start, tok.end)
+        return ParseExprResult { p: pp, expr: expr }
+    }
+    if kind == TK_FALSE {
+        let pp = p_advance(p)
+        let expr = mk_bool_lit(false, tok.start, tok.end)
+        return ParseExprResult { p: pp, expr: expr }
+    }
+
+    // None literal
+    if kind == TK_NONE {
+        let pp = p_advance(p)
+        let expr = mk_none_lit(tok.start, tok.end)
+        return ParseExprResult { p: pp, expr: expr }
+    }
+
+    // Identifier -- may be struct literal or plain ident
+    if kind == TK_IDENT or kind == TK_TYPE_IDENT {
+        let pp = p_advance(p)
+        let name = tok.text
+        // Check for struct literal: Name { ... }
+        if p_check(pp, TK_LBRACE) and looks_like_type_name(name) {
+            return parse_struct_literal(pp, name, tok.start)
+        }
+        let expr = mk_ident(name, tok.start, tok.end)
+        return ParseExprResult { p: pp, expr: expr }
+    }
+
+    // Lambda: fn(params) -> RetType { body }
+    if kind == TK_FN {
+        return parse_lambda(p)
+    }
+
+    // If expression
+    if kind == TK_IF {
+        return parse_if_expr(p)
+    }
+
+    // Match expression
+    if kind == TK_MATCH {
+        return parse_match_expr(p)
+    }
+
+    // Array literal: [1, 2, 3]
+    if kind == TK_LBRACKET {
+        return parse_array_literal(p)
+    }
+
+    // Grouped expression or tuple: (expr) or (a, b)
+    if kind == TK_LPAREN {
+        return parse_paren_or_tuple(p)
+    }
+
+    // Map literal or block expression: { ... }
+    if kind == TK_LBRACE {
+        return parse_map_or_block_expr(p)
+    }
+
+    // Error
+    let pp = p_error(p, "expected expression, found " + token_kind_name(kind))
+    let pp2 = p_advance(pp)
+    let expr = mk_ident("<error>", tok.start, tok.end)
+    return ParseExprResult { p: pp2, expr: expr }
+}
+
+// -------------------------------------------------------------------
+// Struct literal: Name { field: value, ... }
+// -------------------------------------------------------------------
+
+fn parse_struct_literal(p: Parser, name: str, start: i32) -> ParseExprResult {
+    let mut pp = p_expect(p, TK_LBRACE)
+    let mut fnames: [str] = []
+    let mut fexprs: [Expr] = []
+
+    while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
+        let nr = p_expect_name(pp)
+        pp = nr.p
+        pp = p_expect(pp, TK_COLON)
+        let vr = parse_expr(pp)
+        pp = vr.p
+        push(fnames, nr.name)
+        push(fexprs, vr.expr)
+        if not p_check(pp, TK_RBRACE) {
+            pp = p_expect(pp, TK_COMMA)
+        }
+    }
+    pp = p_expect(pp, TK_RBRACE)
+    let expr = mk_struct_lit(name, fnames, fexprs, start, p_peek(pp).start)
+    return ParseExprResult { p: pp, expr: expr }
+}
+
+// -------------------------------------------------------------------
+// Lambda: fn(params) -> RetType { body }
+// -------------------------------------------------------------------
+
+fn parse_lambda(p: Parser) -> ParseExprResult {
+    let mut pp = p_expect(p, TK_FN)
+    let start = p_peek(p).start
+    pp = p_expect(pp, TK_LPAREN)
+    let pr = parse_param_list(pp)
+    pp = pr.p
+    pp = p_expect(pp, TK_RPAREN)
+
+    let mut ret_type: [TypeExpr] = []
+    if p_check(pp, TK_ARROW) {
+        pp = p_advance(pp)
+        let tr = parse_type(pp)
+        pp = tr.p
+        push(ret_type, tr.ty)
+    }
+
+    let block_result = parse_block(pp)
+    pp = block_result.p
+    let expr = Expr {
+        kind: EXPR_LAMBDA, int_val: 0, float_val: 0.0,
+        str_val: "", bool_val: false, name: "", op: 0,
+        left: [], right: [], args: [], elements: [],
+        field_names: [], field_exprs: [],
+        params: pr.params, ret_type: ret_type,
+        then_block: [], else_block: [],
+        match_arms: [], inclusive: false,
+        cast_type: [], block_stmts: block_result.stmts, string_parts: [],
+        start: start, end: p_peek(pp).start
+    }
+    return ParseExprResult { p: pp, expr: expr }
+}
+
+// -------------------------------------------------------------------
+// If expression
+// -------------------------------------------------------------------
+
+fn parse_if_expr(p: Parser) -> ParseExprResult {
+    let mut pp = p_expect(p, TK_IF)
+    let start = p_peek(p).start
+    let cr = parse_expr(pp)
+    pp = cr.p
+    let then_br = parse_block(pp)
+    pp = then_br.p
+    let mut else_stmts: [Stmt] = []
+    if p_check(pp, TK_ELSE) {
+        pp = p_advance(pp)
+        let else_br = parse_block(pp)
+        pp = else_br.p
+        else_stmts = else_br.stmts
+    }
+    let cond: [Expr] = [cr.expr]
+    let expr = Expr {
+        kind: EXPR_IF, int_val: 0, float_val: 0.0,
+        str_val: "", bool_val: false, name: "", op: 0,
+        left: cond, right: [], args: [], elements: [],
+        field_names: [], field_exprs: [],
+        params: [], ret_type: [],
+        then_block: then_br.stmts, else_block: else_stmts,
+        match_arms: [], inclusive: false,
+        cast_type: [], block_stmts: [], string_parts: [],
+        start: start, end: p_peek(pp).start
+    }
+    return ParseExprResult { p: pp, expr: expr }
+}
+
+// -------------------------------------------------------------------
+// Match expression
+// -------------------------------------------------------------------
+
+fn parse_match_expr(p: Parser) -> ParseExprResult {
+    let mut pp = p_expect(p, TK_MATCH)
+    let start = p_peek(p).start
+    let sr = parse_expr(pp)
+    pp = sr.p
+    pp = p_expect(pp, TK_LBRACE)
+
+    let mut arms: [MatchArm] = []
+    while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
+        let pr = parse_pattern(pp)
+        pp = pr.p
+        let mut guard: [Expr] = []
+        if p_check(pp, TK_IF) {
+            pp = p_advance(pp)
+            let gr = parse_expr(pp)
+            pp = gr.p
+            push(guard, gr.expr)
+        }
+        pp = p_expect(pp, TK_FAT_ARROW)
+        let br = parse_expr(pp)
+        pp = br.p
+        let body: [Expr] = [br.expr]
+        push(arms, MatchArm { pattern: pr.pattern, guard: guard, body: body, start: pr.pattern.start, end: br.expr.end })
+        if not p_check(pp, TK_RBRACE) {
+            if p_check(pp, TK_COMMA) {
+                pp = p_advance(pp)
+            }
+        }
+    }
+    pp = p_expect(pp, TK_RBRACE)
+    let subject: [Expr] = [sr.expr]
+    let expr = Expr {
+        kind: EXPR_MATCH, int_val: 0, float_val: 0.0,
+        str_val: "", bool_val: false, name: "", op: 0,
+        left: subject, right: [], args: [], elements: [],
+        field_names: [], field_exprs: [],
+        params: [], ret_type: [],
+        then_block: [], else_block: [],
+        match_arms: arms, inclusive: false,
+        cast_type: [], block_stmts: [], string_parts: [],
+        start: start, end: p_peek(pp).start
+    }
+    return ParseExprResult { p: pp, expr: expr }
+}
+
+// -------------------------------------------------------------------
+// Array literal: [1, 2, 3]
+// -------------------------------------------------------------------
+
+fn parse_array_literal(p: Parser) -> ParseExprResult {
+    let mut pp = p_expect(p, TK_LBRACKET)
+    let start = p_peek(p).start
+    let mut elements: [Expr] = []
+    while not p_check(pp, TK_RBRACKET) and not p_at_end(pp) {
+        let er = parse_expr(pp)
+        pp = er.p
+        push(elements, er.expr)
+        if not p_check(pp, TK_RBRACKET) {
+            pp = p_expect(pp, TK_COMMA)
+        }
+    }
+    pp = p_expect(pp, TK_RBRACKET)
+    let expr = mk_array_lit(elements, start, p_peek(pp).start)
+    return ParseExprResult { p: pp, expr: expr }
+}
+
+// -------------------------------------------------------------------
+// Grouped expression or tuple: (expr) or (a, b)
+// -------------------------------------------------------------------
+
+fn parse_paren_or_tuple(p: Parser) -> ParseExprResult {
+    let mut pp = p_expect(p, TK_LPAREN)
+    let start = p_peek(p).start
+
+    // Empty tuple
+    if p_check(pp, TK_RPAREN) {
+        pp = p_expect(pp, TK_RPAREN)
+        let expr = Expr {
+            kind: EXPR_TUPLE_LIT, int_val: 0, float_val: 0.0,
+            str_val: "", bool_val: false, name: "", op: 0,
+            left: [], right: [], args: [], elements: [],
+            field_names: [], field_exprs: [],
+            params: [], ret_type: [],
+            then_block: [], else_block: [],
+            match_arms: [], inclusive: false,
+            cast_type: [], block_stmts: [], string_parts: [],
+            start: start, end: p_peek(pp).start
+        }
+        return ParseExprResult { p: pp, expr: expr }
+    }
+
+    let first = parse_expr(pp)
+    pp = first.p
+
+    if p_check(pp, TK_COMMA) {
+        // Tuple
+        let mut elements: [Expr] = [first.expr]
+        while p_check(pp, TK_COMMA) {
+            pp = p_advance(pp)
+            if p_check(pp, TK_RPAREN) {
+                break
+            }
+            let er = parse_expr(pp)
+            pp = er.p
+            push(elements, er.expr)
+        }
+        pp = p_expect(pp, TK_RPAREN)
+        let expr = Expr {
+            kind: EXPR_TUPLE_LIT, int_val: 0, float_val: 0.0,
+            str_val: "", bool_val: false, name: "", op: 0,
+            left: [], right: [], args: [], elements: elements,
+            field_names: [], field_exprs: [],
+            params: [], ret_type: [],
+            then_block: [], else_block: [],
+            match_arms: [], inclusive: false,
+            cast_type: [], block_stmts: [], string_parts: [],
+            start: start, end: p_peek(pp).start
+        }
+        return ParseExprResult { p: pp, expr: expr }
+    }
+
+    // Grouped expression
+    pp = p_expect(pp, TK_RPAREN)
+    return ParseExprResult { p: pp, expr: first.expr }
+}
+
+// -------------------------------------------------------------------
+// Map literal or block expression: { key: value } or { stmts }
+// -------------------------------------------------------------------
+
+fn parse_map_or_block_expr(p: Parser) -> ParseExprResult {
+    let mut pp = p_expect(p, TK_LBRACE)
+    let start = p_peek(p).start
+
+    // Empty map
+    if p_check(pp, TK_RBRACE) {
+        pp = p_expect(pp, TK_RBRACE)
+        let expr = mk_map_lit([], [], start, p_peek(pp).start)
+        return ParseExprResult { p: pp, expr: expr }
+    }
+
+    // Distinguish map from block: if we see ident: or string: or int:, it is a map
+    let pk = p_peek_kind(pp)
+    let pk2 = p_peek_nth(pp, 1)
+    if (pk == TK_IDENT or pk == TK_TYPE_IDENT or pk == TK_STRING or pk == TK_INTEGER) and pk2 == TK_COLON {
+        // Map literal
+        let mut keys: [Expr] = []
+        let mut vals: [Expr] = []
+        while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
+            let kr = parse_expr(pp)
+            pp = kr.p
+            pp = p_expect(pp, TK_COLON)
+            let vr = parse_expr(pp)
+            pp = vr.p
+            push(keys, kr.expr)
+            push(vals, vr.expr)
+            if not p_check(pp, TK_RBRACE) {
+                if p_check(pp, TK_COMMA) {
+                    pp = p_advance(pp)
+                }
+            }
+        }
+        pp = p_expect(pp, TK_RBRACE)
+        let expr = mk_map_lit(keys, vals, start, p_peek(pp).start)
+        return ParseExprResult { p: pp, expr: expr }
+    }
+
+    // Block expression
+    let mut stmts: [Stmt] = []
+    while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
+        let sr = parse_statement(pp)
+        if sr.ok {
+            push(stmts, sr.stmt)
+            pp = sr.p
+        } else {
+            if not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
+                pp = p_advance(pp)
+            }
+        }
+    }
+    pp = p_expect(pp, TK_RBRACE)
+    let expr = Expr {
+        kind: EXPR_BLOCK, int_val: 0, float_val: 0.0,
+        str_val: "", bool_val: false, name: "", op: 0,
+        left: [], right: [], args: [], elements: [],
+        field_names: [], field_exprs: [],
+        params: [], ret_type: [],
+        then_block: [], else_block: [],
+        match_arms: [], inclusive: false,
+        cast_type: [], block_stmts: stmts, string_parts: [],
+        start: start, end: p_peek(pp).start
+    }
+    return ParseExprResult { p: pp, expr: expr }
+}
+
+// -------------------------------------------------------------------
+// Argument list: expr, expr, ...
+// -------------------------------------------------------------------
+
+struct ParseArgsResult {
+    p: Parser,
+    args: [Expr]
+}
+
+fn parse_arg_list(p: Parser) -> ParseArgsResult {
+    let mut pp = p
+    let mut args: [Expr] = []
+    while not p_check(pp, TK_RPAREN) and not p_at_end(pp) {
+        let er = parse_expr(pp)
+        pp = er.p
+        push(args, er.expr)
+        if not p_check(pp, TK_RPAREN) {
+            pp = p_expect(pp, TK_COMMA)
+        }
+    }
+    return ParseArgsResult { p: pp, args: args }
+}
+
+// ===================================================================
+// PATTERN PARSING
+// ===================================================================
+
+fn parse_pattern(p: Parser) -> ParsePatternResult {
+    let tok = p_peek(p)
+    let kind = tok.kind
+
+    // Wildcard: _
+    if kind == TK_IDENT and tok.text == "_" {
+        let pp = p_advance(p)
+        let pat = Pattern {
+            kind: PAT_WILDCARD, name: "_", mutable: false,
+            lit_expr: [], sub_patterns: [],
+            field_names: [], field_patterns: [],
+            variant: "", or_patterns: [],
+            start: tok.start, end: tok.end
+        }
+        return ParsePatternResult { p: pp, pattern: pat }
+    }
+
+    // `mut name`
+    if kind == TK_MUT {
+        let pp = p_advance(p)
+        let nr = p_expect_name(pp)
+        let pat = Pattern {
+            kind: PAT_IDENT, name: nr.name, mutable: true,
+            lit_expr: [], sub_patterns: [],
+            field_names: [], field_patterns: [],
+            variant: "", or_patterns: [],
+            start: tok.start, end: nr.end
+        }
+        return ParsePatternResult { p: nr.p, pattern: pat }
+    }
+
+    // Tuple pattern: (a, b, c)
+    if kind == TK_LPAREN {
+        let pp = p_advance(p)
+        let mut elements: [Pattern] = []
+        while not p_check(pp, TK_RPAREN) and not p_at_end(pp) {
+            let pr = parse_pattern(pp)
+            pp = pr.p
+            push(elements, pr.pattern)
+            if not p_check(pp, TK_RPAREN) {
+                pp = p_expect(pp, TK_COMMA)
+            }
+        }
+        let end_tok = p_peek(pp)
+        pp = p_expect(pp, TK_RPAREN)
+        let pat = Pattern {
+            kind: PAT_TUPLE, name: "", mutable: false,
+            lit_expr: [], sub_patterns: elements,
+            field_names: [], field_patterns: [],
+            variant: "", or_patterns: [],
+            start: tok.start, end: end_tok.end
+        }
+        return ParsePatternResult { p: pp, pattern: pat }
+    }
+
+    // Literal patterns: integers, strings, bools
+    if kind == TK_INTEGER {
+        let pp = p_advance(p)
+        let value = parse_int_literal(tok.text)
+        let expr = mk_int_lit(value, tok.start, tok.end)
+        let pat = Pattern {
+            kind: PAT_LITERAL, name: "", mutable: false,
+            lit_expr: [expr], sub_patterns: [],
+            field_names: [], field_patterns: [],
+            variant: "", or_patterns: [],
+            start: tok.start, end: tok.end
+        }
+        return ParsePatternResult { p: pp, pattern: pat }
+    }
+    if kind == TK_STRING {
+        let pp = p_advance(p)
+        let expr = mk_string_lit(tok.text, tok.start, tok.end)
+        let pat = Pattern {
+            kind: PAT_LITERAL, name: "", mutable: false,
+            lit_expr: [expr], sub_patterns: [],
+            field_names: [], field_patterns: [],
+            variant: "", or_patterns: [],
+            start: tok.start, end: tok.end
+        }
+        return ParsePatternResult { p: pp, pattern: pat }
+    }
+    if kind == TK_TRUE {
+        let pp = p_advance(p)
+        let expr = mk_bool_lit(true, tok.start, tok.end)
+        let pat = Pattern {
+            kind: PAT_LITERAL, name: "", mutable: false,
+            lit_expr: [expr], sub_patterns: [],
+            field_names: [], field_patterns: [],
+            variant: "", or_patterns: [],
+            start: tok.start, end: tok.end
+        }
+        return ParsePatternResult { p: pp, pattern: pat }
+    }
+    if kind == TK_FALSE {
+        let pp = p_advance(p)
+        let expr = mk_bool_lit(false, tok.start, tok.end)
+        let pat = Pattern {
+            kind: PAT_LITERAL, name: "", mutable: false,
+            lit_expr: [expr], sub_patterns: [],
+            field_names: [], field_patterns: [],
+            variant: "", or_patterns: [],
+            start: tok.start, end: tok.end
+        }
+        return ParsePatternResult { p: pp, pattern: pat }
+    }
+
+    // Identifier, struct pattern, or enum pattern
+    if kind == TK_IDENT or kind == TK_TYPE_IDENT {
+        let mut pp = p_advance(p)
+        let name = tok.text
+
+        // Enum pattern: Name::Variant or Name::Variant(fields)
+        if p_check(pp, TK_COLON_COLON) {
+            pp = p_advance(pp)
+            let vnr = p_expect_name(pp)
+            pp = vnr.p
+            let mut sub_pats: [Pattern] = []
+            let mut end_pos = vnr.end
+            if p_check(pp, TK_LPAREN) {
+                pp = p_advance(pp)
+                while not p_check(pp, TK_RPAREN) and not p_at_end(pp) {
+                    let pr = parse_pattern(pp)
+                    pp = pr.p
+                    push(sub_pats, pr.pattern)
+                    if not p_check(pp, TK_RPAREN) {
+                        pp = p_expect(pp, TK_COMMA)
+                    }
+                }
+                end_pos = p_peek(pp).end
+                pp = p_expect(pp, TK_RPAREN)
+            }
+            let pat = Pattern {
+                kind: PAT_ENUM, name: name, mutable: false,
+                lit_expr: [], sub_patterns: sub_pats,
+                field_names: [], field_patterns: [],
+                variant: vnr.name, or_patterns: [],
+                start: tok.start, end: end_pos
+            }
+            return ParsePatternResult { p: pp, pattern: pat }
+        }
+
+        // Struct pattern: Name { field1, field2 }
+        if p_check(pp, TK_LBRACE) and looks_like_type_name(name) {
+            pp = p_advance(pp)
+            let mut fnames: [str] = []
+            let mut fpats: [Pattern] = []
+            while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
+                let fnr = p_expect_name(pp)
+                pp = fnr.p
+                if p_check(pp, TK_COLON) {
+                    pp = p_advance(pp)
+                    let fpr = parse_pattern(pp)
+                    pp = fpr.p
+                    push(fnames, fnr.name)
+                    push(fpats, fpr.pattern)
+                } else {
+                    // Shorthand: { x } means { x: x }
+                    push(fnames, fnr.name)
+                    let ident_pat = Pattern {
+                        kind: PAT_IDENT, name: fnr.name, mutable: false,
+                        lit_expr: [], sub_patterns: [],
+                        field_names: [], field_patterns: [],
+                        variant: "", or_patterns: [],
+                        start: fnr.start, end: fnr.end
+                    }
+                    push(fpats, ident_pat)
+                }
+                if not p_check(pp, TK_RBRACE) {
+                    if p_check(pp, TK_COMMA) {
+                        pp = p_advance(pp)
+                    }
+                }
+            }
+            let end_pos = p_peek(pp).end
+            pp = p_expect(pp, TK_RBRACE)
+            let pat = Pattern {
+                kind: PAT_STRUCT, name: name, mutable: false,
+                lit_expr: [], sub_patterns: [],
+                field_names: fnames, field_patterns: fpats,
+                variant: "", or_patterns: [],
+                start: tok.start, end: end_pos
+            }
+            return ParsePatternResult { p: pp, pattern: pat }
+        }
+
+        // Simple identifier pattern
+        let pat = Pattern {
+            kind: PAT_IDENT, name: name, mutable: false,
+            lit_expr: [], sub_patterns: [],
+            field_names: [], field_patterns: [],
+            variant: "", or_patterns: [],
+            start: tok.start, end: tok.end
+        }
+        return ParsePatternResult { p: pp, pattern: pat }
+    }
+
+    // Error
+    let pp = p_error(p, "expected pattern, found " + token_kind_name(kind))
+    let pp2 = p_advance(pp)
+    let pat = Pattern {
+        kind: PAT_WILDCARD, name: "_", mutable: false,
+        lit_expr: [], sub_patterns: [],
+        field_names: [], field_patterns: [],
+        variant: "", or_patterns: [],
+        start: tok.start, end: tok.end
+    }
+    return ParsePatternResult { p: pp2, pattern: pat }
+}
+
+// ===================================================================
+// TYPE PARSING
+// ===================================================================
+
+fn parse_type(p: Parser) -> ParseTypeResult {
+    let tok = p_peek(p)
+    let kind = tok.kind
+
+    // Optional: ?T
+    if kind == TK_IDENT and tok.text == "?" {
+        let pp = p_advance(p)
+        let ir = parse_type(pp)
+        let ty = TypeExpr {
+            kind: TYPE_OPTIONAL, name: "", type_args: [],
+            element_type: [], array_size: -1, tuple_types: [],
+            param_types: [], ret_type: [],
+            inner_type: [ir.ty], mutable: false,
+            start: tok.start, end: ir.ty.end
+        }
+        return ParseTypeResult { p: ir.p, ty: ty }
+    }
+
+    // Reference: &T or &mut T
+    if kind == TK_AMP {
+        let mut pp = p_advance(p)
+        let mut is_mut = false
+        if p_check(pp, TK_MUT) {
+            is_mut = true
+            pp = p_advance(pp)
+        }
+        let ir = parse_type(pp)
+        let ty = TypeExpr {
+            kind: TYPE_REFERENCE, name: "", type_args: [],
+            element_type: [], array_size: -1, tuple_types: [],
+            param_types: [], ret_type: [],
+            inner_type: [ir.ty], mutable: is_mut,
+            start: tok.start, end: ir.ty.end
+        }
+        return ParseTypeResult { p: ir.p, ty: ty }
+    }
+
+    // Pointer: *T or *mut T
+    if kind == TK_STAR {
+        let mut pp = p_advance(p)
+        let mut is_mut = false
+        if p_check(pp, TK_MUT) {
+            is_mut = true
+            pp = p_advance(pp)
+        }
+        let ir = parse_type(pp)
+        let ty = TypeExpr {
+            kind: TYPE_POINTER, name: "", type_args: [],
+            element_type: [], array_size: -1, tuple_types: [],
+            param_types: [], ret_type: [],
+            inner_type: [ir.ty], mutable: is_mut,
+            start: tok.start, end: ir.ty.end
+        }
+        return ParseTypeResult { p: ir.p, ty: ty }
+    }
+
+    // Shared type: shared T
+    if kind == TK_SHARED {
+        let pp = p_advance(p)
+        let ir = parse_type(pp)
+        let ty = TypeExpr {
+            kind: TYPE_SHARED, name: "", type_args: [],
+            element_type: [], array_size: -1, tuple_types: [],
+            param_types: [], ret_type: [],
+            inner_type: [ir.ty], mutable: false,
+            start: tok.start, end: ir.ty.end
+        }
+        return ParseTypeResult { p: ir.p, ty: ty }
+    }
+
+    // Weak type: weak T
+    if kind == TK_WEAK {
+        let pp = p_advance(p)
+        let ir = parse_type(pp)
+        let ty = TypeExpr {
+            kind: TYPE_WEAK, name: "", type_args: [],
+            element_type: [], array_size: -1, tuple_types: [],
+            param_types: [], ret_type: [],
+            inner_type: [ir.ty], mutable: false,
+            start: tok.start, end: ir.ty.end
+        }
+        return ParseTypeResult { p: ir.p, ty: ty }
+    }
+
+    // Function type: fn(i32, i32) -> i32
+    if kind == TK_FN {
+        let mut pp = p_advance(p)
+        pp = p_expect(pp, TK_LPAREN)
+        let mut param_types: [TypeExpr] = []
+        while not p_check(pp, TK_RPAREN) and not p_at_end(pp) {
+            let tr = parse_type(pp)
+            pp = tr.p
+            push(param_types, tr.ty)
+            if not p_check(pp, TK_RPAREN) {
+                pp = p_expect(pp, TK_COMMA)
+            }
+        }
+        pp = p_expect(pp, TK_RPAREN)
+        pp = p_expect(pp, TK_ARROW)
+        let rr = parse_type(pp)
+        pp = rr.p
+        let ty = TypeExpr {
+            kind: TYPE_FUNCTION, name: "", type_args: [],
+            element_type: [], array_size: -1, tuple_types: [],
+            param_types: param_types, ret_type: [rr.ty],
+            inner_type: [], mutable: false,
+            start: tok.start, end: rr.ty.end
+        }
+        return ParseTypeResult { p: pp, ty: ty }
+    }
+
+    // Array type: [T] or [T; N]
+    if kind == TK_LBRACKET {
+        let mut pp = p_advance(p)
+        let er = parse_type(pp)
+        pp = er.p
+        let mut size = -1
+        if p_check(pp, TK_SEMICOLON) {
+            pp = p_advance(pp)
+            let size_tok = p_peek(pp)
+            size = parse_int_literal(size_tok.text)
+            pp = p_expect(pp, TK_INTEGER)
+        }
+        pp = p_expect(pp, TK_RBRACKET)
+        let ty = TypeExpr {
+            kind: TYPE_ARRAY, name: "", type_args: [],
+            element_type: [er.ty], array_size: size, tuple_types: [],
+            param_types: [], ret_type: [],
+            inner_type: [], mutable: false,
+            start: tok.start, end: p_peek(pp).start
+        }
+        return ParseTypeResult { p: pp, ty: ty }
+    }
+
+    // Tuple type: (T, U, V)
+    if kind == TK_LPAREN {
+        let mut pp = p_advance(p)
+        let mut elements: [TypeExpr] = []
+        while not p_check(pp, TK_RPAREN) and not p_at_end(pp) {
+            let tr = parse_type(pp)
+            pp = tr.p
+            push(elements, tr.ty)
+            if not p_check(pp, TK_RPAREN) {
+                pp = p_expect(pp, TK_COMMA)
+            }
+        }
+        pp = p_expect(pp, TK_RPAREN)
+        let ty = TypeExpr {
+            kind: TYPE_TUPLE, name: "", type_args: [],
+            element_type: [], array_size: -1, tuple_types: elements,
+            param_types: [], ret_type: [],
+            inner_type: [], mutable: false,
+            start: tok.start, end: p_peek(pp).start
+        }
+        return ParseTypeResult { p: pp, ty: ty }
+    }
+
+    // Simple or generic type: i32, Vec<i32>
+    if kind == TK_IDENT or kind == TK_TYPE_IDENT {
+        let mut pp = p_advance(p)
+        let name = tok.text
+        if p_check(pp, TK_LT) {
+            pp = p_advance(pp)
+            let mut type_args: [TypeExpr] = []
+            while not p_check(pp, TK_GT) and not p_at_end(pp) {
+                let tr = parse_type(pp)
+                pp = tr.p
+                push(type_args, tr.ty)
+                if not p_check(pp, TK_GT) {
+                    pp = p_expect(pp, TK_COMMA)
+                }
+            }
+            pp = p_expect(pp, TK_GT)
+            let ty = TypeExpr {
+                kind: TYPE_GENERIC, name: name, type_args: type_args,
+                element_type: [], array_size: -1, tuple_types: [],
+                param_types: [], ret_type: [],
+                inner_type: [], mutable: false,
+                start: tok.start, end: p_peek(pp).start
+            }
+            return ParseTypeResult { p: pp, ty: ty }
+        }
+        let ty = TypeExpr {
+            kind: TYPE_SIMPLE, name: name, type_args: [],
+            element_type: [], array_size: -1, tuple_types: [],
+            param_types: [], ret_type: [],
+            inner_type: [], mutable: false,
+            start: tok.start, end: tok.end
+        }
+        return ParseTypeResult { p: pp, ty: ty }
+    }
+
+    // Error -- return inferred type
+    let pp = p_error(p, "expected type, found " + token_kind_name(kind))
+    let pp2 = p_advance(pp)
+    let ty = TypeExpr {
+        kind: TYPE_INFERRED, name: "", type_args: [],
+        element_type: [], array_size: -1, tuple_types: [],
+        param_types: [], ret_type: [],
+        inner_type: [], mutable: false,
+        start: tok.start, end: tok.end
+    }
+    return ParseTypeResult { p: pp2, ty: ty }
+}
+
+// ===================================================================
+// DECL CONSTRUCTORS -- helpers to build Decl nodes with all
+// fields initialized (avoids repeating empty arrays everywhere)
+// ===================================================================
+
+fn make_empty_decl(s: i32, e: i32) -> Decl {
+    let empty_ann: [Annotation] = []
+    let empty_gen: [GenericParam] = []
+    let empty_params: [Param] = []
+    let empty_ty: [TypeExpr] = []
+    let empty_stmts: [Stmt] = []
+    let empty_fields: [StructField] = []
+    let empty_variants: [EnumVariant] = []
+    let empty_decls: [Decl] = []
+    let empty_handlers: [MessageHandler] = []
+    let empty_ip: [ImportPath] = []
+    return Decl {
+        kind: 0, name: "", public: false,
+        annotations: empty_ann, generics: empty_gen,
+        params: empty_params, ret_type: empty_ty, fn_body: empty_stmts,
+        fields: empty_fields, variants: empty_variants,
+        methods: empty_decls, target: "", trait_name: "",
+        state_fields: empty_fields, handlers: empty_handlers,
+        alias_type: empty_ty, import_path: empty_ip,
+        abi: "", extern_items: empty_decls,
+        start: s, end: e
+    }
+}
+
+fn make_fn_decl(name: str, public: bool, annotations: [Annotation],
+                generics: [GenericParam], params: [Param],
+                ret_type: [TypeExpr], fn_body: [Stmt],
+                s: i32, e: i32) -> Decl {
+    let mut d = make_empty_decl(s, e)
+    d = Decl {
+        kind: DECL_FUNCTION, name: name, public: public,
+        annotations: annotations, generics: generics,
+        params: params, ret_type: ret_type, fn_body: fn_body,
+        fields: d.fields, variants: d.variants,
+        methods: d.methods, target: "", trait_name: "",
+        state_fields: d.state_fields, handlers: d.handlers,
+        alias_type: d.alias_type, import_path: d.import_path,
+        abi: "", extern_items: d.extern_items,
+        start: s, end: e
+    }
+    return d
+}
+
+fn make_struct_decl(name: str, public: bool, annotations: [Annotation],
+                    generics: [GenericParam], fields: [StructField],
+                    s: i32, e: i32) -> Decl {
+    let mut d = make_empty_decl(s, e)
+    d = Decl {
+        kind: DECL_STRUCT, name: name, public: public,
+        annotations: annotations, generics: generics,
+        params: d.params, ret_type: d.ret_type, fn_body: d.fn_body,
+        fields: fields, variants: d.variants,
+        methods: d.methods, target: "", trait_name: "",
+        state_fields: d.state_fields, handlers: d.handlers,
+        alias_type: d.alias_type, import_path: d.import_path,
+        abi: "", extern_items: d.extern_items,
+        start: s, end: e
+    }
+    return d
+}
+
+fn make_enum_decl(name: str, public: bool, annotations: [Annotation],
+                  generics: [GenericParam], variants: [EnumVariant],
+                  s: i32, e: i32) -> Decl {
+    let mut d = make_empty_decl(s, e)
+    d = Decl {
+        kind: DECL_ENUM, name: name, public: public,
+        annotations: annotations, generics: generics,
+        params: d.params, ret_type: d.ret_type, fn_body: d.fn_body,
+        fields: d.fields, variants: variants,
+        methods: d.methods, target: "", trait_name: "",
+        state_fields: d.state_fields, handlers: d.handlers,
+        alias_type: d.alias_type, import_path: d.import_path,
+        abi: "", extern_items: d.extern_items,
+        start: s, end: e
+    }
+    return d
+}
+
+fn make_trait_decl(name: str, public: bool, generics: [GenericParam],
+                   methods: [Decl], s: i32, e: i32) -> Decl {
+    let mut d = make_empty_decl(s, e)
+    d = Decl {
+        kind: DECL_TRAIT, name: name, public: public,
+        annotations: d.annotations, generics: generics,
+        params: d.params, ret_type: d.ret_type, fn_body: d.fn_body,
+        fields: d.fields, variants: d.variants,
+        methods: methods, target: "", trait_name: "",
+        state_fields: d.state_fields, handlers: d.handlers,
+        alias_type: d.alias_type, import_path: d.import_path,
+        abi: "", extern_items: d.extern_items,
+        start: s, end: e
+    }
+    return d
+}
+
+fn make_impl_decl(target: str, trait_name: str, generics: [GenericParam],
+                  methods: [Decl], s: i32, e: i32) -> Decl {
+    let mut d = make_empty_decl(s, e)
+    d = Decl {
+        kind: DECL_IMPL, name: target, public: false,
+        annotations: d.annotations, generics: generics,
+        params: d.params, ret_type: d.ret_type, fn_body: d.fn_body,
+        fields: d.fields, variants: d.variants,
+        methods: methods, target: target, trait_name: trait_name,
+        state_fields: d.state_fields, handlers: d.handlers,
+        alias_type: d.alias_type, import_path: d.import_path,
+        abi: "", extern_items: d.extern_items,
+        start: s, end: e
+    }
+    return d
+}
+
+fn make_actor_decl(name: str, annotations: [Annotation],
+                   state_fields: [StructField], handlers: [MessageHandler],
+                   s: i32, e: i32) -> Decl {
+    let mut d = make_empty_decl(s, e)
+    d = Decl {
+        kind: DECL_ACTOR, name: name, public: false,
+        annotations: annotations, generics: d.generics,
+        params: d.params, ret_type: d.ret_type, fn_body: d.fn_body,
+        fields: d.fields, variants: d.variants,
+        methods: d.methods, target: "", trait_name: "",
+        state_fields: state_fields, handlers: handlers,
+        alias_type: d.alias_type, import_path: d.import_path,
+        abi: "", extern_items: d.extern_items,
+        start: s, end: e
+    }
+    return d
+}
+
+fn make_type_alias_decl(name: str, public: bool, generics: [GenericParam],
+                        ty: TypeExpr, s: i32, e: i32) -> Decl {
+    let mut d = make_empty_decl(s, e)
+    d = Decl {
+        kind: DECL_TYPE_ALIAS, name: name, public: public,
+        annotations: d.annotations, generics: generics,
+        params: d.params, ret_type: d.ret_type, fn_body: d.fn_body,
+        fields: d.fields, variants: d.variants,
+        methods: d.methods, target: "", trait_name: "",
+        state_fields: d.state_fields, handlers: d.handlers,
+        alias_type: [ty], import_path: d.import_path,
+        abi: "", extern_items: d.extern_items,
+        start: s, end: e
+    }
+    return d
+}
+
+fn make_import_decl(ip: ImportPath, s: i32, e: i32) -> Decl {
+    let mut d = make_empty_decl(s, e)
+    d = Decl {
+        kind: DECL_IMPORT, name: "", public: false,
+        annotations: d.annotations, generics: d.generics,
+        params: d.params, ret_type: d.ret_type, fn_body: d.fn_body,
+        fields: d.fields, variants: d.variants,
+        methods: d.methods, target: "", trait_name: "",
+        state_fields: d.state_fields, handlers: d.handlers,
+        alias_type: d.alias_type, import_path: [ip],
+        abi: "", extern_items: d.extern_items,
+        start: s, end: e
+    }
+    return d
+}
+
+fn make_extern_decl(abi: str, items: [Decl], s: i32, e: i32) -> Decl {
+    let mut d = make_empty_decl(s, e)
+    d = Decl {
+        kind: DECL_EXTERN, name: "", public: false,
+        annotations: d.annotations, generics: d.generics,
+        params: d.params, ret_type: d.ret_type, fn_body: d.fn_body,
+        fields: d.fields, variants: d.variants,
+        methods: d.methods, target: "", trait_name: "",
+        state_fields: d.state_fields, handlers: d.handlers,
+        alias_type: d.alias_type, import_path: d.import_path,
+        abi: abi, extern_items: items,
+        start: s, end: e
+    }
+    return d
+}
+
+// ===================================================================
+// STMT CONSTRUCTORS
+// ===================================================================
+
+fn make_empty_stmt(s: i32, e: i32) -> Stmt {
+    let empty_ty: [TypeExpr] = []
+    let empty_ex: [Expr] = []
+    let empty_pat: [Pattern] = []
+    let empty_stmts: [Stmt] = []
+    let empty_elifs: [Expr] = []
+    let empty_elif_blocks: [[Stmt]] = []
+    let empty_branches: [SelectBranch] = []
+    return Stmt {
+        kind: 0, name: "", mutable: false,
+        let_type: empty_ty, let_value: empty_ex, let_pattern: empty_pat,
+        assign_target: empty_ex, assign_op: 0, assign_value: empty_ex,
+        return_value: empty_ex,
+        condition: empty_ex, then_block: empty_stmts,
+        elif_conditions: empty_elifs, elif_blocks: empty_elif_blocks,
+        else_block: empty_stmts,
+        for_pattern: empty_pat, iterable: empty_ex, for_body: empty_stmts,
+        while_cond: empty_ex, while_body: empty_stmts,
+        expr: empty_ex,
+        spawn_expr: empty_ex,
+        select_branches: empty_branches,
+        try_block: empty_stmts, catch_name: "", catch_block: empty_stmts,
+        throw_expr: empty_ex,
+        start: s, end: e
+    }
+}
+
+fn make_let_stmt(name: str, mutable: bool, ty: [TypeExpr], value: [Expr], pat: [Pattern], s: i32, e: i32) -> Stmt {
+    let mut st = make_empty_stmt(s, e)
+    st = Stmt {
+        kind: STMT_LET, name: name, mutable: mutable,
+        let_type: ty, let_value: value, let_pattern: pat,
+        assign_target: st.assign_target, assign_op: 0, assign_value: st.assign_value,
+        return_value: st.return_value,
+        condition: st.condition, then_block: st.then_block,
+        elif_conditions: st.elif_conditions, elif_blocks: st.elif_blocks,
+        else_block: st.else_block,
+        for_pattern: st.for_pattern, iterable: st.iterable, for_body: st.for_body,
+        while_cond: st.while_cond, while_body: st.while_body,
+        expr: st.expr,
+        spawn_expr: st.spawn_expr,
+        select_branches: st.select_branches,
+        try_block: st.try_block, catch_name: "", catch_block: st.catch_block,
+        throw_expr: st.throw_expr,
+        start: s, end: e
+    }
+    return st
+}
+
+fn make_assign_stmt(target: [Expr], op: i32, value: [Expr], s: i32, e: i32) -> Stmt {
+    let mut st = make_empty_stmt(s, e)
+    st = Stmt {
+        kind: STMT_ASSIGN, name: "", mutable: false,
+        let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
+        assign_target: target, assign_op: op, assign_value: value,
+        return_value: st.return_value,
+        condition: st.condition, then_block: st.then_block,
+        elif_conditions: st.elif_conditions, elif_blocks: st.elif_blocks,
+        else_block: st.else_block,
+        for_pattern: st.for_pattern, iterable: st.iterable, for_body: st.for_body,
+        while_cond: st.while_cond, while_body: st.while_body,
+        expr: st.expr,
+        spawn_expr: st.spawn_expr,
+        select_branches: st.select_branches,
+        try_block: st.try_block, catch_name: "", catch_block: st.catch_block,
+        throw_expr: st.throw_expr,
+        start: s, end: e
+    }
+    return st
+}
+
+fn make_return_stmt(value: [Expr], s: i32, e: i32) -> Stmt {
+    let mut st = make_empty_stmt(s, e)
+    st = Stmt {
+        kind: STMT_RETURN, name: "", mutable: false,
+        let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
+        assign_target: st.assign_target, assign_op: 0, assign_value: st.assign_value,
+        return_value: value,
+        condition: st.condition, then_block: st.then_block,
+        elif_conditions: st.elif_conditions, elif_blocks: st.elif_blocks,
+        else_block: st.else_block,
+        for_pattern: st.for_pattern, iterable: st.iterable, for_body: st.for_body,
+        while_cond: st.while_cond, while_body: st.while_body,
+        expr: st.expr,
+        spawn_expr: st.spawn_expr,
+        select_branches: st.select_branches,
+        try_block: st.try_block, catch_name: "", catch_block: st.catch_block,
+        throw_expr: st.throw_expr,
+        start: s, end: e
+    }
+    return st
+}
+
+fn make_if_stmt(cond: Expr, then_b: [Stmt], elif_c: [Expr], elif_b: [[Stmt]], else_b: [Stmt], s: i32, e: i32) -> Stmt {
+    let mut st = make_empty_stmt(s, e)
+    st = Stmt {
+        kind: STMT_IF, name: "", mutable: false,
+        let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
+        assign_target: st.assign_target, assign_op: 0, assign_value: st.assign_value,
+        return_value: st.return_value,
+        condition: [cond], then_block: then_b,
+        elif_conditions: elif_c, elif_blocks: elif_b,
+        else_block: else_b,
+        for_pattern: st.for_pattern, iterable: st.iterable, for_body: st.for_body,
+        while_cond: st.while_cond, while_body: st.while_body,
+        expr: st.expr,
+        spawn_expr: st.spawn_expr,
+        select_branches: st.select_branches,
+        try_block: st.try_block, catch_name: "", catch_block: st.catch_block,
+        throw_expr: st.throw_expr,
+        start: s, end: e
+    }
+    return st
+}
+
+fn make_for_stmt(pat: [Pattern], iter: [Expr], body: [Stmt], s: i32, e: i32) -> Stmt {
+    let mut st = make_empty_stmt(s, e)
+    st = Stmt {
+        kind: STMT_FOR, name: "", mutable: false,
+        let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
+        assign_target: st.assign_target, assign_op: 0, assign_value: st.assign_value,
+        return_value: st.return_value,
+        condition: st.condition, then_block: st.then_block,
+        elif_conditions: st.elif_conditions, elif_blocks: st.elif_blocks,
+        else_block: st.else_block,
+        for_pattern: pat, iterable: iter, for_body: body,
+        while_cond: st.while_cond, while_body: st.while_body,
+        expr: st.expr,
+        spawn_expr: st.spawn_expr,
+        select_branches: st.select_branches,
+        try_block: st.try_block, catch_name: "", catch_block: st.catch_block,
+        throw_expr: st.throw_expr,
+        start: s, end: e
+    }
+    return st
+}
+
+fn make_while_stmt(cond: [Expr], body: [Stmt], s: i32, e: i32) -> Stmt {
+    let mut st = make_empty_stmt(s, e)
+    st = Stmt {
+        kind: STMT_WHILE, name: "", mutable: false,
+        let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
+        assign_target: st.assign_target, assign_op: 0, assign_value: st.assign_value,
+        return_value: st.return_value,
+        condition: st.condition, then_block: st.then_block,
+        elif_conditions: st.elif_conditions, elif_blocks: st.elif_blocks,
+        else_block: st.else_block,
+        for_pattern: st.for_pattern, iterable: st.iterable, for_body: st.for_body,
+        while_cond: cond, while_body: body,
+        expr: st.expr,
+        spawn_expr: st.spawn_expr,
+        select_branches: st.select_branches,
+        try_block: st.try_block, catch_name: "", catch_block: st.catch_block,
+        throw_expr: st.throw_expr,
+        start: s, end: e
+    }
+    return st
+}
+
+fn make_break_stmt(s: i32, e: i32) -> Stmt {
+    let mut st = make_empty_stmt(s, e)
+    st = Stmt {
+        kind: STMT_BREAK, name: "", mutable: false,
+        let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
+        assign_target: st.assign_target, assign_op: 0, assign_value: st.assign_value,
+        return_value: st.return_value,
+        condition: st.condition, then_block: st.then_block,
+        elif_conditions: st.elif_conditions, elif_blocks: st.elif_blocks,
+        else_block: st.else_block,
+        for_pattern: st.for_pattern, iterable: st.iterable, for_body: st.for_body,
+        while_cond: st.while_cond, while_body: st.while_body,
+        expr: st.expr,
+        spawn_expr: st.spawn_expr,
+        select_branches: st.select_branches,
+        try_block: st.try_block, catch_name: "", catch_block: st.catch_block,
+        throw_expr: st.throw_expr,
+        start: s, end: e
+    }
+    return st
+}
+
+fn make_continue_stmt(s: i32, e: i32) -> Stmt {
+    let mut st = make_empty_stmt(s, e)
+    st = Stmt {
+        kind: STMT_CONTINUE, name: "", mutable: false,
+        let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
+        assign_target: st.assign_target, assign_op: 0, assign_value: st.assign_value,
+        return_value: st.return_value,
+        condition: st.condition, then_block: st.then_block,
+        elif_conditions: st.elif_conditions, elif_blocks: st.elif_blocks,
+        else_block: st.else_block,
+        for_pattern: st.for_pattern, iterable: st.iterable, for_body: st.for_body,
+        while_cond: st.while_cond, while_body: st.while_body,
+        expr: st.expr,
+        spawn_expr: st.spawn_expr,
+        select_branches: st.select_branches,
+        try_block: st.try_block, catch_name: "", catch_block: st.catch_block,
+        throw_expr: st.throw_expr,
+        start: s, end: e
+    }
+    return st
+}
+
+fn make_expr_stmt(e: [Expr], s: i32, end: i32) -> Stmt {
+    let mut st = make_empty_stmt(s, end)
+    st = Stmt {
+        kind: STMT_EXPR, name: "", mutable: false,
+        let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
+        assign_target: st.assign_target, assign_op: 0, assign_value: st.assign_value,
+        return_value: st.return_value,
+        condition: st.condition, then_block: st.then_block,
+        elif_conditions: st.elif_conditions, elif_blocks: st.elif_blocks,
+        else_block: st.else_block,
+        for_pattern: st.for_pattern, iterable: st.iterable, for_body: st.for_body,
+        while_cond: st.while_cond, while_body: st.while_body,
+        expr: e,
+        spawn_expr: st.spawn_expr,
+        select_branches: st.select_branches,
+        try_block: st.try_block, catch_name: "", catch_block: st.catch_block,
+        throw_expr: st.throw_expr,
+        start: s, end: end
+    }
+    return st
+}
+
+fn make_spawn_stmt(e: [Expr], s: i32, end: i32) -> Stmt {
+    let mut st = make_empty_stmt(s, end)
+    st = Stmt {
+        kind: STMT_SPAWN, name: "", mutable: false,
+        let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
+        assign_target: st.assign_target, assign_op: 0, assign_value: st.assign_value,
+        return_value: st.return_value,
+        condition: st.condition, then_block: st.then_block,
+        elif_conditions: st.elif_conditions, elif_blocks: st.elif_blocks,
+        else_block: st.else_block,
+        for_pattern: st.for_pattern, iterable: st.iterable, for_body: st.for_body,
+        while_cond: st.while_cond, while_body: st.while_body,
+        expr: st.expr,
+        spawn_expr: e,
+        select_branches: st.select_branches,
+        try_block: st.try_block, catch_name: "", catch_block: st.catch_block,
+        throw_expr: st.throw_expr,
+        start: s, end: end
+    }
+    return st
+}
+
+fn make_select_stmt(branches: [SelectBranch], s: i32, e: i32) -> Stmt {
+    let mut st = make_empty_stmt(s, e)
+    st = Stmt {
+        kind: STMT_SELECT, name: "", mutable: false,
+        let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
+        assign_target: st.assign_target, assign_op: 0, assign_value: st.assign_value,
+        return_value: st.return_value,
+        condition: st.condition, then_block: st.then_block,
+        elif_conditions: st.elif_conditions, elif_blocks: st.elif_blocks,
+        else_block: st.else_block,
+        for_pattern: st.for_pattern, iterable: st.iterable, for_body: st.for_body,
+        while_cond: st.while_cond, while_body: st.while_body,
+        expr: st.expr,
+        spawn_expr: st.spawn_expr,
+        select_branches: branches,
+        try_block: st.try_block, catch_name: "", catch_block: st.catch_block,
+        throw_expr: st.throw_expr,
+        start: s, end: e
+    }
+    return st
+}
+
+fn make_try_catch_stmt(try_b: [Stmt], catch_name: str, catch_b: [Stmt], s: i32, e: i32) -> Stmt {
+    let mut st = make_empty_stmt(s, e)
+    st = Stmt {
+        kind: STMT_TRY_CATCH, name: "", mutable: false,
+        let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
+        assign_target: st.assign_target, assign_op: 0, assign_value: st.assign_value,
+        return_value: st.return_value,
+        condition: st.condition, then_block: st.then_block,
+        elif_conditions: st.elif_conditions, elif_blocks: st.elif_blocks,
+        else_block: st.else_block,
+        for_pattern: st.for_pattern, iterable: st.iterable, for_body: st.for_body,
+        while_cond: st.while_cond, while_body: st.while_body,
+        expr: st.expr,
+        spawn_expr: st.spawn_expr,
+        select_branches: st.select_branches,
+        try_block: try_b, catch_name: catch_name, catch_block: catch_b,
+        throw_expr: st.throw_expr,
+        start: s, end: e
+    }
+    return st
+}
+
+fn make_throw_stmt(e: [Expr], s: i32, end: i32) -> Stmt {
+    let mut st = make_empty_stmt(s, end)
+    st = Stmt {
+        kind: STMT_THROW, name: "", mutable: false,
+        let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
+        assign_target: st.assign_target, assign_op: 0, assign_value: st.assign_value,
+        return_value: st.return_value,
+        condition: st.condition, then_block: st.then_block,
+        elif_conditions: st.elif_conditions, elif_blocks: st.elif_blocks,
+        else_block: st.else_block,
+        for_pattern: st.for_pattern, iterable: st.iterable, for_body: st.for_body,
+        while_cond: st.while_cond, while_body: st.while_body,
+        expr: st.expr,
+        spawn_expr: st.spawn_expr,
+        select_branches: st.select_branches,
+        try_block: st.try_block, catch_name: "", catch_block: st.catch_block,
+        throw_expr: e,
+        start: s, end: end
+    }
+    return st
+}

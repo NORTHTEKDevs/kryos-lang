@@ -1,0 +1,536 @@
+// ============================================================
+// std.fmt -- Formatting and string conversion utilities
+//
+// Provides number formatting (hex, octal, binary, scientific),
+// string alignment, padding, and debug/display representations.
+//
+// Usage: std.fmt.hex(255), std.fmt.pad_left("42", 6, "0")
+// ============================================================
+
+// --- Template formatting -----------------------------------------------------
+
+/// Format a template string with positional arguments.
+/// Replaces {0}, {1}, etc. with the corresponding arg converted to string.
+///
+///   format("Hello, {0}! You are {1}.", ["Alice", "30"])
+///   => "Hello, Alice! You are 30."
+fn format(template: str, args: [any]) -> str {
+    let mut result = template
+    let argc = len(args)
+    let mut i = 0
+    while i < argc {
+        let placeholder = "{" + to_string(i) + "}"
+        result = _replace_all(result, placeholder, to_string(args[i]))
+        i = i + 1
+    }
+    return result
+}
+
+/// Internal: replace all occurrences of old with new in s.
+fn _replace_all(s: str, old: str, new: str) -> str {
+    let olen = len(old)
+    let nlen = len(new)
+    let slen = len(s)
+    if olen == 0 {
+        return s
+    }
+    let mut result = ""
+    let mut i = 0
+    while i < slen {
+        let mut matched = true
+        if i + olen > slen {
+            matched = false
+        } else {
+            let mut j = 0
+            while j < olen {
+                if s[i + j] != old[j] {
+                    matched = false
+                    j = olen
+                }
+                j = j + 1
+            }
+        }
+        if matched {
+            result = result + new
+            i = i + olen
+        } else {
+            result = result + s[i]
+            i = i + 1
+        }
+    }
+    return result
+}
+
+// --- Padding and alignment ---------------------------------------------------
+
+/// Pad a string on the left to reach target width.
+fn pad_left(s: str, width: i64, ch: str) -> str {
+    let slen = len(s)
+    if slen >= width {
+        return s
+    }
+    let fill = if len(ch) > 0 { ch[0] } else { " " }
+    let mut padding = ""
+    let mut i = 0
+    let pad_count = width - slen
+    while i < pad_count {
+        padding = padding + fill
+        i = i + 1
+    }
+    return padding + s
+}
+
+/// Pad a string on the right to reach target width.
+fn pad_right(s: str, width: i64, ch: str) -> str {
+    let slen = len(s)
+    if slen >= width {
+        return s
+    }
+    let fill = if len(ch) > 0 { ch[0] } else { " " }
+    let mut result = s
+    let mut i = 0
+    let pad_count = width - slen
+    while i < pad_count {
+        result = result + fill
+        i = i + 1
+    }
+    return result
+}
+
+/// Center a string within the given width.
+fn center(s: str, width: i64, ch: str) -> str {
+    let slen = len(s)
+    if slen >= width {
+        return s
+    }
+    let fill = if len(ch) > 0 { ch[0] } else { " " }
+    let total_pad = width - slen
+    let left_pad = total_pad / 2
+    let right_pad = total_pad - left_pad
+    let mut result = ""
+    let mut i = 0
+    while i < left_pad {
+        result = result + fill
+        i = i + 1
+    }
+    result = result + s
+    i = 0
+    while i < right_pad {
+        result = result + fill
+        i = i + 1
+    }
+    return result
+}
+
+// --- Number base conversions -------------------------------------------------
+
+/// Convert an integer to its hexadecimal string representation.
+fn hex(n: i64) -> str {
+    if n == 0 {
+        return "0x0"
+    }
+    let hex_digits = "0123456789abcdef"
+    let negative = n < 0
+    let mut val = n
+    if negative {
+        val = -val
+    }
+    let mut result = ""
+    while val > 0 {
+        let digit = val % 16
+        result = hex_digits[digit] + result
+        val = val / 16
+    }
+    if negative {
+        return "-0x" + result
+    }
+    return "0x" + result
+}
+
+/// Convert an integer to uppercase hexadecimal.
+fn hex_upper(n: i64) -> str {
+    if n == 0 {
+        return "0x0"
+    }
+    let hex_digits = "0123456789ABCDEF"
+    let negative = n < 0
+    let mut val = n
+    if negative {
+        val = -val
+    }
+    let mut result = ""
+    while val > 0 {
+        let digit = val % 16
+        result = hex_digits[digit] + result
+        val = val / 16
+    }
+    if negative {
+        return "-0x" + result
+    }
+    return "0x" + result
+}
+
+/// Convert an integer to its octal string representation.
+fn oct(n: i64) -> str {
+    if n == 0 {
+        return "0o0"
+    }
+    let negative = n < 0
+    let mut val = n
+    if negative {
+        val = -val
+    }
+    let mut result = ""
+    while val > 0 {
+        let digit = val % 8
+        result = to_string(digit) + result
+        val = val / 8
+    }
+    if negative {
+        return "-0o" + result
+    }
+    return "0o" + result
+}
+
+/// Convert an integer to its binary string representation.
+fn bin(n: i64) -> str {
+    if n == 0 {
+        return "0b0"
+    }
+    let negative = n < 0
+    let mut val = n
+    if negative {
+        val = -val
+    }
+    let mut result = ""
+    while val > 0 {
+        let digit = val % 2
+        result = to_string(digit) + result
+        val = val / 2
+    }
+    if negative {
+        return "-0b" + result
+    }
+    return "0b" + result
+}
+
+// --- Floating-point formatting -----------------------------------------------
+
+/// Format a float with a fixed number of decimal places.
+///
+///   float_fixed(3.14159, 2) => "3.14"
+///   float_fixed(42.0, 4)   => "42.0000"
+fn float_fixed(n: f64, decimals: i64) -> str {
+    let negative = n < 0.0
+    let mut val = n
+    if negative {
+        val = -val
+    }
+
+    // Shift by decimals, round, then split
+    let mut multiplier = 1.0
+    let mut d = 0
+    while d < decimals {
+        multiplier = multiplier * 10.0
+        d = d + 1
+    }
+
+    let shifted = _floor_f64(val * multiplier + 0.5)
+    let int_part = _floor_f64(shifted / multiplier)
+    let frac_part = shifted - int_part * multiplier
+
+    let int_str = to_string(to_i64(int_part))
+    let mut frac_str = to_string(to_i64(frac_part))
+
+    // Zero-pad the fractional part
+    while len(frac_str) < decimals {
+        frac_str = "0" + frac_str
+    }
+
+    let mut result = int_str + "." + frac_str
+    if negative {
+        result = "-" + result
+    }
+    return result
+}
+
+/// Internal floor for positive floats.
+fn _floor_f64(x: f64) -> f64 {
+    let i = to_i64(x)
+    let f = to_f64(i)
+    if f > x {
+        return f - 1.0
+    }
+    return f
+}
+
+/// Format a float in scientific notation.
+///
+///   float_sci(12345.6, 2) => "1.23e+4"
+///   float_sci(0.00042, 3) => "4.200e-4"
+fn float_sci(n: f64, decimals: i64) -> str {
+    if n == 0.0 {
+        return float_fixed(0.0, decimals) + "e+0"
+    }
+
+    let negative = n < 0.0
+    let mut val = n
+    if negative {
+        val = -val
+    }
+
+    // Find exponent
+    let mut exponent = 0
+    let mut mantissa = val
+    if mantissa >= 10.0 {
+        while mantissa >= 10.0 {
+            mantissa = mantissa / 10.0
+            exponent = exponent + 1
+        }
+    } else if mantissa < 1.0 {
+        while mantissa < 1.0 {
+            mantissa = mantissa * 10.0
+            exponent = exponent - 1
+        }
+    }
+
+    let mantissa_str = float_fixed(mantissa, decimals)
+    let mut exp_str = ""
+    if exponent >= 0 {
+        exp_str = "e+" + to_string(exponent)
+    } else {
+        exp_str = "e" + to_string(exponent)
+    }
+
+    if negative {
+        return "-" + mantissa_str + exp_str
+    }
+    return mantissa_str + exp_str
+}
+
+// --- Thousands separator -----------------------------------------------------
+
+/// Format a number with commas as thousands separators.
+///
+///   thousands(1234567) => "1,234,567"
+fn thousands(n: i64) -> str {
+    let negative = n < 0
+    let mut val = n
+    if negative {
+        val = -val
+    }
+    let s = to_string(val)
+    let slen = len(s)
+    let mut result = ""
+    let mut count = 0
+    let mut i = slen - 1
+    while i >= 0 {
+        if count > 0 and count % 3 == 0 {
+            result = "," + result
+        }
+        result = s[i] + result
+        count = count + 1
+        i = i - 1
+    }
+    if negative {
+        return "-" + result
+    }
+    return result
+}
+
+// --- Percentage --------------------------------------------------------------
+
+/// Format a ratio as a percentage.
+///
+///   percent(0.8567, 1) => "85.7%"
+fn percent(ratio: f64, decimals: i64) -> str {
+    return float_fixed(ratio * 100.0, decimals) + "%"
+}
+
+// --- Debug and display -------------------------------------------------------
+
+/// Produce a debug representation of any value.
+/// Strings are quoted, arrays are bracketed, etc.
+fn debug(val: any) -> str {
+    let t = type_of(val)
+    if t == "string" {
+        return "\"" + _escape_string(val) + "\""
+    }
+    if t == "array" {
+        let mut parts = []
+        let vlen = len(val)
+        let mut i = 0
+        while i < vlen {
+            push(parts, debug(val[i]))
+            i = i + 1
+        }
+        return "[" + _join_parts(parts, ", ") + "]"
+    }
+    if t == "map" {
+        let keys = map_keys(val)
+        let mut parts = []
+        let klen = len(keys)
+        let mut i = 0
+        while i < klen {
+            let k = keys[i]
+            let v = map_get(val, k)
+            push(parts, debug(k) + ": " + debug(v))
+            i = i + 1
+        }
+        return "{" + _join_parts(parts, ", ") + "}"
+    }
+    if t == "bool" {
+        if val {
+            return "true"
+        }
+        return "false"
+    }
+    if t == "null" or t == "nil" {
+        return "nil"
+    }
+    return to_string(val)
+}
+
+/// Produce a human-readable display of any value.
+/// Unlike debug, strings are NOT quoted.
+fn display(val: any) -> str {
+    let t = type_of(val)
+    if t == "string" {
+        return val
+    }
+    if t == "array" {
+        let mut parts = []
+        let vlen = len(val)
+        let mut i = 0
+        while i < vlen {
+            push(parts, display(val[i]))
+            i = i + 1
+        }
+        return "[" + _join_parts(parts, ", ") + "]"
+    }
+    if t == "bool" {
+        if val {
+            return "true"
+        }
+        return "false"
+    }
+    return to_string(val)
+}
+
+// --- Internal helpers --------------------------------------------------------
+
+/// Escape special characters in a string for debug output.
+fn _escape_string(s: str) -> str {
+    let mut result = ""
+    let slen = len(s)
+    let mut i = 0
+    while i < slen {
+        let ch = s[i]
+        if ch == "\\" {
+            result = result + "\\\\"
+        } else if ch == "\"" {
+            result = result + "\\\""
+        } else if ch == "\n" {
+            result = result + "\\n"
+        } else if ch == "\t" {
+            result = result + "\\t"
+        } else if ch == "\r" {
+            result = result + "\\r"
+        } else {
+            result = result + ch
+        }
+        i = i + 1
+    }
+    return result
+}
+
+/// Join string parts with a separator (internal, avoids circular dependency).
+fn _join_parts(parts: [str], sep: str) -> str {
+    let plen = len(parts)
+    if plen == 0 {
+        return ""
+    }
+    let mut result = parts[0]
+    let mut i = 1
+    while i < plen {
+        result = result + sep + parts[i]
+        i = i + 1
+    }
+    return result
+}
+
+// --- Ordinal suffixes --------------------------------------------------------
+
+/// Add an English ordinal suffix to a number.
+///
+///   ordinal(1)  => "1st"
+///   ordinal(22) => "22nd"
+///   ordinal(13) => "13th"
+fn ordinal(n: i64) -> str {
+    let abs_n = n
+    let mut suffix = "th"
+    let mod100 = abs_n % 100
+    if mod100 >= 11 and mod100 <= 13 {
+        suffix = "th"
+    } else {
+        let mod10 = abs_n % 10
+        if mod10 == 1 {
+            suffix = "st"
+        } else if mod10 == 2 {
+            suffix = "nd"
+        } else if mod10 == 3 {
+            suffix = "rd"
+        }
+    }
+    return to_string(n) + suffix
+}
+
+// --- Byte size formatting ----------------------------------------------------
+
+/// Format a byte count as a human-readable string.
+///
+///   bytes(1536)      => "1.5 KB"
+///   bytes(1048576)   => "1.0 MB"
+fn bytes(n: i64) -> str {
+    let units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    let mut val = to_f64(n)
+    let mut unit_idx = 0
+    while val >= 1024.0 and unit_idx < 5 {
+        val = val / 1024.0
+        unit_idx = unit_idx + 1
+    }
+    if unit_idx == 0 {
+        return to_string(n) + " B"
+    }
+    return float_fixed(val, 1) + " " + units[unit_idx]
+}
+
+// --- Duration formatting -----------------------------------------------------
+
+/// Format seconds as a human-readable duration.
+///
+///   duration(3661) => "1h 1m 1s"
+///   duration(45)   => "45s"
+fn duration(seconds: i64) -> str {
+    let mut s = seconds
+    if s < 0 {
+        s = -s
+    }
+
+    let hours = s / 3600
+    s = s % 3600
+    let minutes = s / 60
+    s = s % 60
+
+    let mut parts = []
+    if hours > 0 {
+        push(parts, to_string(hours) + "h")
+    }
+    if minutes > 0 {
+        push(parts, to_string(minutes) + "m")
+    }
+    if s > 0 or len(parts) == 0 {
+        push(parts, to_string(s) + "s")
+    }
+    return _join_parts(parts, " ")
+}

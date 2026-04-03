@@ -1,0 +1,464 @@
+// ============================================================
+// std.term -- Terminal manipulation: size, raw mode, cursor,
+// ANSI colors, styles, and key reading
+//
+// Wraps the kryos-stdlib-native terminal FFI (crossterm-backed)
+// and adds a pure-Kryos ANSI escape layer for colors and styles.
+// ============================================================
+
+// --- Native FFI declarations ------------------------------------------------
+
+extern {
+    fn kryos_term_raw_enable() -> i32
+    fn kryos_term_raw_disable() -> i32
+    fn kryos_term_width() -> i32
+    fn kryos_term_height() -> i32
+    fn kryos_term_cursor_move(col: i32, row: i32) -> i32
+    fn kryos_term_clear(mode: i32) -> i32
+    fn kryos_stdout_write(data: ptr, len: i64) -> i64
+    fn kryos_stdin_read(buf: ptr, buf_len: i64) -> i64
+}
+
+// --- Terminal size ----------------------------------------------------------
+
+// Returns the terminal width in columns.
+@capabilities(io)
+fn width() -> i32 {
+    let w = kryos_term_width()
+    if w < 0 {
+        throw "term error: could not get terminal width"
+    }
+    return w
+}
+
+// Returns the terminal height in rows.
+@capabilities(io)
+fn height() -> i32 {
+    let h = kryos_term_height()
+    if h < 0 {
+        throw "term error: could not get terminal height"
+    }
+    return h
+}
+
+// Returns [width, height] as an array.
+@capabilities(io)
+fn size() -> [i32] {
+    return [width(), height()]
+}
+
+// --- Raw mode ---------------------------------------------------------------
+
+// Enable raw mode (disables line buffering and echo).
+@capabilities(io)
+fn raw_enable() -> bool {
+    let result = kryos_term_raw_enable()
+    if result < 0 {
+        throw "term error: could not enable raw mode"
+    }
+    return true
+}
+
+// Disable raw mode (restore normal terminal behavior).
+@capabilities(io)
+fn raw_disable() -> bool {
+    let result = kryos_term_raw_disable()
+    if result < 0 {
+        throw "term error: could not disable raw mode"
+    }
+    return true
+}
+
+// Execute a function with raw mode enabled, then restore on exit.
+// The callback receives no arguments and returns a value of any type.
+@capabilities(io)
+fn with_raw_mode(callback: fn() -> str) -> str {
+    raw_enable()
+    let mut result = ""
+    try {
+        result = callback()
+    } catch (e) {
+        raw_disable()
+        throw e
+    }
+    raw_disable()
+    return result
+}
+
+// --- Screen clearing --------------------------------------------------------
+
+// Clear the entire screen.
+@capabilities(io)
+fn clear() -> bool {
+    let result = kryos_term_clear(0)
+    if result < 0 {
+        throw "term error: could not clear screen"
+    }
+    return true
+}
+
+// Clear the current line.
+@capabilities(io)
+fn clear_line() -> bool {
+    let result = kryos_term_clear(1)
+    if result < 0 {
+        throw "term error: could not clear line"
+    }
+    return true
+}
+
+// Clear from the cursor to the end of the screen.
+@capabilities(io)
+fn clear_below() -> bool {
+    let result = kryos_term_clear(2)
+    if result < 0 {
+        throw "term error: could not clear below cursor"
+    }
+    return true
+}
+
+// --- Cursor movement --------------------------------------------------------
+
+// Move the cursor to (col, row), both 0-indexed.
+@capabilities(io)
+fn cursor_move(col: i32, row: i32) -> bool {
+    let result = kryos_term_cursor_move(col, row)
+    if result < 0 {
+        throw "term error: could not move cursor"
+    }
+    return true
+}
+
+// Move the cursor to the top-left corner (0, 0).
+@capabilities(io)
+fn cursor_home() -> bool {
+    return cursor_move(0, 0)
+}
+
+// Hide the cursor using ANSI escape.
+@capabilities(io)
+fn cursor_hide() -> bool {
+    let seq = "\x1b[?25l"
+    kryos_stdout_write(str_to_ptr(seq), len(seq))
+    return true
+}
+
+// Show the cursor using ANSI escape.
+@capabilities(io)
+fn cursor_show() -> bool {
+    let seq = "\x1b[?25h"
+    kryos_stdout_write(str_to_ptr(seq), len(seq))
+    return true
+}
+
+// Save the cursor position using ANSI escape.
+@capabilities(io)
+fn cursor_save() -> bool {
+    let seq = "\x1b[s"
+    kryos_stdout_write(str_to_ptr(seq), len(seq))
+    return true
+}
+
+// Restore the cursor position using ANSI escape.
+@capabilities(io)
+fn cursor_restore() -> bool {
+    let seq = "\x1b[u"
+    kryos_stdout_write(str_to_ptr(seq), len(seq))
+    return true
+}
+
+// --- ANSI color constants ---------------------------------------------------
+
+let RESET       = "\x1b[0m"
+let BOLD        = "\x1b[1m"
+let DIM         = "\x1b[2m"
+let ITALIC      = "\x1b[3m"
+let UNDERLINE   = "\x1b[4m"
+let BLINK       = "\x1b[5m"
+let REVERSE     = "\x1b[7m"
+let HIDDEN      = "\x1b[8m"
+let STRIKE      = "\x1b[9m"
+
+// Foreground colors
+let FG_BLACK    = "\x1b[30m"
+let FG_RED      = "\x1b[31m"
+let FG_GREEN    = "\x1b[32m"
+let FG_YELLOW   = "\x1b[33m"
+let FG_BLUE     = "\x1b[34m"
+let FG_MAGENTA  = "\x1b[35m"
+let FG_CYAN     = "\x1b[36m"
+let FG_WHITE    = "\x1b[37m"
+
+// Bright foreground colors
+let FG_BRIGHT_BLACK   = "\x1b[90m"
+let FG_BRIGHT_RED     = "\x1b[91m"
+let FG_BRIGHT_GREEN   = "\x1b[92m"
+let FG_BRIGHT_YELLOW  = "\x1b[93m"
+let FG_BRIGHT_BLUE    = "\x1b[94m"
+let FG_BRIGHT_MAGENTA = "\x1b[95m"
+let FG_BRIGHT_CYAN    = "\x1b[96m"
+let FG_BRIGHT_WHITE   = "\x1b[97m"
+
+// Background colors
+let BG_BLACK    = "\x1b[40m"
+let BG_RED      = "\x1b[41m"
+let BG_GREEN    = "\x1b[42m"
+let BG_YELLOW   = "\x1b[43m"
+let BG_BLUE     = "\x1b[44m"
+let BG_MAGENTA  = "\x1b[45m"
+let BG_CYAN     = "\x1b[46m"
+let BG_WHITE    = "\x1b[47m"
+
+// --- Color/style functions --------------------------------------------------
+
+// Wrap text in a foreground color (by name).
+fn color(text: str, color_name: str) -> str {
+    let code = match color_name {
+        "black"   => FG_BLACK,
+        "red"     => FG_RED,
+        "green"   => FG_GREEN,
+        "yellow"  => FG_YELLOW,
+        "blue"    => FG_BLUE,
+        "magenta" => FG_MAGENTA,
+        "cyan"    => FG_CYAN,
+        "white"   => FG_WHITE,
+        _         => "",
+    }
+    if len(code) == 0 {
+        return text
+    }
+    return code + text + RESET
+}
+
+// Wrap text in a 256-color foreground (0-255).
+fn color_256(text: str, n: i32) -> str {
+    return "\x1b[38;5;" + to_string(n) + "m" + text + RESET
+}
+
+// Wrap text in a 24-bit true-color foreground (RGB).
+fn color_rgb(text: str, r: i32, g: i32, b: i32) -> str {
+    return "\x1b[38;2;" + to_string(r) + ";" + to_string(g) + ";" + to_string(b) + "m" + text + RESET
+}
+
+// Wrap text in a background color (by name).
+fn bg_color(text: str, color_name: str) -> str {
+    let code = match color_name {
+        "black"   => BG_BLACK,
+        "red"     => BG_RED,
+        "green"   => BG_GREEN,
+        "yellow"  => BG_YELLOW,
+        "blue"    => BG_BLUE,
+        "magenta" => BG_MAGENTA,
+        "cyan"    => BG_CYAN,
+        "white"   => BG_WHITE,
+        _         => "",
+    }
+    if len(code) == 0 {
+        return text
+    }
+    return code + text + RESET
+}
+
+// Wrap text in a 24-bit true-color background (RGB).
+fn bg_color_rgb(text: str, r: i32, g: i32, b: i32) -> str {
+    return "\x1b[48;2;" + to_string(r) + ";" + to_string(g) + ";" + to_string(b) + "m" + text + RESET
+}
+
+// --- Style functions --------------------------------------------------------
+
+fn bold(text: str) -> str {
+    return BOLD + text + RESET
+}
+
+fn dim(text: str) -> str {
+    return DIM + text + RESET
+}
+
+fn italic(text: str) -> str {
+    return ITALIC + text + RESET
+}
+
+fn underline(text: str) -> str {
+    return UNDERLINE + text + RESET
+}
+
+fn strikethrough(text: str) -> str {
+    return STRIKE + text + RESET
+}
+
+fn reverse(text: str) -> str {
+    return REVERSE + text + RESET
+}
+
+// Combine a style and a color: e.g. styled("hello", "bold", "red")
+fn styled(text: str, style_name: str, color_name: str) -> str {
+    let style_code = match style_name {
+        "bold"      => BOLD,
+        "dim"       => DIM,
+        "italic"    => ITALIC,
+        "underline" => UNDERLINE,
+        "strike"    => STRIKE,
+        "reverse"   => REVERSE,
+        _           => "",
+    }
+    let colored = color(text, color_name)
+    return style_code + colored
+}
+
+// --- Key reading ------------------------------------------------------------
+
+// Key constants for special keys
+let KEY_ENTER     = 13
+let KEY_ESCAPE    = 27
+let KEY_BACKSPACE = 127
+let KEY_TAB       = 9
+
+struct KeyEvent {
+    code: i32,
+    char: str,
+    is_special: bool
+}
+
+// Read a single key press from stdin (requires raw mode).
+@capabilities(io)
+fn read_key() -> KeyEvent {
+    let buf = alloc(8)
+    let n = kryos_stdin_read(buf, 8)
+    if n < 0 {
+        throw "term error: could not read key"
+    }
+    if n == 0 {
+        return KeyEvent { code: 0, char: "", is_special: true }
+    }
+
+    let raw = buf_to_str(buf, n)
+    let first_byte = char_code(raw[0])
+
+    // Check for escape sequences (arrow keys, function keys, etc.)
+    if first_byte == 27 and n >= 3 {
+        let second = raw[1]
+        let third = raw[2]
+        if second == "[" {
+            // Arrow keys
+            if third == "A" {
+                return KeyEvent { code: 1001, char: "up", is_special: true }
+            }
+            if third == "B" {
+                return KeyEvent { code: 1002, char: "down", is_special: true }
+            }
+            if third == "C" {
+                return KeyEvent { code: 1003, char: "right", is_special: true }
+            }
+            if third == "D" {
+                return KeyEvent { code: 1004, char: "left", is_special: true }
+            }
+            if third == "H" {
+                return KeyEvent { code: 1005, char: "home", is_special: true }
+            }
+            if third == "F" {
+                return KeyEvent { code: 1006, char: "end", is_special: true }
+            }
+            // Page Up/Down, Delete, Insert (4+ byte sequences)
+            if n >= 4 {
+                let fourth = raw[3]
+                if third == "3" and fourth == "~" {
+                    return KeyEvent { code: 1007, char: "delete", is_special: true }
+                }
+                if third == "5" and fourth == "~" {
+                    return KeyEvent { code: 1008, char: "pageup", is_special: true }
+                }
+                if third == "6" and fourth == "~" {
+                    return KeyEvent { code: 1009, char: "pagedown", is_special: true }
+                }
+            }
+        }
+        return KeyEvent { code: 27, char: "escape", is_special: true }
+    }
+
+    // Single byte -- regular key or control character
+    if first_byte == KEY_ENTER {
+        return KeyEvent { code: KEY_ENTER, char: "enter", is_special: true }
+    }
+    if first_byte == KEY_BACKSPACE or first_byte == 8 {
+        return KeyEvent { code: KEY_BACKSPACE, char: "backspace", is_special: true }
+    }
+    if first_byte == KEY_TAB {
+        return KeyEvent { code: KEY_TAB, char: "tab", is_special: true }
+    }
+    if first_byte == KEY_ESCAPE {
+        return KeyEvent { code: KEY_ESCAPE, char: "escape", is_special: true }
+    }
+
+    // Printable character
+    return KeyEvent { code: first_byte, char: raw[0], is_special: false }
+}
+
+// --- Terminal write helpers -------------------------------------------------
+
+// Write a string at a specific position.
+@capabilities(io)
+fn write_at(col: i32, row: i32, text: str) -> bool {
+    cursor_move(col, row)
+    kryos_stdout_write(str_to_ptr(text), len(text))
+    return true
+}
+
+// Draw a horizontal line of a given character and length.
+@capabilities(io)
+fn draw_hline(col: i32, row: i32, ch: str, length: i32) -> bool {
+    cursor_move(col, row)
+    let mut line = ""
+    let mut i = 0
+    while i < length {
+        line = line + ch
+        i = i + 1
+    }
+    kryos_stdout_write(str_to_ptr(line), len(line))
+    return true
+}
+
+// Draw a vertical line of a given character and height.
+@capabilities(io)
+fn draw_vline(col: i32, row: i32, ch: str, height: i32) -> bool {
+    let mut i = 0
+    while i < height {
+        cursor_move(col, row + i)
+        kryos_stdout_write(str_to_ptr(ch), len(ch))
+        i = i + 1
+    }
+    return true
+}
+
+// Draw a box border (single-line Unicode characters).
+@capabilities(io)
+fn draw_box(col: i32, row: i32, w: i32, h: i32) -> bool {
+    // Top edge
+    let mut top = "\u250c"
+    let mut i = 0
+    while i < w - 2 {
+        top = top + "\u2500"
+        i = i + 1
+    }
+    top = top + "\u2510"
+    write_at(col, row, top)
+
+    // Sides
+    i = 1
+    while i < h - 1 {
+        write_at(col, row + i, "\u2502")
+        write_at(col + w - 1, row + i, "\u2502")
+        i = i + 1
+    }
+
+    // Bottom edge
+    let mut bottom = "\u2514"
+    i = 0
+    while i < w - 2 {
+        bottom = bottom + "\u2500"
+        i = i + 1
+    }
+    bottom = bottom + "\u2518"
+    write_at(col, row + h - 1, bottom)
+
+    return true
+}

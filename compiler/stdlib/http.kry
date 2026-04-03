@@ -1,0 +1,644 @@
+// ============================================================
+// std.http -- HTTP client and server
+//
+// Provides a high-level HTTP client (get, post, put, delete,
+// patch, head) and a simple HTTP server (listen, route, handle).
+// Uses std.net TCP functions internally.
+//
+// All network-facing functions carry @capabilities(net).
+//
+// Usage:
+//   let resp = std.http.get("http://example.com/api")
+//   std.http.listen(8080, router)
+// ============================================================
+
+// --- URL parsing -------------------------------------------------------------
+
+struct Url {
+    scheme: str,
+    host: str,
+    port: i64,
+    path: str,
+    query: str,
+    fragment: str,
+    raw: str
+}
+
+/// Parse a URL string into its components.
+fn parse_url(raw: str) -> Url {
+    let mut scheme = "http"
+    let mut rest = raw
+
+    // Extract scheme
+    let scheme_end = _find(rest, "://")
+    if scheme_end >= 0 {
+        scheme = _substring(rest, 0, scheme_end)
+        rest = _substring(rest, scheme_end + 3, len(rest))
+    }
+
+    // Extract fragment
+    let mut fragment = ""
+    let frag_idx = _find(rest, "#")
+    if frag_idx >= 0 {
+        fragment = _substring(rest, frag_idx + 1, len(rest))
+        rest = _substring(rest, 0, frag_idx)
+    }
+
+    // Extract query
+    let mut query = ""
+    let query_idx = _find(rest, "?")
+    if query_idx >= 0 {
+        query = _substring(rest, query_idx + 1, len(rest))
+        rest = _substring(rest, 0, query_idx)
+    }
+
+    // Extract path
+    let mut path = "/"
+    let path_idx = _find(rest, "/")
+    if path_idx >= 0 {
+        path = _substring(rest, path_idx, len(rest))
+        rest = _substring(rest, 0, path_idx)
+    }
+
+    // Extract host and port
+    let mut host = rest
+    let mut port = if scheme == "https" { 443 } else { 80 }
+    let colon_idx = _find(rest, ":")
+    if colon_idx >= 0 {
+        host = _substring(rest, 0, colon_idx)
+        let port_str = _substring(rest, colon_idx + 1, len(rest))
+        port = to_i64(port_str)
+    }
+
+    return Url {
+        scheme: scheme,
+        host: host,
+        port: port,
+        path: path,
+        query: query,
+        fragment: fragment,
+        raw: raw
+    }
+}
+
+/// Reconstruct a URL string from a Url struct.
+fn url_to_string(u: Url) -> str {
+    let mut result = u.scheme + "://" + u.host
+    if (u.scheme == "http" and u.port != 80) or (u.scheme == "https" and u.port != 443) {
+        result = result + ":" + to_string(u.port)
+    }
+    result = result + u.path
+    if len(u.query) > 0 {
+        result = result + "?" + u.query
+    }
+    if len(u.fragment) > 0 {
+        result = result + "#" + u.fragment
+    }
+    return result
+}
+
+// --- Header map --------------------------------------------------------------
+
+struct Headers {
+    keys: [str],
+    values: [str]
+}
+
+/// Create an empty header map.
+fn new_headers() -> Headers {
+    return Headers { keys: [], values: [] }
+}
+
+/// Set a header value (case-insensitive key).  Replaces if exists.
+fn set_header(h: Headers, key: str, value: str) -> Headers {
+    let lower_key = _to_lower(key)
+    let mut keys = h.keys
+    let mut values = h.values
+    let count = len(keys)
+    let mut i = 0
+    while i < count {
+        if _to_lower(keys[i]) == lower_key {
+            values[i] = value
+            return Headers { keys: keys, values: values }
+        }
+        i = i + 1
+    }
+    push(keys, key)
+    push(values, value)
+    return Headers { keys: keys, values: values }
+}
+
+/// Get a header value by key (case-insensitive).  Returns "" if not found.
+fn get_header(h: Headers, key: str) -> str {
+    let lower_key = _to_lower(key)
+    let count = len(h.keys)
+    let mut i = 0
+    while i < count {
+        if _to_lower(h.keys[i]) == lower_key {
+            return h.values[i]
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+/// Check whether a header exists.
+fn has_header(h: Headers, key: str) -> bool {
+    return len(get_header(h, key)) > 0
+}
+
+/// Serialize headers into HTTP wire format (key: value\r\n).
+fn headers_to_string(h: Headers) -> str {
+    let mut result = ""
+    let count = len(h.keys)
+    let mut i = 0
+    while i < count {
+        result = result + h.keys[i] + ": " + h.values[i] + "\r\n"
+        i = i + 1
+    }
+    return result
+}
+
+/// Parse raw header lines into a Headers struct.
+fn parse_headers(raw: str) -> Headers {
+    let mut headers = new_headers()
+    let lines = _split(raw, "\r\n")
+    let count = len(lines)
+    let mut i = 0
+    while i < count {
+        let line = lines[i]
+        let colon = _find(line, ": ")
+        if colon >= 0 {
+            let key = _substring(line, 0, colon)
+            let value = _substring(line, colon + 2, len(line))
+            headers = set_header(headers, key, value)
+        }
+        i = i + 1
+    }
+    return headers
+}
+
+// --- Request / Response structs ----------------------------------------------
+
+struct Request {
+    method: str,
+    url: Url,
+    headers: Headers,
+    body: str
+}
+
+struct Response {
+    status: i64,
+    status_text: str,
+    headers: Headers,
+    body: str
+}
+
+/// Create a new request.
+fn new_request(method: str, url_str: str) -> Request {
+    let u = parse_url(url_str)
+    let mut headers = new_headers()
+    headers = set_header(headers, "Host", u.host)
+    headers = set_header(headers, "User-Agent", "kryos-http/1.0")
+    headers = set_header(headers, "Accept", "*/*")
+    headers = set_header(headers, "Connection", "close")
+    return Request {
+        method: method,
+        url: u,
+        headers: headers,
+        body: ""
+    }
+}
+
+/// Set the request body and update Content-Length.
+fn with_body(req: Request, body: str) -> Request {
+    let mut headers = set_header(req.headers, "Content-Length", to_string(len(body)))
+    if not has_header(headers, "Content-Type") {
+        headers = set_header(headers, "Content-Type", "application/octet-stream")
+    }
+    return Request {
+        method: req.method,
+        url: req.url,
+        headers: headers,
+        body: body
+    }
+}
+
+/// Set a JSON body on the request.
+fn with_json_body(req: Request, body: str) -> Request {
+    let mut headers = set_header(req.headers, "Content-Type", "application/json")
+    headers = set_header(headers, "Content-Length", to_string(len(body)))
+    return Request {
+        method: req.method,
+        url: req.url,
+        headers: headers,
+        body: body
+    }
+}
+
+// --- Serialize / deserialize HTTP messages ------------------------------------
+
+/// Serialize a request into an HTTP/1.1 message string.
+fn serialize_request(req: Request) -> str {
+    let u = req.url
+    let mut path = u.path
+    if len(u.query) > 0 {
+        path = path + "?" + u.query
+    }
+    let mut msg = req.method + " " + path + " HTTP/1.1\r\n"
+    msg = msg + headers_to_string(req.headers)
+    msg = msg + "\r\n"
+    if len(req.body) > 0 {
+        msg = msg + req.body
+    }
+    return msg
+}
+
+/// Parse a raw HTTP response string into a Response struct.
+fn parse_response(raw: str) -> Response {
+    // Split at first \r\n\r\n to separate headers from body
+    let sep_idx = _find(raw, "\r\n\r\n")
+    let mut header_section = raw
+    let mut body = ""
+    if sep_idx >= 0 {
+        header_section = _substring(raw, 0, sep_idx)
+        body = _substring(raw, sep_idx + 4, len(raw))
+    }
+
+    // Parse status line
+    let first_newline = _find(header_section, "\r\n")
+    let mut status_line = header_section
+    let mut remaining_headers = ""
+    if first_newline >= 0 {
+        status_line = _substring(header_section, 0, first_newline)
+        remaining_headers = _substring(header_section, first_newline + 2, len(header_section))
+    }
+
+    // Status line: "HTTP/1.1 200 OK"
+    let mut status = 0
+    let mut status_text = ""
+    let first_space = _find(status_line, " ")
+    if first_space >= 0 {
+        let after_version = _substring(status_line, first_space + 1, len(status_line))
+        let second_space = _find(after_version, " ")
+        if second_space >= 0 {
+            let status_str = _substring(after_version, 0, second_space)
+            status = to_i64(status_str)
+            status_text = _substring(after_version, second_space + 1, len(after_version))
+        } else {
+            status = to_i64(after_version)
+        }
+    }
+
+    let headers = parse_headers(remaining_headers)
+
+    return Response {
+        status: status,
+        status_text: status_text,
+        headers: headers,
+        body: body
+    }
+}
+
+// --- HTTP client (high-level) ------------------------------------------------
+
+/// Send an HTTP request and return the response.
+/// Uses std.net TCP functions for the connection.
+@capabilities(net)
+fn send(req: Request) -> Response {
+    let u = req.url
+    let raw_request = serialize_request(req)
+
+    // Connect, send, receive via std.net builtins
+    let conn = tcp_connect(u.host, u.port)
+    tcp_send(conn, raw_request)
+
+    // Read the full response
+    let mut response_data = ""
+    let mut done = false
+    while not done {
+        let chunk = tcp_recv(conn, 8192)
+        if len(chunk) == 0 {
+            done = true
+        } else {
+            response_data = response_data + chunk
+        }
+    }
+    tcp_close(conn)
+
+    return parse_response(response_data)
+}
+
+/// HTTP GET request.
+@capabilities(net)
+fn get(url: str) -> Response {
+    let req = new_request("GET", url)
+    return send(req)
+}
+
+/// HTTP POST request with a body.
+@capabilities(net)
+fn post(url: str, body: str) -> Response {
+    let mut req = new_request("POST", url)
+    req = with_body(req, body)
+    return send(req)
+}
+
+/// HTTP POST request with a JSON body.
+@capabilities(net)
+fn post_json(url: str, json_body: str) -> Response {
+    let mut req = new_request("POST", url)
+    req = with_json_body(req, json_body)
+    return send(req)
+}
+
+/// HTTP PUT request with a body.
+@capabilities(net)
+fn put(url: str, body: str) -> Response {
+    let mut req = new_request("PUT", url)
+    req = with_body(req, body)
+    return send(req)
+}
+
+/// HTTP DELETE request.
+@capabilities(net)
+fn delete(url: str) -> Response {
+    let req = new_request("DELETE", url)
+    return send(req)
+}
+
+/// HTTP PATCH request with a body.
+@capabilities(net)
+fn patch(url: str, body: str) -> Response {
+    let mut req = new_request("PATCH", url)
+    req = with_body(req, body)
+    return send(req)
+}
+
+/// HTTP HEAD request (response will have empty body).
+@capabilities(net)
+fn head(url: str) -> Response {
+    let req = new_request("HEAD", url)
+    return send(req)
+}
+
+// --- Simple HTTP server ------------------------------------------------------
+
+struct Route {
+    method: str,
+    path: str,
+    handler: fn
+}
+
+struct Router {
+    routes: [Route]
+}
+
+/// Create a new empty router.
+fn new_router() -> Router {
+    return Router { routes: [] }
+}
+
+/// Add a route to the router.
+fn add_route(router: Router, method: str, path: str, handler: fn) -> Router {
+    let route = Route { method: method, path: path, handler: handler }
+    let mut routes = router.routes
+    push(routes, route)
+    return Router { routes: routes }
+}
+
+/// Convenience: add a GET route.
+fn route_get(router: Router, path: str, handler: fn) -> Router {
+    return add_route(router, "GET", path, handler)
+}
+
+/// Convenience: add a POST route.
+fn route_post(router: Router, path: str, handler: fn) -> Router {
+    return add_route(router, "POST", path, handler)
+}
+
+/// Convenience: add a PUT route.
+fn route_put(router: Router, path: str, handler: fn) -> Router {
+    return add_route(router, "PUT", path, handler)
+}
+
+/// Convenience: add a DELETE route.
+fn route_delete(router: Router, path: str, handler: fn) -> Router {
+    return add_route(router, "DELETE", path, handler)
+}
+
+/// Find a matching route for the given method and path.
+fn match_route(router: Router, method: str, path: str) -> Route {
+    let count = len(router.routes)
+    let mut i = 0
+    while i < count {
+        let route = router.routes[i]
+        if route.method == method and route.path == path {
+            return route
+        }
+        i = i + 1
+    }
+    throw "no matching route for " + method + " " + path
+}
+
+/// Parse an incoming HTTP request from raw data.
+fn parse_request(raw: str) -> Request {
+    let sep_idx = _find(raw, "\r\n\r\n")
+    let mut header_section = raw
+    let mut body = ""
+    if sep_idx >= 0 {
+        header_section = _substring(raw, 0, sep_idx)
+        body = _substring(raw, sep_idx + 4, len(raw))
+    }
+
+    // Request line: "GET /path HTTP/1.1"
+    let first_newline = _find(header_section, "\r\n")
+    let mut request_line = header_section
+    let mut remaining_headers = ""
+    if first_newline >= 0 {
+        request_line = _substring(header_section, 0, first_newline)
+        remaining_headers = _substring(header_section, first_newline + 2, len(header_section))
+    }
+
+    let parts = _split(request_line, " ")
+    let method = parts[0]
+    let raw_path = if len(parts) > 1 { parts[1] } else { "/" }
+
+    let headers = parse_headers(remaining_headers)
+    let host = get_header(headers, "Host")
+    let url = parse_url("http://" + host + raw_path)
+
+    return Request {
+        method: method,
+        url: url,
+        headers: headers,
+        body: body
+    }
+}
+
+/// Create a response string for sending over TCP.
+fn serialize_response(resp: Response) -> str {
+    let mut msg = "HTTP/1.1 " + to_string(resp.status) + " " + resp.status_text + "\r\n"
+    let mut headers = resp.headers
+    if not has_header(headers, "Content-Length") {
+        headers = set_header(headers, "Content-Length", to_string(len(resp.body)))
+    }
+    msg = msg + headers_to_string(headers)
+    msg = msg + "\r\n"
+    msg = msg + resp.body
+    return msg
+}
+
+/// Create a simple text response.
+fn text_response(status: i64, body: str) -> Response {
+    let mut headers = new_headers()
+    headers = set_header(headers, "Content-Type", "text/plain; charset=utf-8")
+    headers = set_header(headers, "Content-Length", to_string(len(body)))
+    let status_text = _status_text(status)
+    return Response {
+        status: status,
+        status_text: status_text,
+        headers: headers,
+        body: body
+    }
+}
+
+/// Create a JSON response.
+fn json_response(status: i64, body: str) -> Response {
+    let mut headers = new_headers()
+    headers = set_header(headers, "Content-Type", "application/json")
+    headers = set_header(headers, "Content-Length", to_string(len(body)))
+    let status_text = _status_text(status)
+    return Response {
+        status: status,
+        status_text: status_text,
+        headers: headers,
+        body: body
+    }
+}
+
+/// Start an HTTP server on the given port.
+/// The handler function receives a Request and must return a Response.
+@capabilities(net)
+fn listen(port: i64, router: Router) -> void {
+    let server = tcp_listen("0.0.0.0", port)
+    while true {
+        let conn = tcp_accept(server)
+        spawn {
+            try {
+                let raw = tcp_recv(conn, 65536)
+                let req = parse_request(raw)
+                let mut resp = text_response(404, "Not Found")
+                try {
+                    let route = match_route(router, req.method, req.url.path)
+                    resp = route.handler(req)
+                } catch (e) {
+                    resp = text_response(404, "Not Found")
+                }
+                let raw_resp = serialize_response(resp)
+                tcp_send(conn, raw_resp)
+            } catch (e) {
+                let err_resp = serialize_response(text_response(500, "Internal Server Error"))
+                tcp_send(conn, err_resp)
+            }
+            tcp_close(conn)
+        }
+    }
+}
+
+// --- Internal helpers (delegates to std.string / builtins) --------------------
+
+fn _find(haystack: str, needle: str) -> i64 {
+    let hlen = len(haystack)
+    let nlen = len(needle)
+    if nlen == 0 { return 0 }
+    if nlen > hlen { return -1 }
+    let mut i = 0
+    let limit = hlen - nlen
+    while i <= limit {
+        let mut matched = true
+        let mut j = 0
+        while j < nlen {
+            if haystack[i + j] != needle[j] {
+                matched = false
+                j = nlen
+            }
+            j = j + 1
+        }
+        if matched { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+fn _substring(s: str, start: i64, end: i64) -> str {
+    return substr(s, start, end)
+}
+
+fn _split(s: str, delimiter: str) -> [str] {
+    let mut result = []
+    let slen = len(s)
+    let dlen = len(delimiter)
+    if dlen == 0 { return [s] }
+    let mut start = 0
+    let mut i = 0
+    while i <= slen - dlen {
+        let mut matched = true
+        let mut j = 0
+        while j < dlen {
+            if s[i + j] != delimiter[j] {
+                matched = false
+                j = dlen
+            }
+            j = j + 1
+        }
+        if matched {
+            push(result, _substring(s, start, i))
+            start = i + dlen
+            i = start
+        } else {
+            i = i + 1
+        }
+    }
+    push(result, _substring(s, start, slen))
+    return result
+}
+
+fn _to_lower(s: str) -> str {
+    let mut result = ""
+    let slen = len(s)
+    let mut i = 0
+    while i < slen {
+        let ch = s[i]
+        let code = char_code(ch)
+        if code >= 65 and code <= 90 {
+            result = result + from_char_code(code + 32)
+        } else {
+            result = result + ch
+        }
+        i = i + 1
+    }
+    return result
+}
+
+fn _status_text(code: i64) -> str {
+    if code == 200 { return "OK" }
+    if code == 201 { return "Created" }
+    if code == 204 { return "No Content" }
+    if code == 301 { return "Moved Permanently" }
+    if code == 302 { return "Found" }
+    if code == 304 { return "Not Modified" }
+    if code == 400 { return "Bad Request" }
+    if code == 401 { return "Unauthorized" }
+    if code == 403 { return "Forbidden" }
+    if code == 404 { return "Not Found" }
+    if code == 405 { return "Method Not Allowed" }
+    if code == 409 { return "Conflict" }
+    if code == 422 { return "Unprocessable Entity" }
+    if code == 429 { return "Too Many Requests" }
+    if code == 500 { return "Internal Server Error" }
+    if code == 502 { return "Bad Gateway" }
+    if code == 503 { return "Service Unavailable" }
+    if code == 504 { return "Gateway Timeout" }
+    return "Unknown"
+}

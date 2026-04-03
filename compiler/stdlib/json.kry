@@ -1,0 +1,716 @@
+// ============================================================
+// std.json -- JSON parser and serializer
+//
+// Pure Kryos implementation.  No FFI, no external dependencies.
+// Implements a recursive descent parser that handles the full
+// JSON specification: strings (with escapes), numbers (int and
+// float, including exponents), booleans, null, arrays, objects.
+//
+// Usage:
+//   let val = std.json.parse("{\"key\": 42}")
+//   let s   = std.json.stringify(val)
+//   let n   = std.json.get(val, "key")
+// ============================================================
+
+// --- JSON value type ---------------------------------------------------------
+
+enum JsonValue {
+    Null,
+    Bool(bool),
+    Number(f64),
+    String(str),
+    Array([JsonValue]),
+    Object([str], [JsonValue])
+}
+
+// --- Constructors (convenience) ----------------------------------------------
+
+fn json_null() -> JsonValue {
+    return JsonValue.Null
+}
+
+fn json_bool(v: bool) -> JsonValue {
+    return JsonValue.Bool(v)
+}
+
+fn json_number(v: f64) -> JsonValue {
+    return JsonValue.Number(v)
+}
+
+fn json_string(v: str) -> JsonValue {
+    return JsonValue.String(v)
+}
+
+fn json_array(items: [JsonValue]) -> JsonValue {
+    return JsonValue.Array(items)
+}
+
+fn json_object(keys: [str], values: [JsonValue]) -> JsonValue {
+    return JsonValue.Object(keys, values)
+}
+
+// --- Parser state ------------------------------------------------------------
+
+struct Parser {
+    input: str,
+    pos: i64,
+    input_len: i64
+}
+
+fn _new_parser(input: str) -> Parser {
+    return Parser { input: input, pos: 0, input_len: len(input) }
+}
+
+fn _peek(p: Parser) -> str {
+    if p.pos >= p.input_len {
+        return ""
+    }
+    return p.input[p.pos]
+}
+
+fn _advance(p: Parser) -> Parser {
+    return Parser { input: p.input, pos: p.pos + 1, input_len: p.input_len }
+}
+
+fn _current_char(p: Parser) -> str {
+    if p.pos >= p.input_len {
+        throw "json: unexpected end of input at position " + to_string(p.pos)
+    }
+    return p.input[p.pos]
+}
+
+fn _is_whitespace(ch: str) -> bool {
+    return ch == " " or ch == "\t" or ch == "\n" or ch == "\r"
+}
+
+fn _skip_whitespace(p: Parser) -> Parser {
+    let mut parser = p
+    while parser.pos < parser.input_len and _is_whitespace(parser.input[parser.pos]) {
+        parser = _advance(parser)
+    }
+    return parser
+}
+
+fn _expect_char(p: Parser, ch: str) -> Parser {
+    let actual = _current_char(p)
+    if actual != ch {
+        throw "json: expected '" + ch + "' but got '" + actual + "' at position " + to_string(p.pos)
+    }
+    return _advance(p)
+}
+
+fn _is_digit(ch: str) -> bool {
+    let code = char_code(ch)
+    return code >= 48 and code <= 57
+}
+
+// --- Recursive descent parser ------------------------------------------------
+
+/// Parse a complete JSON string.  Returns the parsed JsonValue.
+fn parse(input: str) -> JsonValue {
+    let mut p = _new_parser(input)
+    p = _skip_whitespace(p)
+    let result = _parse_value(p)
+    return result.value
+}
+
+// Internal: parse result carries updated parser state
+struct ParseResult {
+    value: JsonValue,
+    parser: Parser
+}
+
+fn _parse_value(p: Parser) -> ParseResult {
+    let mut parser = _skip_whitespace(p)
+    let ch = _peek(parser)
+
+    if ch == "\"" {
+        return _parse_string(parser)
+    }
+    if ch == "{" {
+        return _parse_object(parser)
+    }
+    if ch == "[" {
+        return _parse_array(parser)
+    }
+    if ch == "t" {
+        return _parse_true(parser)
+    }
+    if ch == "f" {
+        return _parse_false(parser)
+    }
+    if ch == "n" {
+        return _parse_null(parser)
+    }
+    if ch == "-" or _is_digit(ch) {
+        return _parse_number(parser)
+    }
+    throw "json: unexpected character '" + ch + "' at position " + to_string(parser.pos)
+}
+
+fn _parse_null(p: Parser) -> ParseResult {
+    let mut parser = p
+    // Expect "null"
+    parser = _expect_char(parser, "n")
+    parser = _expect_char(parser, "u")
+    parser = _expect_char(parser, "l")
+    parser = _expect_char(parser, "l")
+    return ParseResult { value: JsonValue.Null, parser: parser }
+}
+
+fn _parse_true(p: Parser) -> ParseResult {
+    let mut parser = p
+    parser = _expect_char(parser, "t")
+    parser = _expect_char(parser, "r")
+    parser = _expect_char(parser, "u")
+    parser = _expect_char(parser, "e")
+    return ParseResult { value: JsonValue.Bool(true), parser: parser }
+}
+
+fn _parse_false(p: Parser) -> ParseResult {
+    let mut parser = p
+    parser = _expect_char(parser, "f")
+    parser = _expect_char(parser, "a")
+    parser = _expect_char(parser, "l")
+    parser = _expect_char(parser, "s")
+    parser = _expect_char(parser, "e")
+    return ParseResult { value: JsonValue.Bool(false), parser: parser }
+}
+
+fn _parse_string(p: Parser) -> ParseResult {
+    let mut parser = _expect_char(p, "\"")
+    let mut result = ""
+
+    while parser.pos < parser.input_len {
+        let ch = parser.input[parser.pos]
+
+        if ch == "\"" {
+            parser = _advance(parser)
+            return ParseResult { value: JsonValue.String(result), parser: parser }
+        }
+
+        if ch == "\\" {
+            parser = _advance(parser)
+            let escape = _current_char(parser)
+            if escape == "\"" {
+                result = result + "\""
+            } else if escape == "\\" {
+                result = result + "\\"
+            } else if escape == "/" {
+                result = result + "/"
+            } else if escape == "b" {
+                result = result + "\b"
+            } else if escape == "f" {
+                result = result + "\f"
+            } else if escape == "n" {
+                result = result + "\n"
+            } else if escape == "r" {
+                result = result + "\r"
+            } else if escape == "t" {
+                result = result + "\t"
+            } else if escape == "u" {
+                // Parse 4-digit hex unicode escape
+                parser = _advance(parser)
+                let hex = substr(parser.input, parser.pos, parser.pos + 4)
+                let code_point = _hex_to_int(hex)
+                result = result + from_char_code(code_point)
+                // Advance 3 more (the 4th advance happens below)
+                parser = _advance(parser)
+                parser = _advance(parser)
+                parser = _advance(parser)
+            } else {
+                throw "json: invalid escape sequence '\\" + escape + "' at position " + to_string(parser.pos)
+            }
+            parser = _advance(parser)
+        } else {
+            result = result + ch
+            parser = _advance(parser)
+        }
+    }
+
+    throw "json: unterminated string starting at position " + to_string(p.pos)
+}
+
+fn _parse_number(p: Parser) -> ParseResult {
+    let mut parser = p
+    let start = parser.pos
+    let mut is_float = false
+
+    // Optional leading minus
+    if _peek(parser) == "-" {
+        parser = _advance(parser)
+    }
+
+    // Integer part
+    if _peek(parser) == "0" {
+        parser = _advance(parser)
+    } else if _is_digit(_peek(parser)) {
+        while parser.pos < parser.input_len and _is_digit(_peek(parser)) {
+            parser = _advance(parser)
+        }
+    } else {
+        throw "json: invalid number at position " + to_string(parser.pos)
+    }
+
+    // Fractional part
+    if _peek(parser) == "." {
+        is_float = true
+        parser = _advance(parser)
+        if not _is_digit(_peek(parser)) {
+            throw "json: expected digit after decimal point at position " + to_string(parser.pos)
+        }
+        while parser.pos < parser.input_len and _is_digit(_peek(parser)) {
+            parser = _advance(parser)
+        }
+    }
+
+    // Exponent part
+    let e_ch = _peek(parser)
+    if e_ch == "e" or e_ch == "E" {
+        is_float = true
+        parser = _advance(parser)
+        let sign_ch = _peek(parser)
+        if sign_ch == "+" or sign_ch == "-" {
+            parser = _advance(parser)
+        }
+        if not _is_digit(_peek(parser)) {
+            throw "json: expected digit in exponent at position " + to_string(parser.pos)
+        }
+        while parser.pos < parser.input_len and _is_digit(_peek(parser)) {
+            parser = _advance(parser)
+        }
+    }
+
+    let num_str = substr(parser.input, start, parser.pos)
+    let value = to_f64(num_str)
+    return ParseResult { value: JsonValue.Number(value), parser: parser }
+}
+
+fn _parse_array(p: Parser) -> ParseResult {
+    let mut parser = _expect_char(p, "[")
+    parser = _skip_whitespace(parser)
+
+    let mut items = []
+
+    // Empty array
+    if _peek(parser) == "]" {
+        parser = _advance(parser)
+        return ParseResult { value: JsonValue.Array(items), parser: parser }
+    }
+
+    // First element
+    let first = _parse_value(parser)
+    push(items, first.value)
+    parser = _skip_whitespace(first.parser)
+
+    // Remaining elements
+    while _peek(parser) == "," {
+        parser = _advance(parser)
+        parser = _skip_whitespace(parser)
+        let elem = _parse_value(parser)
+        push(items, elem.value)
+        parser = _skip_whitespace(elem.parser)
+    }
+
+    parser = _expect_char(parser, "]")
+    return ParseResult { value: JsonValue.Array(items), parser: parser }
+}
+
+fn _parse_object(p: Parser) -> ParseResult {
+    let mut parser = _expect_char(p, "{")
+    parser = _skip_whitespace(parser)
+
+    let mut keys = []
+    let mut values = []
+
+    // Empty object
+    if _peek(parser) == "}" {
+        parser = _advance(parser)
+        return ParseResult { value: JsonValue.Object(keys, values), parser: parser }
+    }
+
+    // First key-value pair
+    let first_key = _parse_string(parser)
+    let key_str = match first_key.value {
+        JsonValue.String(s) => s,
+        _ => throw "json: object key must be a string"
+    }
+    push(keys, key_str)
+    parser = _skip_whitespace(first_key.parser)
+    parser = _expect_char(parser, ":")
+    parser = _skip_whitespace(parser)
+    let first_val = _parse_value(parser)
+    push(values, first_val.value)
+    parser = _skip_whitespace(first_val.parser)
+
+    // Remaining pairs
+    while _peek(parser) == "," {
+        parser = _advance(parser)
+        parser = _skip_whitespace(parser)
+
+        let key_result = _parse_string(parser)
+        let k = match key_result.value {
+            JsonValue.String(s) => s,
+            _ => throw "json: object key must be a string"
+        }
+        push(keys, k)
+        parser = _skip_whitespace(key_result.parser)
+        parser = _expect_char(parser, ":")
+        parser = _skip_whitespace(parser)
+        let val_result = _parse_value(parser)
+        push(values, val_result.value)
+        parser = _skip_whitespace(val_result.parser)
+    }
+
+    parser = _expect_char(parser, "}")
+    return ParseResult { value: JsonValue.Object(keys, values), parser: parser }
+}
+
+// --- Serializer --------------------------------------------------------------
+
+/// Convert a JsonValue to a compact JSON string.
+fn stringify(val: JsonValue) -> str {
+    return match val {
+        JsonValue.Null => "null",
+        JsonValue.Bool(b) => if b { "true" } else { "false" },
+        JsonValue.Number(n) => _format_number(n),
+        JsonValue.String(s) => _escape_string(s),
+        JsonValue.Array(items) => _stringify_array(items),
+        JsonValue.Object(keys, values) => _stringify_object(keys, values)
+    }
+}
+
+fn _format_number(n: f64) -> str {
+    // If the number is an integer value, format without decimal
+    let i = to_i64(n)
+    if to_f64(i) == n {
+        return to_string(i)
+    }
+    return to_string(n)
+}
+
+fn _escape_string(s: str) -> str {
+    let mut result = "\""
+    let slen = len(s)
+    let mut i = 0
+    while i < slen {
+        let ch = s[i]
+        if ch == "\"" {
+            result = result + "\\\""
+        } else if ch == "\\" {
+            result = result + "\\\\"
+        } else if ch == "\n" {
+            result = result + "\\n"
+        } else if ch == "\r" {
+            result = result + "\\r"
+        } else if ch == "\t" {
+            result = result + "\\t"
+        } else if ch == "\b" {
+            result = result + "\\b"
+        } else if ch == "\f" {
+            result = result + "\\f"
+        } else {
+            result = result + ch
+        }
+        i = i + 1
+    }
+    result = result + "\""
+    return result
+}
+
+fn _stringify_array(items: [JsonValue]) -> str {
+    let count = len(items)
+    if count == 0 {
+        return "[]"
+    }
+    let mut result = "["
+    let mut i = 0
+    while i < count {
+        if i > 0 {
+            result = result + ","
+        }
+        result = result + stringify(items[i])
+        i = i + 1
+    }
+    result = result + "]"
+    return result
+}
+
+fn _stringify_object(keys: [str], values: [JsonValue]) -> str {
+    let count = len(keys)
+    if count == 0 {
+        return "{}"
+    }
+    let mut result = "{"
+    let mut i = 0
+    while i < count {
+        if i > 0 {
+            result = result + ","
+        }
+        result = result + _escape_string(keys[i]) + ":" + stringify(values[i])
+        i = i + 1
+    }
+    result = result + "}"
+    return result
+}
+
+/// Pretty-print a JsonValue with the given indent level (spaces per level).
+fn pretty_print(val: JsonValue, indent: i64) -> str {
+    return _pretty_print_inner(val, indent, 0)
+}
+
+fn _pretty_print_inner(val: JsonValue, indent: i64, depth: i64) -> str {
+    return match val {
+        JsonValue.Null => "null",
+        JsonValue.Bool(b) => if b { "true" } else { "false" },
+        JsonValue.Number(n) => _format_number(n),
+        JsonValue.String(s) => _escape_string(s),
+        JsonValue.Array(items) => _pretty_array(items, indent, depth),
+        JsonValue.Object(keys, values) => _pretty_object(keys, values, indent, depth)
+    }
+}
+
+fn _indent_str(indent: i64, depth: i64) -> str {
+    let total = indent * depth
+    let mut result = ""
+    let mut i = 0
+    while i < total {
+        result = result + " "
+        i = i + 1
+    }
+    return result
+}
+
+fn _pretty_array(items: [JsonValue], indent: i64, depth: i64) -> str {
+    let count = len(items)
+    if count == 0 {
+        return "[]"
+    }
+    let inner_indent = _indent_str(indent, depth + 1)
+    let outer_indent = _indent_str(indent, depth)
+    let mut result = "[\n"
+    let mut i = 0
+    while i < count {
+        result = result + inner_indent + _pretty_print_inner(items[i], indent, depth + 1)
+        if i < count - 1 {
+            result = result + ","
+        }
+        result = result + "\n"
+        i = i + 1
+    }
+    result = result + outer_indent + "]"
+    return result
+}
+
+fn _pretty_object(keys: [str], values: [JsonValue], indent: i64, depth: i64) -> str {
+    let count = len(keys)
+    if count == 0 {
+        return "{}"
+    }
+    let inner_indent = _indent_str(indent, depth + 1)
+    let outer_indent = _indent_str(indent, depth)
+    let mut result = "{\n"
+    let mut i = 0
+    while i < count {
+        result = result + inner_indent + _escape_string(keys[i]) + ": "
+        result = result + _pretty_print_inner(values[i], indent, depth + 1)
+        if i < count - 1 {
+            result = result + ","
+        }
+        result = result + "\n"
+        i = i + 1
+    }
+    result = result + outer_indent + "}"
+    return result
+}
+
+// --- Accessors ---------------------------------------------------------------
+
+/// Get a value from a JSON object by key.  Returns JsonValue.Null if not found.
+fn get(val: JsonValue, key: str) -> JsonValue {
+    return match val {
+        JsonValue.Object(keys, values) => {
+            let count = len(keys)
+            let mut i = 0
+            while i < count {
+                if keys[i] == key {
+                    return values[i]
+                }
+                i = i + 1
+            }
+            return JsonValue.Null
+        },
+        _ => JsonValue.Null
+    }
+}
+
+/// Get a value from a JSON array by index.  Returns JsonValue.Null if out of bounds.
+fn get_index(val: JsonValue, index: i64) -> JsonValue {
+    return match val {
+        JsonValue.Array(items) => {
+            if index >= 0 and index < len(items) {
+                return items[index]
+            }
+            return JsonValue.Null
+        },
+        _ => JsonValue.Null
+    }
+}
+
+/// Set a key-value pair on a JSON object.  Returns a new object.
+fn set(val: JsonValue, key: str, new_val: JsonValue) -> JsonValue {
+    return match val {
+        JsonValue.Object(keys, values) => {
+            let mut new_keys = []
+            let mut new_values = []
+            let count = len(keys)
+            let mut found = false
+            let mut i = 0
+            while i < count {
+                push(new_keys, keys[i])
+                if keys[i] == key {
+                    push(new_values, new_val)
+                    found = true
+                } else {
+                    push(new_values, values[i])
+                }
+                i = i + 1
+            }
+            if not found {
+                push(new_keys, key)
+                push(new_values, new_val)
+            }
+            return JsonValue.Object(new_keys, new_values)
+        },
+        _ => throw "json.set: value is not an object"
+    }
+}
+
+// --- Type conversion helpers -------------------------------------------------
+
+/// Extract a boolean from a JsonValue.  Throws if not a Bool.
+fn to_bool(val: JsonValue) -> bool {
+    return match val {
+        JsonValue.Bool(b) => b,
+        _ => throw "json.to_bool: value is not a boolean"
+    }
+}
+
+/// Extract a number as i64.  Throws if not a Number.
+fn to_int(val: JsonValue) -> i64 {
+    return match val {
+        JsonValue.Number(n) => to_i64(n),
+        _ => throw "json.to_int: value is not a number"
+    }
+}
+
+/// Extract a number as f64.  Throws if not a Number.
+fn to_float(val: JsonValue) -> f64 {
+    return match val {
+        JsonValue.Number(n) => n,
+        _ => throw "json.to_float: value is not a number"
+    }
+}
+
+/// Extract a string.  Throws if not a String.
+fn to_str(val: JsonValue) -> str {
+    return match val {
+        JsonValue.String(s) => s,
+        _ => throw "json.to_str: value is not a string"
+    }
+}
+
+/// Extract an array of JsonValues.  Throws if not an Array.
+fn to_array(val: JsonValue) -> [JsonValue] {
+    return match val {
+        JsonValue.Array(items) => items,
+        _ => throw "json.to_array: value is not an array"
+    }
+}
+
+/// Extract object keys and values.  Returns {"keys": [str], "values": [JsonValue]}.
+fn to_object(val: JsonValue) -> any {
+    return match val {
+        JsonValue.Object(keys, values) => {"keys": keys, "values": values},
+        _ => throw "json.to_object: value is not an object"
+    }
+}
+
+// --- Type checking -----------------------------------------------------------
+
+fn is_null(val: JsonValue) -> bool {
+    return match val {
+        JsonValue.Null => true,
+        _ => false
+    }
+}
+
+fn is_bool(val: JsonValue) -> bool {
+    return match val {
+        JsonValue.Bool(_) => true,
+        _ => false
+    }
+}
+
+fn is_number(val: JsonValue) -> bool {
+    return match val {
+        JsonValue.Number(_) => true,
+        _ => false
+    }
+}
+
+fn is_string(val: JsonValue) -> bool {
+    return match val {
+        JsonValue.String(_) => true,
+        _ => false
+    }
+}
+
+fn is_array(val: JsonValue) -> bool {
+    return match val {
+        JsonValue.Array(_) => true,
+        _ => false
+    }
+}
+
+fn is_object(val: JsonValue) -> bool {
+    return match val {
+        JsonValue.Object(_, _) => true,
+        _ => false
+    }
+}
+
+/// Count elements in an array or keys in an object.
+fn length(val: JsonValue) -> i64 {
+    return match val {
+        JsonValue.Array(items) => len(items),
+        JsonValue.Object(keys, _) => len(keys),
+        JsonValue.String(s) => len(s),
+        _ => 0
+    }
+}
+
+// --- Internal hex parser -----------------------------------------------------
+
+fn _hex_to_int(hex: str) -> i64 {
+    let hlen = len(hex)
+    let mut result = 0
+    let mut i = 0
+    while i < hlen {
+        let ch = hex[i]
+        let code = char_code(ch)
+        let mut digit = 0
+        if code >= 48 and code <= 57 {
+            digit = code - 48
+        } else if code >= 65 and code <= 70 {
+            digit = code - 55
+        } else if code >= 97 and code <= 102 {
+            digit = code - 87
+        } else {
+            throw "json: invalid hex digit '" + ch + "'"
+        }
+        result = result * 16 + digit
+        i = i + 1
+    }
+    return result
+}

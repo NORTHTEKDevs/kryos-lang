@@ -1,0 +1,599 @@
+// ============================================================
+// lexer.kry -- Full lexer for the Kryos self-hosted compiler.
+//
+// Mirrors the Rust kryos-lexer crate exactly.  Takes a source
+// string and produces an array of Token structs (defined in
+// token.kry).
+//
+// Design decisions:
+//   - Mutable lexer state is carried in a `Lexer` struct.
+//   - Because Kryos structs are value types in the bootstrap
+//     runtime, lexer methods are free functions that take and
+//     return the Lexer.  When native codegen lands these become
+//     `impl Lexer { fn method(self: Lexer) }`.
+//   - Character-level operations use `char_code()` and single-
+//     char string indexing (`src[pos]`).
+//   - Token output is accumulated in an array via `push()`.
+//
+// Handles:
+//   - Whitespace, newlines, single-line // and block /* */ comments
+//   - Integer literals (decimal, hex 0x, binary 0b, octal 0o, _)
+//   - Float literals (decimal point, exponent e/E)
+//   - String literals with escape sequences and interpolation
+//   - Character literals
+//   - All single-char and multi-char operators/punctuation
+//   - Identifiers, keywords, builtin type names
+//   - @ for annotations
+// ============================================================
+
+// -------------------------------------------------------------------
+// Lexer struct
+// -------------------------------------------------------------------
+
+struct Lexer {
+    src: str,
+    pos: i32,
+    tokens: [Token]
+}
+
+// -------------------------------------------------------------------
+// Character classification helpers
+// -------------------------------------------------------------------
+
+fn is_digit(ch: str) -> bool {
+    let c = char_code(ch)
+    return c >= 48 and c <= 57
+}
+
+fn is_hex_digit(ch: str) -> bool {
+    let c = char_code(ch)
+    return (c >= 48 and c <= 57) or (c >= 65 and c <= 70) or (c >= 97 and c <= 102)
+}
+
+fn is_alpha(ch: str) -> bool {
+    let c = char_code(ch)
+    return (c >= 65 and c <= 90) or (c >= 97 and c <= 122) or c == 95
+}
+
+fn is_alnum(ch: str) -> bool {
+    return is_digit(ch) or is_alpha(ch)
+}
+
+fn is_upper(ch: str) -> bool {
+    let c = char_code(ch)
+    return c >= 65 and c <= 90
+}
+
+// -------------------------------------------------------------------
+// Lexer constructor
+// -------------------------------------------------------------------
+
+fn lexer_new(src: str) -> Lexer {
+    let tokens: [Token] = []
+    return Lexer { src: src, pos: 0, tokens: tokens }
+}
+
+// -------------------------------------------------------------------
+// Low-level navigation
+// -------------------------------------------------------------------
+
+fn lex_at_end(lex: Lexer) -> bool {
+    return lex.pos >= len(lex.src)
+}
+
+fn lex_peek(lex: Lexer) -> str {
+    if lex_at_end(lex) {
+        return ""
+    }
+    return lex.src[lex.pos]
+}
+
+fn lex_peek_at(lex: Lexer, offset: i32) -> str {
+    let idx = lex.pos + offset
+    if idx >= len(lex.src) {
+        return ""
+    }
+    return lex.src[idx]
+}
+
+fn lex_advance(lex: Lexer) -> Lexer {
+    return Lexer { src: lex.src, pos: lex.pos + 1, tokens: lex.tokens }
+}
+
+fn lex_match_char(lex: Lexer, expected: str) -> Lexer {
+    // Returns advanced lexer if match, else returns lex unchanged.
+    // Caller checks pos difference to know if it matched.
+    if lex_at_end(lex) {
+        return lex
+    }
+    if lex.src[lex.pos] == expected {
+        return Lexer { src: lex.src, pos: lex.pos + 1, tokens: lex.tokens }
+    }
+    return lex
+}
+
+// -------------------------------------------------------------------
+// Token emission
+// -------------------------------------------------------------------
+
+fn lex_emit(lex: Lexer, kind: i32, start: i32, end: i32, text: str) -> Lexer {
+    let tok = Token { kind: kind, text: text, start: start, end: end }
+    let mut tokens = lex.tokens
+    push(tokens, tok)
+    return Lexer { src: lex.src, pos: lex.pos, tokens: tokens }
+}
+
+// -------------------------------------------------------------------
+// Skip whitespace and comments
+// -------------------------------------------------------------------
+
+fn lex_skip_ws(lex: Lexer) -> Lexer {
+    let mut l = lex
+    let mut again = true
+    while again {
+        // Skip spaces, tabs, carriage returns, newlines
+        while not lex_at_end(l) {
+            let ch = lex_peek(l)
+            if ch == " " or ch == "\t" or ch == "\r" or ch == "\n" {
+                l = lex_advance(l)
+            } else {
+                break
+            }
+        }
+        if lex_at_end(l) {
+            return l
+        }
+        // Single-line comment: //
+        if lex_peek(l) == "/" and lex_peek_at(l, 1) == "/" {
+            while not lex_at_end(l) and lex_peek(l) != "\n" {
+                l = lex_advance(l)
+            }
+            continue
+        }
+        // Block comment: /* ... */ with nesting
+        if lex_peek(l) == "/" and lex_peek_at(l, 1) == "*" {
+            l = lex_advance(l)
+            l = lex_advance(l)
+            let mut depth = 1
+            while not lex_at_end(l) and depth > 0 {
+                if lex_peek(l) == "/" and lex_peek_at(l, 1) == "*" {
+                    l = lex_advance(l)
+                    l = lex_advance(l)
+                    depth = depth + 1
+                } elif lex_peek(l) == "*" and lex_peek_at(l, 1) == "/" {
+                    l = lex_advance(l)
+                    l = lex_advance(l)
+                    depth = depth - 1
+                } else {
+                    l = lex_advance(l)
+                }
+            }
+            continue
+        }
+        again = false
+    }
+    return l
+}
+
+// -------------------------------------------------------------------
+// Scan string literal
+// -------------------------------------------------------------------
+
+fn lex_scan_string(lex: Lexer, start: i32) -> Lexer {
+    // Called after the opening " has already been consumed.
+    let mut l = lex
+    let mut text = ""
+    let mut has_interp = false
+
+    while not lex_at_end(l) and lex_peek(l) != "\"" {
+        // String interpolation: {expr}
+        if lex_peek(l) == "{" {
+            // Emit what we have so far as StringPart
+            if len(text) > 0 or not has_interp {
+                l = lex_emit(l, TK_STRING_PART, start, l.pos, text)
+                text = ""
+            }
+            has_interp = true
+            let brace_start = l.pos
+            l = lex_advance(l) // skip {
+            l = lex_emit(l, TK_INTERP_START, brace_start, l.pos, "{")
+
+            // Tokenize the interpolated expression until we hit }
+            while not lex_at_end(l) and lex_peek(l) != "}" {
+                l = lex_skip_ws(l)
+                if not lex_at_end(l) and lex_peek(l) != "}" {
+                    l = lex_scan_token(l)
+                }
+            }
+            if not lex_at_end(l) {
+                let end_start = l.pos
+                l = lex_advance(l) // skip }
+                l = lex_emit(l, TK_INTERP_END, end_start, l.pos, "}")
+            }
+            continue
+        }
+
+        // Escape sequences
+        if lex_peek(l) == "\\" {
+            l = lex_advance(l) // skip backslash
+            if not lex_at_end(l) {
+                let esc = lex_peek(l)
+                l = lex_advance(l)
+                if esc == "n" {
+                    text = text + "\n"
+                } elif esc == "t" {
+                    text = text + "\t"
+                } elif esc == "r" {
+                    text = text + "\r"
+                } elif esc == "\\" {
+                    text = text + "\\"
+                } elif esc == "\"" {
+                    text = text + "\""
+                } elif esc == "0" {
+                    text = text + "\0"
+                } else {
+                    text = text + "\\" + esc
+                }
+            }
+            continue
+        }
+
+        // Normal character
+        text = text + lex_peek(l)
+        l = lex_advance(l)
+    }
+
+    // Consume closing "
+    if not lex_at_end(l) {
+        l = lex_advance(l)
+    }
+
+    if has_interp {
+        l = lex_emit(l, TK_STRING_PART, start, l.pos, text)
+    } else {
+        l = lex_emit(l, TK_STRING, start, l.pos, text)
+    }
+    return l
+}
+
+// -------------------------------------------------------------------
+// Scan character literal
+// -------------------------------------------------------------------
+
+fn lex_scan_char(lex: Lexer, start: i32) -> Lexer {
+    // Called after the opening ' has already been consumed.
+    let mut l = lex
+    let mut ch = ""
+    if lex_peek(l) == "\\" {
+        l = lex_advance(l) // skip backslash
+        let esc = lex_peek(l)
+        l = lex_advance(l)
+        if esc == "n" {
+            ch = "\n"
+        } elif esc == "t" {
+            ch = "\t"
+        } elif esc == "r" {
+            ch = "\r"
+        } elif esc == "\\" {
+            ch = "\\"
+        } elif esc == "'" {
+            ch = "'"
+        } elif esc == "0" {
+            ch = "\0"
+        } else {
+            ch = esc
+        }
+    } else {
+        ch = lex_peek(l)
+        l = lex_advance(l)
+    }
+    // Consume closing '
+    if not lex_at_end(l) and lex_peek(l) == "'" {
+        l = lex_advance(l)
+    }
+    l = lex_emit(l, TK_CHAR, start, l.pos, ch)
+    return l
+}
+
+// -------------------------------------------------------------------
+// Scan number literal (integer or float)
+// -------------------------------------------------------------------
+
+fn lex_scan_number(lex: Lexer, start: i32) -> Lexer {
+    let mut l = lex
+
+    // Check for radix prefixes: 0x, 0b, 0o
+    if l.src[start] == "0" and not lex_at_end(l) {
+        let next = lex_peek(l)
+        // Hexadecimal
+        if next == "x" or next == "X" {
+            l = lex_advance(l)
+            while not lex_at_end(l) and (is_hex_digit(lex_peek(l)) or lex_peek(l) == "_") {
+                l = lex_advance(l)
+            }
+            let text = substr(l.src, start, l.pos)
+            l = lex_emit(l, TK_INTEGER, start, l.pos, text)
+            return l
+        }
+        // Binary
+        if next == "b" or next == "B" {
+            l = lex_advance(l)
+            while not lex_at_end(l) and (lex_peek(l) == "0" or lex_peek(l) == "1" or lex_peek(l) == "_") {
+                l = lex_advance(l)
+            }
+            let text = substr(l.src, start, l.pos)
+            l = lex_emit(l, TK_INTEGER, start, l.pos, text)
+            return l
+        }
+        // Octal
+        if next == "o" or next == "O" {
+            l = lex_advance(l)
+            while not lex_at_end(l) {
+                let ch = lex_peek(l)
+                let c = char_code(ch)
+                if (c >= 48 and c <= 55) or ch == "_" {
+                    l = lex_advance(l)
+                } else {
+                    break
+                }
+            }
+            let text = substr(l.src, start, l.pos)
+            l = lex_emit(l, TK_INTEGER, start, l.pos, text)
+            return l
+        }
+    }
+
+    // Decimal digits (including underscores)
+    while not lex_at_end(l) and (is_digit(lex_peek(l)) or lex_peek(l) == "_") {
+        l = lex_advance(l)
+    }
+
+    let mut is_float = false
+
+    // Decimal point (but not range operator ..)
+    if not lex_at_end(l) and lex_peek(l) == "." and lex_peek_at(l, 1) != "." {
+        if not lex_at_end(l) and is_digit(lex_peek_at(l, 1)) {
+            is_float = true
+            l = lex_advance(l) // skip .
+            while not lex_at_end(l) and (is_digit(lex_peek(l)) or lex_peek(l) == "_") {
+                l = lex_advance(l)
+            }
+        }
+    }
+
+    // Exponent: e/E followed by optional +/- and digits
+    if not lex_at_end(l) and (lex_peek(l) == "e" or lex_peek(l) == "E") {
+        is_float = true
+        l = lex_advance(l)
+        if not lex_at_end(l) and (lex_peek(l) == "+" or lex_peek(l) == "-") {
+            l = lex_advance(l)
+        }
+        while not lex_at_end(l) and is_digit(lex_peek(l)) {
+            l = lex_advance(l)
+        }
+    }
+
+    let text = substr(l.src, start, l.pos)
+    if is_float {
+        l = lex_emit(l, TK_FLOAT, start, l.pos, text)
+    } else {
+        l = lex_emit(l, TK_INTEGER, start, l.pos, text)
+    }
+    return l
+}
+
+// -------------------------------------------------------------------
+// Scan identifier / keyword
+// -------------------------------------------------------------------
+
+fn lex_scan_identifier(lex: Lexer, start: i32) -> Lexer {
+    let mut l = lex
+    while not lex_at_end(l) and is_alnum(lex_peek(l)) {
+        l = lex_advance(l)
+    }
+    let word = substr(l.src, start, l.pos)
+
+    // Check if it is a keyword
+    let kind = keyword_lookup(word)
+    if kind != TK_IDENT {
+        l = lex_emit(l, kind, start, l.pos, word)
+        return l
+    }
+
+    // Check if it is a builtin type name -> TypeIdent
+    if is_builtin_type(word) {
+        l = lex_emit(l, TK_TYPE_IDENT, start, l.pos, word)
+        return l
+    }
+
+    // Regular identifier
+    l = lex_emit(l, TK_IDENT, start, l.pos, word)
+    return l
+}
+
+// -------------------------------------------------------------------
+// Scan a single token (main dispatch)
+// -------------------------------------------------------------------
+
+fn lex_scan_token(lex: Lexer) -> Lexer {
+    let start = lex.pos
+    let ch = lex_peek(lex)
+    let mut l = lex
+    l = lex_advance(l)
+
+    // -- Grouping --
+    if ch == "(" { return lex_emit(l, TK_LPAREN, start, l.pos, "(") }
+    if ch == ")" { return lex_emit(l, TK_RPAREN, start, l.pos, ")") }
+    if ch == "{" { return lex_emit(l, TK_LBRACE, start, l.pos, "{") }
+    if ch == "}" { return lex_emit(l, TK_RBRACE, start, l.pos, "}") }
+    if ch == "[" { return lex_emit(l, TK_LBRACKET, start, l.pos, "[") }
+    if ch == "]" { return lex_emit(l, TK_RBRACKET, start, l.pos, "]") }
+
+    // -- Single-char punctuation --
+    if ch == ";" { return lex_emit(l, TK_SEMICOLON, start, l.pos, ";") }
+    if ch == "," { return lex_emit(l, TK_COMMA, start, l.pos, ",") }
+    if ch == "~" { return lex_emit(l, TK_TILDE, start, l.pos, "~") }
+    if ch == "@" { return lex_emit(l, TK_AT, start, l.pos, "@") }
+    if ch == "^" { return lex_emit(l, TK_CARET, start, l.pos, "^") }
+    if ch == "&" { return lex_emit(l, TK_AMP, start, l.pos, "&") }
+    if ch == "%" { return lex_emit(l, TK_PERCENT, start, l.pos, "%") }
+    if ch == "|" { return lex_emit(l, TK_PIPE, start, l.pos, "|") }
+
+    // -- Multi-char operators starting with + --
+    if ch == "+" {
+        if not lex_at_end(l) and lex_peek(l) == "=" {
+            l = lex_advance(l)
+            return lex_emit(l, TK_PLUS_EQ, start, l.pos, "+=")
+        }
+        return lex_emit(l, TK_PLUS, start, l.pos, "+")
+    }
+
+    // -- Multi-char operators starting with - --
+    if ch == "-" {
+        if not lex_at_end(l) and lex_peek(l) == ">" {
+            l = lex_advance(l)
+            return lex_emit(l, TK_ARROW, start, l.pos, "->")
+        }
+        if not lex_at_end(l) and lex_peek(l) == "=" {
+            l = lex_advance(l)
+            return lex_emit(l, TK_MINUS_EQ, start, l.pos, "-=")
+        }
+        return lex_emit(l, TK_MINUS, start, l.pos, "-")
+    }
+
+    // -- Multi-char operators starting with * --
+    if ch == "*" {
+        if not lex_at_end(l) and lex_peek(l) == "*" {
+            l = lex_advance(l)
+            return lex_emit(l, TK_POWER, start, l.pos, "**")
+        }
+        if not lex_at_end(l) and lex_peek(l) == "=" {
+            l = lex_advance(l)
+            return lex_emit(l, TK_STAR_EQ, start, l.pos, "*=")
+        }
+        return lex_emit(l, TK_STAR, start, l.pos, "*")
+    }
+
+    // -- Multi-char operators starting with / --
+    if ch == "/" {
+        if not lex_at_end(l) and lex_peek(l) == "=" {
+            l = lex_advance(l)
+            return lex_emit(l, TK_SLASH_EQ, start, l.pos, "/=")
+        }
+        return lex_emit(l, TK_SLASH, start, l.pos, "/")
+    }
+
+    // -- Multi-char operators starting with = --
+    if ch == "=" {
+        if not lex_at_end(l) and lex_peek(l) == "=" {
+            l = lex_advance(l)
+            return lex_emit(l, TK_EQ_EQ, start, l.pos, "==")
+        }
+        if not lex_at_end(l) and lex_peek(l) == ">" {
+            l = lex_advance(l)
+            return lex_emit(l, TK_FAT_ARROW, start, l.pos, "=>")
+        }
+        return lex_emit(l, TK_EQ, start, l.pos, "=")
+    }
+
+    // -- Multi-char operators starting with ! --
+    if ch == "!" {
+        if not lex_at_end(l) and lex_peek(l) == "=" {
+            l = lex_advance(l)
+            return lex_emit(l, TK_BANG_EQ, start, l.pos, "!=")
+        }
+        return lex_emit(l, TK_ERROR, start, l.pos, "!")
+    }
+
+    // -- Multi-char operators starting with < --
+    if ch == "<" {
+        if not lex_at_end(l) and lex_peek(l) == "=" {
+            l = lex_advance(l)
+            return lex_emit(l, TK_LT_EQ, start, l.pos, "<=")
+        }
+        if not lex_at_end(l) and lex_peek(l) == "<" {
+            l = lex_advance(l)
+            return lex_emit(l, TK_SHL, start, l.pos, "<<")
+        }
+        return lex_emit(l, TK_LT, start, l.pos, "<")
+    }
+
+    // -- Multi-char operators starting with > --
+    if ch == ">" {
+        if not lex_at_end(l) and lex_peek(l) == "=" {
+            l = lex_advance(l)
+            return lex_emit(l, TK_GT_EQ, start, l.pos, ">=")
+        }
+        if not lex_at_end(l) and lex_peek(l) == ">" {
+            l = lex_advance(l)
+            return lex_emit(l, TK_SHR, start, l.pos, ">>")
+        }
+        return lex_emit(l, TK_GT, start, l.pos, ">")
+    }
+
+    // -- Multi-char operators starting with : --
+    if ch == ":" {
+        if not lex_at_end(l) and lex_peek(l) == ":" {
+            l = lex_advance(l)
+            return lex_emit(l, TK_COLON_COLON, start, l.pos, "::")
+        }
+        return lex_emit(l, TK_COLON, start, l.pos, ":")
+    }
+
+    // -- Multi-char operators starting with . --
+    if ch == "." {
+        if not lex_at_end(l) and lex_peek(l) == "." {
+            l = lex_advance(l)
+            if not lex_at_end(l) and lex_peek(l) == "=" {
+                l = lex_advance(l)
+                return lex_emit(l, TK_DOT_DOT_EQ, start, l.pos, "..=")
+            }
+            return lex_emit(l, TK_DOT_DOT, start, l.pos, "..")
+        }
+        return lex_emit(l, TK_DOT, start, l.pos, ".")
+    }
+
+    // -- String literal --
+    if ch == "\"" {
+        return lex_scan_string(l, start)
+    }
+
+    // -- Character literal --
+    if ch == "'" {
+        return lex_scan_char(l, start)
+    }
+
+    // -- Number literal --
+    if is_digit(ch) {
+        return lex_scan_number(l, start)
+    }
+
+    // -- Identifier / keyword --
+    if is_alpha(ch) {
+        return lex_scan_identifier(l, start)
+    }
+
+    // -- Unknown character -> error token --
+    return lex_emit(l, TK_ERROR, start, l.pos, ch)
+}
+
+// -------------------------------------------------------------------
+// tokenize -- Main entry point.
+// Takes a source string, returns an array of Tokens.
+// -------------------------------------------------------------------
+
+fn tokenize(src: str) -> [Token] {
+    let mut lex = lexer_new(src)
+
+    while not lex_at_end(lex) {
+        lex = lex_skip_ws(lex)
+        if lex_at_end(lex) {
+            break
+        }
+        lex = lex_scan_token(lex)
+    }
+
+    // Emit the Eof sentinel
+    lex = lex_emit(lex, TK_EOF, lex.pos, lex.pos, "")
+    return lex.tokens
+}
