@@ -9,7 +9,7 @@ use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
-use cranelift_module::{FuncId, Linkage, Module};
+use cranelift_module::{DataDescription, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 
@@ -183,6 +183,17 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
     func_ids.insert("kryos_arc_release".to_string(), arc_release_id);
     func_ids.insert("kryos_arc_alloc".to_string(), arc_alloc_id);
 
+    // Declare C `puts` for println support.
+    // println("...") in Kryos MIR maps to a call to C puts(const char*).
+    let puts_sig = {
+        let mut sig = Signature::new(call_conv);
+        sig.params.push(AbiParam::new(types::I64)); // const char* string pointer
+        sig.returns.push(AbiParam::new(types::I32)); // int return
+        sig
+    };
+    let puts_id = object_module.declare_function("puts", Linkage::Import, &puts_sig)?;
+    func_ids.insert("println".to_string(), puts_id);
+
     // Define ARC runtime stubs (no-ops for now)
     {
         // kryos_arc_retain(ptr: i64) -> void — no-op stub
@@ -268,7 +279,11 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
         let mut ctx = Context::for_function(cl_func);
         object_module
             .define_function(func_id, &mut ctx)
-            .map_err(|e| CodegenError::Module(e))?;
+            .map_err(|e| {
+                eprintln!("[kryos] codegen error in function '{}': {e}", mir_func.name);
+                eprintln!("[kryos] full error details: {e:#?}");
+                CodegenError::Module(e)
+            })?;
     }
 
     // If the user's main returns void, emit a C-compatible `main` wrapper:
@@ -365,6 +380,8 @@ struct FuncTranslator<'a> {
     func_refs: HashMap<String, cranelift_codegen::ir::FuncRef>,
     /// Access to function ID table.
     func_ids: &'a HashMap<String, FuncId>,
+    /// Counter for unique string data section names.
+    string_counter: u32,
 }
 
 /// Translate a MIR function body into Cranelift IR instructions.
@@ -380,6 +397,7 @@ pub fn translate_function<M: Module>(
         blocks: HashMap::new(),
         func_refs: HashMap::new(),
         func_ids,
+        string_counter: 0,
     };
 
     // Create Cranelift blocks for each MIR basic block.
@@ -456,7 +474,7 @@ fn translate_block_body<M: Module>(
     for instr in &bb.instructions {
         translate_instruction(instr, builder, translator, module)?;
     }
-    translate_terminator(&bb.terminator, builder, translator)?;
+    translate_terminator(&bb.terminator, builder, translator, module)?;
     Ok(())
 }
 
@@ -481,7 +499,34 @@ fn translate_instruction<M: Module>(
                     .ok_or_else(|| {
                         CodegenError::Internal(format!("undefined local _{}", dest.0))
                     })?;
-                builder.def_var(var, val);
+
+                // Coerce the value to the declared variable type if they differ
+                // (e.g. a call returning I32 assigned to a Void/I64 temp).
+                let dest_ty = mir_type_to_cl_or_i64(
+                    &translator
+                        .mir_func
+                        .locals
+                        .iter()
+                        .find(|l| l.id == *dest)
+                        .map(|l| l.ty.clone())
+                        .unwrap_or(MirType::I64),
+                )?;
+                let val_ty = builder.func.dfg.value_type(val);
+                let coerced = if val_ty != dest_ty {
+                    if is_float_type(val_ty) || is_float_type(dest_ty) {
+                        // Float<->int cast; just use the raw value for now.
+                        val
+                    } else if val_ty.bits() < dest_ty.bits() {
+                        builder.ins().sextend(dest_ty, val)
+                    } else if val_ty.bits() > dest_ty.bits() {
+                        builder.ins().ireduce(dest_ty, val)
+                    } else {
+                        val
+                    }
+                } else {
+                    val
+                };
+                builder.def_var(var, coerced);
             }
         }
         Instruction::ArcRetain { ptr } => {
@@ -530,7 +575,7 @@ fn translate_rvalue<M: Module>(
 ) -> Result<Option<cranelift_codegen::ir::Value>, CodegenError> {
     match rvalue {
         RValue::Use(operand) => {
-            let val = translate_operand(operand, builder, translator)?;
+            let val = translate_operand(operand, builder, translator, module)?;
             Ok(Some(val))
         }
 
@@ -574,10 +619,26 @@ fn translate_rvalue<M: Module>(
             Ok(Some(val))
         }
 
-        RValue::ConstString(_s) => {
-            // For now, string constants are represented as null pointers.
-            // A full implementation would store them in a data section.
-            let val = builder.ins().iconst(types::I64, 0);
+        RValue::ConstString(s) => {
+            // Store the string in the object file's data section with a null
+            // terminator so it can be passed to C functions like puts().
+            let data_name = format!(".str.{}", translator.string_counter);
+            translator.string_counter += 1;
+
+            let data_id = module
+                .declare_data(&data_name, Linkage::Local, false, false)
+                .map_err(CodegenError::Module)?;
+
+            let mut data_desc = DataDescription::new();
+            let mut bytes = s.as_bytes().to_vec();
+            bytes.push(0); // null terminator
+            data_desc.define(bytes.into_boxed_slice());
+            module
+                .define_data(data_id, &data_desc)
+                .map_err(CodegenError::Module)?;
+
+            let gv = module.declare_data_in_func(data_id, builder.func);
+            let val = builder.ins().global_value(types::I64, gv);
             Ok(Some(val))
         }
 
@@ -587,8 +648,8 @@ fn translate_rvalue<M: Module>(
         }
 
         RValue::BinOp { op, left, right } => {
-            let lhs = translate_operand(left, builder, translator)?;
-            let rhs = translate_operand(right, builder, translator)?;
+            let lhs = translate_operand(left, builder, translator, module)?;
+            let rhs = translate_operand(right, builder, translator, module)?;
             let lhs_ty = type_of_operand_hint(left, &translator.mir_func.locals);
             let is_float = is_float_type(lhs_ty);
 
@@ -597,7 +658,7 @@ fn translate_rvalue<M: Module>(
         }
 
         RValue::UnOp { op, operand } => {
-            let val = translate_operand(operand, builder, translator)?;
+            let val = translate_operand(operand, builder, translator, module)?;
             let val_ty = type_of_operand_hint(operand, &translator.mir_func.locals);
             let is_float = is_float_type(val_ty);
 
@@ -606,11 +667,32 @@ fn translate_rvalue<M: Module>(
         }
 
         RValue::Call { func, args } => {
-            let func_ref = ensure_func_ref(func, builder, translator, module)?;
-            let arg_vals: Vec<cranelift_codegen::ir::Value> = args
+            let func_ref = ensure_func_ref_with_args(func, builder, translator, module, args.len())?;
+            let mut arg_vals: Vec<cranelift_codegen::ir::Value> = args
                 .iter()
-                .map(|a| translate_operand(a, builder, translator))
+                .map(|a| translate_operand(a, builder, translator, module))
                 .collect::<Result<_, _>>()?;
+
+            // Widen arguments to match the callee's expected parameter types.
+            // This handles cases like passing an i32 to a function expecting i64.
+            let sig = builder.func.dfg.ext_funcs[func_ref].signature;
+            let param_types: Vec<Type> = builder.func.dfg.signatures[sig]
+                .params
+                .iter()
+                .map(|p| p.value_type)
+                .collect();
+            for (i, arg) in arg_vals.iter_mut().enumerate() {
+                if let Some(&expected_ty) = param_types.get(i) {
+                    let actual_ty = builder.func.dfg.value_type(*arg);
+                    if actual_ty != expected_ty && !is_float_type(actual_ty) && !is_float_type(expected_ty) {
+                        if actual_ty.bits() < expected_ty.bits() {
+                            *arg = builder.ins().sextend(expected_ty, *arg);
+                        } else if actual_ty.bits() > expected_ty.bits() {
+                            *arg = builder.ins().ireduce(expected_ty, *arg);
+                        }
+                    }
+                }
+            }
 
             let call_inst = builder.ins().call(func_ref, &arg_vals);
             let results = builder.inst_results(call_inst);
@@ -622,42 +704,102 @@ fn translate_rvalue<M: Module>(
         }
 
         RValue::Array(_elems) => {
-            // Aggregate construction: return a placeholder pointer.
-            let val = builder.ins().iconst(types::I64, 0);
+            // Aggregate construction: return a placeholder of the correct dest type.
+            let cl_ty = dest
+                .and_then(|d| {
+                    translator.mir_func.locals.iter()
+                        .find(|l| l.id == d)
+                        .and_then(|l| mir_type_to_cl(&l.ty).ok().flatten())
+                })
+                .unwrap_or(types::I64);
+            let val = if is_float_type(cl_ty) {
+                if cl_ty == types::F32 { builder.ins().f32const(0.0) }
+                else { builder.ins().f64const(0.0) }
+            } else {
+                builder.ins().iconst(cl_ty, 0)
+            };
             Ok(Some(val))
         }
 
         RValue::Tuple(_elems) => {
-            let val = builder.ins().iconst(types::I64, 0);
+            let cl_ty = dest
+                .and_then(|d| {
+                    translator.mir_func.locals.iter()
+                        .find(|l| l.id == d)
+                        .and_then(|l| mir_type_to_cl(&l.ty).ok().flatten())
+                })
+                .unwrap_or(types::I64);
+            let val = if is_float_type(cl_ty) {
+                if cl_ty == types::F32 { builder.ins().f32const(0.0) }
+                else { builder.ins().f64const(0.0) }
+            } else {
+                builder.ins().iconst(cl_ty, 0)
+            };
             Ok(Some(val))
         }
 
         RValue::Struct { .. } => {
-            let val = builder.ins().iconst(types::I64, 0);
+            let cl_ty = dest
+                .and_then(|d| {
+                    translator.mir_func.locals.iter()
+                        .find(|l| l.id == d)
+                        .and_then(|l| mir_type_to_cl(&l.ty).ok().flatten())
+                })
+                .unwrap_or(types::I64);
+            let val = if is_float_type(cl_ty) {
+                if cl_ty == types::F32 { builder.ins().f32const(0.0) }
+                else { builder.ins().f64const(0.0) }
+            } else {
+                builder.ins().iconst(cl_ty, 0)
+            };
             Ok(Some(val))
         }
 
         RValue::Field { .. } => {
-            let val = builder.ins().iconst(types::I64, 0);
+            let cl_ty = dest
+                .and_then(|d| {
+                    translator.mir_func.locals.iter()
+                        .find(|l| l.id == d)
+                        .and_then(|l| mir_type_to_cl(&l.ty).ok().flatten())
+                })
+                .unwrap_or(types::I64);
+            let val = if is_float_type(cl_ty) {
+                if cl_ty == types::F32 { builder.ins().f32const(0.0) }
+                else { builder.ins().f64const(0.0) }
+            } else {
+                builder.ins().iconst(cl_ty, 0)
+            };
             Ok(Some(val))
         }
 
         RValue::Index { .. } => {
-            let val = builder.ins().iconst(types::I64, 0);
+            let cl_ty = dest
+                .and_then(|d| {
+                    translator.mir_func.locals.iter()
+                        .find(|l| l.id == d)
+                        .and_then(|l| mir_type_to_cl(&l.ty).ok().flatten())
+                })
+                .unwrap_or(types::I64);
+            let val = if is_float_type(cl_ty) {
+                if cl_ty == types::F32 { builder.ins().f32const(0.0) }
+                else { builder.ins().f64const(0.0) }
+            } else {
+                builder.ins().iconst(cl_ty, 0)
+            };
             Ok(Some(val))
         }
 
         RValue::ArcAlloc { inner } => {
             let func_ref =
                 ensure_func_ref("kryos_arc_alloc", builder, translator, module)?;
-            let val = translate_operand(inner, builder, translator)?;
+            let val = translate_operand(inner, builder, translator, module)?;
             let call_inst = builder.ins().call(func_ref, &[val]);
             let results = builder.inst_results(call_inst);
             Ok(Some(results[0]))
         }
 
         RValue::Cast { operand, ty } => {
-            let val = translate_operand(operand, builder, translator)?;
+            let val = translate_operand(operand, builder, translator, module)?;
             let src_ty = type_of_operand_hint(operand, &translator.mir_func.locals);
             let dest_ty = mir_type_to_cl(ty)?.unwrap_or(types::I64);
             let result = translate_cast(val, src_ty, dest_ty, builder)?;
@@ -670,10 +812,11 @@ fn translate_rvalue<M: Module>(
 // Operand translation
 // ---------------------------------------------------------------------------
 
-fn translate_operand(
+fn translate_operand<M: Module>(
     operand: &Operand,
     builder: &mut FunctionBuilder,
-    translator: &FuncTranslator,
+    translator: &mut FuncTranslator,
+    module: &mut M,
 ) -> Result<cranelift_codegen::ir::Value, CodegenError> {
     match operand {
         Operand::Local(id) => {
@@ -688,7 +831,27 @@ fn translate_operand(
             Constant::Int(n) => Ok(builder.ins().iconst(types::I64, *n)),
             Constant::Float(n) => Ok(builder.ins().f64const(*n)),
             Constant::Bool(b) => Ok(builder.ins().iconst(types::I8, *b as i64)),
-            Constant::Str(_) => Ok(builder.ins().iconst(types::I64, 0)),
+            Constant::Str(s) => {
+                // Store the string in the data section with a null terminator.
+                let data_name = format!(".str.{}", translator.string_counter);
+                translator.string_counter += 1;
+
+                let data_id = module
+                    .declare_data(&data_name, Linkage::Local, false, false)
+                    .map_err(CodegenError::Module)?;
+
+                let mut data_desc = DataDescription::new();
+                let mut bytes = s.as_bytes().to_vec();
+                bytes.push(0); // null terminator
+                data_desc.define(bytes.into_boxed_slice());
+                module
+                    .define_data(data_id, &data_desc)
+                    .map_err(CodegenError::Module)?;
+
+                let gv = module.declare_data_in_func(data_id, builder.func);
+                let val = builder.ins().global_value(types::I64, gv);
+                Ok(val)
+            }
             Constant::None => Ok(builder.ins().iconst(types::I64, 0)),
         },
     }
@@ -884,17 +1047,26 @@ fn translate_cast(
 // Terminator translation
 // ---------------------------------------------------------------------------
 
-fn translate_terminator(
+fn translate_terminator<M: Module>(
     term: &Terminator,
     builder: &mut FunctionBuilder,
-    translator: &FuncTranslator,
+    translator: &mut FuncTranslator,
+    module: &mut M,
 ) -> Result<(), CodegenError> {
     match term {
         Terminator::Return(None) => {
-            builder.ins().return_(&[]);
+            if builder.func.signature.returns.is_empty() {
+                builder.ins().return_(&[]);
+            } else {
+                // Unreachable code path in a non-void function (e.g., dead
+                // block after an explicit return).  Emit a trap instead of
+                // a bare return so the verifier doesn't reject the
+                // signature mismatch.
+                builder.ins().trap(cranelift_codegen::ir::TrapCode::user(1).unwrap());
+            }
         }
         Terminator::Return(Some(operand)) => {
-            let val = translate_operand(operand, builder, translator)?;
+            let val = translate_operand(operand, builder, translator, module)?;
             builder.ins().return_(&[val]);
         }
         Terminator::Goto(target) => {
@@ -906,7 +1078,7 @@ fn translate_terminator(
             then_block,
             else_block,
         } => {
-            let cond_val = translate_operand(cond, builder, translator)?;
+            let cond_val = translate_operand(cond, builder, translator, module)?;
             let then_cl = translator.blocks[&then_block.0];
             let else_cl = translator.blocks[&else_block.0];
             builder.ins().brif(cond_val, then_cl, &[], else_cl, &[]);
@@ -916,7 +1088,7 @@ fn translate_terminator(
             targets,
             default,
         } => {
-            let val = translate_operand(value, builder, translator)?;
+            let val = translate_operand(value, builder, translator, module)?;
             let default_cl = translator.blocks[&default.0];
 
             // Emit a chain of brif instructions for each target.
@@ -949,7 +1121,7 @@ fn translate_terminator(
             }
         }
         Terminator::Unreachable => {
-            builder.ins().trap(cranelift_codegen::ir::TrapCode::user(0).unwrap());
+            builder.ins().trap(cranelift_codegen::ir::TrapCode::user(1).unwrap());
         }
     }
     Ok(())
@@ -967,6 +1139,18 @@ fn ensure_func_ref<M: Module>(
     translator: &mut FuncTranslator,
     module: &mut M,
 ) -> Result<cranelift_codegen::ir::FuncRef, CodegenError> {
+    ensure_func_ref_with_args(name, builder, translator, module, 1)
+}
+
+/// Like `ensure_func_ref`, but accepts the expected number of arguments so
+/// that unknown (external) functions get a signature with the right arity.
+fn ensure_func_ref_with_args<M: Module>(
+    name: &str,
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+    arg_count: usize,
+) -> Result<cranelift_codegen::ir::FuncRef, CodegenError> {
     if let Some(func_ref) = translator.func_refs.get(name) {
         return Ok(*func_ref);
     }
@@ -976,9 +1160,12 @@ fn ensure_func_ref<M: Module>(
         *id
     } else {
         // Unknown function — declare it as an import with a generic signature.
-        // In a real compiler, the MIR would carry type info for external calls.
+        // We use I64 for all parameters and a single I64 return, which works
+        // for runtime builtins like `range`, `len`, `print`, etc.
         let mut sig = Signature::new(module.isa().default_call_conv());
-        sig.params.push(AbiParam::new(types::I64));
+        for _ in 0..arg_count {
+            sig.params.push(AbiParam::new(types::I64));
+        }
         sig.returns.push(AbiParam::new(types::I64));
         module.declare_function(name, Linkage::Import, &sig)?
     };

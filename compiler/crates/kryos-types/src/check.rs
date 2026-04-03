@@ -1196,6 +1196,15 @@ impl TypeChecker {
 /// Type-check a module, returning all diagnostics found.
 pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     let mut checker = TypeChecker::new();
+
+    // Register built-in functions that are always available.
+    checker.env.define_function(FunctionSig {
+        name: "println".to_string(),
+        generic_params: vec![],
+        params: vec![("value".to_string(), Type::Str)],
+        ret: Type::Void,
+    });
+
     checker.check_module(module);
     checker.diagnostics
 }

@@ -4,6 +4,8 @@
 //! graph representation (`MirModule`).  The lowerer walks each function body,
 //! creating basic blocks, instructions, and terminators.
 
+use std::collections::HashMap;
+
 use kryos_ast::{self as ast};
 use kryos_types::Type;
 
@@ -31,6 +33,10 @@ pub struct LoweringContext {
     loop_headers: Vec<BlockId>,
     /// Stack of loop exits for `break`.
     loop_exits: Vec<BlockId>,
+    /// Struct definitions: struct_name -> (field_name -> MirType).
+    struct_defs: HashMap<String, HashMap<String, MirType>>,
+    /// Function return types: func_name -> MirType.
+    func_ret_types: HashMap<String, MirType>,
 }
 
 impl LoweringContext {
@@ -44,6 +50,8 @@ impl LoweringContext {
             next_block: 0,
             loop_headers: Vec::new(),
             loop_exits: Vec::new(),
+            struct_defs: HashMap::new(),
+            func_ret_types: HashMap::new(),
         }
     }
 
@@ -121,6 +129,29 @@ impl LoweringContext {
 /// Lower an entire AST module to MIR.
 pub fn lower_module(module: &ast::Module) -> MirModule {
     let mut ctx = LoweringContext::new();
+
+    // Pre-pass: collect struct definitions and function return types so the
+    // lowerer can infer correct types for field accesses and call results.
+    for decl in &module.declarations {
+        match decl {
+            ast::Decl::Struct { name, fields, .. } => {
+                let mut field_map = HashMap::new();
+                for f in fields {
+                    field_map.insert(f.name.clone(), lower_type_expr(&f.ty));
+                }
+                ctx.struct_defs.insert(name.clone(), field_map);
+            }
+            ast::Decl::Function { name, ret_ty, .. } => {
+                let mir_ret = match ret_ty {
+                    Some(ty) => lower_type_expr(ty),
+                    None => MirType::Void,
+                };
+                ctx.func_ret_types.insert(name.clone(), mir_ret);
+            }
+            _ => {}
+        }
+    }
+
     let mut functions = Vec::new();
 
     for decl in &module.declarations {
@@ -229,10 +260,14 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             value,
             ..
         } => {
-            let mir_ty = ty
-                .as_ref()
-                .map(|t| lower_type_expr(t))
-                .unwrap_or(MirType::I64);
+            let mir_ty = if let Some(t) = ty {
+                lower_type_expr(t)
+            } else if let Some(expr) = value {
+                // No explicit type annotation — infer from the initializer.
+                infer_expr_type(ctx, expr)
+            } else {
+                MirType::I64
+            };
             let local = ctx.alloc_local(Some(name.clone()), mir_ty, *mutable);
 
             if let Some(expr) = value {
@@ -352,7 +387,17 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
 
         ast::Stmt::Expr { expr, .. } => {
             // Lower the expression for its side effects.
-            let _ = lower_expr_to_rvalue(ctx, expr);
+            let rvalue = lower_expr_to_rvalue(ctx, expr);
+
+            // Function calls need to be emitted as instructions even when
+            // their return value is discarded, so assign to a temp.
+            if matches!(&rvalue, RValue::Call { .. }) {
+                let temp = ctx.alloc_temp(MirType::Void);
+                ctx.emit(Instruction::Assign {
+                    dest: temp,
+                    value: rvalue,
+                });
+            }
 
             // If the expression is a match, it was already lowered via
             // `lower_match` inside `lower_expr_to_rvalue`.
@@ -650,6 +695,95 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
 }
 
 // ---------------------------------------------------------------------------
+// Expression type inference
+// ---------------------------------------------------------------------------
+
+/// Best-effort inference of a MIR type for an AST expression.
+///
+/// Uses struct definitions and function return types collected during the
+/// pre-pass to resolve field accesses and call results.  Falls back to I64
+/// for anything it can't resolve.
+fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
+    match expr {
+        ast::Expr::IntLiteral { .. } => MirType::I64,
+        ast::Expr::FloatLiteral { .. } => MirType::F64,
+        ast::Expr::BoolLiteral { .. } => MirType::Bool,
+        ast::Expr::StringLiteral { .. } | ast::Expr::InterpolatedString { .. } => MirType::Str,
+        ast::Expr::CharLiteral { .. } => MirType::Char,
+        ast::Expr::NoneLiteral { .. } => MirType::I64,
+
+        ast::Expr::Identifier { name, .. } => {
+            // Look up the local's MIR type.
+            ctx.locals
+                .iter()
+                .rev()
+                .find(|l| l.name.as_deref() == Some(name))
+                .map(|l| l.ty.clone())
+                .unwrap_or(MirType::I64)
+        }
+
+        ast::Expr::FieldAccess { object, field, .. } => {
+            // Resolve the object's type, then look up the field in struct_defs.
+            let obj_ty = infer_expr_type(ctx, object);
+            if let MirType::Struct(name) = &obj_ty {
+                if let Some(fields) = ctx.struct_defs.get(name) {
+                    if let Some(field_ty) = fields.get(field.as_str()) {
+                        return field_ty.clone();
+                    }
+                }
+            }
+            MirType::I64
+        }
+
+        ast::Expr::BinaryOp { left, right, op, .. } => {
+            // Comparison operators always produce bool.
+            match op {
+                ast::BinOp::Eq | ast::BinOp::Neq | ast::BinOp::Lt
+                | ast::BinOp::Gt | ast::BinOp::LtEq | ast::BinOp::GtEq
+                | ast::BinOp::And | ast::BinOp::Or => return MirType::Bool,
+                _ => {}
+            }
+            // For arithmetic, propagate the type of the left operand; if
+            // either side is float, the result is float.
+            let lty = infer_expr_type(ctx, left);
+            let rty = infer_expr_type(ctx, right);
+            match (&lty, &rty) {
+                (MirType::F64, _) | (_, MirType::F64) => MirType::F64,
+                (MirType::F32, _) | (_, MirType::F32) => MirType::F32,
+                _ => lty,
+            }
+        }
+
+        ast::Expr::UnaryOp { operand, .. } => infer_expr_type(ctx, operand),
+
+        ast::Expr::FnCall { callee, .. } => {
+            // If the callee is a simple identifier, look up the return type.
+            if let ast::Expr::Identifier { name, .. } = callee.as_ref() {
+                if let Some(ret_ty) = ctx.func_ret_types.get(name.as_str()) {
+                    return ret_ty.clone();
+                }
+            }
+            MirType::I64
+        }
+
+        ast::Expr::MethodCall { method, .. } => {
+            if let Some(ret_ty) = ctx.func_ret_types.get(method.as_str()) {
+                return ret_ty.clone();
+            }
+            MirType::I64
+        }
+
+        ast::Expr::StructLiteral { name, .. } => MirType::Struct(name.clone()),
+        ast::Expr::ArrayLiteral { .. } => MirType::I64,
+        ast::Expr::TupleLiteral { .. } => MirType::I64,
+
+        ast::Expr::Cast { ty, .. } => lower_type_expr(ty),
+
+        _ => MirType::I64,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Expression lowering
 // ---------------------------------------------------------------------------
 
@@ -668,8 +802,11 @@ fn lower_expr_to_operand(ctx: &mut LoweringContext, expr: &ast::Expr) -> Operand
         }
         _ => {
             // Complex expression — lower to rvalue, store in temp.
+            // Infer the type so the temp has the correct MIR type instead
+            // of defaulting to I64 for everything.
+            let inferred_ty = infer_expr_type(ctx, expr);
             let rvalue = lower_expr_to_rvalue(ctx, expr);
-            let temp = ctx.alloc_temp(MirType::I64);
+            let temp = ctx.alloc_temp(inferred_ty);
             ctx.emit(Instruction::Assign {
                 dest: temp,
                 value: rvalue,
