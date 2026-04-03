@@ -305,15 +305,137 @@ fn compile_source_impl(
         OutputType::Binary | OutputType::Library | OutputType::Object => {
             if let Some(be) = backend {
                 match be.compile(&mir) {
-                    Ok(bytes) => CompileResult {
-                        diagnostics,
-                        source_map,
-                        success: true,
-                        output_path: None,
-                        mir: Some(mir),
-                        object_bytes: Some(bytes),
-                        llvm_ir: None,
-                    },
+                    Ok(bytes) => {
+                        let out_path = config.derive_output_path();
+
+                        if config.output_type == OutputType::Object {
+                            // Just write the object file to disk
+                            if let Err(e) = fs::write(&out_path, &bytes) {
+                                diagnostics.push(Diagnostic::error(format!(
+                                    "failed to write object file '{}': {e}",
+                                    out_path.display()
+                                )));
+                                return CompileResult {
+                                    diagnostics,
+                                    source_map,
+                                    success: false,
+                                    output_path: None,
+                                    mir: Some(mir),
+                                    object_bytes: Some(bytes),
+                                    llvm_ir: None,
+                                };
+                            }
+
+                            CompileResult {
+                                diagnostics,
+                                source_map,
+                                success: true,
+                                output_path: Some(out_path.to_string_lossy().to_string()),
+                                mir: Some(mir),
+                                object_bytes: Some(bytes),
+                                llvm_ir: None,
+                            }
+                        } else {
+                            // Binary or Library: write temp .o, invoke linker, clean up
+
+                            // Derive temp object file path next to the output
+                            let stem = out_path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("out");
+                            let obj_path = out_path
+                                .parent()
+                                .unwrap_or_else(|| Path::new("."))
+                                .join(format!("{stem}.o"));
+
+                            // Write the object bytes to the temp .o file
+                            if let Err(e) = fs::write(&obj_path, &bytes) {
+                                diagnostics.push(Diagnostic::error(format!(
+                                    "failed to write temp object file '{}': {e}",
+                                    obj_path.display()
+                                )));
+                                return CompileResult {
+                                    diagnostics,
+                                    source_map,
+                                    success: false,
+                                    output_path: None,
+                                    mir: Some(mir),
+                                    object_bytes: Some(bytes),
+                                    llvm_ir: None,
+                                };
+                            }
+
+                            // Determine the target
+                            let target = if let Some(ref triple) = config.target {
+                                match kryos_linker::Target::from_triple(triple) {
+                                    Ok(t) => t,
+                                    Err(e) => {
+                                        let _ = fs::remove_file(&obj_path);
+                                        diagnostics.push(Diagnostic::error(format!(
+                                            "invalid target triple: {e}"
+                                        )));
+                                        return CompileResult {
+                                            diagnostics,
+                                            source_map,
+                                            success: false,
+                                            output_path: None,
+                                            mir: Some(mir),
+                                            object_bytes: Some(bytes),
+                                            llvm_ir: None,
+                                        };
+                                    }
+                                }
+                            } else {
+                                kryos_linker::Target::host()
+                            };
+
+                            // Construct linker config
+                            let linker_config = kryos_linker::LinkerConfig {
+                                target,
+                                object_files: vec![obj_path.clone()],
+                                runtime_lib: None,   // TODO: runtime library discovery
+                                stdlib_native: None,  // TODO: stdlib library discovery
+                                output: out_path.clone(),
+                                link_type: if config.output_type == OutputType::Library {
+                                    kryos_linker::LinkType::SharedLib
+                                } else {
+                                    kryos_linker::LinkType::Dynamic
+                                },
+                                extra_libs: vec![],
+                                extra_lib_dirs: vec![],
+                            };
+
+                            // Invoke the linker
+                            if let Err(e) = kryos_linker::link(&linker_config) {
+                                let _ = fs::remove_file(&obj_path);
+                                diagnostics.push(Diagnostic::error(format!(
+                                    "linking failed: {e}"
+                                )));
+                                return CompileResult {
+                                    diagnostics,
+                                    source_map,
+                                    success: false,
+                                    output_path: None,
+                                    mir: Some(mir),
+                                    object_bytes: Some(bytes),
+                                    llvm_ir: None,
+                                };
+                            }
+
+                            // Clean up temp object file (best effort)
+                            let _ = fs::remove_file(&obj_path);
+
+                            CompileResult {
+                                diagnostics,
+                                source_map,
+                                success: true,
+                                output_path: Some(out_path.to_string_lossy().to_string()),
+                                mir: Some(mir),
+                                object_bytes: Some(bytes),
+                                llvm_ir: None,
+                            }
+                        }
+                    }
                     Err(e) => {
                         diagnostics.push(Diagnostic::error(format!(
                             "codegen ({}) failed: {}",

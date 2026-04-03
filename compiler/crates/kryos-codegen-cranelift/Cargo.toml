@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 kryos-errors.workspace = true
 kryos-mir.workspace = true
+kryos-driver.workspace = true
 cranelift-codegen.workspace = true
 cranelift-frontend.workspace = true
 cranelift-jit.workspace = true

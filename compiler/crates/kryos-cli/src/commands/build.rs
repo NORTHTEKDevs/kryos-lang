@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use kryos_driver::{BuildConfig, BuildMode, OutputType};
+use kryos_driver::{Backend, BuildConfig, BuildMode, OutputType};
 use kryos_errors::render_diagnostic;
 
 /// Execute the build command.
@@ -43,10 +43,16 @@ pub fn execute(
         eprintln!("kryos: build config = {:?}", config);
     }
 
+    // Instantiate the appropriate codegen backend based on build mode.
+    let backend: Box<dyn Backend> = match mode {
+        BuildMode::Debug => Box::new(kryos_codegen_cranelift::CraneliftBackend::new()),
+        BuildMode::Release => Box::new(kryos_codegen_llvm::LlvmBackend::default()),
+    };
+
     let p = Path::new(path);
 
     let result = if p.is_file() {
-        kryos_driver::compile_file(p, &config)
+        kryos_driver::compile_file_with_backend(p, &config, Some(backend.as_ref()))
     } else if p.is_dir() {
         // Project directory -- look for kryos.toml.
         let manifest_path = p.join("kryos.toml");
@@ -56,7 +62,7 @@ pub fn execute(
                 p.display()
             ));
         }
-        kryos_driver::compile_project(p, &config)
+        kryos_driver::compile_project_with_backend(p, &config, Some(backend.as_ref()))
     } else {
         return Err(format!("`{}` is not a file or directory", p.display()));
     };

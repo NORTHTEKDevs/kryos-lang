@@ -76,3 +76,24 @@ impl Default for CraneliftBackend {
         Self::new()
     }
 }
+
+// ---------------------------------------------------------------------------
+// kryos_driver::Backend implementation
+// ---------------------------------------------------------------------------
+
+impl kryos_driver::Backend for CraneliftBackend {
+    fn compile(&self, module: &kryos_mir::ir::MirModule) -> Result<Vec<u8>, kryos_driver::BackendError> {
+        self.compile_module(module)
+            .map_err(|e| kryos_driver::BackendError::new(e.to_string()))
+    }
+
+    fn emit_ir(&self, _module: &kryos_mir::ir::MirModule) -> Result<String, kryos_driver::BackendError> {
+        Err(kryos_driver::BackendError::unsupported(
+            "LLVM IR emission not supported by Cranelift backend",
+        ))
+    }
+
+    fn name(&self) -> &str {
+        "cranelift"
+    }
+}

@@ -13,4 +13,6 @@ kryos-errors.workspace = true
 kryos-bindgen.workspace = true
 kryos-package.workspace = true
 kryos-lsp.workspace = true
+kryos-codegen-cranelift.workspace = true
+kryos-codegen-llvm.workspace = true
 clap.workspace = true

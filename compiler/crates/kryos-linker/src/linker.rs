@@ -92,11 +92,14 @@ pub fn link(config: &LinkerConfig) -> Result<(), LinkError> {
     if output.status.success() {
         Ok(())
     } else {
+        // MSVC link.exe writes errors to stdout, not stderr
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let combined = if stderr.is_empty() { stdout } else { format!("{stderr}\n{stdout}") };
         Err(LinkError::LinkFailed {
             linker: linker_path.display().to_string(),
             exit_code: output.status.code(),
-            stderr,
+            stderr: combined,
         })
     }
 }
@@ -154,11 +157,15 @@ fn build_unix_command(cmd: &mut Command, config: &LinkerConfig) {
 /// Build a command line for MSVC's link.exe.
 fn build_msvc_command(cmd: &mut Command, config: &LinkerConfig) {
     cmd.arg(format!("/OUT:{}", config.output.display()));
+    cmd.arg("/NOLOGO");
 
     match config.link_type {
         LinkType::SharedLib => { cmd.arg("/DLL"); }
         LinkType::Static => { cmd.arg("/LTCG"); }
-        LinkType::Dynamic => {}
+        LinkType::Dynamic => {
+            cmd.arg("/SUBSYSTEM:CONSOLE");
+            cmd.arg("/ENTRY:mainCRTStartup");
+        }
     }
 
     // Object files
@@ -174,6 +181,15 @@ fn build_msvc_command(cmd: &mut Command, config: &LinkerConfig) {
         cmd.arg(stdlib);
     }
 
+    // Add MSVC CRT and Windows SDK library paths
+    for lib_path in find_msvc_lib_paths(config.target.arch) {
+        cmd.arg(format!("/LIBPATH:{}", lib_path.display()));
+    }
+
+    // Link the C runtime and kernel libraries
+    cmd.arg("libcmt.lib");
+    cmd.arg("kernel32.lib");
+
     // Extra library search directories
     for dir in &config.extra_lib_dirs {
         cmd.arg(format!("/LIBPATH:{}", dir.display()));
@@ -183,6 +199,87 @@ fn build_msvc_command(cmd: &mut Command, config: &LinkerConfig) {
     for lib in &config.extra_libs {
         cmd.arg(format!("{lib}.lib"));
     }
+}
+
+/// Find MSVC CRT and Windows SDK library directories.
+fn find_msvc_lib_paths(arch: Arch) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let arch_dir = match arch {
+        Arch::X86_64 => "x64",
+        Arch::Aarch64 => "arm64",
+        _ => return paths,
+    };
+
+    let program_files = [
+        std::env::var("ProgramFiles(x86)").ok(),
+        Some("C:\\Program Files (x86)".to_string()),
+    ];
+
+    let editions = ["BuildTools", "Enterprise", "Professional", "Community"];
+
+    // Find MSVC CRT lib path
+    for pf in program_files.iter().flatten() {
+        for edition in &editions {
+            let msvc_dir = PathBuf::from(pf)
+                .join("Microsoft Visual Studio")
+                .join("2022")
+                .join(edition)
+                .join("VC")
+                .join("Tools")
+                .join("MSVC");
+
+            if let Ok(entries) = std::fs::read_dir(&msvc_dir) {
+                let mut versions: Vec<PathBuf> = entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect();
+                versions.sort();
+                versions.reverse();
+
+                for ver_dir in versions {
+                    let lib_dir = ver_dir.join("lib").join(arch_dir);
+                    if lib_dir.is_dir() {
+                        paths.push(lib_dir);
+                        break;
+                    }
+                }
+            }
+            if !paths.is_empty() {
+                break;
+            }
+        }
+        if !paths.is_empty() {
+            break;
+        }
+    }
+
+    // Find Windows SDK lib paths (ucrt and um)
+    let sdk_root = PathBuf::from("C:\\Program Files (x86)\\Windows Kits\\10\\Lib");
+    if sdk_root.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&sdk_root) {
+            let mut versions: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect();
+            versions.sort();
+            versions.reverse();
+
+            if let Some(sdk_ver) = versions.first() {
+                let ucrt_dir = sdk_ver.join("ucrt").join(arch_dir);
+                if ucrt_dir.is_dir() {
+                    paths.push(ucrt_dir);
+                }
+                let um_dir = sdk_ver.join("um").join(arch_dir);
+                if um_dir.is_dir() {
+                    paths.push(um_dir);
+                }
+            }
+        }
+    }
+
+    paths
 }
 
 /// Build a command line for wasm-ld.
@@ -219,10 +316,17 @@ fn build_wasm_command(cmd: &mut Command, config: &LinkerConfig) {
 ///
 /// Search order:
 /// - WASM targets: `wasm-ld`
-/// - Windows/MSVC: `link.exe`
+/// - Windows/MSVC: VS Build Tools `link.exe`, then PATH
 /// - Windows/GNU (MinGW): `gcc`, `cc`
 /// - Unix: `cc`, `gcc`, `clang`
 pub fn find_system_linker(target: &Target) -> Result<PathBuf, String> {
+    // On Windows/MSVC, try to find the real MSVC link.exe first
+    if target.os == Os::Windows && target.env == Env::Msvc {
+        if let Some(path) = find_msvc_link_exe(target.arch) {
+            return Ok(path);
+        }
+    }
+
     let candidates: &[&str] = match (target.arch, target.os, target.env) {
         (Arch::Wasm32, _, _) => &["wasm-ld", "wasm-ld-18", "wasm-ld-17", "wasm-ld-16"],
         (_, Os::Windows, Env::Msvc) => &["link.exe"],
@@ -232,6 +336,14 @@ pub fn find_system_linker(target: &Target) -> Result<PathBuf, String> {
 
     for name in candidates {
         if let Some(path) = which(name) {
+            // On Windows, verify that a found `link.exe` is actually MSVC's
+            // and not Git's /usr/bin/link (Unix hardlink command)
+            if name == &"link.exe" {
+                let path_str = path.to_string_lossy().to_lowercase();
+                if path_str.contains("git") || path_str.contains("usr/bin") || path_str.contains("usr\\bin") {
+                    continue;
+                }
+            }
             return Ok(path);
         }
     }
@@ -241,6 +353,66 @@ pub fn find_system_linker(target: &Target) -> Result<PathBuf, String> {
         target.triple_string(),
         candidates.join(", "),
     ))
+}
+
+/// Search for MSVC's link.exe in Visual Studio Build Tools installation.
+fn find_msvc_link_exe(arch: Arch) -> Option<PathBuf> {
+    let host = if cfg!(target_arch = "x86_64") { "Hostx64" } else { "Hostx86" };
+    let target_dir = match arch {
+        Arch::X86_64 => "x64",
+        Arch::Aarch64 => "arm64",
+        _ => return None,
+    };
+
+    // Search common VS installation paths
+    let program_files = [
+        std::env::var("ProgramFiles(x86)").ok(),
+        std::env::var("ProgramFiles").ok(),
+        Some("C:\\Program Files (x86)".to_string()),
+        Some("C:\\Program Files".to_string()),
+    ];
+
+    let editions = ["BuildTools", "Enterprise", "Professional", "Community"];
+
+    for pf in program_files.iter().flatten() {
+        for edition in &editions {
+            let vs_dir = PathBuf::from(pf)
+                .join("Microsoft Visual Studio")
+                .join("2022")
+                .join(edition)
+                .join("VC")
+                .join("Tools")
+                .join("MSVC");
+
+            if !vs_dir.is_dir() {
+                continue;
+            }
+
+            // Find the latest MSVC version
+            if let Ok(entries) = std::fs::read_dir(&vs_dir) {
+                let mut versions: Vec<PathBuf> = entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect();
+                versions.sort();
+                versions.reverse();
+
+                for ver_dir in versions {
+                    let link_exe = ver_dir
+                        .join("bin")
+                        .join(host)
+                        .join(target_dir)
+                        .join("link.exe");
+                    if link_exe.is_file() {
+                        return Some(link_exe);
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Search PATH for an executable by name.

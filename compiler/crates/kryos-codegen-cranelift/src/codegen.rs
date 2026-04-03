@@ -115,50 +115,133 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
     let mut fb_ctx = FunctionBuilderContext::new();
 
     // First pass: declare all functions so we can reference them.
+    //
+    // Special handling for `main`: if the user's main returns void, we rename
+    // it to `_kryos_main` and later emit a C-compatible `main` wrapper that
+    // calls it and returns 0.  This satisfies the linker expectation that
+    // `main` has signature `() -> i32`.
     let mut func_ids: HashMap<String, FuncId> = HashMap::new();
+    let mut needs_main_wrapper = false;
+
     for mir_func in &module.functions {
         let sig = build_signature(mir_func, object_module.isa().default_call_conv());
-        let func_id = object_module.declare_function(
-            &mir_func.name,
-            Linkage::Export,
-            &sig,
-        )?;
-        func_ids.insert(mir_func.name.clone(), func_id);
+
+        if mir_func.name == "main" && mir_func.ret_ty == MirType::Void {
+            // Declare the user's main under an internal name.
+            let func_id = object_module.declare_function(
+                "_kryos_main",
+                Linkage::Local,
+                &sig,
+            )?;
+            func_ids.insert(mir_func.name.clone(), func_id);
+            needs_main_wrapper = true;
+        } else {
+            let func_id = object_module.declare_function(
+                &mir_func.name,
+                Linkage::Export,
+                &sig,
+            )?;
+            func_ids.insert(mir_func.name.clone(), func_id);
+        }
     }
 
-    // Declare ARC runtime functions.
+    // Declare and define ARC runtime stub functions.
+    // These are no-op stubs until a proper runtime library is linked.
+    // We define them locally so the linker doesn't require an external runtime.
+    let call_conv = object_module.isa().default_call_conv();
     let arc_retain_sig = {
-        let mut sig = Signature::new(object_module.isa().default_call_conv());
+        let mut sig = Signature::new(call_conv);
         sig.params.push(AbiParam::new(types::I64));
         sig
     };
     let arc_release_sig = arc_retain_sig.clone();
     let arc_alloc_sig = {
-        let mut sig = Signature::new(object_module.isa().default_call_conv());
+        let mut sig = Signature::new(call_conv);
         sig.params.push(AbiParam::new(types::I64));
         sig.returns.push(AbiParam::new(types::I64));
         sig
     };
 
+    // Declare as local (defined in this module) rather than imported
     let arc_retain_id = object_module.declare_function(
         "kryos_arc_retain",
-        Linkage::Import,
+        Linkage::Local,
         &arc_retain_sig,
     )?;
     let arc_release_id = object_module.declare_function(
         "kryos_arc_release",
-        Linkage::Import,
+        Linkage::Local,
         &arc_release_sig,
     )?;
     let arc_alloc_id = object_module.declare_function(
         "kryos_arc_alloc",
-        Linkage::Import,
+        Linkage::Local,
         &arc_alloc_sig,
     )?;
 
     func_ids.insert("kryos_arc_retain".to_string(), arc_retain_id);
     func_ids.insert("kryos_arc_release".to_string(), arc_release_id);
     func_ids.insert("kryos_arc_alloc".to_string(), arc_alloc_id);
+
+    // Define ARC runtime stubs (no-ops for now)
+    {
+        // kryos_arc_retain(ptr: i64) -> void — no-op stub
+        let mut retain_fn = Function::with_name_signature(
+            UserFuncName::user(0, arc_retain_id.as_u32()),
+            arc_retain_sig.clone(),
+        );
+        {
+            let mut builder = FunctionBuilder::new(&mut retain_fn, &mut fb_ctx);
+            let block = builder.create_block();
+            builder.append_block_params_for_function_params(block);
+            builder.switch_to_block(block);
+            builder.seal_block(block);
+            builder.ins().return_(&[]);
+            builder.finalize();
+        }
+        let mut ctx = Context::for_function(retain_fn);
+        object_module.define_function(arc_retain_id, &mut ctx)?;
+        ctx.clear();
+    }
+    {
+        // kryos_arc_release(ptr: i64) -> void — no-op stub
+        let mut release_fn = Function::with_name_signature(
+            UserFuncName::user(0, arc_release_id.as_u32()),
+            arc_release_sig.clone(),
+        );
+        {
+            let mut builder = FunctionBuilder::new(&mut release_fn, &mut fb_ctx);
+            let block = builder.create_block();
+            builder.append_block_params_for_function_params(block);
+            builder.switch_to_block(block);
+            builder.seal_block(block);
+            builder.ins().return_(&[]);
+            builder.finalize();
+        }
+        let mut ctx = Context::for_function(release_fn);
+        object_module.define_function(arc_release_id, &mut ctx)?;
+        ctx.clear();
+    }
+    {
+        // kryos_arc_alloc(size: i64) -> i64 — stub returns the input pointer
+        let mut alloc_fn = Function::with_name_signature(
+            UserFuncName::user(0, arc_alloc_id.as_u32()),
+            arc_alloc_sig.clone(),
+        );
+        {
+            let mut builder = FunctionBuilder::new(&mut alloc_fn, &mut fb_ctx);
+            let block = builder.create_block();
+            builder.append_block_params_for_function_params(block);
+            builder.switch_to_block(block);
+            builder.seal_block(block);
+            let param = builder.block_params(block)[0];
+            builder.ins().return_(&[param]);
+            builder.finalize();
+        }
+        let mut ctx = Context::for_function(alloc_fn);
+        object_module.define_function(arc_alloc_id, &mut ctx)?;
+        ctx.clear();
+    }
 
     // Second pass: translate each function body.
     for mir_func in &module.functions {
@@ -185,6 +268,60 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
         let mut ctx = Context::for_function(cl_func);
         object_module
             .define_function(func_id, &mut ctx)
+            .map_err(|e| CodegenError::Module(e))?;
+    }
+
+    // If the user's main returns void, emit a C-compatible `main` wrapper:
+    //   i32 main() { _kryos_main(); return 0; }
+    if needs_main_wrapper {
+        let call_conv = object_module.isa().default_call_conv();
+
+        // Declare the exported `main` symbol with C signature: () -> i32.
+        let mut main_sig = Signature::new(call_conv);
+        main_sig.returns.push(AbiParam::new(types::I32));
+        let main_id = object_module.declare_function(
+            "main",
+            Linkage::Export,
+            &main_sig,
+        )?;
+
+        // Build the wrapper function body.
+        let kryos_main_id = func_ids["main"]; // points to _kryos_main
+        let mut cl_func = Function::with_name_signature(
+            UserFuncName::user(0, main_id.as_u32()),
+            main_sig.clone(),
+        );
+
+        {
+            let mut builder = FunctionBuilder::new(&mut cl_func, &mut fb_ctx);
+            let entry = builder.create_block();
+            builder.switch_to_block(entry);
+            builder.append_block_params_for_function_params(entry);
+
+            // Call _kryos_main().
+            let callee_sig = build_signature(
+                module.functions.iter().find(|f| f.name == "main").unwrap(),
+                call_conv,
+            );
+            let callee_sig_ref = builder.import_signature(callee_sig);
+            let callee_ref = object_module.declare_func_in_func(kryos_main_id, builder.func);
+            builder.ins().call(callee_ref, &[]);
+
+            // Return 0i32.
+            let zero = builder.ins().iconst(types::I32, 0);
+            builder.ins().return_(&[zero]);
+
+            builder.seal_all_blocks();
+            builder.finalize();
+
+            // Suppress unused-variable warning — sig_ref is consumed by the
+            // import but not explicitly referenced after; the builder owns it.
+            let _ = callee_sig_ref;
+        }
+
+        let mut ctx = Context::for_function(cl_func);
+        object_module
+            .define_function(main_id, &mut ctx)
             .map_err(|e| CodegenError::Module(e))?;
     }
 

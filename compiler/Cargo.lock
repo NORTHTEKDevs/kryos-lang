@@ -478,6 +478,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "kryos-bindgen",
+ "kryos-codegen-cranelift",
+ "kryos-codegen-llvm",
  "kryos-driver",
  "kryos-errors",
  "kryos-lsp",
@@ -494,6 +496,7 @@ dependencies = [
  "cranelift-module",
  "cranelift-native",
  "cranelift-object",
+ "kryos-driver",
  "kryos-errors",
  "kryos-mir",
 ]
@@ -502,6 +505,7 @@ dependencies = [
 name = "kryos-codegen-llvm"
 version = "0.1.0"
 dependencies = [
+ "kryos-driver",
  "kryos-errors",
  "kryos-mir",
 ]

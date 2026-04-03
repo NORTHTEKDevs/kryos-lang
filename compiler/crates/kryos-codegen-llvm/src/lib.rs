@@ -103,3 +103,49 @@ pub fn emit_module(
     let mut cg = LlvmCodegen::new(options.clone());
     cg.emit_module(module)
 }
+
+// ---------------------------------------------------------------------------
+// LlvmBackend — driver-compatible backend wrapper
+// ---------------------------------------------------------------------------
+
+/// The LLVM IR codegen backend — implements the driver's Backend trait.
+pub struct LlvmBackend {
+    options: EmitOptions,
+}
+
+impl LlvmBackend {
+    pub fn new(options: EmitOptions) -> Self {
+        Self { options }
+    }
+}
+
+impl Default for LlvmBackend {
+    fn default() -> Self {
+        Self::new(EmitOptions::default())
+    }
+}
+
+impl kryos_driver::Backend for LlvmBackend {
+    fn compile(
+        &self,
+        _module: &kryos_mir::ir::MirModule,
+    ) -> Result<Vec<u8>, kryos_driver::BackendError> {
+        // LLVM backend emits IR text, not object code directly.
+        // The pipeline should use emit_ir() and then invoke llc/clang externally.
+        Err(kryos_driver::BackendError::unsupported(
+            "direct object code compilation not supported by LLVM IR text backend; use emit_ir() + llc",
+        ))
+    }
+
+    fn emit_ir(
+        &self,
+        module: &kryos_mir::ir::MirModule,
+    ) -> Result<String, kryos_driver::BackendError> {
+        emit_module(module, &self.options)
+            .map_err(|e| kryos_driver::BackendError::new(e.to_string()))
+    }
+
+    fn name(&self) -> &str {
+        "llvm"
+    }
+}

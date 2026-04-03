@@ -65,15 +65,61 @@ pub fn execute() -> Result<(), String> {
             }
             input if input.starts_with(":type ") => {
                 let expr = &input[6..];
-                // TODO: hook into the type checker once the driver pipeline is
-                // connected. For now, show a placeholder.
-                println!("(type checking not yet connected for: `{expr}`)");
+                // Wrap in a function so the parser can handle it
+                let wrapper = format!("fn __repl_type_check__() {{ let __result__ = {expr}; }}");
+                let (diags, sm) = kryos_driver::check_source(&wrapper, "<repl>");
+                if diags.iter().any(|d| d.is_error()) {
+                    for d in &diags {
+                        eprint!("{}", kryos_errors::render_diagnostic(d, &sm));
+                    }
+                } else {
+                    // Type check passed — report success.
+                    // Full type inference display would require accessing the
+                    // type table, which isn't exposed yet. For now, report that
+                    // the expression is valid.
+                    println!("expression `{expr}` type-checks successfully");
+                }
             }
             input => {
-                // TODO: Compile the expression/statement with the Cranelift JIT
-                // and print the result. This requires the driver pipeline to be
-                // wired up.
-                println!("(evaluation not yet connected for: `{input}`)");
+                // Wrap input as a function body so the pipeline can handle it.
+                let wrapper = if input.contains("let ") || input.contains('=') || input.ends_with(';') {
+                    format!("fn __repl_eval__() {{ {input} }}")
+                } else {
+                    // Bare expression — wrap as a statement.
+                    format!("fn __repl_eval__() {{ {input}; }}")
+                };
+
+                let config = kryos_driver::BuildConfig::for_file("<repl>");
+                let result = kryos_driver::compile_source(&wrapper, "<repl>", &config);
+
+                if !result.success {
+                    for d in &result.diagnostics {
+                        let rendered = kryos_errors::render_diagnostic(d, &result.source_map);
+                        eprint!("{rendered}");
+                    }
+                } else if let Some(ref mir) = result.mir {
+                    // Try JIT compilation via the Cranelift backend.
+                    let backend = kryos_codegen_cranelift::CraneliftBackend::new();
+                    // Find the __repl_eval__ function in MIR.
+                    if let Some(func) = mir.functions.iter().find(|f| f.name == "__repl_eval__") {
+                        match backend.jit_compile_function(func) {
+                            Ok(ptr) => {
+                                // Execute the JIT'd function.
+                                // Safety: `ptr` points to JIT-compiled code with the
+                                // signature `fn()` produced by the Cranelift backend.
+                                let f: fn() = unsafe { std::mem::transmute(ptr) };
+                                f();
+                            }
+                            Err(e) => {
+                                eprintln!("JIT error: {e}");
+                            }
+                        }
+                    } else {
+                        eprintln!("(internal: __repl_eval__ not found in MIR)");
+                    }
+                } else {
+                    println!("(no output)");
+                }
             }
         }
     }

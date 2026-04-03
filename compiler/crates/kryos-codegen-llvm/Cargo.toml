@@ -6,3 +6,4 @@ edition.workspace = true
 [dependencies]
 kryos-errors.workspace = true
 kryos-mir.workspace = true
+kryos-driver.workspace = true
