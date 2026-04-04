@@ -43,6 +43,18 @@ pub struct EnumVariantDef {
 }
 
 // ---------------------------------------------------------------------------
+// Trait definitions (for MIR-level trait tracking)
+// ---------------------------------------------------------------------------
+
+/// A single method signature within a trait definition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraitMethodSig {
+    pub name: String,
+    pub param_types: Vec<MirType>,
+    pub ret_ty: MirType,
+}
+
+// ---------------------------------------------------------------------------
 // Types (MIR-level, decoupled from AST TypeExpr)
 // ---------------------------------------------------------------------------
 

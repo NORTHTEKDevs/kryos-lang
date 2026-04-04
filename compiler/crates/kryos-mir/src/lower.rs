@@ -41,6 +41,25 @@ pub struct LoweringContext {
     func_ret_types: HashMap<String, MirType>,
     /// Method ownership: (TypeName, method_name) -> mangled function name.
     method_owners: HashMap<(String, String), String>,
+    /// Trait definitions: trait_name -> list of required method signatures.
+    trait_defs: HashMap<String, Vec<TraitMethodSig>>,
+    /// Impl-for-trait map: (type_name, trait_name) -> list of mangled method names.
+    impl_map: HashMap<(String, String), Vec<String>>,
+    /// Generic function templates: func_name -> (generic_params, AST function decl).
+    /// These are not lowered immediately; they are instantiated on demand at call sites.
+    generic_templates: HashMap<String, GenericTemplate>,
+    /// Already-monomorphized specializations, to avoid duplicate lowering.
+    monomorphized: HashMap<String, bool>,
+    /// Functions produced by monomorphization (collected after lowering).
+    monomorphized_functions: Vec<MirFunction>,
+}
+
+/// Stores a generic function's AST for deferred monomorphization.
+struct GenericTemplate {
+    generic_params: Vec<String>,
+    params: Vec<ast::Param>,
+    ret_ty: Option<ast::TypeExpr>,
+    body: ast::Block,
 }
 
 impl LoweringContext {
@@ -58,6 +77,11 @@ impl LoweringContext {
             enum_defs: HashMap::new(),
             func_ret_types: HashMap::new(),
             method_owners: HashMap::new(),
+            trait_defs: HashMap::new(),
+            impl_map: HashMap::new(),
+            generic_templates: HashMap::new(),
+            monomorphized: HashMap::new(),
+            monomorphized_functions: Vec::new(),
         }
     }
 
@@ -126,6 +150,44 @@ impl LoweringContext {
         self.loop_headers.clear();
         self.loop_exits.clear();
     }
+
+    /// Save the per-function state so we can restore it after monomorphization.
+    fn save_function_state(&self) -> FunctionState {
+        FunctionState {
+            locals: self.locals.clone(),
+            blocks: self.blocks.clone(),
+            current_instructions: self.current_instructions.clone(),
+            current_block: self.current_block,
+            next_local: self.next_local,
+            next_block: self.next_block,
+            loop_headers: self.loop_headers.clone(),
+            loop_exits: self.loop_exits.clone(),
+        }
+    }
+
+    /// Restore per-function state after monomorphization.
+    fn restore_function_state(&mut self, state: FunctionState) {
+        self.locals = state.locals;
+        self.blocks = state.blocks;
+        self.current_instructions = state.current_instructions;
+        self.current_block = state.current_block;
+        self.next_local = state.next_local;
+        self.next_block = state.next_block;
+        self.loop_headers = state.loop_headers;
+        self.loop_exits = state.loop_exits;
+    }
+}
+
+/// Saved per-function lowering state (used during monomorphization).
+struct FunctionState {
+    locals: Vec<MirLocal>,
+    blocks: Vec<BasicBlock>,
+    current_instructions: Vec<Instruction>,
+    current_block: BlockId,
+    next_local: u32,
+    next_block: u32,
+    loop_headers: Vec<BlockId>,
+    loop_exits: Vec<BlockId>,
 }
 
 // ---------------------------------------------------------------------------
@@ -157,14 +219,57 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                     .collect();
                 ctx.enum_defs.insert(name.clone(), variant_defs);
             }
-            ast::Decl::Function { name, ret_ty, .. } => {
+            ast::Decl::Function { name, generics, params, ret_ty, body, .. } => {
                 let mir_ret = match ret_ty {
                     Some(ty) => lower_type_expr(ty),
                     None => MirType::Void,
                 };
                 ctx.func_ret_types.insert(name.clone(), mir_ret);
+
+                // If this function has generic params, store it as a template
+                // for monomorphization instead of lowering it immediately.
+                if !generics.is_empty() {
+                    if let Some(body) = body {
+                        ctx.generic_templates.insert(name.clone(), GenericTemplate {
+                            generic_params: generics.iter().map(|g| g.name.clone()).collect(),
+                            params: params.clone(),
+                            ret_ty: ret_ty.clone(),
+                            body: body.clone(),
+                        });
+                    }
+                }
             }
-            ast::Decl::Impl { target, methods, .. } => {
+            ast::Decl::Trait { name, methods, .. } => {
+                let method_sigs: Vec<TraitMethodSig> = methods
+                    .iter()
+                    .filter_map(|m| {
+                        if let ast::Decl::Function { name, params, ret_ty, .. } = m {
+                            let param_types: Vec<MirType> = params
+                                .iter()
+                                .filter(|p| p.name != "self")
+                                .map(|p| {
+                                    p.ty.as_ref()
+                                        .map(|t| lower_type_expr(t))
+                                        .unwrap_or(MirType::I64)
+                                })
+                                .collect();
+                            let ret = match ret_ty {
+                                Some(ty) => lower_type_expr(ty),
+                                None => MirType::Void,
+                            };
+                            Some(TraitMethodSig {
+                                name: name.clone(),
+                                param_types,
+                                ret_ty: ret,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                ctx.trait_defs.insert(name.clone(), method_sigs);
+            }
+            ast::Decl::Impl { target, trait_name, methods, .. } => {
                 // Register mangled method names in func_ret_types.
                 for method in methods {
                     if let ast::Decl::Function { name, ret_ty, .. } = method {
@@ -185,6 +290,23 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                         );
                     }
                 }
+                // If implementing a trait, record in impl_map.
+                if let Some(trait_name) = trait_name {
+                    let mangled_names: Vec<String> = methods
+                        .iter()
+                        .filter_map(|m| {
+                            if let ast::Decl::Function { name, .. } = m {
+                                Some(format!("{target}__{name}"))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    ctx.impl_map.insert(
+                        (target.clone(), trait_name.clone()),
+                        mangled_names,
+                    );
+                }
             }
             _ => {}
         }
@@ -196,11 +318,16 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         match decl {
             ast::Decl::Function {
                 name,
+                generics,
                 params,
                 ret_ty,
                 body: Some(body),
                 ..
             } => {
+                // Skip generic functions — they are lowered on demand via monomorphization.
+                if !generics.is_empty() {
+                    continue;
+                }
                 functions.push(lower_function(&mut ctx, name, params, ret_ty, body));
             }
             ast::Decl::Impl { target, methods, .. } => {
@@ -240,6 +367,9 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
             _ => {}
         }
     }
+
+    // Collect monomorphized specializations generated during lowering.
+    functions.extend(ctx.monomorphized_functions.drain(..));
 
     MirModule {
         functions,
@@ -993,9 +1123,37 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
 
         ast::Expr::UnaryOp { operand, .. } => infer_expr_type(ctx, operand),
 
-        ast::Expr::FnCall { callee, .. } => {
+        ast::Expr::FnCall { callee, args, .. } => {
             // If the callee is a simple identifier, look up the return type.
             if let ast::Expr::Identifier { name, .. } = callee.as_ref() {
+                // For generic functions, the return type depends on argument types.
+                if let Some(template) = ctx.generic_templates.get(name.as_str()) {
+                    let generic_params = template.generic_params.clone();
+                    let template_params = template.params.clone();
+                    let template_ret_ty = template.ret_ty.clone();
+                    // Infer type map from arguments.
+                    let mut type_map: HashMap<String, MirType> = HashMap::new();
+                    for (i, param) in template_params.iter().enumerate() {
+                        if let Some(ty_expr) = &param.ty {
+                            if let ast::TypeExpr::Simple { name: tn, .. } = ty_expr {
+                                if generic_params.contains(tn) {
+                                    if let Some(arg) = args.get(i) {
+                                        type_map.insert(tn.clone(), infer_expr_type(ctx, arg));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(ret_ty) = &template_ret_ty {
+                        if let ast::TypeExpr::Simple { name: rn, .. } = ret_ty {
+                            if let Some(concrete) = type_map.get(rn) {
+                                return concrete.clone();
+                            }
+                        }
+                        return lower_type_expr(ret_ty);
+                    }
+                    return MirType::Void;
+                }
                 if let Some(ret_ty) = ctx.func_ret_types.get(name.as_str()) {
                     return ret_ty.clone();
                 }
@@ -1117,6 +1275,23 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     enum_name,
                     variant_idx,
                     fields: mir_args,
+                };
+            }
+
+            // Check if this is a call to a generic function — monomorphize.
+            if ctx.generic_templates.contains_key(&func_name) {
+                let arg_types: Vec<MirType> = args
+                    .iter()
+                    .map(|a| infer_expr_type(ctx, a))
+                    .collect();
+                let mangled = monomorphize(ctx, &func_name, &arg_types);
+                let mir_args: Vec<Operand> = args
+                    .iter()
+                    .map(|a| lower_expr_to_operand(ctx, a))
+                    .collect();
+                return RValue::Call {
+                    func: mangled,
+                    args: mir_args,
                 };
             }
 
@@ -1478,4 +1653,205 @@ fn find_enum_variant(ctx: &LoweringContext, name: &str) -> Option<(String, u32)>
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// Monomorphization
+// ---------------------------------------------------------------------------
+
+/// Produce a mangled name for a monomorphized specialization.
+/// e.g., `id` with `[I64]` → `id___i64`.
+fn mono_mangled_name(base: &str, concrete_types: &[MirType]) -> String {
+    let suffix: Vec<String> = concrete_types.iter().map(|t| format!("{t}")).collect();
+    format!("{base}___{}", suffix.join("_"))
+}
+
+/// Monomorphize a generic function template with concrete argument types.
+///
+/// Infers type parameter bindings from argument types, substitutes them
+/// in the parameter/return type annotations, lowers the specialized copy,
+/// and returns the mangled name.
+fn monomorphize(
+    ctx: &mut LoweringContext,
+    func_name: &str,
+    arg_types: &[MirType],
+) -> String {
+    // Build type param → concrete type mapping by matching args to params.
+    let template = ctx.generic_templates.get(func_name).expect("template exists");
+    let generic_params = template.generic_params.clone();
+    let template_params = template.params.clone();
+    let template_ret_ty = template.ret_ty.clone();
+    let template_body = template.body.clone();
+
+    let mut type_map: HashMap<String, MirType> = HashMap::new();
+    for (i, param) in template_params.iter().enumerate() {
+        if let Some(ty_expr) = &param.ty {
+            if let ast::TypeExpr::Simple { name, .. } = ty_expr {
+                if generic_params.contains(name) {
+                    if let Some(concrete) = arg_types.get(i) {
+                        type_map.insert(name.clone(), concrete.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Build the list of concrete types in generic_params order for the mangled name.
+    let concrete_ordered: Vec<MirType> = generic_params
+        .iter()
+        .map(|gp| type_map.get(gp).cloned().unwrap_or(MirType::I64))
+        .collect();
+    let mangled = mono_mangled_name(func_name, &concrete_ordered);
+
+    // If already monomorphized, just return the name.
+    if ctx.monomorphized.contains_key(&mangled) {
+        return mangled;
+    }
+    ctx.monomorphized.insert(mangled.clone(), true);
+
+    // Register the return type for the specialized function.
+    let specialized_ret = if let Some(ret_ty) = &template_ret_ty {
+        if let ast::TypeExpr::Simple { name, .. } = ret_ty {
+            if let Some(concrete) = type_map.get(name) {
+                concrete.clone()
+            } else {
+                lower_type_expr(ret_ty)
+            }
+        } else {
+            lower_type_expr(ret_ty)
+        }
+    } else {
+        MirType::Void
+    };
+    ctx.func_ret_types.insert(mangled.clone(), specialized_ret);
+
+    // Substitute type params in the parameter list.
+    let specialized_params: Vec<ast::Param> = template_params
+        .iter()
+        .map(|p| {
+            let new_ty = p.ty.as_ref().map(|ty_expr| substitute_type_expr(ty_expr, &type_map));
+            ast::Param {
+                name: p.name.clone(),
+                ty: new_ty,
+                default: p.default.clone(),
+                span: p.span,
+            }
+        })
+        .collect();
+
+    let specialized_ret_ty = template_ret_ty
+        .as_ref()
+        .map(|ty| substitute_type_expr(ty, &type_map));
+
+    // Save the current function state — lower_function will call reset().
+    let saved = ctx.save_function_state();
+
+    // Lower the specialized function.
+    let mir_func = lower_function(ctx, &mangled, &specialized_params, &specialized_ret_ty, &template_body);
+
+    // Restore the caller's function state.
+    ctx.restore_function_state(saved);
+
+    // Store the monomorphized function for collection by lower_module.
+    ctx.monomorphized_functions.push(mir_func);
+
+    mangled
+}
+
+/// Substitute generic type parameters in a TypeExpr based on a type map.
+fn substitute_type_expr(
+    ty: &ast::TypeExpr,
+    type_map: &HashMap<String, MirType>,
+) -> ast::TypeExpr {
+    match ty {
+        ast::TypeExpr::Simple { name, span } => {
+            if let Some(concrete) = type_map.get(name) {
+                // Convert MirType back to a Simple TypeExpr name.
+                let concrete_name = mir_type_to_name(concrete);
+                ast::TypeExpr::Simple {
+                    name: concrete_name,
+                    span: *span,
+                }
+            } else {
+                ty.clone()
+            }
+        }
+        // For compound types, recurse.
+        ast::TypeExpr::Array { element, size, span } => ast::TypeExpr::Array {
+            element: Box::new(substitute_type_expr(element, type_map)),
+            size: *size,
+            span: *span,
+        },
+        ast::TypeExpr::Tuple { elements, span } => ast::TypeExpr::Tuple {
+            elements: elements.iter().map(|e| substitute_type_expr(e, type_map)).collect(),
+            span: *span,
+        },
+        ast::TypeExpr::Function { params, ret, span } => ast::TypeExpr::Function {
+            params: params.iter().map(|p| substitute_type_expr(p, type_map)).collect(),
+            ret: Box::new(substitute_type_expr(ret, type_map)),
+            span: *span,
+        },
+        ast::TypeExpr::Generic { name, args, span } => {
+            if let Some(concrete) = type_map.get(name) {
+                let concrete_name = mir_type_to_name(concrete);
+                ast::TypeExpr::Simple {
+                    name: concrete_name,
+                    span: *span,
+                }
+            } else {
+                ast::TypeExpr::Generic {
+                    name: name.clone(),
+                    args: args.iter().map(|a| substitute_type_expr(a, type_map)).collect(),
+                    span: *span,
+                }
+            }
+        }
+        ast::TypeExpr::Shared { inner, span } => ast::TypeExpr::Shared {
+            inner: Box::new(substitute_type_expr(inner, type_map)),
+            span: *span,
+        },
+        ast::TypeExpr::Pointer { inner, mutable, span } => ast::TypeExpr::Pointer {
+            inner: Box::new(substitute_type_expr(inner, type_map)),
+            mutable: *mutable,
+            span: *span,
+        },
+        ast::TypeExpr::Optional { inner, span } => ast::TypeExpr::Optional {
+            inner: Box::new(substitute_type_expr(inner, type_map)),
+            span: *span,
+        },
+        ast::TypeExpr::Reference { inner, mutable, span } => ast::TypeExpr::Reference {
+            inner: Box::new(substitute_type_expr(inner, type_map)),
+            mutable: *mutable,
+            span: *span,
+        },
+        ast::TypeExpr::Weak { inner, span } => ast::TypeExpr::Weak {
+            inner: Box::new(substitute_type_expr(inner, type_map)),
+            span: *span,
+        },
+        ast::TypeExpr::Inferred { .. } => ty.clone(),
+    }
+}
+
+/// Convert a MirType to a simple type name string for TypeExpr substitution.
+fn mir_type_to_name(ty: &MirType) -> String {
+    match ty {
+        MirType::I8 => "i8".into(),
+        MirType::I16 => "i16".into(),
+        MirType::I32 => "i32".into(),
+        MirType::I64 => "i64".into(),
+        MirType::I128 => "i128".into(),
+        MirType::U8 => "u8".into(),
+        MirType::U16 => "u16".into(),
+        MirType::U32 => "u32".into(),
+        MirType::U64 => "u64".into(),
+        MirType::U128 => "u128".into(),
+        MirType::F32 => "f32".into(),
+        MirType::F64 => "f64".into(),
+        MirType::Bool => "bool".into(),
+        MirType::Char => "char".into(),
+        MirType::Str => "str".into(),
+        MirType::Void => "void".into(),
+        MirType::Struct(name) | MirType::Enum(name) => name.clone(),
+        _ => "i64".into(),
+    }
 }

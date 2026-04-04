@@ -81,6 +81,41 @@ fn make_fn(name: &str, params: Vec<Param>, ret_ty: Option<TypeExpr>, body: Block
     }
 }
 
+fn make_generic_fn(
+    name: &str,
+    generics: Vec<ast::decl::GenericParam>,
+    params: Vec<Param>,
+    ret_ty: Option<TypeExpr>,
+    body: Block,
+) -> Decl {
+    Decl::Function {
+        name: name.to_string(),
+        generics,
+        params,
+        ret_ty,
+        body: Some(body),
+        public: false,
+        annotations: vec![],
+        span: S,
+    }
+}
+
+fn make_generic_param(name: &str) -> ast::decl::GenericParam {
+    ast::decl::GenericParam {
+        name: name.to_string(),
+        bounds: vec![],
+        span: S,
+    }
+}
+
+fn make_generic_param_bounded(name: &str, bounds: Vec<&str>) -> ast::decl::GenericParam {
+    ast::decl::GenericParam {
+        name: name.to_string(),
+        bounds: bounds.into_iter().map(|s| s.to_string()).collect(),
+        span: S,
+    }
+}
+
 fn make_param(name: &str, ty: &str) -> Param {
     Param {
         name: name.to_string(),
@@ -763,4 +798,295 @@ fn block_successors() {
         bb_switch.successors(),
         vec![BlockId(10), BlockId(11), BlockId(12)]
     );
+}
+
+// ---------------------------------------------------------------------------
+// Test 17: Generic identity function — monomorphization
+// ---------------------------------------------------------------------------
+
+#[test]
+fn generic_identity_monomorphized() {
+    // fn id<T>(x: T) -> T { x }
+    // fn main() { let a = id(42); let b = id(3.14); }
+    let module = make_module(vec![
+        make_generic_fn(
+            "id",
+            vec![make_generic_param("T")],
+            vec![Param {
+                name: "x".into(),
+                ty: Some(simple_ty("T")),
+                default: None,
+                span: S,
+            }],
+            Some(simple_ty("T")),
+            block(vec![Stmt::Return {
+                value: Some(ident("x")),
+                span: S,
+            }]),
+        ),
+        make_fn(
+            "main",
+            vec![],
+            None,
+            block(vec![
+                Stmt::Let {
+                    name: "a".into(),
+                    mutable: false,
+                    ty: None,
+                    value: Some(ast::Expr::FnCall {
+                        callee: Box::new(ident("id")),
+                        args: vec![int_lit(42)],
+                        span: S,
+                    }),
+                    pattern: None,
+                    span: S,
+                },
+                Stmt::Let {
+                    name: "b".into(),
+                    mutable: false,
+                    ty: None,
+                    value: Some(ast::Expr::FnCall {
+                        callee: Box::new(ident("id")),
+                        args: vec![float_lit(3.14)],
+                        span: S,
+                    }),
+                    pattern: None,
+                    span: S,
+                },
+            ]),
+        ),
+    ]);
+
+    let mir = lower_module(&module);
+
+    // The generic `id` should NOT appear as a function.
+    assert!(
+        !mir.functions.iter().any(|f| f.name == "id"),
+        "generic template 'id' should not be in output functions"
+    );
+
+    // Instead, we should have monomorphized specializations.
+    let has_id_i64 = mir.functions.iter().any(|f| f.name == "id___i64");
+    let has_id_f64 = mir.functions.iter().any(|f| f.name == "id___f64");
+    assert!(has_id_i64, "should have monomorphized id___i64");
+    assert!(has_id_f64, "should have monomorphized id___f64");
+
+    // main should exist and call the mangled names.
+    let main_fn = mir.functions.iter().find(|f| f.name == "main").unwrap();
+    let calls: Vec<String> = main_fn
+        .blocks
+        .iter()
+        .flat_map(|bb| bb.instructions.iter())
+        .filter_map(|inst| match inst {
+            Instruction::Assign { value: RValue::Call { func, .. }, .. } => Some(func.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(calls.contains(&"id___i64".to_string()), "main should call id___i64");
+    assert!(calls.contains(&"id___f64".to_string()), "main should call id___f64");
+}
+
+// ---------------------------------------------------------------------------
+// Test 18: Generic function with multiple type params
+// ---------------------------------------------------------------------------
+
+#[test]
+fn generic_two_type_params() {
+    // fn pair<A, B>(a: A, b: B) -> A { a }
+    // fn main() { let x = pair(1, true); }
+    let module = make_module(vec![
+        make_generic_fn(
+            "pair",
+            vec![make_generic_param("A"), make_generic_param("B")],
+            vec![
+                Param { name: "a".into(), ty: Some(simple_ty("A")), default: None, span: S },
+                Param { name: "b".into(), ty: Some(simple_ty("B")), default: None, span: S },
+            ],
+            Some(simple_ty("A")),
+            block(vec![Stmt::Return { value: Some(ident("a")), span: S }]),
+        ),
+        make_fn(
+            "main",
+            vec![],
+            None,
+            block(vec![Stmt::Let {
+                name: "x".into(),
+                mutable: false,
+                ty: None,
+                value: Some(ast::Expr::FnCall {
+                    callee: Box::new(ident("pair")),
+                    args: vec![int_lit(1), bool_lit(true)],
+                    span: S,
+                }),
+                pattern: None,
+                span: S,
+            }]),
+        ),
+    ]);
+
+    let mir = lower_module(&module);
+
+    // Should produce pair___i64_bool.
+    let has_specialized = mir.functions.iter().any(|f| f.name == "pair___i64_bool");
+    assert!(has_specialized, "should have monomorphized pair___i64_bool");
+}
+
+// ---------------------------------------------------------------------------
+// Test 19: Trait definition tracked in lowering context
+// ---------------------------------------------------------------------------
+
+#[test]
+fn trait_definition_tracked() {
+    // trait Printable { fn print(self) -> void }
+    // fn main() {}
+    let module = make_module(vec![
+        Decl::Trait {
+            name: "Printable".into(),
+            generics: vec![],
+            methods: vec![Decl::Function {
+                name: "print".into(),
+                generics: vec![],
+                params: vec![Param {
+                    name: "self".into(),
+                    ty: None,
+                    default: None,
+                    span: S,
+                }],
+                ret_ty: None,
+                body: None,
+                public: false,
+                annotations: vec![],
+                span: S,
+            }],
+            public: false,
+            span: S,
+        },
+        make_fn("main", vec![], None, block(vec![])),
+    ]);
+
+    let mir = lower_module(&module);
+    // Should compile without errors — trait decls don't produce functions.
+    assert_eq!(mir.functions.len(), 1); // only main
+    assert_eq!(mir.functions[0].name, "main");
+}
+
+// ---------------------------------------------------------------------------
+// Test 20: Impl for trait registers mangled methods
+// ---------------------------------------------------------------------------
+
+#[test]
+fn impl_for_trait_methods() {
+    // trait Greetable { fn greet(self) -> i64 }
+    // struct Dog { age: i64 }
+    // impl Greetable for Dog { fn greet(self) -> i64 { 42 } }
+    // fn main() {}
+    let module = make_module(vec![
+        Decl::Trait {
+            name: "Greetable".into(),
+            generics: vec![],
+            methods: vec![Decl::Function {
+                name: "greet".into(),
+                generics: vec![],
+                params: vec![Param { name: "self".into(), ty: None, default: None, span: S }],
+                ret_ty: Some(simple_ty("i64")),
+                body: None,
+                public: false,
+                annotations: vec![],
+                span: S,
+            }],
+            public: false,
+            span: S,
+        },
+        Decl::Struct {
+            name: "Dog".into(),
+            generics: vec![],
+            fields: vec![ast::decl::StructField {
+                name: "age".into(),
+                ty: simple_ty("i64"),
+                public: false,
+                default: None,
+                span: S,
+            }],
+            public: false,
+            annotations: vec![],
+            span: S,
+        },
+        Decl::Impl {
+            target: "Dog".into(),
+            trait_name: Some("Greetable".into()),
+            generics: vec![],
+            methods: vec![Decl::Function {
+                name: "greet".into(),
+                generics: vec![],
+                params: vec![Param { name: "self".into(), ty: None, default: None, span: S }],
+                ret_ty: Some(simple_ty("i64")),
+                body: Some(block(vec![Stmt::Return { value: Some(int_lit(42)), span: S }])),
+                public: false,
+                annotations: vec![],
+                span: S,
+            }],
+            span: S,
+        },
+        make_fn("main", vec![], None, block(vec![])),
+    ]);
+
+    let mir = lower_module(&module);
+
+    // Should have Dog__greet as a function.
+    let has_greet = mir.functions.iter().any(|f| f.name == "Dog__greet");
+    assert!(has_greet, "should have Dog__greet from impl Greetable for Dog");
+
+    // Should have main.
+    let has_main = mir.functions.iter().any(|f| f.name == "main");
+    assert!(has_main, "should have main");
+}
+
+// ---------------------------------------------------------------------------
+// Test 21: Deduplicated monomorphization (same specialization called twice)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn monomorphization_deduplication() {
+    // fn id<T>(x: T) -> T { x }
+    // fn main() { let a = id(1); let b = id(2); }
+    // Both calls use i64 — should only produce one id___i64.
+    let module = make_module(vec![
+        make_generic_fn(
+            "id",
+            vec![make_generic_param("T")],
+            vec![Param { name: "x".into(), ty: Some(simple_ty("T")), default: None, span: S }],
+            Some(simple_ty("T")),
+            block(vec![Stmt::Return { value: Some(ident("x")), span: S }]),
+        ),
+        make_fn(
+            "main",
+            vec![],
+            None,
+            block(vec![
+                Stmt::Let {
+                    name: "a".into(), mutable: false, ty: None,
+                    value: Some(ast::Expr::FnCall {
+                        callee: Box::new(ident("id")),
+                        args: vec![int_lit(1)],
+                        span: S,
+                    }),
+                    pattern: None, span: S,
+                },
+                Stmt::Let {
+                    name: "b".into(), mutable: false, ty: None,
+                    value: Some(ast::Expr::FnCall {
+                        callee: Box::new(ident("id")),
+                        args: vec![int_lit(2)],
+                        span: S,
+                    }),
+                    pattern: None, span: S,
+                },
+            ]),
+        ),
+    ]);
+
+    let mir = lower_module(&module);
+
+    let id_i64_count = mir.functions.iter().filter(|f| f.name == "id___i64").count();
+    assert_eq!(id_i64_count, 1, "should only have one id___i64, not duplicates");
 }
