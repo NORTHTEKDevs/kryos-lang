@@ -300,6 +300,304 @@ fn build_config_explicit_output_overrides_derived() {
 }
 
 // ---------------------------------------------------------------------------
+// Module import tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compile_file_with_import_succeeds() {
+    // Create a main file that imports a math module.
+    let dir = std::env::temp_dir().join("kryos_module_tests");
+    fs::create_dir_all(&dir).unwrap();
+
+    let math_src = r#"fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+fn subtract(a: i32, b: i32) -> i32 {
+    return a - b
+}
+"#;
+
+    let main_src = r#"use math
+
+fn main() {
+    let result = add(3, 4)
+    println("module import works")
+}
+"#;
+
+    fs::write(dir.join("math.kry"), math_src).unwrap();
+    fs::write(dir.join("main.kry"), main_src).unwrap();
+
+    let main_path = dir.join("main.kry");
+    let config = BuildConfig {
+        input: main_path.to_string_lossy().to_string(),
+        output: None,
+        mode: BuildMode::Debug,
+        output_type: OutputType::Mir,
+        target: None,
+        capabilities: Vec::new(),
+        verbose: true,
+    };
+
+    let result = compile_file(&main_path, &config);
+
+    assert!(
+        result.success,
+        "expected success but got errors: {:?}",
+        result.diagnostics
+    );
+    assert_eq!(
+        result.error_count(),
+        0,
+        "expected no errors, got: {:?}",
+        result.errors()
+    );
+    assert!(result.mir.is_some(), "expected MIR to be produced");
+
+    // The merged MIR should contain functions from both files:
+    // add, subtract (from math.kry) and main (from main.kry).
+    let mir = result.mir.unwrap();
+    let func_names: Vec<&str> = mir.functions.iter().map(|f| f.name.as_str()).collect();
+    assert!(
+        func_names.contains(&"add"),
+        "expected 'add' in merged MIR, got: {func_names:?}"
+    );
+    assert!(
+        func_names.contains(&"subtract"),
+        "expected 'subtract' in merged MIR, got: {func_names:?}"
+    );
+    assert!(
+        func_names.contains(&"main"),
+        "expected 'main' in merged MIR, got: {func_names:?}"
+    );
+}
+
+#[test]
+fn compile_file_with_missing_import_fails() {
+    let dir = std::env::temp_dir().join("kryos_module_tests_missing");
+    fs::create_dir_all(&dir).unwrap();
+
+    let main_src = r#"use nonexistent
+
+fn main() {
+    println("should fail")
+}
+"#;
+
+    fs::write(dir.join("main.kry"), main_src).unwrap();
+
+    let main_path = dir.join("main.kry");
+    let config = BuildConfig {
+        input: main_path.to_string_lossy().to_string(),
+        output: None,
+        mode: BuildMode::Debug,
+        output_type: OutputType::Mir,
+        target: None,
+        capabilities: Vec::new(),
+        verbose: false,
+    };
+
+    let result = compile_file(&main_path, &config);
+
+    assert!(!result.success, "expected failure for missing import");
+    assert!(
+        result.error_count() > 0,
+        "expected at least one error diagnostic"
+    );
+    let msg = &result.diagnostics[0].message;
+    assert!(
+        msg.contains("nonexistent") && msg.contains("not found"),
+        "expected error about 'nonexistent' not found, got: {msg}"
+    );
+}
+
+#[test]
+fn compile_file_with_transitive_import_succeeds() {
+    // Test: main imports utils, which imports helpers.
+    let dir = std::env::temp_dir().join("kryos_module_tests_transitive");
+    fs::create_dir_all(&dir).unwrap();
+
+    let helpers_src = r#"fn double(x: i32) -> i32 {
+    return x + x
+}
+"#;
+
+    let utils_src = r#"use helpers
+
+fn triple(x: i32) -> i32 {
+    return x + x + x
+}
+"#;
+
+    let main_src = r#"use utils
+
+fn main() {
+    let a = triple(5)
+    let b = double(3)
+    println("transitive import works")
+}
+"#;
+
+    fs::write(dir.join("helpers.kry"), helpers_src).unwrap();
+    fs::write(dir.join("utils.kry"), utils_src).unwrap();
+    fs::write(dir.join("main.kry"), main_src).unwrap();
+
+    let main_path = dir.join("main.kry");
+    let config = BuildConfig {
+        input: main_path.to_string_lossy().to_string(),
+        output: None,
+        mode: BuildMode::Debug,
+        output_type: OutputType::Mir,
+        target: None,
+        capabilities: Vec::new(),
+        verbose: true,
+    };
+
+    let result = compile_file(&main_path, &config);
+
+    assert!(
+        result.success,
+        "expected success but got errors: {:?}",
+        result.diagnostics
+    );
+
+    let mir = result.mir.unwrap();
+    let func_names: Vec<&str> = mir.functions.iter().map(|f| f.name.as_str()).collect();
+    assert!(
+        func_names.contains(&"double"),
+        "expected 'double' from transitive import, got: {func_names:?}"
+    );
+    assert!(
+        func_names.contains(&"triple"),
+        "expected 'triple' from direct import, got: {func_names:?}"
+    );
+    assert!(
+        func_names.contains(&"main"),
+        "expected 'main' in merged MIR, got: {func_names:?}"
+    );
+}
+
+#[test]
+fn compile_file_with_diamond_import_no_duplicates() {
+    // Diamond: main imports A and B, both import common.
+    // Functions from common should appear exactly once.
+    let dir = std::env::temp_dir().join("kryos_module_tests_diamond");
+    fs::create_dir_all(&dir).unwrap();
+
+    let common_src = r#"fn shared_fn(x: i32) -> i32 {
+    return x
+}
+"#;
+
+    let a_src = r#"use common
+
+fn a_fn(x: i32) -> i32 {
+    return shared_fn(x)
+}
+"#;
+
+    let b_src = r#"use common
+
+fn b_fn(x: i32) -> i32 {
+    return shared_fn(x)
+}
+"#;
+
+    let main_src = r#"use a
+use b
+
+fn main() {
+    let x = a_fn(1)
+    let y = b_fn(2)
+    println("diamond import works")
+}
+"#;
+
+    fs::write(dir.join("common.kry"), common_src).unwrap();
+    fs::write(dir.join("a.kry"), a_src).unwrap();
+    fs::write(dir.join("b.kry"), b_src).unwrap();
+    fs::write(dir.join("main.kry"), main_src).unwrap();
+
+    let main_path = dir.join("main.kry");
+    let config = BuildConfig {
+        input: main_path.to_string_lossy().to_string(),
+        output: None,
+        mode: BuildMode::Debug,
+        output_type: OutputType::Mir,
+        target: None,
+        capabilities: Vec::new(),
+        verbose: true,
+    };
+
+    let result = compile_file(&main_path, &config);
+
+    assert!(
+        result.success,
+        "expected success but got errors: {:?}",
+        result.diagnostics
+    );
+
+    let mir = result.mir.unwrap();
+    let func_names: Vec<&str> = mir.functions.iter().map(|f| f.name.as_str()).collect();
+
+    // shared_fn should appear exactly once despite being imported through two paths.
+    let shared_count = func_names.iter().filter(|&&n| n == "shared_fn").count();
+    assert_eq!(
+        shared_count, 1,
+        "expected 'shared_fn' exactly once in MIR, got {shared_count} in: {func_names:?}"
+    );
+
+    assert!(func_names.contains(&"a_fn"));
+    assert!(func_names.contains(&"b_fn"));
+    assert!(func_names.contains(&"main"));
+}
+
+// ---------------------------------------------------------------------------
+// Module resolution tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn resolve_module_sibling_file() {
+    let dir = std::env::temp_dir().join("kryos_resolve_tests");
+    fs::create_dir_all(&dir).unwrap();
+
+    fs::write(dir.join("foo.kry"), "fn foo() {}").unwrap();
+    let main_path = dir.join("main.kry");
+    fs::write(&main_path, "use foo").unwrap();
+
+    let result = kryos_driver::resolve::resolve_module_path("foo", &main_path);
+    assert!(result.is_ok(), "expected to find foo.kry as sibling");
+    assert_eq!(result.unwrap(), dir.join("foo.kry"));
+}
+
+#[test]
+fn resolve_module_dir_mod() {
+    let dir = std::env::temp_dir().join("kryos_resolve_tests_dir");
+    fs::create_dir_all(dir.join("bar")).unwrap();
+
+    fs::write(dir.join("bar").join("mod.kry"), "fn bar() {}").unwrap();
+    let main_path = dir.join("main.kry");
+    fs::write(&main_path, "use bar").unwrap();
+
+    let result = kryos_driver::resolve::resolve_module_path("bar", &main_path);
+    assert!(result.is_ok(), "expected to find bar/mod.kry");
+    assert_eq!(result.unwrap(), dir.join("bar").join("mod.kry"));
+}
+
+#[test]
+fn resolve_module_not_found() {
+    let dir = std::env::temp_dir().join("kryos_resolve_tests_missing");
+    fs::create_dir_all(&dir).unwrap();
+
+    let main_path = dir.join("main.kry");
+    fs::write(&main_path, "use nonexistent").unwrap();
+
+    let result = kryos_driver::resolve::resolve_module_path("nonexistent", &main_path);
+    assert!(result.is_err(), "expected error for missing module");
+}
+
+// ---------------------------------------------------------------------------
 // Version
 // ---------------------------------------------------------------------------
 

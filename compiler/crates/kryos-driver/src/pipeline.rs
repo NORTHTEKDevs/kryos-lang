@@ -3,6 +3,7 @@
 //! The pipeline runs each compiler pass in sequence, collecting diagnostics
 //! at every stage and bailing out early if errors are found.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
@@ -15,6 +16,7 @@ use kryos_parser::parse;
 use kryos_types::type_check;
 
 use crate::config::{BuildConfig, OutputType};
+use crate::resolve;
 
 // ---------------------------------------------------------------------------
 // Backend trait — codegen backends implement this
@@ -131,6 +133,10 @@ pub fn compile_file(path: &Path, config: &BuildConfig) -> CompileResult {
 }
 
 /// Same as [`compile_file`] but with an explicit backend.
+///
+/// This is the primary entry point for compiling a `.kry` file. It handles
+/// module imports by resolving `use` declarations, parsing imported modules,
+/// and merging their declarations into the main module before type checking.
 pub fn compile_file_with_backend(
     path: &Path,
     config: &BuildConfig,
@@ -147,21 +153,16 @@ pub fn compile_file_with_backend(
         }
     };
 
-    compile_source_impl(&source, path.to_string_lossy().as_ref(), config, backend)
+    compile_file_impl(&source, path, config, backend)
 }
 
-/// Compile source code provided as a string.
+/// Internal: compile a file with full import resolution support.
 ///
-/// This is the core pipeline entry point. `file_name` is used for
-/// diagnostic messages (it does not need to correspond to a real file).
-pub fn compile_source(source: &str, file_name: &str, config: &BuildConfig) -> CompileResult {
-    compile_source_impl(source, file_name, config, None)
-}
-
-/// Internal: the full compilation pipeline.
-fn compile_source_impl(
+/// Unlike `compile_source_impl` (which works on bare strings), this function
+/// knows the file path and can resolve `use` declarations to sibling files.
+fn compile_file_impl(
     source: &str,
-    file_name: &str,
+    path: &Path,
     config: &BuildConfig,
     backend: Option<&dyn Backend>,
 ) -> CompileResult {
@@ -169,6 +170,7 @@ fn compile_source_impl(
 
     // 2. Source map registration
     let mut source_map = SourceMap::default();
+    let file_name = path.to_string_lossy();
     let file_id = source_map.add_file(file_name.to_string(), source.to_string());
 
     // 3. Lex
@@ -182,7 +184,7 @@ fn compile_source_impl(
     }
 
     // 4. Parse
-    let module = match parse(tokens) {
+    let mut module = match parse(tokens) {
         Ok(module) => module,
         Err(parse_errors) => {
             return CompileResult {
@@ -197,6 +199,61 @@ fn compile_source_impl(
         }
     };
 
+    // 5. Module import resolution — resolve `use` declarations and merge
+    //    imported declarations into the main module's AST.
+    let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut visited = HashSet::new();
+    visited.insert(canonical);
+
+    let mut imported_decls = Vec::new();
+    if let Err(import_diags) = resolve::resolve_imports(
+        &module,
+        path,
+        &mut visited,
+        &mut imported_decls,
+        config.verbose,
+    ) {
+        diagnostics.extend(import_diags);
+        return CompileResult {
+            diagnostics,
+            source_map,
+            success: false,
+            output_path: None,
+            mir: None,
+            object_bytes: None,
+            llvm_ir: None,
+        };
+    }
+
+    if config.verbose && !imported_decls.is_empty() {
+        eprintln!(
+            "[kryos] imports: merged {} declarations from imported modules",
+            imported_decls.len()
+        );
+    }
+
+    // Prepend imported declarations so they are visible during type checking.
+    // We insert them before the main module's declarations.
+    let mut merged_decls = imported_decls;
+    merged_decls.append(&mut module.declarations);
+    module.declarations = merged_decls;
+
+    // From here on, the pipeline is the same as compile_source_impl but uses
+    // the merged module.
+    compile_module_impl(module, diagnostics, source_map, config, backend)
+}
+
+/// Internal: run the analysis + codegen pipeline on an already-parsed module.
+///
+/// This is the shared tail of both `compile_source_impl` (no imports) and
+/// `compile_file_impl` (with imports merged).
+fn compile_module_impl(
+    module: kryos_ast::Module,
+    mut diagnostics: Vec<Diagnostic>,
+    source_map: SourceMap,
+    config: &BuildConfig,
+    backend: Option<&dyn Backend>,
+) -> CompileResult {
     // 5. Type check
     let type_diags = type_check(&module);
     let has_type_errors = type_diags.iter().any(|d| d.is_error());
@@ -256,6 +313,69 @@ fn compile_source_impl(
     }
 
     // 11. Codegen (requires a backend)
+    codegen_and_link(mir, diagnostics, source_map, config, backend)
+}
+
+/// Compile source code provided as a string.
+///
+/// This is the core pipeline entry point. `file_name` is used for
+/// diagnostic messages (it does not need to correspond to a real file).
+pub fn compile_source(source: &str, file_name: &str, config: &BuildConfig) -> CompileResult {
+    compile_source_impl(source, file_name, config, None)
+}
+
+/// Internal: the full compilation pipeline for string-based compilation (no imports).
+fn compile_source_impl(
+    source: &str,
+    file_name: &str,
+    config: &BuildConfig,
+    backend: Option<&dyn Backend>,
+) -> CompileResult {
+    let diagnostics: Vec<Diagnostic> = Vec::new();
+
+    // 2. Source map registration
+    let mut source_map = SourceMap::default();
+    let file_id = source_map.add_file(file_name.to_string(), source.to_string());
+
+    // 3. Lex
+    let tokens = Lexer::new(source, file_id).tokenize();
+
+    if config.verbose {
+        eprintln!(
+            "[kryos] lexer: {} tokens from '{file_name}'",
+            tokens.len()
+        );
+    }
+
+    // 4. Parse
+    let module = match parse(tokens) {
+        Ok(module) => module,
+        Err(parse_errors) => {
+            return CompileResult {
+                diagnostics: parse_errors,
+                source_map,
+                success: false,
+                output_path: None,
+                mir: None,
+                object_bytes: None,
+                llvm_ir: None,
+            };
+        }
+    };
+
+    // Note: compile_source does not support `use` imports (no file path context).
+    // For file-based compilation with import support, use compile_file_with_backend.
+    compile_module_impl(module, diagnostics, source_map, config, backend)
+}
+
+/// Codegen + linking stage, extracted for reuse.
+fn codegen_and_link(
+    mir: MirModule,
+    mut diagnostics: Vec<Diagnostic>,
+    source_map: SourceMap,
+    config: &BuildConfig,
+    backend: Option<&dyn Backend>,
+) -> CompileResult {
     match config.output_type {
         OutputType::LlvmIr => {
             if let Some(be) = backend {
@@ -287,7 +407,6 @@ fn compile_source_impl(
                     }
                 }
             } else {
-                // No backend available — return MIR and note the limitation
                 diagnostics.push(Diagnostic::warning(
                     "no codegen backend available; stopping after MIR",
                 ));
@@ -309,7 +428,6 @@ fn compile_source_impl(
                         let out_path = config.derive_output_path();
 
                         if config.output_type == OutputType::Object {
-                            // Just write the object file to disk
                             if let Err(e) = fs::write(&out_path, &bytes) {
                                 diagnostics.push(Diagnostic::error(format!(
                                     "failed to write object file '{}': {e}",
@@ -336,9 +454,6 @@ fn compile_source_impl(
                                 llvm_ir: None,
                             }
                         } else {
-                            // Binary or Library: write temp .o, invoke linker, clean up
-
-                            // Derive temp object file path next to the output
                             let stem = out_path
                                 .file_stem()
                                 .and_then(|s| s.to_str())
@@ -348,7 +463,6 @@ fn compile_source_impl(
                                 .unwrap_or_else(|| Path::new("."))
                                 .join(format!("{stem}.o"));
 
-                            // Write the object bytes to the temp .o file
                             if let Err(e) = fs::write(&obj_path, &bytes) {
                                 diagnostics.push(Diagnostic::error(format!(
                                     "failed to write temp object file '{}': {e}",
@@ -365,7 +479,6 @@ fn compile_source_impl(
                                 };
                             }
 
-                            // Determine the target
                             let target = if let Some(ref triple) = config.target {
                                 match kryos_linker::Target::from_triple(triple) {
                                     Ok(t) => t,
@@ -389,12 +502,11 @@ fn compile_source_impl(
                                 kryos_linker::Target::host()
                             };
 
-                            // Construct linker config
                             let linker_config = kryos_linker::LinkerConfig {
                                 target,
                                 object_files: vec![obj_path.clone()],
-                                runtime_lib: None,   // TODO: runtime library discovery
-                                stdlib_native: None,  // TODO: stdlib library discovery
+                                runtime_lib: None,
+                                stdlib_native: None,
                                 output: out_path.clone(),
                                 link_type: if config.output_type == OutputType::Library {
                                     kryos_linker::LinkType::SharedLib
@@ -405,7 +517,6 @@ fn compile_source_impl(
                                 extra_lib_dirs: vec![],
                             };
 
-                            // Invoke the linker
                             if let Err(e) = kryos_linker::link(&linker_config) {
                                 let _ = fs::remove_file(&obj_path);
                                 diagnostics.push(Diagnostic::error(format!(
@@ -422,7 +533,6 @@ fn compile_source_impl(
                                 };
                             }
 
-                            // Clean up temp object file (best effort)
                             let _ = fs::remove_file(&obj_path);
 
                             CompileResult {
@@ -570,6 +680,7 @@ pub fn compile_project_with_backend(
 ///
 /// Runs the full analysis pipeline (lex, parse, type check, ownership,
 /// capabilities) but skips MIR lowering and codegen.
+/// Resolves `use` imports from sibling files.
 ///
 /// Returns `(diagnostics, source_map)` so the caller can render errors.
 pub fn check_file(path: &Path) -> (Vec<Diagnostic>, SourceMap) {
@@ -586,7 +697,57 @@ pub fn check_file(path: &Path) -> (Vec<Diagnostic>, SourceMap) {
         }
     };
 
-    check_source(&source, path.to_string_lossy().as_ref())
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+    // Source map
+    let mut source_map = SourceMap::default();
+    let file_id = source_map.add_file(
+        path.to_string_lossy().to_string(),
+        source.to_string(),
+    );
+
+    // Lex
+    let tokens = Lexer::new(&source, file_id).tokenize();
+
+    // Parse
+    let mut module = match parse(tokens) {
+        Ok(module) => module,
+        Err(parse_errors) => return (parse_errors, source_map),
+    };
+
+    // Resolve imports
+    let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut visited = HashSet::new();
+    visited.insert(canonical);
+
+    let mut imported_decls = Vec::new();
+    if let Err(import_diags) = resolve::resolve_imports(
+        &module,
+        path,
+        &mut visited,
+        &mut imported_decls,
+        false,
+    ) {
+        diagnostics.extend(import_diags);
+        return (diagnostics, source_map);
+    }
+
+    // Merge imported declarations before the main module's declarations.
+    let mut merged_decls = imported_decls;
+    merged_decls.append(&mut module.declarations);
+    module.declarations = merged_decls;
+
+    // Type check
+    diagnostics.extend(type_check(&module));
+
+    // Ownership
+    let ownership = analyze_ownership(&module);
+    diagnostics.extend(ownership.errors);
+
+    // Capabilities
+    diagnostics.extend(check_capabilities(&module));
+
+    (diagnostics, source_map)
 }
 
 /// Check source code provided as a string, without producing output.
