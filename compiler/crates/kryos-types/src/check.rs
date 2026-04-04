@@ -499,6 +499,18 @@ impl TypeChecker {
 
                 self.check_block(body);
 
+                // Check for missing return in non-void functions.
+                if let Some(ref ret) = self.current_return_type {
+                    if *ret != Type::Void && !block_returns(body) {
+                        self.error(
+                            format!(
+                                "function `{name}` has return type but not all paths return a value"
+                            ),
+                            *span,
+                        );
+                    }
+                }
+
                 self.current_return_type = None;
                 self.env.pop_scope();
 
@@ -1473,4 +1485,52 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
 
     checker.check_module(module);
     checker.diagnostics
+}
+
+// ── Missing return analysis ─────────────────────────────────────────
+
+/// Returns `true` if the block is guaranteed to return a value on all
+/// control flow paths. This is a conservative check — it may produce
+/// false negatives (miss some paths) but never false positives.
+fn block_returns(block: &Block) -> bool {
+    if let Some(last) = block.stmts.last() {
+        stmt_returns(last)
+    } else {
+        false
+    }
+}
+
+fn stmt_returns(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Return { .. } => true,
+        Stmt::Throw { .. } => true,
+        Stmt::If {
+            then_block,
+            elif_clauses,
+            else_block,
+            ..
+        } => {
+            // All branches must return, including else.
+            let then_ok = block_returns(then_block);
+            let elifs_ok = elif_clauses.iter().all(|(_, b)| block_returns(b));
+            let else_ok = else_block.as_ref().is_some_and(|b| block_returns(b));
+            then_ok && elifs_ok && else_ok
+        }
+        Stmt::TryCatch {
+            try_block,
+            catch_block,
+            ..
+        } => block_returns(try_block) && block_returns(catch_block),
+        // An expression statement at the end of a block can serve as an
+        // implicit return value (expression-bodied functions).
+        Stmt::Expr { .. } => true,
+        _ => false,
+    }
+}
+
+fn expr_returns(expr: &Expr) -> bool {
+    match expr {
+        Expr::Block { block, .. } => block_returns(block),
+        _ => false,
+    }
 }
