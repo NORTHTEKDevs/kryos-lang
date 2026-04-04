@@ -1299,6 +1299,13 @@ fn translate_rvalue<M: Module>(
             let result = translate_cast(val, src_ty, dest_ty, builder)?;
             Ok(Some(result))
         }
+
+        RValue::Closure { func_name: _, captures: _ } => {
+            // Simplified closure: represent as a zero value (function pointer placeholder).
+            // Full closure support would involve heap-allocating an environment struct.
+            let val = builder.ins().iconst(types::I64, 0);
+            Ok(Some(val))
+        }
     }
 }
 

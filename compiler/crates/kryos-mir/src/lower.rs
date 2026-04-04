@@ -52,6 +52,10 @@ pub struct LoweringContext {
     monomorphized: HashMap<String, bool>,
     /// Functions produced by monomorphization (collected after lowering).
     monomorphized_functions: Vec<MirFunction>,
+    /// Counter for anonymous lambda function names.
+    lambda_counter: u32,
+    /// Type alias map: alias_name -> resolved MirType.
+    type_aliases: HashMap<String, MirType>,
 }
 
 /// Stores a generic function's AST for deferred monomorphization.
@@ -82,7 +86,24 @@ impl LoweringContext {
             generic_templates: HashMap::new(),
             monomorphized: HashMap::new(),
             monomorphized_functions: Vec::new(),
+            lambda_counter: 0,
+            type_aliases: HashMap::new(),
         }
+    }
+
+    // ----- type resolution -----
+
+    /// Resolve a type, checking type aliases first.
+    #[allow(dead_code)]
+    fn resolve_type(&self, ty: &ast::TypeExpr) -> MirType {
+        let mir_ty = lower_type_expr(ty);
+        // If the result is a Struct with a name that matches a type alias, resolve it.
+        if let MirType::Struct(ref name) = mir_ty {
+            if let Some(aliased) = self.type_aliases.get(name) {
+                return aliased.clone();
+            }
+        }
+        mir_ty
     }
 
     // ----- allocation helpers -----
@@ -317,6 +338,22 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                         (target.clone(), trait_name.clone()),
                         mangled_names,
                     );
+                }
+            }
+            ast::Decl::TypeAlias { name, ty, .. } => {
+                let mir_ty = lower_type_expr(ty);
+                ctx.type_aliases.insert(name.clone(), mir_ty);
+            }
+            ast::Decl::Extern { items, .. } => {
+                // Register extern function signatures so they can be called.
+                for item in items {
+                    if let ast::Decl::Function { name, ret_ty, .. } = item {
+                        let mir_ret = match ret_ty {
+                            Some(ty) => lower_type_expr(ty),
+                            None => MirType::Void,
+                        };
+                        ctx.func_ret_types.insert(name.clone(), mir_ret);
+                    }
                 }
             }
             _ => {}
@@ -1326,6 +1363,22 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
 
         ast::Expr::Cast { ty, .. } => lower_type_expr(ty),
 
+        ast::Expr::Lambda { ret_ty, .. } => {
+            // A lambda expression's type is Function.
+            MirType::Function {
+                params: vec![MirType::I64], // simplified
+                ret: Box::new(match ret_ty {
+                    Some(ty) => lower_type_expr(ty),
+                    None => MirType::I64,
+                }),
+            }
+        }
+
+        ast::Expr::PipeExpr { right, .. } => {
+            // The pipe result type is the return type of the RHS function.
+            infer_expr_type(ctx, right)
+        }
+
         _ => MirType::I64,
     }
 }
@@ -1609,6 +1662,113 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             RValue::ConstNone
         }
 
+        ast::Expr::Lambda {
+            params,
+            ret_ty,
+            body,
+            ..
+        } => {
+            // Create an anonymous function name.
+            let lambda_name = format!("__lambda_{}", ctx.lambda_counter);
+            ctx.lambda_counter += 1;
+
+            // Analyze free variables in the lambda body (captures from enclosing scope).
+            let captures = find_free_variables(ctx, body, params);
+
+            // Save state, lower the lambda as a standalone function.
+            let saved = ctx.save_function_state();
+
+            // Build params: captures first (as extra params), then declared params.
+            let mut all_params: Vec<ast::Param> = captures
+                .iter()
+                .map(|name| ast::Param {
+                    name: name.clone(),
+                    ty: None,
+                    default: None,
+                    span: kryos_errors::Span::DUMMY,
+                })
+                .collect();
+            all_params.extend_from_slice(params);
+
+            // Create a block from the body expression.
+            let body_block = ast::Block {
+                stmts: vec![ast::Stmt::Return {
+                    value: Some(body.as_ref().clone()),
+                    span: kryos_errors::Span::DUMMY,
+                }],
+                span: kryos_errors::Span::DUMMY,
+            };
+
+            let mir_func = lower_function(
+                ctx,
+                &lambda_name,
+                &all_params,
+                ret_ty,
+                &body_block,
+            );
+            ctx.restore_function_state(saved);
+            ctx.monomorphized_functions.push(mir_func);
+
+            // Register the lambda's return type.
+            let mir_ret = match ret_ty {
+                Some(ty) => lower_type_expr(ty),
+                None => MirType::I64,
+            };
+            ctx.func_ret_types.insert(lambda_name.clone(), mir_ret);
+
+            // Emit the closure RValue with captured variable operands.
+            let capture_ops: Vec<Operand> = captures
+                .iter()
+                .map(|name| {
+                    let local = find_local_by_name(ctx, name);
+                    Operand::Local(local)
+                })
+                .collect();
+
+            RValue::Closure {
+                func_name: lambda_name,
+                captures: capture_ops,
+            }
+        }
+
+        ast::Expr::PipeExpr { left, right, .. } => {
+            // Desugar: `a |> f` → `f(a)`
+            // Desugar: `a |> f(b, c)` → `f(a, b, c)`
+            let lhs_op = lower_expr_to_operand(ctx, left);
+            match right.as_ref() {
+                ast::Expr::FnCall { callee, args, span: _ } => {
+                    // `a |> f(b, c)` → `f(a, b, c)`
+                    let func_name = match callee.as_ref() {
+                        ast::Expr::Identifier { name, .. } => name.clone(),
+                        _ => "<pipe_target>".to_string(),
+                    };
+                    let mut all_args = vec![lhs_op];
+                    for a in args {
+                        all_args.push(lower_expr_to_operand(ctx, a));
+                    }
+                    RValue::Call {
+                        func: func_name,
+                        args: all_args,
+                    }
+                }
+                ast::Expr::Identifier { name, .. } => {
+                    // `a |> f` → `f(a)`
+                    RValue::Call {
+                        func: name.clone(),
+                        args: vec![lhs_op],
+                    }
+                }
+                _ => {
+                    // Fallback: try to evaluate RHS as a function.
+                    let rhs_op = lower_expr_to_operand(ctx, right);
+                    RValue::Call {
+                        func: "<pipe_target>".to_string(),
+                        args: vec![lhs_op, rhs_op],
+                    }
+                }
+            }
+        }
+
         // Fallback for unsupported expressions.
         _ => RValue::ConstNone,
     }
@@ -1798,6 +1958,95 @@ fn find_enum_variant(ctx: &LoweringContext, name: &str) -> Option<(String, u32)>
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// Lambda / Closure helpers
+// ---------------------------------------------------------------------------
+
+/// Find free variables in a lambda body that refer to locals in the enclosing scope.
+///
+/// Returns the names of captured variables (excluding the lambda's own parameters).
+fn find_free_variables(
+    ctx: &LoweringContext,
+    body: &ast::Expr,
+    params: &[ast::Param],
+) -> Vec<String> {
+    let param_names: std::collections::HashSet<String> =
+        params.iter().map(|p| p.name.clone()).collect();
+    let mut free_vars = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    collect_identifiers(body, &param_names, &mut free_vars, &mut seen, ctx);
+    free_vars
+}
+
+/// Recursively collect identifier names used in an expression that are:
+/// 1. Not in `bound` (lambda params)
+/// 2. Exist as locals in the enclosing scope
+fn collect_identifiers(
+    expr: &ast::Expr,
+    bound: &std::collections::HashSet<String>,
+    free_vars: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+    ctx: &LoweringContext,
+) {
+    match expr {
+        ast::Expr::Identifier { name, .. } => {
+            if !bound.contains(name)
+                && !seen.contains(name)
+                && ctx.locals.iter().any(|l| l.name.as_deref() == Some(name.as_str()))
+            {
+                seen.insert(name.clone());
+                free_vars.push(name.clone());
+            }
+        }
+        ast::Expr::BinaryOp { left, right, .. } => {
+            collect_identifiers(left, bound, free_vars, seen, ctx);
+            collect_identifiers(right, bound, free_vars, seen, ctx);
+        }
+        ast::Expr::UnaryOp { operand, .. } => {
+            collect_identifiers(operand, bound, free_vars, seen, ctx);
+        }
+        ast::Expr::FnCall { callee, args, .. } => {
+            collect_identifiers(callee, bound, free_vars, seen, ctx);
+            for a in args {
+                collect_identifiers(a, bound, free_vars, seen, ctx);
+            }
+        }
+        ast::Expr::MethodCall { object, args, .. } => {
+            collect_identifiers(object, bound, free_vars, seen, ctx);
+            for a in args {
+                collect_identifiers(a, bound, free_vars, seen, ctx);
+            }
+        }
+        ast::Expr::FieldAccess { object, .. } => {
+            collect_identifiers(object, bound, free_vars, seen, ctx);
+        }
+        ast::Expr::IndexAccess { object, index, .. } => {
+            collect_identifiers(object, bound, free_vars, seen, ctx);
+            collect_identifiers(index, bound, free_vars, seen, ctx);
+        }
+        ast::Expr::IfExpr { condition, then_branch, else_branch, .. } => {
+            collect_identifiers(condition, bound, free_vars, seen, ctx);
+            for s in &then_branch.stmts {
+                if let ast::Stmt::Expr { expr, .. } = s {
+                    collect_identifiers(expr, bound, free_vars, seen, ctx);
+                }
+            }
+            if let Some(eb) = else_branch {
+                for s in &eb.stmts {
+                    if let ast::Stmt::Expr { expr, .. } = s {
+                        collect_identifiers(expr, bound, free_vars, seen, ctx);
+                    }
+                }
+            }
+        }
+        ast::Expr::Cast { expr, .. } => {
+            collect_identifiers(expr, bound, free_vars, seen, ctx);
+        }
+        // For other expression types, we don't recurse deeper.
+        _ => {}
+    }
 }
 
 // ---------------------------------------------------------------------------

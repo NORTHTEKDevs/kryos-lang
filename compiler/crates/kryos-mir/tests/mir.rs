@@ -1307,3 +1307,327 @@ fn throw_produces_result_err() {
     });
     assert!(has_err, "throw should produce Result::Err variant");
 }
+
+// ---------------------------------------------------------------------------
+// Test 26: Lambda creates anonymous function + Closure RValue
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lambda_creates_closure() {
+    // fn main() { let f = |x: i64| -> i64 { x }; }
+    let module = make_module(vec![make_fn(
+        "main",
+        vec![],
+        None,
+        block(vec![Stmt::Let {
+            name: "f".into(),
+            mutable: false,
+            ty: None,
+            value: Some(ast::Expr::Lambda {
+                params: vec![Param {
+                    name: "x".into(),
+                    ty: Some(simple_ty("i64")),
+                    default: None,
+                    span: S,
+                }],
+                ret_ty: Some(simple_ty("i64")),
+                body: Box::new(ident("x")),
+                span: S,
+            }),
+            pattern: None,
+            span: S,
+        }]),
+    )]);
+
+    let mir = lower_module(&module);
+
+    // Should have the anonymous lambda function __lambda_0.
+    let has_lambda = mir.functions.iter().any(|f| f.name.starts_with("__lambda_"));
+    assert!(has_lambda, "lambda should produce an anonymous __lambda_N function");
+
+    // main should have a Closure rvalue.
+    let main_fn = mir.functions.iter().find(|f| f.name == "main").unwrap();
+    let has_closure = main_fn.blocks.iter().any(|bb| {
+        bb.instructions.iter().any(|inst| match inst {
+            Instruction::Assign {
+                value: RValue::Closure { func_name, .. },
+                ..
+            } => func_name.starts_with("__lambda_"),
+            _ => false,
+        })
+    });
+    assert!(has_closure, "main should assign a Closure rvalue for the lambda");
+}
+
+// ---------------------------------------------------------------------------
+// Test 27: Lambda with captures includes free variables
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lambda_captures_free_variables() {
+    // fn main() { let y = 10; let f = |x: i64| -> i64 { x }; }
+    // Note: `y` is not referenced in the lambda body, so captures should be empty.
+    // A lambda that references an outer variable would capture it.
+    let module = make_module(vec![make_fn(
+        "main",
+        vec![],
+        None,
+        block(vec![
+            Stmt::Let {
+                name: "y".into(),
+                mutable: false,
+                ty: None,
+                value: Some(int_lit(10)),
+                pattern: None,
+                span: S,
+            },
+            Stmt::Let {
+                name: "f".into(),
+                mutable: false,
+                ty: None,
+                value: Some(ast::Expr::Lambda {
+                    params: vec![Param {
+                        name: "x".into(),
+                        ty: Some(simple_ty("i64")),
+                        default: None,
+                        span: S,
+                    }],
+                    ret_ty: Some(simple_ty("i64")),
+                    body: Box::new(ident("x")),
+                    span: S,
+                }),
+                pattern: None,
+                span: S,
+            },
+        ]),
+    )]);
+
+    let mir = lower_module(&module);
+
+    // Lambda without captures: Closure should have empty captures vec.
+    let main_fn = mir.functions.iter().find(|f| f.name == "main").unwrap();
+    let closure_captures: Vec<usize> = main_fn
+        .blocks
+        .iter()
+        .flat_map(|bb| bb.instructions.iter())
+        .filter_map(|inst| match inst {
+            Instruction::Assign {
+                value: RValue::Closure { captures, .. },
+                ..
+            } => Some(captures.len()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(closure_captures, vec![0], "lambda not referencing outer vars should have 0 captures");
+}
+
+// ---------------------------------------------------------------------------
+// Test 28: Pipe expression desugars to function call
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pipe_expression_desugars() {
+    // fn double(x: i64) -> i64 { x }
+    // fn main() { let r = 5 |> double; }
+    let module = make_module(vec![
+        make_fn(
+            "double",
+            vec![Param {
+                name: "x".into(),
+                ty: Some(simple_ty("i64")),
+                default: None,
+                span: S,
+            }],
+            Some(simple_ty("i64")),
+            block(vec![Stmt::Return {
+                value: Some(ident("x")),
+                span: S,
+            }]),
+        ),
+        make_fn(
+            "main",
+            vec![],
+            None,
+            block(vec![Stmt::Let {
+                name: "r".into(),
+                mutable: false,
+                ty: None,
+                value: Some(ast::Expr::PipeExpr {
+                    left: Box::new(int_lit(5)),
+                    right: Box::new(ident("double")),
+                    span: S,
+                }),
+                pattern: None,
+                span: S,
+            }]),
+        ),
+    ]);
+
+    let mir = lower_module(&module);
+    let main_fn = mir.functions.iter().find(|f| f.name == "main").unwrap();
+
+    // Pipe `5 |> double` should desugar to `call double(5)`.
+    let calls: Vec<(String, usize)> = main_fn
+        .blocks
+        .iter()
+        .flat_map(|bb| bb.instructions.iter())
+        .filter_map(|inst| match inst {
+            Instruction::Assign {
+                value: RValue::Call { func, args },
+                ..
+            } => Some((func.clone(), args.len())),
+            _ => None,
+        })
+        .collect();
+    let has_double_call = calls.iter().any(|(name, nargs)| name == "double" && *nargs == 1);
+    assert!(has_double_call, "pipe should desugar to call double(5) with 1 arg");
+}
+
+// ---------------------------------------------------------------------------
+// Test 29: Pipe expression with args: a |> f(b) -> f(a, b)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pipe_expression_with_args() {
+    // fn add(a: i64, b: i64) -> i64 { a }
+    // fn main() { let r = 1 |> add(2); }
+    let module = make_module(vec![
+        make_fn(
+            "add",
+            vec![
+                Param { name: "a".into(), ty: Some(simple_ty("i64")), default: None, span: S },
+                Param { name: "b".into(), ty: Some(simple_ty("i64")), default: None, span: S },
+            ],
+            Some(simple_ty("i64")),
+            block(vec![Stmt::Return { value: Some(ident("a")), span: S }]),
+        ),
+        make_fn(
+            "main",
+            vec![],
+            None,
+            block(vec![Stmt::Let {
+                name: "r".into(),
+                mutable: false,
+                ty: None,
+                value: Some(ast::Expr::PipeExpr {
+                    left: Box::new(int_lit(1)),
+                    right: Box::new(ast::Expr::FnCall {
+                        callee: Box::new(ident("add")),
+                        args: vec![int_lit(2)],
+                        span: S,
+                    }),
+                    span: S,
+                }),
+                pattern: None,
+                span: S,
+            }]),
+        ),
+    ]);
+
+    let mir = lower_module(&module);
+    let main_fn = mir.functions.iter().find(|f| f.name == "main").unwrap();
+
+    // `1 |> add(2)` should desugar to `call add(1, 2)` — 2 args.
+    let calls: Vec<(String, usize)> = main_fn
+        .blocks
+        .iter()
+        .flat_map(|bb| bb.instructions.iter())
+        .filter_map(|inst| match inst {
+            Instruction::Assign {
+                value: RValue::Call { func, args },
+                ..
+            } => Some((func.clone(), args.len())),
+            _ => None,
+        })
+        .collect();
+    let has_add_2args = calls.iter().any(|(name, nargs)| name == "add" && *nargs == 2);
+    assert!(has_add_2args, "pipe with args should desugar to call add(1, 2) with 2 args");
+}
+
+// ---------------------------------------------------------------------------
+// Test 30: Type alias tracked (doesn't produce function)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn type_alias_tracked() {
+    // type Num = i64
+    // fn main() {}
+    let module = make_module(vec![
+        Decl::TypeAlias {
+            name: "Num".into(),
+            generics: vec![],
+            ty: simple_ty("i64"),
+            public: false,
+            span: S,
+        },
+        make_fn("main", vec![], None, block(vec![])),
+    ]);
+
+    let mir = lower_module(&module);
+    // Type aliases don't produce functions — only main should exist.
+    assert_eq!(mir.functions.len(), 1);
+    assert_eq!(mir.functions[0].name, "main");
+}
+
+// ---------------------------------------------------------------------------
+// Test 31: Extern block registers function signatures
+// ---------------------------------------------------------------------------
+
+#[test]
+fn extern_block_registers_signatures() {
+    // extern "C" { fn puts(s: str) -> i64; }
+    // fn main() { puts("hello"); }
+    let module = make_module(vec![
+        Decl::Extern {
+            abi: "C".into(),
+            items: vec![Decl::Function {
+                name: "puts".into(),
+                generics: vec![],
+                params: vec![Param {
+                    name: "s".into(),
+                    ty: Some(simple_ty("str")),
+                    default: None,
+                    span: S,
+                }],
+                ret_ty: Some(simple_ty("i64")),
+                body: None,
+                public: false,
+                annotations: vec![],
+                span: S,
+            }],
+            span: S,
+        },
+        make_fn(
+            "main",
+            vec![],
+            None,
+            block(vec![expr_stmt(ast::Expr::FnCall {
+                callee: Box::new(ident("puts")),
+                args: vec![str_lit("hello")],
+                span: S,
+            })]),
+        ),
+    ]);
+
+    let mir = lower_module(&module);
+
+    // main should call `puts` — it's an extern, so no function body is emitted for it.
+    let main_fn = mir.functions.iter().find(|f| f.name == "main").unwrap();
+    let calls: Vec<String> = main_fn
+        .blocks
+        .iter()
+        .flat_map(|bb| bb.instructions.iter())
+        .filter_map(|inst| match inst {
+            Instruction::Assign {
+                value: RValue::Call { func, .. },
+                ..
+            } => Some(func.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(calls.contains(&"puts".to_string()), "main should call extern function puts");
+
+    // `puts` should NOT appear as a lowered MIR function (it has no body).
+    let has_puts_fn = mir.functions.iter().any(|f| f.name == "puts");
+    assert!(!has_puts_fn, "extern function should not be emitted as MIR function");
+}

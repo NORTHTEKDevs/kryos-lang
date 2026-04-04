@@ -293,6 +293,14 @@ pub enum RValue {
         variant_idx: u32,
         field_idx: u32,
     },
+
+    // ---- Closures ----
+
+    /// A closure: function pointer + captured environment variables.
+    Closure {
+        func_name: String,
+        captures: Vec<Operand>,
+    },
 }
 
 /// An operand — either a local reference or an inline constant.

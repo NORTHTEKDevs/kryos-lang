@@ -138,6 +138,14 @@ impl fmt::Display for RValue {
             RValue::EnumPayload { operand, variant_idx, field_idx } => {
                 write!(f, "enum_payload({operand}, variant={variant_idx}, field={field_idx})")
             }
+            RValue::Closure { func_name, captures } => {
+                write!(f, "closure({func_name}, [")?;
+                for (i, cap) in captures.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{cap}")?;
+                }
+                write!(f, "])")
+            }
         }
     }
 }
