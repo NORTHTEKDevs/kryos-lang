@@ -39,6 +39,8 @@ pub struct LoweringContext {
     enum_defs: HashMap<String, Vec<EnumVariantDef>>,
     /// Function return types: func_name -> MirType.
     func_ret_types: HashMap<String, MirType>,
+    /// Method ownership: (TypeName, method_name) -> mangled function name.
+    method_owners: HashMap<(String, String), String>,
 }
 
 impl LoweringContext {
@@ -55,6 +57,7 @@ impl LoweringContext {
             struct_defs: HashMap::new(),
             enum_defs: HashMap::new(),
             func_ret_types: HashMap::new(),
+            method_owners: HashMap::new(),
         }
     }
 
@@ -161,6 +164,28 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                 };
                 ctx.func_ret_types.insert(name.clone(), mir_ret);
             }
+            ast::Decl::Impl { target, methods, .. } => {
+                // Register mangled method names in func_ret_types.
+                for method in methods {
+                    if let ast::Decl::Function { name, ret_ty, .. } = method {
+                        let mangled = format!("{target}__{name}");
+                        let mir_ret = match ret_ty {
+                            Some(ty) => lower_type_expr(ty),
+                            None => MirType::Void,
+                        };
+                        ctx.func_ret_types.insert(mangled, mir_ret);
+                    }
+                }
+                // Track which methods belong to which type for method call resolution.
+                for method in methods {
+                    if let ast::Decl::Function { name, .. } = method {
+                        ctx.method_owners.insert(
+                            (target.clone(), name.clone()),
+                            format!("{target}__{name}"),
+                        );
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -168,15 +193,51 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
     let mut functions = Vec::new();
 
     for decl in &module.declarations {
-        if let ast::Decl::Function {
-            name,
-            params,
-            ret_ty,
-            body: Some(body),
-            ..
-        } = decl
-        {
-            functions.push(lower_function(&mut ctx, name, params, ret_ty, body));
+        match decl {
+            ast::Decl::Function {
+                name,
+                params,
+                ret_ty,
+                body: Some(body),
+                ..
+            } => {
+                functions.push(lower_function(&mut ctx, name, params, ret_ty, body));
+            }
+            ast::Decl::Impl { target, methods, .. } => {
+                // Lower each method as a free function with mangled name.
+                for method in methods {
+                    if let ast::Decl::Function {
+                        name,
+                        params,
+                        ret_ty,
+                        body: Some(body),
+                        ..
+                    } = method
+                    {
+                        let mangled = format!("{target}__{name}");
+                        // Prepend `self` as first param if not already present.
+                        let mut all_params = Vec::new();
+                        let has_self = params.iter().any(|p| p.name == "self");
+                        if has_self {
+                            all_params.extend_from_slice(params);
+                        } else {
+                            // Add implicit self parameter.
+                            all_params.push(ast::Param {
+                                name: "self".into(),
+                                ty: Some(ast::TypeExpr::Simple {
+                                    name: target.clone(),
+                                    span: kryos_errors::Span::DUMMY,
+                                }),
+                                default: None,
+                                span: kryos_errors::Span::DUMMY,
+                            });
+                            all_params.extend_from_slice(params);
+                        }
+                        functions.push(lower_function(&mut ctx, &mangled, &all_params, ret_ty, body));
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -942,7 +1003,14 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
             MirType::I64
         }
 
-        ast::Expr::MethodCall { method, .. } => {
+        ast::Expr::MethodCall { object, method, .. } => {
+            // Try mangled name first (TypeName__method), then bare method name.
+            if let Some(type_name) = infer_type_name(ctx, object) {
+                let mangled = format!("{type_name}__{method}");
+                if let Some(ret_ty) = ctx.func_ret_types.get(&mangled) {
+                    return ret_ty.clone();
+                }
+            }
             if let Some(ret_ty) = ctx.func_ret_types.get(method.as_str()) {
                 return ret_ty.clone();
             }
@@ -1073,8 +1141,21 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             for a in args {
                 mir_args.push(lower_expr_to_operand(ctx, a));
             }
+
+            // Resolve mangled method name: infer the object's type and look up
+            // the impl method as TypeName__method.
+            let type_name = infer_type_name(ctx, object);
+            let func_name = if let Some(tn) = type_name {
+                ctx.method_owners
+                    .get(&(tn.clone(), method.clone()))
+                    .cloned()
+                    .unwrap_or_else(|| method.clone())
+            } else {
+                method.clone()
+            };
+
             RValue::Call {
-                func: method.clone(),
+                func: func_name,
                 args: mir_args,
             }
         }
@@ -1376,6 +1457,15 @@ fn find_local_by_name(ctx: &mut LoweringContext, name: &str) -> LocalId {
     }
     // Not found — allocate a placeholder local.
     ctx.alloc_local(Some(name.to_string()), MirType::I64, false)
+}
+
+/// Infer the type name of an expression (for method call resolution).
+/// Returns the struct/enum name if resolvable, None otherwise.
+fn infer_type_name(ctx: &LoweringContext, expr: &ast::Expr) -> Option<String> {
+    match infer_expr_type(ctx, expr) {
+        MirType::Struct(name) | MirType::Enum(name) => Some(name),
+        _ => None,
+    }
 }
 
 /// Check if `name` is an enum variant. Returns (enum_name, variant_index) if found.
