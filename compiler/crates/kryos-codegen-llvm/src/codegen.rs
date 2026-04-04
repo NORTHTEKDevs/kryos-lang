@@ -313,6 +313,17 @@ impl LlvmCodegen {
                     self.prescan_operand(cap);
                 }
             }
+            RValue::Map(entries) => {
+                for (k, v) in entries {
+                    self.prescan_operand(k);
+                    self.prescan_operand(v);
+                }
+            }
+            RValue::StringConcat(parts) => {
+                for p in parts {
+                    self.prescan_operand(p);
+                }
+            }
             RValue::ConstInt(_)
             | RValue::ConstFloat(_)
             | RValue::ConstBool(_)
@@ -858,10 +869,6 @@ impl LlvmCodegen {
             }
 
             RValue::Closure { func_name, captures: _ } => {
-                // For LLVM, a closure is represented as a pointer-sized value.
-                // At this stage, closures without captures are just function pointers.
-                // Closures with captures would need heap-allocated environments;
-                // for now, emit the function name as a constant (simplified).
                 if is_mutable {
                     self.emit_line(&format!(
                         "  store i64 0, ptr %_{}.addr  ; closure({func_name})",
@@ -872,6 +879,33 @@ impl LlvmCodegen {
                         "  %_{} = add i64 0, 0  ; closure({func_name})",
                         dest.0
                     ));
+                }
+            }
+
+            RValue::Map(_entries) => {
+                // Map literals are opaque handles — placeholder i64 0.
+                if is_mutable {
+                    self.emit_line(&format!("  store i64 0, ptr %_{}.addr  ; map literal", dest.0));
+                } else {
+                    self.emit_line(&format!("  %_{} = add i64 0, 0  ; map literal", dest.0));
+                }
+            }
+
+            RValue::StringConcat(parts) => {
+                // String concatenation placeholder — returns opaque i64 handle.
+                if parts.is_empty() {
+                    if is_mutable {
+                        self.emit_line(&format!("  store i64 0, ptr %_{}.addr  ; empty str_concat", dest.0));
+                    } else {
+                        self.emit_line(&format!("  %_{} = add i64 0, 0  ; empty str_concat", dest.0));
+                    }
+                } else {
+                    let first = self.operand_to_llvm(&parts[0], func);
+                    if is_mutable {
+                        self.emit_line(&format!("  store i64 {first}, ptr %_{}.addr  ; str_concat", dest.0));
+                    } else {
+                        self.emit_line(&format!("  %_{} = add i64 {first}, 0  ; str_concat", dest.0));
+                    }
                 }
             }
         }

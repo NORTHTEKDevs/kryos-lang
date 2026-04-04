@@ -1631,3 +1631,128 @@ fn extern_block_registers_signatures() {
     let has_puts_fn = mir.functions.iter().any(|f| f.name == "puts");
     assert!(!has_puts_fn, "extern function should not be emitted as MIR function");
 }
+
+// ---------------------------------------------------------------------------
+// Test 32: Interpolated string produces StringConcat
+// ---------------------------------------------------------------------------
+
+#[test]
+fn interpolated_string_lowering() {
+    // fn main() { let s = f"hello {42} world"; }
+    use ast::expr::StringPart;
+    let module = make_module(vec![make_fn(
+        "main",
+        vec![],
+        None,
+        block(vec![Stmt::Let {
+            name: "s".into(),
+            mutable: false,
+            ty: None,
+            value: Some(ast::Expr::InterpolatedString {
+                parts: vec![
+                    StringPart::Literal("hello ".into()),
+                    StringPart::Expr(Box::new(int_lit(42))),
+                    StringPart::Literal(" world".into()),
+                ],
+                span: S,
+            }),
+            pattern: None,
+            span: S,
+        }]),
+    )]);
+
+    let mir = lower_module(&module);
+    let f = &mir.functions[0];
+
+    // Should have a StringConcat rvalue with 3 parts.
+    let has_concat = f.blocks.iter().any(|bb| {
+        bb.instructions.iter().any(|inst| match inst {
+            Instruction::Assign {
+                value: RValue::StringConcat(parts),
+                ..
+            } => parts.len() == 3,
+            _ => false,
+        })
+    });
+    assert!(has_concat, "interpolated string should produce StringConcat with 3 parts");
+}
+
+// ---------------------------------------------------------------------------
+// Test 33: Map literal produces Map RValue
+// ---------------------------------------------------------------------------
+
+#[test]
+fn map_literal_lowering() {
+    // fn main() { let m = { 1: "a", 2: "b" }; }
+    let module = make_module(vec![make_fn(
+        "main",
+        vec![],
+        None,
+        block(vec![Stmt::Let {
+            name: "m".into(),
+            mutable: false,
+            ty: None,
+            value: Some(ast::Expr::MapLiteral {
+                entries: vec![
+                    (int_lit(1), str_lit("a")),
+                    (int_lit(2), str_lit("b")),
+                ],
+                span: S,
+            }),
+            pattern: None,
+            span: S,
+        }]),
+    )]);
+
+    let mir = lower_module(&module);
+    let f = &mir.functions[0];
+
+    // Should have a Map rvalue with 2 entries.
+    let has_map = f.blocks.iter().any(|bb| {
+        bb.instructions.iter().any(|inst| match inst {
+            Instruction::Assign {
+                value: RValue::Map(entries),
+                ..
+            } => entries.len() == 2,
+            _ => false,
+        })
+    });
+    assert!(has_map, "map literal should produce Map rvalue with 2 entries");
+}
+
+// ---------------------------------------------------------------------------
+// Test 34: Char literal lowered as ConstInt
+// ---------------------------------------------------------------------------
+
+#[test]
+fn char_literal_lowering() {
+    // fn main() { let c = 'A'; }
+    let module = make_module(vec![make_fn(
+        "main",
+        vec![],
+        None,
+        block(vec![Stmt::Let {
+            name: "c".into(),
+            mutable: false,
+            ty: None,
+            value: Some(ast::Expr::CharLiteral { value: 'A', span: S }),
+            pattern: None,
+            span: S,
+        }]),
+    )]);
+
+    let mir = lower_module(&module);
+    let f = &mir.functions[0];
+
+    // 'A' is 65 as i64.
+    let has_char = f.blocks.iter().any(|bb| {
+        bb.instructions.iter().any(|inst| match inst {
+            Instruction::Assign {
+                value: RValue::ConstInt(65),
+                ..
+            } => true,
+            _ => false,
+        })
+    });
+    assert!(has_char, "char literal 'A' should lower to ConstInt(65)");
+}

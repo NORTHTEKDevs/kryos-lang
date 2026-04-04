@@ -146,6 +146,22 @@ impl fmt::Display for RValue {
                 }
                 write!(f, "])")
             }
+            RValue::Map(entries) => {
+                write!(f, "{{")?;
+                for (i, (k, v)) in entries.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{k}: {v}")?;
+                }
+                write!(f, "}}")
+            }
+            RValue::StringConcat(parts) => {
+                write!(f, "str_concat(")?;
+                for (i, p) in parts.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{p}")?;
+                }
+                write!(f, ")")
+            }
         }
     }
 }

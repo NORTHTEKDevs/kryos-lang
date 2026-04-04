@@ -1379,6 +1379,8 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
             infer_expr_type(ctx, right)
         }
 
+        ast::Expr::MapLiteral { .. } => MirType::I64, // opaque map handle
+
         _ => MirType::I64,
     }
 }
@@ -1768,6 +1770,38 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 }
             }
         }
+
+        ast::Expr::InterpolatedString { parts, .. } => {
+            // Lower each part to an operand: literal strings become ConstString,
+            // expressions are lowered normally (caller must convert to string at runtime).
+            let ops: Vec<Operand> = parts
+                .iter()
+                .map(|part| match part {
+                    ast::StringPart::Literal(s) => {
+                        let tmp = ctx.alloc_temp(MirType::Str);
+                        ctx.emit(Instruction::Assign {
+                            dest: tmp,
+                            value: RValue::ConstString(s.clone()),
+                        });
+                        Operand::Local(tmp)
+                    }
+                    ast::StringPart::Expr(e) => lower_expr_to_operand(ctx, e),
+                })
+                .collect();
+            RValue::StringConcat(ops)
+        }
+
+        ast::Expr::MapLiteral { entries, .. } => {
+            let mir_entries: Vec<(Operand, Operand)> = entries
+                .iter()
+                .map(|(k, v)| {
+                    (lower_expr_to_operand(ctx, k), lower_expr_to_operand(ctx, v))
+                })
+                .collect();
+            RValue::Map(mir_entries)
+        }
+
+        ast::Expr::CharLiteral { value, .. } => RValue::ConstInt(*value as i64),
 
         // Fallback for unsupported expressions.
         _ => RValue::ConstNone,

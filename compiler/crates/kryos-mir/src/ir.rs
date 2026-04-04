@@ -301,6 +301,12 @@ pub enum RValue {
         func_name: String,
         captures: Vec<Operand>,
     },
+
+    /// Map literal: ordered list of key-value pairs.
+    Map(Vec<(Operand, Operand)>),
+
+    /// String concatenation (from interpolated strings).
+    StringConcat(Vec<Operand>),
 }
 
 /// An operand — either a local reference or an inline constant.
