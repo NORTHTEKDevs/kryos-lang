@@ -18,6 +18,7 @@
 pub mod codegen;
 
 use std::fmt;
+use std::path::PathBuf;
 
 // Re-export the main entry point and key types.
 pub use codegen::LlvmCodegen;
@@ -128,13 +129,74 @@ impl Default for LlvmBackend {
 impl kryos_driver::Backend for LlvmBackend {
     fn compile(
         &self,
-        _module: &kryos_mir::ir::MirModule,
+        module: &kryos_mir::ir::MirModule,
     ) -> Result<Vec<u8>, kryos_driver::BackendError> {
-        // LLVM backend emits IR text, not object code directly.
-        // The pipeline should use emit_ir() and then invoke llc/clang externally.
-        Err(kryos_driver::BackendError::unsupported(
-            "direct object code compilation not supported by LLVM IR text backend; use emit_ir() + llc",
-        ))
+        // 1. Emit LLVM IR text.
+        let ir = self.emit_ir(module)?;
+
+        // 2. Find clang on the system.
+        let clang = find_llvm_compiler().ok_or_else(|| {
+            kryos_driver::BackendError::new(
+                "could not find clang; install LLVM or set LLVM_PATH environment variable",
+            )
+        })?;
+
+        // 3. Write IR to a temp .ll file.
+        let tmp_dir = std::env::temp_dir();
+        let ll_path = tmp_dir.join("kryos_llvm_tmp.ll");
+        let obj_path = tmp_dir.join("kryos_llvm_tmp.o");
+
+        std::fs::write(&ll_path, &ir).map_err(|e| {
+            kryos_driver::BackendError::new(format!(
+                "failed to write temp .ll file '{}': {e}",
+                ll_path.display()
+            ))
+        })?;
+
+        // 4. Run clang to compile .ll -> .o
+        let opt_flag = format!("-{}", self.options.opt_level);
+        let mut cmd = std::process::Command::new(&clang);
+        cmd.arg(&opt_flag)
+            .arg("-c")
+            .arg(&ll_path)
+            .arg("-o")
+            .arg(&obj_path);
+
+        // Pass target triple if specified.
+        if let Some(ref triple) = self.options.target_triple {
+            cmd.arg(format!("--target={triple}"));
+        }
+
+        let output = cmd.output().map_err(|e| {
+            kryos_driver::BackendError::new(format!(
+                "failed to execute clang at '{}': {e}",
+                clang.display()
+            ))
+        })?;
+
+        // Clean up .ll file (best effort).
+        let _ = std::fs::remove_file(&ll_path);
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let _ = std::fs::remove_file(&obj_path);
+            return Err(kryos_driver::BackendError::new(format!(
+                "clang compilation failed:\n{stderr}"
+            )));
+        }
+
+        // 5. Read the .o bytes.
+        let bytes = std::fs::read(&obj_path).map_err(|e| {
+            kryos_driver::BackendError::new(format!(
+                "failed to read object file '{}': {e}",
+                obj_path.display()
+            ))
+        })?;
+
+        // Clean up .o file (best effort).
+        let _ = std::fs::remove_file(&obj_path);
+
+        Ok(bytes)
     }
 
     fn emit_ir(
@@ -148,4 +210,83 @@ impl kryos_driver::Backend for LlvmBackend {
     fn name(&self) -> &str {
         "llvm"
     }
+}
+
+// ---------------------------------------------------------------------------
+// LLVM tool discovery
+// ---------------------------------------------------------------------------
+
+/// Search for a clang/clang.exe compiler on the system.
+///
+/// Checks (in order):
+/// 1. `LLVM_PATH` environment variable
+/// 2. Common installation paths (Windows: `C:\Program Files\LLVM\bin`)
+/// 3. `PATH` via `which`/`where`
+fn find_llvm_compiler() -> Option<PathBuf> {
+    // 1. Check LLVM_PATH env var.
+    if let Ok(llvm_path) = std::env::var("LLVM_PATH") {
+        let candidate = PathBuf::from(&llvm_path).join("clang.exe");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        let candidate = PathBuf::from(&llvm_path).join("clang");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    // 2. Check common installation paths.
+    let common_paths: &[&str] = &[
+        r"C:\Program Files\LLVM\bin\clang.exe",
+        r"C:\Program Files (x86)\LLVM\bin\clang.exe",
+        "/usr/bin/clang",
+        "/usr/local/bin/clang",
+        "/opt/homebrew/bin/clang",
+    ];
+
+    for path in common_paths {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
+    // 3. Try PATH lookup.
+    #[cfg(windows)]
+    {
+        if let Ok(output) = std::process::Command::new("where")
+            .arg("clang.exe")
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if let Some(first_line) = stdout.lines().next() {
+                    let p = PathBuf::from(first_line.trim());
+                    if p.exists() {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        if let Ok(output) = std::process::Command::new("which")
+            .arg("clang")
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if let Some(first_line) = stdout.lines().next() {
+                    let p = PathBuf::from(first_line.trim());
+                    if p.exists() {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }

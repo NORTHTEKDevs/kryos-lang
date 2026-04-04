@@ -32,6 +32,8 @@ pub struct LlvmCodegen {
     needs_arc_runtime: bool,
     /// Local type map for the current function (LocalId -> LLVM type string).
     local_types: HashMap<u32, String>,
+    /// Function signatures: name -> list of LLVM parameter type strings.
+    func_param_types: HashMap<String, Vec<String>>,
 }
 
 impl LlvmCodegen {
@@ -45,6 +47,7 @@ impl LlvmCodegen {
             options,
             needs_arc_runtime: false,
             local_types: HashMap::new(),
+            func_param_types: HashMap::new(),
         }
     }
 
@@ -60,10 +63,19 @@ impl LlvmCodegen {
         self.temp_counter = 0;
         self.string_counter = 0;
         self.needs_arc_runtime = false;
+        self.func_param_types.clear();
 
-        // Pre-scan: collect string constants and detect ARC usage.
+        // Pre-scan: collect string constants, detect ARC usage, and record
+        // function signatures for type-correct call emission.
         for func in &module.functions {
             self.prescan_function(func);
+            let param_types: Vec<String> = func
+                .params
+                .iter()
+                .map(|p| mir_type_to_llvm(&p.ty))
+                .collect();
+            self.func_param_types
+                .insert(func.name.clone(), param_types);
         }
 
         // Module header.
@@ -77,9 +89,27 @@ impl LlvmCodegen {
             self.emit_arc_declarations();
         }
 
+        // External C function declarations used by builtins.
+        self.emit_extern_declarations();
+
         // Functions.
+        // Check if we need a main() wrapper: if MIR has a void-returning `main`,
+        // rename it to `_kryos_main` and emit a C-compatible `main` wrapper.
+        let has_void_main = module.functions.iter().any(|f| {
+            f.name == "main" && f.ret_ty == MirType::Void
+        });
+
         for func in &module.functions {
-            self.emit_function(func)?;
+            if has_void_main && func.name == "main" {
+                self.emit_function_as(func, "_kryos_main")?;
+            } else {
+                self.emit_function(func)?;
+            }
+        }
+
+        // Emit C-compatible main() wrapper if needed.
+        if has_void_main {
+            self.emit_main_wrapper();
         }
 
         Ok(self.output.clone())
@@ -140,6 +170,32 @@ impl LlvmCodegen {
         self.emit_line("declare ptr @kryos_arc_alloc(i64, ptr)");
         self.emit_line("declare void @kryos_arc_retain(ptr)");
         self.emit_line("declare void @kryos_arc_release(ptr)");
+        self.emit_blank();
+    }
+
+    // -----------------------------------------------------------------------
+    // External C function declarations
+    // -----------------------------------------------------------------------
+
+    fn emit_extern_declarations(&mut self) {
+        self.emit_line("; External C functions (used by Kryos builtins)");
+        self.emit_line("declare i32 @puts(ptr)");
+        self.emit_line("declare i32 @printf(ptr, ...)");
+        self.emit_line("declare void @exit(i32)");
+        self.emit_blank();
+    }
+
+    // -----------------------------------------------------------------------
+    // Main wrapper
+    // -----------------------------------------------------------------------
+
+    fn emit_main_wrapper(&mut self) {
+        self.emit_line("; C-compatible main() entry point");
+        self.emit_line("define i32 @main() {");
+        self.emit_line("entry:");
+        self.emit_line("  call void @_kryos_main()");
+        self.emit_line("  ret i32 0");
+        self.emit_line("}");
         self.emit_blank();
     }
 
@@ -238,6 +294,10 @@ impl LlvmCodegen {
     // -----------------------------------------------------------------------
 
     fn emit_function(&mut self, func: &MirFunction) -> Result<(), CodegenError> {
+        self.emit_function_as(func, &func.name.clone())
+    }
+
+    fn emit_function_as(&mut self, func: &MirFunction, name: &str) -> Result<(), CodegenError> {
         // Build the local type map for this function.
         self.local_types.clear();
         for local in &func.locals {
@@ -253,7 +313,7 @@ impl LlvmCodegen {
             .collect::<Vec<_>>()
             .join(", ");
 
-        self.emit_line(&format!("define {ret} @{}({params}) {{", func.name));
+        self.emit_line(&format!("define {ret} @{name}({params}) {{"));
 
         for (i, block) in func.blocks.iter().enumerate() {
             self.emit_block(block, func)?;
@@ -371,23 +431,50 @@ impl LlvmCodegen {
 
             // ----- Function call -----
             RValue::Call { func: fname, args } => {
+                // Look up the callee's parameter types for type-correct emission.
+                let callee_param_types = self.func_param_types.get(fname.as_str()).cloned();
+
                 let arg_list = args
                     .iter()
-                    .map(|a| {
-                        let ty = self.operand_type(a, func);
+                    .enumerate()
+                    .map(|(i, a)| {
+                        let inferred_ty = self.operand_type(a, func);
+                        // Use the callee's declared parameter type if available,
+                        // otherwise fall back to the inferred operand type.
+                        let ty = callee_param_types
+                            .as_ref()
+                            .and_then(|pts| pts.get(i))
+                            .cloned()
+                            .unwrap_or(inferred_ty);
                         let val = self.operand_to_llvm(a, func);
                         format!("{ty} {val}")
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
 
-                if dest_ty == "void" {
-                    self.emit_line(&format!("  call void @{fname}({arg_list})"));
-                } else {
-                    self.emit_line(&format!(
-                        "  %_{} = call {dest_ty} @{fname}({arg_list})",
-                        dest.0
-                    ));
+                // Map Kryos builtin names to C library functions.
+                match fname.as_str() {
+                    "println" | "eprintln" => {
+                        // puts(ptr) -> i32, discard return value
+                        self.emit_line(&format!("  call i32 @puts({arg_list})"));
+                    }
+                    "print" => {
+                        // printf(ptr, ...) -> i32, discard return value
+                        self.emit_line(&format!("  call i32 (ptr, ...) @printf({arg_list})"));
+                    }
+                    "exit" => {
+                        self.emit_line(&format!("  call void @exit({arg_list})"));
+                    }
+                    _ => {
+                        if dest_ty == "void" {
+                            self.emit_line(&format!("  call void @{fname}({arg_list})"));
+                        } else {
+                            self.emit_line(&format!(
+                                "  %_{} = call {dest_ty} @{fname}({arg_list})",
+                                dest.0
+                            ));
+                        }
+                    }
                 }
             }
 
@@ -805,7 +892,15 @@ impl LlvmCodegen {
     ) -> Result<(), CodegenError> {
         match term {
             Terminator::Return(None) => {
-                self.emit_line("  ret void");
+                let ret_ty = mir_type_to_llvm(&func.ret_ty);
+                if ret_ty == "void" {
+                    self.emit_line("  ret void");
+                } else {
+                    // Non-void function with bare return (e.g. cleanup block).
+                    // Emit a zero-value return to keep LLVM IR valid.
+                    let zero = default_value_for_type(&ret_ty);
+                    self.emit_line(&format!("  ret {ret_ty} {zero}"));
+                }
             }
             Terminator::Return(Some(op)) => {
                 let ty = self.operand_type(op, func);
@@ -858,6 +953,15 @@ impl LlvmCodegen {
     fn operand_to_llvm(&self, op: &Operand, _func: &MirFunction) -> String {
         match op {
             Operand::Local(id) => format!("%_{}", id.0),
+            Operand::Constant(Constant::Str(s)) => {
+                // String constants need a GEP constant expression to get a ptr.
+                if let Some(global_name) = self.string_constants.get(s.as_str()) {
+                    let len = s.len() + 1;
+                    format!("getelementptr ([{len} x i8], ptr {global_name}, i64 0, i64 0)")
+                } else {
+                    "null".into()
+                }
+            }
             Operand::Constant(c) => constant_to_llvm(c),
         }
     }
@@ -1013,6 +1117,16 @@ fn float_to_llvm_hex(v: f64) -> String {
     }
     let bits = v.to_bits();
     format!("0x{:016X}", bits)
+}
+
+/// Return a suitable zero/default value for an LLVM type string.
+fn default_value_for_type(ty: &str) -> &str {
+    match ty {
+        "float" | "double" => "0.0",
+        "ptr" => "null",
+        "void" => "void",
+        _ => "0", // i1, i8, i16, i32, i64, i128
+    }
 }
 
 /// Escape a string for use in an LLVM IR constant array.

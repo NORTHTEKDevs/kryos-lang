@@ -46,7 +46,30 @@ pub fn execute(
     // Instantiate the appropriate codegen backend based on build mode.
     let backend: Box<dyn Backend> = match mode {
         BuildMode::Debug => Box::new(kryos_codegen_cranelift::CraneliftBackend::new()),
-        BuildMode::Release => Box::new(kryos_codegen_llvm::LlvmBackend::default()),
+        BuildMode::Release => {
+            let triple = if cfg!(target_os = "windows") {
+                if cfg!(target_arch = "x86_64") {
+                    "x86_64-pc-windows-msvc"
+                } else {
+                    "aarch64-pc-windows-msvc"
+                }
+            } else if cfg!(target_os = "macos") {
+                if cfg!(target_arch = "aarch64") {
+                    "aarch64-apple-darwin"
+                } else {
+                    "x86_64-apple-darwin"
+                }
+            } else {
+                "x86_64-unknown-linux-gnu"
+            };
+            Box::new(kryos_codegen_llvm::LlvmBackend::new(
+                kryos_codegen_llvm::EmitOptions {
+                    opt_level: kryos_codegen_llvm::OptLevel::O2,
+                    target_triple: Some(triple.to_string()),
+                    target_datalayout: None,
+                },
+            ))
+        }
     };
 
     let p = Path::new(path);
