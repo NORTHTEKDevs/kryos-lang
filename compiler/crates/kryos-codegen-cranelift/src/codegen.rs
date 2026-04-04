@@ -343,76 +343,48 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
     let exit_id = object_module.declare_function("exit", Linkage::Import, &exit_sig)?;
     func_ids.insert("exit".to_string(), exit_id);
 
-    // Declare len() builtin — stub that returns 0 for now.
-    // The MIR lowering special-cases range() loops so they never call len(),
-    // but we still need it declared for non-range iteration (future).
+    // Import len() builtin — reads len field from any Kryos collection.
     let len_sig = {
         let mut sig = Signature::new(call_conv);
-        sig.params.push(AbiParam::new(types::I64)); // collection pointer
+        sig.params.push(AbiParam::new(types::I64)); // collection handle
         sig.returns.push(AbiParam::new(types::I64)); // length
         sig
     };
     let len_id = object_module.declare_function(
         "kryos_builtin_len",
-        Linkage::Local,
+        Linkage::Import,
         &len_sig,
     )?;
     func_ids.insert("len".to_string(), len_id);
-    // Define len stub (returns 0)
-    {
-        let mut len_fn = Function::with_name_signature(
-            UserFuncName::user(0, len_id.as_u32()),
-            len_sig.clone(),
-        );
-        {
-            let mut builder = FunctionBuilder::new(&mut len_fn, &mut fb_ctx);
-            let block = builder.create_block();
-            builder.append_block_params_for_function_params(block);
-            builder.switch_to_block(block);
-            builder.seal_block(block);
-            let zero = builder.ins().iconst(types::I64, 0);
-            builder.ins().return_(&[zero]);
-            builder.finalize();
-        }
-        let mut ctx = Context::for_function(len_fn);
-        object_module.define_function(len_id, &mut ctx)?;
-        ctx.clear();
-    }
 
-    // Declare to_string() builtin — stub that returns the input as-is for now.
-    // A proper implementation would convert an integer to its string representation.
+    // Import to_string() builtin — converts i64 to KryosString.
     let to_string_sig = {
         let mut sig = Signature::new(call_conv);
         sig.params.push(AbiParam::new(types::I64)); // value
-        sig.returns.push(AbiParam::new(types::I64)); // string pointer
+        sig.returns.push(AbiParam::new(types::I64)); // string handle
         sig
     };
     let to_string_id = object_module.declare_function(
         "kryos_builtin_to_string",
-        Linkage::Local,
+        Linkage::Import,
         &to_string_sig,
     )?;
     func_ids.insert("to_string".to_string(), to_string_id);
-    // Define to_string stub (returns input unchanged)
-    {
-        let mut ts_fn = Function::with_name_signature(
-            UserFuncName::user(0, to_string_id.as_u32()),
-            to_string_sig.clone(),
-        );
-        {
-            let mut builder = FunctionBuilder::new(&mut ts_fn, &mut fb_ctx);
-            let block = builder.create_block();
-            builder.append_block_params_for_function_params(block);
-            builder.switch_to_block(block);
-            builder.seal_block(block);
-            let param = builder.block_params(block)[0];
-            builder.ins().return_(&[param]);
-            builder.finalize();
-        }
-        let mut ctx = Context::for_function(ts_fn);
-        object_module.define_function(to_string_id, &mut ctx)?;
-        ctx.clear();
-    }
+
+    // Import ipow() builtin — integer exponentiation.
+    let ipow_sig = {
+        let mut sig = Signature::new(call_conv);
+        sig.params.push(AbiParam::new(types::I64)); // base
+        sig.params.push(AbiParam::new(types::I64)); // exp
+        sig.returns.push(AbiParam::new(types::I64)); // result
+        sig
+    };
+    let ipow_id = object_module.declare_function(
+        "kryos_ipow",
+        Linkage::Import,
+        &ipow_sig,
+    )?;
+    func_ids.insert("kryos_ipow".to_string(), ipow_id);
 
     // Define ARC runtime stubs (no-ops for now)
     {
@@ -1082,6 +1054,14 @@ fn translate_rvalue<M: Module>(
                 }
             }
 
+            // Integer power: call runtime kryos_ipow instead of inline ops.
+            if *op == MirBinOp::Pow && !is_float {
+                let ipow_ref = ensure_func_ref_with_args(
+                    "kryos_ipow", builder, translator, module, 2,
+                )?;
+                let call = builder.ins().call(ipow_ref, &[lhs, rhs]);
+                return Ok(Some(builder.inst_results(call)[0]));
+            }
             let val = translate_binop(*op, lhs, rhs, is_float, builder)?;
             Ok(Some(val))
         }
@@ -1538,11 +1518,10 @@ fn translate_binop_int(
         MirBinOp::Div => builder.ins().sdiv(lhs, rhs),
         MirBinOp::Mod => builder.ins().srem(lhs, rhs),
         MirBinOp::Pow => {
-            // Cranelift has no integer power instruction. Emit a loop-based
-            // exponentiation or call a runtime helper. For now, return lhs as
-            // a placeholder — the runtime will provide `kryos_ipow`.
+            // Handled at call site via kryos_ipow runtime call.
+            // Should never reach here — Pow is intercepted before dispatch.
             return Err(CodegenError::UnsupportedOperation(
-                "integer exponentiation (Pow) not yet supported in Cranelift backend".to_string(),
+                "Pow should be handled at call site".to_string(),
             ));
         }
         MirBinOp::Eq => {

@@ -99,6 +99,9 @@ impl JitCompiler {
         jit_builder.symbol("kryos_array_set", kryos_array_set_stub as *const u8);
         jit_builder.symbol("kryos_array_len", kryos_array_len_stub as *const u8);
         jit_builder.symbol("kryos_array_free", kryos_array_free_stub as *const u8);
+        jit_builder.symbol("kryos_builtin_len", kryos_builtin_len_stub as *const u8);
+        jit_builder.symbol("kryos_builtin_to_string", kryos_builtin_to_string_stub as *const u8);
+        jit_builder.symbol("kryos_ipow", kryos_ipow_stub as *const u8);
 
         let module = JITModule::new(jit_builder);
 
@@ -234,3 +237,18 @@ extern "C" fn kryos_array_get_stub(_arr: u64, _idx: u64) -> u64 { 0 }
 extern "C" fn kryos_array_set_stub(_arr: u64, _idx: u64, _val: u64) {}
 extern "C" fn kryos_array_len_stub(_arr: u64) -> u64 { 0 }
 extern "C" fn kryos_array_free_stub(_arr: u64) {}
+extern "C" fn kryos_builtin_len_stub(collection: u64) -> u64 {
+    if collection == 0 { return 0; }
+    unsafe { *(collection as *const u64) }
+}
+extern "C" fn kryos_builtin_to_string_stub(val: u64) -> u64 { val } // passthrough in JIT
+extern "C" fn kryos_ipow_stub(mut base: u64, exp: u64) -> u64 {
+    let mut result: u64 = 1;
+    let mut e = exp;
+    while e > 0 {
+        if e & 1 == 1 { result = result.wrapping_mul(base); }
+        base = base.wrapping_mul(base);
+        e >>= 1;
+    }
+    result
+}

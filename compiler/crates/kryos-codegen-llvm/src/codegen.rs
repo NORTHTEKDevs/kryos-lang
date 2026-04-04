@@ -224,6 +224,13 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_map_get(i64, i64)");
         self.emit_line("declare i64 @kryos_map_len(i64)");
         self.emit_line("declare void @kryos_map_free(i64)");
+        self.emit_line("; Builtin runtime");
+        self.emit_line("declare i64 @kryos_builtin_len(i64)");
+        self.emit_line("declare i64 @kryos_builtin_to_string(i64)");
+        self.emit_line("declare i64 @kryos_ipow(i64, i64)");
+        self.emit_line("declare i64 @kryos_i64_to_string(i64)");
+        self.emit_line("declare i64 @kryos_f64_to_string(double)");
+        self.emit_line("declare i64 @kryos_bool_to_string(i64)");
         self.emit_blank();
     }
 
@@ -647,24 +654,31 @@ impl LlvmCodegen {
                         self.emit_line(&format!("  call void @exit({arg_list})"));
                     }
                     "len" => {
-                        // Stub: returns 0 (proper implementation in Phase 5)
-                        if is_mutable {
-                            self.emit_line(&format!("  store i64 0, ptr %_{}.addr", dest.0));
+                        let arg = if !args.is_empty() {
+                            self.operand_to_llvm(&args[0], func)
                         } else {
-                            self.emit_line(&format!("  %_{} = add i64 0, 0", dest.0));
+                            "0".to_string()
+                        };
+                        if is_mutable {
+                            let tmp = self.next_temp();
+                            self.emit_line(&format!("  %t{tmp} = call i64 @kryos_builtin_len(i64 {arg})"));
+                            self.emit_line(&format!("  store i64 %t{tmp}, ptr %_{}.addr", dest.0));
+                        } else {
+                            self.emit_line(&format!("  %_{} = call i64 @kryos_builtin_len(i64 {arg})", dest.0));
                         }
                     }
                     "to_string" => {
-                        // Stub: returns input unchanged (proper implementation in Phase 5)
                         let val = if !args.is_empty() {
                             self.operand_to_llvm(&args[0], func)
                         } else {
                             "0".to_string()
                         };
                         if is_mutable {
-                            self.emit_line(&format!("  store {dest_ty} {val}, ptr %_{}.addr", dest.0));
+                            let tmp = self.next_temp();
+                            self.emit_line(&format!("  %t{tmp} = call i64 @kryos_builtin_to_string(i64 {val})"));
+                            self.emit_line(&format!("  store i64 %t{tmp}, ptr %_{}.addr", dest.0));
                         } else {
-                            self.emit_line(&format!("  %_{} = add {dest_ty} {val}, 0", dest.0));
+                            self.emit_line(&format!("  %_{} = call i64 @kryos_builtin_to_string(i64 {val})", dest.0));
                         }
                     }
                     _ => {
@@ -1115,7 +1129,7 @@ impl LlvmCodegen {
                 format!("  {target} = call {ty} @llvm.pow.f64({ty} {left}, {ty} {right})")
             }
             MirBinOp::Pow => {
-                format!("  {target} = call {ty} @kryos_int_pow({ty} {left}, {ty} {right})")
+                format!("  {target} = call {ty} @kryos_ipow({ty} {left}, {ty} {right})")
             }
             MirBinOp::Eq if is_float => format!("  {target} = fcmp oeq {ty} {left}, {right}"),
             MirBinOp::Eq => format!("  {target} = icmp eq {ty} {left}, {right}"),

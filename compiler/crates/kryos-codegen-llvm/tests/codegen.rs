@@ -1187,10 +1187,10 @@ fn test_len_builtin_returns_zero() {
     });
 
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
-    // len stub inlines to 0
-    assert!(ir.contains("add i64 0, 0"), "len() stub should return 0:\n{ir}");
+    // len calls the runtime kryos_builtin_len
+    assert!(ir.contains("@kryos_builtin_len"), "len() should call kryos_builtin_len:\n{ir}");
     // Must NOT emit a call to @len (which would be an undefined symbol)
-    assert!(!ir.contains("call i64 @len"), "len must not emit external call:\n{ir}");
+    assert!(!ir.contains("call i64 @len("), "len must not emit external call to @len:\n{ir}");
 }
 
 #[test]
@@ -1217,10 +1217,10 @@ fn test_to_string_builtin_returns_input() {
     });
 
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
-    // to_string stub returns input unchanged: %_1 = add i64 %_0, 0
-    assert!(ir.contains("%_0, 0"), "to_string() should return input unchanged:\n{ir}");
-    assert!(!ir.contains("call") || ir.contains("@puts") == false,
-        "to_string must not emit external call to @to_string:\n{ir}");
+    // to_string calls the runtime kryos_builtin_to_string
+    assert!(ir.contains("@kryos_builtin_to_string"), "to_string() should call kryos_builtin_to_string:\n{ir}");
+    // Must NOT emit a call to @to_string (which would be an undefined symbol)
+    assert!(!ir.contains("call i64 @to_string("), "to_string must not emit external call to @to_string:\n{ir}");
 }
 
 // ===========================================================================

@@ -1528,9 +1528,3 @@ fn stmt_returns(stmt: &Stmt) -> bool {
     }
 }
 
-fn expr_returns(expr: &Expr) -> bool {
-    match expr {
-        Expr::Block { block, .. } => block_returns(block),
-        _ => false,
-    }
-}
