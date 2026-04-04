@@ -770,17 +770,21 @@ impl LlvmCodegen {
                 }
             }
             RValue::Index { object, index } => {
+                // Array/tuple pointer + index: GEP to compute address, then load.
                 let obj_val = self.operand_to_llvm(object, func);
                 let idx_val = self.operand_to_llvm(index, func);
-                let _obj_ty = self.operand_type(object, func);
                 let idx_ty = self.operand_type(index, func);
+                let elem_ptr = self.next_temp();
+                self.emit_line(&format!(
+                    "  {elem_ptr} = getelementptr i64, ptr {obj_val}, {idx_ty} {idx_val}"
+                ));
                 let target_name = if is_mutable {
                     self.next_temp()
                 } else {
                     format!("%_{}", dest.0)
                 };
                 self.emit_line(&format!(
-                    "  {target_name} = getelementptr {dest_ty}, ptr {obj_val}, {idx_ty} {idx_val}"
+                    "  {target_name} = load {dest_ty}, ptr {elem_ptr}"
                 ));
                 if is_mutable {
                     self.emit_line(&format!("  store {dest_ty} {target_name}, ptr %_{}.addr", dest.0));
@@ -888,17 +892,49 @@ impl LlvmCodegen {
                 self.emit_cast(dest, operand, ty, func, is_mutable)?;
             }
 
-            RValue::Closure { func_name, captures: _ } => {
-                if is_mutable {
+            RValue::Closure { func_name, captures } => {
+                // Closure: store function pointer as i64.
+                // If captures exist, allocate env struct [func_ptr, cap0, cap1, ...].
+                if captures.is_empty() {
+                    let fptr = self.next_temp();
                     self.emit_line(&format!(
-                        "  store i64 0, ptr %_{}.addr  ; closure({func_name})",
-                        dest.0
+                        "  {fptr} = ptrtoint ptr @{func_name} to i64"
                     ));
+                    if is_mutable {
+                        self.emit_line(&format!("  store i64 {fptr}, ptr %_{}.addr", dest.0));
+                    } else {
+                        self.emit_line(&format!("  %_{} = add i64 {fptr}, 0", dest.0));
+                    }
                 } else {
+                    // Allocate closure env: [func_ptr: i64, cap0: i64, cap1: i64, ...]
+                    let env_size = (1 + captures.len()) * 8;
+                    let env_ptr = self.next_temp();
                     self.emit_line(&format!(
-                        "  %_{} = add i64 0, 0  ; closure({func_name})",
-                        dest.0
+                        "  {env_ptr} = call ptr @malloc(i64 {env_size})"
                     ));
+                    // Store function pointer at offset 0.
+                    let fptr = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {fptr} = ptrtoint ptr @{func_name} to i64"
+                    ));
+                    self.emit_line(&format!("  store i64 {fptr}, ptr {env_ptr}"));
+                    // Store each capture at offset (i+1)*8.
+                    for (i, cap) in captures.iter().enumerate() {
+                        let cap_val = self.operand_to_llvm(cap, func);
+                        let cap_ptr = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {cap_ptr} = getelementptr i64, ptr {env_ptr}, i64 {}",
+                            i + 1
+                        ));
+                        self.emit_line(&format!("  store i64 {cap_val}, ptr {cap_ptr}"));
+                    }
+                    let env_int = self.next_temp();
+                    self.emit_line(&format!("  {env_int} = ptrtoint ptr {env_ptr} to i64"));
+                    if is_mutable {
+                        self.emit_line(&format!("  store i64 {env_int}, ptr %_{}.addr", dest.0));
+                    } else {
+                        self.emit_line(&format!("  %_{} = add i64 {env_int}, 0", dest.0));
+                    }
                 }
             }
 
@@ -911,12 +947,37 @@ impl LlvmCodegen {
                 }
             }
 
-            RValue::Range { .. } => {
-                // Range: opaque handle placeholder.
+            RValue::Range { start, end, inclusive } => {
+                // Range layout: { i64 start, i64 end, i64 inclusive } — alloca 3 x i64.
+                let range_ptr = self.next_temp();
+                self.emit_line(&format!("  {range_ptr} = alloca [3 x i64]"));
+                // Store start.
+                let start_val = match start {
+                    Some(op) => self.operand_to_llvm(op, func),
+                    None => "0".to_string(),
+                };
+                let start_ptr = self.next_temp();
+                self.emit_line(&format!("  {start_ptr} = getelementptr i64, ptr {range_ptr}, i64 0"));
+                self.emit_line(&format!("  store i64 {start_val}, ptr {start_ptr}"));
+                // Store end.
+                let end_val = match end {
+                    Some(op) => self.operand_to_llvm(op, func),
+                    None => format!("{}", i64::MAX),
+                };
+                let end_ptr = self.next_temp();
+                self.emit_line(&format!("  {end_ptr} = getelementptr i64, ptr {range_ptr}, i64 1"));
+                self.emit_line(&format!("  store i64 {end_val}, ptr {end_ptr}"));
+                // Store inclusive flag.
+                let incl_ptr = self.next_temp();
+                self.emit_line(&format!("  {incl_ptr} = getelementptr i64, ptr {range_ptr}, i64 2"));
+                self.emit_line(&format!("  store i64 {}, ptr {incl_ptr}", *inclusive as i64));
+                // Assign pointer to dest.
+                let ptr_val = self.next_temp();
+                self.emit_line(&format!("  {ptr_val} = ptrtoint ptr {range_ptr} to i64"));
                 if is_mutable {
-                    self.emit_line(&format!("  store i64 0, ptr %_{}.addr  ; range", dest.0));
+                    self.emit_line(&format!("  store i64 {ptr_val}, ptr %_{}.addr", dest.0));
                 } else {
-                    self.emit_line(&format!("  %_{} = add i64 0, 0  ; range", dest.0));
+                    self.emit_line(&format!("  %_{} = add i64 {ptr_val}, 0", dest.0));
                 }
             }
 
@@ -926,19 +987,40 @@ impl LlvmCodegen {
             }
 
             RValue::StringConcat(parts) => {
-                // String concatenation placeholder — returns opaque i64 handle.
+                // Chain kryos_string_concat calls: fold left across all parts.
                 if parts.is_empty() {
                     if is_mutable {
-                        self.emit_line(&format!("  store i64 0, ptr %_{}.addr  ; empty str_concat", dest.0));
+                        self.emit_line(&format!("  store i64 0, ptr %_{}.addr", dest.0));
                     } else {
-                        self.emit_line(&format!("  %_{} = add i64 0, 0  ; empty str_concat", dest.0));
+                        self.emit_line(&format!("  %_{} = add i64 0, 0", dest.0));
+                    }
+                } else if parts.len() == 1 {
+                    let val = self.operand_to_llvm(&parts[0], func);
+                    if is_mutable {
+                        self.emit_line(&format!("  store i64 {val}, ptr %_{}.addr", dest.0));
+                    } else {
+                        self.emit_line(&format!("  %_{} = add i64 {val}, 0", dest.0));
                     }
                 } else {
+                    // Fold: acc = concat(parts[0], parts[1]), acc = concat(acc, parts[2]), ...
                     let first = self.operand_to_llvm(&parts[0], func);
+                    let second = self.operand_to_llvm(&parts[1], func);
+                    let mut acc = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {acc} = call i64 @kryos_string_concat(i64 {first}, i64 {second})"
+                    ));
+                    for part in &parts[2..] {
+                        let next_val = self.operand_to_llvm(part, func);
+                        let next_acc = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {next_acc} = call i64 @kryos_string_concat(i64 {acc}, i64 {next_val})"
+                        ));
+                        acc = next_acc;
+                    }
                     if is_mutable {
-                        self.emit_line(&format!("  store i64 {first}, ptr %_{}.addr  ; str_concat", dest.0));
+                        self.emit_line(&format!("  store i64 {acc}, ptr %_{}.addr", dest.0));
                     } else {
-                        self.emit_line(&format!("  %_{} = add i64 {first}, 0  ; str_concat", dest.0));
+                        self.emit_line(&format!("  %_{} = add i64 {acc}, 0", dest.0));
                     }
                 }
             }

@@ -1097,39 +1097,42 @@ fn translate_rvalue<M: Module>(
             }
         }
 
-        RValue::Array(_elems) => {
-            // Aggregate construction: return a placeholder of the correct dest type.
-            let cl_ty = dest
-                .and_then(|d| {
-                    translator.mir_func.locals.iter()
-                        .find(|l| l.id == d)
-                        .and_then(|l| mir_type_to_cl(&l.ty).ok().flatten())
-                })
-                .unwrap_or(types::I64);
-            let val = if is_float_type(cl_ty) {
-                if cl_ty == types::F32 { builder.ins().f32const(0.0) }
-                else { builder.ins().f64const(0.0) }
-            } else {
-                builder.ins().iconst(cl_ty, 0)
-            };
-            Ok(Some(val))
+        RValue::Array(elems) => {
+            // Array layout: [elem0: i64, elem1: i64, ...] — 8 bytes per element.
+            let total_size = (elems.len().max(1) as u32) * 8;
+            let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                total_size,
+                0,
+            ));
+            let ptr = builder.ins().stack_addr(types::I64, slot, 0);
+
+            for (i, elem) in elems.iter().enumerate() {
+                let val = translate_operand(elem, builder, translator, module)?;
+                let offset = (i * 8) as i32;
+                builder.ins().store(MemFlags::trusted(), val, ptr, offset);
+            }
+
+            Ok(Some(ptr))
         }
 
-        RValue::Tuple(_elems) => {
-            let cl_ty = dest
-                .and_then(|d| {
-                    translator.mir_func.locals.iter()
-                        .find(|l| l.id == d)
-                        .and_then(|l| mir_type_to_cl(&l.ty).ok().flatten())
-                })
-                .unwrap_or(types::I64);
-            let val = if is_float_type(cl_ty) {
-                if cl_ty == types::F32 { builder.ins().f32const(0.0) }
-                else { builder.ins().f64const(0.0) }
-            } else {
-                builder.ins().iconst(cl_ty, 0)
-            };
-            Ok(Some(val))
+        RValue::Tuple(elems) => {
+            // Tuple layout: same as array — [elem0: i64, elem1: i64, ...].
+            let total_size = (elems.len().max(1) as u32) * 8;
+            let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                total_size,
+                0,
+            ));
+            let ptr = builder.ins().stack_addr(types::I64, slot, 0);
+
+            for (i, elem) in elems.iter().enumerate() {
+                let val = translate_operand(elem, builder, translator, module)?;
+                let offset = (i * 8) as i32;
+                builder.ins().store(MemFlags::trusted(), val, ptr, offset);
+            }
+
+            Ok(Some(ptr))
         }
 
         RValue::Struct { name, fields } => {
@@ -1230,20 +1233,14 @@ fn translate_rvalue<M: Module>(
             Ok(Some(val))
         }
 
-        RValue::Index { .. } => {
-            let cl_ty = dest
-                .and_then(|d| {
-                    translator.mir_func.locals.iter()
-                        .find(|l| l.id == d)
-                        .and_then(|l| mir_type_to_cl(&l.ty).ok().flatten())
-                })
-                .unwrap_or(types::I64);
-            let val = if is_float_type(cl_ty) {
-                if cl_ty == types::F32 { builder.ins().f32const(0.0) }
-                else { builder.ins().f64const(0.0) }
-            } else {
-                builder.ins().iconst(cl_ty, 0)
-            };
+        RValue::Index { object, index } => {
+            // Load element from pointer: ptr + index * 8.
+            let ptr = translate_operand(object, builder, translator, module)?;
+            let idx = translate_operand(index, builder, translator, module)?;
+            let elem_size = builder.ins().iconst(types::I64, 8);
+            let byte_offset = builder.ins().imul(idx, elem_size);
+            let addr = builder.ins().iadd(ptr, byte_offset);
+            let val = builder.ins().load(types::I64, MemFlags::trusted(), addr, 0);
             Ok(Some(val))
         }
 
@@ -1309,9 +1306,45 @@ fn translate_rvalue<M: Module>(
             Ok(Some(result))
         }
 
-        RValue::Closure { func_name: _, captures: _ } => {
-            let val = builder.ins().iconst(types::I64, 0);
-            Ok(Some(val))
+        RValue::Closure { func_name, captures } => {
+            if captures.is_empty() {
+                // No captures — closure is just a function pointer.
+                // Look up the function reference and convert to i64.
+                if let Some(&func_ref) = translator.func_refs.get(func_name.as_str()) {
+                    let fptr = builder.ins().func_addr(types::I64, func_ref);
+                    Ok(Some(fptr))
+                } else {
+                    // Function not yet declared in this scope — return 0 as placeholder.
+                    let val = builder.ins().iconst(types::I64, 0);
+                    Ok(Some(val))
+                }
+            } else {
+                // With captures: allocate [func_ptr, cap0, cap1, ...] on stack.
+                let env_size = ((1 + captures.len()) * 8) as u32;
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    env_size,
+                    0,
+                ));
+                let ptr = builder.ins().stack_addr(types::I64, slot, 0);
+
+                // Store function pointer at offset 0.
+                let fptr = if let Some(&func_ref) = translator.func_refs.get(func_name.as_str()) {
+                    builder.ins().func_addr(types::I64, func_ref)
+                } else {
+                    builder.ins().iconst(types::I64, 0)
+                };
+                builder.ins().store(MemFlags::trusted(), fptr, ptr, 0);
+
+                // Store captures at offsets 8, 16, ...
+                for (i, cap) in captures.iter().enumerate() {
+                    let val = translate_operand(cap, builder, translator, module)?;
+                    let offset = ((i + 1) * 8) as i32;
+                    builder.ins().store(MemFlags::trusted(), val, ptr, offset);
+                }
+
+                Ok(Some(ptr))
+            }
         }
 
         RValue::Map(_) => {
@@ -1320,15 +1353,55 @@ fn translate_rvalue<M: Module>(
             Ok(Some(val))
         }
 
-        RValue::StringConcat(_parts) => {
-            let val = builder.ins().iconst(types::I64, 0);
-            Ok(Some(val))
+        RValue::StringConcat(parts) => {
+            if parts.is_empty() {
+                let val = builder.ins().iconst(types::I64, 0);
+                Ok(Some(val))
+            } else if parts.len() == 1 {
+                let val = translate_operand(&parts[0], builder, translator, module)?;
+                Ok(Some(val))
+            } else {
+                // Fold: acc = concat(parts[0], parts[1]), then concat(acc, parts[2]), ...
+                let func_ref =
+                    ensure_func_ref("kryos_string_concat", builder, translator, module)?;
+                let first = translate_operand(&parts[0], builder, translator, module)?;
+                let second = translate_operand(&parts[1], builder, translator, module)?;
+                let call = builder.ins().call(func_ref, &[first, second]);
+                let mut acc = builder.inst_results(call)[0];
+                for part in &parts[2..] {
+                    let next_val = translate_operand(part, builder, translator, module)?;
+                    let call = builder.ins().call(func_ref, &[acc, next_val]);
+                    acc = builder.inst_results(call)[0];
+                }
+                Ok(Some(acc))
+            }
         }
 
-        RValue::Range { .. } => {
-            // Range: opaque handle placeholder.
-            let val = builder.ins().iconst(types::I64, 0);
-            Ok(Some(val))
+        RValue::Range { start, end, inclusive } => {
+            // Range layout: [start: i64, end: i64, inclusive: i64] — 24 bytes.
+            let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                24,
+                0,
+            ));
+            let ptr = builder.ins().stack_addr(types::I64, slot, 0);
+
+            let start_val = match start {
+                Some(op) => translate_operand(op, builder, translator, module)?,
+                None => builder.ins().iconst(types::I64, 0),
+            };
+            builder.ins().store(MemFlags::trusted(), start_val, ptr, 0);
+
+            let end_val = match end {
+                Some(op) => translate_operand(op, builder, translator, module)?,
+                None => builder.ins().iconst(types::I64, i64::MAX),
+            };
+            builder.ins().store(MemFlags::trusted(), end_val, ptr, 8);
+
+            let incl_val = builder.ins().iconst(types::I64, *inclusive as i64);
+            builder.ins().store(MemFlags::trusted(), incl_val, ptr, 16);
+
+            Ok(Some(ptr))
         }
 
         RValue::Comptime(inner) => {
