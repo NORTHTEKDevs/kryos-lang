@@ -1321,9 +1321,19 @@ fn translate_rvalue<M: Module>(
         }
 
         RValue::StringConcat(_parts) => {
-            // String concatenation placeholder — returns opaque handle.
             let val = builder.ins().iconst(types::I64, 0);
             Ok(Some(val))
+        }
+
+        RValue::Range { .. } => {
+            // Range: opaque handle placeholder.
+            let val = builder.ins().iconst(types::I64, 0);
+            Ok(Some(val))
+        }
+
+        RValue::Comptime(inner) => {
+            // Comptime: lower inner RValue directly.
+            translate_rvalue(inner, builder, translator, module, dest)
         }
     }
 }

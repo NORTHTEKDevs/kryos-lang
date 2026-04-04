@@ -1917,6 +1917,43 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
 
         ast::Expr::CharLiteral { value, .. } => RValue::ConstInt(*value as i64),
 
+        ast::Expr::RangeExpr { start, end, inclusive, .. } => {
+            let s = start.as_ref().map(|e| lower_expr_to_operand(ctx, e));
+            let e = end.as_ref().map(|e| lower_expr_to_operand(ctx, e));
+            RValue::Range {
+                start: s,
+                end: e,
+                inclusive: *inclusive,
+            }
+        }
+
+        ast::Expr::ComptimeBlock { body, .. } => {
+            // Lower the body block, wrapping the result in Comptime.
+            for (i, stmt) in body.stmts.iter().enumerate() {
+                if i == body.stmts.len() - 1 {
+                    if let ast::Stmt::Expr { expr, .. } = stmt {
+                        let inner = lower_expr_to_rvalue(ctx, expr);
+                        return RValue::Comptime(Box::new(inner));
+                    }
+                }
+                lower_stmt(ctx, stmt);
+            }
+            RValue::Comptime(Box::new(RValue::ConstNone))
+        }
+
+        ast::Expr::QuantumBlock { body, .. } => {
+            // Quantum blocks: lower body normally (placeholder — future quantum backend).
+            for (i, stmt) in body.stmts.iter().enumerate() {
+                if i == body.stmts.len() - 1 {
+                    if let ast::Stmt::Expr { expr, .. } = stmt {
+                        return lower_expr_to_rvalue(ctx, expr);
+                    }
+                }
+                lower_stmt(ctx, stmt);
+            }
+            RValue::ConstNone
+        }
+
         // Fallback for unsupported expressions.
         _ => RValue::ConstNone,
     }

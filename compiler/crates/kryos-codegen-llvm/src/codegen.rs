@@ -326,6 +326,11 @@ impl LlvmCodegen {
                     self.prescan_operand(p);
                 }
             }
+            RValue::Range { start, end, .. } => {
+                if let Some(s) = start { self.prescan_operand(s); }
+                if let Some(e) = end { self.prescan_operand(e); }
+            }
+            RValue::Comptime(inner) => self.prescan_rvalue(inner),
             RValue::ConstInt(_)
             | RValue::ConstFloat(_)
             | RValue::ConstBool(_)
@@ -904,6 +909,20 @@ impl LlvmCodegen {
                 } else {
                     self.emit_line(&format!("  %_{} = add i64 0, 0  ; map literal", dest.0));
                 }
+            }
+
+            RValue::Range { .. } => {
+                // Range: opaque handle placeholder.
+                if is_mutable {
+                    self.emit_line(&format!("  store i64 0, ptr %_{}.addr  ; range", dest.0));
+                } else {
+                    self.emit_line(&format!("  %_{} = add i64 0, 0  ; range", dest.0));
+                }
+            }
+
+            RValue::Comptime(inner) => {
+                // Comptime: lower the inner RValue directly (const-eval at MIR level).
+                self.emit_assign(dest, inner, func)?;
             }
 
             RValue::StringConcat(parts) => {

@@ -165,6 +165,16 @@ impl fmt::Display for RValue {
                 }
                 write!(f, ")")
             }
+            RValue::Range { start, end, inclusive } => {
+                let op = if *inclusive { "..=" } else { ".." };
+                match (start, end) {
+                    (Some(s), Some(e)) => write!(f, "{s}{op}{e}"),
+                    (Some(s), None) => write!(f, "{s}{op}"),
+                    (None, Some(e)) => write!(f, "{op}{e}"),
+                    (None, None) => write!(f, "{op}"),
+                }
+            }
+            RValue::Comptime(inner) => write!(f, "comptime({inner})")
         }
     }
 }

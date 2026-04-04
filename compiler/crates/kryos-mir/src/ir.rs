@@ -316,6 +316,16 @@ pub enum RValue {
 
     /// String concatenation (from interpolated strings).
     StringConcat(Vec<Operand>),
+
+    /// Range expression: start..end or start..=end.
+    Range {
+        start: Option<Operand>,
+        end: Option<Operand>,
+        inclusive: bool,
+    },
+
+    /// Comptime-evaluated expression (result is constant after eval).
+    Comptime(Box<RValue>),
 }
 
 /// An operand — either a local reference or an inline constant.

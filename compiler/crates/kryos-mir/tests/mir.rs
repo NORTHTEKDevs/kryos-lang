@@ -1897,3 +1897,125 @@ fn select_statement_produces_switch() {
     });
     assert!(has_receive, "select branches should have Receive instructions");
 }
+
+// ---------------------------------------------------------------------------
+// Test 38: Comptime block wraps inner RValue
+// ---------------------------------------------------------------------------
+
+#[test]
+fn comptime_block_lowering() {
+    // fn main() { let x = comptime { 42 }; }
+    let module = make_module(vec![make_fn(
+        "main",
+        vec![],
+        None,
+        block(vec![Stmt::Let {
+            name: "x".into(),
+            mutable: false,
+            ty: None,
+            value: Some(ast::Expr::ComptimeBlock {
+                body: block(vec![expr_stmt(int_lit(42))]),
+                span: S,
+            }),
+            pattern: None,
+            span: S,
+        }]),
+    )]);
+
+    let mir = lower_module(&module);
+    let f = &mir.functions[0];
+
+    // Should have a Comptime(ConstInt(42)) rvalue.
+    let has_comptime = f.blocks.iter().any(|bb| {
+        bb.instructions.iter().any(|inst| match inst {
+            Instruction::Assign {
+                value: RValue::Comptime(inner),
+                ..
+            } => matches!(inner.as_ref(), RValue::ConstInt(42)),
+            _ => false,
+        })
+    });
+    assert!(has_comptime, "comptime block should produce Comptime(ConstInt(42))");
+}
+
+// ---------------------------------------------------------------------------
+// Test 39: Range expression lowering
+// ---------------------------------------------------------------------------
+
+#[test]
+fn range_expression_lowering() {
+    // fn main() { let r = 0..10; }
+    let module = make_module(vec![make_fn(
+        "main",
+        vec![],
+        None,
+        block(vec![Stmt::Let {
+            name: "r".into(),
+            mutable: false,
+            ty: None,
+            value: Some(ast::Expr::RangeExpr {
+                start: Some(Box::new(int_lit(0))),
+                end: Some(Box::new(int_lit(10))),
+                inclusive: false,
+                span: S,
+            }),
+            pattern: None,
+            span: S,
+        }]),
+    )]);
+
+    let mir = lower_module(&module);
+    let f = &mir.functions[0];
+
+    let has_range = f.blocks.iter().any(|bb| {
+        bb.instructions.iter().any(|inst| match inst {
+            Instruction::Assign {
+                value: RValue::Range { start: Some(_), end: Some(_), inclusive: false },
+                ..
+            } => true,
+            _ => false,
+        })
+    });
+    assert!(has_range, "range expression should produce Range rvalue");
+}
+
+// ---------------------------------------------------------------------------
+// Test 40: Inclusive range expression
+// ---------------------------------------------------------------------------
+
+#[test]
+fn inclusive_range_expression() {
+    // fn main() { let r = 1..=5; }
+    let module = make_module(vec![make_fn(
+        "main",
+        vec![],
+        None,
+        block(vec![Stmt::Let {
+            name: "r".into(),
+            mutable: false,
+            ty: None,
+            value: Some(ast::Expr::RangeExpr {
+                start: Some(Box::new(int_lit(1))),
+                end: Some(Box::new(int_lit(5))),
+                inclusive: true,
+                span: S,
+            }),
+            pattern: None,
+            span: S,
+        }]),
+    )]);
+
+    let mir = lower_module(&module);
+    let f = &mir.functions[0];
+
+    let has_range = f.blocks.iter().any(|bb| {
+        bb.instructions.iter().any(|inst| match inst {
+            Instruction::Assign {
+                value: RValue::Range { inclusive: true, .. },
+                ..
+            } => true,
+            _ => false,
+        })
+    });
+    assert!(has_range, "inclusive range should have inclusive=true");
+}
