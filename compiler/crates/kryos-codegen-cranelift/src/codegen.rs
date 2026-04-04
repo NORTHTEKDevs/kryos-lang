@@ -240,9 +240,98 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
     let printf_id = object_module.declare_function("printf", Linkage::Import, &printf_sig)?;
     func_ids.insert("print".to_string(), printf_id);
 
-    // eprintln -> reuse puts (stdout + newline) as v0.2 approximation.
-    // A proper implementation would use fprintf(stderr, ...).
-    func_ids.insert("eprintln".to_string(), puts_id);
+    // Declare fputs and fputc for stderr output (used by eprintln).
+    let fputs_sig = {
+        let mut sig = Signature::new(call_conv);
+        sig.params.push(AbiParam::new(types::I64)); // const char*
+        sig.params.push(AbiParam::new(types::I64)); // FILE*
+        sig.returns.push(AbiParam::new(types::I32));
+        sig
+    };
+    let fputs_id = object_module.declare_function("fputs", Linkage::Import, &fputs_sig)?;
+
+    let fputc_sig = {
+        let mut sig = Signature::new(call_conv);
+        sig.params.push(AbiParam::new(types::I32)); // int char
+        sig.params.push(AbiParam::new(types::I64)); // FILE*
+        sig.returns.push(AbiParam::new(types::I32));
+        sig
+    };
+    let fputc_id = object_module.declare_function("fputc", Linkage::Import, &fputc_sig)?;
+
+    // Define kryos_eprintln: writes message to stderr with trailing newline.
+    let eprintln_sig = {
+        let mut sig = Signature::new(call_conv);
+        sig.params.push(AbiParam::new(types::I64)); // const char* message
+        sig
+    };
+    let eprintln_id = object_module.declare_function(
+        "kryos_eprintln",
+        Linkage::Local,
+        &eprintln_sig,
+    )?;
+    func_ids.insert("eprintln".to_string(), eprintln_id);
+    {
+        let mut ep_fn = Function::with_name_signature(
+            UserFuncName::user(0, eprintln_id.as_u32()),
+            eprintln_sig.clone(),
+        );
+        {
+            let mut builder = FunctionBuilder::new(&mut ep_fn, &mut fb_ctx);
+            let block = builder.create_block();
+            builder.append_block_params_for_function_params(block);
+            builder.switch_to_block(block);
+            builder.seal_block(block);
+
+            let msg = builder.block_params(block)[0];
+
+            // Get stderr FILE* — platform-specific.
+            let stderr_ptr = if cfg!(target_os = "windows") {
+                // Windows UCRT: __acrt_iob_func(2) returns FILE* for stderr.
+                let iob_sig = {
+                    let mut sig = Signature::new(call_conv);
+                    sig.params.push(AbiParam::new(types::I32));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    sig
+                };
+                let iob_id = object_module.declare_function(
+                    "__acrt_iob_func",
+                    Linkage::Import,
+                    &iob_sig,
+                )?;
+                let iob_ref = object_module.declare_func_in_func(iob_id, builder.func);
+                let two = builder.ins().iconst(types::I32, 2);
+                let call = builder.ins().call(iob_ref, &[two]);
+                builder.inst_results(call)[0]
+            } else {
+                // Unix: load from extern FILE *stderr global.
+                let stderr_data_id = object_module.declare_data(
+                    "stderr",
+                    Linkage::Import,
+                    false,
+                    false,
+                )?;
+                let stderr_gv = object_module.declare_data_in_func(stderr_data_id, builder.func);
+                let addr = builder.ins().global_value(types::I64, stderr_gv);
+                builder.ins().load(types::I64, MemFlags::trusted(), addr, 0)
+            };
+
+            // fputs(msg, stderr)
+            let fputs_ref = object_module.declare_func_in_func(fputs_id, builder.func);
+            builder.ins().call(fputs_ref, &[msg, stderr_ptr]);
+
+            // fputc('\n', stderr)
+            let fputc_ref = object_module.declare_func_in_func(fputc_id, builder.func);
+            let newline = builder.ins().iconst(types::I32, 10);
+            builder.ins().call(fputc_ref, &[newline, stderr_ptr]);
+
+            builder.ins().return_(&[]);
+            builder.finalize();
+        }
+        let mut ctx = Context::for_function(ep_fn);
+        object_module.define_function(eprintln_id, &mut ctx)?;
+        ctx.clear();
+    }
 
     // Declare C `exit` for exit support.
     // exit(code) in Kryos MIR maps to a call to C exit(int).

@@ -1115,3 +1115,105 @@ fn test_struct_field_access_first_field() {
     // Field "x" is at index 0.
     assert!(ir.contains(", 0"), "field 'x' must use index 0:\n{ir}");
 }
+
+#[test]
+fn test_eprintln_uses_stderr() {
+    let module = module_with(MirFunction {
+        name: "warn".into(),
+        params: vec![],
+        ret_ty: MirType::Void,
+        locals: vec![
+            MirLocal { id: LocalId(0), name: None, ty: MirType::Str, mutable: false },
+        ],
+        blocks: vec![BasicBlock {
+            id: BlockId(0),
+            instructions: vec![
+                Instruction::Assign {
+                    dest: LocalId(0),
+                    value: RValue::ConstString("oops".into()),
+                },
+                Instruction::Assign {
+                    dest: LocalId(0),
+                    value: RValue::Call {
+                        func: "eprintln".into(),
+                        args: vec![Operand::Local(LocalId(0))],
+                    },
+                },
+            ],
+            terminator: Terminator::Return(None),
+        }],
+    });
+
+    let ir = emit_module(&module, &EmitOptions::default()).unwrap();
+    // Must use fputs + fputc to stderr, NOT puts
+    assert!(ir.contains("@fputs"), "eprintln should call fputs:\n{ir}");
+    assert!(ir.contains("@fputc"), "eprintln should call fputc for newline:\n{ir}");
+    assert!(!ir.contains("call i32 @puts") || ir.contains("@fputs"),
+        "eprintln must not fall through to puts:\n{ir}");
+    // Must declare stderr accessor
+    if cfg!(target_os = "windows") {
+        assert!(ir.contains("@__acrt_iob_func"), "must declare __acrt_iob_func on Windows:\n{ir}");
+    } else {
+        assert!(ir.contains("@stderr"), "must declare stderr on Unix:\n{ir}");
+    }
+}
+
+#[test]
+fn test_len_builtin_returns_zero() {
+    let module = module_with(MirFunction {
+        name: "get_len".into(),
+        params: vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        ret_ty: MirType::I64,
+        locals: vec![
+            MirLocal { id: LocalId(0), name: Some("arr".into()), ty: MirType::I64, mutable: false },
+            MirLocal { id: LocalId(1), name: None, ty: MirType::I64, mutable: false },
+        ],
+        blocks: vec![BasicBlock {
+            id: BlockId(0),
+            instructions: vec![Instruction::Assign {
+                dest: LocalId(1),
+                value: RValue::Call {
+                    func: "len".into(),
+                    args: vec![Operand::Local(LocalId(0))],
+                },
+            }],
+            terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
+        }],
+    });
+
+    let ir = emit_module(&module, &EmitOptions::default()).unwrap();
+    // len stub inlines to 0
+    assert!(ir.contains("add i64 0, 0"), "len() stub should return 0:\n{ir}");
+    // Must NOT emit a call to @len (which would be an undefined symbol)
+    assert!(!ir.contains("call i64 @len"), "len must not emit external call:\n{ir}");
+}
+
+#[test]
+fn test_to_string_builtin_returns_input() {
+    let module = module_with(MirFunction {
+        name: "stringify".into(),
+        params: vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        ret_ty: MirType::I64,
+        locals: vec![
+            MirLocal { id: LocalId(0), name: Some("val".into()), ty: MirType::I64, mutable: false },
+            MirLocal { id: LocalId(1), name: None, ty: MirType::I64, mutable: false },
+        ],
+        blocks: vec![BasicBlock {
+            id: BlockId(0),
+            instructions: vec![Instruction::Assign {
+                dest: LocalId(1),
+                value: RValue::Call {
+                    func: "to_string".into(),
+                    args: vec![Operand::Local(LocalId(0))],
+                },
+            }],
+            terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
+        }],
+    });
+
+    let ir = emit_module(&module, &EmitOptions::default()).unwrap();
+    // to_string stub returns input unchanged: %_1 = add i64 %_0, 0
+    assert!(ir.contains("%_0, 0"), "to_string() should return input unchanged:\n{ir}");
+    assert!(!ir.contains("call") || ir.contains("@puts") == false,
+        "to_string must not emit external call to @to_string:\n{ir}");
+}

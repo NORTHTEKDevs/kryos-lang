@@ -189,7 +189,23 @@ impl LlvmCodegen {
         self.emit_line("declare i32 @puts(ptr)");
         self.emit_line("declare i32 @printf(ptr, ...)");
         self.emit_line("declare void @exit(i32)");
+        self.emit_line("declare i32 @fputs(ptr, ptr)");
+        self.emit_line("declare i32 @fputc(i32, ptr)");
+        if self.is_windows_target() {
+            self.emit_line("declare ptr @__acrt_iob_func(i32)");
+        } else {
+            self.emit_line("@stderr = external global ptr");
+        }
         self.emit_blank();
+    }
+
+    /// Returns true if the target is Windows (for platform-specific codegen).
+    fn is_windows_target(&self) -> bool {
+        if let Some(ref triple) = self.options.target_triple {
+            triple.contains("windows")
+        } else {
+            cfg!(target_os = "windows")
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -525,14 +541,54 @@ impl LlvmCodegen {
 
                 // Map Kryos builtin names to C library functions.
                 match fname.as_str() {
-                    "println" | "eprintln" => {
+                    "println" => {
                         self.emit_line(&format!("  call i32 @puts({arg_list})"));
+                    }
+                    "eprintln" => {
+                        // Write to stderr: fputs(msg, stderr) + fputc('\n', stderr)
+                        let stderr = self.next_temp();
+                        if self.is_windows_target() {
+                            self.emit_line(&format!(
+                                "  {stderr} = call ptr @__acrt_iob_func(i32 2)"
+                            ));
+                        } else {
+                            self.emit_line(&format!(
+                                "  {stderr} = load ptr, ptr @stderr"
+                            ));
+                        }
+                        self.emit_line(&format!(
+                            "  call i32 @fputs({arg_list}, ptr {stderr})"
+                        ));
+                        self.emit_line(&format!(
+                            "  call i32 @fputc(i32 10, ptr {stderr})"
+                        ));
                     }
                     "print" => {
                         self.emit_line(&format!("  call i32 (ptr, ...) @printf({arg_list})"));
                     }
                     "exit" => {
                         self.emit_line(&format!("  call void @exit({arg_list})"));
+                    }
+                    "len" => {
+                        // Stub: returns 0 (proper implementation in Phase 5)
+                        if is_mutable {
+                            self.emit_line(&format!("  store i64 0, ptr %_{}.addr", dest.0));
+                        } else {
+                            self.emit_line(&format!("  %_{} = add i64 0, 0", dest.0));
+                        }
+                    }
+                    "to_string" => {
+                        // Stub: returns input unchanged (proper implementation in Phase 5)
+                        let val = if !args.is_empty() {
+                            self.operand_to_llvm(&args[0], func)
+                        } else {
+                            "0".to_string()
+                        };
+                        if is_mutable {
+                            self.emit_line(&format!("  store {dest_ty} {val}, ptr %_{}.addr", dest.0));
+                        } else {
+                            self.emit_line(&format!("  %_{} = add {dest_ty} {val}, 0", dest.0));
+                        }
                     }
                     _ => {
                         if dest_ty == "void" {
