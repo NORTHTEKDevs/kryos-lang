@@ -1,0 +1,3 @@
+fn distance(ax: f64, bx: f64) -> f64 { let dx = ax - bx
+return dx * dx }
+fn main() { let r = distance(1.0, 4.0) }

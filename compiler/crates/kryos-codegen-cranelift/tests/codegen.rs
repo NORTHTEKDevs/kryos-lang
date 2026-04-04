@@ -1,5 +1,6 @@
 //! Integration tests for the Cranelift codegen backend.
 
+use std::collections::HashMap;
 use kryos_mir::ir::*;
 use kryos_codegen_cranelift::jit;
 use kryos_codegen_cranelift::codegen;
@@ -271,6 +272,7 @@ fn aot_arc_calls_emitted() {
 
     let module = MirModule {
         functions: vec![func],
+        struct_defs: HashMap::new(),
     };
 
     let obj_bytes = codegen::compile_module(&module).expect("AOT compilation failed");
@@ -447,6 +449,7 @@ fn aot_compile_simple_module() {
 
     let module = MirModule {
         functions: vec![func],
+        struct_defs: HashMap::new(),
     };
 
     let obj_bytes = codegen::compile_module(&module).expect("AOT compilation failed");
@@ -510,4 +513,165 @@ fn jit_int_sub_mul() {
     assert_eq!(f(5, 5), 0);
     // (0 - 7) * 7 = -49
     assert_eq!(f(0, 7), -49);
+}
+
+// ---------------------------------------------------------------------------
+// Test: Struct creation and field access (AOT)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn aot_struct_field_access() {
+    // struct Point { x: i64, y: i64 }
+    //
+    // fn get_y() -> i64 {
+    //     let p = Point { x: 10, y: 42 }
+    //     let result = p.y
+    //     return result
+    // }
+    let mut struct_defs = HashMap::new();
+    struct_defs.insert(
+        "Point".to_string(),
+        vec![
+            ("x".to_string(), MirType::I64),
+            ("y".to_string(), MirType::I64),
+        ],
+    );
+
+    let func = make_function(
+        "get_y",
+        vec![],
+        MirType::I64,
+        vec![
+            // _0: Point (pointer to struct on stack)
+            MirLocal {
+                id: LocalId(0),
+                name: Some("p".into()),
+                ty: MirType::Struct("Point".into()),
+                mutable: false,
+            },
+            // _1: i64 (result of p.y)
+            MirLocal {
+                id: LocalId(1),
+                name: Some("result".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+        ],
+        vec![BasicBlock {
+            id: BlockId(0),
+            instructions: vec![
+                // _0 = Point { x: 10, y: 42 }
+                Instruction::Assign {
+                    dest: LocalId(0),
+                    value: RValue::Struct {
+                        name: "Point".into(),
+                        fields: vec![
+                            ("x".to_string(), Operand::Constant(Constant::Int(10))),
+                            ("y".to_string(), Operand::Constant(Constant::Int(42))),
+                        ],
+                    },
+                },
+                // _1 = _0.y
+                Instruction::Assign {
+                    dest: LocalId(1),
+                    value: RValue::Field {
+                        object: Operand::Local(LocalId(0)),
+                        field: "y".into(),
+                    },
+                },
+            ],
+            terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
+        }],
+    );
+
+    let module = MirModule {
+        functions: vec![func],
+        struct_defs,
+    };
+
+    let obj_bytes = codegen::compile_module(&module).expect("AOT compilation of struct access failed");
+    assert!(
+        obj_bytes.len() > 10,
+        "object file too small: {} bytes",
+        obj_bytes.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test: Struct with f64 fields (AOT)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn aot_struct_f64_field_access() {
+    // struct Vec2 { x: f64, y: f64 }
+    //
+    // fn get_x() -> f64 {
+    //     let v = Vec2 { x: 3.14, y: 2.72 }
+    //     let result = v.x
+    //     return result
+    // }
+    let mut struct_defs = HashMap::new();
+    struct_defs.insert(
+        "Vec2".to_string(),
+        vec![
+            ("x".to_string(), MirType::F64),
+            ("y".to_string(), MirType::F64),
+        ],
+    );
+
+    let func = make_function(
+        "get_x",
+        vec![],
+        MirType::F64,
+        vec![
+            MirLocal {
+                id: LocalId(0),
+                name: Some("v".into()),
+                ty: MirType::Struct("Vec2".into()),
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("result".into()),
+                ty: MirType::F64,
+                mutable: false,
+            },
+        ],
+        vec![BasicBlock {
+            id: BlockId(0),
+            instructions: vec![
+                Instruction::Assign {
+                    dest: LocalId(0),
+                    value: RValue::Struct {
+                        name: "Vec2".into(),
+                        fields: vec![
+                            ("x".to_string(), Operand::Constant(Constant::Float(3.14))),
+                            ("y".to_string(), Operand::Constant(Constant::Float(2.72))),
+                        ],
+                    },
+                },
+                Instruction::Assign {
+                    dest: LocalId(1),
+                    value: RValue::Field {
+                        object: Operand::Local(LocalId(0)),
+                        field: "x".into(),
+                    },
+                },
+            ],
+            terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
+        }],
+    );
+
+    let module = MirModule {
+        functions: vec![func],
+        struct_defs,
+    };
+
+    let obj_bytes =
+        codegen::compile_module(&module).expect("AOT compilation of f64 struct access failed");
+    assert!(
+        obj_bytes.len() > 10,
+        "object file too small: {} bytes",
+        obj_bytes.len()
+    );
 }

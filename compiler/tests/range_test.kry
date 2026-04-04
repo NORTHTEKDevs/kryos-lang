@@ -1,0 +1,7 @@
+fn main() {
+    let mut sum: i32 = 0
+    for i in range(0, 10) {
+        sum = sum + i
+    }
+    println("range loop done")
+}

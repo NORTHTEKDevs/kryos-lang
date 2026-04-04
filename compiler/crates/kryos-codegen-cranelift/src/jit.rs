@@ -154,12 +154,14 @@ impl JitCompiler {
         );
 
         {
+            let empty_struct_defs = std::collections::HashMap::new();
             let mut builder = FunctionBuilder::new(&mut cl_func, &mut self.fb_ctx);
             crate::codegen::translate_function(
                 mir_func,
                 &mut builder,
                 &func_ids,
                 &mut self.module,
+                &empty_struct_defs,
             )?;
             builder.seal_all_blocks();
             builder.finalize();

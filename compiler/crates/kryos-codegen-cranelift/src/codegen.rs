@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 
 use cranelift_codegen::ir::{
-    types, AbiParam, Function, InstBuilder, Signature, Type, UserFuncName,
+    types, AbiParam, Function, InstBuilder, MemFlags, Signature, StackSlotData, StackSlotKind,
+    Type, UserFuncName,
 };
 use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings::{self, Configurable};
@@ -80,6 +81,40 @@ fn type_of_operand_hint(operand: &Operand, locals: &[kryos_mir::ir::MirLocal]) -
 /// Returns true if a type is a floating-point type.
 fn is_float_type(ty: Type) -> bool {
     ty == types::F32 || ty == types::F64
+}
+
+// ---------------------------------------------------------------------------
+// Struct layout computation
+// ---------------------------------------------------------------------------
+
+/// Computed memory layout for a struct type.
+struct StructLayout {
+    /// Total size of the struct in bytes.
+    total_size: u32,
+    /// Per-field: (field_name, byte_offset, cranelift_type).
+    field_offsets: Vec<(String, u32, Type)>,
+}
+
+/// Compute the memory layout for a struct given its ordered field definitions.
+/// Fields are naturally aligned (aligned to their own size).
+fn compute_struct_layout(fields: &[(String, MirType)]) -> Result<StructLayout, CodegenError> {
+    let mut offset = 0u32;
+    let mut field_offsets = Vec::new();
+    for (name, ty) in fields {
+        let cl_ty = mir_type_to_cl(ty)?.unwrap_or(types::I64);
+        let size = cl_ty.bytes() as u32;
+        // Natural alignment: align to the field's own size.
+        let align = size;
+        if align > 0 {
+            offset = (offset + align - 1) & !(align - 1);
+        }
+        field_offsets.push((name.clone(), offset, cl_ty));
+        offset += size;
+    }
+    Ok(StructLayout {
+        total_size: offset,
+        field_offsets,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -194,6 +229,102 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
     let puts_id = object_module.declare_function("puts", Linkage::Import, &puts_sig)?;
     func_ids.insert("println".to_string(), puts_id);
 
+    // Declare C `printf` for print support (no newline).
+    // print("...") in Kryos MIR maps to a call to C printf(const char*).
+    let printf_sig = {
+        let mut sig = Signature::new(call_conv);
+        sig.params.push(AbiParam::new(types::I64)); // const char* format/string pointer
+        sig.returns.push(AbiParam::new(types::I32)); // int return
+        sig
+    };
+    let printf_id = object_module.declare_function("printf", Linkage::Import, &printf_sig)?;
+    func_ids.insert("print".to_string(), printf_id);
+
+    // eprintln -> reuse puts (stdout + newline) as v0.2 approximation.
+    // A proper implementation would use fprintf(stderr, ...).
+    func_ids.insert("eprintln".to_string(), puts_id);
+
+    // Declare C `exit` for exit support.
+    // exit(code) in Kryos MIR maps to a call to C exit(int).
+    let exit_sig = {
+        let mut sig = Signature::new(call_conv);
+        sig.params.push(AbiParam::new(types::I32)); // int status
+        sig
+    };
+    let exit_id = object_module.declare_function("exit", Linkage::Import, &exit_sig)?;
+    func_ids.insert("exit".to_string(), exit_id);
+
+    // Declare len() builtin — stub that returns 0 for now.
+    // The MIR lowering special-cases range() loops so they never call len(),
+    // but we still need it declared for non-range iteration (future).
+    let len_sig = {
+        let mut sig = Signature::new(call_conv);
+        sig.params.push(AbiParam::new(types::I64)); // collection pointer
+        sig.returns.push(AbiParam::new(types::I64)); // length
+        sig
+    };
+    let len_id = object_module.declare_function(
+        "kryos_builtin_len",
+        Linkage::Local,
+        &len_sig,
+    )?;
+    func_ids.insert("len".to_string(), len_id);
+    // Define len stub (returns 0)
+    {
+        let mut len_fn = Function::with_name_signature(
+            UserFuncName::user(0, len_id.as_u32()),
+            len_sig.clone(),
+        );
+        {
+            let mut builder = FunctionBuilder::new(&mut len_fn, &mut fb_ctx);
+            let block = builder.create_block();
+            builder.append_block_params_for_function_params(block);
+            builder.switch_to_block(block);
+            builder.seal_block(block);
+            let zero = builder.ins().iconst(types::I64, 0);
+            builder.ins().return_(&[zero]);
+            builder.finalize();
+        }
+        let mut ctx = Context::for_function(len_fn);
+        object_module.define_function(len_id, &mut ctx)?;
+        ctx.clear();
+    }
+
+    // Declare to_string() builtin — stub that returns the input as-is for now.
+    // A proper implementation would convert an integer to its string representation.
+    let to_string_sig = {
+        let mut sig = Signature::new(call_conv);
+        sig.params.push(AbiParam::new(types::I64)); // value
+        sig.returns.push(AbiParam::new(types::I64)); // string pointer
+        sig
+    };
+    let to_string_id = object_module.declare_function(
+        "kryos_builtin_to_string",
+        Linkage::Local,
+        &to_string_sig,
+    )?;
+    func_ids.insert("to_string".to_string(), to_string_id);
+    // Define to_string stub (returns input unchanged)
+    {
+        let mut ts_fn = Function::with_name_signature(
+            UserFuncName::user(0, to_string_id.as_u32()),
+            to_string_sig.clone(),
+        );
+        {
+            let mut builder = FunctionBuilder::new(&mut ts_fn, &mut fb_ctx);
+            let block = builder.create_block();
+            builder.append_block_params_for_function_params(block);
+            builder.switch_to_block(block);
+            builder.seal_block(block);
+            let param = builder.block_params(block)[0];
+            builder.ins().return_(&[param]);
+            builder.finalize();
+        }
+        let mut ctx = Context::for_function(ts_fn);
+        object_module.define_function(to_string_id, &mut ctx)?;
+        ctx.clear();
+    }
+
     // Define ARC runtime stubs (no-ops for now)
     {
         // kryos_arc_retain(ptr: i64) -> void — no-op stub
@@ -271,6 +402,7 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
                 &mut builder,
                 &func_ids,
                 &mut object_module,
+                &module.struct_defs,
             )?;
             builder.seal_all_blocks();
             builder.finalize();
@@ -382,6 +514,8 @@ struct FuncTranslator<'a> {
     func_ids: &'a HashMap<String, FuncId>,
     /// Counter for unique string data section names.
     string_counter: u32,
+    /// Struct definitions for layout computation.
+    struct_defs: &'a HashMap<String, Vec<(String, MirType)>>,
 }
 
 /// Translate a MIR function body into Cranelift IR instructions.
@@ -390,6 +524,7 @@ pub fn translate_function<M: Module>(
     builder: &mut FunctionBuilder,
     func_ids: &HashMap<String, FuncId>,
     module: &mut M,
+    struct_defs: &HashMap<String, Vec<(String, MirType)>>,
 ) -> Result<(), CodegenError> {
     let mut translator = FuncTranslator {
         mir_func,
@@ -398,6 +533,7 @@ pub fn translate_function<M: Module>(
         func_refs: HashMap::new(),
         func_ids,
         string_counter: 0,
+        struct_defs,
     };
 
     // Create Cranelift blocks for each MIR basic block.
@@ -648,10 +784,24 @@ fn translate_rvalue<M: Module>(
         }
 
         RValue::BinOp { op, left, right } => {
-            let lhs = translate_operand(left, builder, translator, module)?;
-            let rhs = translate_operand(right, builder, translator, module)?;
+            let mut lhs = translate_operand(left, builder, translator, module)?;
+            let mut rhs = translate_operand(right, builder, translator, module)?;
             let lhs_ty = type_of_operand_hint(left, &translator.mir_func.locals);
+            let rhs_ty = type_of_operand_hint(right, &translator.mir_func.locals);
             let is_float = is_float_type(lhs_ty);
+
+            // Coerce integer operands to the same width before the operation.
+            if !is_float && !is_float_type(rhs_ty) {
+                let lhs_actual = builder.func.dfg.value_type(lhs);
+                let rhs_actual = builder.func.dfg.value_type(rhs);
+                if lhs_actual != rhs_actual {
+                    if lhs_actual.bits() < rhs_actual.bits() {
+                        lhs = builder.ins().sextend(rhs_actual, lhs);
+                    } else {
+                        rhs = builder.ins().sextend(lhs_actual, rhs);
+                    }
+                }
+            }
 
             let val = translate_binop(*op, lhs, rhs, is_float, builder)?;
             Ok(Some(val))
@@ -738,34 +888,98 @@ fn translate_rvalue<M: Module>(
             Ok(Some(val))
         }
 
-        RValue::Struct { .. } => {
-            let cl_ty = dest
-                .and_then(|d| {
-                    translator.mir_func.locals.iter()
-                        .find(|l| l.id == d)
-                        .and_then(|l| mir_type_to_cl(&l.ty).ok().flatten())
-                })
-                .unwrap_or(types::I64);
-            let val = if is_float_type(cl_ty) {
-                if cl_ty == types::F32 { builder.ins().f32const(0.0) }
-                else { builder.ins().f64const(0.0) }
+        RValue::Struct { name, fields } => {
+            // Look up the struct definition to compute its memory layout.
+            if let Some(struct_def) = translator.struct_defs.get(name) {
+                let layout = compute_struct_layout(struct_def)?;
+
+                // Allocate stack space for the struct.
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    layout.total_size,
+                    0, // align_shift: 0 means natural alignment
+                ));
+
+                // Get a pointer (I64) to the stack slot base.
+                let ptr = builder.ins().stack_addr(types::I64, slot, 0);
+
+                // Store each field value at its computed offset.
+                for (field_name, operand) in fields {
+                    if let Some((_, offset, _cl_ty)) = layout
+                        .field_offsets
+                        .iter()
+                        .find(|(n, _, _)| n == field_name)
+                    {
+                        let val = translate_operand(operand, builder, translator, module)?;
+                        builder
+                            .ins()
+                            .store(MemFlags::new(), val, ptr, *offset as i32);
+                    }
+                }
+
+                Ok(Some(ptr))
             } else {
-                builder.ins().iconst(cl_ty, 0)
-            };
-            Ok(Some(val))
+                // Unknown struct — fall back to a zero pointer.
+                let val = builder.ins().iconst(types::I64, 0);
+                Ok(Some(val))
+            }
         }
 
-        RValue::Field { .. } => {
+        RValue::Field { object, field } => {
+            let ptr = translate_operand(object, builder, translator, module)?;
+
+            // Determine the struct type name from the object operand's local type.
+            let struct_name = match object {
+                Operand::Local(id) => {
+                    translator
+                        .mir_func
+                        .locals
+                        .iter()
+                        .find(|l| l.id == *id)
+                        .and_then(|l| match &l.ty {
+                            MirType::Struct(name) => Some(name.clone()),
+                            _ => None,
+                        })
+                }
+                _ => None,
+            };
+
+            if let Some(name) = struct_name {
+                if let Some(struct_def) = translator.struct_defs.get(&name) {
+                    let layout = compute_struct_layout(struct_def)?;
+                    if let Some((_, offset, cl_ty)) = layout
+                        .field_offsets
+                        .iter()
+                        .find(|(n, _, _)| n == field)
+                    {
+                        let val = builder.ins().load(
+                            *cl_ty,
+                            MemFlags::new(),
+                            ptr,
+                            *offset as i32,
+                        );
+                        return Ok(Some(val));
+                    }
+                }
+            }
+
+            // Fallback for unknown structs or fields: return typed zero.
             let cl_ty = dest
                 .and_then(|d| {
-                    translator.mir_func.locals.iter()
+                    translator
+                        .mir_func
+                        .locals
+                        .iter()
                         .find(|l| l.id == d)
                         .and_then(|l| mir_type_to_cl(&l.ty).ok().flatten())
                 })
                 .unwrap_or(types::I64);
             let val = if is_float_type(cl_ty) {
-                if cl_ty == types::F32 { builder.ins().f32const(0.0) }
-                else { builder.ins().f64const(0.0) }
+                if cl_ty == types::F32 {
+                    builder.ins().f32const(0.0)
+                } else {
+                    builder.ins().f64const(0.0)
+                }
             } else {
                 builder.ins().iconst(cl_ty, 0)
             };

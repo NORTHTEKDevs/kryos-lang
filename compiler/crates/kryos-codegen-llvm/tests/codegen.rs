@@ -1,5 +1,6 @@
 //! Integration tests for the LLVM IR text emitter.
 
+use std::collections::HashMap;
 use kryos_codegen_llvm::{emit_module, EmitOptions, OptLevel};
 use kryos_mir::ir::*;
 
@@ -11,6 +12,7 @@ use kryos_mir::ir::*;
 fn module_with(func: MirFunction) -> MirModule {
     MirModule {
         functions: vec![func],
+        struct_defs: HashMap::new(),
     }
 }
 
@@ -758,6 +760,7 @@ fn test_multiple_functions() {
 
     let module = MirModule {
         functions: vec![func1, func2],
+        struct_defs: HashMap::new(),
     };
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
 

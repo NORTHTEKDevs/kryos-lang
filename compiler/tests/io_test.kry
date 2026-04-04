@@ -1,0 +1,6 @@
+fn main() {
+    print("Hello ")
+    print("World")
+    println("!")
+    eprintln("This goes to stderr")
+}

@@ -5,7 +5,7 @@
 //! Reports mismatches as `Diagnostic` errors.
 
 use kryos_ast::{
-    BinOp, Block, Decl, Expr, Module, Stmt, TypeExpr, UnOp,
+    BinOp, Block, Decl, Expr, Module, Pattern, Stmt, TypeExpr, UnOp,
 };
 use kryos_errors::{Diagnostic, Span};
 
@@ -540,13 +540,25 @@ impl TypeChecker {
                 self.env.pop_scope();
             }
             Stmt::For {
-                pattern: _,
-                iterable: _,
+                pattern,
+                iterable,
                 body,
                 ..
             } => {
-                // TODO: check iterable implements iterator, bind pattern vars.
+                // Infer the iterable type and determine element type.
+                let iter_ty = self.infer_expr(iterable);
+                let elem_ty = match &iter_ty {
+                    Type::Array { element, .. } => *element.clone(),
+                    _ => Type::I32, // default for range() and other builtins
+                };
+
                 self.env.push_scope();
+
+                // Bind the loop variable from the pattern into scope.
+                if let Pattern::Ident { name, .. } = pattern {
+                    self.env.define_var(name.clone(), elem_ty);
+                }
+
                 self.check_block(body);
                 self.env.pop_scope();
             }
@@ -1203,6 +1215,61 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         generic_params: vec![],
         params: vec![("value".to_string(), Type::Str)],
         ret: Type::Void,
+    });
+
+    // print(value: str) -> void  (no newline)
+    checker.env.define_function(FunctionSig {
+        name: "print".to_string(),
+        generic_params: vec![],
+        params: vec![("value".to_string(), Type::Str)],
+        ret: Type::Void,
+    });
+
+    // eprintln(value: str) -> void  (stderr + newline)
+    checker.env.define_function(FunctionSig {
+        name: "eprintln".to_string(),
+        generic_params: vec![],
+        params: vec![("value".to_string(), Type::Str)],
+        ret: Type::Void,
+    });
+
+    // exit(code: i32) -> void
+    checker.env.define_function(FunctionSig {
+        name: "exit".to_string(),
+        generic_params: vec![],
+        params: vec![("code".to_string(), Type::I32)],
+        ret: Type::Void,
+    });
+
+    // range(start, end) -> [i32]  (conceptually returns an integer sequence;
+    // the MIR lowering special-cases this into a counter loop)
+    checker.env.define_function(FunctionSig {
+        name: "range".to_string(),
+        generic_params: vec![],
+        params: vec![
+            ("start".to_string(), Type::I32),
+            ("end".to_string(), Type::I32),
+        ],
+        ret: Type::Array {
+            element: Box::new(Type::I32),
+            size: None,
+        },
+    });
+
+    // len(collection) -> i64
+    checker.env.define_function(FunctionSig {
+        name: "len".to_string(),
+        generic_params: vec![],
+        params: vec![("collection".to_string(), Type::I64)],
+        ret: Type::I64,
+    });
+
+    // to_string(value) -> str
+    checker.env.define_function(FunctionSig {
+        name: "to_string".to_string(),
+        generic_params: vec![],
+        params: vec![("value".to_string(), Type::I64)],
+        ret: Type::Str,
     });
 
     checker.check_module(module);

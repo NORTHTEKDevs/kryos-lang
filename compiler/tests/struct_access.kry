@@ -1,0 +1,10 @@
+struct Point {
+    x: f64
+    y: f64
+}
+
+fn main() {
+    let p = Point { x: 3.14, y: 2.72 }
+    let a = p.x
+    let b = p.y
+}

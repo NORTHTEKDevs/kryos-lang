@@ -33,8 +33,8 @@ pub struct LoweringContext {
     loop_headers: Vec<BlockId>,
     /// Stack of loop exits for `break`.
     loop_exits: Vec<BlockId>,
-    /// Struct definitions: struct_name -> (field_name -> MirType).
-    struct_defs: HashMap<String, HashMap<String, MirType>>,
+    /// Struct definitions: struct_name -> ordered list of (field_name, MirType).
+    struct_defs: HashMap<String, Vec<(String, MirType)>>,
     /// Function return types: func_name -> MirType.
     func_ret_types: HashMap<String, MirType>,
 }
@@ -135,11 +135,11 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
     for decl in &module.declarations {
         match decl {
             ast::Decl::Struct { name, fields, .. } => {
-                let mut field_map = HashMap::new();
-                for f in fields {
-                    field_map.insert(f.name.clone(), lower_type_expr(&f.ty));
-                }
-                ctx.struct_defs.insert(name.clone(), field_map);
+                let field_list: Vec<(String, MirType)> = fields
+                    .iter()
+                    .map(|f| (f.name.clone(), lower_type_expr(&f.ty)))
+                    .collect();
+                ctx.struct_defs.insert(name.clone(), field_list);
             }
             ast::Decl::Function { name, ret_ty, .. } => {
                 let mir_ret = match ret_ty {
@@ -167,7 +167,10 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         }
     }
 
-    MirModule { functions }
+    MirModule {
+        functions,
+        struct_defs: ctx.struct_defs.clone(),
+    }
 }
 
 /// Lower a single AST function declaration to a `MirFunction`.
@@ -514,7 +517,18 @@ fn lower_for(
     iterable: &ast::Expr,
     body: &ast::Block,
 ) {
-    // Desugar `for x in iterable { body }` to:
+    // Check if the iterable is a `range(start, end)` call — if so, emit a
+    // simple counter loop instead of the general len-based iteration.
+    if let ast::Expr::FnCall { callee, args, .. } = iterable {
+        if let ast::Expr::Identifier { name, .. } = callee.as_ref() {
+            if name == "range" && args.len() == 2 {
+                lower_for_range(ctx, pattern, &args[0], &args[1], body);
+                return;
+            }
+        }
+    }
+
+    // General case: desugar `for x in iterable { body }` to:
     //   let _iter = iterable;
     //   let _idx  = 0;
     //   while _idx < len(_iter) {
@@ -591,6 +605,100 @@ fn lower_for(
     ctx.loop_exits.pop();
 
     // Increment idx.
+    ctx.emit(Instruction::Assign {
+        dest: idx_local,
+        value: RValue::BinOp {
+            op: MirBinOp::Add,
+            left: Operand::Local(idx_local),
+            right: Operand::Constant(Constant::Int(1)),
+        },
+    });
+
+    // Back-edge.
+    ctx.finish_block(Terminator::Goto(header_bb), exit_bb);
+}
+
+/// Lower `for i in range(start, end) { body }` into a simple counter loop:
+///
+/// ```text
+///   let _idx = start
+///   while _idx < end {
+///       let i = _idx
+///       body
+///       _idx += 1
+///   }
+/// ```
+///
+/// This avoids needing `range()` to produce an actual collection at runtime.
+fn lower_for_range(
+    ctx: &mut LoweringContext,
+    pattern: &ast::Pattern,
+    start_expr: &ast::Expr,
+    end_expr: &ast::Expr,
+    body: &ast::Block,
+) {
+    // Lower start and end bounds.
+    let start_op = lower_expr_to_operand(ctx, start_expr);
+    let end_op = lower_expr_to_operand(ctx, end_expr);
+
+    // Store end in a local so it's only evaluated once.
+    let end_local = ctx.alloc_temp(MirType::I64);
+    ctx.emit(Instruction::Assign {
+        dest: end_local,
+        value: RValue::Use(end_op),
+    });
+
+    // let _idx = start
+    let idx_local = ctx.alloc_local(Some("_idx".into()), MirType::I64, true);
+    ctx.emit(Instruction::Assign {
+        dest: idx_local,
+        value: RValue::Use(start_op),
+    });
+
+    let header_bb = ctx.alloc_block();
+    let body_bb = ctx.alloc_block();
+    let exit_bb = ctx.alloc_block();
+
+    // Jump to header.
+    ctx.finish_block(Terminator::Goto(header_bb), header_bb);
+
+    // Header: _idx < end
+    let cond_temp = ctx.alloc_temp(MirType::Bool);
+    ctx.emit(Instruction::Assign {
+        dest: cond_temp,
+        value: RValue::BinOp {
+            op: MirBinOp::Lt,
+            left: Operand::Local(idx_local),
+            right: Operand::Local(end_local),
+        },
+    });
+    ctx.finish_block(
+        Terminator::Branch {
+            cond: Operand::Local(cond_temp),
+            then_block: body_bb,
+            else_block: exit_bb,
+        },
+        body_bb,
+    );
+
+    // Body: bind loop variable (let i = _idx)
+    let loop_var_name = match pattern {
+        ast::Pattern::Ident { name, .. } => name.clone(),
+        _ => "_anon".into(),
+    };
+    let loop_var = ctx.alloc_local(Some(loop_var_name), MirType::I64, false);
+    ctx.emit(Instruction::Assign {
+        dest: loop_var,
+        value: RValue::Use(Operand::Local(idx_local)),
+    });
+
+    ctx.loop_headers.push(header_bb);
+    ctx.loop_exits.push(exit_bb);
+    lower_block_stmts(ctx, &body.stmts);
+    ctx.loop_headers.pop();
+    ctx.loop_exits.pop();
+
+    // Increment: _idx += 1
     ctx.emit(Instruction::Assign {
         dest: idx_local,
         value: RValue::BinOp {
@@ -727,7 +835,7 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
             let obj_ty = infer_expr_type(ctx, object);
             if let MirType::Struct(name) = &obj_ty {
                 if let Some(fields) = ctx.struct_defs.get(name) {
-                    if let Some(field_ty) = fields.get(field.as_str()) {
+                    if let Some((_, field_ty)) = fields.iter().find(|(n, _)| n == field.as_str()) {
                         return field_ty.clone();
                     }
                 }

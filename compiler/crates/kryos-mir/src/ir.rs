@@ -4,6 +4,7 @@
 //! backends (Cranelift / LLVM). It uses a control-flow graph of basic blocks
 //! where each block contains a list of instructions and a single terminator.
 
+use std::collections::HashMap;
 use std::fmt;
 
 // ---------------------------------------------------------------------------
@@ -120,6 +121,9 @@ impl fmt::Display for MirType {
 #[derive(Debug, Clone)]
 pub struct MirModule {
     pub functions: Vec<MirFunction>,
+    /// Struct definitions: struct name -> ordered list of (field_name, field_type).
+    /// Used by codegen to compute memory layouts for struct allocation and field access.
+    pub struct_defs: HashMap<String, Vec<(String, MirType)>>,
 }
 
 /// A single MIR function.
