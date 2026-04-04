@@ -1494,6 +1494,12 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
         }
 
         ast::Expr::MapLiteral { .. } => MirType::I64, // opaque map handle
+        ast::Expr::MoveExpr { inner, .. } => infer_expr_type(ctx, inner),
+        ast::Expr::WeakExpr { inner, .. } => {
+            let inner_ty = infer_expr_type(ctx, inner);
+            MirType::Shared(Box::new(inner_ty))
+        }
+        ast::Expr::RangeExpr { .. } => MirType::I64,
 
         _ => MirType::I64,
     }
@@ -1917,6 +1923,17 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
 
         ast::Expr::CharLiteral { value, .. } => RValue::ConstInt(*value as i64),
 
+        ast::Expr::MoveExpr { inner, .. } => {
+            // Move is an ownership marker — at MIR level, just lower the inner expr.
+            lower_expr_to_rvalue(ctx, inner)
+        }
+
+        ast::Expr::WeakExpr { inner, .. } => {
+            // Weak reference — lower inner, ARC alloc is tracked separately.
+            let inner_op = lower_expr_to_operand(ctx, inner);
+            RValue::ArcAlloc { inner: inner_op }
+        }
+
         ast::Expr::RangeExpr { start, end, inclusive, .. } => {
             let s = start.as_ref().map(|e| lower_expr_to_operand(ctx, e));
             let e = end.as_ref().map(|e| lower_expr_to_operand(ctx, e));
@@ -1954,8 +1971,6 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             RValue::ConstNone
         }
 
-        // Fallback for unsupported expressions.
-        _ => RValue::ConstNone,
     }
 }
 
