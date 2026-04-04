@@ -198,6 +198,17 @@ struct FunctionState {
 pub fn lower_module(module: &ast::Module) -> MirModule {
     let mut ctx = LoweringContext::new();
 
+    // Register built-in prelude enums (Option, Result) so they're available
+    // to all programs without explicit import.
+    ctx.enum_defs.insert("Option".to_string(), vec![
+        EnumVariantDef { name: "Some".to_string(), fields: vec![MirType::I64] },
+        EnumVariantDef { name: "None".to_string(), fields: vec![] },
+    ]);
+    ctx.enum_defs.insert("Result".to_string(), vec![
+        EnumVariantDef { name: "Ok".to_string(), fields: vec![MirType::I64] },
+        EnumVariantDef { name: "Err".to_string(), fields: vec![MirType::I64] },
+    ]);
+
     // Pre-pass: collect struct definitions and function return types so the
     // lowerer can infer correct types for field accesses and call results.
     for decl in &module.declarations {
@@ -611,7 +622,30 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             // `lower_match` inside `lower_expr_to_rvalue`.
         }
 
-        // Spawn, Select, TryCatch, Throw — emit Nop placeholders for now.
+        ast::Stmt::TryCatch {
+            try_block,
+            catch_name,
+            catch_block,
+            ..
+        } => {
+            lower_try_catch(ctx, try_block, catch_name, catch_block);
+        }
+
+        ast::Stmt::Throw { expr, .. } => {
+            // Lower `throw expr` as constructing Result::Err(expr).
+            let val = lower_expr_to_operand(ctx, expr);
+            let err_local = ctx.alloc_temp(MirType::Enum("Result".into()));
+            ctx.emit(Instruction::Assign {
+                dest: err_local,
+                value: RValue::EnumVariant {
+                    enum_name: "Result".into(),
+                    variant_idx: 1, // Err
+                    fields: vec![val],
+                },
+            });
+        }
+
+        // Spawn, Select — emit Nop placeholders for now.
         _ => {
             ctx.emit(Instruction::Nop);
         }
@@ -915,6 +949,117 @@ fn lower_for_range(
 
     // Back-edge.
     ctx.finish_block(Terminator::Goto(header_bb), exit_bb);
+}
+
+// ---------------------------------------------------------------------------
+// Try/Catch lowering
+// ---------------------------------------------------------------------------
+
+/// Lower `try { body } catch e { handler }` into:
+///
+/// ```text
+///   let _result = { body }          // last expr wrapped in Result::Ok
+///   let _tag = enum_tag(_result)
+///   if _tag == 0 goto ok_bb else goto err_bb
+///   ok_bb: extract Ok payload -> continue
+///   err_bb: let e = extract Err payload; handler
+///   merge_bb:
+/// ```
+fn lower_try_catch(
+    ctx: &mut LoweringContext,
+    try_block: &ast::Block,
+    catch_name: &str,
+    catch_block: &ast::Block,
+) {
+    let result_local = ctx.alloc_temp(MirType::Enum("Result".into()));
+
+    // Lower the try block body. The last expression is wrapped in Result::Ok.
+    for (i, stmt) in try_block.stmts.iter().enumerate() {
+        if i == try_block.stmts.len() - 1 {
+            // Wrap last expression in Result::Ok.
+            if let ast::Stmt::Expr { expr, .. } = stmt {
+                let val = lower_expr_to_operand(ctx, expr);
+                ctx.emit(Instruction::Assign {
+                    dest: result_local,
+                    value: RValue::EnumVariant {
+                        enum_name: "Result".into(),
+                        variant_idx: 0, // Ok
+                        fields: vec![val],
+                    },
+                });
+            } else {
+                lower_stmt(ctx, stmt);
+                ctx.emit(Instruction::Assign {
+                    dest: result_local,
+                    value: RValue::EnumVariant {
+                        enum_name: "Result".into(),
+                        variant_idx: 0,
+                        fields: vec![Operand::Constant(Constant::Int(0))],
+                    },
+                });
+            }
+        } else {
+            lower_stmt(ctx, stmt);
+        }
+    }
+
+    // If try block is empty, produce Ok(0).
+    if try_block.stmts.is_empty() {
+        ctx.emit(Instruction::Assign {
+            dest: result_local,
+            value: RValue::EnumVariant {
+                enum_name: "Result".into(),
+                variant_idx: 0,
+                fields: vec![Operand::Constant(Constant::Int(0))],
+            },
+        });
+    }
+
+    // Extract tag and branch.
+    let tag_local = ctx.alloc_temp(MirType::I64);
+    ctx.emit(Instruction::Assign {
+        dest: tag_local,
+        value: RValue::EnumTag { operand: Operand::Local(result_local) },
+    });
+
+    let ok_bb = ctx.alloc_block();
+    let err_bb = ctx.alloc_block();
+    let merge_bb = ctx.alloc_block();
+
+    // tag == 0 means Ok, tag == 1 means Err.
+    ctx.finish_block(
+        Terminator::Switch {
+            value: Operand::Local(tag_local),
+            targets: vec![(0, ok_bb)],
+            default: err_bb,
+        },
+        ok_bb,
+    );
+
+    // Ok path: extract the Ok payload and continue.
+    let ok_payload = ctx.alloc_temp(MirType::I64);
+    ctx.emit(Instruction::Assign {
+        dest: ok_payload,
+        value: RValue::EnumPayload {
+            operand: Operand::Local(result_local),
+            variant_idx: 0,
+            field_idx: 0,
+        },
+    });
+    ctx.finish_block(Terminator::Goto(merge_bb), err_bb);
+
+    // Err path: bind error value to catch_name, execute handler.
+    let err_payload = ctx.alloc_local(Some(catch_name.to_string()), MirType::I64, false);
+    ctx.emit(Instruction::Assign {
+        dest: err_payload,
+        value: RValue::EnumPayload {
+            operand: Operand::Local(result_local),
+            variant_idx: 1,
+            field_idx: 0,
+        },
+    });
+    lower_block_stmts(ctx, &catch_block.stmts);
+    ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
 }
 
 // ---------------------------------------------------------------------------

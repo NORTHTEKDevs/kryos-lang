@@ -1090,3 +1090,220 @@ fn monomorphization_deduplication() {
     let id_i64_count = mir.functions.iter().filter(|f| f.name == "id___i64").count();
     assert_eq!(id_i64_count, 1, "should only have one id___i64, not duplicates");
 }
+
+// ---------------------------------------------------------------------------
+// Test 22: Option::Some and Option::None as prelude enums
+// ---------------------------------------------------------------------------
+
+#[test]
+fn option_some_none_prelude() {
+    // fn main() { let x = Some(42); let y = None; }
+    let module = make_module(vec![make_fn(
+        "main",
+        vec![],
+        None,
+        block(vec![
+            Stmt::Let {
+                name: "x".into(),
+                mutable: false,
+                ty: None,
+                value: Some(ast::Expr::FnCall {
+                    callee: Box::new(ident("Some")),
+                    args: vec![int_lit(42)],
+                    span: S,
+                }),
+                pattern: None,
+                span: S,
+            },
+            Stmt::Let {
+                name: "y".into(),
+                mutable: false,
+                ty: None,
+                value: Some(ident("None")),
+                pattern: None,
+                span: S,
+            },
+        ]),
+    )]);
+
+    let mir = lower_module(&module);
+    let f = &mir.functions[0];
+
+    // `Some(42)` should lower to EnumVariant { enum_name: "Option", variant_idx: 0 }
+    let has_some = f.blocks.iter().any(|bb| {
+        bb.instructions.iter().any(|inst| match inst {
+            Instruction::Assign {
+                value: RValue::EnumVariant { enum_name, variant_idx, fields },
+                ..
+            } => enum_name == "Option" && *variant_idx == 0 && fields.len() == 1,
+            _ => false,
+        })
+    });
+    assert!(has_some, "should have EnumVariant for Some(42)");
+
+    // `None` should lower to EnumVariant { enum_name: "Option", variant_idx: 1, fields: [] }
+    let has_none = f.blocks.iter().any(|bb| {
+        bb.instructions.iter().any(|inst| match inst {
+            Instruction::Assign {
+                value: RValue::EnumVariant { enum_name, variant_idx, fields },
+                ..
+            } => enum_name == "Option" && *variant_idx == 1 && fields.is_empty(),
+            _ => false,
+        })
+    });
+    assert!(has_none, "should have EnumVariant for None");
+}
+
+// ---------------------------------------------------------------------------
+// Test 23: Result::Ok and Result::Err as prelude enums
+// ---------------------------------------------------------------------------
+
+#[test]
+fn result_ok_err_prelude() {
+    // fn main() { let x = Ok(1); let y = Err(42); }
+    let module = make_module(vec![make_fn(
+        "main",
+        vec![],
+        None,
+        block(vec![
+            Stmt::Let {
+                name: "x".into(),
+                mutable: false,
+                ty: None,
+                value: Some(ast::Expr::FnCall {
+                    callee: Box::new(ident("Ok")),
+                    args: vec![int_lit(1)],
+                    span: S,
+                }),
+                pattern: None,
+                span: S,
+            },
+            Stmt::Let {
+                name: "y".into(),
+                mutable: false,
+                ty: None,
+                value: Some(ast::Expr::FnCall {
+                    callee: Box::new(ident("Err")),
+                    args: vec![int_lit(42)],
+                    span: S,
+                }),
+                pattern: None,
+                span: S,
+            },
+        ]),
+    )]);
+
+    let mir = lower_module(&module);
+    let f = &mir.functions[0];
+
+    let has_ok = f.blocks.iter().any(|bb| {
+        bb.instructions.iter().any(|inst| match inst {
+            Instruction::Assign {
+                value: RValue::EnumVariant { enum_name, variant_idx, .. },
+                ..
+            } => enum_name == "Result" && *variant_idx == 0,
+            _ => false,
+        })
+    });
+    assert!(has_ok, "should have EnumVariant for Ok(1)");
+
+    let has_err = f.blocks.iter().any(|bb| {
+        bb.instructions.iter().any(|inst| match inst {
+            Instruction::Assign {
+                value: RValue::EnumVariant { enum_name, variant_idx, .. },
+                ..
+            } => enum_name == "Result" && *variant_idx == 1,
+            _ => false,
+        })
+    });
+    assert!(has_err, "should have EnumVariant for Err(42)");
+}
+
+// ---------------------------------------------------------------------------
+// Test 24: try/catch produces Switch on Result tag
+// ---------------------------------------------------------------------------
+
+#[test]
+fn try_catch_lowering() {
+    // fn main() { try { 42 } catch e { -1 } }
+    let module = make_module(vec![make_fn(
+        "main",
+        vec![],
+        None,
+        block(vec![Stmt::TryCatch {
+            try_block: block(vec![expr_stmt(int_lit(42))]),
+            catch_name: "e".into(),
+            catch_block: block(vec![expr_stmt(int_lit(-1))]),
+            span: S,
+        }]),
+    )]);
+
+    let mir = lower_module(&module);
+    let f = &mir.functions[0];
+
+    // Should have a Switch terminator (branching on Result tag).
+    let has_switch = f.blocks.iter().any(|bb| {
+        matches!(&bb.terminator, Terminator::Switch { .. })
+    });
+    assert!(has_switch, "try/catch should produce Switch on Result tag");
+
+    // Should have a local named "e" (the catch binding).
+    let has_e = f.locals.iter().any(|l| l.name.as_deref() == Some("e"));
+    assert!(has_e, "catch should bind error to variable 'e'");
+
+    // Should have EnumVariant for Result::Ok (wrapping try body result).
+    let has_ok = f.blocks.iter().any(|bb| {
+        bb.instructions.iter().any(|inst| match inst {
+            Instruction::Assign {
+                value: RValue::EnumVariant { enum_name, variant_idx, .. },
+                ..
+            } => enum_name == "Result" && *variant_idx == 0,
+            _ => false,
+        })
+    });
+    assert!(has_ok, "try body should be wrapped in Result::Ok");
+
+    // Should have EnumPayload extraction (for the catch arm).
+    let has_err_extract = f.blocks.iter().any(|bb| {
+        bb.instructions.iter().any(|inst| match inst {
+            Instruction::Assign {
+                value: RValue::EnumPayload { variant_idx: 1, .. },
+                ..
+            } => true,
+            _ => false,
+        })
+    });
+    assert!(has_err_extract, "catch arm should extract Err payload");
+}
+
+// ---------------------------------------------------------------------------
+// Test 25: throw produces Result::Err
+// ---------------------------------------------------------------------------
+
+#[test]
+fn throw_produces_result_err() {
+    // fn main() { throw 99 }
+    let module = make_module(vec![make_fn(
+        "main",
+        vec![],
+        None,
+        block(vec![Stmt::Throw {
+            expr: int_lit(99),
+            span: S,
+        }]),
+    )]);
+
+    let mir = lower_module(&module);
+    let f = &mir.functions[0];
+
+    let has_err = f.blocks.iter().any(|bb| {
+        bb.instructions.iter().any(|inst| match inst {
+            Instruction::Assign {
+                value: RValue::EnumVariant { enum_name, variant_idx, .. },
+                ..
+            } => enum_name == "Result" && *variant_idx == 1,
+            _ => false,
+        })
+    });
+    assert!(has_err, "throw should produce Result::Err variant");
+}
