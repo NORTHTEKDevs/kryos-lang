@@ -218,6 +218,12 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_array_set(ptr, i64, i64)");
         self.emit_line("declare i64 @kryos_array_len(ptr)");
         self.emit_line("declare void @kryos_array_free(ptr)");
+        self.emit_line("; Map runtime");
+        self.emit_line("declare i64 @kryos_map_new()");
+        self.emit_line("declare void @kryos_map_insert(i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_map_get(i64, i64)");
+        self.emit_line("declare i64 @kryos_map_len(i64)");
+        self.emit_line("declare void @kryos_map_free(i64)");
         self.emit_blank();
     }
 
@@ -938,12 +944,21 @@ impl LlvmCodegen {
                 }
             }
 
-            RValue::Map(_entries) => {
-                // Map literals are opaque handles — placeholder i64 0.
+            RValue::Map(entries) => {
+                // Create map via runtime, then insert each key-value pair.
+                let map_handle = self.next_temp();
+                self.emit_line(&format!("  {map_handle} = call i64 @kryos_map_new()"));
+                for (k, v) in entries {
+                    let key_val = self.operand_to_llvm(k, func);
+                    let val_val = self.operand_to_llvm(v, func);
+                    self.emit_line(&format!(
+                        "  call void @kryos_map_insert(i64 {map_handle}, i64 {key_val}, i64 {val_val})"
+                    ));
+                }
                 if is_mutable {
-                    self.emit_line(&format!("  store i64 0, ptr %_{}.addr  ; map literal", dest.0));
+                    self.emit_line(&format!("  store i64 {map_handle}, ptr %_{}.addr", dest.0));
                 } else {
-                    self.emit_line(&format!("  %_{} = add i64 0, 0  ; map literal", dest.0));
+                    self.emit_line(&format!("  %_{} = add i64 {map_handle}, 0", dest.0));
                 }
             }
 

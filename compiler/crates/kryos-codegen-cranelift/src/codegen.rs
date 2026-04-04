@@ -613,6 +613,41 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
         func_ids.insert("kryos_array_set".to_string(), as_id);
         func_ids.insert("kryos_array_len".to_string(), al_id);
         func_ids.insert("kryos_array_free".to_string(), af_id);
+
+        // Map functions.
+        let map_new_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.returns.push(AbiParam::new(types::I64)); // opaque handle
+            sig
+        };
+        let map_insert_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // map
+            sig.params.push(AbiParam::new(types::I64)); // key
+            sig.params.push(AbiParam::new(types::I64)); // value
+            sig
+        };
+        let map_get_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // map
+            sig.params.push(AbiParam::new(types::I64)); // key
+            sig.returns.push(AbiParam::new(types::I64)); // value
+            sig
+        };
+        let map_len_sig = string_len_sig.clone();
+        let map_free_sig = string_free_sig.clone();
+
+        let mn_id = object_module.declare_function("kryos_map_new", Linkage::Import, &map_new_sig)?;
+        let mi_id = object_module.declare_function("kryos_map_insert", Linkage::Import, &map_insert_sig)?;
+        let mg_id = object_module.declare_function("kryos_map_get", Linkage::Import, &map_get_sig)?;
+        let ml_id = object_module.declare_function("kryos_map_len", Linkage::Import, &map_len_sig)?;
+        let mf_id = object_module.declare_function("kryos_map_free", Linkage::Import, &map_free_sig)?;
+
+        func_ids.insert("kryos_map_new".to_string(), mn_id);
+        func_ids.insert("kryos_map_insert".to_string(), mi_id);
+        func_ids.insert("kryos_map_get".to_string(), mg_id);
+        func_ids.insert("kryos_map_len".to_string(), ml_id);
+        func_ids.insert("kryos_map_free".to_string(), mf_id);
     }
 
     // Second pass: translate each function body.
@@ -1347,10 +1382,22 @@ fn translate_rvalue<M: Module>(
             }
         }
 
-        RValue::Map(_) => {
-            // Map literal: opaque handle placeholder.
-            let val = builder.ins().iconst(types::I64, 0);
-            Ok(Some(val))
+        RValue::Map(entries) => {
+            // Create map via kryos_map_new, then insert each entry.
+            let new_ref = ensure_func_ref_with_args("kryos_map_new", builder, translator, module, 0)?;
+            let call = builder.ins().call(new_ref, &[]);
+            let map_handle = builder.inst_results(call)[0];
+
+            if !entries.is_empty() {
+                let insert_ref = ensure_func_ref_with_args("kryos_map_insert", builder, translator, module, 3)?;
+                for (k, v) in entries {
+                    let key_val = translate_operand(k, builder, translator, module)?;
+                    let val_val = translate_operand(v, builder, translator, module)?;
+                    builder.ins().call(insert_ref, &[map_handle, key_val, val_val]);
+                }
+            }
+
+            Ok(Some(map_handle))
         }
 
         RValue::StringConcat(parts) => {
