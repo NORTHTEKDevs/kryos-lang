@@ -210,6 +210,15 @@ pub enum Instruction {
     /// Drop a local (scope-exit cleanup).
     Drop { local: LocalId },
 
+    /// Spawn a concurrent task — evaluates expr and runs it concurrently.
+    Spawn { task: LocalId },
+
+    /// Send a value on a channel.
+    Send { channel: LocalId, value: LocalId },
+
+    /// Receive a value from a channel.
+    Receive { dest: LocalId, channel: LocalId },
+
     /// No-op placeholder.
     Nop,
 }

@@ -1756,3 +1756,144 @@ fn char_literal_lowering() {
     });
     assert!(has_char, "char literal 'A' should lower to ConstInt(65)");
 }
+
+// ---------------------------------------------------------------------------
+// Test 35: Spawn statement emits Spawn instruction
+// ---------------------------------------------------------------------------
+
+#[test]
+fn spawn_statement_emits_instruction() {
+    // fn work() -> i64 { 42 }
+    // fn main() { spawn work(); }
+    let module = make_module(vec![
+        make_fn(
+            "work",
+            vec![],
+            Some(simple_ty("i64")),
+            block(vec![Stmt::Return { value: Some(int_lit(42)), span: S }]),
+        ),
+        make_fn(
+            "main",
+            vec![],
+            None,
+            block(vec![Stmt::Spawn {
+                expr: ast::Expr::FnCall {
+                    callee: Box::new(ident("work")),
+                    args: vec![],
+                    span: S,
+                },
+                span: S,
+            }]),
+        ),
+    ]);
+
+    let mir = lower_module(&module);
+    let main_fn = mir.functions.iter().find(|f| f.name == "main").unwrap();
+
+    let has_spawn = main_fn.blocks.iter().any(|bb| {
+        bb.instructions.iter().any(|inst| matches!(inst, Instruction::Spawn { .. }))
+    });
+    assert!(has_spawn, "spawn statement should produce Spawn instruction");
+}
+
+// ---------------------------------------------------------------------------
+// Test 36: Actor declaration lowers handlers as mangled functions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn actor_handlers_lowered() {
+    // actor Counter { count: i64; handle increment(n: i64) -> void { } }
+    // fn main() {}
+    use ast::decl::{StructField, MessageHandler};
+    let module = make_module(vec![
+        Decl::Actor {
+            name: "Counter".into(),
+            state_fields: vec![StructField {
+                name: "count".into(),
+                ty: simple_ty("i64"),
+                public: false,
+                default: None,
+                span: S,
+            }],
+            handlers: vec![MessageHandler {
+                name: "increment".into(),
+                params: vec![Param {
+                    name: "n".into(),
+                    ty: Some(simple_ty("i64")),
+                    default: None,
+                    span: S,
+                }],
+                ret_ty: None,
+                body: block(vec![]),
+                span: S,
+            }],
+            annotations: vec![],
+            span: S,
+        },
+        make_fn("main", vec![], None, block(vec![])),
+    ]);
+
+    let mir = lower_module(&module);
+
+    // Actor handler should be lowered as Counter__increment.
+    let has_handler = mir.functions.iter().any(|f| f.name == "Counter__increment");
+    assert!(has_handler, "actor handler should produce Counter__increment function");
+
+    // Actor state should be registered as a struct def.
+    assert!(
+        mir.struct_defs.contains_key("Counter"),
+        "actor state should be registered as struct def"
+    );
+
+    // main should exist.
+    assert!(mir.functions.iter().any(|f| f.name == "main"));
+}
+
+// ---------------------------------------------------------------------------
+// Test 37: Select statement produces Switch terminator
+// ---------------------------------------------------------------------------
+
+#[test]
+fn select_statement_produces_switch() {
+    // fn main() { select { msg from ch1 { } } }
+    use ast::stmt::SelectBranch;
+    let module = make_module(vec![make_fn(
+        "main",
+        vec![],
+        None,
+        block(vec![
+            Stmt::Let {
+                name: "ch1".into(),
+                mutable: false,
+                ty: None,
+                value: Some(int_lit(0)),
+                pattern: None,
+                span: S,
+            },
+            Stmt::Select {
+                branches: vec![SelectBranch {
+                    pattern: "msg".into(),
+                    channel: ident("ch1"),
+                    body: block(vec![]),
+                    span: S,
+                }],
+                span: S,
+            },
+        ]),
+    )]);
+
+    let mir = lower_module(&module);
+    let main_fn = mir.functions.iter().find(|f| f.name == "main").unwrap();
+
+    // Select should produce a Switch terminator.
+    let has_switch = main_fn.blocks.iter().any(|bb| {
+        matches!(&bb.terminator, Terminator::Switch { .. })
+    });
+    assert!(has_switch, "select should produce Switch terminator");
+
+    // Should have a Receive instruction.
+    let has_receive = main_fn.blocks.iter().any(|bb| {
+        bb.instructions.iter().any(|inst| matches!(inst, Instruction::Receive { .. }))
+    });
+    assert!(has_receive, "select branches should have Receive instructions");
+}

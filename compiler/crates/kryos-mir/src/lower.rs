@@ -356,6 +356,27 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                     }
                 }
             }
+            ast::Decl::Actor { name, state_fields, handlers, .. } => {
+                // Register actor state as a struct def.
+                let fields: Vec<(String, MirType)> = state_fields
+                    .iter()
+                    .map(|f| (f.name.clone(), lower_type_expr(&f.ty)))
+                    .collect();
+                ctx.struct_defs.insert(name.clone(), fields);
+                // Register handler signatures.
+                for handler in handlers {
+                    let mangled = format!("{name}__{}", handler.name);
+                    let mir_ret = match &handler.ret_ty {
+                        Some(ty) => lower_type_expr(ty),
+                        None => MirType::Void,
+                    };
+                    ctx.func_ret_types.insert(mangled.clone(), mir_ret.clone());
+                    ctx.method_owners.insert(
+                        (name.clone(), handler.name.clone()),
+                        mangled,
+                    );
+                }
+            }
             _ => {}
         }
     }
@@ -390,13 +411,11 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                     } = method
                     {
                         let mangled = format!("{target}__{name}");
-                        // Prepend `self` as first param if not already present.
                         let mut all_params = Vec::new();
                         let has_self = params.iter().any(|p| p.name == "self");
                         if has_self {
                             all_params.extend_from_slice(params);
                         } else {
-                            // Add implicit self parameter.
                             all_params.push(ast::Param {
                                 name: "self".into(),
                                 ty: Some(ast::TypeExpr::Simple {
@@ -410,6 +429,30 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                         }
                         functions.push(lower_function(&mut ctx, &mangled, &all_params, ret_ty, body));
                     }
+                }
+            }
+            ast::Decl::Actor { name, handlers, .. } => {
+                // Lower each message handler as a free function: ActorName__handler_name.
+                for handler in handlers {
+                    let mangled = format!("{name}__{}", handler.name);
+                    // Prepend implicit `self` param for actor state.
+                    let mut all_params = vec![ast::Param {
+                        name: "self".into(),
+                        ty: Some(ast::TypeExpr::Simple {
+                            name: name.clone(),
+                            span: kryos_errors::Span::DUMMY,
+                        }),
+                        default: None,
+                        span: kryos_errors::Span::DUMMY,
+                    }];
+                    all_params.extend_from_slice(&handler.params);
+                    functions.push(lower_function(
+                        &mut ctx,
+                        &mangled,
+                        &all_params,
+                        &handler.ret_ty,
+                        &handler.body,
+                    ));
                 }
             }
             _ => {}
@@ -682,9 +725,80 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             });
         }
 
-        // Spawn, Select — emit Nop placeholders for now.
-        _ => {
-            ctx.emit(Instruction::Nop);
+        ast::Stmt::Spawn { expr, .. } => {
+            // Lower spawn: evaluate the expression into a temp, emit Spawn instruction.
+            let rvalue = lower_expr_to_rvalue(ctx, expr);
+            let task_local = ctx.alloc_temp(MirType::I64);
+            ctx.emit(Instruction::Assign {
+                dest: task_local,
+                value: rvalue,
+            });
+            ctx.emit(Instruction::Spawn { task: task_local });
+        }
+
+        ast::Stmt::Select { branches, .. } => {
+            // Lower select: evaluate each channel, emit a Switch on readiness.
+            // Each branch becomes: receive from channel → run body.
+            let merge_bb = ctx.alloc_block();
+
+            if branches.is_empty() {
+                ctx.emit(Instruction::Nop);
+                return;
+            }
+
+            // Build switch targets: tag i → branch_bb_i.
+            let mut targets = Vec::new();
+            let mut branch_bbs = Vec::new();
+            for (i, branch) in branches.iter().enumerate() {
+                let bb = ctx.alloc_block();
+                targets.push((i as i64, bb));
+                branch_bbs.push((bb, branch));
+            }
+
+            // Emit a switch on a readiness index (simplified: sequential check).
+            let select_idx = ctx.alloc_temp(MirType::I64);
+            ctx.emit(Instruction::Assign {
+                dest: select_idx,
+                value: RValue::ConstInt(0), // runtime would populate this
+            });
+            let default_bb = merge_bb;
+            ctx.finish_block(
+                Terminator::Switch {
+                    value: Operand::Local(select_idx),
+                    targets: targets.clone(),
+                    default: default_bb,
+                },
+                branch_bbs[0].0,
+            );
+
+            // Lower each branch body.
+            for (i, (_bb, branch)) in branch_bbs.into_iter().enumerate() {
+                // At the start of each branch, receive from the channel.
+                let ch_op = lower_expr_to_operand(ctx, &branch.channel);
+                let ch_local = ctx.alloc_temp(MirType::I64);
+                ctx.emit(Instruction::Assign {
+                    dest: ch_local,
+                    value: RValue::Use(ch_op),
+                });
+                let recv_local = ctx.alloc_local(
+                    Some(branch.pattern.clone()),
+                    MirType::I64,
+                    false,
+                );
+                ctx.emit(Instruction::Receive {
+                    dest: recv_local,
+                    channel: ch_local,
+                });
+
+                lower_block_stmts(ctx, &branch.body.stmts);
+
+                let next_bb = if i + 1 < targets.len() {
+                    targets[i + 1].1
+                } else {
+                    merge_bb
+                };
+                ctx.finish_block(Terminator::Goto(merge_bb), next_bb);
+            }
         }
     }
 }

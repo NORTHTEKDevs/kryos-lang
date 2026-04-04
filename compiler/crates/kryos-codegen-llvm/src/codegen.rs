@@ -258,7 +258,9 @@ impl LlvmCodegen {
                     | Instruction::ArcRelease { .. } => {
                         self.needs_arc_runtime = true;
                     }
-                    Instruction::Drop { .. } | Instruction::Nop => {}
+                    Instruction::Drop { .. } | Instruction::Nop
+                    | Instruction::Spawn { .. } | Instruction::Send { .. }
+                    | Instruction::Receive { .. } => {}
                 }
             }
             // Also scan terminator operands for constants (rare, but possible).
@@ -502,8 +504,21 @@ impl LlvmCodegen {
                 // release calls handle deallocation. We emit a comment.
                 self.emit_line("  ; drop (no-op)");
             }
-            Instruction::Nop => {
-                // Nothing.
+            Instruction::Nop => {}
+            Instruction::Spawn { task } => {
+                self.emit_line(&format!("  ; spawn(_{}) — runtime call placeholder", task.0));
+            }
+            Instruction::Send { channel, value } => {
+                self.emit_line(&format!(
+                    "  ; send(_{}, _{}) — runtime call placeholder",
+                    channel.0, value.0
+                ));
+            }
+            Instruction::Receive { dest, channel } => {
+                self.emit_line(&format!(
+                    "  ; receive(_{}, _{}) — runtime call placeholder",
+                    dest.0, channel.0
+                ));
             }
         }
         Ok(())

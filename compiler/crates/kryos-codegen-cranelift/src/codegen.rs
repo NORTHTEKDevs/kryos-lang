@@ -929,6 +929,15 @@ fn translate_instruction<M: Module>(
             // handled by ARC retain/release pairs inserted during MIR lowering.
         }
         Instruction::Nop => {}
+        Instruction::Spawn { .. } => {
+            // Spawn: runtime call placeholder — no-op in Cranelift for now.
+        }
+        Instruction::Send { .. } => {
+            // Send: runtime call placeholder.
+        }
+        Instruction::Receive { .. } => {
+            // Receive: runtime call placeholder.
+        }
     }
     Ok(())
 }

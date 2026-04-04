@@ -66,6 +66,9 @@ impl fmt::Display for Instruction {
             Instruction::ArcRetain { ptr } => write!(f, "arc_retain({ptr})"),
             Instruction::ArcRelease { ptr } => write!(f, "arc_release({ptr})"),
             Instruction::Drop { local } => write!(f, "drop({local})"),
+            Instruction::Spawn { task } => write!(f, "spawn({task})"),
+            Instruction::Send { channel, value } => write!(f, "send({channel}, {value})"),
+            Instruction::Receive { dest, channel } => write!(f, "{dest} = receive({channel})"),
             Instruction::Nop => write!(f, "nop"),
         }
     }
