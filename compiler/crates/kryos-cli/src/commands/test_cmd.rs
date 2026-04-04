@@ -2,30 +2,40 @@
 
 use std::path::Path;
 
+use kryos_test_runner::{discover_tests, format_report, run_all};
+
 /// Execute the test command.
 pub fn execute(filter: Option<&str>) -> Result<(), String> {
-    let manifest_path = Path::new("kryos.toml");
-    if !manifest_path.exists() {
-        return Err(
-            "no kryos.toml found — run `kryos pkg init` or navigate to a project directory"
-                .to_string(),
-        );
-    }
+    // Look for a tests/ directory first, fall back to current directory.
+    let test_dir = if Path::new("tests").is_dir() {
+        Path::new("tests")
+    } else {
+        Path::new(".")
+    };
 
-    // TODO: Once the driver supports test discovery and execution:
-    // 1. Parse kryos.toml to find source roots.
-    // 2. Scan for `#[test]` functions.
-    // 3. Compile with test harness enabled.
-    // 4. Execute each test, collecting pass/fail/skip.
-    // 5. Print summary.
+    let mut tests = discover_tests(test_dir);
 
     if let Some(f) = filter {
-        eprintln!("kryos test: filtering tests matching `{f}`");
+        tests.retain(|t| t.name.contains(f));
     }
 
-    eprintln!("kryos test: test runner not yet connected to compiler pipeline");
-    eprintln!("  hint: the test framework will discover #[test] functions once");
-    eprintln!("        the driver pipeline is fully wired up.");
+    if tests.is_empty() {
+        eprintln!("kryos test: no test files found in `{}`", test_dir.display());
+        if filter.is_some() {
+            eprintln!("  hint: no tests matched the filter");
+        }
+        return Ok(());
+    }
 
-    Ok(())
+    eprintln!("running {} test{}", tests.len(), if tests.len() == 1 { "" } else { "s" });
+    eprintln!();
+
+    let report = run_all(&tests);
+    eprint!("{}", format_report(&report));
+
+    if report.all_passed() {
+        Ok(())
+    } else {
+        Err(format!("{} test{} failed", report.failed, if report.failed == 1 { "" } else { "s" }))
+    }
 }

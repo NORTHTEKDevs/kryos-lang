@@ -5,7 +5,6 @@ use std::path::Path;
 /// Execute the fmt command.
 pub fn execute(files: &[String], check: bool) -> Result<(), String> {
     let targets = if files.is_empty() {
-        // Collect all .kry files in the project.
         discover_kry_files(Path::new("."))?
     } else {
         files.to_vec()
@@ -16,22 +15,36 @@ pub fn execute(files: &[String], check: bool) -> Result<(), String> {
         return Ok(());
     }
 
-    // TODO: Once a formatter is implemented in the driver or as a separate
-    // crate, call it here. The formatter should:
-    // 1. Parse the source to AST.
-    // 2. Pretty-print the AST with canonical formatting rules.
-    // 3. Write back (or diff in --check mode).
+    let mut unformatted = 0usize;
 
-    if check {
-        eprintln!("kryos fmt --check: formatter not yet connected");
-        eprintln!("  would check {} file{}", targets.len(), plural(targets.len()));
-    } else {
-        eprintln!("kryos fmt: formatter not yet connected");
-        eprintln!("  would format {} file{}", targets.len(), plural(targets.len()));
+    for path in &targets {
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| format!("cannot read `{path}`: {e}"))?;
+
+        let formatted = kryos_fmt::format_source(&source).map_err(|diags| {
+            let msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
+            format!("parse error in `{path}`: {}", msgs.join("; "))
+        })?;
+
+        if source == formatted {
+            continue;
+        }
+
+        if check {
+            eprintln!("  would reformat {path}");
+            unformatted += 1;
+        } else {
+            std::fs::write(path, &formatted)
+                .map_err(|e| format!("cannot write `{path}`: {e}"))?;
+            eprintln!("  formatted {path}");
+        }
     }
 
-    for t in &targets {
-        eprintln!("  {t}");
+    if check && unformatted > 0 {
+        return Err(format!(
+            "{unformatted} file{} would be reformatted",
+            if unformatted == 1 { "" } else { "s" }
+        ));
     }
 
     Ok(())
@@ -46,13 +59,13 @@ fn discover_kry_files(dir: &Path) -> Result<Vec<String>, String> {
 }
 
 fn walk_dir(dir: &Path, out: &mut Vec<String>) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir).map_err(|e| format!("cannot read `{}`: {e}", dir.display()))?;
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("cannot read `{}`: {e}", dir.display()))?;
 
     for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
 
-        // Skip hidden directories and common non-source directories.
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
             if name.starts_with('.') || name == "target" || name == "node_modules" {
                 continue;
@@ -67,8 +80,4 @@ fn walk_dir(dir: &Path, out: &mut Vec<String>) -> Result<(), String> {
     }
 
     Ok(())
-}
-
-fn plural(n: usize) -> &'static str {
-    if n == 1 { "" } else { "s" }
 }
