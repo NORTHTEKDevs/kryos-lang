@@ -1,17 +1,20 @@
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
-dist/
-build/
-.eggs/
-*.so
-*.dll
-.venv/
-venv/
-.env
-*.log
-.idea/
-.vscode/
+# Build artifacts
 target/
 compiler/target/
+
+# Compiled binaries in test dirs
+*.exe
+*.pdb
+*.obj
+*.o
+*.so
+*.dll
+*.dylib
+
+# IDE
+.idea/
+.vscode/
+
+# Misc
+.env
+*.log

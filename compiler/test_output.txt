@@ -1,10 +1,2 @@
-   Compiling kryos-codegen-llvm v0.1.0 (C:\Users\Krist\projects\active\kryos-lang\compiler\crates\kryos-codegen-llvm)
-error: linking with `link.exe` failed: exit code: 1104
-  |
-  = note: "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC\\14.44.35207\\bin\\HostX64\\x64\\link.exe" "/NOLOGO" "C:\\Users\\Krist\\AppData\\Local\\Temp\\rustcDlQv8l\\symbols.o" "<49 object files omitted>" "<sysroot>\\lib\\rustlib\\x86_64-pc-windows-msvc\\lib/{libtest-*,libgetopts-*,librustc_std_workspace_std-*}.rlib" "C:\\Users\\Krist\\projects\\active\\kryos-lang\\compiler\\target\\debug\\deps/{libkryos_codegen_llvm-0d04f1681b1332dc,libkryos_mir-17eef7eaa08c274e,libkryos_types-89d23b89b4d1353e,libkryos_ast-84cdd49708cc8cfd,libkryos_errors-2e9c75984b3b68b0}.rlib" "<sysroot>\\lib\\rustlib\\x86_64-pc-windows-msvc\\lib/{libstd-*,libpanic_unwind-*,libcfg_if-*,libwindows_targets-*,librustc_demangle-*,libstd_detect-*,libhashbrown-*,librustc_std_workspace_alloc-*,libunwind-*,librustc_std_workspace_core-*,liballoc-*,libcore-*,libcompiler_builtins-*}.rlib" "kernel32.lib" "kernel32.lib" "kernel32.lib" "kernel32.lib" "ntdll.lib" "userenv.lib" "ws2_32.lib" "dbghelp.lib" "/defaultlib:msvcrt" "/NXCOMPAT" "/OUT:C:\\Users\\Krist\\projects\\active\\kryos-lang\\compiler\\target\\debug\\deps\\codegen-11e697240ae8199e.exe" "/OPT:REF,NOICF" "/DEBUG" "/PDBALTPATH:%_PDB%" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\intrinsic.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\liballoc.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\libcore.natvis" "/NATVIS:<sysroot>\\lib\\rustlib\\etc\\libstd.natvis"
-  = note: some arguments are omitted. use `--verbose` to show all linker arguments
-  = note: LINK : fatal error LNK1104: cannot open file 'C:\Users\Krist\projects\active\kryos-lang\compiler\target\debug\deps\codegen-11e697240ae8199e.exe'␍
-          
-
-error: could not compile `kryos-codegen-llvm` (test "codegen") due to 1 previous error
-DONE:101
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s
+EXIT=0

@@ -2,24 +2,17 @@ name: Kryos CI
 on: [push, pull_request]
 
 jobs:
-  test-python:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install -e .
-      - run: python -m pytest tests/test_actor.py tests/test_safety.py tests/test_packages_github.py tests/test_codegen_arrays.py tests/test_codegen_extended.py tests/test_ownership.py tests/test_comptime.py -v
-
-  test-rust-vm:
-    runs-on: ubuntu-latest
+  build-and-test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cd rust && cargo build --release -p kryos-runner 2>/dev/null || echo "No Rust VM in this repo"
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install -e .
-      - run: python -m pytest tests/test_runtime_parity.py -v || echo "Parity tests skipped (no Rust VM)"
+      - name: Build workspace
+        working-directory: compiler
+        run: cargo build --workspace
+      - name: Run tests
+        working-directory: compiler
+        run: cargo test --workspace
