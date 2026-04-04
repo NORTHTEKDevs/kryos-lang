@@ -1,10 +1,12 @@
 # AI Runtime
 
+> **Status:** The AI runtime described in this chapter is part of Kryos's language specification and stdlib design. These features were prototyped in the early Python-based interpreter. The native Rust compiler does not yet include these builtins -- they will be reimplemented as native stdlib modules backed by the Kryos runtime (not Python/numpy). This chapter documents the target API.
+
 Kryos has a built-in runtime for AI and machine learning workloads. Instead of bolting ML onto a general-purpose language, Kryos treats tensors, probability, agents, streams, lineage, and cost tracking as first-class concepts. This chapter covers all of them.
 
 ## Tensors
 
-The `KryosTensor` type is an N-dimensional array with shape tracking, broadcasting, element-wise operations, reductions, linear algebra, and ML-specific ops. It uses numpy as the compute backend when available and falls back to pure-Python nested lists when numpy is not installed.
+The `KryosTensor` type is an N-dimensional array with shape tracking, broadcasting, element-wise operations, reductions, linear algebra, and ML-specific ops.
 
 ### Creating Tensors
 
