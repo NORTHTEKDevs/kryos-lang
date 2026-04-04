@@ -7,6 +7,8 @@
 
 pub mod alloc;
 pub mod arc;
+pub mod array;
 pub mod actor;
 pub mod channel;
 pub mod panic;
+pub mod string;

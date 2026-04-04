@@ -83,6 +83,23 @@ impl JitCompiler {
         jit_builder.symbol("kryos_arc_release", kryos_arc_release_stub as *const u8);
         jit_builder.symbol("kryos_arc_alloc", kryos_arc_alloc_stub as *const u8);
 
+        // Register string/array runtime functions for JIT linking.
+        // These are the actual kryos-rt implementations when available,
+        // or stubs when running without the runtime.
+        jit_builder.symbol("kryos_string_new", kryos_string_new_stub as *const u8);
+        jit_builder.symbol("kryos_string_concat", kryos_string_concat_stub as *const u8);
+        jit_builder.symbol("kryos_string_len", kryos_string_len_stub as *const u8);
+        jit_builder.symbol("kryos_string_eq", kryos_string_eq_stub as *const u8);
+        jit_builder.symbol("kryos_string_slice", kryos_string_slice_stub as *const u8);
+        jit_builder.symbol("kryos_string_find", kryos_string_find_stub as *const u8);
+        jit_builder.symbol("kryos_string_free", kryos_string_free_stub as *const u8);
+        jit_builder.symbol("kryos_array_new", kryos_array_new_stub as *const u8);
+        jit_builder.symbol("kryos_array_push", kryos_array_push_stub as *const u8);
+        jit_builder.symbol("kryos_array_get", kryos_array_get_stub as *const u8);
+        jit_builder.symbol("kryos_array_set", kryos_array_set_stub as *const u8);
+        jit_builder.symbol("kryos_array_len", kryos_array_len_stub as *const u8);
+        jit_builder.symbol("kryos_array_free", kryos_array_free_stub as *const u8);
+
         let module = JITModule::new(jit_builder);
 
         Ok(Self {
@@ -199,3 +216,21 @@ extern "C" fn kryos_arc_alloc_stub(_val: u64) -> u64 {
     // Returns the value itself — no real allocation.
     _val
 }
+
+// ---------------------------------------------------------------------------
+// String/Array runtime stubs (no-ops for JIT without a linked runtime)
+// ---------------------------------------------------------------------------
+
+extern "C" fn kryos_string_new_stub(_ptr: u64, _len: u64) -> u64 { 0 }
+extern "C" fn kryos_string_concat_stub(_a: u64, _b: u64) -> u64 { 0 }
+extern "C" fn kryos_string_len_stub(_s: u64) -> u64 { 0 }
+extern "C" fn kryos_string_eq_stub(_a: u64, _b: u64) -> u8 { 0 }
+extern "C" fn kryos_string_slice_stub(_s: u64, _start: u64, _end: u64) -> u64 { 0 }
+extern "C" fn kryos_string_find_stub(_s: u64, _needle: u64) -> u64 { u64::MAX } // -1 as unsigned
+extern "C" fn kryos_string_free_stub(_s: u64) {}
+extern "C" fn kryos_array_new_stub(_elem_size: u64, _cap: u64) -> u64 { 0 }
+extern "C" fn kryos_array_push_stub(_arr: u64, _val: u64) {}
+extern "C" fn kryos_array_get_stub(_arr: u64, _idx: u64) -> u64 { 0 }
+extern "C" fn kryos_array_set_stub(_arr: u64, _idx: u64, _val: u64) {}
+extern "C" fn kryos_array_len_stub(_arr: u64) -> u64 { 0 }
+extern "C" fn kryos_array_free_stub(_arr: u64) {}

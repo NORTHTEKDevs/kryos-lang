@@ -195,11 +195,29 @@ impl LlvmCodegen {
         self.emit_line("declare void @exit(i32)");
         self.emit_line("declare i32 @fputs(ptr, ptr)");
         self.emit_line("declare i32 @fputc(i32, ptr)");
+        self.emit_line("declare ptr @malloc(i64)");
+        self.emit_line("declare void @free(ptr)");
+        self.emit_line("declare ptr @realloc(ptr, i64)");
         if self.is_windows_target() {
             self.emit_line("declare ptr @__acrt_iob_func(i32)");
         } else {
             self.emit_line("@stderr = external global ptr");
         }
+        self.emit_blank();
+        self.emit_line("; Kryos runtime functions");
+        self.emit_line("declare ptr @kryos_string_new(ptr, i64)");
+        self.emit_line("declare ptr @kryos_string_concat(ptr, ptr)");
+        self.emit_line("declare i64 @kryos_string_len(ptr)");
+        self.emit_line("declare i1 @kryos_string_eq(ptr, ptr)");
+        self.emit_line("declare ptr @kryos_string_slice(ptr, i64, i64)");
+        self.emit_line("declare i64 @kryos_string_find(ptr, ptr)");
+        self.emit_line("declare void @kryos_string_free(ptr)");
+        self.emit_line("declare ptr @kryos_array_new(i64, i64)");
+        self.emit_line("declare void @kryos_array_push(ptr, i64)");
+        self.emit_line("declare i64 @kryos_array_get(ptr, i64)");
+        self.emit_line("declare void @kryos_array_set(ptr, i64, i64)");
+        self.emit_line("declare i64 @kryos_array_len(ptr)");
+        self.emit_line("declare void @kryos_array_free(ptr)");
         self.emit_blank();
     }
 

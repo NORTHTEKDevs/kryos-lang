@@ -474,6 +474,147 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
         ctx.clear();
     }
 
+    // Declare C heap functions as imports.
+    {
+        let malloc_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            sig
+        };
+        let free_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig
+        };
+        let realloc_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            sig
+        };
+        let malloc_id = object_module.declare_function("malloc", Linkage::Import, &malloc_sig)?;
+        let free_id = object_module.declare_function("free", Linkage::Import, &free_sig)?;
+        let realloc_id = object_module.declare_function("realloc", Linkage::Import, &realloc_sig)?;
+        func_ids.insert("malloc".to_string(), malloc_id);
+        func_ids.insert("free".to_string(), free_id);
+        func_ids.insert("realloc".to_string(), realloc_id);
+    }
+
+    // Declare Kryos runtime string/array functions as imports.
+    {
+        // String: (ptr, i64) -> ptr
+        let string_new_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // ptr
+            sig.params.push(AbiParam::new(types::I64)); // len
+            sig.returns.push(AbiParam::new(types::I64)); // ptr
+            sig
+        };
+        let string_concat_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // a
+            sig.params.push(AbiParam::new(types::I64)); // b
+            sig.returns.push(AbiParam::new(types::I64)); // ptr
+            sig
+        };
+        let string_len_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // s
+            sig.returns.push(AbiParam::new(types::I64)); // len
+            sig
+        };
+        let string_eq_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // a
+            sig.params.push(AbiParam::new(types::I64)); // b
+            sig.returns.push(AbiParam::new(types::I8));  // bool
+            sig
+        };
+        let string_slice_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // s
+            sig.params.push(AbiParam::new(types::I64)); // start
+            sig.params.push(AbiParam::new(types::I64)); // end
+            sig.returns.push(AbiParam::new(types::I64)); // ptr
+            sig
+        };
+        let string_find_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // s
+            sig.params.push(AbiParam::new(types::I64)); // needle
+            sig.returns.push(AbiParam::new(types::I64)); // offset
+            sig
+        };
+        let string_free_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // s
+            sig
+        };
+
+        let sn_id = object_module.declare_function("kryos_string_new", Linkage::Import, &string_new_sig)?;
+        let sc_id = object_module.declare_function("kryos_string_concat", Linkage::Import, &string_concat_sig)?;
+        let sl_id = object_module.declare_function("kryos_string_len", Linkage::Import, &string_len_sig)?;
+        let se_id = object_module.declare_function("kryos_string_eq", Linkage::Import, &string_eq_sig)?;
+        let ss_id = object_module.declare_function("kryos_string_slice", Linkage::Import, &string_slice_sig)?;
+        let sf_id = object_module.declare_function("kryos_string_find", Linkage::Import, &string_find_sig)?;
+        let sfr_id = object_module.declare_function("kryos_string_free", Linkage::Import, &string_free_sig)?;
+
+        func_ids.insert("kryos_string_new".to_string(), sn_id);
+        func_ids.insert("kryos_string_concat".to_string(), sc_id);
+        func_ids.insert("kryos_string_len".to_string(), sl_id);
+        func_ids.insert("kryos_string_eq".to_string(), se_id);
+        func_ids.insert("kryos_string_slice".to_string(), ss_id);
+        func_ids.insert("kryos_string_find".to_string(), sf_id);
+        func_ids.insert("kryos_string_free".to_string(), sfr_id);
+
+        // Array functions.
+        let array_new_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // elem_size
+            sig.params.push(AbiParam::new(types::I64)); // cap
+            sig.returns.push(AbiParam::new(types::I64)); // ptr
+            sig
+        };
+        let array_push_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // arr
+            sig.params.push(AbiParam::new(types::I64)); // val
+            sig
+        };
+        let array_get_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // arr
+            sig.params.push(AbiParam::new(types::I64)); // idx
+            sig.returns.push(AbiParam::new(types::I64)); // val
+            sig
+        };
+        let array_set_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // arr
+            sig.params.push(AbiParam::new(types::I64)); // idx
+            sig.params.push(AbiParam::new(types::I64)); // val
+            sig
+        };
+        let array_len_sig = string_len_sig.clone();
+        let array_free_sig = string_free_sig.clone();
+
+        let an_id = object_module.declare_function("kryos_array_new", Linkage::Import, &array_new_sig)?;
+        let ap_id = object_module.declare_function("kryos_array_push", Linkage::Import, &array_push_sig)?;
+        let ag_id = object_module.declare_function("kryos_array_get", Linkage::Import, &array_get_sig)?;
+        let as_id = object_module.declare_function("kryos_array_set", Linkage::Import, &array_set_sig)?;
+        let al_id = object_module.declare_function("kryos_array_len", Linkage::Import, &array_len_sig)?;
+        let af_id = object_module.declare_function("kryos_array_free", Linkage::Import, &array_free_sig)?;
+
+        func_ids.insert("kryos_array_new".to_string(), an_id);
+        func_ids.insert("kryos_array_push".to_string(), ap_id);
+        func_ids.insert("kryos_array_get".to_string(), ag_id);
+        func_ids.insert("kryos_array_set".to_string(), as_id);
+        func_ids.insert("kryos_array_len".to_string(), al_id);
+        func_ids.insert("kryos_array_free".to_string(), af_id);
+    }
+
     // Second pass: translate each function body.
     for mir_func in &module.functions {
         let func_id = func_ids[&mir_func.name];
