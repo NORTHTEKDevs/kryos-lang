@@ -4,19 +4,27 @@ This chapter gets you from zero to running Kryos programs. By the end you will h
 
 ## Installation
 
-Kryos requires Python 3.10 or later. NumPy is optional but recommended for fast tensor operations.
+Kryos is a native Rust compiler (21 crates). You need Rust 1.75+ and Cargo to build it.
 
 ### From source (recommended)
 
-Clone the repo and install in editable mode so `kryos` is available as a CLI command:
+Clone the repo and build the compiler:
 
 ```bash
 git clone https://github.com/FrostbyteDevTeam/kryos-lang.git
-cd kryos-lang
-pip install -e .
+cd kryos-lang/compiler
+cargo build --release
 ```
 
-This registers the `kryos` command globally. Editable mode means changes to the source take effect immediately -- useful if you are hacking on the language itself.
+The `kryos` binary is produced at `compiler/target/release/kryos`. Add it to your PATH or symlink it:
+
+```bash
+# Linux/macOS
+sudo ln -s $(pwd)/target/release/kryos /usr/local/bin/kryos
+
+# Windows (PowerShell, as admin)
+Copy-Item target\release\kryos.exe C:\Windows\kryos.exe
+```
 
 ### Verify the install
 
@@ -28,30 +36,22 @@ You should see output like:
 
 ```
 Kryos v0.1.0
-License: Community
 ```
-
-### Optional: Rust VM
-
-For faster execution, build the Rust-based VM runner:
-
-```bash
-cd rust
-cargo build --release -p kryos-runner
-```
-
-When the `kryos-runner` binary is present, `kryos run` uses it automatically. Without it, Kryos falls back to the Python tree-walking interpreter. Both produce identical results -- the Rust path is just faster.
 
 ### Optional: LLVM toolchain
 
-To compile Kryos programs to native binaries, install `llc` and `clang` from the LLVM project. Without them, `kryos build` still emits `.ll` files (LLVM IR text) -- you just cannot link them into executables.
+Debug builds use the Cranelift backend (fast compilation, no external dependencies). Release builds (`--release`) use LLVM for optimized native code. To use the LLVM backend, install `llc` and `clang` from the LLVM project.
+
+Without LLVM installed, `kryos build` still works -- it uses Cranelift. You only need LLVM for `kryos build --release`.
 
 ## Hello World
 
 Create a file called `hello.kry`:
 
 ```
-println("Hello, Kryos!")
+fn main() {
+    println("Hello, Kryos!")
+}
 ```
 
 Run it:
@@ -66,7 +66,7 @@ Output:
 Hello, Kryos!
 ```
 
-That is the entire program. No `main` function, no imports, no boilerplate. `println` is a built-in -- always available, no `use` statement needed.
+Every compiled program needs a `fn main()` as its entry point. `println` is a built-in -- always available, no `use` statement needed.
 
 The file extension is `.kry`. The CLI warns (but still runs) if you use a different extension.
 
@@ -99,17 +99,19 @@ impl Point {
     }
 }
 
-// Print a Fibonacci table
-println("n\tFib(n)")
-println("--\t------")
-for i in range(0, 10) {
-    println(to_string(i) + "\t" + to_string(fibonacci(i)))
-}
+fn main() {
+    // Print a Fibonacci table
+    println("n\tFib(n)")
+    println("--\t------")
+    for i in range(0, 10) {
+        println(to_string(i) + "\t" + to_string(fibonacci(i)))
+    }
 
-// Use the struct
-let a = Point { x: 0.0, y: 0.0 }
-let b = Point { x: 3.0, y: 4.0 }
-println("\nDistance from origin to (3, 4): " + to_string(a.distance_to(b)))
+    // Use the struct
+    let a = Point { x: 0.0, y: 0.0 }
+    let b = Point { x: 3.0, y: 4.0 }
+    println("\nDistance from origin to (3, 4): " + to_string(a.distance_to(b)))
+}
 ```
 
 Run it:
@@ -130,45 +132,47 @@ A few things to notice:
 
 ## CLI Commands
 
-The `kryos` command has 17 subcommands. Here is what each one does and when you would use it.
+The `kryos` command has 10 subcommands. Here is what each one does and when you would use it.
 
 ### Running and building
 
 | Command | What it does |
 |---------|-------------|
-| `kryos run <file.kry>` | Execute a program. Uses the Rust VM if available, otherwise the Python interpreter. Pass `--no-heal` to disable self-healing error recovery. |
-| `kryos build <file.kry>` | Compile to LLVM IR (`.ll` file). If `llc` and `clang` are installed, also links a native binary. Pass `--emit-ir` to only emit IR without attempting native compilation. |
-| `kryos check <file.kry>` | Type-check and run a capability audit. Reports violations (functions accessing capabilities they did not declare) and prints a capability map of every function. |
+| `kryos run <file.kry>` | Compile and execute a program in one step. Debug builds use Cranelift (fast), `--release` uses LLVM (optimized). |
+| `kryos build <file.kry>` | Compile to a native binary. By default uses Cranelift AOT; pass `--release` for LLVM-optimized output. Use `-o <path>` to set the output path and `--target <triple>` for cross-compilation. |
+| `kryos check <file.kry>` | Type-check, ownership analysis, and capability audit without producing a binary. Reports violations and prints a capability map of every function. |
 | `kryos repl` | Start an interactive REPL session. Supports multi-line input (detects unclosed braces/parens). Type `exit` or Ctrl+D to quit. |
-| `kryos test [dir]` | Run `.kry` test files in a directory. Tests use `// expect:` comments to assert expected output. Defaults to `tests/programs` if no directory is given. |
-| `kryos bundle <file.kry>` | Bundle a program into a self-contained deployment package with launcher scripts and a Dockerfile. |
+| `kryos test [dir]` | Run `.kry` test files in a directory. Tests use `// expect:` comments to assert expected output and `// expect-error:` for expected failures. Use `// skip` to skip a test. Defaults to `tests/` if no directory is given. |
 
-### Code assistance
+### Build flags
+
+| Flag | What it does |
+|---------|-------------|
+| `--release` | Use the LLVM backend for optimized native code (requires LLVM installed). |
+| `--emit-mir` | Dump the MIR (mid-level intermediate representation) for inspection. |
+| `--emit-llvm` | Dump the generated LLVM IR text. |
+| `--verbose` | Print each compilation stage as it runs. |
+| `-o <path>` | Set the output binary path. |
+| `--target <triple>` | Cross-compile for a specific target (e.g., `x86_64-unknown-linux-gnu`). |
+
+### Code formatting and tooling
 
 | Command | What it does |
 |---------|-------------|
-| `kryos validate <file.kry>` | AI-assisted code validation. Checks for correctness issues and suggests fixes. Pass `--fix` to auto-apply corrections. |
-| `kryos migrate <file>` | Convert code from Python, JavaScript, Rust, C, Go, or Java into Kryos. Auto-detects the source language (override with `--lang`). Use `-o output.kry` to write the result to a file. |
-| `kryos heal-report <file.kry>` | Run a program with self-healing enabled and print a diagnostic report of every auto-correction the runtime made. |
-
-### Project management
-
-| Command | What it does |
-|---------|-------------|
-| `kryos init [path]` | Create a new project with a `kryos.toml` manifest. Defaults to the current directory. |
-| `kryos add <package>` | Add a dependency to `kryos.toml`. |
-| `kryos remove <package>` | Remove a dependency from `kryos.toml`. |
-| `kryos deps` | List all project dependencies. |
-| `kryos install` | Install all dependencies declared in `kryos.toml`. |
-| `kryos publish` | Publish the current package to the local registry (`~/.kryos/packages/`). |
-
-### Tooling
-
-| Command | What it does |
-|---------|-------------|
+| `kryos fmt [file.kry]` | Format `.kry` source files (rewrites in place). Pass `--check` for diff mode (exits non-zero if changes needed). |
+| `kryos bindgen <header>` | Generate Kryos FFI bindings from C headers. |
 | `kryos lsp` | Start the Language Server Protocol server (JSON-RPC over stdin/stdout). Configure your editor to use this for `.kry` files to get diagnostics, hover info, completions, go-to-definition, and document symbols. |
-| `kryos license` | Show license status. Use `--activate <key>` to activate a license, `--deactivate` to remove it, or `--tiers` to see what each tier includes. |
-| `kryos version` | Print the Kryos version and current license tier. |
+| `kryos version` | Print the Kryos version. |
+
+### Package management
+
+| Command | What it does |
+|---------|-------------|
+| `kryos pkg init` | Create a new project with a `kryos.toml` manifest. |
+| `kryos pkg add <package>` | Add a dependency to `kryos.toml`. |
+| `kryos pkg remove <package>` | Remove a dependency from `kryos.toml`. |
+| `kryos pkg update` | Update all dependencies to their latest compatible versions. |
+| `kryos pkg lock` | Regenerate the lockfile from `kryos.toml`. |
 
 ## The REPL
 
@@ -200,7 +204,7 @@ Kryos source files use the `.kry` extension. The CLI warns if you pass a file wi
 
 ## Project Structure
 
-When you run `kryos init`, it creates a `kryos.toml` manifest:
+When you run `kryos pkg init`, it creates a `kryos.toml` manifest:
 
 ```toml
 [package]
@@ -216,24 +220,26 @@ A typical Kryos project looks like this:
 my-project/
     kryos.toml          # project manifest
     src/
-        main.kry        # entry point
+        main.kry        # entry point (must define fn main())
         utils.kry       # utility module
     tests/
-        programs/
-            test_math.kry     # test file with // expect: assertions
-            test_strings.kry
+        test_math.kry         # test file with // expect: assertions
+        test_strings.kry      # test file with // expect-error: assertions
     examples/
         demo.kry
 ```
 
 Conventions:
 
-- **`src/`** for source files. The entry point is typically `main.kry`.
-- **`tests/programs/`** for test files. Each test file uses `// expect: <value>` comments that `kryos test` checks against actual output.
+- **`src/`** for source files. The entry point is `main.kry` and must define `fn main()`.
+- **`tests/`** for test files. Each test file uses annotation comments that `kryos test` checks:
+  - `// expect: <value>` -- assert that the program prints this line
+  - `// expect-error: <message>` -- assert that compilation fails with this error
+  - `// skip` -- skip this test file
 - **`examples/`** for example programs.
 - **`kryos.toml`** at the project root declares the package name, version, and dependencies.
 
-Dependencies are installed to `~/.kryos/packages/` and resolved via semver matching. Use `kryos add <package>` to declare them and `kryos install` to fetch them.
+Use `kryos pkg add <package>` to add dependencies and `kryos pkg update` to update them.
 
 ## Editor Support
 
@@ -260,4 +266,4 @@ Now that you have the toolchain running:
 - [Variables and Types](02-variables-and-types.md) covers `let`/`let mut`, type annotations, and the full type system.
 - [Functions](03-functions.md) covers `fn` declarations, closures, lambdas, and first-class functions.
 - [Core Built-ins](stdlib-core.md) lists every function available without imports.
-- The three example programs in the `examples/` directory show real patterns: `demo.kry` (language features), `neural_net.kry` (AI runtime), and `kryos_bootstrap.kry` (a tokenizer written in Kryos).
+- [Compilation Pipeline](15-codegen.md) explains how the compiler transforms your code into native binaries.
