@@ -1,4 +1,3 @@
-// skip
 // Test: struct with impl methods (skipped — self.field access not yet resolved by type checker)
 struct Counter {
     value: i32,

@@ -1,4 +1,3 @@
-// skip
 // Test: shared references (skipped — field access through &T not yet resolved)
 struct Data {
     value: i32,

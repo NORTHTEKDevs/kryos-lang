@@ -1,4 +1,3 @@
-// skip
 // Test: enum variants with data (skipped — match pattern bindings not yet in type checker scope)
 enum Shape {
     Circle(f64),

@@ -1,4 +1,3 @@
-// skip
 // Test: extern FFI declaration (skipped — extern symbols not yet visible to type checker)
 extern "C" {
     fn puts(s: str) -> i32

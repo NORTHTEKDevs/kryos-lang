@@ -1,4 +1,3 @@
-// skip
 // Test: lambda (skipped — type checker doesn't resolve lambda return types yet)
 fn apply(f: fn(i32) -> i32, x: i32) -> i32 {
     return f(x)

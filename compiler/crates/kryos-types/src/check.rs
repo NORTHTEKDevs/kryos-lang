@@ -64,6 +64,9 @@ impl TypeChecker {
                             name: name.clone(),
                             generics: vec![],
                         }
+                    } else if let Some(ty) = self.env.lookup_var(name) {
+                        // Type alias or generic parameter registered as a variable.
+                        ty.clone()
                     } else {
                         self.error(format!("unknown type `{name}`"), *span);
                         Type::Error
@@ -218,6 +221,15 @@ impl TypeChecker {
                 ret_ty,
                 ..
             } => {
+                // Temporarily bind generic params so they resolve in param/return types.
+                if !generics.is_empty() {
+                    self.env.push_scope();
+                    for gp in generics {
+                        let tv = self.engine.fresh_var();
+                        self.env.define_var(gp.name.clone(), tv);
+                    }
+                }
+
                 let param_types: Vec<(String, Type)> = params
                     .iter()
                     .map(|p| {
@@ -235,6 +247,10 @@ impl TypeChecker {
                     .map(|t| self.resolve_type_expr(t))
                     .unwrap_or(Type::Void);
 
+                if !generics.is_empty() {
+                    self.env.pop_scope();
+                }
+
                 let sig = FunctionSig {
                     name: name.clone(),
                     generic_params: generics.iter().map(|g| g.name.clone()).collect(),
@@ -249,10 +265,21 @@ impl TypeChecker {
                 fields,
                 ..
             } => {
+                // Bind generic params so they resolve in field types.
+                if !generics.is_empty() {
+                    self.env.push_scope();
+                    for gp in generics {
+                        let tv = self.engine.fresh_var();
+                        self.env.define_var(gp.name.clone(), tv);
+                    }
+                }
                 let field_types: Vec<(String, Type)> = fields
                     .iter()
                     .map(|f| (f.name.clone(), self.resolve_type_expr(&f.ty)))
                     .collect();
+                if !generics.is_empty() {
+                    self.env.pop_scope();
+                }
                 self.env.define_struct(StructDef {
                     name: name.clone(),
                     generic_params: generics.iter().map(|g| g.name.clone()).collect(),
@@ -265,6 +292,14 @@ impl TypeChecker {
                 variants,
                 ..
             } => {
+                // Bind generic params so they resolve in variant field types.
+                if !generics.is_empty() {
+                    self.env.push_scope();
+                    for gp in generics {
+                        let tv = self.engine.fresh_var();
+                        self.env.define_var(gp.name.clone(), tv);
+                    }
+                }
                 let variant_types: Vec<(String, Vec<Type>)> = variants
                     .iter()
                     .map(|v| {
@@ -272,6 +307,9 @@ impl TypeChecker {
                         (v.name.clone(), tys)
                     })
                     .collect();
+                if !generics.is_empty() {
+                    self.env.pop_scope();
+                }
                 self.env.define_enum(EnumDef {
                     name: name.clone(),
                     generic_params: generics.iter().map(|g| g.name.clone()).collect(),
@@ -284,6 +322,21 @@ impl TypeChecker {
                 methods,
                 ..
             } => {
+                // Resolve the impl target type once for binding `self` params.
+                let impl_target_ty = if self.env.lookup_struct(target).is_some() {
+                    Some(Type::Struct {
+                        name: target.clone(),
+                        generics: vec![],
+                    })
+                } else if self.env.lookup_enum(target).is_some() {
+                    Some(Type::Enum {
+                        name: target.clone(),
+                        generics: vec![],
+                    })
+                } else {
+                    None
+                };
+
                 let method_sigs: Vec<FunctionSig> = methods
                     .iter()
                     .filter_map(|m| {
@@ -298,11 +351,17 @@ impl TypeChecker {
                             let param_types: Vec<(String, Type)> = params
                                 .iter()
                                 .map(|p| {
-                                    let ty = p
-                                        .ty
-                                        .as_ref()
-                                        .map(|t| self.resolve_type_expr(t))
-                                        .unwrap_or_else(|| self.engine.fresh_var());
+                                    let ty = if p.name == "self" && p.ty.is_none() {
+                                        // `self` with no annotation gets the impl target type.
+                                        impl_target_ty
+                                            .clone()
+                                            .unwrap_or_else(|| self.engine.fresh_var())
+                                    } else {
+                                        p.ty
+                                            .as_ref()
+                                            .map(|t| self.resolve_type_expr(t))
+                                            .unwrap_or_else(|| self.engine.fresh_var())
+                                    };
                                     (p.name.clone(), ty)
                                 })
                                 .collect();
@@ -321,6 +380,11 @@ impl TypeChecker {
                         }
                     })
                     .collect();
+                // Register each method as a standalone function so check_decl
+                // can look it up and bind params (including `self`) correctly.
+                for sig in &method_sigs {
+                    self.env.define_function(sig.clone());
+                }
                 self.env
                     .define_impl(target.clone(), trait_name.clone(), method_sigs);
             }
@@ -378,8 +442,14 @@ impl TypeChecker {
                 // Register as a variable in the type namespace for lookup.
                 self.env.define_var(name.clone(), resolved);
             }
-            Decl::Import { .. } | Decl::Extern { .. } | Decl::Actor { .. } => {
+            Decl::Import { .. } | Decl::Actor { .. } => {
                 // These don't introduce types we need to check yet.
+            }
+            Decl::Extern { items, .. } => {
+                // Register extern function declarations so they're callable.
+                for item in items {
+                    self.register_decl(item);
+                }
             }
         }
     }
@@ -389,6 +459,7 @@ impl TypeChecker {
         match decl {
             Decl::Function {
                 name,
+                generics,
                 params,
                 ret_ty,
                 body: Some(body),
@@ -396,6 +467,13 @@ impl TypeChecker {
                 ..
             } => {
                 self.env.push_scope();
+
+                // Bind generic type parameters as type variables so they resolve
+                // in parameter types, return types, and the function body.
+                for gp in generics {
+                    let tv = self.engine.fresh_var();
+                    self.env.define_var(gp.name.clone(), tv);
+                }
 
                 // Bind parameters in function scope.
                 let sig = self.env.lookup_function(name).cloned();
@@ -426,9 +504,35 @@ impl TypeChecker {
 
                 let _ = span; // suppress unused warning
             }
-            Decl::Impl { methods, .. } => {
+            Decl::Impl { target, methods, .. } => {
+                // Resolve the target type so we can bind `self` in methods.
+                let target_ty = if self.env.lookup_struct(target).is_some() {
+                    Some(Type::Struct {
+                        name: target.clone(),
+                        generics: vec![],
+                    })
+                } else if self.env.lookup_enum(target).is_some() {
+                    Some(Type::Enum {
+                        name: target.clone(),
+                        generics: vec![],
+                    })
+                } else {
+                    None
+                };
+
                 for method in methods {
-                    self.check_decl(method);
+                    if let (Some(ref ty), Decl::Function { body: Some(_), .. }) =
+                        (&target_ty, method)
+                    {
+                        // Push scope, bind `self` to the concrete target type,
+                        // then check the method body normally.
+                        self.env.push_scope();
+                        self.env.define_var("self".to_string(), ty.clone());
+                        self.check_decl(method);
+                        self.env.pop_scope();
+                    } else {
+                        self.check_decl(method);
+                    }
                 }
             }
             _ => {}
@@ -589,6 +693,61 @@ impl TypeChecker {
         }
     }
 
+    // ── Pattern binding ──────────────────────────────────────────────
+
+    /// Bind variables introduced by a pattern into the current scope.
+    ///
+    /// For example, `Option::Some(val)` binds `val` to a fresh type variable.
+    /// `Ident` patterns bind the name to the subject type.
+    /// Wildcards and literals bind nothing.
+    fn bind_pattern(&mut self, pattern: &Pattern, subject_ty: &Type) {
+        match pattern {
+            Pattern::Wildcard { .. } | Pattern::Literal { .. } => {}
+            Pattern::Ident { name, .. } => {
+                self.env.define_var(name.clone(), subject_ty.clone());
+            }
+            Pattern::Tuple { elements, .. } => {
+                for elem in elements {
+                    let tv = self.engine.fresh_var();
+                    self.bind_pattern(elem, &tv);
+                }
+            }
+            Pattern::Struct { fields, .. } => {
+                for (_field_name, pat) in fields {
+                    let tv = self.engine.fresh_var();
+                    self.bind_pattern(pat, &tv);
+                }
+            }
+            Pattern::Enum { name, fields, .. } => {
+                // Look up the enum variant's field types if available.
+                let field_types: Vec<Type> =
+                    if let Some(edef) = self.env.lookup_enum(name).cloned() {
+                        // Find variant types (already stored as Vec<Type> per variant)
+                        edef.variants
+                            .iter()
+                            .find(|(_, _)| true) // We'd need variant name here
+                            .map(|(_, tys)| tys.clone())
+                            .unwrap_or_default()
+                    } else {
+                        vec![]
+                    };
+
+                for (i, pat) in fields.iter().enumerate() {
+                    let field_ty = field_types
+                        .get(i)
+                        .cloned()
+                        .unwrap_or_else(|| self.engine.fresh_var());
+                    self.bind_pattern(pat, &field_ty);
+                }
+            }
+            Pattern::Or { patterns, .. } => {
+                for pat in patterns {
+                    self.bind_pattern(pat, subject_ty);
+                }
+            }
+        }
+    }
+
     // ── Expression type inference ────────────────────────────────────
 
     /// Infer the type of an expression.
@@ -658,6 +817,26 @@ impl TypeChecker {
                         } else {
                             self.error(
                                 format!("no field `{field}` on tuple type"),
+                                *span,
+                            );
+                            Type::Error
+                        }
+                    }
+                    // Auto-deref: access fields through references.
+                    Type::Reference { inner, .. } => {
+                        if let Type::Struct { name, .. } = inner.as_ref() {
+                            if let Some(fty) = self.env.lookup_field(name, field) {
+                                fty.clone()
+                            } else {
+                                self.error(
+                                    format!("no field `{field}` on type `{name}`"),
+                                    *span,
+                                );
+                                Type::Error
+                            }
+                        } else {
+                            self.error(
+                                format!("cannot access field `{field}` on type `{obj_ty}`"),
                                 *span,
                             );
                             Type::Error
@@ -959,6 +1138,11 @@ impl TypeChecker {
                     .map(|t| self.resolve_type_expr(t))
                     .unwrap_or_else(|| self.engine.fresh_var());
 
+                // Set current_return_type so `return` statements inside the
+                // lambda body are validated against the declared return type.
+                let prev_ret = self.current_return_type.take();
+                self.current_return_type = Some(ret.clone());
+
                 self.env.push_scope();
                 for (param, ty) in params.iter().zip(param_types.iter()) {
                     self.env.define_var(param.name.clone(), ty.clone());
@@ -966,8 +1150,15 @@ impl TypeChecker {
                 let body_ty = self.infer_expr(body);
                 self.env.pop_scope();
 
-                if let Err(diag) = self.engine.unify(&ret, &body_ty, body.span()) {
-                    self.diagnostics.push(diag);
+                self.current_return_type = prev_ret;
+
+                // If the body evaluates to Void (e.g. block ending with `return`),
+                // the return statements already validated against `ret`.
+                // Only unify when body produces a non-void expression result.
+                if body_ty != Type::Void {
+                    if let Err(diag) = self.engine.unify(&ret, &body_ty, body.span()) {
+                        self.diagnostics.push(diag);
+                    }
                 }
 
                 Type::Function {
@@ -1001,18 +1192,26 @@ impl TypeChecker {
 
             // Match expression.
             Expr::MatchExpr { subject, arms, span } => {
-                let _subject_ty = self.infer_expr(subject);
+                let subject_ty = self.infer_expr(subject);
                 if arms.is_empty() {
                     return Type::Void;
                 }
-                let first_ty = self.infer_expr(&arms[0].body);
-                for arm in &arms[1..] {
+                let mut result_ty: Option<Type> = None;
+                for arm in arms {
+                    self.env.push_scope();
+                    self.bind_pattern(&arm.pattern, &subject_ty);
                     let arm_ty = self.infer_expr(&arm.body);
-                    if let Err(diag) = self.engine.unify(&first_ty, &arm_ty, *span) {
-                        self.diagnostics.push(diag);
+                    self.env.pop_scope();
+
+                    if let Some(ref first) = result_ty {
+                        if let Err(diag) = self.engine.unify(first, &arm_ty, *span) {
+                            self.diagnostics.push(diag);
+                        }
+                    } else {
+                        result_ty = Some(arm_ty);
                     }
                 }
-                first_ty
+                result_ty.unwrap_or(Type::Void)
             }
 
             // Range expression.
