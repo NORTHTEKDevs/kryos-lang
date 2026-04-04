@@ -1,6 +1,10 @@
 //! Runtime hash map for Kryos map literals.
 //!
-//! Simple open-addressing hash map with i64 keys and i64 values.
+//! Open-addressing hash map with i64 keys and i64 values.
+//! The header is a stable allocation (the external handle); entries live
+//! in a separate allocation that can be resized without invalidating
+//! the handle.
+//!
 //! Exposed as `extern "C"` functions for linking from compiled code.
 
 use std::alloc::{alloc_zeroed, dealloc, Layout};
@@ -16,42 +20,95 @@ struct MapEntry {
     occupied: bool,
 }
 
-/// Hash map header stored at the start of the allocation.
+/// Hash map header — stable allocation that serves as the external handle.
+/// Entries are stored in a separate allocation pointed to by `entries`.
 #[repr(C)]
 struct MapHeader {
     len: i64,
     capacity: i64,
-    // Followed by `capacity` MapEntry values.
+    entries: *mut MapEntry,
 }
 
 fn hash_key(key: i64, capacity: usize) -> usize {
-    // Simple multiplicative hash.
     let h = (key as u64).wrapping_mul(0x9E3779B97F4A7C15);
     (h as usize) % capacity
 }
 
-unsafe fn get_entries(ptr: *mut u8) -> *mut MapEntry {
-    ptr.add(std::mem::size_of::<MapHeader>()) as *mut MapEntry
+unsafe fn alloc_entries(capacity: usize) -> *mut MapEntry {
+    let layout = Layout::from_size_align_unchecked(
+        capacity * std::mem::size_of::<MapEntry>(),
+        8,
+    );
+    let ptr = alloc_zeroed(layout);
+    ptr as *mut MapEntry
 }
 
-unsafe fn map_layout(capacity: usize) -> Layout {
-    let size = std::mem::size_of::<MapHeader>()
-        + capacity * std::mem::size_of::<MapEntry>();
-    Layout::from_size_align_unchecked(size, 8)
+unsafe fn free_entries(entries: *mut MapEntry, capacity: usize) {
+    if entries.is_null() {
+        return;
+    }
+    let layout = Layout::from_size_align_unchecked(
+        capacity * std::mem::size_of::<MapEntry>(),
+        8,
+    );
+    dealloc(entries as *mut u8, layout);
+}
+
+/// Resize the map to double its current capacity.
+unsafe fn resize(header: *mut MapHeader) {
+    let old_cap = (*header).capacity as usize;
+    let new_cap = old_cap * 2;
+    let new_entries = alloc_entries(new_cap);
+    if new_entries.is_null() {
+        return; // OOM — leave existing map intact
+    }
+
+    let old_entries = (*header).entries;
+
+    // Rehash all occupied entries into the new table.
+    for i in 0..old_cap {
+        let entry = &*old_entries.add(i);
+        if entry.occupied {
+            let mut idx = hash_key(entry.key, new_cap);
+            loop {
+                let slot = &mut *new_entries.add(idx);
+                if !slot.occupied {
+                    slot.key = entry.key;
+                    slot.value = entry.value;
+                    slot.occupied = true;
+                    break;
+                }
+                idx = (idx + 1) % new_cap;
+            }
+        }
+    }
+
+    free_entries(old_entries, old_cap);
+    (*header).entries = new_entries;
+    (*header).capacity = new_cap as i64;
 }
 
 /// Create a new empty map. Returns an opaque pointer as i64.
 #[no_mangle]
 pub extern "C" fn kryos_map_new() -> i64 {
     unsafe {
-        let layout = map_layout(INITIAL_CAPACITY);
+        let layout = Layout::from_size_align_unchecked(
+            std::mem::size_of::<MapHeader>(),
+            8,
+        );
         let ptr = alloc_zeroed(layout);
         if ptr.is_null() {
             return 0;
         }
         let header = ptr as *mut MapHeader;
+        let entries = alloc_entries(INITIAL_CAPACITY);
+        if entries.is_null() {
+            dealloc(ptr, layout);
+            return 0;
+        }
         (*header).len = 0;
         (*header).capacity = INITIAL_CAPACITY as i64;
+        (*header).entries = entries;
         ptr as i64
     }
 }
@@ -63,15 +120,15 @@ pub extern "C" fn kryos_map_insert(map: i64, key: i64, value: i64) {
         return;
     }
     unsafe {
-        let ptr = map as *mut u8;
-        let header = ptr as *mut MapHeader;
-        let capacity = (*header).capacity as usize;
-        let entries = get_entries(ptr);
+        let header = map as *mut MapHeader;
 
-        // Check load factor — resize if needed.
-        if ((*header).len + 1) as f64 > capacity as f64 * LOAD_FACTOR {
-            // TODO: resize. For now, just proceed.
+        // Resize if load factor exceeded.
+        if ((*header).len + 1) as f64 > (*header).capacity as f64 * LOAD_FACTOR {
+            resize(header);
         }
+
+        let capacity = (*header).capacity as usize;
+        let entries = (*header).entries;
 
         let mut idx = hash_key(key, capacity);
         for _ in 0..capacity {
@@ -97,10 +154,9 @@ pub extern "C" fn kryos_map_get(map: i64, key: i64) -> i64 {
         return 0;
     }
     unsafe {
-        let ptr = map as *mut u8;
-        let header = ptr as *const MapHeader;
+        let header = map as *const MapHeader;
         let capacity = (*header).capacity as usize;
-        let entries = get_entries(ptr);
+        let entries = (*header).entries;
 
         let mut idx = hash_key(key, capacity);
         for _ in 0..capacity {
@@ -136,11 +192,14 @@ pub extern "C" fn kryos_map_free(map: i64) {
         return;
     }
     unsafe {
-        let ptr = map as *mut u8;
-        let header = ptr as *const MapHeader;
+        let header = map as *mut MapHeader;
         let capacity = (*header).capacity as usize;
-        let layout = map_layout(capacity);
-        dealloc(ptr, layout);
+        free_entries((*header).entries, capacity);
+        let layout = Layout::from_size_align_unchecked(
+            std::mem::size_of::<MapHeader>(),
+            8,
+        );
+        dealloc(map as *mut u8, layout);
     }
 }
 
@@ -185,5 +244,38 @@ mod tests {
         assert_eq!(kryos_map_get(0, 1), 0);
         assert_eq!(kryos_map_len(0), 0);
         kryos_map_free(0);
+    }
+
+    #[test]
+    fn resize_under_load() {
+        let map = kryos_map_new();
+        // Insert enough entries to trigger multiple resizes.
+        // Initial capacity is 16, load factor 0.75 → resize at 13.
+        for i in 0..100 {
+            kryos_map_insert(map, i, i * 10);
+        }
+        assert_eq!(kryos_map_len(map), 100);
+        // Verify all entries survived the resizes.
+        for i in 0..100 {
+            assert_eq!(kryos_map_get(map, i), i * 10);
+        }
+        kryos_map_free(map);
+    }
+
+    #[test]
+    fn resize_preserves_overwrites() {
+        let map = kryos_map_new();
+        for i in 0..50 {
+            kryos_map_insert(map, i, i);
+        }
+        // Overwrite all values.
+        for i in 0..50 {
+            kryos_map_insert(map, i, i + 1000);
+        }
+        assert_eq!(kryos_map_len(map), 50);
+        for i in 0..50 {
+            assert_eq!(kryos_map_get(map, i), i + 1000);
+        }
+        kryos_map_free(map);
     }
 }
