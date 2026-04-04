@@ -1,0 +1,15 @@
+// skip
+// Test: struct with impl methods (skipped — self.field access not yet resolved by type checker)
+struct Counter {
+    value: i32,
+}
+
+impl Counter {
+    fn new() -> Counter {
+        return Counter { value: 0 }
+    }
+
+    fn increment(self) -> i32 {
+        return self.value + 1
+    }
+}

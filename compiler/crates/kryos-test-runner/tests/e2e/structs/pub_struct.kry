@@ -1,0 +1,6 @@
+// skip
+// Test: public struct with generics (skipped — generic type params not yet resolved)
+pub struct Pair<A, B> {
+    first: A,
+    second: B,
+}

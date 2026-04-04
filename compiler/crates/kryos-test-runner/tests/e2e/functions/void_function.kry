@@ -1,0 +1,4 @@
+// Test: void function (no return type)
+fn greet(name: str) {
+    println(name)
+}

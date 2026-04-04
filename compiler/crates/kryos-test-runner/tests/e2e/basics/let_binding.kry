@@ -1,0 +1,7 @@
+// Test: basic let bindings with type annotations
+fn main() {
+    let x: i32 = 42
+    let y: f64 = 3.14
+    let name: str = "hello"
+    let flag: bool = true
+}

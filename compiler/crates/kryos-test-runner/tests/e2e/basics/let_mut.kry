@@ -1,0 +1,5 @@
+// Test: mutable let bindings
+fn main() {
+    let mut counter: i32 = 0
+    counter = counter + 1
+}

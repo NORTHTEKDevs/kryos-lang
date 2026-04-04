@@ -1,0 +1,8 @@
+// Test: match expression (arms are expressions)
+fn describe(x: i32) -> str {
+    match x {
+        0 => "zero",
+        1 => "one",
+        _ => "other",
+    }
+}

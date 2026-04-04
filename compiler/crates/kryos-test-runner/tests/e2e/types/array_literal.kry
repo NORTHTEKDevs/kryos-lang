@@ -1,0 +1,5 @@
+// Test: array literals with explicit size
+fn main() {
+    let nums: [i32; 5] = [1, 2, 3, 4, 5]
+    let empty: [i32; 0] = []
+}

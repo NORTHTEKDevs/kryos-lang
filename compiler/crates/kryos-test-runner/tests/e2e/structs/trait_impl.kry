@@ -1,0 +1,15 @@
+// skip
+// Test: trait impl (skipped — self.field access not yet resolved by type checker)
+trait Describable {
+    fn describe(self) -> str
+}
+
+struct Dog {
+    name: str,
+}
+
+impl Describable for Dog {
+    fn describe(self) -> str {
+        return self.name
+    }
+}

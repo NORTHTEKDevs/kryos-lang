@@ -1,0 +1,12 @@
+// Test: break and continue in loops
+fn find_first_even(arr: [i32]) -> i32 {
+    let mut result: i32 = -1
+    for item in arr {
+        if item % 2 != 0 {
+            continue
+        }
+        result = item
+        break
+    }
+    return result
+}

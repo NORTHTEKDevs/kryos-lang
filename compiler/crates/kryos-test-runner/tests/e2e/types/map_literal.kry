@@ -1,0 +1,4 @@
+// Test: map literal (type inferred)
+fn main() {
+    let ages = {"alice": 30, "bob": 25}
+}

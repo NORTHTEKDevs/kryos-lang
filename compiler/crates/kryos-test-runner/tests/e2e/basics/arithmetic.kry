@@ -1,0 +1,8 @@
+// Test: arithmetic expressions
+fn main() {
+    let a: i32 = 10 + 20
+    let b: i32 = 100 - 50
+    let c: i32 = 6 * 7
+    let d: i32 = 100 / 4
+    let e: i32 = 17 % 5
+}

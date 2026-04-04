@@ -1,0 +1,8 @@
+// Test: while loop
+fn countdown(n: i32) -> i32 {
+    let mut count: i32 = n
+    while count > 0 {
+        count = count - 1
+    }
+    return count
+}

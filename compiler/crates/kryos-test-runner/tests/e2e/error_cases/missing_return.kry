@@ -1,0 +1,6 @@
+// skip
+// Test: missing return (skipped — compiler does not yet check for missing returns)
+// expect-error: return
+fn compute() -> i32 {
+    let x: i32 = 42
+}

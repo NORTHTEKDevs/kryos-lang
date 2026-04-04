@@ -482,8 +482,10 @@ dependencies = [
  "kryos-codegen-llvm",
  "kryos-driver",
  "kryos-errors",
+ "kryos-fmt",
  "kryos-lsp",
  "kryos-package",
+ "kryos-test-runner",
 ]
 
 [[package]]

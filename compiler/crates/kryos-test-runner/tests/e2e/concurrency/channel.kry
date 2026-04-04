@@ -1,0 +1,6 @@
+// skip
+// Test: channel send/receive (skipped — chan<T> type not yet supported in parser)
+fn main() {
+    let ch: chan<i32> = chan()
+    send(ch, 42)
+}

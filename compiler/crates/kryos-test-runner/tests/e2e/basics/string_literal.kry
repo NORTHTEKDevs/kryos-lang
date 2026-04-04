@@ -1,0 +1,5 @@
+// Test: string literals and operations
+fn main() {
+    let greeting: str = "Hello, world!"
+    let empty: str = ""
+}

@@ -1,0 +1,8 @@
+// Test: try/catch error handling
+fn risky() -> i32 {
+    try {
+        return 42
+    } catch e {
+        return -1
+    }
+}

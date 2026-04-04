@@ -1,0 +1,8 @@
+// skip
+// Test: type aliases (skipped — type checker does not yet resolve aliases in function params)
+type Age = i32
+type Name = str
+
+fn greet(name: Name, age: Age) -> str {
+    return name
+}

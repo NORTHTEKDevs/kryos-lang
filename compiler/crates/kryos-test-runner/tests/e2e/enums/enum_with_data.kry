@@ -1,0 +1,15 @@
+// skip
+// Test: enum variants with data (skipped — match pattern bindings not yet in type checker scope)
+enum Shape {
+    Circle(f64),
+    Rectangle(f64, f64),
+    Point,
+}
+
+fn area(s: Shape) -> f64 {
+    match s {
+        Shape::Circle(r) => 3.14159 * r * r,
+        Shape::Rectangle(w, h) => w * h,
+        Shape::Point => 0.0,
+    }
+}

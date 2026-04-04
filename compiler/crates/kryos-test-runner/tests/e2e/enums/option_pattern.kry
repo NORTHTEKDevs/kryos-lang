@@ -1,0 +1,13 @@
+// skip
+// Test: Option-like enum (skipped — match pattern bindings not yet in type checker scope)
+enum Option {
+    Some(i32),
+    None,
+}
+
+fn unwrap_or(opt: Option, default: i32) -> i32 {
+    match opt {
+        Option::Some(val) => val,
+        Option::None => default,
+    }
+}

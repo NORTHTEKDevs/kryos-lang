@@ -1,0 +1,13 @@
+// Test: basic enum definition
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+fn is_red(c: Color) -> bool {
+    match c {
+        Color::Red => true,
+        _ => false,
+    }
+}

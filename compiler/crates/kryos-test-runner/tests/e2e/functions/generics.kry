@@ -1,0 +1,5 @@
+// skip
+// Test: generic function (skipped — type checker does not yet resolve generic type params)
+fn identity<T>(x: T) -> T {
+    return x
+}

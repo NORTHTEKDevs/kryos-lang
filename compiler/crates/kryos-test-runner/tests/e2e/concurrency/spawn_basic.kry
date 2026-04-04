@@ -1,0 +1,8 @@
+// Test: basic spawn statement
+fn worker() {
+    println("working")
+}
+
+fn main() {
+    spawn worker()
+}

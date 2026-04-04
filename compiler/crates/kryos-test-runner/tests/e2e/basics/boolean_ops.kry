@@ -1,0 +1,10 @@
+// Test: boolean operators (Kryos uses keyword operators)
+fn main() {
+    let a: bool = true and false
+    let b: bool = true or false
+    let c: bool = not true
+    let d: bool = 10 > 5
+    let e: bool = 3 <= 3
+    let f: bool = 1 == 1
+    let g: bool = 1 != 2
+}

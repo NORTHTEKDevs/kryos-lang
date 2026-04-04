@@ -1,0 +1,8 @@
+// Test: for-in loop
+fn sum_array(arr: [i32]) -> i32 {
+    let mut total: i32 = 0
+    for item in arr {
+        total = total + item
+    }
+    return total
+}
