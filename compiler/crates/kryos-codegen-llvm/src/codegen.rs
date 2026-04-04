@@ -6,8 +6,8 @@
 use std::collections::{HashMap, HashSet};
 
 use kryos_mir::ir::{
-    BasicBlock, Constant, Instruction, LocalId, MirBinOp, MirFunction, MirModule, MirType,
-    MirUnOp, Operand, RValue, Terminator,
+    BasicBlock, Constant, EnumVariantDef, Instruction, LocalId, MirBinOp, MirFunction, MirModule,
+    MirType, MirUnOp, Operand, RValue, Terminator,
 };
 
 use crate::{CodegenError, EmitOptions};
@@ -36,6 +36,8 @@ pub struct LlvmCodegen {
     func_param_types: HashMap<String, Vec<String>>,
     /// Struct definitions from the MIR module (for field access resolution).
     struct_defs: HashMap<String, Vec<(String, MirType)>>,
+    /// Enum definitions from the MIR module (for enum codegen).
+    enum_defs: HashMap<String, Vec<EnumVariantDef>>,
     /// Set of local IDs that need alloca/store/load (mutable or multi-assigned).
     mutable_locals: HashSet<u32>,
 }
@@ -53,6 +55,7 @@ impl LlvmCodegen {
             local_types: HashMap::new(),
             func_param_types: HashMap::new(),
             struct_defs: HashMap::new(),
+            enum_defs: HashMap::new(),
             mutable_locals: HashSet::new(),
         }
     }
@@ -71,6 +74,7 @@ impl LlvmCodegen {
         self.needs_arc_runtime = false;
         self.func_param_types.clear();
         self.struct_defs = module.struct_defs.clone();
+        self.enum_defs = module.enum_defs.clone();
 
         // Pre-scan: collect string constants, detect ARC usage, and record
         // function signatures for type-correct call emission.
@@ -279,6 +283,13 @@ impl LlvmCodegen {
                 self.prescan_operand(index);
             }
             RValue::Cast { operand, .. } => self.prescan_operand(operand),
+            RValue::EnumVariant { fields, .. } => {
+                for op in fields {
+                    self.prescan_operand(op);
+                }
+            }
+            RValue::EnumTag { operand } => self.prescan_operand(operand),
+            RValue::EnumPayload { operand, .. } => self.prescan_operand(operand),
             RValue::ConstInt(_)
             | RValue::ConstFloat(_)
             | RValue::ConstBool(_)
@@ -324,8 +335,14 @@ impl LlvmCodegen {
         // Build the local type map for this function.
         self.local_types.clear();
         for local in &func.locals {
-            self.local_types
-                .insert(local.id.0, mir_type_to_llvm(&local.ty));
+            let llvm_ty = match &local.ty {
+                MirType::Enum(name) => {
+                    let max = self.enum_max_fields(name);
+                    self.enum_llvm_type(name, max)
+                }
+                other => mir_type_to_llvm(other),
+            };
+            self.local_types.insert(local.id.0, llvm_ty);
         }
 
         // Detect which locals need alloca/store/load (mutable or assigned >1 time).
@@ -734,6 +751,81 @@ impl LlvmCodegen {
                 ));
                 if is_mutable {
                     self.emit_line(&format!("  store ptr {target_name}, ptr %_{}.addr", dest.0));
+                }
+            }
+
+            // ----- Enums -----
+            RValue::EnumVariant { enum_name, variant_idx, fields } => {
+                let max_fields = self.enum_max_fields(enum_name);
+                let llvm_ty = self.enum_llvm_type(enum_name, max_fields);
+
+                if fields.is_empty() {
+                    // Unit variant: just the tag.
+                    let target = if is_mutable { self.next_temp() } else { format!("%_{}", dest.0) };
+                    self.emit_line(&format!(
+                        "  {target} = insertvalue {llvm_ty} undef, i64 {variant_idx}, 0"
+                    ));
+                    if is_mutable {
+                        self.emit_line(&format!("  store {llvm_ty} {target}, ptr %_{}.addr", dest.0));
+                    }
+                } else {
+                    // Tag + fields via chained insertvalue.
+                    let tag_tmp = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {tag_tmp} = insertvalue {llvm_ty} undef, i64 {variant_idx}, 0"
+                    ));
+                    let mut current = tag_tmp;
+
+                    for (i, field_op) in fields.iter().enumerate() {
+                        let val = self.operand_to_llvm(field_op, func);
+                        let val_ty = self.operand_type(field_op, func);
+                        let is_last = i + 1 == fields.len();
+                        let target = if is_last && !is_mutable {
+                            format!("%_{}", dest.0)
+                        } else {
+                            self.next_temp()
+                        };
+                        self.emit_line(&format!(
+                            "  {target} = insertvalue {llvm_ty} {current}, {val_ty} {val}, {idx}",
+                            idx = i + 1
+                        ));
+                        current = target;
+                    }
+
+                    if is_mutable {
+                        self.emit_line(&format!("  store {llvm_ty} {current}, ptr %_{}.addr", dest.0));
+                    }
+                }
+            }
+            RValue::EnumTag { operand } => {
+                let val = self.operand_to_llvm(operand, func);
+                let obj_ty = self.operand_type(operand, func);
+                let target_name = if is_mutable {
+                    self.next_temp()
+                } else {
+                    format!("%_{}", dest.0)
+                };
+                self.emit_line(&format!(
+                    "  {target_name} = extractvalue {obj_ty} {val}, 0"
+                ));
+                if is_mutable {
+                    self.emit_line(&format!("  store i64 {target_name}, ptr %_{}.addr", dest.0));
+                }
+            }
+            RValue::EnumPayload { operand, field_idx, .. } => {
+                let val = self.operand_to_llvm(operand, func);
+                let obj_ty = self.operand_type(operand, func);
+                let target_name = if is_mutable {
+                    self.next_temp()
+                } else {
+                    format!("%_{}", dest.0)
+                };
+                self.emit_line(&format!(
+                    "  {target_name} = extractvalue {obj_ty} {val}, {idx}",
+                    idx = field_idx + 1
+                ));
+                if is_mutable {
+                    self.emit_line(&format!("  store {dest_ty} {target_name}, ptr %_{}.addr", dest.0));
                 }
             }
 
@@ -1159,6 +1251,25 @@ impl LlvmCodegen {
     }
 
     /// Get the LLVM type string for an operand.
+    /// Returns the max number of payload fields across all variants of an enum.
+    fn enum_max_fields(&self, enum_name: &str) -> usize {
+        self.enum_defs
+            .get(enum_name)
+            .map(|variants| variants.iter().map(|v| v.fields.len()).max().unwrap_or(0))
+            .unwrap_or(0)
+    }
+
+    /// Build the LLVM struct type for an enum: `{ i64, <payload fields> }`.
+    /// All payload slots use i64 for uniform layout.
+    fn enum_llvm_type(&self, _enum_name: &str, max_fields: usize) -> String {
+        if max_fields == 0 {
+            "{ i64 }".to_string()
+        } else {
+            let fields: Vec<&str> = (0..max_fields).map(|_| "i64").collect();
+            format!("{{ i64, {} }}", fields.join(", "))
+        }
+    }
+
     fn operand_type(&self, op: &Operand, _func: &MirFunction) -> String {
         match op {
             Operand::Local(id) => self.local_type(*id),
@@ -1244,6 +1355,11 @@ pub fn mir_type_to_llvm(ty: &MirType) -> String {
             format!("{{ {} }}", parts.join(", "))
         }
         MirType::Struct(name) => format!("%{name}"),
+        MirType::Enum(_) => {
+            // Enum type is resolved dynamically by enum_llvm_type().
+            // Fallback: treat as i64 (just the tag).
+            "i64".into()
+        }
         MirType::Function { params: _, ret: _ } => {
             // Function types in LLVM IR: ret_ty (param_tys)
             // But in most contexts we use `ptr` for function pointers.

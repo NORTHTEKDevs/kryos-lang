@@ -126,6 +126,18 @@ impl fmt::Display for RValue {
             RValue::Index { object, index } => write!(f, "{object}[{index}]"),
             RValue::ArcAlloc { inner } => write!(f, "arc_alloc({inner})"),
             RValue::Cast { operand, ty } => write!(f, "{operand} as {ty}"),
+            RValue::EnumVariant { enum_name, variant_idx, fields } => {
+                write!(f, "{enum_name}::variant#{variant_idx}(")?;
+                for (i, field) in fields.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{field}")?;
+                }
+                write!(f, ")")
+            }
+            RValue::EnumTag { operand } => write!(f, "enum_tag({operand})"),
+            RValue::EnumPayload { operand, variant_idx, field_idx } => {
+                write!(f, "enum_payload({operand}, variant={variant_idx}, field={field_idx})")
+            }
         }
     }
 }

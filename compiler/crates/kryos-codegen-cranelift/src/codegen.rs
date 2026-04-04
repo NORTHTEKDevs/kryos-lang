@@ -15,7 +15,7 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 
 use kryos_mir::ir::{
-    BasicBlock, Constant, Instruction, LocalId, MirBinOp, MirFunction, MirModule,
+    BasicBlock, Constant, EnumVariantDef, Instruction, LocalId, MirBinOp, MirFunction, MirModule,
     MirType, MirUnOp, Operand, RValue, Terminator,
 };
 
@@ -44,7 +44,7 @@ pub fn mir_type_to_cl(ty: &MirType) -> Result<Option<Type>, CodegenError> {
         MirType::Str => Ok(Some(types::I64)),   // pointer to string data
         MirType::Void => Ok(None),
         MirType::Ptr(_) | MirType::Shared(_) => Ok(Some(types::I64)), // pointer
-        MirType::Array(_, _) | MirType::Tuple(_) | MirType::Struct(_) => {
+        MirType::Array(_, _) | MirType::Tuple(_) | MirType::Struct(_) | MirType::Enum(_) => {
             Ok(Some(types::I64)) // pointer to heap/stack allocation
         }
         MirType::Function { .. } => Ok(Some(types::I64)), // function pointer
@@ -492,6 +492,7 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
                 &func_ids,
                 &mut object_module,
                 &module.struct_defs,
+                &module.enum_defs,
             )?;
             builder.seal_all_blocks();
             builder.finalize();
@@ -605,6 +606,8 @@ struct FuncTranslator<'a> {
     string_counter: u32,
     /// Struct definitions for layout computation.
     struct_defs: &'a HashMap<String, Vec<(String, MirType)>>,
+    /// Enum definitions for tag/payload codegen.
+    enum_defs: &'a HashMap<String, Vec<EnumVariantDef>>,
 }
 
 /// Translate a MIR function body into Cranelift IR instructions.
@@ -614,6 +617,7 @@ pub fn translate_function<M: Module>(
     func_ids: &HashMap<String, FuncId>,
     module: &mut M,
     struct_defs: &HashMap<String, Vec<(String, MirType)>>,
+    enum_defs: &HashMap<String, Vec<EnumVariantDef>>,
 ) -> Result<(), CodegenError> {
     let mut translator = FuncTranslator {
         mir_func,
@@ -623,6 +627,7 @@ pub fn translate_function<M: Module>(
         func_ids,
         string_counter: 0,
         struct_defs,
+        enum_defs,
     };
 
     // Create Cranelift blocks for each MIR basic block.
@@ -1099,6 +1104,51 @@ fn translate_rvalue<M: Module>(
             let call_inst = builder.ins().call(func_ref, &[val]);
             let results = builder.inst_results(call_inst);
             Ok(Some(results[0]))
+        }
+
+        RValue::EnumVariant { enum_name, variant_idx, fields } => {
+            // Enum layout: [tag: i64, field0: i64, field1: i64, ...]
+            // All fields are stored as i64 (8 bytes each) for uniform layout.
+            let max_fields = translator.enum_defs
+                .get(enum_name.as_str())
+                .map(|vs| vs.iter().map(|v| v.fields.len()).max().unwrap_or(0))
+                .unwrap_or(0);
+            let total_size = (1 + max_fields) as u32 * 8;
+
+            let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                total_size,
+                0,
+            ));
+            let ptr = builder.ins().stack_addr(types::I64, slot, 0);
+
+            // Store tag at offset 0.
+            let tag = builder.ins().iconst(types::I64, *variant_idx as i64);
+            builder.ins().store(MemFlags::trusted(), tag, ptr, 0);
+
+            // Store payload fields at offsets 8, 16, 24, ...
+            for (i, field_op) in fields.iter().enumerate() {
+                let val = translate_operand(field_op, builder, translator, module)?;
+                let offset = ((i + 1) * 8) as i32;
+                builder.ins().store(MemFlags::trusted(), val, ptr, offset);
+            }
+
+            Ok(Some(ptr))
+        }
+
+        RValue::EnumTag { operand } => {
+            // Load the tag (i64) from offset 0 of the enum value pointer.
+            let ptr = translate_operand(operand, builder, translator, module)?;
+            let tag = builder.ins().load(types::I64, MemFlags::trusted(), ptr, 0);
+            Ok(Some(tag))
+        }
+
+        RValue::EnumPayload { operand, field_idx, .. } => {
+            // Load the field value from offset (1 + field_idx) * 8.
+            let ptr = translate_operand(operand, builder, translator, module)?;
+            let offset = ((field_idx + 1) * 8) as i32;
+            let val = builder.ins().load(types::I64, MemFlags::trusted(), ptr, offset);
+            Ok(Some(val))
         }
 
         RValue::Cast { operand, ty } => {

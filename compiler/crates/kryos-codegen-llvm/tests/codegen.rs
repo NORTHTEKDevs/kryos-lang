@@ -13,6 +13,7 @@ fn module_with(func: MirFunction) -> MirModule {
     MirModule {
         functions: vec![func],
         struct_defs: HashMap::new(),
+        enum_defs: HashMap::new(),
     }
 }
 
@@ -761,6 +762,7 @@ fn test_multiple_functions() {
     let module = MirModule {
         functions: vec![func1, func2],
         struct_defs: HashMap::new(),
+        enum_defs: HashMap::new(),
     };
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
 
@@ -1007,6 +1009,7 @@ fn test_mutable_variable_in_loop() {
             ],
         }],
         struct_defs: HashMap::new(),
+        enum_defs: HashMap::new(),
     };
 
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
@@ -1075,6 +1078,7 @@ fn test_struct_field_access_correct_index() {
             }],
         }],
         struct_defs,
+        enum_defs: HashMap::new(),
     };
 
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
@@ -1109,6 +1113,7 @@ fn test_struct_field_access_first_field() {
             }],
         }],
         struct_defs,
+        enum_defs: HashMap::new(),
     };
 
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
@@ -1216,4 +1221,174 @@ fn test_to_string_builtin_returns_input() {
     assert!(ir.contains("%_0, 0"), "to_string() should return input unchanged:\n{ir}");
     assert!(!ir.contains("call") || ir.contains("@puts") == false,
         "to_string must not emit external call to @to_string:\n{ir}");
+}
+
+// ===========================================================================
+// Enum codegen tests
+// ===========================================================================
+
+#[test]
+fn test_enum_unit_variant() {
+    use kryos_mir::ir::EnumVariantDef;
+
+    let mut enum_defs = HashMap::new();
+    enum_defs.insert("Color".to_string(), vec![
+        EnumVariantDef { name: "Red".into(), fields: vec![] },
+        EnumVariantDef { name: "Green".into(), fields: vec![] },
+        EnumVariantDef { name: "Blue".into(), fields: vec![] },
+    ]);
+
+    let module = MirModule {
+        functions: vec![MirFunction {
+            name: "get_green".into(),
+            params: vec![],
+            ret_ty: MirType::Enum("Color".into()),
+            locals: vec![
+                MirLocal { id: LocalId(0), name: None, ty: MirType::Enum("Color".into()), mutable: false },
+            ],
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                instructions: vec![Instruction::Assign {
+                    dest: LocalId(0),
+                    value: RValue::EnumVariant {
+                        enum_name: "Color".into(),
+                        variant_idx: 1, // Green
+                        fields: vec![],
+                    },
+                }],
+                terminator: Terminator::Return(Some(Operand::Local(LocalId(0)))),
+            }],
+        }],
+        struct_defs: HashMap::new(),
+        enum_defs,
+    };
+
+    let ir = emit_module(&module, &EmitOptions::default()).unwrap();
+    // Unit variant: insertvalue { i64 } undef, i64 1, 0
+    assert!(ir.contains("insertvalue"), "enum variant must use insertvalue:\n{ir}");
+    assert!(ir.contains("i64 1"), "Green variant should have tag 1:\n{ir}");
+}
+
+#[test]
+fn test_enum_variant_with_fields() {
+    use kryos_mir::ir::EnumVariantDef;
+
+    let mut enum_defs = HashMap::new();
+    enum_defs.insert("Shape".to_string(), vec![
+        EnumVariantDef { name: "Circle".into(), fields: vec![MirType::F64] },
+        EnumVariantDef { name: "Rect".into(), fields: vec![MirType::F64, MirType::F64] },
+    ]);
+
+    let module = MirModule {
+        functions: vec![MirFunction {
+            name: "make_rect".into(),
+            params: vec![],
+            ret_ty: MirType::Enum("Shape".into()),
+            locals: vec![
+                MirLocal { id: LocalId(0), name: None, ty: MirType::Enum("Shape".into()), mutable: false },
+            ],
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                instructions: vec![Instruction::Assign {
+                    dest: LocalId(0),
+                    value: RValue::EnumVariant {
+                        enum_name: "Shape".into(),
+                        variant_idx: 1, // Rect
+                        fields: vec![
+                            Operand::Constant(Constant::Float(3.0)),
+                            Operand::Constant(Constant::Float(4.0)),
+                        ],
+                    },
+                }],
+                terminator: Terminator::Return(Some(Operand::Local(LocalId(0)))),
+            }],
+        }],
+        struct_defs: HashMap::new(),
+        enum_defs,
+    };
+
+    let ir = emit_module(&module, &EmitOptions::default()).unwrap();
+    // Rect variant: tag=1, 2 fields → 3 insertvalue ops (tag + 2 fields)
+    let insert_count = ir.matches("insertvalue").count();
+    assert!(insert_count >= 3, "Rect(f64,f64) needs 3 insertvalue ops, got {insert_count}:\n{ir}");
+}
+
+#[test]
+fn test_enum_tag_extraction() {
+    use kryos_mir::ir::EnumVariantDef;
+
+    let mut enum_defs = HashMap::new();
+    enum_defs.insert("Color".to_string(), vec![
+        EnumVariantDef { name: "Red".into(), fields: vec![] },
+        EnumVariantDef { name: "Green".into(), fields: vec![] },
+    ]);
+
+    let module = MirModule {
+        functions: vec![MirFunction {
+            name: "get_tag".into(),
+            params: vec![MirParam { local: LocalId(0), ty: MirType::Enum("Color".into()) }],
+            ret_ty: MirType::I64,
+            locals: vec![
+                MirLocal { id: LocalId(0), name: Some("c".into()), ty: MirType::Enum("Color".into()), mutable: false },
+                MirLocal { id: LocalId(1), name: None, ty: MirType::I64, mutable: false },
+            ],
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                instructions: vec![Instruction::Assign {
+                    dest: LocalId(1),
+                    value: RValue::EnumTag { operand: Operand::Local(LocalId(0)) },
+                }],
+                terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
+            }],
+        }],
+        struct_defs: HashMap::new(),
+        enum_defs,
+    };
+
+    let ir = emit_module(&module, &EmitOptions::default()).unwrap();
+    // Tag extraction: extractvalue { i64 } %_0, 0
+    assert!(ir.contains("extractvalue"), "enum tag must use extractvalue:\n{ir}");
+    assert!(ir.contains(", 0"), "tag is at index 0:\n{ir}");
+}
+
+#[test]
+fn test_enum_payload_extraction() {
+    use kryos_mir::ir::EnumVariantDef;
+
+    let mut enum_defs = HashMap::new();
+    enum_defs.insert("Shape".to_string(), vec![
+        EnumVariantDef { name: "Circle".into(), fields: vec![MirType::F64] },
+        EnumVariantDef { name: "Rect".into(), fields: vec![MirType::F64, MirType::F64] },
+    ]);
+
+    let module = MirModule {
+        functions: vec![MirFunction {
+            name: "get_height".into(),
+            params: vec![MirParam { local: LocalId(0), ty: MirType::Enum("Shape".into()) }],
+            ret_ty: MirType::I64,
+            locals: vec![
+                MirLocal { id: LocalId(0), name: Some("s".into()), ty: MirType::Enum("Shape".into()), mutable: false },
+                MirLocal { id: LocalId(1), name: None, ty: MirType::I64, mutable: false },
+            ],
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                instructions: vec![Instruction::Assign {
+                    dest: LocalId(1),
+                    value: RValue::EnumPayload {
+                        operand: Operand::Local(LocalId(0)),
+                        variant_idx: 1, // Rect
+                        field_idx: 1,   // second field (height)
+                    },
+                }],
+                terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
+            }],
+        }],
+        struct_defs: HashMap::new(),
+        enum_defs,
+    };
+
+    let ir = emit_module(&module, &EmitOptions::default()).unwrap();
+    // Payload at index 1+1=2: extractvalue ... , 2
+    assert!(ir.contains("extractvalue"), "payload must use extractvalue:\n{ir}");
+    assert!(ir.contains(", 2"), "second payload field is at index 2:\n{ir}");
 }

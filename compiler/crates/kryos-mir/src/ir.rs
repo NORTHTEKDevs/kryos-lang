@@ -32,6 +32,17 @@ impl fmt::Display for BlockId {
 }
 
 // ---------------------------------------------------------------------------
+// Enum definitions
+// ---------------------------------------------------------------------------
+
+/// A single variant in an enum definition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumVariantDef {
+    pub name: String,
+    pub fields: Vec<MirType>,
+}
+
+// ---------------------------------------------------------------------------
 // Types (MIR-level, decoupled from AST TypeExpr)
 // ---------------------------------------------------------------------------
 
@@ -59,6 +70,7 @@ pub enum MirType {
     Array(Box<MirType>, Option<u64>),
     Tuple(Vec<MirType>),
     Struct(String),
+    Enum(String),
     Function {
         params: Vec<MirType>,
         ret: Box<MirType>,
@@ -99,6 +111,7 @@ impl fmt::Display for MirType {
                 write!(f, ")")
             }
             MirType::Struct(name) => write!(f, "{name}"),
+            MirType::Enum(name) => write!(f, "{name}"),
             MirType::Function { params, ret } => {
                 write!(f, "fn(")?;
                 for (i, p) in params.iter().enumerate() {
@@ -124,6 +137,8 @@ pub struct MirModule {
     /// Struct definitions: struct name -> ordered list of (field_name, field_type).
     /// Used by codegen to compute memory layouts for struct allocation and field access.
     pub struct_defs: HashMap<String, Vec<(String, MirType)>>,
+    /// Enum definitions: enum name -> ordered list of variants with their field types.
+    pub enum_defs: HashMap<String, Vec<EnumVariantDef>>,
 }
 
 /// A single MIR function.
@@ -244,6 +259,27 @@ pub enum RValue {
     Cast {
         operand: Operand,
         ty: MirType,
+    },
+
+    // ---- Enums ----
+
+    /// Construct an enum value with a tag and payload fields.
+    EnumVariant {
+        enum_name: String,
+        variant_idx: u32,
+        fields: Vec<Operand>,
+    },
+
+    /// Extract the tag (variant index) from an enum value.
+    EnumTag {
+        operand: Operand,
+    },
+
+    /// Extract a payload field from an enum value.
+    EnumPayload {
+        operand: Operand,
+        variant_idx: u32,
+        field_idx: u32,
     },
 }
 

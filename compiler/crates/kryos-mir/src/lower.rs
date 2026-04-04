@@ -35,6 +35,8 @@ pub struct LoweringContext {
     loop_exits: Vec<BlockId>,
     /// Struct definitions: struct_name -> ordered list of (field_name, MirType).
     struct_defs: HashMap<String, Vec<(String, MirType)>>,
+    /// Enum definitions: enum_name -> ordered list of variants.
+    enum_defs: HashMap<String, Vec<EnumVariantDef>>,
     /// Function return types: func_name -> MirType.
     func_ret_types: HashMap<String, MirType>,
 }
@@ -51,6 +53,7 @@ impl LoweringContext {
             loop_headers: Vec::new(),
             loop_exits: Vec::new(),
             struct_defs: HashMap::new(),
+            enum_defs: HashMap::new(),
             func_ret_types: HashMap::new(),
         }
     }
@@ -141,6 +144,16 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                     .collect();
                 ctx.struct_defs.insert(name.clone(), field_list);
             }
+            ast::Decl::Enum { name, variants, .. } => {
+                let variant_defs: Vec<EnumVariantDef> = variants
+                    .iter()
+                    .map(|v| EnumVariantDef {
+                        name: v.name.clone(),
+                        fields: v.fields.iter().map(|t| lower_type_expr(t)).collect(),
+                    })
+                    .collect();
+                ctx.enum_defs.insert(name.clone(), variant_defs);
+            }
             ast::Decl::Function { name, ret_ty, .. } => {
                 let mir_ret = match ret_ty {
                     Some(ty) => lower_type_expr(ty),
@@ -170,6 +183,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
     MirModule {
         functions,
         struct_defs: ctx.struct_defs.clone(),
+        enum_defs: ctx.enum_defs.clone(),
     }
 }
 
@@ -716,25 +730,60 @@ fn lower_for_range(
 // Match lowering
 // ---------------------------------------------------------------------------
 
+/// Per-arm enum binding: (variant_idx, field_patterns).
+struct EnumBinding {
+    variant_idx: u32,
+    field_patterns: Vec<ast::Pattern>,
+}
+
 fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::MatchArm]) -> Operand {
     let subj_op = lower_expr_to_operand(ctx, subject);
     let result_local = ctx.alloc_temp(MirType::I64);
     let merge_bb = ctx.alloc_block();
 
-    // Collect integer-literal arms for Switch, fallback to default.
+    // Detect enum match: any arm uses Pattern::Enum.
+    let is_enum_match = arms.iter().any(|a| matches!(&a.pattern, ast::Pattern::Enum { .. }));
+
+    // For enum matches, extract the tag first and switch on that.
+    let switch_op = if is_enum_match {
+        let tag_local = ctx.alloc_temp(MirType::I64);
+        ctx.emit(Instruction::Assign {
+            dest: tag_local,
+            value: RValue::EnumTag { operand: subj_op.clone() },
+        });
+        Operand::Local(tag_local)
+    } else {
+        subj_op.clone()
+    };
+
+    // Collect arms into switch targets.
     let mut targets: Vec<(i64, BlockId)> = Vec::new();
-    let mut arm_blocks: Vec<(BlockId, &ast::Expr)> = Vec::new();
+    let mut arm_blocks: Vec<(BlockId, &ast::Expr, Option<EnumBinding>)> = Vec::new();
     let mut default_arm: Option<(BlockId, &ast::Expr)> = None;
 
     for arm in arms {
         let arm_bb = ctx.alloc_block();
         match &arm.pattern {
+            ast::Pattern::Enum { name, variant, fields, .. } => {
+                if let Some(variants) = ctx.enum_defs.get(name.as_str()) {
+                    if let Some(idx) = variants.iter().position(|v| v.name == *variant) {
+                        targets.push((idx as i64, arm_bb));
+                        arm_blocks.push((arm_bb, &arm.body, Some(EnumBinding {
+                            variant_idx: idx as u32,
+                            field_patterns: fields.clone(),
+                        })));
+                    } else {
+                        default_arm = Some((arm_bb, &arm.body));
+                    }
+                } else {
+                    default_arm = Some((arm_bb, &arm.body));
+                }
+            }
             ast::Pattern::Literal { expr, .. } => {
                 if let ast::Expr::IntLiteral { value, .. } = expr.as_ref() {
                     targets.push((*value, arm_bb));
-                    arm_blocks.push((arm_bb, &arm.body));
+                    arm_blocks.push((arm_bb, &arm.body, None));
                 } else {
-                    // Non-integer literal -> treat as default.
                     default_arm = Some((arm_bb, &arm.body));
                 }
             }
@@ -752,15 +801,13 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
         .unwrap_or(merge_bb);
 
     // Emit switch terminator.
-    let first_arm_bb = arm_blocks.first().map(|(bb, _)| *bb).unwrap_or(default_bb);
-    let _ = first_arm_bb;
     ctx.finish_block(
         Terminator::Switch {
-            value: subj_op,
+            value: switch_op,
             targets,
             default: default_bb,
         },
-        if let Some((bb, _)) = arm_blocks.first() {
+        if let Some((bb, _, _)) = arm_blocks.first() {
             *bb
         } else {
             default_bb
@@ -768,12 +815,29 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
     );
 
     // Emit each arm block.
-    for (i, (arm_bb, body)) in arm_blocks.iter().enumerate() {
-        // The current_block should already be `arm_bb` for the first one (set
-        // by finish_block above). For subsequent ones, we need to set it.
+    for (i, (arm_bb, body, enum_binding)) in arm_blocks.iter().enumerate() {
         if i > 0 {
             ctx.current_block = *arm_bb;
         }
+
+        // For enum arms, extract payload fields and bind to locals.
+        if let Some(binding) = enum_binding {
+            for (field_idx, pat) in binding.field_patterns.iter().enumerate() {
+                if let ast::Pattern::Ident { name, .. } = pat {
+                    let local = ctx.alloc_local(Some(name.clone()), MirType::I64, false);
+                    ctx.emit(Instruction::Assign {
+                        dest: local,
+                        value: RValue::EnumPayload {
+                            operand: subj_op.clone(),
+                            variant_idx: binding.variant_idx,
+                            field_idx: field_idx as u32,
+                        },
+                    });
+                }
+                // Wildcard patterns — skip, no binding needed.
+            }
+        }
+
         let arm_rvalue = lower_expr_to_rvalue(ctx, body);
         ctx.emit(Instruction::Assign {
             dest: result_local,
@@ -821,6 +885,10 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
         ast::Expr::NoneLiteral { .. } => MirType::I64,
 
         ast::Expr::Identifier { name, .. } => {
+            // Check if it's an enum variant first.
+            if let Some((enum_name, _)) = find_enum_variant(ctx, name) {
+                return MirType::Enum(enum_name);
+            }
             // Look up the local's MIR type.
             ctx.locals
                 .iter()
@@ -933,6 +1001,14 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
         ast::Expr::NoneLiteral { .. } => RValue::ConstNone,
 
         ast::Expr::Identifier { name, .. } => {
+            // Check if this is a unit enum variant (e.g., `None`, `Red`).
+            if let Some((enum_name, variant_idx)) = find_enum_variant(ctx, name) {
+                return RValue::EnumVariant {
+                    enum_name,
+                    variant_idx,
+                    fields: vec![],
+                };
+            }
             let local = find_local_by_name(ctx, name);
             RValue::Use(Operand::Local(local))
         }
@@ -962,6 +1038,20 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 ast::Expr::Identifier { name, .. } => name.clone(),
                 _ => "<closure>".to_string(),
             };
+
+            // Check if this is an enum variant constructor (e.g., `Some(42)`).
+            if let Some((enum_name, variant_idx)) = find_enum_variant(ctx, &func_name) {
+                let mir_args: Vec<Operand> = args
+                    .iter()
+                    .map(|a| lower_expr_to_operand(ctx, a))
+                    .collect();
+                return RValue::EnumVariant {
+                    enum_name,
+                    variant_idx,
+                    fields: mir_args,
+                };
+            }
+
             let mir_args: Vec<Operand> = args
                 .iter()
                 .map(|a| lower_expr_to_operand(ctx, a))
@@ -1247,7 +1337,8 @@ pub fn lower_resolved_type(ty: &Type) -> MirType {
         Type::Tuple { elements } => {
             MirType::Tuple(elements.iter().map(|e| lower_resolved_type(e)).collect())
         }
-        Type::Struct { name, .. } | Type::Enum { name, .. } => MirType::Struct(name.clone()),
+        Type::Struct { name, .. } => MirType::Struct(name.clone()),
+        Type::Enum { name, .. } => MirType::Enum(name.clone()),
         Type::Function { params, ret } => MirType::Function {
             params: params.iter().map(|p| lower_resolved_type(p)).collect(),
             ret: Box::new(lower_resolved_type(ret)),
@@ -1285,4 +1376,16 @@ fn find_local_by_name(ctx: &mut LoweringContext, name: &str) -> LocalId {
     }
     // Not found — allocate a placeholder local.
     ctx.alloc_local(Some(name.to_string()), MirType::I64, false)
+}
+
+/// Check if `name` is an enum variant. Returns (enum_name, variant_index) if found.
+fn find_enum_variant(ctx: &LoweringContext, name: &str) -> Option<(String, u32)> {
+    for (enum_name, variants) in &ctx.enum_defs {
+        for (idx, v) in variants.iter().enumerate() {
+            if v.name == name {
+                return Some((enum_name.clone(), idx as u32));
+            }
+        }
+    }
+    None
 }
