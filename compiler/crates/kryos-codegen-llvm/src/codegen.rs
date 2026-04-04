@@ -3,7 +3,7 @@
 //! Translates MIR basic blocks, instructions, and terminators into valid
 //! LLVM IR text. The output can be compiled by `llc` or `clang`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use kryos_mir::ir::{
     BasicBlock, Constant, Instruction, LocalId, MirBinOp, MirFunction, MirModule, MirType,
@@ -34,6 +34,10 @@ pub struct LlvmCodegen {
     local_types: HashMap<u32, String>,
     /// Function signatures: name -> list of LLVM parameter type strings.
     func_param_types: HashMap<String, Vec<String>>,
+    /// Struct definitions from the MIR module (for field access resolution).
+    struct_defs: HashMap<String, Vec<(String, MirType)>>,
+    /// Set of local IDs that need alloca/store/load (mutable or multi-assigned).
+    mutable_locals: HashSet<u32>,
 }
 
 impl LlvmCodegen {
@@ -48,6 +52,8 @@ impl LlvmCodegen {
             needs_arc_runtime: false,
             local_types: HashMap::new(),
             func_param_types: HashMap::new(),
+            struct_defs: HashMap::new(),
+            mutable_locals: HashSet::new(),
         }
     }
 
@@ -64,6 +70,7 @@ impl LlvmCodegen {
         self.string_counter = 0;
         self.needs_arc_runtime = false;
         self.func_param_types.clear();
+        self.struct_defs = module.struct_defs.clone();
 
         // Pre-scan: collect string constants, detect ARC usage, and record
         // function signatures for type-correct call emission.
@@ -305,6 +312,23 @@ impl LlvmCodegen {
                 .insert(local.id.0, mir_type_to_llvm(&local.ty));
         }
 
+        // Detect which locals need alloca/store/load (mutable or assigned >1 time).
+        self.mutable_locals.clear();
+        let mut assign_counts: HashMap<u32, u32> = HashMap::new();
+        for block in &func.blocks {
+            for inst in &block.instructions {
+                if let Instruction::Assign { dest, .. } = inst {
+                    *assign_counts.entry(dest.0).or_insert(0) += 1;
+                }
+            }
+        }
+        for local in &func.locals {
+            let count = assign_counts.get(&local.id.0).copied().unwrap_or(0);
+            if local.mutable || count > 1 {
+                self.mutable_locals.insert(local.id.0);
+            }
+        }
+
         let ret = mir_type_to_llvm(&func.ret_ty);
         let params = func
             .params
@@ -315,12 +339,48 @@ impl LlvmCodegen {
 
         self.emit_line(&format!("define {ret} @{name}({params}) {{"));
 
+        // Emit entry block label and allocas for mutable locals.
+        let first_block = &func.blocks[0];
+        self.emit_line(&format!("bb{}:", first_block.id.0));
+
+        // Emit allocas for all mutable locals at the top of the entry block.
+        let _param_ids: HashSet<u32> = func.params.iter().map(|p| p.local.0).collect();
+        for local in &func.locals {
+            if self.mutable_locals.contains(&local.id.0) {
+                let ty = mir_type_to_llvm(&local.ty);
+                if ty != "void" {
+                    self.emit_line(&format!("  %_{}.addr = alloca {ty}", local.id.0));
+                }
+            }
+        }
+        // Store parameter values into their allocas.
+        for param in &func.params {
+            if self.mutable_locals.contains(&param.local.0) {
+                let ty = mir_type_to_llvm(&param.ty);
+                if ty != "void" {
+                    self.emit_line(&format!(
+                        "  store {ty} %_{}, ptr %_{}.addr",
+                        param.local.0, param.local.0
+                    ));
+                }
+            }
+        }
+
+        // Emit the entry block's instructions and terminator (label already emitted).
+        for inst in &first_block.instructions {
+            self.emit_instruction(inst, func)?;
+        }
+        self.emit_terminator(&first_block.terminator, func)?;
+
+        // Emit remaining blocks.
         for (i, block) in func.blocks.iter().enumerate() {
-            self.emit_block(block, func)?;
-            // Blank line between blocks (but not after the last one).
-            if i + 1 < func.blocks.len() {
+            if i == 0 {
+                continue; // Already emitted above.
+            }
+            if i > 0 {
                 self.emit_blank();
             }
+            self.emit_block(block, func)?;
         }
 
         self.emit_line("}");
@@ -389,25 +449,26 @@ impl LlvmCodegen {
         func: &MirFunction,
     ) -> Result<(), CodegenError> {
         let dest_ty = self.local_type(dest);
+        let is_mutable = self.mutable_locals.contains(&dest.0);
 
         match value {
             // ----- Simple use / copy -----
             RValue::Use(op) => {
                 let val = self.operand_to_llvm(op, func);
-                // In LLVM IR, we can't truly "copy" — we just alias.
-                // For simplicity, emit an `add 0` for ints or a bitcast for others.
-                // But the cleanest approach is to note that later uses reference
-                // the same SSA value. Since MIR locals may be assigned multiple
-                // times (they're mutable), we use alloca+store+load in the future.
-                // For now (SSA-like MIR), we emit a bitcast or simple copy.
                 if dest_ty == "void" {
-                    // Can't assign void.
                     return Ok(());
                 }
-                self.emit_line(&format!(
-                    "  %_{} = add {dest_ty} {val}, 0",
-                    dest.0
-                ));
+                if is_mutable {
+                    // For mutable locals: compute value, store to alloca.
+                    let tmp = self.next_temp();
+                    self.emit_line(&format!("  {tmp} = add {dest_ty} {val}, 0"));
+                    self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
+                } else {
+                    self.emit_line(&format!(
+                        "  %_{} = add {dest_ty} {val}, 0",
+                        dest.0
+                    ));
+                }
             }
 
             // ----- Binary ops -----
@@ -417,7 +478,13 @@ impl LlvmCodegen {
                 let is_float = self.operand_is_float(left, func);
                 let operand_ty = self.operand_type(left, func);
 
-                self.emit_binop(dest, *op, &left_val, &right_val, &operand_ty, is_float)?;
+                if is_mutable {
+                    let tmp = self.next_temp();
+                    self.emit_binop_to(&tmp, *op, &left_val, &right_val, &operand_ty, is_float)?;
+                    self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
+                } else {
+                    self.emit_binop(dest, *op, &left_val, &right_val, &operand_ty, is_float)?;
+                }
             }
 
             // ----- Unary ops -----
@@ -426,7 +493,13 @@ impl LlvmCodegen {
                 let operand_ty = self.operand_type(operand, func);
                 let is_float = self.operand_is_float(operand, func);
 
-                self.emit_unop(dest, *op, &val, &operand_ty, is_float)?;
+                if is_mutable {
+                    let tmp = self.next_temp();
+                    self.emit_unop_to(&tmp, *op, &val, &operand_ty, is_float)?;
+                    self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
+                } else {
+                    self.emit_unop(dest, *op, &val, &operand_ty, is_float)?;
+                }
             }
 
             // ----- Function call -----
@@ -439,8 +512,6 @@ impl LlvmCodegen {
                     .enumerate()
                     .map(|(i, a)| {
                         let inferred_ty = self.operand_type(a, func);
-                        // Use the callee's declared parameter type if available,
-                        // otherwise fall back to the inferred operand type.
                         let ty = callee_param_types
                             .as_ref()
                             .and_then(|pts| pts.get(i))
@@ -455,11 +526,9 @@ impl LlvmCodegen {
                 // Map Kryos builtin names to C library functions.
                 match fname.as_str() {
                     "println" | "eprintln" => {
-                        // puts(ptr) -> i32, discard return value
                         self.emit_line(&format!("  call i32 @puts({arg_list})"));
                     }
                     "print" => {
-                        // printf(ptr, ...) -> i32, discard return value
                         self.emit_line(&format!("  call i32 (ptr, ...) @printf({arg_list})"));
                     }
                     "exit" => {
@@ -468,6 +537,12 @@ impl LlvmCodegen {
                     _ => {
                         if dest_ty == "void" {
                             self.emit_line(&format!("  call void @{fname}({arg_list})"));
+                        } else if is_mutable {
+                            let tmp = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {tmp} = call {dest_ty} @{fname}({arg_list})"
+                            ));
+                            self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
                         } else {
                             self.emit_line(&format!(
                                 "  %_{} = call {dest_ty} @{fname}({arg_list})",
@@ -480,18 +555,32 @@ impl LlvmCodegen {
 
             // ----- Constants -----
             RValue::ConstInt(v) => {
-                self.emit_line(&format!("  %_{} = add {dest_ty} {v}, 0", dest.0));
+                if is_mutable {
+                    self.emit_line(&format!("  store {dest_ty} {v}, ptr %_{}.addr", dest.0));
+                } else {
+                    self.emit_line(&format!("  %_{} = add {dest_ty} {v}, 0", dest.0));
+                }
             }
             RValue::ConstFloat(v) => {
                 let hex = float_to_llvm_hex(*v);
-                self.emit_line(&format!(
-                    "  %_{} = fadd {dest_ty} {hex}, 0.0",
-                    dest.0
-                ));
+                if is_mutable {
+                    let tmp = self.next_temp();
+                    self.emit_line(&format!("  {tmp} = fadd {dest_ty} {hex}, 0.0"));
+                    self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
+                } else {
+                    self.emit_line(&format!(
+                        "  %_{} = fadd {dest_ty} {hex}, 0.0",
+                        dest.0
+                    ));
+                }
             }
             RValue::ConstBool(b) => {
                 let v: i32 = if *b { 1 } else { 0 };
-                self.emit_line(&format!("  %_{} = add i1 {v}, 0", dest.0));
+                if is_mutable {
+                    self.emit_line(&format!("  store i1 {v}, ptr %_{}.addr", dest.0));
+                } else {
+                    self.emit_line(&format!("  %_{} = add i1 {v}, 0", dest.0));
+                }
             }
             RValue::ConstString(s) => {
                 let global_name = self
@@ -500,73 +589,101 @@ impl LlvmCodegen {
                     .cloned()
                     .unwrap_or_else(|| self.intern_string(s));
                 let len = s.len() + 1;
-                self.emit_line(&format!(
-                    "  %_{} = getelementptr [{len} x i8], ptr {global_name}, i64 0, i64 0",
-                    dest.0
-                ));
+                if is_mutable {
+                    let tmp = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {tmp} = getelementptr [{len} x i8], ptr {global_name}, i64 0, i64 0"
+                    ));
+                    self.emit_line(&format!("  store ptr {tmp}, ptr %_{}.addr", dest.0));
+                } else {
+                    self.emit_line(&format!(
+                        "  %_{} = getelementptr [{len} x i8], ptr {global_name}, i64 0, i64 0",
+                        dest.0
+                    ));
+                }
             }
             RValue::ConstNone => {
-                // Emit a null pointer.
-                self.emit_line(&format!("  %_{} = inttoptr i64 0 to ptr", dest.0));
+                if is_mutable {
+                    let tmp = self.next_temp();
+                    self.emit_line(&format!("  {tmp} = inttoptr i64 0 to ptr"));
+                    self.emit_line(&format!("  store ptr {tmp}, ptr %_{}.addr", dest.0));
+                } else {
+                    self.emit_line(&format!("  %_{} = inttoptr i64 0 to ptr", dest.0));
+                }
             }
 
             // ----- Aggregates -----
             RValue::Array(elems) => {
-                self.emit_aggregate_array(dest, elems, &dest_ty, func)?;
+                self.emit_aggregate_array(dest, elems, &dest_ty, func, is_mutable)?;
             }
             RValue::Tuple(elems) => {
-                self.emit_aggregate_tuple(dest, elems, &dest_ty, func)?;
+                self.emit_aggregate_tuple(dest, elems, &dest_ty, func, is_mutable)?;
             }
             RValue::Struct { name: _, fields } => {
-                self.emit_aggregate_struct(dest, fields, &dest_ty, func)?;
+                self.emit_aggregate_struct(dest, fields, &dest_ty, func, is_mutable)?;
             }
 
             // ----- Field / Index access -----
             RValue::Field { object, field } => {
-                // For now, emit an extractvalue with a placeholder index.
-                // Real struct layout resolution requires type info we don't carry yet.
                 let obj_val = self.operand_to_llvm(object, func);
                 let obj_ty = self.operand_type(object, func);
-                // We emit a comment about the field name and use index 0 as placeholder.
+
+                // Resolve field index from struct definitions.
+                let field_idx = self.resolve_field_index(object, field, func);
+                let target_name = if is_mutable {
+                    self.next_temp()
+                } else {
+                    format!("%_{}", dest.0)
+                };
                 self.emit_line(&format!(
-                    "  ; field access: .{field}"
+                    "  {target_name} = extractvalue {obj_ty} {obj_val}, {field_idx} ; .{field}"
                 ));
-                self.emit_line(&format!(
-                    "  %_{} = extractvalue {obj_ty} {obj_val}, 0",
-                    dest.0
-                ));
+                if is_mutable {
+                    self.emit_line(&format!("  store {dest_ty} {target_name}, ptr %_{}.addr", dest.0));
+                }
             }
             RValue::Index { object, index } => {
                 let obj_val = self.operand_to_llvm(object, func);
                 let idx_val = self.operand_to_llvm(index, func);
                 let _obj_ty = self.operand_type(object, func);
                 let idx_ty = self.operand_type(index, func);
-                // For pointer-based arrays, use GEP.
+                let target_name = if is_mutable {
+                    self.next_temp()
+                } else {
+                    format!("%_{}", dest.0)
+                };
                 self.emit_line(&format!(
-                    "  %_{} = getelementptr {dest_ty}, ptr {obj_val}, {idx_ty} {idx_val}",
-                    dest.0
+                    "  {target_name} = getelementptr {dest_ty}, ptr {obj_val}, {idx_ty} {idx_val}"
                 ));
+                if is_mutable {
+                    self.emit_line(&format!("  store {dest_ty} {target_name}, ptr %_{}.addr", dest.0));
+                }
             }
 
             // ----- ARC alloc -----
             RValue::ArcAlloc { inner } => {
                 let inner_val = self.operand_to_llvm(inner, func);
                 let inner_ty = self.operand_type(inner, func);
-                // kryos_arc_alloc(size, data_ptr). We simplify: pass size=8 and
-                // bitcast the operand to ptr. A real impl would compute actual size.
                 let tmp = self.next_temp();
                 self.emit_line(&format!(
                     "  {tmp} = inttoptr {inner_ty} {inner_val} to ptr"
                 ));
+                let target_name = if is_mutable {
+                    self.next_temp()
+                } else {
+                    format!("%_{}", dest.0)
+                };
                 self.emit_line(&format!(
-                    "  %_{} = call ptr @kryos_arc_alloc(i64 8, ptr {tmp})",
-                    dest.0
+                    "  {target_name} = call ptr @kryos_arc_alloc(i64 8, ptr {tmp})"
                 ));
+                if is_mutable {
+                    self.emit_line(&format!("  store ptr {target_name}, ptr %_{}.addr", dest.0));
+                }
             }
 
             // ----- Cast -----
             RValue::Cast { operand, ty } => {
-                self.emit_cast(dest, operand, ty, func)?;
+                self.emit_cast(dest, operand, ty, func, is_mutable)?;
             }
         }
 
@@ -577,6 +694,35 @@ impl LlvmCodegen {
     // Binary operations
     // -----------------------------------------------------------------------
 
+    /// Resolve the field index for a struct field access. Returns the 0-based
+    /// index of `field` within the struct type of `object`, or 0 as fallback.
+    fn resolve_field_index(&self, object: &Operand, field: &str, func: &MirFunction) -> usize {
+        // Determine the struct type name from the operand.
+        let struct_name = match object {
+            Operand::Local(id) => {
+                func.locals
+                    .iter()
+                    .find(|l| l.id == *id)
+                    .and_then(|l| match &l.ty {
+                        MirType::Struct(name) => Some(name.clone()),
+                        _ => None,
+                    })
+            }
+            _ => None,
+        };
+
+        if let Some(name) = struct_name {
+            if let Some(fields) = self.struct_defs.get(&name) {
+                for (i, (fname, _)) in fields.iter().enumerate() {
+                    if fname == field {
+                        return i;
+                    }
+                }
+            }
+        }
+        0 // Fallback
+    }
+
     fn emit_binop(
         &mut self,
         dest: LocalId,
@@ -586,92 +732,54 @@ impl LlvmCodegen {
         ty: &str,
         is_float: bool,
     ) -> Result<(), CodegenError> {
+        let name = format!("%_{}", dest.0);
+        self.emit_binop_to(&name, op, left, right, ty, is_float)
+    }
+
+    /// Emit a binary op to a named target (used for both direct SSA and mutable temp names).
+    fn emit_binop_to(
+        &mut self,
+        target: &str,
+        op: MirBinOp,
+        left: &str,
+        right: &str,
+        ty: &str,
+        is_float: bool,
+    ) -> Result<(), CodegenError> {
         let line = match op {
-            // Arithmetic
-            MirBinOp::Add if is_float => {
-                format!("  %_{} = fadd {ty} {left}, {right}", dest.0)
-            }
-            MirBinOp::Add => format!("  %_{} = add {ty} {left}, {right}", dest.0),
-
-            MirBinOp::Sub if is_float => {
-                format!("  %_{} = fsub {ty} {left}, {right}", dest.0)
-            }
-            MirBinOp::Sub => format!("  %_{} = sub {ty} {left}, {right}", dest.0),
-
-            MirBinOp::Mul if is_float => {
-                format!("  %_{} = fmul {ty} {left}, {right}", dest.0)
-            }
-            MirBinOp::Mul => format!("  %_{} = mul {ty} {left}, {right}", dest.0),
-
-            MirBinOp::Div if is_float => {
-                format!("  %_{} = fdiv {ty} {left}, {right}", dest.0)
-            }
-            MirBinOp::Div => format!("  %_{} = sdiv {ty} {left}, {right}", dest.0),
-
-            MirBinOp::Mod if is_float => {
-                format!("  %_{} = frem {ty} {left}, {right}", dest.0)
-            }
-            MirBinOp::Mod => format!("  %_{} = srem {ty} {left}, {right}", dest.0),
-
-            // Pow — LLVM has no pow instruction; emit a call to llvm.powi or
-            // a runtime helper. For now, emit an intrinsic call.
+            MirBinOp::Add if is_float => format!("  {target} = fadd {ty} {left}, {right}"),
+            MirBinOp::Add => format!("  {target} = add {ty} {left}, {right}"),
+            MirBinOp::Sub if is_float => format!("  {target} = fsub {ty} {left}, {right}"),
+            MirBinOp::Sub => format!("  {target} = sub {ty} {left}, {right}"),
+            MirBinOp::Mul if is_float => format!("  {target} = fmul {ty} {left}, {right}"),
+            MirBinOp::Mul => format!("  {target} = mul {ty} {left}, {right}"),
+            MirBinOp::Div if is_float => format!("  {target} = fdiv {ty} {left}, {right}"),
+            MirBinOp::Div => format!("  {target} = sdiv {ty} {left}, {right}"),
+            MirBinOp::Mod if is_float => format!("  {target} = frem {ty} {left}, {right}"),
+            MirBinOp::Mod => format!("  {target} = srem {ty} {left}, {right}"),
             MirBinOp::Pow if is_float => {
-                format!(
-                    "  %_{} = call {ty} @llvm.pow.f64({ty} {left}, {ty} {right})",
-                    dest.0
-                )
+                format!("  {target} = call {ty} @llvm.pow.f64({ty} {left}, {ty} {right})")
             }
             MirBinOp::Pow => {
-                // Integer power — not directly available. Emit a placeholder call.
-                format!(
-                    "  %_{} = call {ty} @kryos_int_pow({ty} {left}, {ty} {right})",
-                    dest.0
-                )
+                format!("  {target} = call {ty} @kryos_int_pow({ty} {left}, {ty} {right})")
             }
-
-            // Comparisons
-            MirBinOp::Eq if is_float => {
-                format!("  %_{} = fcmp oeq {ty} {left}, {right}", dest.0)
-            }
-            MirBinOp::Eq => format!("  %_{} = icmp eq {ty} {left}, {right}", dest.0),
-
-            MirBinOp::Neq if is_float => {
-                format!("  %_{} = fcmp one {ty} {left}, {right}", dest.0)
-            }
-            MirBinOp::Neq => format!("  %_{} = icmp ne {ty} {left}, {right}", dest.0),
-
-            MirBinOp::Lt if is_float => {
-                format!("  %_{} = fcmp olt {ty} {left}, {right}", dest.0)
-            }
-            MirBinOp::Lt => format!("  %_{} = icmp slt {ty} {left}, {right}", dest.0),
-
-            MirBinOp::Gt if is_float => {
-                format!("  %_{} = fcmp ogt {ty} {left}, {right}", dest.0)
-            }
-            MirBinOp::Gt => format!("  %_{} = icmp sgt {ty} {left}, {right}", dest.0),
-
-            MirBinOp::LtEq if is_float => {
-                format!("  %_{} = fcmp ole {ty} {left}, {right}", dest.0)
-            }
-            MirBinOp::LtEq => format!("  %_{} = icmp sle {ty} {left}, {right}", dest.0),
-
-            MirBinOp::GtEq if is_float => {
-                format!("  %_{} = fcmp oge {ty} {left}, {right}", dest.0)
-            }
-            MirBinOp::GtEq => format!("  %_{} = icmp sge {ty} {left}, {right}", dest.0),
-
-            // Logical / bitwise (same LLVM instructions for i1 and iN)
-            MirBinOp::And | MirBinOp::BitAnd => {
-                format!("  %_{} = and {ty} {left}, {right}", dest.0)
-            }
-            MirBinOp::Or | MirBinOp::BitOr => {
-                format!("  %_{} = or {ty} {left}, {right}", dest.0)
-            }
-            MirBinOp::BitXor => format!("  %_{} = xor {ty} {left}, {right}", dest.0),
-
-            // Shifts
-            MirBinOp::Shl => format!("  %_{} = shl {ty} {left}, {right}", dest.0),
-            MirBinOp::Shr => format!("  %_{} = ashr {ty} {left}, {right}", dest.0),
+            MirBinOp::Eq if is_float => format!("  {target} = fcmp oeq {ty} {left}, {right}"),
+            MirBinOp::Eq => format!("  {target} = icmp eq {ty} {left}, {right}"),
+            MirBinOp::Neq if is_float => format!("  {target} = fcmp one {ty} {left}, {right}"),
+            MirBinOp::Neq => format!("  {target} = icmp ne {ty} {left}, {right}"),
+            MirBinOp::Lt if is_float => format!("  {target} = fcmp olt {ty} {left}, {right}"),
+            MirBinOp::Lt => format!("  {target} = icmp slt {ty} {left}, {right}"),
+            MirBinOp::Gt if is_float => format!("  {target} = fcmp ogt {ty} {left}, {right}"),
+            MirBinOp::Gt => format!("  {target} = icmp sgt {ty} {left}, {right}"),
+            MirBinOp::LtEq if is_float => format!("  {target} = fcmp ole {ty} {left}, {right}"),
+            MirBinOp::LtEq => format!("  {target} = icmp sle {ty} {left}, {right}"),
+            MirBinOp::GtEq if is_float => format!("  {target} = fcmp oge {ty} {left}, {right}"),
+            MirBinOp::GtEq => format!("  {target} = icmp sge {ty} {left}, {right}"),
+            MirBinOp::And | MirBinOp::BitAnd => format!("  {target} = and {ty} {left}, {right}"),
+            MirBinOp::Or | MirBinOp::BitOr => format!("  {target} = or {ty} {left}, {right}"),
+            MirBinOp::BitXor => format!("  {target} = xor {ty} {left}, {right}"),
+            MirBinOp::Shl => format!("  {target} = shl {ty} {left}, {right}"),
+            MirBinOp::Shr => format!("  {target} = ashr {ty} {left}, {right}"),
         };
 
         self.emit_line(&line);
@@ -690,21 +798,23 @@ impl LlvmCodegen {
         ty: &str,
         is_float: bool,
     ) -> Result<(), CodegenError> {
+        let name = format!("%_{}", dest.0);
+        self.emit_unop_to(&name, op, val, ty, is_float)
+    }
+
+    fn emit_unop_to(
+        &mut self,
+        target: &str,
+        op: MirUnOp,
+        val: &str,
+        ty: &str,
+        is_float: bool,
+    ) -> Result<(), CodegenError> {
         let line = match op {
-            MirUnOp::Neg if is_float => {
-                format!("  %_{} = fneg {ty} {val}", dest.0)
-            }
-            MirUnOp::Neg => {
-                format!("  %_{} = sub {ty} 0, {val}", dest.0)
-            }
-            MirUnOp::Not => {
-                // Logical not (for i1): xor with 1.
-                format!("  %_{} = xor {ty} {val}, 1", dest.0)
-            }
-            MirUnOp::BitNot => {
-                // Bitwise not: xor with -1 (all ones).
-                format!("  %_{} = xor {ty} {val}, -1", dest.0)
-            }
+            MirUnOp::Neg if is_float => format!("  {target} = fneg {ty} {val}"),
+            MirUnOp::Neg => format!("  {target} = sub {ty} 0, {val}"),
+            MirUnOp::Not => format!("  {target} = xor {ty} {val}, 1"),
+            MirUnOp::BitNot => format!("  {target} = xor {ty} {val}, -1"),
         };
 
         self.emit_line(&line);
@@ -721,6 +831,7 @@ impl LlvmCodegen {
         elems: &[Operand],
         dest_ty: &str,
         func: &MirFunction,
+        _is_mutable: bool,
     ) -> Result<(), CodegenError> {
         // Build up with insertvalue.
         for (i, elem) in elems.iter().enumerate() {
@@ -758,6 +869,7 @@ impl LlvmCodegen {
         elems: &[Operand],
         dest_ty: &str,
         func: &MirFunction,
+        _is_mutable: bool,
     ) -> Result<(), CodegenError> {
         // Same approach as arrays — insertvalue into a struct type.
         for (i, elem) in elems.iter().enumerate() {
@@ -791,6 +903,7 @@ impl LlvmCodegen {
         fields: &[(String, Operand)],
         dest_ty: &str,
         func: &MirFunction,
+        _is_mutable: bool,
     ) -> Result<(), CodegenError> {
         // Structs are lowered identically to tuples in LLVM IR (insertvalue by index).
         for (i, (field_name, op)) in fields.iter().enumerate() {
@@ -831,14 +944,20 @@ impl LlvmCodegen {
         operand: &Operand,
         target_ty: &MirType,
         func: &MirFunction,
+        is_mutable: bool,
     ) -> Result<(), CodegenError> {
         let src_val = self.operand_to_llvm(operand, func);
         let src_ty = self.operand_type(operand, func);
         let dst_ty = mir_type_to_llvm(target_ty);
 
         if src_ty == dst_ty {
-            // No-op cast.
-            self.emit_line(&format!("  %_{} = add {dst_ty} {src_val}, 0", dest.0));
+            if is_mutable {
+                let tmp = self.next_temp();
+                self.emit_line(&format!("  {tmp} = add {dst_ty} {src_val}, 0"));
+                self.emit_line(&format!("  store {dst_ty} {tmp}, ptr %_{}.addr", dest.0));
+            } else {
+                self.emit_line(&format!("  %_{} = add {dst_ty} {src_val}, 0", dest.0));
+            }
             return Ok(());
         }
 
@@ -873,10 +992,16 @@ impl LlvmCodegen {
             }
         };
 
-        self.emit_line(&format!(
-            "  %_{} = {inst} {src_ty} {src_val} to {dst_ty}",
-            dest.0
-        ));
+        if is_mutable {
+            let tmp = self.next_temp();
+            self.emit_line(&format!("  {tmp} = {inst} {src_ty} {src_val} to {dst_ty}"));
+            self.emit_line(&format!("  store {dst_ty} {tmp}, ptr %_{}.addr", dest.0));
+        } else {
+            self.emit_line(&format!(
+                "  %_{} = {inst} {src_ty} {src_val} to {dst_ty}",
+                dest.0
+            ));
+        }
 
         Ok(())
     }
@@ -950,9 +1075,20 @@ impl LlvmCodegen {
     // -----------------------------------------------------------------------
 
     /// Convert an MIR Operand to its LLVM IR textual representation (the value part).
-    fn operand_to_llvm(&self, op: &Operand, _func: &MirFunction) -> String {
+    /// For mutable locals, this emits a `load` instruction and returns the temp name.
+    fn operand_to_llvm(&mut self, op: &Operand, _func: &MirFunction) -> String {
         match op {
-            Operand::Local(id) => format!("%_{}", id.0),
+            Operand::Local(id) => {
+                if self.mutable_locals.contains(&id.0) {
+                    let ty = self.local_type(*id);
+                    if ty != "void" {
+                        let tmp = self.next_temp();
+                        self.emit_line(&format!("  {tmp} = load {ty}, ptr %_{}.addr", id.0));
+                        return tmp;
+                    }
+                }
+                format!("%_{}", id.0)
+            }
             Operand::Constant(Constant::Str(s)) => {
                 // String constants need a GEP constant expression to get a ptr.
                 if let Some(global_name) = self.string_constants.get(s.as_str()) {

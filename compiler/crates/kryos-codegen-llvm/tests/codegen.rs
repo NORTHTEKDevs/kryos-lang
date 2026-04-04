@@ -933,3 +933,185 @@ fn test_cast_int_to_float() {
 
     assert!(ir.contains("sitofp i32 %_0 to double"));
 }
+
+// ---------------------------------------------------------------------------
+// SSA fix: mutable variables use alloca/store/load
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_mutable_variable_in_loop() {
+    let module = MirModule {
+        functions: vec![MirFunction {
+            name: "loop_sum".into(),
+            params: vec![],
+            ret_ty: MirType::I64,
+            locals: vec![
+                MirLocal { id: LocalId(0), name: Some("sum".into()), ty: MirType::I64, mutable: true },
+                MirLocal { id: LocalId(1), name: Some("i".into()), ty: MirType::I64, mutable: true },
+                MirLocal { id: LocalId(2), name: None, ty: MirType::Bool, mutable: false },
+            ],
+            blocks: vec![
+                BasicBlock {
+                    id: BlockId(0),
+                    instructions: vec![
+                        Instruction::Assign { dest: LocalId(0), value: RValue::ConstInt(0) },
+                        Instruction::Assign { dest: LocalId(1), value: RValue::ConstInt(0) },
+                    ],
+                    terminator: Terminator::Goto(BlockId(1)),
+                },
+                BasicBlock {
+                    id: BlockId(1),
+                    instructions: vec![
+                        Instruction::Assign {
+                            dest: LocalId(2),
+                            value: RValue::BinOp {
+                                op: MirBinOp::Lt,
+                                left: Operand::Local(LocalId(1)),
+                                right: Operand::Constant(Constant::Int(10)),
+                            },
+                        },
+                    ],
+                    terminator: Terminator::Branch {
+                        cond: Operand::Local(LocalId(2)),
+                        then_block: BlockId(2),
+                        else_block: BlockId(3),
+                    },
+                },
+                BasicBlock {
+                    id: BlockId(2),
+                    instructions: vec![
+                        Instruction::Assign {
+                            dest: LocalId(0),
+                            value: RValue::BinOp {
+                                op: MirBinOp::Add,
+                                left: Operand::Local(LocalId(0)),
+                                right: Operand::Local(LocalId(1)),
+                            },
+                        },
+                        Instruction::Assign {
+                            dest: LocalId(1),
+                            value: RValue::BinOp {
+                                op: MirBinOp::Add,
+                                left: Operand::Local(LocalId(1)),
+                                right: Operand::Constant(Constant::Int(1)),
+                            },
+                        },
+                    ],
+                    terminator: Terminator::Goto(BlockId(1)),
+                },
+                BasicBlock {
+                    id: BlockId(3),
+                    instructions: vec![],
+                    terminator: Terminator::Return(Some(Operand::Local(LocalId(0)))),
+                },
+            ],
+        }],
+        struct_defs: HashMap::new(),
+    };
+
+    let ir = emit_module(&module, &EmitOptions::default()).unwrap();
+    // Mutable locals must use alloca/store/load.
+    assert!(ir.contains("alloca"), "mutable vars must use alloca:\n{ir}");
+    assert!(ir.contains("store"), "mutable var assignment must use store:\n{ir}");
+    assert!(ir.contains("load"), "mutable var reads must use load:\n{ir}");
+}
+
+#[test]
+fn test_immutable_variable_no_alloca() {
+    // An immutable variable assigned once should NOT use alloca.
+    let func = MirFunction {
+        name: "imm_test".into(),
+        params: vec![],
+        ret_ty: MirType::I64,
+        locals: vec![MirLocal {
+            id: LocalId(0), name: Some("x".into()), ty: MirType::I64, mutable: false,
+        }],
+        blocks: vec![BasicBlock {
+            id: BlockId(0),
+            instructions: vec![Instruction::Assign {
+                dest: LocalId(0),
+                value: RValue::ConstInt(42),
+            }],
+            terminator: Terminator::Return(Some(Operand::Local(LocalId(0)))),
+        }],
+    };
+
+    let module = module_with(func);
+    let ir = emit_module(&module, &EmitOptions::default()).unwrap();
+    // Direct SSA for immutable: %_0 = add i64 42, 0
+    assert!(ir.contains("%_0 = add i64 42, 0"), "immutable should use direct SSA:\n{ir}");
+    assert!(!ir.contains("alloca"), "immutable should NOT use alloca:\n{ir}");
+}
+
+// ---------------------------------------------------------------------------
+// Field access: correct index resolution from struct_defs
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_struct_field_access_correct_index() {
+    let mut struct_defs = HashMap::new();
+    struct_defs.insert("Point".to_string(), vec![
+        ("x".to_string(), MirType::I64),
+        ("y".to_string(), MirType::I64),
+        ("z".to_string(), MirType::I64),
+    ]);
+
+    let module = MirModule {
+        functions: vec![MirFunction {
+            name: "get_y".into(),
+            params: vec![MirParam { local: LocalId(0), ty: MirType::Struct("Point".into()) }],
+            ret_ty: MirType::I64,
+            locals: vec![
+                MirLocal { id: LocalId(0), name: Some("p".into()), ty: MirType::Struct("Point".into()), mutable: false },
+                MirLocal { id: LocalId(1), name: None, ty: MirType::I64, mutable: false },
+            ],
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                instructions: vec![Instruction::Assign {
+                    dest: LocalId(1),
+                    value: RValue::Field { object: Operand::Local(LocalId(0)), field: "y".into() },
+                }],
+                terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
+            }],
+        }],
+        struct_defs,
+    };
+
+    let ir = emit_module(&module, &EmitOptions::default()).unwrap();
+    // Field "y" is at index 1.
+    assert!(ir.contains(", 1"), "field 'y' must use index 1, not 0:\n{ir}");
+}
+
+#[test]
+fn test_struct_field_access_first_field() {
+    let mut struct_defs = HashMap::new();
+    struct_defs.insert("Point".to_string(), vec![
+        ("x".to_string(), MirType::I64),
+        ("y".to_string(), MirType::I64),
+    ]);
+
+    let module = MirModule {
+        functions: vec![MirFunction {
+            name: "get_x".into(),
+            params: vec![MirParam { local: LocalId(0), ty: MirType::Struct("Point".into()) }],
+            ret_ty: MirType::I64,
+            locals: vec![
+                MirLocal { id: LocalId(0), name: Some("p".into()), ty: MirType::Struct("Point".into()), mutable: false },
+                MirLocal { id: LocalId(1), name: None, ty: MirType::I64, mutable: false },
+            ],
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                instructions: vec![Instruction::Assign {
+                    dest: LocalId(1),
+                    value: RValue::Field { object: Operand::Local(LocalId(0)), field: "x".into() },
+                }],
+                terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
+            }],
+        }],
+        struct_defs,
+    };
+
+    let ir = emit_module(&module, &EmitOptions::default()).unwrap();
+    // Field "x" is at index 0.
+    assert!(ir.contains(", 0"), "field 'x' must use index 0:\n{ir}");
+}
