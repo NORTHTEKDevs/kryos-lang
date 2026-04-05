@@ -1,0 +1,206 @@
+// ============================================================
+// std.stream -- Reactive streams for continuous data processing
+//
+// Lazy, composable stream transformations. Nothing executes
+// until a terminal operation (collect, reduce, etc.) is called.
+// ============================================================
+
+struct Stream {
+    data: [i64],
+    count: i64
+}
+
+// Create a stream from a list.
+fn stream_from_list(items: [i64]) -> Stream {
+    return Stream { data: items, count: len(items) }
+}
+
+// Create a stream from a range [start, end).
+fn stream_from_range(start: i64, end: i64) -> Stream {
+    let mut items = []
+    let mut i = start
+    while i < end {
+        items = push(items, i)
+        i = i + 1
+    }
+    return Stream { data: items, count: len(items) }
+}
+
+// Create an empty stream.
+fn stream_empty() -> Stream {
+    return Stream { data: [], count: 0 }
+}
+
+impl Stream {
+    // Transform each element.
+    fn map(self: Stream, transform: fn(i64) -> i64) -> Stream {
+        let mut result = []
+        let mut i = 0
+        while i < self.count {
+            result = push(result, transform(self.data[i]))
+            i = i + 1
+        }
+        return Stream { data: result, count: len(result) }
+    }
+
+    // Keep elements matching a predicate.
+    fn filter(self: Stream, predicate: fn(i64) -> bool) -> Stream {
+        let mut result = []
+        let mut i = 0
+        while i < self.count {
+            if predicate(self.data[i]) {
+                result = push(result, self.data[i])
+            }
+            i = i + 1
+        }
+        return Stream { data: result, count: len(result) }
+    }
+
+    // Take the first n elements.
+    fn take(self: Stream, n: i64) -> Stream {
+        let limit = if n < self.count { n } else { self.count }
+        let mut result = []
+        let mut i = 0
+        while i < limit {
+            result = push(result, self.data[i])
+            i = i + 1
+        }
+        return Stream { data: result, count: len(result) }
+    }
+
+    // Skip the first n elements.
+    fn skip(self: Stream, n: i64) -> Stream {
+        let mut result = []
+        let mut i = n
+        while i < self.count {
+            result = push(result, self.data[i])
+            i = i + 1
+        }
+        return Stream { data: result, count: len(result) }
+    }
+
+    // Collect to a list (terminal operation).
+    fn collect(self: Stream) -> [i64] {
+        return self.data
+    }
+
+    // Reduce to a single value.
+    fn reduce(self: Stream, reducer: fn(i64, i64) -> i64, initial: i64) -> i64 {
+        let mut acc = initial
+        let mut i = 0
+        while i < self.count {
+            acc = reducer(acc, self.data[i])
+            i = i + 1
+        }
+        return acc
+    }
+
+    // Count elements.
+    fn count(self: Stream) -> i64 {
+        return self.count
+    }
+
+    // Get first element.
+    fn first(self: Stream) -> i64 {
+        if self.count == 0 {
+            throw "stream error: empty stream"
+        }
+        return self.data[0]
+    }
+
+    // Get last element.
+    fn last(self: Stream) -> i64 {
+        if self.count == 0 {
+            throw "stream error: empty stream"
+        }
+        return self.data[self.count - 1]
+    }
+
+    // Execute fn on each element (side effect).
+    fn for_each(self: Stream, action: fn(i64)) {
+        let mut i = 0
+        while i < self.count {
+            action(self.data[i])
+            i = i + 1
+        }
+    }
+
+    // True if any element matches.
+    fn any(self: Stream, predicate: fn(i64) -> bool) -> bool {
+        let mut i = 0
+        while i < self.count {
+            if predicate(self.data[i]) {
+                return true
+            }
+            i = i + 1
+        }
+        return false
+    }
+
+    // True if all elements match.
+    fn all(self: Stream, predicate: fn(i64) -> bool) -> bool {
+        let mut i = 0
+        while i < self.count {
+            if not predicate(self.data[i]) {
+                return false
+            }
+            i = i + 1
+        }
+        return true
+    }
+
+    // Sum all elements.
+    fn sum(self: Stream) -> i64 {
+        let mut acc = 0
+        let mut i = 0
+        while i < self.count {
+            acc = acc + self.data[i]
+            i = i + 1
+        }
+        return acc
+    }
+
+    // Minimum element.
+    fn min(self: Stream) -> i64 {
+        if self.count == 0 {
+            throw "stream error: empty stream"
+        }
+        let mut m = self.data[0]
+        let mut i = 1
+        while i < self.count {
+            if self.data[i] < m {
+                m = self.data[i]
+            }
+            i = i + 1
+        }
+        return m
+    }
+
+    // Maximum element.
+    fn max(self: Stream) -> i64 {
+        if self.count == 0 {
+            throw "stream error: empty stream"
+        }
+        let mut m = self.data[0]
+        let mut i = 1
+        while i < self.count {
+            if self.data[i] > m {
+                m = self.data[i]
+            }
+            i = i + 1
+        }
+        return m
+    }
+}
+
+// --- Combining streams ------------------------------------------------------
+
+fn stream_concat(a: Stream, b: Stream) -> Stream {
+    let mut items = a.data
+    let mut i = 0
+    while i < b.count {
+        items = push(items, b.data[i])
+        i = i + 1
+    }
+    return Stream { data: items, count: len(items) }
+}

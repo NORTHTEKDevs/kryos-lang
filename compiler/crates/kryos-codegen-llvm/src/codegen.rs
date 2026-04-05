@@ -247,6 +247,66 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_spawn(i64, ptr, i64)");
         self.emit_line("declare void @kryos_spawn_wait_all()");
         self.emit_line("declare void @kryos_sleep(i64)");
+        // Tensor runtime
+        self.emit_line("declare i64 @kryos_tensor_zeros(ptr, i64)");
+        self.emit_line("declare i64 @kryos_tensor_ones(ptr, i64)");
+        self.emit_line("declare i64 @kryos_tensor_rand(ptr, i64)");
+        self.emit_line("declare i64 @kryos_tensor_randn(ptr, i64)");
+        self.emit_line("declare i64 @kryos_tensor_from_data(ptr, i64, ptr, i64)");
+        self.emit_line("declare i64 @kryos_tensor_eye(i64)");
+        self.emit_line("declare i64 @kryos_tensor_arange(i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_tensor_ndim(i64)");
+        self.emit_line("declare i64 @kryos_tensor_numel(i64)");
+        self.emit_line("declare i64 @kryos_tensor_shape_dim(i64, i64)");
+        self.emit_line("declare i64 @kryos_tensor_get(i64, i64)");
+        self.emit_line("declare void @kryos_tensor_set(i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_tensor_add(i64, i64)");
+        self.emit_line("declare i64 @kryos_tensor_sub(i64, i64)");
+        self.emit_line("declare i64 @kryos_tensor_mul(i64, i64)");
+        self.emit_line("declare i64 @kryos_tensor_div(i64, i64)");
+        self.emit_line("declare i64 @kryos_tensor_pow(i64, i64)");
+        self.emit_line("declare i64 @kryos_tensor_scale(i64, i64)");
+        self.emit_line("declare i64 @kryos_tensor_exp(i64)");
+        self.emit_line("declare i64 @kryos_tensor_log(i64)");
+        self.emit_line("declare i64 @kryos_tensor_sqrt(i64)");
+        self.emit_line("declare i64 @kryos_tensor_tanh(i64)");
+        self.emit_line("declare i64 @kryos_tensor_sigmoid(i64)");
+        self.emit_line("declare i64 @kryos_tensor_relu(i64)");
+        self.emit_line("declare i64 @kryos_tensor_neg(i64)");
+        self.emit_line("declare i64 @kryos_tensor_sum(i64)");
+        self.emit_line("declare i64 @kryos_tensor_mean(i64)");
+        self.emit_line("declare i64 @kryos_tensor_max(i64)");
+        self.emit_line("declare i64 @kryos_tensor_min(i64)");
+        self.emit_line("declare i64 @kryos_tensor_argmax(i64)");
+        self.emit_line("declare i64 @kryos_tensor_argmin(i64)");
+        self.emit_line("declare i64 @kryos_tensor_matmul(i64, i64)");
+        self.emit_line("declare i64 @kryos_tensor_transpose(i64)");
+        self.emit_line("declare i64 @kryos_tensor_reshape(i64, ptr, i64)");
+        self.emit_line("declare i64 @kryos_tensor_flatten(i64)");
+        self.emit_line("declare i64 @kryos_tensor_softmax(i64, i64)");
+        self.emit_line("declare i64 @kryos_tensor_cross_entropy(i64, i64)");
+        self.emit_line("declare i64 @kryos_tensor_mse_loss(i64, i64)");
+        self.emit_line("declare i64 @kryos_tensor_to_string(i64)");
+        self.emit_line("declare void @kryos_tensor_free(i64)");
+        // Process management (stdlib-native)
+        self.emit_line("declare i64 @kryos_env_get(ptr, i64, ptr, i64)");
+        self.emit_line("declare void @kryos_process_exit(i32)");
+        self.emit_line("declare i64 @kryos_process_exec(ptr, i64, ptr, i64)");
+        self.emit_line("declare i64 @kryos_process_exec_simple(ptr, i64)");
+        self.emit_line("declare i64 @kryos_process_argc()");
+        self.emit_line("declare i64 @kryos_process_argv(i64)");
+        // Filesystem (stdlib-native)
+        self.emit_line("declare i32 @kryos_path_exists(ptr, i64)");
+        self.emit_line("declare i32 @kryos_dir_create(ptr, i64)");
+        self.emit_line("declare i32 @kryos_file_remove(ptr, i64)");
+        self.emit_line("declare i64 @kryos_dir_list(ptr, i64, ptr, i64)");
+        self.emit_line("declare i64 @kryos_dir_walk(ptr, i64, ptr, i64)");
+        // File I/O (stdlib-native)
+        self.emit_line("declare i64 @kryos_file_open(ptr, i64, i8)");
+        self.emit_line("declare i64 @kryos_file_read(i64, ptr, i64)");
+        self.emit_line("declare i64 @kryos_file_write(i64, ptr, i64)");
+        self.emit_line("declare i32 @kryos_file_close(i64)");
+        self.emit_line("declare i64 @kryos_stderr_write(ptr, i64)");
         self.emit_blank();
     }
 

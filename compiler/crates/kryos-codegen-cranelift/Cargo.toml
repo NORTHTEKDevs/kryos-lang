@@ -8,6 +8,7 @@ kryos-errors.workspace = true
 kryos-mir.workspace = true
 kryos-driver.workspace = true
 kryos-rt.workspace = true
+kryos-stdlib-native.workspace = true
 cranelift-codegen.workspace = true
 cranelift-frontend.workspace = true
 cranelift-jit.workspace = true

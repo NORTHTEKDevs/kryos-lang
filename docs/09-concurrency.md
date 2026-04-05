@@ -1,5 +1,7 @@
 # Concurrency
 
+> **Implementation Status:** `spawn` is fully implemented (parser, MIR, Cranelift + LLVM codegen, runtime). `actor` declarations are parsed and lowered to structs + handler functions in MIR -- they compile through both backends. Channels (`chan`, `send`, `recv`) are implemented in the runtime. `select` is parsed and lowered in MIR but may have edge cases. `sleep` is implemented. `parallel for` is **not yet implemented**.
+
 Kryos has two concurrency primitives: `spawn` for fire-and-forget parallel execution, and `actor` for stateful message-passing concurrency. Both are built into the language syntax -- no library imports, no async/await coloring, no callback chains.
 
 ## spawn

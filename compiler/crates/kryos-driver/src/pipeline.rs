@@ -503,10 +503,15 @@ fn codegen_and_link(
                             };
 
                             let rt_lib = crate::runtime::find_runtime_lib();
+                            let stdlib_native_lib = crate::runtime::find_stdlib_native_lib();
                             if config.verbose {
                                 match &rt_lib {
                                     Some(p) => eprintln!("[kryos] runtime lib: {}", p.display()),
                                     None => eprintln!("[kryos] runtime lib: not found (runtime symbols will be unresolved)"),
+                                }
+                                match &stdlib_native_lib {
+                                    Some(p) => eprintln!("[kryos] stdlib-native lib: {}", p.display()),
+                                    None => eprintln!("[kryos] stdlib-native lib: not found"),
                                 }
                             }
 
@@ -517,7 +522,7 @@ fn codegen_and_link(
                                 target,
                                 object_files: vec![obj_path.clone()],
                                 runtime_lib: rt_lib,
-                                stdlib_native: None,
+                                stdlib_native: stdlib_native_lib,
                                 output: out_path.clone(),
                                 link_type: if config.output_type == OutputType::Library {
                                     kryos_linker::LinkType::SharedLib

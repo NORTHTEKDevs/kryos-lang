@@ -1,128 +1,73 @@
-// Kryos Neural Network Example
-// A simple 2-layer perceptron demonstrating tensor-like operations
-// This is the foundation pattern for the LLM build
+// ============================================================
+// Kryos Neural Network Demo
+//
+// Demonstrates the native tensor runtime with a 2-layer
+// neural network forward pass using matrix multiplication,
+// ReLU activation, and softmax output.
+// ============================================================
 
-println("=== Kryos Neural Network Demo ===")
-println("")
-
-// ================================================================
-// Activation functions
-// ================================================================
-
-fn sigmoid(x: f64) -> f64 {
-    return 1.0 / (1.0 + pow(2.718281828, 0.0 - x))
+extern {
+    fn kryos_tensor_zeros(shape_ptr: i64, ndim: i64) -> i64
+    fn kryos_tensor_ones(shape_ptr: i64, ndim: i64) -> i64
+    fn kryos_tensor_rand(shape_ptr: i64, ndim: i64) -> i64
+    fn kryos_tensor_randn(shape_ptr: i64, ndim: i64) -> i64
+    fn kryos_tensor_eye(n: i64) -> i64
+    fn kryos_tensor_matmul(a: i64, b: i64) -> i64
+    fn kryos_tensor_relu(handle: i64) -> i64
+    fn kryos_tensor_softmax(handle: i64, dim: i64) -> i64
+    fn kryos_tensor_numel(handle: i64) -> i64
 }
 
-fn relu(x: f64) -> f64 {
-    if x > 0.0 {
-        return x
-    }
-    return 0.0
+fn main() {
+    println("=== Kryos Neural Network Demo ===")
+    println("")
+    println("Network: input(4) -> hidden(8) -> output(3)")
+    println("")
+
+    // --- Build weight matrices ---
+    let w1_shape = [4, 8]
+    let w2_shape = [8, 3]
+    let input_shape = [2, 4]
+
+    // Create tensors for forward pass
+    let x = kryos_tensor_rand(input_shape as i64, 2)
+    let w1 = kryos_tensor_randn(w1_shape as i64, 2)
+    let w2 = kryos_tensor_randn(w2_shape as i64, 2)
+
+    // --- Forward pass ---
+    // Layer 1: hidden = relu(X @ W1)
+    let hidden_raw = kryos_tensor_matmul(x, w1)
+    let hidden = kryos_tensor_relu(hidden_raw)
+
+    // Layer 2: output = softmax(hidden @ W2)
+    let logits = kryos_tensor_matmul(hidden, w2)
+    let probs = kryos_tensor_softmax(logits, -1)
+
+    // Report
+    let num_probs = kryos_tensor_numel(probs)
+    println("Forward pass complete!")
+    println("  Input:  2 samples x 4 features")
+    println("  W1:     4x8 = 32 parameters")
+    println("  W2:     8x3 = 24 parameters")
+    println("  Output: " + to_string(num_probs) + " probabilities (2 samples x 3 classes)")
+    println("")
+
+    // --- Additional tensor ops ---
+    let eye = kryos_tensor_eye(4)
+    let eye_n = kryos_tensor_numel(eye)
+    println("Identity matrix (4x4): " + to_string(eye_n) + " elements")
+
+    let z_shape = [10, 10]
+    let z = kryos_tensor_zeros(z_shape as i64, 2)
+    let z_n = kryos_tensor_numel(z)
+    println("Zeros (10x10):         " + to_string(z_n) + " elements")
+
+    let o_shape = [3, 3]
+    let o = kryos_tensor_ones(o_shape as i64, 2)
+    let o_n = kryos_tensor_numel(o)
+    println("Ones (3x3):            " + to_string(o_n) + " elements")
+
+    println("")
+    println("Total parameters: 56 (W1: 32, W2: 24)")
+    println("=== Demo complete ===")
 }
-
-// ================================================================
-// Vector operations
-// ================================================================
-
-fn vec_dot(a: [f64], b: [f64]) -> f64 {
-    let mut sum = 0.0
-    for i in range(0, len(a)) {
-        sum = sum + a[i] * b[i]
-    }
-    return sum
-}
-
-fn vec_add(a: [f64], b: [f64]) -> [f64] {
-    let mut result = []
-    for i in range(0, len(a)) {
-        push(result, a[i] + b[i])
-    }
-    return result
-}
-
-fn vec_scale(v: [f64], s: f64) -> [f64] {
-    let mut result = []
-    for i in range(0, len(v)) {
-        push(result, v[i] * s)
-    }
-    return result
-}
-
-// ================================================================
-// Forward pass: input(2) -> hidden(4) -> output(1)
-// ================================================================
-
-// Network weights (manually initialized for demo)
-// In real usage, tensor_rand would be used
-let w1 = [0.5, -0.3, 0.8, 0.1, -0.4, 0.6, 0.2, -0.7]  // 4x2 flattened
-let b1 = [0.1, -0.1, 0.05, 0.0]                           // bias for hidden
-let w2 = [0.3, -0.5, 0.7, 0.2]                             // 1x4 flattened
-let b2 = [0.0]                                               // bias for output
-
-fn forward(input: [f64]) -> f64 {
-    // Hidden layer: 4 neurons
-    let mut hidden = []
-    for i in range(0, 4) {
-        let mut activation = b1[i]
-        for j in range(0, 2) {
-            activation = activation + w1[i * 2 + j] * input[j]
-        }
-        push(hidden, sigmoid(activation))
-    }
-
-    // Output layer: 1 neuron
-    let mut output = b2[0]
-    for i in range(0, 4) {
-        output = output + w2[i] * hidden[i]
-    }
-    return sigmoid(output)
-}
-
-// ================================================================
-// XOR truth table inference
-// ================================================================
-
-println("XOR Neural Network Inference:")
-println("-----------------------------")
-
-let inputs = [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]
-let expected = [0.0, 1.0, 1.0, 0.0]
-
-for i in range(0, 4) {
-    let input = inputs[i]
-    let prediction = forward(input)
-    let target = expected[i]
-    let error = abs(prediction - target)
-    println("Input: [" + to_string(input[0]) + ", " + to_string(input[1]) + "] -> Predicted: " + to_string(prediction) + " (target: " + to_string(target) + ")")
-}
-
-println("")
-println("Note: Random weights won't solve XOR without training.")
-println("The tensor runtime with autodiff handles training.")
-
-// ================================================================
-// Tensor runtime demo (using built-in tensor ops)
-// ================================================================
-
-println("")
-println("=== Tensor Runtime Demo ===")
-
-let t1 = tensor_zeros([2, 3])
-println("Zeros shape: " + to_string(type_of(t1)))
-
-let t2 = tensor_ones([3, 2])
-println("Ones created")
-
-let t3 = tensor_matmul(t1, t2)
-println("Matmul completed")
-
-let t4 = tensor_rand([2, 4])
-let t5 = tensor_softmax(t4, -1)
-println("Softmax computed")
-
-let t6 = tensor_randn([3, 3])
-let t7 = tensor_relu(t6)
-println("ReLU applied")
-
-println("")
-println("=== Neural network demo complete ===")

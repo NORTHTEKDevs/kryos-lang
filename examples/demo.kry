@@ -1,119 +1,91 @@
+// ============================================================
 // Kryos Language Demo - FrostByte Digital
-// A universal systems language with AI, quantum, and security capabilities
-
-// ============================================================
-// 1. Basic systems programming
+// A universal systems language with AI-native capabilities
 // ============================================================
 
-fn fibonacci(n: i32) -> i32 {
+extern {
+    fn kryos_tensor_ones(shape_ptr: i64, ndim: i64) -> i64
+    fn kryos_tensor_matmul(a: i64, b: i64) -> i64
+    fn kryos_tensor_numel(handle: i64) -> i64
+    fn kryos_process_argc() -> i64
+}
+
+fn fibonacci(n: i64) -> i64 {
     if n <= 1 {
         return n
     }
     return fibonacci(n - 1) + fibonacci(n - 2)
 }
 
-println("Fibonacci(10) = " + to_string(fibonacci(10)))
-
-// ============================================================
-// 2. Structs and data modeling
-// ============================================================
-
-struct Vector3 {
-    x: f64,
-    y: f64,
-    z: f64
-}
-
-fn dot(a: Vector3, b: Vector3) -> f64 {
-    return a.x * b.x + a.y * b.y + a.z * b.z
-}
-
-fn magnitude(v: Vector3) -> f64 {
-    return sqrt(dot(v, v))
-}
-
-let v1 = Vector3 { x: 1.0, y: 2.0, z: 3.0 }
-let v2 = Vector3 { x: 4.0, y: 5.0, z: 6.0 }
-println("Dot product: " + to_string(dot(v1, v2)))
-println("Magnitude: " + to_string(magnitude(v1)))
-
-// ============================================================
-// 3. Higher-order functions and closures
-// ============================================================
-
-fn apply_twice(f: fn, x: i32) -> i32 {
+fn apply_twice(f: fn(i64) -> i64, x: i64) -> i64 {
     return f(f(x))
 }
 
-fn double(x: i32) -> i32 {
+fn double(x: i64) -> i64 {
     return x * 2
 }
 
-println("Apply double twice to 3: " + to_string(apply_twice(double, 3)))
+fn main() {
+    println("=== Kryos Language Demo ===")
+    println("")
 
-// ============================================================
-// 4. Array processing
-// ============================================================
+    // 1. Recursion
+    println("1. Recursion")
+    let fib10 = fibonacci(10)
+    let fib20 = fibonacci(20)
+    println("   fibonacci(10) = " + to_string(fib10))
+    println("   fibonacci(20) = " + to_string(fib20))
+    println("")
 
-let mut data = [10, 25, 3, 47, 12, 8, 33]
+    // 2. Higher-order functions
+    println("2. Higher-Order Functions")
+    let result = apply_twice(double, 3)
+    println("   double(double(3)) = " + to_string(result))
+    println("")
 
-fn find_max(arr: [i32]) -> i32 {
-    let mut best = arr[0]
-    for i in range(1, len(arr)) {
-        if arr[i] > best {
-            best = arr[i]
-        }
+    // 3. Float math
+    println("3. Float Math")
+    let pi = 3.14159265
+    println(pi)
+    let power = 2.0 ** 10.0
+    println(power)
+    println("")
+
+    // 4. Error handling
+    println("4. Error Handling (try/catch)")
+    try {
+        throw "intentional error for demo"
+    } catch e {
+        println("   Caught: " + e)
     }
-    return best
+    println("")
+
+    // 5. Map data structure
+    println("5. Map (Hash Table)")
+    let mut scores = {}
+    scores["alice"] = 95
+    scores["bob"] = 87
+    scores["carol"] = 92
+    println("   alice: " + to_string(scores["alice"]))
+    println("   bob:   " + to_string(scores["bob"]))
+    println("")
+
+    // 6. Tensor runtime
+    println("6. Tensor Runtime")
+    let sa = [2, 3]
+    let sb = [3, 4]
+    let a = kryos_tensor_ones(sa as i64, 2)
+    let b = kryos_tensor_ones(sb as i64, 2)
+    let c = kryos_tensor_matmul(a, b)
+    let cn = kryos_tensor_numel(c)
+    println("   ones(2,3) @ ones(3,4) -> " + to_string(cn) + " elements")
+    println("")
+
+    // 7. Process access
+    println("7. System Integration")
+    let argc = kryos_process_argc()
+    println("   command-line args: " + to_string(argc))
+    println("")
+
+    println("=== Kryos v0.1.0 - FrostByte Digital ===")
 }
-
-fn sum_array(arr: [i32]) -> i32 {
-    let mut total = 0
-    for i in range(0, len(arr)) {
-        total = total + arr[i]
-    }
-    return total
-}
-
-println("Max: " + to_string(find_max(data)))
-println("Sum: " + to_string(sum_array(data)))
-
-// ============================================================
-// 5. Capabilities - secure by default
-// ============================================================
-
-@capabilities(compute)
-fn secure_process(input: i32) -> i32 {
-    // This function can only do computation
-    // No network, no filesystem — enforced by the compiler
-    return input * input + input + 1
-}
-
-println("Secure compute: " + to_string(secure_process(7)))
-
-// ============================================================
-// 6. String processing
-// ============================================================
-
-fn repeat_string(s: str, n: i32) -> str {
-    let mut result = ""
-    for i in range(0, n) {
-        result = result + s
-    }
-    return result
-}
-
-fn reverse_string(s: str) -> str {
-    let mut result = ""
-    let mut i = len(s) - 1
-    while i >= 0 {
-        result = result + s[i]
-        i = i - 1
-    }
-    return result
-}
-
-println(repeat_string("Kryos! ", 3))
-println("Reversed: " + reverse_string("FrostByte"))
-
-println("\n=== Kryos v0.1.0 - FrostByte Digital ===")

@@ -502,6 +502,7 @@ dependencies = [
  "kryos-errors",
  "kryos-mir",
  "kryos-rt",
+ "kryos-stdlib-native",
 ]
 
 [[package]]
@@ -627,6 +628,7 @@ name = "kryos-stdlib-native"
 version = "0.1.0"
 dependencies = [
  "crossterm",
+ "kryos-rt",
  "regex",
  "ring",
 ]

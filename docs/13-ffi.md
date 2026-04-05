@@ -1,5 +1,7 @@
 # Foreign Function Interface (FFI)
 
+> **Implementation Status:** `extern` blocks (with optional ABI string, defaulting to `"C"`) are fully implemented -- parsed, type-checked, and compiled through both Cranelift and LLVM backends. Functions declared in extern blocks are resolved at link time. The runtime library (`kryos-rt`) and stdlib native library (`kryos-stdlib-native`) provide 100+ FFI functions covering strings, arrays, maps, tensors, process management, file I/O, channels, and more. Custom link flags in `kryos.toml` and `kryos bindgen` are **not yet implemented**.
+
 Kryos can call into C libraries and system functions directly using `extern` blocks. This is how you leverage the existing native ecosystem -- call system libraries, use crypto routines, integrate with any C-ABI shared library.
 
 FFI access is gated by the capability system. Declare `ffi` in your `kryos.toml` capabilities:

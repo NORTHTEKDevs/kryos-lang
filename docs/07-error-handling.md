@@ -1,5 +1,7 @@
 # Error Handling
 
+> **Implementation Status:** `try`/`catch`/`throw` is fully implemented -- parsed, lowered to Result-enum-based control flow in MIR, and compiled through both backends. Nested try/catch, throwing any value type, and catching runtime errors all work. The **self-healing runtime** (automatic recovery from division by zero, index clamping, `@intent`, `@constraint`, `@fallback` attributes, and `--heal-report`) is a **roadmap feature** and is not yet implemented.
+
 Kryos has two complementary systems for dealing with errors: explicit `try`/`catch`/`throw` for errors you expect, and a self-healing runtime that automatically recovers from common runtime faults. Understanding when to use each is key to writing robust programs.
 
 ## try / catch / throw

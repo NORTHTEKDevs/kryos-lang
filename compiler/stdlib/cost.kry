@@ -1,0 +1,172 @@
+// ============================================================
+// std.cost -- Computation cost tracking and budget enforcement
+//
+// Every computation has a cost: money, energy, latency, tokens.
+// This module makes costs visible and controllable.
+// ============================================================
+
+struct ComputeCost {
+    wall_time_ms: f64,
+    tokens_used: i64,
+    api_calls: i64,
+    money_usd: f64,
+    energy_kwh: f64
+}
+
+// Create a zero cost.
+fn cost_zero() -> ComputeCost {
+    return ComputeCost {
+        wall_time_ms: 0.0,
+        tokens_used: 0,
+        api_calls: 0,
+        money_usd: 0.0,
+        energy_kwh: 0.0
+    }
+}
+
+// Add two costs together.
+fn cost_add(a: ComputeCost, b: ComputeCost) -> ComputeCost {
+    return ComputeCost {
+        wall_time_ms: a.wall_time_ms + b.wall_time_ms,
+        tokens_used: a.tokens_used + b.tokens_used,
+        api_calls: a.api_calls + b.api_calls,
+        money_usd: a.money_usd + b.money_usd,
+        energy_kwh: a.energy_kwh + b.energy_kwh
+    }
+}
+
+impl ComputeCost {
+    fn to_string(self: ComputeCost) -> str {
+        return "Cost(time=" + to_string(self.wall_time_ms) + "ms, tokens=" + to_string(self.tokens_used) + ", cost=$" + to_string(self.money_usd) + ", api_calls=" + to_string(self.api_calls) + ")"
+    }
+}
+
+// --- Budget -----------------------------------------------------------------
+
+struct Budget {
+    max_usd: f64,
+    max_tokens: i64,
+    max_api_calls: i64,
+    spent_usd: f64,
+    spent_tokens: i64,
+    spent_api_calls: i64
+}
+
+// Create a budget with limits.
+fn budget_new(max_usd: f64, max_tokens: i64, max_api_calls: i64) -> Budget {
+    return Budget {
+        max_usd: max_usd,
+        max_tokens: max_tokens,
+        max_api_calls: max_api_calls,
+        spent_usd: 0.0,
+        spent_tokens: 0,
+        spent_api_calls: 0
+    }
+}
+
+impl Budget {
+    // Remaining budget.
+    fn remaining_usd(self: Budget) -> f64 {
+        return self.max_usd - self.spent_usd
+    }
+
+    fn remaining_tokens(self: Budget) -> i64 {
+        return self.max_tokens - self.spent_tokens
+    }
+
+    fn remaining_api_calls(self: Budget) -> i64 {
+        return self.max_api_calls - self.spent_api_calls
+    }
+
+    // Check if budget is exhausted.
+    fn is_exhausted(self: Budget) -> bool {
+        return self.spent_usd >= self.max_usd or
+               self.spent_tokens >= self.max_tokens or
+               self.spent_api_calls >= self.max_api_calls
+    }
+
+    // Charge against the budget. Throws BudgetExceeded if over.
+    fn charge(self: Budget, cost: ComputeCost) -> Budget {
+        let new_usd = self.spent_usd + cost.money_usd
+        let new_tokens = self.spent_tokens + cost.tokens_used
+        let new_calls = self.spent_api_calls + cost.api_calls
+
+        if new_usd > self.max_usd {
+            throw "BudgetExceeded: USD limit ($" + to_string(self.max_usd) + ") exceeded"
+        }
+        if new_tokens > self.max_tokens {
+            throw "BudgetExceeded: token limit (" + to_string(self.max_tokens) + ") exceeded"
+        }
+        if new_calls > self.max_api_calls {
+            throw "BudgetExceeded: API call limit (" + to_string(self.max_api_calls) + ") exceeded"
+        }
+
+        return Budget {
+            max_usd: self.max_usd,
+            max_tokens: self.max_tokens,
+            max_api_calls: self.max_api_calls,
+            spent_usd: new_usd,
+            spent_tokens: new_tokens,
+            spent_api_calls: new_calls
+        }
+    }
+
+    // Status report.
+    fn status(self: Budget) -> str {
+        return "Budget: $" + to_string(self.spent_usd) + " / $" + to_string(self.max_usd) + "\n" +
+               "Tokens: " + to_string(self.spent_tokens) + " / " + to_string(self.max_tokens) + "\n" +
+               "API calls: " + to_string(self.spent_api_calls) + " / " + to_string(self.max_api_calls)
+    }
+}
+
+// --- Cost Tracker -----------------------------------------------------------
+
+struct CostTracker {
+    total: ComputeCost,
+    budget: Budget,
+    entries: [ComputeCost]
+}
+
+// Create a tracker with an optional budget.
+fn cost_tracker_new(budget: Budget) -> CostTracker {
+    return CostTracker {
+        total: cost_zero(),
+        budget: budget,
+        entries: []
+    }
+}
+
+impl CostTracker {
+    // Record a cost entry.
+    fn record(self: CostTracker, cost: ComputeCost) -> CostTracker {
+        return CostTracker {
+            total: cost_add(self.total, cost),
+            budget: self.budget.charge(cost),
+            entries: push(self.entries, cost)
+        }
+    }
+
+    // Record token usage.
+    fn record_tokens(self: CostTracker, count: i64, cost_per_token: f64) -> CostTracker {
+        let cost = ComputeCost {
+            wall_time_ms: 0.0,
+            tokens_used: count,
+            api_calls: 0,
+            money_usd: to_float(count) * cost_per_token,
+            energy_kwh: 0.0
+        }
+        return self.record(cost)
+    }
+
+    // Record an API call.
+    fn record_api_call(self: CostTracker, cost_usd: f64, tokens: i64) -> CostTracker {
+        let cost = ComputeCost {
+            wall_time_ms: 0.0,
+            tokens_used: tokens,
+            api_calls: 1,
+            money_usd: cost_usd,
+            energy_kwh: 0.0
+        }
+        return self.record(cost)
+    }
+}

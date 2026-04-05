@@ -1,0 +1,11 @@
+// expect-stdout: ok
+extern {
+    fn kryos_process_argc() -> i64
+}
+
+fn main() {
+    let count = kryos_process_argc()
+    if count >= 1 {
+        println("ok")
+    }
+}

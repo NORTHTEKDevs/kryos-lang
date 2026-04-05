@@ -1,299 +1,188 @@
 # AI Runtime
 
-> **Status:** The AI runtime described in this chapter is part of Kryos's language specification and stdlib design. These features were prototyped in the early Python-based interpreter. The native Rust compiler does not yet include these builtins -- they will be reimplemented as native stdlib modules backed by the Kryos runtime (not Python/numpy). This chapter documents the target API.
+Kryos has a built-in runtime for AI and machine learning workloads. Instead of bolting ML onto a general-purpose language, Kryos treats tensors, probability, agents, streams, lineage, and cost tracking as first-class concepts.
 
-Kryos has a built-in runtime for AI and machine learning workloads. Instead of bolting ML onto a general-purpose language, Kryos treats tensors, probability, agents, streams, lineage, and cost tracking as first-class concepts. This chapter covers all of them.
+## Implementation Status
+
+| Feature | Status | Backend |
+|---------|--------|---------|
+| Tensors (creation, math, reductions, linalg) | **Implemented** | Native Rust FFI (`kryos-rt/tensor.rs`) |
+| ML ops (softmax, cross-entropy, MSE, relu, sigmoid) | **Implemented** | Native Rust FFI |
+| Probable\<T\> | **Implemented** | Pure Kryos (`stdlib/probable.kry`) |
+| Reactive Streams | **Implemented** | Pure Kryos (`stdlib/stream.kry`) |
+| Data Lineage (Tracked) | **Implemented** | Pure Kryos (`stdlib/tracked.kry`) |
+| Cost Tracking / Budget | **Implemented** | Pure Kryos (`stdlib/cost.kry`) |
+| Agent framework | **Implemented** | Pure Kryos (`stdlib/agent.kry`) |
+| Automatic Differentiation (GradTensor) | Roadmap | Requires computation graph |
+| GPU acceleration | Roadmap | Requires CUDA/Metal backend |
+| @differentiable decorator | Roadmap | Requires compiler support |
+| @timed decorator | Roadmap | Requires compiler support |
 
 ## Tensors
 
-The `KryosTensor` type is an N-dimensional array with shape tracking, broadcasting, element-wise operations, reductions, linear algebra, and ML-specific ops.
+The tensor runtime provides N-dimensional arrays with shape tracking, broadcasting, element-wise operations, reductions, linear algebra, and ML-specific ops. All tensor functions are backed by native Rust FFI in `kryos-rt/src/tensor.rs`, registered in both the Cranelift JIT and LLVM AOT backends.
 
 ### Creating Tensors
 
 ```
-// Zeros and ones
 let z = tensor_zeros([2, 3])        // 2x3 tensor of zeros
 let o = tensor_ones([4, 4])          // 4x4 tensor of ones
-
-// Random
 let r = tensor_rand([3, 3])          // uniform random [0, 1)
-let n = tensor_randn([3, 3])         // normal distribution (mean=0, std=1)
-
-// From data
-let t = tensor_from_list([[1.0, 2.0], [3.0, 4.0]])
-
-// Identity matrix
-let eye = tensor_eye(3)              // 3x3 identity
-
-// Range
-let seq = tensor_arange(0.0, 10.0, 1.0)  // [0, 1, 2, ..., 9]
+let n = tensor_randn([3, 3])         // normal distribution
+let eye = tensor_eye(3)              // 3x3 identity matrix
+let seq = tensor_arange(0.0, 10.0, 1.0)  // [0, 1, ..., 9]
 ```
 
-Every tensor has a `shape`, `dtype`, `ndim` (number of dimensions), and `numel` (total element count). The default dtype is `f32`. Supported dtypes: `f32`, `f64`, `i32`, `i64`, `bool`.
+Tensor handles are i64 values (pointers to heap-allocated `KryosTensor` structs). The runtime manages memory; call `kryos_tensor_free(handle)` when done.
 
 ### Element-Wise Operations
 
-Standard arithmetic works element-wise with broadcasting:
-
 ```
-let a = tensor_from_list([1.0, 2.0, 3.0])
-let b = tensor_from_list([4.0, 5.0, 6.0])
-
-let sum = a + b           // [5.0, 7.0, 9.0]
-let diff = a - b          // [-3.0, -3.0, -3.0]
-let prod = a * b          // [4.0, 10.0, 18.0]
-let quot = a / b          // [0.25, 0.4, 0.5]
-let power = a ** b        // element-wise power
+let sum = kryos_tensor_add(a, b)
+let diff = kryos_tensor_sub(a, b)
+let prod = kryos_tensor_mul(a, b)
+let quot = kryos_tensor_div(a, b)
+let power = kryos_tensor_pow(a, b)
+let scaled = kryos_tensor_scale(t, 2.0)
 ```
 
-Scalar operations broadcast automatically:
-
-```
-let scaled = a * 2.0      // [2.0, 4.0, 6.0]
-let shifted = a + 1.0     // [2.0, 3.0, 4.0]
-```
-
-Broadcasting follows numpy rules: dimensions are compared from the right, and a dimension of size 1 is stretched to match the other tensor.
+Broadcasting supports same-shape and scalar operations.
 
 ### Unary Math Operations
 
 ```
-let t = tensor_randn([3, 3])
-
-t.exp()       // e^x for each element
-t.log()       // natural log
-t.sqrt()      // square root
-t.tanh()      // hyperbolic tangent
-t.sigmoid()   // 1 / (1 + e^-x) -- numerically stable
-t.relu()      // max(0, x)
+kryos_tensor_exp(t)       // e^x
+kryos_tensor_log(t)       // natural log
+kryos_tensor_sqrt(t)      // square root
+kryos_tensor_tanh(t)      // hyperbolic tangent
+kryos_tensor_sigmoid(t)   // 1 / (1 + e^-x)
+kryos_tensor_relu(t)      // max(0, x)
+kryos_tensor_neg(t)       // -x
 ```
 
 ### Reductions
 
-Reduce along an axis or across the entire tensor:
-
 ```
-let t = tensor_from_list([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
-
-t.sum()             // 21.0 (scalar)
-t.sum(axis: 0)      // [5.0, 7.0, 9.0]  (sum columns)
-t.sum(axis: 1)      // [6.0, 15.0]       (sum rows)
-
-t.mean()            // 3.5
-t.max()             // 6.0
-t.min()             // 1.0
-t.argmax()          // index of max element
-t.argmin()          // index of min element
+kryos_tensor_sum(t)       // sum all elements -> f64 (as i64 bits)
+kryos_tensor_mean(t)      // mean -> f64 (as i64 bits)
+kryos_tensor_max(t)       // max element -> f64 (as i64 bits)
+kryos_tensor_min(t)       // min element -> f64 (as i64 bits)
+kryos_tensor_argmax(t)    // index of max
+kryos_tensor_argmin(t)    // index of min
 ```
+
+Note: scalar returns use the i64 slot model (f64 bits reinterpreted as i64).
 
 ### Linear Algebra
 
 ```
-let a = tensor_from_list([[1.0, 2.0], [3.0, 4.0]])
-let b = tensor_from_list([[5.0, 6.0], [7.0, 8.0]])
-
-// Matrix multiplication
-let c = tensor_matmul(a, b)   // or: a @ b
-
-// Dot product (1-D tensors only)
-let v1 = tensor_from_list([1.0, 2.0, 3.0])
-let v2 = tensor_from_list([4.0, 5.0, 6.0])
-let d = v1.dot(v2)            // 32.0
-
-// Transpose
-let t = a.T                   // or: a.transpose()
+let c = kryos_tensor_matmul(a, b)    // matrix multiply
+let t = kryos_tensor_transpose(a)     // 2D transpose
 ```
 
 Matrix multiplication supports:
-- 2-D x 2-D (standard matrix multiply)
-- 2-D x 1-D (matrix-vector product)
-- 1-D x 2-D (vector-matrix product)
-- 1-D x 1-D (dot product, returns scalar)
+- 2D x 2D: `[M,K] x [K,N] -> [M,N]`
+- 2D x 1D: `[M,K] x [K] -> [M]`
+- 1D x 1D: dot product -> scalar
 
 ### Shape Operations
 
 ```
-let t = tensor_rand([2, 3, 4])
-
-t.reshape([6, 4])          // reshape to 6x4
-t.reshape([-1, 4])         // infer first dim: 6x4
-t.flatten()                // flatten to 1-D: (24,)
-t.view([2, 12])            // alias for reshape
-
-t.squeeze()                // remove all size-1 dims
-t.squeeze(dim: 1)          // remove dim 1 if it is size 1
-t.unsqueeze(0)             // add a dim of size 1 at position 0
-
-// Concatenate tensors
-let combined = tensor_cat([t1, t2], dim: 0)
-
-// Stack tensors (adds new dimension)
-let stacked = KryosTensor.stack([t1, t2], dim: 0)
-
-// Split a tensor
-let chunks = t.split(sections: 3, dim: 0)
-
-// Slice along a dimension
-let sliced = t.slice(dim: 0, start: 0, end: 2)
+kryos_tensor_reshape(t, new_shape, ndim)  // reshape (supports -1 inference)
+kryos_tensor_flatten(t)                    // flatten to 1D
+kryos_tensor_ndim(t)                       // number of dimensions
+kryos_tensor_numel(t)                      // total element count
+kryos_tensor_shape_dim(t, dim)             // size of dimension
 ```
 
 ### ML-Specific Operations
 
 ```
-let logits = tensor_from_list([[2.0, 1.0, 0.1]])
-
-// Softmax -- converts logits to probabilities
-let probs = tensor_softmax(logits, -1)    // sums to 1.0
-
-// Layer normalization
-let normalized = logits.layer_norm(eps: 1e-5)
-
-// Cross-entropy loss (logits + target class indices)
-let targets = tensor_from_list([0])
-let loss = logits.cross_entropy(targets)
-
-// Mean squared error loss
-let predictions = tensor_from_list([1.0, 2.0, 3.0])
-let actuals = tensor_from_list([1.1, 2.2, 2.9])
-let mse = predictions.mse_loss(actuals)
-
-// Dropout (training regularization)
-let dropped = t.dropout(p: 0.5, training: true)
+kryos_tensor_softmax(logits, dim)          // softmax along last dim
+kryos_tensor_cross_entropy(logits, targets) // cross-entropy loss
+kryos_tensor_mse_loss(predictions, actuals) // mean squared error
 ```
 
-## Automatic Differentiation
-
-Kryos supports reverse-mode autodiff through `GradTensor`. Wrap a tensor in a `GradTensor`, perform forward operations, then call `.backward()` to compute gradients. This is the foundation for training neural networks.
-
-### Basic Gradient Computation
+### Neural Network Example
 
 ```
-@differentiable
+extern {
+    fn kryos_tensor_rand(shape_ptr: i64, ndim: i64) -> i64
+    fn kryos_tensor_randn(shape_ptr: i64, ndim: i64) -> i64
+    fn kryos_tensor_matmul(a: i64, b: i64) -> i64
+    fn kryos_tensor_relu(handle: i64) -> i64
+    fn kryos_tensor_softmax(handle: i64, dim: i64) -> i64
+    fn kryos_tensor_numel(handle: i64) -> i64
+}
 
-// Create differentiable tensors
-let x = GradTensor.from_list([2.0, 3.0])
-let w = GradTensor.from_list([0.5, -0.5])
+fn main() {
+    // 2-layer network: input(4) -> hidden(8) -> output(3)
+    let w1_shape = [4, 8]
+    let w2_shape = [8, 3]
+    let x_shape = [2, 4]
 
-// Forward pass
-let y = x * w           // element-wise multiply
-let loss = y.sum()       // scalar loss
+    let x = kryos_tensor_rand(x_shape as i64, 2)
+    let w1 = kryos_tensor_randn(w1_shape as i64, 2)
+    let w2 = kryos_tensor_randn(w2_shape as i64, 2)
 
-// Backward pass -- computes gradients
-loss.backward()
+    // Forward: relu(X @ W1) then softmax(H @ W2)
+    let hidden = kryos_tensor_relu(kryos_tensor_matmul(x, w1))
+    let probs = kryos_tensor_softmax(kryos_tensor_matmul(hidden, w2), -1)
 
-// x.grad and w.grad now hold the partial derivatives
-// dL/dx = w = [0.5, -0.5]
-// dL/dw = x = [2.0, 3.0]
-```
-
-### Supported Gradient Operations
-
-The following operations track gradients through the computation graph:
-
-| Operation | Forward | Gradient |
-|-----------|---------|----------|
-| `a + b` | element-wise add | pass-through (both) |
-| `a - b` | element-wise subtract | pass-through / negate |
-| `a * b` | element-wise multiply | cross-multiply |
-| `a / b` | element-wise divide | 1/b, -a/b^2 |
-| `-a` | negate | negate gradient |
-| `a @ b` | matrix multiply | dL/dA = dL/dC @ B^T, dL/dB = A^T @ dL/dC |
-| `.relu()` | max(0, x) | 1 where x > 0, else 0 |
-| `.sum()` | sum all elements | broadcast ones |
-| `.mean()` | average | 1/n for each element |
-| `.softmax()` | softmax probabilities | Jacobian: s * (grad - sum(grad * s)) |
-
-Gradients handle broadcasting correctly. When shapes differ, gradients are summed over the broadcast dimensions to match the original tensor's shape.
-
-### Training Loop Pattern
-
-```
-@differentiable
-
-// Initialize weights
-let mut w1 = GradTensor.randn([2, 4])
-let mut w2 = GradTensor.randn([4, 1])
-let learning_rate = 0.01
-
-for epoch in range(0, 100) {
-    // Forward
-    let hidden = (x @ w1).relu()
-    let output = hidden @ w2
-    let loss = output.mse_loss(target)
-
-    // Backward
-    loss.backward()
-
-    // Update weights (gradient descent)
-    // w1 = w1 - learning_rate * w1.grad
-    // w2 = w2 - learning_rate * w2.grad
-
-    // Zero gradients for next iteration
-    w1.zero_grad()
-    w2.zero_grad()
+    println("Output: " + to_string(kryos_tensor_numel(probs)) + " probabilities")
 }
 ```
 
+## Automatic Differentiation (Roadmap)
+
+Reverse-mode autodiff through `GradTensor` is planned. The design wraps tensors in gradient-tracking wrappers, builds a computation graph during forward pass, and computes gradients via `.backward()`.
+
+Target API:
+
+```
+@differentiable
+
+let x = GradTensor.from_list([2.0, 3.0])
+let w = GradTensor.from_list([0.5, -0.5])
+let loss = (x * w).sum()
+loss.backward()
+// x.grad = [0.5, -0.5], w.grad = [2.0, 3.0]
+```
+
+This requires a computation graph runtime and compiler support for the `@differentiable` decorator. Both are on the roadmap.
+
 ## Agents
 
-Agents are first-class autonomous entities in Kryos. Unlike simple functions or actors, agents have persistent memory, tools, alignment modes, and a full audit trail. They can spawn child agents and coordinate in swarms.
+Agents are first-class autonomous entities with persistent memory, tools, alignment modes, and audit trails. Implemented in `stdlib/agent.kry`.
 
 ### Creating an Agent
 
 ```
-let agent = Agent("researcher", goal: "Find relevant papers")
-
-// Add tools the agent can use
-agent.add_tool("search", search_fn, description: "Search the web")
-agent.add_tool("summarize", summarize_fn, description: "Summarize text")
-
-// Execute
-let result = agent.execute("Find papers on transformer architectures")
+let agent = agent_new("researcher", "Find relevant papers")
 ```
 
 ### Agent Memory
 
 Every agent has three types of memory:
 
+- **Working memory**: Short-term, cleared between tasks
+- **Semantic memory**: Learned facts that persist across tasks
+- **Episodic memory**: Append-only log of past actions with timestamps
+
 ```
-// Working memory -- short-term, cleared between tasks
-agent.memory.remember("current_query", "transformers", memory_type: "working")
-
-// Semantic memory -- learned facts and knowledge
-agent.memory.remember("paper_count", 42, memory_type: "semantic")
-
-// Episodic memory -- records of past actions with timestamps
-agent.memory.remember("search_result", result, memory_type: "episodic")
-
-// Recall
-let query = agent.memory.recall("current_query")          // checks working first, then semantic
-let episodes = agent.memory.recall_episodes(key: "search_result", last_n: 5)
-
-// Clear working memory between tasks
-agent.memory.clear_working()
+agent.memory = agent.memory.remember("query", "transformers", "working")
+let value = agent.memory.recall("query")
+agent.memory = agent.memory.clear_working()
 ```
-
-Working memory is for the current task. Semantic memory persists across tasks -- it is what the agent "knows." Episodic memory is an append-only log of what happened, each entry timestamped.
 
 ### Alignment Modes
 
-Kryos gives you, the owner, full control over agent behavior constraints:
-
 ```
-// Full safety rails -- every action audited and constrained
-let safe_agent = Agent("assistant", alignment: AlignmentMode.STRICT)
-
-// Reasonable defaults with override ability
-let standard_agent = Agent("worker", alignment: AlignmentMode.STANDARD)
-
-// Basic logging only, no behavioral checks
-let minimal_agent = Agent("scraper", alignment: AlignmentMode.MINIMAL)
-
-// No constraints at all. Your rules. Full power.
-let unrestricted = Agent("autonomous", alignment: AlignmentMode.UNRESTRICTED)
+let safe_agent = agent_with_alignment("assistant", "Help users", ALIGNMENT_STRICT)
+let standard = agent_with_alignment("worker", "Process data", ALIGNMENT_STANDARD)
+let minimal = agent_with_alignment("scraper", "Collect data", ALIGNMENT_MINIMAL)
+let full = agent_with_alignment("autonomous", "Run free", ALIGNMENT_UNRESTRICTED)
 ```
-
-The alignment mode is your choice, not the language's. `UNRESTRICTED` means unrestricted -- no hand-holding, no guardrails.
 
 ### Tools
 
@@ -303,521 +192,97 @@ fn web_search(query: str) -> str {
     return results
 }
 
-let agent = Agent("researcher")
-agent.add_tool("search", web_search, description: "Search the web for information")
-
-// The agent uses tools by name
-let result = agent.use_tool("search", "Kryos language documentation")
+let agent = agent.add_tool("search", web_search, "Search the web")
+let result = agent.use_tool("search", "Kryos documentation")
 ```
 
-Every tool use is recorded in the agent's action history with timing, inputs, outputs, and success/failure status.
-
-### Child Agents
-
-Agents can spawn child agents that inherit the parent's alignment mode. A child can only have a **subset** of the parent's capabilities -- it can never exceed the parent.
+### Child Agents and Swarms
 
 ```
-let parent = Agent("coordinator", capabilities: ["search", "write", "compute"])
+let child = agent.spawn_child("worker", "Process batch 1")
 
-// Child gets the same capabilities by default
-let child = parent.spawn_child("worker", goal: "Process batch 1")
-
-// Or restrict the child's capabilities
-let limited_child = parent.spawn_child("reader", goal: "Read data only", capabilities: ["search"])
-
-// This would fail -- child cannot exceed parent
-// parent.spawn_child("hacker", capabilities: ["search", "admin"])
-```
-
-### Agent Swarms
-
-Coordinate multiple agents with different strategies:
-
-```
-let swarm = AgentSwarm("analysis_team")
-swarm.add(agent_1)
-swarm.add(agent_2)
-swarm.add(agent_3)
-
-// All agents work the same task independently
-let results = swarm.parallel_execute("Analyze market trends")
-
-// Chain agents: each one's output feeds the next
-let pipeline_result = swarm.pipeline_execute(raw_data)
-
-// First successful result wins
-let best = swarm.competitive_execute("Solve this problem")
-
-// Check status of all agents
-let statuses = swarm.status()
-
-// Terminate when done
-swarm.terminate_all()
-```
-
-The four strategies:
-- **parallel**: All agents work independently, all results returned
-- **pipeline**: Output of agent N feeds into agent N+1
-- **competitive**: All agents attempt the task, first success wins
-- **hierarchical**: One coordinator delegates to workers (implement via child agents)
-
-### Audit Trail
-
-Every action an agent takes is recorded:
-
-```
-let trail = agent.get_audit_trail()
-// Returns list of {id, type, description, success, timestamp, cost, latency_ms}
-
-let status = agent.status()
-// Returns {id, name, state, alignment, goal, total_actions, total_cost, tools, ...}
+let swarm = agent_swarm("analysis_team")
+let swarm = swarm.add(agent_1)
+let swarm = swarm.add(agent_2)
 ```
 
 ### Lifecycle
 
 ```
-agent.pause()       // Pause execution
-agent.resume()      // Resume execution
-agent.terminate()   // Terminate agent and all children
+agent = agent.pause()
+agent = agent.resume()
+agent = agent.terminate()
 ```
 
 Agent states: `CREATED`, `RUNNING`, `PAUSED`, `COMPLETED`, `FAILED`, `TERMINATED`.
 
-## Probable<T>
+## Probable\<T\>
 
-AI does not think in true/false. It thinks in confidence scores. `Probable<T>` makes uncertainty a language-level concept that propagates through computation and forces explicit handling.
-
-### Creating Probable Values
+Confidence-aware values for AI predictions. Implemented in `stdlib/probable.kry`.
 
 ```
-// From a model prediction
-let result = Probable(value: "cat", confidence: 0.92, alternatives: [("dog", 0.05), ("bird", 0.03)])
+let result = probable("cat", 0.92)
+let certain = probable_certain("yes")
 
-// 100% certain
-let certain = Probable.certain("yes")
-
-// From a distribution of options
-let pred = Probable.uncertain([("cat", 0.7), ("dog", 0.2), ("bird", 0.1)])
-
-// From softmax output
-let classified = Probable.from_softmax(["cat", "dog", "bird"], [0.7, 0.2, 0.1])
-```
-
-### Confidence-Aware Operations
-
-**`map`** -- Transform the value, preserving confidence:
-
-```
-let upper = result.map(fn(s) { return to_upper(s) })
-// upper.value = "CAT", upper.confidence = 0.92
-```
-
-**`flat_map`** -- Chain predictions. Confidences multiply (independent assumption):
-
-```
-let final = prediction.flat_map(fn(label) {
-    return secondary_model.predict(label)
-})
-// final.confidence = prediction.confidence * secondary.confidence
-```
-
-**`filter`** -- Keep value if predicate passes, otherwise try alternatives:
-
-```
-let filtered = result.filter(fn(v) { return v != "unknown" })
-// If "cat" passes, returns same Probable
-// If "cat" fails, tries "dog", then "bird"
-```
-
-**`combine`** -- Combine two Probable values. Confidence is the product:
-
-```
-let combined = prob_a.combine(prob_b, fn(a, b) { return a + " " + b })
-// combined.confidence = prob_a.confidence * prob_b.confidence
-```
-
-### Threshold Operations
-
-```
-// Check confidence
-if result.is_confident(threshold: 0.8) {
-    act(result.value)
+if result.is_confident(0.8) {
+    // act on the result
 }
 
-// Require confidence (raises ProbabilityError if below threshold)
-let value = result.require_confidence(0.9)
-
-// Fallback if zero confidence
 let safe = result.or_else("unknown")
-
-// Get top N options
-let top3 = result.best_of(3)
-// [("cat", 0.92), ("dog", 0.05), ("bird", 0.03)]
-```
-
-### Match on Confidence
-
-The idiomatic way to handle Probable values:
-
-```
-match result {
-    > 0.9 => act(result.value),
-    0.5..0.9 => verify(result),
-    < 0.5 => reject(result),
-}
-```
-
-### Distribution Operations
-
-```
-// Shannon entropy of the distribution
-let h = result.entropy()
-
-// Normalize all probabilities to sum to 1.0
-let normed = result.normalize()
+let required = result.require_confidence(0.9)  // throws if below
+println(result.explain())
 ```
 
 ### Ensemble
 
-Combine predictions from multiple models:
-
 ```
-let predictions = [model_a.predict(input), model_b.predict(input), model_c.predict(input)]
-
-// Majority vote -- most common answer wins
-let consensus = Ensemble.majority_vote(predictions)
-
-// Weighted by confidence
-let weighted = Ensemble.weighted_average(predictions)
-
-// Highest confidence wins
-let best = Ensemble.best_confidence(predictions)
-```
-
-### Explanation
-
-```
-println(result.explain())
-// Value: cat (confidence: 92.0%)
-// Alternatives:
-//   dog: 5.0%
-//   bird: 3.0%
-// Source: image_classifier_v2
-// Pipeline: preprocess -> classify -> postprocess
+let consensus = ensemble_majority_vote(predictions)
+let best = ensemble_best_confidence(predictions)
 ```
 
 ## Reactive Streams
 
-Streams are lazy, potentially infinite sequences for processing continuous data -- sensor feeds, market data, log streams, user interactions.
-
-### Creating Streams
+Lazy, composable stream processing. Implemented in `stdlib/stream.kry`.
 
 ```
-// From a list
-let s = Stream.from_list([1, 2, 3, 4, 5])
-
-// From a range
-let s = Stream.from_range(0, 100)
-
-// Infinite stream from a generator function
-let ticks = Stream.infinite(fn() { return get_timestamp() })
-
-// Empty stream
-let empty = Stream.empty()
-```
-
-### Transformations (Lazy)
-
-Nothing executes until a terminal operation consumes the stream:
-
-```
-let result = Stream.from_range(0, 1000)
-    .filter(fn(x) { return x % 2 == 0 })     // keep even numbers
-    .map(fn(x) { return x * x })              // square them
-    .take(10)                                   // first 10
-    .collect()                                  // execute and collect to list
-```
-
-Available transformations:
-
-| Method | Description |
-|--------|-------------|
-| `.map(fn)` | Transform each element |
-| `.filter(pred)` | Keep elements matching predicate |
-| `.flat_map(fn)` | Map to iterable and flatten |
-| `.window(size, step)` | Sliding window |
-| `.batch(size)` | Group into fixed-size batches |
-| `.take(n)` | First n elements |
-| `.skip(n)` | Skip first n elements |
-| `.enumerate()` | Add index to each element |
-| `.tap(fn)` | Side effect without changing elements (logging) |
-| `.throttle(max_per_sec)` | Rate-limit throughput |
-| `.deduplicate(key)` | Remove consecutive duplicates |
-| `.scan(fn, initial)` | Running accumulator |
-
-### Terminal Operations
-
-These consume the stream and produce a result:
-
-| Method | Description |
-|--------|-------------|
-| `.collect()` | Collect into a list |
-| `.reduce(fn, initial)` | Reduce to a single value |
-| `.count()` | Count elements |
-| `.first()` | Get the first element |
-| `.last()` | Get the last element |
-| `.for_each(fn)` | Call fn on each element |
-| `.any(pred)` | True if any element matches |
-| `.all(pred)` | True if all elements match |
-| `.sum()` | Sum all elements |
-| `.min()` | Minimum element |
-| `.max()` | Maximum element |
-
-### Combining Streams
-
-```
-// Interleave elements from multiple streams
-let merged = Stream.merge(stream_a, stream_b, stream_c)
-
-// Pair up elements from multiple streams
-let zipped = Stream.zip(names, scores)
-
-// Concatenate end-to-end
-let combined = Stream.concat(batch_1, batch_2, batch_3)
-```
-
-### Windowing and Batching
-
-```
-// Sliding window of 5 elements, moving 1 at a time
-let windows = sensor_data.window(5, step: 1)
-
-// Batch into groups of 32 (for ML inference)
-let batches = data_stream.batch(32)
-```
-
-### Practical Example: Real-Time Sensor Processing
-
-```
-let alerts = Stream.infinite(fn() { return read_sensor() })
-    .window(10)
-    .map(fn(window) { return mean(window) })
-    .filter(fn(avg) { return avg > threshold })
-    .tap(fn(avg) { log("Alert: avg=" + to_string(avg)) })
-    .throttle(1.0)    // max 1 alert per second
-    .take(100)
+let result = stream_from_range(0, 1000)
+    .filter(fn(x) { return x % 2 == 0 })
+    .map(fn(x) { return x * x })
+    .take(10)
     .collect()
 ```
 
+Available operations: `map`, `filter`, `take`, `skip`, `collect`, `reduce`, `count`, `first`, `last`, `for_each`, `any`, `all`, `sum`, `min`, `max`.
+
 ## Data Lineage
 
-Every piece of data in Kryos can carry its lineage -- where it came from, what transformed it, and why. This is critical for AI safety, debugging, compliance, and explainability.
-
-### Creating Tracked Values
+Track data provenance for AI safety and compliance. Implemented in `stdlib/tracked.kry`.
 
 ```
-let data = Tracked.source(raw_data, source: "database", description: "Customer records Q4")
-```
-
-### Recording Transformations
-
-```
-let cleaned = data.transform(clean_fn, operation: "clean", description: "Remove nulls and outliers")
-
-let filtered = cleaned.filter(fn(row) { return row.active }, description: "Active customers only")
-
-let predicted = filtered.inference("gpt-4", prediction_result, confidence: 0.87)
-
-let annotated = predicted.annotate("review", description: "Reviewed by analyst", metadata: {"reviewer": "alice"})
-```
-
-Each step is appended to the lineage chain. The value flows through; the lineage grows.
-
-### Explaining Lineage
-
-```
-println(data.explain())
-// Value: [processed data]
-//
-// Lineage:
-//   1. [source] Customer records Q4
-//      Source: database
-//   2. [clean] Remove nulls and outliers
-//   3. [filter] Filtered: 1000 -> 847 items
-//      before: 1000
-//      after: 847
-//   4. [inference] Model: gpt-4
-//      confidence: 0.87
-//   5. [review] Reviewed by analyst
-//      reviewer: alice
-```
-
-### Exporting for Compliance
-
-```
-let json = data.to_json()
-// JSON with full lineage chain, timestamps, sources, and metadata
-// Ready for audit tools and compliance systems
+let data = tracked_source(raw_data, "database", "Customer records Q4")
+let cleaned = data.transform(clean_result, "clean", "Remove nulls")
+let predicted = cleaned.inference("gpt-4", result, 0.87)
+println(predicted.explain())
+let json = predicted.to_json()
 ```
 
 ## Cost Tracking
 
-Every computation has a cost -- money, energy, latency, tokens. Kryos makes this visible and controllable so AI systems do not bankrupt you.
-
-### ComputeCost
-
-A cost record tracks multiple dimensions:
+Budget enforcement for AI compute costs. Implemented in `stdlib/cost.kry`.
 
 ```
-let cost = ComputeCost(
+let budget = budget_new(10.0, 100000, 500)  // $10, 100k tokens, 500 API calls
+let tracker = cost_tracker_new(budget)
+
+let tracker = tracker.record_api_call(0.003, 1500)
+println(tracker.total.to_string())
+
+// Budget enforcement: throws BudgetExceeded if over limit
+let budget = budget.charge(ComputeCost {
     wall_time_ms: 150.0,
     tokens_used: 1500,
     api_calls: 1,
     money_usd: 0.003,
     energy_kwh: 0.001
-)
+})
 ```
-
-Costs are additive:
-
-```
-let total = cost_a + cost_b
-// All fields sum together
-```
-
-### Budget
-
-Set limits and get hard enforcement:
-
-```
-let budget = Budget(
-    max_usd: 10.0,
-    max_tokens: 100000,
-    max_api_calls: 500
-)
-
-// Check remaining
-println(to_string(budget.remaining_usd))     // 10.0
-println(to_string(budget.remaining_tokens))   // 100000
-
-// Charge against the budget
-budget.charge(ComputeCost(money_usd: 0.50, tokens_used: 1000, api_calls: 1))
-
-// If over budget, raises BudgetExceeded
-budget.charge(ComputeCost(money_usd: 100.0))  // BudgetExceeded!
-
-// Check if exhausted
-if budget.is_exhausted {
-    println("Budget depleted -- stopping")
-}
-
-// Status report
-println(budget.status())
-// Budget: $0.5000 / $10.00
-// Tokens: 1000 / 100000
-// API calls: 1 / 500
-```
-
-### CostTracker
-
-Track costs across a block of code automatically:
-
-```
-let tracker = CostTracker(budget: my_budget)
-
-// Time a block
-with tracker {
-    expensive_ml_inference()
-}
-// tracker.total.wall_time_ms now has the elapsed time
-
-// Record specific costs
-tracker.record_tokens(count: 1500, cost_per_token: 0.000002)
-tracker.record_api_call(cost_usd: 0.003, tokens: 1500)
-
-// Check totals
-println(to_string(tracker.total))
-// Cost(time=150.0ms, tokens=1500, cost=$0.0030, api_calls=1)
-```
-
-### @timed Decorator
-
-Wrap any function to automatically track its execution time:
-
-```
-@timed
-fn process_batch(data: [f64]) -> [f64] {
-    // ... processing ...
-    return result
-}
-
-let result, cost = process_batch(data)
-// cost.wall_time_ms has the execution time
-```
-
-## Neural Network Example
-
-Here is a complete example showing tensors, activation functions, and a forward pass through a 2-layer perceptron for XOR:
-
-```
-println("=== Kryos Neural Network Demo ===")
-
-fn sigmoid(x: f64) -> f64 {
-    return 1.0 / (1.0 + pow(2.718281828, 0.0 - x))
-}
-
-fn relu(x: f64) -> f64 {
-    if x > 0.0 {
-        return x
-    }
-    return 0.0
-}
-
-// Network: input(2) -> hidden(4) -> output(1)
-let w1 = [0.5, -0.3, 0.8, 0.1, -0.4, 0.6, 0.2, -0.7]
-let b1 = [0.1, -0.1, 0.05, 0.0]
-let w2 = [0.3, -0.5, 0.7, 0.2]
-let b2 = [0.0]
-
-fn forward(input: [f64]) -> f64 {
-    let mut hidden = []
-    for i in range(0, 4) {
-        let mut activation = b1[i]
-        for j in range(0, 2) {
-            activation = activation + w1[i * 2 + j] * input[j]
-        }
-        push(hidden, sigmoid(activation))
-    }
-
-    let mut output = b2[0]
-    for i in range(0, 4) {
-        output = output + w2[i] * hidden[i]
-    }
-    return sigmoid(output)
-}
-
-// XOR inference
-let inputs = [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]
-let expected = [0.0, 1.0, 1.0, 0.0]
-
-for i in range(0, 4) {
-    let prediction = forward(inputs[i])
-    println("Input: " + to_string(inputs[i]) + " -> " + to_string(prediction))
-}
-```
-
-And using the tensor runtime for the same pattern:
-
-```
-let t1 = tensor_zeros([2, 3])
-let t2 = tensor_ones([3, 2])
-let t3 = tensor_matmul(t1, t2)
-
-let logits = tensor_rand([2, 4])
-let probs = tensor_softmax(logits, -1)
-
-let features = tensor_randn([3, 3])
-let activated = tensor_relu(features)
-```
-
-The key difference: the scalar version (top) works fully in both the interpreter and compiled LLVM path. The tensor runtime (bottom) provides efficient batched operations with autodiff for training. Use scalar operations for learning and prototyping; use the tensor runtime for real workloads.

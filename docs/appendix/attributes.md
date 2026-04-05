@@ -1,5 +1,7 @@
 # Attributes Reference
 
+> **Implementation Status:** The `@name(args)` annotation syntax is fully parsed and attached to functions, structs, enums, and actors. `@capabilities` is the only attribute with compile-time enforcement (via the `kryos-capabilities` crate). All other attributes listed below (`@compute`, `@export`, `@differentiable`, `@zero_copy`, `@real_time`, `@target`, `@layout`, `@no_std`) are **parsed but not enforced** -- they are reserved for future compiler passes.
+
 Attributes in Kryos use the `@name` or `@name(args)` syntax and are placed directly before a declaration (function, struct, etc.). They provide metadata that affects compilation, runtime behavior, or capability gating.
 
 ## @capabilities

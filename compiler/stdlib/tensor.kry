@@ -1,0 +1,95 @@
+// ============================================================
+// std.tensor -- N-dimensional tensor operations
+//
+// Wraps the kryos-rt tensor FFI. Provides creation, element-wise
+// ops, reductions, linear algebra, and ML primitives.
+// ============================================================
+
+// --- Native FFI declarations ------------------------------------------------
+
+extern {
+    fn kryos_tensor_zeros(shape_ptr: i64, ndim: i64) -> i64
+    fn kryos_tensor_ones(shape_ptr: i64, ndim: i64) -> i64
+    fn kryos_tensor_rand(shape_ptr: i64, ndim: i64) -> i64
+    fn kryos_tensor_randn(shape_ptr: i64, ndim: i64) -> i64
+    fn kryos_tensor_from_data(data_ptr: i64, numel: i64, shape_ptr: i64, ndim: i64) -> i64
+    fn kryos_tensor_eye(n: i64) -> i64
+    fn kryos_tensor_arange(start: i64, end: i64, step: i64) -> i64
+    fn kryos_tensor_ndim(handle: i64) -> i64
+    fn kryos_tensor_numel(handle: i64) -> i64
+    fn kryos_tensor_shape_dim(handle: i64, dim: i64) -> i64
+    fn kryos_tensor_get(handle: i64, idx: i64) -> i64
+    fn kryos_tensor_set(handle: i64, idx: i64, val: i64)
+    fn kryos_tensor_add(a: i64, b: i64) -> i64
+    fn kryos_tensor_sub(a: i64, b: i64) -> i64
+    fn kryos_tensor_mul(a: i64, b: i64) -> i64
+    fn kryos_tensor_div(a: i64, b: i64) -> i64
+    fn kryos_tensor_pow(a: i64, b: i64) -> i64
+    fn kryos_tensor_scale(handle: i64, scalar: i64) -> i64
+    fn kryos_tensor_exp(handle: i64) -> i64
+    fn kryos_tensor_log(handle: i64) -> i64
+    fn kryos_tensor_sqrt(handle: i64) -> i64
+    fn kryos_tensor_tanh(handle: i64) -> i64
+    fn kryos_tensor_sigmoid(handle: i64) -> i64
+    fn kryos_tensor_relu(handle: i64) -> i64
+    fn kryos_tensor_neg(handle: i64) -> i64
+    fn kryos_tensor_sum(handle: i64) -> i64
+    fn kryos_tensor_mean(handle: i64) -> i64
+    fn kryos_tensor_max(handle: i64) -> i64
+    fn kryos_tensor_min(handle: i64) -> i64
+    fn kryos_tensor_argmax(handle: i64) -> i64
+    fn kryos_tensor_argmin(handle: i64) -> i64
+    fn kryos_tensor_matmul(a: i64, b: i64) -> i64
+    fn kryos_tensor_transpose(handle: i64) -> i64
+    fn kryos_tensor_reshape(handle: i64, shape_ptr: i64, ndim: i64) -> i64
+    fn kryos_tensor_flatten(handle: i64) -> i64
+    fn kryos_tensor_softmax(handle: i64, dim: i64) -> i64
+    fn kryos_tensor_cross_entropy(logits: i64, targets: i64) -> i64
+    fn kryos_tensor_mse_loss(a: i64, b: i64) -> i64
+    fn kryos_tensor_to_string(handle: i64) -> i64
+    fn kryos_tensor_free(handle: i64)
+}
+
+// --- Creation functions -----------------------------------------------------
+
+fn tensor_zeros(shape: [i64]) -> i64 {
+    return kryos_tensor_zeros(shape as i64, len(shape))
+}
+
+fn tensor_ones(shape: [i64]) -> i64 {
+    return kryos_tensor_ones(shape as i64, len(shape))
+}
+
+fn tensor_rand(shape: [i64]) -> i64 {
+    return kryos_tensor_rand(shape as i64, len(shape))
+}
+
+fn tensor_randn(shape: [i64]) -> i64 {
+    return kryos_tensor_randn(shape as i64, len(shape))
+}
+
+fn tensor_eye(n: i64) -> i64 {
+    return kryos_tensor_eye(n)
+}
+
+fn tensor_arange(start: f64, end: f64, step: f64) -> i64 {
+    return kryos_tensor_arange(start, end, step)
+}
+
+// --- Operations (free functions) --------------------------------------------
+
+fn tensor_matmul(a: i64, b: i64) -> i64 {
+    return kryos_tensor_matmul(a, b)
+}
+
+fn tensor_softmax(t: i64, dim: i64) -> i64 {
+    return kryos_tensor_softmax(t, dim)
+}
+
+fn tensor_relu(t: i64) -> i64 {
+    return kryos_tensor_relu(t)
+}
+
+fn tensor_sigmoid(t: i64) -> i64 {
+    return kryos_tensor_sigmoid(t)
+}

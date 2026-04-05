@@ -16,6 +16,8 @@ extern {
     fn kryos_file_read(fd: i64, buf: ptr, buf_len: i64) -> i64
     fn kryos_file_write(fd: i64, data: ptr, data_len: i64) -> i64
     fn kryos_file_close(fd: i64) -> i32
+    fn kryos_dir_list(path_ptr: ptr, path_len: i64, out_array: ptr, max_entries: i64) -> i64
+    fn kryos_dir_walk(path_ptr: ptr, path_len: i64, out_array: ptr, max_entries: i64) -> i64
 }
 
 // --- Path existence and type ------------------------------------------------
@@ -200,10 +202,7 @@ fn file_size(path: str) -> i64 {
     return len(contents)
 }
 
-// --- Directory listing (via convention file) ---------------------------------
-// NOTE: Full directory listing requires native support (readdir).
-// Until then, these are provided as safe stubs that throw clear errors,
-// and `list_dir` / `walk_dir` are scaffolded for future native binding.
+// --- Directory listing -------------------------------------------------------
 
 struct DirEntry {
     name: str,
@@ -212,26 +211,50 @@ struct DirEntry {
     is_dir: bool
 }
 
-// List the contents of a directory.
-// Requires future native support: kryos_dir_list.
+// List the contents of a directory. Returns entry names as strings.
 @capabilities(io)
-fn list_dir(path: str) -> [DirEntry] {
+fn list_dir(path: str) -> [str] {
     if not exists(path) {
         throw "fs error: directory does not exist: " + path
     }
-    // TODO: bind to native kryos_dir_list when available
-    throw "fs error: list_dir requires native kryos_dir_list (not yet bound)"
+    let max = 4096
+    let out = alloc(max * 8)
+    let count = kryos_dir_list(str_to_ptr(path), len(path), out, max)
+    if count < 0 {
+        throw "fs error: could not list directory: " + path
+    }
+    let mut result = []
+    let actual = if count < max { count } else { max }
+    let mut i = 0
+    while i < actual {
+        let handle = ptr_read_i64(out, i)
+        result = push(result, handle_to_str(handle))
+        i = i + 1
+    }
+    return result
 }
 
-// Walk a directory tree recursively, returning all entries.
-// Requires list_dir to be functional.
+// Walk a directory tree recursively, returning full paths.
 @capabilities(io)
-fn walk_dir(path: str) -> [DirEntry] {
+fn walk_dir(path: str) -> [str] {
     if not exists(path) {
         throw "fs error: directory does not exist: " + path
     }
-    // TODO: implement recursive walk once list_dir is available
-    throw "fs error: walk_dir requires native kryos_dir_list (not yet bound)"
+    let max = 16384
+    let out = alloc(max * 8)
+    let count = kryos_dir_walk(str_to_ptr(path), len(path), out, max)
+    if count < 0 {
+        throw "fs error: could not walk directory: " + path
+    }
+    let mut result = []
+    let actual = if count < max { count } else { max }
+    let mut i = 0
+    while i < actual {
+        let handle = ptr_read_i64(out, i)
+        result = push(result, handle_to_str(handle))
+        i = i + 1
+    }
+    return result
 }
 
 // --- Path utilities ---------------------------------------------------------

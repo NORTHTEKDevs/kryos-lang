@@ -61,6 +61,54 @@ pub fn find_runtime_lib() -> Option<PathBuf> {
     None
 }
 
+/// The static library filename for kryos-stdlib-native.
+fn stdlib_native_lib_filename() -> &'static str {
+    if cfg!(all(windows, target_env = "msvc")) {
+        "kryos_stdlib_native.lib"
+    } else {
+        "libkryos_stdlib_native.a"
+    }
+}
+
+/// Locate the kryos-stdlib-native static library.
+///
+/// Uses the same search strategy as `find_runtime_lib`.
+pub fn find_stdlib_native_lib() -> Option<PathBuf> {
+    let name = stdlib_native_lib_filename();
+
+    // 1. Explicit override via environment variable.
+    if let Ok(path) = std::env::var("KRYOS_STDLIB_NATIVE_LIB") {
+        let p = PathBuf::from(path);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+
+    // 2. Distribution layout: <exe_dir>/../lib/<name>
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let dist = exe_dir.join("..").join("lib").join(name);
+            if dist.is_file() {
+                return Some(dist);
+            }
+            let flat = exe_dir.join(name);
+            if flat.is_file() {
+                return Some(flat);
+            }
+        }
+    }
+
+    // 3. Cargo target directory (development builds).
+    for profile in &["debug", "release"] {
+        let candidate = PathBuf::from("target").join(profile).join(name);
+        if candidate.is_file() {
+            return Some(candidate.canonicalize().unwrap_or(candidate));
+        }
+    }
+
+    None
+}
+
 /// Return the system libraries required when linking the Rust-based runtime
 /// staticlib on the given target.
 ///
@@ -75,6 +123,9 @@ pub fn system_libs(target: &kryos_linker::Target) -> Vec<String> {
             "userenv".into(),
             "ws2_32".into(),
             "dbghelp".into(),
+            "user32".into(),
+            "bcrypt".into(),
+            "advapi32".into(),
         ],
         (Os::Windows, _) => vec![
             // MinGW / GNU
@@ -82,6 +133,9 @@ pub fn system_libs(target: &kryos_linker::Target) -> Vec<String> {
             "userenv".into(),
             "ws2_32".into(),
             "dbghelp".into(),
+            "user32".into(),
+            "bcrypt".into(),
+            "advapi32".into(),
             "gcc".into(),
             "pthread".into(),
         ],

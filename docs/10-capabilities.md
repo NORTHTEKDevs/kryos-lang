@@ -1,5 +1,7 @@
 # Capabilities
 
+> **Implementation Status:** The `@capabilities(...)` annotation is parsed and the compile-time capability checker (`kryos-capabilities` crate) is implemented. It enforces: functions must declare capabilities matching the stdlib modules they use, child scopes cannot exceed parent capabilities (attenuation), and extern blocks require FFI capability. The actual capability variants are: `net`, `io`, `ffi`, `compute`, `crypto`, `process`, `env`, `term`, `db`, `time`, `all`. Features described below that are **not yet implemented**: sub-capabilities (e.g. `filesystem:read`), runtime enforcement (`CapabilityEnforcer`), audit logging, license tiers, sandboxing, and `kryos check` CLI command.
+
 Capabilities are Kryos's security model. Every function declares exactly what system resources it needs -- filesystem access, network connections, GPU compute, FFI calls. If a function tries to use something it did not declare, the program fails at compile time. Not at runtime, not with a warning -- it does not compile.
 
 This is the opposite of how most languages work. In Python or JavaScript, any function can open a file, make a network request, or call `eval`. You only find out about unauthorized access when something goes wrong in production. Kryos inverts that: you see every capability a program uses before you run it.

@@ -137,6 +137,70 @@ impl JitCompiler {
         jit_builder.symbol("kryos_spawn_wait_all", kryos_rt::spawn::kryos_spawn_wait_all as *const u8);
         jit_builder.symbol("kryos_sleep", kryos_rt::spawn::kryos_sleep as *const u8);
 
+        // Tensor runtime
+        jit_builder.symbol("kryos_tensor_zeros", kryos_rt::tensor::kryos_tensor_zeros as *const u8);
+        jit_builder.symbol("kryos_tensor_ones", kryos_rt::tensor::kryos_tensor_ones as *const u8);
+        jit_builder.symbol("kryos_tensor_rand", kryos_rt::tensor::kryos_tensor_rand as *const u8);
+        jit_builder.symbol("kryos_tensor_randn", kryos_rt::tensor::kryos_tensor_randn as *const u8);
+        jit_builder.symbol("kryos_tensor_from_data", kryos_rt::tensor::kryos_tensor_from_data as *const u8);
+        jit_builder.symbol("kryos_tensor_eye", kryos_rt::tensor::kryos_tensor_eye as *const u8);
+        jit_builder.symbol("kryos_tensor_arange", kryos_rt::tensor::kryos_tensor_arange as *const u8);
+        jit_builder.symbol("kryos_tensor_ndim", kryos_rt::tensor::kryos_tensor_ndim as *const u8);
+        jit_builder.symbol("kryos_tensor_numel", kryos_rt::tensor::kryos_tensor_numel as *const u8);
+        jit_builder.symbol("kryos_tensor_shape_dim", kryos_rt::tensor::kryos_tensor_shape_dim as *const u8);
+        jit_builder.symbol("kryos_tensor_get", kryos_rt::tensor::kryos_tensor_get as *const u8);
+        jit_builder.symbol("kryos_tensor_set", kryos_rt::tensor::kryos_tensor_set as *const u8);
+        jit_builder.symbol("kryos_tensor_add", kryos_rt::tensor::kryos_tensor_add as *const u8);
+        jit_builder.symbol("kryos_tensor_sub", kryos_rt::tensor::kryos_tensor_sub as *const u8);
+        jit_builder.symbol("kryos_tensor_mul", kryos_rt::tensor::kryos_tensor_mul as *const u8);
+        jit_builder.symbol("kryos_tensor_div", kryos_rt::tensor::kryos_tensor_div as *const u8);
+        jit_builder.symbol("kryos_tensor_pow", kryos_rt::tensor::kryos_tensor_pow as *const u8);
+        jit_builder.symbol("kryos_tensor_scale", kryos_rt::tensor::kryos_tensor_scale as *const u8);
+        jit_builder.symbol("kryos_tensor_exp", kryos_rt::tensor::kryos_tensor_exp as *const u8);
+        jit_builder.symbol("kryos_tensor_log", kryos_rt::tensor::kryos_tensor_log as *const u8);
+        jit_builder.symbol("kryos_tensor_sqrt", kryos_rt::tensor::kryos_tensor_sqrt as *const u8);
+        jit_builder.symbol("kryos_tensor_tanh", kryos_rt::tensor::kryos_tensor_tanh as *const u8);
+        jit_builder.symbol("kryos_tensor_sigmoid", kryos_rt::tensor::kryos_tensor_sigmoid as *const u8);
+        jit_builder.symbol("kryos_tensor_relu", kryos_rt::tensor::kryos_tensor_relu as *const u8);
+        jit_builder.symbol("kryos_tensor_neg", kryos_rt::tensor::kryos_tensor_neg as *const u8);
+        jit_builder.symbol("kryos_tensor_sum", kryos_rt::tensor::kryos_tensor_sum as *const u8);
+        jit_builder.symbol("kryos_tensor_mean", kryos_rt::tensor::kryos_tensor_mean as *const u8);
+        jit_builder.symbol("kryos_tensor_max", kryos_rt::tensor::kryos_tensor_max as *const u8);
+        jit_builder.symbol("kryos_tensor_min", kryos_rt::tensor::kryos_tensor_min as *const u8);
+        jit_builder.symbol("kryos_tensor_argmax", kryos_rt::tensor::kryos_tensor_argmax as *const u8);
+        jit_builder.symbol("kryos_tensor_argmin", kryos_rt::tensor::kryos_tensor_argmin as *const u8);
+        jit_builder.symbol("kryos_tensor_matmul", kryos_rt::tensor::kryos_tensor_matmul as *const u8);
+        jit_builder.symbol("kryos_tensor_transpose", kryos_rt::tensor::kryos_tensor_transpose as *const u8);
+        jit_builder.symbol("kryos_tensor_reshape", kryos_rt::tensor::kryos_tensor_reshape as *const u8);
+        jit_builder.symbol("kryos_tensor_flatten", kryos_rt::tensor::kryos_tensor_flatten as *const u8);
+        jit_builder.symbol("kryos_tensor_softmax", kryos_rt::tensor::kryos_tensor_softmax as *const u8);
+        jit_builder.symbol("kryos_tensor_cross_entropy", kryos_rt::tensor::kryos_tensor_cross_entropy as *const u8);
+        jit_builder.symbol("kryos_tensor_mse_loss", kryos_rt::tensor::kryos_tensor_mse_loss as *const u8);
+        jit_builder.symbol("kryos_tensor_to_string", kryos_rt::tensor::kryos_tensor_to_string as *const u8);
+        jit_builder.symbol("kryos_tensor_free", kryos_rt::tensor::kryos_tensor_free as *const u8);
+
+        // Stdlib-native: process management
+        jit_builder.symbol("kryos_env_get", kryos_stdlib_native::process::kryos_env_get as *const u8);
+        jit_builder.symbol("kryos_process_exit", kryos_stdlib_native::process::kryos_process_exit as *const u8);
+        jit_builder.symbol("kryos_process_exec", kryos_stdlib_native::process::kryos_process_exec as *const u8);
+        jit_builder.symbol("kryos_process_exec_simple", kryos_stdlib_native::process::kryos_process_exec_simple as *const u8);
+        jit_builder.symbol("kryos_process_argc", kryos_stdlib_native::process::kryos_process_argc as *const u8);
+        jit_builder.symbol("kryos_process_argv", kryos_stdlib_native::process::kryos_process_argv as *const u8);
+
+        // Stdlib-native: filesystem
+        jit_builder.symbol("kryos_path_exists", kryos_stdlib_native::fs::kryos_path_exists as *const u8);
+        jit_builder.symbol("kryos_dir_create", kryos_stdlib_native::fs::kryos_dir_create as *const u8);
+        jit_builder.symbol("kryos_file_remove", kryos_stdlib_native::fs::kryos_file_remove as *const u8);
+        jit_builder.symbol("kryos_dir_list", kryos_stdlib_native::process::kryos_dir_list as *const u8);
+        jit_builder.symbol("kryos_dir_walk", kryos_stdlib_native::process::kryos_dir_walk as *const u8);
+
+        // Stdlib-native: file I/O
+        jit_builder.symbol("kryos_file_open", kryos_stdlib_native::io::kryos_file_open as *const u8);
+        jit_builder.symbol("kryos_file_read", kryos_stdlib_native::io::kryos_file_read as *const u8);
+        jit_builder.symbol("kryos_file_write", kryos_stdlib_native::io::kryos_file_write as *const u8);
+        jit_builder.symbol("kryos_file_close", kryos_stdlib_native::io::kryos_file_close as *const u8);
+        jit_builder.symbol("kryos_stderr_write", kryos_stdlib_native::io::kryos_stderr_write as *const u8);
+
         let module = JITModule::new(jit_builder);
 
         Ok(Self {

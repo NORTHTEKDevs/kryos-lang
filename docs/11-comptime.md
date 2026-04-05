@@ -1,6 +1,8 @@
 # Compile-Time Evaluation
 
-`comptime` blocks run during compilation, not at runtime. The result is baked into the program as a constant. Use them for lookup tables, precomputed values, configuration constants, and anything expensive that does not need to be recalculated every time the program starts.
+> **Implementation Status:** The `comptime` keyword is parsed and lowered through the compiler pipeline (lexer, parser, AST, MIR, codegen). Currently the inner expression is lowered directly as a regular value -- the planned compile-time interpreter that folds expressions into constants before codegen is not yet implemented. The syntax is reserved and will be fully operational in a future release.
+
+`comptime` blocks are designed to run during compilation, not at runtime. The result will be baked into the program as a constant. Use them for lookup tables, precomputed values, configuration constants, and anything expensive that does not need to be recalculated every time the program starts.
 
 ## Syntax
 
@@ -14,17 +16,17 @@ let pi = comptime {
 
 After compilation, this is identical to `let pi = 3.14159`. The `comptime` block is evaluated once during compilation, and the result replaces the block entirely in the program.
 
-## How It Works
+## How It Works (Target Design)
 
-The `ComptimeTransformer` walks the AST before interpretation or codegen. When it finds a `ComptimeBlock` node, it:
+The planned implementation will:
 
-1. Creates a fresh, isolated interpreter instance
-2. Executes the block's statements in that interpreter
-3. Takes the result (the value of the last expression, or the return value)
-4. Converts the result back into an AST literal node (IntLiteral, StringLiteral, etc.)
-5. Replaces the `ComptimeBlock` in the AST with that literal
+1. Walk the AST before codegen and find `ComptimeBlock` nodes
+2. Create a fresh, isolated evaluator instance
+3. Execute the block's statements in that evaluator
+4. Convert the result back into an AST literal node (IntLiteral, StringLiteral, etc.)
+5. Replace the `ComptimeBlock` in the AST with that literal
 
-By the time the main interpreter or LLVM codegen sees the program, every `comptime` block is gone -- replaced by plain constants.
+Currently, `comptime` blocks are parsed as `Expr::ComptimeBlock` in the AST, lowered to `RValue::Comptime(inner)` in MIR, and both the Cranelift and LLVM codegens lower the inner expression directly. The compile-time evaluation step (folding to constants) is planned.
 
 ## Use Cases
 

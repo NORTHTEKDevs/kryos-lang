@@ -1,0 +1,305 @@
+// ============================================================
+// std.agent -- First-class autonomous agents
+//
+// Agents have persistent memory, tools, alignment modes, and
+// full audit trails. They can spawn child agents and coordinate
+// in swarms.
+// ============================================================
+
+// --- Alignment modes --------------------------------------------------------
+
+let ALIGNMENT_STRICT = 0
+let ALIGNMENT_STANDARD = 1
+let ALIGNMENT_MINIMAL = 2
+let ALIGNMENT_UNRESTRICTED = 3
+
+// --- Agent state ------------------------------------------------------------
+
+let STATE_CREATED = 0
+let STATE_RUNNING = 1
+let STATE_PAUSED = 2
+let STATE_COMPLETED = 3
+let STATE_FAILED = 4
+let STATE_TERMINATED = 5
+
+// --- Memory types -----------------------------------------------------------
+
+struct MemoryEntry {
+    key: str,
+    value: str,
+    memory_type: str,
+    timestamp: i64
+}
+
+struct AgentMemory {
+    working: [MemoryEntry],
+    semantic: [MemoryEntry],
+    episodic: [MemoryEntry]
+}
+
+fn agent_memory_new() -> AgentMemory {
+    return AgentMemory {
+        working: [],
+        semantic: [],
+        episodic: []
+    }
+}
+
+impl AgentMemory {
+    // Remember a key-value pair in the given memory type.
+    fn remember(self: AgentMemory, key: str, value: str, memory_type: str) -> AgentMemory {
+        let entry = MemoryEntry {
+            key: key,
+            value: value,
+            memory_type: memory_type,
+            timestamp: time_now()
+        }
+        if memory_type == "working" {
+            return AgentMemory {
+                working: push(self.working, entry),
+                semantic: self.semantic,
+                episodic: self.episodic
+            }
+        }
+        if memory_type == "semantic" {
+            return AgentMemory {
+                working: self.working,
+                semantic: push(self.semantic, entry),
+                episodic: self.episodic
+            }
+        }
+        // episodic
+        return AgentMemory {
+            working: self.working,
+            semantic: self.semantic,
+            episodic: push(self.episodic, entry)
+        }
+    }
+
+    // Recall a value by key. Checks working, then semantic.
+    fn recall(self: AgentMemory, key: str) -> str {
+        // Check working memory first.
+        let mut i = len(self.working) - 1
+        while i >= 0 {
+            if self.working[i].key == key {
+                return self.working[i].value
+            }
+            i = i - 1
+        }
+        // Then semantic.
+        i = len(self.semantic) - 1
+        while i >= 0 {
+            if self.semantic[i].key == key {
+                return self.semantic[i].value
+            }
+            i = i - 1
+        }
+        return ""
+    }
+
+    // Clear working memory.
+    fn clear_working(self: AgentMemory) -> AgentMemory {
+        return AgentMemory {
+            working: [],
+            semantic: self.semantic,
+            episodic: self.episodic
+        }
+    }
+}
+
+// --- Audit trail ------------------------------------------------------------
+
+struct AuditEntry {
+    id: i64,
+    entry_type: str,
+    description: str,
+    success: bool,
+    timestamp: i64,
+    cost_usd: f64,
+    latency_ms: f64
+}
+
+// --- Tool -------------------------------------------------------------------
+
+struct AgentTool {
+    name: str,
+    description: str,
+    handler: fn(str) -> str
+}
+
+// --- Agent ------------------------------------------------------------------
+
+struct Agent {
+    name: str,
+    goal: str,
+    alignment: i64,
+    state: i64,
+    memory: AgentMemory,
+    tools: [AgentTool],
+    audit_trail: [AuditEntry],
+    action_count: i64,
+    total_cost: f64,
+    capabilities: [str]
+}
+
+// Create a new agent.
+fn agent_new(name: str, goal: str) -> Agent {
+    return Agent {
+        name: name,
+        goal: goal,
+        alignment: ALIGNMENT_STANDARD,
+        state: STATE_CREATED,
+        memory: agent_memory_new(),
+        tools: [],
+        audit_trail: [],
+        action_count: 0,
+        total_cost: 0.0,
+        capabilities: []
+    }
+}
+
+// Create an agent with an alignment mode.
+fn agent_with_alignment(name: str, goal: str, alignment: i64) -> Agent {
+    let a = agent_new(name, goal)
+    return Agent {
+        name: a.name,
+        goal: a.goal,
+        alignment: alignment,
+        state: a.state,
+        memory: a.memory,
+        tools: a.tools,
+        audit_trail: a.audit_trail,
+        action_count: a.action_count,
+        total_cost: a.total_cost,
+        capabilities: a.capabilities
+    }
+}
+
+impl Agent {
+    // Add a tool to the agent.
+    fn add_tool(self: Agent, name: str, handler: fn(str) -> str, description: str) -> Agent {
+        let tool = AgentTool {
+            name: name,
+            description: description,
+            handler: handler
+        }
+        return Agent {
+            name: self.name,
+            goal: self.goal,
+            alignment: self.alignment,
+            state: self.state,
+            memory: self.memory,
+            tools: push(self.tools, tool),
+            audit_trail: self.audit_trail,
+            action_count: self.action_count,
+            total_cost: self.total_cost,
+            capabilities: push(self.capabilities, name)
+        }
+    }
+
+    // Use a tool by name.
+    fn use_tool(self: Agent, tool_name: str, input: str) -> str {
+        let mut i = 0
+        while i < len(self.tools) {
+            if self.tools[i].name == tool_name {
+                return self.tools[i].handler(input)
+            }
+            i = i + 1
+        }
+        throw "agent error: tool not found: " + tool_name
+    }
+
+    // Spawn a child agent (inherits alignment, subset of capabilities).
+    fn spawn_child(self: Agent, name: str, goal: str) -> Agent {
+        return Agent {
+            name: name,
+            goal: goal,
+            alignment: self.alignment,
+            state: STATE_CREATED,
+            memory: agent_memory_new(),
+            tools: self.tools,
+            audit_trail: [],
+            action_count: 0,
+            total_cost: 0.0,
+            capabilities: self.capabilities
+        }
+    }
+
+    // Pause the agent.
+    fn pause(self: Agent) -> Agent {
+        return Agent {
+            name: self.name, goal: self.goal, alignment: self.alignment,
+            state: STATE_PAUSED, memory: self.memory, tools: self.tools,
+            audit_trail: self.audit_trail, action_count: self.action_count,
+            total_cost: self.total_cost, capabilities: self.capabilities
+        }
+    }
+
+    // Resume the agent.
+    fn resume(self: Agent) -> Agent {
+        return Agent {
+            name: self.name, goal: self.goal, alignment: self.alignment,
+            state: STATE_RUNNING, memory: self.memory, tools: self.tools,
+            audit_trail: self.audit_trail, action_count: self.action_count,
+            total_cost: self.total_cost, capabilities: self.capabilities
+        }
+    }
+
+    // Terminate the agent.
+    fn terminate(self: Agent) -> Agent {
+        return Agent {
+            name: self.name, goal: self.goal, alignment: self.alignment,
+            state: STATE_TERMINATED, memory: self.memory, tools: self.tools,
+            audit_trail: self.audit_trail, action_count: self.action_count,
+            total_cost: self.total_cost, capabilities: self.capabilities
+        }
+    }
+
+    // Get the audit trail.
+    fn get_audit_trail(self: Agent) -> [AuditEntry] {
+        return self.audit_trail
+    }
+
+    // Status summary.
+    fn status(self: Agent) -> str {
+        let state_names = ["CREATED", "RUNNING", "PAUSED", "COMPLETED", "FAILED", "TERMINATED"]
+        let alignment_names = ["STRICT", "STANDARD", "MINIMAL", "UNRESTRICTED"]
+        return "Agent: " + self.name + "\n" +
+               "Goal: " + self.goal + "\n" +
+               "State: " + state_names[self.state] + "\n" +
+               "Alignment: " + alignment_names[self.alignment] + "\n" +
+               "Actions: " + to_string(self.action_count) + "\n" +
+               "Total cost: $" + to_string(self.total_cost) + "\n" +
+               "Tools: " + to_string(len(self.tools))
+    }
+}
+
+// --- Agent Swarm ------------------------------------------------------------
+
+struct AgentSwarm {
+    name: str,
+    agents: [Agent]
+}
+
+fn agent_swarm(name: str) -> AgentSwarm {
+    return AgentSwarm { name: name, agents: [] }
+}
+
+impl AgentSwarm {
+    fn add(self: AgentSwarm, agent: Agent) -> AgentSwarm {
+        return AgentSwarm {
+            name: self.name,
+            agents: push(self.agents, agent)
+        }
+    }
+
+    fn terminate_all(self: AgentSwarm) -> AgentSwarm {
+        let mut terminated = []
+        let mut i = 0
+        while i < len(self.agents) {
+            terminated = push(terminated, self.agents[i].terminate())
+            i = i + 1
+        }
+        return AgentSwarm { name: self.name, agents: terminated }
+    }
+}
