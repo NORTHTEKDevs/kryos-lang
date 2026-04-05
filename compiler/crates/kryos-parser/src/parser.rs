@@ -1185,6 +1185,12 @@ impl Parser {
                 Expr::Identifier { name, span: start }
             }
 
+            // Channel/send/recv keywords used as function calls in expressions.
+            TokenKind::Chan | TokenKind::Send | TokenKind::Recv => {
+                self.advance();
+                Expr::Identifier { name: tok.text.clone(), span: tok.span }
+            }
+
             // Lambda: `fn(params) -> RetType { body }` or `fn(params) { body }`
             TokenKind::Fn => self.parse_lambda(),
 
@@ -1640,6 +1646,22 @@ impl Parser {
                 }
                 let rparen = self.expect(TokenKind::RParen);
                 TypeExpr::Tuple { elements, span: tok.span.merge(rparen.span) }
+            }
+            // Channel type: `chan<T>`
+            TokenKind::Chan => {
+                self.advance();
+                if self.eat(TokenKind::Lt) {
+                    let inner = self.parse_type();
+                    let gt = self.expect(TokenKind::Gt);
+                    TypeExpr::Generic {
+                        name: "chan".to_string(),
+                        args: vec![inner],
+                        span: tok.span.merge(gt.span),
+                    }
+                } else {
+                    // Bare `chan` without type param.
+                    TypeExpr::Simple { name: "chan".to_string(), span: tok.span }
+                }
             }
             // Simple or generic type: `i32`, `Vec<i32>`, `Map<String, i32>`
             TokenKind::Ident | TokenKind::TypeIdent => {

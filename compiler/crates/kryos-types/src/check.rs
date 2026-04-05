@@ -111,6 +111,8 @@ impl TypeChecker {
                             Type::Error
                         }
                     }
+                    // chan<T> — channels are opaque i64 handles at runtime.
+                    "chan" => Type::I64,
                     "Set" => {
                         if resolved_args.len() == 1 {
                             Type::Set {
@@ -1481,6 +1483,33 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         generic_params: vec![],
         params: vec![("value".to_string(), Type::I64)],
         ret: Type::Str,
+    });
+
+    // chan() -> i64  (create a new channel)
+    checker.env.define_function(FunctionSig {
+        name: "chan".to_string(),
+        generic_params: vec![],
+        params: vec![],
+        ret: Type::I64,
+    });
+
+    // send(ch, value) -> void
+    checker.env.define_function(FunctionSig {
+        name: "send".to_string(),
+        generic_params: vec![],
+        params: vec![
+            ("ch".to_string(), Type::I64),
+            ("value".to_string(), Type::I64),
+        ],
+        ret: Type::Void,
+    });
+
+    // recv(ch) -> i64
+    checker.env.define_function(FunctionSig {
+        name: "recv".to_string(),
+        generic_params: vec![],
+        params: vec![("ch".to_string(), Type::I64)],
+        ret: Type::I64,
     });
 
     checker.check_module(module);
