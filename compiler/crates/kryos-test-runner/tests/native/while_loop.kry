@@ -1,0 +1,10 @@
+// expect-stdout: 10
+fn main() {
+    let mut sum = 0
+    let mut i = 0
+    while i < 5 {
+        sum = sum + i
+        i = i + 1
+    }
+    println(sum)
+}

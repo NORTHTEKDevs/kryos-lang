@@ -1,0 +1,12 @@
+// expect-stdout: before
+// expect-stdout: after
+// expect-stdout: spawned work
+fn do_work() {
+    println("spawned work")
+}
+
+fn main() {
+    println("before")
+    spawn do_work()
+    println("after")
+}

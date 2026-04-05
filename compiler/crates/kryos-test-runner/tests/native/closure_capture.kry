@@ -1,0 +1,11 @@
+// expect-stdout: 15
+fn make_adder(x: i64) -> i64 {
+    fn adder(y: i64) -> i64 {
+        return x + y
+    }
+    return adder(10)
+}
+
+fn main() {
+    println(make_adder(5))
+}

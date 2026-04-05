@@ -1,0 +1,8 @@
+// expect-stdout: 0
+// expect-stdout: 1
+// expect-stdout: 2
+fn main() {
+    for i in range(0, 3) {
+        println(i)
+    }
+}

@@ -1,0 +1,30 @@
+// expect-stdout: 1
+// expect-stdout: 2
+// expect-stdout: Fizz
+// expect-stdout: 4
+// expect-stdout: Buzz
+// expect-stdout: Fizz
+// expect-stdout: 7
+// expect-stdout: 8
+// expect-stdout: Fizz
+// expect-stdout: Buzz
+// expect-stdout: 11
+// expect-stdout: Fizz
+// expect-stdout: 13
+// expect-stdout: 14
+// expect-stdout: FizzBuzz
+fn main() {
+    let mut i = 1
+    while i <= 15 {
+        if i % 15 == 0 {
+            println("FizzBuzz")
+        } elif i % 3 == 0 {
+            println("Fizz")
+        } elif i % 5 == 0 {
+            println("Buzz")
+        } else {
+            println(i)
+        }
+        i = i + 1
+    }
+}

@@ -1,0 +1,6 @@
+// expect-stdout: 42
+fn main() {
+    let m = {"key": 42}
+    let val = m["key"]
+    println(val)
+}

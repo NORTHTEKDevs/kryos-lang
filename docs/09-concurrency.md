@@ -25,7 +25,7 @@ spawned
 after
 ```
 
-The `sleep(0.2)` gives the spawned thread time to run before the program exits. Without it, the program might finish before the spawned block prints. This is intentional -- spawned work is fire-and-forget by default.
+The compiler inserts a `kryos_spawn_wait_all()` call at the end of `main`, so all spawned threads are joined before the process exits. The `sleep(0.2)` is for ordering -- it gives the spawned thread time to print before the main thread's `println("after")` runs. Without the sleep, the output order may vary because spawned threads run concurrently.
 
 ### What spawn does
 
@@ -247,6 +247,64 @@ actor Connection {
     }
 }
 ```
+
+## Channels
+
+Channels are typed communication pipes between threads. Use `chan()` to create a channel, `send()` to push values, and `recv()` to pull values (blocking).
+
+```
+fn main() {
+    let ch = chan()
+    
+    spawn {
+        send(ch, 42)
+        send(ch, 100)
+    }
+    
+    let a = recv(ch)
+    let b = recv(ch)
+    println(to_string(a + b))  // 142
+}
+```
+
+### How channels work
+
+1. `chan()` creates a multi-producer, multi-consumer channel for i64 values
+2. `send(ch, value)` pushes a value into the channel (non-blocking)
+3. `recv(ch)` blocks until a value is available, then returns it
+
+Channels are reference-counted. Multiple threads can hold the same channel handle. The channel stays alive as long as at least one handle exists.
+
+### Select
+
+The `select` statement waits on multiple channels simultaneously, running the first branch that receives a message:
+
+```
+select {
+    msg from ch1 => {
+        println("got from ch1: " + to_string(msg))
+    }
+    msg from ch2 => {
+        println("got from ch2: " + to_string(msg))
+    }
+}
+```
+
+`select` blocks until one of the channels has data, then runs the matching branch. Only one branch runs per `select` evaluation.
+
+### When to use channels vs actors
+
+Use **channels** when you need to pass data between threads with explicit send/receive coordination. Channels are lower-level and more flexible.
+
+Use **actors** when you have stateful components that respond to messages. Actors encapsulate state and guarantee no shared mutable data.
+
+| Pattern | Use |
+|---------|-----|
+| Producer-consumer pipeline | Channels |
+| Background worker with state | Actor |
+| Fan-out / fan-in parallelism | Channels |
+| Request-response service | Actor |
+| Event stream processing | Either |
 
 ## Combining spawn and actors
 

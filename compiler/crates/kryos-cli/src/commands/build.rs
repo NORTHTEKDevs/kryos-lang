@@ -112,7 +112,7 @@ pub fn execute(
     // Handle special output types.
     if emit_mir {
         if let Some(ref mir) = result.mir {
-            println!("{mir:?}");
+            println!("{mir}");
         }
     } else if emit_llvm {
         if let Some(ref ir) = result.llvm_ir {

@@ -1,0 +1,24 @@
+// expect-stdout: 1
+// expect-stdout: 0
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+fn main() {
+    let c = Color.Red
+    let tag = match c {
+        Red => 1,
+        Green => 2,
+        Blue => 3,
+    }
+    println(tag)
+
+    let d = Color.Green
+    let is_red = match d {
+        Red => 1,
+        _ => 0,
+    }
+    println(is_red)
+}

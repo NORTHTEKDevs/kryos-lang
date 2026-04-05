@@ -210,8 +210,12 @@ pub enum Instruction {
     /// Drop a local (scope-exit cleanup).
     Drop { local: LocalId },
 
-    /// Spawn a concurrent task — evaluates expr and runs it concurrently.
-    Spawn { task: LocalId },
+    /// Spawn a function on a new OS thread.
+    ///
+    /// `func` is the name of the function to call (may be a generated
+    /// `__spawn_N` wrapper for block-style spawns).
+    /// `args` are the operands to pass as i64 arguments.
+    Spawn { func: String, args: Vec<Operand> },
 
     /// Send a value on a channel.
     Send { channel: LocalId, value: LocalId },
@@ -242,9 +246,15 @@ pub enum RValue {
         operand: Operand,
     },
 
-    /// Function call.
+    /// Direct function call (callee known at compile time).
     Call {
         func: String,
+        args: Vec<Operand>,
+    },
+
+    /// Indirect function call (callee is a runtime value — function pointer).
+    CallIndirect {
+        callee: Operand,
         args: Vec<Operand>,
     },
 

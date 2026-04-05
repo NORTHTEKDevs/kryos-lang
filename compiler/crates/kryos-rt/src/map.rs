@@ -173,6 +173,115 @@ pub extern "C" fn kryos_map_get(map: i64, key: i64) -> i64 {
     }
 }
 
+/// Insert a key-value pair where the key is a KryosString pointer.
+/// Uses content-based hashing and comparison for string keys.
+#[no_mangle]
+pub extern "C" fn kryos_map_insert_str(map: i64, key: i64, value: i64) {
+    if map == 0 {
+        return;
+    }
+    unsafe {
+        let header = map as *mut MapHeader;
+
+        // Resize if load factor exceeded.
+        if ((*header).len + 1) as f64 > (*header).capacity as f64 * LOAD_FACTOR {
+            resize_str(header);
+        }
+
+        let capacity = (*header).capacity as usize;
+        let entries = (*header).entries;
+
+        let str_hash = crate::string::kryos_string_hash(key as *const crate::string::KryosString);
+        let mut idx = hash_key(str_hash, capacity);
+        for _ in 0..capacity {
+            let entry = &mut *entries.add(idx);
+            if !entry.occupied {
+                entry.key = key;
+                entry.value = value;
+                entry.occupied = true;
+                (*header).len += 1;
+                return;
+            }
+            // Compare by content for string keys.
+            if crate::string::kryos_string_eq(
+                entry.key as *const crate::string::KryosString,
+                key as *const crate::string::KryosString,
+            ) {
+                entry.value = value;
+                return;
+            }
+            idx = (idx + 1) % capacity;
+        }
+    }
+}
+
+/// Get a value from the map where the key is a KryosString pointer.
+/// Uses content-based hashing and comparison for string keys.
+#[no_mangle]
+pub extern "C" fn kryos_map_get_str(map: i64, key: i64) -> i64 {
+    if map == 0 {
+        return 0;
+    }
+    unsafe {
+        let header = map as *const MapHeader;
+        let capacity = (*header).capacity as usize;
+        let entries = (*header).entries;
+
+        let str_hash = crate::string::kryos_string_hash(key as *const crate::string::KryosString);
+        let mut idx = hash_key(str_hash, capacity);
+        for _ in 0..capacity {
+            let entry = &*entries.add(idx);
+            if !entry.occupied {
+                return 0;
+            }
+            if crate::string::kryos_string_eq(
+                entry.key as *const crate::string::KryosString,
+                key as *const crate::string::KryosString,
+            ) {
+                return entry.value;
+            }
+            idx = (idx + 1) % capacity;
+        }
+        0
+    }
+}
+
+/// Resize helper for string-keyed maps (uses content-based hashing).
+unsafe fn resize_str(header: *mut MapHeader) {
+    let old_cap = (*header).capacity as usize;
+    let new_cap = old_cap * 2;
+    let new_entries = alloc_entries(new_cap);
+    if new_entries.is_null() {
+        return;
+    }
+
+    let old_entries = (*header).entries;
+
+    for i in 0..old_cap {
+        let entry = &*old_entries.add(i);
+        if entry.occupied {
+            let str_hash = crate::string::kryos_string_hash(
+                entry.key as *const crate::string::KryosString,
+            );
+            let mut idx = hash_key(str_hash, new_cap);
+            loop {
+                let slot = &mut *new_entries.add(idx);
+                if !slot.occupied {
+                    slot.key = entry.key;
+                    slot.value = entry.value;
+                    slot.occupied = true;
+                    break;
+                }
+                idx = (idx + 1) % new_cap;
+            }
+        }
+    }
+
+    free_entries(old_entries, old_cap);
+    (*header).entries = new_entries;
+    (*header).capacity = new_cap as i64;
+}
+
 /// Get the number of entries in the map.
 #[no_mangle]
 pub extern "C" fn kryos_map_len(map: i64) -> i64 {

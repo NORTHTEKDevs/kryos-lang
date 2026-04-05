@@ -1,0 +1,13 @@
+// expect-stdout: 10
+fn double(x: i32) -> i32 {
+    return x * 2
+}
+
+fn apply(f: fn(i32) -> i32, x: i32) -> i32 {
+    return f(x)
+}
+
+fn main() {
+    let result = apply(double, 5)
+    println(result)
+}

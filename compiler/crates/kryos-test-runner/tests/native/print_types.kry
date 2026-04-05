@@ -1,0 +1,8 @@
+// expect-stdout: 42
+// expect-stdout: true
+// expect-stdout: 3.14
+fn main() {
+    println(42)
+    println(true)
+    println(3.14)
+}

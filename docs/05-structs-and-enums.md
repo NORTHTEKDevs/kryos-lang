@@ -204,6 +204,39 @@ let status = match 404 {
 println(status)  // not found
 ```
 
+### Matching on enums
+
+When matching on an enum value, use bare variant names -- not fully qualified paths:
+
+```
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+let c = Color.Red
+let tag = match c {
+    Red => 1,
+    Green => 2,
+    Blue => 3,
+}
+println(tag)  // 1
+```
+
+The compiler knows the subject of the match is a `Color`, so it resolves `Red`, `Green`, and `Blue` against `Color`'s variant list. You don't need to write `Color.Red =>` in the arm.
+
+The wildcard `_` works as a catch-all for enum matches too:
+
+```
+let is_red = match c {
+    Red => true,
+    _ => false,
+}
+```
+
+Match is an expression -- it returns the value of the matched arm. All arms must produce the same type.
+
 ## Struct and enum composition
 
 Structs and enums work well together. A common pattern is a struct that provides methods operating on enum variants:

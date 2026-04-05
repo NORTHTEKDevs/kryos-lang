@@ -9,6 +9,44 @@ use kryos_errors::{Diagnostic, Span};
 
 use crate::ty::Type;
 
+/// Check if `from` can be widened to `to` (safe integer promotion).
+///
+/// Rules: signed integers widen to larger signed integers,
+/// unsigned integers widen to larger unsigned integers.
+/// This allows `42` (i32) to be used where `i64` is expected.
+fn is_int_widening(from: &Type, to: &Type) -> bool {
+    let signed_rank = |t: &Type| -> Option<u8> {
+        match t {
+            Type::I8 => Some(0),
+            Type::I16 => Some(1),
+            Type::I32 => Some(2),
+            Type::I64 | Type::ISize => Some(3),
+            Type::I128 => Some(4),
+            _ => None,
+        }
+    };
+    let unsigned_rank = |t: &Type| -> Option<u8> {
+        match t {
+            Type::U8 => Some(0),
+            Type::U16 => Some(1),
+            Type::U32 | Type::USize => Some(2),
+            Type::U64 => Some(3),
+            Type::U128 => Some(4),
+            _ => None,
+        }
+    };
+
+    // Signed → signed widening.
+    if let (Some(from_r), Some(to_r)) = (signed_rank(from), signed_rank(to)) {
+        return from_r < to_r;
+    }
+    // Unsigned → unsigned widening.
+    if let (Some(from_r), Some(to_r)) = (unsigned_rank(from), unsigned_rank(to)) {
+        return from_r < to_r;
+    }
+    false
+}
+
 /// The inference engine: tracks type variables and their resolved types.
 #[derive(Debug)]
 pub struct InferenceEngine {
@@ -300,6 +338,10 @@ impl InferenceEngine {
 
             // Never unifies with anything (diverging expressions).
             (Type::Never, _) | (_, Type::Never) => Ok(()),
+
+            // Integer widening: smaller signed → larger signed, smaller unsigned → larger unsigned.
+            // This allows integer literals (default i32) to be used where i64 is expected.
+            _ if is_int_widening(&a, &b) || is_int_widening(&b, &a) => Ok(()),
 
             // Everything else is a mismatch.
             _ => Err(

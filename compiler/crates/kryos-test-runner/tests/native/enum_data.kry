@@ -1,0 +1,14 @@
+// expect-stdout: 3
+enum Shape {
+    Circle(i64),
+    Rect(i64, i64),
+}
+
+fn main() {
+    let s = Shape.Circle(3)
+    let tag = match s {
+        Circle => 3,
+        Rect => 4,
+    }
+    println(tag)
+}

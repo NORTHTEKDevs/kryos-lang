@@ -1,0 +1,8 @@
+// expect-stdout: 42
+fn main() {
+    let ch = chan()
+    let v: i64 = 42
+    send(ch, v)
+    let result = recv(ch)
+    println(result)
+}

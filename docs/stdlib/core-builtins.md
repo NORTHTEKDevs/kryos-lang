@@ -1,6 +1,6 @@
 # Core Builtins Reference
 
-These functions are available in every `.kry` program without imports. They are registered directly by the interpreter at startup.
+These functions are available in every `.kry` program without imports. They are registered by the type checker and compiled to calls against the Kryos runtime library (`kryos-rt`). All builtins work in both debug (Cranelift) and release (LLVM) builds.
 
 ---
 
@@ -809,3 +809,57 @@ assert(len("hello") == 5, "string length should be 5")
 **Edge cases:** The condition is evaluated for truthiness, not strict boolean equality. `0`, `""`, `none`, `false`, and empty arrays are falsy.
 
 **See also:** `type_of`
+
+---
+
+## Concurrency
+
+### chan
+
+```
+fn chan() -> chan<i64>
+```
+
+Create a new multi-producer, multi-consumer channel for passing i64 values between threads. The returned handle is reference-counted and can be shared across `spawn` blocks.
+
+```kryos
+let ch = chan()
+```
+
+**See also:** `send`, `recv`
+
+---
+
+### send
+
+```
+fn send(ch: chan<i64>, value: i64)
+```
+
+Send a value through a channel. Non-blocking -- the value is queued and the caller continues immediately.
+
+```kryos
+let ch = chan()
+send(ch, 42)
+send(ch, 100)
+```
+
+**See also:** `chan`, `recv`
+
+---
+
+### recv
+
+```
+fn recv(ch: chan<i64>) -> i64
+```
+
+Receive a value from a channel. Blocks until a value is available. Returns 0 if the channel is closed and empty.
+
+```kryos
+let ch = chan()
+send(ch, 42)
+let value = recv(ch)  // 42
+```
+
+**See also:** `chan`, `send`

@@ -1,0 +1,19 @@
+// expect-stdout: two
+// expect-stdout: other
+fn main() {
+    let x = 2
+    let result = match x {
+        1 => "one",
+        2 => "two",
+        3 => "three",
+        _ => "other",
+    }
+    println(result)
+
+    let y = 99
+    let r2 = match y {
+        1 => "one",
+        _ => "other",
+    }
+    println(r2)
+}

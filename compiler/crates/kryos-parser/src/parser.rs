@@ -352,11 +352,17 @@ impl Parser {
             // Handle `self` parameter
             if self.peek().text == "self" {
                 let tok = self.advance().clone();
+                let ty = if self.eat(TokenKind::Colon) {
+                    Some(self.parse_type())
+                } else {
+                    None
+                };
+                let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
                 params.push(Param {
                     name: "self".to_string(),
-                    ty: None,
+                    ty,
                     default: None,
-                    span: tok.span,
+                    span: tok.span.merge(end),
                 });
             } else {
                 let (name, name_span) = self.expect_name();
@@ -723,6 +729,19 @@ impl Parser {
             TokenKind::Select => Some(self.parse_select()),
             TokenKind::Try => Some(self.parse_try_catch()),
             TokenKind::Throw => Some(self.parse_throw()),
+            TokenKind::Fn => {
+                // Peek ahead: if the next token after `fn` is an Ident, this is
+                // an inner named function declaration. Desugar to:
+                //   let name = fn(params) -> ret { body }
+                if self.pos + 1 < self.tokens.len()
+                    && self.tokens[self.pos + 1].kind == TokenKind::Ident
+                {
+                    Some(self.parse_inner_fn())
+                } else {
+                    // Anonymous lambda in expression position.
+                    Some(self.parse_expr_or_assign())
+                }
+            }
             TokenKind::RBrace => None, // End of block — caller handles
             _ => Some(self.parse_expr_or_assign()),
         }
@@ -897,6 +916,53 @@ impl Parser {
         let expr = self.parse_expr();
         let end = expr.span();
         Stmt::Throw { expr, span: start.merge(end) }
+    }
+
+    /// Parse `fn name(params) -> RetType { body }` inside a function body.
+    /// Desugars to `let name = fn(params) -> RetType { body }`.
+    fn parse_inner_fn(&mut self) -> Stmt {
+        let fn_tok = self.expect(TokenKind::Fn);
+        let start = fn_tok.span;
+        let (name, _) = self.expect_name();
+
+        self.expect(TokenKind::LParen);
+        let params = self.parse_param_list();
+        self.expect(TokenKind::RParen);
+
+        let ret_ty = if self.eat(TokenKind::Arrow) {
+            Some(self.parse_type())
+        } else {
+            None
+        };
+
+        let body_block = self.parse_block();
+        let end = body_block.span;
+
+        let body = if body_block.stmts.len() == 1 {
+            if let Stmt::Expr { ref expr, .. } = body_block.stmts[0] {
+                expr.clone()
+            } else {
+                Expr::Block { block: body_block.clone(), span: body_block.span }
+            }
+        } else {
+            Expr::Block { block: body_block.clone(), span: body_block.span }
+        };
+
+        let lambda = Expr::Lambda {
+            params,
+            ret_ty,
+            body: Box::new(body),
+            span: start.merge(end),
+        };
+
+        Stmt::Let {
+            name,
+            mutable: false,
+            ty: None,
+            value: Some(lambda),
+            pattern: None,
+            span: start.merge(end),
+        }
     }
 
     fn parse_expr_or_assign(&mut self) -> Stmt {
@@ -1149,6 +1215,41 @@ impl Parser {
             TokenKind::String => {
                 self.advance();
                 Expr::StringLiteral { value: tok.text.clone(), span: tok.span }
+            }
+            TokenKind::StringPart => {
+                // Interpolated string: collect StringPart and InterpStart/End sequences.
+                let start_span = tok.span;
+                let mut parts: Vec<StringPart> = Vec::new();
+
+                // First string part (text before first interpolation).
+                let first_text = tok.text.clone();
+                self.advance();
+                if !first_text.is_empty() {
+                    parts.push(StringPart::Literal(first_text));
+                }
+
+                // Consume alternating interp blocks and string parts.
+                while self.check(TokenKind::InterpStart) {
+                    self.advance(); // consume InterpStart '{'
+                    let expr = self.parse_expr();
+                    parts.push(StringPart::Expr(Box::new(expr)));
+                    if self.check(TokenKind::InterpEnd) {
+                        self.advance(); // consume InterpEnd '}'
+                    }
+                    // Next StringPart (text after interpolation).
+                    if self.check(TokenKind::StringPart) {
+                        let text = self.peek().text.clone();
+                        self.advance();
+                        if !text.is_empty() {
+                            parts.push(StringPart::Literal(text));
+                        }
+                    }
+                }
+
+                Expr::InterpolatedString {
+                    parts,
+                    span: start_span,
+                }
             }
             TokenKind::Char => {
                 self.advance();

@@ -501,6 +501,7 @@ dependencies = [
  "kryos-driver",
  "kryos-errors",
  "kryos-mir",
+ "kryos-rt",
 ]
 
 [[package]]

@@ -101,6 +101,24 @@ pub unsafe extern "C" fn kryos_string_len(s: *const KryosString) -> i64 {
     (*s).len
 }
 
+/// Compute a content-based hash of a KryosString (FNV-1a).
+/// Returns 0 for null pointers.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_string_hash(s: *const KryosString) -> i64 {
+    if s.is_null() {
+        return 0;
+    }
+    let len = (*s).len as usize;
+    let data = (*s).data;
+    // FNV-1a hash
+    let mut h: u64 = 0xcbf29ce484222325;
+    for i in 0..len {
+        h ^= *data.add(i) as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h as i64
+}
+
 /// Compare two strings for equality.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_string_eq(

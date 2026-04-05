@@ -17,6 +17,7 @@
 pub mod config;
 pub mod pipeline;
 pub mod resolve;
+pub mod runtime;
 
 // Re-export key types for convenient use from the CLI and other consumers.
 pub use config::{BuildConfig, BuildMode, OutputType};

@@ -1,0 +1,20 @@
+// expect-exit: 33
+fn classify(x: i32) -> i32 {
+    if x > 100 {
+        return 3
+    } elif x > 50 {
+        return 2
+    } elif x > 0 {
+        return 1
+    } else {
+        return 0
+    }
+}
+
+fn main() -> i32 {
+    let a = classify(200)
+    let b = classify(75)
+    let c = classify(25)
+    let d = classify(-5)
+    return a * 10 + b + c + d
+}

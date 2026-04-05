@@ -9,7 +9,7 @@ The basic mechanism for handling errors is `try`/`catch`. Wrap code that might f
 ```
 try {
     throw "custom error"
-} catch (e) {
+} catch e {
     println(e)  // custom error
 }
 ```
@@ -34,7 +34,7 @@ If the try block completes without throwing, the catch block is skipped entirely
 try {
     let x = 42
     println(x)  // 42
-} catch (e) {
+} catch e {
     println("should not print")
 }
 ```
@@ -46,7 +46,7 @@ After the try/catch block finishes (whether through the try path or the catch pa
 ```
 try {
     throw "oops"
-} catch (e) {
+} catch e {
     println(e)  // oops
 }
 println("after try/catch")  // this runs
@@ -60,11 +60,11 @@ Try/catch blocks can nest. An inner catch can throw a new error that gets caught
 try {
     try {
         throw "inner"
-    } catch (e) {
+    } catch e {
         println("inner: " + e)  // inner: inner
         throw "outer"
     }
-} catch (e) {
+} catch e {
     println("outer: " + e)     // outer: outer
 }
 ```
@@ -78,7 +78,7 @@ This is useful for layered error handling -- handle what you can at the inner le
 ```
 try {
     let result = json_parse("not valid json")
-} catch (e) {
+} catch e {
     println("Parse failed: " + e)
 }
 ```
@@ -246,7 +246,7 @@ try {
     let x = data[10]       // self-healing clamps to data[2] = 3
     println(x)             // 3
     throw "manual error"
-} catch (e) {
+} catch e {
     println(e)             // manual error
 }
 ```
@@ -281,7 +281,7 @@ With healing disabled, division by zero and index-out-of-bounds produce hard err
 | Python | Kryos |
 |--------|-------|
 | `try:` | `try {` |
-| `except Exception as e:` | `catch (e) {` |
+| `except Exception as e:` | `catch e {` |
 | `raise ValueError("msg")` | `throw "msg"` |
 | `finally:` | Not yet available |
 | `with` context managers | Not yet available |
@@ -314,7 +314,7 @@ let content = file_read("config.txt")
 try {
     let content = file_read("config.txt")
     // use content
-} catch (e) {
+} catch e {
     println("Could not read config: " + e)
     // use defaults
 }
@@ -344,7 +344,7 @@ If you throw inside a catch block and there is no outer try, the error propagate
 ```
 try {
     throw "first"
-} catch (e) {
+} catch e {
     throw "second"  // no outer try -- this crashes
 }
 ```

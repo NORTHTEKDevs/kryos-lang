@@ -502,10 +502,21 @@ fn codegen_and_link(
                                 kryos_linker::Target::host()
                             };
 
+                            let rt_lib = crate::runtime::find_runtime_lib();
+                            if config.verbose {
+                                match &rt_lib {
+                                    Some(p) => eprintln!("[kryos] runtime lib: {}", p.display()),
+                                    None => eprintln!("[kryos] runtime lib: not found (runtime symbols will be unresolved)"),
+                                }
+                            }
+
+                            // System libraries required by the Rust-based runtime staticlib.
+                            let extra_libs = crate::runtime::system_libs(&target);
+
                             let linker_config = kryos_linker::LinkerConfig {
                                 target,
                                 object_files: vec![obj_path.clone()],
-                                runtime_lib: None,
+                                runtime_lib: rt_lib,
                                 stdlib_native: None,
                                 output: out_path.clone(),
                                 link_type: if config.output_type == OutputType::Library {
@@ -513,7 +524,7 @@ fn codegen_and_link(
                                 } else {
                                     kryos_linker::LinkType::Dynamic
                                 },
-                                extra_libs: vec![],
+                                extra_libs,
                                 extra_lib_dirs: vec![],
                             };
 

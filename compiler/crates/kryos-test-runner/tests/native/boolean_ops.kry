@@ -1,0 +1,10 @@
+// expect-stdout: true
+// expect-stdout: false
+// expect-stdout: true
+fn main() {
+    let a = true
+    let b = false
+    println(a or b)
+    println(a and b)
+    println(not b)
+}

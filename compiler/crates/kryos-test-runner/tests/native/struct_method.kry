@@ -1,0 +1,14 @@
+// expect-stdout: 50
+fn main() {
+    let r = Rect { width: 5, height: 10 }
+    println(area(r))
+}
+
+struct Rect {
+    width: i64,
+    height: i64,
+}
+
+fn area(r: Rect) -> i64 {
+    return r.width * r.height
+}

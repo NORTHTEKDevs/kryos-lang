@@ -54,8 +54,20 @@ pub struct LoweringContext {
     monomorphized_functions: Vec<MirFunction>,
     /// Counter for anonymous lambda function names.
     lambda_counter: u32,
+    /// Counter for spawn wrapper function names.
+    spawn_counter: u32,
     /// Type alias map: alias_name -> resolved MirType.
     type_aliases: HashMap<String, MirType>,
+    /// When inside a `try` block, holds the target local and check-block for `throw`.
+    try_catch_target: Option<TryCatchTarget>,
+    /// Tracks locals that are closures with captures: local_name -> (func_name, capture_operands).
+    closure_locals: HashMap<String, (String, Vec<Operand>)>,
+}
+
+/// Context passed to `throw` statements inside a `try` block.
+struct TryCatchTarget {
+    result_local: LocalId,
+    check_block: BlockId,
 }
 
 /// Stores a generic function's AST for deferred monomorphization.
@@ -87,7 +99,10 @@ impl LoweringContext {
             monomorphized: HashMap::new(),
             monomorphized_functions: Vec::new(),
             lambda_counter: 0,
+            spawn_counter: 0,
             type_aliases: HashMap::new(),
+            try_catch_target: None,
+            closure_locals: HashMap::new(),
         }
     }
 
@@ -572,6 +587,16 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             if let Some(expr) = value {
                 let rvalue = lower_expr_to_rvalue(ctx, expr);
 
+                // Track closures with captures for direct-call optimization.
+                if let RValue::Closure { ref func_name, ref captures } = rvalue {
+                    if !captures.is_empty() {
+                        ctx.closure_locals.insert(
+                            name.clone(),
+                            (func_name.clone(), captures.clone()),
+                        );
+                    }
+                }
+
                 // If the value is Shared, emit ArcRetain.
                 if matches!(expr, ast::Expr::SharedExpr { .. }) {
                     ctx.emit(Instruction::Assign {
@@ -712,28 +737,39 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
         }
 
         ast::Stmt::Throw { expr, .. } => {
-            // Lower `throw expr` as constructing Result::Err(expr).
             let val = lower_expr_to_operand(ctx, expr);
-            let err_local = ctx.alloc_temp(MirType::Enum("Result".into()));
-            ctx.emit(Instruction::Assign {
-                dest: err_local,
-                value: RValue::EnumVariant {
-                    enum_name: "Result".into(),
-                    variant_idx: 1, // Err
-                    fields: vec![val],
-                },
-            });
+            if let Some(ref target) = ctx.try_catch_target {
+                // Inside a try block: store Result::Err into the try/catch
+                // result local and jump to the tag-check block.
+                let result_local = target.result_local;
+                let check_block = target.check_block;
+                ctx.emit(Instruction::Assign {
+                    dest: result_local,
+                    value: RValue::EnumVariant {
+                        enum_name: "Result".into(),
+                        variant_idx: 1, // Err
+                        fields: vec![val],
+                    },
+                });
+                // Allocate a dead block to receive the remaining unreachable stmts.
+                let dead_bb = ctx.alloc_block();
+                ctx.finish_block(Terminator::Goto(check_block), dead_bb);
+            } else {
+                // Outside try: construct Result::Err (for function-level returns).
+                let err_local = ctx.alloc_temp(MirType::Enum("Result".into()));
+                ctx.emit(Instruction::Assign {
+                    dest: err_local,
+                    value: RValue::EnumVariant {
+                        enum_name: "Result".into(),
+                        variant_idx: 1, // Err
+                        fields: vec![val],
+                    },
+                });
+            }
         }
 
         ast::Stmt::Spawn { expr, .. } => {
-            // Lower spawn: evaluate the expression into a temp, emit Spawn instruction.
-            let rvalue = lower_expr_to_rvalue(ctx, expr);
-            let task_local = ctx.alloc_temp(MirType::I64);
-            ctx.emit(Instruction::Assign {
-                dest: task_local,
-                value: rvalue,
-            });
-            ctx.emit(Instruction::Spawn { task: task_local });
+            lower_spawn(ctx, expr);
         }
 
         ast::Stmt::Select { branches, .. } => {
@@ -916,6 +952,17 @@ fn lower_for(
                 return;
             }
         }
+    }
+
+    // Check if the iterable is a range expression (start..end or start..=end).
+    if let ast::Expr::RangeExpr { start, end, .. } = iterable {
+        // Use 0 as default start and i64::MAX as default end for open ranges.
+        let default_start = ast::Expr::IntLiteral { value: 0, span: iterable.span() };
+        let default_end = ast::Expr::IntLiteral { value: i64::MAX, span: iterable.span() };
+        let s = start.as_deref().unwrap_or(&default_start);
+        let e = end.as_deref().unwrap_or(&default_end);
+        lower_for_range(ctx, pattern, s, e, body);
+        return;
     }
 
     // General case: desugar `for x in iterable { body }` to:
@@ -1103,6 +1150,103 @@ fn lower_for_range(
 }
 
 // ---------------------------------------------------------------------------
+// Spawn lowering
+// ---------------------------------------------------------------------------
+
+/// Lower `spawn expr` into a `Spawn` instruction.
+///
+/// Two cases:
+/// 1. `spawn some_function(a, b)` — directly emits `Spawn { func, args }`.
+/// 2. `spawn { ... }` (block) — generates a wrapper function `__spawn_N`
+///    that takes captured variables as parameters, then emits `Spawn`
+///    pointing to the wrapper with captures as args.
+fn lower_spawn(ctx: &mut LoweringContext, expr: &ast::Expr) {
+    match expr {
+        // Case 1: spawn a direct function call.
+        ast::Expr::FnCall { callee, args, .. } => {
+            let func_name = match callee.as_ref() {
+                ast::Expr::Identifier { name, .. } => name.clone(),
+                _ => {
+                    // Complex callee — evaluate and fall through to block path.
+                    lower_spawn_block(ctx, &[ast::Stmt::Expr {
+                        expr: expr.clone(),
+                        span: kryos_errors::Span::DUMMY,
+                    }]);
+                    return;
+                }
+            };
+            let mir_args: Vec<Operand> = args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
+            ctx.emit(Instruction::Spawn { func: func_name, args: mir_args });
+        }
+
+        // Case 2: spawn a block expression.
+        ast::Expr::Block { block, .. } => {
+            lower_spawn_block(ctx, &block.stmts);
+        }
+
+        // Fallback: wrap arbitrary expression in a block.
+        other => {
+            lower_spawn_block(ctx, &[ast::Stmt::Expr {
+                expr: other.clone(),
+                span: kryos_errors::Span::DUMMY,
+            }]);
+        }
+    }
+}
+
+/// Generate a `__spawn_N` wrapper function for a spawn block body.
+///
+/// Uses the same save/restore pattern as lambda lowering:
+/// 1. Analyze free variables in the block
+/// 2. Generate a function with captures as parameters
+/// 3. Emit `Spawn { func: "__spawn_N", args: [captures...] }`
+fn lower_spawn_block(ctx: &mut LoweringContext, stmts: &[ast::Stmt]) {
+    let spawn_name = format!("__spawn_{}", ctx.spawn_counter);
+    ctx.spawn_counter += 1;
+
+    // Find captured variables from enclosing scope.
+    let captures = find_free_variables_block(ctx, stmts);
+
+    // Build the capture operands before we save state (need access to current locals).
+    let capture_ops: Vec<Operand> = captures
+        .iter()
+        .map(|name| {
+            let local = find_local_by_name(ctx, name);
+            Operand::Local(local)
+        })
+        .collect();
+
+    // Save current function state and lower the spawn body as a new function.
+    let saved = ctx.save_function_state();
+
+    // Build params from captures.
+    let params: Vec<ast::Param> = captures
+        .iter()
+        .map(|name| ast::Param {
+            name: name.clone(),
+            ty: None,
+            default: None,
+            span: kryos_errors::Span::DUMMY,
+        })
+        .collect();
+
+    let body = ast::Block {
+        stmts: stmts.to_vec(),
+        span: kryos_errors::Span::DUMMY,
+    };
+
+    let mir_func = lower_function(ctx, &spawn_name, &params, &None, &body);
+    ctx.restore_function_state(saved);
+    ctx.monomorphized_functions.push(mir_func);
+
+    // Register the spawn function's return type.
+    ctx.func_ret_types.insert(spawn_name.clone(), MirType::Void);
+
+    // Emit the spawn instruction.
+    ctx.emit(Instruction::Spawn { func: spawn_name, args: capture_ops });
+}
+
+// ---------------------------------------------------------------------------
 // Try/Catch lowering
 // ---------------------------------------------------------------------------
 
@@ -1123,6 +1267,16 @@ fn lower_try_catch(
     catch_block: &ast::Block,
 ) {
     let result_local = ctx.alloc_temp(MirType::Enum("Result".into()));
+
+    // Pre-allocate the tag-check block so `throw` can jump to it.
+    let check_bb = ctx.alloc_block();
+
+    // Save previous try/catch context (for nesting) and install ours.
+    let prev_target = ctx.try_catch_target.take();
+    ctx.try_catch_target = Some(TryCatchTarget {
+        result_local,
+        check_block: check_bb,
+    });
 
     // Lower the try block body. The last expression is wrapped in Result::Ok.
     for (i, stmt) in try_block.stmts.iter().enumerate() {
@@ -1165,6 +1319,12 @@ fn lower_try_catch(
             },
         });
     }
+
+    // Restore previous try/catch context.
+    ctx.try_catch_target = prev_target;
+
+    // Fall through from the try block into the tag-check block.
+    ctx.finish_block(Terminator::Goto(check_bb), check_bb);
 
     // Extract tag and branch.
     let tag_local = ctx.alloc_temp(MirType::I64);
@@ -1225,11 +1385,24 @@ struct EnumBinding {
 
 fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::MatchArm]) -> Operand {
     let subj_op = lower_expr_to_operand(ctx, subject);
-    let result_local = ctx.alloc_temp(MirType::I64);
+    // Infer the result type from the first arm's body expression.
+    let result_ty = arms
+        .first()
+        .map(|arm| infer_expr_type(ctx, &arm.body))
+        .unwrap_or(MirType::I64);
+    let result_local = ctx.alloc_temp(result_ty);
     let merge_bb = ctx.alloc_block();
 
-    // Detect enum match: any arm uses Pattern::Enum.
-    let is_enum_match = arms.iter().any(|a| matches!(&a.pattern, ast::Pattern::Enum { .. }));
+    // Detect enum match: either explicit Pattern::Enum, or bare ident patterns
+    // where the subject type is an enum (e.g., `match c { Red => ... }`).
+    let subj_ty = infer_expr_type(ctx, subject);
+    let subj_enum_name = match &subj_ty {
+        MirType::Enum(name) => Some(name.clone()),
+        _ => None,
+    };
+    let is_enum_match = arms.iter().any(|a| matches!(&a.pattern, ast::Pattern::Enum { .. }))
+        || (subj_enum_name.is_some()
+            && arms.iter().any(|a| matches!(&a.pattern, ast::Pattern::Ident { .. })));
 
     // For enum matches, extract the tag first and switch on that.
     let switch_op = if is_enum_match {
@@ -1274,7 +1447,23 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                     default_arm = Some((arm_bb, &arm.body));
                 }
             }
-            ast::Pattern::Wildcard { .. } | ast::Pattern::Ident { .. } => {
+            ast::Pattern::Ident { name, .. } => {
+                // Check if this ident matches an enum variant of the subject type.
+                let mut matched = false;
+                if let Some(ref enum_name) = subj_enum_name {
+                    if let Some(variants) = ctx.enum_defs.get(enum_name.as_str()) {
+                        if let Some(idx) = variants.iter().position(|v| v.name == *name) {
+                            targets.push((idx as i64, arm_bb));
+                            arm_blocks.push((arm_bb, &arm.body, None));
+                            matched = true;
+                        }
+                    }
+                }
+                if !matched {
+                    default_arm = Some((arm_bb, &arm.body));
+                }
+            }
+            ast::Pattern::Wildcard { .. } => {
                 default_arm = Some((arm_bb, &arm.body));
             }
             _ => {
@@ -1395,6 +1584,20 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
                     }
                 }
             }
+            // Enum variant access: Color.Red → Enum("Color")
+            if let MirType::Enum(name) = &obj_ty {
+                if ctx.enum_defs.get(name.as_str()).map_or(false, |vs| {
+                    vs.iter().any(|v| v.name == field.as_str())
+                }) {
+                    return MirType::Enum(name.clone());
+                }
+            }
+            // Check if object is an identifier matching an enum name.
+            if let ast::Expr::Identifier { name, .. } = object.as_ref() {
+                if ctx.enum_defs.contains_key(name.as_str()) {
+                    return MirType::Enum(name.clone());
+                }
+            }
             MirType::I64
         }
 
@@ -1453,11 +1656,28 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
                 if let Some(ret_ty) = ctx.func_ret_types.get(name.as_str()) {
                     return ret_ty.clone();
                 }
+                // Check if callee is a function-typed local (indirect call).
+                if let Some(local) = ctx
+                    .locals
+                    .iter()
+                    .rev()
+                    .find(|l| l.name.as_deref() == Some(name.as_str()))
+                {
+                    if let MirType::Function { ret, .. } = &local.ty {
+                        return *ret.clone();
+                    }
+                }
             }
             MirType::I64
         }
 
         ast::Expr::MethodCall { object, method, .. } => {
+            // Check if this is an enum variant constructor.
+            if let ast::Expr::Identifier { name, .. } = object.as_ref() {
+                if ctx.enum_defs.contains_key(name.as_str()) {
+                    return MirType::Enum(name.clone());
+                }
+            }
             // Try mangled name first (TypeName__method), then bare method name.
             if let Some(type_name) = infer_type_name(ctx, object) {
                 let mangled = format!("{type_name}__{method}");
@@ -1493,13 +1713,35 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
             infer_expr_type(ctx, right)
         }
 
-        ast::Expr::MapLiteral { .. } => MirType::I64, // opaque map handle
+        ast::Expr::MapLiteral { .. } => MirType::Ptr(Box::new(MirType::Str)), // map handle (sentinel)
         ast::Expr::MoveExpr { inner, .. } => infer_expr_type(ctx, inner),
         ast::Expr::WeakExpr { inner, .. } => {
             let inner_ty = infer_expr_type(ctx, inner);
             MirType::Shared(Box::new(inner_ty))
         }
         ast::Expr::RangeExpr { .. } => MirType::I64,
+
+        ast::Expr::MatchExpr { arms, .. } => {
+            // Infer the type from the first arm's body expression.
+            arms.first()
+                .map(|arm| infer_expr_type(ctx, &arm.body))
+                .unwrap_or(MirType::I64)
+        }
+
+        ast::Expr::IfExpr { then_branch, .. } => {
+            // Infer from the last expression of the then branch.
+            then_branch
+                .stmts
+                .last()
+                .and_then(|s| {
+                    if let ast::Stmt::Expr { expr, .. } = s {
+                        Some(infer_expr_type(ctx, expr))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(MirType::I64)
+        }
 
         _ => MirType::I64,
     }
@@ -1519,6 +1761,24 @@ fn lower_expr_to_operand(ctx: &mut LoweringContext, expr: &ast::Expr) -> Operand
         }
         ast::Expr::NoneLiteral { .. } => Operand::Constant(Constant::None),
         ast::Expr::Identifier { name, .. } => {
+            // Check if this is a function name used as a value (function pointer).
+            let is_local = ctx
+                .locals
+                .iter()
+                .any(|l| l.name.as_deref() == Some(name.as_str()));
+            if !is_local && ctx.func_ret_types.contains_key(name.as_str()) {
+                // Emit a Closure with no captures to get the function address.
+                let rvalue = RValue::Closure {
+                    func_name: name.clone(),
+                    captures: vec![],
+                };
+                let temp = ctx.alloc_temp(MirType::I64);
+                ctx.emit(Instruction::Assign {
+                    dest: temp,
+                    value: rvalue,
+                });
+                return Operand::Local(temp);
+            }
             let local = find_local_by_name(ctx, name);
             Operand::Local(local)
         }
@@ -1553,6 +1813,19 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     enum_name,
                     variant_idx,
                     fields: vec![],
+                };
+            }
+            // Check if this is a function name used as a value (function pointer).
+            // If the name matches a known function but is NOT a local variable,
+            // emit a Closure with no captures to get the function's address.
+            let is_local = ctx
+                .locals
+                .iter()
+                .any(|l| l.name.as_deref() == Some(name));
+            if !is_local && ctx.func_ret_types.contains_key(name.as_str()) {
+                return RValue::Closure {
+                    func_name: name.clone(),
+                    captures: vec![],
                 };
             }
             let local = find_local_by_name(ctx, name);
@@ -1615,6 +1888,41 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 };
             }
 
+            // Check if the callee is a local with function type (indirect call).
+            if func_name != "<closure>" {
+                let is_fn_local = ctx
+                    .locals
+                    .iter()
+                    .rev()
+                    .find(|l| l.name.as_deref() == Some(&func_name))
+                    .map(|l| matches!(l.ty, MirType::Function { .. }))
+                    .unwrap_or(false);
+                if is_fn_local {
+                    // If this local is a tracked closure with captures,
+                    // emit a direct call with captures prepended.
+                    if let Some((real_func, capture_ops)) = ctx.closure_locals.get(&func_name).cloned() {
+                        let mut mir_args: Vec<Operand> = capture_ops;
+                        for a in args {
+                            mir_args.push(lower_expr_to_operand(ctx, a));
+                        }
+                        return RValue::Call {
+                            func: real_func,
+                            args: mir_args,
+                        };
+                    }
+
+                    let callee_local = find_local_by_name(ctx, &func_name);
+                    let mir_args: Vec<Operand> = args
+                        .iter()
+                        .map(|a| lower_expr_to_operand(ctx, a))
+                        .collect();
+                    return RValue::CallIndirect {
+                        callee: Operand::Local(callee_local),
+                        args: mir_args,
+                    };
+                }
+            }
+
             let mir_args: Vec<Operand> = args
                 .iter()
                 .map(|a| lower_expr_to_operand(ctx, a))
@@ -1631,6 +1939,22 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             args,
             ..
         } => {
+            // Check if this is an enum variant constructor with data (e.g. Shape.Circle(3)).
+            if let ast::Expr::Identifier { name, .. } = object.as_ref() {
+                if let Some(variants) = ctx.enum_defs.get(name.as_str()) {
+                    if let Some((idx, _)) = variants.iter().enumerate().find(|(_, v)| v.name == *method) {
+                        let fields: Vec<Operand> = args.iter()
+                            .map(|a| lower_expr_to_operand(ctx, a))
+                            .collect();
+                        return RValue::EnumVariant {
+                            enum_name: name.clone(),
+                            variant_idx: idx as u32,
+                            fields,
+                        };
+                    }
+                }
+            }
+
             let obj = lower_expr_to_operand(ctx, object);
             let mut mir_args: Vec<Operand> = vec![obj];
             for a in args {
@@ -1683,6 +2007,18 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
         }
 
         ast::Expr::FieldAccess { object, field, .. } => {
+            // Check if this is an enum variant construction (e.g., `Color.Red`).
+            if let ast::Expr::Identifier { name, .. } = object.as_ref() {
+                if let Some(variants) = ctx.enum_defs.get(name.as_str()) {
+                    if let Some(idx) = variants.iter().position(|v| v.name == field.as_str()) {
+                        return RValue::EnumVariant {
+                            enum_name: name.clone(),
+                            variant_idx: idx as u32,
+                            fields: vec![],
+                        };
+                    }
+                }
+            }
             let obj = lower_expr_to_operand(ctx, object);
             RValue::Field {
                 object: obj,
@@ -1691,8 +2027,24 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
         }
 
         ast::Expr::IndexAccess { object, index, .. } => {
+            let obj_ty = infer_expr_type(ctx, object);
             let obj = lower_expr_to_operand(ctx, object);
             let idx = lower_expr_to_operand(ctx, index);
+
+            // Maps use runtime lookup instead of pointer arithmetic.
+            if matches!(obj_ty, MirType::Ptr(ref inner) if **inner == MirType::Str) {
+                let idx_ty = infer_expr_type(ctx, index);
+                let get_fn = if idx_ty == MirType::Str {
+                    "kryos_map_get_str"
+                } else {
+                    "kryos_map_get"
+                };
+                return RValue::Call {
+                    func: get_fn.to_string(),
+                    args: vec![obj, idx],
+                };
+            }
+
             RValue::Index {
                 object: obj,
                 index: idx,
@@ -1821,11 +2173,24 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 span: kryos_errors::Span::DUMMY,
             };
 
+            // If no explicit return type, default to i64 (not void).
+            let inferred_ret: Option<ast::TypeExpr>;
+            let effective_ret = match ret_ty {
+                Some(_) => ret_ty,
+                None => {
+                    inferred_ret = Some(ast::TypeExpr::Simple {
+                        name: "i64".to_string(),
+                        span: kryos_errors::Span::DUMMY,
+                    });
+                    &inferred_ret
+                }
+            };
+
             let mir_func = lower_function(
                 ctx,
                 &lambda_name,
                 &all_params,
-                ret_ty,
+                effective_ret,
                 &body_block,
             );
             ctx.restore_function_state(saved);
@@ -1999,8 +2364,10 @@ fn lower_binop(op: ast::BinOp) -> MirBinOp {
         ast::BinOp::BitXor => MirBinOp::BitXor,
         ast::BinOp::Shl => MirBinOp::Shl,
         ast::BinOp::Shr => MirBinOp::Shr,
-        // Pipe and MatMul don't have direct MIR equivalents — lower as Add placeholders.
+        // Pipe is handled as PipeExpr before reaching this path; if we get
+        // here it means the parser unexpectedly created a BinOp::Pipe.
         ast::BinOp::Pipe => MirBinOp::Add,
+        // MatMul (@) is reserved for future matrix operations.
         ast::BinOp::MatMul => MirBinOp::Mul,
     }
 }
@@ -2244,9 +2611,104 @@ fn collect_identifiers(
         ast::Expr::Cast { expr, .. } => {
             collect_identifiers(expr, bound, free_vars, seen, ctx);
         }
+        ast::Expr::Block { block, .. } => {
+            collect_identifiers_block(&block.stmts, bound, free_vars, seen, ctx);
+        }
+        ast::Expr::Lambda { body, params, .. } => {
+            let mut inner_bound = bound.clone();
+            for p in params {
+                inner_bound.insert(p.name.clone());
+            }
+            collect_identifiers(body, &inner_bound, free_vars, seen, ctx);
+        }
         // For other expression types, we don't recurse deeper.
         _ => {}
     }
+}
+
+/// Collect free variables from a list of statements (used for spawn blocks).
+fn collect_identifiers_block(
+    stmts: &[ast::Stmt],
+    bound: &std::collections::HashSet<String>,
+    free_vars: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+    ctx: &LoweringContext,
+) {
+    let mut local_bound = bound.clone();
+    for stmt in stmts {
+        match stmt {
+            ast::Stmt::Let { name, value, .. } => {
+                if let Some(val) = value {
+                    collect_identifiers(val, &local_bound, free_vars, seen, ctx);
+                }
+                local_bound.insert(name.clone());
+            }
+            ast::Stmt::Expr { expr, .. }
+            | ast::Stmt::Spawn { expr, .. }
+            | ast::Stmt::Return { value: Some(expr), .. } => {
+                collect_identifiers(expr, &local_bound, free_vars, seen, ctx);
+            }
+            ast::Stmt::Assign { target, value, .. } => {
+                collect_identifiers(target, &local_bound, free_vars, seen, ctx);
+                collect_identifiers(value, &local_bound, free_vars, seen, ctx);
+            }
+            ast::Stmt::If { condition, then_block, elif_clauses, else_block, .. } => {
+                collect_identifiers(condition, &local_bound, free_vars, seen, ctx);
+                collect_identifiers_block(&then_block.stmts, &local_bound, free_vars, seen, ctx);
+                for (cond, block) in elif_clauses {
+                    collect_identifiers(cond, &local_bound, free_vars, seen, ctx);
+                    collect_identifiers_block(&block.stmts, &local_bound, free_vars, seen, ctx);
+                }
+                if let Some(eb) = else_block {
+                    collect_identifiers_block(&eb.stmts, &local_bound, free_vars, seen, ctx);
+                }
+            }
+            ast::Stmt::While { condition, body, .. } => {
+                collect_identifiers(condition, &local_bound, free_vars, seen, ctx);
+                collect_identifiers_block(&body.stmts, &local_bound, free_vars, seen, ctx);
+            }
+            ast::Stmt::For { iterable, body, pattern, .. } => {
+                collect_identifiers(iterable, &local_bound, free_vars, seen, ctx);
+                let mut for_bound = local_bound.clone();
+                // Extract bound names from the pattern.
+                collect_pattern_names(pattern, &mut for_bound);
+                collect_identifiers_block(&body.stmts, &for_bound, free_vars, seen, ctx);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Extract all bound names from a pattern into a set.
+fn collect_pattern_names(pattern: &ast::Pattern, names: &mut std::collections::HashSet<String>) {
+    match pattern {
+        ast::Pattern::Ident { name, .. } => { names.insert(name.clone()); }
+        ast::Pattern::Tuple { elements, .. } => {
+            for p in elements { collect_pattern_names(p, names); }
+        }
+        ast::Pattern::Struct { fields, .. } => {
+            for (_, p) in fields { collect_pattern_names(p, names); }
+        }
+        ast::Pattern::Enum { fields, .. } => {
+            for p in fields { collect_pattern_names(p, names); }
+        }
+        ast::Pattern::Or { patterns, .. } => {
+            for p in patterns { collect_pattern_names(p, names); }
+        }
+        ast::Pattern::Wildcard { .. } | ast::Pattern::Literal { .. } => {}
+    }
+}
+
+/// Find free variables in a block's statements that refer to enclosing scope locals.
+fn find_free_variables_block(
+    ctx: &LoweringContext,
+    stmts: &[ast::Stmt],
+) -> Vec<String> {
+    let bound = std::collections::HashSet::new();
+    let mut free_vars = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    collect_identifiers_block(stmts, &bound, &mut free_vars, &mut seen, ctx);
+    free_vars
 }
 
 // ---------------------------------------------------------------------------

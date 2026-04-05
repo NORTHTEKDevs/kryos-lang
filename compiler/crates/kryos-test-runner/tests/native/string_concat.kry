@@ -1,0 +1,6 @@
+// expect-stdout: Hello, Kryos!
+fn main() {
+    let name = "Kryos"
+    let msg = "Hello, " + name + "!"
+    println(msg)
+}

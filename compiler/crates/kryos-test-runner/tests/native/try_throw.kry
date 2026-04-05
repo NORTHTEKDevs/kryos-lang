@@ -1,0 +1,11 @@
+// expect-stdout: caught
+// expect-stdout: done
+fn main() {
+    try {
+        throw 99
+        println("unreachable")
+    } catch e {
+        println("caught")
+    }
+    println("done")
+}

@@ -787,6 +787,12 @@ impl TypeChecker {
                         params: sig.params.iter().map(|(_, t)| t.clone()).collect(),
                         ret: Box::new(sig.ret.clone()),
                     }
+                } else if self.env.lookup_enum(name).is_some() {
+                    // Enum name used as a namespace (e.g., `Color` in `Color.Red`).
+                    Type::Enum {
+                        name: name.clone(),
+                        generics: vec![],
+                    }
                 } else {
                     self.error(format!("undefined variable `{name}`"), *span);
                     Type::Error
@@ -844,6 +850,29 @@ impl TypeChecker {
                             } else {
                                 self.error(
                                     format!("no field `{field}` on type `{name}`"),
+                                    *span,
+                                );
+                                Type::Error
+                            }
+                        } else {
+                            self.error(
+                                format!("cannot access field `{field}` on type `{obj_ty}`"),
+                                *span,
+                            );
+                            Type::Error
+                        }
+                    }
+                    // Enum variant access: Color.Red resolves to the enum type.
+                    Type::Enum { name, generics } => {
+                        if let Some(edef) = self.env.lookup_enum(name) {
+                            if edef.variants.iter().any(|(vname, _)| vname == field) {
+                                Type::Enum {
+                                    name: name.clone(),
+                                    generics: generics.clone(),
+                                }
+                            } else {
+                                self.error(
+                                    format!("no variant `{field}` on enum `{name}`"),
                                     *span,
                                 );
                                 Type::Error
@@ -1008,6 +1037,17 @@ impl TypeChecker {
                 };
 
                 if let Some(ref tname) = type_name {
+                    // Check if this is an enum variant constructor (e.g. Shape.Circle(3)).
+                    if let Some(edef) = self.env.lookup_enum(tname).cloned() {
+                        if edef.variants.iter().any(|(vname, _)| vname == method) {
+                            // Infer args but accept the call as a variant constructor.
+                            for arg in args.iter() {
+                                self.infer_expr(arg);
+                            }
+                            return Type::Enum { name: tname.clone(), generics: vec![] };
+                        }
+                    }
+
                     if let Some(sig) = self.env.lookup_method(tname, method).cloned() {
                         // Skip 'self' parameter (first param) if present.
                         let expected_params: Vec<_> = if sig.params.first().map(|(n, _)| n.as_str())
@@ -1423,26 +1463,28 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     let mut checker = TypeChecker::new();
 
     // Register built-in functions that are always available.
+    // println/print/eprintln accept any type — codegen converts non-string
+    // args to strings via kryos_builtin_to_string at call time.
     checker.env.define_function(FunctionSig {
         name: "println".to_string(),
         generic_params: vec![],
-        params: vec![("value".to_string(), Type::Str)],
+        params: vec![("value".to_string(), Type::Error)],
         ret: Type::Void,
     });
 
-    // print(value: str) -> void  (no newline)
+    // print(value: any) -> void  (no newline)
     checker.env.define_function(FunctionSig {
         name: "print".to_string(),
         generic_params: vec![],
-        params: vec![("value".to_string(), Type::Str)],
+        params: vec![("value".to_string(), Type::Error)],
         ret: Type::Void,
     });
 
-    // eprintln(value: str) -> void  (stderr + newline)
+    // eprintln(value: any) -> void  (stderr + newline)
     checker.env.define_function(FunctionSig {
         name: "eprintln".to_string(),
         generic_params: vec![],
-        params: vec![("value".to_string(), Type::Str)],
+        params: vec![("value".to_string(), Type::Error)],
         ret: Type::Void,
     });
 
@@ -1469,19 +1511,21 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         },
     });
 
-    // len(collection) -> i64
+    // len(collection) -> i64 — accepts any collection type (str, array, map).
+    // Codegen passes the opaque handle to kryos_builtin_len which reads
+    // the length field at offset 0 (shared across all collection types).
     checker.env.define_function(FunctionSig {
         name: "len".to_string(),
         generic_params: vec![],
-        params: vec![("collection".to_string(), Type::I64)],
+        params: vec![("collection".to_string(), Type::Error)],
         ret: Type::I64,
     });
 
-    // to_string(value) -> str
+    // to_string(value) -> str — accepts any type.
     checker.env.define_function(FunctionSig {
         name: "to_string".to_string(),
         generic_params: vec![],
-        params: vec![("value".to_string(), Type::I64)],
+        params: vec![("value".to_string(), Type::Error)],
         ret: Type::Str,
     });
 

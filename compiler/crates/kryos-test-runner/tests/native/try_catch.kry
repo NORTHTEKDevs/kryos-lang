@@ -1,0 +1,10 @@
+// expect-stdout: safe
+// expect-stdout: done
+fn main() {
+    try {
+        println("safe")
+    } catch e {
+        println("error")
+    }
+    println("done")
+}

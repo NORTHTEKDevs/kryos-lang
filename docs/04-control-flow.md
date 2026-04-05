@@ -81,14 +81,25 @@ The loop runs as long as the condition is true. Like `if`, braces are required a
 
 ### Iterating over a range
 
+Kryos supports two equivalent syntaxes for range-based loops:
+
 ```
+// Range operator syntax (preferred)
+for i in 0..5 {
+    println(i)
+}
+// prints: 0, 1, 2, 3, 4
+
+// range() function syntax
 for i in range(0, 5) {
     println(i)
 }
 // prints: 0, 1, 2, 3, 4
 ```
 
-`range(start, end)` produces integers from `start` (inclusive) to `end` (exclusive). It also supports a step parameter: `range(0, 10, 2)` produces `0, 2, 4, 6, 8`.
+Both produce identical code -- a simple counter loop. The `..` operator creates a half-open range (inclusive start, exclusive end). `range(start, end)` does the same thing.
+
+The `range()` function also supports a step parameter: `range(0, 10, 2)` produces `0, 2, 4, 6, 8`.
 
 Single-argument form starts from 0:
 
@@ -267,5 +278,5 @@ Inner loops have their own scope. Variables declared inside a block are not visi
 - **`elif` instead of `else if`.** Rust chains `else if`. Kryos uses the single keyword `elif`. The behavior is identical.
 - **`match` syntax is similar.** `match value { pattern => result, _ => default }` will feel familiar. The main difference: Kryos `match` currently handles value patterns and wildcards, not destructuring or enum variants with bindings.
 - **No `loop` keyword.** Use `while true { }` for infinite loops.
-- **`for` uses `in range()`.** Instead of Rust's `for i in 0..5`, Kryos uses `for i in range(0, 5)`. The `..` operator exists in Kryos for range expressions, but `for` loops typically use the `range()` function.
+- **`for` supports both `0..5` and `range(0, 5)`.** Rust's `for i in 0..5` works identically in Kryos. You can also use `range(start, end)` or `range(start, end, step)` for the function-call style.
 - **`break` and `continue` are the same.** No labeled breaks (`'outer: loop`) yet -- they apply to the innermost loop.

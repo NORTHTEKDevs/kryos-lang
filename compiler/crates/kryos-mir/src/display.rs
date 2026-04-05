@@ -66,7 +66,14 @@ impl fmt::Display for Instruction {
             Instruction::ArcRetain { ptr } => write!(f, "arc_retain({ptr})"),
             Instruction::ArcRelease { ptr } => write!(f, "arc_release({ptr})"),
             Instruction::Drop { local } => write!(f, "drop({local})"),
-            Instruction::Spawn { task } => write!(f, "spawn({task})"),
+            Instruction::Spawn { func, args } => {
+                write!(f, "spawn {func}(")?;
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{a}")?;
+                }
+                write!(f, ")")
+            }
             Instruction::Send { channel, value } => write!(f, "send({channel}, {value})"),
             Instruction::Receive { dest, channel } => write!(f, "{dest} = receive({channel})"),
             Instruction::Nop => write!(f, "nop"),
@@ -82,6 +89,16 @@ impl fmt::Display for RValue {
             RValue::UnOp { op, operand } => write!(f, "{op}({operand})"),
             RValue::Call { func, args } => {
                 write!(f, "call {func}(")?;
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{a}")?;
+                }
+                write!(f, ")")
+            }
+            RValue::CallIndirect { callee, args } => {
+                write!(f, "call_indirect {callee}(")?;
                 for (i, a) in args.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;

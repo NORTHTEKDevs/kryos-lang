@@ -77,31 +77,65 @@ impl JitCompiler {
             cranelift_module::default_libcall_names(),
         );
 
-        // Register ARC runtime stubs so JIT linking doesn't fail when these
-        // symbols are referenced but no runtime is linked.
+        // Register ARC runtime stubs — ARC is not active in JIT mode.
         jit_builder.symbol("kryos_arc_retain", kryos_arc_retain_stub as *const u8);
         jit_builder.symbol("kryos_arc_release", kryos_arc_release_stub as *const u8);
         jit_builder.symbol("kryos_arc_alloc", kryos_arc_alloc_stub as *const u8);
 
-        // Register string/array runtime functions for JIT linking.
-        // These are the actual kryos-rt implementations when available,
-        // or stubs when running without the runtime.
-        jit_builder.symbol("kryos_string_new", kryos_string_new_stub as *const u8);
-        jit_builder.symbol("kryos_string_concat", kryos_string_concat_stub as *const u8);
-        jit_builder.symbol("kryos_string_len", kryos_string_len_stub as *const u8);
-        jit_builder.symbol("kryos_string_eq", kryos_string_eq_stub as *const u8);
-        jit_builder.symbol("kryos_string_slice", kryos_string_slice_stub as *const u8);
-        jit_builder.symbol("kryos_string_find", kryos_string_find_stub as *const u8);
-        jit_builder.symbol("kryos_string_free", kryos_string_free_stub as *const u8);
-        jit_builder.symbol("kryos_array_new", kryos_array_new_stub as *const u8);
-        jit_builder.symbol("kryos_array_push", kryos_array_push_stub as *const u8);
-        jit_builder.symbol("kryos_array_get", kryos_array_get_stub as *const u8);
-        jit_builder.symbol("kryos_array_set", kryos_array_set_stub as *const u8);
-        jit_builder.symbol("kryos_array_len", kryos_array_len_stub as *const u8);
-        jit_builder.symbol("kryos_array_free", kryos_array_free_stub as *const u8);
-        jit_builder.symbol("kryos_builtin_len", kryos_builtin_len_stub as *const u8);
-        jit_builder.symbol("kryos_builtin_to_string", kryos_builtin_to_string_stub as *const u8);
-        jit_builder.symbol("kryos_ipow", kryos_ipow_stub as *const u8);
+        // Register real kryos-rt function implementations. Since the JIT
+        // runs in-process, we pass the actual runtime function addresses
+        // instead of stubs. This gives `kryos run` full runtime support.
+
+        // String operations
+        jit_builder.symbol("kryos_string_new", kryos_rt::string::kryos_string_new as *const u8);
+        jit_builder.symbol("kryos_string_concat", kryos_rt::string::kryos_string_concat as *const u8);
+        jit_builder.symbol("kryos_string_len", kryos_rt::string::kryos_string_len as *const u8);
+        jit_builder.symbol("kryos_string_eq", kryos_rt::string::kryos_string_eq as *const u8);
+        jit_builder.symbol("kryos_string_slice", kryos_rt::string::kryos_string_slice as *const u8);
+        jit_builder.symbol("kryos_string_find", kryos_rt::string::kryos_string_find as *const u8);
+        jit_builder.symbol("kryos_string_free", kryos_rt::string::kryos_string_free as *const u8);
+
+        // Array operations
+        jit_builder.symbol("kryos_array_new", kryos_rt::array::kryos_array_new as *const u8);
+        jit_builder.symbol("kryos_array_push", kryos_rt::array::kryos_array_push as *const u8);
+        jit_builder.symbol("kryos_array_get", kryos_rt::array::kryos_array_get as *const u8);
+        jit_builder.symbol("kryos_array_set", kryos_rt::array::kryos_array_set as *const u8);
+        jit_builder.symbol("kryos_array_len", kryos_rt::array::kryos_array_len as *const u8);
+        jit_builder.symbol("kryos_array_free", kryos_rt::array::kryos_array_free as *const u8);
+
+        // Map operations
+        jit_builder.symbol("kryos_map_new", kryos_rt::map::kryos_map_new as *const u8);
+        jit_builder.symbol("kryos_map_insert", kryos_rt::map::kryos_map_insert as *const u8);
+        jit_builder.symbol("kryos_map_insert_str", kryos_rt::map::kryos_map_insert_str as *const u8);
+        jit_builder.symbol("kryos_map_get", kryos_rt::map::kryos_map_get as *const u8);
+        jit_builder.symbol("kryos_map_get_str", kryos_rt::map::kryos_map_get_str as *const u8);
+        jit_builder.symbol("kryos_map_len", kryos_rt::map::kryos_map_len as *const u8);
+        jit_builder.symbol("kryos_map_free", kryos_rt::map::kryos_map_free as *const u8);
+
+        // Builtins and type conversions
+        jit_builder.symbol("kryos_builtin_len", kryos_rt::builtins::kryos_builtin_len as *const u8);
+        jit_builder.symbol("kryos_builtin_to_string", kryos_rt::builtins::kryos_builtin_to_string as *const u8);
+        jit_builder.symbol("kryos_i64_to_string", kryos_rt::builtins::kryos_i64_to_string as *const u8);
+        jit_builder.symbol("kryos_f64_to_string", kryos_rt::builtins::kryos_f64_to_string as *const u8);
+        jit_builder.symbol("kryos_bool_to_string", kryos_rt::builtins::kryos_bool_to_string as *const u8);
+        jit_builder.symbol("kryos_ipow", kryos_rt::builtins::kryos_ipow as *const u8);
+        jit_builder.symbol("kryos_fpow", kryos_rt::builtins::kryos_fpow as *const u8);
+        jit_builder.symbol("kryos_fmod", kryos_rt::builtins::kryos_fmod as *const u8);
+
+        // Print operations
+        jit_builder.symbol("kryos_println_str", kryos_rt::builtins::kryos_println_str as *const u8);
+        jit_builder.symbol("kryos_print_str", kryos_rt::builtins::kryos_print_str as *const u8);
+        jit_builder.symbol("kryos_eprintln_str", kryos_rt::builtins::kryos_eprintln_str as *const u8);
+
+        // Channel operations
+        jit_builder.symbol("kryos_chan_new_i64", kryos_rt::builtins::kryos_chan_new_i64 as *const u8);
+        jit_builder.symbol("kryos_chan_send_i64", kryos_rt::builtins::kryos_chan_send_i64 as *const u8);
+        jit_builder.symbol("kryos_chan_recv_i64", kryos_rt::builtins::kryos_chan_recv_i64 as *const u8);
+
+        // Spawn runtime
+        jit_builder.symbol("kryos_spawn", kryos_rt::spawn::kryos_spawn as *const u8);
+        jit_builder.symbol("kryos_spawn_wait_all", kryos_rt::spawn::kryos_spawn_wait_all as *const u8);
+        jit_builder.symbol("kryos_sleep", kryos_rt::spawn::kryos_sleep as *const u8);
 
         let module = JITModule::new(jit_builder);
 
@@ -176,6 +210,7 @@ impl JitCompiler {
         {
             let empty_struct_defs = std::collections::HashMap::new();
             let empty_enum_defs = std::collections::HashMap::new();
+            let mut str_counter = 0u32;
             let mut builder = FunctionBuilder::new(&mut cl_func, &mut self.fb_ctx);
             crate::codegen::translate_function(
                 mir_func,
@@ -184,6 +219,7 @@ impl JitCompiler {
                 &mut self.module,
                 &empty_struct_defs,
                 &empty_enum_defs,
+                &mut str_counter,
             )?;
             builder.seal_all_blocks();
             builder.finalize();
@@ -204,51 +240,14 @@ impl JitCompiler {
 }
 
 // ---------------------------------------------------------------------------
-// ARC runtime stubs (no-ops for JIT without a linked runtime)
+// ARC runtime stubs — ARC is not active in JIT mode, so these remain no-ops.
+// All other runtime functions use real kryos-rt implementations.
 // ---------------------------------------------------------------------------
 
-extern "C" fn kryos_arc_retain_stub(_ptr: u64) {
-    // No-op: ARC not active in JIT stub mode.
-}
+extern "C" fn kryos_arc_retain_stub(_ptr: u64) {}
 
-extern "C" fn kryos_arc_release_stub(_ptr: u64) {
-    // No-op: ARC not active in JIT stub mode.
-}
+extern "C" fn kryos_arc_release_stub(_ptr: u64) {}
 
 extern "C" fn kryos_arc_alloc_stub(_val: u64) -> u64 {
-    // Returns the value itself — no real allocation.
     _val
-}
-
-// ---------------------------------------------------------------------------
-// String/Array runtime stubs (no-ops for JIT without a linked runtime)
-// ---------------------------------------------------------------------------
-
-extern "C" fn kryos_string_new_stub(_ptr: u64, _len: u64) -> u64 { 0 }
-extern "C" fn kryos_string_concat_stub(_a: u64, _b: u64) -> u64 { 0 }
-extern "C" fn kryos_string_len_stub(_s: u64) -> u64 { 0 }
-extern "C" fn kryos_string_eq_stub(_a: u64, _b: u64) -> u8 { 0 }
-extern "C" fn kryos_string_slice_stub(_s: u64, _start: u64, _end: u64) -> u64 { 0 }
-extern "C" fn kryos_string_find_stub(_s: u64, _needle: u64) -> u64 { u64::MAX } // -1 as unsigned
-extern "C" fn kryos_string_free_stub(_s: u64) {}
-extern "C" fn kryos_array_new_stub(_elem_size: u64, _cap: u64) -> u64 { 0 }
-extern "C" fn kryos_array_push_stub(_arr: u64, _val: u64) {}
-extern "C" fn kryos_array_get_stub(_arr: u64, _idx: u64) -> u64 { 0 }
-extern "C" fn kryos_array_set_stub(_arr: u64, _idx: u64, _val: u64) {}
-extern "C" fn kryos_array_len_stub(_arr: u64) -> u64 { 0 }
-extern "C" fn kryos_array_free_stub(_arr: u64) {}
-extern "C" fn kryos_builtin_len_stub(collection: u64) -> u64 {
-    if collection == 0 { return 0; }
-    unsafe { *(collection as *const u64) }
-}
-extern "C" fn kryos_builtin_to_string_stub(val: u64) -> u64 { val } // passthrough in JIT
-extern "C" fn kryos_ipow_stub(mut base: u64, exp: u64) -> u64 {
-    let mut result: u64 = 1;
-    let mut e = exp;
-    while e > 0 {
-        if e & 1 == 1 { result = result.wrapping_mul(base); }
-        base = base.wrapping_mul(base);
-        e >>= 1;
-    }
-    result
 }

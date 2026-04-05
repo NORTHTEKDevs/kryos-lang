@@ -221,16 +221,32 @@ impl LlvmCodegen {
         self.emit_line("; Map runtime");
         self.emit_line("declare i64 @kryos_map_new()");
         self.emit_line("declare void @kryos_map_insert(i64, i64, i64)");
+        self.emit_line("declare void @kryos_map_insert_str(i64, i64, i64)");
         self.emit_line("declare i64 @kryos_map_get(i64, i64)");
+        self.emit_line("declare i64 @kryos_map_get_str(i64, i64)");
         self.emit_line("declare i64 @kryos_map_len(i64)");
         self.emit_line("declare void @kryos_map_free(i64)");
         self.emit_line("; Builtin runtime");
         self.emit_line("declare i64 @kryos_builtin_len(i64)");
         self.emit_line("declare i64 @kryos_builtin_to_string(i64)");
         self.emit_line("declare i64 @kryos_ipow(i64, i64)");
+        self.emit_line("declare double @kryos_fpow(double, double)");
+        self.emit_line("declare double @kryos_fmod(double, double)");
         self.emit_line("declare i64 @kryos_i64_to_string(i64)");
         self.emit_line("declare i64 @kryos_f64_to_string(double)");
         self.emit_line("declare i64 @kryos_bool_to_string(i64)");
+        // Channel runtime
+        self.emit_line("declare i64 @kryos_chan_new_i64()");
+        self.emit_line("declare i64 @kryos_chan_send_i64(i64, i64)");
+        self.emit_line("declare i64 @kryos_chan_recv_i64(i64)");
+        // Print runtime (for KryosString handles)
+        self.emit_line("declare void @kryos_println_str(ptr)");
+        self.emit_line("declare void @kryos_print_str(ptr)");
+        self.emit_line("declare void @kryos_eprintln_str(ptr)");
+        // Spawn runtime
+        self.emit_line("declare i64 @kryos_spawn(i64, ptr, i64)");
+        self.emit_line("declare void @kryos_spawn_wait_all()");
+        self.emit_line("declare void @kryos_sleep(i64)");
         self.emit_blank();
     }
 
@@ -296,6 +312,12 @@ impl LlvmCodegen {
             RValue::UnOp { operand, .. } => self.prescan_operand(operand),
             RValue::Use(op) => self.prescan_operand(op),
             RValue::Call { args, .. } => {
+                for arg in args {
+                    self.prescan_operand(arg);
+                }
+            }
+            RValue::CallIndirect { callee, args } => {
+                self.prescan_operand(callee);
                 for arg in args {
                     self.prescan_operand(arg);
                 }
@@ -517,26 +539,85 @@ impl LlvmCodegen {
                     ptr.0
                 ));
             }
-            Instruction::Drop { .. } => {
-                // Drop is a no-op at the LLVM IR level for now — the ARC
-                // release calls handle deallocation. We emit a comment.
-                self.emit_line("  ; drop (no-op)");
+            Instruction::Drop { local } => {
+                // For string locals, call kryos_string_free to release the heap allocation.
+                let is_str = func
+                    .locals
+                    .iter()
+                    .find(|l| l.id == *local)
+                    .map_or(false, |l| l.ty == MirType::Str);
+                if is_str {
+                    let val = if self.mutable_locals.contains(&local.0) {
+                        let tmp = self.next_temp();
+                        self.emit_line(&format!("  {tmp} = load ptr, ptr %_{}.addr", local.0));
+                        tmp
+                    } else {
+                        format!("%_{}", local.0)
+                    };
+                    self.emit_line(&format!("  call void @kryos_string_free(ptr {val})"));
+                } else {
+                    self.emit_line("  ; drop (no-op)");
+                }
             }
             Instruction::Nop => {}
-            Instruction::Spawn { task } => {
-                self.emit_line(&format!("  ; spawn(_{}) — runtime call placeholder", task.0));
+            Instruction::Spawn { func: spawn_fn, args } => {
+                // Get function pointer.
+                let tmp_fptr = self.next_temp();
+                self.emit_line(&format!(
+                    "  {tmp_fptr} = ptrtoint ptr @{spawn_fn} to i64"
+                ));
+                if args.is_empty() {
+                    // kryos_spawn(fn_ptr, null, 0)
+                    self.emit_line(&format!(
+                        "  call i64 @kryos_spawn(i64 {tmp_fptr}, ptr null, i64 0)"
+                    ));
+                } else {
+                    // Alloca for args array.
+                    let arr = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {arr} = alloca i64, i32 {}", args.len()
+                    ));
+                    for (i, arg) in args.iter().enumerate() {
+                        let val = self.operand_to_llvm(arg, func);
+                        let gep = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {gep} = getelementptr i64, ptr {arr}, i32 {i}"
+                        ));
+                        self.emit_line(&format!(
+                            "  store i64 {val}, ptr {gep}"
+                        ));
+                    }
+                    self.emit_line(&format!(
+                        "  call i64 @kryos_spawn(i64 {tmp_fptr}, ptr {arr}, i64 {})",
+                        args.len()
+                    ));
+                }
             }
             Instruction::Send { channel, value } => {
+                let ch_op = Operand::Local(*channel);
+                let val_op = Operand::Local(*value);
+                let ch = self.operand_to_llvm(&ch_op, func);
+                let val = self.operand_to_llvm(&val_op, func);
                 self.emit_line(&format!(
-                    "  ; send(_{}, _{}) — runtime call placeholder",
-                    channel.0, value.0
+                    "  call i64 @kryos_chan_send_i64(i64 {ch}, i64 {val})"
                 ));
             }
             Instruction::Receive { dest, channel } => {
-                self.emit_line(&format!(
-                    "  ; receive(_{}, _{}) — runtime call placeholder",
-                    dest.0, channel.0
-                ));
+                let ch_op = Operand::Local(*channel);
+                let ch = self.operand_to_llvm(&ch_op, func);
+                let is_mutable = self.mutable_locals.contains(&dest.0);
+                if is_mutable {
+                    let tmp = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {tmp} = call i64 @kryos_chan_recv_i64(i64 {ch})"
+                    ));
+                    self.emit_line(&format!("  store i64 {tmp}, ptr %_{}.addr", dest.0));
+                } else {
+                    self.emit_line(&format!(
+                        "  %_{} = call i64 @kryos_chan_recv_i64(i64 {ch})",
+                        dest.0
+                    ));
+                }
             }
         }
         Ok(())
@@ -573,17 +654,57 @@ impl LlvmCodegen {
 
             // ----- Binary ops -----
             RValue::BinOp { op, left, right } => {
-                let left_val = self.operand_to_llvm(left, func);
-                let right_val = self.operand_to_llvm(right, func);
-                let is_float = self.operand_is_float(left, func);
-                let operand_ty = self.operand_type(left, func);
+                // String operations: dispatch to runtime instead of integer ops.
+                let is_string = Self::operand_is_string(left, func)
+                    || Self::operand_is_string(right, func);
 
-                if is_mutable {
-                    let tmp = self.next_temp();
-                    self.emit_binop_to(&tmp, *op, &left_val, &right_val, &operand_ty, is_float)?;
-                    self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
+                if is_string && *op == MirBinOp::Add {
+                    let left_val = self.operand_to_llvm(left, func);
+                    let right_val = self.operand_to_llvm(right, func);
+                    if is_mutable {
+                        let tmp = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {tmp} = call ptr @kryos_string_concat(ptr {left_val}, ptr {right_val})"
+                        ));
+                        self.emit_line(&format!("  store ptr {tmp}, ptr %_{}.addr", dest.0));
+                    } else {
+                        self.emit_line(&format!(
+                            "  %_{} = call ptr @kryos_string_concat(ptr {left_val}, ptr {right_val})",
+                            dest.0
+                        ));
+                    }
+                } else if is_string && (*op == MirBinOp::Eq || *op == MirBinOp::Neq) {
+                    let left_val = self.operand_to_llvm(left, func);
+                    let right_val = self.operand_to_llvm(right, func);
+                    let eq_tmp = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {eq_tmp} = call i1 @kryos_string_eq(ptr {left_val}, ptr {right_val})"
+                    ));
+                    if *op == MirBinOp::Neq {
+                        let neq_tmp = if is_mutable { self.next_temp() } else { format!("%_{}", dest.0) };
+                        self.emit_line(&format!("  {neq_tmp} = xor i1 {eq_tmp}, 1"));
+                        if is_mutable {
+                            self.emit_line(&format!("  store i1 {neq_tmp}, ptr %_{}.addr", dest.0));
+                        }
+                    } else if is_mutable {
+                        self.emit_line(&format!("  store i1 {eq_tmp}, ptr %_{}.addr", dest.0));
+                    } else {
+                        // eq_tmp is a temp, need to assign to dest
+                        self.emit_line(&format!("  %_{} = xor i1 {eq_tmp}, 0", dest.0));
+                    }
                 } else {
-                    self.emit_binop(dest, *op, &left_val, &right_val, &operand_ty, is_float)?;
+                    let left_val = self.operand_to_llvm(left, func);
+                    let right_val = self.operand_to_llvm(right, func);
+                    let is_float = self.operand_is_float(left, func);
+                    let operand_ty = self.operand_type(left, func);
+
+                    if is_mutable {
+                        let tmp = self.next_temp();
+                        self.emit_binop_to(&tmp, *op, &left_val, &right_val, &operand_ty, is_float)?;
+                        self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
+                    } else {
+                        self.emit_binop(dest, *op, &left_val, &right_val, &operand_ty, is_float)?;
+                    }
                 }
             }
 
@@ -604,6 +725,35 @@ impl LlvmCodegen {
 
             // ----- Function call -----
             RValue::Call { func: fname, args } => {
+                // Handle print/println/eprintln before building arg_list to
+                // avoid double-evaluating operands (which would emit duplicate
+                // kryos_string_new calls for string constants).
+                if matches!(fname.as_str(), "println" | "print" | "eprintln") {
+                    let print_fn = match fname.as_str() {
+                        "println" => "kryos_println_str",
+                        "print" => "kryos_print_str",
+                        _ => "kryos_eprintln_str",
+                    };
+                    if args.is_empty() {
+                        self.emit_line(&format!("  call void @{print_fn}(ptr null)"));
+                    } else if Self::operand_is_string(&args[0], func) {
+                        let val = self.operand_to_llvm(&args[0], func);
+                        self.emit_line(&format!("  call void @{print_fn}(ptr {val})"));
+                    } else {
+                        // Non-string arg: convert to string first.
+                        let val = self.operand_to_llvm(&args[0], func);
+                        let handle_i64 = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {handle_i64} = call i64 @kryos_builtin_to_string(i64 {val})"
+                        ));
+                        let handle_ptr = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {handle_ptr} = inttoptr i64 {handle_i64} to ptr"
+                        ));
+                        self.emit_line(&format!("  call void @{print_fn}(ptr {handle_ptr})"));
+                    }
+                } else {
+
                 // Look up the callee's parameter types for type-correct emission.
                 let callee_param_types = self.func_param_types.get(fname.as_str()).cloned();
 
@@ -623,33 +773,7 @@ impl LlvmCodegen {
                     .collect::<Vec<_>>()
                     .join(", ");
 
-                // Map Kryos builtin names to C library functions.
                 match fname.as_str() {
-                    "println" => {
-                        self.emit_line(&format!("  call i32 @puts({arg_list})"));
-                    }
-                    "eprintln" => {
-                        // Write to stderr: fputs(msg, stderr) + fputc('\n', stderr)
-                        let stderr = self.next_temp();
-                        if self.is_windows_target() {
-                            self.emit_line(&format!(
-                                "  {stderr} = call ptr @__acrt_iob_func(i32 2)"
-                            ));
-                        } else {
-                            self.emit_line(&format!(
-                                "  {stderr} = load ptr, ptr @stderr"
-                            ));
-                        }
-                        self.emit_line(&format!(
-                            "  call i32 @fputs({arg_list}, ptr {stderr})"
-                        ));
-                        self.emit_line(&format!(
-                            "  call i32 @fputc(i32 10, ptr {stderr})"
-                        ));
-                    }
-                    "print" => {
-                        self.emit_line(&format!("  call i32 (ptr, ...) @printf({arg_list})"));
-                    }
                     "exit" => {
                         self.emit_line(&format!("  call void @exit({arg_list})"));
                     }
@@ -681,6 +805,30 @@ impl LlvmCodegen {
                             self.emit_line(&format!("  %_{} = call i64 @kryos_builtin_to_string(i64 {val})", dest.0));
                         }
                     }
+                    "chan" => {
+                        if is_mutable {
+                            let tmp = self.next_temp();
+                            self.emit_line(&format!("  {tmp} = call i64 @kryos_chan_new_i64()"));
+                            self.emit_line(&format!("  store i64 {tmp}, ptr %_{}.addr", dest.0));
+                        } else {
+                            self.emit_line(&format!("  %_{} = call i64 @kryos_chan_new_i64()", dest.0));
+                        }
+                    }
+                    "send" => {
+                        let ch = if !args.is_empty() { self.operand_to_llvm(&args[0], func) } else { "0".into() };
+                        let val = if args.len() > 1 { self.operand_to_llvm(&args[1], func) } else { "0".into() };
+                        self.emit_line(&format!("  call i64 @kryos_chan_send_i64(i64 {ch}, i64 {val})"));
+                    }
+                    "recv" => {
+                        let ch = if !args.is_empty() { self.operand_to_llvm(&args[0], func) } else { "0".into() };
+                        if is_mutable {
+                            let tmp = self.next_temp();
+                            self.emit_line(&format!("  {tmp} = call i64 @kryos_chan_recv_i64(i64 {ch})"));
+                            self.emit_line(&format!("  store i64 {tmp}, ptr %_{}.addr", dest.0));
+                        } else {
+                            self.emit_line(&format!("  %_{} = call i64 @kryos_chan_recv_i64(i64 {ch})", dest.0));
+                        }
+                    }
                     _ => {
                         if dest_ty == "void" {
                             self.emit_line(&format!("  call void @{fname}({arg_list})"));
@@ -697,6 +845,41 @@ impl LlvmCodegen {
                             ));
                         }
                     }
+                }
+                } // close else (non-print call path)
+            }
+
+            RValue::CallIndirect { callee, args } => {
+                // Indirect call: callee is a function pointer stored as i64.
+                let fn_ptr_val = self.operand_to_llvm(callee, func);
+
+                // Build the argument list (all i64 in Kryos uniform slot model).
+                let arg_list = args
+                    .iter()
+                    .map(|a| {
+                        let val = self.operand_to_llvm(a, func);
+                        format!("i64 {val}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                // Cast i64 to function pointer, then call indirect.
+                let fn_ptr = self.next_temp();
+                self.emit_line(&format!(
+                    "  {fn_ptr} = inttoptr i64 {fn_ptr_val} to ptr"
+                ));
+
+                if is_mutable {
+                    let tmp = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {tmp} = call {dest_ty} {fn_ptr}({arg_list})"
+                    ));
+                    self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
+                } else {
+                    self.emit_line(&format!(
+                        "  %_{} = call {dest_ty} {fn_ptr}({arg_list})",
+                        dest.0
+                    ));
                 }
             }
 
@@ -735,16 +918,22 @@ impl LlvmCodegen {
                     .get(s)
                     .cloned()
                     .unwrap_or_else(|| self.intern_string(s));
-                let len = s.len() + 1;
+                let byte_len = s.len();
+                let arr_len = byte_len + 1;
+                // Create a KryosString handle from the raw data section bytes.
+                let gep_tmp = self.next_temp();
+                self.emit_line(&format!(
+                    "  {gep_tmp} = getelementptr [{arr_len} x i8], ptr {global_name}, i64 0, i64 0"
+                ));
                 if is_mutable {
-                    let tmp = self.next_temp();
+                    let handle = self.next_temp();
                     self.emit_line(&format!(
-                        "  {tmp} = getelementptr [{len} x i8], ptr {global_name}, i64 0, i64 0"
+                        "  {handle} = call ptr @kryos_string_new(ptr {gep_tmp}, i64 {byte_len})"
                     ));
-                    self.emit_line(&format!("  store ptr {tmp}, ptr %_{}.addr", dest.0));
+                    self.emit_line(&format!("  store ptr {handle}, ptr %_{}.addr", dest.0));
                 } else {
                     self.emit_line(&format!(
-                        "  %_{} = getelementptr [{len} x i8], ptr {global_name}, i64 0, i64 0",
+                        "  %_{} = call ptr @kryos_string_new(ptr {gep_tmp}, i64 {byte_len})",
                         dest.0
                     ));
                 }
@@ -1019,16 +1208,17 @@ impl LlvmCodegen {
                 // Chain kryos_string_concat calls: fold left across all parts.
                 if parts.is_empty() {
                     if is_mutable {
-                        self.emit_line(&format!("  store i64 0, ptr %_{}.addr", dest.0));
+                        self.emit_line(&format!("  store ptr null, ptr %_{}.addr", dest.0));
                     } else {
-                        self.emit_line(&format!("  %_{} = add i64 0, 0", dest.0));
+                        self.emit_line(&format!("  %_{} = inttoptr i64 0 to ptr", dest.0));
                     }
                 } else if parts.len() == 1 {
                     let val = self.operand_to_llvm(&parts[0], func);
                     if is_mutable {
-                        self.emit_line(&format!("  store i64 {val}, ptr %_{}.addr", dest.0));
+                        self.emit_line(&format!("  store ptr {val}, ptr %_{}.addr", dest.0));
                     } else {
-                        self.emit_line(&format!("  %_{} = add i64 {val}, 0", dest.0));
+                        // Copy the pointer value to the dest.
+                        self.emit_line(&format!("  %_{} = getelementptr i8, ptr {val}, i64 0", dest.0));
                     }
                 } else {
                     // Fold: acc = concat(parts[0], parts[1]), acc = concat(acc, parts[2]), ...
@@ -1036,20 +1226,20 @@ impl LlvmCodegen {
                     let second = self.operand_to_llvm(&parts[1], func);
                     let mut acc = self.next_temp();
                     self.emit_line(&format!(
-                        "  {acc} = call i64 @kryos_string_concat(i64 {first}, i64 {second})"
+                        "  {acc} = call ptr @kryos_string_concat(ptr {first}, ptr {second})"
                     ));
                     for part in &parts[2..] {
                         let next_val = self.operand_to_llvm(part, func);
                         let next_acc = self.next_temp();
                         self.emit_line(&format!(
-                            "  {next_acc} = call i64 @kryos_string_concat(i64 {acc}, i64 {next_val})"
+                            "  {next_acc} = call ptr @kryos_string_concat(ptr {acc}, ptr {next_val})"
                         ));
                         acc = next_acc;
                     }
                     if is_mutable {
-                        self.emit_line(&format!("  store i64 {acc}, ptr %_{}.addr", dest.0));
+                        self.emit_line(&format!("  store ptr {acc}, ptr %_{}.addr", dest.0));
                     } else {
-                        self.emit_line(&format!("  %_{} = add i64 {acc}, 0", dest.0));
+                        self.emit_line(&format!("  %_{} = getelementptr i8, ptr {acc}, i64 0", dest.0));
                     }
                 }
             }
@@ -1458,10 +1648,18 @@ impl LlvmCodegen {
                 format!("%_{}", id.0)
             }
             Operand::Constant(Constant::Str(s)) => {
-                // String constants need a GEP constant expression to get a ptr.
+                // String constants: get raw data pointer then wrap in KryosString.
                 if let Some(global_name) = self.string_constants.get(s.as_str()) {
-                    let len = s.len() + 1;
-                    format!("getelementptr ([{len} x i8], ptr {global_name}, i64 0, i64 0)")
+                    let byte_len = s.len();
+                    let arr_len = byte_len + 1;
+                    let gep = format!(
+                        "getelementptr ([{arr_len} x i8], ptr {global_name}, i64 0, i64 0)"
+                    );
+                    let tmp = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {tmp} = call ptr @kryos_string_new(ptr {gep}, i64 {byte_len})"
+                    ));
+                    tmp
                 } else {
                     "null".into()
                 }
@@ -1501,6 +1699,19 @@ impl LlvmCodegen {
     fn operand_is_float(&self, op: &Operand, func: &MirFunction) -> bool {
         let ty = self.operand_type(op, func);
         is_float_type(&ty)
+    }
+
+    /// Check if an operand has string type at the MIR level.
+    fn operand_is_string(op: &Operand, func: &MirFunction) -> bool {
+        match op {
+            Operand::Local(id) => func
+                .locals
+                .iter()
+                .find(|l| l.id == *id)
+                .map_or(false, |l| l.ty == MirType::Str),
+            Operand::Constant(Constant::Str(_)) => true,
+            _ => false,
+        }
     }
 
     /// Get the LLVM type for a local from the cached map.

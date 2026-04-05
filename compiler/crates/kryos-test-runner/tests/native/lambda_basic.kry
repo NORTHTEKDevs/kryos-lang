@@ -1,0 +1,5 @@
+// expect-stdout: 10
+fn main() {
+    let double = fn(x) { return x * 2 }
+    println(double(5))
+}

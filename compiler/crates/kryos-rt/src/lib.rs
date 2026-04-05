@@ -13,4 +13,5 @@ pub mod builtins;
 pub mod channel;
 pub mod map;
 pub mod panic;
+pub mod spawn;
 pub mod string;
