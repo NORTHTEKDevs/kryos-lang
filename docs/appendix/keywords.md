@@ -37,6 +37,14 @@ All reserved keywords in the Kryos language. These identifiers cannot be used as
 | `try` | Begin an error-handling block | `try { risky_operation() }` |
 | `catch` | Handle errors from a `try` block | `try { ... } catch e { println(e) }` |
 | `throw` | Raise an error | `throw "invalid input"` |
+| `select` | Wait on multiple channels | `select { msg from ch => ... }` |
+| `send` | Send a value through a channel | `send(ch, 42)` |
+| `recv` | Receive a value from a channel | `let x = recv(ch)` |
+| `ask` | Send a request and await response | Reserved for future use |
+| `chan` | Create a channel | `let ch = chan()` |
+| `shared` | Shared reference qualifier | Reserved for future use |
+| `weak` | Weak reference qualifier | Reserved for future use |
+| `move` | Move ownership explicitly | Reserved for future use |
 
 ## Logical Operators (Keywords)
 

@@ -29,9 +29,9 @@ Quick reference for developers transitioning to Kryos from Python, Rust, JavaScr
 | `None` | `none` | Lowercase |
 | `True` / `False` | `true` / `false` | Lowercase |
 | `and` / `or` / `not` | `and` / `or` / `not` | Same |
-| `lambda x: x * 2` | `\|x\| x * 2` | Rust-style lambda syntax |
+| `lambda x: x * 2` | `fn(x) { return x * 2 }` | Explicit function syntax |
 | `list(map(fn, lst))` | `map(lst, fn)` | Array first, function second |
-| `[x for x in lst if x > 0]` | `filter(lst, \|x\| x > 0)` | Use `filter` and `map` |
+| `[x for x in lst if x > 0]` | `filter(lst, fn(x) { return x > 0 })` | Use `filter` and `map` |
 
 ---
 
@@ -71,7 +71,7 @@ Quick reference for developers transitioning to Kryos from Python, Rust, JavaScr
 | `let x = 42` (reassignable) | `let mut x = 42` | Explicit mutability |
 | `const x = 42` | `let x = 42` | `let` is already immutable |
 | `function add(a, b) {` | `fn add(a, b) {` | `fn` instead of `function` |
-| `(a, b) => a + b` | `\|a, b\| a + b` | Pipe-delimited params |
+| `(a, b) => a + b` | `fn(a, b) { return a + b }` | Explicit function syntax |
 | `console.log(x)` | `println(x)` | Direct replacement |
 | `typeof x` | `type_of(x)` | Function, returns lowercase type name |
 | `x.length` | `len(x)` | Function, not property |
@@ -157,8 +157,8 @@ fn connect(host: str, port: i32 = 8080) {
     println("Connecting to " + host + ":" + to_string(port))
 }
 
-// Lambda
-let double = |x| x * 2
+// Lambda / inner function
+fn double(x: i64) -> i64 { return x * 2 }
 let result = map([1, 2, 3], double)   // [2, 4, 6]
 ```
 
