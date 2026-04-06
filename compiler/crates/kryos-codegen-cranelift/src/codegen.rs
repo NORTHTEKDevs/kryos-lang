@@ -1089,6 +1089,46 @@ fn translate_instruction<M: Module>(
             let var = translator.variables[&dest.0];
             builder.def_var(var, result);
         }
+        Instruction::ActorSpawn { dest, dispatch_fn, state } => {
+            // Get dispatch function pointer as i64.
+            let func_ref = ensure_func_ref_with_args(
+                dispatch_fn, builder, translator, module, 1,
+            )?;
+            let fn_ptr = builder.ins().func_addr(types::I64, func_ref);
+            let state_val = translate_operand(state, builder, translator, module)?;
+            // Call kryos_actor_spawn_i64(fn_ptr, state).
+            let spawn_ref = ensure_func_ref_with_args(
+                "kryos_actor_spawn_i64", builder, translator, module, 2,
+            )?;
+            let call = builder.ins().call(spawn_ref, &[fn_ptr, state_val]);
+            let result = builder.inst_results(call)[0];
+            let var = translator.variables[&dest.0];
+            builder.def_var(var, result);
+        }
+        Instruction::ActorSend { actor, handler_tag, args } => {
+            let actor_val = builder.use_var(translator.variables[&actor.0]);
+            // Lock to prevent message interleaving.
+            let lock_ref = ensure_func_ref_with_args(
+                "kryos_actor_lock_i64", builder, translator, module, 1,
+            )?;
+            builder.ins().call(lock_ref, &[actor_val]);
+            // Send handler tag.
+            let tag_val = builder.ins().iconst(types::I64, *handler_tag as i64);
+            let send_ref = ensure_func_ref_with_args(
+                "kryos_actor_send_i64", builder, translator, module, 2,
+            )?;
+            builder.ins().call(send_ref, &[actor_val, tag_val]);
+            // Send each argument.
+            for arg in args {
+                let val = translate_operand(arg, builder, translator, module)?;
+                builder.ins().call(send_ref, &[actor_val, val]);
+            }
+            // Unlock.
+            let unlock_ref = ensure_func_ref_with_args(
+                "kryos_actor_unlock_i64", builder, translator, module, 1,
+            )?;
+            builder.ins().call(unlock_ref, &[actor_val]);
+        }
     }
     Ok(())
 }

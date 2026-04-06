@@ -17,10 +17,13 @@ struct Mailbox {
     closed: bool,
 }
 
-/// Global state: per-actor mailbox and condvar, each independently locked.
+/// Global state: per-actor mailbox, condvar, and send lock.
 struct ActorEntry {
     mailbox: Mutex<Mailbox>,
     condvar: Condvar,
+    /// Spinlock held by senders during multi-word message sequences
+    /// (tag + args) to prevent interleaving from concurrent senders.
+    send_locked: std::sync::atomic::AtomicBool,
 }
 
 /// The global actor registry maps actor IDs to their mailbox entries.
@@ -56,6 +59,7 @@ pub extern "C" fn kryos_actor_spawn(
             closed: false,
         }),
         condvar: Condvar::new(),
+        send_locked: std::sync::atomic::AtomicBool::new(false),
     });
 
     // Register before spawning so early sends don't race.
@@ -160,4 +164,41 @@ pub extern "C" fn kryos_actor_recv(buf_ptr: *mut u8, buf_len: usize) -> i32 {
         }
         mb = entry.condvar.wait(mb).unwrap();
     }
+}
+
+/// Acquire the send lock for an actor. This must be held while sending
+/// a multi-word message (tag + arguments) to prevent interleaving from
+/// concurrent senders. Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn kryos_actor_lock(actor_id: u64) -> i32 {
+    let entry = {
+        let reg = get_registry().lock().unwrap();
+        match reg.get(&actor_id) {
+            Some(e) => e.clone(),
+            None => return -1,
+        }
+    };
+    // Spin until we acquire the lock.
+    while entry
+        .send_locked
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        std::hint::spin_loop();
+    }
+    0
+}
+
+/// Release the send lock for an actor. Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn kryos_actor_unlock(actor_id: u64) -> i32 {
+    let entry = {
+        let reg = get_registry().lock().unwrap();
+        match reg.get(&actor_id) {
+            Some(e) => e.clone(),
+            None => return -1,
+        }
+    };
+    entry.send_locked.store(false, Ordering::Release);
+    0
 }

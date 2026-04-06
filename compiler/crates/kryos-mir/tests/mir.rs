@@ -5,7 +5,7 @@ use kryos_ast::{
     self as ast,
     expr::{BinOp, UnOp, Param, MatchArm, Pattern},
     stmt::{Block, Stmt},
-    decl::{Decl, Module},
+    decl::{Decl, MessageHandler, Module, StructField},
     types::TypeExpr,
 };
 use kryos_mir::{
@@ -2290,4 +2290,160 @@ fn comptime_folds_float_mul() {
     } else {
         panic!("expected Assign instruction");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Actor dispatch loop generation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn actor_generates_dispatch_and_handlers() {
+    // actor Counter {
+    //     count: i64
+    //     fn increment(amount: i64) { }
+    //     fn reset() { }
+    // }
+    // fn main() { let c = Counter() }
+    let module = make_module(vec![
+        Decl::Actor {
+            name: "Counter".into(),
+            state_fields: vec![StructField {
+                name: "count".into(),
+                ty: simple_ty("i64"),
+                public: false,
+                default: None,
+                span: S,
+            }],
+            handlers: vec![
+                MessageHandler {
+                    name: "increment".into(),
+                    params: vec![make_param("amount", "i64")],
+                    ret_ty: None,
+                    body: block(vec![]),
+                    span: S,
+                },
+                MessageHandler {
+                    name: "reset".into(),
+                    params: vec![],
+                    ret_ty: None,
+                    body: block(vec![]),
+                    span: S,
+                },
+            ],
+            annotations: vec![],
+            span: S,
+        },
+        make_fn("main", vec![], None, block(vec![
+            Stmt::Let {
+                name: "c".into(),
+                ty: None,
+                value: Some(ast::Expr::FnCall {
+                    callee: Box::new(ident("Counter")),
+                    args: vec![],
+                    span: S,
+                }),
+                mutable: false,
+                pattern: None,
+                span: S,
+            },
+        ])),
+    ]);
+
+    let mir = lower_module(&module);
+
+    // Should have: Counter__increment, Counter__reset, Counter__dispatch, main
+    let names: Vec<&str> = mir.functions.iter().map(|f| f.name.as_str()).collect();
+    assert!(names.contains(&"Counter__increment"), "missing Counter__increment: {names:?}");
+    assert!(names.contains(&"Counter__reset"), "missing Counter__reset: {names:?}");
+    assert!(names.contains(&"Counter__dispatch"), "missing Counter__dispatch: {names:?}");
+    assert!(names.contains(&"main"), "missing main: {names:?}");
+
+    // Dispatch function should have a recv loop with Switch terminator.
+    let dispatch = mir.functions.iter().find(|f| f.name == "Counter__dispatch").unwrap();
+    assert!(dispatch.params.len() == 1, "dispatch takes 1 param (state)");
+    assert!(dispatch.ret_ty == MirType::Void, "dispatch returns void");
+    // Should have: bb_poll, bb_switch, bb_exit, bb_h1 (increment), bb_h2 (reset)
+    assert!(dispatch.blocks.len() == 5,
+        "expected 5 blocks in dispatch, got {}", dispatch.blocks.len());
+
+    // Check for Switch terminator.
+    let has_switch = dispatch.blocks.iter().any(|b| matches!(b.terminator, Terminator::Switch { .. }));
+    assert!(has_switch, "dispatch must have a Switch terminator");
+
+    // Check for kryos_actor_recv_i64 call.
+    let has_recv = dispatch.blocks.iter().any(|b| {
+        b.instructions.iter().any(|i| matches!(i,
+            Instruction::Assign { value: RValue::Call { func, .. }, .. }
+            if func == "kryos_actor_recv_i64"
+        ))
+    });
+    assert!(has_recv, "dispatch must call kryos_actor_recv_i64");
+
+    // Main should have an ActorSpawn instruction.
+    let main_fn = mir.functions.iter().find(|f| f.name == "main").unwrap();
+    let has_spawn = main_fn.blocks.iter().any(|b| {
+        b.instructions.iter().any(|i| matches!(i, Instruction::ActorSpawn { .. }))
+    });
+    assert!(has_spawn, "main must have an ActorSpawn instruction");
+}
+
+#[test]
+fn actor_method_call_generates_actor_send() {
+    // actor Greeter {
+    //     fn greet(msg: i64) { }
+    // }
+    // fn main() {
+    //     let g = Greeter()
+    //     g.greet(42)
+    // }
+    let module = make_module(vec![
+        Decl::Actor {
+            name: "Greeter".into(),
+            state_fields: vec![],
+            handlers: vec![MessageHandler {
+                name: "greet".into(),
+                params: vec![make_param("msg", "i64")],
+                ret_ty: None,
+                body: block(vec![]),
+                span: S,
+            }],
+            annotations: vec![],
+            span: S,
+        },
+        make_fn("main", vec![], None, block(vec![
+            Stmt::Let {
+                name: "g".into(),
+                ty: None,
+                value: Some(ast::Expr::FnCall {
+                    callee: Box::new(ident("Greeter")),
+                    args: vec![],
+                    span: S,
+                }),
+                mutable: false,
+                pattern: None,
+                span: S,
+            },
+            expr_stmt(ast::Expr::MethodCall {
+                object: Box::new(ident("g")),
+                method: "greet".into(),
+                args: vec![int_lit(42)],
+                span: S,
+            }),
+        ])),
+    ]);
+
+    let mir = lower_module(&module);
+
+    let main_fn = mir.functions.iter().find(|f| f.name == "main").unwrap();
+
+    // Should have an ActorSend instruction with handler_tag=1 and one arg.
+    let has_send = main_fn.blocks.iter().any(|b| {
+        b.instructions.iter().any(|i| match i {
+            Instruction::ActorSend { handler_tag, args, .. } => {
+                *handler_tag == 1 && args.len() == 1
+            }
+            _ => false,
+        })
+    });
+    assert!(has_send, "main must have ActorSend with tag=1 and 1 arg");
 }

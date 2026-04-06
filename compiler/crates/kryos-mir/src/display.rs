@@ -76,6 +76,16 @@ impl fmt::Display for Instruction {
             }
             Instruction::Send { channel, value } => write!(f, "send({channel}, {value})"),
             Instruction::Receive { dest, channel } => write!(f, "{dest} = receive({channel})"),
+            Instruction::ActorSpawn { dest, dispatch_fn, state } => {
+                write!(f, "{dest} = actor_spawn({dispatch_fn}, {state})")
+            }
+            Instruction::ActorSend { actor, handler_tag, args } => {
+                write!(f, "actor_send({actor}, tag={handler_tag}")?;
+                for a in args {
+                    write!(f, ", {a}")?;
+                }
+                write!(f, ")")
+            }
             Instruction::Nop => write!(f, "nop"),
         }
     }

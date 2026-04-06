@@ -254,6 +254,8 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_actor_spawn_i64(i64, i64)");
         self.emit_line("declare i64 @kryos_actor_send_i64(i64, i64)");
         self.emit_line("declare i64 @kryos_actor_recv_i64()");
+        self.emit_line("declare i64 @kryos_actor_lock_i64(i64)");
+        self.emit_line("declare i64 @kryos_actor_unlock_i64(i64)");
         // Tensor runtime
         self.emit_line("declare i64 @kryos_tensor_zeros(ptr, i64)");
         self.emit_line("declare i64 @kryos_tensor_ones(ptr, i64)");
@@ -356,7 +358,9 @@ impl LlvmCodegen {
                     }
                     Instruction::Drop { .. } | Instruction::Nop
                     | Instruction::Spawn { .. } | Instruction::Send { .. }
-                    | Instruction::Receive { .. } => {}
+                    | Instruction::Receive { .. }
+                    | Instruction::ActorSpawn { .. }
+                    | Instruction::ActorSend { .. } => {}
                 }
             }
             // Also scan terminator operands for constants (rare, but possible).
@@ -685,6 +689,50 @@ impl LlvmCodegen {
                         dest.0
                     ));
                 }
+            }
+            Instruction::ActorSpawn { dest, dispatch_fn, state } => {
+                // Get dispatch function pointer.
+                let fptr = self.next_temp();
+                self.emit_line(&format!(
+                    "  {fptr} = ptrtoint ptr @{dispatch_fn} to i64"
+                ));
+                let state_val = self.operand_to_llvm(state, func);
+                let is_mutable = self.mutable_locals.contains(&dest.0);
+                if is_mutable {
+                    let tmp = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {tmp} = call i64 @kryos_actor_spawn_i64(i64 {fptr}, i64 {state_val})"
+                    ));
+                    self.emit_line(&format!("  store i64 {tmp}, ptr %_{}.addr", dest.0));
+                } else {
+                    self.emit_line(&format!(
+                        "  %_{} = call i64 @kryos_actor_spawn_i64(i64 {fptr}, i64 {state_val})",
+                        dest.0
+                    ));
+                }
+            }
+            Instruction::ActorSend { actor, handler_tag, args } => {
+                let actor_op = Operand::Local(*actor);
+                let actor_val = self.operand_to_llvm(&actor_op, func);
+                // Lock to prevent message interleaving.
+                self.emit_line(&format!(
+                    "  call i64 @kryos_actor_lock_i64(i64 {actor_val})"
+                ));
+                // Send handler tag.
+                self.emit_line(&format!(
+                    "  call i64 @kryos_actor_send_i64(i64 {actor_val}, i64 {handler_tag})"
+                ));
+                // Send each argument.
+                for arg in args {
+                    let val = self.operand_to_llvm(arg, func);
+                    self.emit_line(&format!(
+                        "  call i64 @kryos_actor_send_i64(i64 {actor_val}, i64 {val})"
+                    ));
+                }
+                // Unlock.
+                self.emit_line(&format!(
+                    "  call i64 @kryos_actor_unlock_i64(i64 {actor_val})"
+                ));
             }
         }
         Ok(())

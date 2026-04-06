@@ -226,6 +226,22 @@ pub enum Instruction {
     /// Receive a value from a channel.
     Receive { dest: LocalId, channel: LocalId },
 
+    /// Spawn an actor: dest = kryos_actor_spawn_i64(dispatch_fn_ptr, state).
+    /// `dispatch_fn` is the name of the generated dispatch function.
+    ActorSpawn {
+        dest: LocalId,
+        dispatch_fn: String,
+        state: Operand,
+    },
+
+    /// Send a tagged message to an actor.
+    /// Generates: lock(actor) → send(actor, tag) → send(actor, arg[0]) → ... → unlock(actor).
+    ActorSend {
+        actor: LocalId,
+        handler_tag: u32,
+        args: Vec<Operand>,
+    },
+
     /// No-op placeholder.
     Nop,
 }

@@ -62,6 +62,8 @@ pub struct LoweringContext {
     try_catch_target: Option<TryCatchTarget>,
     /// Tracks locals that are closures with captures: local_name -> (func_name, capture_operands).
     closure_locals: HashMap<String, (String, Vec<Operand>)>,
+    /// Actor definitions: actor_name -> ordered list of (handler_name, param_count).
+    actor_defs: HashMap<String, Vec<(String, usize)>>,
 }
 
 /// Context passed to `throw` statements inside a `try` block.
@@ -103,6 +105,7 @@ impl LoweringContext {
             type_aliases: HashMap::new(),
             try_catch_target: None,
             closure_locals: HashMap::new(),
+            actor_defs: HashMap::new(),
         }
     }
 
@@ -378,7 +381,8 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                     .map(|f| (f.name.clone(), lower_type_expr(&f.ty)))
                     .collect();
                 ctx.struct_defs.insert(name.clone(), fields);
-                // Register handler signatures.
+                // Register handler signatures and actor_defs.
+                let mut handler_info = Vec::new();
                 for handler in handlers {
                     let mangled = format!("{name}__{}", handler.name);
                     let mir_ret = match &handler.ret_ty {
@@ -390,7 +394,9 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                         (name.clone(), handler.name.clone()),
                         mangled,
                     );
+                    handler_info.push((handler.name.clone(), handler.params.len()));
                 }
+                ctx.actor_defs.insert(name.clone(), handler_info);
             }
             _ => {}
         }
@@ -472,6 +478,11 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
             }
             _ => {}
         }
+    }
+
+    // Generate dispatch functions for each actor.
+    for (actor_name, handlers) in &ctx.actor_defs {
+        functions.push(generate_actor_dispatch(actor_name, handlers));
     }
 
     // Collect monomorphized specializations generated during lowering.
@@ -1740,6 +1751,10 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
         ast::Expr::FnCall { callee, args, .. } => {
             // If the callee is a simple identifier, look up the return type.
             if let ast::Expr::Identifier { name, .. } = callee.as_ref() {
+                // Actor construction returns a handle typed as the actor struct.
+                if ctx.actor_defs.contains_key(name.as_str()) {
+                    return MirType::Struct(name.clone());
+                }
                 // For generic functions, the return type depends on argument types.
                 if let Some(template) = ctx.generic_templates.get(name.as_str()) {
                     let generic_params = template.generic_params.clone();
@@ -1973,6 +1988,18 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 _ => "<closure>".to_string(),
             };
 
+            // Check if this is an actor construction (e.g., `Counter()`).
+            if ctx.actor_defs.contains_key(&func_name) {
+                let dispatch_fn = format!("{func_name}__dispatch");
+                let result = ctx.alloc_temp(MirType::I64);
+                ctx.emit(Instruction::ActorSpawn {
+                    dest: result,
+                    dispatch_fn,
+                    state: Operand::Constant(Constant::Int(0)),
+                });
+                return RValue::Use(Operand::Local(result));
+            }
+
             // Check if this is an enum variant constructor (e.g., `Some(42)`).
             if let Some((enum_name, variant_idx)) = find_enum_variant(ctx, &func_name) {
                 let mir_args: Vec<Operand> = args
@@ -2070,6 +2097,37 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 }
             }
 
+            // Check if this is a method call on an actor (message send).
+            let type_name = infer_type_name(ctx, object);
+            if let Some(ref tn) = type_name {
+                if let Some(handlers) = ctx.actor_defs.get(tn.as_str()).cloned() {
+                    if let Some((idx, _)) = handlers.iter().enumerate().find(|(_, (h, _))| h == method) {
+                        let obj = lower_expr_to_operand(ctx, object);
+                        // Ensure actor is in a local for ActorSend.
+                        let actor_local = match obj {
+                            Operand::Local(id) => id,
+                            _ => {
+                                let tmp = ctx.alloc_temp(MirType::I64);
+                                ctx.emit(Instruction::Assign {
+                                    dest: tmp,
+                                    value: RValue::Use(obj),
+                                });
+                                tmp
+                            }
+                        };
+                        let send_args: Vec<Operand> = args.iter()
+                            .map(|a| lower_expr_to_operand(ctx, a))
+                            .collect();
+                        ctx.emit(Instruction::ActorSend {
+                            actor: actor_local,
+                            handler_tag: (idx as u32) + 1,
+                            args: send_args,
+                        });
+                        return RValue::ConstInt(0); // fire-and-forget
+                    }
+                }
+            }
+
             let obj = lower_expr_to_operand(ctx, object);
             let mut mir_args: Vec<Operand> = vec![obj];
             for a in args {
@@ -2078,7 +2136,6 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
 
             // Resolve mangled method name: infer the object's type and look up
             // the impl method as TypeName__method.
-            let type_name = infer_type_name(ctx, object);
             let func_name = if let Some(tn) = type_name {
                 ctx.method_owners
                     .get(&(tn.clone(), method.clone()))
@@ -2794,6 +2851,172 @@ fn collect_identifiers_block(
             }
             _ => {}
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Actor dispatch function generation
+// ---------------------------------------------------------------------------
+
+/// Generate a `ActorName__dispatch` function that loops receiving messages
+/// from the actor mailbox and dispatches to the appropriate handler.
+///
+/// Layout:
+///   bb0 (poll):   tag = kryos_actor_recv_i64()
+///                 Branch(tag == 0, bb_exit, bb_switch)
+///   bb_switch:    Switch(tag, [(1, bb_h1), (2, bb_h2), ...], bb0)
+///   bb_h_N:       arg0 = kryos_actor_recv_i64()  // for each handler param
+///                 _ = Call("ActorName__handler", [state, arg0, ...])
+///                 Goto(bb0)
+///   bb_exit:      Return(None)
+fn generate_actor_dispatch(
+    actor_name: &str,
+    handlers: &[(String, usize)],
+) -> MirFunction {
+    let dispatch_name = format!("{actor_name}__dispatch");
+
+    let mut locals = Vec::new();
+    let mut next_local: u32 = 0;
+    let mut next_block: u32 = 0;
+
+    let mut alloc_local = |name: Option<&str>, ty: MirType, mutable: bool| -> LocalId {
+        let id = LocalId(next_local);
+        locals.push(MirLocal {
+            id,
+            name: name.map(|s| s.to_string()),
+            ty,
+            mutable,
+        });
+        next_local += 1;
+        id
+    };
+
+    let mut alloc_block = || -> BlockId {
+        let id = BlockId(next_block);
+        next_block += 1;
+        id
+    };
+
+    // Parameter: state_ptr (i64).
+    let state_local = alloc_local(Some("state"), MirType::I64, false);
+    // Tag variable (mutable — assigned each iteration).
+    let tag_local = alloc_local(Some("__tag"), MirType::I64, true);
+    // Comparison result.
+    let cmp_local = alloc_local(Some("__cmp"), MirType::Bool, false);
+
+    // Pre-allocate block IDs.
+    let bb_poll = alloc_block();   // bb0
+    let bb_switch = alloc_block(); // bb1
+    let bb_exit = alloc_block();   // bb2
+
+    // Allocate handler blocks (one per handler).
+    let handler_blocks: Vec<BlockId> = handlers.iter().map(|_| alloc_block()).collect();
+
+    // Pre-allocate argument locals for the handler with the most params.
+    let max_args = handlers.iter().map(|(_, n)| *n).max().unwrap_or(0);
+    let arg_locals: Vec<LocalId> = (0..max_args)
+        .map(|i| alloc_local(Some(&format!("__arg{i}")), MirType::I64, true))
+        .collect();
+    // Discard local for void handler results.
+    let discard_local = alloc_local(Some("__discard"), MirType::I64, false);
+
+    let mut blocks = Vec::new();
+
+    // bb_poll: tag = kryos_actor_recv_i64(); if tag == 0 goto exit else switch
+    blocks.push(BasicBlock {
+        id: bb_poll,
+        instructions: vec![
+            Instruction::Assign {
+                dest: tag_local,
+                value: RValue::Call {
+                    func: "kryos_actor_recv_i64".into(),
+                    args: vec![],
+                },
+            },
+            Instruction::Assign {
+                dest: cmp_local,
+                value: RValue::BinOp {
+                    op: MirBinOp::Eq,
+                    left: Operand::Local(tag_local),
+                    right: Operand::Constant(Constant::Int(0)),
+                },
+            },
+        ],
+        terminator: Terminator::Branch {
+            cond: Operand::Local(cmp_local),
+            then_block: bb_exit,
+            else_block: bb_switch,
+        },
+    });
+
+    // bb_switch: Switch(tag, [(1, bb_h1), (2, bb_h2), ...], default=bb_poll)
+    let targets: Vec<(i64, BlockId)> = handler_blocks
+        .iter()
+        .enumerate()
+        .map(|(i, &bb)| ((i as i64) + 1, bb))
+        .collect();
+    blocks.push(BasicBlock {
+        id: bb_switch,
+        instructions: vec![],
+        terminator: Terminator::Switch {
+            value: Operand::Local(tag_local),
+            targets,
+            default: bb_poll, // unknown tag → just loop back
+        },
+    });
+
+    // bb_exit: return
+    blocks.push(BasicBlock {
+        id: bb_exit,
+        instructions: vec![],
+        terminator: Terminator::Return(None),
+    });
+
+    // Handler blocks: recv args, call handler, goto poll
+    for (i, (handler_name, param_count)) in handlers.iter().enumerate() {
+        let mut instructions = Vec::new();
+
+        // Receive each argument.
+        for j in 0..*param_count {
+            instructions.push(Instruction::Assign {
+                dest: arg_locals[j],
+                value: RValue::Call {
+                    func: "kryos_actor_recv_i64".into(),
+                    args: vec![],
+                },
+            });
+        }
+
+        // Call the handler: ActorName__handler(state, arg0, arg1, ...)
+        let mangled = format!("{actor_name}__{handler_name}");
+        let mut call_args: Vec<Operand> = vec![Operand::Local(state_local)];
+        for j in 0..*param_count {
+            call_args.push(Operand::Local(arg_locals[j]));
+        }
+        instructions.push(Instruction::Assign {
+            dest: discard_local,
+            value: RValue::Call {
+                func: mangled,
+                args: call_args,
+            },
+        });
+
+        blocks.push(BasicBlock {
+            id: handler_blocks[i],
+            instructions,
+            terminator: Terminator::Goto(bb_poll),
+        });
+    }
+
+    MirFunction {
+        name: dispatch_name,
+        params: vec![MirParam {
+            local: state_local,
+            ty: MirType::I64,
+        }],
+        ret_ty: MirType::Void,
+        blocks,
+        locals,
     }
 }
 

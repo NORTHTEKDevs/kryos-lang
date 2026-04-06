@@ -288,6 +288,18 @@ pub extern "C" fn kryos_actor_recv_i64() -> i64 {
     if result > 0 { buf } else { 0 }
 }
 
+/// Acquire the send lock for an actor (prevents message interleaving).
+#[no_mangle]
+pub extern "C" fn kryos_actor_lock_i64(actor_id: i64) -> i64 {
+    crate::actor::kryos_actor_lock(actor_id as u64) as i64
+}
+
+/// Release the send lock for an actor.
+#[no_mangle]
+pub extern "C" fn kryos_actor_unlock_i64(actor_id: i64) -> i64 {
+    crate::actor::kryos_actor_unlock(actor_id as u64) as i64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
