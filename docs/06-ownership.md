@@ -1,6 +1,6 @@
 # Ownership
 
-> **Implementation Status:** Move semantics and use-after-move detection are fully implemented in the compiler. The ownership analyzer runs after type checking and reports errors for moved values. Shared references (`&T`) and mutable references (`&mut T`) are parsed and type-checked but not enforced at the MIR/codegen level -- they are currently treated as raw pointers. Full borrow checking with lifetime enforcement is planned for a future release. ARC (automatic reference counting) insertions are implemented for values that escape their scope.
+> **Implementation Status:** Move semantics and use-after-move detection are fully implemented in the compiler. The ownership analyzer runs after type checking and reports errors for moved values. Shared references (`&T`) and mutable references (`&mut T`) are parsed, type-checked, and tracked through MIR with mutability preserved (`MirType::Ref { inner, mutable }`). Auto-deref works for field access through references. Borrow checking (preventing overlapping `&mut`) is not yet implemented -- Kryos uses ownership-based memory safety for now. Full borrow checking with lifetime enforcement is planned for a future release. ARC (automatic reference counting) insertions are implemented for values that escape their scope.
 
 This is the most important chapter in the manual. Ownership is how Kryos gives you memory safety without a garbage collector. Once you internalize the rules, they become second nature -- and the compiler catches the mistakes before your code runs.
 

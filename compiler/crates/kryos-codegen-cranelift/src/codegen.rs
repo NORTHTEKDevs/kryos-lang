@@ -43,7 +43,7 @@ pub fn mir_type_to_cl(ty: &MirType) -> Result<Option<Type>, CodegenError> {
         MirType::Char => Ok(Some(types::I32)), // Unicode scalar value
         MirType::Str => Ok(Some(types::I64)),   // pointer to string data
         MirType::Void => Ok(None),
-        MirType::Ptr(_) | MirType::Shared(_) => Ok(Some(types::I64)), // pointer
+        MirType::Ptr(_) | MirType::Ref { .. } | MirType::Shared(_) => Ok(Some(types::I64)), // pointer
         MirType::Array(_, _) | MirType::Tuple(_) | MirType::Struct(_) | MirType::Enum(_) => {
             Ok(Some(types::I64)) // pointer to heap/stack allocation
         }

@@ -2543,8 +2543,8 @@ pub fn lower_type_expr(ty: &ast::TypeExpr) -> MirType {
             let _ = lower_type_expr(inner);
             MirType::Struct("Option".to_string())
         }
-        ast::TypeExpr::Reference { inner, .. } => {
-            MirType::Ptr(Box::new(lower_type_expr(inner)))
+        ast::TypeExpr::Reference { inner, mutable, .. } => {
+            MirType::Ref { inner: Box::new(lower_type_expr(inner)), mutable: *mutable }
         }
         ast::TypeExpr::Weak { inner, .. } => {
             // Lower Weak as Ptr — codegen adds weak-ref bookkeeping.
@@ -2587,7 +2587,10 @@ pub fn lower_resolved_type(ty: &Type) -> MirType {
             ret: Box::new(lower_resolved_type(ret)),
         },
         Type::Shared { inner } => MirType::Shared(Box::new(lower_resolved_type(inner))),
-        Type::Reference { inner, .. } | Type::Pointer { inner, .. } | Type::Weak { inner } => {
+        Type::Reference { inner, mutable } => {
+            MirType::Ref { inner: Box::new(lower_resolved_type(inner)), mutable: *mutable }
+        }
+        Type::Pointer { inner, .. } | Type::Weak { inner } => {
             MirType::Ptr(Box::new(lower_resolved_type(inner)))
         }
         Type::Option { inner } => {
