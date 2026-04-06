@@ -356,11 +356,18 @@ impl LlvmCodegen {
                     | Instruction::ArcRelease { .. } => {
                         self.needs_arc_runtime = true;
                     }
+                    Instruction::Spawn { args, .. } => {
+                        for a in args { self.prescan_operand(a); }
+                    }
+                    Instruction::ActorSpawn { state, .. } => {
+                        self.prescan_operand(state);
+                    }
+                    Instruction::ActorSend { args, .. } => {
+                        for a in args { self.prescan_operand(a); }
+                    }
                     Instruction::Drop { .. } | Instruction::Nop
-                    | Instruction::Spawn { .. } | Instruction::Send { .. }
-                    | Instruction::Receive { .. }
-                    | Instruction::ActorSpawn { .. }
-                    | Instruction::ActorSend { .. } => {}
+                    | Instruction::Send { .. }
+                    | Instruction::Receive { .. } => {}
                 }
             }
             // Also scan terminator operands for constants (rare, but possible).
