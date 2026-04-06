@@ -875,6 +875,9 @@ impl LlvmCodegen {
                             self.emit_line(&format!("  %_{} = call i64 @kryos_chan_new_i64()", dest.0));
                         }
                     }
+                    "kryos_sleep" | "kryos_spawn_wait_all" | "kryos_chan_close_i64" | "kryos_chan_drop_i64" => {
+                        self.emit_line(&format!("  call void @{fname}({arg_list})"));
+                    }
                     "send" => {
                         let ch = if !args.is_empty() { self.operand_to_llvm(&args[0], func) } else { "0".into() };
                         let val = if args.len() > 1 { self.operand_to_llvm(&args[1], func) } else { "0".into() };

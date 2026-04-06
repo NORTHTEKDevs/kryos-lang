@@ -1,6 +1,6 @@
 # Concurrency
 
-> **Implementation Status:** `spawn` creates real OS threads via `kryos_spawn()` in the runtime. Channels are fully implemented as MPMC queues with blocking `recv` and non-blocking `try_recv`. Channel creation (`chan<T>`), send, and receive all work end-to-end through codegen. `select` is parsed and lowered but currently always takes the first branch -- true channel multiplexing is in progress. Actors are parsed and lower to mangled handler functions but the actor scheduler and mailbox runtime are not yet implemented -- use channels for production concurrency. `parallel for` is a reserved keyword but not yet implemented.
+> **Implementation Status:** `spawn` creates real OS threads via `kryos_spawn()` in the runtime. Channels are fully implemented as MPMC queues with blocking `recv` and non-blocking `try_recv`. Channel creation (`chan<T>`), send, and receive all work end-to-end through codegen. `select` polls channels with `try_recv` and branches to the first ready channel (busy-poll with 1ms yield). Actors are parsed and lower to mangled handler functions but the actor scheduler and mailbox runtime are not yet implemented -- use channels for production concurrency. `parallel for` is a reserved keyword but not yet implemented.
 
 Kryos has two concurrency primitives: `spawn` for fire-and-forget parallel execution, and `actor` for stateful message-passing concurrency. Both are built into the language syntax -- no library imports, no async/await coloring, no callback chains.
 

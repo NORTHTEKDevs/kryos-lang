@@ -211,7 +211,10 @@ pub extern "C" fn kryos_chan_drop_i64(handle: i64) {
 }
 
 /// Non-blocking receive. Returns the value if available, or i64::MIN as sentinel
-/// for "no data yet".
+/// for "no data yet" (also returned when channel is closed).
+/// TODO: i64::MIN as sentinel means sending i64::MIN on a channel will be
+/// misinterpreted as "no data" by the select polling loop. A proper fix
+/// requires a two-value return (status + value) or out-parameters.
 #[no_mangle]
 pub extern "C" fn kryos_chan_try_recv_i64(handle: i64) -> i64 {
     let mut buf: i64 = 0;

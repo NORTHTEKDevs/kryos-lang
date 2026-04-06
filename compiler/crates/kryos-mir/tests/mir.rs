@@ -1854,7 +1854,7 @@ fn actor_handlers_lowered() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn select_statement_produces_switch() {
+fn select_statement_produces_try_recv_polling() {
     // fn main() { select { msg from ch1 { } } }
     use ast::stmt::SelectBranch;
     let module = make_module(vec![make_fn(

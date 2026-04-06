@@ -799,8 +799,10 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             ctx.finish_block(Terminator::Goto(bb_poll), bb_poll);
 
             // === bb_poll: evaluate channel expressions, then jump to first try ===
-            // We evaluate all channel expressions once at the top of the poll loop
-            // and store them in locals so they can be reused each iteration.
+            // Channel expressions are re-evaluated each poll iteration. For the
+            // common case (variable references) this is a trivial copy. Side-effecting
+            // channel expressions are not expected in select branches.
+            // TODO: Consider hoisting channel evaluation before the loop if needed.
             let mut ch_locals = Vec::new();
             for branch in branches {
                 let ch_op = lower_expr_to_operand(ctx, &branch.channel);
@@ -876,14 +878,18 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 ctx.finish_block(Terminator::Goto(merge_bb), next_start);
             }
 
-            // === bb_sleep: yield 1ms then retry ===
+            // === bb_sleep: yield then retry ===
+            // 1ms busy-poll interval (f64 bits reinterpreted as i64 for the ABI).
+            // TODO: If all channels are closed, this loops forever. A future
+            // improvement should detect closed channels and break out.
+            const SELECT_POLL_INTERVAL_BITS: i64 = 0.001_f64.to_bits() as i64;
             let sleep_result = ctx.alloc_temp(MirType::I64);
             ctx.emit(Instruction::Assign {
                 dest: sleep_result,
                 value: RValue::Call {
                     func: "kryos_sleep".into(),
                     args: vec![Operand::Constant(Constant::Int(
-                        0.001_f64.to_bits() as i64,
+                        SELECT_POLL_INTERVAL_BITS,
                     ))],
                 },
             });
