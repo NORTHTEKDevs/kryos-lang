@@ -31,7 +31,7 @@ All reserved keywords in the Kryos language. These identifiers cannot be used as
 | `type` | Declare a type alias | `type Coordinate = Point` |
 | `actor` | Declare an actor (concurrent entity) | `actor Counter { ... }` |
 | `spawn` | Spawn an actor or parallel task | `spawn my_actor()` |
-| `parallel` | Execute a loop body in parallel | `parallel for i in range(100) { ... }` |
+| `parallel` | Reserved keyword (parallel iteration planned for future release) | `parallel for i in range(100) { ... }` |
 | `quantum` | Enter a quantum computing block | `quantum { ... }` |
 | `comptime` | Execute a block at compile time | `comptime { let x = 2 ** 10 }` |
 | `try` | Begin an error-handling block | `try { risky_operation() }` |

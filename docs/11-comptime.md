@@ -1,6 +1,6 @@
 # Compile-Time Evaluation
 
-> **Implementation Status:** The `comptime` keyword is parsed and lowered through the compiler pipeline (lexer, parser, AST, MIR, codegen). Currently the inner expression is lowered directly as a regular value -- the planned compile-time interpreter that folds expressions into constants before codegen is not yet implemented. The syntax is reserved and will be fully operational in a future release.
+> **Implementation Status:** The `comptime { }` block is fully parsed and lowered through MIR as `RValue::Comptime`. A compile-time constant evaluator is being implemented that folds arithmetic, comparisons, and boolean operations on literals at compile time. Comptime blocks containing only constant expressions will be replaced with their computed values. Comptime blocks that reference runtime variables fall back to runtime evaluation. Compile-time function execution and type-level comptime are planned for a future release.
 
 `comptime` blocks are designed to run during compilation, not at runtime. The result will be baked into the program as a constant. Use them for lookup tables, precomputed values, configuration constants, and anything expensive that does not need to be recalculated every time the program starts.
 

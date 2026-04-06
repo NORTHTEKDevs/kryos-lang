@@ -1,6 +1,6 @@
 # Concurrency
 
-> **Implementation Status:** `spawn` is fully implemented (parser, MIR, Cranelift + LLVM codegen, runtime). `actor` declarations are parsed and lowered to structs + handler functions in MIR -- they compile through both backends. Channels (`chan`, `send`, `recv`) are implemented in the runtime. `select` is parsed and lowered in MIR but may have edge cases. `sleep` is implemented. `parallel for` is **not yet implemented**.
+> **Implementation Status:** `spawn` creates real OS threads via `kryos_spawn()` in the runtime. Channels are fully implemented as MPMC queues with blocking `recv` and non-blocking `try_recv`. Channel creation (`chan<T>`), send, and receive all work end-to-end through codegen. `select` is parsed and lowered but currently always takes the first branch -- true channel multiplexing is in progress. Actors are parsed and lower to mangled handler functions but the actor scheduler and mailbox runtime are not yet implemented -- use channels for production concurrency. `parallel for` is a reserved keyword but not yet implemented.
 
 Kryos has two concurrency primitives: `spawn` for fire-and-forget parallel execution, and `actor` for stateful message-passing concurrency. Both are built into the language syntax -- no library imports, no async/await coloring, no callback chains.
 
@@ -111,6 +111,8 @@ sleep(1.0)
 ```
 
 ## Actors
+
+> **Note:** Actor handlers compile but the actor scheduler and mailbox runtime are not yet implemented. Use channels for production concurrency.
 
 Actors are the structured concurrency model in Kryos. An actor is a self-contained unit with private state and message handlers. No one can read or write an actor's state directly -- the only way to interact is by sending messages through its handlers.
 
