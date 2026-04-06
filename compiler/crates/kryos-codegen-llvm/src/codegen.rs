@@ -239,6 +239,7 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_chan_new_i64()");
         self.emit_line("declare i64 @kryos_chan_send_i64(i64, i64)");
         self.emit_line("declare i64 @kryos_chan_recv_i64(i64)");
+        self.emit_line("declare i64 @kryos_chan_try_recv_i64(i64)");
         // Print runtime (for KryosString handles)
         self.emit_line("declare void @kryos_println_str(ptr)");
         self.emit_line("declare void @kryos_print_str(ptr)");

@@ -773,8 +773,9 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
         }
 
         ast::Stmt::Select { branches, .. } => {
-            // Lower select: evaluate each channel, emit a Switch on readiness.
-            // Each branch becomes: receive from channel → run body.
+            // Lower select: sequential try_recv polling loop.
+            // Each channel is probed non-blocking; first ready channel wins.
+            // If none ready, sleep 1ms and retry.
             let merge_bb = ctx.alloc_block();
 
             if branches.is_empty() {
@@ -782,59 +783,111 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 return;
             }
 
-            // Build switch targets: tag i → branch_bb_i.
-            let mut targets = Vec::new();
-            let mut branch_bbs = Vec::new();
-            for (i, branch) in branches.iter().enumerate() {
-                let bb = ctx.alloc_block();
-                targets.push((i as i64, bb));
-                branch_bbs.push((bb, branch));
+            // Allocate blocks: poll, one try-block per branch, one got-block
+            // per branch, and a sleep block.
+            let bb_poll = ctx.alloc_block();
+            let bb_sleep = ctx.alloc_block();
+
+            let mut try_bbs = Vec::new();
+            let mut got_bbs = Vec::new();
+            for _ in branches {
+                try_bbs.push(ctx.alloc_block());
+                got_bbs.push(ctx.alloc_block());
             }
 
-            // Emit a switch on a readiness index (simplified: sequential check).
-            let select_idx = ctx.alloc_temp(MirType::I64);
-            ctx.emit(Instruction::Assign {
-                dest: select_idx,
-                value: RValue::ConstInt(0), // runtime would populate this
-            });
-            let default_bb = merge_bb;
-            ctx.finish_block(
-                Terminator::Switch {
-                    value: Operand::Local(select_idx),
-                    targets: targets.clone(),
-                    default: default_bb,
-                },
-                branch_bbs[0].0,
-            );
+            // Jump from current block into the poll block.
+            ctx.finish_block(Terminator::Goto(bb_poll), bb_poll);
 
-            // Lower each branch body.
-            for (i, (_bb, branch)) in branch_bbs.into_iter().enumerate() {
-                // At the start of each branch, receive from the channel.
+            // === bb_poll: evaluate channel expressions, then jump to first try ===
+            // We evaluate all channel expressions once at the top of the poll loop
+            // and store them in locals so they can be reused each iteration.
+            let mut ch_locals = Vec::new();
+            for branch in branches {
                 let ch_op = lower_expr_to_operand(ctx, &branch.channel);
                 let ch_local = ctx.alloc_temp(MirType::I64);
                 ctx.emit(Instruction::Assign {
                     dest: ch_local,
                     value: RValue::Use(ch_op),
                 });
-                let recv_local = ctx.alloc_local(
+                ch_locals.push(ch_local);
+            }
+            ctx.finish_block(Terminator::Goto(try_bbs[0]), try_bbs[0]);
+
+            // === try blocks: try_recv each channel, branch on sentinel ===
+            for (i, branch) in branches.iter().enumerate() {
+                let ready_local = ctx.alloc_temp(MirType::I64);
+                ctx.emit(Instruction::Assign {
+                    dest: ready_local,
+                    value: RValue::Call {
+                        func: "kryos_chan_try_recv_i64".into(),
+                        args: vec![Operand::Local(ch_locals[i])],
+                    },
+                });
+
+                let sentinel_local = ctx.alloc_temp(MirType::I64);
+                ctx.emit(Instruction::Assign {
+                    dest: sentinel_local,
+                    value: RValue::ConstInt(i64::MIN),
+                });
+
+                let cmp_local = ctx.alloc_temp(MirType::I64);
+                ctx.emit(Instruction::Assign {
+                    dest: cmp_local,
+                    value: RValue::BinOp {
+                        op: MirBinOp::Neq,
+                        left: Operand::Local(ready_local),
+                        right: Operand::Local(sentinel_local),
+                    },
+                });
+
+                let else_bb = if i + 1 < branches.len() {
+                    try_bbs[i + 1]
+                } else {
+                    bb_sleep
+                };
+                ctx.finish_block(
+                    Terminator::Branch {
+                        cond: Operand::Local(cmp_local),
+                        then_block: got_bbs[i],
+                        else_block: else_bb,
+                    },
+                    got_bbs[i],
+                );
+
+                // === got block: assign received value to pattern local, run body ===
+                let pattern_local = ctx.alloc_local(
                     Some(branch.pattern.clone()),
                     MirType::I64,
                     false,
                 );
-                ctx.emit(Instruction::Receive {
-                    dest: recv_local,
-                    channel: ch_local,
+                ctx.emit(Instruction::Assign {
+                    dest: pattern_local,
+                    value: RValue::Use(Operand::Local(ready_local)),
                 });
 
                 lower_block_stmts(ctx, &branch.body.stmts);
 
-                let next_bb = if i + 1 < targets.len() {
-                    targets[i + 1].1
+                // After body, jump to merge. Start next block appropriately.
+                let next_start = if i + 1 < branches.len() {
+                    try_bbs[i + 1]
                 } else {
-                    merge_bb
+                    bb_sleep
                 };
-                ctx.finish_block(Terminator::Goto(merge_bb), next_bb);
+                ctx.finish_block(Terminator::Goto(merge_bb), next_start);
             }
+
+            // === bb_sleep: yield 1ms then retry ===
+            let sleep_result = ctx.alloc_temp(MirType::I64);
+            ctx.emit(Instruction::Assign {
+                dest: sleep_result,
+                value: RValue::Call {
+                    func: "kryos_sleep".into(),
+                    args: vec![Operand::Constant(Constant::Int(
+                        0.001_f64.to_bits() as i64,
+                    ))],
+                },
+            });
+            ctx.finish_block(Terminator::Goto(bb_poll), merge_bb);
         }
     }
 }

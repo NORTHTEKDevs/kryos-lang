@@ -210,6 +210,23 @@ pub extern "C" fn kryos_chan_drop_i64(handle: i64) {
     crate::channel::kryos_chan_drop(handle as *mut u8);
 }
 
+/// Non-blocking receive. Returns the value if available, or i64::MIN as sentinel
+/// for "no data yet".
+#[no_mangle]
+pub extern "C" fn kryos_chan_try_recv_i64(handle: i64) -> i64 {
+    let mut buf: i64 = 0;
+    let result = crate::channel::kryos_chan_try_recv(
+        handle as *mut u8,
+        &mut buf as *mut i64 as *mut u8,
+        8,
+    );
+    if result > 0 {
+        buf
+    } else {
+        i64::MIN // sentinel: no data
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,6 +303,23 @@ mod tests {
         assert_eq!(kryos_chan_recv_i64(ch), 10);
         assert_eq!(kryos_chan_recv_i64(ch), 20);
         assert_eq!(kryos_chan_recv_i64(ch), 30);
+        kryos_chan_drop_i64(ch);
+    }
+
+    #[test]
+    fn try_recv_no_data() {
+        let ch = kryos_chan_new_i64();
+        let result = kryos_chan_try_recv_i64(ch);
+        assert_eq!(result, i64::MIN);
+        kryos_chan_drop_i64(ch);
+    }
+
+    #[test]
+    fn try_recv_with_data() {
+        let ch = kryos_chan_new_i64();
+        kryos_chan_send_i64(ch, 42);
+        let result = kryos_chan_try_recv_i64(ch);
+        assert_eq!(result, 42);
         kryos_chan_drop_i64(ch);
     }
 }

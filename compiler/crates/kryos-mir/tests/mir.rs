@@ -1850,7 +1850,7 @@ fn actor_handlers_lowered() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 37: Select statement produces Switch terminator
+// Test 37: Select statement produces try_recv polling loop
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1885,17 +1885,25 @@ fn select_statement_produces_switch() {
     let mir = lower_module(&module);
     let main_fn = mir.functions.iter().find(|f| f.name == "main").unwrap();
 
-    // Select should produce a Switch terminator.
-    let has_switch = main_fn.blocks.iter().any(|bb| {
-        matches!(&bb.terminator, Terminator::Switch { .. })
+    // Select now uses try_recv polling: should have Branch terminators (not Switch).
+    let has_branch = main_fn.blocks.iter().any(|bb| {
+        matches!(&bb.terminator, Terminator::Branch { .. })
     });
-    assert!(has_switch, "select should produce Switch terminator");
+    assert!(has_branch, "select should produce Branch terminator for try_recv polling");
 
-    // Should have a Receive instruction.
-    let has_receive = main_fn.blocks.iter().any(|bb| {
-        bb.instructions.iter().any(|inst| matches!(inst, Instruction::Receive { .. }))
+    // Should have a Call to kryos_chan_try_recv_i64.
+    let has_try_recv = main_fn.blocks.iter().any(|bb| {
+        bb.instructions.iter().any(|inst| matches!(inst, Instruction::Assign {
+            value: RValue::Call { func, .. }, ..
+        } if func == "kryos_chan_try_recv_i64"))
     });
-    assert!(has_receive, "select branches should have Receive instructions");
+    assert!(has_try_recv, "select should call kryos_chan_try_recv_i64");
+
+    // Should have a back-edge Goto for the sleep-retry loop.
+    let goto_count = main_fn.blocks.iter().filter(|bb| {
+        matches!(&bb.terminator, Terminator::Goto(_))
+    }).count();
+    assert!(goto_count >= 2, "select should have Goto terminators for poll loop");
 }
 
 // ---------------------------------------------------------------------------
