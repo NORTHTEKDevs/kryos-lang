@@ -163,6 +163,18 @@ pub extern "C" fn kryos_chan_drop(handle: *mut u8) {
     }
 }
 
+/// Check if a channel is closed.
+///
+/// Returns 1 if the channel is closed, 0 if open, -1 on error (null handle).
+#[no_mangle]
+pub extern "C" fn kryos_chan_is_closed(handle: *mut u8) -> i32 {
+    if handle.is_null() {
+        return -1;
+    }
+    let inner = unsafe { &*(handle as *const ChannelInner) };
+    if inner.closed.load(Ordering::Acquire) { 1 } else { 0 }
+}
+
 /// Clone a channel handle (increment reference count).
 #[no_mangle]
 pub extern "C" fn kryos_chan_clone(handle: *mut u8) -> *mut u8 {

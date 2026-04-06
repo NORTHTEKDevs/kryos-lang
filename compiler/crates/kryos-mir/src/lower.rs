@@ -773,9 +773,10 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
         }
 
         ast::Stmt::Select { branches, .. } => {
-            // Lower select: sequential try_recv polling loop.
-            // Each channel is probed non-blocking; first ready channel wins.
-            // If none ready, sleep 1ms and retry.
+            // Lower select: sequential try_recv polling loop with closed-channel
+            // detection. Each channel is probed non-blocking; first ready wins.
+            // If none ready and not all closed, sleep 1ms and retry.
+            // If all channels are closed, exit the select.
             let merge_bb = ctx.alloc_block();
 
             if branches.is_empty() {
@@ -783,28 +784,23 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 return;
             }
 
-            // Allocate blocks: poll, one try-block per branch, one got-block
-            // per branch, and a sleep block.
+            let num_branches = branches.len() as i64;
+
+            // Allocate blocks: poll, try/got per branch, check-closed, sleep.
             let bb_poll = ctx.alloc_block();
+            let bb_check_closed = ctx.alloc_block();
             let bb_sleep = ctx.alloc_block();
 
             let mut try_bbs = Vec::new();
             let mut got_bbs = Vec::new();
-            for _ in branches {
+            for _ in branches.iter() {
                 try_bbs.push(ctx.alloc_block());
                 got_bbs.push(ctx.alloc_block());
             }
 
-            // Jump from current block into the poll block.
-            ctx.finish_block(Terminator::Goto(bb_poll), bb_poll);
-
-            // === bb_poll: evaluate channel expressions, then jump to first try ===
-            // Channel expressions are re-evaluated each poll iteration. For the
-            // common case (variable references) this is a trivial copy. Side-effecting
-            // channel expressions are not expected in select branches.
-            // TODO: Consider hoisting channel evaluation before the loop if needed.
+            // Evaluate channel expressions ONCE before the poll loop.
             let mut ch_locals = Vec::new();
-            for branch in branches {
+            for branch in branches.iter() {
                 let ch_op = lower_expr_to_operand(ctx, &branch.channel);
                 let ch_local = ctx.alloc_temp(MirType::I64);
                 ctx.emit(Instruction::Assign {
@@ -813,50 +809,60 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 });
                 ch_locals.push(ch_local);
             }
+
+            // Jump into the poll block.
+            ctx.finish_block(Terminator::Goto(bb_poll), bb_poll);
+
+            // === bb_poll: jump straight to first try block ===
             ctx.finish_block(Terminator::Goto(try_bbs[0]), try_bbs[0]);
 
-            // === try blocks: try_recv each channel, branch on sentinel ===
+            // === try blocks: call try_recv_status, branch on result ===
             for (i, branch) in branches.iter().enumerate() {
-                let ready_local = ctx.alloc_temp(MirType::I64);
+                // Call try_recv_status — returns 1 (data), 0 (empty), -1 (closed).
+                let status_local = ctx.alloc_temp(MirType::I64);
                 ctx.emit(Instruction::Assign {
-                    dest: ready_local,
+                    dest: status_local,
                     value: RValue::Call {
-                        func: "kryos_chan_try_recv_i64".into(),
+                        func: "kryos_chan_try_recv_status_i64".into(),
                         args: vec![Operand::Local(ch_locals[i])],
                     },
                 });
 
-                let sentinel_local = ctx.alloc_temp(MirType::I64);
+                // Check: status == 1 (got data)?
+                let has_data = ctx.alloc_temp(MirType::I64);
                 ctx.emit(Instruction::Assign {
-                    dest: sentinel_local,
-                    value: RValue::ConstInt(i64::MIN),
-                });
-
-                let cmp_local = ctx.alloc_temp(MirType::I64);
-                ctx.emit(Instruction::Assign {
-                    dest: cmp_local,
+                    dest: has_data,
                     value: RValue::BinOp {
-                        op: MirBinOp::Neq,
-                        left: Operand::Local(ready_local),
-                        right: Operand::Local(sentinel_local),
+                        op: MirBinOp::Eq,
+                        left: Operand::Local(status_local),
+                        right: Operand::Constant(Constant::Int(1)),
                     },
                 });
 
                 let else_bb = if i + 1 < branches.len() {
                     try_bbs[i + 1]
                 } else {
-                    bb_sleep
+                    bb_check_closed
                 };
                 ctx.finish_block(
                     Terminator::Branch {
-                        cond: Operand::Local(cmp_local),
+                        cond: Operand::Local(has_data),
                         then_block: got_bbs[i],
                         else_block: else_bb,
                     },
                     got_bbs[i],
                 );
 
-                // === got block: assign received value to pattern local, run body ===
+                // === got block: retrieve value, assign to pattern, run body ===
+                let recv_value = ctx.alloc_temp(MirType::I64);
+                ctx.emit(Instruction::Assign {
+                    dest: recv_value,
+                    value: RValue::Call {
+                        func: "kryos_chan_last_recv_i64".into(),
+                        args: vec![],
+                    },
+                });
+
                 let pattern_local = ctx.alloc_local(
                     Some(branch.pattern.clone()),
                     MirType::I64,
@@ -864,24 +870,74 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 );
                 ctx.emit(Instruction::Assign {
                     dest: pattern_local,
-                    value: RValue::Use(Operand::Local(ready_local)),
+                    value: RValue::Use(Operand::Local(recv_value)),
                 });
 
                 lower_block_stmts(ctx, &branch.body.stmts);
 
-                // After body, jump to merge. Start next block appropriately.
+                // After body, jump to merge.
                 let next_start = if i + 1 < branches.len() {
                     try_bbs[i + 1]
                 } else {
-                    bb_sleep
+                    bb_check_closed
                 };
                 ctx.finish_block(Terminator::Goto(merge_bb), next_start);
             }
 
-            // === bb_sleep: yield then retry ===
-            // 1ms busy-poll interval (f64 bits reinterpreted as i64 for the ABI).
-            // TODO: If all channels are closed, this loops forever. A future
-            // improvement should detect closed channels and break out.
+            // === bb_check_closed: if all channels closed, exit select ===
+            // Sum up is_closed for each channel; if sum == num_branches, all
+            // are closed and the select should exit to merge_bb.
+            let mut closed_sum = {
+                let first = ctx.alloc_temp(MirType::I64);
+                ctx.emit(Instruction::Assign {
+                    dest: first,
+                    value: RValue::Call {
+                        func: "kryos_chan_is_closed_i64".into(),
+                        args: vec![Operand::Local(ch_locals[0])],
+                    },
+                });
+                first
+            };
+            for ch_local in ch_locals.iter().skip(1) {
+                let c = ctx.alloc_temp(MirType::I64);
+                ctx.emit(Instruction::Assign {
+                    dest: c,
+                    value: RValue::Call {
+                        func: "kryos_chan_is_closed_i64".into(),
+                        args: vec![Operand::Local(*ch_local)],
+                    },
+                });
+                let new_sum = ctx.alloc_temp(MirType::I64);
+                ctx.emit(Instruction::Assign {
+                    dest: new_sum,
+                    value: RValue::BinOp {
+                        op: MirBinOp::Add,
+                        left: Operand::Local(closed_sum),
+                        right: Operand::Local(c),
+                    },
+                });
+                closed_sum = new_sum;
+            }
+
+            let all_closed = ctx.alloc_temp(MirType::I64);
+            ctx.emit(Instruction::Assign {
+                dest: all_closed,
+                value: RValue::BinOp {
+                    op: MirBinOp::Eq,
+                    left: Operand::Local(closed_sum),
+                    right: Operand::Constant(Constant::Int(num_branches)),
+                },
+            });
+            ctx.finish_block(
+                Terminator::Branch {
+                    cond: Operand::Local(all_closed),
+                    then_block: merge_bb,
+                    else_block: bb_sleep,
+                },
+                bb_sleep,
+            );
+
+            // === bb_sleep: yield 1ms then retry ===
             const SELECT_POLL_INTERVAL_BITS: i64 = 0.001_f64.to_bits() as i64;
             let sleep_result = ctx.alloc_temp(MirType::I64);
             ctx.emit(Instruction::Assign {

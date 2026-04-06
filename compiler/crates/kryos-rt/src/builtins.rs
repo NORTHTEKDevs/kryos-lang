@@ -210,13 +210,12 @@ pub extern "C" fn kryos_chan_drop_i64(handle: i64) {
     crate::channel::kryos_chan_drop(handle as *mut u8);
 }
 
-/// Non-blocking receive. Returns the value if available, or i64::MIN as sentinel
-/// for "no data yet" (also returned when channel is closed).
-/// TODO: i64::MIN as sentinel means sending i64::MIN on a channel will be
-/// misinterpreted as "no data" by the select polling loop. A proper fix
-/// requires a two-value return (status + value) or out-parameters.
+/// Non-blocking receive — status only.
+/// Returns: 1 = data received (retrieve with `kryos_chan_last_recv_i64`),
+///          0 = no data available, -1 = channel closed or error.
+/// The received value is stored in thread-local storage.
 #[no_mangle]
-pub extern "C" fn kryos_chan_try_recv_i64(handle: i64) -> i64 {
+pub extern "C" fn kryos_chan_try_recv_status_i64(handle: i64) -> i64 {
     let mut buf: i64 = 0;
     let result = crate::channel::kryos_chan_try_recv(
         handle as *mut u8,
@@ -224,10 +223,31 @@ pub extern "C" fn kryos_chan_try_recv_i64(handle: i64) -> i64 {
         8,
     );
     if result > 0 {
-        buf
+        LAST_RECV_I64.with(|cell| cell.set(buf));
+        1
+    } else if result == 0 {
+        0
     } else {
-        i64::MIN // sentinel: no data
+        -1
     }
+}
+
+/// Retrieve the value from the last successful `kryos_chan_try_recv_status_i64` call.
+/// Must be called on the same thread, immediately after a status == 1 return.
+#[no_mangle]
+pub extern "C" fn kryos_chan_last_recv_i64() -> i64 {
+    LAST_RECV_I64.with(|cell| cell.get())
+}
+
+/// Check if a channel is closed.
+/// Returns 1 if closed, 0 if open.
+#[no_mangle]
+pub extern "C" fn kryos_chan_is_closed_i64(handle: i64) -> i64 {
+    crate::channel::kryos_chan_is_closed(handle as *mut u8) as i64
+}
+
+std::thread_local! {
+    static LAST_RECV_I64: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -310,19 +330,57 @@ mod tests {
     }
 
     #[test]
-    fn try_recv_no_data() {
+    fn try_recv_status_no_data() {
         let ch = kryos_chan_new_i64();
-        let result = kryos_chan_try_recv_i64(ch);
-        assert_eq!(result, i64::MIN);
+        let status = kryos_chan_try_recv_status_i64(ch);
+        assert_eq!(status, 0, "empty channel should return status 0");
         kryos_chan_drop_i64(ch);
     }
 
     #[test]
-    fn try_recv_with_data() {
+    fn try_recv_status_with_data() {
         let ch = kryos_chan_new_i64();
         kryos_chan_send_i64(ch, 42);
-        let result = kryos_chan_try_recv_i64(ch);
-        assert_eq!(result, 42);
+        let status = kryos_chan_try_recv_status_i64(ch);
+        assert_eq!(status, 1, "channel with data should return status 1");
+        let value = kryos_chan_last_recv_i64();
+        assert_eq!(value, 42);
+        kryos_chan_drop_i64(ch);
+    }
+
+    #[test]
+    fn try_recv_status_closed() {
+        let ch = kryos_chan_new_i64();
+        kryos_chan_close_i64(ch);
+        let status = kryos_chan_try_recv_status_i64(ch);
+        assert_eq!(status, -1, "closed channel should return status -1");
+        kryos_chan_drop_i64(ch);
+    }
+
+    #[test]
+    fn try_recv_i64_min_value() {
+        // Verify i64::MIN can be sent and received correctly (no sentinel collision).
+        let ch = kryos_chan_new_i64();
+        kryos_chan_send_i64(ch, i64::MIN);
+        let status = kryos_chan_try_recv_status_i64(ch);
+        assert_eq!(status, 1);
+        let value = kryos_chan_last_recv_i64();
+        assert_eq!(value, i64::MIN, "i64::MIN must be received correctly");
+        kryos_chan_drop_i64(ch);
+    }
+
+    #[test]
+    fn is_closed_open_channel() {
+        let ch = kryos_chan_new_i64();
+        assert_eq!(kryos_chan_is_closed_i64(ch), 0);
+        kryos_chan_drop_i64(ch);
+    }
+
+    #[test]
+    fn is_closed_after_close() {
+        let ch = kryos_chan_new_i64();
+        kryos_chan_close_i64(ch);
+        assert_eq!(kryos_chan_is_closed_i64(ch), 1);
         kryos_chan_drop_i64(ch);
     }
 }

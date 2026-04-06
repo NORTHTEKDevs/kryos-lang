@@ -1885,21 +1885,37 @@ fn select_statement_produces_try_recv_polling() {
     let mir = lower_module(&module);
     let main_fn = mir.functions.iter().find(|f| f.name == "main").unwrap();
 
-    // Select now uses try_recv polling: should have Branch terminators (not Switch).
-    let has_branch = main_fn.blocks.iter().any(|bb| {
+    // Should have Branch terminators (try_recv status check + closed check).
+    let branch_count = main_fn.blocks.iter().filter(|bb| {
         matches!(&bb.terminator, Terminator::Branch { .. })
-    });
-    assert!(has_branch, "select should produce Branch terminator for try_recv polling");
+    }).count();
+    assert!(branch_count >= 2, "select should have Branch terminators for status check and closed check, got {branch_count}");
 
-    // Should have a Call to kryos_chan_try_recv_i64.
-    let has_try_recv = main_fn.blocks.iter().any(|bb| {
+    // Should call kryos_chan_try_recv_status_i64 (not the old sentinel-based version).
+    let has_try_recv_status = main_fn.blocks.iter().any(|bb| {
         bb.instructions.iter().any(|inst| matches!(inst, Instruction::Assign {
             value: RValue::Call { func, .. }, ..
-        } if func == "kryos_chan_try_recv_i64"))
+        } if func == "kryos_chan_try_recv_status_i64"))
     });
-    assert!(has_try_recv, "select should call kryos_chan_try_recv_i64");
+    assert!(has_try_recv_status, "select should call kryos_chan_try_recv_status_i64");
 
-    // Should have a back-edge Goto for the sleep-retry loop.
+    // Should call kryos_chan_last_recv_i64 to retrieve the value.
+    let has_last_recv = main_fn.blocks.iter().any(|bb| {
+        bb.instructions.iter().any(|inst| matches!(inst, Instruction::Assign {
+            value: RValue::Call { func, .. }, ..
+        } if func == "kryos_chan_last_recv_i64"))
+    });
+    assert!(has_last_recv, "select should call kryos_chan_last_recv_i64");
+
+    // Should call kryos_chan_is_closed_i64 for closed-channel detection.
+    let has_is_closed = main_fn.blocks.iter().any(|bb| {
+        bb.instructions.iter().any(|inst| matches!(inst, Instruction::Assign {
+            value: RValue::Call { func, .. }, ..
+        } if func == "kryos_chan_is_closed_i64"))
+    });
+    assert!(has_is_closed, "select should call kryos_chan_is_closed_i64 for closed detection");
+
+    // Should have Goto terminators for the poll loop back-edge.
     let goto_count = main_fn.blocks.iter().filter(|bb| {
         matches!(&bb.terminator, Terminator::Goto(_))
     }).count();
