@@ -566,7 +566,7 @@ fn resolve_module_sibling_file() {
     let main_path = dir.join("main.kry");
     fs::write(&main_path, "use foo").unwrap();
 
-    let result = kryos_driver::resolve::resolve_module_path("foo", &main_path);
+    let result = kryos_driver::resolve::resolve_module_path(&["foo".to_string()], &main_path);
     assert!(result.is_ok(), "expected to find foo.kry as sibling");
     assert_eq!(result.unwrap(), dir.join("foo.kry"));
 }
@@ -580,7 +580,7 @@ fn resolve_module_dir_mod() {
     let main_path = dir.join("main.kry");
     fs::write(&main_path, "use bar").unwrap();
 
-    let result = kryos_driver::resolve::resolve_module_path("bar", &main_path);
+    let result = kryos_driver::resolve::resolve_module_path(&["bar".to_string()], &main_path);
     assert!(result.is_ok(), "expected to find bar/mod.kry");
     assert_eq!(result.unwrap(), dir.join("bar").join("mod.kry"));
 }
@@ -593,8 +593,160 @@ fn resolve_module_not_found() {
     let main_path = dir.join("main.kry");
     fs::write(&main_path, "use nonexistent").unwrap();
 
-    let result = kryos_driver::resolve::resolve_module_path("nonexistent", &main_path);
+    let result = kryos_driver::resolve::resolve_module_path(&["nonexistent".to_string()], &main_path);
     assert!(result.is_err(), "expected error for missing module");
+}
+
+// ---------------------------------------------------------------------------
+// Multi-segment / selective / alias import tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compile_file_with_multi_segment_import() {
+    let dir = std::env::temp_dir().join("kryos_module_tests_multi_seg");
+    fs::create_dir_all(dir.join("ml")).unwrap();
+
+    let math_src = r#"fn multiply(a: i32, b: i32) -> i32 {
+    return a * b
+}
+"#;
+
+    let main_src = r#"use ml::math
+
+fn main() {
+    let result = multiply(3, 4)
+    println("multi-segment import works")
+}
+"#;
+
+    fs::write(dir.join("ml").join("math.kry"), math_src).unwrap();
+    fs::write(dir.join("main.kry"), main_src).unwrap();
+
+    let main_path = dir.join("main.kry");
+    let config = BuildConfig {
+        input: main_path.to_string_lossy().to_string(),
+        output: None,
+        mode: BuildMode::Debug,
+        output_type: OutputType::Mir,
+        target: None,
+        capabilities: Vec::new(),
+        verbose: true,
+    };
+
+    let result = compile_file(&main_path, &config);
+    assert!(result.success, "expected success but got errors: {:?}", result.diagnostics);
+    assert_eq!(result.error_count(), 0);
+    let mir = result.mir.unwrap();
+    let func_names: Vec<&str> = mir.functions.iter().map(|f| f.name.as_str()).collect();
+    assert!(func_names.contains(&"multiply"),
+        "expected 'multiply' in merged MIR, got: {func_names:?}");
+    assert!(func_names.contains(&"main"),
+        "expected 'main' in merged MIR, got: {func_names:?}");
+}
+
+#[test]
+fn compile_file_with_selective_import() {
+    let dir = std::env::temp_dir().join("kryos_module_tests_selective");
+    fs::create_dir_all(&dir).unwrap();
+
+    let math_src = r#"fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+fn subtract(a: i32, b: i32) -> i32 {
+    return a - b
+}
+fn multiply(a: i32, b: i32) -> i32 {
+    return a * b
+}
+"#;
+
+    let main_src = r#"use math::{add, multiply}
+
+fn main() {
+    let a = add(3, 4)
+    let b = multiply(5, 6)
+    println("selective import works")
+}
+"#;
+
+    fs::write(dir.join("math.kry"), math_src).unwrap();
+    fs::write(dir.join("main.kry"), main_src).unwrap();
+
+    let main_path = dir.join("main.kry");
+    let config = BuildConfig {
+        input: main_path.to_string_lossy().to_string(),
+        output: None,
+        mode: BuildMode::Debug,
+        output_type: OutputType::Mir,
+        target: None,
+        capabilities: Vec::new(),
+        verbose: true,
+    };
+
+    let result = compile_file(&main_path, &config);
+    assert!(result.success, "errors: {:?}", result.diagnostics);
+    let mir = result.mir.unwrap();
+    let func_names: Vec<&str> = mir.functions.iter().map(|f| f.name.as_str()).collect();
+    assert!(func_names.contains(&"add"),
+        "expected 'add' in merged MIR, got: {func_names:?}");
+    assert!(func_names.contains(&"multiply"),
+        "expected 'multiply' in merged MIR, got: {func_names:?}");
+    // subtract should NOT be imported with selective import.
+    assert!(!func_names.contains(&"subtract"),
+        "subtract should not be imported, got: {func_names:?}");
+}
+
+#[test]
+fn compile_file_with_aliased_import() {
+    let dir = std::env::temp_dir().join("kryos_module_tests_alias");
+    fs::create_dir_all(&dir).unwrap();
+
+    let math_src = r#"fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+"#;
+
+    let main_src = r#"use math as m
+
+fn main() {
+    let result = add(3, 4)
+    println("aliased import works")
+}
+"#;
+
+    fs::write(dir.join("math.kry"), math_src).unwrap();
+    fs::write(dir.join("main.kry"), main_src).unwrap();
+
+    let main_path = dir.join("main.kry");
+    let config = BuildConfig {
+        input: main_path.to_string_lossy().to_string(),
+        output: None,
+        mode: BuildMode::Debug,
+        output_type: OutputType::Mir,
+        target: None,
+        capabilities: Vec::new(),
+        verbose: true,
+    };
+
+    let result = compile_file(&main_path, &config);
+    assert!(result.success, "errors: {:?}", result.diagnostics);
+}
+
+#[test]
+fn resolve_module_multi_segment() {
+    let dir = std::env::temp_dir().join("kryos_resolve_tests_multi");
+    fs::create_dir_all(dir.join("net")).unwrap();
+
+    fs::write(dir.join("net").join("http.kry"), "fn get() -> i32 { return 0 }").unwrap();
+    let main_path = dir.join("main.kry");
+    fs::write(&main_path, "use net::http").unwrap();
+
+    let result = kryos_driver::resolve::resolve_module_path(
+        &["net".to_string(), "http".to_string()],
+        &main_path,
+    );
+    assert!(result.is_ok(), "expected to find net/http.kry");
+    assert_eq!(result.unwrap(), dir.join("net").join("http.kry"));
 }
 
 // ---------------------------------------------------------------------------

@@ -12,7 +12,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use kryos_ast::{Decl, Module};
+use kryos_ast::{Decl, ImportPath, Module};
 use kryos_errors::Diagnostic;
 use kryos_lexer::Lexer;
 use kryos_parser::parse;
@@ -54,25 +54,30 @@ impl std::fmt::Display for ResolveError {
     }
 }
 
-/// Resolve a module name to a file path.
+/// Resolve a module path (one or more segments) to a file path.
 ///
+/// `segments` contains the path components, e.g. `["ml", "math"]` for `use ml::math`.
 /// `importing_file` is the path to the file that contains the `use` statement.
-pub fn resolve_module_path(module_name: &str, importing_file: &Path) -> Result<PathBuf, ResolveError> {
+pub fn resolve_module_path(segments: &[String], importing_file: &Path) -> Result<PathBuf, ResolveError> {
+    let module_name = segments.join("::");
     let parent = importing_file
         .parent()
         .unwrap_or_else(|| Path::new("."));
 
     let mut search_paths = Vec::new();
 
-    // 1. Sibling file: /path/to/<module_name>.kry
-    let sibling = parent.join(format!("{module_name}.kry"));
+    // Build relative path from segments: ["ml", "math"] -> ml/math
+    let relative: PathBuf = segments.iter().collect();
+
+    // 1. Sibling file: /path/to/ml/math.kry
+    let sibling = parent.join(&relative).with_extension("kry");
     search_paths.push(sibling.clone());
     if sibling.is_file() {
         return Ok(sibling);
     }
 
-    // 2. Directory module: /path/to/<module_name>/mod.kry
-    let dir_mod = parent.join(module_name).join("mod.kry");
+    // 2. Directory module: /path/to/ml/math/mod.kry
+    let dir_mod = parent.join(&relative).join("mod.kry");
     search_paths.push(dir_mod.clone());
     if dir_mod.is_file() {
         return Ok(dir_mod);
@@ -83,13 +88,13 @@ pub fn resolve_module_path(module_name: &str, importing_file: &Path) -> Result<P
     loop {
         let src_dir = ancestor.join("src");
         if src_dir.is_dir() {
-            let src_sibling = src_dir.join(format!("{module_name}.kry"));
+            let src_sibling = src_dir.join(&relative).with_extension("kry");
             search_paths.push(src_sibling.clone());
             if src_sibling.is_file() {
                 return Ok(src_sibling);
             }
 
-            let src_dir_mod = src_dir.join(module_name).join("mod.kry");
+            let src_dir_mod = src_dir.join(&relative).join("mod.kry");
             search_paths.push(src_dir_mod.clone());
             if src_dir_mod.is_file() {
                 return Ok(src_dir_mod);
@@ -102,23 +107,21 @@ pub fn resolve_module_path(module_name: &str, importing_file: &Path) -> Result<P
     }
 
     Err(ResolveError::NotFound {
-        module_name: module_name.to_string(),
+        module_name,
         search_paths,
     })
 }
 
 /// Extract import declarations from a module's AST.
 ///
-/// Returns the module name (first segment of the import path) for each import.
-pub fn extract_imports(module: &Module) -> Vec<(String, kryos_errors::Span)> {
+/// Returns the full `ImportPath` (segments, alias, selective items) for each import.
+pub fn extract_imports(module: &Module) -> Vec<(ImportPath, kryos_errors::Span)> {
     module
         .declarations
         .iter()
         .filter_map(|decl| {
             if let Decl::Import { path, span } = decl {
-                // Use the first segment as the module name.
-                // e.g., `use math` -> "math", `use std::io` -> "std"
-                path.segments.first().map(|name| (name.clone(), *span))
+                Some((path.clone(), *span))
             } else {
                 None
             }
@@ -160,9 +163,11 @@ pub fn resolve_imports(
 ) -> Result<(), Vec<Diagnostic>> {
     let imports = extract_imports(module);
 
-    for (module_name, span) in imports {
-        // Resolve the module name to a file path.
-        let module_path = match resolve_module_path(&module_name, importing_file) {
+    for (import_path, span) in imports {
+        let module_name = import_path.segments.join("::");
+
+        // Resolve the module path segments to a file path.
+        let module_path = match resolve_module_path(&import_path.segments, importing_file) {
             Ok(p) => p,
             Err(e) => {
                 return Err(vec![
@@ -223,12 +228,37 @@ pub fn resolve_imports(
         )?;
 
         // Collect non-import declarations from the imported module.
+        // When selective import is used (`use foo::{a, b}`), only include
+        // declarations whose names match the requested items.
         for decl in imported_module.declarations {
-            if !matches!(decl, Decl::Import { .. }) {
+            if matches!(decl, Decl::Import { .. }) {
+                continue;
+            }
+            if !import_path.items.is_empty() {
+                // Selective import: only include declarations matching requested items.
+                if let Some(name) = decl_name_of(&decl) {
+                    if import_path.items.contains(&name) {
+                        resolved_decls.push(decl);
+                    }
+                }
+            } else {
                 resolved_decls.push(decl);
             }
         }
     }
 
     Ok(())
+}
+
+/// Extract the name of a declaration, if it has one.
+fn decl_name_of(decl: &Decl) -> Option<String> {
+    match decl {
+        Decl::Function { name, .. } => Some(name.clone()),
+        Decl::Struct { name, .. } => Some(name.clone()),
+        Decl::Enum { name, .. } => Some(name.clone()),
+        Decl::Trait { name, .. } => Some(name.clone()),
+        Decl::TypeAlias { name, .. } => Some(name.clone()),
+        Decl::Actor { name, .. } => Some(name.clone()),
+        _ => None,
+    }
 }
