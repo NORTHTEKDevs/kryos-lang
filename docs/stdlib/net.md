@@ -2,7 +2,7 @@
 
 HTTP client, WebSocket, TCP socket, and URL utility functions.
 
-All functions in this module are available after `use std::net`. HTTP requests use a 30-second timeout and identify as `Kryos/1.0` user agent. WebSocket support requires the optional `websocket-client` Python package.
+All functions in this module are available after `use std::net`. HTTP requests use a 30-second timeout and identify as `Kryos/1.0` user agent.
 
 ---
 
@@ -184,7 +184,6 @@ let ws = ws_connect("wss://api.example.com/ws",
 
 **Edge cases:**
 
-- Requires the `websocket-client` Python package. Throws a runtime error with installation instructions if not available.
 - Connection timeout is 30 seconds.
 - Throws on connection failure.
 

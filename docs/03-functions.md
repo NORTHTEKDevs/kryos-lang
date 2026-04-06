@@ -198,15 +198,6 @@ println(add_one(square(3)))  // 10
 
 The inner call evaluates first: `square(3)` returns 9, then `add_one(9)` returns 10.
 
-## Coming from Python
-
-- **`fn` not `def`.** Shorter, and consistent with Rust and other systems languages.
-- **Explicit parameter types.** `fn add(a: i32, b: i32)` instead of `def add(a, b)`. Kryos needs to know types at compile time.
-- **Braces, not indentation.** Function bodies are wrapped in `{ }`, not determined by whitespace. You still want to indent for readability, but the compiler doesn't care about it.
-- **`return` is explicit.** There's no implicit last-expression return (unlike Rust). Always use `return` to send values back.
-- **No `*args` or `**kwargs`.** Function signatures are fixed. If you need flexibility, use arrays or structs as parameters.
-- **Closures work like you'd expect.** Python's late-binding closure behavior (the classic `lambda i: i` in a loop problem) doesn't apply here. Kryos closures capture values at creation time.
-
 ## Coming from Rust
 
 - **Simpler closure syntax.** No `|x| x + 1` syntax -- Kryos closures are just inner `fn` declarations or `fn(params) { body }` anonymous functions.

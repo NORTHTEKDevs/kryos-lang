@@ -1,37 +1,6 @@
 # Coming From Other Languages
 
-Quick reference for developers transitioning to Kryos from Python, Rust, JavaScript, or C.
-
----
-
-## Coming from Python
-
-| Python | Kryos | Notes |
-|--------|-------|-------|
-| `x = 42` | `let x = 42` | Immutable by default |
-| `x = 42` (reassignable) | `let mut x = 42` | Explicit mutability |
-| `def add(a, b):` | `fn add(a: i32, b: i32) -> i32 {` | Braces, optional type annotations |
-| `return x` | `return x` | Same |
-| `if x > 0:` | `if x > 0 {` | Braces instead of colon + indent |
-| `elif x == 0:` | `elif x == 0 {` | Same keyword, braces |
-| `for i in range(10):` | `for i in range(10) {` | Same semantics |
-| `while True:` | `while true {` | Lowercase `true` |
-| `print("hello")` | `println("hello")` | `println` adds newline |
-| `f"hello {name}"` | `"hello {name}"` | String interpolation built in |
-| `len(x)` | `len(x)` | Same |
-| `x.append(42)` | `push(x, 42)` | Free function, not method |
-| `x.pop()` | `pop(x)` | Free function |
-| `", ".join(lst)` | `join(", ", lst)` | Free function, delimiter first |
-| `s.split(",")` | `split(s, ",")` | Free function |
-| `class Point:` | `struct Point {` | Structs, not classes |
-| `try: ... except:` | `try { ... } catch e { ... }` | Braces, `catch` not `except` |
-| `import math` | `use math` | `use` instead of `import` |
-| `None` | `none` | Lowercase |
-| `True` / `False` | `true` / `false` | Lowercase |
-| `and` / `or` / `not` | `and` / `or` / `not` | Same |
-| `lambda x: x * 2` | `fn(x) { return x * 2 }` | Explicit function syntax |
-| `list(map(fn, lst))` | `map(lst, fn)` | Array first, function second |
-| `[x for x in lst if x > 0]` | `filter(lst, fn(x) { return x > 0 })` | Use `filter` and `map` |
+Quick reference for developers transitioning to Kryos from Rust, JavaScript, or C.
 
 ---
 

@@ -339,23 +339,6 @@ spawn {
 }
 ```
 
-## Coming from Python
-
-If you know Python, here is how Kryos concurrency maps to Python patterns:
-
-| Python | Kryos |
-|--------|-------|
-| `threading.Thread(target=fn).start()` | `spawn { ... }` |
-| `asyncio.create_task(coro())` | `spawn { ... }` |
-| `queue.Queue` + worker threads | `actor` with message handlers |
-| `multiprocessing.Process` | `spawn` (OS threads, not processes) |
-| `time.sleep(n)` | `sleep(n)` |
-| `async def` / `await` | Not needed -- `spawn` handles it |
-
-Key difference: Python's `async`/`await` requires coloring every function in the call chain as `async`. In Kryos, `spawn` just works -- no function coloring, no event loop management, no `asyncio.run()` boilerplate.
-
-Python's GIL limits true parallelism for CPU-bound work in threads. Kryos spawn blocks are real OS threads without a GIL equivalent, so CPU-bound work genuinely runs in parallel.
-
 ## Coming from JavaScript
 
 | JavaScript | Kryos |

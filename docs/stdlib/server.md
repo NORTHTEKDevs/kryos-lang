@@ -2,7 +2,7 @@
 
 HTTP server creation, routing, middleware, and request/response handling.
 
-All functions in this module are available after `use std::server`. The server uses Python's `http.server` internally with threading for concurrent request handling. Suitable for development and lightweight production use.
+All functions in this module are available after `use std::server`. The server uses a threaded TCP listener with routing and middleware support. Suitable for development and lightweight production use.
 
 ---
 

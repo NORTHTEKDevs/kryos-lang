@@ -287,22 +287,6 @@ println(p.home.city)  // Juneau
 
 Chain dots to access deeply nested fields.
 
-## Coming from Python
-
-If you are used to Python classes, here is how to map concepts:
-
-| Python | Kryos |
-|--------|-------|
-| `class Point:` | `struct Point { }` |
-| `def __init__(self, x, y):` | Field declarations inside the struct |
-| `def distance(self):` | Method in an `impl Point { }` block |
-| `self.x` | `self.x` (inside impl methods -- same syntax) |
-| `class Color(Enum):` | `enum Color { }` |
-| `Color.RED` | `Color.Red` |
-| Inheritance | Not available -- use traits and composition |
-
-The biggest shift: there is no `__init__`. You declare fields in the struct and provide all values when creating an instance. No constructor logic runs -- struct literals are data, not function calls.
-
 ## Coming from Rust
 
 Kryos structs and enums are modeled after Rust, with a few simplifications:

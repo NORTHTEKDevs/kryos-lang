@@ -82,4 +82,4 @@ kryos run hello.kry
 - [Operator Reference](appendix/operators.md) -- Full operator table with precedence
 - [Keyword Reference](appendix/keywords.md) -- All reserved words
 - [Attributes Reference](appendix/attributes.md) -- `@capabilities`, `@export`, and other attributes
-- [Coming From Other Languages](appendix/coming-from.md) -- Kryos for Python/Rust/Go/JS developers
+- [Coming From Other Languages](appendix/coming-from.md) -- Kryos for Rust/JS/C developers

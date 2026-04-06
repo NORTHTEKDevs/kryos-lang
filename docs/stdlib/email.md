@@ -1,6 +1,6 @@
 # std::email
 
-Email sending via SMTP and the Resend API. No external dependencies -- uses Python's built-in `smtplib` for SMTP and `urllib` for Resend.
+Email sending via SMTP and the Resend API. No external dependencies -- uses SMTP over TCP sockets for direct delivery and HTTP for the Resend API.
 
 ```kryos
 import std::email

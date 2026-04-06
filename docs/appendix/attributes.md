@@ -26,7 +26,7 @@ fn ping(host: str) -> i64 {
 }
 ```
 
-Available capabilities include: `network`, `filesystem`, `gpu`, `process`, `ffi:python`, `ffi:native`, `network:raw_socket`, and others depending on the tier.
+Available capabilities include: `network`, `filesystem`, `gpu`, `process`, `ffi:native`, `network:raw_socket`, and others depending on the tier.
 
 ---
 

@@ -8,7 +8,7 @@ This is the most important chapter in the manual. Ownership is how Kryos gives y
 
 Most languages handle memory in one of two ways:
 
-1. **Garbage collection** (Python, Go, Java) -- a runtime process scans for unused memory and frees it. Simple for the programmer but adds latency and uses more memory.
+1. **Garbage collection** (Go, Java, C#) -- a runtime process scans for unused memory and frees it. Simple for the programmer but adds latency and uses more memory.
 2. **Manual management** (C, C++) -- the programmer allocates and frees memory. Fast but riddled with bugs: dangling pointers, double frees, use-after-free, data races.
 
 Kryos takes a third path: **compile-time ownership tracking**. The compiler proves at build time that every value is used correctly. No runtime cost, no GC pauses, no dangling pointers.
@@ -308,29 +308,6 @@ Kryos ownership is inspired by Rust but deliberately simpler.
 | `Rc`, `Arc`, `Box` | Smart pointer types | Not needed |
 
 The core guarantee is the same: no use-after-free, no data races, no dangling pointers. Kryos achieves this with fewer concepts. You do not need to learn lifetime syntax, reference types, or smart pointers. The trade-off is less fine-grained control over borrowing -- but for most programs, the simpler model is sufficient.
-
-## Coming from Python
-
-In Python, everything is a reference. Multiple variables can point to the same object, and the garbage collector cleans up when nothing points to it anymore:
-
-```python
-# Python
-a = [1, 2, 3]
-b = a           # b and a both point to the same list
-b.append(4)
-print(a)        # [1, 2, 3, 4] -- surprise, a changed too
-```
-
-In Kryos, `let b = a` moves the value. There is only ever one owner:
-
-```
-let a = [1, 2, 3]
-let b = a           // a is moved -- b is the sole owner
-// println(a)       // ERROR: use of moved value 'a'
-println(b)          // [1, 2, 3]
-```
-
-This eliminates an entire class of bugs where you modify data through one variable and accidentally affect another. Every value has exactly one owner, and you always know who it is.
 
 ## Coming from Rust
 

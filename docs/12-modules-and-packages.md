@@ -1,6 +1,6 @@
 # Modules and Packages
 
-> **Implementation Status:** The `use` statement is parsed and module resolution (sibling files, `src/` directory, directory modules) is implemented in the compiler. The package manager CLI commands (`kryos init`, `kryos add`, `kryos remove`, `kryos install`, `kryos publish`) are implemented. Cross-module name resolution (importing functions/types from other files into the caller's scope) is partially working -- simple cases work but complex cross-file references may fail. Extern imports (`use extern "python" ...`) are parsed but the foreign FFI bridge is not yet wired.
+> **Implementation Status:** The `use` statement is parsed and module resolution (sibling files, `src/` directory, directory modules) is implemented in the compiler. The package manager CLI commands (`kryos init`, `kryos add`, `kryos remove`, `kryos install`, `kryos publish`) are implemented. Cross-module name resolution (importing functions/types from other files into the caller's scope) is partially working -- simple cases work but complex cross-file references may fail. Extern imports (`use extern "c" ...`, `use extern "rust" ...`) are parsed but the foreign FFI bridge is not yet wired.
 
 Kryos projects are organized around modules (individual `.kry` files) and packages (collections of modules with a manifest). The module system uses `use` statements to bring code from other files and packages into scope, and the package manager handles dependency resolution, versioning, and publishing.
 
@@ -19,7 +19,7 @@ use ml::transformers
 use ml::transformers as tf
 
 // Import from an external (non-Kryos) source
-use extern "python" numpy
+use extern "c" libsodium
 ```
 
 ### Resolution Order
@@ -34,14 +34,14 @@ For a single-segment import like `use utils`, Kryos checks `src/utils.kry` first
 
 ### Extern Imports
 
-The `use extern` syntax imports modules from foreign ecosystems (Python, C, Rust). The string after `extern` identifies the source system:
+The `use extern` syntax imports modules from foreign ecosystems (C, Rust). The string after `extern` identifies the source system:
 
 ```
-use extern "python" numpy
 use extern "c" libsodium
+use extern "rust" serde
 ```
 
-These imports require the `ffi` capability in your `kryos.toml` and the corresponding foreign dependency declared under `[dependencies.python]` or `[dependencies.c]`.
+These imports require the `ffi` capability in your `kryos.toml` and the corresponding foreign dependency declared under `[dependencies.c]` or `[dependencies.rust]`.
 
 ## Project Structure
 
@@ -116,10 +116,6 @@ allowed = ["compute"]
 kryos_ml = "^1.0"
 data_utils = ">=0.5.0"
 
-[dependencies.python]
-numpy = "1.26"
-pandas = "2.1"
-
 [dependencies.c]
 libsodium = "1.0.18"
 
@@ -175,14 +171,14 @@ kryos add data_utils
 # Add with a version constraint
 kryos add kryos_ml "^1.0"
 
-# Add a Python dependency
-kryos add numpy "1.26" --category python
-
 # Add a C library
 kryos add libsodium "1.0.18" --category c
+
+# Add a Rust crate
+kryos add serde "1.0" --category rust
 ```
 
-The dependency is written directly into `kryos.toml` under the appropriate section. For Kryos packages, it goes under `[dependencies]`. For foreign dependencies, it goes under `[dependencies.python]`, `[dependencies.c]`, or `[dependencies.rust]`.
+The dependency is written directly into `kryos.toml` under the appropriate section. For Kryos packages, it goes under `[dependencies]`. For foreign dependencies, it goes under `[dependencies.c]` or `[dependencies.rust]`.
 
 ### `kryos remove`
 
@@ -192,7 +188,7 @@ Remove a dependency from `kryos.toml`.
 kryos remove data_utils
 
 # Remove a foreign dependency
-kryos remove numpy --category python
+kryos remove libsodium --category c
 ```
 
 If the package is not found in the manifest, it reports that the dependency was not found. Empty foreign sub-tables are cleaned up automatically.
@@ -210,11 +206,11 @@ For Kryos packages, the manager looks in the local registry (`~/.kryos/packages/
 ```
   [OK]      data_utils = 1.2.0
   [MISSING] kryos_ml -- not found in local registry
-  [python]  pip install numpy==1.26
   [c]       ensure libsodium 1.0.18 is available on system
+  [rust]    ensure serde 1.0 is available via cargo
 ```
 
-Foreign dependencies are not auto-installed. The manager prints the command you need to run (e.g., `pip install numpy==1.26`) so you can install them with the appropriate tool.
+Foreign dependencies are not auto-installed. The manager prints the command you need to run so you can install them with the appropriate tool.
 
 ### `kryos publish`
 
@@ -285,7 +281,6 @@ Kryos supports four categories of dependencies:
 | Category | Config key | What it does |
 |----------|-----------|-------------|
 | `kryos` | `[dependencies]` (top-level) | Native Kryos packages, resolved from local registry |
-| `python` | `[dependencies.python]` | Python packages, installed via `pip` |
 | `rust` | `[dependencies.rust]` | Rust crates, added via `cargo` |
 | `c` | `[dependencies.c]` | C/C++ libraries, must be available on the system |
 
@@ -304,27 +299,26 @@ This shows dependencies grouped by category:
 ```
 kryos:
   data_utils = "^1.0"
-python:
-  numpy = "1.26"
 c:
   libsodium = "1.0.18"
+rust:
+  serde = "1.0"
 ```
 
 ## Practical Example
 
-Here is a complete workflow for starting a project that uses both Kryos packages and Python libraries:
+Here is a complete workflow for starting a project that uses both Kryos packages and C libraries:
 
 ```bash
 # Create the project
-kryos init ml-experiment --name ml-experiment
-cd ml-experiment
+kryos init my-secure-app --name my-secure-app
+cd my-secure-app
 
 # Add dependencies
 kryos add data_utils "^0.2"
-kryos add numpy "1.26" --category python
-kryos add matplotlib "3.8" --category python
+kryos add libsodium "1.0.18" --category c
 
-# Install (resolves Kryos deps, prints pip commands for Python deps)
+# Install (resolves Kryos deps, prints system commands for foreign deps)
 kryos install
 
 # Edit kryos.toml to allow FFI

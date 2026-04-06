@@ -278,18 +278,6 @@ kryos run --no-heal program.kry
 
 With healing disabled, division by zero and index-out-of-bounds produce hard errors. Use this when you prefer crashes over silent recovery -- it depends on your use case.
 
-## Coming from Python
-
-| Python | Kryos |
-|--------|-------|
-| `try:` | `try {` |
-| `except Exception as e:` | `catch e {` |
-| `raise ValueError("msg")` | `throw "msg"` |
-| `finally:` | Not yet available |
-| `with` context managers | Not yet available |
-
-The keywords are different but the structure is the same. The big addition is self-healing -- Python has nothing equivalent. In Python, division by zero always raises `ZeroDivisionError`. In Kryos, it silently returns 0 (with a heal log entry).
-
 ## Coming from Rust
 
 | Rust | Kryos |

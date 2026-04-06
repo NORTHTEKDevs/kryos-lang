@@ -252,20 +252,6 @@ impl Serializable for Color {
 }
 ```
 
-## Coming from Python
-
-If you know Python, traits replace Abstract Base Classes (`abc.ABC` and `@abstractmethod`).
-
-| Python | Kryos |
-|--------|-------|
-| `class Drawable(ABC):` | `trait Drawable { }` |
-| `@abstractmethod def draw(self): ...` | `fn draw(self: Self) -> str` |
-| `class Circle(Drawable):` | `impl Drawable for Circle { }` |
-| `isinstance(x, Drawable)` | Compile-time trait bounds |
-| Duck typing | Explicit trait implementation |
-
-The key difference: Python uses duck typing (if it has a `.draw()` method, it counts), while Kryos requires you to explicitly write `impl Drawable for Circle`. This catches errors at compile time rather than runtime. You always know exactly which types implement which traits.
-
 ## Coming from Rust
 
 Kryos traits are directly inspired by Rust traits. The mental model is nearly identical.

@@ -1,6 +1,6 @@
 # std::regex
 
-Regular expression support. Pattern syntax follows Python's `re` module (Perl-compatible).
+Regular expression support. Pattern syntax follows Perl-compatible regular expressions (PCRE).
 
 ```kryos
 import std::regex

@@ -44,8 +44,8 @@ Execute a shell command and return its stdout as a string. Raises on non-zero ex
 
 **Example:**
 ```kryos
-let version = exec_capture("python --version")
-print(version)  // Python 3.12.0
+let version = exec_capture("kryos --version")
+print(version)  // kryos 0.1.0
 ```
 
 **Edge cases:**

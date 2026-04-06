@@ -45,7 +45,7 @@ if score >= 90 {
 }
 ```
 
-> **Common mistake: using `else if` instead of `elif`.** This is the single most common syntax error for developers coming from C, JavaScript, or Go. Kryos follows the Python/Kotlin convention -- `elif` is one keyword.
+> **Common mistake: using `else if` instead of `elif`.** This is the single most common syntax error for developers coming from C, JavaScript, or Go. Kryos uses the `elif` convention -- it is one keyword, not two.
 >
 > ```
 > // Wrong:
@@ -264,14 +264,6 @@ for i in range(0, 5) {
 ```
 
 Inner loops have their own scope. Variables declared inside a block are not visible outside it.
-
-## Coming from Python
-
-- **`elif` is the same.** This should feel natural. It works identically to Python's `elif`.
-- **Braces required.** No colon-and-indentation. Every `if`, `elif`, `else`, `for`, and `while` body is wrapped in `{ }`.
-- **`for i in range(0, n)` works the same.** The `range` function takes the same arguments: `range(end)`, `range(start, end)`, or `range(start, end, step)`.
-- **No `for/else` or `while/else`.** Kryos doesn't have Python's loop-else construct.
-- **`match` instead of `match/case`.** Python 3.10 added structural pattern matching with `match`/`case`. Kryos uses `match` with `=>` arms and `_` wildcards -- closer to Rust syntax than Python's.
 
 ## Coming from Rust
 

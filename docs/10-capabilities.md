@@ -4,7 +4,7 @@
 
 Capabilities are Kryos's security model. Every function declares exactly what system resources it needs -- filesystem access, network connections, GPU compute, FFI calls. If a function tries to use something it did not declare, the program fails at compile time. Not at runtime, not with a warning -- it does not compile.
 
-This is the opposite of how most languages work. In Python or JavaScript, any function can open a file, make a network request, or call `eval`. You only find out about unauthorized access when something goes wrong in production. Kryos inverts that: you see every capability a program uses before you run it.
+This is the opposite of how most languages work. In JavaScript or Go, any function can open a file, make a network request, or call `eval`. You only find out about unauthorized access when something goes wrong in production. Kryos inverts that: you see every capability a program uses before you run it.
 
 ## The Core Principle: Deny by Default
 
@@ -137,13 +137,12 @@ Foreign function interface -- calling code written in other languages.
 
 ```
 @capabilities(ffi)
-fn call_python() {
-    ffi_call_python("numpy", "array", [1, 2, 3])
+fn call_native() {
+    ffi_call_c("libsodium", "crypto_hash", data)
 }
 ```
 
 Sub-capabilities:
-- `ffi:python` -- Call Python functions (Community license)
 - `ffi:native` -- Call C/C++ functions via native FFI (requires Pro license)
 
 ### quantum
@@ -323,7 +322,6 @@ Some capabilities require a paid license. The tier system:
 | filesystem | yes | yes | yes |
 | gpu | yes | yes | yes |
 | gpu:optimize | -- | yes | yes |
-| ffi:python | yes | yes | yes |
 | ffi:native | -- | yes | yes |
 | agent | -- | yes | yes |
 | memory:raw | -- | -- | yes |
@@ -359,7 +357,7 @@ Every built-in function has a defined set of required capabilities. Here are the
 `alloc` (memory), `dealloc` (memory), `raw_ptr` (memory, memory:raw)
 
 **FFI:**
-`ffi_call_python` (ffi, ffi:python), `ffi_call_c` (ffi, ffi:native)
+`ffi_call_c` (ffi, ffi:native)
 
 ## Real-World Patterns
 

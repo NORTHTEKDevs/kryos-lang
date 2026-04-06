@@ -292,13 +292,6 @@ type_of(none)      // "none"
 
 For struct instances, `type_of()` returns the struct name.
 
-## Coming from Python
-
-- **No dynamic typing.** Every variable has a type determined at declaration time. You cannot assign a string to a variable that holds an integer.
-- **`type_of()` instead of `type()`.** Returns a string name rather than a type object.
-- **No implicit coercion.** `"count: " + 42` does not work. Use `"count: " + to_string(42)` or string interpolation: `"count: {42}"`.
-- **Underscore separators.** Python has these too (`1_000_000`), so that should feel familiar.
-
 ## Coming from Rust
 
 - **Simpler type syntax.** No lifetime annotations, no borrowing syntax. `let x: i32 = 42` works the same, but you never write `&'a str` or `Box<dyn Trait>`.
