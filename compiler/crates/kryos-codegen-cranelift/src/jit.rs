@@ -135,6 +135,11 @@ impl JitCompiler {
         jit_builder.symbol("kryos_chan_last_recv_i64", kryos_rt::builtins::kryos_chan_last_recv_i64 as *const u8);
         jit_builder.symbol("kryos_chan_is_closed_i64", kryos_rt::builtins::kryos_chan_is_closed_i64 as *const u8);
 
+        // Actor runtime
+        jit_builder.symbol("kryos_actor_spawn_i64", kryos_rt::builtins::kryos_actor_spawn_i64 as *const u8);
+        jit_builder.symbol("kryos_actor_send_i64", kryos_rt::builtins::kryos_actor_send_i64 as *const u8);
+        jit_builder.symbol("kryos_actor_recv_i64", kryos_rt::builtins::kryos_actor_recv_i64 as *const u8);
+
         // Spawn runtime
         jit_builder.symbol("kryos_spawn", kryos_rt::spawn::kryos_spawn as *const u8);
         jit_builder.symbol("kryos_spawn_wait_all", kryos_rt::spawn::kryos_spawn_wait_all as *const u8);

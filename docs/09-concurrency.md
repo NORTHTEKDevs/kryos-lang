@@ -1,6 +1,6 @@
 # Concurrency
 
-> **Implementation Status:** `spawn` creates real OS threads via `kryos_spawn()` in the runtime. Channels are fully implemented as MPMC queues with blocking `recv` and non-blocking `try_recv`. Channel creation (`chan<T>`), send, and receive all work end-to-end through codegen. `select` polls channels with `try_recv` and branches to the first ready channel (busy-poll with 1ms yield). Actors are parsed and lower to mangled handler functions but the actor scheduler and mailbox runtime are not yet implemented -- use channels for production concurrency. `parallel for` is a reserved keyword but not yet implemented.
+> **Implementation Status:** `spawn` creates real OS threads via `kryos_spawn()` in the runtime. Channels are fully implemented as MPMC queues with blocking `recv` and non-blocking `try_recv`. Channel creation (`chan<T>`), send, and receive all work end-to-end through codegen. `select` polls channels with `try_recv` and branches to the first ready channel (busy-poll with 1ms yield). Actors are parsed and lower to mangled handler functions; the mailbox runtime (spawn, send, recv) is implemented with i64 wrappers and codegen declarations in both backends. The compiler does not yet generate the dispatch loop that routes messages to handlers automatically. `parallel for` is a reserved keyword but not yet implemented.
 
 Kryos has two concurrency primitives: `spawn` for fire-and-forget parallel execution, and `actor` for stateful message-passing concurrency. Both are built into the language syntax -- no library imports, no async/await coloring, no callback chains.
 
@@ -112,7 +112,7 @@ sleep(1.0)
 
 ## Actors
 
-> **Note:** Actor handlers compile but the actor scheduler and mailbox runtime are not yet implemented. Use channels for production concurrency.
+> **Note:** Actor handlers compile to mangled functions and the mailbox runtime is implemented (spawn, send, recv). However, the compiler does not yet generate the dispatch loop that routes messages to handlers automatically. Actors can be used via the runtime API directly; full language-level actor syntax integration is in progress.
 
 Actors are the structured concurrency model in Kryos. An actor is a self-contained unit with private state and message handlers. No one can read or write an actor's state directly -- the only way to interact is by sending messages through its handlers.
 

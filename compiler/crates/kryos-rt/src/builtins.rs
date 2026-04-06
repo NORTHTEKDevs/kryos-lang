@@ -250,6 +250,44 @@ std::thread_local! {
     static LAST_RECV_I64: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
 }
 
+// ---------------------------------------------------------------------------
+// Actor runtime wrappers — i64-based API for codegen simplicity
+// ---------------------------------------------------------------------------
+
+/// Spawn an actor. `dispatch_fn_ptr` is the actor's message dispatch loop
+/// function (cast to i64). `state_ptr` is the actor's initial state (i64 handle).
+/// Returns actor ID (always > 0).
+#[no_mangle]
+pub extern "C" fn kryos_actor_spawn_i64(dispatch_fn_ptr: i64, state_ptr: i64) -> i64 {
+    let fn_ptr: extern "C" fn(*mut u8) = unsafe {
+        std::mem::transmute(dispatch_fn_ptr as usize)
+    };
+    crate::actor::kryos_actor_spawn(fn_ptr, state_ptr as *mut u8) as i64
+}
+
+/// Send a single i64 message to an actor.
+/// Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn kryos_actor_send_i64(actor_id: i64, message: i64) -> i64 {
+    crate::actor::kryos_actor_send(
+        actor_id as u64,
+        &message as *const i64 as *const u8,
+        8,
+    ) as i64
+}
+
+/// Receive a single i64 message from the current actor's mailbox. Blocks.
+/// Returns the message value. Returns 0 if mailbox closed.
+#[no_mangle]
+pub extern "C" fn kryos_actor_recv_i64() -> i64 {
+    let mut buf: i64 = 0;
+    let result = crate::actor::kryos_actor_recv(
+        &mut buf as *mut i64 as *mut u8,
+        8,
+    );
+    if result > 0 { buf } else { 0 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,5 +420,24 @@ mod tests {
         kryos_chan_close_i64(ch);
         assert_eq!(kryos_chan_is_closed_i64(ch), 1);
         kryos_chan_drop_i64(ch);
+    }
+
+    #[test]
+    fn actor_spawn_send_recv() {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        static RECEIVED: AtomicI64 = AtomicI64::new(0);
+
+        extern "C" fn actor_main(_state: *mut u8) {
+            let msg = kryos_actor_recv_i64();
+            RECEIVED.store(msg, Ordering::SeqCst);
+        }
+
+        let actor_id = kryos_actor_spawn_i64(actor_main as *const () as i64, 0);
+        assert!(actor_id > 0);
+        let send_result = kryos_actor_send_i64(actor_id, 42);
+        assert_eq!(send_result, 0);
+        // Give the actor thread time to process
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(RECEIVED.load(Ordering::SeqCst), 42);
     }
 }

@@ -250,6 +250,10 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_spawn(i64, ptr, i64)");
         self.emit_line("declare void @kryos_spawn_wait_all()");
         self.emit_line("declare void @kryos_sleep(i64)");
+        // Actor runtime
+        self.emit_line("declare i64 @kryos_actor_spawn_i64(i64, i64)");
+        self.emit_line("declare i64 @kryos_actor_send_i64(i64, i64)");
+        self.emit_line("declare i64 @kryos_actor_recv_i64()");
         // Tensor runtime
         self.emit_line("declare i64 @kryos_tensor_zeros(ptr, i64)");
         self.emit_line("declare i64 @kryos_tensor_ones(ptr, i64)");
@@ -1837,7 +1841,7 @@ pub fn mir_type_to_llvm(ty: &MirType) -> String {
         MirType::Str => "ptr".into(),
         MirType::Void => "void".into(),
         // Opaque pointers since LLVM 15+.
-        MirType::Ptr(_) => "ptr".into(),
+        MirType::Ptr(_) | MirType::Ref { .. } => "ptr".into(),
         MirType::Shared(_) => "ptr".into(),
         MirType::Array(elem, Some(n)) => {
             let inner = mir_type_to_llvm(elem);
