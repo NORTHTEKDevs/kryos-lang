@@ -18,6 +18,7 @@
 pub mod ir;
 pub mod lower;
 pub mod display;
+pub mod consteval;
 
 // Re-export key types for convenience.
 pub use ir::*;

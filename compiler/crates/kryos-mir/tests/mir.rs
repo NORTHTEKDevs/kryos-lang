@@ -2019,3 +2019,251 @@ fn inclusive_range_expression() {
     });
     assert!(has_range, "inclusive range should have inclusive=true");
 }
+
+// ---------------------------------------------------------------------------
+// Test 41: Comptime pass folds integer addition
+// ---------------------------------------------------------------------------
+
+#[test]
+fn comptime_folds_int_addition() {
+    use kryos_mir::consteval::run_comptime_pass;
+    use std::collections::HashMap;
+
+    let mut module = MirModule {
+        functions: vec![MirFunction {
+            name: "test".into(),
+            params: vec![],
+            ret_ty: MirType::I64,
+            locals: vec![MirLocal {
+                id: LocalId(0),
+                name: Some("x".into()),
+                ty: MirType::I64,
+                mutable: false,
+            }],
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                instructions: vec![Instruction::Assign {
+                    dest: LocalId(0),
+                    value: RValue::Comptime(Box::new(RValue::BinOp {
+                        op: MirBinOp::Add,
+                        left: Operand::Constant(Constant::Int(2)),
+                        right: Operand::Constant(Constant::Int(3)),
+                    })),
+                }],
+                terminator: Terminator::Return(Some(Operand::Local(LocalId(0)))),
+            }],
+        }],
+        struct_defs: HashMap::new(),
+        enum_defs: HashMap::new(),
+    };
+
+    run_comptime_pass(&mut module);
+
+    // After consteval, the Comptime wrapper should be gone and the value folded.
+    let instr = &module.functions[0].blocks[0].instructions[0];
+    if let Instruction::Assign { value, .. } = instr {
+        match value {
+            RValue::ConstInt(5) => {} // correct
+            other => panic!("expected ConstInt(5), got: {other:?}"),
+        }
+    } else {
+        panic!("expected Assign instruction");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 42: Comptime pass unwraps non-constant expressions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn comptime_non_const_unwraps() {
+    use kryos_mir::consteval::run_comptime_pass;
+    use std::collections::HashMap;
+
+    let mut module = MirModule {
+        functions: vec![MirFunction {
+            name: "test".into(),
+            params: vec![],
+            ret_ty: MirType::I64,
+            locals: vec![MirLocal {
+                id: LocalId(0),
+                name: Some("x".into()),
+                ty: MirType::I64,
+                mutable: false,
+            }],
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                instructions: vec![Instruction::Assign {
+                    dest: LocalId(0),
+                    // Comptime wrapping a local variable use -- can't fold.
+                    value: RValue::Comptime(Box::new(RValue::Use(Operand::Local(LocalId(0))))),
+                }],
+                terminator: Terminator::Return(Some(Operand::Local(LocalId(0)))),
+            }],
+        }],
+        struct_defs: HashMap::new(),
+        enum_defs: HashMap::new(),
+    };
+
+    run_comptime_pass(&mut module);
+
+    let instr = &module.functions[0].blocks[0].instructions[0];
+    if let Instruction::Assign { value, .. } = instr {
+        // Should have unwrapped the Comptime wrapper.
+        match value {
+            RValue::Use(Operand::Local(LocalId(0))) => {} // correct -- unwrapped
+            other => panic!("expected Use(Local(0)), got: {other:?}"),
+        }
+    } else {
+        panic!("expected Assign instruction");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 43: Comptime pass folds boolean logic
+// ---------------------------------------------------------------------------
+
+#[test]
+fn comptime_folds_bool_logic() {
+    use kryos_mir::consteval::run_comptime_pass;
+    use std::collections::HashMap;
+
+    let mut module = MirModule {
+        functions: vec![MirFunction {
+            name: "test".into(),
+            params: vec![],
+            ret_ty: MirType::Bool,
+            locals: vec![MirLocal {
+                id: LocalId(0),
+                name: Some("x".into()),
+                ty: MirType::Bool,
+                mutable: false,
+            }],
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                instructions: vec![Instruction::Assign {
+                    dest: LocalId(0),
+                    value: RValue::Comptime(Box::new(RValue::BinOp {
+                        op: MirBinOp::And,
+                        left: Operand::Constant(Constant::Bool(true)),
+                        right: Operand::Constant(Constant::Bool(false)),
+                    })),
+                }],
+                terminator: Terminator::Return(Some(Operand::Local(LocalId(0)))),
+            }],
+        }],
+        struct_defs: HashMap::new(),
+        enum_defs: HashMap::new(),
+    };
+
+    run_comptime_pass(&mut module);
+
+    let instr = &module.functions[0].blocks[0].instructions[0];
+    if let Instruction::Assign { value, .. } = instr {
+        match value {
+            RValue::ConstBool(false) => {} // correct
+            other => panic!("expected ConstBool(false), got: {other:?}"),
+        }
+    } else {
+        panic!("expected Assign instruction");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 44: Comptime pass folds unary negation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn comptime_folds_unary_neg() {
+    use kryos_mir::consteval::run_comptime_pass;
+    use std::collections::HashMap;
+
+    let mut module = MirModule {
+        functions: vec![MirFunction {
+            name: "test".into(),
+            params: vec![],
+            ret_ty: MirType::I64,
+            locals: vec![MirLocal {
+                id: LocalId(0),
+                name: Some("x".into()),
+                ty: MirType::I64,
+                mutable: false,
+            }],
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                instructions: vec![Instruction::Assign {
+                    dest: LocalId(0),
+                    value: RValue::Comptime(Box::new(RValue::UnOp {
+                        op: MirUnOp::Neg,
+                        operand: Operand::Constant(Constant::Int(42)),
+                    })),
+                }],
+                terminator: Terminator::Return(Some(Operand::Local(LocalId(0)))),
+            }],
+        }],
+        struct_defs: HashMap::new(),
+        enum_defs: HashMap::new(),
+    };
+
+    run_comptime_pass(&mut module);
+
+    let instr = &module.functions[0].blocks[0].instructions[0];
+    if let Instruction::Assign { value, .. } = instr {
+        match value {
+            RValue::ConstInt(-42) => {} // correct
+            other => panic!("expected ConstInt(-42), got: {other:?}"),
+        }
+    } else {
+        panic!("expected Assign instruction");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 45: Comptime pass folds float multiplication
+// ---------------------------------------------------------------------------
+
+#[test]
+fn comptime_folds_float_mul() {
+    use kryos_mir::consteval::run_comptime_pass;
+    use std::collections::HashMap;
+
+    let mut module = MirModule {
+        functions: vec![MirFunction {
+            name: "test".into(),
+            params: vec![],
+            ret_ty: MirType::F64,
+            locals: vec![MirLocal {
+                id: LocalId(0),
+                name: Some("x".into()),
+                ty: MirType::F64,
+                mutable: false,
+            }],
+            blocks: vec![BasicBlock {
+                id: BlockId(0),
+                instructions: vec![Instruction::Assign {
+                    dest: LocalId(0),
+                    value: RValue::Comptime(Box::new(RValue::BinOp {
+                        op: MirBinOp::Mul,
+                        left: Operand::Constant(Constant::Float(3.0)),
+                        right: Operand::Constant(Constant::Float(7.0)),
+                    })),
+                }],
+                terminator: Terminator::Return(Some(Operand::Local(LocalId(0)))),
+            }],
+        }],
+        struct_defs: HashMap::new(),
+        enum_defs: HashMap::new(),
+    };
+
+    run_comptime_pass(&mut module);
+
+    let instr = &module.functions[0].blocks[0].instructions[0];
+    if let Instruction::Assign { value, .. } = instr {
+        match value {
+            RValue::ConstFloat(v) if (*v - 21.0).abs() < f64::EPSILON => {} // correct
+            other => panic!("expected ConstFloat(21.0), got: {other:?}"),
+        }
+    } else {
+        panic!("expected Assign instruction");
+    }
+}

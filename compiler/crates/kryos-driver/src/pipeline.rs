@@ -290,7 +290,10 @@ fn compile_module_impl(
     }
 
     // 9. MIR lowering
-    let mir = kryos_mir::lower_module(&module);
+    let mut mir = kryos_mir::lower_module(&module);
+
+    // 9b. Comptime evaluation: fold constant expressions in comptime blocks.
+    kryos_mir::consteval::run_comptime_pass(&mut mir);
 
     if config.verbose {
         eprintln!(
