@@ -133,27 +133,83 @@ impl SourceMap {
     }
 }
 
-/// Renders a diagnostic to a string (rustc-style output).
+/// ANSI escape codes for colored terminal output.
+mod ansi {
+    pub const RESET: &str = "\x1b[0m";
+    pub const BOLD: &str = "\x1b[1m";
+    pub const BOLD_RED: &str = "\x1b[1;31m";
+    pub const BOLD_YELLOW: &str = "\x1b[1;33m";
+    pub const BOLD_CYAN: &str = "\x1b[1;36m";
+    pub const BOLD_BLUE: &str = "\x1b[1;34m";
+}
+
+/// Renders a diagnostic to a string with ANSI colored output.
+///
+/// Colors:
+/// - Red for errors
+/// - Yellow for warnings
+/// - Cyan for notes/suggestions
+/// - Blue for line numbers and arrows
+/// - Bold for messages
 pub fn render_diagnostic(diag: &Diagnostic, source_map: &SourceMap) -> String {
-    let level_str = match diag.level {
-        Level::Error => "error",
-        Level::Warning => "warning",
-        Level::Info => "info",
-        Level::Help => "help",
+    render_diagnostic_impl(diag, source_map, true)
+}
+
+/// Renders a diagnostic to a plain string without ANSI colors.
+pub fn render_diagnostic_plain(diag: &Diagnostic, source_map: &SourceMap) -> String {
+    render_diagnostic_impl(diag, source_map, false)
+}
+
+fn render_diagnostic_impl(diag: &Diagnostic, source_map: &SourceMap, color: bool) -> String {
+    let (level_str, level_color) = match diag.level {
+        Level::Error => ("error", ansi::BOLD_RED),
+        Level::Warning => ("warning", ansi::BOLD_YELLOW),
+        Level::Info => ("info", ansi::BOLD_CYAN),
+        Level::Help => ("help", ansi::BOLD_CYAN),
     };
 
     let mut out = String::new();
-    if let Some(ref code) = diag.code {
-        out.push_str(&format!("{level_str}[{code}]: {}\n", diag.message));
+
+    // Header line: "error[E001]: message" with colors
+    if color {
+        if let Some(ref code) = diag.code {
+            out.push_str(&format!(
+                "{level_color}{level_str}[{code}]{reset}: {bold}{msg}{reset}\n",
+                reset = ansi::RESET,
+                bold = ansi::BOLD,
+                msg = diag.message,
+            ));
+        } else {
+            out.push_str(&format!(
+                "{level_color}{level_str}{reset}: {bold}{msg}{reset}\n",
+                reset = ansi::RESET,
+                bold = ansi::BOLD,
+                msg = diag.message,
+            ));
+        }
     } else {
-        out.push_str(&format!("{level_str}: {}\n", diag.message));
+        if let Some(ref code) = diag.code {
+            out.push_str(&format!("{level_str}[{code}]: {}\n", diag.message));
+        } else {
+            out.push_str(&format!("{level_str}: {}\n", diag.message));
+        }
     }
 
     for label in &diag.labels {
         if let Some(file) = source_map.get_file(label.span.file_id) {
             let (line, col) = source_map.offset_to_line_col(label.span.file_id, label.span.start);
             let arrow = if label.is_primary { "-->" } else { "   " };
-            out.push_str(&format!(" {arrow} {}:{line}:{col}\n", file.name));
+
+            if color {
+                out.push_str(&format!(
+                    " {blue}{arrow}{reset} {}:{line}:{col}\n",
+                    file.name,
+                    blue = ansi::BOLD_BLUE,
+                    reset = ansi::RESET,
+                ));
+            } else {
+                out.push_str(&format!(" {arrow} {}:{line}:{col}\n", file.name));
+            }
 
             let line_idx = (line - 1) as usize;
             if line_idx < file.line_starts.len() {
@@ -162,7 +218,16 @@ pub fn render_diagnostic(diag: &Diagnostic, source_map: &SourceMap) -> String {
                     .map(|&s| s as usize)
                     .unwrap_or(file.source.len());
                 let src_line = &file.source[start..end].trim_end();
-                out.push_str(&format!("  {line} | {src_line}\n"));
+
+                if color {
+                    out.push_str(&format!(
+                        "  {blue}{line}{reset} | {src_line}\n",
+                        blue = ansi::BOLD_BLUE,
+                        reset = ansi::RESET,
+                    ));
+                } else {
+                    out.push_str(&format!("  {line} | {src_line}\n"));
+                }
 
                 let col_start = (col - 1) as usize;
                 let span_len = (label.span.end - label.span.start) as usize;
@@ -170,13 +235,31 @@ pub fn render_diagnostic(diag: &Diagnostic, source_map: &SourceMap) -> String {
                 let underline = "^".repeat(span_len.max(1));
                 let line_num_width = format!("{line}").len();
                 let gutter = " ".repeat(line_num_width + 2);
-                out.push_str(&format!("{gutter}| {padding}{underline} {}\n", label.message));
+
+                if color {
+                    out.push_str(&format!(
+                        "{gutter}| {padding}{color}{underline} {msg}{reset}\n",
+                        color = level_color,
+                        msg = label.message,
+                        reset = ansi::RESET,
+                    ));
+                } else {
+                    out.push_str(&format!("{gutter}| {padding}{underline} {}\n", label.message));
+                }
             }
         }
     }
 
     for note in &diag.notes {
-        out.push_str(&format!("  = note: {note}\n"));
+        if color {
+            out.push_str(&format!(
+                "  = {cyan}note{reset}: {note}\n",
+                cyan = ansi::BOLD_CYAN,
+                reset = ansi::RESET,
+            ));
+        } else {
+            out.push_str(&format!("  = note: {note}\n"));
+        }
     }
 
     out

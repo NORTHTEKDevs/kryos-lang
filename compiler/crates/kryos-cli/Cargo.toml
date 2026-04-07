@@ -11,6 +11,7 @@ path = "src/main.rs"
 kryos-driver.workspace = true
 kryos-errors.workspace = true
 kryos-bindgen.workspace = true
+kryos-doc.workspace = true
 kryos-package.workspace = true
 kryos-lsp.workspace = true
 kryos-codegen-cranelift.workspace = true

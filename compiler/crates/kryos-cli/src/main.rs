@@ -90,6 +90,16 @@ enum Commands {
         check: bool,
     },
 
+    /// Generate documentation from source files
+    Doc {
+        /// Files to generate documentation for (default: all .kry files)
+        files: Vec<String>,
+
+        /// Output directory for markdown files (default: stdout)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+
     /// Generate Kryos bindings from C header files
     Bindgen {
         /// C header file to process
@@ -168,6 +178,10 @@ fn main() {
         Commands::Test { filter } => commands::test_cmd::execute(filter.as_deref()),
 
         Commands::Fmt { files, check } => commands::fmt::execute(&files, check),
+
+        Commands::Doc { files, output } => {
+            commands::doc::execute(&files, output.as_deref())
+        }
 
         Commands::Bindgen { header, output } => {
             commands::bindgen::execute(&header, output.as_deref())

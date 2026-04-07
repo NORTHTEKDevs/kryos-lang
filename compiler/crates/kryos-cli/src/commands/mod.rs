@@ -6,6 +6,7 @@ pub mod check;
 pub mod repl;
 pub mod test_cmd;
 pub mod fmt;
+pub mod doc;
 pub mod bindgen;
 pub mod pkg;
 pub mod lsp;

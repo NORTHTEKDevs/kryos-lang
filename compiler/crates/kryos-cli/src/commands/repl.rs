@@ -85,8 +85,8 @@ pub fn execute() -> Result<(), String> {
                 let wrapper = if input.contains("let ") || input.contains('=') || input.ends_with(';') {
                     format!("fn __repl_eval__() {{ {input} }}")
                 } else {
-                    // Bare expression — wrap as a statement.
-                    format!("fn __repl_eval__() {{ {input}; }}")
+                    // Bare expression — wrap as a let binding so the parser accepts it.
+                    format!("fn __repl_eval__() {{ let __expr__ = {input} }}")
                 };
 
                 let config = kryos_driver::BuildConfig::for_file("<repl>");

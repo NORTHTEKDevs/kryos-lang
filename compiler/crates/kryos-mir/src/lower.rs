@@ -884,7 +884,7 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 ptr: ptr_op,
                                 value: val_op,
                             });
-                        } else if let ast::Expr::FieldAccess { object, field, .. } = target {
+                        } else if let ast::Expr::FieldAccess { object, field: _, .. } = target {
                             // Field assignment on a struct: load struct, modify, store back
                             // For now, treat as a general field store.
                             let obj_op = lower_expr_to_operand(ctx, object);
