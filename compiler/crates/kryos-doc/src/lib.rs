@@ -18,6 +18,7 @@ pub enum DocKind {
     Trait,
     TypeAlias,
     Actor,
+    Constant,
 }
 
 impl std::fmt::Display for DocKind {
@@ -29,6 +30,7 @@ impl std::fmt::Display for DocKind {
             DocKind::Trait => write!(f, "trait"),
             DocKind::TypeAlias => write!(f, "type"),
             DocKind::Actor => write!(f, "actor"),
+            DocKind::Constant => write!(f, "const"),
         }
     }
 }
@@ -381,6 +383,26 @@ fn doc_item_from_decl(decl: &Decl, source: &str) -> Option<DocItem> {
 
             Some(item)
         }
+        Decl::Const {
+            name,
+            ty,
+            public,
+            span,
+            ..
+        } => {
+            let mut item = DocItem::new(name, DocKind::Constant);
+            item.public = *public;
+            item.doc_comment = extract_preceding_doc_comment(source, span.start);
+
+            let vis = if *public { "pub " } else { "" };
+            let ty_str = ty
+                .as_ref()
+                .map(|t| format!(": {}", render_type_expr(t)))
+                .unwrap_or_default();
+            item.signature = format!("{}const {}{} = ...", vis, name, ty_str);
+
+            Some(item)
+        }
         // Impl blocks, imports, and externs don't generate standalone doc items
         Decl::Impl { .. } | Decl::Import { .. } | Decl::Extern { .. } => None,
     }
@@ -431,6 +453,7 @@ pub fn render_markdown(items: &[DocItem], module_name: &str) -> String {
     let traits: Vec<&DocItem> = items.iter().filter(|i| i.kind == DocKind::Trait).collect();
     let type_aliases: Vec<&DocItem> = items.iter().filter(|i| i.kind == DocKind::TypeAlias).collect();
     let actors: Vec<&DocItem> = items.iter().filter(|i| i.kind == DocKind::Actor).collect();
+    let constants: Vec<&DocItem> = items.iter().filter(|i| i.kind == DocKind::Constant).collect();
 
     // Summary section
     out.push_str("## Overview\n\n");
@@ -451,6 +474,9 @@ pub fn render_markdown(items: &[DocItem], module_name: &str) -> String {
     }
     if !actors.is_empty() {
         out.push_str(&format!("- **Actors:** {}\n", actors.len()));
+    }
+    if !constants.is_empty() {
+        out.push_str(&format!("- **Constants:** {}\n", constants.len()));
     }
     out.push('\n');
 
@@ -476,6 +502,7 @@ pub fn render_markdown(items: &[DocItem], module_name: &str) -> String {
     render_section(&mut out, "Traits", &traits);
     render_section(&mut out, "Type Aliases", &type_aliases);
     render_section(&mut out, "Actors", &actors);
+    render_section(&mut out, "Constants", &constants);
     render_section(&mut out, "Functions", &functions);
 
     out
@@ -576,7 +603,7 @@ pub fn render_module_index(modules: &[(String, Vec<DocItem>)]) -> String {
     let mut all_types: Vec<(&str, &str)> = Vec::new();
     for (mod_name, items) in modules {
         for item in items {
-            if matches!(item.kind, DocKind::Struct | DocKind::Enum | DocKind::Trait | DocKind::TypeAlias) {
+            if matches!(item.kind, DocKind::Struct | DocKind::Enum | DocKind::Trait | DocKind::TypeAlias | DocKind::Constant) {
                 all_types.push((&item.name, mod_name));
             }
         }
