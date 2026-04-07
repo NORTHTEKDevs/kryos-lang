@@ -1,0 +1,7 @@
+// expect-exit: 10
+let A: i64 = 7
+let B: i64 = 3
+
+fn main() -> i32 {
+    return A + B
+}

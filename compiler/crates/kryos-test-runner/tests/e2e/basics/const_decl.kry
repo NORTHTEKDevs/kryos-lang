@@ -1,0 +1,6 @@
+// Test: top-level const declarations compile
+let MAX_SIZE: i64 = 100
+
+fn main() {
+    println("const works")
+}
