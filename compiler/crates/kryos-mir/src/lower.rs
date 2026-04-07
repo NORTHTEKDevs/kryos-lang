@@ -64,6 +64,11 @@ pub struct LoweringContext {
     closure_locals: HashMap<String, (String, Vec<Operand>)>,
     /// Actor definitions: actor_name -> ordered list of (handler_name, param_count).
     actor_defs: HashMap<String, Vec<(String, usize)>>,
+    /// Actor state field layouts: actor_name -> ordered list of (field_name, field_index).
+    /// Each field occupies one i64 slot at offset field_index * 8.
+    actor_state_fields: HashMap<String, Vec<(String, u32)>>,
+    /// Top-level constant definitions: const_name -> (MirType, AST expression).
+    const_defs: HashMap<String, (MirType, ast::Expr)>,
 }
 
 /// Context passed to `throw` statements inside a `try` block.
@@ -106,6 +111,8 @@ impl LoweringContext {
             try_catch_target: None,
             closure_locals: HashMap::new(),
             actor_defs: HashMap::new(),
+            actor_state_fields: HashMap::new(),
+            const_defs: HashMap::new(),
         }
     }
 
@@ -247,6 +254,48 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         EnumVariantDef { name: "Ok".to_string(), fields: vec![MirType::I64] },
         EnumVariantDef { name: "Err".to_string(), fields: vec![MirType::I64] },
     ]);
+
+    // Register built-in function return types so infer_expr_type can resolve
+    // temps correctly (e.g. `to_string()` returns Str, not I64).
+    for (name, ret_ty) in [
+        ("to_string", MirType::Str),
+        ("input", MirType::Str),
+        ("readline", MirType::Str),
+        ("substr", MirType::Str),
+        ("trim", MirType::Str),
+        ("to_upper", MirType::Str),
+        ("to_lower", MirType::Str),
+        ("replace", MirType::Str),
+        ("split", MirType::I64),      // returns array handle
+        ("join", MirType::Str),
+        ("type_of", MirType::Str),
+        ("format", MirType::Str),
+        ("len", MirType::I64),
+        ("abs", MirType::I64),
+        ("sqrt", MirType::F64),
+        ("floor", MirType::F64),
+        ("ceil", MirType::F64),
+        ("round", MirType::F64),
+        ("sin", MirType::F64),
+        ("cos", MirType::F64),
+        ("parse_int", MirType::I64),
+        ("parse_float", MirType::F64),
+        ("file_read", MirType::Str),
+        ("file_write", MirType::I64),
+        ("env_get", MirType::Str),
+        ("time_now", MirType::I64),
+        ("assert", MirType::Void),
+        ("chan", MirType::I64),
+        ("recv", MirType::I64),
+        ("println", MirType::Void),
+        ("print", MirType::Void),
+        ("eprintln", MirType::Void),
+        ("push", MirType::Void),
+        ("send", MirType::Void),
+        ("sleep", MirType::Void),
+    ] {
+        ctx.func_ret_types.insert(name.to_string(), ret_ty);
+    }
 
     // Pre-pass: collect struct definitions and function return types so the
     // lowerer can infer correct types for field accesses and call results.
@@ -397,6 +446,21 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                     handler_info.push((handler.name.clone(), handler.params.len()));
                 }
                 ctx.actor_defs.insert(name.clone(), handler_info);
+                // Register actor state field layout for heap allocation and field access.
+                let state_field_layout: Vec<(String, u32)> = state_fields
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| (f.name.clone(), i as u32))
+                    .collect();
+                ctx.actor_state_fields.insert(name.clone(), state_field_layout);
+            }
+            ast::Decl::Const { name, ty, value, .. } => {
+                let mir_ty = ty
+                    .as_ref()
+                    .map(|t| lower_type_expr(t))
+                    .unwrap_or(MirType::I64);
+                ctx.func_ret_types.insert(name.clone(), mir_ty.clone());
+                ctx.const_defs.insert(name.clone(), (mir_ty, *value.clone()));
             }
             _ => {}
         }
@@ -630,30 +694,50 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             value,
             ..
         } => {
-            match op {
-                ast::AssignOp::Assign => {
-                    // For simple assignment to an identifier, find the local.
-                    if let ast::Expr::Identifier { name, .. } = target {
-                        let dest = find_local_by_name(ctx, name);
-                        let rvalue = lower_expr_to_rvalue(ctx, value);
-                        ctx.emit(Instruction::Assign {
-                            dest,
-                            value: rvalue,
-                        });
+            // Check if the target is an actor state field (self.field).
+            let actor_field_target = if let ast::Expr::FieldAccess { object, field, .. } = target {
+                if let ast::Expr::Identifier { name, .. } = object.as_ref() {
+                    if name == "self" {
+                        let self_local = find_local_by_name(ctx, "self");
+                        let actor_name = ctx.locals.iter()
+                            .find(|l| l.id == self_local)
+                            .and_then(|l| match &l.ty {
+                                MirType::Struct(n) => Some(n.clone()),
+                                _ => None,
+                            });
+                        if let Some(ref aname) = actor_name {
+                            ctx.actor_state_fields.get(aname).cloned()
+                                .and_then(|fields| {
+                                    fields.iter()
+                                        .find(|(n, _)| n == field)
+                                        .map(|(_, idx)| (self_local, *idx))
+                                })
+                        } else {
+                            None
+                        }
                     } else {
-                        // Complex assignment target — use a temp.
-                        let temp = ctx.alloc_temp(MirType::I64);
-                        let rvalue = lower_expr_to_rvalue(ctx, value);
-                        ctx.emit(Instruction::Assign {
-                            dest: temp,
-                            value: rvalue,
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if let Some((state_ptr, field_offset)) = actor_field_target {
+                // Actor state field assignment.
+                match op {
+                    ast::AssignOp::Assign => {
+                        let val = lower_expr_to_operand(ctx, value);
+                        ctx.emit(Instruction::ActorStateStore {
+                            state_ptr,
+                            field_offset,
+                            value: val,
                         });
                     }
-                }
-                _ => {
-                    // Compound assignment (+=, -=, etc.) — desugar to bin-op + assign.
-                    if let ast::Expr::Identifier { name, .. } = target {
-                        let dest = find_local_by_name(ctx, name);
+                    _ => {
+                        // Compound assignment (+=, -=, etc.): load current, compute, store back.
                         let mir_op = match op {
                             ast::AssignOp::AddAssign => MirBinOp::Add,
                             ast::AssignOp::SubAssign => MirBinOp::Sub,
@@ -661,15 +745,103 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             ast::AssignOp::DivAssign => MirBinOp::Div,
                             ast::AssignOp::Assign => unreachable!(),
                         };
+                        let current = ctx.alloc_temp(MirType::I64);
+                        ctx.emit(Instruction::ActorStateLoad {
+                            dest: current,
+                            state_ptr,
+                            field_offset,
+                        });
                         let rhs = lower_expr_to_operand(ctx, value);
+                        let result = ctx.alloc_temp(MirType::I64);
                         ctx.emit(Instruction::Assign {
-                            dest,
+                            dest: result,
                             value: RValue::BinOp {
                                 op: mir_op,
-                                left: Operand::Local(dest),
+                                left: Operand::Local(current),
                                 right: rhs,
                             },
                         });
+                        ctx.emit(Instruction::ActorStateStore {
+                            state_ptr,
+                            field_offset,
+                            value: Operand::Local(result),
+                        });
+                    }
+                }
+            } else {
+                match op {
+                    ast::AssignOp::Assign => {
+                        // For simple assignment to an identifier, find the local.
+                        if let ast::Expr::Identifier { name, .. } = target {
+                            let dest = find_local_by_name(ctx, name);
+                            let rvalue = lower_expr_to_rvalue(ctx, value);
+                            ctx.emit(Instruction::Assign {
+                                dest,
+                                value: rvalue,
+                            });
+                        } else if let ast::Expr::IndexAccess { object, index, .. } = target {
+                            // Map/array index assignment: m["key"] = value → kryos_map_insert_str(m, key, value)
+                            let obj_ty = infer_expr_type(ctx, object);
+                            let map_op = lower_expr_to_operand(ctx, object);
+                            let key_op = lower_expr_to_operand(ctx, index);
+                            let val_op = lower_expr_to_operand(ctx, value);
+                            if matches!(obj_ty, MirType::Ptr(ref inner) if **inner == MirType::Str) {
+                                let idx_ty = infer_expr_type(ctx, index);
+                                let insert_fn = if idx_ty == MirType::Str {
+                                    "kryos_map_insert_str"
+                                } else {
+                                    "kryos_map_insert"
+                                };
+                                let temp = ctx.alloc_temp(MirType::I64);
+                                ctx.emit(Instruction::Assign {
+                                    dest: temp,
+                                    value: RValue::Call {
+                                        func: insert_fn.to_string(),
+                                        args: vec![map_op, key_op, val_op],
+                                    },
+                                });
+                            } else {
+                                // Array index assignment.
+                                let temp = ctx.alloc_temp(MirType::I64);
+                                ctx.emit(Instruction::Assign {
+                                    dest: temp,
+                                    value: RValue::Call {
+                                        func: "kryos_array_set".to_string(),
+                                        args: vec![map_op, key_op, val_op],
+                                    },
+                                });
+                            }
+                        } else {
+                            // Fallback: evaluate RHS into a temp (may have side effects).
+                            let temp = ctx.alloc_temp(MirType::I64);
+                            let rvalue = lower_expr_to_rvalue(ctx, value);
+                            ctx.emit(Instruction::Assign {
+                                dest: temp,
+                                value: rvalue,
+                            });
+                        }
+                    }
+                    _ => {
+                        // Compound assignment (+=, -=, etc.) — desugar to bin-op + assign.
+                        if let ast::Expr::Identifier { name, .. } = target {
+                            let dest = find_local_by_name(ctx, name);
+                            let mir_op = match op {
+                                ast::AssignOp::AddAssign => MirBinOp::Add,
+                                ast::AssignOp::SubAssign => MirBinOp::Sub,
+                                ast::AssignOp::MulAssign => MirBinOp::Mul,
+                                ast::AssignOp::DivAssign => MirBinOp::Div,
+                                ast::AssignOp::Assign => unreachable!(),
+                            };
+                            let rhs = lower_expr_to_operand(ctx, value);
+                            ctx.emit(Instruction::Assign {
+                                dest,
+                                value: RValue::BinOp {
+                                    op: mir_op,
+                                    left: Operand::Local(dest),
+                                    right: rhs,
+                                },
+                            });
+                        }
                     }
                 }
             }
@@ -698,12 +870,17 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
         }
 
         ast::Stmt::For {
+            parallel,
             pattern,
             iterable,
             body,
             ..
         } => {
-            lower_for(ctx, pattern, iterable, body);
+            if *parallel {
+                lower_parallel_for(ctx, pattern, iterable, body);
+            } else {
+                lower_for(ctx, pattern, iterable, body);
+            }
         }
 
         ast::Stmt::Break { .. } => {
@@ -1276,6 +1453,200 @@ fn lower_for_range(
 }
 
 // ---------------------------------------------------------------------------
+// Parallel-for lowering
+// ---------------------------------------------------------------------------
+
+/// Lower `parallel for i in range(start, end) { body }` into chunked spawns.
+///
+/// Generates NUM_THREADS spawn instructions, each running a slice of the range:
+///
+/// ```text
+///   // for each thread t in 0..NUM_THREADS:
+///   spawn __parallel_for_N() {
+///       let __cs = start + t * chunk_size
+///       let __ce = min(__cs + chunk_size, end)
+///       for i in range(__cs, __ce) { body }
+///   }
+/// ```
+///
+/// For non-`range()` iterables the parallel keyword is accepted but execution
+/// falls back to a sequential for-loop.
+fn lower_parallel_for(
+    ctx: &mut LoweringContext,
+    pattern: &ast::Pattern,
+    iterable: &ast::Expr,
+    body: &ast::Block,
+) {
+    // Only optimise `range(start, end)` calls.
+    let (start_expr, end_expr) = match iterable {
+        ast::Expr::FnCall { callee, args, .. } => {
+            if let ast::Expr::Identifier { name, .. } = callee.as_ref() {
+                if name == "range" && args.len() == 2 {
+                    (&args[0], &args[1])
+                } else {
+                    lower_for(ctx, pattern, iterable, body);
+                    return;
+                }
+            } else {
+                lower_for(ctx, pattern, iterable, body);
+                return;
+            }
+        }
+        _ => {
+            lower_for(ctx, pattern, iterable, body);
+            return;
+        }
+    };
+
+    const NUM_THREADS: i64 = 4;
+
+    // Evaluate start and end once.
+    let start_op = lower_expr_to_operand(ctx, start_expr);
+    let end_op = lower_expr_to_operand(ctx, end_expr);
+
+    let start_local = ctx.alloc_temp(MirType::I64);
+    ctx.emit(Instruction::Assign {
+        dest: start_local,
+        value: RValue::Use(start_op),
+    });
+
+    let end_local = ctx.alloc_temp(MirType::I64);
+    ctx.emit(Instruction::Assign {
+        dest: end_local,
+        value: RValue::Use(end_op),
+    });
+
+    // __total = end - start
+    let total_local = ctx.alloc_temp(MirType::I64);
+    ctx.emit(Instruction::Assign {
+        dest: total_local,
+        value: RValue::BinOp {
+            op: MirBinOp::Sub,
+            left: Operand::Local(end_local),
+            right: Operand::Local(start_local),
+        },
+    });
+
+    // __chunk_size = (__total + NUM_THREADS - 1) / NUM_THREADS  (ceiling division)
+    let total_plus = ctx.alloc_temp(MirType::I64);
+    ctx.emit(Instruction::Assign {
+        dest: total_plus,
+        value: RValue::BinOp {
+            op: MirBinOp::Add,
+            left: Operand::Local(total_local),
+            right: Operand::Constant(Constant::Int(NUM_THREADS - 1)),
+        },
+    });
+
+    let chunk_size_local = ctx.alloc_temp(MirType::I64);
+    ctx.emit(Instruction::Assign {
+        dest: chunk_size_local,
+        value: RValue::BinOp {
+            op: MirBinOp::Div,
+            left: Operand::Local(total_plus),
+            right: Operand::Constant(Constant::Int(NUM_THREADS)),
+        },
+    });
+
+    // Name the synthetic locals so capture analysis can find them.
+    ctx.locals[start_local.0 as usize].name = Some("__pf_start".into());
+    ctx.locals[end_local.0 as usize].name = Some("__pf_end".into());
+    ctx.locals[chunk_size_local.0 as usize].name = Some("__pf_chunk_size".into());
+
+    // Emit NUM_THREADS spawn instructions, each running a chunk.
+    let span = kryos_errors::Span::DUMMY;
+
+    for t in 0..NUM_THREADS {
+        let inner_stmts = vec![
+            // let __cs = __pf_start + t * __pf_chunk_size
+            ast::Stmt::Let {
+                name: "__cs".into(),
+                mutable: false,
+                ty: None,
+                value: Some(ast::Expr::BinaryOp {
+                    op: ast::BinOp::Add,
+                    left: Box::new(ast::Expr::Identifier {
+                        name: "__pf_start".into(),
+                        span,
+                    }),
+                    right: Box::new(ast::Expr::BinaryOp {
+                        op: ast::BinOp::Mul,
+                        left: Box::new(ast::Expr::IntLiteral { value: t, span }),
+                        right: Box::new(ast::Expr::Identifier {
+                            name: "__pf_chunk_size".into(),
+                            span,
+                        }),
+                        span,
+                    }),
+                    span,
+                }),
+                pattern: None,
+                span,
+            },
+            // let __ce_raw = __cs + __pf_chunk_size
+            ast::Stmt::Let {
+                name: "__ce_raw".into(),
+                mutable: false,
+                ty: None,
+                value: Some(ast::Expr::BinaryOp {
+                    op: ast::BinOp::Add,
+                    left: Box::new(ast::Expr::Identifier {
+                        name: "__cs".into(),
+                        span,
+                    }),
+                    right: Box::new(ast::Expr::Identifier {
+                        name: "__pf_chunk_size".into(),
+                        span,
+                    }),
+                    span,
+                }),
+                pattern: None,
+                span,
+            },
+            // let __ce = min(__ce_raw, __pf_end)
+            ast::Stmt::Let {
+                name: "__ce".into(),
+                mutable: false,
+                ty: None,
+                value: Some(ast::Expr::FnCall {
+                    callee: Box::new(ast::Expr::Identifier {
+                        name: "min".into(),
+                        span,
+                    }),
+                    args: vec![
+                        ast::Expr::Identifier { name: "__ce_raw".into(), span },
+                        ast::Expr::Identifier { name: "__pf_end".into(), span },
+                    ],
+                    span,
+                }),
+                pattern: None,
+                span,
+            },
+            // for <pattern> in range(__cs, __ce) { body }
+            ast::Stmt::For {
+                parallel: false,
+                pattern: pattern.clone(),
+                iterable: ast::Expr::FnCall {
+                    callee: Box::new(ast::Expr::Identifier {
+                        name: "range".into(),
+                        span,
+                    }),
+                    args: vec![
+                        ast::Expr::Identifier { name: "__cs".into(), span },
+                        ast::Expr::Identifier { name: "__ce".into(), span },
+                    ],
+                    span,
+                },
+                body: body.clone(),
+                span,
+            },
+        ];
+
+        lower_spawn_block(ctx, &inner_stmts);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Spawn lowering
 // ---------------------------------------------------------------------------
 
@@ -1691,6 +2062,10 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
             if let Some((enum_name, _)) = find_enum_variant(ctx, name) {
                 return MirType::Enum(enum_name);
             }
+            // Check if it's a top-level constant.
+            if let Some((mir_ty, _)) = ctx.const_defs.get(name.as_str()) {
+                return mir_ty.clone();
+            }
             // Look up the local's MIR type.
             ctx.locals
                 .iter()
@@ -1891,11 +2266,17 @@ fn lower_expr_to_operand(ctx: &mut LoweringContext, expr: &ast::Expr) -> Operand
         }
         ast::Expr::NoneLiteral { .. } => Operand::Constant(Constant::None),
         ast::Expr::Identifier { name, .. } => {
-            // Check if this is a function name used as a value (function pointer).
+            // Check if this is a top-level constant — inline its value expression.
             let is_local = ctx
                 .locals
                 .iter()
                 .any(|l| l.name.as_deref() == Some(name.as_str()));
+            if !is_local {
+                if let Some((_, const_expr)) = ctx.const_defs.get(name.as_str()).cloned() {
+                    return lower_expr_to_operand(ctx, &const_expr);
+                }
+            }
+            // Check if this is a function name used as a value (function pointer).
             if !is_local && ctx.func_ret_types.contains_key(name.as_str()) {
                 // Emit a Closure with no captures to get the function address.
                 let rvalue = RValue::Closure {
@@ -1945,13 +2326,19 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     fields: vec![],
                 };
             }
-            // Check if this is a function name used as a value (function pointer).
-            // If the name matches a known function but is NOT a local variable,
-            // emit a Closure with no captures to get the function's address.
+            // Check if this is a top-level constant — inline its value expression.
             let is_local = ctx
                 .locals
                 .iter()
                 .any(|l| l.name.as_deref() == Some(name));
+            if !is_local {
+                if let Some((_, const_expr)) = ctx.const_defs.get(name.as_str()).cloned() {
+                    return lower_expr_to_rvalue(ctx, &const_expr);
+                }
+            }
+            // Check if this is a function name used as a value (function pointer).
+            // If the name matches a known function but is NOT a local variable,
+            // emit a Closure with no captures to get the function's address.
             if !is_local && ctx.func_ret_types.contains_key(name.as_str()) {
                 return RValue::Closure {
                     func_name: name.clone(),
@@ -1991,11 +2378,43 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // Check if this is an actor construction (e.g., `Counter()`).
             if ctx.actor_defs.contains_key(&func_name) {
                 let dispatch_fn = format!("{func_name}__dispatch");
+                let num_fields = ctx.actor_state_fields
+                    .get(&func_name)
+                    .map(|f| f.len())
+                    .unwrap_or(0);
+
+                let state_operand = if num_fields > 0 {
+                    // Allocate heap memory for actor state: num_fields * 8 bytes.
+                    let alloc_size = (num_fields as i64) * 8;
+                    let state_ptr = ctx.alloc_temp(MirType::I64);
+                    ctx.emit(Instruction::Assign {
+                        dest: state_ptr,
+                        value: RValue::Call {
+                            func: "kryos_arc_alloc_i64".into(),
+                            args: vec![Operand::Constant(Constant::Int(alloc_size))],
+                        },
+                    });
+                    // Initialize each state field to its default value (0).
+                    // Clone the field layout to avoid borrow conflict with ctx.
+                    let fields = ctx.actor_state_fields.get(&func_name).cloned().unwrap_or_default();
+                    for (_field_name, field_idx) in &fields {
+                        ctx.emit(Instruction::ActorStateStore {
+                            state_ptr,
+                            field_offset: *field_idx,
+                            value: Operand::Constant(Constant::Int(0)),
+                        });
+                    }
+                    Operand::Local(state_ptr)
+                } else {
+                    // No state fields — pass 0 as state pointer.
+                    Operand::Constant(Constant::Int(0))
+                };
+
                 let result = ctx.alloc_temp(MirType::I64);
                 ctx.emit(Instruction::ActorSpawn {
                     dest: result,
                     dispatch_fn,
-                    state: Operand::Constant(Constant::Int(0)),
+                    state: state_operand,
                 });
                 return RValue::Use(Operand::Local(result));
             }
@@ -2191,6 +2610,34 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     }
                 }
             }
+
+            // Check if this is an actor state field access (self.field in a handler).
+            if let ast::Expr::Identifier { name, .. } = object.as_ref() {
+                if name == "self" {
+                    // Determine the actor type from the self param's struct type.
+                    let self_local = find_local_by_name(ctx, "self");
+                    let actor_name = ctx.locals.iter()
+                        .find(|l| l.id == self_local)
+                        .and_then(|l| match &l.ty {
+                            MirType::Struct(n) => Some(n.clone()),
+                            _ => None,
+                        });
+                    if let Some(ref aname) = actor_name {
+                        if let Some(fields) = ctx.actor_state_fields.get(aname).cloned() {
+                            if let Some((_fname, field_idx)) = fields.iter().find(|(n, _)| n == field) {
+                                let dest = ctx.alloc_temp(MirType::I64);
+                                ctx.emit(Instruction::ActorStateLoad {
+                                    dest,
+                                    state_ptr: self_local,
+                                    field_offset: *field_idx,
+                                });
+                                return RValue::Use(Operand::Local(dest));
+                            }
+                        }
+                    }
+                }
+            }
+
             let obj = lower_expr_to_operand(ctx, object);
             RValue::Field {
                 object: obj,
