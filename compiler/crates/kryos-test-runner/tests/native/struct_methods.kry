@@ -1,0 +1,16 @@
+// expect-stdout: 25
+struct Rect {
+    w: i64,
+    h: i64,
+}
+
+impl Rect {
+    fn area(self: Rect) -> i64 {
+        return self.w * self.h
+    }
+}
+
+fn main() {
+    let r = Rect { w: 5, h: 5 }
+    println(r.area())
+}

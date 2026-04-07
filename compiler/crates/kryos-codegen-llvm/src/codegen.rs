@@ -181,6 +181,7 @@ impl LlvmCodegen {
         self.emit_line("declare ptr @kryos_arc_alloc(i64, ptr)");
         self.emit_line("declare void @kryos_arc_retain(ptr)");
         self.emit_line("declare void @kryos_arc_release(ptr)");
+        self.emit_line("declare i64 @kryos_arc_alloc_i64(i64)");
         self.emit_blank();
     }
 
@@ -365,6 +366,10 @@ impl LlvmCodegen {
                     Instruction::ActorSend { args, .. } => {
                         for a in args { self.prescan_operand(a); }
                     }
+                    Instruction::ActorStateStore { value, .. } => {
+                        self.prescan_operand(value);
+                    }
+                    Instruction::ActorStateLoad { .. } => {}
                     Instruction::Drop { .. } | Instruction::Nop
                     | Instruction::Send { .. }
                     | Instruction::Receive { .. } => {}
@@ -741,6 +746,47 @@ impl LlvmCodegen {
                     "  call i64 @kryos_actor_unlock_i64(i64 {actor_val})"
                 ));
             }
+            Instruction::ActorStateLoad { dest, state_ptr, field_offset } => {
+                // Load from state_ptr + field_offset * 8.
+                // Convert i64 state_ptr to a real pointer, GEP to field, then load.
+                let ptr_local = self.operand_to_llvm(&Operand::Local(*state_ptr), func);
+                let ptr_tmp = self.next_temp();
+                self.emit_line(&format!(
+                    "  {ptr_tmp} = inttoptr i64 {ptr_local} to ptr"
+                ));
+                let field_ptr = self.next_temp();
+                self.emit_line(&format!(
+                    "  {field_ptr} = getelementptr i64, ptr {ptr_tmp}, i32 {field_offset}"
+                ));
+                let is_mutable = self.mutable_locals.contains(&dest.0);
+                if is_mutable {
+                    let tmp = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {tmp} = load i64, ptr {field_ptr}"
+                    ));
+                    self.emit_line(&format!("  store i64 {tmp}, ptr %_{}.addr", dest.0));
+                } else {
+                    self.emit_line(&format!(
+                        "  %_{} = load i64, ptr {field_ptr}", dest.0
+                    ));
+                }
+            }
+            Instruction::ActorStateStore { state_ptr, field_offset, value } => {
+                // Store value to state_ptr + field_offset * 8.
+                let ptr_local = self.operand_to_llvm(&Operand::Local(*state_ptr), func);
+                let val = self.operand_to_llvm(value, func);
+                let ptr_tmp = self.next_temp();
+                self.emit_line(&format!(
+                    "  {ptr_tmp} = inttoptr i64 {ptr_local} to ptr"
+                ));
+                let field_ptr = self.next_temp();
+                self.emit_line(&format!(
+                    "  {field_ptr} = getelementptr i64, ptr {ptr_tmp}, i32 {field_offset}"
+                ));
+                self.emit_line(&format!(
+                    "  store i64 {val}, ptr {field_ptr}"
+                ));
+            }
         }
         Ok(())
     }
@@ -907,8 +953,8 @@ impl LlvmCodegen {
                         };
                         if is_mutable {
                             let tmp = self.next_temp();
-                            self.emit_line(&format!("  %t{tmp} = call i64 @kryos_builtin_len(i64 {arg})"));
-                            self.emit_line(&format!("  store i64 %t{tmp}, ptr %_{}.addr", dest.0));
+                            self.emit_line(&format!("  {tmp} = call i64 @kryos_builtin_len(i64 {arg})"));
+                            self.emit_line(&format!("  store i64 {tmp}, ptr %_{}.addr", dest.0));
                         } else {
                             self.emit_line(&format!("  %_{} = call i64 @kryos_builtin_len(i64 {arg})", dest.0));
                         }
@@ -921,8 +967,8 @@ impl LlvmCodegen {
                         };
                         if is_mutable {
                             let tmp = self.next_temp();
-                            self.emit_line(&format!("  %t{tmp} = call i64 @kryos_builtin_to_string(i64 {val})"));
-                            self.emit_line(&format!("  store i64 %t{tmp}, ptr %_{}.addr", dest.0));
+                            self.emit_line(&format!("  {tmp} = call i64 @kryos_builtin_to_string(i64 {val})"));
+                            self.emit_line(&format!("  store i64 {tmp}, ptr %_{}.addr", dest.0));
                         } else {
                             self.emit_line(&format!("  %_{} = call i64 @kryos_builtin_to_string(i64 {val})", dest.0));
                         }
@@ -1378,7 +1424,11 @@ impl LlvmCodegen {
     // -----------------------------------------------------------------------
 
     /// Resolve the field index for a struct field access. Returns the 0-based
-    /// index of `field` within the struct type of `object`, or 0 as fallback.
+    /// index of `field` within the struct type of `object`.
+    ///
+    /// Falls back to index 0 with a warning if the struct or field cannot be
+    /// resolved — this indicates a gap in the type checker or MIR lowering that
+    /// should be investigated.
     fn resolve_field_index(&self, object: &Operand, field: &str, func: &MirFunction) -> usize {
         // Determine the struct type name from the operand.
         let struct_name = match object {
@@ -1394,16 +1444,35 @@ impl LlvmCodegen {
             _ => None,
         };
 
-        if let Some(name) = struct_name {
-            if let Some(fields) = self.struct_defs.get(&name) {
+        if let Some(ref name) = struct_name {
+            if let Some(fields) = self.struct_defs.get(name) {
                 for (i, (fname, _)) in fields.iter().enumerate() {
                     if fname == field {
                         return i;
                     }
                 }
+                // Field not found in known struct — emit a warning.
+                eprintln!(
+                    "warning: LLVM codegen: field `{}` not found in struct `{}` (known fields: {:?}) — defaulting to index 0",
+                    field,
+                    name,
+                    fields.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+                );
+            } else {
+                // Struct definition not registered — emit a warning.
+                eprintln!(
+                    "warning: LLVM codegen: struct `{}` not found in struct_defs — defaulting to index 0 for field `{}`",
+                    name, field
+                );
             }
+        } else {
+            // Could not determine struct type from operand — emit a warning.
+            eprintln!(
+                "warning: LLVM codegen: could not determine struct type for field access `.{}` — defaulting to index 0",
+                field
+            );
         }
-        0 // Fallback
+        0 // Fallback — should not be reached in well-typed programs.
     }
 
     fn emit_binop(
@@ -1514,33 +1583,49 @@ impl LlvmCodegen {
         elems: &[Operand],
         dest_ty: &str,
         func: &MirFunction,
-        _is_mutable: bool,
+        is_mutable: bool,
     ) -> Result<(), CodegenError> {
         // Build up with insertvalue.
+        // When the destination is mutable, the final value is stored to its alloca.
         for (i, elem) in elems.iter().enumerate() {
             let elem_val = self.operand_to_llvm(elem, func);
             let elem_ty = self.operand_type(elem, func);
             let prev = if i == 0 {
-                format!("undef")
+                "undef".to_string()
             } else {
                 format!("%_{}_arr_{}", dest.0, i - 1)
             };
             let this = if i + 1 == elems.len() {
-                format!("%_{}", dest.0)
+                if is_mutable {
+                    self.next_temp()
+                } else {
+                    format!("%_{}", dest.0)
+                }
             } else {
                 format!("%_{}_arr_{}", dest.0, i)
             };
             self.emit_line(&format!(
                 "  {this} = insertvalue {dest_ty} {prev}, {elem_ty} {elem_val}, {i}"
             ));
+            if i + 1 == elems.len() && is_mutable {
+                self.emit_line(&format!("  store {dest_ty} {this}, ptr %_{}.addr", dest.0));
+            }
         }
 
         if elems.is_empty() {
-            // Empty array — just produce undef.
-            self.emit_line(&format!(
-                "  %_{} = insertvalue {dest_ty} undef, i8 0, 0",
-                dest.0
-            ));
+            if is_mutable {
+                let tmp = self.next_temp();
+                self.emit_line(&format!(
+                    "  {tmp} = insertvalue {dest_ty} undef, i8 0, 0"
+                ));
+                self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
+            } else {
+                // Empty array — just produce undef.
+                self.emit_line(&format!(
+                    "  %_{} = insertvalue {dest_ty} undef, i8 0, 0",
+                    dest.0
+                ));
+            }
         }
 
         Ok(())
@@ -1552,9 +1637,10 @@ impl LlvmCodegen {
         elems: &[Operand],
         dest_ty: &str,
         func: &MirFunction,
-        _is_mutable: bool,
+        is_mutable: bool,
     ) -> Result<(), CodegenError> {
         // Same approach as arrays — insertvalue into a struct type.
+        // When the destination is mutable, the final value is stored to its alloca.
         for (i, elem) in elems.iter().enumerate() {
             let elem_val = self.operand_to_llvm(elem, func);
             let elem_ty = self.operand_type(elem, func);
@@ -1564,17 +1650,30 @@ impl LlvmCodegen {
                 format!("%_{}_tup_{}", dest.0, i - 1)
             };
             let this = if i + 1 == elems.len() {
-                format!("%_{}", dest.0)
+                if is_mutable {
+                    self.next_temp()
+                } else {
+                    format!("%_{}", dest.0)
+                }
             } else {
                 format!("%_{}_tup_{}", dest.0, i)
             };
             self.emit_line(&format!(
                 "  {this} = insertvalue {dest_ty} {prev}, {elem_ty} {elem_val}, {i}"
             ));
+            if i + 1 == elems.len() && is_mutable {
+                self.emit_line(&format!("  store {dest_ty} {this}, ptr %_{}.addr", dest.0));
+            }
         }
 
         if elems.is_empty() {
-            self.emit_line(&format!("  %_{} = insertvalue {dest_ty} undef, i8 0, 0", dest.0));
+            if is_mutable {
+                let tmp = self.next_temp();
+                self.emit_line(&format!("  {tmp} = insertvalue {dest_ty} undef, i8 0, 0"));
+                self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
+            } else {
+                self.emit_line(&format!("  %_{} = insertvalue {dest_ty} undef, i8 0, 0", dest.0));
+            }
         }
 
         Ok(())
@@ -1586,9 +1685,11 @@ impl LlvmCodegen {
         fields: &[(String, Operand)],
         dest_ty: &str,
         func: &MirFunction,
-        _is_mutable: bool,
+        is_mutable: bool,
     ) -> Result<(), CodegenError> {
         // Structs are lowered identically to tuples in LLVM IR (insertvalue by index).
+        // When the destination is mutable, the final value is stored to its alloca
+        // via a temporary so subsequent loads from %_X.addr see the correct value.
         for (i, (field_name, op)) in fields.iter().enumerate() {
             let val = self.operand_to_llvm(op, func);
             let ty = self.operand_type(op, func);
@@ -1598,20 +1699,37 @@ impl LlvmCodegen {
                 format!("%_{}_fld_{}", dest.0, i - 1)
             };
             let this = if i + 1 == fields.len() {
-                format!("%_{}", dest.0)
+                if is_mutable {
+                    // Use a temp name; we will store it to the alloca below.
+                    self.next_temp()
+                } else {
+                    format!("%_{}", dest.0)
+                }
             } else {
                 format!("%_{}_fld_{}", dest.0, i)
             };
             self.emit_line(&format!(
                 "  {this} = insertvalue {dest_ty} {prev}, {ty} {val}, {i} ; .{field_name}"
             ));
+            // If this was the last field and the local is mutable, store to alloca.
+            if i + 1 == fields.len() && is_mutable {
+                self.emit_line(&format!("  store {dest_ty} {this}, ptr %_{}.addr", dest.0));
+            }
         }
 
         if fields.is_empty() {
-            self.emit_line(&format!(
-                "  %_{} = insertvalue {dest_ty} undef, i8 0, 0",
-                dest.0
-            ));
+            if is_mutable {
+                let tmp = self.next_temp();
+                self.emit_line(&format!(
+                    "  {tmp} = insertvalue {dest_ty} undef, i8 0, 0"
+                ));
+                self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
+            } else {
+                self.emit_line(&format!(
+                    "  %_{} = insertvalue {dest_ty} undef, i8 0, 0",
+                    dest.0
+                ));
+            }
         }
 
         Ok(())

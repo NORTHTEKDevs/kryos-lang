@@ -1,0 +1,15 @@
+// expect-stdout: 60
+struct Vec3 {
+    x: i64,
+    y: i64,
+    z: i64,
+}
+
+fn sum_vec(v: Vec3) -> i64 {
+    return v.x + v.y + v.z
+}
+
+fn main() {
+    let v = Vec3 { x: 10, y: 20, z: 30 }
+    println(sum_vec(v))
+}

@@ -1,0 +1,10 @@
+// expect-stdout: 30
+struct Point {
+    x: i64,
+    y: i64
+}
+
+fn main() {
+    let p = Point { x: 10, y: 20 }
+    println(p.x + p.y)
+}
