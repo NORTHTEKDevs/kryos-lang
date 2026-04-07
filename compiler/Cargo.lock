@@ -645,6 +645,7 @@ dependencies = [
  "kryos-bindgen",
  "kryos-codegen-cranelift",
  "kryos-codegen-llvm",
+ "kryos-doc",
  "kryos-driver",
  "kryos-errors",
  "kryos-fmt",

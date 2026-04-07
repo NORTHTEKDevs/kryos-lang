@@ -1,0 +1,9 @@
+// expect-exit: 1
+// Tests that dead code (unused function) doesn't break compilation.
+fn unused_func() -> i64 {
+    return 999
+}
+
+fn main() -> i64 {
+    return 1
+}

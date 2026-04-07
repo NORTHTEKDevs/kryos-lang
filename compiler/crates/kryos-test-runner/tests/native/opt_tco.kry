@@ -1,0 +1,12 @@
+// expect-exit: 55
+// Tests tail call optimization: sum_tail is tail-recursive.
+fn sum_tail(n: i64, acc: i64) -> i64 {
+    if n <= 0 {
+        return acc
+    }
+    return sum_tail(n - 1, acc + n)
+}
+
+fn main() -> i64 {
+    return sum_tail(10, 0)
+}

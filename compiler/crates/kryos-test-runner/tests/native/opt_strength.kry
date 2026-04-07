@@ -1,0 +1,8 @@
+// expect-exit: 16
+// Tests that strength reduction doesn't change semantics.
+// x * 8 should produce the same result whether optimized to x << 3 or not.
+fn main() -> i64 {
+    let x = 2
+    let y = x * 8
+    return y
+}
