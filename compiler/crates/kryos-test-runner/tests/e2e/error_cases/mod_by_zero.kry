@@ -1,0 +1,9 @@
+// Modulo by zero check is a runtime check, not a compile-time check.
+// This test verifies that code with integer modulo compiles successfully.
+// The runtime check (kryos_check_div_zero_i64) is emitted before srem.
+fn main() {
+    let x: i64 = 10
+    let y: i64 = 3
+    let result: i64 = x % y
+    println(to_string(result))
+}

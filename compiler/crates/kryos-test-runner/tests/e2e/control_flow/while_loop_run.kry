@@ -1,0 +1,10 @@
+// run-expect: 10
+fn main() {
+    let mut sum = 0
+    let mut i = 1
+    while i <= 4 {
+        sum = sum + i
+        i = i + 1
+    }
+    println(to_string(sum))
+}

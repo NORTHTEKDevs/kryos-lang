@@ -1,0 +1,9 @@
+// Division by zero check is a runtime check, not a compile-time check.
+// This test verifies that code with integer division compiles successfully.
+// The runtime check (kryos_check_div_zero_i64) is emitted before sdiv/srem.
+fn main() {
+    let x: i64 = 10
+    let y: i64 = 2
+    let result: i64 = x / y
+    println(to_string(result))
+}

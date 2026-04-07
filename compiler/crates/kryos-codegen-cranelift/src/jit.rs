@@ -77,10 +77,10 @@ impl JitCompiler {
             cranelift_module::default_libcall_names(),
         );
 
-        // Register ARC runtime stubs — ARC is not active in JIT mode.
-        jit_builder.symbol("kryos_arc_retain", kryos_arc_retain_stub as *const u8);
-        jit_builder.symbol("kryos_arc_release", kryos_arc_release_stub as *const u8);
-        jit_builder.symbol("kryos_arc_alloc", kryos_arc_alloc_stub as *const u8);
+        // Register real ARC runtime functions (i64 wrappers from kryos-rt).
+        jit_builder.symbol("kryos_arc_retain_i64", kryos_rt::builtins::kryos_arc_retain_i64 as *const u8);
+        jit_builder.symbol("kryos_arc_release_i64", kryos_rt::builtins::kryos_arc_release_i64 as *const u8);
+        jit_builder.symbol("kryos_arc_alloc_i64", kryos_rt::builtins::kryos_arc_alloc_i64 as *const u8);
 
         // Register real kryos-rt function implementations. Since the JIT
         // runs in-process, we pass the actual runtime function addresses
@@ -112,6 +112,11 @@ impl JitCompiler {
         jit_builder.symbol("kryos_map_len", kryos_rt::map::kryos_map_len as *const u8);
         jit_builder.symbol("kryos_map_free", kryos_rt::map::kryos_map_free as *const u8);
 
+        // Panic handler and runtime checks
+        jit_builder.symbol("kryos_panic", kryos_rt::panic::kryos_panic as *const u8);
+        jit_builder.symbol("kryos_panic_with_location", kryos_rt::panic::kryos_panic_with_location as *const u8);
+        jit_builder.symbol("kryos_check_div_zero_i64", kryos_rt::builtins::kryos_check_div_zero_i64 as *const u8);
+
         // Builtins and type conversions
         jit_builder.symbol("kryos_builtin_len", kryos_rt::builtins::kryos_builtin_len as *const u8);
         jit_builder.symbol("kryos_builtin_to_string", kryos_rt::builtins::kryos_builtin_to_string as *const u8);
@@ -121,6 +126,16 @@ impl JitCompiler {
         jit_builder.symbol("kryos_ipow", kryos_rt::builtins::kryos_ipow as *const u8);
         jit_builder.symbol("kryos_fpow", kryos_rt::builtins::kryos_fpow as *const u8);
         jit_builder.symbol("kryos_fmod", kryos_rt::builtins::kryos_fmod as *const u8);
+
+        // Ergonomic builtins (file I/O, env, assertions, parsing, introspection)
+        jit_builder.symbol("kryos_builtin_file_read", kryos_rt::builtins::kryos_builtin_file_read as *const u8);
+        jit_builder.symbol("kryos_builtin_file_write", kryos_rt::builtins::kryos_builtin_file_write as *const u8);
+        jit_builder.symbol("kryos_builtin_env_get", kryos_rt::builtins::kryos_builtin_env_get as *const u8);
+        jit_builder.symbol("kryos_builtin_time_now", kryos_rt::builtins::kryos_builtin_time_now as *const u8);
+        jit_builder.symbol("kryos_builtin_assert", kryos_rt::builtins::kryos_builtin_assert as *const u8);
+        jit_builder.symbol("kryos_builtin_parse_int", kryos_rt::builtins::kryos_builtin_parse_int as *const u8);
+        jit_builder.symbol("kryos_builtin_parse_float", kryos_rt::builtins::kryos_builtin_parse_float as *const u8);
+        jit_builder.symbol("kryos_builtin_type_of", kryos_rt::builtins::kryos_builtin_type_of as *const u8);
 
         // Print operations
         jit_builder.symbol("kryos_println_str", kryos_rt::builtins::kryos_println_str as *const u8);
@@ -210,6 +225,48 @@ impl JitCompiler {
         jit_builder.symbol("kryos_file_write", kryos_stdlib_native::io::kryos_file_write as *const u8);
         jit_builder.symbol("kryos_file_close", kryos_stdlib_native::io::kryos_file_close as *const u8);
         jit_builder.symbol("kryos_stderr_write", kryos_stdlib_native::io::kryos_stderr_write as *const u8);
+        jit_builder.symbol("kryos_stdout_write", kryos_stdlib_native::io::kryos_stdout_write as *const u8);
+        jit_builder.symbol("kryos_stdin_read", kryos_stdlib_native::io::kryos_stdin_read as *const u8);
+
+        // Stdlib-native: networking
+        jit_builder.symbol("kryos_tcp_connect", kryos_stdlib_native::net::kryos_tcp_connect as *const u8);
+        jit_builder.symbol("kryos_tcp_bind", kryos_stdlib_native::net::kryos_tcp_bind as *const u8);
+        jit_builder.symbol("kryos_tcp_accept", kryos_stdlib_native::net::kryos_tcp_accept as *const u8);
+        jit_builder.symbol("kryos_tcp_send", kryos_stdlib_native::net::kryos_tcp_send as *const u8);
+        jit_builder.symbol("kryos_tcp_recv", kryos_stdlib_native::net::kryos_tcp_recv as *const u8);
+        jit_builder.symbol("kryos_socket_close", kryos_stdlib_native::net::kryos_socket_close as *const u8);
+
+        // Stdlib-native: datetime
+        jit_builder.symbol("kryos_time_now_secs", kryos_stdlib_native::datetime::kryos_time_now_secs as *const u8);
+        jit_builder.symbol("kryos_time_now_millis", kryos_stdlib_native::datetime::kryos_time_now_millis as *const u8);
+
+        // Stdlib-native: crypto
+        jit_builder.symbol("kryos_sha256", kryos_stdlib_native::crypto::kryos_sha256 as *const u8);
+        jit_builder.symbol("kryos_sha512", kryos_stdlib_native::crypto::kryos_sha512 as *const u8);
+        jit_builder.symbol("kryos_random_bytes", kryos_stdlib_native::crypto::kryos_random_bytes as *const u8);
+
+        // Stdlib-native: regex
+        jit_builder.symbol("kryos_regex_new", kryos_stdlib_native::re::kryos_regex_new as *const u8);
+        jit_builder.symbol("kryos_regex_is_match", kryos_stdlib_native::re::kryos_regex_is_match as *const u8);
+        jit_builder.symbol("kryos_regex_drop", kryos_stdlib_native::re::kryos_regex_drop as *const u8);
+
+        // Stdlib-native: synchronization primitives
+        jit_builder.symbol("kryos_mutex_new", kryos_stdlib_native::sync_prims::kryos_mutex_new as *const u8);
+        jit_builder.symbol("kryos_mutex_lock", kryos_stdlib_native::sync_prims::kryos_mutex_lock as *const u8);
+        jit_builder.symbol("kryos_mutex_unlock", kryos_stdlib_native::sync_prims::kryos_mutex_unlock as *const u8);
+        jit_builder.symbol("kryos_mutex_drop", kryos_stdlib_native::sync_prims::kryos_mutex_drop as *const u8);
+
+        // Trace runtime (call stack tracking for panic stack traces)
+        jit_builder.symbol("kryos_trace_enter", kryos_rt::trace::kryos_trace_enter as *const u8);
+        jit_builder.symbol("kryos_trace_exit", kryos_rt::trace::kryos_trace_exit as *const u8);
+
+        // Stdlib-native: terminal
+        jit_builder.symbol("kryos_term_raw_enable", kryos_stdlib_native::term::kryos_term_raw_enable as *const u8);
+        jit_builder.symbol("kryos_term_raw_disable", kryos_stdlib_native::term::kryos_term_raw_disable as *const u8);
+        jit_builder.symbol("kryos_term_width", kryos_stdlib_native::term::kryos_term_width as *const u8);
+        jit_builder.symbol("kryos_term_height", kryos_stdlib_native::term::kryos_term_height as *const u8);
+        jit_builder.symbol("kryos_term_cursor_move", kryos_stdlib_native::term::kryos_term_cursor_move as *const u8);
+        jit_builder.symbol("kryos_term_clear", kryos_stdlib_native::term::kryos_term_clear as *const u8);
 
         let module = JITModule::new(jit_builder);
 
@@ -245,17 +302,17 @@ impl JitCompiler {
         let mut func_ids = HashMap::new();
 
         let arc_retain_id = self.module.declare_function(
-            "kryos_arc_retain",
+            "kryos_arc_retain_i64",
             Linkage::Import,
             &arc_retain_sig,
         )?;
         let arc_release_id = self.module.declare_function(
-            "kryos_arc_release",
+            "kryos_arc_release_i64",
             Linkage::Import,
             &arc_release_sig,
         )?;
         let arc_alloc_id = self.module.declare_function(
-            "kryos_arc_alloc",
+            "kryos_arc_alloc_i64",
             Linkage::Import,
             &arc_alloc_sig,
         )?;
@@ -263,6 +320,7 @@ impl JitCompiler {
         func_ids.insert("kryos_arc_retain".to_string(), arc_retain_id);
         func_ids.insert("kryos_arc_release".to_string(), arc_release_id);
         func_ids.insert("kryos_arc_alloc".to_string(), arc_alloc_id);
+        func_ids.insert("kryos_arc_alloc_i64".to_string(), arc_alloc_id);
 
         // Declare the function itself.
         let func_id = self.module.declare_function(
@@ -284,6 +342,7 @@ impl JitCompiler {
         {
             let empty_struct_defs = std::collections::HashMap::new();
             let empty_enum_defs = std::collections::HashMap::new();
+            let empty_trait_vtables = std::collections::HashMap::new();
             let mut str_counter = 0u32;
             let mut builder = FunctionBuilder::new(&mut cl_func, &mut self.fb_ctx);
             crate::codegen::translate_function(
@@ -294,6 +353,7 @@ impl JitCompiler {
                 &empty_struct_defs,
                 &empty_enum_defs,
                 &mut str_counter,
+                &empty_trait_vtables,
             )?;
             builder.seal_all_blocks();
             builder.finalize();
@@ -313,15 +373,4 @@ impl JitCompiler {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ARC runtime stubs — ARC is not active in JIT mode, so these remain no-ops.
-// All other runtime functions use real kryos-rt implementations.
-// ---------------------------------------------------------------------------
-
-extern "C" fn kryos_arc_retain_stub(_ptr: u64) {}
-
-extern "C" fn kryos_arc_release_stub(_ptr: u64) {}
-
-extern "C" fn kryos_arc_alloc_stub(_val: u64) -> u64 {
-    _val
-}
+// ARC runtime functions are now provided by kryos-rt (no stubs needed).

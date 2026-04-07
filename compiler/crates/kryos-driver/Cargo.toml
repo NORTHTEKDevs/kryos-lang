@@ -16,3 +16,12 @@ kryos-linker.workspace = true
 kryos-package.workspace = true
 serde.workspace = true
 toml.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+kryos-codegen-cranelift.workspace = true
+kryos-codegen-llvm.workspace = true
+
+[[bench]]
+name = "compile"
+harness = false

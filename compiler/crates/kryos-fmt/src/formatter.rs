@@ -1038,6 +1038,16 @@ impl Formatter {
                 )
             }
 
+            Expr::Borrow { inner, mutable: true, .. } => {
+                format!("&mut {}", self.fmt_expr_to_string(inner))
+            }
+            Expr::Borrow { inner, mutable: false, .. } => {
+                format!("&{}", self.fmt_expr_to_string(inner))
+            }
+            Expr::Deref { inner, .. } => {
+                format!("*{}", self.fmt_expr_to_string(inner))
+            }
+
             Expr::SharedExpr { inner, .. } => {
                 format!("shared {}", self.fmt_expr_to_string(inner))
             }
@@ -1270,6 +1280,8 @@ impl Formatter {
                     format!("*{}", self.fmt_type_to_string(inner))
                 }
             }
+
+            TypeExpr::DynTrait { trait_name, .. } => format!("dyn {trait_name}"),
 
             TypeExpr::Inferred { .. } => "_".to_string(),
         }

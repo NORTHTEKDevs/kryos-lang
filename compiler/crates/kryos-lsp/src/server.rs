@@ -69,7 +69,7 @@ impl LspServer {
         }
     }
 
-    fn handle_request(&mut self, method: &str, id: &Value, params: &Value) -> Option<Value> {
+    pub fn handle_request(&mut self, method: &str, id: &Value, params: &Value) -> Option<Value> {
         match method {
             "initialize" => {
                 self.initialized = true;
@@ -145,7 +145,7 @@ impl LspServer {
         }
     }
 
-    fn handle_notification(&mut self, method: &str, params: &Value) -> Vec<Value> {
+    pub fn handle_notification(&mut self, method: &str, params: &Value) -> Vec<Value> {
         match method {
             "initialized" => Vec::new(),
             "textDocument/didOpen" => {

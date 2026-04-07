@@ -1,0 +1,11 @@
+// run-expect: 1
+fn main() {
+    let t = time_now()
+    // time_now() returns seconds since epoch; any value > 1_000_000_000 is reasonable
+    // (we are well past 2001). Print 1 if it's reasonable, 0 otherwise.
+    if t > 1000000000 {
+        println("1")
+    } else {
+        println("0")
+    }
+}

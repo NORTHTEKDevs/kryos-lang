@@ -1,0 +1,5 @@
+// expect-exit: 120
+fn main() -> i64 {
+    let fact5 = comptime { 1 * 2 * 3 * 4 * 5 }
+    return fact5
+}

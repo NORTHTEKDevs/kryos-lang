@@ -138,6 +138,9 @@ enum PkgAction {
 
     /// Regenerate the lock file
     Lock,
+
+    /// Package and publish to the registry
+    Publish,
 }
 
 fn main() {
@@ -176,6 +179,7 @@ fn main() {
             PkgAction::Remove { dependency } => commands::pkg::remove(&dependency),
             PkgAction::Update => commands::pkg::update(),
             PkgAction::Lock => commands::pkg::lock(),
+            PkgAction::Publish => commands::pkg::publish(),
         },
 
         Commands::Lsp => commands::lsp::execute(),

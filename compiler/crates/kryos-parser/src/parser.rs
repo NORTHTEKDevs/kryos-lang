@@ -50,8 +50,10 @@ fn infix_binding_power(kind: TokenKind, next: Option<TokenKind>) -> Option<(u8, 
 /// Prefix binding power for unary operators.
 fn prefix_binding_power(kind: TokenKind) -> Option<u8> {
     match kind {
-        // 12. unary - not ~
-        TokenKind::Minus | TokenKind::Not | TokenKind::Tilde => Some(24),
+        // 12. unary - not ~ *
+        TokenKind::Minus | TokenKind::Not | TokenKind::Tilde | TokenKind::Star => Some(24),
+        // & (borrow / address-of) — same precedence as other unary prefix ops
+        TokenKind::Amp => Some(24),
         // shared / move / weak — prefix keyword operators (very low, just above range)
         TokenKind::Shared | TokenKind::Move | TokenKind::Weak => Some(3),
         _ => None,
@@ -249,6 +251,7 @@ impl Parser {
             TokenKind::Type => Some(self.parse_type_alias(public)),
             TokenKind::Use => Some(self.parse_import()),
             TokenKind::Extern => Some(self.parse_extern()),
+            TokenKind::Let => Some(self.parse_const_decl(public)),
             _ => {
                 if !annotations.is_empty() || public {
                     let span = self.peek().span;
@@ -607,6 +610,29 @@ impl Parser {
         }
     }
 
+    fn parse_const_decl(&mut self, public: bool) -> Decl {
+        let kw = self.expect(TokenKind::Let);
+        let start = kw.span;
+        // Skip optional 'mut' (top-level let is always immutable, but accept it gracefully)
+        self.eat(TokenKind::Mut);
+        let (name, _) = self.expect_name();
+        let ty = if self.eat(TokenKind::Colon) {
+            Some(self.parse_type())
+        } else {
+            None
+        };
+        self.expect(TokenKind::Eq);
+        let value = self.parse_expr();
+        let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
+        Decl::Const {
+            name,
+            ty,
+            value: Box::new(value),
+            public,
+            span: start.merge(end),
+        }
+    }
+
     fn parse_import(&mut self) -> Decl {
         let kw = self.expect(TokenKind::Use);
         let start = kw.span;
@@ -715,6 +741,11 @@ impl Parser {
             TokenKind::Let => Some(self.parse_let()),
             TokenKind::Return => Some(self.parse_return()),
             TokenKind::If => Some(self.parse_if_stmt()),
+            TokenKind::Parallel if self.pos + 1 < self.tokens.len()
+                && self.tokens[self.pos + 1].kind == TokenKind::For =>
+            {
+                Some(self.parse_parallel_for())
+            }
             TokenKind::For => Some(self.parse_for()),
             TokenKind::While => Some(self.parse_while()),
             TokenKind::Break => {
@@ -849,7 +880,19 @@ impl Parser {
         let iterable = self.parse_expr();
         let body = self.parse_block();
         let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
-        Stmt::For { pattern, iterable, body, span: start.merge(end) }
+        Stmt::For { parallel: false, pattern, iterable, body, span: start.merge(end) }
+    }
+
+    fn parse_parallel_for(&mut self) -> Stmt {
+        let kw = self.expect(TokenKind::Parallel);
+        let start = kw.span;
+        self.expect(TokenKind::For);
+        let pattern = self.parse_pattern();
+        self.expect(TokenKind::In);
+        let iterable = self.parse_expr();
+        let body = self.parse_block();
+        let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
+        Stmt::For { parallel: true, pattern, iterable, body, span: start.merge(end) }
     }
 
     fn parse_while(&mut self) -> Stmt {
@@ -1176,6 +1219,23 @@ impl Parser {
                     let end = operand.span();
                     Expr::UnaryOp { op: UnOp::BitNot, operand: Box::new(operand), span: start.merge(end) }
                 }
+                TokenKind::Amp => {
+                    // &x → Borrow (immutable reference)
+                    // &mut x → Borrow (mutable reference)
+                    let mutable = self.check(TokenKind::Mut);
+                    if mutable {
+                        self.advance(); // consume `mut`
+                    }
+                    let inner = self.parse_expr_bp(bp);
+                    let end = inner.span();
+                    Expr::Borrow { inner: Box::new(inner), mutable, span: start.merge(end) }
+                }
+                TokenKind::Star => {
+                    // *x → Deref (dereference a reference/pointer)
+                    let inner = self.parse_expr_bp(bp);
+                    let end = inner.span();
+                    Expr::Deref { inner: Box::new(inner), span: start.merge(end) }
+                }
                 TokenKind::Shared => {
                     let inner = self.parse_expr_bp(bp);
                     let end = inner.span();
@@ -1300,6 +1360,22 @@ impl Parser {
 
             // Match expression
             TokenKind::Match => self.parse_match_expr(),
+
+            // Comptime block: `comptime { expr }`
+            TokenKind::Comptime => {
+                self.advance();
+                let body = self.parse_block();
+                let end = body.span;
+                Expr::ComptimeBlock { body, span: tok.span.merge(end) }
+            }
+
+            // Quantum block: `quantum { expr }`
+            TokenKind::Quantum => {
+                self.advance();
+                let body = self.parse_block();
+                let end = body.span;
+                Expr::QuantumBlock { body, span: tok.span.merge(end) }
+            }
 
             // Array literal: `[1, 2, 3]`
             TokenKind::LBracket => self.parse_array_literal(),
@@ -1763,6 +1839,18 @@ impl Parser {
                     // Bare `chan` without type param.
                     TypeExpr::Simple { name: "chan".to_string(), span: tok.span }
                 }
+            }
+            // Dynamic trait object: `dyn TraitName`
+            TokenKind::Dyn => {
+                self.advance();
+                // Trait names may be Ident (user-defined) or TypeIdent (builtin).
+                let name_tok = if self.check(TokenKind::TypeIdent) {
+                    self.advance().clone()
+                } else {
+                    self.expect(TokenKind::Ident).clone()
+                };
+                let end = name_tok.span;
+                TypeExpr::DynTrait { trait_name: name_tok.text.clone(), span: tok.span.merge(end) }
             }
             // Simple or generic type: `i32`, `Vec<i32>`, `Map<String, i32>`
             TokenKind::Ident | TokenKind::TypeIdent => {

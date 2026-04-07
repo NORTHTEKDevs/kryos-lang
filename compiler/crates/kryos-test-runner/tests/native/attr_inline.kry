@@ -1,0 +1,12 @@
+// expect-exit: 100
+// Tests that @inline functions work correctly.
+// The attribute is preserved in MIR for use by the inliner in Ring 3.
+
+@inline
+fn square(x: i64) -> i64 {
+    return x * x
+}
+
+fn main() -> i64 {
+    return square(10)
+}

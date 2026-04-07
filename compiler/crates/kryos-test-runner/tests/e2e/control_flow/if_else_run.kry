@@ -1,0 +1,9 @@
+// run-expect: even
+fn main() {
+    let x = 42
+    if x % 2 == 0 {
+        println("even")
+    } else {
+        println("odd")
+    }
+}

@@ -112,6 +112,14 @@ pub enum Decl {
         items: Vec<Decl>,
         span: Span,
     },
+    /// Top-level constant: `let NAME = expr`
+    Const {
+        name: String,
+        ty: Option<TypeExpr>,
+        value: Box<crate::Expr>,
+        public: bool,
+        span: Span,
+    },
 }
 
 impl Decl {
@@ -121,7 +129,7 @@ impl Decl {
             Self::Enum { span, .. } | Self::Trait { span, .. } |
             Self::Impl { span, .. } | Self::Actor { span, .. } |
             Self::TypeAlias { span, .. } | Self::Import { span, .. } |
-            Self::Extern { span, .. } => *span,
+            Self::Extern { span, .. } | Self::Const { span, .. } => *span,
         }
     }
 }

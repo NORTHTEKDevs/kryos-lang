@@ -5,6 +5,7 @@ pub mod semver;
 pub mod manifest;
 pub mod resolve;
 pub mod lock;
+pub mod registry;
 
 pub use manifest::{Manifest, PackageInfo, DepSpec, CapabilitiesConfig, BuildConfig};
 pub use semver::{Version, VersionReq, Op};

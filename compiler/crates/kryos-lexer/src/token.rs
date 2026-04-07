@@ -22,7 +22,7 @@ pub enum TokenKind {
     // --- Keywords ---
     Let, Mut, Fn, Return, If, Else, Elif,
     For, While, In, Break, Continue,
-    Struct, Enum, Impl, Trait,
+    Struct, Enum, Impl, Trait, Dyn,
     Pub, Use, Extern, As, Mod, Type,
     Actor, Spawn, Select, Send, Recv, Ask, Chan,
     Parallel, Quantum, Comptime,
@@ -65,7 +65,7 @@ impl TokenKind {
             Self::Let | Self::Mut | Self::Fn | Self::Return |
             Self::If | Self::Else | Self::Elif |
             Self::For | Self::While | Self::In | Self::Break | Self::Continue |
-            Self::Struct | Self::Enum | Self::Impl | Self::Trait |
+            Self::Struct | Self::Enum | Self::Impl | Self::Trait | Self::Dyn |
             Self::Pub | Self::Use | Self::Extern | Self::As | Self::Mod | Self::Type |
             Self::Actor | Self::Spawn | Self::Select | Self::Send | Self::Recv |
             Self::Ask | Self::Chan | Self::Parallel | Self::Quantum | Self::Comptime |
@@ -113,6 +113,7 @@ pub fn keyword_lookup(word: &str) -> Option<TokenKind> {
         "enum" => TokenKind::Enum,
         "impl" => TokenKind::Impl,
         "trait" => TokenKind::Trait,
+        "dyn" => TokenKind::Dyn,
         "pub" => TokenKind::Pub,
         "use" => TokenKind::Use,
         "extern" => TokenKind::Extern,

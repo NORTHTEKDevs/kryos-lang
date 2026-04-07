@@ -84,6 +84,11 @@ pub enum Type {
         mutable: bool,
     }, // Raw pointer (FFI)
 
+    /// Dynamic trait object: `dyn TraitName`
+    DynTrait {
+        trait_name: String,
+    },
+
     // Type variables (for inference)
     Var(u32), // Unresolved type variable
 
@@ -271,6 +276,7 @@ impl fmt::Display for Type {
                 inner,
                 mutable: false,
             } => write!(f, "*const {inner}"),
+            Type::DynTrait { trait_name } => write!(f, "dyn {trait_name}"),
             Type::Var(id) => write!(f, "?T{id}"),
             Type::Error => write!(f, "<error>"),
         }

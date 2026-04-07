@@ -1,0 +1,12 @@
+// expect-error: @pure
+// A @pure function cannot call I/O builtins.
+
+@pure
+fn bad_pure(x: i64) -> i64 {
+    println(x)
+    return x
+}
+
+fn main() {
+    bad_pure(42)
+}

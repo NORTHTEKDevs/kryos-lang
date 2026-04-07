@@ -48,6 +48,7 @@ pub fn mir_type_to_cl(ty: &MirType) -> Result<Option<Type>, CodegenError> {
             Ok(Some(types::I64)) // pointer to heap/stack allocation
         }
         MirType::Function { .. } => Ok(Some(types::I64)), // function pointer
+        MirType::DynTrait(_) => Ok(Some(types::I64)), // fat pointer (packed as i64 pair, or data ptr)
     }
 }
 
@@ -233,26 +234,27 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
         sig
     };
 
-    // Declare as local (defined in this module) rather than imported
+    // Import ARC runtime functions from libkryos_rt (i64 wrappers).
     let arc_retain_id = object_module.declare_function(
-        "kryos_arc_retain",
-        Linkage::Local,
+        "kryos_arc_retain_i64",
+        Linkage::Import,
         &arc_retain_sig,
     )?;
     let arc_release_id = object_module.declare_function(
-        "kryos_arc_release",
-        Linkage::Local,
+        "kryos_arc_release_i64",
+        Linkage::Import,
         &arc_release_sig,
     )?;
     let arc_alloc_id = object_module.declare_function(
-        "kryos_arc_alloc",
-        Linkage::Local,
+        "kryos_arc_alloc_i64",
+        Linkage::Import,
         &arc_alloc_sig,
     )?;
 
     func_ids.insert("kryos_arc_retain".to_string(), arc_retain_id);
     func_ids.insert("kryos_arc_release".to_string(), arc_release_id);
     func_ids.insert("kryos_arc_alloc".to_string(), arc_alloc_id);
+    func_ids.insert("kryos_arc_alloc_i64".to_string(), arc_alloc_id);
 
     // Declare C `puts` for println support.
     // println("...") in Kryos MIR maps to a call to C puts(const char*).
@@ -444,65 +446,7 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
     )?;
     func_ids.insert("kryos_ipow".to_string(), ipow_id);
 
-    // Define ARC runtime stubs (no-ops for now)
-    {
-        // kryos_arc_retain(ptr: i64) -> void — no-op stub
-        let mut retain_fn = Function::with_name_signature(
-            UserFuncName::user(0, arc_retain_id.as_u32()),
-            arc_retain_sig.clone(),
-        );
-        {
-            let mut builder = FunctionBuilder::new(&mut retain_fn, &mut fb_ctx);
-            let block = builder.create_block();
-            builder.append_block_params_for_function_params(block);
-            builder.switch_to_block(block);
-            builder.seal_block(block);
-            builder.ins().return_(&[]);
-            builder.finalize();
-        }
-        let mut ctx = Context::for_function(retain_fn);
-        object_module.define_function(arc_retain_id, &mut ctx)?;
-        ctx.clear();
-    }
-    {
-        // kryos_arc_release(ptr: i64) -> void — no-op stub
-        let mut release_fn = Function::with_name_signature(
-            UserFuncName::user(0, arc_release_id.as_u32()),
-            arc_release_sig.clone(),
-        );
-        {
-            let mut builder = FunctionBuilder::new(&mut release_fn, &mut fb_ctx);
-            let block = builder.create_block();
-            builder.append_block_params_for_function_params(block);
-            builder.switch_to_block(block);
-            builder.seal_block(block);
-            builder.ins().return_(&[]);
-            builder.finalize();
-        }
-        let mut ctx = Context::for_function(release_fn);
-        object_module.define_function(arc_release_id, &mut ctx)?;
-        ctx.clear();
-    }
-    {
-        // kryos_arc_alloc(size: i64) -> i64 — stub returns the input pointer
-        let mut alloc_fn = Function::with_name_signature(
-            UserFuncName::user(0, arc_alloc_id.as_u32()),
-            arc_alloc_sig.clone(),
-        );
-        {
-            let mut builder = FunctionBuilder::new(&mut alloc_fn, &mut fb_ctx);
-            let block = builder.create_block();
-            builder.append_block_params_for_function_params(block);
-            builder.switch_to_block(block);
-            builder.seal_block(block);
-            let param = builder.block_params(block)[0];
-            builder.ins().return_(&[param]);
-            builder.finalize();
-        }
-        let mut ctx = Context::for_function(alloc_fn);
-        object_module.define_function(arc_alloc_id, &mut ctx)?;
-        ctx.clear();
-    }
+    // ARC functions are now imported from libkryos_rt — no local stubs needed.
 
     // Declare C heap functions as imports.
     {
@@ -669,15 +613,46 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
 
         let mn_id = object_module.declare_function("kryos_map_new", Linkage::Import, &map_new_sig)?;
         let mi_id = object_module.declare_function("kryos_map_insert", Linkage::Import, &map_insert_sig)?;
+        let mis_id = object_module.declare_function("kryos_map_insert_str", Linkage::Import, &map_insert_sig)?;
         let mg_id = object_module.declare_function("kryos_map_get", Linkage::Import, &map_get_sig)?;
+        let mgs_id = object_module.declare_function("kryos_map_get_str", Linkage::Import, &map_get_sig)?;
         let ml_id = object_module.declare_function("kryos_map_len", Linkage::Import, &map_len_sig)?;
         let mf_id = object_module.declare_function("kryos_map_free", Linkage::Import, &map_free_sig)?;
 
         func_ids.insert("kryos_map_new".to_string(), mn_id);
         func_ids.insert("kryos_map_insert".to_string(), mi_id);
+        func_ids.insert("kryos_map_insert_str".to_string(), mis_id);
         func_ids.insert("kryos_map_get".to_string(), mg_id);
+        func_ids.insert("kryos_map_get_str".to_string(), mgs_id);
         func_ids.insert("kryos_map_len".to_string(), ml_id);
         func_ids.insert("kryos_map_free".to_string(), mf_id);
+    }
+
+    // Declare trace runtime functions for stack trace support.
+    {
+        let trace_enter_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // name_ptr
+            sig.params.push(AbiParam::new(types::I64)); // name_len
+            sig.params.push(AbiParam::new(types::I64)); // file_ptr
+            sig.params.push(AbiParam::new(types::I64)); // file_len
+            sig.params.push(AbiParam::new(types::I64)); // line
+            sig
+        };
+        let trace_exit_sig = Signature::new(call_conv);
+
+        let te_id = object_module.declare_function(
+            "kryos_trace_enter",
+            Linkage::Import,
+            &trace_enter_sig,
+        )?;
+        let tx_id = object_module.declare_function(
+            "kryos_trace_exit",
+            Linkage::Import,
+            &trace_exit_sig,
+        )?;
+        func_ids.insert("kryos_trace_enter".to_string(), te_id);
+        func_ids.insert("kryos_trace_exit".to_string(), tx_id);
     }
 
     // Module-level string counter to avoid duplicate data section names.
@@ -703,6 +678,7 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
                 &module.struct_defs,
                 &module.enum_defs,
                 &mut global_str_counter,
+                &module.trait_vtables,
             )?;
             builder.seal_all_blocks();
             builder.finalize();
@@ -833,6 +809,13 @@ struct FuncTranslator<'a> {
     struct_defs: &'a HashMap<String, Vec<(String, MirType)>>,
     /// Enum definitions for tag/payload codegen.
     enum_defs: &'a HashMap<String, Vec<EnumVariantDef>>,
+    /// Persistent stack slots for address-taken locals (used by &/&mut).
+    /// Maps LocalId -> StackSlot. The variable and slot are kept in sync:
+    /// - Before AddrOf: variable value is stored into the slot
+    /// - After calls taking a &mut: slot value is loaded back into variable
+    borrow_slots: HashMap<u32, cranelift_codegen::ir::StackSlot>,
+    /// Trait method vtable map: (concrete_type, trait_name) -> [method_name, ...].
+    mir_module_trait_methods: HashMap<(String, String), Vec<String>>,
 }
 
 /// Translate a MIR function body into Cranelift IR instructions.
@@ -844,6 +827,7 @@ pub fn translate_function<M: Module>(
     struct_defs: &HashMap<String, Vec<(String, MirType)>>,
     enum_defs: &HashMap<String, Vec<EnumVariantDef>>,
     string_counter: &mut u32,
+    trait_vtables: &HashMap<(String, String), Vec<String>>,
 ) -> Result<(), CodegenError> {
     let mut translator = FuncTranslator {
         mir_func,
@@ -854,6 +838,8 @@ pub fn translate_function<M: Module>(
         string_counter,
         struct_defs,
         enum_defs,
+        borrow_slots: HashMap::new(),
+        mir_module_trait_methods: trait_vtables.clone(),
     };
 
     // Create Cranelift blocks for each MIR basic block.
@@ -901,6 +887,9 @@ pub fn translate_function<M: Module>(
             builder.def_var(var, zero);
         }
     }
+
+    // Emit trace_enter at the start of the function for stack trace support.
+    emit_trace_enter(&mir_func.name, builder, &mut translator, module)?;
 
     // Translate the entry block's instructions (we already switched to it).
     translate_block_body(
@@ -984,6 +973,22 @@ fn translate_instruction<M: Module>(
                 };
                 builder.def_var(var, coerced);
             }
+
+            // After a function call, reload all borrowed locals from their
+            // persistent stack slots, since the callee may have mutated them
+            // through a &mut reference.
+            if matches!(value, RValue::Call { .. } | RValue::CallIndirect { .. }) {
+                for (&local_id, &slot) in &translator.borrow_slots {
+                    if let Some(&var) = translator.variables.get(&local_id) {
+                        let cl_ty = translator.mir_func.locals.iter()
+                            .find(|l| l.id.0 == local_id)
+                            .and_then(|l| mir_type_to_cl(&l.ty).ok().flatten())
+                            .unwrap_or(types::I64);
+                        let reloaded = builder.ins().stack_load(cl_ty, slot, 0);
+                        builder.def_var(var, reloaded);
+                    }
+                }
+            }
         }
         Instruction::ArcRetain { ptr } => {
             let func_ref = ensure_func_ref(
@@ -1027,6 +1032,12 @@ fn translate_instruction<M: Module>(
                     builder.ins().call(free_ref, &[val]);
                 }
             }
+        }
+        Instruction::StoreDeref { ptr, value } => {
+            // Store a value through a reference/pointer.
+            let ptr_val = translate_operand(ptr, builder, translator, module)?;
+            let val = translate_operand(value, builder, translator, module)?;
+            builder.ins().store(MemFlags::trusted(), val, ptr_val, 0);
         }
         Instruction::Nop => {}
         Instruction::Spawn { func, args } => {
@@ -1128,6 +1139,31 @@ fn translate_instruction<M: Module>(
                 "kryos_actor_unlock_i64", builder, translator, module, 1,
             )?;
             builder.ins().call(unlock_ref, &[actor_val]);
+        }
+        Instruction::ActorStateLoad { dest, state_ptr, field_offset } => {
+            // Load from state_ptr + field_offset * 8.
+            let ptr_val = builder.use_var(translator.variables[&state_ptr.0]);
+            let offset_bytes = (*field_offset as i32) * 8;
+            let loaded = builder.ins().load(
+                types::I64,
+                MemFlags::new(),
+                ptr_val,
+                offset_bytes,
+            );
+            let var = translator.variables[&dest.0];
+            builder.def_var(var, loaded);
+        }
+        Instruction::ActorStateStore { state_ptr, field_offset, value } => {
+            // Store value to state_ptr + field_offset * 8.
+            let ptr_val = builder.use_var(translator.variables[&state_ptr.0]);
+            let val = translate_operand(value, builder, translator, module)?;
+            let offset_bytes = (*field_offset as i32) * 8;
+            builder.ins().store(
+                MemFlags::new(),
+                val,
+                ptr_val,
+                offset_bytes,
+            );
         }
     }
     Ok(())
@@ -1307,6 +1343,16 @@ fn translate_rvalue<M: Module>(
                 return Ok(Some(builder.inst_results(call)[0]));
             }
 
+            // Integer division/modulo: emit a runtime div-by-zero check before
+            // the actual sdiv/srem instruction. Without this, a zero divisor
+            // causes a hardware exception instead of a friendly error message.
+            if !is_float && (*op == MirBinOp::Div || *op == MirBinOp::Mod) {
+                let check_ref = ensure_func_ref_with_args(
+                    "kryos_check_div_zero_i64", builder, translator, module, 1,
+                )?;
+                builder.ins().call(check_ref, &[rhs]);
+            }
+
             let val = translate_binop(*op, lhs, rhs, is_float, builder)?;
             Ok(Some(val))
         }
@@ -1389,11 +1435,44 @@ fn translate_rvalue<M: Module>(
                 return Ok(None);
             }
 
+            // Handle to_string() with type dispatch: float → kryos_f64_to_string,
+            // bool → kryos_bool_to_string, int → kryos_builtin_to_string.
+            if func == "to_string" && args.len() == 1 {
+                let val = translate_operand(&args[0], builder, translator, module)?;
+                if is_float_operand(&args[0], &translator.mir_func.locals) {
+                    let f64_ref = ensure_func_ref_with_args(
+                        "kryos_f64_to_string", builder, translator, module, 1,
+                    )?;
+                    let call = builder.ins().call(f64_ref, &[val]);
+                    return Ok(Some(builder.inst_results(call)[0]));
+                } else if is_bool_operand(&args[0], &translator.mir_func.locals) {
+                    let mut v = val;
+                    let val_ty = builder.func.dfg.value_type(v);
+                    if val_ty.is_int() && val_ty.bits() < 64 {
+                        v = builder.ins().sextend(types::I64, v);
+                    }
+                    let bool_ref = ensure_func_ref_with_args(
+                        "kryos_bool_to_string", builder, translator, module, 1,
+                    )?;
+                    let call = builder.ins().call(bool_ref, &[v]);
+                    return Ok(Some(builder.inst_results(call)[0]));
+                }
+                // Fall through to generic int to_string below.
+            }
+
             // Map Kryos builtin names to their runtime function names.
             let (runtime_name, runtime_arg_count) = match func.as_str() {
                 "chan"  => ("kryos_chan_new_i64", 0usize),
                 "send"  => ("kryos_chan_send_i64", 2),
                 "recv"  => ("kryos_chan_recv_i64", 1),
+                "file_read"    => ("kryos_builtin_file_read", 1),
+                "file_write"   => ("kryos_builtin_file_write", 2),
+                "env_get"      => ("kryos_builtin_env_get", 1),
+                "time_now"     => ("kryos_builtin_time_now", 0),
+                "assert"       => ("kryos_builtin_assert", 2),
+                "parse_int"    => ("kryos_builtin_parse_int", 1),
+                "parse_float"  => ("kryos_builtin_parse_float", 1),
+                "type_of"      => ("kryos_builtin_type_of", 1),
                 _ => (func.as_str(), args.len()),
             };
             let func_ref = ensure_func_ref_with_args(runtime_name, builder, translator, module, runtime_arg_count)?;
@@ -1801,9 +1880,118 @@ fn translate_rvalue<M: Module>(
             Ok(Some(ptr))
         }
 
+        RValue::AddrOf { local, mutable: _ } => {
+            // Take the address of a local variable.
+            // Use a persistent borrow slot so mutations through the pointer
+            // are visible when we reload the variable.
+            let cl_ty = translator.mir_func.locals.iter()
+                .find(|l| l.id == *local)
+                .and_then(|l| mir_type_to_cl(&l.ty).ok().flatten())
+                .unwrap_or(types::I64);
+            let slot = if let Some(existing) = translator.borrow_slots.get(&local.0) {
+                *existing
+            } else {
+                let slot_size = if cl_ty == types::I128 { 16 } else { 8 };
+                let new_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    slot_size,
+                    0,
+                ));
+                translator.borrow_slots.insert(local.0, new_slot);
+                new_slot
+            };
+            // Store the current value of the local into the slot.
+            let val = builder.use_var(translator.variables[&local.0]);
+            builder.ins().stack_store(val, slot, 0);
+            // Return the address of the slot.
+            let addr = builder.ins().stack_addr(types::I64, slot, 0);
+            Ok(Some(addr))
+        }
+
+        RValue::Deref { operand } => {
+            // Load from a reference/pointer.
+            let ptr = translate_operand(operand, builder, translator, module)?;
+            // Determine the target type from the dest local.
+            let cl_ty = dest
+                .and_then(|d| {
+                    translator.mir_func.locals.iter()
+                        .find(|l| l.id == d)
+                        .and_then(|l| mir_type_to_cl(&l.ty).ok().flatten())
+                })
+                .unwrap_or(types::I64);
+            let val = builder.ins().load(cl_ty, MemFlags::trusted(), ptr, 0);
+            Ok(Some(val))
+        }
+
         RValue::Comptime(inner) => {
             // Comptime: lower inner RValue directly.
             translate_rvalue(inner, builder, translator, module, dest)
+        }
+
+        RValue::MakeTraitObject { value, concrete_type, trait_name } => {
+            // Dynamic dispatch: create a fat pointer [data, vtable_entry...].
+            // For now, store (data_ptr, fn_ptr_0, fn_ptr_1, ...) on the stack.
+            let data_val = translate_operand(value, builder, translator, module)?;
+
+            // Look up the trait method(s) for this concrete type.
+            let vtable_key = (concrete_type.clone(), trait_name.clone());
+            let method_names = translator.mir_module_trait_methods
+                .get(&vtable_key).cloned().unwrap_or_default();
+
+            // Allocate stack slot for fat pointer: [data (i64), fn_ptr_0, fn_ptr_1, ...]
+            let num_methods = method_names.len().max(1) as u32;
+            let slot_size = 8 + 8 * num_methods;
+            let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                slot_size,
+                0,
+            ));
+
+            // Store the data value.
+            builder.ins().stack_store(data_val, slot, 0);
+
+            // Store each method function pointer.
+            for (i, method_name) in method_names.iter().enumerate() {
+                let func_ref = ensure_func_ref_with_args(
+                    method_name, builder, translator, module, 1,
+                )?;
+                let fn_addr = builder.ins().func_addr(types::I64, func_ref);
+                builder.ins().stack_store(fn_addr, slot, 8 + 8 * i as i32);
+            }
+
+            // Return the address of the fat pointer.
+            let addr = builder.ins().stack_addr(types::I64, slot, 0);
+            Ok(Some(addr))
+        }
+
+        RValue::VtableCall { object, method_index, args } => {
+            // Dynamic dispatch: load data and method fn_ptr from the fat pointer.
+            let fat_ptr = translate_operand(object, builder, translator, module)?;
+
+            // Load the data pointer (offset 0).
+            let data_ptr = builder.ins().load(types::I64, MemFlags::trusted(), fat_ptr, 0);
+            // Load the method fn_ptr (offset 8 + 8 * method_index).
+            let fn_offset = 8 + 8 * (*method_index as i32);
+            let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), fat_ptr, fn_offset);
+
+            // Build argument list: data_ptr (self) + any extra args.
+            let mut sig = module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // self/data
+            for _ in args {
+                sig.params.push(AbiParam::new(types::I64));
+            }
+            sig.returns.push(AbiParam::new(types::I64)); // assume i64 return
+
+            let sig_ref = builder.import_signature(sig);
+            let mut call_args = vec![data_ptr];
+            for arg in args {
+                let a = translate_operand(arg, builder, translator, module)?;
+                call_args.push(a);
+            }
+
+            let call = builder.ins().call_indirect(sig_ref, fn_ptr, &call_args);
+            let result = builder.inst_results(call)[0];
+            Ok(Some(result))
         }
     }
 }
@@ -2063,6 +2251,7 @@ fn translate_terminator<M: Module>(
     match term {
         Terminator::Return(None) => {
             if builder.func.signature.returns.is_empty() {
+                emit_trace_exit(builder, translator, module)?;
                 builder.ins().return_(&[]);
             } else {
                 // Unreachable code path in a non-void function (e.g., dead
@@ -2093,6 +2282,7 @@ fn translate_terminator<M: Module>(
             } else {
                 val
             };
+            emit_trace_exit(builder, translator, module)?;
             builder.ins().return_(&[ret_val]);
         }
         Terminator::Goto(target) => {
@@ -2199,6 +2389,116 @@ fn ensure_func_ref_with_args<M: Module>(
     let func_ref = module.declare_func_in_func(func_id, builder.func);
     translator.func_refs.insert(name.to_string(), func_ref);
     Ok(func_ref)
+}
+
+/// Ensure a FuncRef for a void-return function with the given number of I64 params.
+/// Used for trace runtime functions that return nothing.
+fn ensure_func_ref_void<M: Module>(
+    name: &str,
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+    arg_count: usize,
+) -> Result<cranelift_codegen::ir::FuncRef, CodegenError> {
+    if let Some(func_ref) = translator.func_refs.get(name) {
+        return Ok(*func_ref);
+    }
+
+    let func_id = if let Some(id) = translator.func_ids.get(name) {
+        *id
+    } else {
+        let mut sig = Signature::new(module.isa().default_call_conv());
+        for _ in 0..arg_count {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        // No return value.
+        module.declare_function(name, Linkage::Import, &sig)?
+    };
+
+    let func_ref = module.declare_func_in_func(func_id, builder.func);
+    translator.func_refs.insert(name.to_string(), func_ref);
+    Ok(func_ref)
+}
+
+/// Emit a `kryos_trace_enter(name_ptr, name_len, file_ptr, file_len, line)` call.
+///
+/// Creates data sections for the function name and file name strings, then
+/// emits the call instruction. The `string_counter` is used to generate
+/// unique data section names.
+fn emit_trace_enter<M: Module>(
+    func_name: &str,
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+) -> Result<(), CodegenError> {
+    // Create a data section for the function name.
+    let name_data_name = format!(".trace_name.{}", translator.string_counter);
+    *translator.string_counter += 1;
+
+    let name_bytes = func_name.as_bytes();
+    let name_len = name_bytes.len();
+
+    let name_data_id = module
+        .declare_data(&name_data_name, Linkage::Local, false, false)
+        .map_err(CodegenError::Module)?;
+    let mut name_desc = DataDescription::new();
+    let mut name_buf = name_bytes.to_vec();
+    name_buf.push(0); // null terminator for safety
+    name_desc.define(name_buf.into_boxed_slice());
+    module
+        .define_data(name_data_id, &name_desc)
+        .map_err(CodegenError::Module)?;
+
+    let name_gv = module.declare_data_in_func(name_data_id, builder.func);
+    let name_ptr = builder.ins().global_value(types::I64, name_gv);
+    let name_len_val = builder.ins().iconst(types::I64, name_len as i64);
+
+    // For file name, use a placeholder since MirFunction doesn't carry source file info.
+    let file_str = "<unknown>";
+    let file_data_name = format!(".trace_file.{}", translator.string_counter);
+    *translator.string_counter += 1;
+
+    let file_bytes = file_str.as_bytes();
+    let file_len = file_bytes.len();
+
+    let file_data_id = module
+        .declare_data(&file_data_name, Linkage::Local, false, false)
+        .map_err(CodegenError::Module)?;
+    let mut file_desc = DataDescription::new();
+    let mut file_buf = file_bytes.to_vec();
+    file_buf.push(0);
+    file_desc.define(file_buf.into_boxed_slice());
+    module
+        .define_data(file_data_id, &file_desc)
+        .map_err(CodegenError::Module)?;
+
+    let file_gv = module.declare_data_in_func(file_data_id, builder.func);
+    let file_ptr = builder.ins().global_value(types::I64, file_gv);
+    let file_len_val = builder.ins().iconst(types::I64, file_len as i64);
+
+    // Line number: 0 for now (MirFunction doesn't have line info).
+    let line_val = builder.ins().iconst(types::I64, 0);
+
+    // Call kryos_trace_enter(name_ptr, name_len, file_ptr, file_len, line).
+    let trace_enter_ref =
+        ensure_func_ref_void("kryos_trace_enter", builder, translator, module, 5)?;
+    builder
+        .ins()
+        .call(trace_enter_ref, &[name_ptr, name_len_val, file_ptr, file_len_val, line_val]);
+
+    Ok(())
+}
+
+/// Emit a `kryos_trace_exit()` call before a return instruction.
+fn emit_trace_exit<M: Module>(
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+) -> Result<(), CodegenError> {
+    let trace_exit_ref =
+        ensure_func_ref_void("kryos_trace_exit", builder, translator, module, 0)?;
+    builder.ins().call(trace_exit_ref, &[]);
+    Ok(())
 }
 
 /// Like `ensure_func_ref_with_args`, but uses F64 for all params and returns.

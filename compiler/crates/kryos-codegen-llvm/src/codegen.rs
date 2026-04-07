@@ -370,6 +370,10 @@ impl LlvmCodegen {
                         self.prescan_operand(value);
                     }
                     Instruction::ActorStateLoad { .. } => {}
+                    Instruction::StoreDeref { ptr, value } => {
+                        self.prescan_operand(ptr);
+                        self.prescan_operand(value);
+                    }
                     Instruction::Drop { .. } | Instruction::Nop
                     | Instruction::Send { .. }
                     | Instruction::Receive { .. } => {}
@@ -448,7 +452,16 @@ impl LlvmCodegen {
                 if let Some(s) = start { self.prescan_operand(s); }
                 if let Some(e) = end { self.prescan_operand(e); }
             }
+            RValue::AddrOf { .. } => {}
+            RValue::Deref { operand } => self.prescan_operand(operand),
             RValue::Comptime(inner) => self.prescan_rvalue(inner),
+            RValue::MakeTraitObject { value, .. } => self.prescan_operand(value),
+            RValue::VtableCall { object, args, .. } => {
+                self.prescan_operand(object);
+                for arg in args {
+                    self.prescan_operand(arg);
+                }
+            }
             RValue::ConstInt(_)
             | RValue::ConstFloat(_)
             | RValue::ConstBool(_)
@@ -641,6 +654,16 @@ impl LlvmCodegen {
                 } else {
                     self.emit_line("  ; drop (no-op)");
                 }
+            }
+            Instruction::StoreDeref { ptr, value } => {
+                // Store through a reference/pointer.
+                let ptr_val = self.operand_to_llvm(ptr, func);
+                let ptr_ty = self.operand_type(ptr, func);
+                let val = self.operand_to_llvm(value, func);
+                let val_ty = self.operand_type(value, func);
+                let real_ptr = self.next_temp();
+                self.emit_line(&format!("  {real_ptr} = inttoptr {ptr_ty} {ptr_val} to ptr"));
+                self.emit_line(&format!("  store {val_ty} {val}, ptr {real_ptr}"));
             }
             Instruction::Nop => {}
             Instruction::Spawn { func: spawn_fn, args } => {
@@ -1370,9 +1393,79 @@ impl LlvmCodegen {
                 }
             }
 
+            RValue::AddrOf { local, mutable: _ } => {
+                // Take the address of a local.
+                // If the local is mutable (has an alloca), use its alloca address.
+                // Otherwise, create a temp alloca, store the value, return address.
+                if self.mutable_locals.contains(&local.0) {
+                    // The alloca already exists as %_N.addr — return its pointer.
+                    let addr_tmp = self.next_temp();
+                    self.emit_line(&format!("  {addr_tmp} = ptrtoint ptr %_{}.addr to i64", local.0));
+                    if is_mutable {
+                        self.emit_line(&format!("  store i64 {addr_tmp}, ptr %_{}.addr", dest.0));
+                    } else {
+                        self.emit_line(&format!("  %_{} = add i64 {addr_tmp}, 0", dest.0));
+                    }
+                } else {
+                    // Create a temporary alloca for the value.
+                    let local_ty = self.local_types.get(&local.0).cloned().unwrap_or_else(|| "i64".to_string());
+                    let alloca_tmp = self.next_temp();
+                    self.emit_line(&format!("  {alloca_tmp} = alloca {local_ty}"));
+                    self.emit_line(&format!("  store {local_ty} %_{}, ptr {alloca_tmp}", local.0));
+                    let addr_tmp = self.next_temp();
+                    self.emit_line(&format!("  {addr_tmp} = ptrtoint ptr {alloca_tmp} to i64"));
+                    if is_mutable {
+                        self.emit_line(&format!("  store i64 {addr_tmp}, ptr %_{}.addr", dest.0));
+                    } else {
+                        self.emit_line(&format!("  %_{} = add i64 {addr_tmp}, 0", dest.0));
+                    }
+                }
+            }
+
+            RValue::Deref { operand } => {
+                // Load from a reference/pointer.
+                let ptr_val = self.operand_to_llvm(operand, func);
+                let ptr_ty = self.operand_type(operand, func);
+                let int_to_ptr = self.next_temp();
+                self.emit_line(&format!("  {int_to_ptr} = inttoptr {ptr_ty} {ptr_val} to ptr"));
+                let load_tmp = self.next_temp();
+                self.emit_line(&format!("  {load_tmp} = load {dest_ty}, ptr {int_to_ptr}"));
+                if is_mutable {
+                    self.emit_line(&format!("  store {dest_ty} {load_tmp}, ptr %_{}.addr", dest.0));
+                } else {
+                    self.emit_line(&format!("  %_{} = add {dest_ty} {load_tmp}, 0", dest.0));
+                }
+            }
+
             RValue::Comptime(inner) => {
                 // Comptime: lower the inner RValue directly (const-eval at MIR level).
                 self.emit_assign(dest, inner, func)?;
+            }
+
+            RValue::MakeTraitObject { value, .. } => {
+                // LLVM release mode: create fat pointer. For now, pass data through directly.
+                // Full vtable codegen for LLVM deferred to Ring 3.
+                let data_val = self.operand_to_llvm(value, func);
+                if is_mutable {
+                    self.emit_line(&format!("  store i64 {data_val}, ptr %_{}.addr", dest.0));
+                } else {
+                    self.emit_line(&format!("  %_{} = add i64 {data_val}, 0", dest.0));
+                }
+            }
+
+            RValue::VtableCall { object, method_index: _, args } => {
+                // LLVM release mode: for now, emit a placeholder.
+                // Full vtable dispatch for LLVM deferred to Ring 3.
+                let obj_val = self.operand_to_llvm(object, func);
+                let _ = obj_val;
+                for arg in args {
+                    let _ = self.operand_to_llvm(arg, func);
+                }
+                if is_mutable {
+                    self.emit_line(&format!("  store i64 0, ptr %_{}.addr", dest.0));
+                } else {
+                    self.emit_line(&format!("  %_{} = add i64 0, 0", dest.0));
+                }
             }
 
             RValue::StringConcat(parts) => {
@@ -2038,6 +2131,10 @@ pub fn mir_type_to_llvm(ty: &MirType) -> String {
             // Function types in LLVM IR: ret_ty (param_tys)
             // But in most contexts we use `ptr` for function pointers.
             "ptr".into()
+        }
+        MirType::DynTrait(_) => {
+            // Fat pointer: (data_ptr, vtable_ptr) — represented as i64.
+            "i64".into()
         }
     }
 }

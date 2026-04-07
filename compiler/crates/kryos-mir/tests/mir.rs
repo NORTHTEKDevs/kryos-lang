@@ -243,6 +243,7 @@ fn for_loop_desugars() {
         vec![],
         None,
         block(vec![Stmt::For {
+            parallel: false,
             pattern: Pattern::Ident {
                 name: "item".to_string(),
                 mutable: false,
@@ -2076,9 +2077,11 @@ fn comptime_folds_int_addition() {
                 }],
                 terminator: Terminator::Return(Some(Operand::Local(LocalId(0)))),
             }],
+            attributes: MirAttributes::default(),
         }],
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
+        trait_vtables: HashMap::new(),
     };
 
     run_comptime_pass(&mut module);
@@ -2124,9 +2127,11 @@ fn comptime_non_const_unwraps() {
                 }],
                 terminator: Terminator::Return(Some(Operand::Local(LocalId(0)))),
             }],
+            attributes: MirAttributes::default(),
         }],
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
+        trait_vtables: HashMap::new(),
     };
 
     run_comptime_pass(&mut module);
@@ -2175,9 +2180,11 @@ fn comptime_folds_bool_logic() {
                 }],
                 terminator: Terminator::Return(Some(Operand::Local(LocalId(0)))),
             }],
+            attributes: MirAttributes::default(),
         }],
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
+        trait_vtables: HashMap::new(),
     };
 
     run_comptime_pass(&mut module);
@@ -2224,9 +2231,11 @@ fn comptime_folds_unary_neg() {
                 }],
                 terminator: Terminator::Return(Some(Operand::Local(LocalId(0)))),
             }],
+            attributes: MirAttributes::default(),
         }],
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
+        trait_vtables: HashMap::new(),
     };
 
     run_comptime_pass(&mut module);
@@ -2274,9 +2283,11 @@ fn comptime_folds_float_mul() {
                 }],
                 terminator: Terminator::Return(Some(Operand::Local(LocalId(0)))),
             }],
+            attributes: MirAttributes::default(),
         }],
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
+        trait_vtables: HashMap::new(),
     };
 
     run_comptime_pass(&mut module);
@@ -2446,4 +2457,88 @@ fn actor_method_call_generates_actor_send() {
         })
     });
     assert!(has_send, "main must have ActorSend with tag=1 and 1 arg");
+}
+
+// ---------------------------------------------------------------------------
+// Parallel for generates Spawn instructions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parallel_for_generates_spawns() {
+    // parallel for i in range(0, 100) { i }
+    let module = make_module(vec![make_fn(
+        "par_work",
+        vec![],
+        None,
+        block(vec![Stmt::For {
+            parallel: true,
+            pattern: Pattern::Ident {
+                name: "i".to_string(),
+                mutable: false,
+                span: S,
+            },
+            iterable: ast::Expr::FnCall {
+                callee: Box::new(ident("range")),
+                args: vec![int_lit(0), int_lit(100)],
+                span: S,
+            },
+            body: block(vec![expr_stmt(ident("i"))]),
+            span: S,
+        }]),
+    )]);
+
+    let mir = lower_module(&module);
+
+    // The main function should contain Spawn instructions (4 chunks).
+    let main_fn = &mir.functions[0];
+    let spawn_count = main_fn.blocks.iter().flat_map(|b| &b.instructions).filter(|i| {
+        matches!(i, Instruction::Spawn { .. })
+    }).count();
+    assert_eq!(spawn_count, 4, "parallel for should emit 4 Spawn instructions, got {spawn_count}");
+
+    // There should be generated __spawn_N wrapper functions.
+    let spawn_fns: Vec<_> = mir.functions.iter()
+        .filter(|f| f.name.starts_with("__spawn_"))
+        .collect();
+    assert_eq!(spawn_fns.len(), 4, "should generate 4 spawn wrapper functions, got {}", spawn_fns.len());
+}
+
+#[test]
+fn parallel_for_non_range_falls_back() {
+    // parallel for item in collection { item }
+    // Non-range iterable should fall back to sequential for-loop (no spawns).
+    let module = make_module(vec![make_fn(
+        "par_fallback",
+        vec![],
+        None,
+        block(vec![Stmt::For {
+            parallel: true,
+            pattern: Pattern::Ident {
+                name: "item".to_string(),
+                mutable: false,
+                span: S,
+            },
+            iterable: ident("collection"),
+            body: block(vec![expr_stmt(ident("item"))]),
+            span: S,
+        }]),
+    )]);
+
+    let mir = lower_module(&module);
+    let main_fn = &mir.functions[0];
+
+    // No Spawn instructions — should be a regular for-loop.
+    let spawn_count = main_fn.blocks.iter().flat_map(|b| &b.instructions).filter(|i| {
+        matches!(i, Instruction::Spawn { .. })
+    }).count();
+    assert_eq!(spawn_count, 0, "non-range parallel for should NOT emit spawns, got {spawn_count}");
+
+    // Should have a Call to "len" (normal for-loop desugaring).
+    let has_len_call = main_fn.blocks.iter().any(|bb| {
+        bb.instructions.iter().any(|inst| match inst {
+            Instruction::Assign { value: RValue::Call { func, .. }, .. } => func == "len",
+            _ => false,
+        })
+    });
+    assert!(has_len_call, "fallback should emit len() call like regular for");
 }

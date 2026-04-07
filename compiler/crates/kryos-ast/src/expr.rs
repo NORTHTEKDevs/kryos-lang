@@ -82,6 +82,11 @@ pub enum Expr {
 
     PipeExpr { left: Box<Expr>, right: Box<Expr>, span: Span },
 
+    /// Borrow expression: `&x` (immutable) or `&mut x` (mutable).
+    Borrow { inner: Box<Expr>, mutable: bool, span: Span },
+    /// Dereference expression: `*x`.
+    Deref { inner: Box<Expr>, span: Span },
+
     SharedExpr { inner: Box<Expr>, span: Span },
     MoveExpr { inner: Box<Expr>, span: Span },
     WeakExpr { inner: Box<Expr>, span: Span },
@@ -107,7 +112,9 @@ impl Expr {
             Self::MapLiteral { span, .. } | Self::StructLiteral { span, .. } |
             Self::Lambda { span, .. } | Self::IfExpr { span, .. } |
             Self::MatchExpr { span, .. } | Self::RangeExpr { span, .. } |
-            Self::PipeExpr { span, .. } | Self::SharedExpr { span, .. } |
+            Self::PipeExpr { span, .. } |
+            Self::Borrow { span, .. } | Self::Deref { span, .. } |
+            Self::SharedExpr { span, .. } |
             Self::MoveExpr { span, .. } | Self::WeakExpr { span, .. } |
             Self::ComptimeBlock { span, .. } | Self::QuantumBlock { span, .. } |
             Self::Cast { span, .. } | Self::Block { span, .. } => *span,

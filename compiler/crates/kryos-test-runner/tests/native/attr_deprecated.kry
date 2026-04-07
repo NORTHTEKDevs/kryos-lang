@@ -1,0 +1,13 @@
+// expect-exit: 42
+// Tests that @deprecated functions still compile and run.
+// The compiler should emit a warning but not an error.
+
+@deprecated
+fn old_add(a: i64, b: i64) -> i64 {
+    return a + b
+}
+
+fn main() -> i64 {
+    let result = old_add(20, 22)
+    return result
+}

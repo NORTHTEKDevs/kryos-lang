@@ -750,6 +750,138 @@ fn resolve_module_multi_segment() {
 }
 
 // ---------------------------------------------------------------------------
+// Stdlib resolution tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn resolve_std_module_to_stdlib_dir() {
+    // Verify that `use std::math` resolves to stdlib/math.kry via
+    // CARGO_MANIFEST_DIR walk-up (the default path for the compiled driver).
+    let dir = std::env::temp_dir().join("kryos_resolve_std_tests");
+    fs::create_dir_all(&dir).unwrap();
+
+    let main_path = dir.join("main.kry");
+    fs::write(&main_path, "use std::math\nfn main() { let pi = 3.14 }\n").unwrap();
+
+    let result = kryos_driver::resolve::resolve_module_path(
+        &["std".to_string(), "math".to_string()],
+        &main_path,
+    );
+    assert!(result.is_ok(), "expected std::math to resolve to stdlib/math.kry, got: {:?}", result.err());
+    let resolved = result.unwrap();
+    assert!(resolved.to_string_lossy().contains("stdlib"),
+        "expected resolved path to be under stdlib/, got: {}", resolved.display());
+    assert!(resolved.to_string_lossy().ends_with("math.kry"),
+        "expected resolved path to end with math.kry, got: {}", resolved.display());
+}
+
+#[test]
+fn resolve_std_string_to_stdlib_dir() {
+    // Verify that `use std::string` also resolves to stdlib/string.kry.
+    let dir = std::env::temp_dir().join("kryos_resolve_std_string_test");
+    fs::create_dir_all(&dir).unwrap();
+
+    let main_path = dir.join("main.kry");
+    fs::write(&main_path, "fn main() {}\n").unwrap();
+
+    let result = kryos_driver::resolve::resolve_module_path(
+        &["std".to_string(), "string".to_string()],
+        &main_path,
+    );
+    assert!(result.is_ok(), "expected std::string to resolve, got: {:?}", result.err());
+    let resolved = result.unwrap();
+    assert!(resolved.to_string_lossy().contains("stdlib"),
+        "expected path under stdlib/, got: {}", resolved.display());
+    assert!(resolved.to_string_lossy().ends_with("string.kry"),
+        "expected path to end with string.kry, got: {}", resolved.display());
+}
+
+#[test]
+fn resolve_std_nonexistent_fails() {
+    // Verify that `use std::nonexistent` fails since there's no such stdlib module.
+    let dir = std::env::temp_dir().join("kryos_resolve_std_nonexistent");
+    fs::create_dir_all(&dir).unwrap();
+
+    let main_path = dir.join("main.kry");
+    fs::write(&main_path, "fn main() {}\n").unwrap();
+
+    let result = kryos_driver::resolve::resolve_module_path(
+        &["std".to_string(), "nonexistent_module".to_string()],
+        &main_path,
+    );
+    assert!(result.is_err(), "expected std::nonexistent_module to fail");
+}
+
+#[test]
+fn compile_file_with_std_import() {
+    // End-to-end test: compile a file that uses `use std::mymod` where mymod
+    // is a simple module in a local stdlib/ directory.
+    //
+    // We place the main file inside the compiler tree so the CARGO_MANIFEST_DIR
+    // walk-up finds the real stdlib/, and we temporarily create a simple test
+    // module there. The module is created and removed within this test.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let mut stdlib_dir = PathBuf::from(manifest_dir);
+    loop {
+        let candidate = stdlib_dir.join("stdlib");
+        if candidate.is_dir() {
+            stdlib_dir = candidate;
+            break;
+        }
+        assert!(stdlib_dir.pop(), "could not find stdlib/ from CARGO_MANIFEST_DIR");
+    }
+
+    // Use a unique name to avoid conflicts with other tests.
+    let test_mod_name = "_driver_test_std_import";
+    let test_module_path = stdlib_dir.join(format!("{test_mod_name}.kry"));
+    let mymod_src = "fn helper(x: i32) -> i32 {\n    return x + 1\n}\n";
+    fs::write(&test_module_path, mymod_src).unwrap();
+
+    let dir = std::env::temp_dir().join("kryos_std_import_e2e");
+    fs::create_dir_all(&dir).unwrap();
+
+    let main_src = format!("use std::{test_mod_name}\n\nfn main() {{\n    let result = helper(41)\n}}\n");
+    let main_path = dir.join("main.kry");
+    fs::write(&main_path, &main_src).unwrap();
+
+    let config = BuildConfig {
+        input: main_path.to_string_lossy().to_string(),
+        output: None,
+        mode: BuildMode::Debug,
+        output_type: OutputType::Mir,
+        target: None,
+        capabilities: Vec::new(),
+        verbose: false,
+    };
+
+    let result = compile_file(&main_path, &config);
+
+    // Clean up the temporary test module from stdlib/.
+    let _ = fs::remove_file(&test_module_path);
+
+    assert!(
+        result.success,
+        "expected std:: import to succeed, but got errors: {:?}",
+        result.diagnostics
+    );
+    assert_eq!(
+        result.error_count(),
+        0,
+        "expected no errors, got: {:?}",
+        result.errors()
+    );
+    assert!(result.mir.is_some(), "expected MIR to be produced");
+
+    // The MIR should contain functions from the stdlib module and main.
+    let mir = result.mir.unwrap();
+    let func_names: Vec<&str> = mir.functions.iter().map(|f| f.name.as_str()).collect();
+    assert!(func_names.contains(&"helper"),
+        "expected 'helper' from std:: import in merged MIR, got: {func_names:?}");
+    assert!(func_names.contains(&"main"),
+        "expected 'main' in merged MIR, got: {func_names:?}");
+}
+
+// ---------------------------------------------------------------------------
 // Version
 // ---------------------------------------------------------------------------
 

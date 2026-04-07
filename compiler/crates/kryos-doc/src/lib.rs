@@ -121,6 +121,7 @@ fn render_type_expr(ty: &TypeExpr) -> String {
                 format!("*{}", render_type_expr(inner))
             }
         }
+        TypeExpr::DynTrait { trait_name, .. } => format!("dyn {trait_name}"),
         TypeExpr::Inferred { .. } => "_".to_string(),
     }
 }

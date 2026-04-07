@@ -1,0 +1,7 @@
+// run-expect: 42
+fn main() {
+    let x = 40
+    let mut y = 1
+    y = y + 1
+    println(to_string(x + y))
+}

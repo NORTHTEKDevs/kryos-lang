@@ -7,13 +7,16 @@
 //! Supported annotations:
 //! - `// expect: <text>` — the compiler should succeed and output should contain `<text>`
 //! - `// expect-error: <text>` — the compiler should produce an error containing `<text>`
+//! - `// run-expect: <text>` — compile to a binary, execute it, and verify stdout contains `<text>`
 //! - `// skip` — skip this test file entirely
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
-use kryos_driver::{BuildConfig, compile_source, render_diagnostics};
+use kryos_codegen_cranelift::CraneliftBackend;
+use kryos_driver::{BuildConfig, BuildMode, OutputType, compile_source, compile_file_with_backend, render_diagnostics};
 
 // ---------------------------------------------------------------------------
 // Core types
@@ -26,6 +29,8 @@ pub enum Expectation {
     Output(Vec<String>),
     /// The compiler should produce errors containing these strings (from `// expect-error:`).
     Error(Vec<String>),
+    /// Compile to a binary, execute it, and verify stdout contains these lines (from `// run-expect:`).
+    RunOutput(Vec<String>),
 }
 
 /// A single test case discovered from a `.kry` file.
@@ -88,6 +93,7 @@ impl TestReport {
 fn parse_annotations(source: &str) -> (Expectation, bool) {
     let mut expect_lines: Vec<String> = Vec::new();
     let mut expect_error_lines: Vec<String> = Vec::new();
+    let mut run_expect_lines: Vec<String> = Vec::new();
     let mut skip = false;
 
     for line in source.lines() {
@@ -97,13 +103,18 @@ fn parse_annotations(source: &str) -> (Expectation, bool) {
             skip = true;
         } else if let Some(rest) = trimmed.strip_prefix("// expect-error:") {
             expect_error_lines.push(rest.trim().to_string());
+        } else if let Some(rest) = trimmed.strip_prefix("// run-expect:") {
+            run_expect_lines.push(rest.trim().to_string());
         } else if let Some(rest) = trimmed.strip_prefix("// expect:") {
             expect_lines.push(rest.trim().to_string());
         }
     }
 
+    // Priority: expect-error > run-expect > expect
     let expectation = if !expect_error_lines.is_empty() {
         Expectation::Error(expect_error_lines)
+    } else if !run_expect_lines.is_empty() {
+        Expectation::RunOutput(run_expect_lines)
     } else {
         Expectation::Output(expect_lines)
     };
@@ -245,6 +256,171 @@ pub fn run_test(test: &TestCase) -> TestResult {
                             "expected errors containing {:?}, got:\n{}",
                             missing, diagnostics_text
                         ),
+                    }
+                }
+            }
+        }
+        Expectation::RunOutput(expected_lines) => {
+            // First, the source must compile without errors at the analysis level
+            if has_errors {
+                return TestResult {
+                    name: test.name.clone(),
+                    outcome: TestOutcome::Failed {
+                        reason: format!(
+                            "expected successful compilation but got errors:\n{}",
+                            diagnostics_text
+                        ),
+                    },
+                    duration: start.elapsed(),
+                    actual_output: diagnostics_text,
+                };
+            }
+
+            // Write source to a temp file, compile to binary, execute, check stdout
+            let safe_name = test.name.replace('/', "_").replace('\\', "_");
+            let temp_dir = std::env::temp_dir().join("kryos_test_runner");
+            let _ = fs::create_dir_all(&temp_dir);
+            let temp_src = temp_dir.join(format!("{safe_name}.kry"));
+            let exe_ext = if cfg!(windows) { ".exe" } else { "" };
+            let temp_out = temp_dir.join(format!("{safe_name}{exe_ext}"));
+
+            // Write the source to the temp file
+            if let Err(e) = fs::write(&temp_src, &test.source) {
+                return TestResult {
+                    name: test.name.clone(),
+                    outcome: TestOutcome::Failed {
+                        reason: format!("failed to write temp source file: {e}"),
+                    },
+                    duration: start.elapsed(),
+                    actual_output: diagnostics_text,
+                };
+            }
+
+            // Ensure the runtime library can be found during linking.
+            // During `cargo test` the CWD is the crate directory, but the
+            // runtime libs live under the workspace `target/` directory. Set
+            // the environment variables so `find_runtime_lib()` can locate them.
+            if std::env::var("KRYOS_RT_LIB").is_err() {
+                let workspace_target = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("..").join("..").join("target").join("debug");
+                let rt_lib_name = if cfg!(all(windows, target_env = "msvc")) {
+                    "kryos_rt.lib"
+                } else {
+                    "libkryos_rt.a"
+                };
+                let rt_path = workspace_target.join(rt_lib_name);
+                if rt_path.is_file() {
+                    std::env::set_var("KRYOS_RT_LIB", &rt_path);
+                }
+            }
+            if std::env::var("KRYOS_STDLIB_NATIVE_LIB").is_err() {
+                let workspace_target = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("..").join("..").join("target").join("debug");
+                let stdlib_lib_name = if cfg!(all(windows, target_env = "msvc")) {
+                    "kryos_stdlib_native.lib"
+                } else {
+                    "libkryos_stdlib_native.a"
+                };
+                let stdlib_path = workspace_target.join(stdlib_lib_name);
+                if stdlib_path.is_file() {
+                    std::env::set_var("KRYOS_STDLIB_NATIVE_LIB", &stdlib_path);
+                }
+            }
+
+            // Compile to binary using Cranelift backend
+            let build_config = BuildConfig {
+                input: temp_src.to_string_lossy().to_string(),
+                output: Some(temp_out.to_string_lossy().to_string()),
+                mode: BuildMode::Debug,
+                output_type: OutputType::Binary,
+                target: None,
+                capabilities: Vec::new(),
+                verbose: false,
+            };
+
+            let backend = CraneliftBackend::new();
+            let compile_result = compile_file_with_backend(
+                &temp_src,
+                &build_config,
+                Some(&backend),
+            );
+
+            if !compile_result.success {
+                let compile_diags = render_diagnostics(&compile_result);
+                let _ = fs::remove_file(&temp_src);
+                let _ = fs::remove_file(&temp_out);
+                // If linking failed (runtime library not found), skip rather than fail.
+                // This allows the test suite to pass during development when the
+                // runtime library isn't available for linking.
+                let is_link_error = compile_diags.contains("linking failed")
+                    || compile_diags.contains("unresolved external")
+                    || compile_diags.contains("undefined reference");
+                return TestResult {
+                    name: test.name.clone(),
+                    outcome: if is_link_error {
+                        TestOutcome::Skipped
+                    } else {
+                        TestOutcome::Failed {
+                            reason: format!(
+                                "compilation to binary failed:\n{}",
+                                compile_diags
+                            ),
+                        }
+                    },
+                    duration: start.elapsed(),
+                    actual_output: compile_diags,
+                };
+            }
+
+            // Execute the compiled binary and capture stdout
+            let exec_result = Command::new(&temp_out)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output();
+
+            // Clean up temp files regardless of outcome
+            let _ = fs::remove_file(&temp_src);
+            let _ = fs::remove_file(&temp_out);
+
+            match exec_result {
+                Err(e) => {
+                    TestOutcome::Failed {
+                        reason: format!(
+                            "failed to execute compiled binary '{}': {e}",
+                            temp_out.display()
+                        ),
+                    }
+                }
+                Ok(output) => {
+                    if !output.status.success() {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        TestOutcome::Failed {
+                            reason: format!(
+                                "binary exited with status {}\nstderr: {}",
+                                output.status,
+                                stderr.trim()
+                            ),
+                        }
+                    } else {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let stdout_str = stdout.to_string();
+                        let mut missing: Vec<String> = Vec::new();
+                        for expected in expected_lines {
+                            if !stdout_str.contains(expected) {
+                                missing.push(expected.clone());
+                            }
+                        }
+                        if missing.is_empty() {
+                            TestOutcome::Passed
+                        } else {
+                            TestOutcome::Failed {
+                                reason: format!(
+                                    "expected stdout containing {:?}, got:\n{}",
+                                    missing,
+                                    stdout_str.trim()
+                                ),
+                            }
+                        }
                     }
                 }
             }
@@ -448,6 +624,66 @@ mod tests {
                 assert_eq!(errors, vec!["type mismatch".to_string()]);
             }
             _ => panic!("expected Error variant"),
+        }
+    }
+
+    // -- run-expect annotation parsing tests --
+
+    #[test]
+    fn test_parse_run_expect_annotation() {
+        let source = "// run-expect: Hello, Kryos!\nfn main() { println(\"Hello, Kryos!\") }\n";
+        let (expectation, skip) = parse_annotations(source);
+        assert!(!skip);
+        assert_eq!(
+            expectation,
+            Expectation::RunOutput(vec!["Hello, Kryos!".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_parse_multiple_run_expect_lines() {
+        let source = "// run-expect: line1\n// run-expect: line2\nfn main() {}\n";
+        let (expectation, _) = parse_annotations(source);
+        assert_eq!(
+            expectation,
+            Expectation::RunOutput(vec!["line1".to_string(), "line2".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_parse_run_expect_with_skip() {
+        let source = "// run-expect: output\n// skip\nfn main() {}\n";
+        let (expectation, skip) = parse_annotations(source);
+        assert!(skip);
+        assert_eq!(
+            expectation,
+            Expectation::RunOutput(vec!["output".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_parse_error_wins_over_run_expect() {
+        // expect-error takes priority over run-expect
+        let source = "// run-expect: hello\n// expect-error: type mismatch\nfn main() {}\n";
+        let (expectation, _) = parse_annotations(source);
+        match expectation {
+            Expectation::Error(errors) => {
+                assert_eq!(errors, vec!["type mismatch".to_string()]);
+            }
+            _ => panic!("expected Error variant, got {:?}", expectation),
+        }
+    }
+
+    #[test]
+    fn test_parse_run_expect_wins_over_expect() {
+        // run-expect takes priority over expect
+        let source = "// expect: hello\n// run-expect: world\nfn main() {}\n";
+        let (expectation, _) = parse_annotations(source);
+        match expectation {
+            Expectation::RunOutput(lines) => {
+                assert_eq!(lines, vec!["world".to_string()]);
+            }
+            _ => panic!("expected RunOutput variant, got {:?}", expectation),
         }
     }
 

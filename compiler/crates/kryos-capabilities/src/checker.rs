@@ -389,7 +389,9 @@ impl CapabilityChecker {
                 self.check_expr(left);
                 self.check_expr(right);
             }
-            Expr::SharedExpr { inner, .. }
+            Expr::Borrow { inner, .. }
+            | Expr::Deref { inner, .. }
+            | Expr::SharedExpr { inner, .. }
             | Expr::MoveExpr { inner, .. }
             | Expr::WeakExpr { inner, .. } => {
                 self.check_expr(inner);

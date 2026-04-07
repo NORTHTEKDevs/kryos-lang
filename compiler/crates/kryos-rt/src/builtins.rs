@@ -300,6 +300,242 @@ pub extern "C" fn kryos_actor_unlock_i64(actor_id: i64) -> i64 {
     crate::actor::kryos_actor_unlock(actor_id as u64) as i64
 }
 
+// ---------------------------------------------------------------------------
+// Ergonomic builtins — high-level operations on KryosString handles
+// ---------------------------------------------------------------------------
+
+/// Read an entire file to a KryosString.
+/// `path_handle` is a KryosString handle containing the file path.
+/// Returns a KryosString handle with the file contents, or an empty string on error.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_file_read(path_handle: i64) -> i64 {
+    let contents = if path_handle == 0 {
+        String::new()
+    } else {
+        let ks = path_handle as *const crate::string::KryosString;
+        let path_str = unsafe {
+            let len = (*ks).len as usize;
+            let data = (*ks).data;
+            if data.is_null() || len == 0 {
+                ""
+            } else {
+                let slice = std::slice::from_raw_parts(data, len);
+                std::str::from_utf8(slice).unwrap_or("")
+            }
+        };
+        std::fs::read_to_string(path_str).unwrap_or_default()
+    };
+    let bytes = contents.as_bytes();
+    unsafe { kryos_string_new(bytes.as_ptr(), bytes.len() as i64) as i64 }
+}
+
+/// Write a string to a file.
+/// `path_handle` is a KryosString handle containing the file path.
+/// `content_handle` is a KryosString handle containing the data to write.
+/// Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_file_write(path_handle: i64, content_handle: i64) -> i64 {
+    if path_handle == 0 {
+        return -1;
+    }
+    let ks_path = path_handle as *const crate::string::KryosString;
+    let path_str = unsafe {
+        let len = (*ks_path).len as usize;
+        let data = (*ks_path).data;
+        if data.is_null() || len == 0 {
+            return -1;
+        }
+        let slice = std::slice::from_raw_parts(data, len);
+        match std::str::from_utf8(slice) {
+            Ok(s) => s,
+            Err(_) => return -1,
+        }
+    };
+    let content = if content_handle == 0 {
+        &[] as &[u8]
+    } else {
+        let ks_content = content_handle as *const crate::string::KryosString;
+        unsafe {
+            let len = (*ks_content).len as usize;
+            let data = (*ks_content).data;
+            if data.is_null() || len == 0 {
+                &[] as &[u8]
+            } else {
+                std::slice::from_raw_parts(data, len)
+            }
+        }
+    };
+    match std::fs::write(path_str, content) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
+}
+
+/// Get an environment variable as a KryosString.
+/// `key_handle` is a KryosString handle containing the variable name.
+/// Returns a KryosString handle with the value, or an empty string if not found.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_env_get(key_handle: i64) -> i64 {
+    let value = if key_handle == 0 {
+        String::new()
+    } else {
+        let ks = key_handle as *const crate::string::KryosString;
+        let key_str = unsafe {
+            let len = (*ks).len as usize;
+            let data = (*ks).data;
+            if data.is_null() || len == 0 {
+                ""
+            } else {
+                let slice = std::slice::from_raw_parts(data, len);
+                std::str::from_utf8(slice).unwrap_or("")
+            }
+        };
+        std::env::var(key_str).unwrap_or_default()
+    };
+    let bytes = value.as_bytes();
+    unsafe { kryos_string_new(bytes.as_ptr(), bytes.len() as i64) as i64 }
+}
+
+/// Return the current Unix timestamp in seconds.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_time_now() -> i64 {
+    match std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH) {
+        Ok(d) => d.as_secs() as i64,
+        Err(_) => -1,
+    }
+}
+
+/// Assert that `condition` is non-zero (truthy). If it is zero, print
+/// "assertion failed: <msg>" to stderr and abort the process.
+/// `msg_handle` is a KryosString handle. Returns 0 (ignored).
+#[no_mangle]
+pub extern "C" fn kryos_builtin_assert(condition: i64, msg_handle: i64) -> i64 {
+    if condition != 0 {
+        return 0;
+    }
+    let msg = if msg_handle == 0 {
+        "<no message>".to_string()
+    } else {
+        let ks = msg_handle as *const crate::string::KryosString;
+        unsafe {
+            let len = (*ks).len as usize;
+            let data = (*ks).data;
+            if data.is_null() || len == 0 {
+                "<no message>".to_string()
+            } else {
+                let slice = std::slice::from_raw_parts(data, len);
+                std::str::from_utf8(slice)
+                    .unwrap_or("<invalid utf-8>")
+                    .to_string()
+            }
+        }
+    };
+    eprintln!("assertion failed: {}", msg);
+    std::process::abort();
+}
+
+/// Parse a KryosString as an integer. Returns the parsed value, or 0 on failure.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_parse_int(s_handle: i64) -> i64 {
+    if s_handle == 0 {
+        return 0;
+    }
+    let ks = s_handle as *const crate::string::KryosString;
+    let text = unsafe {
+        let len = (*ks).len as usize;
+        let data = (*ks).data;
+        if data.is_null() || len == 0 {
+            return 0;
+        }
+        let slice = std::slice::from_raw_parts(data, len);
+        match std::str::from_utf8(slice) {
+            Ok(s) => s,
+            Err(_) => return 0,
+        }
+    };
+    text.trim().parse::<i64>().unwrap_or(0)
+}
+
+/// Parse a KryosString as an f64, returning the bits as i64. Returns 0 on failure.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_parse_float(s_handle: i64) -> i64 {
+    if s_handle == 0 {
+        return 0;
+    }
+    let ks = s_handle as *const crate::string::KryosString;
+    let text = unsafe {
+        let len = (*ks).len as usize;
+        let data = (*ks).data;
+        if data.is_null() || len == 0 {
+            return 0;
+        }
+        let slice = std::slice::from_raw_parts(data, len);
+        match std::str::from_utf8(slice) {
+            Ok(s) => s,
+            Err(_) => return 0,
+        }
+    };
+    match text.trim().parse::<f64>() {
+        Ok(v) => v.to_bits() as i64,
+        Err(_) => 0,
+    }
+}
+
+/// Return the type name of a value. Since everything is i64 at runtime,
+/// this always returns "i64".
+#[no_mangle]
+pub extern "C" fn kryos_builtin_type_of(_value: i64) -> i64 {
+    let s = b"i64";
+    unsafe { kryos_string_new(s.as_ptr(), s.len() as i64) as i64 }
+}
+
+// ---------------------------------------------------------------------------
+// ARC runtime wrappers — i64-based API for codegen simplicity
+// ---------------------------------------------------------------------------
+
+/// Allocate an ARC-managed object. `size` is the payload size in bytes.
+/// Uses default alignment (8 bytes, matching i64). Returns user-data pointer as i64.
+#[no_mangle]
+pub extern "C" fn kryos_arc_alloc_i64(size: i64) -> i64 {
+    crate::arc::kryos_arc_alloc(size as usize, 8) as i64
+}
+
+/// Increment the reference count of an ARC-managed object.
+/// `ptr` is the user-data pointer (as i64) returned by `kryos_arc_alloc_i64`.
+#[no_mangle]
+pub extern "C" fn kryos_arc_retain_i64(ptr: i64) {
+    crate::arc::kryos_arc_retain(ptr as *mut u8);
+}
+
+/// Decrement the reference count of an ARC-managed object.
+/// When count reaches zero, calls the drop function and deallocates.
+#[no_mangle]
+pub extern "C" fn kryos_arc_release_i64(ptr: i64) {
+    crate::arc::kryos_arc_release(ptr as *mut u8);
+}
+
+// ---------------------------------------------------------------------------
+// Runtime checks — division by zero
+// ---------------------------------------------------------------------------
+
+/// Check for integer division by zero at runtime.
+/// Called by codegen before `sdiv` and `srem` instructions.
+/// If the divisor is zero, prints a panic message and aborts.
+#[no_mangle]
+pub extern "C" fn kryos_check_div_zero_i64(divisor: i64) {
+    if divisor == 0 {
+        eprintln!("kryos panic: integer division by zero");
+        std::process::abort();
+    }
+}
+
+/// Check for float division by zero — intentional no-op.
+/// IEEE 754 float division by zero produces inf/nan, which is expected behavior.
+#[no_mangle]
+pub extern "C" fn kryos_check_div_zero_f64(_divisor: f64) {
+    // No-op: float division by zero produces inf/nan per IEEE 754.
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

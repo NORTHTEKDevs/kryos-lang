@@ -399,6 +399,44 @@ fn test_for_loop() {
     }
 }
 
+// ======================== Parallel for loop ========================
+
+#[test]
+fn test_parallel_for_loop() {
+    let m = parse_ok("fn f() { parallel for i in range(0, 100) { i } }");
+    match &m.declarations[0] {
+        Decl::Function { body: Some(block), .. } => {
+            match &block.stmts[0] {
+                Stmt::For { parallel, pattern, .. } => {
+                    assert!(*parallel, "expected parallel: true");
+                    match pattern {
+                        Pattern::Ident { name, .. } => assert_eq!(name, "i"),
+                        other => panic!("expected Ident pattern, got {:?}", other),
+                    }
+                }
+                other => panic!("expected For, got {:?}", other),
+            }
+        }
+        other => panic!("expected Function, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_regular_for_is_not_parallel() {
+    let m = parse_ok("fn f() { for x in items { x } }");
+    match &m.declarations[0] {
+        Decl::Function { body: Some(block), .. } => {
+            match &block.stmts[0] {
+                Stmt::For { parallel, .. } => {
+                    assert!(!*parallel, "regular for should have parallel: false");
+                }
+                other => panic!("expected For, got {:?}", other),
+            }
+        }
+        other => panic!("expected Function, got {:?}", other),
+    }
+}
+
 // ======================== While loop ========================
 
 #[test]

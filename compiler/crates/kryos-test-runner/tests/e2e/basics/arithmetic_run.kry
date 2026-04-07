@@ -1,0 +1,4 @@
+// run-expect: 5
+fn main() {
+    println(to_string(2 + 3))
+}

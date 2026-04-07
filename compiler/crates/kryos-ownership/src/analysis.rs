@@ -685,6 +685,14 @@ impl OwnershipAnalyzer {
                     self.pop_scope();
                 }
             }
+            Expr::Borrow { inner, .. } => {
+                // Borrowing doesn't move the source — just reads it.
+                self.analyze_expr_use(inner);
+            }
+            Expr::Deref { inner, .. } => {
+                // Dereferencing reads the reference.
+                self.analyze_expr_use(inner);
+            }
             Expr::SharedExpr { inner, span } => {
                 self.analyze_expr_move(inner);
                 // Standalone shared expression — record ARC.

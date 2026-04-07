@@ -1,0 +1,4 @@
+// run-expect: Hello, Kryos!
+fn main() {
+    println("Hello, Kryos!")
+}

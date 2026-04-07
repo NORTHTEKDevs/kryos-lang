@@ -86,6 +86,15 @@ impl fmt::Display for Instruction {
                 }
                 write!(f, ")")
             }
+            Instruction::ActorStateLoad { dest, state_ptr, field_offset } => {
+                write!(f, "{dest} = actor_state_load({state_ptr}, offset={field_offset})")
+            }
+            Instruction::ActorStateStore { state_ptr, field_offset, value } => {
+                write!(f, "actor_state_store({state_ptr}, offset={field_offset}, {value})")
+            }
+            Instruction::StoreDeref { ptr, value } => {
+                write!(f, "store_deref(*{ptr} = {value})")
+            }
             Instruction::Nop => write!(f, "nop"),
         }
     }
@@ -201,7 +210,25 @@ impl fmt::Display for RValue {
                     (None, None) => write!(f, "{op}"),
                 }
             }
-            RValue::Comptime(inner) => write!(f, "comptime({inner})")
+            RValue::AddrOf { local, mutable } => {
+                if *mutable {
+                    write!(f, "&mut {local}")
+                } else {
+                    write!(f, "&{local}")
+                }
+            }
+            RValue::Deref { operand } => write!(f, "*{operand}"),
+            RValue::Comptime(inner) => write!(f, "comptime({inner})"),
+            RValue::MakeTraitObject { value, concrete_type, trait_name } => {
+                write!(f, "make_trait_object({value}, {concrete_type} as dyn {trait_name})")
+            }
+            RValue::VtableCall { object, method_index, args } => {
+                write!(f, "vtable_call({object}, method#{method_index}")?;
+                for a in args {
+                    write!(f, ", {a}")?;
+                }
+                write!(f, ")")
+            }
         }
     }
 }

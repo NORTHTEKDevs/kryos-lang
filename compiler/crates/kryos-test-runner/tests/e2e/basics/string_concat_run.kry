@@ -1,0 +1,4 @@
+// run-expect: hello world
+fn main() {
+    println("hello" + " " + "world")
+}

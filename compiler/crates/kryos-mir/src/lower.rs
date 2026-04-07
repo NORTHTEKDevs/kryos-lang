@@ -69,6 +69,10 @@ pub struct LoweringContext {
     actor_state_fields: HashMap<String, Vec<(String, u32)>>,
     /// Top-level constant definitions: const_name -> (MirType, AST expression).
     const_defs: HashMap<String, (MirType, ast::Expr)>,
+    /// Function parameter types: func_name -> ordered list of MirType.
+    /// Used for dyn Trait coercion: when a concrete struct is passed to a `dyn Trait`
+    /// param, the lowerer wraps it in `MakeTraitObject`.
+    func_param_types: HashMap<String, Vec<MirType>>,
 }
 
 /// Context passed to `throw` statements inside a `try` block.
@@ -113,6 +117,7 @@ impl LoweringContext {
             actor_defs: HashMap::new(),
             actor_state_fields: HashMap::new(),
             const_defs: HashMap::new(),
+            func_param_types: HashMap::new(),
         }
     }
 
@@ -237,6 +242,26 @@ struct FunctionState {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Convert AST annotations to MIR attribute metadata.
+fn annotations_to_mir_attributes(annotations: &[ast::Annotation]) -> MirAttributes {
+    let mut attrs = MirAttributes::default();
+    for ann in annotations {
+        match ann.name.as_str() {
+            "inline" => attrs.inline = true,
+            "pure" => attrs.pure_fn = true,
+            "test" => attrs.test = true,
+            "deprecated" => attrs.deprecated = true,
+            _ => {}
+        }
+    }
+    attrs
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
@@ -324,6 +349,13 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                     None => MirType::Void,
                 };
                 ctx.func_ret_types.insert(name.clone(), mir_ret);
+
+                // Store parameter types for dyn Trait coercion.
+                let param_types: Vec<MirType> = params
+                    .iter()
+                    .map(|p| p.ty.as_ref().map(|t| lower_type_expr(t)).unwrap_or(MirType::I64))
+                    .collect();
+                ctx.func_param_types.insert(name.clone(), param_types);
 
                 // If this function has generic params, store it as a template
                 // for monomorphization instead of lowering it immediately.
@@ -476,30 +508,52 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                 params,
                 ret_ty,
                 body: Some(body),
+                annotations,
                 ..
             } => {
                 // Skip generic functions — they are lowered on demand via monomorphization.
                 if !generics.is_empty() {
                     continue;
                 }
-                functions.push(lower_function(&mut ctx, name, params, ret_ty, body));
+                let mut func = lower_function(&mut ctx, name, params, ret_ty, body);
+                func.attributes = annotations_to_mir_attributes(annotations);
+                functions.push(func);
             }
-            ast::Decl::Impl { target, methods, .. } => {
+            ast::Decl::Impl { target, trait_name, methods, .. } => {
                 // Lower each method as a free function with mangled name.
+                let mut impl_method_names = Vec::new();
                 for method in methods {
                     if let ast::Decl::Function {
                         name,
                         params,
                         ret_ty,
                         body: Some(body),
+                        annotations,
                         ..
                     } = method
                     {
                         let mangled = format!("{target}__{name}");
+                        impl_method_names.push(mangled.clone());
                         let mut all_params = Vec::new();
                         let has_self = params.iter().any(|p| p.name == "self");
                         if has_self {
-                            all_params.extend_from_slice(params);
+                            // Ensure the `self` param has the target type even if
+                            // the user wrote just `self` without `: TypeName`.
+                            for p in params {
+                                if p.name == "self" && p.ty.is_none() {
+                                    all_params.push(ast::Param {
+                                        name: "self".into(),
+                                        ty: Some(ast::TypeExpr::Simple {
+                                            name: target.clone(),
+                                            span: kryos_errors::Span::DUMMY,
+                                        }),
+                                        default: None,
+                                        span: p.span,
+                                    });
+                                } else {
+                                    all_params.push(p.clone());
+                                }
+                            }
                         } else {
                             all_params.push(ast::Param {
                                 name: "self".into(),
@@ -512,8 +566,17 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                             });
                             all_params.extend_from_slice(params);
                         }
-                        functions.push(lower_function(&mut ctx, &mangled, &all_params, ret_ty, body));
+                        let mut func = lower_function(&mut ctx, &mangled, &all_params, ret_ty, body);
+                        func.attributes = annotations_to_mir_attributes(annotations);
+                        functions.push(func);
                     }
+                }
+                // If this is a trait impl, record the vtable mapping in impl_map.
+                if let Some(trait_name) = trait_name {
+                    ctx.impl_map.insert(
+                        (target.clone(), trait_name.clone()),
+                        impl_method_names,
+                    );
                 }
             }
             ast::Decl::Actor { name, handlers, .. } => {
@@ -556,6 +619,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         functions,
         struct_defs: ctx.struct_defs.clone(),
         enum_defs: ctx.enum_defs.clone(),
+        trait_vtables: ctx.impl_map.clone(),
     }
 }
 
@@ -612,6 +676,7 @@ pub fn lower_function(
         ret_ty: mir_ret_ty,
         blocks: ctx.blocks.clone(),
         locals: ctx.locals.clone(),
+        attributes: MirAttributes::default(),
     }
 }
 
@@ -811,6 +876,29 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                     },
                                 });
                             }
+                        } else if let ast::Expr::Deref { inner, .. } = target {
+                            // Deref assignment: *ptr = value → store through pointer.
+                            let ptr_op = lower_expr_to_operand(ctx, inner);
+                            let val_op = lower_expr_to_operand(ctx, value);
+                            ctx.emit(Instruction::StoreDeref {
+                                ptr: ptr_op,
+                                value: val_op,
+                            });
+                        } else if let ast::Expr::FieldAccess { object, field, .. } = target {
+                            // Field assignment on a struct: load struct, modify, store back
+                            // For now, treat as a general field store.
+                            let obj_op = lower_expr_to_operand(ctx, object);
+                            let val_op = lower_expr_to_operand(ctx, value);
+                            // Use a runtime call or inline store depending on context.
+                            // For simplicity, compile as a regular field write.
+                            let temp = ctx.alloc_temp(MirType::I64);
+                            ctx.emit(Instruction::Assign {
+                                dest: temp,
+                                value: RValue::Call {
+                                    func: "__kryos_field_store".to_string(),
+                                    args: vec![obj_op, val_op],
+                                },
+                            });
                         } else {
                             // Fallback: evaluate RHS into a temp (may have side effects).
                             let temp = ctx.alloc_temp(MirType::I64);
@@ -2075,10 +2163,29 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
                 .unwrap_or(MirType::I64)
         }
 
+        ast::Expr::Borrow { inner, mutable, .. } => {
+            let inner_ty = infer_expr_type(ctx, inner);
+            MirType::Ref { inner: Box::new(inner_ty), mutable: *mutable }
+        }
+
+        ast::Expr::Deref { inner, .. } => {
+            let inner_ty = infer_expr_type(ctx, inner);
+            match inner_ty {
+                MirType::Ref { inner, .. } => *inner,
+                MirType::Ptr(inner) => *inner,
+                _ => MirType::I64,
+            }
+        }
+
         ast::Expr::FieldAccess { object, field, .. } => {
             // Resolve the object's type, then look up the field in struct_defs.
             let obj_ty = infer_expr_type(ctx, object);
-            if let MirType::Struct(name) = &obj_ty {
+            // Auto-deref: if the object is a reference to a struct, dereference first.
+            let resolved_ty = match &obj_ty {
+                MirType::Ref { inner, .. } => inner.as_ref().clone(),
+                other => other.clone(),
+            };
+            if let MirType::Struct(name) = &resolved_ty {
                 if let Some(fields) = ctx.struct_defs.get(name) {
                     if let Some((_, field_ty)) = fields.iter().find(|(n, _)| n == field.as_str()) {
                         return field_ty.clone();
@@ -2086,7 +2193,7 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
                 }
             }
             // Enum variant access: Color.Red → Enum("Color")
-            if let MirType::Enum(name) = &obj_ty {
+            if let MirType::Enum(name) = &resolved_ty {
                 if ctx.enum_defs.get(name.as_str()).map_or(false, |vs| {
                     vs.iter().any(|v| v.name == field.as_str())
                 }) {
@@ -2484,9 +2591,35 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 }
             }
 
+            // Check for dyn Trait coercion: if a parameter type is DynTrait
+            // and the argument is a concrete struct, wrap with MakeTraitObject.
+            let param_types = ctx.func_param_types.get(&func_name).cloned();
             let mir_args: Vec<Operand> = args
                 .iter()
-                .map(|a| lower_expr_to_operand(ctx, a))
+                .enumerate()
+                .map(|(i, a)| {
+                    let operand = lower_expr_to_operand(ctx, a);
+                    // Check if this param expects a dyn Trait.
+                    if let Some(ref ptypes) = param_types {
+                        if let Some(MirType::DynTrait(ref trait_name)) = ptypes.get(i) {
+                            let arg_type = infer_expr_type(ctx, a);
+                            if let MirType::Struct(ref concrete_type) = arg_type {
+                                // Emit MakeTraitObject to wrap the struct into a fat pointer.
+                                let tmp = ctx.alloc_temp(MirType::DynTrait(trait_name.clone()));
+                                ctx.emit(Instruction::Assign {
+                                    dest: tmp,
+                                    value: RValue::MakeTraitObject {
+                                        value: operand,
+                                        concrete_type: concrete_type.clone(),
+                                        trait_name: trait_name.clone(),
+                                    },
+                                });
+                                return Operand::Local(tmp);
+                            }
+                        }
+                    }
+                    operand
+                })
                 .collect();
             RValue::Call {
                 func: func_name,
@@ -2543,6 +2676,26 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                             args: send_args,
                         });
                         return RValue::ConstInt(0); // fire-and-forget
+                    }
+                }
+            }
+
+            // Check if this is a method call on a dyn Trait value (dynamic dispatch).
+            let obj_type = infer_expr_type(ctx, object);
+            if let MirType::DynTrait(ref trait_name) = obj_type {
+                // Look up the method index in the trait definition.
+                if let Some(methods) = ctx.trait_defs.get(trait_name.as_str()).cloned() {
+                    if let Some(method_idx) = methods.iter().position(|m| m.name == *method) {
+                        let obj = lower_expr_to_operand(ctx, object);
+                        let mut call_args: Vec<Operand> = Vec::new();
+                        for a in args {
+                            call_args.push(lower_expr_to_operand(ctx, a));
+                        }
+                        return RValue::VtableCall {
+                            object: obj,
+                            method_index: method_idx as u32,
+                            args: call_args,
+                        };
                     }
                 }
             }
@@ -2638,7 +2791,24 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 }
             }
 
+            let obj_ty = infer_expr_type(ctx, object);
             let obj = lower_expr_to_operand(ctx, object);
+
+            // Auto-deref: if the object is a reference, dereference it first.
+            let obj = if matches!(obj_ty, MirType::Ref { .. }) {
+                let deref_temp = ctx.alloc_temp(match &obj_ty {
+                    MirType::Ref { inner, .. } => *inner.clone(),
+                    _ => MirType::I64,
+                });
+                ctx.emit(Instruction::Assign {
+                    dest: deref_temp,
+                    value: RValue::Deref { operand: obj },
+                });
+                Operand::Local(deref_temp)
+            } else {
+                obj
+            };
+
             RValue::Field {
                 object: obj,
                 field: field.clone(),
@@ -2668,6 +2838,28 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 object: obj,
                 index: idx,
             }
+        }
+
+        ast::Expr::Borrow { inner, mutable, .. } => {
+            // &x → take address of local
+            if let ast::Expr::Identifier { name, .. } = inner.as_ref() {
+                let local = find_local_by_name(ctx, name);
+                RValue::AddrOf { local, mutable: *mutable }
+            } else {
+                // For non-identifier expressions, lower to a temp first,
+                // then take its address.
+                let inner_ty = infer_expr_type(ctx, inner);
+                let rvalue = lower_expr_to_rvalue(ctx, inner);
+                let temp = ctx.alloc_local(None, inner_ty, true);
+                ctx.emit(Instruction::Assign { dest: temp, value: rvalue });
+                RValue::AddrOf { local: temp, mutable: *mutable }
+            }
+        }
+
+        ast::Expr::Deref { inner, .. } => {
+            // *x → load from reference
+            let inner_op = lower_expr_to_operand(ctx, inner);
+            RValue::Deref { operand: inner_op }
         }
 
         ast::Expr::SharedExpr { inner, .. } => {
@@ -3054,6 +3246,7 @@ pub fn lower_type_expr(ty: &ast::TypeExpr) -> MirType {
             // Lower Weak as Ptr — codegen adds weak-ref bookkeeping.
             MirType::Ptr(Box::new(lower_type_expr(inner)))
         }
+        ast::TypeExpr::DynTrait { trait_name, .. } => MirType::DynTrait(trait_name.clone()),
         ast::TypeExpr::Inferred { .. } => MirType::I64, // default unresolved
     }
 }
@@ -3108,6 +3301,7 @@ pub fn lower_resolved_type(ty: &Type) -> MirType {
         }
         Type::Map { .. } => MirType::Struct("Map".to_string()),
         Type::Set { .. } => MirType::Struct("Set".to_string()),
+        Type::DynTrait { trait_name } => MirType::DynTrait(trait_name.clone()),
         Type::Var(_) | Type::Error => MirType::I64, // fallback
     }
 }
@@ -3229,6 +3423,9 @@ fn collect_identifiers(
                     }
                 }
             }
+        }
+        ast::Expr::Borrow { inner, .. } | ast::Expr::Deref { inner, .. } => {
+            collect_identifiers(inner, bound, free_vars, seen, ctx);
         }
         ast::Expr::Cast { expr, .. } => {
             collect_identifiers(expr, bound, free_vars, seen, ctx);
@@ -3464,6 +3661,7 @@ fn generate_actor_dispatch(
         ret_ty: MirType::Void,
         blocks,
         locals,
+        attributes: MirAttributes::default(),
     }
 }
 
@@ -3672,6 +3870,7 @@ fn substitute_type_expr(
             inner: Box::new(substitute_type_expr(inner, type_map)),
             span: *span,
         },
+        ast::TypeExpr::DynTrait { .. } => ty.clone(),
         ast::TypeExpr::Inferred { .. } => ty.clone(),
     }
 }

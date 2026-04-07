@@ -336,6 +336,17 @@ impl InferenceEngine {
                 },
             ) if m1 == m2 => self.unify(i1, i2, span),
 
+            // Dynamic trait objects: a concrete struct type can be assigned to dyn Trait.
+            // Full trait-implementation checking is done during type checking; here we
+            // allow the coercion.
+            (Type::Struct { .. }, Type::DynTrait { .. })
+            | (Type::DynTrait { .. }, Type::Struct { .. }) => Ok(()),
+            // Two dyn Traits unify if they name the same trait.
+            (
+                Type::DynTrait { trait_name: t1 },
+                Type::DynTrait { trait_name: t2 },
+            ) if t1 == t2 => Ok(()),
+
             // Never unifies with anything (diverging expressions).
             (Type::Never, _) | (_, Type::Never) => Ok(()),
 
@@ -344,10 +355,21 @@ impl InferenceEngine {
             _ if is_int_widening(&a, &b) || is_int_widening(&b, &a) => Ok(()),
 
             // Everything else is a mismatch.
-            _ => Err(
-                Diagnostic::error(format!("type mismatch: expected `{a}`, found `{b}`"))
-                    .with_label(span, format!("expected `{a}`, found `{b}`")),
-            ),
+            _ => {
+                let mut diag = Diagnostic::error(format!("type mismatch: expected `{a}`, found `{b}`"))
+                    .with_label(span, format!("expected `{a}`, found `{b}`"));
+
+                // Add helpful notes for common mismatches.
+                if (a == Type::Str && b.is_numeric()) || (b == Type::Str && a.is_numeric()) {
+                    diag = diag.with_note("use `to_string()` to convert a number to a string");
+                } else if (a == Type::Bool && (b.is_numeric() || b == Type::Str))
+                    || (b == Type::Bool && (a.is_numeric() || a == Type::Str))
+                {
+                    diag = diag.with_note("Kryos does not implicitly convert between bool and other types");
+                }
+
+                Err(diag)
+            }
         }
     }
 

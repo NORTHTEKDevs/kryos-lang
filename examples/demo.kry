@@ -46,9 +46,9 @@ fn main() {
     // 3. Float math
     println("3. Float Math")
     let pi = 3.14159265
-    println(pi)
+    println("   pi = " + to_string(pi))
     let power = 2.0 ** 10.0
-    println(power)
+    println("   2^10 = " + to_string(power))
     println("")
 
     // 4. Error handling
@@ -68,6 +68,7 @@ fn main() {
     scores["carol"] = 92
     println("   alice: " + to_string(scores["alice"]))
     println("   bob:   " + to_string(scores["bob"]))
+    println("   carol: " + to_string(scores["carol"]))
     println("")
 
     // 6. Tensor runtime

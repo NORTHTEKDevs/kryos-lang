@@ -68,3 +68,4 @@ ring = "0.17"
 regex = "1"
 crossterm = "0.28"
 toml = "0.8"
+criterion = { version = "0.5", features = ["html_reports"] }

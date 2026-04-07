@@ -20,6 +20,12 @@ pub struct TypeChecker {
     pub diagnostics: Vec<Diagnostic>,
     /// The expected return type of the function currently being checked.
     current_return_type: Option<Type>,
+    /// Functions marked with @deprecated — emit warnings on call.
+    deprecated_functions: std::collections::HashSet<String>,
+    /// Functions marked with @pure — cannot call non-pure or do I/O.
+    pure_functions: std::collections::HashSet<String>,
+    /// Whether we are currently inside a @pure function body.
+    in_pure_function: bool,
 }
 
 impl Default for TypeChecker {
@@ -35,6 +41,9 @@ impl TypeChecker {
             engine: InferenceEngine::new(),
             diagnostics: Vec::new(),
             current_return_type: None,
+            deprecated_functions: std::collections::HashSet::new(),
+            pure_functions: std::collections::HashSet::new(),
+            in_pure_function: false,
         }
     }
 
@@ -42,6 +51,12 @@ impl TypeChecker {
     fn error(&mut self, msg: impl Into<String>, span: Span) {
         self.diagnostics
             .push(Diagnostic::error(msg).with_label(span, "here"));
+    }
+
+    /// Report a warning diagnostic.
+    fn warning(&mut self, msg: impl Into<String>, span: Span) {
+        self.diagnostics
+            .push(Diagnostic::warning(msg).with_label(span, "here"));
     }
 
     // ── TypeExpr → Type resolution ───────────────────────────────────
@@ -192,6 +207,14 @@ impl TypeChecker {
                 inner: Box::new(self.resolve_type_expr(inner)),
                 mutable: *mutable,
             },
+            TypeExpr::DynTrait { trait_name, span } => {
+                // Verify the trait exists.
+                if self.env.lookup_trait(trait_name).is_none() {
+                    self.error(format!("unknown trait `{trait_name}`"), *span);
+                    return Type::Error;
+                }
+                Type::DynTrait { trait_name: trait_name.clone() }
+            }
             TypeExpr::Inferred { span: _ } => {
                 // Create a fresh type variable to be inferred.
                 self.engine.fresh_var()
@@ -206,6 +229,16 @@ impl TypeChecker {
         // First pass: register all type and function declarations.
         for decl in &module.declarations {
             self.register_decl(decl);
+            // Track annotated functions.
+            if let Decl::Function { name, annotations, .. } = decl {
+                for ann in annotations {
+                    match ann.name.as_str() {
+                        "deprecated" => { self.deprecated_functions.insert(name.clone()); }
+                        "pure" => { self.pure_functions.insert(name.clone()); }
+                        _ => {}
+                    }
+                }
+            }
         }
         // Second pass: check function bodies and expressions.
         for decl in &module.declarations {
@@ -478,6 +511,12 @@ impl TypeChecker {
             } => {
                 self.env.push_scope();
 
+                // Set @pure flag for the duration of this function body.
+                let was_pure = self.in_pure_function;
+                if self.pure_functions.contains(name) {
+                    self.in_pure_function = true;
+                }
+
                 // Bind generic type parameters as type variables so they resolve
                 // in parameter types, return types, and the function body.
                 for gp in generics {
@@ -522,6 +561,7 @@ impl TypeChecker {
                 }
 
                 self.current_return_type = None;
+                self.in_pure_function = was_pure;
                 self.env.pop_scope();
 
                 let _ = span; // suppress unused warning
@@ -991,19 +1031,68 @@ impl TypeChecker {
 
             // Function call.
             Expr::FnCall { callee, args, span } => {
+                // Extract callee name for attribute checks.
+                let callee_name_str = match callee.as_ref() {
+                    Expr::Identifier { name, .. } => Some(name.clone()),
+                    _ => None,
+                };
+
+                // @deprecated: warn when calling a deprecated function.
+                if let Some(ref name) = callee_name_str {
+                    if self.deprecated_functions.contains(name) {
+                        self.warning(
+                            format!("use of deprecated function `{name}`"),
+                            *span,
+                        );
+                    }
+                }
+
+                // @pure enforcement: pure functions cannot call non-pure functions or I/O builtins.
+                if self.in_pure_function {
+                    let io_builtins = ["println", "print", "eprintln", "exit"];
+                    if let Some(ref name) = callee_name_str {
+                        if io_builtins.contains(&name.as_str()) {
+                            self.error(
+                                format!("`@pure` function cannot call I/O builtin `{name}`"),
+                                *span,
+                            );
+                        } else if !self.pure_functions.contains(name) {
+                            // Only warn for user-defined functions that are not marked @pure.
+                            // Skip builtins like len, range, etc. which are side-effect free.
+                            let side_effect_free_builtins = [
+                                "len", "range", "to_string", "typeof", "sizeof",
+                                "min", "max", "abs", "sqrt", "pow", "floor", "ceil",
+                                "round", "log", "log2", "log10", "sin", "cos", "tan",
+                                "push", "pop", "contains", "keys", "values",
+                                "split", "trim", "starts_with", "ends_with",
+                                "to_upper", "to_lower", "char_at", "substring",
+                                "parse_int", "parse_float",
+                            ];
+                            if self.env.lookup_function(name).is_some()
+                                && !side_effect_free_builtins.contains(&name.as_str())
+                            {
+                                self.error(
+                                    format!("`@pure` function cannot call non-pure function `{name}`"),
+                                    *span,
+                                );
+                            }
+                        }
+                    }
+                }
+
                 let callee_ty = self.infer_expr(callee);
                 let callee_ty = self.engine.resolve(&callee_ty);
 
                 match &callee_ty {
                     Type::Function { params, ret } => {
                         if args.len() != params.len() {
-                            let callee_name = match callee.as_ref() {
-                                Expr::Identifier { name, .. } => format!(" to `{name}`"),
-                                _ => String::new(),
+                            let display_name = match callee_name_str {
+                                Some(ref n) => format!(" to `{n}`"),
+                                None => String::new(),
                             };
                             self.error(
                                 format!(
-                                    "this function{callee_name} takes {} argument{} but {} {} supplied",
+                                    "this function{display_name} takes {} argument{} but {} {} supplied",
                                     params.len(),
                                     if params.len() == 1 { "" } else { "s" },
                                     args.len(),
@@ -1042,6 +1131,47 @@ impl TypeChecker {
             } => {
                 let obj_ty = self.infer_expr(object);
                 let obj_ty = self.engine.resolve(&obj_ty);
+
+                // Handle method calls on dyn Trait objects via trait definition lookup.
+                if let Type::DynTrait { ref trait_name } = obj_ty {
+                    if let Some(trait_def) = self.env.lookup_trait(trait_name).cloned() {
+                        if let Some(sig) = trait_def.methods.iter().find(|m| m.name == *method) {
+                            // Skip 'self' parameter (first param) if present.
+                            let expected_params: Vec<_> = if sig.params.first().map(|(n, _)| n.as_str())
+                                == Some("self")
+                            {
+                                sig.params[1..].to_vec()
+                            } else {
+                                sig.params.clone()
+                            };
+                            if args.len() != expected_params.len() {
+                                self.error(
+                                    format!(
+                                        "method `{method}` expects {} arguments, found {}",
+                                        expected_params.len(),
+                                        args.len()
+                                    ),
+                                    *span,
+                                );
+                            } else {
+                                for (arg, (_, param_ty)) in args.iter().zip(expected_params.iter()) {
+                                    let arg_ty = self.infer_expr(arg);
+                                    if let Err(diag) =
+                                        self.engine.unify(param_ty, &arg_ty, arg.span())
+                                    {
+                                        self.diagnostics.push(diag);
+                                    }
+                                }
+                            }
+                            return sig.ret.clone();
+                        }
+                    }
+                    self.error(
+                        format!("no method `{method}` found on `dyn {trait_name}`"),
+                        *span,
+                    );
+                    return Type::Error;
+                }
 
                 let type_name = match &obj_ty {
                     Type::Struct { name, .. } => Some(name.clone()),
@@ -1338,6 +1468,31 @@ impl TypeChecker {
                 }
             }
 
+            // Borrow expression: &x or &mut x.
+            Expr::Borrow { inner, mutable, .. } => {
+                let inner_ty = self.infer_expr(inner);
+                Type::Reference {
+                    inner: Box::new(inner_ty),
+                    mutable: *mutable,
+                }
+            }
+            // Dereference expression: *x.
+            Expr::Deref { inner, .. } => {
+                let inner_ty = self.infer_expr(inner);
+                match inner_ty {
+                    Type::Reference { inner, .. } => *inner,
+                    Type::Pointer { inner, .. } => *inner,
+                    Type::Shared { inner } => *inner,
+                    _ => {
+                        self.error(
+                            format!("cannot dereference value of type `{inner_ty}`"),
+                            inner.span(),
+                        );
+                        Type::Error
+                    }
+                }
+            }
+
             // Shared / Move / Weak expressions.
             Expr::SharedExpr { inner, .. } => {
                 let inner_ty = self.infer_expr(inner);
@@ -1376,8 +1531,22 @@ impl TypeChecker {
                 Type::Void
             }
 
-            // Comptime and quantum blocks — check body, return void for now.
-            Expr::ComptimeBlock { body, .. } | Expr::QuantumBlock { body, .. } => {
+            // Comptime block — type is the type of the last expression.
+            Expr::ComptimeBlock { body, .. } => {
+                self.env.push_scope();
+                for stmt in &body.stmts {
+                    self.check_stmt(stmt);
+                }
+                self.env.pop_scope();
+                if let Some(last) = body.stmts.last() {
+                    if let Stmt::Expr { expr, .. } = last {
+                        return self.infer_expr(expr);
+                    }
+                }
+                Type::Void
+            }
+            // Quantum blocks — check body, return void for now.
+            Expr::QuantumBlock { body, .. } => {
                 self.env.push_scope();
                 self.check_block(body);
                 self.env.pop_scope();

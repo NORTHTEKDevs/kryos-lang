@@ -1,0 +1,14 @@
+// expect-exit: 10
+fn increment(x: &mut i64) {
+    *x = *x + 1
+}
+
+fn main() -> i64 {
+    let mut count = 0
+    let mut i = 0
+    while i < 10 {
+        increment(&mut count)
+        i = i + 1
+    }
+    return count
+}

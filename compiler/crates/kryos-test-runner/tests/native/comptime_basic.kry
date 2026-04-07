@@ -1,0 +1,5 @@
+// expect-exit: 15
+fn main() -> i64 {
+    let x = comptime { 3 * 5 }
+    return x
+}

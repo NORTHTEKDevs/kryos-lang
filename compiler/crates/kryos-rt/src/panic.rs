@@ -30,7 +30,8 @@ pub extern "C" fn kryos_panic(msg_ptr: *const u8, msg_len: usize) -> ! {
     };
 
     let formatted = format_panic_message(msg);
-    let _ = writeln!(std::io::stderr(), "{}", formatted);
+    let stack = crate::trace::format_stack_trace();
+    let _ = writeln!(std::io::stderr(), "{}{}", formatted, stack);
     std::process::abort();
 }
 
@@ -65,6 +66,7 @@ pub extern "C" fn kryos_panic_with_location(
     };
 
     let formatted = format_panic_with_location(msg, file, line, col);
-    let _ = writeln!(std::io::stderr(), "{}", formatted);
+    let stack = crate::trace::format_stack_trace();
+    let _ = writeln!(std::io::stderr(), "{}{}", formatted, stack);
     std::process::abort();
 }

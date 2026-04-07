@@ -1,0 +1,12 @@
+// run-expect: 12
+fn apply_twice(f: fn(i64) -> i64, x: i64) -> i64 {
+    return f(f(x))
+}
+
+fn double(x: i64) -> i64 {
+    return x * 2
+}
+
+fn main() {
+    println(to_string(apply_twice(double, 3)))
+}

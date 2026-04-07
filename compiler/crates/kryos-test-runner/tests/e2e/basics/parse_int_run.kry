@@ -1,0 +1,4 @@
+// run-expect: 42
+fn main() {
+    println(to_string(parse_int("42")))
+}

@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 use std::path::Path;
 
 use crate::semver::VersionReq;
@@ -54,6 +55,15 @@ pub enum DepSpec {
     Path {
         path: String,
     },
+}
+
+impl fmt::Display for DepSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DepSpec::Remote { source, version_req } => write!(f, "{source}@{version_req}"),
+            DepSpec::Path { path } => write!(f, "path:{path}"),
+        }
+    }
 }
 
 impl Serialize for DepSpec {

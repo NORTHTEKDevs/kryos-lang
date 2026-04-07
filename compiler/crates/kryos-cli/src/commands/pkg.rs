@@ -59,9 +59,33 @@ optimization = "dev"
         .map_err(|e| format!("failed to write src/main.kry: {e}"))?;
     }
 
+    // Create .gitignore if it doesn't exist.
+    let gitignore_path = Path::new(".gitignore");
+    if !gitignore_path.exists() {
+        std::fs::write(
+            gitignore_path,
+            "# Build artifacts\ntarget/\n*.o\n*.obj\n*.exe\n\n# Dependencies\n.kryos/\n\n# Lock file (optional — commit if you want reproducible builds)\n# kryos.lock\n",
+        )
+        .map_err(|e| format!("failed to write .gitignore: {e}"))?;
+    }
+
+    // Create README.md if it doesn't exist.
+    let readme_path = Path::new("README.md");
+    if !readme_path.exists() {
+        std::fs::write(
+            readme_path,
+            format!(
+                "# {project_name}\n\nA [Kryos](https://github.com/FrostbyteDevTeam/kryos-lang) project.\n\n## Build\n\n```bash\nkryos build src/main.kry -o {project_name}\n```\n\n## Run\n\n```bash\nkryos run src/main.kry\n```\n"
+            ),
+        )
+        .map_err(|e| format!("failed to write README.md: {e}"))?;
+    }
+
     eprintln!("initialized Kryos project `{project_name}`");
     eprintln!("  created kryos.toml");
     eprintln!("  created src/main.kry");
+    eprintln!("  created .gitignore");
+    eprintln!("  created README.md");
 
     Ok(())
 }
@@ -103,29 +127,84 @@ pub fn remove(dependency: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `kryos pkg update` — update all dependencies.
+/// `kryos pkg update` — resolve dependencies and update lock file.
 pub fn update() -> Result<(), String> {
     let manifest_path = Path::new("kryos.toml");
-    if !manifest_path.exists() {
-        return Err("no kryos.toml found".to_string());
+    let manifest = load_manifest(&manifest_path)?;
+
+    if manifest.dependencies.is_empty() {
+        eprintln!("no dependencies to resolve");
+        return Ok(());
     }
 
-    // TODO: Once the package resolver supports fetching from registries,
-    // resolve all dependencies to their latest compatible versions and
-    // update kryos.lock.
-    eprintln!("kryos pkg update: dependency resolution not yet connected");
+    // Resolve dependencies using the package resolver.
+    let mut registry = kryos_package::resolve::PackageRegistry::new();
+
+    // For path dependencies, register them in the registry so the resolver can find them.
+    for (name, dep) in &manifest.dependencies {
+        if let kryos_package::DepSpec::Path { path } = dep {
+            let dep_manifest_path = Path::new(path).join("kryos.toml");
+            if dep_manifest_path.exists() {
+                let dep_manifest = Manifest::from_file(&dep_manifest_path)?;
+                let version: kryos_package::Version = dep_manifest.package.version.parse()
+                    .map_err(|e| format!("bad version in {}: {e}", name))?;
+                registry.add(kryos_package::resolve::AvailablePackage {
+                    name: name.clone(),
+                    version,
+                    source: path.clone(),
+                    dependencies: std::collections::HashMap::new(),
+                });
+            }
+        }
+    }
+
+    // resolve() accepts HashMap<String, DepSpec> directly.
+    match kryos_package::resolve::resolve(&manifest.dependencies, &registry) {
+        Ok(graph) => {
+            // Write lock file.
+            let lock = kryos_package::LockFile::from_resolved(&graph);
+            lock.write_to_file(Path::new("kryos.lock"))?;
+
+            eprintln!("resolved {} dependencies", graph.packages.len());
+            for pkg in &graph.packages {
+                eprintln!("  {} v{}", pkg.name, pkg.version);
+            }
+            eprintln!("wrote kryos.lock");
+        }
+        Err(e) => {
+            return Err(format!("dependency resolution failed: {e}"));
+        }
+    }
+
     Ok(())
 }
 
-/// `kryos pkg lock` — regenerate the lock file.
+/// `kryos pkg lock` — regenerate the lock file (alias for update).
 pub fn lock() -> Result<(), String> {
-    let manifest_path = Path::new("kryos.toml");
-    if !manifest_path.exists() {
-        return Err("no kryos.toml found".to_string());
-    }
+    update()
+}
 
-    // TODO: Resolve dependency graph and write kryos.lock.
-    eprintln!("kryos pkg lock: lock file generation not yet connected");
+/// `kryos pkg publish` — package and publish to the registry.
+pub fn publish() -> Result<(), String> {
+    let project_dir = std::env::current_dir()
+        .map_err(|e| format!("cannot determine current directory: {e}"))?;
+
+    eprintln!("packaging...");
+    let pkg = kryos_package::registry::pack(&project_dir)?;
+
+    let index_entry = kryos_package::registry::generate_index_entry(&pkg);
+
+    eprintln!("packaged {} v{}", pkg.name, pkg.version);
+    eprintln!("  tarball: {}", pkg.tarball_path.display());
+    eprintln!();
+    eprintln!("registry index entry:");
+    eprintln!("{index_entry}");
+    eprintln!();
+    eprintln!("to publish, add the index entry to the registry at:");
+    eprintln!("  {}", kryos_package::registry::DEFAULT_REGISTRY);
+    eprintln!();
+    eprintln!("then upload the tarball to your chosen hosting.");
+
     Ok(())
 }
 

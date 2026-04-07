@@ -714,3 +714,179 @@ fn never_type_unifies_with_anything() {
     assert!(engine.unify(&Type::Never, &Type::I32, S).is_ok());
     assert!(engine.unify(&Type::Str, &Type::Never, S).is_ok());
 }
+
+// ── Attribute enforcement ────────────────────────────────────────────
+
+#[test]
+fn deprecated_function_emits_warning() {
+    use kryos_errors::Level;
+
+    let module = Module {
+        name: "test".into(),
+        declarations: vec![
+            // @deprecated fn old_fn() -> i64 { return 1 }
+            Decl::Function {
+                name: "old_fn".into(),
+                generics: vec![],
+                params: vec![],
+                ret_ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }),
+                body: Some(Block {
+                    stmts: vec![Stmt::Return { value: Some(Expr::IntLiteral { value: 1, span: S }), span: S }],
+                    span: S,
+                }),
+                annotations: vec![kryos_ast::Annotation { name: "deprecated".into(), args: vec![], span: S }],
+                public: false,
+                span: S,
+            },
+            // fn main() -> i64 { return old_fn() }
+            Decl::Function {
+                name: "main".into(),
+                generics: vec![],
+                params: vec![],
+                ret_ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }),
+                body: Some(Block {
+                    stmts: vec![Stmt::Return {
+                        value: Some(Expr::FnCall {
+                            callee: Box::new(Expr::Identifier { name: "old_fn".into(), span: S }),
+                            args: vec![],
+                            span: S,
+                        }),
+                        span: S,
+                    }],
+                    span: S,
+                }),
+                annotations: vec![],
+                public: false,
+                span: S,
+            },
+        ],
+        span: S,
+    };
+
+    let diags = type_check(&module);
+    let warnings: Vec<_> = diags.iter().filter(|d| d.level == Level::Warning).collect();
+    assert!(!warnings.is_empty(), "expected a deprecation warning");
+    assert!(
+        warnings.iter().any(|d| d.message.contains("deprecated")),
+        "warning should mention 'deprecated', got: {:?}",
+        warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn pure_function_rejects_io_call() {
+    use kryos_errors::Level;
+
+    let module = Module {
+        name: "test".into(),
+        declarations: vec![
+            // @pure fn bad(x: i64) -> i64 { println(x); return x }
+            Decl::Function {
+                name: "bad".into(),
+                generics: vec![],
+                params: vec![Param { name: "x".into(), ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }), default: None, span: S }],
+                ret_ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }),
+                body: Some(Block {
+                    stmts: vec![
+                        Stmt::Expr {
+                            expr: Expr::FnCall {
+                                callee: Box::new(Expr::Identifier { name: "println".into(), span: S }),
+                                args: vec![Expr::Identifier { name: "x".into(), span: S }],
+                                span: S,
+                            },
+                            span: S,
+                        },
+                        Stmt::Return {
+                            value: Some(Expr::Identifier { name: "x".into(), span: S }),
+                            span: S,
+                        },
+                    ],
+                    span: S,
+                }),
+                annotations: vec![kryos_ast::Annotation { name: "pure".into(), args: vec![], span: S }],
+                public: false,
+                span: S,
+            },
+        ],
+        span: S,
+    };
+
+    let diags = type_check(&module);
+    let errors: Vec<_> = diags.iter().filter(|d| d.level == Level::Error).collect();
+    assert!(
+        errors.iter().any(|d| d.message.contains("@pure") && d.message.contains("println")),
+        "expected error about @pure calling println, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn pure_function_allows_pure_calls() {
+    use kryos_errors::Level;
+
+    let module = Module {
+        name: "test".into(),
+        declarations: vec![
+            // @pure fn add(a: i64, b: i64) -> i64 { return a + b }
+            Decl::Function {
+                name: "add".into(),
+                generics: vec![],
+                params: vec![
+                    Param { name: "a".into(), ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }), default: None, span: S },
+                    Param { name: "b".into(), ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }), default: None, span: S },
+                ],
+                ret_ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }),
+                body: Some(Block {
+                    stmts: vec![Stmt::Return {
+                        value: Some(Expr::BinaryOp {
+                            op: BinOp::Add,
+                            left: Box::new(Expr::Identifier { name: "a".into(), span: S }),
+                            right: Box::new(Expr::Identifier { name: "b".into(), span: S }),
+                            span: S,
+                        }),
+                        span: S,
+                    }],
+                    span: S,
+                }),
+                annotations: vec![kryos_ast::Annotation { name: "pure".into(), args: vec![], span: S }],
+                public: false,
+                span: S,
+            },
+            // @pure fn double(x: i64) -> i64 { return add(x, x) }
+            Decl::Function {
+                name: "double".into(),
+                generics: vec![],
+                params: vec![
+                    Param { name: "x".into(), ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }), default: None, span: S },
+                ],
+                ret_ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }),
+                body: Some(Block {
+                    stmts: vec![Stmt::Return {
+                        value: Some(Expr::FnCall {
+                            callee: Box::new(Expr::Identifier { name: "add".into(), span: S }),
+                            args: vec![
+                                Expr::Identifier { name: "x".into(), span: S },
+                                Expr::Identifier { name: "x".into(), span: S },
+                            ],
+                            span: S,
+                        }),
+                        span: S,
+                    }],
+                    span: S,
+                }),
+                annotations: vec![kryos_ast::Annotation { name: "pure".into(), args: vec![], span: S }],
+                public: false,
+                span: S,
+            },
+        ],
+        span: S,
+    };
+
+    let diags = type_check(&module);
+    let errors: Vec<_> = diags.iter().filter(|d| d.level == Level::Error).collect();
+    assert!(
+        errors.is_empty(),
+        "pure function calling another pure function should be allowed, got errors: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}

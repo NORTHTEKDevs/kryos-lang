@@ -28,6 +28,40 @@ pub fn run_comptime_pass(module: &mut MirModule) {
     }
 }
 
+/// Run a general constant folding pass over an entire MIR module.
+///
+/// This folds any `BinOp` or `UnOp` whose operands are all constants,
+/// regardless of whether they appear inside a `comptime` block.
+/// Intended for release builds to reduce runtime computation.
+pub fn run_constant_fold_pass(module: &mut MirModule) {
+    for func in &mut module.functions {
+        for block in &mut func.blocks {
+            for instr in &mut block.instructions {
+                if let Instruction::Assign { value, .. } = instr {
+                    *value = try_fold(value);
+                }
+            }
+        }
+    }
+}
+
+/// Attempt to fold an RValue to a constant. Returns the original if not foldable.
+fn try_fold(rvalue: &RValue) -> RValue {
+    match rvalue {
+        RValue::BinOp { op, left, right } => {
+            match (operand_to_const(left), operand_to_const(right)) {
+                (Some(l), Some(r)) => eval_binop(*op, &l, &r),
+                _ => rvalue.clone(),
+            }
+        }
+        RValue::UnOp { op, operand } => match operand_to_const(operand) {
+            Some(c) => eval_unop(*op, &c),
+            None => rvalue.clone(),
+        },
+        _ => rvalue.clone(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Per-function / per-block traversal
 // ---------------------------------------------------------------------------

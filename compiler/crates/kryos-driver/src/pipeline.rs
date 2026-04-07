@@ -295,6 +295,11 @@ fn compile_module_impl(
     // 9b. Comptime evaluation: fold constant expressions in comptime blocks.
     kryos_mir::consteval::run_comptime_pass(&mut mir);
 
+    // 9c. Constant folding: fold all constant binary/unary ops (release builds).
+    if config.mode == crate::config::BuildMode::Release {
+        kryos_mir::consteval::run_constant_fold_pass(&mut mir);
+    }
+
     if config.verbose {
         eprintln!(
             "[kryos] MIR: {} functions lowered",

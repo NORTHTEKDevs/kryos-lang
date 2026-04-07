@@ -50,6 +50,7 @@ pub enum Stmt {
         span: Span,
     },
     For {
+        parallel: bool,
         pattern: Pattern,
         iterable: Expr,
         body: Block,

@@ -12,6 +12,8 @@ pub enum TypeExpr {
     Shared { inner: Box<TypeExpr>, span: Span },
     Weak { inner: Box<TypeExpr>, span: Span },
     Pointer { inner: Box<TypeExpr>, mutable: bool, span: Span },
+    /// `dyn TraitName` — dynamic dispatch trait object.
+    DynTrait { trait_name: String, span: Span },
     Inferred { span: Span },
 }
 
@@ -23,7 +25,7 @@ impl TypeExpr {
             Self::Function { span, .. } | Self::Optional { span, .. } |
             Self::Reference { span, .. } | Self::Shared { span, .. } |
             Self::Weak { span, .. } | Self::Pointer { span, .. } |
-            Self::Inferred { span } => *span,
+            Self::DynTrait { span, .. } | Self::Inferred { span } => *span,
         }
     }
 }

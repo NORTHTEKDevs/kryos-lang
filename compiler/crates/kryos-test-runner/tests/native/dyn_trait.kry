@@ -1,0 +1,24 @@
+// expect-exit: 7
+trait Shape {
+    fn area(self) -> i64
+}
+
+struct Rect {
+    w: i64,
+    h: i64,
+}
+
+impl Shape for Rect {
+    fn area(self) -> i64 {
+        return self.w * self.h
+    }
+}
+
+fn use_shape(s: dyn Shape) -> i64 {
+    return s.area()
+}
+
+fn main() -> i64 {
+    let r = Rect { w: 1, h: 7 }
+    return use_shape(r)
+}

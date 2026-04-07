@@ -88,6 +88,8 @@ pub enum MirType {
         params: Vec<MirType>,
         ret: Box<MirType>,
     },
+    /// Dynamic trait object: fat pointer (data_ptr, vtable_ptr).
+    DynTrait(String),
 }
 
 impl fmt::Display for MirType {
@@ -137,6 +139,7 @@ impl fmt::Display for MirType {
                 }
                 write!(f, ") -> {ret}")
             }
+            MirType::DynTrait(name) => write!(f, "dyn {name}"),
         }
     }
 }
@@ -154,6 +157,22 @@ pub struct MirModule {
     pub struct_defs: HashMap<String, Vec<(String, MirType)>>,
     /// Enum definitions: enum name -> ordered list of variants with their field types.
     pub enum_defs: HashMap<String, Vec<EnumVariantDef>>,
+    /// Trait vtable map: (concrete_type, trait_name) -> ordered list of mangled method names.
+    /// Used by codegen to build vtables for dynamic dispatch.
+    pub trait_vtables: HashMap<(String, String), Vec<String>>,
+}
+
+/// Metadata attributes preserved from source annotations.
+#[derive(Debug, Clone, Default)]
+pub struct MirAttributes {
+    /// Function is marked `@inline` — hint for the inliner pass.
+    pub inline: bool,
+    /// Function is marked `@pure` — no side effects.
+    pub pure_fn: bool,
+    /// Function is marked `@test` — discoverable by the test runner.
+    pub test: bool,
+    /// Function is marked `@deprecated`.
+    pub deprecated: bool,
 }
 
 /// A single MIR function.
@@ -164,6 +183,8 @@ pub struct MirFunction {
     pub ret_ty: MirType,
     pub blocks: Vec<BasicBlock>,
     pub locals: Vec<MirLocal>,
+    /// Source-level attributes preserved for optimization and tooling passes.
+    pub attributes: MirAttributes,
 }
 
 /// A formal parameter — refers to a local slot.
@@ -240,6 +261,26 @@ pub enum Instruction {
         actor: LocalId,
         handler_tag: u32,
         args: Vec<Operand>,
+    },
+
+    /// Load a field from actor state: dest = *(state_ptr + field_offset * 8).
+    ActorStateLoad {
+        dest: LocalId,
+        state_ptr: LocalId,
+        field_offset: u32,
+    },
+
+    /// Store a value to an actor state field: *(state_ptr + field_offset * 8) = value.
+    ActorStateStore {
+        state_ptr: LocalId,
+        field_offset: u32,
+        value: Operand,
+    },
+
+    /// Store a value through a reference/pointer (deref assignment: *ptr = val).
+    StoreDeref {
+        ptr: Operand,
+        value: Operand,
     },
 
     /// No-op placeholder.
@@ -353,8 +394,35 @@ pub enum RValue {
         inclusive: bool,
     },
 
+    /// Take the address of a local (borrow: &x or &mut x).
+    AddrOf {
+        local: LocalId,
+        mutable: bool,
+    },
+
+    /// Load from a reference/pointer (dereference: *x).
+    Deref {
+        operand: Operand,
+    },
+
     /// Comptime-evaluated expression (result is constant after eval).
     Comptime(Box<RValue>),
+
+    /// Create a trait object (fat pointer): packs data + vtable pointer.
+    /// `concrete_type` is the struct name, `trait_name` identifies which vtable.
+    MakeTraitObject {
+        value: Operand,
+        concrete_type: String,
+        trait_name: String,
+    },
+
+    /// Call a method through a vtable (dynamic dispatch).
+    /// `object` is the fat pointer (dyn Trait), `method_index` is the slot in the vtable.
+    VtableCall {
+        object: Operand,
+        method_index: u32,
+        args: Vec<Operand>,
+    },
 }
 
 /// An operand — either a local reference or an inline constant.

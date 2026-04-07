@@ -22,6 +22,7 @@ fn make_function(
         ret_ty,
         blocks,
         locals,
+        attributes: MirAttributes::default(),
     }
 }
 
@@ -274,6 +275,7 @@ fn aot_arc_calls_emitted() {
         functions: vec![func],
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
+        trait_vtables: HashMap::new(),
     };
 
     let obj_bytes = codegen::compile_module(&module).expect("AOT compilation failed");
@@ -452,6 +454,7 @@ fn aot_compile_simple_module() {
         functions: vec![func],
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
+        trait_vtables: HashMap::new(),
     };
 
     let obj_bytes = codegen::compile_module(&module).expect("AOT compilation failed");
@@ -590,6 +593,7 @@ fn aot_struct_field_access() {
         functions: vec![func],
         struct_defs,
         enum_defs: HashMap::new(),
+        trait_vtables: HashMap::new(),
     };
 
     let obj_bytes = codegen::compile_module(&module).expect("AOT compilation of struct access failed");
@@ -669,6 +673,7 @@ fn aot_struct_f64_field_access() {
         functions: vec![func],
         struct_defs,
         enum_defs: HashMap::new(),
+        trait_vtables: HashMap::new(),
     };
 
     let obj_bytes =

@@ -7,8 +7,13 @@
 //! For project builds (when a `src/` directory exists):
 //! 3. `<project_root>/src/foo.kry`
 //! 4. `<project_root>/src/foo/mod.kry`
+//!
+//! For stdlib imports (`use std::foo`):
+//! 5. `<stdlib_dir>/foo.kry`     (strip `std` prefix, look in stdlib dir)
+//! 6. `<stdlib_dir>/foo/mod.kry`
 
 use std::collections::HashSet;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -16,6 +21,53 @@ use kryos_ast::{Decl, ImportPath, Module};
 use kryos_errors::Diagnostic;
 use kryos_lexer::Lexer;
 use kryos_parser::parse;
+
+/// Locate the Kryos stdlib directory.
+///
+/// Search order:
+/// 1. `KRYOS_STDLIB_DIR` environment variable (for testing and overrides).
+/// 2. Walk up from `CARGO_MANIFEST_DIR` (compile-time) to find `stdlib/`.
+/// 3. Walk up from `importing_file` to find `stdlib/`.
+fn find_stdlib_dir(importing_file: &Path) -> Option<PathBuf> {
+    // 1. Env var override
+    if let Ok(dir) = env::var("KRYOS_STDLIB_DIR") {
+        let p = PathBuf::from(dir);
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+
+    // 2. Walk up from CARGO_MANIFEST_DIR (compile-time constant)
+    let manifest_dir = option_env!("CARGO_MANIFEST_DIR");
+    if let Some(dir) = manifest_dir {
+        let mut ancestor = PathBuf::from(dir);
+        loop {
+            let stdlib = ancestor.join("stdlib");
+            if stdlib.is_dir() {
+                return Some(stdlib);
+            }
+            if !ancestor.pop() {
+                break;
+            }
+        }
+    }
+
+    // 3. Walk up from the importing file
+    if let Some(parent) = importing_file.parent() {
+        let mut ancestor = parent.to_path_buf();
+        loop {
+            let stdlib = ancestor.join("stdlib");
+            if stdlib.is_dir() {
+                return Some(stdlib);
+            }
+            if !ancestor.pop() {
+                break;
+            }
+        }
+    }
+
+    None
+}
 
 /// Errors that can occur during module resolution.
 #[derive(Debug)]
@@ -103,6 +155,26 @@ pub fn resolve_module_path(segments: &[String], importing_file: &Path) -> Result
         }
         if !ancestor.pop() {
             break;
+        }
+    }
+
+    // 4. Stdlib fallback: if the first segment is "std" and there are 2+ segments,
+    //    strip the "std" prefix and look in the stdlib directory.
+    if segments.len() >= 2 && segments[0] == "std" {
+        if let Some(stdlib_dir) = find_stdlib_dir(importing_file) {
+            let stdlib_relative: PathBuf = segments[1..].iter().collect();
+
+            let stdlib_file = stdlib_dir.join(&stdlib_relative).with_extension("kry");
+            search_paths.push(stdlib_file.clone());
+            if stdlib_file.is_file() {
+                return Ok(stdlib_file);
+            }
+
+            let stdlib_mod = stdlib_dir.join(&stdlib_relative).join("mod.kry");
+            search_paths.push(stdlib_mod.clone());
+            if stdlib_mod.is_file() {
+                return Ok(stdlib_mod);
+            }
         }
     }
 

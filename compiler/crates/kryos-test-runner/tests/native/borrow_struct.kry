@@ -1,0 +1,14 @@
+// expect-exit: 30
+struct Point {
+    x: i64,
+    y: i64
+}
+
+fn sum_point(p: &Point) -> i64 {
+    return p.x + p.y
+}
+
+fn main() -> i64 {
+    let p = Point { x: 10, y: 20 }
+    return sum_point(&p)
+}
