@@ -444,6 +444,14 @@ impl TypeChecker {
                 // Register as a variable in the type namespace for lookup.
                 self.env.define_var(name.clone(), resolved);
             }
+            Decl::Const { name, ty, value, .. } => {
+                let resolved_ty = if let Some(t) = ty {
+                    self.resolve_type_expr(t)
+                } else {
+                    self.infer_expr(value)
+                };
+                self.env.define_var(name.clone(), resolved_ty);
+            }
             Decl::Import { .. } | Decl::Actor { .. } => {
                 // These don't introduce types we need to check yet.
             }
@@ -989,11 +997,17 @@ impl TypeChecker {
                 match &callee_ty {
                     Type::Function { params, ret } => {
                         if args.len() != params.len() {
+                            let callee_name = match callee.as_ref() {
+                                Expr::Identifier { name, .. } => format!(" to `{name}`"),
+                                _ => String::new(),
+                            };
                             self.error(
                                 format!(
-                                    "expected {} arguments, found {}",
+                                    "this function{callee_name} takes {} argument{} but {} {} supplied",
                                     params.len(),
-                                    args.len()
+                                    if params.len() == 1 { "" } else { "s" },
+                                    args.len(),
+                                    if args.len() == 1 { "was" } else { "were" },
                                 ),
                                 *span,
                             );
@@ -1391,8 +1405,13 @@ impl TypeChecker {
                     if op == BinOp::Add && resolved == Type::Str {
                         return Type::Str;
                     }
+                    let op_sym = match op {
+                        BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
+                        BinOp::Div => "/", BinOp::Mod => "%", BinOp::Pow => "**",
+                        _ => "?",
+                    };
                     self.error(
-                        format!("cannot apply `{:?}` to non-numeric type `{resolved}`", op),
+                        format!("cannot apply `{op_sym}` to type `{resolved}`: expected a numeric type"),
                         span,
                     );
                     return Type::Error;
@@ -1427,11 +1446,13 @@ impl TypeChecker {
                 }
                 let resolved = self.engine.resolve(&left_ty);
                 if !resolved.is_integer() && !resolved.is_error() {
+                    let op_sym = match op {
+                        BinOp::BitAnd => "&", BinOp::BitOr => "|", BinOp::BitXor => "^",
+                        BinOp::Shl => "<<", BinOp::Shr => ">>",
+                        _ => "?",
+                    };
                     self.error(
-                        format!(
-                            "cannot apply bitwise `{:?}` to non-integer type `{resolved}`",
-                            op
-                        ),
+                        format!("cannot apply `{op_sym}` to type `{resolved}`: expected an integer type"),
                         span,
                     );
                     return Type::Error;
@@ -1554,6 +1575,76 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         generic_params: vec![],
         params: vec![("ch".to_string(), Type::I64)],
         ret: Type::I64,
+    });
+
+    // file_read(path: str) -> str — read entire file to string
+    checker.env.define_function(FunctionSig {
+        name: "file_read".to_string(),
+        generic_params: vec![],
+        params: vec![("path".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+
+    // file_write(path: str, content: str) -> i64 — write string to file (0=ok, -1=err)
+    checker.env.define_function(FunctionSig {
+        name: "file_write".to_string(),
+        generic_params: vec![],
+        params: vec![
+            ("path".to_string(), Type::Str),
+            ("content".to_string(), Type::Str),
+        ],
+        ret: Type::I64,
+    });
+
+    // env_get(key: str) -> str — get environment variable
+    checker.env.define_function(FunctionSig {
+        name: "env_get".to_string(),
+        generic_params: vec![],
+        params: vec![("key".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+
+    // time_now() -> i64 — Unix timestamp in seconds
+    checker.env.define_function(FunctionSig {
+        name: "time_now".to_string(),
+        generic_params: vec![],
+        params: vec![],
+        ret: Type::I64,
+    });
+
+    // assert(condition: i64, msg: str) -> void — abort if condition is 0
+    checker.env.define_function(FunctionSig {
+        name: "assert".to_string(),
+        generic_params: vec![],
+        params: vec![
+            ("condition".to_string(), Type::I64),
+            ("msg".to_string(), Type::Str),
+        ],
+        ret: Type::Void,
+    });
+
+    // parse_int(s: str) -> i64 — parse string to integer (0 on failure)
+    checker.env.define_function(FunctionSig {
+        name: "parse_int".to_string(),
+        generic_params: vec![],
+        params: vec![("s".to_string(), Type::Str)],
+        ret: Type::I64,
+    });
+
+    // parse_float(s: str) -> f64 — parse string to float (0.0 on failure)
+    checker.env.define_function(FunctionSig {
+        name: "parse_float".to_string(),
+        generic_params: vec![],
+        params: vec![("s".to_string(), Type::Str)],
+        ret: Type::F64,
+    });
+
+    // type_of(value: any) -> str — returns type name (always "i64" at runtime)
+    checker.env.define_function(FunctionSig {
+        name: "type_of".to_string(),
+        generic_params: vec![],
+        params: vec![("value".to_string(), Type::Error)],
+        ret: Type::Str,
     });
 
     checker.check_module(module);
