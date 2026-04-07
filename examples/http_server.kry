@@ -1,0 +1,82 @@
+// ============================================================
+// Kryos HTTP Server Demo
+//
+// Demonstrates: structs, impl, match, error handling,
+//               string concatenation, higher-order patterns
+// ============================================================
+
+struct Request {
+    method: str
+    path: str
+    body: str
+}
+
+struct Response {
+    status: i64
+    body: str
+}
+
+// Route a request to the appropriate handler.
+fn route(req: Request) -> Response {
+    match req.path {
+        "/" => Response { status: 200, body: "Welcome to Kryos!" }
+        "/health" => Response { status: 200, body: "OK" }
+        "/api/echo" => Response { status: 200, body: req.body }
+        _ => Response { status: 404, body: "Not Found" }
+    }
+}
+
+// Format an HTTP response line.
+fn format_response(resp: Response) -> str {
+    return "HTTP/1.1 " + to_string(resp.status) + " :: " + resp.body
+}
+
+// Log a request/response pair.
+fn log_request(path: str, resp: Response) {
+    println("  " + path + " -> " + to_string(resp.status) + " " + resp.body)
+}
+
+fn main() {
+    println("=== Kryos HTTP Server Demo ===")
+    println("")
+
+    // Simulate handling a batch of requests
+    println("Routing requests:")
+
+    let req1 = Request { method: "GET", path: "/", body: "" }
+    let resp1 = route(req1)
+    log_request("/", resp1)
+
+    let req2 = Request { method: "GET", path: "/health", body: "" }
+    let resp2 = route(req2)
+    log_request("/health", resp2)
+
+    let req3 = Request { method: "POST", path: "/api/echo", body: "hello" }
+    let resp3 = route(req3)
+    log_request("/api/echo", resp3)
+
+    let req4 = Request { method: "GET", path: "/missing", body: "" }
+    let resp4 = route(req4)
+    log_request("/missing", resp4)
+
+    println("")
+
+    // Demonstrate error handling in request processing
+    println("Error handling:")
+    try {
+        throw "connection reset by peer"
+    } catch e {
+        println("  Caught network error: " + e)
+        println("  Returning 503 Service Unavailable")
+    }
+
+    println("")
+
+    // Format a full HTTP response
+    let sample = Response { status: 200, body: "Hello, World!" }
+    let formatted = format_response(sample)
+    println("Formatted response: " + formatted)
+
+    println("")
+    println("=== Server demo complete ===")
+}

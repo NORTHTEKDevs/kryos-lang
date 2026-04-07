@@ -1,0 +1,166 @@
+{
+  "Function": {
+    "prefix": "fn",
+    "body": [
+      "fn ${1:name}(${2:params}) -> ${3:ReturnType} {",
+      "    $0",
+      "}"
+    ],
+    "description": "Function declaration"
+  },
+  "Struct": {
+    "prefix": "struct",
+    "body": [
+      "struct ${1:Name} {",
+      "    ${2:field}: ${3:Type}",
+      "}"
+    ],
+    "description": "Struct declaration"
+  },
+  "Enum": {
+    "prefix": "enum",
+    "body": [
+      "enum ${1:Name} {",
+      "    ${2:Variant}",
+      "}"
+    ],
+    "description": "Enum declaration"
+  },
+  "Main": {
+    "prefix": "main",
+    "body": [
+      "fn main() {",
+      "    $0",
+      "}"
+    ],
+    "description": "Main function"
+  },
+  "Test": {
+    "prefix": "test",
+    "body": [
+      "@test",
+      "fn test_${1:name}() {",
+      "    $0",
+      "}"
+    ],
+    "description": "Test function"
+  },
+  "Impl": {
+    "prefix": "impl",
+    "body": [
+      "impl ${1:Type} {",
+      "    fn ${2:method}(self) -> ${3:ReturnType} {",
+      "        $0",
+      "    }",
+      "}"
+    ],
+    "description": "Impl block"
+  },
+  "Trait": {
+    "prefix": "trait",
+    "body": [
+      "trait ${1:Name} {",
+      "    fn ${2:method}(self) -> ${3:ReturnType}",
+      "}"
+    ],
+    "description": "Trait declaration"
+  },
+  "Actor": {
+    "prefix": "actor",
+    "body": [
+      "actor ${1:Name} {",
+      "    ${2:field}: ${3:Type}",
+      "",
+      "    fn ${4:method}(${5:params}) -> ${6:ReturnType} {",
+      "        $0",
+      "    }",
+      "}"
+    ],
+    "description": "Actor declaration"
+  },
+  "Match": {
+    "prefix": "match",
+    "body": [
+      "match ${1:value} {",
+      "    ${2:pattern} => ${3:expr}",
+      "    _ => ${4:default}",
+      "}"
+    ],
+    "description": "Match expression"
+  },
+  "Try Catch": {
+    "prefix": "try",
+    "body": [
+      "try {",
+      "    $0",
+      "} catch ${1:e} {",
+      "    println(\"Error: \" + ${1:e})",
+      "}"
+    ],
+    "description": "Try/catch block"
+  },
+  "While Loop": {
+    "prefix": "while",
+    "body": [
+      "while ${1:condition} {",
+      "    $0",
+      "}"
+    ],
+    "description": "While loop"
+  },
+  "For Loop": {
+    "prefix": "for",
+    "body": [
+      "for ${1:item} in ${2:collection} {",
+      "    $0",
+      "}"
+    ],
+    "description": "For loop"
+  },
+  "Spawn": {
+    "prefix": "spawn",
+    "body": [
+      "spawn {",
+      "    $0",
+      "}"
+    ],
+    "description": "Spawn a new thread"
+  },
+  "Channel": {
+    "prefix": "chan",
+    "body": [
+      "let ${1:ch} = chan()",
+      "spawn {",
+      "    send(${1:ch}, ${2:value})",
+      "}",
+      "let ${3:result} = recv(${1:ch})"
+    ],
+    "description": "Channel with spawn pattern"
+  },
+  "Capabilities": {
+    "prefix": "cap",
+    "body": [
+      "@capabilities(${1:net, io})",
+      "fn ${2:name}(${3:params}) -> ${4:ReturnType} {",
+      "    $0",
+      "}"
+    ],
+    "description": "Function with capability annotation"
+  },
+  "Comptime": {
+    "prefix": "comptime",
+    "body": [
+      "let ${1:name} = comptime { ${2:expr} }"
+    ],
+    "description": "Compile-time evaluation"
+  },
+  "Extern Block": {
+    "prefix": "extern",
+    "body": [
+      "extern {",
+      "    fn ${1:name}(${2:params}) -> ${3:ReturnType}",
+      "}"
+    ],
+    "description": "Extern FFI block"
+  }
+}

@@ -109,12 +109,27 @@ Kryos type checking is **1.16x faster than Rust** and **3.5x faster than Go vet*
 - **CI/CD**: Faster builds = cheaper CI minutes, faster deployments
 - **Binary distribution**: 105KB binaries are trivial to deploy anywhere
 
-### Honest Limitations (v0.1.0)
-- **Runtime performance is unmeasured**: We can't benchmark runtime speed yet because I/O builtins (print, file I/O) aren't wired to codegen. The compiled programs run but can't produce observable output beyond exit codes
-- **Struct codegen is incomplete**: Programs with structs hit Cranelift verifier errors. Scalar types (i32, f64, bool) work correctly
-- **No optimization passes**: Kryos has no optimizer yet. Rust with -O2 will produce dramatically faster runtime code
-- **No standard library at native level**: The 22 stdlib modules exist as .kry source but aren't compiled as native libraries yet
-- **Single-file only**: Multi-file compilation with module resolution isn't wired end-to-end yet
+### Status Update (v0.1.0 post-Ring 3)
+
+Since these benchmarks were first collected, significant improvements have landed:
+
+- **Struct codegen is operational**: Programs with structs compile and run through both Cranelift and LLVM backends
+- **LLVM mutable variable SSA is fixed**: Release builds now work for loop-mutation programs (proper alloca/load/store generation)
+- **Five MIR-level optimization passes** are now active:
+  1. **Constant folding** -- evaluates compile-time-known expressions, eliminating runtime arithmetic
+  2. **Dead code elimination** -- removes unreachable blocks and unused computations
+  3. **Function inlining** -- inlines small functions (body < 10 instructions) at call sites
+  4. **Tail-call optimization** -- converts tail-recursive functions to loops, eliminating stack growth
+  5. **Strength reduction** -- replaces expensive operations (multiply by power-of-2 becomes shift)
+- **28 standard library modules** are available (up from 22)
+- **Module resolution** is functional for `use` imports
+
+These MIR-level optimizations run before the backend, improving both Cranelift debug builds and LLVM release builds. The LLVM release path now benefits from Kryos optimizations stacked on top of LLVM's own -O2 pipeline.
+
+### Remaining Limitations
+- **Integer literal type inference** still requires explicit `as i64` casts in some contexts
+- **Incremental compilation** is not yet implemented
+- **Cross-compilation** is not yet supported
 
 ### Projected Performance at v1.0
 - Compilation speed advantage will **grow** with larger programs (Cranelift's advantage scales with code size)

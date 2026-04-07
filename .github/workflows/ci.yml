@@ -1,5 +1,10 @@
-name: Kryos CI
-on: [push, pull_request]
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
 
 jobs:
   build-and-test:
@@ -9,10 +14,27 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build workspace
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "compiler"
+
+      - name: Build (release)
         working-directory: compiler
-        run: cargo build --workspace
-      - name: Run tests
+        run: cargo build --release -j 4
+
+      - name: Test
         working-directory: compiler
-        run: cargo test --workspace
+        run: cargo test -j 4
+
+      - name: Clippy
+        working-directory: compiler
+        run: cargo clippy -- -D warnings
+
+      - name: Format check
+        working-directory: compiler
+        run: cargo fmt -- --check

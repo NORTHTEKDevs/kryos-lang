@@ -1,0 +1,112 @@
+// ============================================================
+// Kryos Fibonacci Showcase
+//
+// Demonstrates: recursion, tail-call optimization,
+//               compile-time evaluation, higher-order functions,
+//               performance comparison patterns
+// ============================================================
+
+// Classic recursive Fibonacci -- O(2^n)
+fn fib(n: i64) -> i64 {
+    if n <= 1 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+// Tail-recursive Fibonacci -- O(n), optimized by TCO pass
+fn fib_tail(n: i64, a: i64, b: i64) -> i64 {
+    if n <= 0 { return a }
+    return fib_tail(n - 1, b, a + b)
+}
+
+// Iterative Fibonacci -- O(n), baseline comparison
+fn fib_iter(n: i64) -> i64 {
+    if n <= 1 { return n }
+    let mut a = 0
+    let mut b = 1
+    let mut i = 2
+    while i <= n {
+        let tmp = a + b
+        a = b
+        b = tmp
+        i = i + 1
+    }
+    return b
+}
+
+// Apply a function repeatedly and return final result
+fn apply_n(f: fn(i64) -> i64, x: i64, n: i64) -> i64 {
+    let mut result = x
+    let mut i = 0
+    while i < n {
+        result = f(result)
+        i = i + 1
+    }
+    return result
+}
+
+fn double(x: i64) -> i64 { return x * 2 }
+
+fn main() {
+    println("=== Kryos Fibonacci Showcase ===")
+    println("")
+
+    // --- Classic recursion ---
+    println("1. Classic Recursion")
+    let mut i = 0
+    while i <= 10 {
+        let v = fib(i)
+        println("   fib(" + to_string(i) + ") = " + to_string(v))
+        i = i + 2
+    }
+    let fib20 = fib(20)
+    println("   fib(20) = " + to_string(fib20))
+    println("")
+
+    // --- Tail-recursive (TCO optimized) ---
+    println("2. Tail-Recursive (TCO pass)")
+    let fib20_tail = fib_tail(20, 0, 1)
+    println("   fib_tail(20) = " + to_string(fib20_tail))
+    let fib40_tail = fib_tail(40, 0, 1)
+    println("   fib_tail(40) = " + to_string(fib40_tail))
+    let fib50_tail = fib_tail(50, 0, 1)
+    println("   fib_tail(50) = " + to_string(fib50_tail))
+    println("")
+
+    // --- Iterative baseline ---
+    println("3. Iterative Baseline")
+    let fib20_iter = fib_iter(20)
+    println("   fib_iter(20) = " + to_string(fib20_iter))
+    let fib40_iter = fib_iter(40)
+    println("   fib_iter(40) = " + to_string(fib40_iter))
+    println("")
+
+    // --- Compile-time evaluation ---
+    println("4. Compile-Time Evaluation (comptime)")
+    let ct1 = comptime { 6 * 7 }
+    println("   comptime { 6 * 7 } = " + to_string(ct1))
+    let ct2 = comptime { 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2 }
+    println("   comptime { 2^10 }  = " + to_string(ct2))
+    let ct3 = comptime { (100 + 200) * 3 - 50 }
+    println("   comptime { (100+200)*3-50 } = " + to_string(ct3))
+    println("")
+
+    // --- Higher-order functions ---
+    println("5. Higher-Order Functions")
+    let result = apply_n(double, 1, 10)
+    println("   double applied 10 times to 1 = " + to_string(result))
+    println("")
+
+    // --- Correctness check ---
+    println("6. Verification")
+    // Recompute values to satisfy ownership (each value used once)
+    let v1 = fib(20)
+    println("   fib(20)      = " + to_string(v1))
+    let v2 = fib_tail(20, 0, 1)
+    println("   fib_tail(20) = " + to_string(v2))
+    let v3 = fib_iter(20)
+    println("   fib_iter(20) = " + to_string(v3))
+    println("   All three methods should return 6765")
+    println("")
+
+    println("=== Fibonacci complete ===")
+}

@@ -1,0 +1,92 @@
+// ============================================================
+// Kryos Pipeline Demo
+//
+// Demonstrates: concurrency (channels, spawn), structs,
+//               while loops, arithmetic, function composition
+// ============================================================
+
+struct DataPoint {
+    id: i64
+    value: i64
+}
+
+fn square(x: i64) -> i64 {
+    return x * x
+}
+
+fn format_dp(id: i64, value: i64) -> str {
+    return "  DataPoint [id=" + to_string(id) + ", value=" + to_string(value) + "]"
+}
+
+fn main() {
+    println("=== Kryos Pipeline Demo ===")
+    println("")
+
+    let count = 10
+
+    // --- Stage 1: Generate and process data points ---
+    println("Stage 1: Generate squares")
+    let mut sum = 0
+    let mut i = 0
+    while i < count {
+        let v = square(i)
+        // Print the data point (recompute to satisfy ownership)
+        println(format_dp(i, square(i)))
+        sum = sum + v
+        i = i + 1
+    }
+    println("")
+    println("Sum of squares 0-9: " + to_string(sum))
+    println("")
+
+    // --- Stage 2: Filter even squares ---
+    println("Stage 2: Filter even values")
+    let mut even_sum = 0
+    let mut even_count = 0
+    i = 0
+    while i < count {
+        let v = square(i)
+        let remainder = v % 2
+        if remainder == 0 {
+            // Recompute for each use since Kryos enforces move semantics
+            println("  " + to_string(square(i)) + " is even")
+            even_sum = even_sum + square(i)
+            even_count = even_count + 1
+        }
+        i = i + 1
+    }
+    println("")
+    println("Even squares: " + to_string(even_count) + ", sum: " + to_string(even_sum))
+    println("")
+
+    // --- Stage 3: Channel-based pipeline ---
+    println("Stage 3: Channel pipeline")
+    let ch = chan()
+
+    spawn {
+        let mut j = 0
+        while j < 5 {
+            send(ch, j * 10)
+            j = j + 1
+        }
+    }
+
+    let mut received = 0
+    let mut ch_sum = 0
+    while received < 5 {
+        let val = recv(ch)
+        // Use val for accumulation, recompute for print
+        ch_sum = ch_sum + val
+        // Print the running total instead of the moved val
+        println("  Received batch " + to_string(received) + ", running sum: " + to_string(ch_sum))
+        received = received + 1
+    }
+
+    // Recompute for display
+    println("")
+    let final_sum = ch_sum
+    println("Channel sum: " + to_string(final_sum))
+
+    println("")
+    println("=== Pipeline complete ===")
+}

@@ -128,11 +128,24 @@ fn main() {
 
 ### Where Kryos Lags
 
-1. **LLVM release backend is incomplete**: Mutable variable reassignment in loops produces invalid SSA, preventing release builds for 2 of 3 benchmarks. This is the highest-priority codegen fix -- the MIR lowering needs to emit proper `alloca`/`load`/`store` or phi nodes.
+1. **No compile-time loop folding**: Rust release evaluates `sum(0..100M)` at compile time via LLVM's aggressive dead-code elimination. Kryos's constant folding pass handles expressions but does not yet fold entire loops with known bounds.
 
-2. **No constant folding**: Rust release evaluates `sum(0..100M)` at compile time. Kryos has no optimization passes yet -- even the LLVM backend doesn't benefit from LLVM's optimizations because the IR it emits is not structured to enable them (e.g., no mem2reg-compatible form).
+2. **Type system friction**: Kryos requires explicit `as i64` casts where Rust/Go infer automatically. Integer literals default to `i32` with no suffix syntax for `i64`. This is a UX issue, not a performance one.
 
-3. **Type system friction**: Kryos requires explicit `as i64` casts where Rust/Go infer automatically. Integer literals default to `i32` with no suffix syntax for `i64`. This is a UX issue, not a performance one.
+### Status Update (Post-Ring 3 Fixes)
+
+Several issues noted above have been resolved:
+
+- **LLVM SSA bug is fixed**: The MIR-to-LLVM IR lowering now emits proper `alloca`/`load`/`store` for mutable variables. Release builds work for all benchmark programs, including the sum loop and nested loops that previously failed.
+
+- **Five MIR-level optimization passes** now run before the backend:
+  1. **Constant folding** -- evaluates compile-time-known arithmetic and conditionals
+  2. **Dead code elimination** -- removes unreachable basic blocks and unused variables
+  3. **Function inlining** -- inlines small functions (< 10 instructions) at call sites, reducing call overhead
+  4. **Tail-call optimization** -- converts tail-recursive functions into loops, eliminating stack frame allocation
+  5. **Strength reduction** -- replaces expensive operations with cheaper equivalents (e.g., multiply by power-of-2 becomes left shift)
+
+These passes improve debug build performance and enable LLVM's own optimization pipeline to work more effectively on the generated IR. The fib(42) benchmark in particular benefits from TCO when using the tail-recursive variant.
 
 ### The Cranelift Advantage
 
@@ -147,13 +160,17 @@ This validates the dual-backend strategy: Cranelift for fast dev builds, LLVM fo
 
 ### Projected Performance at v1.0
 
-| Improvement | Impact |
-|-------------|--------|
-| Fix LLVM SSA for mutable variables | Release builds for all programs, matching Rust -O2 |
-| Add LLVM mem2reg pass compatibility | Enable LLVM's full optimization pipeline |
-| Integer literal type inference | Remove need for `as i64` casts |
-| Loop unrolling hints | Approach or match Rust release on tight loops |
-| Inlining across functions | Reduce function call overhead in debug mode |
+| Improvement | Status | Impact |
+|-------------|--------|--------|
+| Fix LLVM SSA for mutable variables | DONE | Release builds for all programs, matching Rust -O2 |
+| Constant folding | DONE | Compile-time evaluation of known expressions |
+| Dead code elimination | DONE | Smaller binaries, faster execution |
+| Function inlining | DONE | Reduced call overhead in debug mode |
+| Tail-call optimization | DONE | Recursive functions run in constant stack space |
+| Strength reduction | DONE | Cheaper ALU operations where possible |
+| Loop unrolling hints | Planned | Approach or match Rust release on tight loops |
+| Integer literal type inference | Planned | Remove need for `as i64` casts |
+| LICM (loop-invariant code motion) | Planned | Hoist invariant computations out of loops |
 
 ## Methodology Notes
 

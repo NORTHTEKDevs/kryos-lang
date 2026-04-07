@@ -1,0 +1,45 @@
+{
+  "name": "kryos",
+  "displayName": "Kryos",
+  "description": "Kryos language support -- syntax highlighting, snippets, and LSP integration",
+  "version": "0.1.0",
+  "publisher": "frostbyte-digital",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/FrostbyteDevTeam/kryos-lang"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "kryos",
+        "aliases": [
+          "Kryos",
+          "kryos"
+        ],
+        "extensions": [
+          ".kry"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "kryos",
+        "scopeName": "source.kryos",
+        "path": "./syntaxes/kryos.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "kryos",
+        "path": "./snippets/kryos.json"
+      }
+    ]
+  }
+}

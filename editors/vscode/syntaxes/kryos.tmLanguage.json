@@ -1,0 +1,258 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Kryos",
+  "scopeName": "source.kryos",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#annotations" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#constants" },
+    { "include": "#builtins" },
+    { "include": "#numbers" },
+    { "include": "#operators" },
+    { "include": "#function-definition" },
+    { "include": "#function-call" },
+    { "include": "#struct-definition" },
+    { "include": "#enum-definition" },
+    { "include": "#trait-definition" },
+    { "include": "#impl-block" },
+    { "include": "#actor-definition" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.documentation.kryos",
+          "match": "///.*$"
+        },
+        {
+          "name": "comment.line.double-slash.kryos",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.kryos",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.kryos",
+              "match": "\\\\(n|r|t|\\\\|\"|0|x[0-9a-fA-F]{2}|u\\{[0-9a-fA-F]+\\})"
+            }
+          ]
+        }
+      ]
+    },
+    "annotations": {
+      "patterns": [
+        {
+          "name": "meta.annotation.kryos",
+          "match": "@(capabilities|compute|export|layout|real_time|no_std|zero_copy|target|differentiable|test|bench|actor|budget|sandbox|repr|copy|allocator|inline|deprecated|pure)\\b",
+          "captures": {
+            "0": { "name": "storage.type.annotation.kryos" }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.kryos",
+          "match": "\\b(if|elif|else|match|while|for|in|break|continue|return|try|catch|throw|select)\\b"
+        },
+        {
+          "name": "keyword.declaration.kryos",
+          "match": "\\b(fn|let|mut|const|struct|enum|trait|impl|actor|type|use|mod|pub|extern)\\b"
+        },
+        {
+          "name": "keyword.operator.logical.kryos",
+          "match": "\\b(and|or|not)\\b"
+        },
+        {
+          "name": "keyword.other.kryos",
+          "match": "\\b(spawn|send|recv|ask|chan|parallel|quantum|comptime|dyn|as|shared|weak|move)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.primitive.kryos",
+          "match": "\\b(i8|i16|i32|i64|i128|u8|u16|u32|u64|u128|f32|f64|bool|char|str|void|usize|isize)\\b"
+        },
+        {
+          "name": "storage.type.builtin.kryos",
+          "match": "\\b(Tensor|Vec|Map|Set|Option|Result|Secret|Qubit|Qureg)\\b"
+        },
+        {
+          "name": "entity.name.type.kryos",
+          "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.kryos",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "constant.language.none.kryos",
+          "match": "\\b(none)\\b"
+        }
+      ]
+    },
+    "builtins": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.kryos",
+          "match": "\\b(println|print|eprintln|exit|len|to_string|range|chan|send|recv|file_read|file_write|env_get|time_now|assert|parse_int|parse_float|type_of)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.kryos",
+          "match": "\\b0x[0-9a-fA-F_]+\\b"
+        },
+        {
+          "name": "constant.numeric.binary.kryos",
+          "match": "\\b0b[01_]+\\b"
+        },
+        {
+          "name": "constant.numeric.octal.kryos",
+          "match": "\\b0o[0-7_]+\\b"
+        },
+        {
+          "name": "constant.numeric.float.kryos",
+          "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*([eE][+-]?[0-9_]+)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.kryos",
+          "match": "\\b[0-9][0-9_]*\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.assignment.kryos",
+          "match": "(=|\\+=|-=|\\*=|/=|%=)"
+        },
+        {
+          "name": "keyword.operator.comparison.kryos",
+          "match": "(==|!=|<=|>=|<|>)"
+        },
+        {
+          "name": "keyword.operator.arithmetic.kryos",
+          "match": "(\\+|-|\\*|/|%|\\*\\*)"
+        },
+        {
+          "name": "keyword.operator.bitwise.kryos",
+          "match": "(&|\\||\\^|~|<<|>>)"
+        },
+        {
+          "name": "keyword.operator.arrow.kryos",
+          "match": "(->|=>)"
+        }
+      ]
+    },
+    "function-definition": {
+      "patterns": [
+        {
+          "match": "\\b(fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.function.kryos" },
+            "2": { "name": "entity.name.function.kryos" }
+          }
+        }
+      ]
+    },
+    "function-call": {
+      "patterns": [
+        {
+          "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()",
+          "captures": {
+            "1": { "name": "entity.name.function.call.kryos" }
+          }
+        }
+      ]
+    },
+    "struct-definition": {
+      "patterns": [
+        {
+          "match": "\\b(struct)\\s+([A-Z][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.struct.kryos" },
+            "2": { "name": "entity.name.type.struct.kryos" }
+          }
+        }
+      ]
+    },
+    "enum-definition": {
+      "patterns": [
+        {
+          "match": "\\b(enum)\\s+([A-Z][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.enum.kryos" },
+            "2": { "name": "entity.name.type.enum.kryos" }
+          }
+        }
+      ]
+    },
+    "trait-definition": {
+      "patterns": [
+        {
+          "match": "\\b(trait)\\s+([A-Z][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.trait.kryos" },
+            "2": { "name": "entity.name.type.trait.kryos" }
+          }
+        }
+      ]
+    },
+    "impl-block": {
+      "patterns": [
+        {
+          "match": "\\b(impl)\\s+([A-Z][a-zA-Z0-9_]*)(?:\\s+(for)\\s+([A-Z][a-zA-Z0-9_]*))?",
+          "captures": {
+            "1": { "name": "keyword.declaration.impl.kryos" },
+            "2": { "name": "entity.name.type.kryos" },
+            "3": { "name": "keyword.declaration.kryos" },
+            "4": { "name": "entity.name.type.kryos" }
+          }
+        }
+      ]
+    },
+    "actor-definition": {
+      "patterns": [
+        {
+          "match": "\\b(actor)\\s+([A-Z][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.actor.kryos" },
+            "2": { "name": "entity.name.type.actor.kryos" }
+          }
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.delimiter.kryos",
+          "match": "[;,.]"
+        },
+        {
+          "name": "punctuation.bracket.kryos",
+          "match": "[{}()\\[\\]]"
+        }
+      ]
+    }
+  }
+}
