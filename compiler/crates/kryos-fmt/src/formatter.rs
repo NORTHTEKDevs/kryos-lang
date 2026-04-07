@@ -152,6 +152,14 @@ impl Formatter {
             Decl::Import { path, .. } => self.fmt_import(path),
 
             Decl::Extern { abi, items, .. } => self.fmt_extern(abi, items),
+
+            Decl::Const {
+                name,
+                ty,
+                value,
+                public,
+                ..
+            } => self.fmt_const(name, ty, value, *public),
         }
     }
 
@@ -564,6 +572,24 @@ impl Formatter {
         self.newline();
     }
 
+    // -- const --------------------------------------------------------------
+
+    fn fmt_const(&mut self, name: &str, ty: &Option<TypeExpr>, value: &Expr, public: bool) {
+        self.write_indent();
+        if public {
+            self.write("pub ");
+        }
+        self.write("let ");
+        self.write(name);
+        if let Some(ty_expr) = ty {
+            self.write(": ");
+            self.write(&self.fmt_type_to_string(ty_expr));
+        }
+        self.write(" = ");
+        self.write(&self.fmt_expr_to_string(value));
+        self.newline();
+    }
+
     // -- import -------------------------------------------------------------
 
     fn fmt_import(&mut self, path: &ImportPath) {
@@ -703,12 +729,16 @@ impl Formatter {
             }
 
             Stmt::For {
+                parallel,
                 pattern,
                 iterable,
                 body,
                 ..
             } => {
                 self.write_indent();
+                if *parallel {
+                    self.write("parallel ");
+                }
                 self.write("for ");
                 self.write(&self.fmt_pattern_to_string(pattern));
                 self.write(" in ");
