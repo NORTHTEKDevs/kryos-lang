@@ -455,8 +455,50 @@ impl TypeChecker {
                 for sig in &method_sigs {
                     self.env.define_function(sig.clone());
                 }
+
+                // If this is a trait impl, inherit default methods from the
+                // trait that are not explicitly overridden in this impl block.
+                let mut all_method_sigs = method_sigs.clone();
+                if let Some(ref tname) = trait_name {
+                    if let Some(trait_def) = self.env.lookup_trait(tname).cloned() {
+                        let explicit_names: std::collections::HashSet<&str> =
+                            method_sigs.iter().map(|s| s.name.as_str()).collect();
+                        for trait_method in &trait_def.methods {
+                            if !explicit_names.contains(trait_method.name.as_str()) {
+                                // Rewrite the `self` parameter type to the concrete
+                                // impl target type.
+                                let rewritten_params: Vec<(String, Type)> = trait_method
+                                    .params
+                                    .iter()
+                                    .map(|(pname, pty)| {
+                                        if pname == "self" {
+                                            (
+                                                pname.clone(),
+                                                impl_target_ty.clone().unwrap_or_else(
+                                                    || pty.clone(),
+                                                ),
+                                            )
+                                        } else {
+                                            (pname.clone(), pty.clone())
+                                        }
+                                    })
+                                    .collect();
+                                let default_sig = FunctionSig {
+                                    name: trait_method.name.clone(),
+                                    generic_params: trait_method.generic_params.clone(),
+                                    generic_var_ids: trait_method.generic_var_ids.clone(),
+                                    params: rewritten_params,
+                                    ret: trait_method.ret.clone(),
+                                };
+                                self.env.define_function(default_sig.clone());
+                                all_method_sigs.push(default_sig);
+                            }
+                        }
+                    }
+                }
+
                 self.env
-                    .define_impl(target.clone(), trait_name.clone(), method_sigs);
+                    .define_impl(target.clone(), trait_name.clone(), all_method_sigs);
             }
             Decl::Trait {
                 name,

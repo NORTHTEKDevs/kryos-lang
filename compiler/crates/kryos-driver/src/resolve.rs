@@ -12,7 +12,7 @@
 //! 5. `<stdlib_dir>/foo.kry`     (strip `std` prefix, look in stdlib dir)
 //! 6. `<stdlib_dir>/foo/mod.kry`
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -301,14 +301,19 @@ pub fn resolve_imports(
 
         // Collect non-import declarations from the imported module.
         // When selective import is used (`use foo::{a, b}`), only include
-        // declarations whose names match the requested items.
+        // declarations whose names match the requested items, plus ALL
+        // module-level constants (Decl::Const). Constants are always
+        // included because selected functions may depend on them internally
+        // (e.g., `sqrt` uses `NAN`, trig functions use `PI`/`TAU`).
         for decl in imported_module.declarations {
             if matches!(decl, Decl::Import { .. }) {
                 continue;
             }
             if !import_path.items.is_empty() {
-                // Selective import: only include declarations matching requested items.
-                if let Some(name) = decl_name_of(&decl) {
+                // Selective import: include matching declarations AND all constants.
+                if matches!(decl, Decl::Const { .. }) {
+                    resolved_decls.push(decl);
+                } else if let Some(name) = decl_name_of(&decl) {
                     if import_path.items.contains(&name) {
                         resolved_decls.push(decl);
                     }
@@ -319,7 +324,60 @@ pub fn resolve_imports(
         }
     }
 
+    // Check for duplicate declarations across imported modules.
+    // When two imports define the same name, emit a clear error rather
+    // than letting codegen crash with an opaque "duplicate definition".
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut dup_errors: Vec<Diagnostic> = Vec::new();
+    for (idx, decl) in resolved_decls.iter().enumerate() {
+        if let Some(name) = decl_name_of(decl) {
+            if let Some(&prev_idx) = seen.get(&name) {
+                // Skip duplicate Decl::Const — constants from the same module
+                // can appear multiple times when re-exported through different
+                // selective imports. Only flag non-const duplicates, or const
+                // duplicates that are truly conflicting (different values).
+                if matches!(decl, Decl::Const { .. })
+                    && matches!(&resolved_decls[prev_idx], Decl::Const { .. })
+                {
+                    continue;
+                }
+                let kind = decl_kind_name(decl);
+                dup_errors.push(
+                    Diagnostic::error(format!(
+                        "duplicate {kind} `{name}` imported from multiple modules"
+                    ))
+                    .with_label(decl.span(), "duplicate definition here")
+                    .with_note(format!(
+                        "a {kind} named `{name}` was already imported; \
+                         consider using an alias or selective import to resolve the conflict"
+                    )),
+                );
+            } else {
+                seen.insert(name, idx);
+            }
+        }
+    }
+    if !dup_errors.is_empty() {
+        return Err(dup_errors);
+    }
+
     Ok(())
+}
+
+/// Return a human-readable kind name for a declaration (for error messages).
+fn decl_kind_name(decl: &Decl) -> &'static str {
+    match decl {
+        Decl::Function { .. } => "function",
+        Decl::Struct { .. } => "struct",
+        Decl::Enum { .. } => "enum",
+        Decl::Trait { .. } => "trait",
+        Decl::TypeAlias { .. } => "type alias",
+        Decl::Actor { .. } => "actor",
+        Decl::Const { .. } => "constant",
+        Decl::Import { .. } => "import",
+        Decl::Extern { .. } => "extern block",
+        Decl::Impl { .. } => "impl block",
+    }
 }
 
 /// Extract the name of a declaration, if it has one.

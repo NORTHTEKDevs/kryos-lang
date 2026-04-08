@@ -43,6 +43,8 @@ pub struct LoweringContext {
     method_owners: HashMap<(String, String), String>,
     /// Trait definitions: trait_name -> list of required method signatures.
     trait_defs: HashMap<String, Vec<TraitMethodSig>>,
+    /// Trait default method ASTs: trait_name -> list of methods that have bodies.
+    trait_default_methods: HashMap<String, Vec<ast::Decl>>,
     /// Impl-for-trait map: (type_name, trait_name) -> list of mangled method names.
     impl_map: HashMap<(String, String), Vec<String>>,
     /// Generic function templates: func_name -> (generic_params, AST function decl).
@@ -111,6 +113,7 @@ impl LoweringContext {
             func_ret_types: HashMap::new(),
             method_owners: HashMap::new(),
             trait_defs: HashMap::new(),
+            trait_default_methods: HashMap::new(),
             impl_map: HashMap::new(),
             generic_templates: HashMap::new(),
             monomorphized: HashMap::new(),
@@ -131,12 +134,20 @@ impl LoweringContext {
 
     // ----- type resolution -----
 
-    /// Resolve a type, checking type aliases first.
-    #[allow(dead_code)]
+    /// Resolve a type, checking type aliases and enum definitions.
+    ///
+    /// `lower_type_expr` maps all unknown type names to `Struct(name)`.
+    /// This method post-processes the result: if the name matches a known
+    /// enum definition, it produces `Enum(name)` instead; if it matches a
+    /// type alias, it resolves to the aliased type.
     fn resolve_type(&self, ty: &ast::TypeExpr) -> MirType {
         let mir_ty = lower_type_expr(ty);
-        // If the result is a Struct with a name that matches a type alias, resolve it.
         if let MirType::Struct(ref name) = mir_ty {
+            // Check enum definitions first — enum types must be distinguished
+            // from struct types so that match lowering emits tag extraction.
+            if self.enum_defs.contains_key(name.as_str()) {
+                return MirType::Enum(name.clone());
+            }
             if let Some(aliased) = self.type_aliases.get(name) {
                 return aliased.clone();
             }
@@ -368,7 +379,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
             ast::Decl::Struct { name, fields, .. } => {
                 let field_list: Vec<(String, MirType)> = fields
                     .iter()
-                    .map(|f| (f.name.clone(), lower_type_expr(&f.ty)))
+                    .map(|f| (f.name.clone(), ctx.resolve_type(&f.ty)))
                     .collect();
                 ctx.struct_defs.insert(name.clone(), field_list);
             }
@@ -384,7 +395,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
             }
             ast::Decl::Function { name, generics, params, ret_ty, body, .. } => {
                 let mir_ret = match ret_ty {
-                    Some(ty) => lower_type_expr(ty),
+                    Some(ty) => ctx.resolve_type(ty),
                     None => MirType::Void,
                 };
                 ctx.func_ret_types.insert(name.clone(), mir_ret);
@@ -392,7 +403,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                 // Store parameter types for dyn Trait coercion.
                 let param_types: Vec<MirType> = params
                     .iter()
-                    .map(|p| p.ty.as_ref().map(lower_type_expr).unwrap_or(MirType::I64))
+                    .map(|p| p.ty.as_ref().map(|t| ctx.resolve_type(t)).unwrap_or(MirType::I64))
                     .collect();
                 ctx.func_param_types.insert(name.clone(), param_types);
 
@@ -419,12 +430,12 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                                 .filter(|p| p.name != "self")
                                 .map(|p| {
                                     p.ty.as_ref()
-                                        .map(lower_type_expr)
+                                        .map(|t| ctx.resolve_type(t))
                                         .unwrap_or(MirType::I64)
                                 })
                                 .collect();
                             let ret = match ret_ty {
-                                Some(ty) => lower_type_expr(ty),
+                                Some(ty) => ctx.resolve_type(ty),
                                 None => MirType::Void,
                             };
                             Some(TraitMethodSig {
@@ -438,6 +449,16 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                     })
                     .collect();
                 ctx.trait_defs.insert(name.clone(), method_sigs);
+                // Store default methods (those with bodies) for later use
+                // when processing impl blocks that don't override them.
+                let defaults: Vec<ast::Decl> = methods
+                    .iter()
+                    .filter(|m| matches!(m, ast::Decl::Function { body: Some(_), .. }))
+                    .cloned()
+                    .collect();
+                if !defaults.is_empty() {
+                    ctx.trait_default_methods.insert(name.clone(), defaults);
+                }
             }
             ast::Decl::Impl { target, trait_name, methods, .. } => {
                 // Register mangled method names in func_ret_types.
@@ -445,7 +466,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                     if let ast::Decl::Function { name, ret_ty, .. } = method {
                         let mangled = format!("{target}__{name}");
                         let mir_ret = match ret_ty {
-                            Some(ty) => lower_type_expr(ty),
+                            Some(ty) => ctx.resolve_type(ty),
                             None => MirType::Void,
                         };
                         ctx.func_ret_types.insert(mangled, mir_ret);
@@ -460,9 +481,39 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                         );
                     }
                 }
-                // If implementing a trait, record in impl_map.
+                // Collect explicit method names for checking default overrides.
+                let explicit_names: HashSet<String> = methods
+                    .iter()
+                    .filter_map(|m| {
+                        if let ast::Decl::Function { name, .. } = m {
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                // If implementing a trait, also register default methods that
+                // are NOT overridden in this impl block.
                 if let Some(trait_name) = trait_name {
-                    let mangled_names: Vec<String> = methods
+                    if let Some(defaults) = ctx.trait_default_methods.get(trait_name).cloned() {
+                        for default_method in &defaults {
+                            if let ast::Decl::Function { name, ret_ty, .. } = default_method {
+                                if !explicit_names.contains(name.as_str()) {
+                                    let mangled = format!("{target}__{name}");
+                                    let mir_ret = match ret_ty {
+                                        Some(ty) => ctx.resolve_type(ty),
+                                        None => MirType::Void,
+                                    };
+                                    ctx.func_ret_types.insert(mangled.clone(), mir_ret);
+                                    ctx.method_owners.insert(
+                                        (target.clone(), name.clone()),
+                                        mangled,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    let mut mangled_names: Vec<String> = methods
                         .iter()
                         .filter_map(|m| {
                             if let ast::Decl::Function { name, .. } = m {
@@ -472,6 +523,16 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                             }
                         })
                         .collect();
+                    // Add default methods to the impl_map as well.
+                    if let Some(defaults) = ctx.trait_default_methods.get(trait_name).cloned() {
+                        for default_method in &defaults {
+                            if let ast::Decl::Function { name, .. } = default_method {
+                                if !explicit_names.contains(name.as_str()) {
+                                    mangled_names.push(format!("{target}__{name}"));
+                                }
+                            }
+                        }
+                    }
                     ctx.impl_map.insert(
                         (target.clone(), trait_name.clone()),
                         mangled_names,
@@ -479,7 +540,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                 }
             }
             ast::Decl::TypeAlias { name, ty, .. } => {
-                let mir_ty = lower_type_expr(ty);
+                let mir_ty = ctx.resolve_type(ty);
                 ctx.type_aliases.insert(name.clone(), mir_ty);
             }
             ast::Decl::Extern { items, .. } => {
@@ -487,7 +548,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                 for item in items {
                     if let ast::Decl::Function { name, ret_ty, .. } = item {
                         let mir_ret = match ret_ty {
-                            Some(ty) => lower_type_expr(ty),
+                            Some(ty) => ctx.resolve_type(ty),
                             None => MirType::Void,
                         };
                         ctx.func_ret_types.insert(name.clone(), mir_ret);
@@ -498,7 +559,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                 // Register actor state as a struct def.
                 let fields: Vec<(String, MirType)> = state_fields
                     .iter()
-                    .map(|f| (f.name.clone(), lower_type_expr(&f.ty)))
+                    .map(|f| (f.name.clone(), ctx.resolve_type(&f.ty)))
                     .collect();
                 ctx.struct_defs.insert(name.clone(), fields);
                 // Register handler signatures and actor_defs.
@@ -506,7 +567,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                 for handler in handlers {
                     let mangled = format!("{name}__{}", handler.name);
                     let mir_ret = match &handler.ret_ty {
-                        Some(ty) => lower_type_expr(ty),
+                        Some(ty) => ctx.resolve_type(ty),
                         None => MirType::Void,
                     };
                     ctx.func_ret_types.insert(mangled.clone(), mir_ret.clone());
@@ -528,7 +589,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
             ast::Decl::Const { name, ty, value, .. } => {
                 let mir_ty = ty
                     .as_ref()
-                    .map(lower_type_expr)
+                    .map(|t| ctx.resolve_type(t))
                     .unwrap_or_else(|| infer_expr_type(&ctx, value));
                 ctx.func_ret_types.insert(name.clone(), mir_ty.clone());
                 ctx.const_defs.insert(name.clone(), (mir_ty, *value.clone()));
@@ -610,8 +671,73 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                         functions.push(func);
                     }
                 }
-                // If this is a trait impl, record the vtable mapping in impl_map.
+                // If this is a trait impl, also lower default methods from the
+                // trait that are not overridden in this impl block.
                 if let Some(trait_name) = trait_name {
+                    let explicit_names: HashSet<String> = methods
+                        .iter()
+                        .filter_map(|m| {
+                            if let ast::Decl::Function { name, .. } = m {
+                                Some(name.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if let Some(defaults) = ctx.trait_default_methods.get(trait_name).cloned() {
+                        for default_method in &defaults {
+                            if let ast::Decl::Function {
+                                name,
+                                params,
+                                ret_ty,
+                                body: Some(body),
+                                annotations,
+                                ..
+                            } = default_method
+                            {
+                                if !explicit_names.contains(name.as_str()) {
+                                    let mangled = format!("{target}__{name}");
+                                    impl_method_names.push(mangled.clone());
+                                    // Rewrite `self` param to concrete target type.
+                                    let mut all_params = Vec::new();
+                                    let has_self = params.iter().any(|p| p.name == "self");
+                                    if has_self {
+                                        for p in params {
+                                            if p.name == "self" {
+                                                all_params.push(ast::Param {
+                                                    name: "self".into(),
+                                                    ty: Some(ast::TypeExpr::Simple {
+                                                        name: target.clone(),
+                                                        span: kryos_errors::Span::DUMMY,
+                                                    }),
+                                                    default: None,
+                                                    span: p.span,
+                                                });
+                                            } else {
+                                                all_params.push(p.clone());
+                                            }
+                                        }
+                                    } else {
+                                        all_params.push(ast::Param {
+                                            name: "self".into(),
+                                            ty: Some(ast::TypeExpr::Simple {
+                                                name: target.clone(),
+                                                span: kryos_errors::Span::DUMMY,
+                                            }),
+                                            default: None,
+                                            span: kryos_errors::Span::DUMMY,
+                                        });
+                                        all_params.extend_from_slice(params);
+                                    }
+                                    let mut func = lower_function(
+                                        &mut ctx, &mangled, &all_params, ret_ty, body,
+                                    );
+                                    func.attributes = annotations_to_mir_attributes(annotations);
+                                    functions.push(func);
+                                }
+                            }
+                        }
+                    }
                     ctx.impl_map.insert(
                         (target.clone(), trait_name.clone()),
                         impl_method_names,
@@ -675,21 +801,25 @@ pub fn lower_function(
     // Allocate entry block (id = 0).
     let _entry = ctx.alloc_block();
 
-    // Lower return type.
+    // Lower return type — use resolve_type to correctly handle enum return types.
     let mir_ret_ty = match ret_ty {
-        Some(ty) => lower_type_expr(ty),
+        Some(ty) => ctx.resolve_type(ty),
         None => MirType::Void,
     };
     ctx.current_ret_ty = mir_ret_ty.clone();
 
     // Lower parameters -> locals.
+    // Use resolve_type instead of lower_type_expr so that enum type names
+    // (e.g. `Color`, `Day`) are correctly mapped to MirType::Enum rather
+    // than MirType::Struct.  This is critical for match lowering to emit
+    // tag extraction (EnumTag) on enum-typed parameters.
     let mir_params: Vec<MirParam> = params
         .iter()
         .map(|p| {
             let ty = p
                 .ty
                 .as_ref()
-                .map(lower_type_expr)
+                .map(|t| ctx.resolve_type(t))
                 .unwrap_or(MirType::I64);
             let local = ctx.alloc_local(Some(p.name.clone()), ty.clone(), false);
             MirParam { local, ty }
@@ -796,7 +926,7 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             ..
         } => {
             let mir_ty = if let Some(t) = ty {
-                lower_type_expr(t)
+                ctx.resolve_type(t)
             } else if let Some(expr) = value {
                 // No explicit type annotation — infer from the initializer.
                 infer_expr_type(ctx, expr)
@@ -2467,7 +2597,7 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
                                 return concrete.clone();
                             }
                         }
-                        return lower_type_expr(ret_ty);
+                        return ctx.resolve_type(ret_ty);
                     }
                     return MirType::Void;
                 }
@@ -2513,14 +2643,14 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
         ast::Expr::ArrayLiteral { .. } => MirType::I64,
         ast::Expr::TupleLiteral { .. } => MirType::I64,
 
-        ast::Expr::Cast { ty, .. } => lower_type_expr(ty),
+        ast::Expr::Cast { ty, .. } => ctx.resolve_type(ty),
 
         ast::Expr::Lambda { ret_ty, .. } => {
             // A lambda expression's type is Function.
             MirType::Function {
                 params: vec![MirType::I64], // simplified
                 ret: Box::new(match ret_ty {
-                    Some(ty) => lower_type_expr(ty),
+                    Some(ty) => ctx.resolve_type(ty),
                     None => MirType::I64,
                 }),
             }
@@ -3110,7 +3240,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
 
         ast::Expr::Cast { expr, ty, .. } => {
             let inner = lower_expr_to_operand(ctx, expr);
-            let mir_ty = lower_type_expr(ty);
+            let mir_ty = ctx.resolve_type(ty);
             RValue::Cast {
                 operand: inner,
                 ty: mir_ty,
@@ -3246,7 +3376,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
 
             // Register the lambda's return type.
             let mir_ret = match ret_ty {
-                Some(ty) => lower_type_expr(ty),
+                Some(ty) => ctx.resolve_type(ty),
                 None => MirType::I64,
             };
             ctx.func_ret_types.insert(lambda_name.clone(), mir_ret);
@@ -3992,10 +4122,10 @@ fn monomorphize(
             if let Some(concrete) = type_map.get(name) {
                 concrete.clone()
             } else {
-                lower_type_expr(ret_ty)
+                ctx.resolve_type(ret_ty)
             }
         } else {
-            lower_type_expr(ret_ty)
+            ctx.resolve_type(ret_ty)
         }
     } else {
         MirType::Void

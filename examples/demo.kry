@@ -1,3 +1,10 @@
+// ============================================================
+// Kryos Demo
+//
+// Demonstrates: recursion, higher-order functions, float math,
+//               error handling, maps, structs, arrays, strings
+// ============================================================
+
 struct Point {
     x: f64
     y: f64
@@ -72,5 +79,5 @@ fn main() {
     println("   concat: " + greeting)
     println("   length: " + to_string(len(greeting)))
     println("")
-    println("=== Kryos v0.1.0 - FrostByte Digital ===")
+    println("=== Kryos v0.2.0 - FrostByte Digital ===")
 }

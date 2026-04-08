@@ -1,0 +1,21 @@
+// expect-stdout: Monday
+// expect-stdout: Tuesday
+// expect-stdout: Sunday
+// expect-stdout: Other
+enum Day { Mon, Tue, Wed, Thu, Fri, Sat, Sun }
+
+fn day_name(d: Day) -> str {
+    match d {
+        Mon => "Monday"
+        Tue => "Tuesday"
+        Sun => "Sunday"
+        _ => "Other"
+    }
+}
+
+fn main() {
+    println(day_name(Day.Mon))
+    println(day_name(Day.Tue))
+    println(day_name(Day.Sun))
+    println(day_name(Day.Wed))
+}

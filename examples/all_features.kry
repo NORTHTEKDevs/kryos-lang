@@ -740,6 +740,6 @@ fn main() {
     // ==================================================================
     println("============================================================")
     println("  All 30 feature sections executed successfully!")
-    println("  Kryos v0.1.0 — FrostByte Digital")
+    println("  Kryos v0.2.0 — FrostByte Digital")
     println("============================================================")
 }
