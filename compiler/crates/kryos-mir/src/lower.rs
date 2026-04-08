@@ -736,11 +736,7 @@ pub fn lower_function(
 
         // If the current block hasn't been sealed yet, add an implicit return.
         if ctx.blocks.len() < ctx.next_block as usize {
-            if mir_ret_ty == MirType::Void {
-                ctx.seal_block(Terminator::Return(None));
-            } else {
-                ctx.seal_block(Terminator::Return(None));
-            }
+            ctx.seal_block(Terminator::Return(None));
         }
     }
 
@@ -2369,12 +2365,10 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
                     // Infer type map from arguments.
                     let mut type_map: HashMap<String, MirType> = HashMap::new();
                     for (i, param) in template_params.iter().enumerate() {
-                        if let Some(ty_expr) = &param.ty {
-                            if let ast::TypeExpr::Simple { name: tn, .. } = ty_expr {
-                                if generic_params.contains(tn) {
-                                    if let Some(arg) = args.get(i) {
-                                        type_map.insert(tn.clone(), infer_expr_type(ctx, arg));
-                                    }
+                        if let Some(ast::TypeExpr::Simple { name: tn, .. }) = &param.ty {
+                            if generic_params.contains(tn) {
+                                if let Some(arg) = args.get(i) {
+                                    type_map.insert(tn.clone(), infer_expr_type(ctx, arg));
                                 }
                             }
                         }
@@ -3065,27 +3059,23 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             );
 
             // Then.
-            if let Some(last) = then_branch.stmts.last() {
-                if let ast::Stmt::Expr { expr, .. } = last {
-                    let rv = lower_expr_to_rvalue(ctx, expr);
-                    ctx.emit(Instruction::Assign {
-                        dest: result_local,
-                        value: rv,
-                    });
-                }
+            if let Some(ast::Stmt::Expr { expr, .. }) = then_branch.stmts.last() {
+                let rv = lower_expr_to_rvalue(ctx, expr);
+                ctx.emit(Instruction::Assign {
+                    dest: result_local,
+                    value: rv,
+                });
             }
             ctx.finish_block(Terminator::Goto(merge_bb), else_bb);
 
             // Else.
             if let Some(else_blk) = else_branch {
-                if let Some(last) = else_blk.stmts.last() {
-                    if let ast::Stmt::Expr { expr, .. } = last {
-                        let rv = lower_expr_to_rvalue(ctx, expr);
-                        ctx.emit(Instruction::Assign {
-                            dest: result_local,
-                            value: rv,
-                        });
-                    }
+                if let Some(ast::Stmt::Expr { expr, .. }) = else_blk.stmts.last() {
+                    let rv = lower_expr_to_rvalue(ctx, expr);
+                    ctx.emit(Instruction::Assign {
+                        dest: result_local,
+                        value: rv,
+                    });
                 }
             }
             ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
@@ -3780,9 +3770,9 @@ fn generate_actor_dispatch(
         let mut instructions = Vec::new();
 
         // Receive each argument.
-        for j in 0..*param_count {
+        for &dest in arg_locals.iter().take(*param_count) {
             instructions.push(Instruction::Assign {
-                dest: arg_locals[j],
+                dest,
                 value: RValue::Call {
                     func: "kryos_actor_recv_i64".into(),
                     args: vec![],
@@ -3793,8 +3783,8 @@ fn generate_actor_dispatch(
         // Call the handler: ActorName__handler(state, arg0, arg1, ...)
         let mangled = format!("{actor_name}__{handler_name}");
         let mut call_args: Vec<Operand> = vec![Operand::Local(state_local)];
-        for j in 0..*param_count {
-            call_args.push(Operand::Local(arg_locals[j]));
+        for &local in arg_locals.iter().take(*param_count) {
+            call_args.push(Operand::Local(local));
         }
         instructions.push(Instruction::Assign {
             dest: discard_local,
@@ -3886,12 +3876,10 @@ fn monomorphize(
 
     let mut type_map: HashMap<String, MirType> = HashMap::new();
     for (i, param) in template_params.iter().enumerate() {
-        if let Some(ty_expr) = &param.ty {
-            if let ast::TypeExpr::Simple { name, .. } = ty_expr {
-                if generic_params.contains(name) {
-                    if let Some(concrete) = arg_types.get(i) {
-                        type_map.insert(name.clone(), concrete.clone());
-                    }
+        if let Some(ast::TypeExpr::Simple { name, .. }) = &param.ty {
+            if generic_params.contains(name) {
+                if let Some(concrete) = arg_types.get(i) {
+                    type_map.insert(name.clone(), concrete.clone());
                 }
             }
         }

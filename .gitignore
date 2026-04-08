@@ -2,7 +2,7 @@
 target/
 compiler/target/
 
-# Compiled binaries in test dirs
+# Compiled binaries
 *.exe
 *.pdb
 *.obj
@@ -11,10 +11,28 @@ compiler/target/
 *.dll
 *.dylib
 
+# Debug/test output
+*_output.txt
+*_output*.txt
+check_output.txt
+
+# Python
+__pycache__/
+.pytest_cache/
+*.pyc
+
 # IDE
 .idea/
 .vscode/
+*.swp
+*.swo
+*~
+
+# Internal planning docs (keep out of public repo)
+docs/plans/
 
 # Misc
 .env
 *.log
+.DS_Store
+Thumbs.db

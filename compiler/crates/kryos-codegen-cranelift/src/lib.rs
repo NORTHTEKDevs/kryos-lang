@@ -4,6 +4,12 @@
 //! ahead-of-time compilation (producing object files) and JIT compilation
 //! (producing executable function pointers for `kryos run` and REPL).
 
+#![allow(
+    clippy::result_large_err,
+    clippy::too_many_arguments,
+    clippy::if_same_then_else
+)]
+
 pub mod codegen;
 pub mod jit;
 

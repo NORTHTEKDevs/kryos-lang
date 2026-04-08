@@ -1560,10 +1560,8 @@ impl TypeChecker {
                 }
                 self.env.pop_scope();
                 // Block type is Void unless last stmt is an expression.
-                if let Some(last) = block.stmts.last() {
-                    if let Stmt::Expr { expr, .. } = last {
-                        return self.infer_expr(expr);
-                    }
+                if let Some(Stmt::Expr { expr, .. }) = block.stmts.last() {
+                    return self.infer_expr(expr);
                 }
                 Type::Void
             }
@@ -1575,10 +1573,8 @@ impl TypeChecker {
                     self.check_stmt(stmt);
                 }
                 self.env.pop_scope();
-                if let Some(last) = body.stmts.last() {
-                    if let Stmt::Expr { expr, .. } = last {
-                        return self.infer_expr(expr);
-                    }
+                if let Some(Stmt::Expr { expr, .. }) = body.stmts.last() {
+                    return self.infer_expr(expr);
                 }
                 Type::Void
             }

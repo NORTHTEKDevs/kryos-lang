@@ -112,14 +112,12 @@ fn find_candidates(module: &MirModule, threshold: usize) -> HashMap<String, Inli
 
 /// Returns `true` if any instruction contains a function call.
 fn contains_call(instructions: &[Instruction]) -> bool {
-    instructions.iter().any(|inst| match inst {
+    instructions.iter().any(|inst| matches!(inst,
         Instruction::Assign {
             value: RValue::Call { .. } | RValue::CallIndirect { .. } | RValue::VtableCall { .. },
             ..
-        } => true,
-        Instruction::Spawn { .. } => true,
-        _ => false,
-    })
+        } | Instruction::Spawn { .. }
+    ))
 }
 
 // ---------------------------------------------------------------------------

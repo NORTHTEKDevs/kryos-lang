@@ -3,6 +3,8 @@
 //! The formatter uses 4-space indentation, 80-column line width for signature wrapping,
 //! and blank lines between top-level declarations.
 
+#![allow(clippy::too_many_arguments)]
+
 pub mod formatter;
 
 use kryos_ast::Module;

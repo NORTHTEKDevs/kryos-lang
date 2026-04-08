@@ -2,7 +2,7 @@
   "name": "kryos",
   "displayName": "Kryos",
   "description": "Kryos language support -- syntax highlighting, snippets, and LSP integration",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "frostbyte-digital",
   "repository": {
     "type": "git",

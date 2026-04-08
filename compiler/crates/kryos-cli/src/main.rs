@@ -3,6 +3,8 @@
 //! Entry point that parses arguments with `clap` and delegates to
 //! the appropriate command module.
 
+#![allow(clippy::too_many_arguments)]
+
 mod commands;
 
 use clap::{Parser, Subcommand};

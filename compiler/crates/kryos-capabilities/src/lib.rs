@@ -2,6 +2,7 @@
 //!
 //! This crate enforces the Kryos capability system — a static analysis pass
 //! that restricts what functions, actors, and scopes are permitted to do.
+#![allow(clippy::should_implement_trait, clippy::if_same_then_else)]
 //!
 //! # Key rules
 //!
