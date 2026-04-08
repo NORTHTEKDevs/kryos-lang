@@ -1,0 +1,6 @@
+// run-expect: before exit
+fn main() {
+    println("before exit")
+    exit(0)
+    println("SHOULD NOT PRINT")
+}

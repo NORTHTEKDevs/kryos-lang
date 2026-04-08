@@ -1944,6 +1944,187 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         ret: Type::Void,
     });
 
+    // ── Byte buffer builtins ──────────────────────────────────────
+
+    // buf_new(capacity: i64) -> i64
+    checker.env.define_function(FunctionSig {
+        name: "buf_new".to_string(),
+        generic_params: vec![],
+        params: vec![("capacity".to_string(), Type::I64)],
+        ret: Type::I64,
+    });
+
+    // buf_write_byte(handle: i64, byte: i64) -> void
+    checker.env.define_function(FunctionSig {
+        name: "buf_write_byte".to_string(),
+        generic_params: vec![],
+        params: vec![
+            ("handle".to_string(), Type::I64),
+            ("byte".to_string(), Type::I64),
+        ],
+        ret: Type::Void,
+    });
+
+    // buf_write_i16_le(handle: i64, val: i64) -> void
+    checker.env.define_function(FunctionSig {
+        name: "buf_write_i16_le".to_string(),
+        generic_params: vec![],
+        params: vec![
+            ("handle".to_string(), Type::I64),
+            ("val".to_string(), Type::I64),
+        ],
+        ret: Type::Void,
+    });
+
+    // buf_write_i32_le(handle: i64, val: i64) -> void
+    checker.env.define_function(FunctionSig {
+        name: "buf_write_i32_le".to_string(),
+        generic_params: vec![],
+        params: vec![
+            ("handle".to_string(), Type::I64),
+            ("val".to_string(), Type::I64),
+        ],
+        ret: Type::Void,
+    });
+
+    // buf_write_i64_le(handle: i64, val: i64) -> void
+    checker.env.define_function(FunctionSig {
+        name: "buf_write_i64_le".to_string(),
+        generic_params: vec![],
+        params: vec![
+            ("handle".to_string(), Type::I64),
+            ("val".to_string(), Type::I64),
+        ],
+        ret: Type::Void,
+    });
+
+    // buf_write_bytes(dst: i64, src: i64, len: i64) -> void
+    checker.env.define_function(FunctionSig {
+        name: "buf_write_bytes".to_string(),
+        generic_params: vec![],
+        params: vec![
+            ("dst".to_string(), Type::I64),
+            ("src".to_string(), Type::I64),
+            ("len".to_string(), Type::I64),
+        ],
+        ret: Type::Void,
+    });
+
+    // buf_write_str(handle: i64, s: str) -> void
+    checker.env.define_function(FunctionSig {
+        name: "buf_write_str".to_string(),
+        generic_params: vec![],
+        params: vec![
+            ("handle".to_string(), Type::I64),
+            ("s".to_string(), Type::Str),
+        ],
+        ret: Type::Void,
+    });
+
+    // buf_write_zeros(handle: i64, count: i64) -> void
+    checker.env.define_function(FunctionSig {
+        name: "buf_write_zeros".to_string(),
+        generic_params: vec![],
+        params: vec![
+            ("handle".to_string(), Type::I64),
+            ("count".to_string(), Type::I64),
+        ],
+        ret: Type::Void,
+    });
+
+    // buf_len(handle: i64) -> i64
+    checker.env.define_function(FunctionSig {
+        name: "buf_len".to_string(),
+        generic_params: vec![],
+        params: vec![("handle".to_string(), Type::I64)],
+        ret: Type::I64,
+    });
+
+    // buf_get_byte(handle: i64, offset: i64) -> i64
+    checker.env.define_function(FunctionSig {
+        name: "buf_get_byte".to_string(),
+        generic_params: vec![],
+        params: vec![
+            ("handle".to_string(), Type::I64),
+            ("offset".to_string(), Type::I64),
+        ],
+        ret: Type::I64,
+    });
+
+    // buf_set_byte(handle: i64, offset: i64, byte: i64) -> void
+    checker.env.define_function(FunctionSig {
+        name: "buf_set_byte".to_string(),
+        generic_params: vec![],
+        params: vec![
+            ("handle".to_string(), Type::I64),
+            ("offset".to_string(), Type::I64),
+            ("byte".to_string(), Type::I64),
+        ],
+        ret: Type::Void,
+    });
+
+    // buf_patch_i32_le(handle: i64, offset: i64, val: i64) -> void
+    checker.env.define_function(FunctionSig {
+        name: "buf_patch_i32_le".to_string(),
+        generic_params: vec![],
+        params: vec![
+            ("handle".to_string(), Type::I64),
+            ("offset".to_string(), Type::I64),
+            ("val".to_string(), Type::I64),
+        ],
+        ret: Type::Void,
+    });
+
+    // buf_patch_i64_le(handle: i64, offset: i64, val: i64) -> void
+    checker.env.define_function(FunctionSig {
+        name: "buf_patch_i64_le".to_string(),
+        generic_params: vec![],
+        params: vec![
+            ("handle".to_string(), Type::I64),
+            ("offset".to_string(), Type::I64),
+            ("val".to_string(), Type::I64),
+        ],
+        ret: Type::Void,
+    });
+
+    // buf_write_to_file(handle: i64, path: str) -> i64
+    checker.env.define_function(FunctionSig {
+        name: "buf_write_to_file".to_string(),
+        generic_params: vec![],
+        params: vec![
+            ("handle".to_string(), Type::I64),
+            ("path".to_string(), Type::Str),
+        ],
+        ret: Type::I64,
+    });
+
+    // buf_free(handle: i64) -> void
+    checker.env.define_function(FunctionSig {
+        name: "buf_free".to_string(),
+        generic_params: vec![],
+        params: vec![("handle".to_string(), Type::I64)],
+        ret: Type::Void,
+    });
+
+    // exit(code: i64) -> void — terminate the process
+    checker.env.define_function(FunctionSig {
+        name: "exit".to_string(),
+        generic_params: vec![],
+        params: vec![("code".to_string(), Type::I64)],
+        ret: Type::Void,
+    });
+
+    // args() -> [str] — command-line arguments
+    checker.env.define_function(FunctionSig {
+        name: "args".to_string(),
+        generic_params: vec![],
+        params: vec![],
+        ret: Type::Array {
+            element: Box::new(Type::Str),
+            size: None,
+        },
+    });
+
     checker.check_module(module);
     checker.diagnostics
 }

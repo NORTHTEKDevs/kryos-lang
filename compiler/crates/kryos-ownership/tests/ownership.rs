@@ -118,7 +118,7 @@ fn assign(name: &str, value: Expr) -> Stmt {
     }
 }
 
-/// Helper: a string literal (non-copy type).
+/// Helper: a string literal (copy type — str is copy in Kryos).
 fn string_lit(s: &str) -> Expr {
     Expr::StringLiteral {
         value: s.into(),
@@ -134,15 +134,21 @@ fn int_lit(v: i64) -> Expr {
     }
 }
 
+/// Helper: a non-copy value (opaque function call whose return type
+/// is unknown and therefore defaults to non-copy).
+fn non_copy_val(tag: &str) -> Expr {
+    call(&format!("make_{}", tag), vec![])
+}
+
 // ── Test: Move on assignment ────────────────────────────────────
 
 #[test]
 fn move_on_assignment_error() {
-    // let x = "hello"
-    // let a = x      ← moves x
-    // use(x)         ← error: use of moved value
+    // let x = make_obj()   (non-copy)
+    // let a = x            ← moves x
+    // use(x)               ← error: use of moved value
     let module = module_with_fn(vec![
-        let_move("x", string_lit("hello")),
+        let_move("x", non_copy_val("obj")),
         let_move("a", ident("x")),
         expr_stmt(call("use", vec![ident("x")])),
     ]);
@@ -158,11 +164,11 @@ fn move_on_assignment_error() {
 
 #[test]
 fn move_on_function_call_error() {
-    // let x = "hello"
-    // func(x)        ← moves x
-    // use(x)         ← error: use of moved value
+    // let x = make_obj()   (non-copy)
+    // func(x)              ← moves x
+    // use(x)               ← error: use of moved value
     let module = module_with_fn(vec![
-        let_move("x", string_lit("hello")),
+        let_move("x", non_copy_val("obj")),
         expr_stmt(call("func", vec![ident("x")])),
         expr_stmt(call("use", vec![ident("x")])),
     ]);
@@ -260,12 +266,13 @@ fn closure_capture_mut_arc_insertion() {
 
 #[test]
 fn channel_send_moves_value() {
-    // let x = "data"
+    // let ch = make_chan()  (non-copy)
+    // let x = make_data()  (non-copy)
     // send(ch, x)   ← moves x into channel
     // use(x)        ← error
     let module = module_with_fn(vec![
-        let_move("ch", string_lit("chan")),
-        let_move("x", string_lit("data")),
+        let_move("ch", non_copy_val("chan")),
+        let_move("x", non_copy_val("data")),
         expr_stmt(call("send", vec![ident("ch"), ident("x")])),
         expr_stmt(call("use", vec![ident("x")])),
     ]);
@@ -333,13 +340,13 @@ fn uninitialized_use_error() {
 
 #[test]
 fn conditional_move_warning() {
-    // let x = "hello"
+    // let x = make_obj()   (non-copy)
     // if cond { let a = x } else { /* x not moved */ }
     //
     // Since we need a condition variable, define `cond` first.
     let module = module_with_fn(vec![
         let_typed("cond", "bool", Expr::BoolLiteral { value: true, span: dummy_span() }),
-        let_move("x", string_lit("hello")),
+        let_move("x", non_copy_val("obj")),
         Stmt::If {
             condition: ident("cond"),
             then_block: Block {
@@ -479,11 +486,11 @@ fn multiple_shared_refs_valid() {
 
 #[test]
 fn return_moves_ownership() {
-    // let x = "hello"
-    // return x         ← moves x
-    // use(x)           ← error (dead code, but still a move error)
+    // let x = make_obj()   (non-copy)
+    // return x             ← moves x
+    // use(x)               ← error (dead code, but still a move error)
     let module = module_with_fn(vec![
-        let_move("x", string_lit("hello")),
+        let_move("x", non_copy_val("obj")),
         Stmt::Return {
             value: Some(ident("x")),
             span: Span::new(0, 15, 25),
@@ -678,11 +685,11 @@ fn actor_state_arc_boundary() {
 
 #[test]
 fn double_move_error() {
-    // let x = "hello"
-    // let a = x       ← moves x
-    // let b = x       ← error: already moved
+    // let x = make_obj()   (non-copy)
+    // let a = x            ← moves x
+    // let b = x            ← error: already moved
     let module = module_with_fn(vec![
-        let_move("x", string_lit("hello")),
+        let_move("x", non_copy_val("obj")),
         let_move("a", ident("x")),
         let_move("b", ident("x")),
     ]);
@@ -754,11 +761,11 @@ fn arc_summary_counts() {
 
 #[test]
 fn spawn_moves_value() {
-    // let x = "hello"
-    // spawn x        ← moves x into spawned task
-    // use(x)         ← error
+    // let x = make_obj()   (non-copy)
+    // spawn x              ← moves x into spawned task
+    // use(x)               ← error
     let module = module_with_fn(vec![
-        let_move("x", string_lit("hello")),
+        let_move("x", non_copy_val("obj")),
         Stmt::Spawn {
             expr: ident("x"),
             span: Span::new(0, 15, 25),

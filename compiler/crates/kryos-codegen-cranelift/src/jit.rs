@@ -110,6 +110,12 @@ impl JitCompiler {
         jit_builder.symbol("kryos_map_get", kryos_rt::map::kryos_map_get as *const u8);
         jit_builder.symbol("kryos_map_get_str", kryos_rt::map::kryos_map_get_str as *const u8);
         jit_builder.symbol("kryos_map_len", kryos_rt::map::kryos_map_len as *const u8);
+        jit_builder.symbol("kryos_map_has", kryos_rt::map::kryos_map_has as *const u8);
+        jit_builder.symbol("kryos_map_has_str", kryos_rt::map::kryos_map_has_str as *const u8);
+        jit_builder.symbol("kryos_map_delete", kryos_rt::map::kryos_map_delete as *const u8);
+        jit_builder.symbol("kryos_map_delete_str", kryos_rt::map::kryos_map_delete_str as *const u8);
+        jit_builder.symbol("kryos_map_keys", kryos_rt::map::kryos_map_keys as *const u8);
+        jit_builder.symbol("kryos_map_keys_str", kryos_rt::map::kryos_map_keys_str as *const u8);
         jit_builder.symbol("kryos_map_free", kryos_rt::map::kryos_map_free as *const u8);
 
         // Panic handler and runtime checks
@@ -267,6 +273,25 @@ impl JitCompiler {
         jit_builder.symbol("kryos_term_height", kryos_stdlib_native::term::kryos_term_height as *const u8);
         jit_builder.symbol("kryos_term_cursor_move", kryos_stdlib_native::term::kryos_term_cursor_move as *const u8);
         jit_builder.symbol("kryos_term_clear", kryos_stdlib_native::term::kryos_term_clear as *const u8);
+
+        // Byte buffer operations (for self-hosted native code emission)
+        jit_builder.symbol("kryos_buf_new", kryos_rt::builtins::kryos_buf_new as *const u8);
+        jit_builder.symbol("kryos_buf_write_byte", kryos_rt::builtins::kryos_buf_write_byte as *const u8);
+        jit_builder.symbol("kryos_buf_write_i16_le", kryos_rt::builtins::kryos_buf_write_i16_le as *const u8);
+        jit_builder.symbol("kryos_buf_write_i32_le", kryos_rt::builtins::kryos_buf_write_i32_le as *const u8);
+        jit_builder.symbol("kryos_buf_write_i64_le", kryos_rt::builtins::kryos_buf_write_i64_le as *const u8);
+        jit_builder.symbol("kryos_buf_write_bytes", kryos_rt::builtins::kryos_buf_write_bytes as *const u8);
+        jit_builder.symbol("kryos_buf_write_str", kryos_rt::builtins::kryos_buf_write_str as *const u8);
+        jit_builder.symbol("kryos_buf_write_zeros", kryos_rt::builtins::kryos_buf_write_zeros as *const u8);
+        jit_builder.symbol("kryos_buf_len", kryos_rt::builtins::kryos_buf_len as *const u8);
+        jit_builder.symbol("kryos_buf_get_byte", kryos_rt::builtins::kryos_buf_get_byte as *const u8);
+        jit_builder.symbol("kryos_buf_set_byte", kryos_rt::builtins::kryos_buf_set_byte as *const u8);
+        jit_builder.symbol("kryos_buf_patch_i32_le", kryos_rt::builtins::kryos_buf_patch_i32_le as *const u8);
+        jit_builder.symbol("kryos_buf_patch_i64_le", kryos_rt::builtins::kryos_buf_patch_i64_le as *const u8);
+        jit_builder.symbol("kryos_buf_write_to_file", kryos_rt::builtins::kryos_buf_write_to_file as *const u8);
+        jit_builder.symbol("kryos_buf_free", kryos_rt::builtins::kryos_buf_free as *const u8);
+        jit_builder.symbol("kryos_builtin_exit", kryos_rt::builtins::kryos_builtin_exit as *const u8);
+        jit_builder.symbol("kryos_builtin_args", kryos_rt::builtins::kryos_builtin_args as *const u8);
 
         let module = JITModule::new(jit_builder);
 

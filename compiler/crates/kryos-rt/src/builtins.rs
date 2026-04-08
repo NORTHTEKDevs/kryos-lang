@@ -669,6 +669,148 @@ pub extern "C" fn kryos_check_div_zero_f64(_divisor: f64) {
     // No-op: float division by zero produces inf/nan per IEEE 754.
 }
 
+// ── Byte buffer for native code emission ──────────────────────────
+
+struct KryosBuf {
+    data: Vec<u8>,
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kryos_buf_new(capacity: i64) -> i64 {
+    let buf = Box::new(KryosBuf {
+        data: Vec::with_capacity(capacity.max(0) as usize),
+    });
+    Box::into_raw(buf) as i64
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kryos_buf_write_byte(handle: i64, byte: i64) {
+    let buf = &mut *(handle as *mut KryosBuf);
+    buf.data.push(byte as u8);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kryos_buf_write_i16_le(handle: i64, val: i64) {
+    let buf = &mut *(handle as *mut KryosBuf);
+    buf.data.extend_from_slice(&(val as i16).to_le_bytes());
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kryos_buf_write_i32_le(handle: i64, val: i64) {
+    let buf = &mut *(handle as *mut KryosBuf);
+    buf.data.extend_from_slice(&(val as i32).to_le_bytes());
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kryos_buf_write_i64_le(handle: i64, val: i64) {
+    let buf = &mut *(handle as *mut KryosBuf);
+    buf.data.extend_from_slice(&val.to_le_bytes());
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kryos_buf_write_bytes(dst_handle: i64, src_handle: i64, len: i64) {
+    let src = &*(src_handle as *const KryosBuf);
+    let dst = &mut *(dst_handle as *mut KryosBuf);
+    let n = (len as usize).min(src.data.len());
+    dst.data.extend_from_slice(&src.data[..n]);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kryos_buf_write_str(handle: i64, s_handle: i64) {
+    let buf = &mut *(handle as *mut KryosBuf);
+    let s = &*(s_handle as *const crate::string::KryosString);
+    let slice = std::slice::from_raw_parts(s.data, s.len as usize);
+    buf.data.extend_from_slice(slice);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kryos_buf_write_zeros(handle: i64, count: i64) {
+    let buf = &mut *(handle as *mut KryosBuf);
+    buf.data.resize(buf.data.len() + count.max(0) as usize, 0);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kryos_buf_len(handle: i64) -> i64 {
+    let buf = &*(handle as *const KryosBuf);
+    buf.data.len() as i64
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kryos_buf_get_byte(handle: i64, offset: i64) -> i64 {
+    let buf = &*(handle as *const KryosBuf);
+    let idx = offset as usize;
+    if idx < buf.data.len() { buf.data[idx] as i64 } else { -1 }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kryos_buf_set_byte(handle: i64, offset: i64, byte: i64) {
+    let buf = &mut *(handle as *mut KryosBuf);
+    let idx = offset as usize;
+    if idx < buf.data.len() { buf.data[idx] = byte as u8; }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kryos_buf_patch_i32_le(handle: i64, offset: i64, val: i64) {
+    let buf = &mut *(handle as *mut KryosBuf);
+    let idx = offset as usize;
+    let bytes = (val as i32).to_le_bytes();
+    if idx + 4 <= buf.data.len() {
+        buf.data[idx..idx + 4].copy_from_slice(&bytes);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kryos_buf_patch_i64_le(handle: i64, offset: i64, val: i64) {
+    let buf = &mut *(handle as *mut KryosBuf);
+    let idx = offset as usize;
+    let bytes = val.to_le_bytes();
+    if idx + 8 <= buf.data.len() {
+        buf.data[idx..idx + 8].copy_from_slice(&bytes);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kryos_buf_write_to_file(handle: i64, path_handle: i64) -> i64 {
+    let buf = &*(handle as *const KryosBuf);
+    let path_str = &*(path_handle as *const crate::string::KryosString);
+    let path_slice = std::slice::from_raw_parts(path_str.data, path_str.len as usize);
+    let path = match std::str::from_utf8(path_slice) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    match std::fs::write(path, &buf.data) {
+        Ok(_) => 0,
+        Err(_) => -1,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kryos_buf_free(handle: i64) {
+    if handle != 0 {
+        let _ = Box::from_raw(handle as *mut KryosBuf);
+    }
+}
+
+// ── Process control ───────────────────────────────────────────────
+
+#[no_mangle]
+pub unsafe extern "C" fn kryos_builtin_exit(code: i64) {
+    std::process::exit(code as i32);
+}
+
+// ── Command-line arguments ────────────────────────────────────────
+
+#[no_mangle]
+pub unsafe extern "C" fn kryos_builtin_args() -> i64 {
+    let args: Vec<String> = std::env::args().collect();
+    let arr = crate::array::kryos_array_new(8, args.len() as i64);
+    for arg in &args {
+        let s = crate::string::kryos_string_new(arg.as_ptr(), arg.len() as i64);
+        crate::array::kryos_array_push(arr, s as i64);
+    }
+    arr as i64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

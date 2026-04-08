@@ -1,0 +1,20 @@
+// run-expect: ok
+fn main() {
+    let buf = buf_new(64)
+    buf_write_byte(buf, 72)
+    buf_write_byte(buf, 101)
+    buf_write_byte(buf, 108)
+    assert(buf_len(buf) == 3, "expected 3 bytes")
+    assert(buf_get_byte(buf, 0) == 72, "expected H")
+    assert(buf_get_byte(buf, 1) == 101, "expected e")
+    assert(buf_get_byte(buf, 2) == 108, "expected l")
+    buf_set_byte(buf, 0, 65)
+    assert(buf_get_byte(buf, 0) == 65, "expected A after set")
+    buf_write_i32_le(buf, 42)
+    assert(buf_len(buf) == 7, "expected 7 bytes after i32")
+    buf_patch_i32_le(buf, 3, 99)
+    buf_write_zeros(buf, 3)
+    assert(buf_len(buf) == 10, "expected 10 bytes after zeros")
+    buf_free(buf)
+    println("ok")
+}

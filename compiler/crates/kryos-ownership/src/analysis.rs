@@ -189,6 +189,7 @@ impl OwnershipAnalyzer {
                             | "char_code" | "int" | "float"
                             | "to_string" | "char_from" | "substr"
                             | "type_of" | "env_get" | "file_read"
+                            | "buf_new" | "buf_len" | "buf_get_byte" | "buf_write_to_file"
                     ) {
                         return true;
                     }

@@ -294,6 +294,200 @@ pub extern "C" fn kryos_map_len(map: i64) -> i64 {
     }
 }
 
+/// Check if a key exists in the map. Returns 1 if found, 0 otherwise.
+#[no_mangle]
+pub extern "C" fn kryos_map_has(map: i64, key: i64) -> i64 {
+    if map == 0 {
+        return 0;
+    }
+    unsafe {
+        let header = map as *const MapHeader;
+        let capacity = (*header).capacity as usize;
+        let entries = (*header).entries;
+
+        let mut idx = hash_key(key, capacity);
+        for _ in 0..capacity {
+            let entry = &*entries.add(idx);
+            if !entry.occupied {
+                return 0;
+            }
+            if entry.key == key {
+                return 1;
+            }
+            idx = (idx + 1) % capacity;
+        }
+        0
+    }
+}
+
+/// Check if a string key exists in the map. Returns 1 if found, 0 otherwise.
+#[no_mangle]
+pub extern "C" fn kryos_map_has_str(map: i64, key: i64) -> i64 {
+    if map == 0 {
+        return 0;
+    }
+    unsafe {
+        let header = map as *const MapHeader;
+        let capacity = (*header).capacity as usize;
+        let entries = (*header).entries;
+
+        let str_hash = crate::string::kryos_string_hash(key as *const crate::string::KryosString);
+        let mut idx = hash_key(str_hash, capacity);
+        for _ in 0..capacity {
+            let entry = &*entries.add(idx);
+            if !entry.occupied {
+                return 0;
+            }
+            if crate::string::kryos_string_eq(
+                entry.key as *const crate::string::KryosString,
+                key as *const crate::string::KryosString,
+            ) {
+                return 1;
+            }
+            idx = (idx + 1) % capacity;
+        }
+        0
+    }
+}
+
+/// Delete a key from the map. Returns the old value, or 0 if not found.
+/// Uses tombstone-free backward-shift deletion for open-addressing.
+#[no_mangle]
+pub extern "C" fn kryos_map_delete(map: i64, key: i64) -> i64 {
+    if map == 0 {
+        return 0;
+    }
+    unsafe {
+        let header = map as *mut MapHeader;
+        let capacity = (*header).capacity as usize;
+        let entries = (*header).entries;
+
+        let mut idx = hash_key(key, capacity);
+        for _ in 0..capacity {
+            let entry = &*entries.add(idx);
+            if !entry.occupied {
+                return 0;
+            }
+            if entry.key == key {
+                let old_value = entry.value;
+                // Mark as empty and backward-shift subsequent entries.
+                (*entries.add(idx)).occupied = false;
+                (*header).len -= 1;
+                // Shift entries that may have been displaced by this slot.
+                let mut j = (idx + 1) % capacity;
+                loop {
+                    let next = &*entries.add(j);
+                    if !next.occupied {
+                        break;
+                    }
+                    let natural = hash_key(next.key, capacity);
+                    // Check if `next` belongs before the empty slot we created.
+                    if (j > idx && (natural <= idx || natural > j))
+                        || (j < idx && natural <= idx && natural > j)
+                    {
+                        let k = next.key;
+                        let v = next.value;
+                        (*entries.add(j)).occupied = false;
+                        (*entries.add(idx)).key = k;
+                        (*entries.add(idx)).value = v;
+                        (*entries.add(idx)).occupied = true;
+                        idx = j;
+                    }
+                    j = (j + 1) % capacity;
+                }
+                return old_value;
+            }
+            idx = (idx + 1) % capacity;
+        }
+        0
+    }
+}
+
+/// Delete a string key from the map. Returns the old value, or 0 if not found.
+#[no_mangle]
+pub extern "C" fn kryos_map_delete_str(map: i64, key: i64) -> i64 {
+    if map == 0 {
+        return 0;
+    }
+    unsafe {
+        let header = map as *mut MapHeader;
+        let capacity = (*header).capacity as usize;
+        let entries = (*header).entries;
+
+        let str_hash = crate::string::kryos_string_hash(key as *const crate::string::KryosString);
+        let mut idx = hash_key(str_hash, capacity);
+        for _ in 0..capacity {
+            let entry = &*entries.add(idx);
+            if !entry.occupied {
+                return 0;
+            }
+            if crate::string::kryos_string_eq(
+                entry.key as *const crate::string::KryosString,
+                key as *const crate::string::KryosString,
+            ) {
+                let old_value = entry.value;
+                (*entries.add(idx)).occupied = false;
+                (*header).len -= 1;
+                // Backward-shift for string-keyed entries.
+                let mut j = (idx + 1) % capacity;
+                loop {
+                    let next = &*entries.add(j);
+                    if !next.occupied {
+                        break;
+                    }
+                    let next_hash = crate::string::kryos_string_hash(
+                        next.key as *const crate::string::KryosString,
+                    );
+                    let natural = hash_key(next_hash, capacity);
+                    if (j > idx && (natural <= idx || natural > j))
+                        || (j < idx && natural <= idx && natural > j)
+                    {
+                        let k = next.key;
+                        let v = next.value;
+                        (*entries.add(j)).occupied = false;
+                        (*entries.add(idx)).key = k;
+                        (*entries.add(idx)).value = v;
+                        (*entries.add(idx)).occupied = true;
+                        idx = j;
+                    }
+                    j = (j + 1) % capacity;
+                }
+                return old_value;
+            }
+            idx = (idx + 1) % capacity;
+        }
+        0
+    }
+}
+
+/// Return all keys as a KryosArray of i64 values.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_map_keys(map: i64) -> i64 {
+    if map == 0 {
+        return crate::array::kryos_array_new(8, 0) as i64;
+    }
+    {
+        let header = map as *const MapHeader;
+        let capacity = (*header).capacity as usize;
+        let entries = (*header).entries;
+        let arr = crate::array::kryos_array_new(8, (*header).len);
+
+        for i in 0..capacity {
+            let entry = &*entries.add(i);
+            if entry.occupied {
+                crate::array::kryos_array_push(arr, entry.key);
+            }
+        }
+        arr as i64
+    }
+}
+
+/// Return all string keys as a KryosArray of KryosString handles.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_map_keys_str(map: i64) -> i64 {
+    kryos_map_keys(map) // Same implementation — keys are i64 handles either way.
+}
+
 /// Free the map.
 #[no_mangle]
 pub extern "C" fn kryos_map_free(map: i64) {

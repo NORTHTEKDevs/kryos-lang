@@ -329,7 +329,30 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("int", MirType::I64),
         ("float", MirType::F64),
         ("keys", MirType::I64),       // returns array handle
+        ("map_has", MirType::I64),
+        ("map_has_str", MirType::I64),
+        ("map_delete", MirType::I64),
+        ("map_delete_str", MirType::I64),
+        ("map_keys", MirType::I64),   // returns array handle
+        ("map_keys_str", MirType::I64),
         ("sleep_ms", MirType::Void),
+        ("buf_new", MirType::I64),
+        ("buf_write_byte", MirType::Void),
+        ("buf_write_i16_le", MirType::Void),
+        ("buf_write_i32_le", MirType::Void),
+        ("buf_write_i64_le", MirType::Void),
+        ("buf_write_bytes", MirType::Void),
+        ("buf_write_str", MirType::Void),
+        ("buf_write_zeros", MirType::Void),
+        ("buf_len", MirType::I64),
+        ("buf_get_byte", MirType::I64),
+        ("buf_set_byte", MirType::Void),
+        ("buf_patch_i32_le", MirType::Void),
+        ("buf_patch_i64_le", MirType::Void),
+        ("buf_write_to_file", MirType::I64),
+        ("buf_free", MirType::Void),
+        ("exit", MirType::Void),
+        ("args", MirType::I64),
     ] {
         ctx.func_ret_types.insert(name.to_string(), ret_ty);
     }
