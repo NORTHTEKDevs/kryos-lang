@@ -1,0 +1,2237 @@
+// ============================================================
+// types.kry -- Strict type checker for the Kryos self-hosted
+// compiler.
+//
+// Consumes AST nodes produced by the parser (ast.kry) and
+// validates types across the entire module.  Collects errors
+// rather than aborting on the first problem, enabling batch
+// diagnostics.
+//
+// Architecture:
+//   - TypeInfo structs represent resolved types.
+//   - A scoped symbol table maps names to TypeInfo.
+//   - Two-pass checking: register all declarations first,
+//     then type-check all function bodies.
+//   - Builtins are pre-registered before user code.
+//
+// Dependencies (same compilation unit):
+//   ast.kry -- AST node structs and constants
+// ============================================================
+
+// ===================================================================
+// Type kind constants
+// ===================================================================
+
+let TY_I8       = 1
+let TY_I16      = 2
+let TY_I32      = 3
+let TY_I64      = 4
+let TY_I128     = 5
+let TY_U8       = 6
+let TY_U16      = 7
+let TY_U32      = 8
+let TY_U64      = 9
+let TY_U128     = 10
+let TY_F32      = 11
+let TY_F64      = 12
+let TY_BOOL     = 13
+let TY_CHAR     = 14
+let TY_STR      = 15
+let TY_VOID     = 16
+let TY_ARRAY    = 17
+let TY_STRUCT   = 18
+let TY_ENUM     = 19
+let TY_FUNCTION = 20
+let TY_ANY      = 21
+let TY_PTR      = 22
+let TY_REF      = 23
+let TY_TUPLE    = 24
+let TY_MAP      = 25
+let TY_ERROR    = 26
+
+// ===================================================================
+// TypeInfo -- resolved type representation
+// ===================================================================
+
+struct TypeInfo {
+    kind: i32,
+    name: str,
+    element_type: [TypeInfo],
+    param_types: [TypeInfo],
+    ret_type: [TypeInfo],
+    field_names: [str],
+    field_types: [TypeInfo],
+    tuple_types: [TypeInfo],
+    mutable: bool
+}
+
+// ===================================================================
+// Type constructor helpers
+// ===================================================================
+
+fn ty_simple(k: i32) -> TypeInfo {
+    let empty_ti: [TypeInfo] = []
+    let empty_s: [str] = []
+    return TypeInfo {
+        kind: k, name: "",
+        element_type: empty_ti, param_types: empty_ti,
+        ret_type: empty_ti, field_names: empty_s,
+        field_types: empty_ti, tuple_types: empty_ti,
+        mutable: false
+    }
+}
+
+fn ty_i8() -> TypeInfo { return ty_simple(TY_I8) }
+fn ty_i16() -> TypeInfo { return ty_simple(TY_I16) }
+fn ty_i32() -> TypeInfo { return ty_simple(TY_I32) }
+fn ty_i64() -> TypeInfo { return ty_simple(TY_I64) }
+fn ty_i128() -> TypeInfo { return ty_simple(TY_I128) }
+fn ty_u8() -> TypeInfo { return ty_simple(TY_U8) }
+fn ty_u16() -> TypeInfo { return ty_simple(TY_U16) }
+fn ty_u32() -> TypeInfo { return ty_simple(TY_U32) }
+fn ty_u64() -> TypeInfo { return ty_simple(TY_U64) }
+fn ty_u128() -> TypeInfo { return ty_simple(TY_U128) }
+fn ty_f32() -> TypeInfo { return ty_simple(TY_F32) }
+fn ty_f64() -> TypeInfo { return ty_simple(TY_F64) }
+fn ty_bool() -> TypeInfo { return ty_simple(TY_BOOL) }
+fn ty_char() -> TypeInfo { return ty_simple(TY_CHAR) }
+fn ty_str() -> TypeInfo { return ty_simple(TY_STR) }
+fn ty_void() -> TypeInfo { return ty_simple(TY_VOID) }
+fn ty_any() -> TypeInfo { return ty_simple(TY_ANY) }
+fn ty_error() -> TypeInfo { return ty_simple(TY_ERROR) }
+
+fn ty_array(elem: TypeInfo) -> TypeInfo {
+    let empty_ti: [TypeInfo] = []
+    let empty_s: [str] = []
+    return TypeInfo {
+        kind: TY_ARRAY, name: "",
+        element_type: [elem], param_types: empty_ti,
+        ret_type: empty_ti, field_names: empty_s,
+        field_types: empty_ti, tuple_types: empty_ti,
+        mutable: false
+    }
+}
+
+fn ty_map() -> TypeInfo {
+    return ty_simple(TY_MAP)
+}
+
+fn ty_tuple(types: [TypeInfo]) -> TypeInfo {
+    let empty_ti: [TypeInfo] = []
+    let empty_s: [str] = []
+    return TypeInfo {
+        kind: TY_TUPLE, name: "",
+        element_type: empty_ti, param_types: empty_ti,
+        ret_type: empty_ti, field_names: empty_s,
+        field_types: empty_ti, tuple_types: types,
+        mutable: false
+    }
+}
+
+fn ty_function(params: [TypeInfo], ret: TypeInfo) -> TypeInfo {
+    let empty_ti: [TypeInfo] = []
+    let empty_s: [str] = []
+    return TypeInfo {
+        kind: TY_FUNCTION, name: "",
+        element_type: empty_ti, param_types: params,
+        ret_type: [ret], field_names: empty_s,
+        field_types: empty_ti, tuple_types: empty_ti,
+        mutable: false
+    }
+}
+
+fn ty_struct(sname: str, fnames: [str], ftypes: [TypeInfo]) -> TypeInfo {
+    let empty_ti: [TypeInfo] = []
+    return TypeInfo {
+        kind: TY_STRUCT, name: sname,
+        element_type: empty_ti, param_types: empty_ti,
+        ret_type: empty_ti, field_names: fnames,
+        field_types: ftypes, tuple_types: empty_ti,
+        mutable: false
+    }
+}
+
+fn ty_enum(ename: str) -> TypeInfo {
+    let empty_ti: [TypeInfo] = []
+    let empty_s: [str] = []
+    return TypeInfo {
+        kind: TY_ENUM, name: ename,
+        element_type: empty_ti, param_types: empty_ti,
+        ret_type: empty_ti, field_names: empty_s,
+        field_types: empty_ti, tuple_types: empty_ti,
+        mutable: false
+    }
+}
+
+fn ty_ref(inner: TypeInfo, is_mut: bool) -> TypeInfo {
+    let empty_ti: [TypeInfo] = []
+    let empty_s: [str] = []
+    return TypeInfo {
+        kind: TY_REF, name: "",
+        element_type: [inner], param_types: empty_ti,
+        ret_type: empty_ti, field_names: empty_s,
+        field_types: empty_ti, tuple_types: empty_ti,
+        mutable: is_mut
+    }
+}
+
+fn ty_ptr(inner: TypeInfo) -> TypeInfo {
+    let empty_ti: [TypeInfo] = []
+    let empty_s: [str] = []
+    return TypeInfo {
+        kind: TY_PTR, name: "",
+        element_type: [inner], param_types: empty_ti,
+        ret_type: empty_ti, field_names: empty_s,
+        field_types: empty_ti, tuple_types: empty_ti,
+        mutable: false
+    }
+}
+
+// ===================================================================
+// Type name helper (for error messages)
+// ===================================================================
+
+fn ty_name(t: TypeInfo) -> str {
+    if t.kind == TY_I8 { return "i8" }
+    if t.kind == TY_I16 { return "i16" }
+    if t.kind == TY_I32 { return "i32" }
+    if t.kind == TY_I64 { return "i64" }
+    if t.kind == TY_I128 { return "i128" }
+    if t.kind == TY_U8 { return "u8" }
+    if t.kind == TY_U16 { return "u16" }
+    if t.kind == TY_U32 { return "u32" }
+    if t.kind == TY_U64 { return "u64" }
+    if t.kind == TY_U128 { return "u128" }
+    if t.kind == TY_F32 { return "f32" }
+    if t.kind == TY_F64 { return "f64" }
+    if t.kind == TY_BOOL { return "bool" }
+    if t.kind == TY_CHAR { return "char" }
+    if t.kind == TY_STR { return "str" }
+    if t.kind == TY_VOID { return "void" }
+    if t.kind == TY_ANY { return "any" }
+    if t.kind == TY_ERROR { return "<error>" }
+    if t.kind == TY_ARRAY {
+        if len(t.element_type) > 0 {
+            return "[" + ty_name(t.element_type[0]) + "]"
+        }
+        return "[]"
+    }
+    if t.kind == TY_STRUCT { return t.name }
+    if t.kind == TY_ENUM { return t.name }
+    if t.kind == TY_FUNCTION {
+        let mut s = "fn("
+        for i in range(0, len(t.param_types)) {
+            if i > 0 { s = s + ", " }
+            s = s + ty_name(t.param_types[i])
+        }
+        s = s + ")"
+        if len(t.ret_type) > 0 {
+            s = s + " -> " + ty_name(t.ret_type[0])
+        }
+        return s
+    }
+    if t.kind == TY_TUPLE {
+        let mut s = "("
+        for i in range(0, len(t.tuple_types)) {
+            if i > 0 { s = s + ", " }
+            s = s + ty_name(t.tuple_types[i])
+        }
+        return s + ")"
+    }
+    if t.kind == TY_MAP { return "map" }
+    if t.kind == TY_REF {
+        let mut prefix = "&"
+        if t.mutable { prefix = "&mut " }
+        if len(t.element_type) > 0 {
+            return prefix + ty_name(t.element_type[0])
+        }
+        return prefix + "?"
+    }
+    if t.kind == TY_PTR {
+        if len(t.element_type) > 0 {
+            return "*" + ty_name(t.element_type[0])
+        }
+        return "*?"
+    }
+    return "<unknown>"
+}
+
+// ===================================================================
+// Type equality and compatibility
+// ===================================================================
+
+fn ty_equals(a: TypeInfo, b: TypeInfo) -> bool {
+    if a.kind == TY_ANY or b.kind == TY_ANY { return true }
+    if a.kind == TY_ERROR or b.kind == TY_ERROR { return true }
+    if a.kind != b.kind { return false }
+    if a.kind == TY_STRUCT or a.kind == TY_ENUM {
+        return a.name == b.name
+    }
+    if a.kind == TY_ARRAY {
+        if len(a.element_type) == 0 or len(b.element_type) == 0 {
+            return true
+        }
+        return ty_equals(a.element_type[0], b.element_type[0])
+    }
+    if a.kind == TY_FUNCTION {
+        if len(a.param_types) != len(b.param_types) { return false }
+        for i in range(0, len(a.param_types)) {
+            if not ty_equals(a.param_types[i], b.param_types[i]) { return false }
+        }
+        if len(a.ret_type) > 0 and len(b.ret_type) > 0 {
+            return ty_equals(a.ret_type[0], b.ret_type[0])
+        }
+        return true
+    }
+    if a.kind == TY_TUPLE {
+        if len(a.tuple_types) != len(b.tuple_types) { return false }
+        for i in range(0, len(a.tuple_types)) {
+            if not ty_equals(a.tuple_types[i], b.tuple_types[i]) { return false }
+        }
+        return true
+    }
+    if a.kind == TY_REF or a.kind == TY_PTR {
+        if len(a.element_type) > 0 and len(b.element_type) > 0 {
+            return ty_equals(a.element_type[0], b.element_type[0])
+        }
+        return true
+    }
+    return true
+}
+
+fn ty_is_integer(t: TypeInfo) -> bool {
+    return t.kind == TY_I8 or t.kind == TY_I16 or t.kind == TY_I32 or
+           t.kind == TY_I64 or t.kind == TY_I128 or
+           t.kind == TY_U8 or t.kind == TY_U16 or t.kind == TY_U32 or
+           t.kind == TY_U64 or t.kind == TY_U128
+}
+
+fn ty_is_float(t: TypeInfo) -> bool {
+    return t.kind == TY_F32 or t.kind == TY_F64
+}
+
+fn ty_is_numeric(t: TypeInfo) -> bool {
+    return ty_is_integer(t) or ty_is_float(t)
+}
+
+fn ty_compatible(a: TypeInfo, b: TypeInfo) -> bool {
+    if a.kind == TY_ANY or b.kind == TY_ANY { return true }
+    if a.kind == TY_ERROR or b.kind == TY_ERROR { return true }
+    if ty_equals(a, b) { return true }
+    // Integer types are compatible with each other (implicit widening)
+    if ty_is_integer(a) and ty_is_integer(b) { return true }
+    // Float types are compatible with each other
+    if ty_is_float(a) and ty_is_float(b) { return true }
+    // Integer can promote to float
+    if ty_is_integer(a) and ty_is_float(b) { return true }
+    if ty_is_float(a) and ty_is_integer(b) { return true }
+    // Void matches void contexts
+    if a.kind == TY_VOID and b.kind == TY_VOID { return true }
+    return false
+}
+
+// ===================================================================
+// Symbol and Scope
+// ===================================================================
+
+struct Symbol {
+    name: str,
+    ty: TypeInfo,
+    mutable: bool,
+    defined: bool
+}
+
+struct Scope {
+    symbols: [Symbol],
+    parent_idx: i32
+}
+
+// ===================================================================
+// StructDef / EnumDef / FnSig -- type registry entries
+// ===================================================================
+
+struct StructDef {
+    name: str,
+    field_names: [str],
+    field_types: [TypeInfo]
+}
+
+struct EnumDef {
+    name: str,
+    variant_names: [str],
+    variant_types: [[TypeInfo]]
+}
+
+struct FnSig {
+    name: str,
+    param_types: [TypeInfo],
+    ret_type: TypeInfo
+}
+
+struct TraitDef {
+    name: str,
+    method_names: [str]
+}
+
+struct TypeAlias {
+    name: str,
+    target: TypeInfo
+}
+
+// ===================================================================
+// TypeChecker struct
+// ===================================================================
+
+struct TypeChecker {
+    scopes: [Scope],
+    current_scope: i32,
+    struct_defs: [StructDef],
+    enum_defs: [EnumDef],
+    fn_sigs: [FnSig],
+    trait_defs: [TraitDef],
+    type_aliases: [TypeAlias],
+    errors: [str],
+    warnings: [str],
+    current_fn_ret_type: [TypeInfo]
+}
+
+// ===================================================================
+// TypeChecker constructor
+// ===================================================================
+
+fn tc_new() -> TypeChecker {
+    let empty_sym: [Symbol] = []
+    let global_scope = Scope { symbols: empty_sym, parent_idx: -1 }
+    let scopes: [Scope] = [global_scope]
+    let struct_defs: [StructDef] = []
+    let enum_defs: [EnumDef] = []
+    let fn_sigs: [FnSig] = []
+    let trait_defs: [TraitDef] = []
+    let type_aliases: [TypeAlias] = []
+    let errors: [str] = []
+    let warnings: [str] = []
+    let cur_ret: [TypeInfo] = []
+    return TypeChecker {
+        scopes: scopes, current_scope: 0,
+        struct_defs: struct_defs, enum_defs: enum_defs,
+        fn_sigs: fn_sigs, trait_defs: trait_defs,
+        type_aliases: type_aliases,
+        errors: errors, warnings: warnings,
+        current_fn_ret_type: cur_ret
+    }
+}
+
+// ===================================================================
+// Scope management
+// ===================================================================
+
+fn tc_push_scope(tc: TypeChecker) -> TypeChecker {
+    let empty_sym: [Symbol] = []
+    let new_scope = Scope { symbols: empty_sym, parent_idx: tc.current_scope }
+    let mut scopes = tc.scopes
+    push(scopes, new_scope)
+    let new_idx = len(scopes) - 1
+    return TypeChecker {
+        scopes: scopes, current_scope: new_idx,
+        struct_defs: tc.struct_defs, enum_defs: tc.enum_defs,
+        fn_sigs: tc.fn_sigs, trait_defs: tc.trait_defs,
+        type_aliases: tc.type_aliases,
+        errors: tc.errors, warnings: tc.warnings,
+        current_fn_ret_type: tc.current_fn_ret_type
+    }
+}
+
+fn tc_pop_scope(tc: TypeChecker) -> TypeChecker {
+    let parent = tc.scopes[tc.current_scope].parent_idx
+    if parent < 0 {
+        return tc
+    }
+    return TypeChecker {
+        scopes: tc.scopes, current_scope: parent,
+        struct_defs: tc.struct_defs, enum_defs: tc.enum_defs,
+        fn_sigs: tc.fn_sigs, trait_defs: tc.trait_defs,
+        type_aliases: tc.type_aliases,
+        errors: tc.errors, warnings: tc.warnings,
+        current_fn_ret_type: tc.current_fn_ret_type
+    }
+}
+
+// ===================================================================
+// Error / warning helpers
+// ===================================================================
+
+fn tc_error(tc: TypeChecker, msg: str) -> TypeChecker {
+    let mut errors = tc.errors
+    push(errors, msg)
+    return TypeChecker {
+        scopes: tc.scopes, current_scope: tc.current_scope,
+        struct_defs: tc.struct_defs, enum_defs: tc.enum_defs,
+        fn_sigs: tc.fn_sigs, trait_defs: tc.trait_defs,
+        type_aliases: tc.type_aliases,
+        errors: errors, warnings: tc.warnings,
+        current_fn_ret_type: tc.current_fn_ret_type
+    }
+}
+
+fn tc_warning(tc: TypeChecker, msg: str) -> TypeChecker {
+    let mut warnings = tc.warnings
+    push(warnings, msg)
+    return TypeChecker {
+        scopes: tc.scopes, current_scope: tc.current_scope,
+        struct_defs: tc.struct_defs, enum_defs: tc.enum_defs,
+        fn_sigs: tc.fn_sigs, trait_defs: tc.trait_defs,
+        type_aliases: tc.type_aliases,
+        errors: tc.errors, warnings: warnings,
+        current_fn_ret_type: tc.current_fn_ret_type
+    }
+}
+
+// ===================================================================
+// Symbol table operations
+// ===================================================================
+
+fn tc_define(tc: TypeChecker, name: str, t: TypeInfo, is_mut: bool) -> TypeChecker {
+    let sym = Symbol { name: name, ty: t, mutable: is_mut, defined: true }
+    let mut scopes = tc.scopes
+    let mut cur = scopes[tc.current_scope]
+    let mut syms = cur.symbols
+    push(syms, sym)
+    cur = Scope { symbols: syms, parent_idx: cur.parent_idx }
+    scopes[tc.current_scope] = cur
+    return TypeChecker {
+        scopes: scopes, current_scope: tc.current_scope,
+        struct_defs: tc.struct_defs, enum_defs: tc.enum_defs,
+        fn_sigs: tc.fn_sigs, trait_defs: tc.trait_defs,
+        type_aliases: tc.type_aliases,
+        errors: tc.errors, warnings: tc.warnings,
+        current_fn_ret_type: tc.current_fn_ret_type
+    }
+}
+
+// Result for symbol lookup
+struct LookupResult {
+    found: bool,
+    sym: Symbol
+}
+
+fn tc_lookup(tc: TypeChecker, name: str) -> LookupResult {
+    let mut scope_idx = tc.current_scope
+    while scope_idx >= 0 {
+        let scope = tc.scopes[scope_idx]
+        for i in range(0, len(scope.symbols)) {
+            if scope.symbols[i].name == name {
+                return LookupResult { found: true, sym: scope.symbols[i] }
+            }
+        }
+        scope_idx = scope.parent_idx
+    }
+    let dummy = Symbol { name: "", ty: ty_error(), mutable: false, defined: false }
+    return LookupResult { found: false, sym: dummy }
+}
+
+// ===================================================================
+// Struct/Enum/Function signature lookup
+// ===================================================================
+
+fn tc_find_struct(tc: TypeChecker, name: str) -> i32 {
+    for i in range(0, len(tc.struct_defs)) {
+        if tc.struct_defs[i].name == name {
+            return i
+        }
+    }
+    return -1
+}
+
+fn tc_find_enum(tc: TypeChecker, name: str) -> i32 {
+    for i in range(0, len(tc.enum_defs)) {
+        if tc.enum_defs[i].name == name {
+            return i
+        }
+    }
+    return -1
+}
+
+fn tc_find_fn(tc: TypeChecker, name: str) -> i32 {
+    for i in range(0, len(tc.fn_sigs)) {
+        if tc.fn_sigs[i].name == name {
+            return i
+        }
+    }
+    return -1
+}
+
+fn tc_find_trait(tc: TypeChecker, name: str) -> i32 {
+    for i in range(0, len(tc.trait_defs)) {
+        if tc.trait_defs[i].name == name {
+            return i
+        }
+    }
+    return -1
+}
+
+fn tc_find_alias(tc: TypeChecker, name: str) -> i32 {
+    for i in range(0, len(tc.type_aliases)) {
+        if tc.type_aliases[i].name == name {
+            return i
+        }
+    }
+    return -1
+}
+
+// ===================================================================
+// Set current function return type
+// ===================================================================
+
+fn tc_set_ret_type(tc: TypeChecker, t: TypeInfo) -> TypeChecker {
+    return TypeChecker {
+        scopes: tc.scopes, current_scope: tc.current_scope,
+        struct_defs: tc.struct_defs, enum_defs: tc.enum_defs,
+        fn_sigs: tc.fn_sigs, trait_defs: tc.trait_defs,
+        type_aliases: tc.type_aliases,
+        errors: tc.errors, warnings: tc.warnings,
+        current_fn_ret_type: [t]
+    }
+}
+
+fn tc_clear_ret_type(tc: TypeChecker) -> TypeChecker {
+    let empty_ret: [TypeInfo] = []
+    return TypeChecker {
+        scopes: tc.scopes, current_scope: tc.current_scope,
+        struct_defs: tc.struct_defs, enum_defs: tc.enum_defs,
+        fn_sigs: tc.fn_sigs, trait_defs: tc.trait_defs,
+        type_aliases: tc.type_aliases,
+        errors: tc.errors, warnings: tc.warnings,
+        current_fn_ret_type: empty_ret
+    }
+}
+
+// ===================================================================
+// Type resolution: TypeExpr -> TypeInfo
+// ===================================================================
+
+fn resolve_type_expr(tc: TypeChecker, te: TypeExpr) -> TypeInfo {
+    if te.kind == TYPE_SIMPLE {
+        return resolve_simple_type(tc, te.name)
+    }
+    if te.kind == TYPE_ARRAY {
+        if len(te.element_type) > 0 {
+            let elem = resolve_type_expr(tc, te.element_type[0])
+            return ty_array(elem)
+        }
+        return ty_array(ty_any())
+    }
+    if te.kind == TYPE_TUPLE {
+        let mut types: [TypeInfo] = []
+        for i in range(0, len(te.tuple_types)) {
+            let t = resolve_type_expr(tc, te.tuple_types[i])
+            push(types, t)
+        }
+        return ty_tuple(types)
+    }
+    if te.kind == TYPE_FUNCTION {
+        let mut params: [TypeInfo] = []
+        for i in range(0, len(te.param_types)) {
+            let pt = resolve_type_expr(tc, te.param_types[i])
+            push(params, pt)
+        }
+        let mut ret = ty_void()
+        if len(te.ret_type) > 0 {
+            ret = resolve_type_expr(tc, te.ret_type[0])
+        }
+        return ty_function(params, ret)
+    }
+    if te.kind == TYPE_OPTIONAL {
+        // Optional types treated as their inner type for now
+        if len(te.inner_type) > 0 {
+            return resolve_type_expr(tc, te.inner_type[0])
+        }
+        return ty_any()
+    }
+    if te.kind == TYPE_REFERENCE {
+        if len(te.inner_type) > 0 {
+            let inner = resolve_type_expr(tc, te.inner_type[0])
+            return ty_ref(inner, te.mutable)
+        }
+        return ty_any()
+    }
+    if te.kind == TYPE_SHARED {
+        if len(te.inner_type) > 0 {
+            return resolve_type_expr(tc, te.inner_type[0])
+        }
+        return ty_any()
+    }
+    if te.kind == TYPE_WEAK {
+        if len(te.inner_type) > 0 {
+            return resolve_type_expr(tc, te.inner_type[0])
+        }
+        return ty_any()
+    }
+    if te.kind == TYPE_POINTER {
+        if len(te.inner_type) > 0 {
+            let inner = resolve_type_expr(tc, te.inner_type[0])
+            return ty_ptr(inner)
+        }
+        return ty_any()
+    }
+    if te.kind == TYPE_GENERIC {
+        // Generic types: resolve base and treat as that type
+        return resolve_simple_type(tc, te.name)
+    }
+    if te.kind == TYPE_INFERRED {
+        return ty_any()
+    }
+    return ty_any()
+}
+
+fn resolve_simple_type(tc: TypeChecker, name: str) -> TypeInfo {
+    if name == "i8" { return ty_i8() }
+    if name == "i16" { return ty_i16() }
+    if name == "i32" { return ty_i32() }
+    if name == "i64" { return ty_i64() }
+    if name == "i128" { return ty_i128() }
+    if name == "u8" { return ty_u8() }
+    if name == "u16" { return ty_u16() }
+    if name == "u32" { return ty_u32() }
+    if name == "u64" { return ty_u64() }
+    if name == "u128" { return ty_u128() }
+    if name == "f32" { return ty_f32() }
+    if name == "f64" { return ty_f64() }
+    if name == "bool" { return ty_bool() }
+    if name == "char" { return ty_char() }
+    if name == "str" { return ty_str() }
+    if name == "void" { return ty_void() }
+    if name == "any" { return ty_any() }
+    // Check type aliases
+    let alias_idx = tc_find_alias(tc, name)
+    if alias_idx >= 0 {
+        return tc.type_aliases[alias_idx].target
+    }
+    // Check struct definitions
+    let struct_idx = tc_find_struct(tc, name)
+    if struct_idx >= 0 {
+        let sd = tc.struct_defs[struct_idx]
+        return ty_struct(sd.name, sd.field_names, sd.field_types)
+    }
+    // Check enum definitions
+    let enum_idx = tc_find_enum(tc, name)
+    if enum_idx >= 0 {
+        return ty_enum(name)
+    }
+    // Unknown type -- return any to continue checking
+    return ty_any()
+}
+
+// ===================================================================
+// Expression type checking
+// ===================================================================
+
+// Result wrapper for expression checking
+struct TCExprResult {
+    tc: TypeChecker,
+    ty: TypeInfo
+}
+
+fn tc_check_expr(tc: TypeChecker, e: Expr) -> TCExprResult {
+    if e.kind == EXPR_INT_LIT {
+        return TCExprResult { tc: tc, ty: ty_i64() }
+    }
+    if e.kind == EXPR_FLOAT_LIT {
+        return TCExprResult { tc: tc, ty: ty_f64() }
+    }
+    if e.kind == EXPR_STRING_LIT {
+        return TCExprResult { tc: tc, ty: ty_str() }
+    }
+    if e.kind == EXPR_INTERP_STRING {
+        return TCExprResult { tc: tc, ty: ty_str() }
+    }
+    if e.kind == EXPR_CHAR_LIT {
+        return TCExprResult { tc: tc, ty: ty_char() }
+    }
+    if e.kind == EXPR_BOOL_LIT {
+        return TCExprResult { tc: tc, ty: ty_bool() }
+    }
+    if e.kind == EXPR_NONE_LIT {
+        return TCExprResult { tc: tc, ty: ty_void() }
+    }
+    if e.kind == EXPR_IDENT {
+        return tc_check_ident(tc, e)
+    }
+    if e.kind == EXPR_BINARY_OP {
+        return tc_check_binary_op(tc, e)
+    }
+    if e.kind == EXPR_UNARY_OP {
+        return tc_check_unary_op(tc, e)
+    }
+    if e.kind == EXPR_FN_CALL {
+        return tc_check_fn_call(tc, e)
+    }
+    if e.kind == EXPR_METHOD_CALL {
+        return tc_check_method_call(tc, e)
+    }
+    if e.kind == EXPR_FIELD_ACCESS {
+        return tc_check_field_access(tc, e)
+    }
+    if e.kind == EXPR_INDEX_ACCESS {
+        return tc_check_index_access(tc, e)
+    }
+    if e.kind == EXPR_ARRAY_LIT {
+        return tc_check_array_lit(tc, e)
+    }
+    if e.kind == EXPR_STRUCT_LIT {
+        return tc_check_struct_lit(tc, e)
+    }
+    if e.kind == EXPR_TUPLE_LIT {
+        return tc_check_tuple_lit(tc, e)
+    }
+    if e.kind == EXPR_MAP_LIT {
+        return tc_check_map_lit(tc, e)
+    }
+    if e.kind == EXPR_IF {
+        return tc_check_if_expr(tc, e)
+    }
+    if e.kind == EXPR_MATCH {
+        return tc_check_match_expr(tc, e)
+    }
+    if e.kind == EXPR_LAMBDA {
+        return tc_check_lambda(tc, e)
+    }
+    if e.kind == EXPR_CAST {
+        return tc_check_cast(tc, e)
+    }
+    if e.kind == EXPR_RANGE {
+        return tc_check_range(tc, e)
+    }
+    if e.kind == EXPR_BLOCK {
+        return tc_check_block_expr(tc, e)
+    }
+    if e.kind == EXPR_PIPE {
+        return tc_check_pipe(tc, e)
+    }
+    // EXPR_SHARED, EXPR_MOVE, EXPR_WEAK: check inner expression
+    if e.kind == EXPR_SHARED or e.kind == EXPR_MOVE or e.kind == EXPR_WEAK {
+        if len(e.left) > 0 {
+            return tc_check_expr(tc, e.left[0])
+        }
+        return TCExprResult { tc: tc, ty: ty_any() }
+    }
+    // EXPR_COMPTIME, EXPR_QUANTUM: check inner expression
+    if e.kind == EXPR_COMPTIME or e.kind == EXPR_QUANTUM {
+        if len(e.left) > 0 {
+            return tc_check_expr(tc, e.left[0])
+        }
+        return TCExprResult { tc: tc, ty: ty_any() }
+    }
+    return TCExprResult { tc: tc, ty: ty_any() }
+}
+
+// -------------------------------------------------------------------
+// Identifier lookup
+// -------------------------------------------------------------------
+
+fn tc_check_ident(tc: TypeChecker, e: Expr) -> TCExprResult {
+    let result = tc_lookup(tc, e.name)
+    if result.found {
+        return TCExprResult { tc: tc, ty: result.sym.ty }
+    }
+    // Check if it is a function name
+    let fn_idx = tc_find_fn(tc, e.name)
+    if fn_idx >= 0 {
+        let sig = tc.fn_sigs[fn_idx]
+        let ft = ty_function(sig.param_types, sig.ret_type)
+        return TCExprResult { tc: tc, ty: ft }
+    }
+    // Check if it is a struct name (used as constructor)
+    let struct_idx = tc_find_struct(tc, e.name)
+    if struct_idx >= 0 {
+        let sd = tc.struct_defs[struct_idx]
+        return TCExprResult { tc: tc, ty: ty_struct(sd.name, sd.field_names, sd.field_types) }
+    }
+    // Check if it is an enum name
+    let enum_idx = tc_find_enum(tc, e.name)
+    if enum_idx >= 0 {
+        return TCExprResult { tc: tc, ty: ty_enum(e.name) }
+    }
+    let tc2 = tc_error(tc, "undefined variable: " + e.name + " at " + to_string(e.start))
+    return TCExprResult { tc: tc2, ty: ty_error() }
+}
+
+// -------------------------------------------------------------------
+// Binary operations
+// -------------------------------------------------------------------
+
+fn tc_check_binary_op(tc: TypeChecker, e: Expr) -> TCExprResult {
+    if len(e.left) == 0 or len(e.right) == 0 {
+        return TCExprResult { tc: tc, ty: ty_error() }
+    }
+    let lr = tc_check_expr(tc, e.left[0])
+    let rr = tc_check_expr(lr.tc, e.right[0])
+    let lt = lr.ty
+    let rt = rr.ty
+    let mut tc2 = rr.tc
+
+    // Arithmetic: +, -, *, /, %, **
+    if e.op == BINOP_ADD or e.op == BINOP_SUB or e.op == BINOP_MUL or
+       e.op == BINOP_DIV or e.op == BINOP_MOD or e.op == BINOP_POW {
+        // String concatenation with +
+        if e.op == BINOP_ADD {
+            if lt.kind == TY_STR or rt.kind == TY_STR {
+                return TCExprResult { tc: tc2, ty: ty_str() }
+            }
+        }
+        // Numeric arithmetic
+        if ty_is_numeric(lt) and ty_is_numeric(rt) {
+            // If either is float, result is float
+            if ty_is_float(lt) or ty_is_float(rt) {
+                return TCExprResult { tc: tc2, ty: ty_f64() }
+            }
+            return TCExprResult { tc: tc2, ty: lt }
+        }
+        if lt.kind == TY_ANY or rt.kind == TY_ANY {
+            return TCExprResult { tc: tc2, ty: ty_any() }
+        }
+        if lt.kind != TY_ERROR and rt.kind != TY_ERROR {
+            tc2 = tc_error(tc2, "arithmetic on non-numeric types: " + ty_name(lt) + " " + binop_name(e.op) + " " + ty_name(rt) + " at " + to_string(e.start))
+        }
+        return TCExprResult { tc: tc2, ty: ty_error() }
+    }
+
+    // Comparison: ==, !=, <, >, <=, >=
+    if e.op == BINOP_EQ or e.op == BINOP_NEQ or e.op == BINOP_LT or
+       e.op == BINOP_GT or e.op == BINOP_LT_EQ or e.op == BINOP_GT_EQ {
+        if not ty_compatible(lt, rt) {
+            if lt.kind != TY_ERROR and rt.kind != TY_ERROR {
+                tc2 = tc_error(tc2, "comparison of incompatible types: " + ty_name(lt) + " vs " + ty_name(rt) + " at " + to_string(e.start))
+            }
+        }
+        return TCExprResult { tc: tc2, ty: ty_bool() }
+    }
+
+    // Logical: and, or
+    if e.op == BINOP_AND or e.op == BINOP_OR {
+        if lt.kind != TY_BOOL and lt.kind != TY_ANY and lt.kind != TY_ERROR {
+            tc2 = tc_error(tc2, "logical operator requires bool, got " + ty_name(lt) + " at " + to_string(e.start))
+        }
+        if rt.kind != TY_BOOL and rt.kind != TY_ANY and rt.kind != TY_ERROR {
+            tc2 = tc_error(tc2, "logical operator requires bool, got " + ty_name(rt) + " at " + to_string(e.start))
+        }
+        return TCExprResult { tc: tc2, ty: ty_bool() }
+    }
+
+    // Bitwise: &, |, ^, <<, >>
+    if e.op == BINOP_BIT_AND or e.op == BINOP_BIT_OR or e.op == BINOP_BIT_XOR or
+       e.op == BINOP_SHL or e.op == BINOP_SHR {
+        if not ty_is_integer(lt) and lt.kind != TY_ANY and lt.kind != TY_ERROR {
+            tc2 = tc_error(tc2, "bitwise operator requires integer, got " + ty_name(lt) + " at " + to_string(e.start))
+        }
+        if not ty_is_integer(rt) and rt.kind != TY_ANY and rt.kind != TY_ERROR {
+            tc2 = tc_error(tc2, "bitwise operator requires integer, got " + ty_name(rt) + " at " + to_string(e.start))
+        }
+        return TCExprResult { tc: tc2, ty: lt }
+    }
+
+    return TCExprResult { tc: tc2, ty: ty_any() }
+}
+
+// -------------------------------------------------------------------
+// Unary operations
+// -------------------------------------------------------------------
+
+fn tc_check_unary_op(tc: TypeChecker, e: Expr) -> TCExprResult {
+    if len(e.left) == 0 {
+        return TCExprResult { tc: tc, ty: ty_error() }
+    }
+    let r = tc_check_expr(tc, e.left[0])
+    let ot = r.ty
+    let mut tc2 = r.tc
+
+    if e.op == UNOP_NEG {
+        if not ty_is_numeric(ot) and ot.kind != TY_ANY and ot.kind != TY_ERROR {
+            tc2 = tc_error(tc2, "negation requires numeric type, got " + ty_name(ot) + " at " + to_string(e.start))
+        }
+        return TCExprResult { tc: tc2, ty: ot }
+    }
+    if e.op == UNOP_NOT {
+        if ot.kind != TY_BOOL and ot.kind != TY_ANY and ot.kind != TY_ERROR {
+            tc2 = tc_error(tc2, "'not' requires bool, got " + ty_name(ot) + " at " + to_string(e.start))
+        }
+        return TCExprResult { tc: tc2, ty: ty_bool() }
+    }
+    if e.op == UNOP_BIT_NOT {
+        if not ty_is_integer(ot) and ot.kind != TY_ANY and ot.kind != TY_ERROR {
+            tc2 = tc_error(tc2, "bitwise not requires integer, got " + ty_name(ot) + " at " + to_string(e.start))
+        }
+        return TCExprResult { tc: tc2, ty: ot }
+    }
+    return TCExprResult { tc: tc2, ty: ot }
+}
+
+// -------------------------------------------------------------------
+// Function calls
+// -------------------------------------------------------------------
+
+fn tc_check_fn_call(tc: TypeChecker, e: Expr) -> TCExprResult {
+    if len(e.left) == 0 {
+        return TCExprResult { tc: tc, ty: ty_error() }
+    }
+    let callee = e.left[0]
+    let mut tc2 = tc
+
+    // Check arguments first
+    let mut arg_types: [TypeInfo] = []
+    for i in range(0, len(e.args)) {
+        let ar = tc_check_expr(tc2, e.args[i])
+        tc2 = ar.tc
+        push(arg_types, ar.ty)
+    }
+
+    // Direct function call by name
+    if callee.kind == EXPR_IDENT {
+        let fn_idx = tc_find_fn(tc2, callee.name)
+        if fn_idx >= 0 {
+            let sig = tc2.fn_sigs[fn_idx]
+            // Check argument count
+            if len(e.args) != len(sig.param_types) {
+                // Allow variadic-like builtins (those with TY_ANY params)
+                let mut has_any_param = false
+                for k in range(0, len(sig.param_types)) {
+                    if sig.param_types[k].kind == TY_ANY {
+                        has_any_param = true
+                    }
+                }
+                if not has_any_param {
+                    tc2 = tc_error(tc2, "function " + callee.name + " expects " + to_string(len(sig.param_types)) + " arguments, got " + to_string(len(e.args)) + " at " + to_string(e.start))
+                }
+            } else {
+                // Check argument types
+                for j in range(0, len(sig.param_types)) {
+                    if j < len(arg_types) {
+                        if not ty_compatible(arg_types[j], sig.param_types[j]) {
+                            tc2 = tc_error(tc2, "argument " + to_string(j + 1) + " of " + callee.name + ": expected " + ty_name(sig.param_types[j]) + ", got " + ty_name(arg_types[j]) + " at " + to_string(e.start))
+                        }
+                    }
+                }
+            }
+            return TCExprResult { tc: tc2, ty: sig.ret_type }
+        }
+        // Check if it is a struct constructor
+        let struct_idx = tc_find_struct(tc2, callee.name)
+        if struct_idx >= 0 {
+            let sd = tc2.struct_defs[struct_idx]
+            return TCExprResult { tc: tc2, ty: ty_struct(sd.name, sd.field_names, sd.field_types) }
+        }
+        // Check if it is an enum variant
+        let enum_idx = tc_find_enum(tc2, callee.name)
+        if enum_idx >= 0 {
+            return TCExprResult { tc: tc2, ty: ty_enum(callee.name) }
+        }
+        // Check if callee is in symbol table as function type
+        let lu = tc_lookup(tc2, callee.name)
+        if lu.found {
+            if lu.sym.ty.kind == TY_FUNCTION {
+                let mut ret = ty_void()
+                if len(lu.sym.ty.ret_type) > 0 {
+                    ret = lu.sym.ty.ret_type[0]
+                }
+                return TCExprResult { tc: tc2, ty: ret }
+            }
+            return TCExprResult { tc: tc2, ty: ty_any() }
+        }
+        // Not found -- could be a forward reference or external
+        tc2 = tc_warning(tc2, "unknown function: " + callee.name + " at " + to_string(e.start))
+        return TCExprResult { tc: tc2, ty: ty_any() }
+    }
+
+    // Indirect call: check the callee expression
+    let cr = tc_check_expr(tc2, callee)
+    tc2 = cr.tc
+    if cr.ty.kind == TY_FUNCTION {
+        let mut ret = ty_void()
+        if len(cr.ty.ret_type) > 0 {
+            ret = cr.ty.ret_type[0]
+        }
+        return TCExprResult { tc: tc2, ty: ret }
+    }
+    return TCExprResult { tc: tc2, ty: ty_any() }
+}
+
+// -------------------------------------------------------------------
+// Method calls
+// -------------------------------------------------------------------
+
+fn tc_check_method_call(tc: TypeChecker, e: Expr) -> TCExprResult {
+    if len(e.left) == 0 {
+        return TCExprResult { tc: tc, ty: ty_error() }
+    }
+    let rr = tc_check_expr(tc, e.left[0])
+    let mut tc2 = rr.tc
+    let recv_ty = rr.ty
+
+    // Check arguments
+    for i in range(0, len(e.args)) {
+        let ar = tc_check_expr(tc2, e.args[i])
+        tc2 = ar.tc
+    }
+
+    // Array/string methods
+    if recv_ty.kind == TY_ARRAY {
+        if e.name == "len" { return TCExprResult { tc: tc2, ty: ty_i64() } }
+        if e.name == "push" { return TCExprResult { tc: tc2, ty: ty_void() } }
+        if e.name == "pop" { return TCExprResult { tc: tc2, ty: ty_any() } }
+        if e.name == "contains" { return TCExprResult { tc: tc2, ty: ty_bool() } }
+        if e.name == "is_empty" { return TCExprResult { tc: tc2, ty: ty_bool() } }
+        if e.name == "reverse" { return TCExprResult { tc: tc2, ty: recv_ty } }
+        if e.name == "slice" { return TCExprResult { tc: tc2, ty: recv_ty } }
+        if e.name == "sort" { return TCExprResult { tc: tc2, ty: recv_ty } }
+        if e.name == "map" { return TCExprResult { tc: tc2, ty: ty_array(ty_any()) } }
+        if e.name == "filter" { return TCExprResult { tc: tc2, ty: recv_ty } }
+        if e.name == "join" { return TCExprResult { tc: tc2, ty: ty_str() } }
+    }
+    if recv_ty.kind == TY_STR {
+        if e.name == "len" { return TCExprResult { tc: tc2, ty: ty_i64() } }
+        if e.name == "contains" { return TCExprResult { tc: tc2, ty: ty_bool() } }
+        if e.name == "starts_with" { return TCExprResult { tc: tc2, ty: ty_bool() } }
+        if e.name == "ends_with" { return TCExprResult { tc: tc2, ty: ty_bool() } }
+        if e.name == "trim" { return TCExprResult { tc: tc2, ty: ty_str() } }
+        if e.name == "split" { return TCExprResult { tc: tc2, ty: ty_array(ty_str()) } }
+        if e.name == "replace" { return TCExprResult { tc: tc2, ty: ty_str() } }
+        if e.name == "to_upper" { return TCExprResult { tc: tc2, ty: ty_str() } }
+        if e.name == "to_lower" { return TCExprResult { tc: tc2, ty: ty_str() } }
+        if e.name == "chars" { return TCExprResult { tc: tc2, ty: ty_array(ty_str()) } }
+    }
+    if recv_ty.kind == TY_MAP {
+        if e.name == "get" { return TCExprResult { tc: tc2, ty: ty_any() } }
+        if e.name == "set" { return TCExprResult { tc: tc2, ty: ty_void() } }
+        if e.name == "has" { return TCExprResult { tc: tc2, ty: ty_bool() } }
+        if e.name == "keys" { return TCExprResult { tc: tc2, ty: ty_array(ty_any()) } }
+        if e.name == "values" { return TCExprResult { tc: tc2, ty: ty_array(ty_any()) } }
+        if e.name == "delete" { return TCExprResult { tc: tc2, ty: ty_bool() } }
+        if e.name == "len" { return TCExprResult { tc: tc2, ty: ty_i64() } }
+    }
+
+    // Struct method: look up impl methods via fn_sigs
+    // Convention: method "foo" on struct "Bar" is registered as "Bar.foo"
+    if recv_ty.kind == TY_STRUCT {
+        let qualified = recv_ty.name + "." + e.name
+        let fn_idx = tc_find_fn(tc2, qualified)
+        if fn_idx >= 0 {
+            return TCExprResult { tc: tc2, ty: tc2.fn_sigs[fn_idx].ret_type }
+        }
+    }
+
+    // Unknown method -- return any for forward compatibility
+    return TCExprResult { tc: tc2, ty: ty_any() }
+}
+
+// -------------------------------------------------------------------
+// Field access
+// -------------------------------------------------------------------
+
+fn tc_check_field_access(tc: TypeChecker, e: Expr) -> TCExprResult {
+    if len(e.left) == 0 {
+        return TCExprResult { tc: tc, ty: ty_error() }
+    }
+    let rr = tc_check_expr(tc, e.left[0])
+    let mut tc2 = rr.tc
+    let recv_ty = rr.ty
+
+    if recv_ty.kind == TY_STRUCT {
+        // Search field names
+        for i in range(0, len(recv_ty.field_names)) {
+            if recv_ty.field_names[i] == e.name {
+                return TCExprResult { tc: tc2, ty: recv_ty.field_types[i] }
+            }
+        }
+        tc2 = tc_error(tc2, "struct " + recv_ty.name + " has no field " + e.name + " at " + to_string(e.start))
+        return TCExprResult { tc: tc2, ty: ty_error() }
+    }
+
+    // For non-struct types, allow field access on any/error
+    if recv_ty.kind == TY_ANY or recv_ty.kind == TY_ERROR {
+        return TCExprResult { tc: tc2, ty: ty_any() }
+    }
+
+    // Tuple field access (e.g. t.0, t.1) -- not common, allow any
+    if recv_ty.kind == TY_TUPLE {
+        return TCExprResult { tc: tc2, ty: ty_any() }
+    }
+
+    tc2 = tc_error(tc2, "cannot access field " + e.name + " on type " + ty_name(recv_ty) + " at " + to_string(e.start))
+    return TCExprResult { tc: tc2, ty: ty_error() }
+}
+
+// -------------------------------------------------------------------
+// Index access
+// -------------------------------------------------------------------
+
+fn tc_check_index_access(tc: TypeChecker, e: Expr) -> TCExprResult {
+    if len(e.left) == 0 {
+        return TCExprResult { tc: tc, ty: ty_error() }
+    }
+    let rr = tc_check_expr(tc, e.left[0])
+    let mut tc2 = rr.tc
+    let recv_ty = rr.ty
+
+    // Check the index expression
+    if len(e.right) > 0 {
+        let ir = tc_check_expr(tc2, e.right[0])
+        tc2 = ir.tc
+    }
+
+    if recv_ty.kind == TY_ARRAY {
+        if len(recv_ty.element_type) > 0 {
+            return TCExprResult { tc: tc2, ty: recv_ty.element_type[0] }
+        }
+        return TCExprResult { tc: tc2, ty: ty_any() }
+    }
+    if recv_ty.kind == TY_STR {
+        // String indexing returns a single-char string
+        return TCExprResult { tc: tc2, ty: ty_str() }
+    }
+    if recv_ty.kind == TY_MAP {
+        return TCExprResult { tc: tc2, ty: ty_any() }
+    }
+    if recv_ty.kind == TY_TUPLE {
+        return TCExprResult { tc: tc2, ty: ty_any() }
+    }
+    if recv_ty.kind == TY_ANY or recv_ty.kind == TY_ERROR {
+        return TCExprResult { tc: tc2, ty: ty_any() }
+    }
+
+    tc2 = tc_error(tc2, "cannot index into type " + ty_name(recv_ty) + " at " + to_string(e.start))
+    return TCExprResult { tc: tc2, ty: ty_error() }
+}
+
+// -------------------------------------------------------------------
+// Array literal
+// -------------------------------------------------------------------
+
+fn tc_check_array_lit(tc: TypeChecker, e: Expr) -> TCExprResult {
+    if len(e.elements) == 0 {
+        return TCExprResult { tc: tc, ty: ty_array(ty_any()) }
+    }
+    // Check first element to get the element type
+    let first = tc_check_expr(tc, e.elements[0])
+    let mut tc2 = first.tc
+    let elem_ty = first.ty
+    // Check remaining elements
+    for i in range(1, len(e.elements)) {
+        let er = tc_check_expr(tc2, e.elements[i])
+        tc2 = er.tc
+        if not ty_compatible(er.ty, elem_ty) {
+            if er.ty.kind != TY_ERROR and elem_ty.kind != TY_ERROR {
+                tc2 = tc_error(tc2, "array element type mismatch: expected " + ty_name(elem_ty) + ", got " + ty_name(er.ty) + " at " + to_string(e.start))
+            }
+        }
+    }
+    return TCExprResult { tc: tc2, ty: ty_array(elem_ty) }
+}
+
+// -------------------------------------------------------------------
+// Struct literal
+// -------------------------------------------------------------------
+
+fn tc_check_struct_lit(tc: TypeChecker, e: Expr) -> TCExprResult {
+    let struct_idx = tc_find_struct(tc, e.name)
+    let mut tc2 = tc
+    if struct_idx < 0 {
+        // Unknown struct -- check field expressions anyway
+        for i in range(0, len(e.field_exprs)) {
+            let fr = tc_check_expr(tc2, e.field_exprs[i])
+            tc2 = fr.tc
+        }
+        tc2 = tc_error(tc2, "unknown struct: " + e.name + " at " + to_string(e.start))
+        return TCExprResult { tc: tc2, ty: ty_error() }
+    }
+    let sd = tc2.struct_defs[struct_idx]
+
+    // Check each field expression
+    for i in range(0, len(e.field_exprs)) {
+        let fr = tc_check_expr(tc2, e.field_exprs[i])
+        tc2 = fr.tc
+        // Find the matching struct field type and check compatibility
+        if i < len(e.field_names) {
+            let fname = e.field_names[i]
+            let mut found_field = false
+            for j in range(0, len(sd.field_names)) {
+                if sd.field_names[j] == fname {
+                    found_field = true
+                    if not ty_compatible(fr.ty, sd.field_types[j]) {
+                        if fr.ty.kind != TY_ERROR {
+                            tc2 = tc_error(tc2, "field " + fname + " of " + e.name + ": expected " + ty_name(sd.field_types[j]) + ", got " + ty_name(fr.ty) + " at " + to_string(e.start))
+                        }
+                    }
+                }
+            }
+            if not found_field {
+                tc2 = tc_error(tc2, "struct " + e.name + " has no field " + fname + " at " + to_string(e.start))
+            }
+        }
+    }
+
+    return TCExprResult { tc: tc2, ty: ty_struct(sd.name, sd.field_names, sd.field_types) }
+}
+
+// -------------------------------------------------------------------
+// Tuple literal
+// -------------------------------------------------------------------
+
+fn tc_check_tuple_lit(tc: TypeChecker, e: Expr) -> TCExprResult {
+    let mut types: [TypeInfo] = []
+    let mut tc2 = tc
+    for i in range(0, len(e.elements)) {
+        let er = tc_check_expr(tc2, e.elements[i])
+        tc2 = er.tc
+        push(types, er.ty)
+    }
+    return TCExprResult { tc: tc2, ty: ty_tuple(types) }
+}
+
+// -------------------------------------------------------------------
+// Map literal
+// -------------------------------------------------------------------
+
+fn tc_check_map_lit(tc: TypeChecker, e: Expr) -> TCExprResult {
+    let mut tc2 = tc
+    // Check key expressions (left) and value expressions (right)
+    for i in range(0, len(e.left)) {
+        let kr = tc_check_expr(tc2, e.left[i])
+        tc2 = kr.tc
+    }
+    for i in range(0, len(e.right)) {
+        let vr = tc_check_expr(tc2, e.right[i])
+        tc2 = vr.tc
+    }
+    return TCExprResult { tc: tc2, ty: ty_map() }
+}
+
+// -------------------------------------------------------------------
+// If expression
+// -------------------------------------------------------------------
+
+fn tc_check_if_expr(tc: TypeChecker, e: Expr) -> TCExprResult {
+    let mut tc2 = tc
+    // Check condition
+    if len(e.left) > 0 {
+        let cr = tc_check_expr(tc2, e.left[0])
+        tc2 = cr.tc
+        if cr.ty.kind != TY_BOOL and cr.ty.kind != TY_ANY and cr.ty.kind != TY_ERROR {
+            tc2 = tc_error(tc2, "if condition must be bool, got " + ty_name(cr.ty) + " at " + to_string(e.start))
+        }
+    }
+    // Check then block
+    let mut then_ty = ty_void()
+    tc2 = tc_push_scope(tc2)
+    for i in range(0, len(e.then_block)) {
+        tc2 = tc_check_stmt(tc2, e.then_block[i])
+    }
+    tc2 = tc_pop_scope(tc2)
+    // Check else block
+    if len(e.else_block) > 0 {
+        tc2 = tc_push_scope(tc2)
+        for i in range(0, len(e.else_block)) {
+            tc2 = tc_check_stmt(tc2, e.else_block[i])
+        }
+        tc2 = tc_pop_scope(tc2)
+    }
+    return TCExprResult { tc: tc2, ty: then_ty }
+}
+
+// -------------------------------------------------------------------
+// Match expression
+// -------------------------------------------------------------------
+
+fn tc_check_match_expr(tc: TypeChecker, e: Expr) -> TCExprResult {
+    let mut tc2 = tc
+    // Check the subject expression
+    if len(e.left) > 0 {
+        let sr = tc_check_expr(tc2, e.left[0])
+        tc2 = sr.tc
+    }
+    // Check each arm
+    let mut result_ty = ty_void()
+    for i in range(0, len(e.match_arms)) {
+        let arm = e.match_arms[i]
+        tc2 = tc_push_scope(tc2)
+        // Bind pattern variables
+        tc2 = tc_bind_pattern(tc2, arm.pattern)
+        // Check guard
+        if len(arm.guard) > 0 {
+            let gr = tc_check_expr(tc2, arm.guard[0])
+            tc2 = gr.tc
+        }
+        // Check body
+        if len(arm.body) > 0 {
+            let br = tc_check_expr(tc2, arm.body[0])
+            tc2 = br.tc
+            if i == 0 {
+                result_ty = br.ty
+            }
+        }
+        tc2 = tc_pop_scope(tc2)
+    }
+    return TCExprResult { tc: tc2, ty: result_ty }
+}
+
+// -------------------------------------------------------------------
+// Pattern binding (defines variables from pattern matches)
+// -------------------------------------------------------------------
+
+fn tc_bind_pattern(tc: TypeChecker, pat: Pattern) -> TypeChecker {
+    if pat.kind == PAT_IDENT {
+        return tc_define(tc, pat.name, ty_any(), pat.mutable)
+    }
+    if pat.kind == PAT_TUPLE {
+        let mut tc2 = tc
+        for i in range(0, len(pat.sub_patterns)) {
+            tc2 = tc_bind_pattern(tc2, pat.sub_patterns[i])
+        }
+        return tc2
+    }
+    if pat.kind == PAT_STRUCT {
+        let mut tc2 = tc
+        for i in range(0, len(pat.field_patterns)) {
+            tc2 = tc_bind_pattern(tc2, pat.field_patterns[i])
+        }
+        return tc2
+    }
+    if pat.kind == PAT_ENUM {
+        let mut tc2 = tc
+        for i in range(0, len(pat.sub_patterns)) {
+            tc2 = tc_bind_pattern(tc2, pat.sub_patterns[i])
+        }
+        return tc2
+    }
+    if pat.kind == PAT_OR {
+        let mut tc2 = tc
+        for i in range(0, len(pat.or_patterns)) {
+            tc2 = tc_bind_pattern(tc2, pat.or_patterns[i])
+        }
+        return tc2
+    }
+    // PAT_WILDCARD, PAT_LITERAL: no binding needed
+    return tc
+}
+
+// -------------------------------------------------------------------
+// Lambda
+// -------------------------------------------------------------------
+
+fn tc_check_lambda(tc: TypeChecker, e: Expr) -> TCExprResult {
+    let mut tc2 = tc_push_scope(tc)
+    let mut param_types: [TypeInfo] = []
+    for i in range(0, len(e.params)) {
+        let mut pt = ty_any()
+        if len(e.params[i].ty) > 0 {
+            pt = resolve_type_expr(tc2, e.params[i].ty[0])
+        }
+        push(param_types, pt)
+        tc2 = tc_define(tc2, e.params[i].name, pt, false)
+    }
+    // Check body (stored in block_stmts for statement lambdas)
+    let mut body_ty = ty_void()
+    for i in range(0, len(e.block_stmts)) {
+        tc2 = tc_check_stmt(tc2, e.block_stmts[i])
+    }
+    // If there is a single expression body in left
+    if len(e.left) > 0 {
+        let br = tc_check_expr(tc2, e.left[0])
+        tc2 = br.tc
+        body_ty = br.ty
+    }
+    let mut ret = ty_void()
+    if len(e.ret_type) > 0 {
+        ret = resolve_type_expr(tc2, e.ret_type[0])
+    } else {
+        ret = body_ty
+    }
+    tc2 = tc_pop_scope(tc2)
+    return TCExprResult { tc: tc2, ty: ty_function(param_types, ret) }
+}
+
+// -------------------------------------------------------------------
+// Cast expression
+// -------------------------------------------------------------------
+
+fn tc_check_cast(tc: TypeChecker, e: Expr) -> TCExprResult {
+    let mut tc2 = tc
+    if len(e.left) > 0 {
+        let sr = tc_check_expr(tc2, e.left[0])
+        tc2 = sr.tc
+    }
+    if len(e.cast_type) > 0 {
+        let target = resolve_type_expr(tc2, e.cast_type[0])
+        return TCExprResult { tc: tc2, ty: target }
+    }
+    return TCExprResult { tc: tc2, ty: ty_any() }
+}
+
+// -------------------------------------------------------------------
+// Range expression
+// -------------------------------------------------------------------
+
+fn tc_check_range(tc: TypeChecker, e: Expr) -> TCExprResult {
+    let mut tc2 = tc
+    if len(e.left) > 0 {
+        let sr = tc_check_expr(tc2, e.left[0])
+        tc2 = sr.tc
+        if not ty_is_integer(sr.ty) and sr.ty.kind != TY_ANY and sr.ty.kind != TY_ERROR {
+            tc2 = tc_error(tc2, "range start must be integer, got " + ty_name(sr.ty) + " at " + to_string(e.start))
+        }
+    }
+    if len(e.right) > 0 {
+        let er = tc_check_expr(tc2, e.right[0])
+        tc2 = er.tc
+        if not ty_is_integer(er.ty) and er.ty.kind != TY_ANY and er.ty.kind != TY_ERROR {
+            tc2 = tc_error(tc2, "range end must be integer, got " + ty_name(er.ty) + " at " + to_string(e.start))
+        }
+    }
+    return TCExprResult { tc: tc2, ty: ty_array(ty_i64()) }
+}
+
+// -------------------------------------------------------------------
+// Block expression
+// -------------------------------------------------------------------
+
+fn tc_check_block_expr(tc: TypeChecker, e: Expr) -> TCExprResult {
+    let mut tc2 = tc_push_scope(tc)
+    for i in range(0, len(e.block_stmts)) {
+        tc2 = tc_check_stmt(tc2, e.block_stmts[i])
+    }
+    tc2 = tc_pop_scope(tc2)
+    return TCExprResult { tc: tc2, ty: ty_void() }
+}
+
+// -------------------------------------------------------------------
+// Pipe expression
+// -------------------------------------------------------------------
+
+fn tc_check_pipe(tc: TypeChecker, e: Expr) -> TCExprResult {
+    let mut tc2 = tc
+    if len(e.left) > 0 {
+        let lr = tc_check_expr(tc2, e.left[0])
+        tc2 = lr.tc
+    }
+    if len(e.right) > 0 {
+        let rr = tc_check_expr(tc2, e.right[0])
+        tc2 = rr.tc
+        return TCExprResult { tc: tc2, ty: rr.ty }
+    }
+    return TCExprResult { tc: tc2, ty: ty_any() }
+}
+
+// ===================================================================
+// Statement type checking
+// ===================================================================
+
+fn tc_check_stmt(tc: TypeChecker, s: Stmt) -> TypeChecker {
+    if s.kind == STMT_LET {
+        return tc_check_let(tc, s)
+    }
+    if s.kind == STMT_ASSIGN {
+        return tc_check_assign(tc, s)
+    }
+    if s.kind == STMT_RETURN {
+        return tc_check_return(tc, s)
+    }
+    if s.kind == STMT_IF {
+        return tc_check_if_stmt(tc, s)
+    }
+    if s.kind == STMT_FOR {
+        return tc_check_for(tc, s)
+    }
+    if s.kind == STMT_WHILE {
+        return tc_check_while(tc, s)
+    }
+    if s.kind == STMT_EXPR {
+        return tc_check_expr_stmt(tc, s)
+    }
+    if s.kind == STMT_TRY_CATCH {
+        return tc_check_try_catch(tc, s)
+    }
+    if s.kind == STMT_THROW {
+        return tc_check_throw(tc, s)
+    }
+    if s.kind == STMT_SPAWN {
+        return tc_check_spawn(tc, s)
+    }
+    // STMT_BREAK, STMT_CONTINUE, STMT_SELECT: no type checking needed
+    return tc
+}
+
+// -------------------------------------------------------------------
+// Let statement
+// -------------------------------------------------------------------
+
+fn tc_check_let(tc: TypeChecker, s: Stmt) -> TypeChecker {
+    let mut tc2 = tc
+    let mut var_type = ty_any()
+
+    // If there is a type annotation, resolve it
+    if len(s.let_type) > 0 {
+        var_type = resolve_type_expr(tc2, s.let_type[0])
+    }
+
+    // If there is an initializer, check it
+    if len(s.let_value) > 0 {
+        let vr = tc_check_expr(tc2, s.let_value[0])
+        tc2 = vr.tc
+        if var_type.kind != TY_ANY {
+            // Annotated type: check value matches
+            if not ty_compatible(vr.ty, var_type) {
+                if vr.ty.kind != TY_ERROR {
+                    tc2 = tc_error(tc2, "let " + s.name + ": expected " + ty_name(var_type) + ", got " + ty_name(vr.ty) + " at " + to_string(s.start))
+                }
+            }
+        } else {
+            // No annotation: infer from value
+            var_type = vr.ty
+        }
+    }
+
+    // Define the variable in the current scope
+    tc2 = tc_define(tc2, s.name, var_type, s.mutable)
+    return tc2
+}
+
+// -------------------------------------------------------------------
+// Assignment statement
+// -------------------------------------------------------------------
+
+fn tc_check_assign(tc: TypeChecker, s: Stmt) -> TypeChecker {
+    let mut tc2 = tc
+
+    // Check the target
+    if len(s.assign_target) > 0 {
+        let target = s.assign_target[0]
+        let tr = tc_check_expr(tc2, target)
+        tc2 = tr.tc
+        let target_ty = tr.ty
+
+        // Check mutability for simple identifiers
+        if target.kind == EXPR_IDENT {
+            let lu = tc_lookup(tc2, target.name)
+            if lu.found {
+                if not lu.sym.mutable {
+                    tc2 = tc_error(tc2, "cannot assign to immutable variable: " + target.name + " at " + to_string(s.start))
+                }
+            }
+        }
+
+        // Check the value
+        if len(s.assign_value) > 0 {
+            let vr = tc_check_expr(tc2, s.assign_value[0])
+            tc2 = vr.tc
+
+            // For compound assignment (+=, -=, etc.), check arithmetic compat
+            if s.assign_op == ASSIGN_ADD_EQ or s.assign_op == ASSIGN_SUB_EQ or
+               s.assign_op == ASSIGN_MUL_EQ or s.assign_op == ASSIGN_DIV_EQ {
+                // String += is ok
+                if s.assign_op == ASSIGN_ADD_EQ and target_ty.kind == TY_STR {
+                    if vr.ty.kind != TY_STR and vr.ty.kind != TY_ANY and vr.ty.kind != TY_ERROR {
+                        tc2 = tc_error(tc2, "+= on str requires str value, got " + ty_name(vr.ty) + " at " + to_string(s.start))
+                    }
+                } else {
+                    if not ty_compatible(vr.ty, target_ty) {
+                        if vr.ty.kind != TY_ERROR and target_ty.kind != TY_ERROR {
+                            tc2 = tc_error(tc2, "assignment type mismatch: " + ty_name(target_ty) + " vs " + ty_name(vr.ty) + " at " + to_string(s.start))
+                        }
+                    }
+                }
+            } else {
+                // Simple assignment =
+                if not ty_compatible(vr.ty, target_ty) {
+                    if vr.ty.kind != TY_ERROR and target_ty.kind != TY_ERROR {
+                        tc2 = tc_error(tc2, "assignment type mismatch: expected " + ty_name(target_ty) + ", got " + ty_name(vr.ty) + " at " + to_string(s.start))
+                    }
+                }
+            }
+        }
+    }
+
+    return tc2
+}
+
+// -------------------------------------------------------------------
+// Return statement
+// -------------------------------------------------------------------
+
+fn tc_check_return(tc: TypeChecker, s: Stmt) -> TypeChecker {
+    let mut tc2 = tc
+    let mut val_ty = ty_void()
+
+    if len(s.return_value) > 0 {
+        let vr = tc_check_expr(tc2, s.return_value[0])
+        tc2 = vr.tc
+        val_ty = vr.ty
+    }
+
+    // Check against current function return type
+    if len(tc2.current_fn_ret_type) > 0 {
+        let expected = tc2.current_fn_ret_type[0]
+        if not ty_compatible(val_ty, expected) {
+            if val_ty.kind != TY_ERROR and expected.kind != TY_ERROR {
+                tc2 = tc_error(tc2, "return type mismatch: expected " + ty_name(expected) + ", got " + ty_name(val_ty) + " at " + to_string(s.start))
+            }
+        }
+    }
+
+    return tc2
+}
+
+// -------------------------------------------------------------------
+// If statement
+// -------------------------------------------------------------------
+
+fn tc_check_if_stmt(tc: TypeChecker, s: Stmt) -> TypeChecker {
+    let mut tc2 = tc
+
+    // Check condition
+    if len(s.condition) > 0 {
+        let cr = tc_check_expr(tc2, s.condition[0])
+        tc2 = cr.tc
+        if cr.ty.kind != TY_BOOL and cr.ty.kind != TY_ANY and cr.ty.kind != TY_ERROR {
+            tc2 = tc_error(tc2, "if condition must be bool, got " + ty_name(cr.ty) + " at " + to_string(s.start))
+        }
+    }
+
+    // Check then block
+    tc2 = tc_push_scope(tc2)
+    for i in range(0, len(s.then_block)) {
+        tc2 = tc_check_stmt(tc2, s.then_block[i])
+    }
+    tc2 = tc_pop_scope(tc2)
+
+    // Check elif conditions and blocks
+    for i in range(0, len(s.elif_conditions)) {
+        let er = tc_check_expr(tc2, s.elif_conditions[i])
+        tc2 = er.tc
+        if er.ty.kind != TY_BOOL and er.ty.kind != TY_ANY and er.ty.kind != TY_ERROR {
+            tc2 = tc_error(tc2, "elif condition must be bool, got " + ty_name(er.ty) + " at " + to_string(s.start))
+        }
+    }
+    // Note: elif_blocks is [[Stmt]] -- nested arrays
+    // We check each block if accessible
+
+    // Check else block
+    if len(s.else_block) > 0 {
+        tc2 = tc_push_scope(tc2)
+        for i in range(0, len(s.else_block)) {
+            tc2 = tc_check_stmt(tc2, s.else_block[i])
+        }
+        tc2 = tc_pop_scope(tc2)
+    }
+
+    return tc2
+}
+
+// -------------------------------------------------------------------
+// For statement
+// -------------------------------------------------------------------
+
+fn tc_check_for(tc: TypeChecker, s: Stmt) -> TypeChecker {
+    let mut tc2 = tc
+
+    // Check the iterable
+    let mut elem_ty = ty_any()
+    if len(s.iterable) > 0 {
+        let ir = tc_check_expr(tc2, s.iterable[0])
+        tc2 = ir.tc
+        if ir.ty.kind == TY_ARRAY {
+            if len(ir.ty.element_type) > 0 {
+                elem_ty = ir.ty.element_type[0]
+            }
+        } elif ir.ty.kind == TY_STR {
+            elem_ty = ty_str()
+        } elif ir.ty.kind == TY_MAP {
+            elem_ty = ty_any()
+        }
+    }
+
+    // Push scope for loop body and define loop variable
+    tc2 = tc_push_scope(tc2)
+    if len(s.for_pattern) > 0 {
+        let pat = s.for_pattern[0]
+        if pat.kind == PAT_IDENT {
+            tc2 = tc_define(tc2, pat.name, elem_ty, pat.mutable)
+        } else {
+            tc2 = tc_bind_pattern(tc2, pat)
+        }
+    }
+
+    // Check loop body
+    for i in range(0, len(s.for_body)) {
+        tc2 = tc_check_stmt(tc2, s.for_body[i])
+    }
+    tc2 = tc_pop_scope(tc2)
+
+    return tc2
+}
+
+// -------------------------------------------------------------------
+// While statement
+// -------------------------------------------------------------------
+
+fn tc_check_while(tc: TypeChecker, s: Stmt) -> TypeChecker {
+    let mut tc2 = tc
+
+    // Check condition
+    if len(s.while_cond) > 0 {
+        let cr = tc_check_expr(tc2, s.while_cond[0])
+        tc2 = cr.tc
+        if cr.ty.kind != TY_BOOL and cr.ty.kind != TY_ANY and cr.ty.kind != TY_ERROR {
+            tc2 = tc_error(tc2, "while condition must be bool, got " + ty_name(cr.ty) + " at " + to_string(s.start))
+        }
+    }
+
+    // Check body
+    tc2 = tc_push_scope(tc2)
+    for i in range(0, len(s.while_body)) {
+        tc2 = tc_check_stmt(tc2, s.while_body[i])
+    }
+    tc2 = tc_pop_scope(tc2)
+
+    return tc2
+}
+
+// -------------------------------------------------------------------
+// Expression statement
+// -------------------------------------------------------------------
+
+fn tc_check_expr_stmt(tc: TypeChecker, s: Stmt) -> TypeChecker {
+    let mut tc2 = tc
+    if len(s.expr) > 0 {
+        let er = tc_check_expr(tc2, s.expr[0])
+        tc2 = er.tc
+    }
+    return tc2
+}
+
+// -------------------------------------------------------------------
+// Try/catch
+// -------------------------------------------------------------------
+
+fn tc_check_try_catch(tc: TypeChecker, s: Stmt) -> TypeChecker {
+    let mut tc2 = tc
+
+    // Check try block
+    tc2 = tc_push_scope(tc2)
+    for i in range(0, len(s.try_block)) {
+        tc2 = tc_check_stmt(tc2, s.try_block[i])
+    }
+    tc2 = tc_pop_scope(tc2)
+
+    // Check catch block -- define the catch variable as str
+    tc2 = tc_push_scope(tc2)
+    if len(s.catch_name) > 0 {
+        tc2 = tc_define(tc2, s.catch_name, ty_str(), false)
+    }
+    for i in range(0, len(s.catch_block)) {
+        tc2 = tc_check_stmt(tc2, s.catch_block[i])
+    }
+    tc2 = tc_pop_scope(tc2)
+
+    return tc2
+}
+
+// -------------------------------------------------------------------
+// Throw
+// -------------------------------------------------------------------
+
+fn tc_check_throw(tc: TypeChecker, s: Stmt) -> TypeChecker {
+    let mut tc2 = tc
+    if len(s.throw_expr) > 0 {
+        let er = tc_check_expr(tc2, s.throw_expr[0])
+        tc2 = er.tc
+    }
+    return tc2
+}
+
+// -------------------------------------------------------------------
+// Spawn
+// -------------------------------------------------------------------
+
+fn tc_check_spawn(tc: TypeChecker, s: Stmt) -> TypeChecker {
+    let mut tc2 = tc
+    if len(s.spawn_expr) > 0 {
+        let er = tc_check_expr(tc2, s.spawn_expr[0])
+        tc2 = er.tc
+    }
+    return tc2
+}
+
+// ===================================================================
+// Declaration registration (Pass 1)
+// ===================================================================
+
+fn tc_register_decl(tc: TypeChecker, d: Decl) -> TypeChecker {
+    if d.kind == DECL_FUNCTION {
+        return tc_register_function(tc, d)
+    }
+    if d.kind == DECL_STRUCT {
+        return tc_register_struct(tc, d)
+    }
+    if d.kind == DECL_ENUM {
+        return tc_register_enum(tc, d)
+    }
+    if d.kind == DECL_TRAIT {
+        return tc_register_trait(tc, d)
+    }
+    if d.kind == DECL_IMPL {
+        return tc_register_impl(tc, d)
+    }
+    if d.kind == DECL_TYPE_ALIAS {
+        return tc_register_alias(tc, d)
+    }
+    if d.kind == DECL_EXTERN {
+        return tc_register_extern(tc, d)
+    }
+    // DECL_IMPORT, DECL_ACTOR: skip for now
+    return tc
+}
+
+fn tc_register_function(tc: TypeChecker, d: Decl) -> TypeChecker {
+    // Skip top-level wrappers
+    if d.name == "<top-level>" {
+        return tc
+    }
+    let mut param_types: [TypeInfo] = []
+    for i in range(0, len(d.params)) {
+        let mut pt = ty_any()
+        if len(d.params[i].ty) > 0 {
+            pt = resolve_type_expr(tc, d.params[i].ty[0])
+        }
+        push(param_types, pt)
+    }
+    let mut ret = ty_void()
+    if len(d.ret_type) > 0 {
+        ret = resolve_type_expr(tc, d.ret_type[0])
+    }
+    let sig = FnSig { name: d.name, param_types: param_types, ret_type: ret }
+    let mut sigs = tc.fn_sigs
+    push(sigs, sig)
+    // Also define in symbol table as function type
+    let ft = ty_function(param_types, ret)
+    let mut tc2 = TypeChecker {
+        scopes: tc.scopes, current_scope: tc.current_scope,
+        struct_defs: tc.struct_defs, enum_defs: tc.enum_defs,
+        fn_sigs: sigs, trait_defs: tc.trait_defs,
+        type_aliases: tc.type_aliases,
+        errors: tc.errors, warnings: tc.warnings,
+        current_fn_ret_type: tc.current_fn_ret_type
+    }
+    tc2 = tc_define(tc2, d.name, ft, false)
+    return tc2
+}
+
+fn tc_register_struct(tc: TypeChecker, d: Decl) -> TypeChecker {
+    let mut fnames: [str] = []
+    let mut ftypes: [TypeInfo] = []
+    for i in range(0, len(d.fields)) {
+        push(fnames, d.fields[i].name)
+        let ft = resolve_type_expr(tc, d.fields[i].ty)
+        push(ftypes, ft)
+    }
+    let sd = StructDef { name: d.name, field_names: fnames, field_types: ftypes }
+    let mut defs = tc.struct_defs
+    push(defs, sd)
+    return TypeChecker {
+        scopes: tc.scopes, current_scope: tc.current_scope,
+        struct_defs: defs, enum_defs: tc.enum_defs,
+        fn_sigs: tc.fn_sigs, trait_defs: tc.trait_defs,
+        type_aliases: tc.type_aliases,
+        errors: tc.errors, warnings: tc.warnings,
+        current_fn_ret_type: tc.current_fn_ret_type
+    }
+}
+
+fn tc_register_enum(tc: TypeChecker, d: Decl) -> TypeChecker {
+    let mut vnames: [str] = []
+    let mut vtypes: [[TypeInfo]] = []
+    for i in range(0, len(d.variants)) {
+        push(vnames, d.variants[i].name)
+        let mut fields: [TypeInfo] = []
+        for j in range(0, len(d.variants[i].fields)) {
+            let ft = resolve_type_expr(tc, d.variants[i].fields[j])
+            push(fields, ft)
+        }
+        push(vtypes, fields)
+    }
+    let ed = EnumDef { name: d.name, variant_names: vnames, variant_types: vtypes }
+    let mut defs = tc.enum_defs
+    push(defs, ed)
+    return TypeChecker {
+        scopes: tc.scopes, current_scope: tc.current_scope,
+        struct_defs: tc.struct_defs, enum_defs: defs,
+        fn_sigs: tc.fn_sigs, trait_defs: tc.trait_defs,
+        type_aliases: tc.type_aliases,
+        errors: tc.errors, warnings: tc.warnings,
+        current_fn_ret_type: tc.current_fn_ret_type
+    }
+}
+
+fn tc_register_trait(tc: TypeChecker, d: Decl) -> TypeChecker {
+    let mut method_names: [str] = []
+    for i in range(0, len(d.methods)) {
+        push(method_names, d.methods[i].name)
+    }
+    let td = TraitDef { name: d.name, method_names: method_names }
+    let mut defs = tc.trait_defs
+    push(defs, td)
+    return TypeChecker {
+        scopes: tc.scopes, current_scope: tc.current_scope,
+        struct_defs: tc.struct_defs, enum_defs: tc.enum_defs,
+        fn_sigs: tc.fn_sigs, trait_defs: defs,
+        type_aliases: tc.type_aliases,
+        errors: tc.errors, warnings: tc.warnings,
+        current_fn_ret_type: tc.current_fn_ret_type
+    }
+}
+
+fn tc_register_impl(tc: TypeChecker, d: Decl) -> TypeChecker {
+    let mut tc2 = tc
+    // Register each method with a qualified name: Target.method_name
+    for i in range(0, len(d.methods)) {
+        let m = d.methods[i]
+        let qualified = d.target + "." + m.name
+        let mut param_types: [TypeInfo] = []
+        for j in range(0, len(m.params)) {
+            let mut pt = ty_any()
+            if len(m.params[j].ty) > 0 {
+                pt = resolve_type_expr(tc2, m.params[j].ty[0])
+            }
+            push(param_types, pt)
+        }
+        let mut ret = ty_void()
+        if len(m.ret_type) > 0 {
+            ret = resolve_type_expr(tc2, m.ret_type[0])
+        }
+        let sig = FnSig { name: qualified, param_types: param_types, ret_type: ret }
+        let mut sigs = tc2.fn_sigs
+        push(sigs, sig)
+        tc2 = TypeChecker {
+            scopes: tc2.scopes, current_scope: tc2.current_scope,
+            struct_defs: tc2.struct_defs, enum_defs: tc2.enum_defs,
+            fn_sigs: sigs, trait_defs: tc2.trait_defs,
+            type_aliases: tc2.type_aliases,
+            errors: tc2.errors, warnings: tc2.warnings,
+            current_fn_ret_type: tc2.current_fn_ret_type
+        }
+    }
+    return tc2
+}
+
+fn tc_register_alias(tc: TypeChecker, d: Decl) -> TypeChecker {
+    let mut target = ty_any()
+    if len(d.alias_type) > 0 {
+        target = resolve_type_expr(tc, d.alias_type[0])
+    }
+    let a = TypeAlias { name: d.name, target: target }
+    let mut aliases = tc.type_aliases
+    push(aliases, a)
+    return TypeChecker {
+        scopes: tc.scopes, current_scope: tc.current_scope,
+        struct_defs: tc.struct_defs, enum_defs: tc.enum_defs,
+        fn_sigs: tc.fn_sigs, trait_defs: tc.trait_defs,
+        type_aliases: aliases,
+        errors: tc.errors, warnings: tc.warnings,
+        current_fn_ret_type: tc.current_fn_ret_type
+    }
+}
+
+fn tc_register_extern(tc: TypeChecker, d: Decl) -> TypeChecker {
+    let mut tc2 = tc
+    for i in range(0, len(d.extern_items)) {
+        tc2 = tc_register_function(tc2, d.extern_items[i])
+    }
+    return tc2
+}
+
+// ===================================================================
+// Declaration type checking (Pass 2)
+// ===================================================================
+
+fn tc_check_decl(tc: TypeChecker, d: Decl) -> TypeChecker {
+    if d.kind == DECL_FUNCTION {
+        return tc_check_function(tc, d)
+    }
+    if d.kind == DECL_IMPL {
+        return tc_check_impl(tc, d)
+    }
+    // Structs, enums, traits, type aliases, imports, externs:
+    // already fully handled in registration pass
+    return tc
+}
+
+fn tc_check_function(tc: TypeChecker, d: Decl) -> TypeChecker {
+    // Top-level statements get checked as-is
+    if d.name == "<top-level>" {
+        let mut tc2 = tc
+        for i in range(0, len(d.fn_body)) {
+            tc2 = tc_check_stmt(tc2, d.fn_body[i])
+        }
+        return tc2
+    }
+
+    let mut tc2 = tc
+
+    // Set the current function return type
+    let mut ret = ty_void()
+    if len(d.ret_type) > 0 {
+        ret = resolve_type_expr(tc2, d.ret_type[0])
+    }
+    tc2 = tc_set_ret_type(tc2, ret)
+
+    // Push scope, define parameters
+    tc2 = tc_push_scope(tc2)
+    for i in range(0, len(d.params)) {
+        let mut pt = ty_any()
+        if len(d.params[i].ty) > 0 {
+            pt = resolve_type_expr(tc2, d.params[i].ty[0])
+        }
+        tc2 = tc_define(tc2, d.params[i].name, pt, false)
+    }
+
+    // Check the function body
+    for i in range(0, len(d.fn_body)) {
+        tc2 = tc_check_stmt(tc2, d.fn_body[i])
+    }
+
+    tc2 = tc_pop_scope(tc2)
+    tc2 = tc_clear_ret_type(tc2)
+    return tc2
+}
+
+fn tc_check_impl(tc: TypeChecker, d: Decl) -> TypeChecker {
+    let mut tc2 = tc
+    // Verify the target type exists
+    let struct_idx = tc_find_struct(tc2, d.target)
+    let enum_idx = tc_find_enum(tc2, d.target)
+    if struct_idx < 0 and enum_idx < 0 {
+        tc2 = tc_warning(tc2, "impl target type not found: " + d.target + " at " + to_string(d.start))
+    }
+
+    // Check each method
+    for i in range(0, len(d.methods)) {
+        tc2 = tc_check_function(tc2, d.methods[i])
+    }
+    return tc2
+}
+
+// ===================================================================
+// Builtin registration
+// ===================================================================
+
+fn tc_register_builtin(tc: TypeChecker, name: str, params: [TypeInfo], ret: TypeInfo) -> TypeChecker {
+    let sig = FnSig { name: name, param_types: params, ret_type: ret }
+    let mut sigs = tc.fn_sigs
+    push(sigs, sig)
+    let ft = ty_function(params, ret)
+    let mut tc2 = TypeChecker {
+        scopes: tc.scopes, current_scope: tc.current_scope,
+        struct_defs: tc.struct_defs, enum_defs: tc.enum_defs,
+        fn_sigs: sigs, trait_defs: tc.trait_defs,
+        type_aliases: tc.type_aliases,
+        errors: tc.errors, warnings: tc.warnings,
+        current_fn_ret_type: tc.current_fn_ret_type
+    }
+    tc2 = tc_define(tc2, name, ft, false)
+    return tc2
+}
+
+fn tc_register_builtins(tc: TypeChecker) -> TypeChecker {
+    let mut tc2 = tc
+
+    // I/O
+    let p_str: [TypeInfo] = [ty_str()]
+    let p_str_str: [TypeInfo] = [ty_str(), ty_str()]
+    let p_any: [TypeInfo] = [ty_any()]
+    let p_any_any: [TypeInfo] = [ty_any(), ty_any()]
+    let p_bool_str: [TypeInfo] = [ty_bool(), ty_str()]
+    let p_i64: [TypeInfo] = [ty_i64()]
+    let p_i64_i64: [TypeInfo] = [ty_i64(), ty_i64()]
+    let p_i64_i64_i64: [TypeInfo] = [ty_i64(), ty_i64(), ty_i64()]
+    let p_str_i64_i64: [TypeInfo] = [ty_str(), ty_i64(), ty_i64()]
+    let p_empty: [TypeInfo] = []
+
+    tc2 = tc_register_builtin(tc2, "println", p_str, ty_void())
+    tc2 = tc_register_builtin(tc2, "print", p_str, ty_void())
+    tc2 = tc_register_builtin(tc2, "eprintln", p_str, ty_void())
+    tc2 = tc_register_builtin(tc2, "to_string", p_any, ty_str())
+    tc2 = tc_register_builtin(tc2, "len", p_any, ty_i64())
+    tc2 = tc_register_builtin(tc2, "push", p_any_any, ty_i64())
+    tc2 = tc_register_builtin(tc2, "pop", p_any, ty_i64())
+    tc2 = tc_register_builtin(tc2, "assert", p_bool_str, ty_void())
+    tc2 = tc_register_builtin(tc2, "file_read", p_str, ty_str())
+    tc2 = tc_register_builtin(tc2, "file_write", p_str_str, ty_i64())
+    tc2 = tc_register_builtin(tc2, "env_get", p_str, ty_str())
+    tc2 = tc_register_builtin(tc2, "time_now", p_empty, ty_i64())
+    tc2 = tc_register_builtin(tc2, "parse_int", p_str, ty_i64())
+    tc2 = tc_register_builtin(tc2, "parse_float", p_str, ty_f64())
+    tc2 = tc_register_builtin(tc2, "char_code", p_str, ty_i64())
+    tc2 = tc_register_builtin(tc2, "char_from", p_i64, ty_str())
+    tc2 = tc_register_builtin(tc2, "substr", p_str_i64_i64, ty_str())
+    tc2 = tc_register_builtin(tc2, "int", p_any, ty_i64())
+    tc2 = tc_register_builtin(tc2, "float", p_any, ty_f64())
+    tc2 = tc_register_builtin(tc2, "type_of", p_any, ty_str())
+    tc2 = tc_register_builtin(tc2, "exit", p_i64, ty_void())
+    tc2 = tc_register_builtin(tc2, "args", p_empty, ty_array(ty_str()))
+    tc2 = tc_register_builtin(tc2, "range", p_i64_i64, ty_array(ty_i64()))
+
+    // Buffer operations
+    tc2 = tc_register_builtin(tc2, "buf_new", p_i64, ty_i64())
+    tc2 = tc_register_builtin(tc2, "buf_write_byte", p_i64_i64, ty_void())
+    tc2 = tc_register_builtin(tc2, "buf_write_i16_le", p_i64_i64, ty_void())
+    tc2 = tc_register_builtin(tc2, "buf_write_i32_le", p_i64_i64, ty_void())
+    tc2 = tc_register_builtin(tc2, "buf_write_i64_le", p_i64_i64, ty_void())
+    tc2 = tc_register_builtin(tc2, "buf_write_bytes", p_i64_i64_i64, ty_void())
+    tc2 = tc_register_builtin(tc2, "buf_write_str", p_i64_i64, ty_void())
+    tc2 = tc_register_builtin(tc2, "buf_write_zeros", p_i64_i64, ty_void())
+    tc2 = tc_register_builtin(tc2, "buf_len", p_i64, ty_i64())
+    tc2 = tc_register_builtin(tc2, "buf_get_byte", p_i64_i64, ty_i64())
+    tc2 = tc_register_builtin(tc2, "buf_set_byte", p_i64_i64_i64, ty_void())
+    tc2 = tc_register_builtin(tc2, "buf_patch_i32_le", p_i64_i64_i64, ty_void())
+    tc2 = tc_register_builtin(tc2, "buf_patch_i64_le", p_i64_i64_i64, ty_void())
+    tc2 = tc_register_builtin(tc2, "buf_write_to_file", p_i64_i64, ty_i64())
+    tc2 = tc_register_builtin(tc2, "buf_free", p_i64, ty_void())
+
+    // Map operations
+    tc2 = tc_register_builtin(tc2, "map_has", p_i64_i64, ty_i64())
+    tc2 = tc_register_builtin(tc2, "map_has_str", p_i64_i64, ty_i64())
+    tc2 = tc_register_builtin(tc2, "map_delete", p_i64_i64, ty_i64())
+    tc2 = tc_register_builtin(tc2, "map_delete_str", p_i64_i64, ty_i64())
+    tc2 = tc_register_builtin(tc2, "map_keys", p_i64, ty_i64())
+    tc2 = tc_register_builtin(tc2, "map_keys_str", p_i64, ty_i64())
+
+    return tc2
+}
+
+// ===================================================================
+// Module-level entry point
+// ===================================================================
+
+fn tc_check_module(tc: TypeChecker, module: Module) -> TypeChecker {
+    let mut tc2 = tc
+
+    // Pass 1: register all types, structs, enums, function signatures
+    for i in range(0, len(module.declarations)) {
+        tc2 = tc_register_decl(tc2, module.declarations[i])
+    }
+
+    // Pass 2: type-check all function bodies
+    for i in range(0, len(module.declarations)) {
+        tc2 = tc_check_decl(tc2, module.declarations[i])
+    }
+
+    return tc2
+}
+
+// ===================================================================
+// Convenience: create a type checker, register builtins, check module
+// ===================================================================
+
+fn typecheck_module(module: Module) -> TypeChecker {
+    let mut tc = tc_new()
+    tc = tc_register_builtins(tc)
+    tc = tc_check_module(tc, module)
+    return tc
+}
