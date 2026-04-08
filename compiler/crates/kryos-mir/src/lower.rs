@@ -76,6 +76,9 @@ pub struct LoweringContext {
     /// Tracks locals that have already been dropped by an inner scope to prevent
     /// double-free when the outer scope's drop loop runs.
     dropped_locals: HashSet<u32>,
+    /// Return type of the function currently being lowered.  Used by `throw`
+    /// outside a `try` block to emit a properly-typed early return.
+    current_ret_ty: MirType,
 }
 
 /// Context passed to `throw` statements inside a `try` block.
@@ -122,6 +125,7 @@ impl LoweringContext {
             const_defs: HashMap::new(),
             func_param_types: HashMap::new(),
             dropped_locals: HashSet::new(),
+            current_ret_ty: MirType::Void,
         }
     }
 
@@ -676,6 +680,7 @@ pub fn lower_function(
         Some(ty) => lower_type_expr(ty),
         None => MirType::Void,
     };
+    ctx.current_ret_ty = mir_ret_ty.clone();
 
     // Lower parameters -> locals.
     let mir_params: Vec<MirParam> = params
@@ -1102,16 +1107,26 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 let dead_bb = ctx.alloc_block();
                 ctx.finish_block(Terminator::Goto(check_block), dead_bb);
             } else {
-                // Outside try: construct Result::Err (for function-level returns).
-                let err_local = ctx.alloc_temp(MirType::Enum("Result".into()));
+                // Outside try: store the exception in the thread-local via
+                // kryos_exception_throw and return from this function so the
+                // caller can detect the pending exception and unwind.
+                let throw_result = ctx.alloc_temp(MirType::I64);
                 ctx.emit(Instruction::Assign {
-                    dest: err_local,
-                    value: RValue::EnumVariant {
-                        enum_name: "Result".into(),
-                        variant_idx: 1, // Err
-                        fields: vec![val],
+                    dest: throw_result,
+                    value: RValue::Call {
+                        func: "kryos_exception_throw".into(),
+                        args: vec![val],
                     },
                 });
+                // Return immediately to unwind toward the nearest try/catch.
+                // Use the right return form based on the function's return type.
+                let ret_operand = if ctx.current_ret_ty == MirType::Void {
+                    None
+                } else {
+                    Some(Operand::Constant(Constant::Int(0)))
+                };
+                let dead_bb = ctx.alloc_block();
+                ctx.finish_block(Terminator::Return(ret_operand), dead_bb);
             }
         }
 
@@ -1912,6 +1927,72 @@ fn lower_spawn_block(ctx: &mut LoweringContext, stmts: &[ast::Stmt]) {
 // Try/Catch lowering
 // ---------------------------------------------------------------------------
 
+/// Emit a check for a pending thread-local exception (set by a cross-function
+/// `throw`).  If an exception is pending, take it, store it as `Result::Err`
+/// in `result_local`, and jump to `check_bb` (the tag-check block of the
+/// enclosing try/catch).  Otherwise, fall through to a new continuation block.
+///
+/// Generated MIR:
+/// ```text
+///   _check = call kryos_exception_check()
+///   branch _check → exc_handler_bb, continue_bb
+///
+///   exc_handler_bb:
+///     _exc_val = call kryos_exception_take()
+///     result_local = Result::Err(_exc_val)
+///     goto check_bb
+///
+///   continue_bb:
+///     ... (subsequent instructions) ...
+/// ```
+fn emit_exception_check(
+    ctx: &mut LoweringContext,
+    result_local: LocalId,
+    check_bb: BlockId,
+) {
+    let exc_flag = ctx.alloc_temp(MirType::I64);
+    ctx.emit(Instruction::Assign {
+        dest: exc_flag,
+        value: RValue::Call {
+            func: "kryos_exception_check".into(),
+            args: vec![],
+        },
+    });
+
+    let exc_handler_bb = ctx.alloc_block();
+    let continue_bb = ctx.alloc_block();
+
+    ctx.finish_block(
+        Terminator::Branch {
+            cond: Operand::Local(exc_flag),
+            then_block: exc_handler_bb,
+            else_block: continue_bb,
+        },
+        exc_handler_bb,
+    );
+
+    // exc_handler_bb: take the exception value and store it as Result::Err.
+    let exc_val = ctx.alloc_temp(MirType::I64);
+    ctx.emit(Instruction::Assign {
+        dest: exc_val,
+        value: RValue::Call {
+            func: "kryos_exception_take".into(),
+            args: vec![],
+        },
+    });
+    ctx.emit(Instruction::Assign {
+        dest: result_local,
+        value: RValue::EnumVariant {
+            enum_name: "Result".into(),
+            variant_idx: 1, // Err
+            fields: vec![Operand::Local(exc_val)],
+        },
+    });
+    ctx.finish_block(Terminator::Goto(check_bb), continue_bb);
+
+    // continue_bb: normal execution continues here.
+}
+
 /// Lower `try { body } catch e { handler }` into:
 ///
 /// ```text
@@ -1941,11 +2022,16 @@ fn lower_try_catch(
     });
 
     // Lower the try block body. The last expression is wrapped in Result::Ok.
+    // After each statement, check the thread-local exception state so that
+    // `throw` from a called function is caught immediately.
     for (i, stmt) in try_block.stmts.iter().enumerate() {
         if i == try_block.stmts.len() - 1 {
             // Wrap last expression in Result::Ok.
             if let ast::Stmt::Expr { expr, .. } = stmt {
                 let val = lower_expr_to_operand(ctx, expr);
+                // Before wrapping in Ok, check if a cross-function throw
+                // set the thread-local exception during this expression.
+                emit_exception_check(ctx, result_local, check_bb);
                 ctx.emit(Instruction::Assign {
                     dest: result_local,
                     value: RValue::EnumVariant {
@@ -1956,6 +2042,7 @@ fn lower_try_catch(
                 });
             } else {
                 lower_stmt(ctx, stmt);
+                emit_exception_check(ctx, result_local, check_bb);
                 ctx.emit(Instruction::Assign {
                     dest: result_local,
                     value: RValue::EnumVariant {
@@ -1967,6 +2054,7 @@ fn lower_try_catch(
             }
         } else {
             lower_stmt(ctx, stmt);
+            emit_exception_check(ctx, result_local, check_bb);
         }
     }
 

@@ -28,6 +28,10 @@ pub struct EnumDef {
 pub struct FunctionSig {
     pub name: String,
     pub generic_params: Vec<String>,
+    /// Type variable IDs corresponding 1:1 with `generic_params`.
+    /// Used to instantiate fresh type variables at each call site
+    /// so that generic functions monomorphize correctly.
+    pub generic_var_ids: Vec<u32>,
     pub params: Vec<(String, Type)>,
     pub ret: Type,
 }

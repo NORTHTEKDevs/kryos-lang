@@ -1,0 +1,18 @@
+// expect-stdout: Caught: deep error
+// expect-stdout: Done
+fn inner() {
+    throw "deep error"
+}
+
+fn middle() {
+    inner()
+}
+
+fn main() {
+    try {
+        middle()
+    } catch e {
+        println("Caught: " + e)
+    }
+    println("Done")
+}

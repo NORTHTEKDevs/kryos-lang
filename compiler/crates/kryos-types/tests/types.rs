@@ -685,6 +685,7 @@ fn env_function_lookup() {
     env.define_function(FunctionSig {
         name: "add".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![
             ("a".to_string(), Type::I32),
             ("b".to_string(), Type::I32),
@@ -888,5 +889,211 @@ fn pure_function_allows_pure_calls() {
         errors.is_empty(),
         "pure function calling another pure function should be allowed, got errors: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ── Trait impl self-type resolution ─────────────────────────────────
+
+#[test]
+fn multiple_trait_impls_self_resolves_correctly() {
+    // Regression test: when two structs implement the same trait, `self` in
+    // earlier impl blocks must resolve to its own struct, not the last struct.
+    //
+    //   trait Area { fn area(self: Self) -> i64 }
+    //   struct Circle { radius: i64 }
+    //   impl Area for Circle { fn area(self: Circle) -> i64 { return self.radius * self.radius * 3 } }
+    //   struct Rect { w: i64, h: i64 }
+    //   impl Area for Rect { fn area(self: Rect) -> i64 { return self.w * self.h } }
+    //   fn main() { let c = Circle { radius: 5 }; c.area() }
+    let diags = check_module(vec![
+        // trait Area { fn area(self) -> i64 }
+        Decl::Trait {
+            name: "Area".into(),
+            generics: vec![],
+            methods: vec![Decl::Function {
+                name: "area".into(),
+                generics: vec![],
+                params: vec![Param {
+                    name: "self".into(),
+                    ty: None,
+                    default: None,
+                    span: S,
+                }],
+                ret_ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }),
+                body: None,
+                public: false,
+                annotations: vec![],
+                span: S,
+            }],
+            public: false,
+            span: S,
+        },
+        // struct Circle { radius: i64 }
+        Decl::Struct {
+            name: "Circle".into(),
+            generics: vec![],
+            fields: vec![StructField {
+                name: "radius".into(),
+                ty: TypeExpr::Simple { name: "i64".into(), span: S },
+                public: false,
+                default: None,
+                span: S,
+            }],
+            public: false,
+            annotations: vec![],
+            span: S,
+        },
+        // impl Area for Circle { fn area(self: Circle) -> i64 { return self.radius * self.radius * 3 } }
+        Decl::Impl {
+            target: "Circle".into(),
+            trait_name: Some("Area".into()),
+            generics: vec![],
+            methods: vec![Decl::Function {
+                name: "area".into(),
+                generics: vec![],
+                params: vec![Param {
+                    name: "self".into(),
+                    ty: Some(TypeExpr::Simple { name: "Circle".into(), span: S }),
+                    default: None,
+                    span: S,
+                }],
+                ret_ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }),
+                body: Some(Block {
+                    stmts: vec![Stmt::Return {
+                        value: Some(Expr::BinaryOp {
+                            op: BinOp::Mul,
+                            left: Box::new(Expr::BinaryOp {
+                                op: BinOp::Mul,
+                                left: Box::new(Expr::FieldAccess {
+                                    object: Box::new(Expr::Identifier { name: "self".into(), span: S }),
+                                    field: "radius".into(),
+                                    span: S,
+                                }),
+                                right: Box::new(Expr::FieldAccess {
+                                    object: Box::new(Expr::Identifier { name: "self".into(), span: S }),
+                                    field: "radius".into(),
+                                    span: S,
+                                }),
+                                span: S,
+                            }),
+                            right: Box::new(Expr::IntLiteral { value: 3, span: S }),
+                            span: S,
+                        }),
+                        span: S,
+                    }],
+                    span: S,
+                }),
+                public: false,
+                annotations: vec![],
+                span: S,
+            }],
+            span: S,
+        },
+        // struct Rect { w: i64, h: i64 }
+        Decl::Struct {
+            name: "Rect".into(),
+            generics: vec![],
+            fields: vec![
+                StructField {
+                    name: "w".into(),
+                    ty: TypeExpr::Simple { name: "i64".into(), span: S },
+                    public: false,
+                    default: None,
+                    span: S,
+                },
+                StructField {
+                    name: "h".into(),
+                    ty: TypeExpr::Simple { name: "i64".into(), span: S },
+                    public: false,
+                    default: None,
+                    span: S,
+                },
+            ],
+            public: false,
+            annotations: vec![],
+            span: S,
+        },
+        // impl Area for Rect { fn area(self: Rect) -> i64 { return self.w * self.h } }
+        Decl::Impl {
+            target: "Rect".into(),
+            trait_name: Some("Area".into()),
+            generics: vec![],
+            methods: vec![Decl::Function {
+                name: "area".into(),
+                generics: vec![],
+                params: vec![Param {
+                    name: "self".into(),
+                    ty: Some(TypeExpr::Simple { name: "Rect".into(), span: S }),
+                    default: None,
+                    span: S,
+                }],
+                ret_ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }),
+                body: Some(Block {
+                    stmts: vec![Stmt::Return {
+                        value: Some(Expr::BinaryOp {
+                            op: BinOp::Mul,
+                            left: Box::new(Expr::FieldAccess {
+                                object: Box::new(Expr::Identifier { name: "self".into(), span: S }),
+                                field: "w".into(),
+                                span: S,
+                            }),
+                            right: Box::new(Expr::FieldAccess {
+                                object: Box::new(Expr::Identifier { name: "self".into(), span: S }),
+                                field: "h".into(),
+                                span: S,
+                            }),
+                            span: S,
+                        }),
+                        span: S,
+                    }],
+                    span: S,
+                }),
+                public: false,
+                annotations: vec![],
+                span: S,
+            }],
+            span: S,
+        },
+        // fn main() { let c = Circle { radius: 5 }; c.area() }
+        Decl::Function {
+            name: "main".into(),
+            generics: vec![],
+            params: vec![],
+            ret_ty: None,
+            body: Some(Block {
+                stmts: vec![
+                    Stmt::Let {
+                        name: "c".into(),
+                        mutable: false,
+                        ty: None,
+                        value: Some(Expr::StructLiteral {
+                            name: "Circle".into(),
+                            fields: vec![("radius".into(), Expr::IntLiteral { value: 5, span: S })],
+                            span: S,
+                        }),
+                        pattern: None,
+                        span: S,
+                    },
+                    Stmt::Expr {
+                        expr: Expr::MethodCall {
+                            object: Box::new(Expr::Identifier { name: "c".into(), span: S }),
+                            method: "area".into(),
+                            args: vec![],
+                            span: S,
+                        },
+                        span: S,
+                    },
+                ],
+                span: S,
+            }),
+            public: false,
+            annotations: vec![],
+            span: S,
+        },
+    ]);
+    assert!(
+        diags.is_empty(),
+        "expected no type errors when two structs implement the same trait, got: {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }

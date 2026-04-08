@@ -1270,7 +1270,7 @@ fn try_catch_lowering() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 25: throw produces Result::Err
+// Test 25: throw outside try calls kryos_exception_throw and returns
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1289,16 +1289,30 @@ fn throw_produces_result_err() {
     let mir = lower_module(&module);
     let f = &mir.functions[0];
 
-    let has_err = f.blocks.iter().any(|bb| {
+    // throw outside a try block should emit a call to kryos_exception_throw.
+    let has_throw_call = f.blocks.iter().any(|bb| {
         bb.instructions.iter().any(|inst| match inst {
             Instruction::Assign {
-                value: RValue::EnumVariant { enum_name, variant_idx, .. },
+                value: RValue::Call { func, .. },
                 ..
-            } => enum_name == "Result" && *variant_idx == 1,
+            } => func == "kryos_exception_throw",
             _ => false,
         })
     });
-    assert!(has_err, "throw should produce Result::Err variant");
+    assert!(has_throw_call, "throw should call kryos_exception_throw");
+
+    // The block containing the throw call should terminate with Return.
+    let has_return = f.blocks.iter().any(|bb| {
+        let has_call = bb.instructions.iter().any(|inst| match inst {
+            Instruction::Assign {
+                value: RValue::Call { func, .. },
+                ..
+            } => func == "kryos_exception_throw",
+            _ => false,
+        });
+        has_call && matches!(bb.terminator, Terminator::Return(_))
+    });
+    assert!(has_return, "throw should return after kryos_exception_throw");
 }
 
 // ---------------------------------------------------------------------------

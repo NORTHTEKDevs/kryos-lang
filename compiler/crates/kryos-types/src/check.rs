@@ -284,10 +284,16 @@ impl TypeChecker {
                 ..
             } => {
                 // Temporarily bind generic params so they resolve in param/return types.
+                // Capture the type variable IDs so we can instantiate fresh copies
+                // at each call site (prevents generic pinning bug).
+                let mut generic_var_ids = Vec::new();
                 if !generics.is_empty() {
                     self.env.push_scope();
                     for gp in generics {
                         let tv = self.engine.fresh_var();
+                        if let Type::Var(id) = &tv {
+                            generic_var_ids.push(*id);
+                        }
                         self.env.define_var(gp.name.clone(), tv);
                     }
                 }
@@ -316,6 +322,7 @@ impl TypeChecker {
                 let sig = FunctionSig {
                     name: name.clone(),
                     generic_params: generics.iter().map(|g| g.name.clone()).collect(),
+                    generic_var_ids,
                     params: param_types,
                     ret,
                 };
@@ -434,6 +441,7 @@ impl TypeChecker {
                             Some(FunctionSig {
                                 name: name.clone(),
                                 generic_params: generics.iter().map(|g| g.name.clone()).collect(),
+                                generic_var_ids: vec![],
                                 params: param_types,
                                 ret,
                             })
@@ -485,6 +493,7 @@ impl TypeChecker {
                             Some(FunctionSig {
                                 name: name.clone(),
                                 generic_params: generics.iter().map(|g| g.name.clone()).collect(),
+                                generic_var_ids: vec![],
                                 params: param_types,
                                 ret,
                             })
@@ -610,13 +619,25 @@ impl TypeChecker {
                 };
 
                 for method in methods {
-                    if let (Some(ref ty), Decl::Function { body: Some(_), .. }) =
+                    if let (Some(ref ty), Decl::Function { name: mname, body: Some(_), .. }) =
                         (&target_ty, method)
                     {
                         // Push scope, bind `self` to the concrete target type,
                         // then check the method body normally.
                         self.env.push_scope();
                         self.env.define_var("self".to_string(), ty.clone());
+                        // Re-register the correct method signature for this
+                        // specific impl in the inner scope.  Methods with the
+                        // same name across different impl blocks (e.g. two
+                        // structs implementing the same trait) are registered
+                        // globally during the registration pass, where the last
+                        // impl overwrites earlier ones.  By placing the correct
+                        // per-impl signature here, lookup_function(name) inside
+                        // check_decl(Function) will find it first, ensuring
+                        // `self` and other params resolve to the right types.
+                        if let Some(sig) = self.env.lookup_method(target, mname).cloned() {
+                            self.env.define_function(sig);
+                        }
                         self.check_decl(method);
                         self.env.pop_scope();
                     } else {
@@ -858,9 +879,14 @@ impl TypeChecker {
                     ty.clone()
                 } else if let Some(sig) = self.env.lookup_function(name) {
                     // Function used as a value — return its function type.
+                    // For generic functions, instantiate fresh type variables so
+                    // each call site gets independent type inference (prevents
+                    // generic type pinning across call sites).
+                    let sig = sig.clone();
+                    let (params, ret) = self.engine.instantiate_sig(&sig);
                     Type::Function {
-                        params: sig.params.iter().map(|(_, t)| t.clone()).collect(),
-                        ret: Box::new(sig.ret.clone()),
+                        params,
+                        ret: Box::new(ret),
                     }
                 } else if self.env.lookup_enum(name).is_some() {
                     // Enum name used as a namespace (e.g., `Color` in `Color.Red`).
@@ -1691,6 +1717,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "println".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("value".to_string(), Type::Error)],
         ret: Type::Void,
     });
@@ -1699,6 +1726,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "print".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("value".to_string(), Type::Error)],
         ret: Type::Void,
     });
@@ -1707,6 +1735,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "eprintln".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("value".to_string(), Type::Error)],
         ret: Type::Void,
     });
@@ -1715,6 +1744,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "exit".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("code".to_string(), Type::I32)],
         ret: Type::Void,
     });
@@ -1724,6 +1754,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "range".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![
             ("start".to_string(), Type::I32),
             ("end".to_string(), Type::I32),
@@ -1740,6 +1771,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "len".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("collection".to_string(), Type::Error)],
         ret: Type::I64,
     });
@@ -1748,6 +1780,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "to_string".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("value".to_string(), Type::Error)],
         ret: Type::Str,
     });
@@ -1756,6 +1789,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "chan".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![],
         ret: Type::I64,
     });
@@ -1764,6 +1798,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "send".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![
             ("ch".to_string(), Type::I64),
             ("value".to_string(), Type::I64),
@@ -1775,6 +1810,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "recv".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("ch".to_string(), Type::I64)],
         ret: Type::I64,
     });
@@ -1783,6 +1819,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "file_read".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("path".to_string(), Type::Str)],
         ret: Type::Str,
     });
@@ -1791,6 +1828,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "file_write".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![
             ("path".to_string(), Type::Str),
             ("content".to_string(), Type::Str),
@@ -1802,6 +1840,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "env_get".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("key".to_string(), Type::Str)],
         ret: Type::Str,
     });
@@ -1810,6 +1849,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "time_now".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![],
         ret: Type::I64,
     });
@@ -1818,6 +1858,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "assert".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![
             ("condition".to_string(), Type::Bool),
             ("msg".to_string(), Type::Str),
@@ -1829,6 +1870,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "parse_int".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("s".to_string(), Type::Str)],
         ret: Type::I64,
     });
@@ -1837,6 +1879,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "parse_float".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("s".to_string(), Type::Str)],
         ret: Type::F64,
     });
@@ -1845,6 +1888,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "type_of".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("value".to_string(), Type::Error)],
         ret: Type::Str,
     });
@@ -1853,6 +1897,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "char_code".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("c".to_string(), Type::Str)],
         ret: Type::I64,
     });
@@ -1861,6 +1906,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "char_from".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("n".to_string(), Type::I64)],
         ret: Type::Str,
     });
@@ -1869,6 +1915,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "substr".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![
             ("s".to_string(), Type::Str),
             ("start".to_string(), Type::I64),
@@ -1881,6 +1928,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "push".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![
             ("arr".to_string(), Type::Error),
             ("val".to_string(), Type::Error),
@@ -1892,6 +1940,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "pop".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("arr".to_string(), Type::Error)],
         ret: Type::Error,
     });
@@ -1900,6 +1949,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "int".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("x".to_string(), Type::Error)],
         ret: Type::I64,
     });
@@ -1908,6 +1958,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "float".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("x".to_string(), Type::Error)],
         ret: Type::F64,
     });
@@ -1916,6 +1967,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "sqrt".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("x".to_string(), Type::F64)],
         ret: Type::F64,
     });
@@ -1924,6 +1976,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "floor".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("x".to_string(), Type::F64)],
         ret: Type::F64,
     });
@@ -1932,6 +1985,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "ceil".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("x".to_string(), Type::F64)],
         ret: Type::F64,
     });
@@ -1940,6 +1994,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "abs".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("x".to_string(), Type::Error)],
         ret: Type::Error,
     });
@@ -1948,6 +2003,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "log".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("x".to_string(), Type::F64)],
         ret: Type::F64,
     });
@@ -1956,6 +2012,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "keys".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("m".to_string(), Type::Error)],
         ret: Type::Array {
             element: Box::new(Type::Str),
@@ -1967,6 +2024,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "sleep_ms".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("ms".to_string(), Type::I64)],
         ret: Type::Void,
     });
@@ -1977,6 +2035,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "buf_new".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("capacity".to_string(), Type::I64)],
         ret: Type::I64,
     });
@@ -1985,6 +2044,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "buf_write_byte".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![
             ("handle".to_string(), Type::I64),
             ("byte".to_string(), Type::I64),
@@ -1996,6 +2056,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "buf_write_i16_le".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![
             ("handle".to_string(), Type::I64),
             ("val".to_string(), Type::I64),
@@ -2007,6 +2068,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "buf_write_i32_le".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![
             ("handle".to_string(), Type::I64),
             ("val".to_string(), Type::I64),
@@ -2018,6 +2080,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "buf_write_i64_le".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![
             ("handle".to_string(), Type::I64),
             ("val".to_string(), Type::I64),
@@ -2029,6 +2092,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "buf_write_bytes".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![
             ("dst".to_string(), Type::I64),
             ("src".to_string(), Type::I64),
@@ -2041,6 +2105,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "buf_write_str".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![
             ("handle".to_string(), Type::I64),
             ("s".to_string(), Type::Str),
@@ -2052,6 +2117,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "buf_write_zeros".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![
             ("handle".to_string(), Type::I64),
             ("count".to_string(), Type::I64),
@@ -2063,6 +2129,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "buf_len".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("handle".to_string(), Type::I64)],
         ret: Type::I64,
     });
@@ -2071,6 +2138,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "buf_get_byte".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![
             ("handle".to_string(), Type::I64),
             ("offset".to_string(), Type::I64),
@@ -2082,6 +2150,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "buf_set_byte".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![
             ("handle".to_string(), Type::I64),
             ("offset".to_string(), Type::I64),
@@ -2094,6 +2163,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "buf_patch_i32_le".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![
             ("handle".to_string(), Type::I64),
             ("offset".to_string(), Type::I64),
@@ -2106,6 +2176,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "buf_patch_i64_le".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![
             ("handle".to_string(), Type::I64),
             ("offset".to_string(), Type::I64),
@@ -2118,6 +2189,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "buf_write_to_file".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![
             ("handle".to_string(), Type::I64),
             ("path".to_string(), Type::Str),
@@ -2129,6 +2201,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "buf_free".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("handle".to_string(), Type::I64)],
         ret: Type::Void,
     });
@@ -2137,6 +2210,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "exit".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![("code".to_string(), Type::I64)],
         ret: Type::Void,
     });
@@ -2145,6 +2219,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_function(FunctionSig {
         name: "args".to_string(),
         generic_params: vec![],
+        generic_var_ids: vec![],
         params: vec![],
         ret: Type::Array {
             element: Box::new(Type::Str),

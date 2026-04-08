@@ -21,6 +21,7 @@ pub mod array;
 pub mod actor;
 pub mod builtins;
 pub mod channel;
+pub mod exception;
 pub mod map;
 pub mod panic;
 pub mod spawn;

@@ -1,9 +1,7 @@
-// ============================================================
-// Kryos Language Demo - FrostByte Digital
-// A universal systems language with AI-native capabilities
-// ============================================================
-
-struct Point { x: f64, y: f64 }
+struct Point {
+    x: f64
+    y: f64
+}
 
 fn fibonacci(n: i64) -> i64 {
     if n <= 1 {
@@ -23,30 +21,22 @@ fn double(x: i64) -> i64 {
 fn main() {
     println("=== Kryos Language Demo ===")
     println("")
-
-    // 1. Recursion
     println("1. Recursion")
     let fib10 = fibonacci(10)
     let fib20 = fibonacci(20)
     println("   fibonacci(10) = " + to_string(fib10))
     println("   fibonacci(20) = " + to_string(fib20))
     println("")
-
-    // 2. Higher-order functions
     println("2. Higher-Order Functions")
     let result = apply_twice(double, 3)
     println("   double(double(3)) = " + to_string(result))
     println("")
-
-    // 3. Float math
     println("3. Float Math")
     let pi = 3.14159265
     println("   pi = " + to_string(pi))
     let power = 2.0 ** 10.0
     println("   2^10 = " + to_string(power))
     println("")
-
-    // 4. Error handling
     println("4. Error Handling (try/catch)")
     try {
         throw "intentional error for demo"
@@ -54,8 +44,6 @@ fn main() {
         println("   Caught: " + e)
     }
     println("")
-
-    // 5. Map data structure
     println("5. Map (Hash Table)")
     let mut scores = {}
     scores["alice"] = 95
@@ -65,15 +53,11 @@ fn main() {
     println("   bob:   " + to_string(scores["bob"]))
     println("   carol: " + to_string(scores["carol"]))
     println("")
-
-    // 6. Structs
     println("6. Structs")
     let p = Point { x: 3.0, y: 4.0 }
     let dist = (p.x * p.x + p.y * p.y) ** 0.5
     println("   Point(3, 4) distance = " + to_string(dist))
     println("")
-
-    // 7. Arrays and iteration
     println("7. Arrays")
     let nums = [10, 20, 30, 40, 50]
     let mut sum = 0
@@ -83,13 +67,10 @@ fn main() {
     println("   sum([10..50]) = " + to_string(sum))
     println("   len = " + to_string(len(nums)))
     println("")
-
-    // 8. String operations
     println("8. String Operations")
     let greeting = "Hello, " + "Kryos!"
     println("   concat: " + greeting)
     println("   length: " + to_string(len(greeting)))
     println("")
-
     println("=== Kryos v0.1.0 - FrostByte Digital ===")
 }

@@ -423,6 +423,107 @@ impl InferenceEngine {
         }
     }
 
+    /// Instantiate a type by replacing old type variable IDs with fresh ones.
+    ///
+    /// Given a mapping from old var IDs to new var IDs, recursively walk the
+    /// type and replace any `Var(old_id)` with `Var(new_id)`. This is used
+    /// to create fresh copies of generic function signatures at each call site
+    /// so that unification at one call doesn't pollute another.
+    pub fn instantiate(&self, ty: &Type, var_map: &HashMap<u32, u32>) -> Type {
+        match ty {
+            Type::Var(id) => {
+                if let Some(&new_id) = var_map.get(id) {
+                    Type::Var(new_id)
+                } else {
+                    ty.clone()
+                }
+            }
+            Type::Array { element, size } => Type::Array {
+                element: Box::new(self.instantiate(element, var_map)),
+                size: *size,
+            },
+            Type::Tuple { elements } => Type::Tuple {
+                elements: elements.iter().map(|e| self.instantiate(e, var_map)).collect(),
+            },
+            Type::Map { key, value } => Type::Map {
+                key: Box::new(self.instantiate(key, var_map)),
+                value: Box::new(self.instantiate(value, var_map)),
+            },
+            Type::Set { element } => Type::Set {
+                element: Box::new(self.instantiate(element, var_map)),
+            },
+            Type::Option { inner } => Type::Option {
+                inner: Box::new(self.instantiate(inner, var_map)),
+            },
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(self.instantiate(ok, var_map)),
+                err: Box::new(self.instantiate(err, var_map)),
+            },
+            Type::Struct { name, generics } => Type::Struct {
+                name: name.clone(),
+                generics: generics.iter().map(|g| self.instantiate(g, var_map)).collect(),
+            },
+            Type::Enum { name, generics } => Type::Enum {
+                name: name.clone(),
+                generics: generics.iter().map(|g| self.instantiate(g, var_map)).collect(),
+            },
+            Type::Function { params, ret } => Type::Function {
+                params: params.iter().map(|p| self.instantiate(p, var_map)).collect(),
+                ret: Box::new(self.instantiate(ret, var_map)),
+            },
+            Type::Reference { inner, mutable } => Type::Reference {
+                inner: Box::new(self.instantiate(inner, var_map)),
+                mutable: *mutable,
+            },
+            Type::Shared { inner } => Type::Shared {
+                inner: Box::new(self.instantiate(inner, var_map)),
+            },
+            Type::Weak { inner } => Type::Weak {
+                inner: Box::new(self.instantiate(inner, var_map)),
+            },
+            Type::Pointer { inner, mutable } => Type::Pointer {
+                inner: Box::new(self.instantiate(inner, var_map)),
+                mutable: *mutable,
+            },
+            // Primitives, Error, Never, DynTrait, etc. pass through unchanged.
+            _ => ty.clone(),
+        }
+    }
+
+    /// Create fresh type variables for a generic function signature and return
+    /// the instantiated param types and return type.
+    ///
+    /// For each generic type parameter's original var ID, a new fresh var is
+    /// allocated, and all occurrences in the param/ret types are replaced.
+    pub fn instantiate_sig(
+        &mut self,
+        sig: &crate::env::FunctionSig,
+    ) -> (Vec<Type>, Type) {
+        if sig.generic_var_ids.is_empty() {
+            // Non-generic function — no instantiation needed.
+            let params = sig.params.iter().map(|(_, t)| t.clone()).collect();
+            return (params, sig.ret.clone());
+        }
+
+        // Build old_id → new_id mapping.
+        let mut var_map = HashMap::new();
+        for &old_id in &sig.generic_var_ids {
+            let new_var = self.fresh_var();
+            if let Type::Var(new_id) = new_var {
+                var_map.insert(old_id, new_id);
+            }
+        }
+
+        let params = sig
+            .params
+            .iter()
+            .map(|(_, t)| self.instantiate(t, &var_map))
+            .collect();
+        let ret = self.instantiate(&sig.ret, &var_map);
+
+        (params, ret)
+    }
+
     /// Get the current substitution map (for debugging/testing).
     pub fn substitutions(&self) -> &HashMap<u32, Type> {
         &self.substitutions

@@ -1,15 +1,15 @@
 # Kryos
 
-A compiled systems language with ownership-based memory safety, compile-time capability enforcement, and a native AI runtime.
+A compiled systems language with ownership-based memory safety, compile-time capability annotations, and a native AI runtime.
 
 ## Key Features
 
 - **Ownership without lifetimes** -- move semantics and borrowing enforced at compile time, no lifetime annotations
-- **Dual-backend compilation** -- Cranelift for fast development builds, LLVM for optimized release binaries
+- **Cranelift compilation** -- fast native code generation via Cranelift, with an LLVM backend in development
 - **AI-native primitives** -- tensors, agents, probability types, and reactive streams as language-level constructs
-- **Capability-based security** -- functions declare required system resources; the compiler enforces deny-by-default access
+- **Capability annotations** -- functions declare required system resources via `@capabilities`
 - **Compile-time evaluation** -- `comptime` blocks evaluate arbitrary expressions during compilation
-- **Full toolchain** -- LSP, formatter, doc generator, package manager, test runner, REPL
+- **Full toolchain** -- LSP, formatter, doc generator, package manager, test runner, REPL, C bindgen
 
 ## Quick Start
 
@@ -45,15 +45,15 @@ Type Checker ... Inference, validation, capability tracking
 Ownership ...... Move tracking, use-after-move detection
   |
   v
-Capabilities ... Deny-by-default resource enforcement
+Capabilities ... Resource annotation tracking
   |
   v
 MIR ............ SSA basic blocks, monomorphization
   |
   +-- Optimization passes: constant folding, DCE, inlining, TCO, strength reduction
   |
-  +---> Cranelift JIT (fast debug builds)
-  +---> LLVM codegen (optimized release builds)
+  +---> Cranelift codegen (native binaries + JIT)
+  +---> LLVM codegen (in development)
   +---> LSP server (diagnostics, hover, completion)
 ```
 
@@ -67,10 +67,10 @@ MIR ............ SSA basic blocks, monomorphization
 | `kryos-ast` | AST node types |
 | `kryos-types` | Type checker with inference |
 | `kryos-ownership` | Move tracking, use-after-move detection |
-| `kryos-capabilities` | Compile-time capability enforcement |
+| `kryos-capabilities` | Capability annotation tracking |
 | `kryos-mir` | Mid-level IR (SSA, basic blocks, monomorphization) |
-| `kryos-codegen-cranelift` | Cranelift JIT backend |
-| `kryos-codegen-llvm` | LLVM IR backend |
+| `kryos-codegen-cranelift` | Cranelift native backend |
+| `kryos-codegen-llvm` | LLVM IR backend (in development) |
 | `kryos-linker` | Native binary linking |
 | `kryos-driver` | Compilation pipeline orchestration |
 | `kryos-rt` | Runtime (strings, arrays, maps, tensors, channels, spawn) |
@@ -85,20 +85,19 @@ MIR ............ SSA basic blocks, monomorphization
 
 ## Performance
 
-| Benchmark | Kryos (Cranelift) | Kryos (LLVM) | Rust (release) | Go |
-|-----------|-------------------|--------------|----------------|----|
-| fib(42) | 1190ms | 594ms | 594ms | 1094ms |
-| Sum 100M | 46ms | ~5ms | 5ms | 27ms |
-| Nested 1Kx1K | 5ms | 5ms | 5ms | 6ms |
-| Compilation | ~500ms | -- | ~600ms | ~720ms |
+| Benchmark | Kryos (Cranelift) | Rust (release) | Go |
+|-----------|-------------------|----------------|----|
+| fib(42) | 1190ms | 594ms | 1094ms |
+| Sum 100M | 46ms | 5ms | 27ms |
+| Nested 1Kx1K | 5ms | 5ms | 6ms |
+| Compilation | ~500ms | ~600ms | ~720ms |
 
-LLVM release builds match Rust. Five MIR-level optimization passes (constant folding, dead code elimination, function inlining, tail-call optimization, strength reduction) improve debug builds and compound with LLVM's own optimizations in release mode.
+Five MIR-level optimization passes (constant folding, dead code elimination, function inlining, tail-call optimization, strength reduction) bring Cranelift debug builds within striking distance. An LLVM backend is in development for optimized release builds.
 
 ## Toolchain
 
 ```
-kryos build <file>            Compile to native binary
-kryos build <file> --release  Compile with LLVM optimizations
+kryos build <file>            Compile to native binary (Cranelift)
 kryos run <file>              Compile and execute
 kryos check <file>            Type-check without codegen
 kryos test                    Run project tests
@@ -106,6 +105,7 @@ kryos repl                    Interactive REPL
 kryos fmt <file>              Format source code
 kryos lsp                     Start language server
 kryos doc <file>              Generate documentation
+kryos bindgen <header>        Generate Kryos bindings from C headers
 kryos pkg init                Create new project
 kryos pkg add <dep>           Add dependency
 kryos version                 Print version info
@@ -124,7 +124,9 @@ fn fib(n: i64) -> i64 {                    // First-class functions
 
 struct Point { x: f64, y: f64 }            // Structs with impl blocks
 impl Point {
-    fn magnitude(self: Point) -> f64 { return sqrt(self.x * self.x + self.y * self.y) }
+    fn magnitude(self: Point) -> f64 {
+        return (self.x * self.x + self.y * self.y) ** 0.5
+    }
 }
 
 trait Printable { fn display(self: Self) -> str }   // Traits
@@ -142,13 +144,13 @@ let value = recv(ch)
 
 let size = comptime { 2 * 2 * 2 * 2 }     // Compile-time evaluation
 
-@capabilities(net, io)                      // Capability-based security
+@capabilities(net, io)                      // Capability annotations
 fn download(url: str, path: str) { }
 ```
 
 ## Standard Library
 
-28 modules covering strings, math, collections, I/O, networking, cryptography, JSON, regex, datetime, terminal, process management, tensors, agents, probability types, reactive streams, data lineage, and cost tracking.
+28 modules covering strings, math, collections, I/O, networking, cryptography, JSON, regex, datetime, terminal, process management, tensors, agents, probability types, reactive streams, data lineage, and cost tracking. All 847 functions are implemented -- zero stubs.
 
 See the [language manual](docs/README.md) for complete documentation.
 
@@ -160,18 +162,17 @@ See the [language manual](docs/README.md) for complete documentation.
 | [`http_server.kry`](examples/http_server.kry) | Structs, string match, error handling, request routing |
 | [`pipeline.kry`](examples/pipeline.kry) | Channels, spawn, concurrency, data processing pipeline |
 | [`fibonacci_showcase.kry`](examples/fibonacci_showcase.kry) | Recursion, tail-call optimization, comptime, higher-order functions |
-| [`neural_net.kry`](examples/neural_net.kry) | Two-layer neural network forward pass with native tensor runtime |
 | [`calculator.kry`](examples/calculator.kry) | String match, tail expressions, function composition |
 | [`word_count.kry`](examples/word_count.kry) | String operations, for loops, builtins |
 | [`json_counter.kry`](examples/json_counter.kry) | Structs, channels, spawn, try/catch, integer match |
 | [`mini_grep.kry`](examples/mini_grep.kry) | File I/O, error handling, string search |
 | [`all_features.kry`](examples/all_features.kry) | Comprehensive showcase of all language features |
 
-## Self-Hosting
+## Self-Hosting (In Progress)
 
-The Kryos compiler can compile itself. An 18,700-line self-hosted compiler written entirely in Kryos lives in `compiler/self-host/` (15 files). It implements the complete pipeline: lexer, parser, type checker, MIR lowering, 5-pass optimizer, register allocator, x86_64 machine code emission, and ELF/COFF linking -- with zero external dependencies beyond the OS kernel.
+An 18,700-line self-hosted compiler written entirely in Kryos lives in `compiler/self-host/`. It implements the complete pipeline: lexer, parser, type checker, MIR lowering, 5-pass optimizer, register allocator, x86_64 machine code emission, and ELF/COFF linking -- with zero external dependencies beyond the OS kernel.
 
-Bootstrap verification follows the same 3-stage technique used by GCC, Rust, and Go:
+The self-host requires a module/import system to compile as a multi-file project. This is currently in development. The bootstrap verification follows the same 3-stage technique used by GCC, Rust, and Go:
 
 ```
 stage-0 (Rust/Cranelift) -> stage-1 binary
@@ -182,20 +183,40 @@ stage-2 == stage-3        -> compiler faithfully reproduces itself
 
 ## Status
 
-**v0.2.0** -- The compiler is self-hosting with 680+ passing tests. All core language features are implemented: type inference, ownership analysis, capability checking, pattern matching, generics with monomorphization, `dyn Trait`, `comptime`, concurrency primitives, and FFI. The self-hosted compiler produces working native binaries on x86_64.
+**v0.2.0** -- 21-crate Rust compiler with 689 passing tests and zero clippy warnings. Core language features are fully implemented: type inference, ownership analysis, pattern matching, generics, `dyn Trait`, `comptime`, concurrency primitives, and FFI. The Cranelift backend produces working native binaries on x86_64.
+
+### What Works
+
+- All core language features (structs, enums, traits, generics, closures, channels, try/catch)
+- Native binary compilation via Cranelift
+- Full toolchain: formatter, type-checker, doc generator, test runner, REPL, LSP, C bindgen
+- 28 stdlib modules with 847 real implementations
+- Ownership-based move tracking for struct types
+- Rust-quality error diagnostics
+
+### Known Limitations
+
+- LLVM backend is in development (Cranelift-only for now)
+- Module/import system is in development (single-file compilation only)
+- Capability annotations are tracked but not yet enforced at compile time
+- Error handling (`throw`) does not propagate across function boundaries
+- Self-hosted compiler requires the module system to compile
 
 ### Roadmap
 
-- Complete bootstrap verification (stage-2 == stage-3 identity proof)
+- Module system and multi-file compilation
+- Cross-function error propagation
+- LLVM release backend
+- Capability enforcement
+- Complete self-hosting bootstrap verification
 - Async runtime with structured concurrency
-- GPU compute backend via capability annotations
 - Package registry
 - Incremental compilation
 
 ## Requirements
 
 - Rust 1.75+ (to build the compiler)
-- LLVM 15+ (optional, for release builds)
+- LLVM 15+ (optional, for future release builds)
 
 ## License
 

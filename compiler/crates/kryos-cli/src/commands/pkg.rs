@@ -1,16 +1,42 @@
 //! `kryos pkg` — package management commands.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use kryos_package::Manifest;
 
 /// `kryos pkg init [name]` — create a new kryos.toml.
+///
+/// When `name` is provided, creates a `<name>/` directory and writes all
+/// project files inside it (like `cargo new`).  When `name` is `None`,
+/// initialises the *current* directory (like `cargo init`).
 pub fn init(name: Option<&str>) -> Result<(), String> {
-    let manifest_path = Path::new("kryos.toml");
-
-    if manifest_path.exists() {
-        return Err("kryos.toml already exists in this directory".to_string());
-    }
+    // Determine the base directory: either a new subdirectory or cwd.
+    let base_dir: PathBuf = match name {
+        Some(n) => {
+            let dir = PathBuf::from(n);
+            if dir.exists() {
+                // If the directory already exists, only bail when a manifest
+                // is already present (allows `init` into an empty folder).
+                if dir.join("kryos.toml").exists() {
+                    return Err(format!(
+                        "kryos.toml already exists in `{}`",
+                        dir.display()
+                    ));
+                }
+            } else {
+                std::fs::create_dir_all(&dir)
+                    .map_err(|e| format!("failed to create directory `{}`: {e}", dir.display()))?;
+            }
+            dir
+        }
+        None => {
+            let dir = PathBuf::from(".");
+            if dir.join("kryos.toml").exists() {
+                return Err("kryos.toml already exists in this directory".to_string());
+            }
+            dir
+        }
+    };
 
     let project_name = match name {
         Some(n) => n.to_string(),
@@ -40,13 +66,15 @@ optimization = "dev"
 "#
     );
 
-    std::fs::write(manifest_path, &toml_content)
+    // Write kryos.toml inside the base directory.
+    let manifest_path = base_dir.join("kryos.toml");
+    std::fs::write(&manifest_path, &toml_content)
         .map_err(|e| format!("failed to write kryos.toml: {e}"))?;
 
-    // Also create a src/ directory with a main.kry stub if it doesn't exist.
-    let src_dir = Path::new("src");
+    // Create a src/ directory with a main.kry stub if it doesn't exist.
+    let src_dir = base_dir.join("src");
     if !src_dir.exists() {
-        std::fs::create_dir_all(src_dir)
+        std::fs::create_dir_all(&src_dir)
             .map_err(|e| format!("failed to create src/: {e}"))?;
     }
 
@@ -60,20 +88,20 @@ optimization = "dev"
     }
 
     // Create .gitignore if it doesn't exist.
-    let gitignore_path = Path::new(".gitignore");
+    let gitignore_path = base_dir.join(".gitignore");
     if !gitignore_path.exists() {
         std::fs::write(
-            gitignore_path,
+            &gitignore_path,
             "# Build artifacts\ntarget/\n*.o\n*.obj\n*.exe\n\n# Dependencies\n.kryos/\n\n# Lock file (optional — commit if you want reproducible builds)\n# kryos.lock\n",
         )
         .map_err(|e| format!("failed to write .gitignore: {e}"))?;
     }
 
     // Create README.md if it doesn't exist.
-    let readme_path = Path::new("README.md");
+    let readme_path = base_dir.join("README.md");
     if !readme_path.exists() {
         std::fs::write(
-            readme_path,
+            &readme_path,
             format!(
                 "# {project_name}\n\nA [Kryos](https://github.com/FrostbyteDevTeam/kryos-lang) project.\n\n## Build\n\n```bash\nkryos build src/main.kry -o {project_name}\n```\n\n## Run\n\n```bash\nkryos run src/main.kry\n```\n"
             ),

@@ -1,0 +1,14 @@
+// expect-stdout: Caught: something went wrong
+// expect-stdout: Done
+fn fail() {
+    throw "something went wrong"
+}
+
+fn main() {
+    try {
+        fail()
+    } catch e {
+        println("Caught: " + e)
+    }
+    println("Done")
+}

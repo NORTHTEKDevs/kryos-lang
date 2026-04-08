@@ -880,6 +880,10 @@ struct FuncTranslator<'a> {
     borrow_slots: HashMap<u32, cranelift_codegen::ir::StackSlot>,
     /// Trait method vtable map: (concrete_type, trait_name) -> [method_name, ...].
     mir_module_trait_methods: HashMap<(String, String), Vec<String>>,
+    /// Whether this function has MIR-level exception checks (try/catch).
+    /// When true, the codegen does NOT emit its own post-call exception
+    /// checks because the MIR checks handle routing to catch blocks.
+    has_mir_exception_checks: bool,
 }
 
 /// Translate a MIR function body into Cranelift IR instructions.
@@ -893,6 +897,17 @@ pub fn translate_function<M: Module>(
     string_counter: &mut u32,
     trait_vtables: &HashMap<(String, String), Vec<String>>,
 ) -> Result<(), CodegenError> {
+    // Check if this function already contains MIR-level exception checks
+    // (from try/catch lowering).  If so, the codegen must NOT add its own
+    // post-call return-on-exception guards because they would bypass the
+    // catch handler.
+    let has_mir_exception_checks = mir_func.blocks.iter().any(|bb| {
+        bb.instructions.iter().any(|inst| {
+            matches!(inst, Instruction::Assign { value: RValue::Call { func, .. }, .. }
+                if func == "kryos_exception_check")
+        })
+    });
+
     let mut translator = FuncTranslator {
         mir_func,
         variables: HashMap::new(),
@@ -904,6 +919,7 @@ pub fn translate_function<M: Module>(
         enum_defs,
         borrow_slots: HashMap::new(),
         mir_module_trait_methods: trait_vtables.clone(),
+        has_mir_exception_checks,
     };
 
     // Create Cranelift blocks for each MIR basic block.
@@ -1051,6 +1067,73 @@ fn translate_instruction<M: Module>(
                         let reloaded = builder.ins().stack_load(cl_ty, slot, 0);
                         builder.def_var(var, reloaded);
                     }
+                }
+            }
+
+            // For functions WITHOUT MIR-level exception handling (i.e., no
+            // try/catch), check the thread-local exception state after every
+            // user function call.  If an exception is pending, return
+            // immediately to propagate the unwind toward the nearest try/catch
+            // up the call stack.
+            if !translator.has_mir_exception_checks {
+                let should_check = match value {
+                    RValue::Call { func, .. } => {
+                        !func.starts_with("kryos_")
+                            && !matches!(
+                                func.as_str(),
+                                "println" | "print" | "eprintln"
+                                    | "sleep" | "sqrt" | "floor" | "ceil" | "abs"
+                                    | "assert" | "len" | "range" | "to_string"
+                                    | "exit"
+                            )
+                    }
+                    RValue::CallIndirect { .. } | RValue::VtableCall { .. } => true,
+                    _ => false,
+                };
+                if should_check {
+                    let check_ref = ensure_func_ref_with_args(
+                        "kryos_exception_check",
+                        builder,
+                        translator,
+                        module,
+                        0,
+                    )?;
+                    let check_call = builder.ins().call(check_ref, &[]);
+                    let has_exc = builder.inst_results(check_call)[0];
+
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let is_pending =
+                        builder
+                            .ins()
+                            .icmp(IntCC::NotEqual, has_exc, zero);
+
+                    let exc_return_block = builder.create_block();
+                    let continue_block = builder.create_block();
+
+                    builder
+                        .ins()
+                        .brif(is_pending, exc_return_block, &[], continue_block, &[]);
+
+                    // Early-return block: emit trace_exit and return a default
+                    // value to propagate the exception up the call stack.
+                    builder.switch_to_block(exc_return_block);
+                    builder.seal_block(exc_return_block);
+                    emit_trace_exit(builder, translator, module)?;
+                    if builder.func.signature.returns.is_empty() {
+                        builder.ins().return_(&[]);
+                    } else {
+                        let ret_ty = builder.func.signature.returns[0].value_type;
+                        let default_ret = if is_float_type(ret_ty) {
+                            builder.ins().f64const(0.0)
+                        } else {
+                            builder.ins().iconst(ret_ty, 0)
+                        };
+                        builder.ins().return_(&[default_ret]);
+                    }
+
+                    // Continue normal execution.
+                    builder.switch_to_block(continue_block);
+                    builder.seal_block(continue_block);
                 }
             }
         }
@@ -1604,9 +1687,46 @@ fn translate_rvalue<M: Module>(
                 return Ok(None);
             }
 
-            // Handle to_string() with type dispatch: float → kryos_f64_to_string,
-            // bool → kryos_bool_to_string, int → kryos_builtin_to_string.
+            // Handle math builtins that map to native Cranelift f64 instructions.
+            // sqrt, floor, ceil use Cranelift's native instructions directly;
+            // abs dispatches to fabs for floats or integer negation for ints.
+            if matches!(func.as_str(), "sqrt" | "floor" | "ceil" | "abs") && args.len() == 1 {
+                let val = translate_operand(&args[0], builder, translator, module)?;
+                let val_ty = builder.func.dfg.value_type(val);
+
+                if is_float_type(val_ty) {
+                    let result = match func.as_str() {
+                        "sqrt"  => builder.ins().sqrt(val),
+                        "floor" => builder.ins().floor(val),
+                        "ceil"  => builder.ins().ceil(val),
+                        "abs"   => builder.ins().fabs(val),
+                        _       => unreachable!(),
+                    };
+                    return Ok(Some(result));
+                } else if func == "abs" {
+                    // Integer abs: if val < 0 then -val else val.
+                    let zero = builder.ins().iconst(val_ty, 0);
+                    let neg = builder.ins().ineg(val);
+                    let is_neg = builder.ins().icmp(IntCC::SignedLessThan, val, zero);
+                    let result = builder.ins().select(is_neg, neg, val);
+                    return Ok(Some(result));
+                }
+                // For non-float sqrt/floor/ceil, fall through (should be
+                // a type error, but let the generic path handle it).
+            }
+
+            // Handle to_string() with type dispatch: str → pass-through,
+            // float → kryos_f64_to_string, bool → kryos_bool_to_string,
+            // int → kryos_builtin_to_string.
             if func == "to_string" && args.len() == 1 {
+                // If the argument is already a string, just return it as-is.
+                // Without this check, string pointers fall through to
+                // kryos_builtin_to_string which formats the pointer address
+                // as an integer (e.g. "2353427280336" instead of "hello").
+                if is_string_operand(&args[0], &translator.mir_func.locals) {
+                    let val = translate_operand(&args[0], builder, translator, module)?;
+                    return Ok(Some(val));
+                }
                 let val = translate_operand(&args[0], builder, translator, module)?;
                 if is_float_operand(&args[0], &translator.mir_func.locals) {
                     let f64_ref = ensure_func_ref_with_args(
