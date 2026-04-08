@@ -578,12 +578,12 @@ fn _format_ms(ms: f64) -> str {
         return "<1ms"
     }
     if ms < 1000.0 {
-        return to_string(to_i64(ms)) + "ms"
+        return to_string(int(ms)) + "ms"
     }
     let seconds = ms / 1000.0
     // Format to 2 decimal places
-    let whole = to_i64(seconds)
-    let frac = to_i64((seconds - to_f64(whole)) * 100.0)
+    let whole = int(seconds)
+    let frac = int((seconds - float(whole)) * 100.0)
     let mut frac_str = to_string(frac)
     if frac < 10 {
         frac_str = "0" + frac_str

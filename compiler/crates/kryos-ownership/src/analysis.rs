@@ -44,6 +44,8 @@ impl OwnershipScope {
 }
 
 /// Set of known copy type names (primitives + builtins).
+/// `str` is included because at runtime strings are immutable i64
+/// handles — copying the handle is cheap and safe (no aliased mutation).
 fn is_primitive_copy_type(name: &str) -> bool {
     matches!(
         name,
@@ -52,6 +54,7 @@ fn is_primitive_copy_type(name: &str) -> bool {
             | "f32" | "f64"
             | "bool" | "char"
             | "usize" | "isize"
+            | "str"
     )
 }
 
@@ -62,6 +65,8 @@ pub struct OwnershipAnalyzer {
     pub arc_insertions: Vec<ArcInsertion>,
     /// Structs annotated with @copy.
     copy_structs: HashSet<String>,
+    /// Function name → whether return type is a primitive copy type.
+    fn_copy_returns: HashMap<String, bool>,
 }
 
 impl OwnershipAnalyzer {
@@ -71,6 +76,7 @@ impl OwnershipAnalyzer {
             diagnostics: Vec::new(),
             arc_insertions: Vec::new(),
             copy_structs: HashSet::new(),
+            fn_copy_returns: HashMap::new(),
         }
     }
 
@@ -140,13 +146,19 @@ impl OwnershipAnalyzer {
     }
 
     /// Determine if an expression's inferred type is a copy type.
-    /// Conservative: returns true only for known copy expressions.
+    /// Returns true when the result is provably a primitive copy type
+    /// (i64, f64, bool, char, etc.), even through compound expressions
+    /// like binary ops, function calls, match, if-else, and casts.
     fn expr_is_copy(&self, expr: &Expr) -> bool {
         match expr {
+            // Literals are always copy.
             Expr::IntLiteral { .. }
             | Expr::FloatLiteral { .. }
             | Expr::BoolLiteral { .. }
-            | Expr::CharLiteral { .. } => true,
+            | Expr::CharLiteral { .. }
+            | Expr::StringLiteral { .. } => true,
+
+            // Identifiers: check the variable's is_copy flag.
             Expr::Identifier { name, .. } => {
                 if let Some(info) = self.lookup_var(name) {
                     info.is_copy
@@ -154,7 +166,125 @@ impl OwnershipAnalyzer {
                     false
                 }
             }
+
+            // Binary ops on copy operands produce copy results
+            // (arithmetic, comparison, logical ops on primitives).
+            Expr::BinaryOp { left, right, .. } => {
+                self.expr_is_copy(left) && self.expr_is_copy(right)
+            }
+
+            // Unary ops on a copy operand produce a copy result.
+            Expr::UnaryOp { operand, .. } => self.expr_is_copy(operand),
+
+            // Function calls: check builtins, then declared function return types.
+            Expr::FnCall { callee, .. } => {
+                if let Expr::Identifier { name, .. } = callee.as_ref() {
+                    // Known builtins that return copy types (including str,
+                    // which is copy in Kryos).
+                    if matches!(
+                        name.as_str(),
+                        "len" | "parse_int" | "parse_float" | "time_now" | "abs"
+                            | "min" | "max" | "floor" | "ceil" | "round"
+                            | "sqrt" | "pow" | "log" | "sin" | "cos" | "tan"
+                            | "char_code" | "int" | "float"
+                            | "to_string" | "char_from" | "substr"
+                            | "type_of" | "env_get" | "file_read"
+                    ) {
+                        return true;
+                    }
+                    // Check user-defined function return type annotations.
+                    if let Some(&is_copy) = self.fn_copy_returns.get(name.as_str()) {
+                        return is_copy;
+                    }
+                    false
+                } else {
+                    false
+                }
+            }
+
+            // Method calls: check common methods that return primitives,
+            // then fall back to the function return type registry.
+            Expr::MethodCall { method, .. } => {
+                // Well-known methods that always return copy types.
+                if matches!(
+                    method.as_str(),
+                    "len" | "count" | "size" | "capacity"
+                        | "is_empty" | "contains" | "starts_with" | "ends_with"
+                        | "parse_int" | "parse_float"
+                        | "abs" | "min" | "max" | "floor" | "ceil" | "round"
+                        | "sqrt" | "pow" | "log" | "sin" | "cos" | "tan"
+                        | "clone"
+                ) {
+                    return true;
+                }
+                // Check if the method was declared with a copy return type.
+                if let Some(&is_copy) = self.fn_copy_returns.get(method.as_str()) {
+                    return is_copy;
+                }
+                false
+            }
+
+            // Match expression: copy if ALL arms produce copy values.
+            Expr::MatchExpr { arms, .. } => {
+                !arms.is_empty() && arms.iter().all(|arm| self.expr_is_copy(&arm.body))
+            }
+
+            // If expression: copy if both branches' last expressions are copy.
+            Expr::IfExpr {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                let then_copy = self.block_last_expr_is_copy(then_branch);
+                let else_copy = else_branch
+                    .as_ref()
+                    .map(|blk| self.block_last_expr_is_copy(blk))
+                    .unwrap_or(true);
+                then_copy && else_copy
+            }
+
+            // Cast to a copy type produces a copy value.
+            Expr::Cast { ty, .. } => self.is_type_expr_copy(ty),
+
+            // Range expressions produce a copy handle (iterator over i64).
+            Expr::RangeExpr { .. } => true,
+
+            // Index access conservatively returns copy (array elements are i64).
+            Expr::IndexAccess { .. } => true,
+
+            // Block expression: copy if the last expression in the block is copy.
+            Expr::Block { block, .. } => self.block_last_expr_is_copy(block),
+
+            // Field access: copy if the object is a copy type (all fields of
+            // a copy struct are themselves copy).
+            Expr::FieldAccess { object, .. } => self.expr_is_copy(object),
+
+            // Pipe expression: the result type is determined by the right-hand
+            // side (the function receiving the piped value).
+            Expr::PipeExpr { right, .. } => self.expr_is_copy(right),
+
+            // Borrow/Deref: references to copy types yield copy values.
+            Expr::Borrow { inner, .. } => self.expr_is_copy(inner),
+            Expr::Deref { inner, .. } => self.expr_is_copy(inner),
+
+            // Move of a copy type is still copy.
+            Expr::MoveExpr { inner, .. } => self.expr_is_copy(inner),
+
             _ => false,
+        }
+    }
+
+    /// Check if the last expression of a block is a copy type.
+    /// Blocks produce their last statement's expression value.
+    fn block_last_expr_is_copy(&self, block: &Block) -> bool {
+        if let Some(last) = block.stmts.last() {
+            match last {
+                Stmt::Expr { expr, .. } => self.expr_is_copy(expr),
+                Stmt::Return { value: Some(expr), .. } => self.expr_is_copy(expr),
+                _ => false,
+            }
+        } else {
+            false
         }
     }
 
@@ -203,14 +333,40 @@ impl OwnershipAnalyzer {
     // ── Analysis entry point ────────────────────────────────────────
 
     pub fn analyze_module(&mut self, module: &Module) {
-        // First pass: collect @copy struct annotations.
+        // First pass: collect @copy struct annotations and function return types.
         for decl in &module.declarations {
-            if let Decl::Struct {
-                name, annotations, ..
-            } = decl
-            {
-                if annotations.iter().any(|a| a.name == "copy") {
-                    self.copy_structs.insert(name.clone());
+            match decl {
+                Decl::Struct {
+                    name, annotations, ..
+                } => {
+                    if annotations.iter().any(|a| a.name == "copy") {
+                        self.copy_structs.insert(name.clone());
+                    }
+                }
+                Decl::Function {
+                    name, ret_ty, ..
+                } => {
+                    let is_copy_ret = ret_ty
+                        .as_ref()
+                        .map(|t| self.is_type_expr_copy(t))
+                        .unwrap_or(false);
+                    self.fn_copy_returns.insert(name.clone(), is_copy_ret);
+                }
+                _ => {}
+            }
+        }
+
+        // Also collect methods from impl blocks.
+        for decl in &module.declarations {
+            if let Decl::Impl { methods, .. } = decl {
+                for method in methods {
+                    if let Decl::Function { name, ret_ty, .. } = method {
+                        let is_copy_ret = ret_ty
+                            .as_ref()
+                            .map(|t| self.is_type_expr_copy(t))
+                            .unwrap_or(false);
+                        self.fn_copy_returns.insert(name.clone(), is_copy_ret);
+                    }
                 }
             }
         }

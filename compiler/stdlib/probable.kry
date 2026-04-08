@@ -140,7 +140,7 @@ fn ensemble_majority_vote(predictions: [Probable]) -> Probable {
         }
         i = i + 1
     }
-    return probable(best_value, to_float(best_count) / to_float(len(predictions)))
+    return probable(best_value, float(best_count) / float(len(predictions)))
 }
 
 // Best confidence: pick the prediction with highest confidence.

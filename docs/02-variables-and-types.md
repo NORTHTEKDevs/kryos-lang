@@ -265,16 +265,11 @@ let s = to_string(42)        // "42"
 let sf = to_string(3.14)     // "3.14"
 let sb = to_string(true)     // "true"
 
-// int -- converts to integer
-let n = int("42")            // 42
-let nf = int(3.99)           // 3
+// parse_int -- parses a string to integer
+let n = parse_int("42")      // 42
 
-// float -- converts to float
-let f = float("3.14")        // 3.14
-let fi = float(42)           // 42.0
-
-// str -- converts any value to string (same as to_string)
-let s2 = str(100)            // "100"
+// parse_float -- parses a string to float
+let f = parse_float("3.14")  // 3.14
 ```
 
 ## Runtime type inspection
@@ -282,12 +277,12 @@ let s2 = str(100)            // "100"
 Use `type_of()` to inspect a value's type at runtime:
 
 ```
-type_of(42)        // "i32"
-type_of(3.14)      // "f64"
-type_of("hello")   // "str"
-type_of(true)      // "bool"
-type_of([1, 2])    // "array"
-type_of(none)      // "none"
+println(type_of(42))        // "i32"
+println(type_of(3.14))      // "f64"
+println(type_of("hello"))   // "str"
+println(type_of(true))      // "bool"
+println(type_of([1, 2]))    // "array"
+println(type_of(none))      // "none"
 ```
 
 For struct instances, `type_of()` returns the struct name.

@@ -1,6 +1,6 @@
 # Traits and Generics
 
-> **Implementation Status:** Traits are parsed, type-checked, and lowered through MIR. Trait methods are name-mangled as `TypeName_methodName`. `impl TraitName for Type` blocks register method implementations. Generics are parsed (with trait bounds) and compiled via monomorphization -- each unique type combination produces a specialized function. Default trait methods are supported. Dynamic dispatch (trait objects / `dyn Trait`) is not yet implemented.
+> **Implementation Status:** Traits are parsed, type-checked, and lowered through MIR. Trait methods are name-mangled as `TypeName_methodName`. `impl TraitName for Type` blocks register method implementations. Generics are parsed (with trait bounds) and compiled via monomorphization -- each unique type combination produces a specialized function. Default trait methods are supported. Dynamic dispatch via `dyn Trait` is implemented using vtable-based fat pointers.
 
 Traits define shared behavior. If two types can both be printed, sorted, or serialized, a trait is how you express that contract. Generics let you write functions and structs that work across multiple types without duplicating code. Together they give you polymorphism without inheritance.
 

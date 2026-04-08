@@ -320,9 +320,16 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("println", MirType::Void),
         ("print", MirType::Void),
         ("eprintln", MirType::Void),
-        ("push", MirType::Void),
+        ("push", MirType::I64),        // returns array handle
+        ("pop", MirType::I64),
         ("send", MirType::Void),
         ("sleep", MirType::Void),
+        ("char_code", MirType::I64),
+        ("char_from", MirType::Str),
+        ("int", MirType::I64),
+        ("float", MirType::F64),
+        ("keys", MirType::I64),       // returns array handle
+        ("sleep_ms", MirType::Void),
     ] {
         ctx.func_ret_types.insert(name.to_string(), ret_ty);
     }

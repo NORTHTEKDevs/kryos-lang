@@ -213,7 +213,7 @@ fn _parse_string(p: Parser) -> ParseResult {
                 parser = _advance(parser)
                 let hex = substr(parser.input, parser.pos, parser.pos + 4)
                 let code_point = _hex_to_int(hex)
-                result = result + from_char_code(code_point)
+                result = result + char_from(code_point)
                 // Advance 3 more (the 4th advance happens below)
                 parser = _advance(parser)
                 parser = _advance(parser)
@@ -282,7 +282,7 @@ fn _parse_number(p: Parser) -> ParseResult {
     }
 
     let num_str = substr(parser.input, start, parser.pos)
-    let value = to_f64(num_str)
+    let value = float(num_str)
     return ParseResult { value: JsonValue.Number(value), parser: parser }
 }
 
@@ -382,8 +382,8 @@ fn stringify(val: JsonValue) -> str {
 
 fn _format_number(n: f64) -> str {
     // If the number is an integer value, format without decimal
-    let i = to_i64(n)
-    if to_f64(i) == n {
+    let i = int(n)
+    if float(i) == n {
         return to_string(i)
     }
     return to_string(n)
@@ -599,7 +599,7 @@ fn to_bool(val: JsonValue) -> bool {
 /// Extract a number as i64.  Throws if not a Number.
 fn to_int(val: JsonValue) -> i64 {
     return match val {
-        JsonValue.Number(n) => to_i64(n),
+        JsonValue.Number(n) => int(n),
         _ => throw "json.to_int: value is not a number"
     }
 }

@@ -120,6 +120,59 @@ fn is_float_operand(operand: &Operand, locals: &[kryos_mir::ir::MirLocal]) -> bo
     }
 }
 
+/// Returns the type name string for a MIR operand, used by `type_of()`.
+/// Covers all MIR types so that `type_of` can be fully resolved at compile time.
+fn mir_type_name_of_operand(operand: &Operand, locals: &[kryos_mir::ir::MirLocal]) -> &'static str {
+    match operand {
+        Operand::Local(id) => {
+            if let Some(local) = locals.iter().find(|l| l.id == *id) {
+                mir_type_name(&local.ty)
+            } else {
+                "i64"
+            }
+        }
+        Operand::Constant(c) => match c {
+            Constant::Int(_) => "i64",
+            Constant::Float(_) => "f64",
+            Constant::Bool(_) => "bool",
+            Constant::Str(_) => "str",
+            Constant::None => "void",
+        },
+    }
+}
+
+/// Maps a MIR type to its Kryos type name string.
+fn mir_type_name(ty: &kryos_mir::ir::MirType) -> &'static str {
+    use kryos_mir::ir::MirType;
+    match ty {
+        MirType::I8 => "i8",
+        MirType::I16 => "i16",
+        MirType::I32 => "i32",
+        MirType::I64 => "i64",
+        MirType::I128 => "i128",
+        MirType::U8 => "u8",
+        MirType::U16 => "u16",
+        MirType::U32 => "u32",
+        MirType::U64 => "u64",
+        MirType::U128 => "u128",
+        MirType::F32 => "f32",
+        MirType::F64 => "f64",
+        MirType::Bool => "bool",
+        MirType::Char => "char",
+        MirType::Str => "str",
+        MirType::Void => "void",
+        MirType::Ptr(_) => "ptr",
+        MirType::Ref { .. } => "ref",
+        MirType::Shared(_) => "shared",
+        MirType::Array(_, _) => "array",
+        MirType::Tuple(_) => "tuple",
+        MirType::Struct(_) => "struct",
+        MirType::Enum(_) => "enum",
+        MirType::Function { .. } => "fn",
+        MirType::DynTrait(_) => "dyn",
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Struct layout computation
 // ---------------------------------------------------------------------------
@@ -1494,6 +1547,104 @@ fn translate_rvalue<M: Module>(
                 // Fall through to generic int to_string below.
             }
 
+            // Handle type_of() with compile-time type dispatch.
+            // Resolve the type name entirely at compile time for ALL MIR types
+            // to avoid Cranelift verifier errors from type mismatches (e.g. passing
+            // f64 or i8 to a runtime function expecting i64).
+            if func == "type_of" && args.len() == 1 {
+                let s = mir_type_name_of_operand(&args[0], &translator.mir_func.locals);
+
+                // Emit the argument for side effects (unused), then return a
+                // string constant with the type name.
+                let _ = translate_operand(&args[0], builder, translator, module)?;
+
+                let data_name = format!(".str.{}", translator.string_counter);
+                *translator.string_counter += 1;
+
+                let data_id = module
+                    .declare_data(&data_name, Linkage::Local, false, false)
+                    .map_err(CodegenError::Module)?;
+
+                let mut data_desc = DataDescription::new();
+                let mut bytes = s.as_bytes().to_vec();
+                let str_len = bytes.len();
+                bytes.push(0); // null terminator
+                data_desc.define(bytes.into_boxed_slice());
+                module
+                    .define_data(data_id, &data_desc)
+                    .map_err(CodegenError::Module)?;
+
+                let gv = module.declare_data_in_func(data_id, builder.func);
+                let data_ptr = builder.ins().global_value(types::I64, gv);
+                let len_val = builder.ins().iconst(types::I64, str_len as i64);
+
+                let string_new_ref = ensure_func_ref_with_args(
+                    "kryos_string_new", builder, translator, module, 2,
+                )?;
+                let call = builder.ins().call(string_new_ref, &[data_ptr, len_val]);
+                return Ok(Some(builder.inst_results(call)[0]));
+            }
+
+            // Handle assert() with optional message and bool condition support.
+            // The runtime function expects (i64, i64) where the second arg is a
+            // string message. Support single-arg calls with a default message,
+            // and extend bool (i8) conditions to i64.
+            if func == "assert" && !args.is_empty() {
+                let mut condition = translate_operand(&args[0], builder, translator, module)?;
+
+                // Coerce the condition to i64 for the runtime assert function.
+                let cond_ty = builder.func.dfg.value_type(condition);
+                if is_float_type(cond_ty) {
+                    // Float condition: treat non-zero as truthy (fcmp ne 0.0).
+                    let zero = builder.ins().f64const(0.0);
+                    let cmp = builder.ins().fcmp(FloatCC::NotEqual, condition, zero);
+                    // bint is i8 (0 or 1); extend to i64.
+                    condition = builder.ins().uextend(types::I64, cmp);
+                } else if cond_ty.is_int() && cond_ty.bits() < 64 {
+                    // Bool (i8) or other small int: sign-extend to i64.
+                    condition = builder.ins().sextend(types::I64, condition);
+                }
+
+                // Get or create the message argument.
+                let message = if args.len() >= 2 {
+                    translate_operand(&args[1], builder, translator, module)?
+                } else {
+                    // Create a default "assertion failed" message.
+                    let default_msg = "assertion failed";
+                    let data_name = format!(".str.{}", translator.string_counter);
+                    *translator.string_counter += 1;
+
+                    let data_id = module
+                        .declare_data(&data_name, Linkage::Local, false, false)
+                        .map_err(CodegenError::Module)?;
+
+                    let mut data_desc = DataDescription::new();
+                    let mut bytes = default_msg.as_bytes().to_vec();
+                    let str_len = bytes.len();
+                    bytes.push(0);
+                    data_desc.define(bytes.into_boxed_slice());
+                    module
+                        .define_data(data_id, &data_desc)
+                        .map_err(CodegenError::Module)?;
+
+                    let gv = module.declare_data_in_func(data_id, builder.func);
+                    let data_ptr = builder.ins().global_value(types::I64, gv);
+                    let len_val = builder.ins().iconst(types::I64, str_len as i64);
+
+                    let string_new_ref = ensure_func_ref_with_args(
+                        "kryos_string_new", builder, translator, module, 2,
+                    )?;
+                    let call = builder.ins().call(string_new_ref, &[data_ptr, len_val]);
+                    builder.inst_results(call)[0]
+                };
+
+                let assert_ref = ensure_func_ref_with_args(
+                    "kryos_builtin_assert", builder, translator, module, 2,
+                )?;
+                builder.ins().call(assert_ref, &[condition, message]);
+                return Ok(None);
+            }
+
             // Map Kryos builtin names to their runtime function names.
             let (runtime_name, runtime_arg_count) = match func.as_str() {
                 "chan"  => ("kryos_chan_new_i64", 0usize),
@@ -1503,10 +1654,16 @@ fn translate_rvalue<M: Module>(
                 "file_write"   => ("kryos_builtin_file_write", 2),
                 "env_get"      => ("kryos_builtin_env_get", 1),
                 "time_now"     => ("kryos_builtin_time_now", 0),
-                "assert"       => ("kryos_builtin_assert", 2),
                 "parse_int"    => ("kryos_builtin_parse_int", 1),
                 "parse_float"  => ("kryos_builtin_parse_float", 1),
                 "type_of"      => ("kryos_builtin_type_of", 1),
+                "char_code"    => ("kryos_builtin_char_code", 1),
+                "char_from"    => ("kryos_builtin_char_from", 1),
+                "substr"       => ("kryos_builtin_substr", 3),
+                "push"         => ("kryos_builtin_push", 2),
+                "pop"          => ("kryos_builtin_pop", 1),
+                "int"          => ("kryos_builtin_int", 1),
+                "float"        => ("kryos_builtin_float", 1),
                 _ => (func.as_str(), args.len()),
             };
             let func_ref = ensure_func_ref_with_args(runtime_name, builder, translator, module, runtime_arg_count)?;

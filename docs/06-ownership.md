@@ -121,15 +121,17 @@ ownership error: cannot assign to immutable variable 'x'
   note: consider declaring with 'let mut'
 ```
 
-## Borrowing
+## Borrowing (partially implemented)
 
-Sometimes you want to read a value without taking ownership. This is called borrowing. In Kryos, the borrow checker tracks who is reading from what and enforces these rules:
+> **Status:** References (`&T`, `&mut T`) are parsed, type-checked, and tracked through MIR. Auto-deref works for field access through references. Full borrow checking (preventing overlapping `&mut`) is not yet enforced. Kryos currently relies on move semantics for memory safety. Full borrow checking with lifetime enforcement is planned for a future release.
+
+Sometimes you want to read a value without taking ownership. This is called borrowing. The planned borrow checker will enforce these rules:
 
 1. **You can have multiple immutable borrows** -- any number of readers.
 2. **You can have one mutable borrow** -- exactly one writer.
 3. **You cannot have immutable and mutable borrows at the same time.**
 
-These rules prevent data races at compile time.
+These rules will prevent data races at compile time.
 
 ### What counts as a borrow
 

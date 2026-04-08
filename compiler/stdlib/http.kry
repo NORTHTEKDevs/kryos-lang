@@ -67,7 +67,7 @@ fn parse_url(raw: str) -> Url {
     if colon_idx >= 0 {
         host = _substring(rest, 0, colon_idx)
         let port_str = _substring(rest, colon_idx + 1, len(rest))
-        port = to_i64(port_str)
+        port = int(port_str)
     }
 
     return Url {
@@ -283,10 +283,10 @@ fn parse_response(raw: str) -> Response {
         let second_space = _find(after_version, " ")
         if second_space >= 0 {
             let status_str = _substring(after_version, 0, second_space)
-            status = to_i64(status_str)
+            status = int(status_str)
             status_text = _substring(after_version, second_space + 1, len(after_version))
         } else {
-            status = to_i64(after_version)
+            status = int(after_version)
         }
     }
 
@@ -612,7 +612,7 @@ fn _to_lower(s: str) -> str {
         let ch = s[i]
         let code = char_code(ch)
         if code >= 65 and code <= 90 {
-            result = result + from_char_code(code + 32)
+            result = result + char_from(code + 32)
         } else {
             result = result + ch
         }

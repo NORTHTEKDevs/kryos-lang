@@ -152,7 +152,7 @@ impl CostTracker {
             wall_time_ms: 0.0,
             tokens_used: count,
             api_calls: 0,
-            money_usd: to_float(count) * cost_per_token,
+            money_usd: float(count) * cost_per_token,
             energy_kwh: 0.0
         }
         return self.record(cost)

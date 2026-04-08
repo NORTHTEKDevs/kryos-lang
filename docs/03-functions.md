@@ -203,4 +203,4 @@ The inner call evaluates first: `square(3)` returns 9, then `add_one(9)` returns
 - **Simpler closure syntax.** No `|x| x + 1` syntax -- Kryos closures are just inner `fn` declarations or `fn(params) { body }` anonymous functions.
 - **`fn` as a type.** When accepting a function parameter, you write `f: fn` rather than `f: impl Fn(i32) -> i32`. Simpler, but less precise.
 - **No lifetime annotations.** Closures capture by value. No need to reason about `'a` or `move`.
-- **No implicit return.** Rust returns the last expression without `return`. Kryos always requires `return`.
+- **Tail expression return.** Like Rust, the last expression in a function body is implicitly returned if it matches the return type. Explicit `return` is also supported and preferred for clarity.

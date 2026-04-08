@@ -1085,7 +1085,13 @@ impl TypeChecker {
 
                 match &callee_ty {
                     Type::Function { params, ret } => {
-                        if args.len() != params.len() {
+                        // Special handling for assert(): accept 1 or 2 args.
+                        // assert(condition) uses a default message at codegen time.
+                        let is_assert_1arg = matches!(&callee_name_str, Some(n) if n == "assert")
+                            && args.len() == 1
+                            && params.len() == 2;
+
+                        if !is_assert_1arg && args.len() != params.len() {
                             let display_name = match callee_name_str {
                                 Some(ref n) => format!(" to `{n}`"),
                                 None => String::new(),
@@ -1781,12 +1787,12 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         ret: Type::I64,
     });
 
-    // assert(condition: i64, msg: str) -> void — abort if condition is 0
+    // assert(condition: bool, msg: str) -> void — abort if condition is false
     checker.env.define_function(FunctionSig {
         name: "assert".to_string(),
         generic_params: vec![],
         params: vec![
-            ("condition".to_string(), Type::I64),
+            ("condition".to_string(), Type::Bool),
             ("msg".to_string(), Type::Str),
         ],
         ret: Type::Void,
@@ -1814,6 +1820,128 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         generic_params: vec![],
         params: vec![("value".to_string(), Type::Error)],
         ret: Type::Str,
+    });
+
+    // char_code(c: str) -> i64 — Unicode code point of first character
+    checker.env.define_function(FunctionSig {
+        name: "char_code".to_string(),
+        generic_params: vec![],
+        params: vec![("c".to_string(), Type::Str)],
+        ret: Type::I64,
+    });
+
+    // char_from(n: i64) -> str — single-character string from code point
+    checker.env.define_function(FunctionSig {
+        name: "char_from".to_string(),
+        generic_params: vec![],
+        params: vec![("n".to_string(), Type::I64)],
+        ret: Type::Str,
+    });
+
+    // substr(s: str, start: i64, end: i64) -> str — substring [start..end)
+    checker.env.define_function(FunctionSig {
+        name: "substr".to_string(),
+        generic_params: vec![],
+        params: vec![
+            ("s".to_string(), Type::Str),
+            ("start".to_string(), Type::I64),
+            ("end".to_string(), Type::I64),
+        ],
+        ret: Type::Str,
+    });
+
+    // push(arr: any, val: any) -> any — append value to array
+    checker.env.define_function(FunctionSig {
+        name: "push".to_string(),
+        generic_params: vec![],
+        params: vec![
+            ("arr".to_string(), Type::Error),
+            ("val".to_string(), Type::Error),
+        ],
+        ret: Type::Error,
+    });
+
+    // pop(arr: any) -> any — remove and return last element
+    checker.env.define_function(FunctionSig {
+        name: "pop".to_string(),
+        generic_params: vec![],
+        params: vec![("arr".to_string(), Type::Error)],
+        ret: Type::Error,
+    });
+
+    // int(x: any) -> i64 — convert to integer
+    checker.env.define_function(FunctionSig {
+        name: "int".to_string(),
+        generic_params: vec![],
+        params: vec![("x".to_string(), Type::Error)],
+        ret: Type::I64,
+    });
+
+    // float(x: any) -> f64 — convert to float
+    checker.env.define_function(FunctionSig {
+        name: "float".to_string(),
+        generic_params: vec![],
+        params: vec![("x".to_string(), Type::Error)],
+        ret: Type::F64,
+    });
+
+    // sqrt(x: f64) -> f64 — square root
+    checker.env.define_function(FunctionSig {
+        name: "sqrt".to_string(),
+        generic_params: vec![],
+        params: vec![("x".to_string(), Type::F64)],
+        ret: Type::F64,
+    });
+
+    // floor(x: f64) -> f64 — floor
+    checker.env.define_function(FunctionSig {
+        name: "floor".to_string(),
+        generic_params: vec![],
+        params: vec![("x".to_string(), Type::F64)],
+        ret: Type::F64,
+    });
+
+    // ceil(x: f64) -> f64 — ceiling
+    checker.env.define_function(FunctionSig {
+        name: "ceil".to_string(),
+        generic_params: vec![],
+        params: vec![("x".to_string(), Type::F64)],
+        ret: Type::F64,
+    });
+
+    // abs(x: any) -> any — absolute value
+    checker.env.define_function(FunctionSig {
+        name: "abs".to_string(),
+        generic_params: vec![],
+        params: vec![("x".to_string(), Type::Error)],
+        ret: Type::Error,
+    });
+
+    // log(x: f64) -> f64 — natural logarithm
+    checker.env.define_function(FunctionSig {
+        name: "log".to_string(),
+        generic_params: vec![],
+        params: vec![("x".to_string(), Type::F64)],
+        ret: Type::F64,
+    });
+
+    // keys(m: any) -> [str] — get map keys
+    checker.env.define_function(FunctionSig {
+        name: "keys".to_string(),
+        generic_params: vec![],
+        params: vec![("m".to_string(), Type::Error)],
+        ret: Type::Array {
+            element: Box::new(Type::Str),
+            size: None,
+        },
+    });
+
+    // sleep_ms(ms: i64) -> void — sleep for milliseconds
+    checker.env.define_function(FunctionSig {
+        name: "sleep_ms".to_string(),
+        generic_params: vec![],
+        params: vec![("ms".to_string(), Type::I64)],
+        ret: Type::Void,
     });
 
     checker.check_module(module);

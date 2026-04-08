@@ -9,10 +9,9 @@
 
 // --- Query -------------------------------------------------------------------
 
-/// Length of the string in characters.
-fn len(s: str) -> i64 {
-    return __builtin_len(s)
-}
+// NOTE: String length is provided by the builtin len() function.
+// This module re-exports it for API completeness. The compiler
+// resolves bare len() calls to the builtin, so no wrapper is needed.
 
 /// True if the string has zero length.
 fn is_empty(s: str) -> bool {
@@ -132,7 +131,7 @@ fn to_upper(s: str) -> str {
         let code = char_code(ch)
         // a-z => A-Z
         if code >= 97 and code <= 122 {
-            result = result + from_char_code(code - 32)
+            result = result + char_from(code - 32)
         } else {
             result = result + ch
         }
@@ -151,7 +150,7 @@ fn to_lower(s: str) -> str {
         let code = char_code(ch)
         // A-Z => a-z
         if code >= 65 and code <= 90 {
-            result = result + from_char_code(code + 32)
+            result = result + char_from(code + 32)
         } else {
             result = result + ch
         }

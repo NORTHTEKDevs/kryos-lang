@@ -490,6 +490,139 @@ pub extern "C" fn kryos_builtin_type_of(_value: i64) -> i64 {
 }
 
 // ---------------------------------------------------------------------------
+// String character builtins — char_code, char_from, substr
+// ---------------------------------------------------------------------------
+
+/// `char_code(s)` — Return the Unicode code point of the first character
+/// of a KryosString. Returns 0 for an empty or null string.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_char_code(s_handle: i64) -> i64 {
+    if s_handle == 0 {
+        return 0;
+    }
+    let ks = s_handle as *const crate::string::KryosString;
+    unsafe {
+        let len = (*ks).len as usize;
+        let data = (*ks).data;
+        if data.is_null() || len == 0 {
+            return 0;
+        }
+        let slice = std::slice::from_raw_parts(data, len);
+        match std::str::from_utf8(slice) {
+            Ok(s) => s.chars().next().map_or(0, |c| c as i64),
+            Err(_) => slice[0] as i64,
+        }
+    }
+}
+
+/// `char_from(n)` — Create a single-character KryosString from a Unicode code
+/// point. Returns an empty string if the code point is invalid.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_char_from(code: i64) -> i64 {
+    let ch = if code >= 0 && code <= 0x10FFFF {
+        char::from_u32(code as u32)
+    } else {
+        None
+    };
+    match ch {
+        Some(c) => {
+            let mut buf = [0u8; 4];
+            let s = c.encode_utf8(&mut buf);
+            let bytes = s.as_bytes();
+            unsafe { kryos_string_new(bytes.as_ptr(), bytes.len() as i64) as i64 }
+        }
+        None => unsafe { kryos_string_new(std::ptr::null(), 0) as i64 },
+    }
+}
+
+/// `substr(s, start, end)` — Extract a substring [start..end).
+/// Delegates to `kryos_string_slice`.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_substr(s_handle: i64, start: i64, end: i64) -> i64 {
+    if s_handle == 0 {
+        return unsafe { kryos_string_new(std::ptr::null(), 0) as i64 };
+    }
+    let ks = s_handle as *const crate::string::KryosString;
+    unsafe { crate::string::kryos_string_slice(ks, start, end) as i64 }
+}
+
+// ---------------------------------------------------------------------------
+// Numeric conversion builtins — int, float
+// ---------------------------------------------------------------------------
+
+/// `int(x)` — Identity on integers (everything is i64 at runtime).
+/// When called on a float bit-pattern, reinterprets as f64 and truncates.
+/// The type checker will dispatch the correct variant based on the source type.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_int(value: i64) -> i64 {
+    value
+}
+
+/// `int` for float arguments — truncate f64 to i64.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_int_from_float(value: f64) -> i64 {
+    value as i64
+}
+
+/// `float(x)` — Convert an integer to f64, return as bit-pattern i64.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_float(value: i64) -> i64 {
+    (value as f64).to_bits() as i64
+}
+
+/// `float` for float arguments — identity (already f64 bits).
+#[no_mangle]
+pub extern "C" fn kryos_builtin_float_from_float(value: f64) -> i64 {
+    value.to_bits() as i64
+}
+
+// ---------------------------------------------------------------------------
+// Array builtins — push, pop
+// ---------------------------------------------------------------------------
+
+/// `push(arr, val)` — Append a value to an array. Returns the array handle.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_push(arr_handle: i64, val: i64) -> i64 {
+    if arr_handle == 0 {
+        return arr_handle;
+    }
+    let arr = arr_handle as *mut crate::array::KryosArray;
+    unsafe { crate::array::kryos_array_push(arr, val) };
+    arr_handle
+}
+
+/// `pop(arr)` — Remove and return the last element of an array.
+/// Returns 0 if the array is empty or null.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_pop(arr_handle: i64) -> i64 {
+    if arr_handle == 0 {
+        return 0;
+    }
+    let arr = arr_handle as *mut crate::array::KryosArray;
+    unsafe {
+        let len = (*arr).len;
+        if len <= 0 {
+            return 0;
+        }
+        let last_idx = len - 1;
+        let val = crate::array::kryos_array_get(arr, last_idx);
+        (*arr).len = last_idx;
+        val
+    }
+}
+
+// ---------------------------------------------------------------------------
+// String indexing — get single character as a new KryosString
+// ---------------------------------------------------------------------------
+
+/// `kryos_string_char_at(s, idx)` — Return a single-character substring at
+/// the given byte index. Used by `s[i]` on strings.
+#[no_mangle]
+pub extern "C" fn kryos_string_char_at(s_handle: i64, idx: i64) -> i64 {
+    kryos_builtin_substr(s_handle, idx, idx + 1)
+}
+
+// ---------------------------------------------------------------------------
 // ARC runtime wrappers — i64-based API for codegen simplicity
 // ---------------------------------------------------------------------------
 

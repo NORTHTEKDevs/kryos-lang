@@ -68,8 +68,8 @@ fn sign(x: f64) -> f64 {
 
 /// Floor: largest integer <= x.
 fn floor(x: f64) -> f64 {
-    let truncated = to_i64(x)
-    let f = to_f64(truncated)
+    let truncated = int(x)
+    let f = float(truncated)
     if x < 0.0 and f != x {
         return f - 1.0
     }
@@ -147,7 +147,7 @@ fn pow(base: f64, exponent: f64) -> f64 {
     // Integer exponent fast path
     if exponent == floor(exponent) and abs(exponent) < 1000.0 {
         let mut result = 1.0
-        let mut exp = to_i64(abs(exponent))
+        let mut exp = int(abs(exponent))
         let mut b = base
         while exp > 0 {
             if exp % 2 == 1 {
@@ -176,7 +176,7 @@ fn exp(x: f64) -> f64 {
     let mut sum = 1.0
     let mut i = 1
     while i <= 30 {
-        term = term * r / to_f64(i)
+        term = term * r / float(i)
         sum = sum + term
         if abs(term) < 1.0e-16 {
             i = 31
@@ -187,7 +187,7 @@ fn exp(x: f64) -> f64 {
     // Multiply by e^k using repeated squaring
     let mut e_k = 1.0
     let mut base = E
-    let mut exp_k = to_i64(abs(k))
+    let mut exp_k = int(abs(k))
     while exp_k > 0 {
         if exp_k % 2 == 1 {
             e_k = e_k * base
@@ -235,7 +235,7 @@ fn ln(x: f64) -> f64 {
     let mut k = 1
     while k <= 40 {
         term = term * t2
-        let denom = to_f64(2 * k + 1)
+        let denom = float(2 * k + 1)
         sum = sum + term / denom
         k = k + 1
     }
@@ -278,7 +278,7 @@ fn sin(x: f64) -> f64 {
     let a2 = a * a
     let mut n = 1
     while n <= 20 {
-        term = -term * a2 / to_f64((2 * n) * (2 * n + 1))
+        term = -term * a2 / float((2 * n) * (2 * n + 1))
         sum = sum + term
         if abs(term) < 1.0e-16 {
             return sum
@@ -296,7 +296,7 @@ fn cos(x: f64) -> f64 {
     let a2 = a * a
     let mut n = 1
     while n <= 20 {
-        term = -term * a2 / to_f64((2 * n - 1) * (2 * n))
+        term = -term * a2 / float((2 * n - 1) * (2 * n))
         sum = sum + term
         if abs(term) < 1.0e-16 {
             return sum
@@ -334,7 +334,7 @@ fn asin(x: f64) -> f64 {
     let mut sum = x
     let mut n = 1
     while n <= 40 {
-        term = term * x2 * to_f64(2 * n - 1) * to_f64(2 * n - 1) / (to_f64(2 * n) * to_f64(2 * n + 1))
+        term = term * x2 * float(2 * n - 1) * float(2 * n - 1) / (float(2 * n) * float(2 * n + 1))
         sum = sum + term
         if abs(term) < 1.0e-16 {
             return sum
@@ -365,7 +365,7 @@ fn atan(x: f64) -> f64 {
     let mut n = 1
     while n <= 50 {
         term = -term * x2
-        sum = sum + term / to_f64(2 * n + 1)
+        sum = sum + term / float(2 * n + 1)
         if abs(term) < 1.0e-16 {
             return sum
         }
@@ -456,14 +456,14 @@ fn is_inf(x: f64) -> bool {
 
 /// Greatest common divisor (Euclidean algorithm).
 fn gcd(a: i64, b: i64) -> i64 {
-    let mut x = abs(to_f64(a))
-    let mut y = abs(to_f64(b))
+    let mut x = abs(float(a))
+    let mut y = abs(float(b))
     while y > 0.0 {
         let temp = y
         y = x - floor(x / y) * y
         x = temp
     }
-    return to_i64(x)
+    return int(x)
 }
 
 /// Least common multiple.
@@ -472,8 +472,8 @@ fn lcm(a: i64, b: i64) -> i64 {
         return 0
     }
     let g = gcd(a, b)
-    let product = abs(to_f64(a)) * abs(to_f64(b))
-    return to_i64(product / to_f64(g))
+    let product = abs(float(a)) * abs(float(b))
+    return int(product / float(g))
 }
 
 /// Factorial of n (n must be >= 0).

@@ -87,9 +87,11 @@ try {
 
 Any error that would normally crash the program can be caught and handled.
 
-## The self-healing runtime
+## The self-healing runtime (roadmap)
 
-This is where Kryos diverges from every other language. When self-healing is enabled (the default), the runtime automatically recovers from certain classes of errors instead of crashing.
+> **Not yet implemented.** The self-healing runtime is a planned feature. The design below describes the target behavior. Currently, division by zero, index out of bounds, and type mismatches produce hard errors caught by `try`/`catch`.
+
+This is where Kryos will diverge from every other language. When self-healing is enabled, the runtime will automatically recover from certain classes of errors instead of crashing.
 
 ### How it works
 

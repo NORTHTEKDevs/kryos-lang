@@ -771,3 +771,399 @@ fn spawn_moves_value() {
         "spawn should move the value"
     );
 }
+
+// ── Test: BinaryOp result is copy ──────────────────────────────
+
+#[test]
+fn binary_op_result_is_copy() {
+    // let a: i64 = 10
+    // let b: i64 = 20
+    // let c = a + b    ← binary op on copy types produces copy
+    // use(a)           ← OK: a was not moved (copy)
+    // use(b)           ← OK: b was not moved (copy)
+    let module = module_with_fn(vec![
+        let_typed("a", "i64", int_lit(10)),
+        let_typed("b", "i64", int_lit(20)),
+        let_move(
+            "c",
+            Expr::BinaryOp {
+                op: BinOp::Add,
+                left: Box::new(ident("a")),
+                right: Box::new(ident("b")),
+                span: dummy_span(),
+            },
+        ),
+        expr_stmt(call("use", vec![ident("a")])),
+        expr_stmt(call("use", vec![ident("b")])),
+    ]);
+    let result = analyze_ownership(&module);
+    let move_errors: Vec<_> = result
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("use of moved value"))
+        .collect();
+    assert!(
+        move_errors.is_empty(),
+        "binary op on copy types should not move operands, got: {:?}",
+        move_errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+// ── Test: UnaryOp result is copy ───────────────────────────────
+
+#[test]
+fn unary_op_result_is_copy() {
+    // let a: i64 = 42
+    // let b = -a       ← unary op on copy type produces copy
+    // use(a)           ← OK: a was not moved
+    let module = module_with_fn(vec![
+        let_typed("a", "i64", int_lit(42)),
+        let_move(
+            "b",
+            Expr::UnaryOp {
+                op: UnOp::Neg,
+                operand: Box::new(ident("a")),
+                span: dummy_span(),
+            },
+        ),
+        expr_stmt(call("use", vec![ident("a")])),
+    ]);
+    let result = analyze_ownership(&module);
+    let move_errors: Vec<_> = result
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("use of moved value"))
+        .collect();
+    assert!(
+        move_errors.is_empty(),
+        "unary op on copy type should not move operand, got: {:?}",
+        move_errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+// ── Test: FnCall with copy return type ─────────────────────────
+
+#[test]
+fn fn_call_with_copy_return_type() {
+    // fn compute() -> i64 { 42 }
+    // fn main() {
+    //   let x = compute()   ← returns i64 (copy), so x is copy
+    //   let a = x           ← copy
+    //   use(x)              ← OK: x is still alive
+    // }
+    let module = Module {
+        name: "test".into(),
+        declarations: vec![
+            Decl::Function {
+                name: "compute".into(),
+                generics: vec![],
+                params: vec![],
+                ret_ty: Some(TypeExpr::Simple {
+                    name: "i64".into(),
+                    span: dummy_span(),
+                }),
+                body: Some(Block {
+                    stmts: vec![Stmt::Return {
+                        value: Some(int_lit(42)),
+                        span: dummy_span(),
+                    }],
+                    span: dummy_span(),
+                }),
+                public: false,
+                annotations: vec![],
+                span: dummy_span(),
+            },
+            Decl::Function {
+                name: "main".into(),
+                generics: vec![],
+                params: vec![],
+                ret_ty: None,
+                body: Some(Block {
+                    stmts: vec![
+                        let_move("x", call("compute", vec![])),
+                        let_move("a", ident("x")),
+                        expr_stmt(call("use", vec![ident("x")])),
+                    ],
+                    span: dummy_span(),
+                }),
+                public: false,
+                annotations: vec![],
+                span: dummy_span(),
+            },
+        ],
+        span: dummy_span(),
+    };
+    let result = analyze_ownership(&module);
+    let move_errors: Vec<_> = result
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("use of moved value"))
+        .collect();
+    assert!(
+        move_errors.is_empty(),
+        "fn call returning copy type should produce copy value, got: {:?}",
+        move_errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+// ── Test: FnCall with non-copy return type still moves ─────────
+
+#[test]
+fn fn_call_with_non_copy_return_moves() {
+    // fn create() -> String { "hello" }
+    // fn main() {
+    //   let x = create()   ← returns String (non-copy)
+    //   let a = x           ← moves x
+    //   use(x)              ← error: x was moved
+    // }
+    let module = Module {
+        name: "test".into(),
+        declarations: vec![
+            Decl::Function {
+                name: "create".into(),
+                generics: vec![],
+                params: vec![],
+                ret_ty: Some(TypeExpr::Simple {
+                    name: "String".into(),
+                    span: dummy_span(),
+                }),
+                body: Some(Block {
+                    stmts: vec![Stmt::Return {
+                        value: Some(string_lit("hello")),
+                        span: dummy_span(),
+                    }],
+                    span: dummy_span(),
+                }),
+                public: false,
+                annotations: vec![],
+                span: dummy_span(),
+            },
+            Decl::Function {
+                name: "main".into(),
+                generics: vec![],
+                params: vec![],
+                ret_ty: None,
+                body: Some(Block {
+                    stmts: vec![
+                        let_move("x", call("create", vec![])),
+                        let_move("a", ident("x")),
+                        expr_stmt(call("use", vec![ident("x")])),
+                    ],
+                    span: dummy_span(),
+                }),
+                public: false,
+                annotations: vec![],
+                span: dummy_span(),
+            },
+        ],
+        span: dummy_span(),
+    };
+    let result = analyze_ownership(&module);
+    assert!(
+        result.errors.iter().any(|e| e.message.contains("use of moved value")),
+        "fn call returning non-copy type should move, got: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+// ── Test: MethodCall returning copy type ───────────────────────
+
+#[test]
+fn method_call_len_is_copy() {
+    // let s = "hello"
+    // let n = s.len()     ← .len() returns usize (copy)
+    // let m = n           ← copy
+    // use(n)              ← OK: n is still alive
+    let module = module_with_fn(vec![
+        let_move("s", string_lit("hello")),
+        let_move(
+            "n",
+            Expr::MethodCall {
+                object: Box::new(ident("s")),
+                method: "len".into(),
+                args: vec![],
+                span: dummy_span(),
+            },
+        ),
+        let_move("m", ident("n")),
+        expr_stmt(call("use", vec![ident("n")])),
+    ]);
+    let result = analyze_ownership(&module);
+    let move_errors: Vec<_> = result
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("use of moved value"))
+        .collect();
+    assert!(
+        move_errors.is_empty(),
+        ".len() should return copy type, got: {:?}",
+        move_errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+// ── Test: Computed expression passed as fn arg is copy ─────────
+
+#[test]
+fn binary_op_as_fn_arg_is_copy() {
+    // let a: i64 = 10
+    // let b: i64 = 20
+    // func(a + b)       ← a+b is copy, so a and b are used (not moved)
+    // use(a)            ← OK
+    // use(b)            ← OK
+    let module = module_with_fn(vec![
+        let_typed("a", "i64", int_lit(10)),
+        let_typed("b", "i64", int_lit(20)),
+        expr_stmt(call(
+            "func",
+            vec![Expr::BinaryOp {
+                op: BinOp::Add,
+                left: Box::new(ident("a")),
+                right: Box::new(ident("b")),
+                span: dummy_span(),
+            }],
+        )),
+        expr_stmt(call("use", vec![ident("a")])),
+        expr_stmt(call("use", vec![ident("b")])),
+    ]);
+    let result = analyze_ownership(&module);
+    let move_errors: Vec<_> = result
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("use of moved value"))
+        .collect();
+    assert!(
+        move_errors.is_empty(),
+        "binary op passed as arg should be copy, got: {:?}",
+        move_errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+// ── Test: MatchExpr returning copy type ────────────────────────
+
+#[test]
+fn match_expr_copy_result() {
+    // let x: i64 = 1
+    // let y = match x { 1 => 10, _ => 20 }   ← all arms return i64 (copy)
+    // let z = y                                ← copy
+    // use(y)                                   ← OK
+    let module = module_with_fn(vec![
+        let_typed("x", "i64", int_lit(1)),
+        let_move(
+            "y",
+            Expr::MatchExpr {
+                subject: Box::new(ident("x")),
+                arms: vec![
+                    MatchArm {
+                        pattern: Pattern::Literal {
+                            expr: Box::new(int_lit(1)),
+                            span: dummy_span(),
+                        },
+                        guard: None,
+                        body: Box::new(int_lit(10)),
+                        span: dummy_span(),
+                    },
+                    MatchArm {
+                        pattern: Pattern::Wildcard { span: dummy_span() },
+                        guard: None,
+                        body: Box::new(int_lit(20)),
+                        span: dummy_span(),
+                    },
+                ],
+                span: dummy_span(),
+            },
+        ),
+        let_move("z", ident("y")),
+        expr_stmt(call("use", vec![ident("y")])),
+    ]);
+    let result = analyze_ownership(&module);
+    let move_errors: Vec<_> = result
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("use of moved value"))
+        .collect();
+    assert!(
+        move_errors.is_empty(),
+        "match returning copy values should produce copy, got: {:?}",
+        move_errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+// ── Test: IfExpr returning copy type ───────────────────────────
+
+#[test]
+fn if_expr_copy_result() {
+    // let cond: bool = true
+    // let x = if cond { 10 } else { 20 }   ← both branches return i64 (copy)
+    // let y = x                              ← copy
+    // use(x)                                 ← OK
+    let module = module_with_fn(vec![
+        let_typed(
+            "cond",
+            "bool",
+            Expr::BoolLiteral {
+                value: true,
+                span: dummy_span(),
+            },
+        ),
+        let_move(
+            "x",
+            Expr::IfExpr {
+                condition: Box::new(ident("cond")),
+                then_branch: Block {
+                    stmts: vec![Stmt::Expr {
+                        expr: int_lit(10),
+                        span: dummy_span(),
+                    }],
+                    span: dummy_span(),
+                },
+                else_branch: Some(Block {
+                    stmts: vec![Stmt::Expr {
+                        expr: int_lit(20),
+                        span: dummy_span(),
+                    }],
+                    span: dummy_span(),
+                }),
+                span: dummy_span(),
+            },
+        ),
+        let_move("y", ident("x")),
+        expr_stmt(call("use", vec![ident("x")])),
+    ]);
+    let result = analyze_ownership(&module);
+    let move_errors: Vec<_> = result
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("use of moved value"))
+        .collect();
+    assert!(
+        move_errors.is_empty(),
+        "if expr returning copy values should produce copy, got: {:?}",
+        move_errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+// ── Test: Builtin fn call is copy ──────────────────────────────
+
+#[test]
+fn builtin_fn_call_is_copy() {
+    // let x = len(arr)    ← builtin len returns usize (copy)
+    // let y = x           ← copy
+    // use(x)              ← OK
+    let module = module_with_fn(vec![
+        let_move("arr", string_lit("hello")),
+        let_move("x", call("len", vec![ident("arr")])),
+        let_move("y", ident("x")),
+        expr_stmt(call("use", vec![ident("x")])),
+    ]);
+    let result = analyze_ownership(&module);
+    let move_errors: Vec<_> = result
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("use of moved value"))
+        .collect();
+    assert!(
+        move_errors.is_empty(),
+        "builtin len() should return copy type, got: {:?}",
+        move_errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}

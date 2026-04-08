@@ -21,6 +21,7 @@ use criterion::{
 
 use kryos_capabilities::check_capabilities;
 use kryos_codegen_cranelift::CraneliftBackend;
+use kryos_codegen_cranelift::jit::jit_compile_module;
 use kryos_driver::{check_source, compile_source, BuildConfig, BuildMode, OutputType};
 use kryos_errors::SourceMap;
 use kryos_lexer::Lexer;
@@ -693,6 +694,70 @@ fn bench_pipeline(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// JIT fibonacci runtime benchmark
+// ---------------------------------------------------------------------------
+
+/// Fibonacci-only source — no runtime calls (println, to_string, etc.) so the
+/// JIT can compile and execute it without needing the full kryos-rt symbol table
+/// beyond what `jit_compile_module` already registers.
+const FIB_PROGRAM: &str = r#"
+fn fibonacci(n: i64) -> i64 {
+    if n <= 1 { return n }
+    return fibonacci(n - 1) + fibonacci(n - 2)
+}
+"#;
+
+fn bench_jit_fibonacci(c: &mut Criterion) {
+    // Pre-compile the fibonacci function to MIR once.
+    let fib_module = parse_source(FIB_PROGRAM);
+    let fib_mir = lower_module(&fib_module);
+
+    let mut group = c.benchmark_group("jit");
+
+    // Benchmark 1: JIT compilation time (compile fibonacci to native code)
+    group.bench_function("compile_fibonacci", |b| {
+        b.iter(|| {
+            let ptrs = jit_compile_module(black_box(&fib_mir))
+                .expect("JIT compilation must succeed");
+            black_box(ptrs);
+        });
+    });
+
+    // Benchmark 2: JIT execution of fib(30) — measures actual native runtime
+    // We compile once, then benchmark the execution.
+    let ptrs = jit_compile_module(&fib_mir).expect("JIT compilation must succeed");
+    let fib_ptr = ptrs
+        .get("fibonacci")
+        .expect("fibonacci function must be in JIT output");
+    let fib_fn: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(*fib_ptr) };
+
+    // Sanity check: fib(10) == 55
+    assert_eq!(fib_fn(10), 55, "JIT fibonacci sanity check failed");
+
+    group.bench_function("execute_fib_30", |b| {
+        b.iter(|| {
+            let result = fib_fn(black_box(30));
+            black_box(result);
+        });
+    });
+
+    // Benchmark 3: Full round-trip — parse + typecheck + MIR lower + JIT compile + execute fib(30)
+    group.bench_function("full_roundtrip_fib_30", |b| {
+        b.iter(|| {
+            let module = parse_source(black_box(FIB_PROGRAM));
+            let mir = lower_module(&module);
+            let ptrs = jit_compile_module(&mir).expect("JIT compilation must succeed");
+            let fib_ptr = ptrs.get("fibonacci").unwrap();
+            let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(*fib_ptr) };
+            let result = f(30);
+            black_box(result);
+        });
+    });
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // Criterion harness
 // ---------------------------------------------------------------------------
 
@@ -706,5 +771,6 @@ criterion_group!(
     bench_mir,
     bench_codegen_cranelift,
     bench_pipeline,
+    bench_jit_fibonacci,
 );
 criterion_main!(benches);

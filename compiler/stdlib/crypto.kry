@@ -241,8 +241,8 @@ fn hmac_sha256(key: str, message: str) -> str {
         // XOR with 0x36 for inner pad, 0x5c for outer pad
         let inner_byte = key_byte ^ 54   // 0x36
         let outer_byte = key_byte ^ 92   // 0x5c
-        inner_pad = inner_pad + from_char_code(inner_byte)
-        outer_pad = outer_pad + from_char_code(outer_byte)
+        inner_pad = inner_pad + char_from(inner_byte)
+        outer_pad = outer_pad + char_from(outer_byte)
         i = i + 1
     }
 

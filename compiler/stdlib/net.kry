@@ -239,7 +239,7 @@ fn parse_http_response(raw: str) -> HttpResponse {
     }
 
     let code_str = substr(status_line, space1 + 1, space2)
-    let status_code = to_int(code_str)
+    let status_code = int(code_str)
     let status_text = substr(status_line, space2 + 1, len(status_line))
 
     // Find header/body separator (\r\n\r\n)
@@ -327,7 +327,7 @@ fn parse_url(url: str) -> [str] {
 fn http_get(url: str) -> HttpResponse {
     let parts = parse_url(url)
     let host = parts[0]
-    let port = to_int(parts[1])
+    let port = int(parts[1])
     let path = parts[2]
 
     let stream = connect(host, port)
@@ -351,7 +351,7 @@ fn http_get(url: str) -> HttpResponse {
 fn http_post(url: str, body: str, content_type: str) -> HttpResponse {
     let parts = parse_url(url)
     let host = parts[0]
-    let port = to_int(parts[1])
+    let port = int(parts[1])
     let path = parts[2]
 
     let stream = connect(host, port)

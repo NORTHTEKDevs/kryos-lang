@@ -165,10 +165,11 @@ See the [language manual](docs/README.md) for complete documentation.
 | [`word_count.kry`](examples/word_count.kry) | String operations, for loops, builtins |
 | [`json_counter.kry`](examples/json_counter.kry) | Structs, channels, spawn, try/catch, integer match |
 | [`mini_grep.kry`](examples/mini_grep.kry) | File I/O, error handling, string search |
+| [`all_features.kry`](examples/all_features.kry) | Comprehensive showcase of all language features |
 
 ## Status
 
-**v0.1.0** -- The compiler is functional with 680+ passing tests. All core language features are implemented: type inference, ownership analysis, capability checking, pattern matching, generics with monomorphization, `dyn Trait`, `comptime`, concurrency primitives, and FFI.
+**v0.1.1** -- The compiler is functional with 680+ passing tests. All core language features are implemented: type inference, ownership analysis, capability checking, pattern matching, generics with monomorphization, `dyn Trait`, `comptime`, concurrency primitives, and FFI. v0.1.1 fixes parser struct-literal ambiguity, struct heap allocation, string match patterns, tail expression return, string concatenation coercion, double-free prevention, and comptime type inference.
 
 ### Roadmap
 

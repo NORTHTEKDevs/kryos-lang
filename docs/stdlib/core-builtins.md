@@ -699,63 +699,45 @@ println(to_string(none))          // none
 println(to_string([1, 2, 3]))     // [1, 2, 3]
 ```
 
-**See also:** `str`, `int`, `float`
+**See also:** `parse_int`, `parse_float`
 
 ---
 
-### str
+### parse_int
 
 ```
-fn str(x: any) -> str
+fn parse_int(s: str) -> i64
 ```
 
-Convert a value to a string. Functionally identical to `to_string`.
+Parse a string as an integer.
 
 ```kryos
-let s = str(42)
-println(s + " items")     // 42 items
-```
-
-**See also:** `to_string`, `int`, `float`
-
----
-
-### int
-
-```
-fn int(x: any) -> i64
-```
-
-Convert a value to an integer. Strings are parsed, floats are truncated.
-
-```kryos
-println(int("42"))         // 42
-println(int(3.9))          // 3
-println(int(true))         // 1
+println(parse_int("42"))         // 42
+println(parse_int("-100"))       // -100
 ```
 
 **Edge cases:** Raises a runtime error if the string cannot be parsed as an integer.
 
-**See also:** `float`, `str`, `to_string`
+**See also:** `parse_float`, `to_string`
 
 ---
 
-### float
+### parse_float
 
 ```
-fn float(x: any) -> f64
+fn parse_float(s: str) -> f64
 ```
 
-Convert a value to a floating-point number.
+Parse a string as a floating-point number.
 
 ```kryos
-println(float("3.14"))    // 3.14
-println(float(42))         // 42.0
+println(parse_float("3.14"))    // 3.14
+println(parse_float("42"))      // 42.0
 ```
 
 **Edge cases:** Raises a runtime error if the string cannot be parsed as a float.
 
-**See also:** `int`, `str`
+**See also:** `parse_int`, `to_string`
 
 ---
 

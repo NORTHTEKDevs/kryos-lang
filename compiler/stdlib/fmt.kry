@@ -239,8 +239,8 @@ fn float_fixed(n: f64, decimals: i64) -> str {
     let int_part = _floor_f64(shifted / multiplier)
     let frac_part = shifted - int_part * multiplier
 
-    let int_str = to_string(to_i64(int_part))
-    let mut frac_str = to_string(to_i64(frac_part))
+    let int_str = to_string(int(int_part))
+    let mut frac_str = to_string(int(frac_part))
 
     // Zero-pad the fractional part
     while len(frac_str) < decimals {
@@ -256,8 +256,8 @@ fn float_fixed(n: f64, decimals: i64) -> str {
 
 /// Internal floor for positive floats.
 fn _floor_f64(x: f64) -> f64 {
-    let i = to_i64(x)
-    let f = to_f64(i)
+    let i = int(x)
+    let f = float(i)
     if f > x {
         return f - 1.0
     }
@@ -493,7 +493,7 @@ fn ordinal(n: i64) -> str {
 ///   bytes(1048576)   => "1.0 MB"
 fn bytes(n: i64) -> str {
     let units = ["B", "KB", "MB", "GB", "TB", "PB"]
-    let mut val = to_f64(n)
+    let mut val = float(n)
     let mut unit_idx = 0
     while val >= 1024.0 and unit_idx < 5 {
         val = val / 1024.0
