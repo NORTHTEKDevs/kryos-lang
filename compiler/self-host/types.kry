@@ -212,7 +212,7 @@ fn ty_name(t: TypeInfo) -> str {
     if t.kind == TY_ERROR { return "<error>" }
     if t.kind == TY_ARRAY {
         if len(t.element_type) > 0 {
-            return "[" + ty_name(t.element_type[0]) + "]"
+            return char_from(91) + ty_name(t.element_type[0]) + char_from(93)
         }
         return "[]"
     }

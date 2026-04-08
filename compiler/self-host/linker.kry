@@ -1,0 +1,1488 @@
+// ============================================================
+// linker.kry -- Static linker for the Kryos self-hosted compiler.
+//
+// Takes compiled object data (sections + symbols + relocations)
+// and produces native executables for Linux (ELF) and Windows (PE).
+//
+// The linker works with in-memory data structures passed from
+// the code generator, not by re-parsing .o/.obj files.  This
+// keeps the self-hosted compiler pipeline simple and avoids
+// object format parsing complexity.
+//
+// Pipeline:
+//   1. Merge sections (.text, .data, .rodata) from all inputs
+//   2. Resolve symbols across all inputs (check duplicates/undef)
+//   3. Apply relocations (PC32, ABS64, ABS32)
+//   4. Emit executable (ELF on Linux, PE on Windows)
+//
+// Dependencies (same compilation unit):
+//   Uses buf_* builtins for binary output construction.
+// ============================================================
+
+
+// ===================================================================
+// Section constants
+// ===================================================================
+
+let LSEC_UNDEF  = 0
+let LSEC_TEXT   = 1
+let LSEC_DATA   = 2
+let LSEC_RODATA = 3
+let LSEC_BSS    = 4
+
+// ===================================================================
+// Relocation type constants
+// ===================================================================
+
+let LREL_PC32  = 1   // 32-bit PC-relative
+let LREL_ABS64 = 2   // 64-bit absolute
+let LREL_ABS32 = 3   // 32-bit absolute
+
+// ===================================================================
+// ELF constants
+// ===================================================================
+
+let ELF_TEXT_BASE: i64 = 4194304   // 0x400000
+let ELF_PAGE_SIZE: i64 = 4096
+let PT_LOAD = 1
+let PF_X    = 1
+let PF_W    = 2
+let PF_R    = 4
+let ET_EXEC = 2
+let EM_X86_64 = 62
+
+// ELF header size and program header entry size
+let ELF_EHDR_SIZE = 64
+let ELF_PHDR_SIZE = 56
+
+// ===================================================================
+// PE constants
+// ===================================================================
+
+let PE_IMAGE_BASE: i64 = 5368709120   // 0x140000000
+let PE_SECTION_ALIGN = 4096
+let PE_FILE_ALIGN    = 512
+let PE_TEXT_RVA      = 4096   // 0x1000
+
+// DOS + PE sig + COFF + Optional header (PE32+) + 3 section headers
+let PE_DOS_SIZE      = 64
+let PE_SIG_SIZE      = 4
+let PE_COFF_SIZE     = 20
+let PE_OPT_SIZE      = 240
+let PE_SECTHDR_SIZE  = 40
+
+
+// ===================================================================
+// Data structures
+// ===================================================================
+
+struct LinkerSymbol {
+    name: str,
+    offset: i32,
+    section: i32,
+    is_global: bool,
+    is_func: bool,
+    size: i32
+}
+
+struct LinkerReloc {
+    offset: i32,
+    symbol_name: str,
+    rel_type: i32,
+    addend: i32
+}
+
+struct LinkerInput {
+    name: str,
+    text_data: i64,
+    data_data: i64,
+    rodata_data: i64,
+    symbols: [LinkerSymbol],
+    relocations: [LinkerReloc]
+}
+
+struct LinkerMerged {
+    text: i64,
+    data: i64,
+    rodata: i64,
+    text_offsets: [i32],
+    data_offsets: [i32],
+    rodata_offsets: [i32]
+}
+
+// ResolvedSymbol holds the final virtual address of a symbol
+struct ResolvedSymbol {
+    name: str,
+    address: i64,
+    section: i32,
+    is_global: bool,
+    is_func: bool,
+    size: i32
+}
+
+struct LinkerResult {
+    success: bool,
+    error_msg: str,
+    output_path: str
+}
+
+
+// ===================================================================
+// Helper: alignment
+// ===================================================================
+
+fn link_align_up(val: i64, align: i64) -> i64 {
+    if align <= 0 {
+        return val
+    }
+    let remainder = val - (val / align) * align
+    if remainder == 0 {
+        return val
+    }
+    return val + align - remainder
+}
+
+// ===================================================================
+// Helper: write u16 little-endian (2 bytes)
+// ===================================================================
+
+fn link_write_u16_le(buf: i64, val: i64) {
+    let lo = val - (val / 256) * 256
+    let hi = val / 256
+    buf_write_byte(buf, lo)
+    buf_write_byte(buf, hi)
+}
+
+// ===================================================================
+// Helper: write u32 little-endian (4 bytes)
+// ===================================================================
+
+fn link_write_u32_le(buf: i64, val: i64) {
+    buf_write_i32_le(buf, val)
+}
+
+// ===================================================================
+// Helper: write u64 little-endian (8 bytes)
+// ===================================================================
+
+fn link_write_u64_le(buf: i64, val: i64) {
+    buf_write_i64_le(buf, val)
+}
+
+// ===================================================================
+// Helper: pad buffer to alignment boundary
+// ===================================================================
+
+fn link_pad_to_alignment(buf: i64, align: i64) {
+    let current = buf_len(buf)
+    let target = link_align_up(current, align)
+    let pad_count = target - current
+    if pad_count > 0 {
+        buf_write_zeros(buf, pad_count)
+    }
+}
+
+// ===================================================================
+// Helper: find symbol by name in resolved symbol table
+// Returns index or -1 if not found.
+// ===================================================================
+
+fn link_find_symbol(symbols: [ResolvedSymbol], name: str) -> i32 {
+    let count = len(symbols)
+    let mut i = 0
+    while i < count {
+        if symbols[i].name == name {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// ===================================================================
+// Helper: find symbol by name in linker symbol list
+// Returns index or -1 if not found.
+// ===================================================================
+
+fn link_find_input_symbol(symbols: [LinkerSymbol], name: str) -> i32 {
+    let count = len(symbols)
+    let mut i = 0
+    while i < count {
+        if symbols[i].name == name {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+
+// ===================================================================
+// Section merging
+//
+// Concatenates all .text/.data/.rodata sections from all inputs
+// into single merged buffers.  Records per-input offsets so
+// relocations can adjust symbol addresses later.
+// ===================================================================
+
+fn link_merge_sections(inputs: [LinkerInput]) -> LinkerMerged {
+    let text_buf = buf_new(0)
+    let data_buf = buf_new(0)
+    let rodata_buf = buf_new(0)
+
+    let text_off: [i32] = []
+    let data_off: [i32] = []
+    let rodata_off: [i32] = []
+
+    let input_count = len(inputs)
+    let mut i = 0
+    while i < input_count {
+        let inp = inputs[i]
+
+        // Record where this input's .text starts in the merged buffer
+        let t_off = buf_len(text_buf)
+        push(text_off, t_off)
+
+        // Copy .text data
+        let t_len = buf_len(inp.text_data)
+        if t_len > 0 {
+            buf_write_bytes(text_buf, inp.text_data, t_len)
+        }
+
+        // Align .text to 16-byte boundary after each input
+        link_pad_to_alignment(text_buf, 16)
+
+        // Record where this input's .data starts
+        let d_off = buf_len(data_buf)
+        push(data_off, d_off)
+
+        // Copy .data
+        let d_len = buf_len(inp.data_data)
+        if d_len > 0 {
+            buf_write_bytes(data_buf, inp.data_data, d_len)
+        }
+
+        // Align .data to 8-byte boundary
+        link_pad_to_alignment(data_buf, 8)
+
+        // Record where this input's .rodata starts
+        let r_off = buf_len(rodata_buf)
+        push(rodata_off, r_off)
+
+        // Copy .rodata
+        let r_len = buf_len(inp.rodata_data)
+        if r_len > 0 {
+            buf_write_bytes(rodata_buf, inp.rodata_data, r_len)
+        }
+
+        // Align .rodata to 8-byte boundary
+        link_pad_to_alignment(rodata_buf, 8)
+
+        i = i + 1
+    }
+
+    return LinkerMerged {
+        text: text_buf,
+        data: data_buf,
+        rodata: rodata_buf,
+        text_offsets: text_off,
+        data_offsets: data_off,
+        rodata_offsets: rodata_off
+    }
+}
+
+
+// ===================================================================
+// Symbol resolution
+//
+// Collects all global symbols from all inputs.  Checks for
+// duplicates and unresolved references.  Returns a merged
+// symbol table with final resolved offsets (relative to section
+// start -- absolute addresses are computed during relocation).
+// ===================================================================
+
+fn link_resolve_symbols(inputs: [LinkerInput], merged: LinkerMerged, text_base: i64, data_base: i64, rodata_base: i64) -> [ResolvedSymbol] {
+    let result: [ResolvedSymbol] = []
+    let errors: [str] = []
+
+    let input_count = len(inputs)
+    let mut i = 0
+    while i < input_count {
+        let inp = inputs[i]
+        let sym_count = len(inp.symbols)
+        let mut j = 0
+        while j < sym_count {
+            let sym = inp.symbols[j]
+
+            // Skip undefined symbols -- they're references, not definitions
+            if sym.section == LSEC_UNDEF {
+                j = j + 1
+                continue
+            }
+
+            // Compute the absolute address of this symbol
+            let mut addr: i64 = 0
+            if sym.section == LSEC_TEXT {
+                let base_off: i64 = merged.text_offsets[i]
+                let sym_off: i64 = sym.offset
+                addr = text_base + base_off + sym_off
+            }
+            if sym.section == LSEC_DATA {
+                let base_off: i64 = merged.data_offsets[i]
+                let sym_off: i64 = sym.offset
+                addr = data_base + base_off + sym_off
+            }
+            if sym.section == LSEC_RODATA {
+                let base_off: i64 = merged.rodata_offsets[i]
+                let sym_off: i64 = sym.offset
+                addr = rodata_base + base_off + sym_off
+            }
+
+            // Check for duplicate global definitions
+            if sym.is_global {
+                let existing = link_find_symbol(result, sym.name)
+                if existing >= 0 {
+                    push(errors, "linker: duplicate symbol: " + sym.name)
+                    j = j + 1
+                    continue
+                }
+            }
+
+            let resolved = ResolvedSymbol {
+                name: sym.name,
+                address: addr,
+                section: sym.section,
+                is_global: sym.is_global,
+                is_func: sym.is_func,
+                size: sym.size
+            }
+            push(result, resolved)
+
+            j = j + 1
+        }
+        i = i + 1
+    }
+
+    // Check for undefined references -- scan all inputs for UNDEF symbols
+    // and verify they have a definition in the resolved table
+    i = 0
+    while i < input_count {
+        let inp = inputs[i]
+        let sym_count = len(inp.symbols)
+        let mut j = 0
+        while j < sym_count {
+            let sym = inp.symbols[j]
+            if sym.section == LSEC_UNDEF {
+                let def_idx = link_find_symbol(result, sym.name)
+                if def_idx < 0 {
+                    push(errors, "linker: undefined symbol: " + sym.name)
+                }
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+
+    // Report errors
+    if len(errors) > 0 {
+        let mut k = 0
+        while k < len(errors) {
+            println(errors[k])
+            k = k + 1
+        }
+    }
+
+    return result
+}
+
+
+// ===================================================================
+// Relocation patching
+//
+// For each relocation in each input, finds the target symbol's
+// resolved address and patches the merged .text buffer.
+//
+// Relocation types:
+//   LREL_PC32:  32-bit PC-relative -- patch = target - (site + 4) + addend
+//   LREL_ABS64: 64-bit absolute   -- patch = target + addend
+//   LREL_ABS32: 32-bit absolute   -- patch = target + addend (truncated)
+// ===================================================================
+
+fn link_apply_relocations(merged: LinkerMerged, inputs: [LinkerInput], symbols: [ResolvedSymbol], text_base: i64, data_base: i64, rodata_base: i64) -> bool {
+    let input_count = len(inputs)
+    let mut has_error = false
+
+    let mut i = 0
+    while i < input_count {
+        let inp = inputs[i]
+        let text_start: i64 = merged.text_offsets[i]
+        let reloc_count = len(inp.relocations)
+
+        let mut j = 0
+        while j < reloc_count {
+            let reloc = inp.relocations[j]
+
+            // Find the target symbol
+            let sym_idx = link_find_symbol(symbols, reloc.symbol_name)
+            if sym_idx < 0 {
+                println("linker: relocation references undefined symbol: " + reloc.symbol_name)
+                has_error = true
+                j = j + 1
+                continue
+            }
+
+            let target_addr = symbols[sym_idx].address
+            let reloc_off: i64 = reloc.offset
+            let addend_val: i64 = reloc.addend
+
+            // The patch site is in the merged .text buffer at
+            // text_start + reloc.offset
+            let patch_site = text_start + reloc_off
+
+            if reloc.rel_type == LREL_PC32 {
+                // PC-relative 32-bit:
+                // value = target - (patch_site_virtual + 4) + addend
+                let site_vaddr = text_base + patch_site
+                let value = target_addr - (site_vaddr + 4) + addend_val
+                buf_patch_i32_le(merged.text, patch_site, value)
+            }
+
+            if reloc.rel_type == LREL_ABS64 {
+                // Absolute 64-bit:
+                // value = target + addend
+                let value = target_addr + addend_val
+                buf_patch_i64_le(merged.text, patch_site, value)
+            }
+
+            if reloc.rel_type == LREL_ABS32 {
+                // Absolute 32-bit:
+                // value = target + addend (truncated to 32 bits)
+                let value = target_addr + addend_val
+                buf_patch_i32_le(merged.text, patch_site, value)
+            }
+
+            j = j + 1
+        }
+        i = i + 1
+    }
+
+    return not has_error
+}
+
+
+// ===================================================================
+// ELF executable emitter
+//
+// Produces a minimal ELF64 executable with two PT_LOAD segments:
+//   1. .text (RX) loaded at 0x400000
+//   2. .data + .rodata (RW) loaded at next page boundary
+//
+// Layout:
+//   [ELF header 64B][2 PHDRs 112B][.text][pad to page][.data][.rodata]
+// ===================================================================
+
+fn link_emit_elf_exe(merged: LinkerMerged, entry_name: str, symbols: [ResolvedSymbol], path: str) -> LinkerResult {
+    let out = buf_new(0)
+
+    // Find entry point
+    let entry_idx = link_find_symbol(symbols, entry_name)
+    if entry_idx < 0 {
+        buf_free(out)
+        return LinkerResult {
+            success: false,
+            error_msg: "linker: entry point not found: " + entry_name,
+            output_path: path
+        }
+    }
+    let entry_addr = symbols[entry_idx].address
+
+    // Calculate sizes
+    let text_size = buf_len(merged.text)
+    let data_size = buf_len(merged.data)
+    let rodata_size = buf_len(merged.rodata)
+
+    // File layout offsets
+    let header_size: i64 = ELF_EHDR_SIZE + 2 * ELF_PHDR_SIZE   // 64 + 112 = 176
+    let text_file_offset = header_size
+    let text_end = text_file_offset + text_size
+    let data_file_offset = link_align_up(text_end, ELF_PAGE_SIZE)
+    let data_end = data_file_offset + data_size + rodata_size
+
+    // Virtual addresses
+    let text_vaddr = ELF_TEXT_BASE + text_file_offset
+    let data_vaddr = link_align_up(ELF_TEXT_BASE + text_end, ELF_PAGE_SIZE)
+
+    // ---------------------------------------------------------------
+    // ELF header (64 bytes)
+    // ---------------------------------------------------------------
+
+    // e_ident: magic + class + data + version + OS/ABI + padding (16 bytes)
+    buf_write_byte(out, 127)     // 0x7F
+    buf_write_byte(out, 69)      // 'E'
+    buf_write_byte(out, 76)      // 'L'
+    buf_write_byte(out, 70)      // 'F'
+    buf_write_byte(out, 2)       // ELFCLASS64
+    buf_write_byte(out, 1)       // ELFDATA2LSB
+    buf_write_byte(out, 1)       // EV_CURRENT
+    buf_write_byte(out, 0)       // ELFOSABI_NONE
+    buf_write_zeros(out, 8)      // padding
+
+    // e_type: ET_EXEC (2)
+    link_write_u16_le(out, ET_EXEC)
+
+    // e_machine: EM_X86_64 (62)
+    link_write_u16_le(out, EM_X86_64)
+
+    // e_version: EV_CURRENT (1)
+    link_write_u32_le(out, 1)
+
+    // e_entry: entry point virtual address
+    link_write_u64_le(out, entry_addr)
+
+    // e_phoff: program header table offset (64)
+    link_write_u64_le(out, ELF_EHDR_SIZE)
+
+    // e_shoff: section header table offset (0 -- no section headers)
+    link_write_u64_le(out, 0)
+
+    // e_flags: 0
+    link_write_u32_le(out, 0)
+
+    // e_ehsize: ELF header size (64)
+    link_write_u16_le(out, ELF_EHDR_SIZE)
+
+    // e_phentsize: program header entry size (56)
+    link_write_u16_le(out, ELF_PHDR_SIZE)
+
+    // e_phnum: number of program headers (2)
+    link_write_u16_le(out, 2)
+
+    // e_shentsize: section header entry size (0)
+    link_write_u16_le(out, 0)
+
+    // e_shnum: number of section headers (0)
+    link_write_u16_le(out, 0)
+
+    // e_shstrndx: section name string table index (0)
+    link_write_u16_le(out, 0)
+
+    // ---------------------------------------------------------------
+    // Program header 1: .text (PT_LOAD, R+X)
+    // ---------------------------------------------------------------
+
+    // p_type: PT_LOAD
+    link_write_u32_le(out, PT_LOAD)
+
+    // p_flags: PF_R | PF_X = 5
+    link_write_u32_le(out, PF_R + PF_X)
+
+    // p_offset: file offset of .text
+    link_write_u64_le(out, text_file_offset)
+
+    // p_vaddr: virtual address
+    link_write_u64_le(out, text_vaddr)
+
+    // p_paddr: physical address (= vaddr)
+    link_write_u64_le(out, text_vaddr)
+
+    // p_filesz: size in file
+    link_write_u64_le(out, text_size)
+
+    // p_memsz: size in memory
+    link_write_u64_le(out, text_size)
+
+    // p_align: page alignment
+    link_write_u64_le(out, ELF_PAGE_SIZE)
+
+    // ---------------------------------------------------------------
+    // Program header 2: .data + .rodata (PT_LOAD, R+W)
+    // ---------------------------------------------------------------
+
+    let combined_data_size = data_size + rodata_size
+
+    // p_type: PT_LOAD
+    link_write_u32_le(out, PT_LOAD)
+
+    // p_flags: PF_R | PF_W = 6
+    link_write_u32_le(out, PF_R + PF_W)
+
+    // p_offset: file offset
+    link_write_u64_le(out, data_file_offset)
+
+    // p_vaddr: virtual address
+    link_write_u64_le(out, data_vaddr)
+
+    // p_paddr: physical address
+    link_write_u64_le(out, data_vaddr)
+
+    // p_filesz: size in file
+    link_write_u64_le(out, combined_data_size)
+
+    // p_memsz: size in memory
+    link_write_u64_le(out, combined_data_size)
+
+    // p_align: page alignment
+    link_write_u64_le(out, ELF_PAGE_SIZE)
+
+    // ---------------------------------------------------------------
+    // .text section content
+    // ---------------------------------------------------------------
+
+    if text_size > 0 {
+        buf_write_bytes(out, merged.text, text_size)
+    }
+
+    // Pad to page boundary before .data
+    link_pad_to_alignment(out, ELF_PAGE_SIZE)
+
+    // ---------------------------------------------------------------
+    // .data section content
+    // ---------------------------------------------------------------
+
+    if data_size > 0 {
+        buf_write_bytes(out, merged.data, data_size)
+    }
+
+    // ---------------------------------------------------------------
+    // .rodata section content
+    // ---------------------------------------------------------------
+
+    if rodata_size > 0 {
+        buf_write_bytes(out, merged.rodata, rodata_size)
+    }
+
+    // ---------------------------------------------------------------
+    // Write to file
+    // ---------------------------------------------------------------
+
+    buf_write_to_file(out, path)
+    buf_free(out)
+
+    return LinkerResult {
+        success: true,
+        error_msg: "",
+        output_path: path
+    }
+}
+
+
+// ===================================================================
+// PE executable emitter
+//
+// Produces a minimal PE32+ executable with three sections:
+//   .text  (RX)
+//   .data  (RW)
+//   .rdata (R)
+//
+// Layout:
+//   [DOS hdr 64B][PE sig 4B][COFF 20B][Opt 240B][3 SecHdrs 120B]
+//   [pad to 512][.text][pad to 512][.data][pad to 512][.rdata]
+// ===================================================================
+
+fn link_emit_pe_exe(merged: LinkerMerged, entry_name: str, symbols: [ResolvedSymbol], path: str) -> LinkerResult {
+    let out = buf_new(0)
+
+    // Find entry point
+    let entry_idx = link_find_symbol(symbols, entry_name)
+    if entry_idx < 0 {
+        buf_free(out)
+        return LinkerResult {
+            success: false,
+            error_msg: "linker: entry point not found: " + entry_name,
+            output_path: path
+        }
+    }
+    let entry_addr = symbols[entry_idx].address
+    // Entry point RVA is relative to image base
+    let entry_rva = entry_addr - PE_IMAGE_BASE
+
+    // Calculate sizes
+    let text_size = buf_len(merged.text)
+    let data_size = buf_len(merged.data)
+    let rodata_size = buf_len(merged.rodata)
+
+    // Header total: DOS(64) + PEsig(4) + COFF(20) + Optional(240) + 3*SecHdr(120) = 448
+    let headers_raw: i64 = PE_DOS_SIZE + PE_SIG_SIZE + PE_COFF_SIZE + PE_OPT_SIZE + 3 * PE_SECTHDR_SIZE
+    let headers_size = link_align_up(headers_raw, PE_FILE_ALIGN)
+
+    // Section RVAs (virtual addresses relative to image base)
+    let text_rva: i64 = PE_TEXT_RVA
+    let text_vsize = link_align_up(text_size, PE_SECTION_ALIGN)
+    let data_rva = text_rva + text_vsize
+    let data_vsize = link_align_up(data_size, PE_SECTION_ALIGN)
+    let rdata_rva = data_rva + data_vsize
+    let rdata_vsize = link_align_up(rodata_size, PE_SECTION_ALIGN)
+
+    // File offsets for raw section data
+    let text_file_off = headers_size
+    let text_file_size = link_align_up(text_size, PE_FILE_ALIGN)
+    let data_file_off = text_file_off + text_file_size
+    let data_file_size = link_align_up(data_size, PE_FILE_ALIGN)
+    let rdata_file_off = data_file_off + data_file_size
+    let rdata_file_size = link_align_up(rodata_size, PE_FILE_ALIGN)
+
+    // Total image size (virtual)
+    let image_size = rdata_rva + rdata_vsize
+
+    // ---------------------------------------------------------------
+    // DOS header (64 bytes)
+    // ---------------------------------------------------------------
+
+    // e_magic: "MZ"
+    buf_write_byte(out, 77)    // 'M'
+    buf_write_byte(out, 90)    // 'Z'
+
+    // Pad bytes 2..59 with zeros
+    buf_write_zeros(out, 58)
+
+    // e_lfanew at offset 0x3C (60): pointer to PE signature
+    link_write_u32_le(out, PE_DOS_SIZE)
+
+    // ---------------------------------------------------------------
+    // PE signature: "PE\0\0"
+    // ---------------------------------------------------------------
+
+    buf_write_byte(out, 80)    // 'P'
+    buf_write_byte(out, 69)    // 'E'
+    buf_write_byte(out, 0)
+    buf_write_byte(out, 0)
+
+    // ---------------------------------------------------------------
+    // COFF header (20 bytes)
+    // ---------------------------------------------------------------
+
+    // Machine: IMAGE_FILE_MACHINE_AMD64 = 0x8664 = 34404
+    link_write_u16_le(out, 34404)
+
+    // NumberOfSections: 3
+    link_write_u16_le(out, 3)
+
+    // TimeDateStamp: 0
+    link_write_u32_le(out, 0)
+
+    // PointerToSymbolTable: 0
+    link_write_u32_le(out, 0)
+
+    // NumberOfSymbols: 0
+    link_write_u32_le(out, 0)
+
+    // SizeOfOptionalHeader: 240
+    link_write_u16_le(out, PE_OPT_SIZE)
+
+    // Characteristics: EXECUTABLE_IMAGE | LARGE_ADDRESS_AWARE
+    // 0x0002 | 0x0020 = 0x0022 = 34
+    link_write_u16_le(out, 34)
+
+    // ---------------------------------------------------------------
+    // Optional header (PE32+, 240 bytes)
+    // ---------------------------------------------------------------
+
+    // Magic: PE32+ = 0x020B = 523
+    link_write_u16_le(out, 523)
+
+    // MajorLinkerVersion, MinorLinkerVersion
+    buf_write_byte(out, 1)
+    buf_write_byte(out, 0)
+
+    // SizeOfCode
+    link_write_u32_le(out, text_file_size)
+
+    // SizeOfInitializedData
+    link_write_u32_le(out, data_file_size + rdata_file_size)
+
+    // SizeOfUninitializedData
+    link_write_u32_le(out, 0)
+
+    // AddressOfEntryPoint (RVA)
+    link_write_u32_le(out, entry_rva)
+
+    // BaseOfCode (RVA)
+    link_write_u32_le(out, text_rva)
+
+    // ImageBase (PE32+ uses 8 bytes)
+    link_write_u64_le(out, PE_IMAGE_BASE)
+
+    // SectionAlignment
+    link_write_u32_le(out, PE_SECTION_ALIGN)
+
+    // FileAlignment
+    link_write_u32_le(out, PE_FILE_ALIGN)
+
+    // MajorOperatingSystemVersion, MinorOperatingSystemVersion
+    link_write_u16_le(out, 6)
+    link_write_u16_le(out, 0)
+
+    // MajorImageVersion, MinorImageVersion
+    link_write_u16_le(out, 0)
+    link_write_u16_le(out, 0)
+
+    // MajorSubsystemVersion, MinorSubsystemVersion
+    link_write_u16_le(out, 6)
+    link_write_u16_le(out, 0)
+
+    // Win32VersionValue: 0
+    link_write_u32_le(out, 0)
+
+    // SizeOfImage (must be aligned to SectionAlignment)
+    link_write_u32_le(out, image_size)
+
+    // SizeOfHeaders (aligned to FileAlignment)
+    link_write_u32_le(out, headers_size)
+
+    // CheckSum: 0
+    link_write_u32_le(out, 0)
+
+    // Subsystem: IMAGE_SUBSYSTEM_WINDOWS_CUI = 3 (console)
+    link_write_u16_le(out, 3)
+
+    // DllCharacteristics: DYNAMIC_BASE | NX_COMPAT | TERMINAL_SERVER_AWARE
+    // 0x0040 | 0x0100 | 0x8000 = 0x8140 = 33088
+    link_write_u16_le(out, 33088)
+
+    // SizeOfStackReserve: 1 MB = 0x100000
+    link_write_u64_le(out, 1048576)
+
+    // SizeOfStackCommit: 4 KB = 0x1000
+    link_write_u64_le(out, 4096)
+
+    // SizeOfHeapReserve: 1 MB
+    link_write_u64_le(out, 1048576)
+
+    // SizeOfHeapCommit: 4 KB
+    link_write_u64_le(out, 4096)
+
+    // LoaderFlags: 0
+    link_write_u32_le(out, 0)
+
+    // NumberOfRvaAndSizes: 16
+    link_write_u32_le(out, 16)
+
+    // Data directories: 16 entries x 8 bytes = 128 bytes (all zeros)
+    buf_write_zeros(out, 128)
+
+    // ---------------------------------------------------------------
+    // Section headers (3 x 40 bytes)
+    // ---------------------------------------------------------------
+
+    // --- .text section header ---
+    pe_write_section_name(out, ".text")
+
+    // VirtualSize
+    link_write_u32_le(out, text_size)
+
+    // VirtualAddress (RVA)
+    link_write_u32_le(out, text_rva)
+
+    // SizeOfRawData
+    link_write_u32_le(out, text_file_size)
+
+    // PointerToRawData
+    link_write_u32_le(out, text_file_off)
+
+    // PointerToRelocations: 0
+    link_write_u32_le(out, 0)
+
+    // PointerToLineNumbers: 0
+    link_write_u32_le(out, 0)
+
+    // NumberOfRelocations: 0
+    link_write_u16_le(out, 0)
+
+    // NumberOfLineNumbers: 0
+    link_write_u16_le(out, 0)
+
+    // Characteristics: IMAGE_SCN_CNT_CODE | MEM_EXECUTE | MEM_READ
+    // 0x00000020 | 0x20000000 | 0x40000000 = 0x60000020 = 1610612768
+    link_write_u32_le(out, 1610612768)
+
+    // --- .data section header ---
+    pe_write_section_name(out, ".data")
+
+    // VirtualSize
+    link_write_u32_le(out, data_size)
+
+    // VirtualAddress (RVA)
+    link_write_u32_le(out, data_rva)
+
+    // SizeOfRawData
+    link_write_u32_le(out, data_file_size)
+
+    // PointerToRawData
+    link_write_u32_le(out, data_file_off)
+
+    // PointerToRelocations: 0
+    link_write_u32_le(out, 0)
+
+    // PointerToLineNumbers: 0
+    link_write_u32_le(out, 0)
+
+    // NumberOfRelocations: 0
+    link_write_u16_le(out, 0)
+
+    // NumberOfLineNumbers: 0
+    link_write_u16_le(out, 0)
+
+    // Characteristics: IMAGE_SCN_CNT_INITIALIZED_DATA | MEM_READ | MEM_WRITE
+    // 0x00000040 | 0x40000000 | 0x80000000 = 0xC0000040 = 3221225536
+    link_write_u32_le(out, 3221225536)
+
+    // --- .rdata section header ---
+    pe_write_section_name(out, ".rdata")
+
+    // VirtualSize
+    link_write_u32_le(out, rodata_size)
+
+    // VirtualAddress (RVA)
+    link_write_u32_le(out, rdata_rva)
+
+    // SizeOfRawData
+    link_write_u32_le(out, rdata_file_size)
+
+    // PointerToRawData
+    link_write_u32_le(out, rdata_file_off)
+
+    // PointerToRelocations: 0
+    link_write_u32_le(out, 0)
+
+    // PointerToLineNumbers: 0
+    link_write_u32_le(out, 0)
+
+    // NumberOfRelocations: 0
+    link_write_u16_le(out, 0)
+
+    // NumberOfLineNumbers: 0
+    link_write_u16_le(out, 0)
+
+    // Characteristics: IMAGE_SCN_CNT_INITIALIZED_DATA | MEM_READ
+    // 0x00000040 | 0x40000000 = 0x40000040 = 1073741888
+    link_write_u32_le(out, 1073741888)
+
+    // ---------------------------------------------------------------
+    // Pad headers to FileAlignment (512)
+    // ---------------------------------------------------------------
+
+    link_pad_to_alignment(out, PE_FILE_ALIGN)
+
+    // ---------------------------------------------------------------
+    // .text raw data
+    // ---------------------------------------------------------------
+
+    if text_size > 0 {
+        buf_write_bytes(out, merged.text, text_size)
+    }
+    link_pad_to_alignment(out, PE_FILE_ALIGN)
+
+    // ---------------------------------------------------------------
+    // .data raw data
+    // ---------------------------------------------------------------
+
+    if data_size > 0 {
+        buf_write_bytes(out, merged.data, data_size)
+    }
+    link_pad_to_alignment(out, PE_FILE_ALIGN)
+
+    // ---------------------------------------------------------------
+    // .rdata raw data
+    // ---------------------------------------------------------------
+
+    if rodata_size > 0 {
+        buf_write_bytes(out, merged.rodata, rodata_size)
+    }
+    link_pad_to_alignment(out, PE_FILE_ALIGN)
+
+    // ---------------------------------------------------------------
+    // Write to file
+    // ---------------------------------------------------------------
+
+    buf_write_to_file(out, path)
+    buf_free(out)
+
+    return LinkerResult {
+        success: true,
+        error_msg: "",
+        output_path: path
+    }
+}
+
+
+// ===================================================================
+// PE section name helper
+//
+// Writes an 8-byte section name (padded with zeros).
+// PE section names are exactly 8 bytes, null-padded.
+// ===================================================================
+
+fn pe_write_section_name(buf: i64, name: str) {
+    let name_len = len(name)
+
+    // Write the name as string bytes
+    buf_write_str(buf, name)
+
+    // Pad remaining bytes to 8
+    let pad_count: i64 = 8 - name_len
+    if pad_count > 0 {
+        buf_write_zeros(buf, pad_count)
+    }
+}
+
+
+// ===================================================================
+// Main entry point: link_exe
+//
+// Orchestrates the full linking process:
+//   1. Merge sections from all inputs
+//   2. Compute section base addresses
+//   3. Resolve symbols (with base addresses)
+//   4. Apply relocations
+//   5. Emit executable (ELF or PE based on target_os)
+// ===================================================================
+
+fn link_exe(inputs: [LinkerInput], entry_name: str, output_path: str, target_os: str) -> LinkerResult {
+    // Validate inputs
+    if len(inputs) == 0 {
+        return LinkerResult {
+            success: false,
+            error_msg: "linker: no input files",
+            output_path: output_path
+        }
+    }
+
+    println("linker: merging sections from " + to_string(len(inputs)) + " input(s)")
+
+    // Step 1: Merge sections
+    let merged = link_merge_sections(inputs)
+
+    let text_size = buf_len(merged.text)
+    let data_size = buf_len(merged.data)
+    let rodata_size = buf_len(merged.rodata)
+
+    println("linker: .text  = " + to_string(text_size) + " bytes")
+    println("linker: .data  = " + to_string(data_size) + " bytes")
+    println("linker: .rodata = " + to_string(rodata_size) + " bytes")
+
+    // Step 2: Compute base addresses based on target
+    let mut text_base: i64 = 0
+    let mut data_base: i64 = 0
+    let mut rodata_base: i64 = 0
+
+    if target_os == "linux" {
+        // ELF layout:
+        // Headers at file start, .text follows at header_size offset from 0x400000
+        let header_total: i64 = ELF_EHDR_SIZE + 2 * ELF_PHDR_SIZE
+        text_base = ELF_TEXT_BASE + header_total
+
+        // .data starts at next page after .text ends
+        let text_end = text_base + text_size
+        data_base = link_align_up(text_end, ELF_PAGE_SIZE)
+        rodata_base = data_base + data_size
+    }
+
+    if target_os == "windows" {
+        // PE layout:
+        // .text at RVA 0x1000
+        let text_rva: i64 = PE_TEXT_RVA
+        text_base = PE_IMAGE_BASE + text_rva
+
+        // .data at next section-aligned RVA after .text
+        let text_vsize = link_align_up(text_size, PE_SECTION_ALIGN)
+        let data_rva = text_rva + text_vsize
+        data_base = PE_IMAGE_BASE + data_rva
+
+        // .rdata at next section-aligned RVA after .data
+        let data_vsize = link_align_up(data_size, PE_SECTION_ALIGN)
+        let rdata_rva = data_rva + data_vsize
+        rodata_base = PE_IMAGE_BASE + rdata_rva
+    }
+
+    if target_os != "linux" and target_os != "windows" {
+        return LinkerResult {
+            success: false,
+            error_msg: "linker: unsupported target OS: " + target_os,
+            output_path: output_path
+        }
+    }
+
+    // Step 3: Resolve symbols
+    println("linker: resolving symbols")
+    let symbols = link_resolve_symbols(inputs, merged, text_base, data_base, rodata_base)
+
+    if len(symbols) == 0 {
+        // Free merged buffers
+        buf_free(merged.text)
+        buf_free(merged.data)
+        buf_free(merged.rodata)
+        return LinkerResult {
+            success: false,
+            error_msg: "linker: no symbols found",
+            output_path: output_path
+        }
+    }
+
+    println("linker: resolved " + to_string(len(symbols)) + " symbol(s)")
+
+    // Check that entry point exists
+    let entry_check = link_find_symbol(symbols, entry_name)
+    if entry_check < 0 {
+        buf_free(merged.text)
+        buf_free(merged.data)
+        buf_free(merged.rodata)
+        return LinkerResult {
+            success: false,
+            error_msg: "linker: entry point not found: " + entry_name,
+            output_path: output_path
+        }
+    }
+
+    // Step 4: Apply relocations
+    println("linker: applying relocations")
+    let reloc_count = link_count_relocations(inputs)
+    let reloc_ok = link_apply_relocations(merged, inputs, symbols, text_base, data_base, rodata_base)
+
+    if not reloc_ok {
+        buf_free(merged.text)
+        buf_free(merged.data)
+        buf_free(merged.rodata)
+        return LinkerResult {
+            success: false,
+            error_msg: "linker: relocation errors occurred",
+            output_path: output_path
+        }
+    }
+
+    println("linker: applied " + to_string(reloc_count) + " relocation(s)")
+
+    // Step 5: Emit executable
+    let mut result = LinkerResult {
+        success: false,
+        error_msg: "",
+        output_path: output_path
+    }
+
+    if target_os == "linux" {
+        println("linker: emitting ELF executable -> " + output_path)
+        result = link_emit_elf_exe(merged, entry_name, symbols, output_path)
+    }
+
+    if target_os == "windows" {
+        println("linker: emitting PE executable -> " + output_path)
+        result = link_emit_pe_exe(merged, entry_name, symbols, output_path)
+    }
+
+    // Cleanup merged buffers
+    buf_free(merged.text)
+    buf_free(merged.data)
+    buf_free(merged.rodata)
+
+    if result.success {
+        println("linker: done")
+    } else {
+        println("linker: failed: " + result.error_msg)
+    }
+
+    return result
+}
+
+
+// ===================================================================
+// Helper: count total relocations across all inputs
+// ===================================================================
+
+fn link_count_relocations(inputs: [LinkerInput]) -> i32 {
+    let mut total = 0
+    let count = len(inputs)
+    let mut i = 0
+    while i < count {
+        total = total + len(inputs[i].relocations)
+        i = i + 1
+    }
+    return total
+}
+
+
+// ===================================================================
+// Helper: create a minimal LinkerInput with empty sections
+// ===================================================================
+
+fn link_input_new(name: str) -> LinkerInput {
+    let empty_syms: [LinkerSymbol] = []
+    let empty_relocs: [LinkerReloc] = []
+    return LinkerInput {
+        name: name,
+        text_data: buf_new(0),
+        data_data: buf_new(0),
+        rodata_data: buf_new(0),
+        symbols: empty_syms,
+        relocations: empty_relocs
+    }
+}
+
+
+// ===================================================================
+// Helper: create a LinkerSymbol
+// ===================================================================
+
+fn link_symbol_new(name: str, offset: i32, section: i32, is_global: bool, is_func: bool, size: i32) -> LinkerSymbol {
+    return LinkerSymbol {
+        name: name,
+        offset: offset,
+        section: section,
+        is_global: is_global,
+        is_func: is_func,
+        size: size
+    }
+}
+
+
+// ===================================================================
+// Helper: create a LinkerReloc
+// ===================================================================
+
+fn link_reloc_new(offset: i32, symbol_name: str, rel_type: i32, addend: i32) -> LinkerReloc {
+    return LinkerReloc {
+        offset: offset,
+        symbol_name: symbol_name,
+        rel_type: rel_type,
+        addend: addend
+    }
+}
+
+
+// ===================================================================
+// Helper: add symbol to a LinkerInput
+// ===================================================================
+
+fn link_input_add_symbol(inp: LinkerInput, sym: LinkerSymbol) {
+    push(inp.symbols, sym)
+}
+
+
+// ===================================================================
+// Helper: add relocation to a LinkerInput
+// ===================================================================
+
+fn link_input_add_reloc(inp: LinkerInput, reloc: LinkerReloc) {
+    push(inp.relocations, reloc)
+}
+
+
+// ===================================================================
+// Helper: free a LinkerInput's buffers
+// ===================================================================
+
+fn link_input_free(inp: LinkerInput) {
+    buf_free(inp.text_data)
+    buf_free(inp.data_data)
+    buf_free(inp.rodata_data)
+}
+
+
+// ===================================================================
+// Debug: dump symbol table
+// ===================================================================
+
+fn link_dump_symbols(symbols: [ResolvedSymbol]) {
+    println("--- Symbol Table ---")
+    let count = len(symbols)
+    let mut i = 0
+    while i < count {
+        let sym = symbols[i]
+        let mut sec_name = "UNDEF"
+        if sym.section == LSEC_TEXT {
+            sec_name = ".text"
+        }
+        if sym.section == LSEC_DATA {
+            sec_name = ".data"
+        }
+        if sym.section == LSEC_RODATA {
+            sec_name = ".rodata"
+        }
+        if sym.section == LSEC_BSS {
+            sec_name = ".bss"
+        }
+
+        let mut kind = "local"
+        if sym.is_global {
+            kind = "global"
+        }
+
+        let mut sym_type = "object"
+        if sym.is_func {
+            sym_type = "func"
+        }
+
+        println("  " + sym.name + "  " + sec_name + "  addr=0x" + to_hex_string(sym.address) + "  " + kind + "  " + sym_type + "  size=" + to_string(sym.size))
+        i = i + 1
+    }
+    println("--- End Symbol Table ---")
+}
+
+
+// ===================================================================
+// Helper: convert i64 to hex string (for debug output)
+// ===================================================================
+
+fn to_hex_string(val: i64) -> str {
+    if val == 0 {
+        return "0"
+    }
+
+    let mut result = ""
+    let mut remaining = val
+
+    // Handle negative values -- treat as unsigned by masking
+    if remaining < 0 {
+        remaining = remaining + 9223372036854775807 + 1
+    }
+
+    while remaining > 0 {
+        let digit = remaining - (remaining / 16) * 16
+        // Build string from right to left by prepending
+        let mut digit_char = "0"
+        if digit == 0 { digit_char = "0" }
+        if digit == 1 { digit_char = "1" }
+        if digit == 2 { digit_char = "2" }
+        if digit == 3 { digit_char = "3" }
+        if digit == 4 { digit_char = "4" }
+        if digit == 5 { digit_char = "5" }
+        if digit == 6 { digit_char = "6" }
+        if digit == 7 { digit_char = "7" }
+        if digit == 8 { digit_char = "8" }
+        if digit == 9 { digit_char = "9" }
+        if digit == 10 { digit_char = "a" }
+        if digit == 11 { digit_char = "b" }
+        if digit == 12 { digit_char = "c" }
+        if digit == 13 { digit_char = "d" }
+        if digit == 14 { digit_char = "e" }
+        if digit == 15 { digit_char = "f" }
+        result = digit_char + result
+        remaining = remaining / 16
+    }
+
+    return result
+}
+
+
+// ===================================================================
+// Helper: validate a LinkerInput has consistent data
+// ===================================================================
+
+fn link_validate_input(inp: LinkerInput) -> bool {
+    let mut valid = true
+
+    // Check that all symbol offsets are within their sections
+    let sym_count = len(inp.symbols)
+    let text_len = buf_len(inp.text_data)
+    let data_len = buf_len(inp.data_data)
+    let rodata_len = buf_len(inp.rodata_data)
+
+    let mut i = 0
+    while i < sym_count {
+        let sym = inp.symbols[i]
+        let off: i64 = sym.offset
+
+        if sym.section == LSEC_TEXT {
+            if off < 0 or off > text_len {
+                println("linker: warning: symbol '" + sym.name + "' offset " + to_string(sym.offset) + " exceeds .text size " + to_string(text_len))
+                valid = false
+            }
+        }
+
+        if sym.section == LSEC_DATA {
+            if off < 0 or off > data_len {
+                println("linker: warning: symbol '" + sym.name + "' offset " + to_string(sym.offset) + " exceeds .data size " + to_string(data_len))
+                valid = false
+            }
+        }
+
+        if sym.section == LSEC_RODATA {
+            if off < 0 or off > rodata_len {
+                println("linker: warning: symbol '" + sym.name + "' offset " + to_string(sym.offset) + " exceeds .rodata size " + to_string(rodata_len))
+                valid = false
+            }
+        }
+
+        i = i + 1
+    }
+
+    // Check that all relocation offsets are within .text
+    let reloc_count = len(inp.relocations)
+    let mut j = 0
+    while j < reloc_count {
+        let reloc = inp.relocations[j]
+        let reloc_off: i64 = reloc.offset
+
+        if reloc_off < 0 or reloc_off >= text_len {
+            println("linker: warning: relocation at offset " + to_string(reloc.offset) + " exceeds .text size " + to_string(text_len))
+            valid = false
+        }
+
+        // Validate relocation type
+        if reloc.rel_type != LREL_PC32 and reloc.rel_type != LREL_ABS64 and reloc.rel_type != LREL_ABS32 {
+            println("linker: warning: unknown relocation type " + to_string(reloc.rel_type))
+            valid = false
+        }
+
+        j = j + 1
+    }
+
+    return valid
+}
+
+
+// ===================================================================
+// Helper: compute section name from constant
+// ===================================================================
+
+fn link_section_name(sec: i32) -> str {
+    if sec == LSEC_TEXT {
+        return ".text"
+    }
+    if sec == LSEC_DATA {
+        return ".data"
+    }
+    if sec == LSEC_RODATA {
+        return ".rodata"
+    }
+    if sec == LSEC_BSS {
+        return ".bss"
+    }
+    if sec == LSEC_UNDEF {
+        return "UNDEF"
+    }
+    return "UNKNOWN"
+}
+
+
+// ===================================================================
+// Helper: compute relocation type name from constant
+// ===================================================================
+
+fn link_reloc_type_name(rel_type: i32) -> str {
+    if rel_type == LREL_PC32 {
+        return "R_X86_64_PC32"
+    }
+    if rel_type == LREL_ABS64 {
+        return "R_X86_64_64"
+    }
+    if rel_type == LREL_ABS32 {
+        return "R_X86_64_32"
+    }
+    return "UNKNOWN"
+}
+
+
+// ===================================================================
+// Debug: dump relocations for an input
+// ===================================================================
+
+fn link_dump_relocations(inp: LinkerInput) {
+    println("--- Relocations for " + inp.name + " ---")
+    let count = len(inp.relocations)
+    let mut i = 0
+    while i < count {
+        let reloc = inp.relocations[i]
+        println("  offset=" + to_string(reloc.offset) + "  sym=" + reloc.symbol_name + "  type=" + link_reloc_type_name(reloc.rel_type) + "  addend=" + to_string(reloc.addend))
+        i = i + 1
+    }
+    println("--- End Relocations ---")
+}

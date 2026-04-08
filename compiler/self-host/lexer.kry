@@ -27,6 +27,13 @@
 // ============================================================
 
 // -------------------------------------------------------------------
+// Character helpers for { } to avoid interpolation parse issues
+// -------------------------------------------------------------------
+
+let CHR_LBRACE = char_from(123)
+let CHR_RBRACE = char_from(125)
+
+// -------------------------------------------------------------------
 // Lexer struct
 // -------------------------------------------------------------------
 
@@ -187,7 +194,7 @@ fn lex_scan_string(lex: Lexer, start: i32) -> Lexer {
 
     while not lex_at_end(l) and lex_peek(l) != "\"" {
         // String interpolation: {expr}
-        if lex_peek(l) == "{" {
+        if lex_peek(l) == CHR_LBRACE {
             // Emit what we have so far as StringPart
             if len(text) > 0 or not has_interp {
                 l = lex_emit(l, TK_STRING_PART, start, l.pos, text)
@@ -196,19 +203,19 @@ fn lex_scan_string(lex: Lexer, start: i32) -> Lexer {
             has_interp = true
             let brace_start = l.pos
             l = lex_advance(l) // skip {
-            l = lex_emit(l, TK_INTERP_START, brace_start, l.pos, "{")
+            l = lex_emit(l, TK_INTERP_START, brace_start, l.pos, CHR_LBRACE)
 
             // Tokenize the interpolated expression until we hit }
-            while not lex_at_end(l) and lex_peek(l) != "}" {
+            while not lex_at_end(l) and lex_peek(l) != CHR_RBRACE {
                 l = lex_skip_ws(l)
-                if not lex_at_end(l) and lex_peek(l) != "}" {
+                if not lex_at_end(l) and lex_peek(l) != CHR_RBRACE {
                     l = lex_scan_token(l)
                 }
             }
             if not lex_at_end(l) {
                 let end_start = l.pos
                 l = lex_advance(l) // skip }
-                l = lex_emit(l, TK_INTERP_END, end_start, l.pos, "}")
+                l = lex_emit(l, TK_INTERP_END, end_start, l.pos, CHR_RBRACE)
             }
             continue
         }
@@ -424,10 +431,10 @@ fn lex_scan_token(lex: Lexer) -> Lexer {
     // -- Grouping --
     if ch == "(" { return lex_emit(l, TK_LPAREN, start, l.pos, "(") }
     if ch == ")" { return lex_emit(l, TK_RPAREN, start, l.pos, ")") }
-    if ch == "{" { return lex_emit(l, TK_LBRACE, start, l.pos, "{") }
-    if ch == "}" { return lex_emit(l, TK_RBRACE, start, l.pos, "}") }
-    if ch == "[" { return lex_emit(l, TK_LBRACKET, start, l.pos, "[") }
-    if ch == "]" { return lex_emit(l, TK_RBRACKET, start, l.pos, "]") }
+    if ch == CHR_LBRACE { return lex_emit(l, TK_LBRACE, start, l.pos, CHR_LBRACE) }
+    if ch == CHR_RBRACE { return lex_emit(l, TK_RBRACE, start, l.pos, CHR_RBRACE) }
+    if ch == char_from(91) { return lex_emit(l, TK_LBRACKET, start, l.pos, char_from(91)) }
+    if ch == char_from(93) { return lex_emit(l, TK_RBRACKET, start, l.pos, char_from(93)) }
 
     // -- Single-char punctuation --
     if ch == ";" { return lex_emit(l, TK_SEMICOLON, start, l.pos, ";") }

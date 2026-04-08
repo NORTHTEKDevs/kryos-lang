@@ -422,7 +422,7 @@ fn mir_ty_name(t: MirType) -> str {
     if t.kind == MIR_TY_MAP { return "map" }
     if t.kind == MIR_TY_ARRAY {
         if len(t.element_type) > 0 {
-            return "[" + mir_ty_name(t.element_type[0]) + "]"
+            return char_from(91) + mir_ty_name(t.element_type[0]) + char_from(93)
         }
         return "[]"
     }

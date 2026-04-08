@@ -1,0 +1,1194 @@
+// ============================================================
+// regalloc.kry -- Linear-scan register allocator for the
+// Kryos self-hosted compiler, targeting x86_64.
+//
+// Implements liveness analysis over MIR functions, then runs
+// the classic linear-scan algorithm to assign physical
+// registers.  When all registers are occupied, the interval
+// with the longest remaining range is spilled to a stack slot.
+//
+// Follows the System V AMD64 ABI:
+//   - Arguments in RDI, RSI, RDX, RCX, R8, R9
+//   - Return in RAX
+//   - Callee-saved: RBX, RBP, R12-R15
+//   - Caller-saved: RAX, RCX, RDX, RSI, RDI, R8-R11
+//   - 16-byte stack alignment
+//
+// Dependencies (same compilation unit):
+//   mir.kry   -- MIR data structures, instruction/rvalue kinds
+// ============================================================
+
+// ===================================================================
+// x86_64 general-purpose register constants
+// ===================================================================
+
+let REG_RAX  = 0
+let REG_RCX  = 1
+let REG_RDX  = 2
+let REG_RBX  = 3
+let REG_RSP  = 4
+let REG_RBP  = 5
+let REG_RSI  = 6
+let REG_RDI  = 7
+let REG_R8   = 8
+let REG_R9   = 9
+let REG_R10  = 10
+let REG_R11  = 11
+let REG_R12  = 12
+let REG_R13  = 13
+let REG_R14  = 14
+let REG_R15  = 15
+
+let REG_NONE    = -1   // not yet assigned
+let REG_SPILLED = -2   // spilled to stack
+
+// Number of physical general-purpose registers
+let REG_COUNT = 16
+
+// ===================================================================
+// System V AMD64 argument register order
+// ===================================================================
+
+let ARG_REG_COUNT = 6
+
+// ===================================================================
+// Data structures
+// ===================================================================
+
+struct LiveInterval {
+    local_id: i32,
+    start: i32,
+    end: i32,
+    reg: i32,
+    spill_slot: i32,
+    is_fixed: bool
+}
+
+struct RegAllocResult {
+    intervals: [LiveInterval],
+    stack_size: i32,
+    callee_saved: [i32]
+}
+
+struct LivenessMap {
+    max_id: i32,
+    defs: [i32],
+    uses: [i32]
+}
+
+struct RegPool {
+    used: [bool]
+}
+
+struct PrologueInfo {
+    pushes: [i32],
+    sub_rsp: i32
+}
+
+// ===================================================================
+// Argument register lookup
+// ===================================================================
+
+fn ra_arg_reg(index: i32) -> i32 {
+    // System V: RDI, RSI, RDX, RCX, R8, R9
+    if index == 0 { return REG_RDI }
+    if index == 1 { return REG_RSI }
+    if index == 2 { return REG_RDX }
+    if index == 3 { return REG_RCX }
+    if index == 4 { return REG_R8 }
+    if index == 5 { return REG_R9 }
+    return REG_NONE
+}
+
+// ===================================================================
+// Register classification helpers
+// ===================================================================
+
+fn ra_is_allocatable(reg: i32) -> bool {
+    if reg == REG_RSP { return false }
+    if reg == REG_RBP { return false }
+    if reg < 0 { return false }
+    if reg >= REG_COUNT { return false }
+    return true
+}
+
+fn ra_is_caller_saved(reg: i32) -> bool {
+    if reg == REG_RAX { return true }
+    if reg == REG_RCX { return true }
+    if reg == REG_RDX { return true }
+    if reg == REG_RSI { return true }
+    if reg == REG_RDI { return true }
+    if reg == REG_R8  { return true }
+    if reg == REG_R9  { return true }
+    if reg == REG_R10 { return true }
+    if reg == REG_R11 { return true }
+    return false
+}
+
+fn ra_is_callee_saved(reg: i32) -> bool {
+    if reg == REG_RBX { return true }
+    if reg == REG_R12 { return true }
+    if reg == REG_R13 { return true }
+    if reg == REG_R14 { return true }
+    if reg == REG_R15 { return true }
+    return false
+}
+
+fn ra_reg_name(reg: i32) -> str {
+    if reg == REG_RAX  { return "rax" }
+    if reg == REG_RCX  { return "rcx" }
+    if reg == REG_RDX  { return "rdx" }
+    if reg == REG_RBX  { return "rbx" }
+    if reg == REG_RSP  { return "rsp" }
+    if reg == REG_RBP  { return "rbp" }
+    if reg == REG_RSI  { return "rsi" }
+    if reg == REG_RDI  { return "rdi" }
+    if reg == REG_R8   { return "r8" }
+    if reg == REG_R9   { return "r9" }
+    if reg == REG_R10  { return "r10" }
+    if reg == REG_R11  { return "r11" }
+    if reg == REG_R12  { return "r12" }
+    if reg == REG_R13  { return "r13" }
+    if reg == REG_R14  { return "r14" }
+    if reg == REG_R15  { return "r15" }
+    if reg == REG_NONE    { return "<none>" }
+    if reg == REG_SPILLED { return "<spill>" }
+    return "<invalid>"
+}
+
+// ===================================================================
+// Allocatable register list
+//
+// Returns the registers available for allocation in preference
+// order.  Caller-saved scratch registers first (cheap to use),
+// then callee-saved (require save/restore in prologue/epilogue).
+// ===================================================================
+
+fn ra_allocatable_regs() -> [i32] {
+    return [
+        REG_R10, REG_R11,
+        REG_RAX, REG_RCX, REG_RDX, REG_RSI, REG_RDI,
+        REG_R8, REG_R9,
+        REG_RBX, REG_R12, REG_R13, REG_R14, REG_R15
+    ]
+}
+
+// ===================================================================
+// LivenessMap constructor
+// ===================================================================
+
+fn liveness_map_new(max_id: i32) -> LivenessMap {
+    let mut defs: [i32] = []
+    let mut uses: [i32] = []
+    let mut i = 0
+    while i <= max_id {
+        push(defs, -1)
+        push(uses, -1)
+        i = i + 1
+    }
+    return LivenessMap {
+        max_id: max_id,
+        defs: defs,
+        uses: uses
+    }
+}
+
+// ===================================================================
+// Liveness recording helpers
+// ===================================================================
+
+fn ra_record_def(lm: LivenessMap, local_id: i32, pos: i32) {
+    if local_id < 0 { return }
+    if local_id > lm.max_id { return }
+    // First definition wins -- keep the earliest
+    if lm.defs[local_id] == -1 {
+        lm.defs[local_id] = pos
+    } elif pos < lm.defs[local_id] {
+        lm.defs[local_id] = pos
+    }
+    // Extend use to at least the def point so the interval
+    // is non-empty even if the value is never read
+    if lm.uses[local_id] == -1 {
+        lm.uses[local_id] = pos
+    }
+}
+
+fn ra_record_use(lm: LivenessMap, local_id: i32, pos: i32) {
+    if local_id < 0 { return }
+    if local_id > lm.max_id { return }
+    // If never defined yet, treat the use position as an implicit def
+    if lm.defs[local_id] == -1 {
+        lm.defs[local_id] = pos
+    }
+    // Last use wins -- keep the latest
+    if lm.uses[local_id] == -1 {
+        lm.uses[local_id] = pos
+    } elif pos > lm.uses[local_id] {
+        lm.uses[local_id] = pos
+    }
+}
+
+// ===================================================================
+// Operand scanning -- extract live-variable information from
+// the MIR instruction operands
+// ===================================================================
+
+fn ra_scan_operand(lm: LivenessMap, operand: Operand, pos: i32) {
+    if operand.is_local {
+        ra_record_use(lm, operand.local_id, pos)
+    }
+}
+
+fn ra_scan_operand_list(lm: LivenessMap, ops: [Operand], pos: i32) {
+    let mut i = 0
+    while i < len(ops) {
+        ra_scan_operand(lm, ops[i], pos)
+        i = i + 1
+    }
+}
+
+fn ra_scan_rvalue(lm: LivenessMap, rv: RValue, pos: i32) {
+    if rv.kind == RV_USE {
+        ra_scan_operand_list(lm, rv.use_operand, pos)
+        return
+    }
+    if rv.kind == RV_BINOP {
+        ra_scan_operand_list(lm, rv.left, pos)
+        ra_scan_operand_list(lm, rv.right, pos)
+        return
+    }
+    if rv.kind == RV_UNOP {
+        ra_scan_operand_list(lm, rv.left, pos)
+        return
+    }
+    if rv.kind == RV_CALL {
+        ra_scan_operand_list(lm, rv.args, pos)
+        return
+    }
+    if rv.kind == RV_CALL_INDIRECT {
+        ra_scan_operand_list(lm, rv.callee, pos)
+        ra_scan_operand_list(lm, rv.args, pos)
+        return
+    }
+    if rv.kind == RV_CONST_INT { return }
+    if rv.kind == RV_CONST_FLOAT { return }
+    if rv.kind == RV_CONST_BOOL { return }
+    if rv.kind == RV_CONST_STRING { return }
+    if rv.kind == RV_CONST_NONE { return }
+    if rv.kind == RV_ARRAY {
+        ra_scan_operand_list(lm, rv.elements, pos)
+        return
+    }
+    if rv.kind == RV_TUPLE {
+        ra_scan_operand_list(lm, rv.elements, pos)
+        return
+    }
+    if rv.kind == RV_STRUCT {
+        ra_scan_operand_list(lm, rv.field_operands, pos)
+        return
+    }
+    if rv.kind == RV_FIELD {
+        ra_scan_operand_list(lm, rv.object, pos)
+        return
+    }
+    if rv.kind == RV_INDEX {
+        ra_scan_operand_list(lm, rv.index_obj, pos)
+        ra_scan_operand_list(lm, rv.index_idx, pos)
+        return
+    }
+    if rv.kind == RV_CAST {
+        ra_scan_operand_list(lm, rv.cast_operand, pos)
+        return
+    }
+    if rv.kind == RV_ENUM_VARIANT {
+        ra_scan_operand_list(lm, rv.enum_fields, pos)
+        return
+    }
+    if rv.kind == RV_ENUM_TAG {
+        ra_scan_operand_list(lm, rv.enum_operand, pos)
+        return
+    }
+    if rv.kind == RV_ENUM_PAYLOAD {
+        ra_scan_operand_list(lm, rv.enum_operand, pos)
+        return
+    }
+    if rv.kind == RV_CLOSURE {
+        ra_scan_operand_list(lm, rv.captures, pos)
+        return
+    }
+    if rv.kind == RV_MAP {
+        ra_scan_operand_list(lm, rv.map_keys, pos)
+        ra_scan_operand_list(lm, rv.map_values, pos)
+        return
+    }
+    if rv.kind == RV_STRING_CONCAT {
+        ra_scan_operand_list(lm, rv.concat_parts, pos)
+        return
+    }
+    if rv.kind == RV_RANGE {
+        ra_scan_operand_list(lm, rv.range_start, pos)
+        ra_scan_operand_list(lm, rv.range_end, pos)
+        return
+    }
+    if rv.kind == RV_ADDR_OF {
+        ra_record_use(lm, rv.addr_local, pos)
+        return
+    }
+    if rv.kind == RV_DEREF {
+        ra_scan_operand_list(lm, rv.deref_operand, pos)
+        return
+    }
+}
+
+fn ra_scan_terminator(lm: LivenessMap, term: Terminator, pos: i32) {
+    if term.kind == TERM_RETURN {
+        ra_scan_operand_list(lm, term.ret_val, pos)
+        return
+    }
+    if term.kind == TERM_GOTO {
+        return
+    }
+    if term.kind == TERM_BRANCH {
+        ra_scan_operand_list(lm, term.cond, pos)
+        return
+    }
+    if term.kind == TERM_SWITCH {
+        ra_scan_operand_list(lm, term.switch_val, pos)
+        return
+    }
+}
+
+// ===================================================================
+// Instruction scanning -- handle each instruction kind
+// ===================================================================
+
+fn ra_scan_instruction(lm: LivenessMap, inst: Instruction, pos: i32) {
+    if inst.kind == INST_ASSIGN {
+        ra_record_def(lm, inst.dest, pos)
+        if len(inst.value) > 0 {
+            ra_scan_rvalue(lm, inst.value[0], pos)
+        }
+        return
+    }
+    if inst.kind == INST_DROP {
+        ra_record_use(lm, inst.drop_local, pos)
+        return
+    }
+    if inst.kind == INST_STORE_DEREF {
+        ra_scan_operand_list(lm, inst.ptr_operand, pos)
+        ra_scan_operand_list(lm, inst.store_value, pos)
+        return
+    }
+    if inst.kind == INST_NOP {
+        return
+    }
+    if inst.kind == INST_SPAWN {
+        ra_scan_operand_list(lm, inst.spawn_args, pos)
+        return
+    }
+    if inst.kind == INST_SEND {
+        ra_record_use(lm, inst.send_channel, pos)
+        ra_record_use(lm, inst.send_value, pos)
+        return
+    }
+    if inst.kind == INST_RECEIVE {
+        ra_record_def(lm, inst.recv_dest, pos)
+        ra_record_use(lm, inst.recv_channel, pos)
+        return
+    }
+}
+
+// ===================================================================
+// ra_compute_liveness -- walk a MirFunction and build live
+// intervals for every local variable.
+//
+// Instructions are numbered linearly:
+//   block 0, inst 0  -> position 0
+//   block 0, inst 1  -> position 1
+//   ...
+//   block 0, terminator -> position N
+//   block 1, inst 0  -> position N+1
+//   ...
+// ===================================================================
+
+fn ra_compute_liveness(func: MirFunction) -> [LiveInterval] {
+    // Determine the maximum local id so we can size arrays
+    let mut max_id = 0
+    let mut k = 0
+    while k < len(func.locals) {
+        if func.locals[k].id > max_id {
+            max_id = func.locals[k].id
+        }
+        k = k + 1
+    }
+
+    let lm = liveness_map_new(max_id)
+
+    // Parameters are defined at position 0 (function entry)
+    let mut pi = 0
+    while pi < len(func.params) {
+        ra_record_def(lm, func.params[pi].local_id, 0)
+        pi = pi + 1
+    }
+
+    // Walk all blocks and instructions
+    let mut pos = 0
+    let mut bi = 0
+    while bi < len(func.blocks) {
+        let block = func.blocks[bi]
+        let mut ii = 0
+        while ii < len(block.instructions) {
+            ra_scan_instruction(lm, block.instructions[ii], pos)
+            pos = pos + 1
+            ii = ii + 1
+        }
+        // Scan the terminator
+        if len(block.terminator) > 0 {
+            ra_scan_terminator(lm, block.terminator[0], pos)
+        }
+        pos = pos + 1
+        bi = bi + 1
+    }
+
+    // Build LiveInterval array from the defs/uses maps
+    let mut intervals: [LiveInterval] = []
+    let mut lid = 0
+    while lid <= max_id {
+        if lm.defs[lid] != -1 {
+            let mut interval_end = lm.uses[lid]
+            if interval_end < lm.defs[lid] {
+                interval_end = lm.defs[lid]
+            }
+            let interval = LiveInterval {
+                local_id: lid,
+                start: lm.defs[lid],
+                end: interval_end,
+                reg: REG_NONE,
+                spill_slot: -1,
+                is_fixed: false
+            }
+            push(intervals, interval)
+        }
+        lid = lid + 1
+    }
+
+    return intervals
+}
+
+// ===================================================================
+// Interval sorting -- insertion sort by start position
+// ===================================================================
+
+fn ra_sort_intervals(intervals: [LiveInterval]) {
+    let n = len(intervals)
+    let mut i = 1
+    while i < n {
+        let key = intervals[i]
+        let mut j = i - 1
+        let mut done = false
+        while j >= 0 and not done {
+            if intervals[j].start > key.start {
+                intervals[j + 1] = intervals[j]
+                j = j - 1
+            } else {
+                done = true
+            }
+        }
+        intervals[j + 1] = key
+        i = i + 1
+    }
+}
+
+// ===================================================================
+// Active interval list helpers
+// ===================================================================
+
+fn ra_active_insert(active: [LiveInterval], interval: LiveInterval) {
+    // Insert sorted by end position
+    let mut insert_pos = len(active)
+    let mut idx = 0
+    while idx < len(active) {
+        if active[idx].end > interval.end {
+            insert_pos = idx
+            idx = len(active)  // break
+        } else {
+            idx = idx + 1
+        }
+    }
+    // Append, then shift right to make room at insert_pos
+    push(active, interval)
+    let mut k = len(active) - 1
+    while k > insert_pos {
+        active[k] = active[k - 1]
+        k = k - 1
+    }
+    active[insert_pos] = interval
+}
+
+fn ra_active_without(active: [LiveInterval], index: i32) -> [LiveInterval] {
+    let mut result: [LiveInterval] = []
+    let mut k = 0
+    while k < len(active) {
+        if k != index {
+            push(result, active[k])
+        }
+        k = k + 1
+    }
+    return result
+}
+
+// ===================================================================
+// Register pool
+// ===================================================================
+
+fn reg_pool_new() -> RegPool {
+    let mut used: [bool] = []
+    let mut i = 0
+    while i < REG_COUNT {
+        push(used, false)
+        i = i + 1
+    }
+    return RegPool { used: used }
+}
+
+fn reg_pool_mark_used(pool: RegPool, reg: i32) {
+    if reg >= 0 {
+        if reg < REG_COUNT {
+            pool.used[reg] = true
+        }
+    }
+}
+
+fn reg_pool_mark_free(pool: RegPool, reg: i32) {
+    if reg >= 0 {
+        if reg < REG_COUNT {
+            pool.used[reg] = false
+        }
+    }
+}
+
+fn reg_pool_is_free(pool: RegPool, reg: i32) -> bool {
+    if reg < 0 { return false }
+    if reg >= REG_COUNT { return false }
+    if pool.used[reg] {
+        return false
+    }
+    return true
+}
+
+fn reg_pool_alloc(pool: RegPool) -> i32 {
+    let regs = ra_allocatable_regs()
+    let mut i = 0
+    while i < len(regs) {
+        let r = regs[i]
+        if not pool.used[r] {
+            pool.used[r] = true
+            return r
+        }
+        i = i + 1
+    }
+    return REG_NONE
+}
+
+// ===================================================================
+// ra_fix_arg_intervals -- pre-assign ABI argument registers
+// ===================================================================
+
+fn ra_fix_arg_intervals(intervals: [LiveInterval], func: MirFunction) {
+    let mut pi = 0
+    while pi < len(func.params) {
+        if pi < ARG_REG_COUNT {
+            let param_local = func.params[pi].local_id
+            let arg_reg = ra_arg_reg(pi)
+
+            let mut ii = 0
+            while ii < len(intervals) {
+                if intervals[ii].local_id == param_local {
+                    intervals[ii].reg = arg_reg
+                    intervals[ii].is_fixed = true
+                    ii = len(intervals)  // break
+                } else {
+                    ii = ii + 1
+                }
+            }
+        } else {
+            // Parameters beyond 6 are passed on the stack
+            let param_local = func.params[pi].local_id
+            let stack_offset = (pi - ARG_REG_COUNT) * 8 + 16
+
+            let mut ii = 0
+            while ii < len(intervals) {
+                if intervals[ii].local_id == param_local {
+                    intervals[ii].reg = REG_SPILLED
+                    intervals[ii].spill_slot = stack_offset
+                    intervals[ii].is_fixed = true
+                    ii = len(intervals)  // break
+                } else {
+                    ii = ii + 1
+                }
+            }
+        }
+        pi = pi + 1
+    }
+}
+
+// ===================================================================
+// ra_expire_old -- remove intervals from the active list whose
+// end position is before the current start position.
+// ===================================================================
+
+fn ra_expire_old(active: [LiveInterval], pool: RegPool, start: i32) -> [LiveInterval] {
+    let mut new_active: [LiveInterval] = []
+    let mut i = 0
+    while i < len(active) {
+        if active[i].end < start {
+            reg_pool_mark_free(pool, active[i].reg)
+        } else {
+            push(new_active, active[i])
+        }
+        i = i + 1
+    }
+    return new_active
+}
+
+// ===================================================================
+// ra_spill_at -- spill an interval when no register is free
+//
+// Returns the stolen register, or REG_SPILLED if the current
+// interval itself should be spilled.
+// ===================================================================
+
+fn ra_spill_at(
+    active: [LiveInterval],
+    current: LiveInterval,
+    intervals: [LiveInterval],
+    next_spill: i32
+) -> i32 {
+    // Find the active interval with the largest end position
+    let mut spill_idx = -1
+    let mut spill_end = -1
+    let mut i = 0
+    while i < len(active) {
+        if not active[i].is_fixed {
+            if active[i].end > spill_end {
+                spill_end = active[i].end
+                spill_idx = i
+            }
+        }
+        i = i + 1
+    }
+
+    // If the longest active interval ends after the current one,
+    // spill that and give its register to current.
+    if spill_idx >= 0 {
+        if spill_end > current.end {
+            let stolen_reg = active[spill_idx].reg
+
+            // Mark the victim as spilled in the master interval list
+            let victim_local = active[spill_idx].local_id
+            let mut vi = 0
+            while vi < len(intervals) {
+                if intervals[vi].local_id == victim_local {
+                    intervals[vi].reg = REG_SPILLED
+                    intervals[vi].spill_slot = next_spill
+                    vi = len(intervals)  // break
+                } else {
+                    vi = vi + 1
+                }
+            }
+            active[spill_idx].reg = REG_SPILLED
+            active[spill_idx].spill_slot = next_spill
+
+            return stolen_reg
+        }
+    }
+
+    return REG_SPILLED
+}
+
+// ===================================================================
+// ra_update_interval -- write reg and spill_slot into intervals
+// ===================================================================
+
+fn ra_update_interval(intervals: [LiveInterval], local_id: i32, reg: i32, spill_slot: i32) {
+    let mut i = 0
+    while i < len(intervals) {
+        if intervals[i].local_id == local_id {
+            intervals[i].reg = reg
+            intervals[i].spill_slot = spill_slot
+            return
+        }
+        i = i + 1
+    }
+}
+
+// ===================================================================
+// ra_linear_scan -- the core linear-scan algorithm
+// ===================================================================
+
+fn ra_linear_scan(intervals: [LiveInterval]) -> RegAllocResult {
+    ra_sort_intervals(intervals)
+
+    let pool = reg_pool_new()
+    let mut active: [LiveInterval] = []
+    let mut next_spill_slot = 0
+
+    // Reserve registers for fixed intervals (function args)
+    let mut fi = 0
+    while fi < len(intervals) {
+        if intervals[fi].is_fixed {
+            if intervals[fi].reg >= 0 {
+                reg_pool_mark_used(pool, intervals[fi].reg)
+                ra_active_insert(active, intervals[fi])
+            }
+        }
+        fi = fi + 1
+    }
+
+    // Process each non-fixed interval
+    let mut ci = 0
+    while ci < len(intervals) {
+        if intervals[ci].is_fixed {
+            ci = ci + 1
+            continue
+        }
+
+        let current = intervals[ci]
+
+        // Expire intervals that ended before this one starts
+        active = ra_expire_old(active, pool, current.start)
+
+        // Try to allocate a register
+        let reg = reg_pool_alloc(pool)
+
+        if reg != REG_NONE {
+            intervals[ci].reg = reg
+            intervals[ci].spill_slot = -1
+            let updated = LiveInterval {
+                local_id: current.local_id,
+                start: current.start,
+                end: current.end,
+                reg: reg,
+                spill_slot: -1,
+                is_fixed: false
+            }
+            ra_active_insert(active, updated)
+        } else {
+            // No free register -- must spill
+            let stolen = ra_spill_at(active, current, intervals, next_spill_slot * 8)
+
+            if stolen != REG_SPILLED {
+                intervals[ci].reg = stolen
+                intervals[ci].spill_slot = -1
+                next_spill_slot = next_spill_slot + 1
+
+                // Rebuild active: remove spilled entries, add current
+                let mut new_active: [LiveInterval] = []
+                let mut ai = 0
+                while ai < len(active) {
+                    if active[ai].reg != REG_SPILLED {
+                        push(new_active, active[ai])
+                    }
+                    ai = ai + 1
+                }
+                let updated = LiveInterval {
+                    local_id: current.local_id,
+                    start: current.start,
+                    end: current.end,
+                    reg: stolen,
+                    spill_slot: -1,
+                    is_fixed: false
+                }
+                ra_active_insert(new_active, updated)
+                active = new_active
+            } else {
+                intervals[ci].reg = REG_SPILLED
+                intervals[ci].spill_slot = next_spill_slot * 8
+                next_spill_slot = next_spill_slot + 1
+            }
+        }
+
+        ci = ci + 1
+    }
+
+    // Compute total stack size (each spill slot is 8 bytes)
+    let mut stack_size = next_spill_slot * 8
+    // Align stack to 16 bytes
+    if stack_size % 16 != 0 {
+        stack_size = stack_size + (16 - (stack_size % 16))
+    }
+
+    // Collect callee-saved registers that were actually used
+    let mut callee_saved: [i32] = []
+    let mut ri = 0
+    while ri < len(intervals) {
+        let r = intervals[ri].reg
+        if r >= 0 {
+            if ra_is_callee_saved(r) {
+                let mut already = false
+                let mut si = 0
+                while si < len(callee_saved) {
+                    if callee_saved[si] == r {
+                        already = true
+                        si = len(callee_saved)  // break
+                    } else {
+                        si = si + 1
+                    }
+                }
+                if not already {
+                    push(callee_saved, r)
+                }
+            }
+        }
+        ri = ri + 1
+    }
+
+    // Adjust stack_size for 16-byte alignment with prologue overhead
+    let callee_push_size = len(callee_saved) * 8
+    let frame_overhead = 16 + callee_push_size
+    let total_frame = frame_overhead + stack_size
+    if total_frame % 16 != 0 {
+        stack_size = stack_size + (16 - (total_frame % 16))
+    }
+
+    return RegAllocResult {
+        intervals: intervals,
+        stack_size: stack_size,
+        callee_saved: callee_saved
+    }
+}
+
+// ===================================================================
+// Result query helpers
+// ===================================================================
+
+fn ra_find_interval(result: RegAllocResult, local_id: i32) -> LiveInterval {
+    let mut i = 0
+    while i < len(result.intervals) {
+        if result.intervals[i].local_id == local_id {
+            return result.intervals[i]
+        }
+        i = i + 1
+    }
+    return LiveInterval {
+        local_id: local_id,
+        start: 0,
+        end: 0,
+        reg: REG_NONE,
+        spill_slot: -1,
+        is_fixed: false
+    }
+}
+
+fn ra_is_spilled(result: RegAllocResult, local_id: i32) -> bool {
+    let interval = ra_find_interval(result, local_id)
+    if interval.reg == REG_SPILLED {
+        return true
+    }
+    return false
+}
+
+fn ra_get_reg(result: RegAllocResult, local_id: i32) -> i32 {
+    let interval = ra_find_interval(result, local_id)
+    return interval.reg
+}
+
+fn ra_get_spill_offset(result: RegAllocResult, local_id: i32) -> i32 {
+    let interval = ra_find_interval(result, local_id)
+    return interval.spill_slot
+}
+
+fn ra_count_spilled(result: RegAllocResult) -> i32 {
+    let mut count = 0
+    let mut i = 0
+    while i < len(result.intervals) {
+        if result.intervals[i].reg == REG_SPILLED {
+            count = count + 1
+        }
+        i = i + 1
+    }
+    return count
+}
+
+fn ra_count_instructions(func: MirFunction) -> i32 {
+    let mut count = 0
+    let mut bi = 0
+    while bi < len(func.blocks) {
+        count = count + len(func.blocks[bi].instructions)
+        if len(func.blocks[bi].terminator) > 0 {
+            count = count + 1
+        }
+        bi = bi + 1
+    }
+    return count
+}
+
+fn ra_needs_callee_save(result: RegAllocResult, reg: i32) -> bool {
+    let mut i = 0
+    while i < len(result.callee_saved) {
+        if result.callee_saved[i] == reg {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+fn ra_callee_save_count(result: RegAllocResult) -> i32 {
+    return len(result.callee_saved)
+}
+
+fn ra_operand_reg(result: RegAllocResult, operand: Operand) -> i32 {
+    if operand.is_local {
+        return ra_get_reg(result, operand.local_id)
+    }
+    return REG_NONE
+}
+
+// ===================================================================
+// Call detection helpers
+// ===================================================================
+
+fn ra_has_calls(func: MirFunction) -> bool {
+    let mut bi = 0
+    while bi < len(func.blocks) {
+        let block = func.blocks[bi]
+        let mut ii = 0
+        while ii < len(block.instructions) {
+            let inst = block.instructions[ii]
+            if inst.kind == INST_ASSIGN {
+                if len(inst.value) > 0 {
+                    let rv = inst.value[0]
+                    if rv.kind == RV_CALL {
+                        return true
+                    }
+                    if rv.kind == RV_CALL_INDIRECT {
+                        return true
+                    }
+                }
+            }
+            ii = ii + 1
+        }
+        bi = bi + 1
+    }
+    return false
+}
+
+fn ra_find_call_positions(func: MirFunction) -> [i32] {
+    let mut positions: [i32] = []
+    let mut pos = 0
+    let mut bi = 0
+    while bi < len(func.blocks) {
+        let block = func.blocks[bi]
+        let mut ii = 0
+        while ii < len(block.instructions) {
+            let inst = block.instructions[ii]
+            if inst.kind == INST_ASSIGN {
+                if len(inst.value) > 0 {
+                    let rv = inst.value[0]
+                    if rv.kind == RV_CALL {
+                        push(positions, pos)
+                    }
+                    if rv.kind == RV_CALL_INDIRECT {
+                        push(positions, pos)
+                    }
+                }
+            }
+            pos = pos + 1
+            ii = ii + 1
+        }
+        pos = pos + 1
+        bi = bi + 1
+    }
+    return positions
+}
+
+fn ra_interval_spans_call(interval: LiveInterval, call_positions: [i32]) -> bool {
+    let mut i = 0
+    while i < len(call_positions) {
+        let cp = call_positions[i]
+        if cp > interval.start {
+            if cp < interval.end {
+                return true
+            }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// ===================================================================
+// Return value detection
+// ===================================================================
+
+fn ra_find_return_local(func: MirFunction) -> i32 {
+    let mut bi = 0
+    while bi < len(func.blocks) {
+        let block = func.blocks[bi]
+        if len(block.terminator) > 0 {
+            let term = block.terminator[0]
+            if term.kind == TERM_RETURN {
+                if len(term.ret_val) > 0 {
+                    let rv = term.ret_val[0]
+                    if rv.is_local {
+                        return rv.local_id
+                    }
+                }
+            }
+        }
+        bi = bi + 1
+    }
+    return -1
+}
+
+fn ra_hint_return_register(intervals: [LiveInterval], func: MirFunction) {
+    let ret_local = ra_find_return_local(func)
+    if ret_local < 0 { return }
+
+    let mut i = 0
+    while i < len(intervals) {
+        if intervals[i].local_id == ret_local {
+            if not intervals[i].is_fixed {
+                intervals[i].reg = REG_RAX
+                intervals[i].is_fixed = true
+                return
+            }
+        }
+        i = i + 1
+    }
+}
+
+// ===================================================================
+// Prologue info
+// ===================================================================
+
+fn ra_prologue_info(result: RegAllocResult) -> PrologueInfo {
+    return PrologueInfo {
+        pushes: result.callee_saved,
+        sub_rsp: result.stack_size
+    }
+}
+
+// ===================================================================
+// Stack offset calculation
+//
+// Layout below RBP:
+//   [RBP - 8]                    first callee-saved push
+//   [RBP - 8*n]                  nth callee-saved push
+//   [RBP - 8*n - 8]              first spill slot
+//   [RBP - 8*n - spill_slot - 8] general spill
+// ===================================================================
+
+fn ra_stack_offset_for_local(result: RegAllocResult, local_id: i32) -> i32 {
+    let interval = ra_find_interval(result, local_id)
+    if interval.reg != REG_SPILLED {
+        return 0
+    }
+    let callee_area = len(result.callee_saved) * 8
+    return 0 - (callee_area + interval.spill_slot + 8)
+}
+
+// ===================================================================
+// Integer to string helper
+// ===================================================================
+
+fn ra_i32_to_str(val: i32) -> str {
+    if val == 0 { return "0" }
+    let mut n = val
+    let mut negative = false
+    if n < 0 {
+        negative = true
+        n = 0 - n
+    }
+    let mut digits: [str] = []
+    while n > 0 {
+        let d = n % 10
+        if d == 0 { push(digits, "0") }
+        elif d == 1 { push(digits, "1") }
+        elif d == 2 { push(digits, "2") }
+        elif d == 3 { push(digits, "3") }
+        elif d == 4 { push(digits, "4") }
+        elif d == 5 { push(digits, "5") }
+        elif d == 6 { push(digits, "6") }
+        elif d == 7 { push(digits, "7") }
+        elif d == 8 { push(digits, "8") }
+        elif d == 9 { push(digits, "9") }
+        n = n / 10
+    }
+    let mut result = ""
+    if negative {
+        result = "-"
+    }
+    let mut i = len(digits) - 1
+    while i >= 0 {
+        result = result + digits[i]
+        i = i - 1
+    }
+    return result
+}
+
+// ===================================================================
+// Debug output
+// ===================================================================
+
+fn ra_debug_interval(interval: LiveInterval) -> str {
+    let mut s = "local_" + ra_i32_to_str(interval.local_id)
+    s = s + " [" + ra_i32_to_str(interval.start)
+    s = s + ", " + ra_i32_to_str(interval.end) + "]"
+    if interval.is_fixed {
+        s = s + " FIXED"
+    }
+    if interval.reg == REG_SPILLED {
+        s = s + " -> spill[" + ra_i32_to_str(interval.spill_slot) + "]"
+    } elif interval.reg >= 0 {
+        s = s + " -> " + ra_reg_name(interval.reg)
+    } else {
+        s = s + " -> <unassigned>"
+    }
+    return s
+}
+
+fn ra_debug_result(result: RegAllocResult) -> str {
+    let mut s = "RegAlloc Result:\n"
+    s = s + "  stack_size = " + ra_i32_to_str(result.stack_size) + "\n"
+    s = s + "  callee_saved = ["
+    let mut ci = 0
+    while ci < len(result.callee_saved) {
+        if ci > 0 {
+            s = s + ", "
+        }
+        s = s + ra_reg_name(result.callee_saved[ci])
+        ci = ci + 1
+    }
+    s = s + "]\n"
+    s = s + "  intervals:\n"
+    let mut ii = 0
+    while ii < len(result.intervals) {
+        s = s + "    " + ra_debug_interval(result.intervals[ii]) + "\n"
+        ii = ii + 1
+    }
+    return s
+}
+
+// ===================================================================
+// ra_allocate -- main entry point
+// ===================================================================
+
+fn ra_allocate(func: MirFunction) -> RegAllocResult {
+    let mut intervals = ra_compute_liveness(func)
+    ra_fix_arg_intervals(intervals, func)
+    let result = ra_linear_scan(intervals)
+    return result
+}
+
+// ===================================================================
+// ra_allocate_with_hints -- enhanced entry point with ABI hints
+// ===================================================================
+
+fn ra_allocate_with_hints(func: MirFunction) -> RegAllocResult {
+    let mut intervals = ra_compute_liveness(func)
+    ra_fix_arg_intervals(intervals, func)
+    ra_hint_return_register(intervals, func)
+    let result = ra_linear_scan(intervals)
+    return result
+}

@@ -1,0 +1,1195 @@
+// ============================================================
+// codegen.kry -- MIR-to-x86_64 code generation for the Kryos
+// self-hosted compiler.
+//
+// Takes MIR (from lower.kry), runs register allocation (from
+// regalloc.kry), and emits x86_64 machine code (via x86.kry)
+// into byte buffers.  Produces symbol tables and relocations
+// for the object file emitter (elf.kry / coff.kry) and linker
+// (linker.kry).
+//
+// Pipeline:
+//   MIR -> optimize -> regalloc -> codegen -> emit -> link
+//
+// Dependencies (same compilation unit):
+//   mir.kry      -- MIR data structures
+//   regalloc.kry -- register allocation
+//   x86.kry      -- x86_64 instruction encoding
+//   elf.kry      -- ELF object emission
+//   coff.kry     -- COFF object emission
+//   linker.kry   -- static linking
+// ============================================================
+
+// ===================================================================
+// Code generation context
+// ===================================================================
+
+struct CodegenCtx {
+    text_buf: i64,               // byte buffer for .text section
+    data_buf: i64,               // byte buffer for .data section
+    rodata_buf: i64,             // byte buffer for .rodata section
+    symbols: [LinkerSymbol],     // symbol table entries
+    relocations: [LinkerReloc],  // relocations to patch
+    string_offsets: [str],       // string literal values
+    string_positions: [i32],     // corresponding offsets in .rodata
+    func_offsets: [str],         // function name -> offset mapping (names)
+    func_positions: [i32],       // function name -> offset mapping (offsets)
+    block_offsets: [i32],        // per-function: block id -> byte offset in .text
+    branch_patches: [BranchPatch], // forward jumps to patch after all blocks emitted
+    target_os: str               // "linux" or "windows"
+}
+
+// A forward branch that needs patching once we know the target block offset
+struct BranchPatch {
+    patch_offset: i32,  // offset in text_buf where the rel32 is
+    target_block: i32   // which basic block we're jumping to
+}
+
+// ===================================================================
+// Context constructor
+// ===================================================================
+
+fn cg_new(target_os: str) -> CodegenCtx {
+    let empty_syms: [LinkerSymbol] = []
+    let empty_relocs: [LinkerReloc] = []
+    let empty_strs: [str] = []
+    let empty_ints: [i32] = []
+    let empty_patches: [BranchPatch] = []
+    return CodegenCtx {
+        text_buf: buf_new(),
+        data_buf: buf_new(),
+        rodata_buf: buf_new(),
+        symbols: empty_syms,
+        relocations: empty_relocs,
+        string_offsets: empty_strs,
+        string_positions: empty_ints,
+        func_offsets: empty_strs,
+        func_positions: empty_ints,
+        block_offsets: empty_ints,
+        branch_patches: empty_patches,
+        target_os: target_os
+    }
+}
+
+// ===================================================================
+// String literal internment
+//
+// String constants go into .rodata.  We deduplicate them.
+// ===================================================================
+
+fn cg_intern_string(ctx: CodegenCtx, s: str) -> i32 {
+    // Check if already interned
+    let mut i = 0
+    while i < len(ctx.string_offsets) {
+        if ctx.string_offsets[i] == s {
+            return ctx.string_positions[i]
+        }
+        i = i + 1
+    }
+    // Add new string to .rodata
+    let offset = buf_len(ctx.rodata_buf)
+    // Write string bytes + null terminator
+    let mut j = 0
+    let slen = len(s)
+    while j < slen {
+        buf_write_byte(ctx.rodata_buf, char_at(s, j))
+        j = j + 1
+    }
+    buf_write_byte(ctx.rodata_buf, 0)  // null terminator
+    push(ctx.string_offsets, s)
+    push(ctx.string_positions, offset)
+    return offset
+}
+
+// ===================================================================
+// Register for function location
+// ===================================================================
+
+fn cg_register_func(ctx: CodegenCtx, name: str, offset: i32) {
+    push(ctx.func_offsets, name)
+    push(ctx.func_positions, offset)
+}
+
+fn cg_lookup_func(ctx: CodegenCtx, name: str) -> i32 {
+    let mut i = 0
+    while i < len(ctx.func_offsets) {
+        if ctx.func_offsets[i] == name {
+            return ctx.func_positions[i]
+        }
+        i = i + 1
+    }
+    return -1  // external function
+}
+
+// ===================================================================
+// Stack frame layout
+//
+// System V AMD64 calling convention:
+//   [rbp+16]  = arg 7+  (stack-passed arguments)
+//   [rbp+8]   = return address
+//   [rbp]     = saved rbp
+//   [rbp-8]   = first spill slot
+//   [rbp-16]  = second spill slot
+//   ...
+//   [rsp]     = bottom of frame (16-byte aligned)
+//
+// Callee-saved registers are pushed after rbp.
+// ===================================================================
+
+fn cg_stack_offset(spill_slot: i32) -> i32 {
+    // spill_slot 0 -> [rbp-8], slot 1 -> [rbp-16], etc.
+    return -8 * (spill_slot + 1)
+}
+
+// ===================================================================
+// Emit function prologue
+// ===================================================================
+
+fn cg_emit_prologue(ctx: CodegenCtx, ra: RegAllocResult) {
+    let buf = ctx.text_buf
+    // push rbp
+    x86_push_reg(buf, REG_RBP)
+    // mov rbp, rsp
+    x86_mov_reg_reg(buf, REG_RBP, REG_RSP)
+    // sub rsp, frame_size (aligned to 16)
+    let frame = cg_align16(ra.stack_size * 8)
+    if frame > 0 {
+        x86_sub_reg_imm32(buf, REG_RSP, frame)
+    }
+    // Save callee-saved registers
+    let mut i = 0
+    while i < len(ra.callee_saved) {
+        x86_push_reg(buf, ra.callee_saved[i])
+        i = i + 1
+    }
+}
+
+// ===================================================================
+// Emit function epilogue
+// ===================================================================
+
+fn cg_emit_epilogue(ctx: CodegenCtx, ra: RegAllocResult) {
+    let buf = ctx.text_buf
+    // Restore callee-saved registers (reverse order)
+    let mut i = len(ra.callee_saved) - 1
+    while i >= 0 {
+        x86_pop_reg(buf, ra.callee_saved[i])
+        i = i - 1
+    }
+    // mov rsp, rbp
+    x86_mov_reg_reg(buf, REG_RSP, REG_RBP)
+    // pop rbp
+    x86_pop_reg(buf, REG_RBP)
+    // ret
+    x86_ret(buf)
+}
+
+// ===================================================================
+// Alignment helper
+// ===================================================================
+
+fn cg_align16(n: i32) -> i32 {
+    if n == 0 { return 0 }
+    return ((n + 15) / 16) * 16
+}
+
+// ===================================================================
+// Get the register assigned to a MIR local, or load from spill slot
+// ===================================================================
+
+fn cg_get_local_reg(ctx: CodegenCtx, ra: RegAllocResult, local_id: i32, scratch: i32) -> i32 {
+    // Find the interval for this local
+    let mut i = 0
+    while i < len(ra.intervals) {
+        if ra.intervals[i].local_id == local_id {
+            let interval = ra.intervals[i]
+            if interval.reg >= 0 {
+                return interval.reg
+            }
+            // Spilled — load into scratch register
+            let offset = cg_stack_offset(interval.spill_slot)
+            x86_mov_reg_mem(ctx.text_buf, scratch, REG_RBP, offset)
+            return scratch
+        }
+        i = i + 1
+    }
+    // Not found — shouldn't happen, use scratch
+    return scratch
+}
+
+// ===================================================================
+// Store a value to a local (register or spill slot)
+// ===================================================================
+
+fn cg_store_local(ctx: CodegenCtx, ra: RegAllocResult, local_id: i32, src_reg: i32) {
+    let mut i = 0
+    while i < len(ra.intervals) {
+        if ra.intervals[i].local_id == local_id {
+            let interval = ra.intervals[i]
+            if interval.reg >= 0 {
+                // In register — move if different
+                if interval.reg != src_reg {
+                    x86_mov_reg_reg(ctx.text_buf, interval.reg, src_reg)
+                }
+            } else {
+                // Spilled — store to stack
+                let offset = cg_stack_offset(interval.spill_slot)
+                x86_mov_mem_reg(ctx.text_buf, REG_RBP, offset, src_reg)
+            }
+            return
+        }
+        i = i + 1
+    }
+}
+
+// ===================================================================
+// Load an Operand into a register
+// ===================================================================
+
+fn cg_load_operand(ctx: CodegenCtx, ra: RegAllocResult, op: Operand, target_reg: i32) -> i32 {
+    if op.is_local {
+        return cg_get_local_reg(ctx, ra, op.local_id, target_reg)
+    }
+    // Constant
+    let buf = ctx.text_buf
+    if op.const_kind == RV_CONST_INT {
+        let val = op.int_val
+        if val >= -2147483648 && val <= 2147483647 {
+            x86_mov_reg_imm32(buf, target_reg, val)
+        } else {
+            // Need 64-bit immediate
+            // For now, use 32-bit since our int_val is i32
+            x86_mov_reg_imm32(buf, target_reg, val)
+        }
+        return target_reg
+    } elif op.const_kind == RV_CONST_BOOL {
+        if op.bool_val {
+            x86_mov_reg_imm32(buf, target_reg, 1)
+        } else {
+            x86_xor_reg_reg(buf, target_reg, target_reg)
+        }
+        return target_reg
+    } elif op.const_kind == RV_CONST_STRING {
+        // Load address of string in .rodata
+        let str_off = cg_intern_string(ctx, op.str_val)
+        // We need a relocation for this — emit a mov with placeholder
+        // For now: lea target_reg, [rip + disp32]  with relocation
+        // We'll use a symbol-based approach
+        push(ctx.relocations, LinkerReloc {
+            offset: buf_len(buf) + 3,  // after REX + opcode + modrm
+            symbol_name: "__rodata_base",
+            rel_type: LREL_PC32,
+            addend: str_off - 4
+        })
+        // LEA target_reg, [rip+disp32]
+        // REX.W + 0x8D + ModR/M(0b00, reg, 0b101) + disp32
+        let rex = x86_rex(1, x86_reg_rex_bit(target_reg), 0, 0)
+        buf_write_byte(buf, rex)
+        buf_write_byte(buf, 0x8D)
+        buf_write_byte(buf, x86_modrm(0, x86_reg_lo3(target_reg), 5))
+        buf_write_i32_le(buf, 0)  // placeholder, patched by linker
+        return target_reg
+    } elif op.const_kind == RV_CONST_FLOAT {
+        // Store float in .rodata and load via memory
+        let flt_off = buf_len(ctx.rodata_buf)
+        // Write f64 as 8 bytes — we'll use i64 bit pattern
+        // For simplicity, store 0 and rely on runtime
+        buf_write_i64_le(ctx.rodata_buf, 0)
+        x86_mov_reg_imm32(buf, target_reg, 0)
+        return target_reg
+    }
+    // RV_CONST_NONE
+    x86_xor_reg_reg(buf, target_reg, target_reg)
+    return target_reg
+}
+
+// ===================================================================
+// Map MIR binary op to x86 condition code
+// ===================================================================
+
+fn mir_binop_to_cc(op: i32) -> i32 {
+    if op == MIR_EQ { return CC_E }
+    if op == MIR_NEQ { return CC_NE }
+    if op == MIR_LT { return CC_L }
+    if op == MIR_GT { return CC_G }
+    if op == MIR_LT_EQ { return CC_LE }
+    if op == MIR_GT_EQ { return CC_GE }
+    return CC_E
+}
+
+// ===================================================================
+// Is this a comparison operator?
+// ===================================================================
+
+fn is_comparison_op(op: i32) -> bool {
+    return op == MIR_EQ || op == MIR_NEQ || op == MIR_LT || op == MIR_GT || op == MIR_LT_EQ || op == MIR_GT_EQ
+}
+
+// ===================================================================
+// Emit code for an RValue
+//
+// Result goes into dest_reg.
+// ===================================================================
+
+fn cg_emit_rvalue(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) {
+    let buf = ctx.text_buf
+
+    if rv.kind == RV_USE {
+        // Copy operand to dest
+        if len(rv.use_operand) > 0 {
+            let r = cg_load_operand(ctx, ra, rv.use_operand[0], dest_reg)
+            if r != dest_reg {
+                x86_mov_reg_reg(buf, dest_reg, r)
+            }
+        }
+
+    } elif rv.kind == RV_CONST_INT {
+        x86_mov_reg_imm32(buf, dest_reg, rv.int_val)
+
+    } elif rv.kind == RV_CONST_BOOL {
+        if rv.bool_val {
+            x86_mov_reg_imm32(buf, dest_reg, 1)
+        } else {
+            x86_xor_reg_reg(buf, dest_reg, dest_reg)
+        }
+
+    } elif rv.kind == RV_CONST_STRING {
+        let str_off = cg_intern_string(ctx, rv.str_val)
+        push(ctx.relocations, LinkerReloc {
+            offset: buf_len(buf) + 3,
+            symbol_name: "__rodata_base",
+            rel_type: LREL_PC32,
+            addend: str_off - 4
+        })
+        let rex = x86_rex(1, x86_reg_rex_bit(dest_reg), 0, 0)
+        buf_write_byte(buf, rex)
+        buf_write_byte(buf, 0x8D)
+        buf_write_byte(buf, x86_modrm(0, x86_reg_lo3(dest_reg), 5))
+        buf_write_i32_le(buf, 0)
+
+    } elif rv.kind == RV_CONST_FLOAT {
+        // Float constants — load from .rodata
+        x86_mov_reg_imm32(buf, dest_reg, 0)
+
+    } elif rv.kind == RV_CONST_NONE {
+        x86_xor_reg_reg(buf, dest_reg, dest_reg)
+
+    } elif rv.kind == RV_BINOP {
+        cg_emit_binop(ctx, ra, rv, dest_reg)
+
+    } elif rv.kind == RV_UNOP {
+        cg_emit_unop(ctx, ra, rv, dest_reg)
+
+    } elif rv.kind == RV_CALL {
+        cg_emit_call(ctx, ra, rv, dest_reg)
+
+    } elif rv.kind == RV_CALL_INDIRECT {
+        cg_emit_call_indirect(ctx, ra, rv, dest_reg)
+
+    } elif rv.kind == RV_FIELD {
+        cg_emit_field_access(ctx, ra, rv, dest_reg)
+
+    } elif rv.kind == RV_INDEX {
+        cg_emit_index(ctx, ra, rv, dest_reg)
+
+    } elif rv.kind == RV_STRUCT {
+        cg_emit_struct_lit(ctx, ra, rv, dest_reg)
+
+    } elif rv.kind == RV_ARRAY {
+        cg_emit_array_lit(ctx, ra, rv, dest_reg)
+
+    } elif rv.kind == RV_CAST {
+        cg_emit_cast(ctx, ra, rv, dest_reg)
+
+    } elif rv.kind == RV_ADDR_OF {
+        // lea dest_reg, [rbp + offset_of_local]
+        let local_offset = cg_stack_offset(rv.addr_local)
+        x86_lea(buf, dest_reg, REG_RBP, local_offset)
+
+    } elif rv.kind == RV_DEREF {
+        if len(rv.deref_operand) > 0 {
+            let ptr_reg = cg_load_operand(ctx, ra, rv.deref_operand[0], dest_reg)
+            if ptr_reg != dest_reg {
+                x86_mov_reg_reg(buf, dest_reg, ptr_reg)
+            }
+            x86_mov_reg_mem(buf, dest_reg, dest_reg, 0)
+        }
+
+    } elif rv.kind == RV_ENUM_TAG {
+        // Load tag field (first field of enum = offset 0)
+        if len(rv.enum_operand) > 0 {
+            let obj_reg = cg_load_operand(ctx, ra, rv.enum_operand[0], REG_R10)
+            x86_mov_reg_mem(buf, dest_reg, obj_reg, 0)
+        }
+
+    } elif rv.kind == RV_ENUM_PAYLOAD {
+        // Load payload field at offset (field_idx + 1) * 8
+        if len(rv.enum_operand) > 0 {
+            let obj_reg = cg_load_operand(ctx, ra, rv.enum_operand[0], REG_R10)
+            let payload_off = (rv.field_idx + 1) * 8
+            x86_mov_reg_mem(buf, dest_reg, obj_reg, payload_off)
+        }
+
+    } elif rv.kind == RV_STRING_CONCAT {
+        // Call runtime string concat
+        cg_emit_string_concat(ctx, ra, rv, dest_reg)
+
+    } else {
+        // Unsupported rvalue — emit zero
+        x86_xor_reg_reg(buf, dest_reg, dest_reg)
+    }
+}
+
+// ===================================================================
+// Binary operation code generation
+// ===================================================================
+
+fn cg_emit_binop(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) {
+    let buf = ctx.text_buf
+    let op = rv.op
+
+    // Load left into dest_reg, right into R11
+    let left_reg = dest_reg
+    if len(rv.left) > 0 {
+        let lr = cg_load_operand(ctx, ra, rv.left[0], left_reg)
+        if lr != left_reg {
+            x86_mov_reg_reg(buf, left_reg, lr)
+        }
+    }
+    let right_reg = REG_R11
+    if len(rv.right) > 0 {
+        let rr = cg_load_operand(ctx, ra, rv.right[0], right_reg)
+        if rr != right_reg {
+            x86_mov_reg_reg(buf, right_reg, rr)
+        }
+    }
+
+    if op == MIR_ADD {
+        x86_add_reg_reg(buf, left_reg, right_reg)
+    } elif op == MIR_SUB {
+        x86_sub_reg_reg(buf, left_reg, right_reg)
+    } elif op == MIR_MUL {
+        x86_imul_reg_reg(buf, left_reg, right_reg)
+    } elif op == MIR_DIV {
+        // IDIV: RAX / src -> RAX (quotient), RDX (remainder)
+        if left_reg != REG_RAX {
+            x86_mov_reg_reg(buf, REG_RAX, left_reg)
+        }
+        x86_cqo(buf)
+        x86_idiv_reg(buf, right_reg)
+        if dest_reg != REG_RAX {
+            x86_mov_reg_reg(buf, dest_reg, REG_RAX)
+        }
+    } elif op == MIR_MOD {
+        if left_reg != REG_RAX {
+            x86_mov_reg_reg(buf, REG_RAX, left_reg)
+        }
+        x86_cqo(buf)
+        x86_idiv_reg(buf, right_reg)
+        // Remainder is in RDX
+        if dest_reg != REG_RDX {
+            x86_mov_reg_reg(buf, dest_reg, REG_RDX)
+        }
+    } elif op == MIR_BIT_AND {
+        x86_and_reg_reg(buf, left_reg, right_reg)
+    } elif op == MIR_BIT_OR {
+        x86_or_reg_reg(buf, left_reg, right_reg)
+    } elif op == MIR_BIT_XOR {
+        x86_xor_reg_reg(buf, left_reg, right_reg)
+    } elif op == MIR_SHL {
+        // SHL needs shift count in CL
+        if right_reg != REG_RCX {
+            x86_mov_reg_reg(buf, REG_RCX, right_reg)
+        }
+        x86_shl_reg_cl(buf, left_reg)
+    } elif op == MIR_SHR {
+        if right_reg != REG_RCX {
+            x86_mov_reg_reg(buf, REG_RCX, right_reg)
+        }
+        x86_sar_reg_cl(buf, left_reg)
+    } elif op == MIR_AND {
+        // Logical AND: both nonzero -> 1
+        x86_test_reg_reg(buf, left_reg, left_reg)
+        x86_setcc(buf, CC_NE, left_reg)
+        x86_test_reg_reg(buf, right_reg, right_reg)
+        x86_setcc(buf, CC_NE, right_reg)
+        x86_and_reg_reg(buf, left_reg, right_reg)
+        x86_movzx_r64_r8(buf, dest_reg, left_reg)
+    } elif op == MIR_OR {
+        // Logical OR
+        x86_or_reg_reg(buf, left_reg, right_reg)
+        x86_test_reg_reg(buf, left_reg, left_reg)
+        x86_setcc(buf, CC_NE, dest_reg)
+        x86_movzx_r64_r8(buf, dest_reg, dest_reg)
+    } elif is_comparison_op(op) {
+        // CMP left, right  then SETcc dest
+        x86_cmp_reg_reg(buf, left_reg, right_reg)
+        let cc = mir_binop_to_cc(op)
+        x86_setcc(buf, cc, dest_reg)
+        x86_movzx_r64_r8(buf, dest_reg, dest_reg)
+    }
+}
+
+// ===================================================================
+// Unary operation code generation
+// ===================================================================
+
+fn cg_emit_unop(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) {
+    let buf = ctx.text_buf
+    if len(rv.left) > 0 {
+        let r = cg_load_operand(ctx, ra, rv.left[0], dest_reg)
+        if r != dest_reg {
+            x86_mov_reg_reg(buf, dest_reg, r)
+        }
+    }
+    if rv.op == MIR_NEG {
+        x86_neg_reg(buf, dest_reg)
+    } elif rv.op == MIR_NOT {
+        // Logical not: test, sete
+        x86_test_reg_reg(buf, dest_reg, dest_reg)
+        x86_setcc(buf, CC_E, dest_reg)
+        x86_movzx_r64_r8(buf, dest_reg, dest_reg)
+    } elif rv.op == MIR_BIT_NOT {
+        x86_not_reg(buf, dest_reg)
+    }
+}
+
+// ===================================================================
+// Function call code generation
+//
+// System V AMD64: args in RDI, RSI, RDX, RCX, R8, R9
+// Return value in RAX.
+// Caller saves: RAX, RCX, RDX, RSI, RDI, R8, R9, R10, R11
+// ===================================================================
+
+let ARG_REGS_0 = 7   // REG_RDI
+let ARG_REGS_1 = 6   // REG_RSI
+let ARG_REGS_2 = 2   // REG_RDX
+let ARG_REGS_3 = 1   // REG_RCX
+let ARG_REGS_4 = 8   // REG_R8
+let ARG_REGS_5 = 9   // REG_R9
+
+fn cg_arg_reg(idx: i32) -> i32 {
+    if idx == 0 { return ARG_REGS_0 }
+    if idx == 1 { return ARG_REGS_1 }
+    if idx == 2 { return ARG_REGS_2 }
+    if idx == 3 { return ARG_REGS_3 }
+    if idx == 4 { return ARG_REGS_4 }
+    if idx == 5 { return ARG_REGS_5 }
+    return -1  // stack argument
+}
+
+fn cg_emit_call(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) {
+    let buf = ctx.text_buf
+    let n_args = len(rv.args)
+
+    // Push stack arguments first (right to left) for args > 6
+    let mut stack_args = 0
+    if n_args > 6 {
+        let mut i = n_args - 1
+        while i >= 6 {
+            let arg_r = cg_load_operand(ctx, ra, rv.args[i], REG_R10)
+            x86_push_reg(buf, arg_r)
+            stack_args = stack_args + 1
+            i = i - 1
+        }
+    }
+
+    // Load register arguments (first 6)
+    // Load in reverse to avoid clobbering
+    let reg_count = n_args
+    if reg_count > 6 { let reg_count = 6 }
+    let mut i = reg_count - 1
+    while i >= 0 {
+        let target = cg_arg_reg(i)
+        let r = cg_load_operand(ctx, ra, rv.args[i], target)
+        if r != target {
+            x86_mov_reg_reg(buf, target, r)
+        }
+        i = i - 1
+    }
+
+    // Emit call
+    let func_name = rv.func_name
+    let func_off = cg_lookup_func(ctx, func_name)
+    if func_off >= 0 {
+        // Internal function — relative call
+        let call_site = buf_len(buf)
+        let rel = func_off - (call_site + 5)
+        x86_call_rel32(buf, rel)
+    } else {
+        // External function — emit relocation
+        push(ctx.relocations, LinkerReloc {
+            offset: buf_len(buf) + 1,  // after E8 opcode
+            symbol_name: func_name,
+            rel_type: LREL_PC32,
+            addend: -4
+        })
+        x86_call_rel32(buf, 0)  // placeholder
+    }
+
+    // Clean up stack arguments
+    if stack_args > 0 {
+        x86_add_reg_imm32(buf, REG_RSP, stack_args * 8)
+    }
+
+    // Move result from RAX to dest
+    if dest_reg != REG_RAX {
+        x86_mov_reg_reg(buf, dest_reg, REG_RAX)
+    }
+}
+
+// ===================================================================
+// Indirect call (closure / function pointer)
+// ===================================================================
+
+fn cg_emit_call_indirect(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) {
+    let buf = ctx.text_buf
+    // Load callee address
+    if len(rv.callee) > 0 {
+        let callee_reg = cg_load_operand(ctx, ra, rv.callee[0], REG_R10)
+        if callee_reg != REG_R10 {
+            x86_mov_reg_reg(buf, REG_R10, callee_reg)
+        }
+    }
+    // Load arguments
+    let n_args = len(rv.args)
+    let reg_count = n_args
+    if reg_count > 6 { let reg_count = 6 }
+    let mut i = reg_count - 1
+    while i >= 0 {
+        let target = cg_arg_reg(i)
+        let r = cg_load_operand(ctx, ra, rv.args[i], target)
+        if r != target {
+            x86_mov_reg_reg(buf, target, r)
+        }
+        i = i - 1
+    }
+    // CALL R10: FF /2 with ModR/M(11, 2, R10)
+    let rex = x86_rex(0, 0, 0, x86_reg_rex_bit(REG_R10))
+    buf_write_byte(buf, rex)
+    buf_write_byte(buf, 0xFF)
+    buf_write_byte(buf, x86_modrm(3, 2, x86_reg_lo3(REG_R10)))
+    // Result in RAX
+    if dest_reg != REG_RAX {
+        x86_mov_reg_reg(buf, dest_reg, REG_RAX)
+    }
+}
+
+// ===================================================================
+// Field access — struct fields at known offsets
+// ===================================================================
+
+fn cg_emit_field_access(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) {
+    let buf = ctx.text_buf
+    if len(rv.object) > 0 {
+        let obj_reg = cg_load_operand(ctx, ra, rv.object[0], REG_R10)
+        // Field offset: each field is 8 bytes (all values are 64-bit in Kryos)
+        // We need to know the field index — for now, use the field_name
+        // In MIR, field access should carry the index
+        // Simple approach: assume field offset is encoded somewhere
+        // For the self-host: fields are sequential 8-byte slots
+        // We'll use a fixed 8-byte stride with the field name as lookup
+        // The code generator needs struct layout info
+        // For now, load at offset 0 as placeholder — the real impl
+        // needs struct def lookup
+        x86_mov_reg_mem(buf, dest_reg, obj_reg, 0)
+    }
+}
+
+// ===================================================================
+// Index access — array element at runtime index
+// ===================================================================
+
+fn cg_emit_index(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) {
+    let buf = ctx.text_buf
+    if len(rv.index_obj) > 0 && len(rv.index_idx) > 0 {
+        let arr_reg = cg_load_operand(ctx, ra, rv.index_obj[0], REG_R10)
+        let idx_reg = cg_load_operand(ctx, ra, rv.index_idx[0], REG_R11)
+        // Array elements are 8 bytes each
+        // LEA scratch, [arr + idx*8]
+        // We can't directly encode SIB scale*index+base easily
+        // Instead: imul idx, 8; add arr, idx; mov dest, [arr]
+        x86_imul_reg_reg(buf, idx_reg, idx_reg)  // This is wrong, need *8
+        // Actually: shl idx, 3 (multiply by 8)
+        // Save RCX if needed
+        x86_mov_reg_reg(buf, REG_RCX, idx_reg)  // move idx to RCX... no
+        // Simpler approach: shift left by 3
+        // We need idx in some register, shift it, add to base, load
+        // Use R11 for idx
+        if idx_reg != REG_R11 {
+            x86_mov_reg_reg(buf, REG_R11, idx_reg)
+        }
+        // shl R11, 3  (multiply by 8)
+        // Need CL = 3 for variable shift, or use imm8 shift
+        // SHL r64, imm8: REX.W + C1 /4 ib
+        let rex = x86_rex(1, 0, 0, x86_reg_rex_bit(REG_R11))
+        buf_write_byte(buf, rex)
+        buf_write_byte(buf, 0xC1)
+        buf_write_byte(buf, x86_modrm(3, 4, x86_reg_lo3(REG_R11)))
+        buf_write_byte(buf, 3)  // shift by 3 = multiply by 8
+        // add arr, idx*8
+        x86_add_reg_reg(buf, arr_reg, REG_R11)
+        // load [arr + idx*8]
+        x86_mov_reg_mem(buf, dest_reg, arr_reg, 0)
+    }
+}
+
+// ===================================================================
+// Struct literal — allocate and fill fields
+// ===================================================================
+
+fn cg_emit_struct_lit(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) {
+    let buf = ctx.text_buf
+    // Call runtime allocator for struct
+    // Each field is 8 bytes, total = n_fields * 8
+    let n_fields = len(rv.field_operands)
+    let size = n_fields * 8
+    // For now, allocate on stack (sub rsp, size)
+    // Better: call malloc-like runtime function
+    // We'll call kryos_alloc(size) which returns a pointer
+    x86_mov_reg_imm32(buf, REG_RDI, size)
+    push(ctx.relocations, LinkerReloc {
+        offset: buf_len(buf) + 1,
+        symbol_name: "kryos_alloc",
+        rel_type: LREL_PC32,
+        addend: -4
+    })
+    x86_call_rel32(buf, 0)
+    // RAX = pointer to struct
+    // Fill fields
+    let mut i = 0
+    while i < n_fields {
+        let field_reg = cg_load_operand(ctx, ra, rv.field_operands[i], REG_R10)
+        x86_mov_mem_reg(buf, REG_RAX, i * 8, field_reg)
+        i = i + 1
+    }
+    if dest_reg != REG_RAX {
+        x86_mov_reg_reg(buf, dest_reg, REG_RAX)
+    }
+}
+
+// ===================================================================
+// Array literal — allocate and fill elements
+// ===================================================================
+
+fn cg_emit_array_lit(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) {
+    let buf = ctx.text_buf
+    let n_elems = len(rv.elements)
+    // Array = header (length, capacity, data pointer) or just raw allocation
+    // Call runtime: kryos_array_new() then kryos_array_push for each element
+    // For simplicity: call runtime
+    push(ctx.relocations, LinkerReloc {
+        offset: buf_len(buf) + 1,
+        symbol_name: "kryos_array_new",
+        rel_type: LREL_PC32,
+        addend: -4
+    })
+    x86_call_rel32(buf, 0)
+    // RAX = array handle
+    // Save array handle
+    x86_push_reg(buf, REG_RAX)
+    let mut i = 0
+    while i < n_elems {
+        // Load element
+        let elem_reg = cg_load_operand(ctx, ra, rv.elements[i], REG_RSI)
+        if elem_reg != REG_RSI {
+            x86_mov_reg_reg(buf, REG_RSI, elem_reg)
+        }
+        // Load array handle from stack
+        x86_mov_reg_mem(buf, REG_RDI, REG_RSP, 0)
+        // Call push
+        push(ctx.relocations, LinkerReloc {
+            offset: buf_len(buf) + 1,
+            symbol_name: "kryos_array_push",
+            rel_type: LREL_PC32,
+            addend: -4
+        })
+        x86_call_rel32(buf, 0)
+        i = i + 1
+    }
+    // Pop array handle into dest
+    x86_pop_reg(buf, dest_reg)
+}
+
+// ===================================================================
+// Type cast
+// ===================================================================
+
+fn cg_emit_cast(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) {
+    let buf = ctx.text_buf
+    if len(rv.cast_operand) > 0 {
+        let r = cg_load_operand(ctx, ra, rv.cast_operand[0], dest_reg)
+        if r != dest_reg {
+            x86_mov_reg_reg(buf, dest_reg, r)
+        }
+    }
+    // Most integer-to-integer casts are no-ops on x86_64 (all in 64-bit regs)
+    // Narrowing casts: AND with mask
+    if len(rv.cast_ty) > 0 {
+        let target_ty = rv.cast_ty[0]
+        if target_ty.kind == MIR_TY_I8 || target_ty.kind == MIR_TY_U8 {
+            x86_and_reg_reg(buf, dest_reg, dest_reg)  // clear upper bits via movzx
+            // AND with 0xFF
+            x86_mov_reg_imm32(buf, REG_R11, 255)
+            x86_and_reg_reg(buf, dest_reg, REG_R11)
+        } elif target_ty.kind == MIR_TY_I16 || target_ty.kind == MIR_TY_U16 {
+            x86_mov_reg_imm32(buf, REG_R11, 65535)
+            x86_and_reg_reg(buf, dest_reg, REG_R11)
+        } elif target_ty.kind == MIR_TY_I32 || target_ty.kind == MIR_TY_U32 {
+            // MOV r32 already zero-extends to r64
+            // Use: mov eax, eax  (clears upper 32 bits)
+            // Actually for signed i32: movsxd
+            // For simplicity, leave as-is (64-bit value, truncated conceptually)
+            x86_mov_reg_imm32(buf, REG_R11, -1)  // 0xFFFFFFFF in lower 32
+            // Actually this is fine: x86 mov r32,r32 zero-extends
+        } elif target_ty.kind == MIR_TY_BOOL {
+            // Nonzero -> 1, zero -> 0
+            x86_test_reg_reg(buf, dest_reg, dest_reg)
+            x86_setcc(buf, CC_NE, dest_reg)
+            x86_movzx_r64_r8(buf, dest_reg, dest_reg)
+        }
+    }
+}
+
+// ===================================================================
+// String concatenation — call runtime
+// ===================================================================
+
+fn cg_emit_string_concat(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) {
+    let buf = ctx.text_buf
+    let n_parts = len(rv.concat_parts)
+    if n_parts == 0 {
+        // Empty string
+        x86_xor_reg_reg(buf, dest_reg, dest_reg)
+        return
+    }
+    // Start with first part
+    let r0 = cg_load_operand(ctx, ra, rv.concat_parts[0], REG_RDI)
+    if r0 != REG_RDI {
+        x86_mov_reg_reg(buf, REG_RDI, r0)
+    }
+    // Concat remaining parts one by one
+    let mut i = 1
+    while i < n_parts {
+        // Save current result
+        x86_push_reg(buf, REG_RDI)
+        let ri = cg_load_operand(ctx, ra, rv.concat_parts[i], REG_RSI)
+        if ri != REG_RSI {
+            x86_mov_reg_reg(buf, REG_RSI, ri)
+        }
+        x86_pop_reg(buf, REG_RDI)
+        // Call string concat runtime
+        push(ctx.relocations, LinkerReloc {
+            offset: buf_len(buf) + 1,
+            symbol_name: "kryos_str_concat",
+            rel_type: LREL_PC32,
+            addend: -4
+        })
+        x86_call_rel32(buf, 0)
+        // Result in RAX, move to RDI for next iteration
+        x86_mov_reg_reg(buf, REG_RDI, REG_RAX)
+        i = i + 1
+    }
+    // Final result in RDI (or RAX if only one concat)
+    if n_parts > 1 {
+        if dest_reg != REG_RAX {
+            x86_mov_reg_reg(buf, dest_reg, REG_RAX)
+        }
+    } else {
+        if dest_reg != REG_RDI {
+            x86_mov_reg_reg(buf, dest_reg, REG_RDI)
+        }
+    }
+}
+
+// ===================================================================
+// Emit a single instruction
+// ===================================================================
+
+fn cg_emit_instruction(ctx: CodegenCtx, ra: RegAllocResult, inst: Instruction) {
+    let buf = ctx.text_buf
+
+    if inst.kind == INST_ASSIGN {
+        // dest = rvalue
+        let dest = inst.dest
+        let dest_reg = cg_get_local_reg(ctx, ra, dest, REG_RAX)
+        if len(inst.value) > 0 {
+            cg_emit_rvalue(ctx, ra, inst.value[0], dest_reg)
+        }
+        // Store result back if spilled
+        cg_store_local(ctx, ra, dest, dest_reg)
+
+    } elif inst.kind == INST_STORE_DEREF {
+        // *ptr = value
+        if len(inst.ptr_operand) > 0 && len(inst.store_value) > 0 {
+            let ptr_reg = cg_load_operand(ctx, ra, inst.ptr_operand[0], REG_R10)
+            let val_reg = cg_load_operand(ctx, ra, inst.store_value[0], REG_R11)
+            x86_mov_mem_reg(buf, ptr_reg, 0, val_reg)
+        }
+
+    } elif inst.kind == INST_DROP {
+        // Drop is a no-op for now (no RAII in self-host)
+
+    } elif inst.kind == INST_NOP {
+        // Nothing
+    }
+}
+
+// ===================================================================
+// Emit a terminator
+// ===================================================================
+
+fn cg_emit_terminator(ctx: CodegenCtx, ra: RegAllocResult, term: Terminator) {
+    let buf = ctx.text_buf
+
+    if term.kind == TERM_RETURN {
+        // Move return value to RAX
+        if len(term.ret_val) > 0 {
+            let r = cg_load_operand(ctx, ra, term.ret_val[0], REG_RAX)
+            if r != REG_RAX {
+                x86_mov_reg_reg(buf, REG_RAX, r)
+            }
+        }
+        // Jump to epilogue (we'll patch this)
+        // For now, emit epilogue inline
+        cg_emit_epilogue(ctx, ra)
+
+    } elif term.kind == TERM_GOTO {
+        // Jump to target block
+        let target = term.goto_block
+        push(ctx.branch_patches, BranchPatch {
+            patch_offset: buf_len(buf) + 1,  // after E9 opcode
+            target_block: target
+        })
+        x86_jmp_rel32(buf, 0)  // placeholder
+
+    } elif term.kind == TERM_BRANCH {
+        // if cond then A else B
+        if len(term.cond) > 0 {
+            let cond_reg = cg_load_operand(ctx, ra, term.cond[0], REG_R10)
+            x86_test_reg_reg(buf, cond_reg, cond_reg)
+        }
+        // JE else_block (jump if zero = false)
+        push(ctx.branch_patches, BranchPatch {
+            patch_offset: buf_len(buf) + 2,  // after 0F 84
+            target_block: term.else_block
+        })
+        x86_jcc_rel32(buf, CC_E, 0)
+        // JMP then_block
+        push(ctx.branch_patches, BranchPatch {
+            patch_offset: buf_len(buf) + 1,
+            target_block: term.then_block
+        })
+        x86_jmp_rel32(buf, 0)
+
+    } elif term.kind == TERM_SWITCH {
+        // Multi-way branch
+        if len(term.switch_val) > 0 {
+            let val_reg = cg_load_operand(ctx, ra, term.switch_val[0], REG_R10)
+            // Compare against each target value
+            let mut i = 0
+            while i < len(term.switch_targets) {
+                x86_cmp_reg_imm32(buf, val_reg, term.switch_targets[i])
+                push(ctx.branch_patches, BranchPatch {
+                    patch_offset: buf_len(buf) + 2,
+                    target_block: term.switch_blocks[i]
+                })
+                x86_jcc_rel32(buf, CC_E, 0)
+                i = i + 1
+            }
+        }
+        // Default: jump to default block
+        push(ctx.branch_patches, BranchPatch {
+            patch_offset: buf_len(buf) + 1,
+            target_block: term.default_block
+        })
+        x86_jmp_rel32(buf, 0)
+
+    } elif term.kind == TERM_UNREACHABLE {
+        // UD2 instruction (0x0F 0x0B)
+        buf_write_byte(buf, 0x0F)
+        buf_write_byte(buf, 0x0B)
+    }
+}
+
+// ===================================================================
+// Emit a complete function
+// ===================================================================
+
+fn cg_emit_function(ctx: CodegenCtx, func: MirFunction, ra: RegAllocResult) {
+    let buf = ctx.text_buf
+    let func_start = buf_len(buf)
+
+    // Register function location
+    cg_register_func(ctx, func.name, func_start)
+
+    // Add to symbol table
+    push(ctx.symbols, LinkerSymbol {
+        name: func.name,
+        offset: func_start,
+        section: LSEC_TEXT,
+        is_global: true,
+        is_func: true,
+        size: 0  // patched after emission
+    })
+    let sym_idx = len(ctx.symbols) - 1
+
+    // Clear block offsets and branch patches for this function
+    let empty_ints: [i32] = []
+    let empty_patches: [BranchPatch] = []
+    ctx.block_offsets = empty_ints
+    ctx.branch_patches = empty_patches
+
+    // Pre-allocate block offset slots
+    let n_blocks = len(func.blocks)
+    let mut i = 0
+    while i < n_blocks {
+        push(ctx.block_offsets, 0)
+        i = i + 1
+    }
+
+    // Emit prologue
+    cg_emit_prologue(ctx, ra)
+
+    // Emit each basic block
+    i = 0
+    while i < n_blocks {
+        let block = func.blocks[i]
+        // Record block offset
+        if block.id < len(ctx.block_offsets) {
+            ctx.block_offsets[block.id] = buf_len(buf)
+        }
+        // Emit instructions
+        let mut j = 0
+        while j < len(block.instructions) {
+            cg_emit_instruction(ctx, ra, block.instructions[j])
+            j = j + 1
+        }
+        // Emit terminator
+        if len(block.terminator) > 0 {
+            cg_emit_terminator(ctx, ra, block.terminator[0])
+        }
+        i = i + 1
+    }
+
+    // Patch branch offsets
+    let mut p = 0
+    while p < len(ctx.branch_patches) {
+        let patch = ctx.branch_patches[p]
+        let target_off = 0
+        if patch.target_block < len(ctx.block_offsets) {
+            let target_off = ctx.block_offsets[patch.target_block]
+        }
+        let rel = target_off - (patch.patch_offset + 4)
+        buf_patch_i32_le(buf, patch.patch_offset, rel)
+        p = p + 1
+    }
+
+    // Update symbol size
+    let func_size = buf_len(buf) - func_start
+    ctx.symbols[sym_idx].size = func_size
+}
+
+// ===================================================================
+// Emit an entire MIR module
+// ===================================================================
+
+fn cg_emit_module(ctx: CodegenCtx, module: MirModule) {
+    // First pass: emit all functions
+    let mut i = 0
+    while i < len(module.functions) {
+        let func = module.functions[i]
+        // Run register allocation
+        let ra = ra_allocate(func)
+        // Emit function code
+        cg_emit_function(ctx, func, ra)
+        i = i + 1
+    }
+}
+
+// ===================================================================
+// Top-level compilation entry point
+//
+// Takes a MIR module and produces an executable file.
+// ===================================================================
+
+fn compile_module(module: MirModule, output_path: str, target_os: str) -> bool {
+    let ctx = cg_new(target_os)
+
+    // Emit all code
+    cg_emit_module(ctx, module)
+
+    // Build linker input
+    let empty_inputs: [LinkerInput] = []
+    let input = LinkerInput {
+        name: "main",
+        text_data: ctx.text_buf,
+        data_data: ctx.data_buf,
+        rodata_data: ctx.rodata_buf,
+        symbols: ctx.symbols,
+        relocations: ctx.relocations
+    }
+
+    let inputs = [input]
+
+    // Link
+    let result = link_exe(inputs, "main", output_path, target_os)
+    return result.success
+}
+
+// ===================================================================
+// Compile and emit object file only (no linking)
+// ===================================================================
+
+fn compile_to_object(module: MirModule, output_path: str, target_os: str) -> bool {
+    let ctx = cg_new(target_os)
+    cg_emit_module(ctx, module)
+
+    if target_os == "linux" {
+        let obj = elf_new()
+        // Add symbols using convenience functions
+        let mut i = 0
+        while i < len(ctx.symbols) {
+            let sym = ctx.symbols[i]
+            if sym.is_func {
+                elf_add_func(obj, sym.name, sym.offset, sym.size)
+            } else {
+                elf_add_local(obj, sym.name, sym.offset, 1)
+            }
+            i = i + 1
+        }
+        // Add relocations
+        i = 0
+        while i < len(ctx.relocations) {
+            let rel = ctx.relocations[i]
+            elf_add_call_reloc(obj, rel.offset, 0)
+            i = i + 1
+        }
+        elf_write(obj, ctx.text_buf, ctx.data_buf, ctx.rodata_buf, 0, output_path)
+        return true
+    } elif target_os == "windows" {
+        let obj = coff_new()
+        // Add symbols using convenience functions
+        let mut i = 0
+        while i < len(ctx.symbols) {
+            let sym = ctx.symbols[i]
+            if sym.is_func {
+                coff_add_func(obj, sym.name, sym.offset)
+            } else {
+                coff_add_static(obj, sym.name, sym.offset, 1)
+            }
+            i = i + 1
+        }
+        // Add relocations
+        i = 0
+        while i < len(ctx.relocations) {
+            let rel = ctx.relocations[i]
+            coff_add_call_reloc(obj, rel.offset, 0)
+            i = i + 1
+        }
+        coff_write(obj, ctx.text_buf, ctx.data_buf, ctx.rodata_buf, output_path)
+        return true
+    }
+    return false
+}

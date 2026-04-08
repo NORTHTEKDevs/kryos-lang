@@ -1,0 +1,692 @@
+// ============================================================
+// elf.kry -- ELF64 relocatable object file emitter for the
+// Kryos self-hosted compiler (Linux x86-64).
+//
+// Produces a standard ELF64 .o file that can be linked by
+// ld, lld, or gcc.  The emitter constructs the full file
+// layout in memory using byte buffer builtins, then writes
+// it to disk in one shot.
+//
+// Sections emitted:
+//   [0] null        (required by ELF)
+//   [1] .text       (code, SHT_PROGBITS, SHF_ALLOC|SHF_EXECINSTR)
+//   [2] .data       (initialized data, SHT_PROGBITS, SHF_ALLOC|SHF_WRITE)
+//   [3] .rodata     (read-only data, SHT_PROGBITS, SHF_ALLOC)
+//   [4] .bss        (uninitialized data, SHT_NOBITS, SHF_ALLOC|SHF_WRITE)
+//   [5] .symtab     (symbol table)
+//   [6] .strtab     (string table for symbols)
+//   [7] .shstrtab   (section header string table)
+//   [8] .rela.text  (relocations for .text)
+//
+// Architecture:
+//   - Symbols and relocations are stored as parallel arrays of
+//     scalar fields (names, values, binds, etc.) rather than as
+//     arrays of structs, to avoid ownership-move issues in the
+//     Kryos type checker.
+//   - The strtab is a byte buffer handle (i64) that accumulates
+//     null-terminated strings.
+//   - elf_write builds symtab + rela inline to avoid passing the
+//     entire object to sub-functions.
+//
+// Dependencies (byte buffer builtins):
+//   buf_new, buf_write_byte, buf_write_i16_le, buf_write_i32_le,
+//   buf_write_i64_le, buf_write_zeros, buf_write_str, buf_len,
+//   buf_patch_i32_le, buf_patch_i64_le, buf_write_to_file, buf_free
+// ============================================================
+
+// ===================================================================
+// ELF format constants
+// ===================================================================
+
+// ELF magic bytes
+let ELF_MAG0 = 0x7F
+let ELF_MAG1 = 0x45
+let ELF_MAG2 = 0x4C
+let ELF_MAG3 = 0x46
+
+// ELF class
+let ELFCLASS64 = 2
+
+// Data encoding
+let ELFDATA2LSB = 1
+
+// ELF version
+let EV_CURRENT = 1
+
+// OS/ABI
+let ELFOSABI_NONE = 0
+
+// Object type
+let ET_REL = 1
+
+// Machine type
+let EM_X86_64 = 62
+
+// Section types
+let SHT_NULL     = 0
+let SHT_PROGBITS = 1
+let SHT_SYMTAB   = 2
+let SHT_STRTAB   = 3
+let SHT_RELA     = 4
+let SHT_NOBITS   = 8
+
+// Section flags
+let SHF_WRITE     = 1
+let SHF_ALLOC     = 2
+let SHF_EXECINSTR = 4
+
+// Symbol binding
+let STB_LOCAL  = 0
+let STB_GLOBAL = 1
+
+// Symbol type
+let STT_NOTYPE  = 0
+let STT_FUNC    = 2
+let STT_SECTION = 3
+
+// Relocation types (x86-64)
+let R_X86_64_PC32  = 2
+let R_X86_64_PLT32 = 4
+let R_X86_64_32S   = 11
+
+// Special section indices
+let SHN_UNDEF = 0
+let SHN_ABS   = 0xFFF1
+
+// Number of fixed sections
+let ELF_NUM_SECTIONS = 9
+
+// Section indices
+let SEC_NULL     = 0
+let SEC_TEXT     = 1
+let SEC_DATA     = 2
+let SEC_RODATA   = 3
+let SEC_BSS      = 4
+let SEC_SYMTAB   = 5
+let SEC_STRTAB   = 6
+let SEC_SHSTRTAB = 7
+let SEC_RELA     = 8
+
+// ===================================================================
+// Data structure
+//
+// Parallel arrays store symbol and relocation fields to avoid
+// struct-of-arrays ownership issues in the checker.
+// ===================================================================
+
+struct ElfObject {
+    // Symbol parallel arrays
+    sym_names: [str],
+    sym_values: [i64],
+    sym_sizes: [i64],
+    sym_binds: [i64],
+    sym_types: [i64],
+    sym_sections: [i64],
+    // Relocation parallel arrays
+    rel_offsets: [i64],
+    rel_sym_idxs: [i64],
+    rel_types: [i64],
+    rel_addends: [i64],
+    // String table buffer handle
+    strtab: i64,
+    // Count of local symbols
+    local_count: i64
+}
+
+// ===================================================================
+// Constructor
+// ===================================================================
+
+fn elf_new() -> ElfObject {
+    let strtab = buf_new(256)
+    // String table starts with a null byte
+    buf_write_byte(strtab, 0)
+    return ElfObject {
+        sym_names: [],
+        sym_values: [],
+        sym_sizes: [],
+        sym_binds: [],
+        sym_types: [],
+        sym_sections: [],
+        rel_offsets: [],
+        rel_sym_idxs: [],
+        rel_types: [],
+        rel_addends: [],
+        strtab: strtab,
+        local_count: 0
+    }
+}
+
+// ===================================================================
+// Add a string to the string table, returns its offset
+// ===================================================================
+
+fn elf_add_string(strtab: i64, s: str) -> i64 {
+    let offset = buf_len(strtab)
+    buf_write_str(strtab, s)
+    buf_write_byte(strtab, 0)
+    return offset
+}
+
+// ===================================================================
+// Add a symbol, returns its index
+// ===================================================================
+
+fn elf_add_symbol(obj: ElfObject, name: str, value: i64, size: i64, bind: i64, sym_type: i64, section_idx: i64) -> i64 {
+    push(obj.sym_names, name)
+    push(obj.sym_values, value)
+    push(obj.sym_sizes, size)
+    push(obj.sym_binds, bind)
+    push(obj.sym_types, sym_type)
+    push(obj.sym_sections, section_idx)
+    if bind == STB_LOCAL {
+        obj.local_count = obj.local_count + 1
+    }
+    return len(obj.sym_names) - 1
+}
+
+// ===================================================================
+// Add a relocation entry
+// ===================================================================
+
+fn elf_add_relocation(obj: ElfObject, offset: i64, sym_idx: i64, rel_type: i64, addend: i64) {
+    push(obj.rel_offsets, offset)
+    push(obj.rel_sym_idxs, sym_idx)
+    push(obj.rel_types, rel_type)
+    push(obj.rel_addends, addend)
+}
+
+// ===================================================================
+// Write helpers: emit u16 as two bytes (little-endian)
+// ===================================================================
+
+fn elf_write_u16_le(buf: i64, val: i64) {
+    buf_write_byte(buf, val % 256)
+    buf_write_byte(buf, (val / 256) % 256)
+}
+
+// ===================================================================
+// Build section header string table (.shstrtab)
+// ===================================================================
+
+struct ShstrtabResult {
+    buf: i64,
+    off_null: i64,
+    off_text: i64,
+    off_data: i64,
+    off_rodata: i64,
+    off_bss: i64,
+    off_symtab: i64,
+    off_strtab: i64,
+    off_shstrtab: i64,
+    off_rela: i64
+}
+
+fn elf_build_shstrtab() -> ShstrtabResult {
+    let buf = buf_new(128)
+    // First byte must be null
+    buf_write_byte(buf, 0)
+    let off_null = 0
+
+    let off_text = buf_len(buf)
+    buf_write_str(buf, ".text")
+    buf_write_byte(buf, 0)
+
+    let off_data = buf_len(buf)
+    buf_write_str(buf, ".data")
+    buf_write_byte(buf, 0)
+
+    let off_rodata = buf_len(buf)
+    buf_write_str(buf, ".rodata")
+    buf_write_byte(buf, 0)
+
+    let off_bss = buf_len(buf)
+    buf_write_str(buf, ".bss")
+    buf_write_byte(buf, 0)
+
+    let off_symtab = buf_len(buf)
+    buf_write_str(buf, ".symtab")
+    buf_write_byte(buf, 0)
+
+    let off_strtab = buf_len(buf)
+    buf_write_str(buf, ".strtab")
+    buf_write_byte(buf, 0)
+
+    let off_shstrtab = buf_len(buf)
+    buf_write_str(buf, ".shstrtab")
+    buf_write_byte(buf, 0)
+
+    let off_rela = buf_len(buf)
+    buf_write_str(buf, ".rela.text")
+    buf_write_byte(buf, 0)
+
+    return ShstrtabResult {
+        buf: buf,
+        off_null: off_null,
+        off_text: off_text,
+        off_data: off_data,
+        off_rodata: off_rodata,
+        off_bss: off_bss,
+        off_symtab: off_symtab,
+        off_strtab: off_strtab,
+        off_shstrtab: off_shstrtab,
+        off_rela: off_rela
+    }
+}
+
+// ===================================================================
+// Write a section header entry (64 bytes)
+// ===================================================================
+
+fn elf_write_shdr(buf: i64, sh_name: i64, sh_type: i64, sh_flags: i64, sh_offset: i64, sh_size: i64, sh_link: i64, sh_info: i64, sh_addralign: i64, sh_entsize: i64) {
+    // sh_name (u32)
+    buf_write_i32_le(buf, sh_name)
+    // sh_type (u32)
+    buf_write_i32_le(buf, sh_type)
+    // sh_flags (u64)
+    buf_write_i64_le(buf, sh_flags)
+    // sh_addr (u64) -- always 0 for relocatable
+    buf_write_i64_le(buf, 0)
+    // sh_offset (u64)
+    buf_write_i64_le(buf, sh_offset)
+    // sh_size (u64)
+    buf_write_i64_le(buf, sh_size)
+    // sh_link (u32)
+    buf_write_i32_le(buf, sh_link)
+    // sh_info (u32)
+    buf_write_i32_le(buf, sh_info)
+    // sh_addralign (u64)
+    buf_write_i64_le(buf, sh_addralign)
+    // sh_entsize (u64)
+    buf_write_i64_le(buf, sh_entsize)
+}
+
+// ===================================================================
+// Write the ELF64 file header (64 bytes)
+// ===================================================================
+
+fn elf_write_ehdr(buf: i64, sh_offset: i64, sh_num: i64, shstrndx: i64) {
+    // e_ident[0..4]: magic
+    buf_write_byte(buf, ELF_MAG0)
+    buf_write_byte(buf, ELF_MAG1)
+    buf_write_byte(buf, ELF_MAG2)
+    buf_write_byte(buf, ELF_MAG3)
+    // e_ident[4]: class
+    buf_write_byte(buf, ELFCLASS64)
+    // e_ident[5]: data encoding
+    buf_write_byte(buf, ELFDATA2LSB)
+    // e_ident[6]: version
+    buf_write_byte(buf, EV_CURRENT)
+    // e_ident[7]: OS/ABI
+    buf_write_byte(buf, ELFOSABI_NONE)
+    // e_ident[8..16]: padding
+    buf_write_zeros(buf, 8)
+
+    // e_type (u16): relocatable object
+    elf_write_u16_le(buf, ET_REL)
+    // e_machine (u16)
+    elf_write_u16_le(buf, EM_X86_64)
+    // e_version (u32)
+    buf_write_i32_le(buf, EV_CURRENT)
+    // e_entry (u64): no entry point for .o
+    buf_write_i64_le(buf, 0)
+    // e_phoff (u64): no program headers for .o
+    buf_write_i64_le(buf, 0)
+    // e_shoff (u64): section header table offset
+    buf_write_i64_le(buf, sh_offset)
+    // e_flags (u32)
+    buf_write_i32_le(buf, 0)
+    // e_ehsize (u16): ELF header size = 64
+    elf_write_u16_le(buf, 64)
+    // e_phentsize (u16): 0 for .o
+    elf_write_u16_le(buf, 0)
+    // e_phnum (u16): 0 for .o
+    elf_write_u16_le(buf, 0)
+    // e_shentsize (u16): 64 bytes per section header
+    elf_write_u16_le(buf, 64)
+    // e_shnum (u16)
+    elf_write_u16_le(buf, sh_num)
+    // e_shstrndx (u16)
+    elf_write_u16_le(buf, shstrndx)
+}
+
+// ===================================================================
+// Align a value up to the given alignment
+// ===================================================================
+
+fn elf_align_up(val: i64, align: i64) -> i64 {
+    if align <= 1 {
+        return val
+    }
+    let remainder = val % align
+    if remainder == 0 {
+        return val
+    }
+    return val + (align - remainder)
+}
+
+// ===================================================================
+// Copy buffer contents from src to dst
+// ===================================================================
+
+fn elf_copy_buf(dst: i64, src: i64) {
+    let size = buf_len(src)
+    for i in range(0, size) {
+        let b = buf_get_byte(src, i)
+        buf_write_byte(dst, b)
+    }
+}
+
+// ===================================================================
+// Pad buffer to alignment boundary
+// ===================================================================
+
+fn elf_pad_to(buf: i64, align: i64) {
+    if align <= 1 {
+        return
+    }
+    let cur = buf_len(buf)
+    let target = elf_align_up(cur, align)
+    let pad = target - cur
+    if pad > 0 {
+        buf_write_zeros(buf, pad)
+    }
+}
+
+// ===================================================================
+// Build the symbol table (.symtab) into a byte buffer.
+//
+// Takes the parallel arrays and strtab handle directly to avoid
+// moving the ElfObject.
+// ===================================================================
+
+fn elf_build_symtab(sym_names: [str], sym_values: [i64], sym_sizes: [i64], sym_binds: [i64], sym_types: [i64], sym_sections: [i64], strtab: i64) -> i64 {
+    let buf = buf_new(512)
+    let num_syms = len(sym_names)
+
+    // Entry 0: null symbol (24 bytes of zeros)
+    buf_write_zeros(buf, 24)
+
+    // Emit all symbols
+    for i in range(0, num_syms) {
+        let name_off = elf_add_string(strtab, sym_names[i])
+
+        // st_name (u32)
+        buf_write_i32_le(buf, name_off)
+        // st_info (u8): (bind << 4) | type
+        let info = (sym_binds[i] * 16) + sym_types[i]
+        buf_write_byte(buf, info)
+        // st_other (u8)
+        buf_write_byte(buf, 0)
+        // st_shndx (u16)
+        elf_write_u16_le(buf, sym_sections[i])
+        // st_value (u64)
+        buf_write_i64_le(buf, sym_values[i])
+        // st_size (u64)
+        buf_write_i64_le(buf, sym_sizes[i])
+    }
+
+    return buf
+}
+
+// ===================================================================
+// Build the relocation table (.rela.text) into a byte buffer.
+// ===================================================================
+
+fn elf_build_rela(rel_offsets: [i64], rel_sym_idxs: [i64], rel_types: [i64], rel_addends: [i64]) -> i64 {
+    let buf = buf_new(256)
+    let num_relocs = len(rel_offsets)
+
+    for i in range(0, num_relocs) {
+        // r_offset (u64)
+        buf_write_i64_le(buf, rel_offsets[i])
+
+        // r_info (u64) = (sym_idx << 32) | type
+        // Write as two i32s: low = type, high = sym_idx
+        buf_write_i32_le(buf, rel_types[i])
+        buf_write_i32_le(buf, rel_sym_idxs[i])
+
+        // r_addend (i64)
+        buf_write_i64_le(buf, rel_addends[i])
+    }
+
+    return buf
+}
+
+// ===================================================================
+// elf_write -- Write the complete ELF64 .o file
+//
+// Parameters:
+//   obj       -- the ElfObject with symbols and relocations
+//   text_buf  -- byte buffer with .text section content
+//   data_buf  -- byte buffer with .data section content
+//   rodata_buf -- byte buffer with .rodata section content
+//   bss_size  -- size of .bss section (no actual data)
+//   path      -- output file path
+// ===================================================================
+
+fn elf_write(obj: ElfObject, text_buf: i64, data_buf: i64, rodata_buf: i64, bss_size: i64, path: str) {
+    // Build the auxiliary tables
+    let shstrtab_result = elf_build_shstrtab()
+
+    // Build symtab and rela from parallel arrays (avoids double-move of obj)
+    let symtab_buf = elf_build_symtab(obj.sym_names, obj.sym_values, obj.sym_sizes, obj.sym_binds, obj.sym_types, obj.sym_sections, obj.strtab)
+    let rela_buf = elf_build_rela(obj.rel_offsets, obj.rel_sym_idxs, obj.rel_types, obj.rel_addends)
+
+    // Section sizes
+    let text_size = buf_len(text_buf)
+    let data_size = buf_len(data_buf)
+    let rodata_size = buf_len(rodata_buf)
+    let symtab_size = buf_len(symtab_buf)
+    let strtab_size = buf_len(obj.strtab)
+    let shstrtab_size = buf_len(shstrtab_result.buf)
+    let rela_size = buf_len(rela_buf)
+
+    // ---------------------------------------------------------------
+    // Compute layout offsets
+    // ---------------------------------------------------------------
+
+    let elf_hdr_size: i64 = 64
+
+    // .text starts right after the ELF header
+    let text_offset = elf_hdr_size
+
+    // .data follows .text, aligned to 16
+    let data_offset = elf_align_up(text_offset + text_size, 16)
+
+    // .rodata follows .data, aligned to 16
+    let rodata_offset = elf_align_up(data_offset + data_size, 16)
+
+    // .symtab follows .rodata, aligned to 8
+    let symtab_offset = elf_align_up(rodata_offset + rodata_size, 8)
+
+    // .strtab follows .symtab
+    let strtab_offset = symtab_offset + symtab_size
+
+    // .shstrtab follows .strtab
+    let shstrtab_offset = strtab_offset + strtab_size
+
+    // .rela.text follows .shstrtab, aligned to 8
+    let rela_offset = elf_align_up(shstrtab_offset + shstrtab_size, 8)
+
+    // Section header table follows .rela.text, aligned to 8
+    let sh_offset = elf_align_up(rela_offset + rela_size, 8)
+
+    // ---------------------------------------------------------------
+    // Build the output buffer
+    // ---------------------------------------------------------------
+
+    let output = buf_new(4096)
+
+    // -- ELF header --
+    elf_write_ehdr(output, sh_offset, ELF_NUM_SECTIONS, SEC_SHSTRTAB)
+
+    // -- .text section data --
+    elf_copy_buf(output, text_buf)
+
+    // -- .data section data --
+    elf_pad_to(output, 16)
+    elf_copy_buf(output, data_buf)
+
+    // -- .rodata section data --
+    elf_pad_to(output, 16)
+    elf_copy_buf(output, rodata_buf)
+
+    // -- .symtab section data --
+    elf_pad_to(output, 8)
+    elf_copy_buf(output, symtab_buf)
+
+    // -- .strtab section data --
+    elf_copy_buf(output, obj.strtab)
+
+    // -- .shstrtab section data --
+    elf_copy_buf(output, shstrtab_result.buf)
+
+    // -- .rela.text section data --
+    elf_pad_to(output, 8)
+    elf_copy_buf(output, rela_buf)
+
+    // -- Section header table --
+    elf_pad_to(output, 8)
+
+    // Compute the number of local symbols (+1 for the null entry)
+    let num_locals = obj.local_count + 1
+
+    // [0] SHT_NULL
+    elf_write_shdr(output, shstrtab_result.off_null, SHT_NULL, 0, 0, 0, 0, 0, 0, 0)
+
+    // [1] .text
+    elf_write_shdr(output, shstrtab_result.off_text, SHT_PROGBITS, SHF_ALLOC + SHF_EXECINSTR, text_offset, text_size, 0, 0, 16, 0)
+
+    // [2] .data
+    elf_write_shdr(output, shstrtab_result.off_data, SHT_PROGBITS, SHF_ALLOC + SHF_WRITE, data_offset, data_size, 0, 0, 16, 0)
+
+    // [3] .rodata
+    elf_write_shdr(output, shstrtab_result.off_rodata, SHT_PROGBITS, SHF_ALLOC, rodata_offset, rodata_size, 0, 0, 16, 0)
+
+    // [4] .bss
+    elf_write_shdr(output, shstrtab_result.off_bss, SHT_NOBITS, SHF_ALLOC + SHF_WRITE, 0, bss_size, 0, 0, 16, 0)
+
+    // [5] .symtab -- sh_link = .strtab(6), sh_info = first non-local, sh_entsize = 24
+    elf_write_shdr(output, shstrtab_result.off_symtab, SHT_SYMTAB, 0, symtab_offset, symtab_size, SEC_STRTAB, num_locals, 8, 24)
+
+    // [6] .strtab
+    elf_write_shdr(output, shstrtab_result.off_strtab, SHT_STRTAB, 0, strtab_offset, strtab_size, 0, 0, 1, 0)
+
+    // [7] .shstrtab
+    elf_write_shdr(output, shstrtab_result.off_shstrtab, SHT_STRTAB, 0, shstrtab_offset, shstrtab_size, 0, 0, 1, 0)
+
+    // [8] .rela.text -- sh_link = .symtab(5), sh_info = .text(1), sh_entsize = 24
+    elf_write_shdr(output, shstrtab_result.off_rela, SHT_RELA, 0, rela_offset, rela_size, SEC_SYMTAB, SEC_TEXT, 8, 24)
+
+    // ---------------------------------------------------------------
+    // Write to file
+    // ---------------------------------------------------------------
+
+    buf_write_to_file(output, path)
+
+    // Free temporary buffers
+    buf_free(symtab_buf)
+    buf_free(rela_buf)
+    buf_free(shstrtab_result.buf)
+    buf_free(output)
+}
+
+// ===================================================================
+// Convenience: create a minimal ELF .o with just .text
+// ===================================================================
+
+fn elf_write_simple(text_buf: i64, fn_name: str, path: str) {
+    let obj = elf_new()
+    let text_size = buf_len(text_buf)
+
+    // Add the function as a global symbol in .text
+    push(obj.sym_names, fn_name)
+    push(obj.sym_values, 0)
+    push(obj.sym_sizes, text_size)
+    push(obj.sym_binds, STB_GLOBAL)
+    push(obj.sym_types, STT_FUNC)
+    push(obj.sym_sections, SEC_TEXT)
+
+    // Empty data and rodata
+    let data_buf = buf_new(0)
+    let rodata_buf = buf_new(0)
+
+    elf_write(obj, text_buf, data_buf, rodata_buf, 0, path)
+
+    buf_free(data_buf)
+    buf_free(rodata_buf)
+}
+
+// ===================================================================
+// Convenience: add a global function symbol
+// ===================================================================
+
+fn elf_add_func(obj: ElfObject, name: str, offset: i64, size: i64) -> i64 {
+    return elf_add_symbol(obj, name, offset, size, STB_GLOBAL, STT_FUNC, SEC_TEXT)
+}
+
+// ===================================================================
+// Convenience: add an external (undefined) symbol
+// ===================================================================
+
+fn elf_add_extern(obj: ElfObject, name: str) -> i64 {
+    return elf_add_symbol(obj, name, 0, 0, STB_GLOBAL, STT_NOTYPE, SHN_UNDEF)
+}
+
+// ===================================================================
+// Convenience: add a local label symbol
+// ===================================================================
+
+fn elf_add_local(obj: ElfObject, name: str, offset: i64, section_idx: i64) -> i64 {
+    return elf_add_symbol(obj, name, offset, 0, STB_LOCAL, STT_NOTYPE, section_idx)
+}
+
+// ===================================================================
+// Convenience: add a section symbol
+// ===================================================================
+
+fn elf_add_section_sym(obj: ElfObject, section_idx: i64) -> i64 {
+    return elf_add_symbol(obj, "", 0, 0, STB_LOCAL, STT_SECTION, section_idx)
+}
+
+// ===================================================================
+// Convenience: add a PC-relative call relocation (R_X86_64_PLT32)
+// Used for call instructions: addend = -4
+// ===================================================================
+
+fn elf_add_call_reloc(obj: ElfObject, offset: i64, sym_idx: i64) {
+    elf_add_relocation(obj, offset, sym_idx, R_X86_64_PLT32, -4)
+}
+
+// ===================================================================
+// Convenience: add a PC-relative data reference (R_X86_64_PC32)
+// ===================================================================
+
+fn elf_add_pcrel_reloc(obj: ElfObject, offset: i64, sym_idx: i64, addend: i64) {
+    elf_add_relocation(obj, offset, sym_idx, R_X86_64_PC32, addend)
+}
+
+// ===================================================================
+// Convenience: add a signed 32-bit absolute relocation (R_X86_64_32S)
+// ===================================================================
+
+fn elf_add_abs32s_reloc(obj: ElfObject, offset: i64, sym_idx: i64, addend: i64) {
+    elf_add_relocation(obj, offset, sym_idx, R_X86_64_32S, addend)
+}
+
+// ===================================================================
+// Convenience: add a global data symbol in .data
+// ===================================================================
+
+fn elf_add_data_sym(obj: ElfObject, name: str, offset: i64, size: i64) -> i64 {
+    return elf_add_symbol(obj, name, offset, size, STB_GLOBAL, STT_NOTYPE, SEC_DATA)
+}
+
+// ===================================================================
+// Convenience: add a global data symbol in .rodata
+// ===================================================================
+
+fn elf_add_rodata_sym(obj: ElfObject, name: str, offset: i64, size: i64) -> i64 {
+    return elf_add_symbol(obj, name, offset, size, STB_GLOBAL, STT_NOTYPE, SEC_RODATA)
+}

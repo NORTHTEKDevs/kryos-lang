@@ -230,6 +230,16 @@ fn is_builtin_type(name: str) -> bool {
 }
 
 // -------------------------------------------------------------------
+// Character helpers -- avoid bare { } [ ] in string literals
+// (the lexer treats { } as interpolation boundaries)
+// -------------------------------------------------------------------
+
+fn tk_chr_lbrace() -> str { return char_from(123) }
+fn tk_chr_rbrace() -> str { return char_from(125) }
+fn tk_chr_lbracket() -> str { return char_from(91) }
+fn tk_chr_rbracket() -> str { return char_from(93) }
+
+// -------------------------------------------------------------------
 // token_kind_name -- returns a human-readable name for a token kind.
 // Used for diagnostics and AST printing.
 // -------------------------------------------------------------------
@@ -324,10 +334,10 @@ fn token_kind_name(kind: i32) -> str {
     if kind == TK_COMMA        { return "," }
     if kind == TK_LPAREN       { return "(" }
     if kind == TK_RPAREN       { return ")" }
-    if kind == TK_LBRACE       { return "{" }
-    if kind == TK_RBRACE       { return "}" }
-    if kind == TK_LBRACKET     { return "[" }
-    if kind == TK_RBRACKET     { return "]" }
+    if kind == TK_LBRACE       { return tk_chr_lbrace() }
+    if kind == TK_RBRACE       { return tk_chr_rbrace() }
+    if kind == TK_LBRACKET     { return tk_chr_lbracket() }
+    if kind == TK_RBRACKET     { return tk_chr_rbracket() }
     if kind == TK_NEWLINE      { return "Newline" }
     if kind == TK_EOF          { return "Eof" }
     return "Error"

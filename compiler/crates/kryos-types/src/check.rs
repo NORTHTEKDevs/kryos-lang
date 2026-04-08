@@ -226,6 +226,11 @@ impl TypeChecker {
 
     /// Type-check an entire module.
     pub fn check_module(&mut self, module: &Module) {
+        // Pass 0: pre-register all struct/enum NAMES so self-referential
+        // types (e.g. `struct Expr { left: [Expr] }`) can resolve.
+        for decl in &module.declarations {
+            self.pre_register_type_name(decl);
+        }
         // First pass: register all type and function declarations.
         for decl in &module.declarations {
             self.register_decl(decl);
@@ -243,6 +248,28 @@ impl TypeChecker {
         // Second pass: check function bodies and expressions.
         for decl in &module.declarations {
             self.check_decl(decl);
+        }
+    }
+
+    /// Pre-register struct/enum names with empty fields so self-referential
+    /// types resolve during the full registration pass.
+    fn pre_register_type_name(&mut self, decl: &Decl) {
+        match decl {
+            Decl::Struct { name, generics, .. } => {
+                self.env.define_struct(StructDef {
+                    name: name.clone(),
+                    generic_params: generics.iter().map(|g| g.name.clone()).collect(),
+                    fields: vec![],
+                });
+            }
+            Decl::Enum { name, generics, .. } => {
+                self.env.define_enum(EnumDef {
+                    name: name.clone(),
+                    generic_params: generics.iter().map(|g| g.name.clone()).collect(),
+                    variants: vec![],
+                });
+            }
+            _ => {}
         }
     }
 

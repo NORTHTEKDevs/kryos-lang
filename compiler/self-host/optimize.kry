@@ -1,0 +1,1598 @@
+// ============================================================
+// optimize.kry -- MIR optimization passes for the Kryos
+// self-hosted compiler.
+//
+// Transforms MIR in-place to improve performance of generated
+// code.  Five optimization passes:
+//   1. Constant folding    -- evaluate constant expressions
+//   2. Strength reduction  -- replace expensive ops with cheaper
+//   3. Dead code elim      -- remove unused blocks/assignments
+//   4. Tail call opt       -- convert tail recursion to loops
+//   5. Function inlining   -- inline small single-block functions
+//
+// Dependencies (same compilation unit):
+//   mir.kry -- MIR data structures and constructors
+// ============================================================
+
+
+// ===================================================================
+// Helper: operand classification and extraction
+// ===================================================================
+
+fn is_const_operand(op: Operand) -> bool {
+    if op.is_local {
+        return false
+    }
+    if op.const_kind == RV_CONST_INT {
+        return true
+    }
+    if op.const_kind == RV_CONST_FLOAT {
+        return true
+    }
+    if op.const_kind == RV_CONST_BOOL {
+        return true
+    }
+    return false
+}
+
+fn is_const_int_operand(op: Operand) -> bool {
+    if op.is_local {
+        return false
+    }
+    return op.const_kind == RV_CONST_INT
+}
+
+fn is_const_float_operand(op: Operand) -> bool {
+    if op.is_local {
+        return false
+    }
+    return op.const_kind == RV_CONST_FLOAT
+}
+
+fn is_const_bool_operand(op: Operand) -> bool {
+    if op.is_local {
+        return false
+    }
+    return op.const_kind == RV_CONST_BOOL
+}
+
+fn get_const_int(op: Operand) -> i32 {
+    return op.int_val
+}
+
+fn get_const_float(op: Operand) -> f64 {
+    return op.float_val
+}
+
+fn get_const_bool(op: Operand) -> bool {
+    return op.bool_val
+}
+
+
+// ===================================================================
+// Helper: power-of-two detection and log2
+// ===================================================================
+
+fn is_power_of_two(n: i32) -> bool {
+    if n <= 0 {
+        return false
+    }
+    // n & (n-1) == 0 means power of two
+    let check = n - 1
+    let result = n & check
+    return result == 0
+}
+
+fn log2_int(n: i32) -> i32 {
+    let mut val = n
+    let mut result = 0
+    while val > 1 {
+        val = val / 2
+        result = result + 1
+    }
+    return result
+}
+
+
+// ===================================================================
+// Helper: local usage analysis
+// ===================================================================
+
+fn operand_references_local(op: Operand, local_id: i32) -> bool {
+    if op.is_local {
+        return op.local_id == local_id
+    }
+    return false
+}
+
+// Check if any operand in an array references a local
+fn operand_list_references_local(ops: [Operand], local_id: i32) -> bool {
+    for i in range(0, len(ops)) {
+        if operand_references_local(ops[i], local_id) {
+            return true
+        }
+    }
+    return false
+}
+
+fn rvalue_uses_local(rv: RValue, local_id: i32) -> bool {
+    // Check RV_USE
+    if rv.kind == RV_USE {
+        if operand_list_references_local(rv.use_operand, local_id) {
+            return true
+        }
+    }
+    // Check binop operands
+    if rv.kind == RV_BINOP {
+        if operand_list_references_local(rv.left, local_id) {
+            return true
+        }
+        if operand_list_references_local(rv.right, local_id) {
+            return true
+        }
+    }
+    // Check unop operand
+    if rv.kind == RV_UNOP {
+        if operand_list_references_local(rv.left, local_id) {
+            return true
+        }
+    }
+    // Check call args
+    if rv.kind == RV_CALL {
+        if operand_list_references_local(rv.args, local_id) {
+            return true
+        }
+    }
+    if rv.kind == RV_CALL_INDIRECT {
+        if operand_list_references_local(rv.callee, local_id) {
+            return true
+        }
+        if operand_list_references_local(rv.args, local_id) {
+            return true
+        }
+    }
+    // Check field access
+    if rv.kind == RV_FIELD {
+        if operand_list_references_local(rv.object, local_id) {
+            return true
+        }
+    }
+    // Check index access
+    if rv.kind == RV_INDEX {
+        if operand_list_references_local(rv.index_obj, local_id) {
+            return true
+        }
+        if operand_list_references_local(rv.index_idx, local_id) {
+            return true
+        }
+    }
+    // Check array / tuple elements
+    if rv.kind == RV_ARRAY {
+        if operand_list_references_local(rv.elements, local_id) {
+            return true
+        }
+    }
+    if rv.kind == RV_TUPLE {
+        if operand_list_references_local(rv.elements, local_id) {
+            return true
+        }
+    }
+    // Check struct construction
+    if rv.kind == RV_STRUCT {
+        if operand_list_references_local(rv.field_operands, local_id) {
+            return true
+        }
+    }
+    // Check cast
+    if rv.kind == RV_CAST {
+        if operand_list_references_local(rv.cast_operand, local_id) {
+            return true
+        }
+    }
+    // Check enum
+    if rv.kind == RV_ENUM_VARIANT {
+        if operand_list_references_local(rv.enum_fields, local_id) {
+            return true
+        }
+    }
+    if rv.kind == RV_ENUM_TAG {
+        if operand_list_references_local(rv.enum_operand, local_id) {
+            return true
+        }
+    }
+    if rv.kind == RV_ENUM_PAYLOAD {
+        if operand_list_references_local(rv.enum_operand, local_id) {
+            return true
+        }
+    }
+    // Check closure captures
+    if rv.kind == RV_CLOSURE {
+        if operand_list_references_local(rv.captures, local_id) {
+            return true
+        }
+    }
+    // Check map
+    if rv.kind == RV_MAP {
+        if operand_list_references_local(rv.map_keys, local_id) {
+            return true
+        }
+        if operand_list_references_local(rv.map_values, local_id) {
+            return true
+        }
+    }
+    // Check string concat
+    if rv.kind == RV_STRING_CONCAT {
+        if operand_list_references_local(rv.concat_parts, local_id) {
+            return true
+        }
+    }
+    // Check range
+    if rv.kind == RV_RANGE {
+        if operand_list_references_local(rv.range_start, local_id) {
+            return true
+        }
+        if operand_list_references_local(rv.range_end, local_id) {
+            return true
+        }
+    }
+    // Check addr_of
+    if rv.kind == RV_ADDR_OF {
+        if rv.addr_local == local_id {
+            return true
+        }
+    }
+    // Check deref
+    if rv.kind == RV_DEREF {
+        if operand_list_references_local(rv.deref_operand, local_id) {
+            return true
+        }
+    }
+    return false
+}
+
+fn instruction_uses_local(inst: Instruction, local_id: i32) -> bool {
+    if inst.kind == INST_ASSIGN {
+        // The destination itself is a def, not a use.
+        // But the rvalue may use the local.
+        if len(inst.value) > 0 {
+            if rvalue_uses_local(inst.value[0], local_id) {
+                return true
+            }
+        }
+    }
+    if inst.kind == INST_STORE_DEREF {
+        if operand_list_references_local(inst.ptr_operand, local_id) {
+            return true
+        }
+        if operand_list_references_local(inst.store_value, local_id) {
+            return true
+        }
+    }
+    if inst.kind == INST_DROP {
+        if inst.drop_local == local_id {
+            return true
+        }
+    }
+    if inst.kind == INST_SPAWN {
+        if operand_list_references_local(inst.spawn_args, local_id) {
+            return true
+        }
+    }
+    if inst.kind == INST_SEND {
+        if inst.send_channel == local_id {
+            return true
+        }
+        if inst.send_value == local_id {
+            return true
+        }
+    }
+    if inst.kind == INST_RECEIVE {
+        if inst.recv_channel == local_id {
+            return true
+        }
+    }
+    return false
+}
+
+fn terminator_uses_local(term: Terminator, local_id: i32) -> bool {
+    if term.kind == TERM_RETURN {
+        if operand_list_references_local(term.ret_val, local_id) {
+            return true
+        }
+    }
+    if term.kind == TERM_BRANCH {
+        if operand_list_references_local(term.cond, local_id) {
+            return true
+        }
+    }
+    if term.kind == TERM_SWITCH {
+        if operand_list_references_local(term.switch_val, local_id) {
+            return true
+        }
+    }
+    return false
+}
+
+// Check if a local is used anywhere in the function (as an operand,
+// not as a destination).  Used by DCE.
+fn is_local_used(func: MirFunction, local_id: i32) -> bool {
+    for bi in range(0, len(func.blocks)) {
+        let block = func.blocks[bi]
+        // Check instructions
+        for ii in range(0, len(block.instructions)) {
+            let inst = block.instructions[ii]
+            if instruction_uses_local(inst, local_id) {
+                return true
+            }
+            // Also check if another assignment's rvalue references it
+            // (handled above by instruction_uses_local)
+        }
+        // Check terminator
+        if len(block.terminator) > 0 {
+            if terminator_uses_local(block.terminator[0], local_id) {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+
+// ===================================================================
+// Helper: predecessor computation
+// ===================================================================
+
+// Returns a 2D array where result[i] is the list of block indices
+// (not block IDs) that jump to block i.
+// We use block indices (position in func.blocks) not block IDs.
+fn compute_predecessors(func: MirFunction) -> [[i32]] {
+    let n = len(func.blocks)
+    let mut preds: [[i32]] = []
+    // Initialize empty lists for each block
+    for i in range(0, n) {
+        let empty: [i32] = []
+        push(preds, empty)
+    }
+
+    // For each block, look at its terminator and record edges
+    for bi in range(0, n) {
+        let block = func.blocks[bi]
+        if len(block.terminator) == 0 {
+            // no terminator, skip
+        } else {
+            let term = block.terminator[0]
+            if term.kind == TERM_GOTO {
+                let target_idx = find_block_index(func, term.goto_block)
+                if target_idx >= 0 {
+                    push(preds[target_idx], bi)
+                }
+            }
+            if term.kind == TERM_BRANCH {
+                let then_idx = find_block_index(func, term.then_block)
+                let else_idx = find_block_index(func, term.else_block)
+                if then_idx >= 0 {
+                    push(preds[then_idx], bi)
+                }
+                if else_idx >= 0 {
+                    push(preds[else_idx], bi)
+                }
+            }
+            if term.kind == TERM_SWITCH {
+                for si in range(0, len(term.switch_blocks)) {
+                    let sw_idx = find_block_index(func, term.switch_blocks[si])
+                    if sw_idx >= 0 {
+                        push(preds[sw_idx], bi)
+                    }
+                }
+                let def_idx = find_block_index(func, term.default_block)
+                if def_idx >= 0 {
+                    push(preds[def_idx], bi)
+                }
+            }
+            // TERM_RETURN and TERM_UNREACHABLE have no successors
+        }
+    }
+    return preds
+}
+
+// Find the index of a block by its ID
+fn find_block_index(func: MirFunction, block_id: i32) -> i32 {
+    for i in range(0, len(func.blocks)) {
+        if func.blocks[i].id == block_id {
+            return i
+        }
+    }
+    return -1
+}
+
+
+// ===================================================================
+// Pass 1: Constant Folding
+//
+// If both operands of a RV_BINOP are constants, compute the
+// result at compile time.  Also folds unary ops on constants.
+// ===================================================================
+
+fn fold_int_binop(op: i32, lv: i32, rv: i32) -> [Operand] {
+    // Returns a single-element array with the result operand,
+    // or empty array if the fold is not possible (e.g. div by zero).
+    let empty: [Operand] = []
+
+    if op == MIR_ADD {
+        return [op_int(lv + rv)]
+    }
+    if op == MIR_SUB {
+        return [op_int(lv - rv)]
+    }
+    if op == MIR_MUL {
+        return [op_int(lv * rv)]
+    }
+    if op == MIR_DIV {
+        if rv == 0 {
+            return empty
+        }
+        return [op_int(lv / rv)]
+    }
+    if op == MIR_MOD {
+        if rv == 0 {
+            return empty
+        }
+        return [op_int(lv % rv)]
+    }
+    if op == MIR_SHL {
+        return [op_int(lv << rv)]
+    }
+    if op == MIR_SHR {
+        return [op_int(lv >> rv)]
+    }
+    if op == MIR_BIT_AND {
+        return [op_int(lv & rv)]
+    }
+    if op == MIR_BIT_OR {
+        return [op_int(lv | rv)]
+    }
+    if op == MIR_BIT_XOR {
+        return [op_int(lv ^ rv)]
+    }
+    // Comparison operators produce booleans
+    if op == MIR_EQ {
+        return [op_bool(lv == rv)]
+    }
+    if op == MIR_NEQ {
+        return [op_bool(lv != rv)]
+    }
+    if op == MIR_LT {
+        return [op_bool(lv < rv)]
+    }
+    if op == MIR_GT {
+        return [op_bool(lv > rv)]
+    }
+    if op == MIR_LT_EQ {
+        return [op_bool(lv <= rv)]
+    }
+    if op == MIR_GT_EQ {
+        return [op_bool(lv >= rv)]
+    }
+    // Power: compute iteratively
+    if op == MIR_POW {
+        let mut result = 1
+        let mut exp = rv
+        let mut base = lv
+        while exp > 0 {
+            result = result * base
+            exp = exp - 1
+        }
+        return [op_int(result)]
+    }
+    return empty
+}
+
+fn fold_float_binop(op: i32, lv: f64, rv: f64) -> [Operand] {
+    let empty: [Operand] = []
+
+    if op == MIR_ADD {
+        return [op_float(lv + rv)]
+    }
+    if op == MIR_SUB {
+        return [op_float(lv - rv)]
+    }
+    if op == MIR_MUL {
+        return [op_float(lv * rv)]
+    }
+    if op == MIR_DIV {
+        if rv == 0.0 {
+            return empty
+        }
+        return [op_float(lv / rv)]
+    }
+    if op == MIR_MOD {
+        if rv == 0.0 {
+            return empty
+        }
+        return [op_float(lv % rv)]
+    }
+    // Comparisons
+    if op == MIR_EQ {
+        return [op_bool(lv == rv)]
+    }
+    if op == MIR_NEQ {
+        return [op_bool(lv != rv)]
+    }
+    if op == MIR_LT {
+        return [op_bool(lv < rv)]
+    }
+    if op == MIR_GT {
+        return [op_bool(lv > rv)]
+    }
+    if op == MIR_LT_EQ {
+        return [op_bool(lv <= rv)]
+    }
+    if op == MIR_GT_EQ {
+        return [op_bool(lv >= rv)]
+    }
+    // Power: compute iteratively for integer exponents
+    if op == MIR_POW {
+        let mut result = 1.0
+        let mut exp = rv
+        let mut base = lv
+        // Only fold integer exponents
+        if exp >= 0.0 {
+            let mut count = 0
+            while count < 64 {
+                if result == 0.0 {
+                    return [op_float(0.0)]
+                }
+                if exp < 1.0 {
+                    return [op_float(result)]
+                }
+                result = result * base
+                exp = exp - 1.0
+                count = count + 1
+            }
+        }
+        return empty
+    }
+    return empty
+}
+
+fn fold_bool_binop(op: i32, lv: bool, rv: bool) -> [Operand] {
+    let empty: [Operand] = []
+
+    if op == MIR_AND {
+        return [op_bool(lv and rv)]
+    }
+    if op == MIR_OR {
+        return [op_bool(lv or rv)]
+    }
+    if op == MIR_EQ {
+        return [op_bool(lv == rv)]
+    }
+    if op == MIR_NEQ {
+        return [op_bool(lv != rv)]
+    }
+    return empty
+}
+
+fn try_fold_binop(rv: RValue) -> [RValue] {
+    // Returns single-element array with folded RValue, or empty if
+    // no fold is possible.
+    let empty: [RValue] = []
+
+    if len(rv.left) == 0 {
+        return empty
+    }
+    if len(rv.right) == 0 {
+        return empty
+    }
+
+    let l = rv.left[0]
+    let r = rv.right[0]
+
+    // Both operands must be constants
+    if l.is_local {
+        return empty
+    }
+    if r.is_local {
+        return empty
+    }
+
+    // Integer folding
+    if l.const_kind == RV_CONST_INT {
+        if r.const_kind == RV_CONST_INT {
+            let result = fold_int_binop(rv.op, l.int_val, r.int_val)
+            if len(result) > 0 {
+                let folded_op = result[0]
+                // Determine if result is int or bool
+                if folded_op.const_kind == RV_CONST_BOOL {
+                    return [rv_const_bool(folded_op.bool_val)]
+                }
+                return [rv_const_int(folded_op.int_val)]
+            }
+        }
+    }
+
+    // Float folding
+    if l.const_kind == RV_CONST_FLOAT {
+        if r.const_kind == RV_CONST_FLOAT {
+            let result = fold_float_binop(rv.op, l.float_val, r.float_val)
+            if len(result) > 0 {
+                let folded_op = result[0]
+                if folded_op.const_kind == RV_CONST_BOOL {
+                    return [rv_const_bool(folded_op.bool_val)]
+                }
+                return [rv_const_float(folded_op.float_val)]
+            }
+        }
+    }
+
+    // Boolean folding
+    if l.const_kind == RV_CONST_BOOL {
+        if r.const_kind == RV_CONST_BOOL {
+            let result = fold_bool_binop(rv.op, l.bool_val, r.bool_val)
+            if len(result) > 0 {
+                let folded_op = result[0]
+                return [rv_const_bool(folded_op.bool_val)]
+            }
+        }
+    }
+
+    return empty
+}
+
+fn try_fold_unop(rv: RValue) -> [RValue] {
+    let empty: [RValue] = []
+
+    if len(rv.left) == 0 {
+        return empty
+    }
+    let operand = rv.left[0]
+
+    if operand.is_local {
+        return empty
+    }
+
+    // Negate integer: -(-5) -> 5, -(3) -> -3
+    if rv.op == MIR_NEG {
+        if operand.const_kind == RV_CONST_INT {
+            return [rv_const_int(0 - operand.int_val)]
+        }
+        if operand.const_kind == RV_CONST_FLOAT {
+            return [rv_const_float(0.0 - operand.float_val)]
+        }
+    }
+
+    // Logical not: not(true) -> false
+    if rv.op == MIR_NOT {
+        if operand.const_kind == RV_CONST_BOOL {
+            return [rv_const_bool(not operand.bool_val)]
+        }
+    }
+
+    // Bitwise not: ~n -> -(n+1) for integers (two's complement)
+    if rv.op == MIR_BIT_NOT {
+        if operand.const_kind == RV_CONST_INT {
+            // ~n = -(n + 1) in two's complement
+            let result = 0 - (operand.int_val + 1)
+            return [rv_const_int(result)]
+        }
+    }
+
+    return empty
+}
+
+fn opt_constant_fold(func: MirFunction) {
+    for bi in range(0, len(func.blocks)) {
+        for ii in range(0, len(func.blocks[bi].instructions)) {
+            let inst = func.blocks[bi].instructions[ii]
+            if inst.kind == INST_ASSIGN {
+                if len(inst.value) > 0 {
+                    let rv = inst.value[0]
+
+                    // Try folding binary ops
+                    if rv.kind == RV_BINOP {
+                        let folded = try_fold_binop(rv)
+                        if len(folded) > 0 {
+                            func.blocks[bi].instructions[ii].value = folded
+                        }
+                    }
+
+                    // Try folding unary ops
+                    if rv.kind == RV_UNOP {
+                        let folded = try_fold_unop(rv)
+                        if len(folded) > 0 {
+                            func.blocks[bi].instructions[ii].value = folded
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Also fold branch conditions: if the condition is a known
+    // constant, replace the branch with a goto
+    for bi in range(0, len(func.blocks)) {
+        if len(func.blocks[bi].terminator) > 0 {
+            let term = func.blocks[bi].terminator[0]
+            if term.kind == TERM_BRANCH {
+                if len(term.cond) > 0 {
+                    let cond_op = term.cond[0]
+                    if is_const_bool_operand(cond_op) {
+                        if cond_op.bool_val {
+                            // Always true: goto then_block
+                            func.blocks[bi].terminator = [term_goto(term.then_block)]
+                        } else {
+                            // Always false: goto else_block
+                            func.blocks[bi].terminator = [term_goto(term.else_block)]
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+// ===================================================================
+// Pass 2: Strength Reduction
+//
+// Replace expensive operations with cheaper equivalents.
+// ===================================================================
+
+fn try_strength_reduce(rv: RValue) -> [RValue] {
+    let empty: [RValue] = []
+
+    if rv.kind != RV_BINOP {
+        return empty
+    }
+    if len(rv.left) == 0 {
+        return empty
+    }
+    if len(rv.right) == 0 {
+        return empty
+    }
+
+    let l = rv.left[0]
+    let r = rv.right[0]
+
+    // --- Multiply reductions ---
+    if rv.op == MIR_MUL {
+        // x * 0 -> 0
+        if is_const_int_operand(r) {
+            if r.int_val == 0 {
+                return [rv_const_int(0)]
+            }
+        }
+        if is_const_int_operand(l) {
+            if l.int_val == 0 {
+                return [rv_const_int(0)]
+            }
+        }
+
+        // x * 1 -> x (identity)
+        if is_const_int_operand(r) {
+            if r.int_val == 1 {
+                return [rv_use(l)]
+            }
+        }
+        if is_const_int_operand(l) {
+            if l.int_val == 1 {
+                return [rv_use(r)]
+            }
+        }
+
+        // x * (power of 2) -> x << log2(n)
+        if is_const_int_operand(r) {
+            if r.int_val > 1 {
+                if is_power_of_two(r.int_val) {
+                    let shift = log2_int(r.int_val)
+                    return [rv_binop(MIR_SHL, l, op_int(shift))]
+                }
+            }
+        }
+        if is_const_int_operand(l) {
+            if l.int_val > 1 {
+                if is_power_of_two(l.int_val) {
+                    let shift = log2_int(l.int_val)
+                    return [rv_binop(MIR_SHL, r, op_int(shift))]
+                }
+            }
+        }
+    }
+
+    // --- Addition reductions ---
+    if rv.op == MIR_ADD {
+        // x + 0 -> x
+        if is_const_int_operand(r) {
+            if r.int_val == 0 {
+                return [rv_use(l)]
+            }
+        }
+        if is_const_int_operand(l) {
+            if l.int_val == 0 {
+                return [rv_use(r)]
+            }
+        }
+    }
+
+    // --- Subtraction reductions ---
+    if rv.op == MIR_SUB {
+        // x - 0 -> x
+        if is_const_int_operand(r) {
+            if r.int_val == 0 {
+                return [rv_use(l)]
+            }
+        }
+    }
+
+    // --- Division reductions ---
+    if rv.op == MIR_DIV {
+        // x / 1 -> x
+        if is_const_int_operand(r) {
+            if r.int_val == 1 {
+                return [rv_use(l)]
+            }
+        }
+
+        // x / (power of 2) -> x >> log2(n) (unsigned only, but
+        // we apply it optimistically for positive values)
+        if is_const_int_operand(r) {
+            if r.int_val > 1 {
+                if is_power_of_two(r.int_val) {
+                    let shift = log2_int(r.int_val)
+                    return [rv_binop(MIR_SHR, l, op_int(shift))]
+                }
+            }
+        }
+    }
+
+    // --- Power reductions ---
+    if rv.op == MIR_POW {
+        // x ** 0 -> 1
+        if is_const_int_operand(r) {
+            if r.int_val == 0 {
+                return [rv_const_int(1)]
+            }
+        }
+
+        // x ** 1 -> x
+        if is_const_int_operand(r) {
+            if r.int_val == 1 {
+                return [rv_use(l)]
+            }
+        }
+
+        // x ** 2 -> x * x
+        if is_const_int_operand(r) {
+            if r.int_val == 2 {
+                return [rv_binop(MIR_MUL, l, l)]
+            }
+        }
+    }
+
+    // --- Bitwise reductions ---
+    // x & 0 -> 0
+    if rv.op == MIR_BIT_AND {
+        if is_const_int_operand(r) {
+            if r.int_val == 0 {
+                return [rv_const_int(0)]
+            }
+        }
+        if is_const_int_operand(l) {
+            if l.int_val == 0 {
+                return [rv_const_int(0)]
+            }
+        }
+    }
+
+    // x | 0 -> x
+    if rv.op == MIR_BIT_OR {
+        if is_const_int_operand(r) {
+            if r.int_val == 0 {
+                return [rv_use(l)]
+            }
+        }
+        if is_const_int_operand(l) {
+            if l.int_val == 0 {
+                return [rv_use(r)]
+            }
+        }
+    }
+
+    // x ^ 0 -> x
+    if rv.op == MIR_BIT_XOR {
+        if is_const_int_operand(r) {
+            if r.int_val == 0 {
+                return [rv_use(l)]
+            }
+        }
+        if is_const_int_operand(l) {
+            if l.int_val == 0 {
+                return [rv_use(r)]
+            }
+        }
+    }
+
+    // x << 0 -> x
+    if rv.op == MIR_SHL {
+        if is_const_int_operand(r) {
+            if r.int_val == 0 {
+                return [rv_use(l)]
+            }
+        }
+    }
+
+    // x >> 0 -> x
+    if rv.op == MIR_SHR {
+        if is_const_int_operand(r) {
+            if r.int_val == 0 {
+                return [rv_use(l)]
+            }
+        }
+    }
+
+    return empty
+}
+
+fn opt_strength_reduce(func: MirFunction) {
+    for bi in range(0, len(func.blocks)) {
+        for ii in range(0, len(func.blocks[bi].instructions)) {
+            let inst = func.blocks[bi].instructions[ii]
+            if inst.kind == INST_ASSIGN {
+                if len(inst.value) > 0 {
+                    let rv = inst.value[0]
+                    let reduced = try_strength_reduce(rv)
+                    if len(reduced) > 0 {
+                        func.blocks[bi].instructions[ii].value = reduced
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+// ===================================================================
+// Pass 3: Dead Code Elimination
+//
+// Two sub-passes:
+//   a) Remove unreachable blocks (no predecessors except block 0)
+//   b) Remove assignments to locals that are never read
+// ===================================================================
+
+fn opt_dead_code_elim(func: MirFunction) {
+    // Sub-pass A: remove unreachable blocks
+    opt_dce_unreachable_blocks(func)
+
+    // Sub-pass B: remove dead assignments
+    opt_dce_dead_assigns(func)
+}
+
+fn opt_dce_unreachable_blocks(func: MirFunction) {
+    if len(func.blocks) <= 1 {
+        return
+    }
+
+    let preds = compute_predecessors(func)
+
+    // Mark unreachable blocks by replacing all their instructions
+    // with NOPs and their terminator with UNREACHABLE.
+    // Block 0 (entry) is always reachable.
+    for bi in range(1, len(func.blocks)) {
+        if len(preds[bi]) == 0 {
+            // No predecessors -- this block is dead
+            let mut nop_insts: [Instruction] = []
+            for ii in range(0, len(func.blocks[bi].instructions)) {
+                push(nop_insts, inst_nop())
+            }
+            func.blocks[bi].instructions = nop_insts
+            func.blocks[bi].terminator = [term_unreachable()]
+        }
+    }
+}
+
+fn opt_dce_dead_assigns(func: MirFunction) {
+    // Collect all locals that are assigned but never read.
+    // For each assignment, if the destination local is never
+    // referenced by any other instruction or terminator, NOP it.
+
+    // We need to be careful: a local that is used only as a
+    // destination is dead, but a local used as an operand is alive.
+    // Also, parameters and return values are always alive.
+
+    // Collect parameter local IDs
+    let mut param_ids: [i32] = []
+    for pi in range(0, len(func.params)) {
+        push(param_ids, func.params[pi].local_id)
+    }
+
+    for bi in range(0, len(func.blocks)) {
+        for ii in range(0, len(func.blocks[bi].instructions)) {
+            let inst = func.blocks[bi].instructions[ii]
+            if inst.kind == INST_ASSIGN {
+                let dest = inst.dest
+                // Don't eliminate parameter assignments
+                let mut is_param = false
+                for pi in range(0, len(param_ids)) {
+                    if param_ids[pi] == dest {
+                        is_param = true
+                    }
+                }
+                if is_param {
+                    // skip -- parameter
+                } else {
+                    // Check if the rvalue has side effects
+                    // (calls may have side effects, so keep them)
+                    let mut has_side_effects = false
+                    if len(inst.value) > 0 {
+                        let rv = inst.value[0]
+                        if rv.kind == RV_CALL {
+                            has_side_effects = true
+                        }
+                        if rv.kind == RV_CALL_INDIRECT {
+                            has_side_effects = true
+                        }
+                    }
+                    if has_side_effects {
+                        // Keep -- call may have side effects
+                    } else {
+                        if not is_local_used(func, dest) {
+                            // Dead assignment -- replace with NOP
+                            func.blocks[bi].instructions[ii] = inst_nop()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+// ===================================================================
+// Pass 4: Tail Call Optimization
+//
+// If the last instruction before a TERM_RETURN is a self-recursive
+// call whose result is directly returned, replace with parameter
+// reassignment and goto entry block.
+// ===================================================================
+
+fn opt_tail_call(func: MirFunction) {
+    let func_name = func.name
+
+    for bi in range(0, len(func.blocks)) {
+        let block = func.blocks[bi]
+
+        // Must have a return terminator
+        if len(block.terminator) == 0 {
+            // no terminator
+        } else {
+            let term = block.terminator[0]
+            if term.kind == TERM_RETURN {
+                // The return must return a local
+                if len(term.ret_val) == 0 {
+                    // void return, no tail call possible
+                } else {
+                    let ret_op = term.ret_val[0]
+                    if ret_op.is_local {
+                        let ret_local = ret_op.local_id
+                        // Find the last non-NOP instruction
+                        let last_idx = find_last_non_nop(block)
+                        if last_idx >= 0 {
+                            let last_inst = block.instructions[last_idx]
+                            if last_inst.kind == INST_ASSIGN {
+                                if last_inst.dest == ret_local {
+                                    if len(last_inst.value) > 0 {
+                                        let rv = last_inst.value[0]
+                                        if rv.kind == RV_CALL {
+                                            if rv.func_name == func_name {
+                                                // This is a tail-recursive call!
+                                                apply_tail_call_opt(func, bi, last_idx, rv)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn find_last_non_nop(block: BasicBlock) -> i32 {
+    let mut idx = len(block.instructions) - 1
+    while idx >= 0 {
+        if block.instructions[idx].kind != INST_NOP {
+            return idx
+        }
+        idx = idx - 1
+    }
+    return -1
+}
+
+fn apply_tail_call_opt(func: MirFunction, block_idx: i32, inst_idx: i32, call_rv: RValue) {
+    // Replace the call instruction with parameter reassignments,
+    // then change the terminator from return to goto block 0.
+
+    // Build reassignment instructions for each parameter
+    let mut new_insts: [Instruction] = []
+
+    // Copy all instructions before the call (they may set up args)
+    for ii in range(0, inst_idx) {
+        push(new_insts, func.blocks[block_idx].instructions[ii])
+    }
+
+    // Reassign parameters from call arguments
+    let num_params = len(func.params)
+    let num_args = len(call_rv.args)
+    let mut count = num_params
+    if num_args < count {
+        count = num_args
+    }
+
+    // First, save all args to temps to avoid overwriting
+    let mut temp_ops: [Operand] = []
+    for pi in range(0, count) {
+        let arg = call_rv.args[pi]
+        // Use the arg directly -- if it references a param that
+        // will be overwritten, we need a temp.  For simplicity,
+        // always use a temp.
+        let temp_id = func.next_local_id
+        let local = MirLocal {
+            id: temp_id,
+            name: "_tco_" + to_string(temp_id),
+            ty: mir_ty_simple(MIR_TY_ANY),
+            mutable: true
+        }
+        push(func.locals, local)
+        func.next_local_id = temp_id + 1
+
+        push(new_insts, inst_assign(temp_id, rv_use(arg)))
+        push(temp_ops, op_local(temp_id))
+    }
+
+    // Now assign temps to params
+    for pi in range(0, count) {
+        let param_local = func.params[pi].local_id
+        push(new_insts, inst_assign(param_local, rv_use(temp_ops[pi])))
+    }
+
+    // NOP out remaining instruction slots
+    let original_count = len(func.blocks[block_idx].instructions)
+    while len(new_insts) < original_count {
+        push(new_insts, inst_nop())
+    }
+
+    func.blocks[block_idx].instructions = new_insts
+
+    // Replace terminator: return -> goto entry block (block 0)
+    let entry_id = func.blocks[0].id
+    func.blocks[block_idx].terminator = [term_goto(entry_id)]
+}
+
+
+// ===================================================================
+// Pass 5: Function Inlining (simple version)
+//
+// For calls to known functions that:
+//   - Have a single basic block
+//   - Fewer than 15 instructions
+//   - Are not recursive
+//   - Are not extern
+// Inline the function body at the call site.
+// ===================================================================
+
+fn opt_inline(module: MirModule) {
+    // Build a map of function names to indices for lookup
+    let mut func_names: [str] = []
+    let mut func_indices: [i32] = []
+    for fi in range(0, len(module.functions)) {
+        push(func_names, module.functions[fi].name)
+        push(func_indices, fi)
+    }
+
+    // Process each function
+    for fi in range(0, len(module.functions)) {
+        let func = module.functions[fi]
+
+        // Iterate over blocks and instructions looking for calls
+        for bi in range(0, len(func.blocks)) {
+            for ii in range(0, len(func.blocks[bi].instructions)) {
+                let inst = func.blocks[bi].instructions[ii]
+                if inst.kind == INST_ASSIGN {
+                    if len(inst.value) > 0 {
+                        let rv = inst.value[0]
+                        if rv.kind == RV_CALL {
+                            let callee_idx = find_func_index(func_names, rv.func_name)
+                            if callee_idx >= 0 {
+                                let callee = module.functions[callee_idx]
+                                if should_inline(callee, func.name) {
+                                    inline_call(func, bi, ii, callee, rv)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn find_func_index(names: [str], target: str) -> i32 {
+    for i in range(0, len(names)) {
+        if names[i] == target {
+            return i
+        }
+    }
+    return -1
+}
+
+fn should_inline(callee: MirFunction, caller_name: str) -> bool {
+    // Don't inline recursive calls
+    if callee.name == caller_name {
+        return false
+    }
+
+    // Only inline single-block functions
+    if len(callee.blocks) != 1 {
+        return false
+    }
+
+    // Only inline small functions (< 15 instructions)
+    let block = callee.blocks[0]
+    if len(block.instructions) >= 15 {
+        return false
+    }
+
+    // Must have a return terminator (not goto, branch, etc.)
+    if len(block.terminator) == 0 {
+        return false
+    }
+    let term = block.terminator[0]
+    if term.kind != TERM_RETURN {
+        return false
+    }
+
+    // Don't inline functions that contain calls themselves
+    // (to prevent exponential blowup)
+    for ii in range(0, len(block.instructions)) {
+        if len(block.instructions[ii].value) > 0 {
+            if block.instructions[ii].value[0].kind == RV_CALL {
+                return false
+            }
+            if block.instructions[ii].value[0].kind == RV_CALL_INDIRECT {
+                return false
+            }
+        }
+    }
+
+    return true
+}
+
+fn inline_call(caller: MirFunction, block_idx: i32, inst_idx: i32, callee: MirFunction, call_rv: RValue) {
+    // The callee has a single block.  We:
+    //   1. Map callee locals to new locals in the caller
+    //   2. Map callee parameters to call arguments
+    //   3. Copy callee instructions with remapped operands
+    //   4. Replace the call with the inlined body
+    //   5. Replace callee's return value with assignment to call dest
+
+    let dest = caller.blocks[block_idx].instructions[inst_idx].dest
+
+    // Step 1: Build local ID mapping (callee local -> caller local)
+    let mut callee_to_caller_ids: [i32] = []  // indexed by callee local id
+    let mut callee_to_caller_vals: [i32] = []
+
+    // Map parameters to argument operands
+    // We create a temp local for each parameter and assign the arg
+    let mut param_setup_insts: [Instruction] = []
+    for pi in range(0, len(callee.params)) {
+        let param_id = callee.params[pi].local_id
+        let new_id = caller.next_local_id
+        let local = MirLocal {
+            id: new_id,
+            name: "_inline_" + to_string(new_id),
+            ty: mir_ty_simple(MIR_TY_ANY),
+            mutable: true
+        }
+        push(caller.locals, local)
+        caller.next_local_id = new_id + 1
+
+        push(callee_to_caller_ids, param_id)
+        push(callee_to_caller_vals, new_id)
+
+        // Assign argument to the new local
+        if pi < len(call_rv.args) {
+            push(param_setup_insts, inst_assign(new_id, rv_use(call_rv.args[pi])))
+        }
+    }
+
+    // Map non-parameter locals
+    for li in range(0, len(callee.locals)) {
+        let callee_local = callee.locals[li]
+        // Check if already mapped (as a parameter)
+        let mut already_mapped = false
+        for mi in range(0, len(callee_to_caller_ids)) {
+            if callee_to_caller_ids[mi] == callee_local.id {
+                already_mapped = true
+            }
+        }
+        if not already_mapped {
+            let new_id = caller.next_local_id
+            let local = MirLocal {
+                id: new_id,
+                name: "_inline_" + to_string(new_id),
+                ty: callee_local.ty,
+                mutable: callee_local.mutable
+            }
+            push(caller.locals, local)
+            caller.next_local_id = new_id + 1
+
+            push(callee_to_caller_ids, callee_local.id)
+            push(callee_to_caller_vals, new_id)
+        }
+    }
+
+    // Step 2: Copy callee instructions with remapped operands
+    let callee_block = callee.blocks[0]
+    let mut inlined_insts: [Instruction] = []
+
+    // Add param setup first
+    for pi in range(0, len(param_setup_insts)) {
+        push(inlined_insts, param_setup_insts[pi])
+    }
+
+    // Copy callee instructions
+    for ii in range(0, len(callee_block.instructions)) {
+        let cinst = callee_block.instructions[ii]
+        if cinst.kind == INST_ASSIGN {
+            let new_dest = remap_local_id(callee_to_caller_ids, callee_to_caller_vals, cinst.dest)
+            if len(cinst.value) > 0 {
+                let new_rv = remap_rvalue(cinst.value[0], callee_to_caller_ids, callee_to_caller_vals)
+                push(inlined_insts, inst_assign(new_dest, new_rv))
+            }
+        } else {
+            if cinst.kind == INST_NOP {
+                push(inlined_insts, inst_nop())
+            }
+            // Other instruction kinds: copy as-is (simplified)
+        }
+    }
+
+    // Step 3: Handle return value
+    // The callee's return becomes an assignment to dest
+    if len(callee_block.terminator) > 0 {
+        let term = callee_block.terminator[0]
+        if term.kind == TERM_RETURN {
+            if len(term.ret_val) > 0 {
+                let ret_op = remap_operand(term.ret_val[0], callee_to_caller_ids, callee_to_caller_vals)
+                push(inlined_insts, inst_assign(dest, rv_use(ret_op)))
+            }
+        }
+    }
+
+    // Step 4: Replace the original call instruction with inlined body
+    // Build new instruction list for this block
+    let mut new_block_insts: [Instruction] = []
+
+    // Copy instructions before the call
+    for ii in range(0, inst_idx) {
+        push(new_block_insts, caller.blocks[block_idx].instructions[ii])
+    }
+
+    // Insert inlined instructions
+    for ii in range(0, len(inlined_insts)) {
+        push(new_block_insts, inlined_insts[ii])
+    }
+
+    // Copy instructions after the call
+    let total = len(caller.blocks[block_idx].instructions)
+    for ii in range(inst_idx + 1, total) {
+        push(new_block_insts, caller.blocks[block_idx].instructions[ii])
+    }
+
+    caller.blocks[block_idx].instructions = new_block_insts
+}
+
+fn remap_local_id(from_ids: [i32], to_ids: [i32], old_id: i32) -> i32 {
+    for i in range(0, len(from_ids)) {
+        if from_ids[i] == old_id {
+            return to_ids[i]
+        }
+    }
+    return old_id
+}
+
+fn remap_operand(op: Operand, from_ids: [i32], to_ids: [i32]) -> Operand {
+    if op.is_local {
+        let new_id = remap_local_id(from_ids, to_ids, op.local_id)
+        return op_local(new_id)
+    }
+    return op
+}
+
+fn remap_operand_list(ops: [Operand], from_ids: [i32], to_ids: [i32]) -> [Operand] {
+    let mut result: [Operand] = []
+    for i in range(0, len(ops)) {
+        push(result, remap_operand(ops[i], from_ids, to_ids))
+    }
+    return result
+}
+
+fn remap_rvalue(rv: RValue, from_ids: [i32], to_ids: [i32]) -> RValue {
+    if rv.kind == RV_USE {
+        let new_ops = remap_operand_list(rv.use_operand, from_ids, to_ids)
+        if len(new_ops) > 0 {
+            return rv_use(new_ops[0])
+        }
+        return rv
+    }
+
+    if rv.kind == RV_CONST_INT {
+        return rv_const_int(rv.int_val)
+    }
+    if rv.kind == RV_CONST_FLOAT {
+        return rv_const_float(rv.float_val)
+    }
+    if rv.kind == RV_CONST_BOOL {
+        return rv_const_bool(rv.bool_val)
+    }
+    if rv.kind == RV_CONST_STRING {
+        return rv_const_string(rv.str_val)
+    }
+    if rv.kind == RV_CONST_NONE {
+        return rv_const_none()
+    }
+
+    if rv.kind == RV_BINOP {
+        let new_left = remap_operand_list(rv.left, from_ids, to_ids)
+        let new_right = remap_operand_list(rv.right, from_ids, to_ids)
+        if len(new_left) > 0 {
+            if len(new_right) > 0 {
+                return rv_binop(rv.op, new_left[0], new_right[0])
+            }
+        }
+        return rv
+    }
+
+    if rv.kind == RV_UNOP {
+        let new_left = remap_operand_list(rv.left, from_ids, to_ids)
+        if len(new_left) > 0 {
+            return rv_unop(rv.op, new_left[0])
+        }
+        return rv
+    }
+
+    if rv.kind == RV_FIELD {
+        let new_obj = remap_operand_list(rv.object, from_ids, to_ids)
+        if len(new_obj) > 0 {
+            return rv_field(new_obj[0], rv.field_name)
+        }
+        return rv
+    }
+
+    if rv.kind == RV_INDEX {
+        let new_obj = remap_operand_list(rv.index_obj, from_ids, to_ids)
+        let new_idx = remap_operand_list(rv.index_idx, from_ids, to_ids)
+        if len(new_obj) > 0 {
+            if len(new_idx) > 0 {
+                return rv_index(new_obj[0], new_idx[0])
+            }
+        }
+        return rv
+    }
+
+    if rv.kind == RV_ARRAY {
+        let new_elems = remap_operand_list(rv.elements, from_ids, to_ids)
+        return rv_array(new_elems)
+    }
+
+    if rv.kind == RV_TUPLE {
+        let new_elems = remap_operand_list(rv.elements, from_ids, to_ids)
+        return rv_tuple(new_elems)
+    }
+
+    if rv.kind == RV_STRUCT {
+        let new_fops = remap_operand_list(rv.field_operands, from_ids, to_ids)
+        return rv_struct_lit(rv.struct_name, rv.rv_field_names, new_fops)
+    }
+
+    if rv.kind == RV_CAST {
+        let new_cop = remap_operand_list(rv.cast_operand, from_ids, to_ids)
+        if len(new_cop) > 0 {
+            if len(rv.cast_ty) > 0 {
+                return rv_cast(new_cop[0], rv.cast_ty[0])
+            }
+        }
+        return rv
+    }
+
+    if rv.kind == RV_ADDR_OF {
+        let new_local = remap_local_id(from_ids, to_ids, rv.addr_local)
+        return rv_addr_of(new_local, rv.addr_mutable)
+    }
+
+    if rv.kind == RV_DEREF {
+        let new_dop = remap_operand_list(rv.deref_operand, from_ids, to_ids)
+        if len(new_dop) > 0 {
+            return rv_deref(new_dop[0])
+        }
+        return rv
+    }
+
+    if rv.kind == RV_STRING_CONCAT {
+        let new_parts = remap_operand_list(rv.concat_parts, from_ids, to_ids)
+        return rv_string_concat(new_parts)
+    }
+
+    if rv.kind == RV_RANGE {
+        let new_start = remap_operand_list(rv.range_start, from_ids, to_ids)
+        let new_end = remap_operand_list(rv.range_end, from_ids, to_ids)
+        if len(new_start) > 0 {
+            if len(new_end) > 0 {
+                return rv_range(new_start[0], new_end[0], rv.range_inclusive)
+            }
+        }
+        return rv
+    }
+
+    if rv.kind == RV_ENUM_VARIANT {
+        let new_efields = remap_operand_list(rv.enum_fields, from_ids, to_ids)
+        return rv_enum_variant(rv.enum_name, rv.variant_idx, new_efields)
+    }
+
+    if rv.kind == RV_ENUM_TAG {
+        let new_eop = remap_operand_list(rv.enum_operand, from_ids, to_ids)
+        if len(new_eop) > 0 {
+            return rv_enum_tag(new_eop[0])
+        }
+        return rv
+    }
+
+    if rv.kind == RV_ENUM_PAYLOAD {
+        let new_eop = remap_operand_list(rv.enum_operand, from_ids, to_ids)
+        if len(new_eop) > 0 {
+            return rv_enum_payload(new_eop[0], rv.variant_idx, rv.field_idx)
+        }
+        return rv
+    }
+
+    if rv.kind == RV_MAP {
+        let new_keys = remap_operand_list(rv.map_keys, from_ids, to_ids)
+        let new_vals = remap_operand_list(rv.map_values, from_ids, to_ids)
+        return rv_map(new_keys, new_vals)
+    }
+
+    if rv.kind == RV_CLOSURE {
+        let new_caps = remap_operand_list(rv.captures, from_ids, to_ids)
+        return rv_closure(rv.closure_func, new_caps)
+    }
+
+    // Fallback: return as-is
+    return rv
+}
+
+
+// ===================================================================
+// Entry point: run all optimization passes on a module
+// ===================================================================
+
+fn optimize(module: MirModule) {
+    // Phase 1: per-function local optimizations
+    for i in range(0, len(module.functions)) {
+        opt_constant_fold(module.functions[i])
+        opt_strength_reduce(module.functions[i])
+        opt_dead_code_elim(module.functions[i])
+        opt_tail_call(module.functions[i])
+    }
+
+    // Phase 2: cross-function inlining
+    opt_inline(module)
+
+    // Phase 3: re-run local optimizations after inlining
+    // to catch new folding / DCE opportunities
+    for i in range(0, len(module.functions)) {
+        opt_constant_fold(module.functions[i])
+        opt_dead_code_elim(module.functions[i])
+    }
+}

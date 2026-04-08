@@ -1,0 +1,537 @@
+// ============================================================
+// coff.kry -- COFF/PE object file emitter for the Kryos
+// self-hosted compiler (Windows x86-64).
+//
+// Produces a standard COFF .obj file that can be linked by
+// link.exe (MSVC), lld-link, or MinGW ld.  The emitter
+// constructs the full file layout in memory using byte buffer
+// builtins, then writes it to disk in one shot.
+//
+// Layout:
+//   [0x00]  COFF file header (20 bytes)
+//   [0x14]  Section headers (40 bytes each)
+//   [...]   Section raw data (.text, .data, .rdata)
+//   [...]   Relocations (10 bytes each)
+//   [...]   Symbol table (18 bytes each)
+//   [...]   String table (4-byte size prefix + strings)
+//
+// Sections emitted:
+//   [1] .text   (code)
+//   [2] .data   (initialized data)
+//   [3] .rdata  (read-only data)
+//
+// Architecture:
+//   - Symbols and relocations are stored as parallel arrays of
+//     scalar fields to avoid ownership-move issues.
+//   - The strtab is a byte buffer handle (i64) with a 4-byte
+//     size prefix that gets patched before writing.
+//
+// Dependencies (byte buffer builtins):
+//   buf_new, buf_write_byte, buf_write_i16_le, buf_write_i32_le,
+//   buf_write_i64_le, buf_write_zeros, buf_write_str, buf_len,
+//   buf_patch_i32_le, buf_write_to_file, buf_free, buf_get_byte,
+//   char_code
+// ============================================================
+
+// ===================================================================
+// COFF format constants
+// ===================================================================
+
+// Machine type
+let IMAGE_FILE_MACHINE_AMD64 = 0x8664
+
+// Section characteristics (flags)
+let IMAGE_SCN_CNT_CODE               = 0x00000020
+let IMAGE_SCN_CNT_INITIALIZED_DATA   = 0x00000040
+let IMAGE_SCN_CNT_UNINITIALIZED_DATA = 0x00000080
+let IMAGE_SCN_MEM_EXECUTE            = 0x20000000
+let IMAGE_SCN_MEM_READ               = 0x40000000
+let IMAGE_SCN_MEM_WRITE              = 0x80000000
+let IMAGE_SCN_ALIGN_1BYTES           = 0x00100000
+let IMAGE_SCN_ALIGN_4BYTES           = 0x00300000
+let IMAGE_SCN_ALIGN_16BYTES          = 0x00500000
+
+// Composite characteristics for common sections
+// .text: code | execute | read | align 16
+let COFF_TEXT_FLAGS  = 0x60500020
+// .data: initialized data | read | write
+let COFF_DATA_FLAGS  = 0xC0400040
+// .rdata: initialized data | read
+let COFF_RDATA_FLAGS = 0x40400040
+
+// Symbol storage class
+let IMAGE_SYM_CLASS_EXTERNAL = 2
+let IMAGE_SYM_CLASS_STATIC   = 3
+let IMAGE_SYM_CLASS_LABEL    = 6
+let IMAGE_SYM_CLASS_FILE     = 103
+
+// Symbol section numbers (1-based; 0 = external/undefined)
+let IMAGE_SYM_UNDEFINED = 0
+
+// Symbol type
+let IMAGE_SYM_TYPE_NULL     = 0
+let IMAGE_SYM_DTYPE_FUNCTION = 0x20
+
+// Relocation types (x86-64 COFF)
+let IMAGE_REL_AMD64_ADDR64  = 1
+let IMAGE_REL_AMD64_ADDR32  = 2
+let IMAGE_REL_AMD64_ADDR32NB = 3
+let IMAGE_REL_AMD64_REL32   = 4
+let IMAGE_REL_AMD64_REL32_1 = 5
+let IMAGE_REL_AMD64_REL32_2 = 6
+let IMAGE_REL_AMD64_REL32_3 = 7
+let IMAGE_REL_AMD64_REL32_4 = 8
+let IMAGE_REL_AMD64_REL32_5 = 9
+
+// Number of sections
+let COFF_NUM_SECTIONS = 3
+
+// Section indices (1-based per COFF convention)
+let COFF_SEC_TEXT  = 1
+let COFF_SEC_DATA  = 2
+let COFF_SEC_RDATA = 3
+
+// ===================================================================
+// Data structure
+//
+// Parallel arrays for symbols and relocations, avoiding struct
+// arrays that trigger move issues in the checker.
+// ===================================================================
+
+struct CoffObject {
+    // Symbol parallel arrays
+    sym_names: [str],
+    sym_values: [i64],
+    sym_sections: [i64],
+    sym_classes: [i64],
+    sym_types: [i64],
+    // .text relocation parallel arrays
+    trel_offsets: [i64],
+    trel_sym_idxs: [i64],
+    trel_types: [i64],
+    // .data relocation parallel arrays
+    drel_offsets: [i64],
+    drel_sym_idxs: [i64],
+    drel_types: [i64],
+    // String table buffer handle
+    strtab: i64
+}
+
+// ===================================================================
+// Constructor
+// ===================================================================
+
+fn coff_new() -> CoffObject {
+    let strtab = buf_new(256)
+    // String table starts with a 4-byte size field (placeholder)
+    buf_write_i32_le(strtab, 0)
+    return CoffObject {
+        sym_names: [],
+        sym_values: [],
+        sym_sections: [],
+        sym_classes: [],
+        sym_types: [],
+        trel_offsets: [],
+        trel_sym_idxs: [],
+        trel_types: [],
+        drel_offsets: [],
+        drel_sym_idxs: [],
+        drel_types: [],
+        strtab: strtab
+    }
+}
+
+// ===================================================================
+// Add a symbol, returns its index (0-based)
+// ===================================================================
+
+fn coff_add_symbol(obj: CoffObject, name: str, value: i64, section_num: i64, storage_class: i64, sym_type: i64) -> i64 {
+    push(obj.sym_names, name)
+    push(obj.sym_values, value)
+    push(obj.sym_sections, section_num)
+    push(obj.sym_classes, storage_class)
+    push(obj.sym_types, sym_type)
+    return len(obj.sym_names) - 1
+}
+
+// ===================================================================
+// Add a relocation for .text section
+// ===================================================================
+
+fn coff_add_text_reloc(obj: CoffObject, offset: i64, sym_idx: i64, rel_type: i64) {
+    push(obj.trel_offsets, offset)
+    push(obj.trel_sym_idxs, sym_idx)
+    push(obj.trel_types, rel_type)
+}
+
+// ===================================================================
+// Add a relocation for .data section
+// ===================================================================
+
+fn coff_add_data_reloc(obj: CoffObject, offset: i64, sym_idx: i64, rel_type: i64) {
+    push(obj.drel_offsets, offset)
+    push(obj.drel_sym_idxs, sym_idx)
+    push(obj.drel_types, rel_type)
+}
+
+// ===================================================================
+// Write u16 as two bytes (little-endian)
+// ===================================================================
+
+fn coff_write_u16_le(buf: i64, val: i64) {
+    buf_write_byte(buf, val % 256)
+    buf_write_byte(buf, (val / 256) % 256)
+}
+
+// ===================================================================
+// Add a string to the COFF string table
+// Returns the offset (including the 4-byte size prefix)
+// ===================================================================
+
+fn coff_add_string(strtab: i64, s: str) -> i64 {
+    let offset = buf_len(strtab)
+    buf_write_str(strtab, s)
+    buf_write_byte(strtab, 0)
+    return offset
+}
+
+// ===================================================================
+// Write the symbol name field (8 bytes)
+//
+// COFF symbol names <= 8 chars: stored directly, zero-padded
+// COFF symbol names > 8 chars: first 4 bytes = 0, next 4 = strtab offset
+// ===================================================================
+
+fn coff_write_sym_name(buf: i64, strtab: i64, name: str) {
+    let name_len = len(name)
+    if name_len <= 8 {
+        // Write the name bytes directly, then zero-pad to 8
+        buf_write_str(buf, name)
+        let pad = 8 - name_len
+        if pad > 0 {
+            buf_write_zeros(buf, pad)
+        }
+    } else {
+        // Long name: 4 zero bytes + string table offset
+        let str_offset = coff_add_string(strtab, name)
+        buf_write_i32_le(buf, 0)
+        buf_write_i32_le(buf, str_offset)
+    }
+}
+
+// ===================================================================
+// Write a section name (8 bytes, zero-padded)
+// ===================================================================
+
+fn coff_write_sec_name(buf: i64, name: str) {
+    let name_len = len(name)
+    if name_len <= 8 {
+        // Write the name bytes, then zero-pad to 8
+        buf_write_str(buf, name)
+        let pad = 8 - name_len
+        if pad > 0 {
+            buf_write_zeros(buf, pad)
+        }
+    } else {
+        // Truncate: write first 8 bytes using substr
+        let short = substr(name, 0, 8)
+        buf_write_str(buf, short)
+    }
+}
+
+// ===================================================================
+// Write a COFF section header (40 bytes)
+// ===================================================================
+
+fn coff_write_sec_hdr(buf: i64, name: str, raw_data_size: i64, raw_data_ptr: i64, relocs_ptr: i64, num_relocs: i64, characteristics: i64) {
+    // Name[8]
+    coff_write_sec_name(buf, name)
+    // VirtualSize (u32) -- 0 for object files
+    buf_write_i32_le(buf, 0)
+    // VirtualAddress (u32) -- 0 for object files
+    buf_write_i32_le(buf, 0)
+    // SizeOfRawData (u32)
+    buf_write_i32_le(buf, raw_data_size)
+    // PointerToRawData (u32)
+    buf_write_i32_le(buf, raw_data_ptr)
+    // PointerToRelocations (u32)
+    buf_write_i32_le(buf, relocs_ptr)
+    // PointerToLinenumbers (u32) -- 0
+    buf_write_i32_le(buf, 0)
+    // NumberOfRelocations (u16)
+    coff_write_u16_le(buf, num_relocs)
+    // NumberOfLinenumbers (u16) -- 0
+    coff_write_u16_le(buf, 0)
+    // Characteristics (u32)
+    buf_write_i32_le(buf, characteristics)
+}
+
+// ===================================================================
+// Write the COFF file header (20 bytes)
+// ===================================================================
+
+fn coff_write_file_hdr(buf: i64, num_sections: i64, sym_table_offset: i64, num_symbols: i64) {
+    // Machine (u16)
+    coff_write_u16_le(buf, IMAGE_FILE_MACHINE_AMD64)
+    // NumberOfSections (u16)
+    coff_write_u16_le(buf, num_sections)
+    // TimeDateStamp (u32) -- 0 for reproducible builds
+    buf_write_i32_le(buf, 0)
+    // PointerToSymbolTable (u32)
+    buf_write_i32_le(buf, sym_table_offset)
+    // NumberOfSymbols (u32)
+    buf_write_i32_le(buf, num_symbols)
+    // SizeOfOptionalHeader (u16) -- 0 for .obj
+    coff_write_u16_le(buf, 0)
+    // Characteristics (u16) -- 0 for .obj
+    coff_write_u16_le(buf, 0)
+}
+
+// ===================================================================
+// Write relocation entries (10 bytes each)
+// ===================================================================
+
+fn coff_write_relocs(buf: i64, offsets: [i64], sym_idxs: [i64], types: [i64]) {
+    let n = len(offsets)
+    for i in range(0, n) {
+        // VirtualAddress / offset (u32)
+        buf_write_i32_le(buf, offsets[i])
+        // SymbolTableIndex (u32)
+        buf_write_i32_le(buf, sym_idxs[i])
+        // Type (u16)
+        coff_write_u16_le(buf, types[i])
+    }
+}
+
+// ===================================================================
+// Write symbol table entries (18 bytes each)
+// ===================================================================
+
+fn coff_write_symbols(buf: i64, sym_names: [str], sym_values: [i64], sym_sections: [i64], sym_types: [i64], sym_classes: [i64], strtab: i64) {
+    let n = len(sym_names)
+    for i in range(0, n) {
+        // Name[8]
+        coff_write_sym_name(buf, strtab, sym_names[i])
+        // Value (u32)
+        buf_write_i32_le(buf, sym_values[i])
+        // SectionNumber (i16 stored as u16)
+        coff_write_u16_le(buf, sym_sections[i])
+        // Type (u16)
+        coff_write_u16_le(buf, sym_types[i])
+        // StorageClass (u8)
+        buf_write_byte(buf, sym_classes[i])
+        // NumberOfAuxSymbols (u8) -- 0
+        buf_write_byte(buf, 0)
+    }
+}
+
+// ===================================================================
+// Copy buffer contents from src to dst
+// ===================================================================
+
+fn coff_copy_buf(dst: i64, src: i64) {
+    let size = buf_len(src)
+    for i in range(0, size) {
+        let b = buf_get_byte(src, i)
+        buf_write_byte(dst, b)
+    }
+}
+
+// ===================================================================
+// coff_write -- Write the complete COFF .obj file
+//
+// Parameters:
+//   obj       -- the CoffObject with symbols and relocations
+//   text_buf  -- byte buffer with .text section content
+//   data_buf  -- byte buffer with .data section content
+//   rdata_buf -- byte buffer with .rdata (read-only data) content
+//   path      -- output file path
+// ===================================================================
+
+fn coff_write(obj: CoffObject, text_buf: i64, data_buf: i64, rdata_buf: i64, path: str) {
+    let text_size = buf_len(text_buf)
+    let data_size = buf_len(data_buf)
+    let rdata_size = buf_len(rdata_buf)
+    let num_text_relocs = len(obj.trel_offsets)
+    let num_data_relocs = len(obj.drel_offsets)
+    let num_symbols = len(obj.sym_names)
+
+    // ---------------------------------------------------------------
+    // Compute layout
+    //
+    // COFF layout:
+    //   File header         (20 bytes)
+    //   Section headers     (3 * 40 = 120 bytes)
+    //   .text raw data
+    //   .text relocations   (10 bytes each)
+    //   .data raw data
+    //   .data relocations   (10 bytes each)
+    //   .rdata raw data
+    //   Symbol table        (18 bytes each)
+    //   String table        (4-byte size + strings)
+    // ---------------------------------------------------------------
+
+    let file_hdr_size: i64 = 20
+    let sec_hdr_size: i64 = 40
+    let headers_end = file_hdr_size + (COFF_NUM_SECTIONS * sec_hdr_size)
+
+    // .text starts after all headers
+    let text_offset = headers_end
+
+    // .text relocations follow .text data
+    let text_relocs_offset = text_offset + text_size
+    let text_relocs_size = num_text_relocs * 10
+
+    // .data follows .text relocations
+    let data_offset = text_relocs_offset + text_relocs_size
+
+    // .data relocations follow .data
+    let data_relocs_offset = data_offset + data_size
+    let data_relocs_size = num_data_relocs * 10
+
+    // .rdata follows .data relocations
+    let rdata_offset = data_relocs_offset + data_relocs_size
+
+    // Symbol table follows .rdata
+    let sym_table_offset = rdata_offset + rdata_size
+
+    // ---------------------------------------------------------------
+    // Finalize string table: patch the size field at offset 0
+    // ---------------------------------------------------------------
+    let strtab_size = buf_len(obj.strtab)
+    buf_patch_i32_le(obj.strtab, 0, strtab_size)
+
+    // ---------------------------------------------------------------
+    // Build the output buffer
+    // ---------------------------------------------------------------
+    let output = buf_new(4096)
+
+    // -- File header --
+    coff_write_file_hdr(output, COFF_NUM_SECTIONS, sym_table_offset, num_symbols)
+
+    // -- Section headers --
+
+    // .text header
+    let mut text_relocs_ptr: i64 = 0
+    if num_text_relocs > 0 {
+        text_relocs_ptr = text_relocs_offset
+    }
+    coff_write_sec_hdr(output, ".text", text_size, text_offset, text_relocs_ptr, num_text_relocs, COFF_TEXT_FLAGS)
+
+    // .data header
+    let mut data_relocs_ptr: i64 = 0
+    if num_data_relocs > 0 {
+        data_relocs_ptr = data_relocs_offset
+    }
+    coff_write_sec_hdr(output, ".data", data_size, data_offset, data_relocs_ptr, num_data_relocs, COFF_DATA_FLAGS)
+
+    // .rdata header (no relocations)
+    coff_write_sec_hdr(output, ".rdata", rdata_size, rdata_offset, 0, 0, COFF_RDATA_FLAGS)
+
+    // -- .text raw data --
+    coff_copy_buf(output, text_buf)
+
+    // -- .text relocations --
+    coff_write_relocs(output, obj.trel_offsets, obj.trel_sym_idxs, obj.trel_types)
+
+    // -- .data raw data --
+    coff_copy_buf(output, data_buf)
+
+    // -- .data relocations --
+    coff_write_relocs(output, obj.drel_offsets, obj.drel_sym_idxs, obj.drel_types)
+
+    // -- .rdata raw data --
+    coff_copy_buf(output, rdata_buf)
+
+    // -- Symbol table --
+    coff_write_symbols(output, obj.sym_names, obj.sym_values, obj.sym_sections, obj.sym_types, obj.sym_classes, obj.strtab)
+
+    // -- String table --
+    coff_copy_buf(output, obj.strtab)
+
+    // ---------------------------------------------------------------
+    // Write to file
+    // ---------------------------------------------------------------
+    buf_write_to_file(output, path)
+    buf_free(output)
+}
+
+// ===================================================================
+// Convenience: add a global function symbol in .text
+// ===================================================================
+
+fn coff_add_func(obj: CoffObject, name: str, offset: i64) -> i64 {
+    return coff_add_symbol(obj, name, offset, COFF_SEC_TEXT, IMAGE_SYM_CLASS_EXTERNAL, IMAGE_SYM_DTYPE_FUNCTION)
+}
+
+// ===================================================================
+// Convenience: add an external (undefined) symbol
+// ===================================================================
+
+fn coff_add_extern(obj: CoffObject, name: str) -> i64 {
+    return coff_add_symbol(obj, name, 0, IMAGE_SYM_UNDEFINED, IMAGE_SYM_CLASS_EXTERNAL, IMAGE_SYM_TYPE_NULL)
+}
+
+// ===================================================================
+// Convenience: add a static symbol (local to this .obj)
+// ===================================================================
+
+fn coff_add_static(obj: CoffObject, name: str, offset: i64, section_num: i64) -> i64 {
+    return coff_add_symbol(obj, name, offset, section_num, IMAGE_SYM_CLASS_STATIC, IMAGE_SYM_TYPE_NULL)
+}
+
+// ===================================================================
+// Convenience: add a global data symbol in .data
+// ===================================================================
+
+fn coff_add_data_sym(obj: CoffObject, name: str, offset: i64) -> i64 {
+    return coff_add_symbol(obj, name, offset, COFF_SEC_DATA, IMAGE_SYM_CLASS_EXTERNAL, IMAGE_SYM_TYPE_NULL)
+}
+
+// ===================================================================
+// Convenience: add a global data symbol in .rdata
+// ===================================================================
+
+fn coff_add_rdata_sym(obj: CoffObject, name: str, offset: i64) -> i64 {
+    return coff_add_symbol(obj, name, offset, COFF_SEC_RDATA, IMAGE_SYM_CLASS_EXTERNAL, IMAGE_SYM_TYPE_NULL)
+}
+
+// ===================================================================
+// Convenience: add a REL32 call relocation for .text
+// ===================================================================
+
+fn coff_add_call_reloc(obj: CoffObject, offset: i64, sym_idx: i64) {
+    coff_add_text_reloc(obj, offset, sym_idx, IMAGE_REL_AMD64_REL32)
+}
+
+// ===================================================================
+// Convenience: add a 64-bit address relocation for .text
+// ===================================================================
+
+fn coff_add_addr64_reloc(obj: CoffObject, offset: i64, sym_idx: i64) {
+    coff_add_text_reloc(obj, offset, sym_idx, IMAGE_REL_AMD64_ADDR64)
+}
+
+// ===================================================================
+// Convenience: write a simple .obj with just one function
+// ===================================================================
+
+fn coff_write_simple(text_buf: i64, fn_name: str, path: str) {
+    let obj = coff_new()
+
+    // Add the function as an external (global) symbol in .text
+    push(obj.sym_names, fn_name)
+    push(obj.sym_values, 0)
+    push(obj.sym_sections, COFF_SEC_TEXT)
+    push(obj.sym_classes, IMAGE_SYM_CLASS_EXTERNAL)
+    push(obj.sym_types, IMAGE_SYM_DTYPE_FUNCTION)
+
+    // Empty data and rdata
+    let data_buf = buf_new(0)
+    let rdata_buf = buf_new(0)
+
+    coff_write(obj, text_buf, data_buf, rdata_buf, path)
+
+    buf_free(data_buf)
+    buf_free(rdata_buf)
+}

@@ -1,0 +1,759 @@
+// ============================================================
+// x86.kry -- x86_64 machine code encoder for the Kryos
+// self-hosted compiler.
+//
+// This module encodes raw x86_64 instructions into byte buffers.
+// It is the low-level instruction encoding layer that the code
+// generator (codegen.kry) calls to produce machine code.
+//
+// Architecture:
+//   - Register constants match regalloc.kry numbering.
+//   - Encoding helpers build REX, ModR/M, and SIB bytes.
+//   - Instruction emitters write complete encoded instructions
+//     into buf_* byte buffers.
+//   - Condition code constants for SETcc/Jcc instructions.
+//   - A patching function for fixing up forward jumps.
+//
+// Dependencies (same compilation unit):
+//   (none -- this module is self-contained)
+// ============================================================
+
+// ===================================================================
+// Register constants (must match regalloc.kry)
+// ===================================================================
+
+let REG_RAX = 0
+let REG_RCX = 1
+let REG_RDX = 2
+let REG_RBX = 3
+let REG_RSP = 4
+let REG_RBP = 5
+let REG_RSI = 6
+let REG_RDI = 7
+let REG_R8  = 8
+let REG_R9  = 9
+let REG_R10 = 10
+let REG_R11 = 11
+let REG_R12 = 12
+let REG_R13 = 13
+let REG_R14 = 14
+let REG_R15 = 15
+
+// ===================================================================
+// Condition code constants for SETcc / Jcc
+// ===================================================================
+
+let CC_O   = 0   // overflow
+let CC_NO  = 1   // no overflow
+let CC_B   = 2   // below (unsigned <)
+let CC_AE  = 3   // above or equal (unsigned >=)
+let CC_E   = 4   // equal
+let CC_NE  = 5   // not equal
+let CC_BE  = 6   // below or equal (unsigned <=)
+let CC_A   = 7   // above (unsigned >)
+let CC_S   = 8   // sign
+let CC_NS  = 9   // no sign
+let CC_L   = 12  // less than (signed)
+let CC_GE  = 13  // greater or equal (signed)
+let CC_LE  = 14  // less or equal (signed)
+let CC_G   = 15  // greater than (signed)
+
+// ===================================================================
+// Register encoding helpers
+// ===================================================================
+
+// Return the low 3 bits of a register number for ModR/M encoding.
+fn x86_reg_lo3(reg: i32) -> i32 {
+    return reg & 7
+}
+
+// Return true if the register is R8-R15 (needs REX extension bit).
+fn x86_reg_needs_rex(reg: i32) -> bool {
+    return reg >= 8
+}
+
+// Return 1 if the register is R8-R15, else 0.
+fn x86_reg_rex_bit(reg: i32) -> i32 {
+    if reg >= 8 {
+        return 1
+    }
+    return 0
+}
+
+// ===================================================================
+// REX prefix builder
+//
+// Format: 0100 WRXB
+//   W = 1 for 64-bit operand size
+//   R = extends ModR/M reg field (bit 3 of reg)
+//   X = extends SIB index field (bit 3 of index)
+//   B = extends ModR/M r/m or SIB base field (bit 3 of r/m or base)
+// ===================================================================
+
+fn x86_rex(w: i32, r: i32, x: i32, b: i32) -> i32 {
+    let mut rex = 0x40
+    if w == 1 {
+        rex = rex | 8
+    }
+    if r == 1 {
+        rex = rex | 4
+    }
+    if x == 1 {
+        rex = rex | 2
+    }
+    if b == 1 {
+        rex = rex | 1
+    }
+    return rex
+}
+
+// ===================================================================
+// ModR/M byte builder
+//
+// Format: [mod(2)][reg(3)][rm(3)]
+//   mod_val: 0b00=indirect, 0b01=disp8, 0b10=disp32, 0b11=register
+//   reg: register or opcode extension (3 bits)
+//   rm: register or memory operand (3 bits)
+// ===================================================================
+
+fn x86_modrm(mod_val: i32, reg: i32, rm: i32) -> i32 {
+    return ((mod_val & 3) << 6) | ((reg & 7) << 3) | (rm & 7)
+}
+
+// ===================================================================
+// SIB byte builder
+//
+// Format: [scale(2)][index(3)][base(3)]
+// ===================================================================
+
+fn x86_sib(scale: i32, index: i32, base: i32) -> i32 {
+    return ((scale & 3) << 6) | ((index & 7) << 3) | (base & 7)
+}
+
+// ===================================================================
+// Internal helper: emit REX + opcode for reg-reg 64-bit operations
+//
+// Many instructions follow the pattern: REX.W + opcode + ModR/M(11, reg, rm)
+// This helper emits the REX prefix and opcode byte. The caller
+// provides the reg and rm fields for REX bit computation.
+// ===================================================================
+
+fn x86_emit_rex_w(buf: i64, reg: i32, rm: i32) {
+    let rex = x86_rex(1, x86_reg_rex_bit(reg), 0, x86_reg_rex_bit(rm))
+    buf_write_byte(buf, rex)
+}
+
+// ===================================================================
+// Internal helper: emit memory operand encoding
+//
+// Handles the special cases for RSP (needs SIB) and RBP (needs
+// disp8 even for zero offset). Used by MOV reg,[base+offset] and
+// MOV [base+offset],reg and LEA and MOV mem,imm32.
+//
+// reg_field: the reg/opcode field for ModR/M (3 bits, already masked)
+// base: the base register
+// offset: the displacement
+// ===================================================================
+
+fn x86_emit_memop(buf: i64, reg_field: i32, base: i32, offset: i32) {
+    let base_lo3 = x86_reg_lo3(base)
+
+    // Check if offset fits in a signed byte (-128..127)
+    let use_disp8 = offset >= -128 and offset <= 127
+    // Special case: RBP/R13 with zero offset still needs disp8
+    let is_rbp_base = base_lo3 == 5
+
+    if offset == 0 and is_rbp_base == false {
+        // mod=00, no displacement
+        if base_lo3 == 4 {
+            // RSP/R12 as base requires SIB byte
+            buf_write_byte(buf, x86_modrm(0, reg_field, 4))
+            buf_write_byte(buf, x86_sib(0, 4, base_lo3))
+        } else {
+            buf_write_byte(buf, x86_modrm(0, reg_field, base_lo3))
+        }
+    } elif use_disp8 {
+        // mod=01, 8-bit displacement
+        if base_lo3 == 4 {
+            buf_write_byte(buf, x86_modrm(1, reg_field, 4))
+            buf_write_byte(buf, x86_sib(0, 4, base_lo3))
+        } else {
+            buf_write_byte(buf, x86_modrm(1, reg_field, base_lo3))
+        }
+        buf_write_byte(buf, offset & 0xFF)
+    } else {
+        // mod=10, 32-bit displacement
+        if base_lo3 == 4 {
+            buf_write_byte(buf, x86_modrm(2, reg_field, 4))
+            buf_write_byte(buf, x86_sib(0, 4, base_lo3))
+        } else {
+            buf_write_byte(buf, x86_modrm(2, reg_field, base_lo3))
+        }
+        buf_write_i32_le(buf, offset)
+    }
+}
+
+// ===================================================================
+// Data movement instructions
+// ===================================================================
+
+// MOV r64, r64 -- REX.W + 0x89 + ModR/M(11, src, dst)
+fn x86_mov_reg_reg(buf: i64, dst: i32, src: i32) {
+    x86_emit_rex_w(buf, src, dst)
+    buf_write_byte(buf, 0x89)
+    buf_write_byte(buf, x86_modrm(3, x86_reg_lo3(src), x86_reg_lo3(dst)))
+}
+
+// MOV r64, imm64 -- REX.W + (0xB8 + rd) + imm64 (movabs, 10 bytes)
+fn x86_mov_reg_imm64(buf: i64, dst: i32, val: i64) {
+    let rex = x86_rex(1, 0, 0, x86_reg_rex_bit(dst))
+    buf_write_byte(buf, rex)
+    buf_write_byte(buf, 0xB8 + x86_reg_lo3(dst))
+    buf_write_i64_le(buf, val)
+}
+
+// MOV r32, imm32 -- [REX.B if R8-R15] + (0xB8 + rd) + imm32
+fn x86_mov_reg_imm32(buf: i64, dst: i32, val: i32) {
+    if x86_reg_needs_rex(dst) {
+        let rex = x86_rex(0, 0, 0, 1)
+        buf_write_byte(buf, rex)
+    }
+    buf_write_byte(buf, 0xB8 + x86_reg_lo3(dst))
+    buf_write_i32_le(buf, val)
+}
+
+// MOV r64, [base+offset] -- REX.W + 0x8B + memory operand
+fn x86_mov_reg_mem(buf: i64, dst: i32, base: i32, offset: i32) {
+    x86_emit_rex_w(buf, dst, base)
+    buf_write_byte(buf, 0x8B)
+    x86_emit_memop(buf, x86_reg_lo3(dst), base, offset)
+}
+
+// MOV [base+offset], r64 -- REX.W + 0x89 + memory operand
+fn x86_mov_mem_reg(buf: i64, base: i32, offset: i32, src: i32) {
+    x86_emit_rex_w(buf, src, base)
+    buf_write_byte(buf, 0x89)
+    x86_emit_memop(buf, x86_reg_lo3(src), base, offset)
+}
+
+// MOV qword [base+offset], imm32 (sign-extended)
+// REX.W + 0xC7 + ModR/M(mod, 0, base) + disp + imm32
+fn x86_mov_mem_imm32(buf: i64, base: i32, offset: i32, val: i32) {
+    let rex = x86_rex(1, 0, 0, x86_reg_rex_bit(base))
+    buf_write_byte(buf, rex)
+    buf_write_byte(buf, 0xC7)
+    x86_emit_memop(buf, 0, base, offset)
+    buf_write_i32_le(buf, val)
+}
+
+// LEA r64, [base+offset] -- REX.W + 0x8D + memory operand
+fn x86_lea(buf: i64, dst: i32, base: i32, offset: i32) {
+    x86_emit_rex_w(buf, dst, base)
+    buf_write_byte(buf, 0x8D)
+    x86_emit_memop(buf, x86_reg_lo3(dst), base, offset)
+}
+
+// ===================================================================
+// Arithmetic instructions
+// ===================================================================
+
+// ADD r64, r64 -- REX.W + 0x01 + ModR/M(11, src, dst)
+fn x86_add_reg_reg(buf: i64, dst: i32, src: i32) {
+    x86_emit_rex_w(buf, src, dst)
+    buf_write_byte(buf, 0x01)
+    buf_write_byte(buf, x86_modrm(3, x86_reg_lo3(src), x86_reg_lo3(dst)))
+}
+
+// ADD r64, imm32 -- REX.W + 0x81 + ModR/M(11, 0, dst) + imm32
+fn x86_add_reg_imm32(buf: i64, dst: i32, val: i32) {
+    let rex = x86_rex(1, 0, 0, x86_reg_rex_bit(dst))
+    buf_write_byte(buf, rex)
+    buf_write_byte(buf, 0x81)
+    buf_write_byte(buf, x86_modrm(3, 0, x86_reg_lo3(dst)))
+    buf_write_i32_le(buf, val)
+}
+
+// SUB r64, r64 -- REX.W + 0x29 + ModR/M(11, src, dst)
+fn x86_sub_reg_reg(buf: i64, dst: i32, src: i32) {
+    x86_emit_rex_w(buf, src, dst)
+    buf_write_byte(buf, 0x29)
+    buf_write_byte(buf, x86_modrm(3, x86_reg_lo3(src), x86_reg_lo3(dst)))
+}
+
+// SUB r64, imm32 -- REX.W + 0x81 + ModR/M(11, 5, dst) + imm32
+fn x86_sub_reg_imm32(buf: i64, dst: i32, val: i32) {
+    let rex = x86_rex(1, 0, 0, x86_reg_rex_bit(dst))
+    buf_write_byte(buf, rex)
+    buf_write_byte(buf, 0x81)
+    buf_write_byte(buf, x86_modrm(3, 5, x86_reg_lo3(dst)))
+    buf_write_i32_le(buf, val)
+}
+
+// IMUL r64, r64 -- REX.W + 0x0F 0xAF + ModR/M(11, dst, src)
+fn x86_imul_reg_reg(buf: i64, dst: i32, src: i32) {
+    x86_emit_rex_w(buf, dst, src)
+    buf_write_byte(buf, 0x0F)
+    buf_write_byte(buf, 0xAF)
+    buf_write_byte(buf, x86_modrm(3, x86_reg_lo3(dst), x86_reg_lo3(src)))
+}
+
+// IDIV r64 -- REX.W + 0xF7 + ModR/M(11, 7, divisor)
+// Divides RDX:RAX by the divisor register.
+fn x86_idiv_reg(buf: i64, divisor: i32) {
+    let rex = x86_rex(1, 0, 0, x86_reg_rex_bit(divisor))
+    buf_write_byte(buf, rex)
+    buf_write_byte(buf, 0xF7)
+    buf_write_byte(buf, x86_modrm(3, 7, x86_reg_lo3(divisor)))
+}
+
+// CQO -- sign-extend RAX into RDX:RAX
+// REX.W + 0x99
+fn x86_cqo(buf: i64) {
+    buf_write_byte(buf, x86_rex(1, 0, 0, 0))
+    buf_write_byte(buf, 0x99)
+}
+
+// NEG r64 -- REX.W + 0xF7 + ModR/M(11, 3, reg)
+fn x86_neg_reg(buf: i64, reg: i32) {
+    let rex = x86_rex(1, 0, 0, x86_reg_rex_bit(reg))
+    buf_write_byte(buf, rex)
+    buf_write_byte(buf, 0xF7)
+    buf_write_byte(buf, x86_modrm(3, 3, x86_reg_lo3(reg)))
+}
+
+// NOT r64 -- REX.W + 0xF7 + ModR/M(11, 2, reg)
+fn x86_not_reg(buf: i64, reg: i32) {
+    let rex = x86_rex(1, 0, 0, x86_reg_rex_bit(reg))
+    buf_write_byte(buf, rex)
+    buf_write_byte(buf, 0xF7)
+    buf_write_byte(buf, x86_modrm(3, 2, x86_reg_lo3(reg)))
+}
+
+// INC r64 -- REX.W + 0xFF + ModR/M(11, 0, reg)
+fn x86_inc_reg(buf: i64, reg: i32) {
+    let rex = x86_rex(1, 0, 0, x86_reg_rex_bit(reg))
+    buf_write_byte(buf, rex)
+    buf_write_byte(buf, 0xFF)
+    buf_write_byte(buf, x86_modrm(3, 0, x86_reg_lo3(reg)))
+}
+
+// DEC r64 -- REX.W + 0xFF + ModR/M(11, 1, reg)
+fn x86_dec_reg(buf: i64, reg: i32) {
+    let rex = x86_rex(1, 0, 0, x86_reg_rex_bit(reg))
+    buf_write_byte(buf, rex)
+    buf_write_byte(buf, 0xFF)
+    buf_write_byte(buf, x86_modrm(3, 1, x86_reg_lo3(reg)))
+}
+
+// ===================================================================
+// Bitwise instructions
+// ===================================================================
+
+// AND r64, r64 -- REX.W + 0x21 + ModR/M(11, src, dst)
+fn x86_and_reg_reg(buf: i64, dst: i32, src: i32) {
+    x86_emit_rex_w(buf, src, dst)
+    buf_write_byte(buf, 0x21)
+    buf_write_byte(buf, x86_modrm(3, x86_reg_lo3(src), x86_reg_lo3(dst)))
+}
+
+// OR r64, r64 -- REX.W + 0x09 + ModR/M(11, src, dst)
+fn x86_or_reg_reg(buf: i64, dst: i32, src: i32) {
+    x86_emit_rex_w(buf, src, dst)
+    buf_write_byte(buf, 0x09)
+    buf_write_byte(buf, x86_modrm(3, x86_reg_lo3(src), x86_reg_lo3(dst)))
+}
+
+// XOR r64, r64 -- REX.W + 0x31 + ModR/M(11, src, dst)
+fn x86_xor_reg_reg(buf: i64, dst: i32, src: i32) {
+    x86_emit_rex_w(buf, src, dst)
+    buf_write_byte(buf, 0x31)
+    buf_write_byte(buf, x86_modrm(3, x86_reg_lo3(src), x86_reg_lo3(dst)))
+}
+
+// SHL r64, CL -- REX.W + 0xD3 + ModR/M(11, 4, reg)
+fn x86_shl_reg_cl(buf: i64, reg: i32) {
+    let rex = x86_rex(1, 0, 0, x86_reg_rex_bit(reg))
+    buf_write_byte(buf, rex)
+    buf_write_byte(buf, 0xD3)
+    buf_write_byte(buf, x86_modrm(3, 4, x86_reg_lo3(reg)))
+}
+
+// SHR r64, CL -- REX.W + 0xD3 + ModR/M(11, 5, reg)
+fn x86_shr_reg_cl(buf: i64, reg: i32) {
+    let rex = x86_rex(1, 0, 0, x86_reg_rex_bit(reg))
+    buf_write_byte(buf, rex)
+    buf_write_byte(buf, 0xD3)
+    buf_write_byte(buf, x86_modrm(3, 5, x86_reg_lo3(reg)))
+}
+
+// SAR r64, CL -- REX.W + 0xD3 + ModR/M(11, 7, reg) (arithmetic right shift)
+fn x86_sar_reg_cl(buf: i64, reg: i32) {
+    let rex = x86_rex(1, 0, 0, x86_reg_rex_bit(reg))
+    buf_write_byte(buf, rex)
+    buf_write_byte(buf, 0xD3)
+    buf_write_byte(buf, x86_modrm(3, 7, x86_reg_lo3(reg)))
+}
+
+// ===================================================================
+// Comparison instructions
+// ===================================================================
+
+// CMP r64, r64 -- REX.W + 0x39 + ModR/M(11, src, dst)
+fn x86_cmp_reg_reg(buf: i64, r1: i32, r2: i32) {
+    x86_emit_rex_w(buf, r2, r1)
+    buf_write_byte(buf, 0x39)
+    buf_write_byte(buf, x86_modrm(3, x86_reg_lo3(r2), x86_reg_lo3(r1)))
+}
+
+// CMP r64, imm32 -- REX.W + 0x81 + ModR/M(11, 7, dst) + imm32
+fn x86_cmp_reg_imm32(buf: i64, reg: i32, val: i32) {
+    let rex = x86_rex(1, 0, 0, x86_reg_rex_bit(reg))
+    buf_write_byte(buf, rex)
+    buf_write_byte(buf, 0x81)
+    buf_write_byte(buf, x86_modrm(3, 7, x86_reg_lo3(reg)))
+    buf_write_i32_le(buf, val)
+}
+
+// TEST r64, r64 -- REX.W + 0x85 + ModR/M(11, src, dst)
+fn x86_test_reg_reg(buf: i64, r1: i32, r2: i32) {
+    x86_emit_rex_w(buf, r2, r1)
+    buf_write_byte(buf, 0x85)
+    buf_write_byte(buf, x86_modrm(3, x86_reg_lo3(r2), x86_reg_lo3(r1)))
+}
+
+// SETcc r8 -- set byte based on condition code
+// For registers R8-R15, we need a REX prefix (just REX.B to access
+// the extended register). For registers 0-7, we need a REX prefix
+// if dst is RSP/RBP/RSI/RDI (to access SPL/BPL/SIL/DIL instead
+// of AH/CH/DH/BH). We always emit REX for safety.
+//
+// [REX] + 0x0F + (0x90+cc) + ModR/M(11, 0, dst)
+fn x86_setcc(buf: i64, cc: i32, dst: i32) {
+    // Always emit REX to ensure we get the low-byte register encoding
+    let rex = x86_rex(0, 0, 0, x86_reg_rex_bit(dst))
+    buf_write_byte(buf, rex)
+    buf_write_byte(buf, 0x0F)
+    buf_write_byte(buf, 0x90 + (cc & 0x0F))
+    buf_write_byte(buf, x86_modrm(3, 0, x86_reg_lo3(dst)))
+}
+
+// MOVZX r64, r8 -- zero-extend byte to 64-bit
+// REX.W + 0x0F 0xB6 + ModR/M(11, dst, src)
+fn x86_movzx_r64_r8(buf: i64, dst: i32, src: i32) {
+    x86_emit_rex_w(buf, dst, src)
+    buf_write_byte(buf, 0x0F)
+    buf_write_byte(buf, 0xB6)
+    buf_write_byte(buf, x86_modrm(3, x86_reg_lo3(dst), x86_reg_lo3(src)))
+}
+
+// ===================================================================
+// Control flow instructions
+// ===================================================================
+
+// JMP rel32 -- 0xE9 + imm32
+// The offset is relative to the end of the instruction (after the 4-byte immediate).
+fn x86_jmp_rel32(buf: i64, offset: i32) {
+    buf_write_byte(buf, 0xE9)
+    buf_write_i32_le(buf, offset)
+}
+
+// Jcc rel32 -- 0x0F + (0x80+cc) + imm32
+// Conditional jump with 32-bit displacement.
+fn x86_jcc_rel32(buf: i64, cc: i32, offset: i32) {
+    buf_write_byte(buf, 0x0F)
+    buf_write_byte(buf, 0x80 + (cc & 0x0F))
+    buf_write_i32_le(buf, offset)
+}
+
+// CALL rel32 -- 0xE8 + imm32
+fn x86_call_rel32(buf: i64, offset: i32) {
+    buf_write_byte(buf, 0xE8)
+    buf_write_i32_le(buf, offset)
+}
+
+// RET -- 0xC3
+fn x86_ret(buf: i64) {
+    buf_write_byte(buf, 0xC3)
+}
+
+// NOP -- 0x90
+fn x86_nop(buf: i64) {
+    buf_write_byte(buf, 0x90)
+}
+
+// ===================================================================
+// Stack operations
+// ===================================================================
+
+// PUSH r64 -- [REX.B if R8-R15] + (0x50 + rd)
+fn x86_push_reg(buf: i64, reg: i32) {
+    if x86_reg_needs_rex(reg) {
+        buf_write_byte(buf, x86_rex(0, 0, 0, 1))
+    }
+    buf_write_byte(buf, 0x50 + x86_reg_lo3(reg))
+}
+
+// POP r64 -- [REX.B if R8-R15] + (0x58 + rd)
+fn x86_pop_reg(buf: i64, reg: i32) {
+    if x86_reg_needs_rex(reg) {
+        buf_write_byte(buf, x86_rex(0, 0, 0, 1))
+    }
+    buf_write_byte(buf, 0x58 + x86_reg_lo3(reg))
+}
+
+// ===================================================================
+// System instructions
+// ===================================================================
+
+// SYSCALL -- 0x0F 0x05
+fn x86_syscall(buf: i64) {
+    buf_write_byte(buf, 0x0F)
+    buf_write_byte(buf, 0x05)
+}
+
+// ===================================================================
+// Patching
+// ===================================================================
+
+// Patch a rel32 at the given byte offset to jump to the target address.
+// The rel32 value is calculated as: target - (offset + 4)
+// because the CPU reads the 4-byte displacement, then adds it to the
+// instruction pointer which has already advanced past those 4 bytes.
+fn x86_patch_rel32(buf: i64, offset: i32, target: i32) {
+    let rel = target - (offset + 4)
+    buf_patch_i32_le(buf, offset, rel)
+}
+
+// ===================================================================
+// Convenience helpers for common instruction sequences
+// ===================================================================
+
+// Emit a function prologue: PUSH RBP; MOV RBP, RSP; SUB RSP, frame_size
+fn x86_prologue(buf: i64, frame_size: i32) {
+    x86_push_reg(buf, REG_RBP)
+    x86_mov_reg_reg(buf, REG_RBP, REG_RSP)
+    if frame_size > 0 {
+        x86_sub_reg_imm32(buf, REG_RSP, frame_size)
+    }
+}
+
+// Emit a function epilogue: MOV RSP, RBP; POP RBP; RET
+fn x86_epilogue(buf: i64) {
+    x86_mov_reg_reg(buf, REG_RSP, REG_RBP)
+    x86_pop_reg(buf, REG_RBP)
+    x86_ret(buf)
+}
+
+// Zero a register: XOR r64, r64 (3 bytes, fastest way to zero)
+fn x86_zero_reg(buf: i64, reg: i32) {
+    x86_xor_reg_reg(buf, reg, reg)
+}
+
+// Compare and set boolean result: CMP r1, r2; SETcc dst; MOVZX dst, dst
+fn x86_cmp_set(buf: i64, cc: i32, dst: i32, r1: i32, r2: i32) {
+    x86_cmp_reg_reg(buf, r1, r2)
+    x86_setcc(buf, cc, dst)
+    x86_movzx_r64_r8(buf, dst, dst)
+}
+
+// Move immediate 32-bit value into a register, sign-extending to 64 bits.
+// Uses MOV r32, imm32 for non-negative values (automatically zero-extends),
+// and MOV r64, imm64 for negative values.
+fn x86_mov_reg_imm(buf: i64, dst: i32, val: i32) {
+    if val >= 0 {
+        x86_mov_reg_imm32(buf, dst, val)
+    } else {
+        // Negative value: need movabs to get sign extension
+        // Cast i32 to i64 to preserve sign
+        let val64: i64 = val
+        x86_mov_reg_imm64(buf, dst, val64)
+    }
+}
+
+// ===================================================================
+// Multi-byte NOP sequences for alignment padding
+//
+// Emits `count` NOP bytes. For simplicity, uses single-byte NOPs.
+// A more optimized version would use multi-byte NOP instructions,
+// but for code correctness single-byte NOPs are sufficient.
+// ===================================================================
+
+fn x86_nop_pad(buf: i64, count: i32) {
+    let mut i = 0
+    while i < count {
+        x86_nop(buf)
+        i = i + 1
+    }
+}
+
+// ===================================================================
+// Save and restore callee-saved registers
+//
+// The System V AMD64 ABI defines RBX, RBP, R12-R15 as callee-saved.
+// RSP is also callee-saved but managed by prologue/epilogue.
+// ===================================================================
+
+fn x86_push_callee_saved(buf: i64) {
+    x86_push_reg(buf, REG_RBX)
+    x86_push_reg(buf, REG_R12)
+    x86_push_reg(buf, REG_R13)
+    x86_push_reg(buf, REG_R14)
+    x86_push_reg(buf, REG_R15)
+}
+
+fn x86_pop_callee_saved(buf: i64) {
+    x86_pop_reg(buf, REG_R15)
+    x86_pop_reg(buf, REG_R14)
+    x86_pop_reg(buf, REG_R13)
+    x86_pop_reg(buf, REG_R12)
+    x86_pop_reg(buf, REG_RBX)
+}
+
+// ===================================================================
+// Current position in buffer (for label/fixup tracking)
+// ===================================================================
+
+fn x86_current_offset(buf: i64) -> i32 {
+    return buf_len(buf)
+}
+
+// ===================================================================
+// Emit a placeholder rel32 that will be patched later.
+// Returns the offset of the rel32 field (for use with x86_patch_rel32).
+// ===================================================================
+
+fn x86_emit_jmp_placeholder(buf: i64) -> i32 {
+    buf_write_byte(buf, 0xE9)
+    let offset = buf_len(buf)
+    buf_write_i32_le(buf, 0)
+    return offset
+}
+
+fn x86_emit_jcc_placeholder(buf: i64, cc: i32) -> i32 {
+    buf_write_byte(buf, 0x0F)
+    buf_write_byte(buf, 0x80 + (cc & 0x0F))
+    let offset = buf_len(buf)
+    buf_write_i32_le(buf, 0)
+    return offset
+}
+
+fn x86_emit_call_placeholder(buf: i64) -> i32 {
+    buf_write_byte(buf, 0xE8)
+    let offset = buf_len(buf)
+    buf_write_i32_le(buf, 0)
+    return offset
+}
+
+// ===================================================================
+// Instruction size queries
+//
+// These functions return the encoded size of instructions without
+// actually emitting them. Useful for the code generator to calculate
+// offsets and layout before emitting.
+// ===================================================================
+
+// Size of MOV r64, r64 (always 3 bytes: REX + opcode + ModR/M)
+fn x86_size_mov_reg_reg() -> i32 {
+    return 3
+}
+
+// Size of MOV r64, imm64 (always 10 bytes: REX + opcode + 8-byte immediate)
+fn x86_size_mov_reg_imm64() -> i32 {
+    return 10
+}
+
+// Size of MOV r32, imm32 (5 or 6 bytes depending on REX prefix)
+fn x86_size_mov_reg_imm32(dst: i32) -> i32 {
+    if x86_reg_needs_rex(dst) {
+        return 6
+    }
+    return 5
+}
+
+// Size of JMP rel32 (always 5 bytes: opcode + 4-byte displacement)
+fn x86_size_jmp_rel32() -> i32 {
+    return 5
+}
+
+// Size of Jcc rel32 (always 6 bytes: 0F + opcode + 4-byte displacement)
+fn x86_size_jcc_rel32() -> i32 {
+    return 6
+}
+
+// Size of CALL rel32 (always 5 bytes: opcode + 4-byte displacement)
+fn x86_size_call_rel32() -> i32 {
+    return 5
+}
+
+// Size of RET (always 1 byte)
+fn x86_size_ret() -> i32 {
+    return 1
+}
+
+// Size of PUSH r64 (1 or 2 bytes depending on REX prefix)
+fn x86_size_push_reg(reg: i32) -> i32 {
+    if x86_reg_needs_rex(reg) {
+        return 2
+    }
+    return 1
+}
+
+// Size of POP r64 (1 or 2 bytes depending on REX prefix)
+fn x86_size_pop_reg(reg: i32) -> i32 {
+    if x86_reg_needs_rex(reg) {
+        return 2
+    }
+    return 1
+}
+
+// Size of SYSCALL (always 2 bytes)
+fn x86_size_syscall() -> i32 {
+    return 2
+}
+
+// Size of NOP (always 1 byte)
+fn x86_size_nop() -> i32 {
+    return 1
+}
+
+// ===================================================================
+// Register name lookup (for debug/disassembly output)
+// ===================================================================
+
+fn x86_reg_name(reg: i32) -> str {
+    if reg == REG_RAX { return "rax" }
+    if reg == REG_RCX { return "rcx" }
+    if reg == REG_RDX { return "rdx" }
+    if reg == REG_RBX { return "rbx" }
+    if reg == REG_RSP { return "rsp" }
+    if reg == REG_RBP { return "rbp" }
+    if reg == REG_RSI { return "rsi" }
+    if reg == REG_RDI { return "rdi" }
+    if reg == REG_R8  { return "r8" }
+    if reg == REG_R9  { return "r9" }
+    if reg == REG_R10 { return "r10" }
+    if reg == REG_R11 { return "r11" }
+    if reg == REG_R12 { return "r12" }
+    if reg == REG_R13 { return "r13" }
+    if reg == REG_R14 { return "r14" }
+    if reg == REG_R15 { return "r15" }
+    return "???"
+}
+
+fn x86_cc_name(cc: i32) -> str {
+    if cc == CC_O  { return "o" }
+    if cc == CC_NO { return "no" }
+    if cc == CC_B  { return "b" }
+    if cc == CC_AE { return "ae" }
+    if cc == CC_E  { return "e" }
+    if cc == CC_NE { return "ne" }
+    if cc == CC_BE { return "be" }
+    if cc == CC_A  { return "a" }
+    if cc == CC_S  { return "s" }
+    if cc == CC_NS { return "ns" }
+    if cc == CC_L  { return "l" }
+    if cc == CC_GE { return "ge" }
+    if cc == CC_LE { return "le" }
+    if cc == CC_G  { return "g" }
+    return "??"
+}
