@@ -1,0 +1,1361 @@
+// ============================================================
+// mir.kry -- Mid-level Intermediate Representation for the
+// Kryos self-hosted compiler.
+//
+// The MIR is a control-flow graph with typed locals, basic
+// blocks, instructions, and terminators.  It sits between the
+// frontend (lexer/parser/type checker) and the backend
+// (register allocator/code generator).
+//
+// Each function is a sequence of basic blocks.  Each block has
+// a list of instructions and exactly one terminator.  Locals
+// are typed temporary variables.
+//
+// Uses the same integer-constant + flat-struct pattern as
+// token.kry and ast.kry.  No enum payloads -- kind constants
+// select the active fields.
+//
+// Dependencies (same compilation unit):
+//   types.kry -- TypeInfo struct and TY_* constants
+// ============================================================
+
+// ===================================================================
+// MIR type kind constants (mirrors types.kry TY_* values)
+// ===================================================================
+
+let MIR_TY_I8       = 1
+let MIR_TY_I16      = 2
+let MIR_TY_I32      = 3
+let MIR_TY_I64      = 4
+let MIR_TY_I128     = 5
+let MIR_TY_U8       = 6
+let MIR_TY_U16      = 7
+let MIR_TY_U32      = 8
+let MIR_TY_U64      = 9
+let MIR_TY_U128     = 10
+let MIR_TY_F32      = 11
+let MIR_TY_F64      = 12
+let MIR_TY_BOOL     = 13
+let MIR_TY_CHAR     = 14
+let MIR_TY_STR      = 15
+let MIR_TY_VOID     = 16
+let MIR_TY_ARRAY    = 17
+let MIR_TY_STRUCT   = 18
+let MIR_TY_ENUM     = 19
+let MIR_TY_FUNCTION = 20
+let MIR_TY_ANY      = 21
+let MIR_TY_PTR      = 22
+let MIR_TY_REF      = 23
+let MIR_TY_TUPLE    = 24
+let MIR_TY_MAP      = 25
+
+// ===================================================================
+// Instruction kind constants
+// ===================================================================
+
+let INST_ASSIGN      = 1   // dest = rvalue
+let INST_DROP        = 2   // drop(local)
+let INST_NOP         = 3   // no-op
+let INST_STORE_DEREF = 4   // *ptr = value
+let INST_SPAWN       = 5   // spawn function
+let INST_SEND        = 6   // channel send
+let INST_RECEIVE     = 7   // channel receive
+
+// ===================================================================
+// RValue kind constants (28 variants)
+// ===================================================================
+
+let RV_USE            = 1   // use a local/constant
+let RV_BINOP          = 2   // binary operation
+let RV_UNOP           = 3   // unary operation
+let RV_CALL           = 4   // function call
+let RV_CALL_INDIRECT  = 5   // indirect call (closure)
+let RV_CONST_INT      = 6   // integer literal
+let RV_CONST_FLOAT    = 7   // float literal
+let RV_CONST_BOOL     = 8   // bool literal
+let RV_CONST_STRING   = 9   // string literal
+let RV_CONST_NONE     = 10  // none/void
+let RV_ARRAY          = 11  // array constructor
+let RV_TUPLE          = 12  // tuple constructor
+let RV_STRUCT         = 13  // struct constructor
+let RV_FIELD          = 14  // field access
+let RV_INDEX          = 15  // array index
+let RV_CAST           = 16  // type cast
+let RV_ENUM_VARIANT   = 17  // enum variant constructor
+let RV_ENUM_TAG       = 18  // get enum tag
+let RV_ENUM_PAYLOAD   = 19  // get enum payload field
+let RV_CLOSURE        = 20  // closure constructor
+let RV_MAP            = 21  // map constructor
+let RV_STRING_CONCAT  = 22  // string concatenation
+let RV_RANGE          = 23  // range constructor
+let RV_ADDR_OF        = 24  // take address
+let RV_DEREF          = 25  // dereference pointer
+let RV_COMPTIME       = 26  // compile-time evaluation
+
+// ===================================================================
+// Terminator kind constants
+// ===================================================================
+
+let TERM_RETURN      = 1   // return from function
+let TERM_GOTO        = 2   // unconditional jump
+let TERM_BRANCH      = 3   // conditional branch (if cond then A else B)
+let TERM_SWITCH      = 4   // multi-way branch (match)
+let TERM_UNREACHABLE = 5   // unreachable code
+
+// ===================================================================
+// Binary operator constants (same values as AST BINOP_*)
+// ===================================================================
+
+let MIR_ADD     = 1
+let MIR_SUB     = 2
+let MIR_MUL     = 3
+let MIR_DIV     = 4
+let MIR_MOD     = 5
+let MIR_POW     = 6
+let MIR_EQ      = 7
+let MIR_NEQ     = 8
+let MIR_LT      = 9
+let MIR_GT      = 10
+let MIR_LT_EQ   = 11
+let MIR_GT_EQ   = 12
+let MIR_AND     = 13
+let MIR_OR      = 14
+let MIR_BIT_AND = 15
+let MIR_BIT_OR  = 16
+let MIR_BIT_XOR = 17
+let MIR_SHL     = 18
+let MIR_SHR     = 19
+
+// ===================================================================
+// Unary operator constants (same values as AST UNOP_*)
+// ===================================================================
+
+let MIR_NEG     = 1
+let MIR_NOT     = 2
+let MIR_BIT_NOT = 3
+
+// ===================================================================
+// MirType -- simplified type representation for MIR
+// ===================================================================
+
+struct MirType {
+    kind: i32,
+    name: str,
+    element_type: [MirType],
+    param_types: [MirType],
+    ret_type: [MirType],
+    field_names: [str],
+    field_types: [MirType],
+    mutable: bool
+}
+
+// ===================================================================
+// Operand -- either a local reference or a constant
+// ===================================================================
+
+struct Operand {
+    is_local: bool,
+    local_id: i32,
+    const_kind: i32,
+    int_val: i32,
+    float_val: f64,
+    bool_val: bool,
+    str_val: str
+}
+
+// ===================================================================
+// RValue -- the right side of an assignment
+// ===================================================================
+
+struct RValue {
+    kind: i32,
+    // For RV_BINOP / RV_UNOP
+    op: i32,
+    left: [Operand],
+    right: [Operand],
+    // For RV_CALL / RV_CALL_INDIRECT
+    func_name: str,
+    args: [Operand],
+    callee: [Operand],
+    // For RV_FIELD
+    object: [Operand],
+    field_name: str,
+    // For RV_INDEX
+    index_obj: [Operand],
+    index_idx: [Operand],
+    // For RV_ARRAY / RV_TUPLE
+    elements: [Operand],
+    // For RV_STRUCT
+    struct_name: str,
+    rv_field_names: [str],
+    field_operands: [Operand],
+    // For RV_CONST_*
+    int_val: i32,
+    float_val: f64,
+    bool_val: bool,
+    str_val: str,
+    // For RV_CAST
+    cast_ty: [MirType],
+    cast_operand: [Operand],
+    // For RV_ENUM_*
+    enum_name: str,
+    variant_idx: i32,
+    field_idx: i32,
+    enum_operand: [Operand],
+    enum_fields: [Operand],
+    // For RV_CLOSURE
+    closure_func: str,
+    captures: [Operand],
+    // For RV_MAP
+    map_keys: [Operand],
+    map_values: [Operand],
+    // For RV_STRING_CONCAT
+    concat_parts: [Operand],
+    // For RV_RANGE
+    range_start: [Operand],
+    range_end: [Operand],
+    range_inclusive: bool,
+    // For RV_ADDR_OF
+    addr_local: i32,
+    addr_mutable: bool,
+    // For RV_USE
+    use_operand: [Operand],
+    // For RV_DEREF
+    deref_operand: [Operand]
+}
+
+// ===================================================================
+// Instruction -- a single instruction in a basic block
+// ===================================================================
+
+struct Instruction {
+    kind: i32,
+    dest: i32,
+    value: [RValue],
+    // For INST_STORE_DEREF
+    ptr_operand: [Operand],
+    store_value: [Operand],
+    // For INST_DROP
+    drop_local: i32,
+    // For INST_SPAWN
+    spawn_func: str,
+    spawn_args: [Operand],
+    // For INST_SEND
+    send_channel: i32,
+    send_value: i32,
+    // For INST_RECEIVE
+    recv_dest: i32,
+    recv_channel: i32
+}
+
+// ===================================================================
+// Terminator -- how a basic block exits
+// ===================================================================
+
+struct Terminator {
+    kind: i32,
+    // For TERM_RETURN
+    ret_val: [Operand],
+    // For TERM_GOTO
+    goto_block: i32,
+    // For TERM_BRANCH
+    cond: [Operand],
+    then_block: i32,
+    else_block: i32,
+    // For TERM_SWITCH
+    switch_val: [Operand],
+    switch_targets: [i32],
+    switch_blocks: [i32],
+    default_block: i32
+}
+
+// ===================================================================
+// BasicBlock -- a basic block in a function
+// ===================================================================
+
+struct BasicBlock {
+    id: i32,
+    instructions: [Instruction],
+    terminator: [Terminator]
+}
+
+// ===================================================================
+// MirLocal -- a local variable in a function
+// ===================================================================
+
+struct MirLocal {
+    id: i32,
+    name: str,
+    ty: MirType,
+    mutable: bool
+}
+
+// ===================================================================
+// MirParam -- a function parameter
+// ===================================================================
+
+struct MirParam {
+    local_id: i32,
+    ty: MirType,
+    name: str
+}
+
+// ===================================================================
+// MirFunction -- a complete function in MIR
+// ===================================================================
+
+struct MirFunction {
+    name: str,
+    params: [MirParam],
+    ret_ty: MirType,
+    blocks: [BasicBlock],
+    locals: [MirLocal],
+    next_local_id: i32,
+    next_block_id: i32
+}
+
+// ===================================================================
+// MirStructDef -- struct definition for codegen
+// ===================================================================
+
+struct MirStructDef {
+    name: str,
+    field_names: [str],
+    field_types: [MirType]
+}
+
+// ===================================================================
+// MirEnumDef -- enum definition for codegen
+// ===================================================================
+
+struct MirEnumDef {
+    name: str,
+    variant_names: [str],
+    variant_field_types: [[MirType]]
+}
+
+// ===================================================================
+// MirModule -- the complete MIR module
+// ===================================================================
+
+struct MirModule {
+    functions: [MirFunction],
+    struct_defs: [MirStructDef],
+    enum_defs: [MirEnumDef]
+}
+
+// ===================================================================
+// Type constructors
+// ===================================================================
+
+fn mir_ty_simple(kind: i32) -> MirType {
+    let empty_mt: [MirType] = []
+    let empty_s: [str] = []
+    return MirType {
+        kind: kind, name: "",
+        element_type: empty_mt, param_types: empty_mt,
+        ret_type: empty_mt, field_names: empty_s,
+        field_types: empty_mt, mutable: false
+    }
+}
+
+fn mir_ty_i64() -> MirType { return mir_ty_simple(MIR_TY_I64) }
+fn mir_ty_i32() -> MirType { return mir_ty_simple(MIR_TY_I32) }
+fn mir_ty_f64() -> MirType { return mir_ty_simple(MIR_TY_F64) }
+fn mir_ty_str() -> MirType { return mir_ty_simple(MIR_TY_STR) }
+fn mir_ty_bool() -> MirType { return mir_ty_simple(MIR_TY_BOOL) }
+fn mir_ty_void() -> MirType { return mir_ty_simple(MIR_TY_VOID) }
+
+fn mir_ty_array(elem: MirType) -> MirType {
+    let empty_mt: [MirType] = []
+    let empty_s: [str] = []
+    return MirType {
+        kind: MIR_TY_ARRAY, name: "",
+        element_type: [elem], param_types: empty_mt,
+        ret_type: empty_mt, field_names: empty_s,
+        field_types: empty_mt, mutable: false
+    }
+}
+
+fn mir_ty_struct(sname: str, fnames: [str], ftypes: [MirType]) -> MirType {
+    let empty_mt: [MirType] = []
+    return MirType {
+        kind: MIR_TY_STRUCT, name: sname,
+        element_type: empty_mt, param_types: empty_mt,
+        ret_type: empty_mt, field_names: fnames,
+        field_types: ftypes, mutable: false
+    }
+}
+
+fn mir_ty_function(params: [MirType], ret: MirType) -> MirType {
+    let empty_mt: [MirType] = []
+    let empty_s: [str] = []
+    return MirType {
+        kind: MIR_TY_FUNCTION, name: "",
+        element_type: empty_mt, param_types: params,
+        ret_type: [ret], field_names: empty_s,
+        field_types: empty_mt, mutable: false
+    }
+}
+
+fn mir_ty_name(t: MirType) -> str {
+    if t.kind == MIR_TY_I8 { return "i8" }
+    if t.kind == MIR_TY_I16 { return "i16" }
+    if t.kind == MIR_TY_I32 { return "i32" }
+    if t.kind == MIR_TY_I64 { return "i64" }
+    if t.kind == MIR_TY_I128 { return "i128" }
+    if t.kind == MIR_TY_U8 { return "u8" }
+    if t.kind == MIR_TY_U16 { return "u16" }
+    if t.kind == MIR_TY_U32 { return "u32" }
+    if t.kind == MIR_TY_U64 { return "u64" }
+    if t.kind == MIR_TY_U128 { return "u128" }
+    if t.kind == MIR_TY_F32 { return "f32" }
+    if t.kind == MIR_TY_F64 { return "f64" }
+    if t.kind == MIR_TY_BOOL { return "bool" }
+    if t.kind == MIR_TY_CHAR { return "char" }
+    if t.kind == MIR_TY_STR { return "str" }
+    if t.kind == MIR_TY_VOID { return "void" }
+    if t.kind == MIR_TY_ANY { return "any" }
+    if t.kind == MIR_TY_PTR { return "ptr" }
+    if t.kind == MIR_TY_REF { return "ref" }
+    if t.kind == MIR_TY_TUPLE { return "tuple" }
+    if t.kind == MIR_TY_MAP { return "map" }
+    if t.kind == MIR_TY_ARRAY {
+        if len(t.element_type) > 0 {
+            return "[" + mir_ty_name(t.element_type[0]) + "]"
+        }
+        return "[]"
+    }
+    if t.kind == MIR_TY_STRUCT {
+        return t.name
+    }
+    if t.kind == MIR_TY_ENUM {
+        return t.name
+    }
+    if t.kind == MIR_TY_FUNCTION {
+        let mut s = "fn("
+        for i in range(0, len(t.param_types)) {
+            if i > 0 {
+                s = s + ", "
+            }
+            s = s + mir_ty_name(t.param_types[i])
+        }
+        s = s + ")"
+        if len(t.ret_type) > 0 {
+            s = s + " -> " + mir_ty_name(t.ret_type[0])
+        }
+        return s
+    }
+    return "<unknown>"
+}
+
+// ===================================================================
+// Operand constructors
+// ===================================================================
+
+fn op_local(id: i32) -> Operand {
+    return Operand {
+        is_local: true, local_id: id,
+        const_kind: 0, int_val: 0, float_val: 0.0,
+        bool_val: false, str_val: ""
+    }
+}
+
+fn op_int(val: i32) -> Operand {
+    return Operand {
+        is_local: false, local_id: 0,
+        const_kind: RV_CONST_INT, int_val: val, float_val: 0.0,
+        bool_val: false, str_val: ""
+    }
+}
+
+fn op_float(val: f64) -> Operand {
+    return Operand {
+        is_local: false, local_id: 0,
+        const_kind: RV_CONST_FLOAT, int_val: 0, float_val: val,
+        bool_val: false, str_val: ""
+    }
+}
+
+fn op_bool(val: bool) -> Operand {
+    return Operand {
+        is_local: false, local_id: 0,
+        const_kind: RV_CONST_BOOL, int_val: 0, float_val: 0.0,
+        bool_val: val, str_val: ""
+    }
+}
+
+fn op_str(val: str) -> Operand {
+    return Operand {
+        is_local: false, local_id: 0,
+        const_kind: RV_CONST_STRING, int_val: 0, float_val: 0.0,
+        bool_val: false, str_val: val
+    }
+}
+
+fn op_none() -> Operand {
+    return Operand {
+        is_local: false, local_id: 0,
+        const_kind: RV_CONST_NONE, int_val: 0, float_val: 0.0,
+        bool_val: false, str_val: ""
+    }
+}
+
+// ===================================================================
+// RValue constructors
+// ===================================================================
+
+// Helper: create a fresh RValue with all fields at default
+fn rv_empty(k: i32) -> RValue {
+    let empty_op: [Operand] = []
+    let empty_mt: [MirType] = []
+    let empty_s: [str] = []
+    return RValue {
+        kind: k, op: 0,
+        left: empty_op, right: empty_op,
+        func_name: "", args: empty_op, callee: empty_op,
+        object: empty_op, field_name: "",
+        index_obj: empty_op, index_idx: empty_op,
+        elements: empty_op,
+        struct_name: "", rv_field_names: empty_s, field_operands: empty_op,
+        int_val: 0, float_val: 0.0, bool_val: false, str_val: "",
+        cast_ty: empty_mt, cast_operand: empty_op,
+        enum_name: "", variant_idx: 0, field_idx: 0,
+        enum_operand: empty_op, enum_fields: empty_op,
+        closure_func: "", captures: empty_op,
+        map_keys: empty_op, map_values: empty_op,
+        concat_parts: empty_op,
+        range_start: empty_op, range_end: empty_op, range_inclusive: false,
+        addr_local: 0, addr_mutable: false,
+        use_operand: empty_op, deref_operand: empty_op
+    }
+}
+
+fn rv_use(operand: Operand) -> RValue {
+    let mut rv = rv_empty(RV_USE)
+    rv.use_operand = [operand]
+    return rv
+}
+
+fn rv_const_int(val: i32) -> RValue {
+    let mut rv = rv_empty(RV_CONST_INT)
+    rv.int_val = val
+    return rv
+}
+
+fn rv_const_float(val: f64) -> RValue {
+    let mut rv = rv_empty(RV_CONST_FLOAT)
+    rv.float_val = val
+    return rv
+}
+
+fn rv_const_bool(val: bool) -> RValue {
+    let mut rv = rv_empty(RV_CONST_BOOL)
+    rv.bool_val = val
+    return rv
+}
+
+fn rv_const_string(val: str) -> RValue {
+    let mut rv = rv_empty(RV_CONST_STRING)
+    rv.str_val = val
+    return rv
+}
+
+fn rv_const_none() -> RValue {
+    return rv_empty(RV_CONST_NONE)
+}
+
+fn rv_binop(binop: i32, l: Operand, r: Operand) -> RValue {
+    let mut rv = rv_empty(RV_BINOP)
+    rv.op = binop
+    rv.left = [l]
+    rv.right = [r]
+    return rv
+}
+
+fn rv_unop(unop: i32, operand: Operand) -> RValue {
+    let mut rv = rv_empty(RV_UNOP)
+    rv.op = unop
+    rv.left = [operand]
+    return rv
+}
+
+fn rv_call(name: str, call_args: [Operand]) -> RValue {
+    let mut rv = rv_empty(RV_CALL)
+    rv.func_name = name
+    rv.args = call_args
+    return rv
+}
+
+fn rv_call_indirect(callee_op: Operand, call_args: [Operand]) -> RValue {
+    let mut rv = rv_empty(RV_CALL_INDIRECT)
+    rv.callee = [callee_op]
+    rv.args = call_args
+    return rv
+}
+
+fn rv_field(obj: Operand, fname: str) -> RValue {
+    let mut rv = rv_empty(RV_FIELD)
+    rv.object = [obj]
+    rv.field_name = fname
+    return rv
+}
+
+fn rv_index(obj: Operand, idx: Operand) -> RValue {
+    let mut rv = rv_empty(RV_INDEX)
+    rv.index_obj = [obj]
+    rv.index_idx = [idx]
+    return rv
+}
+
+fn rv_array(elems: [Operand]) -> RValue {
+    let mut rv = rv_empty(RV_ARRAY)
+    rv.elements = elems
+    return rv
+}
+
+fn rv_tuple(elems: [Operand]) -> RValue {
+    let mut rv = rv_empty(RV_TUPLE)
+    rv.elements = elems
+    return rv
+}
+
+fn rv_struct_lit(sname: str, fnames: [str], fops: [Operand]) -> RValue {
+    let mut rv = rv_empty(RV_STRUCT)
+    rv.struct_name = sname
+    rv.rv_field_names = fnames
+    rv.field_operands = fops
+    return rv
+}
+
+fn rv_cast(operand: Operand, ty: MirType) -> RValue {
+    let mut rv = rv_empty(RV_CAST)
+    rv.cast_operand = [operand]
+    rv.cast_ty = [ty]
+    return rv
+}
+
+fn rv_enum_variant(ename: str, vidx: i32, fields: [Operand]) -> RValue {
+    let mut rv = rv_empty(RV_ENUM_VARIANT)
+    rv.enum_name = ename
+    rv.variant_idx = vidx
+    rv.enum_fields = fields
+    return rv
+}
+
+fn rv_enum_tag(operand: Operand) -> RValue {
+    let mut rv = rv_empty(RV_ENUM_TAG)
+    rv.enum_operand = [operand]
+    return rv
+}
+
+fn rv_enum_payload(operand: Operand, vidx: i32, fidx: i32) -> RValue {
+    let mut rv = rv_empty(RV_ENUM_PAYLOAD)
+    rv.enum_operand = [operand]
+    rv.variant_idx = vidx
+    rv.field_idx = fidx
+    return rv
+}
+
+fn rv_closure(func_name: str, caps: [Operand]) -> RValue {
+    let mut rv = rv_empty(RV_CLOSURE)
+    rv.closure_func = func_name
+    rv.captures = caps
+    return rv
+}
+
+fn rv_string_concat(parts: [Operand]) -> RValue {
+    let mut rv = rv_empty(RV_STRING_CONCAT)
+    rv.concat_parts = parts
+    return rv
+}
+
+fn rv_map(keys: [Operand], values: [Operand]) -> RValue {
+    let mut rv = rv_empty(RV_MAP)
+    rv.map_keys = keys
+    rv.map_values = values
+    return rv
+}
+
+fn rv_range(start_op: Operand, end_op: Operand, inclusive: bool) -> RValue {
+    let mut rv = rv_empty(RV_RANGE)
+    rv.range_start = [start_op]
+    rv.range_end = [end_op]
+    rv.range_inclusive = inclusive
+    return rv
+}
+
+fn rv_addr_of(local_id: i32, is_mut: bool) -> RValue {
+    let mut rv = rv_empty(RV_ADDR_OF)
+    rv.addr_local = local_id
+    rv.addr_mutable = is_mut
+    return rv
+}
+
+fn rv_deref(operand: Operand) -> RValue {
+    let mut rv = rv_empty(RV_DEREF)
+    rv.deref_operand = [operand]
+    return rv
+}
+
+// ===================================================================
+// Instruction constructors
+// ===================================================================
+
+fn inst_empty(k: i32) -> Instruction {
+    let empty_rv: [RValue] = []
+    let empty_op: [Operand] = []
+    return Instruction {
+        kind: k, dest: 0, value: empty_rv,
+        ptr_operand: empty_op, store_value: empty_op,
+        drop_local: 0,
+        spawn_func: "", spawn_args: empty_op,
+        send_channel: 0, send_value: 0,
+        recv_dest: 0, recv_channel: 0
+    }
+}
+
+fn inst_assign(dest_id: i32, rvalue: RValue) -> Instruction {
+    let mut inst = inst_empty(INST_ASSIGN)
+    inst.dest = dest_id
+    inst.value = [rvalue]
+    return inst
+}
+
+fn inst_drop(local_id: i32) -> Instruction {
+    let mut inst = inst_empty(INST_DROP)
+    inst.drop_local = local_id
+    return inst
+}
+
+fn inst_nop() -> Instruction {
+    return inst_empty(INST_NOP)
+}
+
+fn inst_store_deref(ptr: Operand, val: Operand) -> Instruction {
+    let mut inst = inst_empty(INST_STORE_DEREF)
+    inst.ptr_operand = [ptr]
+    inst.store_value = [val]
+    return inst
+}
+
+fn inst_spawn(func_name: str, call_args: [Operand]) -> Instruction {
+    let mut inst = inst_empty(INST_SPAWN)
+    inst.spawn_func = func_name
+    inst.spawn_args = call_args
+    return inst
+}
+
+fn inst_send(channel: i32, val: i32) -> Instruction {
+    let mut inst = inst_empty(INST_SEND)
+    inst.send_channel = channel
+    inst.send_value = val
+    return inst
+}
+
+fn inst_receive(dest_id: i32, channel: i32) -> Instruction {
+    let mut inst = inst_empty(INST_RECEIVE)
+    inst.recv_dest = dest_id
+    inst.recv_channel = channel
+    return inst
+}
+
+// ===================================================================
+// Terminator constructors
+// ===================================================================
+
+fn term_empty(k: i32) -> Terminator {
+    let empty_op: [Operand] = []
+    let empty_i: [i32] = []
+    return Terminator {
+        kind: k,
+        ret_val: empty_op,
+        goto_block: 0,
+        cond: empty_op, then_block: 0, else_block: 0,
+        switch_val: empty_op, switch_targets: empty_i,
+        switch_blocks: empty_i, default_block: 0
+    }
+}
+
+fn term_return(val: Operand) -> Terminator {
+    let mut t = term_empty(TERM_RETURN)
+    t.ret_val = [val]
+    return t
+}
+
+fn term_return_void() -> Terminator {
+    return term_empty(TERM_RETURN)
+}
+
+fn term_goto(block: i32) -> Terminator {
+    let mut t = term_empty(TERM_GOTO)
+    t.goto_block = block
+    return t
+}
+
+fn term_branch(cond_op: Operand, then_bb: i32, else_bb: i32) -> Terminator {
+    let mut t = term_empty(TERM_BRANCH)
+    t.cond = [cond_op]
+    t.then_block = then_bb
+    t.else_block = else_bb
+    return t
+}
+
+fn term_switch(val: Operand, targets: [i32], blocks: [i32], default_bb: i32) -> Terminator {
+    let mut t = term_empty(TERM_SWITCH)
+    t.switch_val = [val]
+    t.switch_targets = targets
+    t.switch_blocks = blocks
+    t.default_block = default_bb
+    return t
+}
+
+fn term_unreachable() -> Terminator {
+    return term_empty(TERM_UNREACHABLE)
+}
+
+// ===================================================================
+// BasicBlock constructor
+// ===================================================================
+
+fn bb_new(id: i32) -> BasicBlock {
+    let empty_inst: [Instruction] = []
+    let empty_term: [Terminator] = []
+    return BasicBlock {
+        id: id, instructions: empty_inst,
+        terminator: empty_term
+    }
+}
+
+// ===================================================================
+// MirFunction helpers
+// ===================================================================
+
+fn mir_func_new(name: str, ret_ty: MirType) -> MirFunction {
+    let empty_params: [MirParam] = []
+    let empty_locals: [MirLocal] = []
+    // Create entry block (bb0) automatically
+    let entry = bb_new(0)
+    return MirFunction {
+        name: name, params: empty_params,
+        ret_ty: ret_ty, blocks: [entry],
+        locals: empty_locals,
+        next_local_id: 0, next_block_id: 1
+    }
+}
+
+fn mir_func_alloc_local(func: MirFunction, name: str, ty: MirType, is_mut: bool) -> i32 {
+    let id = func.next_local_id
+    let local = MirLocal { id: id, name: name, ty: ty, mutable: is_mut }
+    func.locals = func.locals + [local]
+    func.next_local_id = id + 1
+    return id
+}
+
+fn mir_func_alloc_temp(func: MirFunction, ty: MirType) -> i32 {
+    let id = func.next_local_id
+    let local = MirLocal { id: id, name: "_" + to_string(id), ty: ty, mutable: false }
+    func.locals = func.locals + [local]
+    func.next_local_id = id + 1
+    return id
+}
+
+fn mir_func_alloc_block(func: MirFunction) -> i32 {
+    let id = func.next_block_id
+    let block = bb_new(id)
+    func.blocks = func.blocks + [block]
+    func.next_block_id = id + 1
+    return id
+}
+
+fn mir_func_emit(func: MirFunction, block_id: i32, inst: Instruction) {
+    for i in range(0, len(func.blocks)) {
+        if func.blocks[i].id == block_id {
+            func.blocks[i].instructions = func.blocks[i].instructions + [inst]
+            return
+        }
+    }
+}
+
+fn mir_func_set_terminator(func: MirFunction, block_id: i32, term: Terminator) {
+    for i in range(0, len(func.blocks)) {
+        if func.blocks[i].id == block_id {
+            func.blocks[i].terminator = [term]
+            return
+        }
+    }
+}
+
+fn mir_func_add_param(func: MirFunction, name: str, ty: MirType) -> i32 {
+    let id = mir_func_alloc_local(func, name, ty, false)
+    let param = MirParam { local_id: id, ty: ty, name: name }
+    func.params = func.params + [param]
+    return id
+}
+
+// ===================================================================
+// MirModule constructor
+// ===================================================================
+
+fn mir_module_new() -> MirModule {
+    let empty_funcs: [MirFunction] = []
+    let empty_structs: [MirStructDef] = []
+    let empty_enums: [MirEnumDef] = []
+    return MirModule {
+        functions: empty_funcs,
+        struct_defs: empty_structs,
+        enum_defs: empty_enums
+    }
+}
+
+fn mir_module_add_function(module: MirModule, func: MirFunction) {
+    module.functions = module.functions + [func]
+}
+
+fn mir_module_add_struct(module: MirModule, def: MirStructDef) {
+    module.struct_defs = module.struct_defs + [def]
+}
+
+fn mir_module_add_enum(module: MirModule, def: MirEnumDef) {
+    module.enum_defs = module.enum_defs + [def]
+}
+
+// ===================================================================
+// Debug printing
+// ===================================================================
+
+fn mir_print_operand(o: Operand) -> str {
+    if o.is_local {
+        return "_" + to_string(o.local_id)
+    }
+    if o.const_kind == RV_CONST_INT {
+        return to_string(o.int_val)
+    }
+    if o.const_kind == RV_CONST_FLOAT {
+        return to_string(o.float_val)
+    }
+    if o.const_kind == RV_CONST_BOOL {
+        if o.bool_val {
+            return "true"
+        }
+        return "false"
+    }
+    if o.const_kind == RV_CONST_STRING {
+        return "\"" + o.str_val + "\""
+    }
+    if o.const_kind == RV_CONST_NONE {
+        return "none"
+    }
+    return "?"
+}
+
+fn mir_binop_name(op: i32) -> str {
+    if op == MIR_ADD { return "+" }
+    if op == MIR_SUB { return "-" }
+    if op == MIR_MUL { return "*" }
+    if op == MIR_DIV { return "/" }
+    if op == MIR_MOD { return "%" }
+    if op == MIR_POW { return "**" }
+    if op == MIR_EQ { return "==" }
+    if op == MIR_NEQ { return "!=" }
+    if op == MIR_LT { return "<" }
+    if op == MIR_GT { return ">" }
+    if op == MIR_LT_EQ { return "<=" }
+    if op == MIR_GT_EQ { return ">=" }
+    if op == MIR_AND { return "and" }
+    if op == MIR_OR { return "or" }
+    if op == MIR_BIT_AND { return "&" }
+    if op == MIR_BIT_OR { return "|" }
+    if op == MIR_BIT_XOR { return "^" }
+    if op == MIR_SHL { return "<<" }
+    if op == MIR_SHR { return ">>" }
+    return "?"
+}
+
+fn mir_unop_name(op: i32) -> str {
+    if op == MIR_NEG { return "-" }
+    if op == MIR_NOT { return "not" }
+    if op == MIR_BIT_NOT { return "~" }
+    return "?"
+}
+
+fn mir_print_rvalue(rv: RValue) -> str {
+    if rv.kind == RV_USE {
+        if len(rv.use_operand) > 0 {
+            return "use " + mir_print_operand(rv.use_operand[0])
+        }
+        return "use ?"
+    }
+    if rv.kind == RV_BINOP {
+        let mut s = ""
+        if len(rv.left) > 0 {
+            s = mir_print_operand(rv.left[0])
+        }
+        s = s + " " + mir_binop_name(rv.op) + " "
+        if len(rv.right) > 0 {
+            s = s + mir_print_operand(rv.right[0])
+        }
+        return s
+    }
+    if rv.kind == RV_UNOP {
+        let mut s = mir_unop_name(rv.op)
+        if len(rv.left) > 0 {
+            s = s + " " + mir_print_operand(rv.left[0])
+        }
+        return s
+    }
+    if rv.kind == RV_CALL {
+        let mut s = "call " + rv.func_name + "("
+        for i in range(0, len(rv.args)) {
+            if i > 0 {
+                s = s + ", "
+            }
+            s = s + mir_print_operand(rv.args[i])
+        }
+        return s + ")"
+    }
+    if rv.kind == RV_CALL_INDIRECT {
+        let mut s = "call_indirect "
+        if len(rv.callee) > 0 {
+            s = s + mir_print_operand(rv.callee[0])
+        }
+        s = s + "("
+        for i in range(0, len(rv.args)) {
+            if i > 0 {
+                s = s + ", "
+            }
+            s = s + mir_print_operand(rv.args[i])
+        }
+        return s + ")"
+    }
+    if rv.kind == RV_CONST_INT {
+        return "const_int " + to_string(rv.int_val)
+    }
+    if rv.kind == RV_CONST_FLOAT {
+        return "const_float " + to_string(rv.float_val)
+    }
+    if rv.kind == RV_CONST_BOOL {
+        if rv.bool_val {
+            return "const_bool true"
+        }
+        return "const_bool false"
+    }
+    if rv.kind == RV_CONST_STRING {
+        return "const_string \"" + rv.str_val + "\""
+    }
+    if rv.kind == RV_CONST_NONE {
+        return "const_none"
+    }
+    if rv.kind == RV_ARRAY {
+        let mut s = "array["
+        for i in range(0, len(rv.elements)) {
+            if i > 0 {
+                s = s + ", "
+            }
+            s = s + mir_print_operand(rv.elements[i])
+        }
+        return s + "]"
+    }
+    if rv.kind == RV_TUPLE {
+        let mut s = "tuple("
+        for i in range(0, len(rv.elements)) {
+            if i > 0 {
+                s = s + ", "
+            }
+            s = s + mir_print_operand(rv.elements[i])
+        }
+        return s + ")"
+    }
+    if rv.kind == RV_STRUCT {
+        let mut s = "struct " + rv.struct_name + "("
+        for i in range(0, len(rv.rv_field_names)) {
+            if i > 0 {
+                s = s + ", "
+            }
+            s = s + rv.rv_field_names[i] + "="
+            if i < len(rv.field_operands) {
+                s = s + mir_print_operand(rv.field_operands[i])
+            }
+        }
+        return s + ")"
+    }
+    if rv.kind == RV_FIELD {
+        let mut s = "field "
+        if len(rv.object) > 0 {
+            s = s + mir_print_operand(rv.object[0])
+        }
+        return s + "." + rv.field_name
+    }
+    if rv.kind == RV_INDEX {
+        let mut s = "index "
+        if len(rv.index_obj) > 0 {
+            s = s + mir_print_operand(rv.index_obj[0])
+        }
+        s = s + "["
+        if len(rv.index_idx) > 0 {
+            s = s + mir_print_operand(rv.index_idx[0])
+        }
+        return s + "]"
+    }
+    if rv.kind == RV_CAST {
+        let mut s = "cast "
+        if len(rv.cast_operand) > 0 {
+            s = s + mir_print_operand(rv.cast_operand[0])
+        }
+        s = s + " as "
+        if len(rv.cast_ty) > 0 {
+            s = s + mir_ty_name(rv.cast_ty[0])
+        }
+        return s
+    }
+    if rv.kind == RV_ENUM_VARIANT {
+        let mut s = "enum_variant " + rv.enum_name + "::" + to_string(rv.variant_idx) + "("
+        for i in range(0, len(rv.enum_fields)) {
+            if i > 0 {
+                s = s + ", "
+            }
+            s = s + mir_print_operand(rv.enum_fields[i])
+        }
+        return s + ")"
+    }
+    if rv.kind == RV_ENUM_TAG {
+        let mut s = "enum_tag "
+        if len(rv.enum_operand) > 0 {
+            s = s + mir_print_operand(rv.enum_operand[0])
+        }
+        return s
+    }
+    if rv.kind == RV_ENUM_PAYLOAD {
+        let mut s = "enum_payload "
+        if len(rv.enum_operand) > 0 {
+            s = s + mir_print_operand(rv.enum_operand[0])
+        }
+        return s + "[" + to_string(rv.variant_idx) + "]." + to_string(rv.field_idx)
+    }
+    if rv.kind == RV_CLOSURE {
+        let mut s = "closure " + rv.closure_func + " captures("
+        for i in range(0, len(rv.captures)) {
+            if i > 0 {
+                s = s + ", "
+            }
+            s = s + mir_print_operand(rv.captures[i])
+        }
+        return s + ")"
+    }
+    if rv.kind == RV_STRING_CONCAT {
+        let mut s = "concat("
+        for i in range(0, len(rv.concat_parts)) {
+            if i > 0 {
+                s = s + ", "
+            }
+            s = s + mir_print_operand(rv.concat_parts[i])
+        }
+        return s + ")"
+    }
+    if rv.kind == RV_MAP {
+        return "map(" + to_string(len(rv.map_keys)) + " entries)"
+    }
+    if rv.kind == RV_RANGE {
+        let mut s = "range("
+        if len(rv.range_start) > 0 {
+            s = s + mir_print_operand(rv.range_start[0])
+        }
+        if rv.range_inclusive {
+            s = s + "..="
+        } else {
+            s = s + ".."
+        }
+        if len(rv.range_end) > 0 {
+            s = s + mir_print_operand(rv.range_end[0])
+        }
+        return s + ")"
+    }
+    if rv.kind == RV_ADDR_OF {
+        let mut s = "&"
+        if rv.addr_mutable {
+            s = s + "mut "
+        }
+        return s + "_" + to_string(rv.addr_local)
+    }
+    if rv.kind == RV_DEREF {
+        let mut s = "deref "
+        if len(rv.deref_operand) > 0 {
+            s = s + mir_print_operand(rv.deref_operand[0])
+        }
+        return s
+    }
+    if rv.kind == RV_COMPTIME {
+        return "comptime"
+    }
+    return "rvalue(kind=" + to_string(rv.kind) + ")"
+}
+
+fn mir_print_instruction(inst: Instruction) {
+    if inst.kind == INST_ASSIGN {
+        let mut s = "    _" + to_string(inst.dest) + " = "
+        if len(inst.value) > 0 {
+            s = s + mir_print_rvalue(inst.value[0])
+        }
+        println(s)
+        return
+    }
+    if inst.kind == INST_DROP {
+        println("    drop _" + to_string(inst.drop_local))
+        return
+    }
+    if inst.kind == INST_NOP {
+        println("    nop")
+        return
+    }
+    if inst.kind == INST_STORE_DEREF {
+        let mut s = "    *"
+        if len(inst.ptr_operand) > 0 {
+            s = s + mir_print_operand(inst.ptr_operand[0])
+        }
+        s = s + " = "
+        if len(inst.store_value) > 0 {
+            s = s + mir_print_operand(inst.store_value[0])
+        }
+        println(s)
+        return
+    }
+    if inst.kind == INST_SPAWN {
+        let mut s = "    spawn " + inst.spawn_func + "("
+        for i in range(0, len(inst.spawn_args)) {
+            if i > 0 {
+                s = s + ", "
+            }
+            s = s + mir_print_operand(inst.spawn_args[i])
+        }
+        println(s + ")")
+        return
+    }
+    if inst.kind == INST_SEND {
+        println("    send ch" + to_string(inst.send_channel) + " _" + to_string(inst.send_value))
+        return
+    }
+    if inst.kind == INST_RECEIVE {
+        println("    _" + to_string(inst.recv_dest) + " = recv ch" + to_string(inst.recv_channel))
+        return
+    }
+    println("    inst(kind=" + to_string(inst.kind) + ")")
+}
+
+fn mir_print_terminator(term: Terminator) {
+    if term.kind == TERM_RETURN {
+        if len(term.ret_val) > 0 {
+            println("    return " + mir_print_operand(term.ret_val[0]))
+        } else {
+            println("    return void")
+        }
+        return
+    }
+    if term.kind == TERM_GOTO {
+        println("    goto bb" + to_string(term.goto_block))
+        return
+    }
+    if term.kind == TERM_BRANCH {
+        let mut s = "    branch "
+        if len(term.cond) > 0 {
+            s = s + mir_print_operand(term.cond[0])
+        }
+        s = s + " -> bb" + to_string(term.then_block)
+        s = s + " else bb" + to_string(term.else_block)
+        println(s)
+        return
+    }
+    if term.kind == TERM_SWITCH {
+        let mut s = "    switch "
+        if len(term.switch_val) > 0 {
+            s = s + mir_print_operand(term.switch_val[0])
+        }
+        s = s + " ["
+        for i in range(0, len(term.switch_targets)) {
+            if i > 0 {
+                s = s + ", "
+            }
+            s = s + to_string(term.switch_targets[i]) + " -> bb" + to_string(term.switch_blocks[i])
+        }
+        s = s + "] default bb" + to_string(term.default_block)
+        println(s)
+        return
+    }
+    if term.kind == TERM_UNREACHABLE {
+        println("    unreachable")
+        return
+    }
+    println("    term(kind=" + to_string(term.kind) + ")")
+}
+
+fn mir_print_function(func: MirFunction) {
+    let mut sig = "fn " + func.name + "("
+    for i in range(0, len(func.params)) {
+        if i > 0 {
+            sig = sig + ", "
+        }
+        sig = sig + func.params[i].name + ": " + mir_ty_name(func.params[i].ty)
+    }
+    sig = sig + ") -> " + mir_ty_name(func.ret_ty) + ":"
+    println(sig)
+    // Print locals
+    for i in range(0, len(func.locals)) {
+        let l = func.locals[i]
+        let mut s = "  let _" + to_string(l.id) + ": " + mir_ty_name(l.ty)
+        if len(l.name) > 0 {
+            s = s + " // " + l.name
+        }
+        println(s)
+    }
+    if len(func.locals) > 0 {
+        println("")
+    }
+    // Print blocks
+    for i in range(0, len(func.blocks)) {
+        let block = func.blocks[i]
+        println("  bb" + to_string(block.id) + ":")
+        for j in range(0, len(block.instructions)) {
+            mir_print_instruction(block.instructions[j])
+        }
+        if len(block.terminator) > 0 {
+            mir_print_terminator(block.terminator[0])
+        }
+    }
+    println("")
+}
+
+fn mir_print_module(module: MirModule) {
+    println("=== MIR Module ===")
+    println("")
+    // Print struct defs
+    for i in range(0, len(module.struct_defs)) {
+        let sd = module.struct_defs[i]
+        let mut s = "struct " + sd.name + "("
+        for j in range(0, len(sd.field_names)) {
+            if j > 0 {
+                s = s + ", "
+            }
+            s = s + sd.field_names[j] + "=" + mir_ty_name(sd.field_types[j])
+        }
+        println(s + ")")
+    }
+    // Print enum defs
+    for i in range(0, len(module.enum_defs)) {
+        let ed = module.enum_defs[i]
+        let mut s = "enum " + ed.name + "("
+        for j in range(0, len(ed.variant_names)) {
+            if j > 0 {
+                s = s + ", "
+            }
+            s = s + ed.variant_names[j]
+        }
+        println(s + ")")
+    }
+    if len(module.struct_defs) > 0 or len(module.enum_defs) > 0 {
+        println("")
+    }
+    // Print functions
+    for i in range(0, len(module.functions)) {
+        mir_print_function(module.functions[i])
+    }
+    println("=== End MIR ===")
+}
