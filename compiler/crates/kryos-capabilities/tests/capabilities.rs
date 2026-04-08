@@ -576,3 +576,422 @@ fn escalation_combined_with_capability_violation() {
     assert!(errs.iter().any(|d| d.code.as_deref() == Some("E-CAP-MISSING")));
     assert!(errs.iter().any(|d| d.code.as_deref() == Some("E-CAP-ESCALATION")));
 }
+
+// ── Builtin function capability enforcement ─────────────────────────────────
+
+fn bare_call(name: &str, args: Vec<Expr>) -> Expr {
+    Expr::FnCall {
+        callee: Box::new(Expr::Identifier {
+            name: name.into(),
+            span: span(),
+        }),
+        args,
+        span: span(),
+    }
+}
+
+fn string_arg(s: &str) -> Expr {
+    Expr::StringLiteral {
+        value: s.into(),
+        span: span(),
+    }
+}
+
+#[test]
+fn builtin_file_write_with_io_capability_passes() {
+    // @capabilities(io) fn save() { file_write("out.txt", data) } — should PASS
+    let module = module_with(vec![fn_decl(
+        "save",
+        vec![ann("capabilities", vec!["io"])],
+        vec![Stmt::Expr {
+            expr: bare_call("file_write", vec![string_arg("out.txt"), string_arg("data")]),
+            span: span(),
+        }],
+    )]);
+
+    let diags = check_capabilities(&module);
+    let errs = errors_only(&diags);
+    assert!(errs.is_empty(), "io cap should allow file_write: {errs:?}");
+}
+
+#[test]
+fn builtin_file_write_with_wrong_capability_fails() {
+    // @capabilities(net) fn save() { file_write("out.txt", data) } — should FAIL
+    let module = module_with(vec![fn_decl(
+        "save",
+        vec![ann("capabilities", vec!["net"])],
+        vec![Stmt::Expr {
+            expr: bare_call("file_write", vec![string_arg("out.txt"), string_arg("data")]),
+            span: span(),
+        }],
+    )]);
+
+    let diags = check_capabilities(&module);
+    let errs = errors_only(&diags);
+    assert_eq!(errs.len(), 1, "net cap should not allow file_write: {errs:?}");
+    assert!(errs[0].message.contains("file_write"));
+    assert!(errs[0].message.contains("io"));
+    assert_eq!(errs[0].code.as_deref(), Some("E-CAP-BUILTIN"));
+}
+
+#[test]
+fn builtin_file_write_without_annotation_passes() {
+    // fn save() { file_write("out.txt", data) } — should PASS (no annotation = unconstrained)
+    let module = module_with(vec![fn_decl(
+        "save",
+        vec![],
+        vec![Stmt::Expr {
+            expr: bare_call("file_write", vec![string_arg("out.txt"), string_arg("data")]),
+            span: span(),
+        }],
+    )]);
+
+    let diags = check_capabilities(&module);
+    let errs = errors_only(&diags);
+    assert!(errs.is_empty(), "no annotation = unconstrained: {errs:?}");
+}
+
+#[test]
+fn builtin_http_get_with_net_capability_passes() {
+    let module = module_with(vec![fn_decl(
+        "fetch",
+        vec![ann("capabilities", vec!["net"])],
+        vec![Stmt::Expr {
+            expr: bare_call("http_get", vec![string_arg("https://example.com")]),
+            span: span(),
+        }],
+    )]);
+
+    let diags = check_capabilities(&module);
+    let errs = errors_only(&diags);
+    assert!(errs.is_empty(), "net cap should allow http_get: {errs:?}");
+}
+
+#[test]
+fn builtin_http_get_with_io_capability_fails() {
+    let module = module_with(vec![fn_decl(
+        "fetch",
+        vec![ann("capabilities", vec!["io"])],
+        vec![Stmt::Expr {
+            expr: bare_call("http_get", vec![string_arg("https://example.com")]),
+            span: span(),
+        }],
+    )]);
+
+    let diags = check_capabilities(&module);
+    let errs = errors_only(&diags);
+    assert_eq!(errs.len(), 1);
+    assert!(errs[0].message.contains("http_get"));
+    assert!(errs[0].message.contains("net"));
+    assert_eq!(errs[0].code.as_deref(), Some("E-CAP-BUILTIN"));
+}
+
+#[test]
+fn builtin_sleep_with_time_capability_passes() {
+    let module = module_with(vec![fn_decl(
+        "wait",
+        vec![ann("capabilities", vec!["time"])],
+        vec![Stmt::Expr {
+            expr: bare_call("sleep", vec![]),
+            span: span(),
+        }],
+    )]);
+
+    let diags = check_capabilities(&module);
+    let errs = errors_only(&diags);
+    assert!(errs.is_empty(), "time cap should allow sleep: {errs:?}");
+}
+
+#[test]
+fn builtin_sha256_with_crypto_capability_passes() {
+    let module = module_with(vec![fn_decl(
+        "hash_it",
+        vec![ann("capabilities", vec!["crypto"])],
+        vec![Stmt::Expr {
+            expr: bare_call("sha256", vec![string_arg("data")]),
+            span: span(),
+        }],
+    )]);
+
+    let diags = check_capabilities(&module);
+    let errs = errors_only(&diags);
+    assert!(errs.is_empty(), "crypto cap should allow sha256: {errs:?}");
+}
+
+#[test]
+fn builtin_term_clear_with_term_capability_passes() {
+    let module = module_with(vec![fn_decl(
+        "clear_screen",
+        vec![ann("capabilities", vec!["term"])],
+        vec![Stmt::Expr {
+            expr: bare_call("term_clear", vec![]),
+            span: span(),
+        }],
+    )]);
+
+    let diags = check_capabilities(&module);
+    let errs = errors_only(&diags);
+    assert!(errs.is_empty(), "term cap should allow term_clear: {errs:?}");
+}
+
+#[test]
+fn builtin_exec_with_process_capability_passes() {
+    let module = module_with(vec![fn_decl(
+        "run_it",
+        vec![ann("capabilities", vec!["process"])],
+        vec![Stmt::Expr {
+            expr: bare_call("exec", vec![string_arg("ls")]),
+            span: span(),
+        }],
+    )]);
+
+    let diags = check_capabilities(&module);
+    let errs = errors_only(&diags);
+    assert!(errs.is_empty(), "process cap should allow exec: {errs:?}");
+}
+
+#[test]
+fn builtin_println_requires_no_capability() {
+    // println, print, eprintln should NEVER require capabilities.
+    let module = module_with(vec![fn_decl(
+        "greet",
+        vec![ann("capabilities", vec![])],
+        vec![
+            Stmt::Expr {
+                expr: bare_call("println", vec![string_arg("hello")]),
+                span: span(),
+            },
+            Stmt::Expr {
+                expr: bare_call("print", vec![string_arg("world")]),
+                span: span(),
+            },
+            Stmt::Expr {
+                expr: bare_call("eprintln", vec![string_arg("debug")]),
+                span: span(),
+            },
+        ],
+    )]);
+
+    let diags = check_capabilities(&module);
+    let errs = errors_only(&diags);
+    assert!(errs.is_empty(), "println/print/eprintln should never need caps: {errs:?}");
+}
+
+#[test]
+fn builtin_all_capability_allows_all_builtins() {
+    let module = module_with(vec![fn_decl(
+        "god_mode",
+        vec![ann("capabilities", vec!["all"])],
+        vec![
+            Stmt::Expr {
+                expr: bare_call("file_write", vec![string_arg("out.txt")]),
+                span: span(),
+            },
+            Stmt::Expr {
+                expr: bare_call("http_get", vec![string_arg("https://x.com")]),
+                span: span(),
+            },
+            Stmt::Expr {
+                expr: bare_call("sha256", vec![string_arg("data")]),
+                span: span(),
+            },
+            Stmt::Expr {
+                expr: bare_call("sleep", vec![]),
+                span: span(),
+            },
+            Stmt::Expr {
+                expr: bare_call("exec", vec![string_arg("ls")]),
+                span: span(),
+            },
+        ],
+    )]);
+
+    let diags = check_capabilities(&module);
+    let errs = errors_only(&diags);
+    assert!(errs.is_empty(), "all cap should grant all builtins: {errs:?}");
+}
+
+#[test]
+fn multiple_builtin_violations_reported() {
+    // @capabilities(net) but calls file_write, sha256, sleep
+    let module = module_with(vec![fn_decl(
+        "bad_mix",
+        vec![ann("capabilities", vec!["net"])],
+        vec![
+            Stmt::Expr {
+                expr: bare_call("file_write", vec![string_arg("out.txt")]),
+                span: span(),
+            },
+            Stmt::Expr {
+                expr: bare_call("sha256", vec![string_arg("data")]),
+                span: span(),
+            },
+            Stmt::Expr {
+                expr: bare_call("sleep", vec![]),
+                span: span(),
+            },
+        ],
+    )]);
+
+    let diags = check_capabilities(&module);
+    let errs = errors_only(&diags);
+    assert_eq!(errs.len(), 3, "should have 3 builtin violations: {errs:?}");
+    assert!(errs.iter().all(|e| e.code.as_deref() == Some("E-CAP-BUILTIN")));
+}
+
+// ── Cross-function propagation ──────────────────────────────────────────────
+
+#[test]
+fn cross_function_call_with_sufficient_caps_passes() {
+    // @capabilities(io, net) fn a() { b() }
+    // @capabilities(io) fn b() { ... }
+    // a has io+net, b needs only io — should PASS
+    let module = module_with(vec![
+        fn_decl(
+            "b",
+            vec![ann("capabilities", vec!["io"])],
+            vec![Stmt::Expr {
+                expr: bare_call("file_write", vec![string_arg("out.txt")]),
+                span: span(),
+            }],
+        ),
+        fn_decl(
+            "a",
+            vec![ann("capabilities", vec!["io", "net"])],
+            vec![Stmt::Expr {
+                expr: bare_call("b", vec![]),
+                span: span(),
+            }],
+        ),
+    ]);
+
+    let diags = check_capabilities(&module);
+    let errs = errors_only(&diags);
+    assert!(errs.is_empty(), "a has superset of b's caps: {errs:?}");
+}
+
+#[test]
+fn cross_function_call_with_insufficient_caps_fails() {
+    // @capabilities(io) fn a() { b() }
+    // @capabilities(io, net) fn b() { ... }
+    // a has only io, b needs io+net — should FAIL
+    let module = module_with(vec![
+        fn_decl(
+            "b",
+            vec![ann("capabilities", vec!["io", "net"])],
+            vec![],
+        ),
+        fn_decl(
+            "a",
+            vec![ann("capabilities", vec!["io"])],
+            vec![Stmt::Expr {
+                expr: bare_call("b", vec![]),
+                span: span(),
+            }],
+        ),
+    ]);
+
+    let diags = check_capabilities(&module);
+    let errs = errors_only(&diags);
+    assert_eq!(errs.len(), 1, "a lacks net for calling b: {errs:?}");
+    assert!(errs[0].message.contains("net"));
+    assert_eq!(errs[0].code.as_deref(), Some("E-CAP-PROPAGATION"));
+}
+
+#[test]
+fn cross_function_unannotated_caller_skips_check() {
+    // fn a() { b() }  — a has no @capabilities, so no propagation check
+    // @capabilities(io, net) fn b() { ... }
+    let module = module_with(vec![
+        fn_decl(
+            "b",
+            vec![ann("capabilities", vec!["io", "net"])],
+            vec![],
+        ),
+        fn_decl(
+            "a",
+            vec![],
+            vec![Stmt::Expr {
+                expr: bare_call("b", vec![]),
+                span: span(),
+            }],
+        ),
+    ]);
+
+    let diags = check_capabilities(&module);
+    let errs = errors_only(&diags);
+    assert!(errs.is_empty(), "unannotated caller is unconstrained: {errs:?}");
+}
+
+#[test]
+fn cross_function_calling_unannotated_function_passes() {
+    // @capabilities(io) fn a() { b() }
+    // fn b() { ... }  — b has no annotation, not in the map, no propagation check
+    let module = module_with(vec![
+        fn_decl("b", vec![], vec![]),
+        fn_decl(
+            "a",
+            vec![ann("capabilities", vec!["io"])],
+            vec![Stmt::Expr {
+                expr: bare_call("b", vec![]),
+                span: span(),
+            }],
+        ),
+    ]);
+
+    let diags = check_capabilities(&module);
+    let errs = errors_only(&diags);
+    assert!(errs.is_empty(), "calling unannotated function is fine: {errs:?}");
+}
+
+#[test]
+fn cross_function_all_capability_allows_calling_any() {
+    // @capabilities(all) fn a() { b() }
+    // @capabilities(io, net, crypto) fn b() { ... }
+    let module = module_with(vec![
+        fn_decl(
+            "b",
+            vec![ann("capabilities", vec!["io", "net", "crypto"])],
+            vec![],
+        ),
+        fn_decl(
+            "a",
+            vec![ann("capabilities", vec!["all"])],
+            vec![Stmt::Expr {
+                expr: bare_call("b", vec![]),
+                span: span(),
+            }],
+        ),
+    ]);
+
+    let diags = check_capabilities(&module);
+    let errs = errors_only(&diags);
+    assert!(errs.is_empty(), "all cap covers any callee: {errs:?}");
+}
+
+// ── Combined builtin + cross-function + stdlib ──────────────────────────────
+
+#[test]
+fn builtin_and_stdlib_violations_combined() {
+    // @capabilities(net) fn mixed_bad() { file_write(...); std.crypto.sign() }
+    let module = module_with(vec![fn_decl(
+        "mixed_bad",
+        vec![ann("capabilities", vec!["net"])],
+        vec![
+            Stmt::Expr {
+                expr: bare_call("file_write", vec![string_arg("out.txt")]),
+                span: span(),
+            },
+            Stmt::Expr {
+                expr: stdlib_call("crypto", "sign"),
+                span: span(),
+            },
+        ],
+    )]);
+
+    let diags = check_capabilities(&module);
+    let errs = errors_only(&diags);
+    assert_eq!(errs.len(), 2, "should have builtin + stdlib errors: {errs:?}");
+    assert!(errs.iter().any(|e| e.code.as_deref() == Some("E-CAP-BUILTIN")));
+    assert!(errs.iter().any(|e| e.code.as_deref() == Some("E-CAP-MISSING")));
+}

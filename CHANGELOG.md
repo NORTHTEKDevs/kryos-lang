@@ -11,7 +11,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Full compilation pipeline: lexer, parser, type checker, MIR lowering, optimizer, register allocator, x86_64 codegen, ELF/COFF linker
 - Zero-dependency runtime (runtime.kry): raw Linux x86_64 syscalls, bump allocator, byte buffers, string/array/map operations
 - 3-stage bootstrap verification script (stage-0 Rust -> stage-1 -> stage-2 -> stage-3, SHA-256 identity proof)
-- Stage-1 binary: 740KB PE32+ executable, compiles and runs Kryos programs
+- Stage-1 binary: 1MB PE32+ executable, compiles and runs Kryos programs
+- Self-host type-checks cleanly (0 errors) through the Rust compiler via concatenation
+
+### Module System
+- File-based module resolution with `use` imports
+- Stdlib resolution via `use std::math`, `use std::json`, etc.
+- Selective imports: `use std::math::{abs, min, max}`
+- Transitive imports with diamond deduplication and cycle detection
+- Sibling file and directory module (`foo/mod.kry`) resolution
+- Const declarations now importable by name
+
+### Capability Enforcement
+- 35 builtin functions mapped to 7 capability categories (io, net, process, term, crypto, time, ffi)
+- Deny-by-default enforcement within `@capabilities`-annotated scopes
+- Cross-function capability propagation (caller must have callee's required capabilities)
+- Opt-in design: unannotated functions have ambient authority (backward compatible)
+
+### LLVM Backend
+- Fixed systematic ptr/i64 type mismatch in LLVM IR emitter
+- Added `coerce_value` helper for type-safe conversions at 15+ boundary points
+- Fixed identity copy pattern (`add ptr` -> `getelementptr i8`) for pointer types
+- Fixed `to_string` return type coercion and float argument dispatch
+- LLVM tools available on Windows (clang 21.1.8, lld-link)
+
+### Compiler Fixes
+- Generic functions now monomorphize per call site (fresh type variables)
+- Multiple trait impls no longer clobber each other's `self` type
+- `throw` propagates across function boundaries via thread-local exception state
+- `to_string()` on strings returns the string (not the raw pointer address)
+- `sqrt`, `floor`, `ceil`, `abs` use native Cranelift instructions (fixes ICE)
+- MIR type inference for untyped constants (no longer defaults to I64)
+- Cranelift float/int type coercion uses proper bitcast instructions
+- `kryos pkg init` now creates files on disk (kryos.toml, src/main.kry, .gitignore, README.md)
+- `kryos check` now supports `--skip-ownership` flag
 
 ### Added
 - `StoreField` MIR instruction for proper struct field mutation (replaces `__kryos_field_store` hack)

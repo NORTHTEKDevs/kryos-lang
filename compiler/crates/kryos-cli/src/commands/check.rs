@@ -5,11 +5,11 @@ use std::path::Path;
 use kryos_errors::render_diagnostic;
 
 /// Execute the check command.
-pub fn execute(path: &str) -> Result<(), String> {
+pub fn execute(path: &str, skip_ownership: bool) -> Result<(), String> {
     let p = Path::new(path);
 
     let (diagnostics, source_map) = if p.is_file() {
-        kryos_driver::check_file(p)
+        kryos_driver::check_file_with_options(p, skip_ownership)
     } else if p.is_dir() {
         let manifest_path = p.join("kryos.toml");
         if !manifest_path.exists() {

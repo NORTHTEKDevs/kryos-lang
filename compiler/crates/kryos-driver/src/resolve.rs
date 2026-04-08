@@ -331,6 +331,7 @@ fn decl_name_of(decl: &Decl) -> Option<String> {
         Decl::Trait { name, .. } => Some(name.clone()),
         Decl::TypeAlias { name, .. } => Some(name.clone()),
         Decl::Actor { name, .. } => Some(name.clone()),
+        Decl::Const { name, .. } => Some(name.clone()),
         _ => None,
     }
 }

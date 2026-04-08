@@ -36,5 +36,5 @@
 pub mod model;
 pub mod checker;
 
-pub use model::{Capability, CapabilitySet, Budget, Sandbox};
+pub use model::{Capability, CapabilitySet, Budget, Sandbox, required_capability_for_builtin};
 pub use checker::check_capabilities;

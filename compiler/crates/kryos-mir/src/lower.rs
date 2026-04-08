@@ -529,7 +529,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                 let mir_ty = ty
                     .as_ref()
                     .map(lower_type_expr)
-                    .unwrap_or(MirType::I64);
+                    .unwrap_or_else(|| infer_expr_type(&ctx, value));
                 ctx.func_ret_types.insert(name.clone(), mir_ty.clone());
                 ctx.const_defs.insert(name.clone(), (mir_ty, *value.clone()));
             }

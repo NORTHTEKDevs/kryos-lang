@@ -216,6 +216,44 @@ pub fn is_escalation_action(name: &str) -> bool {
     PROHIBITED_SELF_HEAL_ACTIONS.contains(&name)
 }
 
+/// Map a bare builtin function name to its required capability.
+///
+/// This catches calls like `file_write("out.txt", data)` where the caller
+/// doesn't use a qualified `std.io.write_file(...)` path.
+///
+/// Returns `None` for functions that don't require any capability
+/// (e.g. `println`, `print`, `len`, `push`, `to_string`).
+pub fn required_capability_for_builtin(name: &str) -> Option<Capability> {
+    match name {
+        // File I/O
+        "file_read" | "file_write" | "read_file" | "write_file" => Some(Capability::Io),
+
+        // Filesystem operations
+        "path_exists" | "is_file" | "is_dir" | "create_dir" | "remove_file"
+        | "remove_dir" | "copy_file" | "rename_file" | "file_size"
+        | "list_dir" | "walk_dir" => Some(Capability::Io),
+
+        // Process
+        "env_get" | "env_set" | "exit" | "exec" | "spawn_process" => Some(Capability::Process),
+
+        // Network
+        "http_get" | "http_post" | "tcp_connect" | "tcp_listen"
+        | "tcp_accept" | "tcp_send" | "tcp_recv" => Some(Capability::Net),
+
+        // Terminal
+        "term_clear" | "term_raw_mode" | "term_size" => Some(Capability::Term),
+
+        // Crypto
+        "sha256" | "sha512" | "random_bytes" | "hmac_sha256" => Some(Capability::Crypto),
+
+        // Time
+        "time_now" | "time_millis" | "sleep" => Some(Capability::Time),
+
+        // println, print, eprintln, to_string, len, push, etc. — NO capability needed
+        _ => None,
+    }
+}
+
 /// Map a stdlib module path prefix to its required capability.
 ///
 /// For example, `std::net` requires `Net`, `std::io` requires `Io`, etc.
@@ -400,5 +438,66 @@ mod tests {
 
         let path = vec!["mylib".into(), "net".into()];
         assert_eq!(required_capability_for_path(&path), None);
+    }
+
+    #[test]
+    fn builtin_io_functions_require_io() {
+        assert_eq!(required_capability_for_builtin("file_read"), Some(Capability::Io));
+        assert_eq!(required_capability_for_builtin("file_write"), Some(Capability::Io));
+        assert_eq!(required_capability_for_builtin("read_file"), Some(Capability::Io));
+        assert_eq!(required_capability_for_builtin("write_file"), Some(Capability::Io));
+        assert_eq!(required_capability_for_builtin("path_exists"), Some(Capability::Io));
+        assert_eq!(required_capability_for_builtin("list_dir"), Some(Capability::Io));
+        assert_eq!(required_capability_for_builtin("walk_dir"), Some(Capability::Io));
+    }
+
+    #[test]
+    fn builtin_net_functions_require_net() {
+        assert_eq!(required_capability_for_builtin("http_get"), Some(Capability::Net));
+        assert_eq!(required_capability_for_builtin("http_post"), Some(Capability::Net));
+        assert_eq!(required_capability_for_builtin("tcp_connect"), Some(Capability::Net));
+        assert_eq!(required_capability_for_builtin("tcp_listen"), Some(Capability::Net));
+    }
+
+    #[test]
+    fn builtin_process_functions_require_process() {
+        assert_eq!(required_capability_for_builtin("env_get"), Some(Capability::Process));
+        assert_eq!(required_capability_for_builtin("env_set"), Some(Capability::Process));
+        assert_eq!(required_capability_for_builtin("exit"), Some(Capability::Process));
+        assert_eq!(required_capability_for_builtin("exec"), Some(Capability::Process));
+        assert_eq!(required_capability_for_builtin("spawn_process"), Some(Capability::Process));
+    }
+
+    #[test]
+    fn builtin_term_functions_require_term() {
+        assert_eq!(required_capability_for_builtin("term_clear"), Some(Capability::Term));
+        assert_eq!(required_capability_for_builtin("term_raw_mode"), Some(Capability::Term));
+        assert_eq!(required_capability_for_builtin("term_size"), Some(Capability::Term));
+    }
+
+    #[test]
+    fn builtin_crypto_functions_require_crypto() {
+        assert_eq!(required_capability_for_builtin("sha256"), Some(Capability::Crypto));
+        assert_eq!(required_capability_for_builtin("sha512"), Some(Capability::Crypto));
+        assert_eq!(required_capability_for_builtin("random_bytes"), Some(Capability::Crypto));
+        assert_eq!(required_capability_for_builtin("hmac_sha256"), Some(Capability::Crypto));
+    }
+
+    #[test]
+    fn builtin_time_functions_require_time() {
+        assert_eq!(required_capability_for_builtin("time_now"), Some(Capability::Time));
+        assert_eq!(required_capability_for_builtin("time_millis"), Some(Capability::Time));
+        assert_eq!(required_capability_for_builtin("sleep"), Some(Capability::Time));
+    }
+
+    #[test]
+    fn safe_builtins_require_no_capability() {
+        assert_eq!(required_capability_for_builtin("println"), None);
+        assert_eq!(required_capability_for_builtin("print"), None);
+        assert_eq!(required_capability_for_builtin("eprintln"), None);
+        assert_eq!(required_capability_for_builtin("to_string"), None);
+        assert_eq!(required_capability_for_builtin("len"), None);
+        assert_eq!(required_capability_for_builtin("push"), None);
+        assert_eq!(required_capability_for_builtin("my_custom_func"), None);
     }
 }

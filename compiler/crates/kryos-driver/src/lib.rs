@@ -23,7 +23,7 @@ pub mod runtime;
 pub use config::{BuildConfig, BuildMode, OutputType};
 pub use pipeline::{
     Backend, BackendError, CompileResult,
-    check_file, check_source, check_project,
+    check_file, check_file_with_options, check_source, check_project,
     compile_file, compile_file_with_backend,
     compile_project, compile_project_with_backend,
     compile_source,

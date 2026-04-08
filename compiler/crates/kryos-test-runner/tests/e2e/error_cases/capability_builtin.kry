@@ -1,0 +1,11 @@
+// expect-error: builtin `file_write` requires `io` capability
+// A @capabilities(net) function cannot call file_write (needs io).
+
+@capabilities(net)
+fn bad_save() {
+    file_write("out.txt", "data")
+}
+
+fn main() {
+    bad_save()
+}

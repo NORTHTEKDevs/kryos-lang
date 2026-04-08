@@ -74,6 +74,10 @@ enum Commands {
         /// Source file or project directory
         #[arg(default_value = ".")]
         path: String,
+
+        /// Skip ownership analysis (for self-host bootstrap)
+        #[arg(long)]
+        skip_ownership: bool,
     },
 
     /// Interactive REPL
@@ -179,7 +183,7 @@ fn main() {
 
         Commands::Run { file, args } => commands::run::execute(&file, &args),
 
-        Commands::Check { path } => commands::check::execute(&path),
+        Commands::Check { path, skip_ownership } => commands::check::execute(&path, skip_ownership),
 
         Commands::Repl => commands::repl::execute(),
 
@@ -284,7 +288,7 @@ mod tests {
     fn parse_check() {
         let cli = Cli::try_parse_from(["kryos", "check"]).unwrap();
         match cli.command {
-            super::Commands::Check { path } => assert_eq!(path, "."),
+            super::Commands::Check { path, .. } => assert_eq!(path, "."),
             _ => panic!("expected Check command"),
         }
     }

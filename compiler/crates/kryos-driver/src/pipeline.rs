@@ -783,6 +783,78 @@ pub fn check_file(path: &Path) -> (Vec<Diagnostic>, SourceMap) {
     (diagnostics, source_map)
 }
 
+/// Check a single file with options (e.g. skip_ownership for self-host bootstrap).
+///
+/// Returns `(diagnostics, source_map)`.
+pub fn check_file_with_options(path: &Path, skip_ownership: bool) -> (Vec<Diagnostic>, SourceMap) {
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                vec![Diagnostic::error(format!(
+                    "failed to read {}: {e}",
+                    path.display()
+                ))],
+                SourceMap::default(),
+            );
+        }
+    };
+
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+    // Source map
+    let mut source_map = SourceMap::default();
+    let file_id = source_map.add_file(
+        path.to_string_lossy().to_string(),
+        source.to_string(),
+    );
+
+    // Lex
+    let tokens = Lexer::new(&source, file_id).tokenize();
+
+    // Parse
+    let mut module = match parse(tokens) {
+        Ok(module) => module,
+        Err(parse_errors) => return (parse_errors, source_map),
+    };
+
+    // Resolve imports
+    let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut visited = HashSet::new();
+    visited.insert(canonical);
+
+    let mut imported_decls = Vec::new();
+    if let Err(import_diags) = resolve::resolve_imports(
+        &module,
+        path,
+        &mut visited,
+        &mut imported_decls,
+        false,
+    ) {
+        diagnostics.extend(import_diags);
+        return (diagnostics, source_map);
+    }
+
+    // Merge imported declarations before the main module's declarations.
+    let mut merged_decls = imported_decls;
+    merged_decls.append(&mut module.declarations);
+    module.declarations = merged_decls;
+
+    // Type check
+    diagnostics.extend(type_check(&module));
+
+    // Ownership (skip for self-host bootstrap)
+    if !skip_ownership {
+        let ownership = analyze_ownership(&module);
+        diagnostics.extend(ownership.errors);
+    }
+
+    // Capabilities
+    diagnostics.extend(check_capabilities(&module));
+
+    (diagnostics, source_map)
+}
+
 /// Check source code provided as a string, without producing output.
 ///
 /// Returns `(diagnostics, source_map)`.

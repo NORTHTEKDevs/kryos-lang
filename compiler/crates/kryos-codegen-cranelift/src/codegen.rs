@@ -1038,9 +1038,14 @@ fn translate_instruction<M: Module>(
                 )?;
                 let val_ty = builder.func.dfg.value_type(val);
                 let coerced = if val_ty != dest_ty {
-                    if is_float_type(val_ty) || is_float_type(dest_ty) {
-                        // Float<->int cast; just use the raw value for now.
-                        val
+                    if is_float_type(dest_ty) && !is_float_type(val_ty) {
+                        // Int -> float: bitcast to reinterpret bits as float.
+                        // Runtime builtins like kryos_builtin_float return f64
+                        // bits packed into an i64 at the C ABI level.
+                        builder.ins().bitcast(dest_ty, MemFlags::new(), val)
+                    } else if !is_float_type(dest_ty) && is_float_type(val_ty) {
+                        // Float -> int: bitcast to pack float bits into an int.
+                        builder.ins().bitcast(dest_ty, MemFlags::new(), val)
                     } else if val_ty.bits() < dest_ty.bits() {
                         builder.ins().sextend(dest_ty, val)
                     } else if val_ty.bits() > dest_ty.bits() {

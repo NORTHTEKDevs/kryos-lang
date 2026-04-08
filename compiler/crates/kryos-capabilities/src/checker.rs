@@ -9,8 +9,11 @@
 use kryos_ast::{Annotation, Decl, Expr, Module, Stmt};
 use kryos_errors::{Diagnostic, Span};
 
+use std::collections::HashMap;
+
 use crate::model::{
-    is_escalation_action, required_capability_for_path, Budget, Capability, CapabilitySet, Sandbox,
+    is_escalation_action, required_capability_for_builtin, required_capability_for_path, Budget,
+    Capability, CapabilitySet, Sandbox,
 };
 
 /// Run the capability checking pass over a module.
@@ -22,13 +25,29 @@ pub fn check_capabilities(module: &Module) -> Vec<Diagnostic> {
     checker.diagnostics
 }
 
+/// A capability scope entry on the stack.
+///
+/// Tracks both the capability set and whether this scope was explicitly
+/// annotated with `@capabilities(...)`. Unannotated scopes are "ambient" —
+/// they don't enforce builtin or cross-function capability checks.
+#[derive(Debug, Clone)]
+struct CapabilityScope {
+    capabilities: CapabilitySet,
+    /// `true` if the enclosing declaration had a `@capabilities(...)` annotation.
+    annotated: bool,
+}
+
 /// Internal checker state.
 struct CapabilityChecker {
     /// Stack of capability scopes. Each entry is the capability set for
     /// the current enclosing scope (function, actor, etc.).
-    scope_stack: Vec<CapabilitySet>,
+    scope_stack: Vec<CapabilityScope>,
     /// Accumulated diagnostics.
     diagnostics: Vec<Diagnostic>,
+    /// Map from function name to its declared capability set.
+    /// Only populated for functions that have `@capabilities(...)` annotations.
+    /// Used for cross-function propagation checks.
+    fn_capabilities: HashMap<String, CapabilitySet>,
 }
 
 impl CapabilityChecker {
@@ -36,15 +55,57 @@ impl CapabilityChecker {
         Self {
             scope_stack: Vec::new(),
             diagnostics: Vec::new(),
+            fn_capabilities: HashMap::new(),
         }
     }
 
     /// Get the current (innermost) capability scope, if any.
-    fn current_scope(&self) -> Option<&CapabilitySet> {
+    fn current_scope(&self) -> Option<&CapabilityScope> {
         self.scope_stack.last()
     }
 
+    /// Get just the current capability set, if any scope exists.
+    fn current_caps(&self) -> Option<&CapabilitySet> {
+        self.scope_stack.last().map(|s| &s.capabilities)
+    }
+
+    /// Check whether ANY enclosing scope is annotated.
+    /// This handles lambdas and blocks inside annotated functions.
+    fn has_annotated_scope(&self) -> bool {
+        self.scope_stack.iter().any(|s| s.annotated)
+    }
+
+    /// Build a map from function names to their declared capability sets.
+    /// Only includes functions with explicit `@capabilities(...)` annotations.
+    fn build_fn_capability_map(&mut self, declarations: &[Decl]) {
+        for decl in declarations {
+            match decl {
+                Decl::Function {
+                    name, annotations, ..
+                } => {
+                    if Self::has_capabilities_annotation(annotations) {
+                        let caps = CapabilitySet::from_annotations(annotations);
+                        self.fn_capabilities.insert(name.clone(), caps);
+                    }
+                }
+                Decl::Impl { methods, .. } | Decl::Trait { methods, .. } => {
+                    self.build_fn_capability_map(methods);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Check if annotations contain a `@capabilities(...)` annotation.
+    fn has_capabilities_annotation(annotations: &[Annotation]) -> bool {
+        annotations.iter().any(|a| a.name == "capabilities")
+    }
+
     fn check_module(&mut self, module: &Module) {
+        // First pass: build the function-to-capabilities map for cross-function checks.
+        self.build_fn_capability_map(&module.declarations);
+
+        // Second pass: walk the AST and enforce capability rules.
         for decl in &module.declarations {
             self.check_decl(decl);
         }
@@ -85,8 +146,8 @@ impl CapabilityChecker {
             Decl::Import { path, .. } => {
                 // Check that imports of capability-gated modules are allowed.
                 if let Some(required_cap) = required_capability_for_path(&path.segments) {
-                    if let Some(scope) = self.current_scope() {
-                        if !scope.has(required_cap) {
+                    if let Some(caps) = self.current_caps() {
+                        if !caps.has(required_cap) {
                             self.diagnostics.push(
                                 Diagnostic::error(format!(
                                     "import of `{}` requires `{required_cap}` capability",
@@ -112,6 +173,7 @@ impl CapabilityChecker {
         span: Span,
     ) {
         let caps = CapabilitySet::from_annotations(annotations);
+        let annotated = Self::has_capabilities_annotation(annotations);
         let _budget = Budget::from_annotations(annotations);
         let _sandbox = Sandbox::from_annotations(annotations);
 
@@ -121,8 +183,8 @@ impl CapabilityChecker {
         // Attenuation check: this function's capabilities must not exceed
         // the enclosing scope's capabilities.
         if let Some(parent) = self.current_scope() {
-            if !caps.is_subset_of(parent) {
-                let excess = caps.excess_over(parent);
+            if !caps.is_subset_of(&parent.capabilities) {
+                let excess = caps.excess_over(&parent.capabilities);
                 let excess_names: Vec<String> = excess.iter().map(|c| c.to_string()).collect();
                 self.diagnostics.push(
                     Diagnostic::error(format!(
@@ -137,7 +199,11 @@ impl CapabilityChecker {
         }
 
         // Push this function's scope and check its body.
-        self.scope_stack.push(caps);
+        let scope = CapabilityScope {
+            capabilities: caps,
+            annotated,
+        };
+        self.scope_stack.push(scope);
         if let Some(block) = body {
             self.check_block(block);
         }
@@ -151,13 +217,14 @@ impl CapabilityChecker {
         handlers: &[kryos_ast::MessageHandler],
     ) {
         let caps = CapabilitySet::from_annotations(annotations);
+        let annotated = Self::has_capabilities_annotation(annotations);
 
         self.validate_capability_annotations(annotations);
 
         // Attenuation: actor capabilities must not exceed parent scope.
         if let Some(parent) = self.current_scope() {
-            if !caps.is_subset_of(parent) {
-                let excess = caps.excess_over(parent);
+            if !caps.is_subset_of(&parent.capabilities) {
+                let excess = caps.excess_over(&parent.capabilities);
                 let excess_names: Vec<String> = excess.iter().map(|c| c.to_string()).collect();
                 self.diagnostics.push(
                     Diagnostic::error(format!(
@@ -178,7 +245,11 @@ impl CapabilityChecker {
         }
 
         // Check each handler under the actor's capability scope.
-        self.scope_stack.push(caps);
+        let scope = CapabilityScope {
+            capabilities: caps,
+            annotated,
+        };
+        self.scope_stack.push(scope);
         for handler in handlers {
             self.check_block(&handler.body);
         }
@@ -187,8 +258,8 @@ impl CapabilityChecker {
 
     fn check_extern(&mut self, items: &[Decl], span: Span) {
         // Extern blocks require the Ffi capability.
-        if let Some(scope) = self.current_scope() {
-            if !scope.has(Capability::Ffi) {
+        if let Some(caps) = self.current_caps() {
+            if !caps.has(Capability::Ffi) {
                 self.diagnostics.push(
                     Diagnostic::error(
                         "extern block requires `ffi` capability",
@@ -433,12 +504,15 @@ impl CapabilityChecker {
     ///
     /// We resolve simple dotted paths like `std.net.TcpStream.connect(...)` by
     /// walking field access chains. This also catches direct calls to
-    /// identifiers that match stdlib path patterns.
+    /// identifiers that match stdlib path patterns, bare builtin function
+    /// calls (like `file_write`), and cross-function capability propagation.
     fn check_callee_capabilities(&mut self, callee: &Expr, call_span: Span) {
         let segments = self.resolve_path(callee);
+
+        // 1. Check qualified stdlib paths (e.g. std.io.write_file).
         if let Some(required_cap) = required_capability_for_path(&segments) {
-            if let Some(scope) = self.current_scope() {
-                if !scope.has(required_cap) {
+            if let Some(caps) = self.current_caps() {
+                if !caps.has(required_cap) {
                     self.diagnostics.push(
                         Diagnostic::error(format!(
                             "call to `{}` requires `{required_cap}` capability",
@@ -450,6 +524,68 @@ impl CapabilityChecker {
                         ))
                         .with_code("E-CAP-MISSING"),
                     );
+                }
+            }
+        }
+
+        // 2. Check bare builtin function calls (e.g. file_write, http_get).
+        //    Only enforced inside explicitly annotated @capabilities scopes.
+        if segments.len() == 1 {
+            if let Some(required_cap) = required_capability_for_builtin(&segments[0]) {
+                if self.has_annotated_scope() {
+                    if let Some(caps) = self.current_caps() {
+                        if !caps.has(required_cap) {
+                            self.diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "builtin `{}` requires `{required_cap}` capability",
+                                    segments[0]
+                                ))
+                                .with_label(
+                                    call_span,
+                                    format!("requires `{required_cap}`"),
+                                )
+                                .with_note(format!(
+                                    "add `@capabilities({required_cap})` to the enclosing function or actor"
+                                ))
+                                .with_code("E-CAP-BUILTIN"),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Cross-function propagation: if calling a known annotated function,
+        //    the caller's capabilities must be a superset of the callee's.
+        if segments.len() == 1 {
+            if let Some(callee_caps) = self.fn_capabilities.get(&segments[0]).cloned() {
+                if self.has_annotated_scope() {
+                    if let Some(caller_caps) = self.current_caps() {
+                        if !callee_caps.is_subset_of(caller_caps) {
+                            let excess = callee_caps.excess_over(caller_caps);
+                            let excess_names: Vec<String> =
+                                excess.iter().map(|c| c.to_string()).collect();
+                            self.diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "call to `{}` requires capabilities [{}] not granted to caller",
+                                    segments[0],
+                                    excess_names.join(", ")
+                                ))
+                                .with_label(call_span, "callee requires more capabilities")
+                                .with_note(format!(
+                                    "function `{}` has @capabilities({}) but caller lacks [{}]",
+                                    segments[0],
+                                    callee_caps
+                                        .iter()
+                                        .map(|c| c.to_string())
+                                        .collect::<Vec<_>>()
+                                        .join(", "),
+                                    excess_names.join(", ")
+                                ))
+                                .with_code("E-CAP-PROPAGATION"),
+                            );
+                        }
+                    }
                 }
             }
         }
