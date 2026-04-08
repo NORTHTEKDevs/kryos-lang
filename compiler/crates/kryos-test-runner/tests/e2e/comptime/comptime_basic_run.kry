@@ -1,0 +1,5 @@
+// run-expect: 42
+fn main() {
+    let x = comptime { 6 * 7 }
+    println(to_string(x))
+}

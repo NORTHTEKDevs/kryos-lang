@@ -1,0 +1,5 @@
+// run-expect: value is 5 end
+fn main() {
+    let x = 5
+    println("value is {x} end")
+}

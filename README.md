@@ -157,10 +157,14 @@ See the [language manual](docs/README.md) for complete documentation.
 | File | Demonstrates |
 |------|-------------|
 | [`demo.kry`](examples/demo.kry) | Recursion, higher-order functions, float math, error handling, maps, tensors |
-| [`neural_net.kry`](examples/neural_net.kry) | Two-layer neural network forward pass with native tensor runtime |
-| [`http_server.kry`](examples/http_server.kry) | Structs, match expressions, error handling, request routing |
+| [`http_server.kry`](examples/http_server.kry) | Structs, string match, error handling, request routing |
 | [`pipeline.kry`](examples/pipeline.kry) | Channels, spawn, concurrency, data processing pipeline |
 | [`fibonacci_showcase.kry`](examples/fibonacci_showcase.kry) | Recursion, tail-call optimization, comptime, higher-order functions |
+| [`neural_net.kry`](examples/neural_net.kry) | Two-layer neural network forward pass with native tensor runtime |
+| [`calculator.kry`](examples/calculator.kry) | String match, tail expressions, function composition |
+| [`word_count.kry`](examples/word_count.kry) | String operations, for loops, builtins |
+| [`json_counter.kry`](examples/json_counter.kry) | Structs, channels, spawn, try/catch, integer match |
+| [`mini_grep.kry`](examples/mini_grep.kry) | File I/O, error handling, string search |
 
 ## Status
 

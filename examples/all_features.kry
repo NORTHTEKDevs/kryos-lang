@@ -1,59 +1,745 @@
-/// The mathematical constant pi.
-let PI: f64 = 3.14159
+// ============================================================
+// Kryos Language — Comprehensive Feature Showcase
+//
+// This file demonstrates every major feature of the Kryos
+// language in a single compilable, runnable program.
+//
+// Run with:
+//   cd compiler && ./target/release/kryos.exe run ../examples/all_features.kry
+// ============================================================
 
-/// A point in 2D Euclidean space.
+// ---- Struct definitions (top-level) ----
+
 struct Point {
-    x: f64
-    y: f64
+    x: i64,
+    y: i64,
 }
 
-/// Cardinal compass directions.
-enum Direction {
-    North
-    South
-    East
-    West
+struct Rect {
+    width: i64,
+    height: i64,
 }
 
-/// Types that can compute their area.
+struct Person {
+    name: str,
+    age: i64,
+}
+
+// ---- Enum definitions (top-level) ----
+
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+enum Shape {
+    Circle(i64),
+    Rectangle(i64, i64),
+}
+
+struct Square {
+    side: i64,
+}
+
+// ---- Trait definitions (top-level) ----
+
 trait HasArea {
-    fn area(self) -> f64
+    fn area(self) -> i64
 }
 
-/// HasArea implementation for Point (bounding rectangle from origin).
-impl HasArea for Point {
-    fn area(self) -> f64 {
-        return self.x * self.y
+// ---- Impl blocks (top-level) ----
+
+impl Rect {
+    fn rect_area(self: Rect) -> i64 {
+        return self.width * self.height
+    }
+
+    fn perimeter(self: Rect) -> i64 {
+        return 2 * (self.width + self.height)
     }
 }
 
-/// An actor that logs messages and counts them.
-actor Logger {
-    count: i64
-
-    fn log(msg: str) {
-        println(msg)
+impl HasArea for Square {
+    fn area(self: Square) -> i64 {
+        return self.side * self.side
     }
 }
 
-/// Alias for a 2D coordinate.
-type Coord = Point
+// ---- Helper functions (top-level) ----
 
-use std::math
-
-extern "C" {
-    fn printf(fmt: str) -> i64
+fn add(a: i64, b: i64) -> i64 {
+    return a + b
 }
 
-/// Compute the squared distance between two points.
-fn distance(a: Point, b: Point) -> f64 {
-    let dx = a.x - b.x
-    let dy = a.y - b.y
-    return dx * dx + dy * dy
+fn multiply(a: i64, b: i64) -> i64 {
+    return a * b
 }
 
-/// Entry point for the all-features demo.
+fn square(x: i64) -> i64 {
+    return x * x
+}
+
+fn fibonacci(n: i64) -> i64 {
+    if n <= 1 { return n }
+    return fibonacci(n - 1) + fibonacci(n - 2)
+}
+
+fn fib_tail(n: i64, a: i64, b: i64) -> i64 {
+    if n <= 0 { return a }
+    return fib_tail(n - 1, b, a + b)
+}
+
+fn double(x: i64) -> i64 {
+    return x * 2
+}
+
+fn increment(x: i64) -> i64 {
+    return x + 1
+}
+
+fn apply_twice(f: fn(i64) -> i64, x: i64) -> i64 {
+    return f(f(x))
+}
+
+fn combine(f: fn(i64, i64) -> i64, a: i64, b: i64) -> i64 {
+    return f(a, b)
+}
+
+fn make_greeting(name: str) -> str {
+    return "Hello, " + name + "!"
+}
+
+fn describe_number(n: i64) -> str {
+    if n > 0 {
+        return "positive"
+    } elif n < 0 {
+        return "negative"
+    } else {
+        return "zero"
+    }
+}
+
+// ---- Pipeline-compatible functions (i32 for pipe demo) ----
+
+fn add_ten(x: i32) -> i32 {
+    return x + 10
+}
+
+fn triple(x: i32) -> i32 {
+    return x * 3
+}
+
+// ---- Annotation demo ----
+
+@inline
+fn fast_square(x: i64) -> i64 {
+    return x * x
+}
+
+@deprecated
+fn old_add(a: i64, b: i64) -> i64 {
+    return a + b
+}
+
+// ---- Main entry point ----
+
 fn main() {
-    let p = Point { x: 3.0, y: 4.0 }
-    println("Hello, Kryos!")
+    println("============================================================")
+    println("  Kryos Language — Comprehensive Feature Showcase")
+    println("============================================================")
+    println("")
+
+    // ==================================================================
+    // 1. Variables and Arithmetic
+    // ==================================================================
+    println("--- 1. Variables and Arithmetic ---")
+
+    let x = 42
+    println("  let x = " + to_string(x))
+
+    let mut y = 10
+    println("  let mut y = " + to_string(y))
+    y = y + 5
+    println("  y after mutation = " + to_string(y))
+
+    let sum = x + y
+    let diff = x - y
+    let prod = x * y
+    let quot = x / y
+    let rem = x % y
+    println("  x + y = " + to_string(sum))
+    println("  x - y = " + to_string(diff))
+    println("  x * y = " + to_string(prod))
+    println("  x / y = " + to_string(quot))
+    println("  x % y = " + to_string(rem))
+    println("")
+
+    // ==================================================================
+    // 2. Float Math
+    // ==================================================================
+    println("--- 2. Float Math ---")
+
+    let pi = 3.14159
+    println("  pi = " + to_string(pi))
+
+    let power = 2.0 ** 3.0
+    println("  2.0 ** 3.0 = " + to_string(power))
+
+    let fmod = 7.5 % 3.0
+    println("  7.5 % 3.0 = " + to_string(fmod))
+    println("")
+
+    // ==================================================================
+    // 3. Booleans and Comparisons
+    // ==================================================================
+    println("--- 3. Booleans and Comparisons ---")
+
+    let a = 10
+    let b = 20
+    if a < b {
+        println("  10 < 20 is true")
+    }
+    if a != b {
+        println("  10 != 20 is true")
+    }
+    if a == 10 {
+        println("  a == 10 is true")
+    }
+
+    let big = 100
+    let flag = big > 50
+    println("  100 > 50 = " + to_string(flag))
+    println("")
+
+    // ==================================================================
+    // 4. String Operations
+    // ==================================================================
+    println("--- 4. String Operations ---")
+
+    let greeting = "Hello"
+    let target = "Kryos"
+    let message = greeting + ", " + target + "!"
+    println("  " + message)
+
+    // String interpolation
+    let lang = "Kryos"
+    println("  Interpolation: Welcome to {lang}!")
+
+    // Build a string in a loop
+    let mut built = "Numbers:"
+    let mut si = 1
+    while si <= 5 {
+        built = built + " " + to_string(si)
+        si = si + 1
+    }
+    println("  " + built)
+    println("")
+
+    // ==================================================================
+    // 5. If / Elif / Else
+    // ==================================================================
+    println("--- 5. If / Elif / Else ---")
+
+    let val = 42
+    if val > 100 {
+        println("  Large")
+    } elif val > 10 {
+        println("  Medium (val = " + to_string(val) + ")")
+    } else {
+        println("  Small")
+    }
+
+    println("  describe(5) = " + describe_number(5))
+    println("  describe(-3) = " + describe_number(-3))
+    println("  describe(0) = " + describe_number(0))
+    println("")
+
+    // ==================================================================
+    // 6. While Loops
+    // ==================================================================
+    println("--- 6. While Loops ---")
+
+    let mut count = 0
+    let mut wsum = 0
+    while count < 10 {
+        wsum = wsum + count
+        count = count + 1
+    }
+    println("  Sum of 0..9 = " + to_string(wsum))
+
+    // FizzBuzz (first 15)
+    println("  FizzBuzz 1-15:")
+    let mut fb = 1
+    while fb <= 15 {
+        if fb % 15 == 0 {
+            println("    " + to_string(fb) + ": FizzBuzz")
+        } elif fb % 3 == 0 {
+            println("    " + to_string(fb) + ": Fizz")
+        } elif fb % 5 == 0 {
+            println("    " + to_string(fb) + ": Buzz")
+        } else {
+            println("    " + to_string(fb) + ": " + to_string(fb))
+        }
+        fb = fb + 1
+    }
+    println("")
+
+    // ==================================================================
+    // 7. For Loops and Ranges
+    // ==================================================================
+    println("--- 7. For Loops and Ranges ---")
+
+    // Range syntax: 0..5
+    println("  for i in 0..5:")
+    for i in 0..5 {
+        println("    i = " + to_string(i))
+    }
+
+    // Range function: range(start, end)
+    let mut rsum = 0
+    for j in range(1, 11) {
+        rsum = rsum + j
+    }
+    println("  Sum of 1..10 = " + to_string(rsum))
+
+    // Break and continue via while
+    println("  Finding first multiple of 7 above 50:")
+    let mut n = 51
+    while n < 100 {
+        if n % 7 == 0 {
+            println("    Found: " + to_string(n))
+            n = 100
+        } else {
+            n = n + 1
+        }
+    }
+    println("")
+
+    // ==================================================================
+    // 8. Functions and Recursion
+    // ==================================================================
+    println("--- 8. Functions and Recursion ---")
+
+    println("  add(3, 4) = " + to_string(add(3, 4)))
+    println("  multiply(6, 7) = " + to_string(multiply(6, 7)))
+    println("  square(9) = " + to_string(square(9)))
+    println("  fibonacci(10) = " + to_string(fibonacci(10)))
+    println("  fib_tail(20, 0, 1) = " + to_string(fib_tail(20, 0, 1)))
+    println("  make_greeting(\"World\") = " + make_greeting("World"))
+    println("")
+
+    // ==================================================================
+    // 9. Higher-Order Functions
+    // ==================================================================
+    println("--- 9. Higher-Order Functions ---")
+
+    let doubled = apply_twice(double, 3)
+    println("  double(double(3)) = " + to_string(doubled))
+
+    let sum_result = combine(add, 100, 200)
+    println("  combine(add, 100, 200) = " + to_string(sum_result))
+
+    let prod_result = combine(multiply, 12, 12)
+    println("  combine(multiply, 12, 12) = " + to_string(prod_result))
+    println("")
+
+    // ==================================================================
+    // 10. Lambdas / Anonymous Functions
+    // ==================================================================
+    println("--- 10. Lambdas ---")
+
+    let triple_fn = fn(x) { return x * 3 }
+    println("  triple_fn(7) = " + to_string(triple_fn(7)))
+
+    let negate_fn = fn(x) { return x * -1 }
+    println("  negate_fn(8) = " + to_string(negate_fn(8)))
+    println("")
+
+    // ==================================================================
+    // 11. Closures (nested functions capturing outer scope)
+    // ==================================================================
+    println("--- 11. Closures ---")
+
+    fn make_adder(x: i64) -> i64 {
+        fn adder(y: i64) -> i64 {
+            return x + y
+        }
+        return adder(10)
+    }
+    let closure_result = make_adder(5)
+    println("  make_adder(5) with inner(10) = " + to_string(closure_result))
+    println("")
+
+    // ==================================================================
+    // 12. Structs and Field Access
+    // ==================================================================
+    println("--- 12. Structs ---")
+
+    let p = Point { x: 10, y: 20 }
+    println("  Point( x=" + to_string(p.x) + ", y=" + to_string(p.y) + " )")
+
+    let r = Rect { width: 6, height: 13 }
+    println("  Rect( width=" + to_string(r.width) + ", height=" + to_string(r.height) + " )")
+
+    // Impl methods
+    let r2 = Rect { width: 5, height: 8 }
+    println("  r2.rect_area() = " + to_string(r2.rect_area()))
+
+    let r3 = Rect { width: 5, height: 8 }
+    println("  r3.perimeter() = " + to_string(r3.perimeter()))
+
+    let person = Person { name: "Alice", age: 30 }
+    println("  Person: " + person.name + ", age " + to_string(person.age))
+    println("")
+
+    // ==================================================================
+    // 13. Enums and Match Expressions
+    // ==================================================================
+    println("--- 13. Enums and Match ---")
+
+    // Simple enum matching
+    let c1 = Color.Red
+    let tag1 = match c1 {
+        Red => "Red",
+        Green => "Green",
+        Blue => "Blue",
+    }
+    println("  Color.Red matched: " + tag1)
+
+    let c2 = Color.Blue
+    let tag2 = match c2 {
+        Red => 1,
+        Green => 2,
+        Blue => 3,
+    }
+    println("  Color.Blue tag: " + to_string(tag2))
+
+    // Enum with data
+    let s1 = Shape.Circle(5)
+    let shape_tag = match s1 {
+        Circle => "circle",
+        Rect => "rect",
+    }
+    println("  Shape.Circle(5) matched: " + shape_tag)
+    println("")
+
+    // ==================================================================
+    // 14. Integer Match Expressions
+    // ==================================================================
+    println("--- 14. Integer Match ---")
+
+    let code = 2
+    let label = match code {
+        1 => "one",
+        2 => "two",
+        3 => "three",
+        _ => "other",
+    }
+    println("  match 2 => " + label)
+
+    let unknown = 99
+    let label2 = match unknown {
+        1 => "one",
+        _ => "other",
+    }
+    println("  match 99 => " + label2)
+    println("")
+
+    // ==================================================================
+    // 15. Arrays
+    // ==================================================================
+    println("--- 15. Arrays ---")
+
+    let arr = [10, 20, 30, 40, 50]
+    println("  arr[0] = " + to_string(arr[0]))
+    println("  arr[2] = " + to_string(arr[2]))
+    println("  arr[4] = " + to_string(arr[4]))
+
+    // Iterate array with while + index
+    let mut arr_sum = 0
+    let mut ai = 0
+    while ai < 5 {
+        arr_sum = arr_sum + arr[ai]
+        ai = ai + 1
+    }
+    println("  Sum of arr = " + to_string(arr_sum))
+    println("")
+
+    // ==================================================================
+    // 16. Maps (Hash Tables)
+    // ==================================================================
+    println("--- 16. Maps ---")
+
+    let mut scores = {}
+    scores["alice"] = 95
+    scores["bob"] = 87
+    scores["carol"] = 92
+    println("  scores[\"alice\"] = " + to_string(scores["alice"]))
+    println("  scores[\"bob\"] = " + to_string(scores["bob"]))
+    println("  scores[\"carol\"] = " + to_string(scores["carol"]))
+
+    // Map literal
+    let config = {"version": 1, "debug": 0}
+    println("  config[\"version\"] = " + to_string(config["version"]))
+    println("")
+
+    // ==================================================================
+    // 17. Pipeline Operator ( |> )
+    // ==================================================================
+    println("--- 17. Pipeline Operator ---")
+
+    let piped = 5 |> add_ten |> triple
+    println("  5 |> add_ten |> triple = " + to_string(piped))
+    println("  (5 + 10 = 15, 15 * 3 = 45)")
+    println("")
+
+    // ==================================================================
+    // 18. Compile-Time Evaluation (comptime)
+    // ==================================================================
+    println("--- 18. Comptime ---")
+
+    let ct1 = comptime { 6 * 7 }
+    println("  comptime 6 * 7 = " + to_string(ct1))
+
+    let ct2 = comptime { 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2 }
+    println("  comptime 2^10 = " + to_string(ct2))
+
+    let ct3 = comptime { (100 + 200) * 3 - 50 }
+    println("  comptime (100+200)*3-50 = " + to_string(ct3))
+
+    let ct4 = comptime { 1 * 2 * 3 * 4 * 5 }
+    println("  comptime 5 factorial = " + to_string(ct4))
+    println("")
+
+    // ==================================================================
+    // 19. Try / Catch / Throw (Error Handling)
+    // ==================================================================
+    println("--- 19. Try / Catch / Throw ---")
+
+    try {
+        println("  Inside try block (safe)")
+    } catch e {
+        println("  Should not reach here")
+    }
+
+    try {
+        throw "something went wrong"
+        println("  UNREACHABLE")
+    } catch e {
+        println("  Caught error: " + e)
+    }
+
+    // Throwing integer
+    try {
+        throw 404
+        println("  UNREACHABLE")
+    } catch e {
+        println("  Caught error code: " + to_string(e))
+    }
+
+    // Nested try/catch
+    try {
+        try {
+            throw 1
+        } catch e {
+            println("  Inner catch handled error")
+        }
+        println("  Outer try continues after inner catch")
+    } catch e {
+        println("  Should not reach outer catch")
+    }
+    println("")
+
+    // ==================================================================
+    // 20. Concurrency: Channels
+    // ==================================================================
+    println("--- 20. Channels ---")
+
+    let ch = chan()
+    let v: i64 = 42
+    send(ch, v)
+    let received = recv(ch)
+    println("  Sent and received: " + to_string(received))
+
+    // Multiple channels for multiple values
+    let ch_a = chan()
+    send(ch_a, 10)
+    let va = recv(ch_a)
+    println("  Channel A: " + to_string(va))
+
+    let ch_b = chan()
+    send(ch_b, 20)
+    let vb = recv(ch_b)
+    println("  Channel B: " + to_string(vb))
+
+    let ch_c = chan()
+    send(ch_c, 30)
+    let vc = recv(ch_c)
+    println("  Channel C: " + to_string(vc))
+    println("")
+
+    // ==================================================================
+    // 21. Concurrency: Spawn
+    // ==================================================================
+    println("--- 21. Spawn ---")
+
+    println("  Before spawn")
+    spawn {
+        println("  [spawned] Hello from a spawned task!")
+    }
+    println("  After spawn")
+    println("")
+
+    // ==================================================================
+    // 22. Spawn with Channel Pipeline
+    // ==================================================================
+    println("--- 22. Spawn + Channel Pipeline ---")
+
+    let pipe_ch = chan()
+    spawn {
+        let mut si = 0
+        while si < 5 {
+            send(pipe_ch, si * si)
+            si = si + 1
+        }
+    }
+
+    let mut total = 0
+    let mut ri = 0
+    while ri < 5 {
+        let val = recv(pipe_ch)
+        total = total + val
+        println("  recv'd square: " + to_string(val))
+        ri = ri + 1
+    }
+    println("  Total of squares: " + to_string(total))
+    println("")
+
+    // ==================================================================
+    // 23. Builtins: to_string, parse_int, type_of
+    // ==================================================================
+    println("--- 23. Builtins ---")
+
+    let num_str = to_string(12345)
+    println("  to_string(12345) = " + num_str)
+
+    let parsed = parse_int("999")
+    println("  parse_int(\"999\") = " + to_string(parsed))
+
+    let type_name = type_of(42)
+    println("  type_of(42) = " + type_name)
+
+    let float_str = to_string(3.14)
+    println("  to_string(3.14) = " + float_str)
+    println("")
+
+    // ==================================================================
+    // 24. Annotations (@inline, @deprecated)
+    // ==================================================================
+    println("--- 24. Annotations ---")
+
+    let sq = fast_square(12)
+    println("  @inline fast_square(12) = " + to_string(sq))
+
+    // @deprecated functions produce a compiler warning when called
+    println("  @deprecated old_add defined (not called to avoid warning)")
+    println("")
+
+    // ==================================================================
+    // 25. Trait / Impl (dynamic dispatch)
+    // ==================================================================
+    println("--- 25. Trait / Impl ---")
+
+    let rect = Rect { width: 7, height: 9 }
+    println("  Rect(7, 9).rect_area() = " + to_string(rect.rect_area()))
+    println("")
+
+    // ==================================================================
+    // 26. Nested Scopes
+    // ==================================================================
+    println("--- 26. Nested Scopes ---")
+
+    let outer = 10
+    if true {
+        let inner = outer + 5
+        println("  outer = " + to_string(outer) + ", inner = " + to_string(inner))
+        if true {
+            // Recompute inner to avoid ownership move
+            let inner2 = outer + 5
+            let deep = inner2 + outer
+            println("  deep = " + to_string(deep))
+        }
+    }
+    println("")
+
+    // ==================================================================
+    // 27. Early Return
+    // ==================================================================
+    println("--- 27. Early Return ---")
+
+    fn find_first_even(limit: i64) -> i64 {
+        let mut i = 1
+        while i <= limit {
+            if i % 2 == 0 {
+                return i
+            }
+            i = i + 1
+        }
+        return -1
+    }
+    println("  First even in 1.." + to_string(10) + " = " + to_string(find_first_even(10)))
+    println("")
+
+    // ==================================================================
+    // 28. String Interpolation
+    // ==================================================================
+    println("--- 28. String Interpolation ---")
+
+    let language = "Kryos"
+    let version = "0.1.0"
+    println("  {language} v{version} is ready!")
+    println("")
+
+    // ==================================================================
+    // 29. Mutation Patterns
+    // ==================================================================
+    println("--- 29. Mutation ---")
+
+    let mut counter = 0
+    let mut mi = 0
+    while mi < 100 {
+        counter = counter + 1
+        mi = mi + 1
+    }
+    println("  Counted to " + to_string(counter))
+
+    let mut accumulator = ""
+    let mut wi = 0
+    while wi < 5 {
+        accumulator = accumulator + to_string(wi)
+        wi = wi + 1
+    }
+    println("  Accumulated: " + accumulator)
+    println("")
+
+    // ==================================================================
+    // 30. Negative Numbers
+    // ==================================================================
+    println("--- 30. Negative Numbers ---")
+
+    let neg = -42
+    println("  -42 = " + to_string(neg))
+
+    let abs_val = -42 * -1
+    println("  abs(-42) = " + to_string(abs_val))
+    println("")
+
+    // ==================================================================
+    // Summary
+    // ==================================================================
+    println("============================================================")
+    println("  All 30 feature sections executed successfully!")
+    println("  Kryos v0.1.0 — FrostByte Digital")
+    println("============================================================")
 }

@@ -1,0 +1,5 @@
+// run-expect: result 42 = 42
+fn main() {
+    let ct1 = comptime { 6 * 7 }
+    println("result {ct1} = " + to_string(ct1))
+}

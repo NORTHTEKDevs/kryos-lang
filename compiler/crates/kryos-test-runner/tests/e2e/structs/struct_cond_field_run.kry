@@ -1,0 +1,26 @@
+// run-expect: hello
+struct SearchResult {
+    pattern: str
+    found: i64
+    line_num: i64
+}
+
+fn make_result(pat: str, found: i64) -> SearchResult {
+    if found == 1 {
+        return SearchResult { pattern: pat, found: 1, line_num: 1 }
+    }
+    return SearchResult { pattern: pat, found: 0, line_num: 0 }
+}
+
+fn report(r: SearchResult) {
+    if r.found == 1 {
+        println(r.pattern)
+    } else {
+        println("miss")
+    }
+}
+
+fn main() {
+    let r1 = make_result("hello", 1)
+    report(r1)
+}

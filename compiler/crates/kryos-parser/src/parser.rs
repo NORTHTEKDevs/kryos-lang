@@ -71,6 +71,10 @@ pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     diagnostics: Vec<Diagnostic>,
+    /// When `true`, suppress parsing `Name { ... }` as a struct literal.
+    /// Set while parsing conditions for `if`, `while`, `elif`, `for`, `match`
+    /// so that `{` is treated as a block opener, not a struct-literal opener.
+    no_struct_literal: bool,
 }
 
 impl Parser {
@@ -79,6 +83,7 @@ impl Parser {
             tokens,
             pos: 0,
             diagnostics: Vec::new(),
+            no_struct_literal: false,
         }
     }
 
@@ -846,12 +851,12 @@ impl Parser {
     fn parse_if_stmt(&mut self) -> Stmt {
         let kw = self.expect(TokenKind::If);
         let start = kw.span;
-        let condition = self.parse_expr();
+        let condition = self.parse_expr_no_struct_lit();
         let then_block = self.parse_block();
 
         let mut elif_clauses = Vec::new();
         while self.eat(TokenKind::Elif) {
-            let cond = self.parse_expr();
+            let cond = self.parse_expr_no_struct_lit();
             let block = self.parse_block();
             elif_clauses.push((cond, block));
         }
@@ -877,7 +882,7 @@ impl Parser {
         let start = kw.span;
         let pattern = self.parse_pattern();
         self.expect(TokenKind::In);
-        let iterable = self.parse_expr();
+        let iterable = self.parse_expr_no_struct_lit();
         let body = self.parse_block();
         let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
         Stmt::For { parallel: false, pattern, iterable, body, span: start.merge(end) }
@@ -889,7 +894,7 @@ impl Parser {
         self.expect(TokenKind::For);
         let pattern = self.parse_pattern();
         self.expect(TokenKind::In);
-        let iterable = self.parse_expr();
+        let iterable = self.parse_expr_no_struct_lit();
         let body = self.parse_block();
         let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
         Stmt::For { parallel: true, pattern, iterable, body, span: start.merge(end) }
@@ -898,7 +903,7 @@ impl Parser {
     fn parse_while(&mut self) -> Stmt {
         let kw = self.expect(TokenKind::While);
         let start = kw.span;
-        let condition = self.parse_expr();
+        let condition = self.parse_expr_no_struct_lit();
         let body = self.parse_block();
         let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
         Stmt::While { condition, body, span: start.merge(end) }
@@ -1044,6 +1049,17 @@ impl Parser {
 
     pub fn parse_expr(&mut self) -> Expr {
         self.parse_expr_bp(0)
+    }
+
+    /// Parse an expression with struct-literal suppression.
+    /// Used in positions where `{` after an identifier should be treated as
+    /// a block opener (if/while/for/match conditions), not a struct literal.
+    fn parse_expr_no_struct_lit(&mut self) -> Expr {
+        let prev = self.no_struct_literal;
+        self.no_struct_literal = true;
+        let expr = self.parse_expr();
+        self.no_struct_literal = prev;
+        expr
     }
 
     fn parse_expr_bp(&mut self, min_bp: u8) -> Expr {
@@ -1337,7 +1353,7 @@ impl Parser {
 
                 // Check for struct literal: `Name { field: value, ... }`
                 // But only if this looks like TypeIdent or capitalized name
-                if self.check(TokenKind::LBrace) && looks_like_type_name(&name) {
+                if self.check(TokenKind::LBrace) && looks_like_type_name(&name) && !self.no_struct_literal {
                     return self.parse_struct_literal(name, start);
                 }
 
@@ -1454,7 +1470,7 @@ impl Parser {
     fn parse_if_expr(&mut self) -> Expr {
         let kw = self.expect(TokenKind::If);
         let start = kw.span;
-        let condition = self.parse_expr();
+        let condition = self.parse_expr_no_struct_lit();
         let then_branch = self.parse_block();
         let else_branch = if self.eat(TokenKind::Else) {
             Some(self.parse_block())
@@ -1473,7 +1489,7 @@ impl Parser {
     fn parse_match_expr(&mut self) -> Expr {
         let kw = self.expect(TokenKind::Match);
         let start = kw.span;
-        let subject = self.parse_expr();
+        let subject = self.parse_expr_no_struct_lit();
         self.expect(TokenKind::LBrace);
 
         let mut arms = Vec::new();

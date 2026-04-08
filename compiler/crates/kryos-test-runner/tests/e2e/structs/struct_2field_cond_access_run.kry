@@ -1,0 +1,25 @@
+// run-expect: hello
+struct Foo {
+    name: str
+    value: i64
+}
+
+fn make_foo(x: i64) -> Foo {
+    if x == 1 {
+        return Foo { name: "hello", value: 1 }
+    }
+    return Foo { name: "world", value: 0 }
+}
+
+fn show(f: Foo) {
+    if f.value == 1 {
+        println(f.name)
+    } else {
+        println("miss")
+    }
+}
+
+fn main() {
+    let f = make_foo(1)
+    show(f)
+}

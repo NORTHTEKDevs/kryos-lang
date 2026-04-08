@@ -4,7 +4,7 @@
 //! graph representation (`MirModule`).  The lowerer walks each function body,
 //! creating basic blocks, instructions, and terminators.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use kryos_ast::{self as ast};
 use kryos_types::Type;
@@ -73,6 +73,9 @@ pub struct LoweringContext {
     /// Used for dyn Trait coercion: when a concrete struct is passed to a `dyn Trait`
     /// param, the lowerer wraps it in `MakeTraitObject`.
     func_param_types: HashMap<String, Vec<MirType>>,
+    /// Tracks locals that have already been dropped by an inner scope to prevent
+    /// double-free when the outer scope's drop loop runs.
+    dropped_locals: HashSet<u32>,
 }
 
 /// Context passed to `throw` statements inside a `try` block.
@@ -118,6 +121,7 @@ impl LoweringContext {
             actor_state_fields: HashMap::new(),
             const_defs: HashMap::new(),
             func_param_types: HashMap::new(),
+            dropped_locals: HashSet::new(),
         }
     }
 
@@ -200,6 +204,7 @@ impl LoweringContext {
         self.next_block = 1; // 0 is already the entry block
         self.loop_headers.clear();
         self.loop_exits.clear();
+        self.dropped_locals.clear();
     }
 
     /// Save the per-function state so we can restore it after monomorphization.
@@ -656,17 +661,56 @@ pub fn lower_function(
         })
         .collect();
 
-    // Lower the body statements.
-    lower_block_stmts(ctx, &body.stmts);
+    // Lower the body statements.  If the function has a non-void return type
+    // and the last statement is a bare expression, treat it as a tail expression
+    // (implicit return) so that e.g. a trailing `match` becomes the return value.
+    let has_tail_expr = mir_ret_ty != MirType::Void
+        && body.stmts.last().map_or(false, |s| matches!(s, ast::Stmt::Expr { .. }));
 
-    // If the current block hasn't been sealed yet, add an implicit return.
-    if ctx.blocks.len() < ctx.next_block as usize {
-        if mir_ret_ty == MirType::Void {
-            ctx.seal_block(Terminator::Return(None));
-        } else {
-            // Implicit return of last expression if present is handled by
-            // `lower_block_stmts`; if we reach here we still need a return.
-            ctx.seal_block(Terminator::Return(None));
+    if has_tail_expr && body.stmts.len() > 0 {
+        let (init, last) = body.stmts.split_at(body.stmts.len() - 1);
+        // Lower all statements except the last.
+        let scope_start = ctx.locals.len();
+        for stmt in init {
+            lower_stmt(ctx, stmt);
+        }
+        // Lower the tail expression and capture its result.
+        if let ast::Stmt::Expr { expr, .. } = &last[0] {
+            let tail_val = lower_expr_to_operand(ctx, expr);
+            // Extract the local ID of the tail value (if it's a local) so we
+            // don't drop the value we're about to return.
+            let tail_local_id = match &tail_val {
+                Operand::Local(id) => Some(id.0),
+                _ => None,
+            };
+            // Emit drops for scope locals before returning.
+            let scope_end = ctx.locals.len();
+            for i in (scope_start..scope_end).rev() {
+                if ctx.locals[i].name.is_some() {
+                    let local_id = ctx.locals[i].id;
+                    if !ctx.dropped_locals.contains(&local_id.0)
+                        && tail_local_id != Some(local_id.0)
+                    {
+                        ctx.emit(Instruction::Drop { local: local_id });
+                        ctx.dropped_locals.insert(local_id.0);
+                    }
+                }
+            }
+            // Seal with implicit return of the tail expression.
+            if ctx.blocks.len() < ctx.next_block as usize {
+                ctx.seal_block(Terminator::Return(Some(tail_val)));
+            }
+        }
+    } else {
+        lower_block_stmts(ctx, &body.stmts);
+
+        // If the current block hasn't been sealed yet, add an implicit return.
+        if ctx.blocks.len() < ctx.next_block as usize {
+            if mir_ret_ty == MirType::Void {
+                ctx.seal_block(Terminator::Return(None));
+            } else {
+                ctx.seal_block(Terminator::Return(None));
+            }
         }
     }
 
@@ -685,22 +729,28 @@ pub fn lower_function(
 // ---------------------------------------------------------------------------
 
 fn lower_block_stmts(ctx: &mut LoweringContext, stmts: &[ast::Stmt]) {
-    // Collect locals declared in this scope so we can emit Drops.
-    let scope_locals: Vec<LocalId> = Vec::new();
     let scope_start = ctx.locals.len();
 
     for stmt in stmts {
         lower_stmt(ctx, stmt);
     }
 
-    // Emit drops for locals declared in this scope (reverse order).
+    // Emit drops for *named* locals declared in this scope (reverse order).
+    // Unnamed temporaries (name == None) must NOT be dropped because they
+    // hold non-owning copies of values (e.g. a string handle loaded from a
+    // struct field).  Dropping them would free memory that the struct still
+    // owns, causing heap corruption / use-after-free.
+    //
+    // We also skip locals that were already dropped by a nested inner scope
+    // to prevent double-free.
     let scope_end = ctx.locals.len();
     for i in (scope_start..scope_end).rev() {
-        let local_id = ctx.locals[i].id;
-        // Don't drop scope_locals that are also parameters (they are
-        // owned by the caller).
-        if !scope_locals.contains(&local_id) {
-            ctx.emit(Instruction::Drop { local: local_id });
+        if ctx.locals[i].name.is_some() {
+            let local_id = ctx.locals[i].id;
+            if !ctx.dropped_locals.contains(&local_id.0) {
+                ctx.emit(Instruction::Drop { local: local_id });
+                ctx.dropped_locals.insert(local_id.0);
+            }
         }
     }
 }
@@ -2003,6 +2053,7 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
 
     // Collect arms into switch targets.
     let mut targets: Vec<(i64, BlockId)> = Vec::new();
+    let mut string_targets: Vec<(String, BlockId)> = Vec::new();
     let mut arm_blocks: Vec<(BlockId, &ast::Expr, Option<EnumBinding>)> = Vec::new();
     let mut default_arm: Option<(BlockId, &ast::Expr)> = None;
 
@@ -2027,6 +2078,9 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
             ast::Pattern::Literal { expr, .. } => {
                 if let ast::Expr::IntLiteral { value, .. } = expr.as_ref() {
                     targets.push((*value, arm_bb));
+                    arm_blocks.push((arm_bb, &arm.body, None));
+                } else if let ast::Expr::StringLiteral { value, .. } = expr.as_ref() {
+                    string_targets.push((value.clone(), arm_bb));
                     arm_blocks.push((arm_bb, &arm.body, None));
                 } else {
                     default_arm = Some((arm_bb, &arm.body));
@@ -2061,19 +2115,58 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
         .map(|(bb, _)| bb)
         .unwrap_or(merge_bb);
 
-    // Emit switch terminator.
-    ctx.finish_block(
-        Terminator::Switch {
-            value: switch_op,
-            targets,
-            default: default_bb,
-        },
-        if let Some((bb, _, _)) = arm_blocks.first() {
-            *bb
-        } else {
-            default_bb
-        },
-    );
+    // Emit terminator: string patterns use an equality-comparison chain
+    // (strings can't go through integer Switch), integer patterns use Switch.
+    if !string_targets.is_empty() {
+        // Chain of BinOp::Eq comparisons with Branch terminators.
+        for (i, (ref pat_str, arm_bb)) in string_targets.iter().enumerate() {
+            let cmp_local = ctx.alloc_temp(MirType::Bool);
+            ctx.emit(Instruction::Assign {
+                dest: cmp_local,
+                value: RValue::BinOp {
+                    op: MirBinOp::Eq,
+                    left: switch_op.clone(),
+                    right: Operand::Constant(Constant::Str(pat_str.clone())),
+                },
+            });
+            if i + 1 < string_targets.len() {
+                // More string patterns to check — allocate a continuation block.
+                let nb = ctx.alloc_block();
+                ctx.finish_block(
+                    Terminator::Branch {
+                        cond: Operand::Local(cmp_local),
+                        then_block: *arm_bb,
+                        else_block: nb,
+                    },
+                    nb,
+                );
+            } else {
+                // Last string pattern — fall through to default on mismatch.
+                let first_arm = arm_blocks.first().map(|(bb, _, _)| *bb).unwrap_or(default_bb);
+                ctx.finish_block(
+                    Terminator::Branch {
+                        cond: Operand::Local(cmp_local),
+                        then_block: *arm_bb,
+                        else_block: default_bb,
+                    },
+                    first_arm,
+                );
+            }
+        }
+    } else {
+        ctx.finish_block(
+            Terminator::Switch {
+                value: switch_op,
+                targets,
+                default: default_bb,
+            },
+            if let Some((bb, _, _)) = arm_blocks.first() {
+                *bb
+            } else {
+                default_bb
+            },
+        );
+    }
 
     // Emit each arm block.
     for (i, (arm_bb, body, enum_binding)) in arm_blocks.iter().enumerate() {
@@ -2344,6 +2437,20 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
             // Infer from the last expression of the then branch.
             then_branch
                 .stmts
+                .last()
+                .and_then(|s| {
+                    if let ast::Stmt::Expr { expr, .. } = s {
+                        Some(infer_expr_type(ctx, expr))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(MirType::I64)
+        }
+
+        ast::Expr::ComptimeBlock { body, .. } => {
+            // Infer from the last expression in the comptime body.
+            body.stmts
                 .last()
                 .and_then(|s| {
                     if let ast::Stmt::Expr { expr, .. } = s {

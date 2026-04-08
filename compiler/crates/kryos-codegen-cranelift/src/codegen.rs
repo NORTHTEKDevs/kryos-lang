@@ -1169,6 +1169,40 @@ fn translate_instruction<M: Module>(
     Ok(())
 }
 
+/// Coerce an operand to a KryosString handle. If the operand is already a
+/// string, return it directly. Otherwise, convert via the appropriate runtime
+/// function (int -> kryos_builtin_to_string, float -> kryos_f64_to_string,
+/// bool -> kryos_bool_to_string).
+fn coerce_to_string<M: Module>(
+    operand: &Operand,
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    if is_string_operand(operand, &translator.mir_func.locals) {
+        return translate_operand(operand, builder, translator, module);
+    }
+    let mut val = translate_operand(operand, builder, translator, module)?;
+    let to_str_fn = if is_bool_operand(operand, &translator.mir_func.locals) {
+        let val_ty = builder.func.dfg.value_type(val);
+        if val_ty.is_int() && val_ty.bits() < 64 {
+            val = builder.ins().sextend(types::I64, val);
+        }
+        "kryos_bool_to_string"
+    } else if is_float_operand(operand, &translator.mir_func.locals) {
+        "kryos_f64_to_string"
+    } else {
+        let val_ty = builder.func.dfg.value_type(val);
+        if val_ty.is_int() && val_ty.bits() < 64 {
+            val = builder.ins().sextend(types::I64, val);
+        }
+        "kryos_builtin_to_string"
+    };
+    let to_str_ref = ensure_func_ref_with_args(to_str_fn, builder, translator, module, 1)?;
+    let call = builder.ins().call(to_str_ref, &[val]);
+    Ok(builder.inst_results(call)[0])
+}
+
 // ---------------------------------------------------------------------------
 // RValue translation
 // ---------------------------------------------------------------------------
@@ -1589,15 +1623,15 @@ fn translate_rvalue<M: Module>(
             if let Some(struct_def) = translator.struct_defs.get(name) {
                 let layout = compute_struct_layout(struct_def)?;
 
-                // Allocate stack space for the struct.
-                let slot = builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot,
-                    layout.total_size,
-                    0, // align_shift: 0 means natural alignment
-                ));
-
-                // Get a pointer (I64) to the stack slot base.
-                let ptr = builder.ins().stack_addr(types::I64, slot, 0);
+                // Heap-allocate the struct via malloc so the pointer survives
+                // across function returns (stack slots are invalidated when the
+                // callee's frame is popped, causing dangling-pointer crashes).
+                let size_val = builder.ins().iconst(types::I64, layout.total_size as i64);
+                let malloc_ref = ensure_func_ref_with_args(
+                    "malloc", builder, translator, module, 1,
+                )?;
+                let call = builder.ins().call(malloc_ref, &[size_val]);
+                let ptr = builder.inst_results(call)[0];
 
                 // Store each field value at its computed offset.
                 for (field_name, operand) in fields {
@@ -1834,18 +1868,18 @@ fn translate_rvalue<M: Module>(
                 let val = builder.ins().iconst(types::I64, 0);
                 Ok(Some(val))
             } else if parts.len() == 1 {
-                let val = translate_operand(&parts[0], builder, translator, module)?;
+                let val = coerce_to_string(&parts[0], builder, translator, module)?;
                 Ok(Some(val))
             } else {
                 // Fold: acc = concat(parts[0], parts[1]), then concat(acc, parts[2]), ...
                 let func_ref =
                     ensure_func_ref("kryos_string_concat", builder, translator, module)?;
-                let first = translate_operand(&parts[0], builder, translator, module)?;
-                let second = translate_operand(&parts[1], builder, translator, module)?;
+                let first = coerce_to_string(&parts[0], builder, translator, module)?;
+                let second = coerce_to_string(&parts[1], builder, translator, module)?;
                 let call = builder.ins().call(func_ref, &[first, second]);
                 let mut acc = builder.inst_results(call)[0];
                 for part in &parts[2..] {
-                    let next_val = translate_operand(part, builder, translator, module)?;
+                    let next_val = coerce_to_string(part, builder, translator, module)?;
                     let call = builder.ins().call(func_ref, &[acc, next_val]);
                     acc = builder.inst_results(call)[0];
                 }

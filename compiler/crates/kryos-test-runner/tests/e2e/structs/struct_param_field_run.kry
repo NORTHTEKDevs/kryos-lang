@@ -1,0 +1,14 @@
+// run-expect: hello
+struct Foo {
+    name: str
+    value: i64
+}
+
+fn show(f: Foo) {
+    println(f.name)
+}
+
+fn main() {
+    let f = Foo { name: "hello", value: 42 }
+    show(f)
+}

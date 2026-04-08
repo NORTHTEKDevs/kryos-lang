@@ -1,0 +1,65 @@
+// ============================================================
+// Kryos Calculator Demo
+//
+// Demonstrates: string match, structs, to_string,
+//               ownership-aware patterns, tail expressions
+// ============================================================
+
+fn calc_add(a: i64, b: i64) -> i64 { a + b }
+fn calc_sub(a: i64, b: i64) -> i64 { a - b }
+fn calc_mul(a: i64, b: i64) -> i64 { a * b }
+fn calc_div(a: i64, b: i64) -> i64 { a / b }
+fn calc_mod(a: i64, b: i64) -> i64 { a % b }
+
+fn calculate(a: i64, op: str, b: i64) -> i64 {
+    match op {
+        "+" => calc_add(a, b)
+        "-" => calc_sub(a, b)
+        "*" => calc_mul(a, b)
+        "/" => calc_div(a, b)
+        "%" => calc_mod(a, b)
+        _ => 0
+    }
+}
+
+fn show(a: i64, op: str, b: i64) {
+    let label = to_string(a) + " " + op + " " + to_string(b)
+    let result = calculate(a, op, b)
+    println("  " + label + " = " + to_string(result))
+}
+
+fn main() {
+    println("=== Kryos Calculator ===")
+    println("")
+
+    println("Arithmetic:")
+    show(10, "+", 20)
+    show(50, "-", 17)
+    show(6, "*", 7)
+    show(100, "/", 4)
+    show(17, "%", 5)
+
+    println("")
+    println("Edge cases:")
+    show(0, "+", 0)
+    show(-10, "+", 10)
+    show(2, "**", 10)
+
+    println("")
+    println("Powers of two:")
+    let val = 1
+    for i in 0..10 {
+        println("  2^" + to_string(i) + " = " + to_string(val))
+        val = val * 2
+    }
+
+    println("")
+
+    // Chained
+    let step1 = calculate(10, "+", 20)
+    let step2 = calculate(step1, "*", 3)
+    println("Chained: (10 + 20) * 3 = " + to_string(step2))
+
+    println("")
+    println("=== Calculator complete ===")
+}

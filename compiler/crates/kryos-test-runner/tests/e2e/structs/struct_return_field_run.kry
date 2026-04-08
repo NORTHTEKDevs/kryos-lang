@@ -1,0 +1,13 @@
+// run-expect: 42
+struct Bar {
+    x: i64
+}
+
+fn make_bar() -> Bar {
+    return Bar { x: 42 }
+}
+
+fn main() {
+    let b = make_bar()
+    println(to_string(b.x))
+}
