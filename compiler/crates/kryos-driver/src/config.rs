@@ -4,23 +4,22 @@ use std::path::PathBuf;
 
 /// Which compilation backend / optimization level to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum BuildMode {
     /// Cranelift backend, no optimizations — fast compile times.
+    #[default]
     Debug,
     /// LLVM backend, O2 optimizations — optimized output.
     Release,
 }
 
-impl Default for BuildMode {
-    fn default() -> Self {
-        BuildMode::Debug
-    }
-}
 
 /// What the compiler should produce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum OutputType {
     /// Linked executable binary.
+    #[default]
     Binary,
     /// Static or shared library.
     Library,
@@ -32,11 +31,6 @@ pub enum OutputType {
     Mir,
 }
 
-impl Default for OutputType {
-    fn default() -> Self {
-        OutputType::Binary
-    }
-}
 
 /// Configuration for a single compilation session.
 ///
@@ -59,6 +53,8 @@ pub struct BuildConfig {
     pub capabilities: Vec<String>,
     /// Print verbose compiler output.
     pub verbose: bool,
+    /// Skip ownership analysis (needed for self-host bootstrap).
+    pub skip_ownership: bool,
 }
 
 impl BuildConfig {
@@ -72,6 +68,7 @@ impl BuildConfig {
             target: None,
             capabilities: Vec::new(),
             verbose: false,
+            skip_ownership: false,
         }
     }
 
@@ -85,6 +82,7 @@ impl BuildConfig {
             target: None,
             capabilities: Vec::new(),
             verbose: false,
+            skip_ownership: false,
         }
     }
 

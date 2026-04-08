@@ -74,9 +74,9 @@ pub fn format_stack_trace() -> String {
         }
         let mut out = String::from("\nstack trace (most recent call last):\n");
         for (i, frame) in stack.iter().rev().enumerate() {
-            let _ = write!(
+            let _ = writeln!(
                 out,
-                "  {}: {}() at {}:{}\n",
+                "  {}: {}() at {}:{}",
                 i, frame.func_name, frame.file, frame.line
             );
         }

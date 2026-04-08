@@ -234,6 +234,19 @@ pub enum Instruction {
     /// Drop a local (scope-exit cleanup).
     Drop { local: LocalId },
 
+    /// Store a value into a struct field.
+    StoreField {
+        object: Operand,
+        field: String,
+        value: Operand,
+    },
+
+    /// Store through a pointer/reference.
+    StoreDeref { ptr: Operand, value: Operand },
+
+    /// No-op placeholder.
+    Nop,
+
     /// Spawn a function on a new OS thread.
     ///
     /// `func` is the name of the function to call (may be a generated
@@ -277,14 +290,6 @@ pub enum Instruction {
         value: Operand,
     },
 
-    /// Store a value through a reference/pointer (deref assignment: *ptr = val).
-    StoreDeref {
-        ptr: Operand,
-        value: Operand,
-    },
-
-    /// No-op placeholder.
-    Nop,
 }
 
 /// Right-hand side of an assignment.

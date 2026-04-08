@@ -10,6 +10,13 @@ fn calc_sub(a: i64, b: i64) -> i64 { a - b }
 fn calc_mul(a: i64, b: i64) -> i64 { a * b }
 fn calc_div(a: i64, b: i64) -> i64 { a / b }
 fn calc_mod(a: i64, b: i64) -> i64 { a % b }
+fn calc_pow(a: i64, b: i64) -> i64 {
+    let mut result = 1
+    for i in range(0, b) {
+        result = result * a
+    }
+    return result
+}
 
 fn calculate(a: i64, op: str, b: i64) -> i64 {
     match op {
@@ -18,6 +25,7 @@ fn calculate(a: i64, op: str, b: i64) -> i64 {
         "*" => calc_mul(a, b)
         "/" => calc_div(a, b)
         "%" => calc_mod(a, b)
+        "**" => calc_pow(a, b)
         _ => 0
     }
 }

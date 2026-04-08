@@ -156,7 +156,7 @@ See the [language manual](docs/README.md) for complete documentation.
 
 | File | Demonstrates |
 |------|-------------|
-| [`demo.kry`](examples/demo.kry) | Recursion, higher-order functions, float math, error handling, maps, tensors |
+| [`demo.kry`](examples/demo.kry) | Recursion, higher-order functions, float math, error handling, maps, structs, arrays, strings |
 | [`http_server.kry`](examples/http_server.kry) | Structs, string match, error handling, request routing |
 | [`pipeline.kry`](examples/pipeline.kry) | Channels, spawn, concurrency, data processing pipeline |
 | [`fibonacci_showcase.kry`](examples/fibonacci_showcase.kry) | Recursion, tail-call optimization, comptime, higher-order functions |
@@ -167,13 +167,26 @@ See the [language manual](docs/README.md) for complete documentation.
 | [`mini_grep.kry`](examples/mini_grep.kry) | File I/O, error handling, string search |
 | [`all_features.kry`](examples/all_features.kry) | Comprehensive showcase of all language features |
 
+## Self-Hosting
+
+The Kryos compiler can compile itself. An 18,700-line self-hosted compiler written entirely in Kryos lives in `compiler/self-host/` (15 files). It implements the complete pipeline: lexer, parser, type checker, MIR lowering, 5-pass optimizer, register allocator, x86_64 machine code emission, and ELF/COFF linking -- with zero external dependencies beyond the OS kernel.
+
+Bootstrap verification follows the same 3-stage technique used by GCC, Rust, and Go:
+
+```
+stage-0 (Rust/Cranelift) -> stage-1 binary
+stage-1 (Kryos)          -> stage-2 binary
+stage-2 (Kryos)          -> stage-3 binary
+stage-2 == stage-3        -> compiler faithfully reproduces itself
+```
+
 ## Status
 
-**v0.1.1** -- The compiler is functional with 680+ passing tests. All core language features are implemented: type inference, ownership analysis, capability checking, pattern matching, generics with monomorphization, `dyn Trait`, `comptime`, concurrency primitives, and FFI. v0.1.1 fixes parser struct-literal ambiguity, struct heap allocation, string match patterns, tail expression return, string concatenation coercion, double-free prevention, and comptime type inference.
+**v0.2.0** -- The compiler is self-hosting with 680+ passing tests. All core language features are implemented: type inference, ownership analysis, capability checking, pattern matching, generics with monomorphization, `dyn Trait`, `comptime`, concurrency primitives, and FFI. The self-hosted compiler produces working native binaries on x86_64.
 
 ### Roadmap
 
-- Self-hosting: rewrite the compiler frontend in Kryos
+- Complete bootstrap verification (stage-2 == stage-3 identity proof)
 - Async runtime with structured concurrency
 - GPU compute backend via capability annotations
 - Package registry

@@ -73,7 +73,7 @@ pub extern "C" fn kryos_file_open(path_ptr: *const u8, path_len: usize, mode: u8
             .truncate(true)
             .open(path),
         2 => OpenOptions::new()
-            .write(true)
+            
             .create(true)
             .append(true)
             .open(path),

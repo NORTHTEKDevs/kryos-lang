@@ -374,6 +374,10 @@ impl LlvmCodegen {
                         self.prescan_operand(ptr);
                         self.prescan_operand(value);
                     }
+                    Instruction::StoreField { object, value, .. } => {
+                        self.prescan_operand(object);
+                        self.prescan_operand(value);
+                    }
                     Instruction::Drop { .. } | Instruction::Nop
                     | Instruction::Send { .. }
                     | Instruction::Receive { .. } => {}
@@ -641,7 +645,7 @@ impl LlvmCodegen {
                     .locals
                     .iter()
                     .find(|l| l.id == *local)
-                    .map_or(false, |l| l.ty == MirType::Str);
+                    .is_some_and(|l| l.ty == MirType::Str);
                 if is_str {
                     let val = if self.mutable_locals.contains(&local.0) {
                         let tmp = self.next_temp();
@@ -805,6 +809,26 @@ impl LlvmCodegen {
                 let field_ptr = self.next_temp();
                 self.emit_line(&format!(
                     "  {field_ptr} = getelementptr i64, ptr {ptr_tmp}, i32 {field_offset}"
+                ));
+                self.emit_line(&format!(
+                    "  store i64 {val}, ptr {field_ptr}"
+                ));
+            }
+            Instruction::StoreField { object, field, value } => {
+                // Store a value into a struct field at its computed offset.
+                // The object is a pointer to the struct; we GEP to the field
+                // index and store the value.
+                let obj_val = self.operand_to_llvm(object, func);
+                let val = self.operand_to_llvm(value, func);
+                let field_idx = self.resolve_field_index(object, field, func);
+
+                let ptr_tmp = self.next_temp();
+                self.emit_line(&format!(
+                    "  {ptr_tmp} = inttoptr i64 {obj_val} to ptr"
+                ));
+                let field_ptr = self.next_temp();
+                self.emit_line(&format!(
+                    "  {field_ptr} = getelementptr i64, ptr {ptr_tmp}, i32 {field_idx}"
                 ));
                 self.emit_line(&format!(
                     "  store i64 {val}, ptr {field_ptr}"
@@ -2044,7 +2068,7 @@ impl LlvmCodegen {
                 .locals
                 .iter()
                 .find(|l| l.id == *id)
-                .map_or(false, |l| l.ty == MirType::Str),
+                .is_some_and(|l| l.ty == MirType::Str),
             Operand::Constant(Constant::Str(_)) => true,
             _ => false,
         }
@@ -2118,7 +2142,7 @@ pub fn mir_type_to_llvm(ty: &MirType) -> String {
             "ptr".into()
         }
         MirType::Tuple(elems) => {
-            let parts: Vec<String> = elems.iter().map(|e| mir_type_to_llvm(e)).collect();
+            let parts: Vec<String> = elems.iter().map(mir_type_to_llvm).collect();
             format!("{{ {} }}", parts.join(", "))
         }
         MirType::Struct(name) => format!("%{name}"),

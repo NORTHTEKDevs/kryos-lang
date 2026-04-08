@@ -43,7 +43,7 @@ pub fn generate(items: &[CItem]) -> String {
                 // Emit non-variadic params (variadic `...` is dropped)
                 let param_strs: Vec<String> = params
                     .iter()
-                    .map(|p| format_param(p))
+                    .map(format_param)
                     .collect();
                 out.push_str(&param_strs.join(", "));
                 out.push(')');

@@ -4,6 +4,44 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] - 2026-04-08
+
+### Self-Hosting Milestone
+- 18,700-line self-hosted compiler written in Kryos (15 files)
+- Full compilation pipeline: lexer, parser, type checker, MIR lowering, optimizer, register allocator, x86_64 codegen, ELF/COFF linker
+- Zero-dependency runtime (runtime.kry): raw Linux x86_64 syscalls, bump allocator, byte buffers, string/array/map operations
+- 3-stage bootstrap verification script (stage-0 Rust -> stage-1 -> stage-2 -> stage-3, SHA-256 identity proof)
+- Stage-1 binary: 740KB PE32+ executable, compiles and runs Kryos programs
+
+### Added
+- `StoreField` MIR instruction for proper struct field mutation (replaces `__kryos_field_store` hack)
+- Full `StoreField` implementation in both Cranelift and LLVM backends
+- `--skip-ownership` CLI flag for self-host bootstrap (ownership checker fires on refcounted patterns)
+- `kryos_string_char_at` runtime function for string indexing
+- `no_struct_lit` parser flag to prevent struct literal ambiguity in if/while/for/match conditions
+- `parse_expr_no_struct_lit()` parser function used in all conditional contexts
+- Array/tuple codegen now uses runtime `kryos_array_new`/`push`/`get` for consistency
+- Array size coercion: fixed-size arrays assignable to dynamic arrays (`[T; N]` -> `[T]`)
+- Division-by-zero check widened to i64 for narrow integer types
+- Float-to-int and int-to-float bitcasting in function call argument coercion
+- IndexAccess type inference for arrays, tuples, and strings in MIR lowering
+- MIR elif duplicate block fix (prevents self-loop when last elif has no else)
+- New example: `word_count.kry`
+- Package registry now computes deterministic content hash (replaces TODO placeholder)
+
+### Fixed
+- Demo example: removed unimplemented tensor extern calls that caused segfault
+- Calculator example: added `**` (power) operator to string-matched calculator
+- Clippy: removed dead code, unused imports, function-cast-as-integer warnings
+- Clippy: fixed prefix-stripping pattern in semver parser
+
+### Changed
+- Self-host MIR: array concatenation (`arr + [elem]`) replaced with `push(arr, elem)` for efficiency
+- Self-host main: `std.io.read_file` -> `file_read`, `std.process.args()` -> `args()` (runtime functions)
+- Self-host codegen: `&&`/`||` -> `and`/`or` (correct Kryos syntax), `char_at` -> `char_code(substr(...))`
+- Bootstrap script upgraded from 2-stage to proper 3-stage verification (stage-2 == stage-3)
+- FFI crates (`kryos-rt`, `kryos-stdlib-native`) now properly document safety and suppress raw-pointer clippy lints
+
 ## [0.1.1] - 2026-04-07
 
 ### Fixed

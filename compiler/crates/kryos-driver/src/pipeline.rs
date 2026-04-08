@@ -259,17 +259,25 @@ fn compile_module_impl(
     let has_type_errors = type_diags.iter().any(|d| d.is_error());
     diagnostics.extend(type_diags);
 
-    // 6. Ownership analysis
-    let ownership = analyze_ownership(&module);
-    let has_ownership_errors = ownership.errors.iter().any(|d| d.is_error());
-    diagnostics.extend(ownership.errors);
+    // 6. Ownership analysis (can be skipped for self-host bootstrap)
+    let has_ownership_errors = if config.skip_ownership {
+        if config.verbose {
+            eprintln!("[kryos] ownership analysis skipped (--skip-ownership)");
+        }
+        false
+    } else {
+        let ownership = analyze_ownership(&module);
+        let has_errors = ownership.errors.iter().any(|d| d.is_error());
+        diagnostics.extend(ownership.errors);
 
-    if config.verbose && !ownership.arc_insertions.is_empty() {
-        eprintln!(
-            "[kryos] ownership: {} ARC insertions",
-            ownership.arc_insertions.len()
-        );
-    }
+        if config.verbose && !ownership.arc_insertions.is_empty() {
+            eprintln!(
+                "[kryos] ownership: {} ARC insertions",
+                ownership.arc_insertions.len()
+            );
+        }
+        has_errors
+    };
 
     // 7. Capability checking
     let cap_diags = check_capabilities(&module);

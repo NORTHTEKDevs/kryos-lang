@@ -51,6 +51,10 @@ enum Commands {
         /// Print verbose compiler internals
         #[arg(short, long)]
         verbose: bool,
+
+        /// Skip ownership analysis (for self-host bootstrap)
+        #[arg(long)]
+        skip_ownership: bool,
     },
 
     /// Compile and run a Kryos file
@@ -165,8 +169,10 @@ fn main() {
             emit_mir,
             emit_llvm,
             verbose,
+            skip_ownership,
         } => commands::build::execute(
             &path, release, target.as_deref(), output.as_deref(), emit_mir, emit_llvm, verbose,
+            skip_ownership,
         ),
 
         Commands::Run { file, args } => commands::run::execute(&file, &args),
@@ -246,6 +252,7 @@ mod tests {
                 emit_mir,
                 emit_llvm,
                 verbose,
+                ..
             } => {
                 assert_eq!(path, "src/main.kry");
                 assert!(release);

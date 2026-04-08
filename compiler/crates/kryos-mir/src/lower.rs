@@ -373,7 +373,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                     .iter()
                     .map(|v| EnumVariantDef {
                         name: v.name.clone(),
-                        fields: v.fields.iter().map(|t| lower_type_expr(t)).collect(),
+                        fields: v.fields.iter().map(lower_type_expr).collect(),
                     })
                     .collect();
                 ctx.enum_defs.insert(name.clone(), variant_defs);
@@ -388,7 +388,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                 // Store parameter types for dyn Trait coercion.
                 let param_types: Vec<MirType> = params
                     .iter()
-                    .map(|p| p.ty.as_ref().map(|t| lower_type_expr(t)).unwrap_or(MirType::I64))
+                    .map(|p| p.ty.as_ref().map(lower_type_expr).unwrap_or(MirType::I64))
                     .collect();
                 ctx.func_param_types.insert(name.clone(), param_types);
 
@@ -415,7 +415,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                                 .filter(|p| p.name != "self")
                                 .map(|p| {
                                     p.ty.as_ref()
-                                        .map(|t| lower_type_expr(t))
+                                        .map(lower_type_expr)
                                         .unwrap_or(MirType::I64)
                                 })
                                 .collect();
@@ -524,7 +524,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
             ast::Decl::Const { name, ty, value, .. } => {
                 let mir_ty = ty
                     .as_ref()
-                    .map(|t| lower_type_expr(t))
+                    .map(lower_type_expr)
                     .unwrap_or(MirType::I64);
                 ctx.func_ret_types.insert(name.clone(), mir_ty.clone());
                 ctx.const_defs.insert(name.clone(), (mir_ty, *value.clone()));
@@ -648,7 +648,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
     }
 
     // Collect monomorphized specializations generated during lowering.
-    functions.extend(ctx.monomorphized_functions.drain(..));
+    functions.append(&mut ctx.monomorphized_functions);
 
     MirModule {
         functions,
@@ -684,7 +684,7 @@ pub fn lower_function(
             let ty = p
                 .ty
                 .as_ref()
-                .map(|t| lower_type_expr(t))
+                .map(lower_type_expr)
                 .unwrap_or(MirType::I64);
             let local = ctx.alloc_local(Some(p.name.clone()), ty.clone(), false);
             MirParam { local, ty }
@@ -695,9 +695,9 @@ pub fn lower_function(
     // and the last statement is a bare expression, treat it as a tail expression
     // (implicit return) so that e.g. a trailing `match` becomes the return value.
     let has_tail_expr = mir_ret_ty != MirType::Void
-        && body.stmts.last().map_or(false, |s| matches!(s, ast::Stmt::Expr { .. }));
+        && body.stmts.last().is_some_and(|s| matches!(s, ast::Stmt::Expr { .. }));
 
-    if has_tail_expr && body.stmts.len() > 0 {
+    if has_tail_expr && !body.stmts.is_empty() {
         let (init, last) = body.stmts.split_at(body.stmts.len() - 1);
         // Lower all statements except the last.
         let scope_start = ctx.locals.len();
@@ -964,20 +964,15 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 ptr: ptr_op,
                                 value: val_op,
                             });
-                        } else if let ast::Expr::FieldAccess { object, field: _, .. } = target {
-                            // Field assignment on a struct: load struct, modify, store back
-                            // For now, treat as a general field store.
+                        } else if let ast::Expr::FieldAccess { object, field, .. } = target {
+                            // Field assignment on a struct: store value at the
+                            // field's offset within the struct pointer.
                             let obj_op = lower_expr_to_operand(ctx, object);
                             let val_op = lower_expr_to_operand(ctx, value);
-                            // Use a runtime call or inline store depending on context.
-                            // For simplicity, compile as a regular field write.
-                            let temp = ctx.alloc_temp(MirType::I64);
-                            ctx.emit(Instruction::Assign {
-                                dest: temp,
-                                value: RValue::Call {
-                                    func: "__kryos_field_store".to_string(),
-                                    args: vec![obj_op, val_op],
-                                },
+                            ctx.emit(Instruction::StoreField {
+                                object: obj_op,
+                                field: field.clone(),
+                                value: val_op,
                             });
                         } else {
                             // Fallback: evaluate RHS into a temp (may have side effects).
@@ -1367,8 +1362,14 @@ fn lower_if(
         // Final else if present.
         if let Some(else_blk) = else_block {
             lower_block_stmts(ctx, &else_blk.stmts);
+            ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
+        } else if ctx.current_block != merge_bb {
+            // When the last elif has no else clause, its else-branch target
+            // is already merge_bb, so current_block == merge_bb and we must
+            // NOT emit another block — that would create a duplicate block
+            // ID and a self-loop.
+            ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
         }
-        ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
     } else if let Some(else_blk) = else_block {
         lower_block_stmts(ctx, &else_blk.stmts);
         ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
@@ -2317,7 +2318,7 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
             }
             // Enum variant access: Color.Red → Enum("Color")
             if let MirType::Enum(name) = &resolved_ty {
-                if ctx.enum_defs.get(name.as_str()).map_or(false, |vs| {
+                if ctx.enum_defs.get(name.as_str()).is_some_and(|vs| {
                     vs.iter().any(|v| v.name == field.as_str())
                 }) {
                     return MirType::Enum(name.clone());
@@ -2446,6 +2447,19 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
         ast::Expr::PipeExpr { right, .. } => {
             // The pipe result type is the return type of the RHS function.
             infer_expr_type(ctx, right)
+        }
+
+        ast::Expr::IndexAccess { object, .. } => {
+            // Infer element type from the array/tuple type.
+            let obj_ty = infer_expr_type(ctx, object);
+            match obj_ty {
+                MirType::Array(elem, _) => *elem,
+                MirType::Tuple(elems) => {
+                    elems.into_iter().next().unwrap_or(MirType::I64)
+                }
+                MirType::Str => MirType::Str, // string indexing returns a char/str
+                _ => MirType::I64,
+            }
         }
 
         ast::Expr::MapLiteral { .. } => MirType::Ptr(Box::new(MirType::Str)), // map handle (sentinel)
@@ -2971,6 +2985,14 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 };
             }
 
+            // String indexing uses kryos_string_char_at (not kryos_array_get).
+            if matches!(obj_ty, MirType::Str) {
+                return RValue::Call {
+                    func: "kryos_string_char_at".to_string(),
+                    args: vec![obj, idx],
+                };
+            }
+
             RValue::Index {
                 object: obj,
                 index: idx,
@@ -3358,10 +3380,10 @@ pub fn lower_type_expr(ty: &ast::TypeExpr) -> MirType {
             MirType::Array(Box::new(lower_type_expr(element)), *size)
         }
         ast::TypeExpr::Tuple { elements, .. } => {
-            MirType::Tuple(elements.iter().map(|e| lower_type_expr(e)).collect())
+            MirType::Tuple(elements.iter().map(lower_type_expr).collect())
         }
         ast::TypeExpr::Function { params, ret, .. } => MirType::Function {
-            params: params.iter().map(|p| lower_type_expr(p)).collect(),
+            params: params.iter().map(lower_type_expr).collect(),
             ret: Box::new(lower_type_expr(ret)),
         },
         ast::TypeExpr::Shared { inner, .. } => {
@@ -3412,12 +3434,12 @@ pub fn lower_resolved_type(ty: &Type) -> MirType {
             MirType::Array(Box::new(lower_resolved_type(element)), *size)
         }
         Type::Tuple { elements } => {
-            MirType::Tuple(elements.iter().map(|e| lower_resolved_type(e)).collect())
+            MirType::Tuple(elements.iter().map(lower_resolved_type).collect())
         }
         Type::Struct { name, .. } => MirType::Struct(name.clone()),
         Type::Enum { name, .. } => MirType::Enum(name.clone()),
         Type::Function { params, ret } => MirType::Function {
-            params: params.iter().map(|p| lower_resolved_type(p)).collect(),
+            params: params.iter().map(lower_resolved_type).collect(),
             ret: Box::new(lower_resolved_type(ret)),
         },
         Type::Shared { inner } => MirType::Shared(Box::new(lower_resolved_type(inner))),

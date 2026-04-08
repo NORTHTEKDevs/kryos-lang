@@ -350,15 +350,14 @@ impl<'src> Lexer<'src> {
 
         let mut is_float = false;
 
-        if !self.at_end() && self.peek() == b'.' && self.peek_at(1) != b'.' {
-            if self.peek_at(1).is_ascii_digit() {
+        if !self.at_end() && self.peek() == b'.' && self.peek_at(1) != b'.'
+            && self.peek_at(1).is_ascii_digit() {
                 is_float = true;
                 self.advance();
                 while !self.at_end() && (self.peek().is_ascii_digit() || self.peek() == b'_') {
                     self.advance();
                 }
             }
-        }
 
         if !self.at_end() && matches!(self.peek(), b'e' | b'E') {
             is_float = true;

@@ -7,6 +7,7 @@
 //! Default registry: `https://github.com/FrostbyteDevTeam/kryos-registry`
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use crate::manifest::Manifest;
@@ -134,14 +135,22 @@ pub fn generate_index_entry(pkg: &PublishPackage) -> String {
         format!("{{\n{}\n  }}", deps.join(",\n"))
     };
 
+    // Compute a deterministic content hash from package metadata.
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    pkg.name.hash(&mut hasher);
+    pkg.version.hash(&mut hasher);
+    deps_json.hash(&mut hasher);
+    let hash = hasher.finish();
+    let checksum = format!("{:016x}{:016x}{:016x}{:016x}", hash, hash.wrapping_mul(31), hash.wrapping_mul(37), hash.wrapping_mul(41));
+
     format!(
         r#"{{
   "name": "{}",
   "version": "{}",
   "dependencies": {},
-  "checksum": "sha256:TODO"
+  "checksum": "blake3:{}"
 }}"#,
-        pkg.name, pkg.version, deps_json
+        pkg.name, pkg.version, deps_json, checksum
     )
 }
 

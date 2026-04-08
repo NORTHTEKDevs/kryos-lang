@@ -1,0 +1,613 @@
+// ============================================================
+// runtime.kry -- Kryos self-hosted runtime library.
+//
+// Provides all builtin functions that the self-hosted compiler
+// needs at runtime: I/O, memory, strings, arrays, byte buffers.
+//
+// When compiled by the Rust stage-0 compiler, these functions
+// shadow the Rust-provided builtins (the Rust runtime has its
+// own implementations that are linked in).
+//
+// When compiled by the self-hosted compiler (stage-1+), these
+// ARE the runtime -- they use raw x86_64 syscalls with zero
+// external dependencies beyond the Linux/Windows kernel.
+//
+// The actual syscall instructions are emitted by the codegen
+// when it recognizes calls to __sys_* functions. For stage-0
+// (Rust-compiled), these are provided by the Rust runtime as
+// C-callable functions.
+// ============================================================
+
+// ===================================================================
+// Platform constants
+// ===================================================================
+
+// Linux x86_64 syscall numbers
+let SYS_READ = 0
+let SYS_WRITE = 1
+let SYS_OPEN = 2
+let SYS_CLOSE = 3
+let SYS_MMAP = 9
+let SYS_MUNMAP = 11
+let SYS_BRK = 12
+let SYS_EXIT_GROUP = 231
+
+// File open flags
+let O_RDONLY = 0
+let O_WRONLY = 1
+let O_CREAT = 64
+let O_TRUNC = 512
+
+// Mmap flags
+let PROT_READ = 1
+let PROT_WRITE = 2
+let MAP_PRIVATE = 2
+let MAP_ANONYMOUS = 32
+
+// File descriptors
+let STDOUT = 1
+let STDERR = 2
+
+// ===================================================================
+// Low-level syscall wrappers
+//
+// These are builtins that the codegen handles specially:
+//   syscall1(nr, a1) -> i64
+//   syscall2(nr, a1, a2) -> i64
+//   syscall3(nr, a1, a2, a3) -> i64
+//   syscall6(nr, a1, a2, a3, a4, a5, a6) -> i64
+//
+// For stage-0 (Rust-compiled), the Rust runtime provides these.
+// For stage-1+ (self-compiled), the codegen emits inline syscall
+// instructions.
+// ===================================================================
+
+// ===================================================================
+// Memory allocator
+//
+// Simple bump allocator backed by mmap. Each allocation gets its
+// own mmap region (simple but correct). A real allocator would
+// use a free list or slab allocator, but for bootstrapping the
+// compiler this is sufficient.
+// ===================================================================
+
+// Minimum allocation size (page-aligned)
+let PAGE_SIZE = 4096
+
+fn rt_align_up(size: i64, align: i64) -> i64 {
+    let mask = align - 1
+    return (size + mask) / align * align
+}
+
+fn rt_alloc(size: i64) -> i64 {
+    let aligned = rt_align_up(size, PAGE_SIZE)
+    let ptr = syscall6(SYS_MMAP, 0, aligned, PROT_READ + PROT_WRITE, MAP_PRIVATE + MAP_ANONYMOUS, -1, 0)
+    if ptr < 0 {
+        rt_print_err("runtime: mmap failed\n")
+        syscall1(SYS_EXIT_GROUP, 1)
+    }
+    return ptr
+}
+
+fn rt_free(ptr: i64, size: i64) {
+    let aligned = rt_align_up(size, PAGE_SIZE)
+    syscall2(SYS_MUNMAP, ptr, aligned)
+}
+
+// ===================================================================
+// Raw I/O
+// ===================================================================
+
+fn rt_write(fd: i64, buf: i64, count: i64) -> i64 {
+    return syscall3(SYS_WRITE, fd, buf, count)
+}
+
+fn rt_read(fd: i64, buf: i64, count: i64) -> i64 {
+    return syscall3(SYS_READ, fd, buf, count)
+}
+
+fn rt_print_err(msg: str) {
+    // For stage-0 compatibility, use println as fallback
+    eprintln(msg)
+}
+
+// ===================================================================
+// Byte buffer operations
+//
+// A buffer is represented as: [cap: i64, len: i64, data...]
+// The i64 handle returned by buf_new is a pointer to this block.
+// ===================================================================
+
+let BUF_HEADER_SIZE = 16    // 8 bytes cap + 8 bytes len
+
+fn rt_buf_cap(handle: i64) -> i64 {
+    return mem_read_i64(handle)
+}
+
+fn rt_buf_len(handle: i64) -> i64 {
+    return mem_read_i64(handle + 8)
+}
+
+fn rt_buf_set_len(handle: i64, new_len: i64) {
+    mem_write_i64(handle + 8, new_len)
+}
+
+fn rt_buf_data(handle: i64) -> i64 {
+    return handle + BUF_HEADER_SIZE
+}
+
+fn rt_buf_grow(handle: i64, needed: i64) -> i64 {
+    let cap = rt_buf_cap(handle)
+    let len = rt_buf_len(handle)
+    if len + needed <= cap {
+        return handle
+    }
+    // Double the capacity or use needed, whichever is larger
+    let mut new_cap = cap * 2
+    if new_cap < len + needed {
+        new_cap = len + needed
+    }
+    let new_handle = rt_alloc(BUF_HEADER_SIZE + new_cap)
+    mem_write_i64(new_handle, new_cap)
+    mem_write_i64(new_handle + 8, len)
+    // Copy existing data
+    mem_copy(rt_buf_data(handle), rt_buf_data(new_handle), len)
+    // Free old buffer
+    rt_free(handle, BUF_HEADER_SIZE + cap)
+    return new_handle
+}
+
+// ===================================================================
+// Public buffer API (matches registered builtins)
+// ===================================================================
+
+fn buf_new(initial_cap: i64) -> i64 {
+    let cap = initial_cap
+    if cap < 64 {
+        // minimum 64 bytes to avoid excessive reallocs
+    }
+    let handle = rt_alloc(BUF_HEADER_SIZE + cap)
+    mem_write_i64(handle, cap)       // capacity
+    mem_write_i64(handle + 8, 0)     // length = 0
+    return handle
+}
+
+fn buf_write_byte(handle: i64, byte_val: i64) {
+    let h = rt_buf_grow(handle, 1)
+    let len = rt_buf_len(h)
+    let data = rt_buf_data(h)
+    mem_write_byte(data + len, byte_val)
+    rt_buf_set_len(h, len + 1)
+}
+
+fn buf_write_i16_le(handle: i64, val: i64) {
+    let h = rt_buf_grow(handle, 2)
+    let len = rt_buf_len(h)
+    let data = rt_buf_data(h)
+    mem_write_byte(data + len, val % 256)
+    mem_write_byte(data + len + 1, (val / 256) % 256)
+    rt_buf_set_len(h, len + 2)
+}
+
+fn buf_write_i32_le(handle: i64, val: i64) {
+    let h = rt_buf_grow(handle, 4)
+    let len = rt_buf_len(h)
+    let data = rt_buf_data(h)
+    mem_write_byte(data + len, val % 256)
+    mem_write_byte(data + len + 1, (val / 256) % 256)
+    mem_write_byte(data + len + 2, (val / 65536) % 256)
+    mem_write_byte(data + len + 3, (val / 16777216) % 256)
+    rt_buf_set_len(h, len + 4)
+}
+
+fn buf_write_i64_le(handle: i64, val: i64) {
+    buf_write_i32_le(handle, val % 4294967296)
+    buf_write_i32_le(handle, val / 4294967296)
+}
+
+fn buf_write_bytes(handle: i64, src_ptr: i64, count: i64) {
+    let h = rt_buf_grow(handle, count)
+    let len = rt_buf_len(h)
+    let data = rt_buf_data(h)
+    mem_copy(src_ptr, data + len, count)
+    rt_buf_set_len(h, len + count)
+}
+
+fn buf_write_str(handle: i64, s: i64) {
+    // s is a string pointer; get its length and data
+    let slen = str_byte_len(s)
+    let sptr = str_data_ptr(s)
+    buf_write_bytes(handle, sptr, slen)
+}
+
+fn buf_write_zeros(handle: i64, count: i64) {
+    let h = rt_buf_grow(handle, count)
+    let len = rt_buf_len(h)
+    let data = rt_buf_data(h)
+    for i in range(0, count) {
+        mem_write_byte(data + len + i, 0)
+    }
+    rt_buf_set_len(h, len + count)
+}
+
+fn buf_len(handle: i64) -> i64 {
+    return rt_buf_len(handle)
+}
+
+fn buf_get_byte(handle: i64, offset: i64) -> i64 {
+    let data = rt_buf_data(handle)
+    return mem_read_byte(data + offset)
+}
+
+fn buf_set_byte(handle: i64, offset: i64, byte_val: i64) {
+    let data = rt_buf_data(handle)
+    mem_write_byte(data + offset, byte_val)
+}
+
+fn buf_patch_i32_le(handle: i64, offset: i64, val: i64) {
+    let data = rt_buf_data(handle)
+    mem_write_byte(data + offset, val % 256)
+    mem_write_byte(data + offset + 1, (val / 256) % 256)
+    mem_write_byte(data + offset + 2, (val / 65536) % 256)
+    mem_write_byte(data + offset + 3, (val / 16777216) % 256)
+}
+
+fn buf_patch_i64_le(handle: i64, offset: i64, val: i64) {
+    buf_patch_i32_le(handle, offset, val % 4294967296)
+    buf_patch_i32_le(handle, offset + 4, val / 4294967296)
+}
+
+fn buf_write_to_file(handle: i64, path: i64) -> i64 {
+    let len = rt_buf_len(handle)
+    let data = rt_buf_data(handle)
+    let path_ptr = str_data_ptr(path)
+    let path_len = str_byte_len(path)
+    // Need null-terminated path for syscall
+    let path_buf = rt_alloc(path_len + 1)
+    mem_copy(path_ptr, path_buf, path_len)
+    mem_write_byte(path_buf + path_len, 0)
+    let fd = syscall3(SYS_OPEN, path_buf, O_WRONLY + O_CREAT + O_TRUNC, 438)  // 0666 octal = 438
+    rt_free(path_buf, path_len + 1)
+    if fd < 0 {
+        return -1
+    }
+    let written = rt_write(fd, data, len)
+    syscall1(SYS_CLOSE, fd)
+    if written < 0 {
+        return -1
+    }
+    return 0
+}
+
+fn buf_free(handle: i64) {
+    let cap = rt_buf_cap(handle)
+    rt_free(handle, BUF_HEADER_SIZE + cap)
+}
+
+// ===================================================================
+// File I/O
+// ===================================================================
+
+fn file_read(path: str) -> str {
+    let path_ptr = str_data_ptr(path)
+    let path_len = str_byte_len(path)
+    // Null-terminate the path
+    let path_buf = rt_alloc(path_len + 1)
+    mem_copy(path_ptr, path_buf, path_len)
+    mem_write_byte(path_buf + path_len, 0)
+    let fd = syscall3(SYS_OPEN, path_buf, O_RDONLY, 0)
+    rt_free(path_buf, path_len + 1)
+    if fd < 0 {
+        return ""
+    }
+    // Read in chunks
+    let chunk_size = 8192
+    let mut total_buf = rt_alloc(chunk_size)
+    let mut total_len = 0
+    let mut total_cap = chunk_size
+    let read_buf = rt_alloc(chunk_size)
+    let mut done = false
+    while not done {
+        let n = rt_read(fd, read_buf, chunk_size)
+        if n <= 0 {
+            done = true
+        } else {
+            // Grow total_buf if needed
+            if total_len + n > total_cap {
+                let new_cap = total_cap * 2
+                let new_buf = rt_alloc(new_cap)
+                mem_copy(total_buf, new_buf, total_len)
+                rt_free(total_buf, total_cap)
+                total_buf = new_buf
+                total_cap = new_cap
+            }
+            mem_copy(read_buf, total_buf + total_len, n)
+            total_len = total_len + n
+        }
+    }
+    rt_free(read_buf, chunk_size)
+    syscall1(SYS_CLOSE, fd)
+    // Convert to Kryos string
+    let result = str_from_bytes(total_buf, total_len)
+    rt_free(total_buf, total_cap)
+    return result
+}
+
+fn file_write(path: str, content: str) -> i64 {
+    let path_ptr = str_data_ptr(path)
+    let path_len = str_byte_len(path)
+    let path_buf = rt_alloc(path_len + 1)
+    mem_copy(path_ptr, path_buf, path_len)
+    mem_write_byte(path_buf + path_len, 0)
+    let fd = syscall3(SYS_OPEN, path_buf, O_WRONLY + O_CREAT + O_TRUNC, 438)
+    rt_free(path_buf, path_len + 1)
+    if fd < 0 {
+        return -1
+    }
+    let data_ptr = str_data_ptr(content)
+    let data_len = str_byte_len(content)
+    let written = rt_write(fd, data_ptr, data_len)
+    syscall1(SYS_CLOSE, fd)
+    if written < 0 {
+        return -1
+    }
+    return 0
+}
+
+// ===================================================================
+// Console I/O
+// ===================================================================
+
+fn println(msg: str) {
+    let ptr = str_data_ptr(msg)
+    let slen = str_byte_len(msg)
+    rt_write(STDOUT, ptr, slen)
+    // Write newline
+    let nl_buf = rt_alloc(1)
+    mem_write_byte(nl_buf, 10)
+    rt_write(STDOUT, nl_buf, 1)
+    rt_free(nl_buf, 1)
+}
+
+fn print(msg: str) {
+    let ptr = str_data_ptr(msg)
+    let slen = str_byte_len(msg)
+    rt_write(STDOUT, ptr, slen)
+}
+
+fn eprintln(msg: str) {
+    let ptr = str_data_ptr(msg)
+    let slen = str_byte_len(msg)
+    rt_write(STDERR, ptr, slen)
+    let nl_buf = rt_alloc(1)
+    mem_write_byte(nl_buf, 10)
+    rt_write(STDERR, nl_buf, 1)
+    rt_free(nl_buf, 1)
+}
+
+// ===================================================================
+// Process
+// ===================================================================
+
+fn exit(code: i64) {
+    syscall1(SYS_EXIT_GROUP, code)
+}
+
+fn args() -> [str] {
+    // Command-line arguments are on the stack at process start.
+    // For stage-0 (Rust-compiled), the Rust runtime provides this.
+    // For stage-1+, the _start function sets up argc/argv before
+    // calling main().
+    //
+    // The codegen emits code that reads from a global __kryos_argc
+    // and __kryos_argv set up by the entry point.
+    return __get_process_args()
+}
+
+// ===================================================================
+// String operations
+// ===================================================================
+
+fn to_string(val: i64) -> str {
+    if val == 0 {
+        return "0"
+    }
+    let mut negative = false
+    let mut n = val
+    if n < 0 {
+        negative = true
+        n = 0 - n
+    }
+    // Maximum i64 has 19 digits + sign
+    let buf = rt_alloc(21)
+    let mut pos = 20
+    while n > 0 {
+        let digit = n % 10
+        pos = pos - 1
+        mem_write_byte(buf + pos, 48 + digit)   // '0' = 48
+        n = n / 10
+    }
+    if negative {
+        pos = pos - 1
+        mem_write_byte(buf + pos, 45)   // '-' = 45
+    }
+    let result = str_from_bytes(buf + pos, 20 - pos)
+    rt_free(buf, 21)
+    return result
+}
+
+fn parse_int(s: str) -> i64 {
+    let ptr = str_data_ptr(s)
+    let slen = str_byte_len(s)
+    let mut result = 0
+    let mut negative = false
+    let mut i = 0
+    if slen > 0 and mem_read_byte(ptr) == 45 {
+        negative = true
+        i = 1
+    }
+    while i < slen {
+        let ch = mem_read_byte(ptr + i)
+        if ch >= 48 and ch <= 57 {
+            result = result * 10 + (ch - 48)
+        }
+        i = i + 1
+    }
+    if negative {
+        result = 0 - result
+    }
+    return result
+}
+
+fn parse_float(s: str) -> f64 {
+    // Minimal float parser -- integer part only for bootstrap
+    let ival = parse_int(s)
+    return float(ival)
+}
+
+fn char_code(s: str) -> i64 {
+    let ptr = str_data_ptr(s)
+    if str_byte_len(s) > 0 {
+        return mem_read_byte(ptr)
+    }
+    return 0
+}
+
+fn char_from(code: i64) -> str {
+    let buf = rt_alloc(1)
+    mem_write_byte(buf, code)
+    let result = str_from_bytes(buf, 1)
+    rt_free(buf, 1)
+    return result
+}
+
+fn substr(s: str, start: i64, end_pos: i64) -> str {
+    let ptr = str_data_ptr(s)
+    let slen = str_byte_len(s)
+    let mut actual_end = end_pos
+    if actual_end > slen {
+        actual_end = slen
+    }
+    if start >= actual_end {
+        return ""
+    }
+    return str_from_bytes(ptr + start, actual_end - start)
+}
+
+fn type_of(val: i64) -> str {
+    // At the machine level, everything is an i64. The type
+    // information is erased. Return a generic indicator.
+    return "i64"
+}
+
+fn int(val: i64) -> i64 {
+    return val
+}
+
+fn float(val: i64) -> f64 {
+    // Codegen handles this as a conversion instruction
+    return __int_to_float(val)
+}
+
+// ===================================================================
+// Assert
+// ===================================================================
+
+fn assert(condition: bool, msg: str) {
+    if not condition {
+        eprintln("assertion failed: " + msg)
+        exit(1)
+    }
+}
+
+// ===================================================================
+// Environment
+// ===================================================================
+
+fn env_get(key: str) -> str {
+    // Not available in zero-dep mode -- return empty
+    return ""
+}
+
+fn time_now() -> i64 {
+    // Not available in zero-dep mode -- return 0
+    return 0
+}
+
+// ===================================================================
+// Array operations
+//
+// Arrays in Kryos are: [cap: i64, len: i64, elem_ptr: i64]
+// These are builtins that the codegen must handle at the
+// representation level. The runtime provides the high-level API.
+// ===================================================================
+
+fn len(collection: i64) -> i64 {
+    // The codegen handles len() by reading the length field
+    // from the array/string/map header. This is a fallback
+    // for opaque types.
+    return __builtin_len(collection)
+}
+
+fn push(arr: i64, val: i64) -> i64 {
+    // The codegen handles push() by growing the array and
+    // appending the element. Returns new length.
+    return __builtin_push(arr, val)
+}
+
+fn pop(arr: i64) -> i64 {
+    return __builtin_pop(arr)
+}
+
+fn range(start: i64, end_val: i64) -> [i64] {
+    return __builtin_range(start, end_val)
+}
+
+// ===================================================================
+// Map operations (opaque handles)
+// ===================================================================
+
+fn map_has(m: i64, key: i64) -> i64 {
+    return __builtin_map_has(m, key)
+}
+
+fn map_has_str(m: i64, key: i64) -> i64 {
+    return __builtin_map_has_str(m, key)
+}
+
+fn map_delete(m: i64, key: i64) -> i64 {
+    return __builtin_map_delete(m, key)
+}
+
+fn map_delete_str(m: i64, key: i64) -> i64 {
+    return __builtin_map_delete_str(m, key)
+}
+
+fn map_keys(m: i64) -> i64 {
+    return __builtin_map_keys(m)
+}
+
+fn map_keys_str(m: i64) -> i64 {
+    return __builtin_map_keys_str(m)
+}
+
+// ===================================================================
+// Low-level memory operations
+//
+// These are intrinsics that the codegen must handle directly.
+// For stage-0, the Rust runtime provides them. For stage-1+,
+// the codegen emits inline mov/load/store instructions.
+//
+//   mem_read_byte(ptr) -> i64
+//   mem_write_byte(ptr, val)
+//   mem_read_i64(ptr) -> i64
+//   mem_write_i64(ptr, val)
+//   mem_copy(src, dst, len)
+//   str_byte_len(s) -> i64
+//   str_data_ptr(s) -> i64
+//   str_from_bytes(ptr, len) -> str
+//
+// These are declared as extern builtins so the type checker
+// knows about them, and the codegen emits the appropriate
+// instructions or calls.
+// ===================================================================

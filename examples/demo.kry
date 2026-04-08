@@ -3,12 +3,7 @@
 // A universal systems language with AI-native capabilities
 // ============================================================
 
-extern {
-    fn kryos_tensor_ones(shape_ptr: i64, ndim: i64) -> i64
-    fn kryos_tensor_matmul(a: i64, b: i64) -> i64
-    fn kryos_tensor_numel(handle: i64) -> i64
-    fn kryos_process_argc() -> i64
-}
+struct Point { x: f64, y: f64 }
 
 fn fibonacci(n: i64) -> i64 {
     if n <= 1 {
@@ -71,21 +66,29 @@ fn main() {
     println("   carol: " + to_string(scores["carol"]))
     println("")
 
-    // 6. Tensor runtime
-    println("6. Tensor Runtime")
-    let sa = [2, 3]
-    let sb = [3, 4]
-    let a = kryos_tensor_ones(sa as i64, 2)
-    let b = kryos_tensor_ones(sb as i64, 2)
-    let c = kryos_tensor_matmul(a, b)
-    let cn = kryos_tensor_numel(c)
-    println("   ones(2,3) @ ones(3,4) -> " + to_string(cn) + " elements")
+    // 6. Structs
+    println("6. Structs")
+    let p = Point { x: 3.0, y: 4.0 }
+    let dist = (p.x * p.x + p.y * p.y) ** 0.5
+    println("   Point(3, 4) distance = " + to_string(dist))
     println("")
 
-    // 7. Process access
-    println("7. System Integration")
-    let argc = kryos_process_argc()
-    println("   command-line args: " + to_string(argc))
+    // 7. Arrays and iteration
+    println("7. Arrays")
+    let nums = [10, 20, 30, 40, 50]
+    let mut sum = 0
+    for n in nums {
+        sum = sum + n
+    }
+    println("   sum([10..50]) = " + to_string(sum))
+    println("   len = " + to_string(len(nums)))
+    println("")
+
+    // 8. String operations
+    println("8. String Operations")
+    let greeting = "Hello, " + "Kryos!"
+    println("   concat: " + greeting)
+    println("   length: " + to_string(len(greeting)))
     println("")
 
     println("=== Kryos v0.1.0 - FrostByte Digital ===")

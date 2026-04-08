@@ -24,6 +24,12 @@ pub struct Formatter {
     indent: usize,
 }
 
+impl Default for Formatter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Formatter {
     pub fn new() -> Self {
         Self {
@@ -1161,7 +1167,7 @@ impl Formatter {
             _ => {
                 // For complex statements in inline positions, render a simplified form.
                 // This shouldn't happen often (match/if expressions are Expr variants).
-                format!("/* stmt */")
+                "/* stmt */".to_string()
             }
         }
     }

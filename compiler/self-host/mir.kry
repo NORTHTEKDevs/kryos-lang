@@ -847,7 +847,7 @@ fn mir_func_new(name: str, ret_ty: MirType) -> MirFunction {
 fn mir_func_alloc_local(func: MirFunction, name: str, ty: MirType, is_mut: bool) -> i32 {
     let id = func.next_local_id
     let local = MirLocal { id: id, name: name, ty: ty, mutable: is_mut }
-    func.locals = func.locals + [local]
+    push(func.locals, local)
     func.next_local_id = id + 1
     return id
 }
@@ -855,7 +855,7 @@ fn mir_func_alloc_local(func: MirFunction, name: str, ty: MirType, is_mut: bool)
 fn mir_func_alloc_temp(func: MirFunction, ty: MirType) -> i32 {
     let id = func.next_local_id
     let local = MirLocal { id: id, name: "_" + to_string(id), ty: ty, mutable: false }
-    func.locals = func.locals + [local]
+    push(func.locals, local)
     func.next_local_id = id + 1
     return id
 }
@@ -863,7 +863,7 @@ fn mir_func_alloc_temp(func: MirFunction, ty: MirType) -> i32 {
 fn mir_func_alloc_block(func: MirFunction) -> i32 {
     let id = func.next_block_id
     let block = bb_new(id)
-    func.blocks = func.blocks + [block]
+    push(func.blocks, block)
     func.next_block_id = id + 1
     return id
 }
@@ -871,7 +871,7 @@ fn mir_func_alloc_block(func: MirFunction) -> i32 {
 fn mir_func_emit(func: MirFunction, block_id: i32, inst: Instruction) {
     for i in range(0, len(func.blocks)) {
         if func.blocks[i].id == block_id {
-            func.blocks[i].instructions = func.blocks[i].instructions + [inst]
+            push(func.blocks[i].instructions, inst)
             return
         }
     }
@@ -889,7 +889,7 @@ fn mir_func_set_terminator(func: MirFunction, block_id: i32, term: Terminator) {
 fn mir_func_add_param(func: MirFunction, name: str, ty: MirType) -> i32 {
     let id = mir_func_alloc_local(func, name, ty, false)
     let param = MirParam { local_id: id, ty: ty, name: name }
-    func.params = func.params + [param]
+    push(func.params, param)
     return id
 }
 
@@ -909,15 +909,15 @@ fn mir_module_new() -> MirModule {
 }
 
 fn mir_module_add_function(module: MirModule, func: MirFunction) {
-    module.functions = module.functions + [func]
+    push(module.functions, func)
 }
 
 fn mir_module_add_struct(module: MirModule, def: MirStructDef) {
-    module.struct_defs = module.struct_defs + [def]
+    push(module.struct_defs, def)
 }
 
 fn mir_module_add_enum(module: MirModule, def: MirEnumDef) {
-    module.enum_defs = module.enum_defs + [def]
+    push(module.enum_defs, def)
 }
 
 // ===================================================================
@@ -1190,172 +1190,6 @@ fn mir_print_rvalue(rv: RValue) -> str {
     return "rvalue(kind=" + to_string(rv.kind) + ")"
 }
 
-fn mir_print_instruction(inst: Instruction) {
-    if inst.kind == INST_ASSIGN {
-        let mut s = "    _" + to_string(inst.dest) + " = "
-        if len(inst.value) > 0 {
-            s = s + mir_print_rvalue(inst.value[0])
-        }
-        println(s)
-        return
-    }
-    if inst.kind == INST_DROP {
-        println("    drop _" + to_string(inst.drop_local))
-        return
-    }
-    if inst.kind == INST_NOP {
-        println("    nop")
-        return
-    }
-    if inst.kind == INST_STORE_DEREF {
-        let mut s = "    *"
-        if len(inst.ptr_operand) > 0 {
-            s = s + mir_print_operand(inst.ptr_operand[0])
-        }
-        s = s + " = "
-        if len(inst.store_value) > 0 {
-            s = s + mir_print_operand(inst.store_value[0])
-        }
-        println(s)
-        return
-    }
-    if inst.kind == INST_SPAWN {
-        let mut s = "    spawn " + inst.spawn_func + "("
-        for i in range(0, len(inst.spawn_args)) {
-            if i > 0 {
-                s = s + ", "
-            }
-            s = s + mir_print_operand(inst.spawn_args[i])
-        }
-        println(s + ")")
-        return
-    }
-    if inst.kind == INST_SEND {
-        println("    send ch" + to_string(inst.send_channel) + " _" + to_string(inst.send_value))
-        return
-    }
-    if inst.kind == INST_RECEIVE {
-        println("    _" + to_string(inst.recv_dest) + " = recv ch" + to_string(inst.recv_channel))
-        return
-    }
-    println("    inst(kind=" + to_string(inst.kind) + ")")
-}
-
-fn mir_print_terminator(term: Terminator) {
-    if term.kind == TERM_RETURN {
-        if len(term.ret_val) > 0 {
-            println("    return " + mir_print_operand(term.ret_val[0]))
-        } else {
-            println("    return void")
-        }
-        return
-    }
-    if term.kind == TERM_GOTO {
-        println("    goto bb" + to_string(term.goto_block))
-        return
-    }
-    if term.kind == TERM_BRANCH {
-        let mut s = "    branch "
-        if len(term.cond) > 0 {
-            s = s + mir_print_operand(term.cond[0])
-        }
-        s = s + " -> bb" + to_string(term.then_block)
-        s = s + " else bb" + to_string(term.else_block)
-        println(s)
-        return
-    }
-    if term.kind == TERM_SWITCH {
-        let mut s = "    switch "
-        if len(term.switch_val) > 0 {
-            s = s + mir_print_operand(term.switch_val[0])
-        }
-        s = s + " ["
-        for i in range(0, len(term.switch_targets)) {
-            if i > 0 {
-                s = s + ", "
-            }
-            s = s + to_string(term.switch_targets[i]) + " -> bb" + to_string(term.switch_blocks[i])
-        }
-        s = s + "] default bb" + to_string(term.default_block)
-        println(s)
-        return
-    }
-    if term.kind == TERM_UNREACHABLE {
-        println("    unreachable")
-        return
-    }
-    println("    term(kind=" + to_string(term.kind) + ")")
-}
-
-fn mir_print_function(func: MirFunction) {
-    let mut sig = "fn " + func.name + "("
-    for i in range(0, len(func.params)) {
-        if i > 0 {
-            sig = sig + ", "
-        }
-        sig = sig + func.params[i].name + ": " + mir_ty_name(func.params[i].ty)
-    }
-    sig = sig + ") -> " + mir_ty_name(func.ret_ty) + ":"
-    println(sig)
-    // Print locals
-    for i in range(0, len(func.locals)) {
-        let l = func.locals[i]
-        let mut s = "  let _" + to_string(l.id) + ": " + mir_ty_name(l.ty)
-        if len(l.name) > 0 {
-            s = s + " // " + l.name
-        }
-        println(s)
-    }
-    if len(func.locals) > 0 {
-        println("")
-    }
-    // Print blocks
-    for i in range(0, len(func.blocks)) {
-        let block = func.blocks[i]
-        println("  bb" + to_string(block.id) + ":")
-        for j in range(0, len(block.instructions)) {
-            mir_print_instruction(block.instructions[j])
-        }
-        if len(block.terminator) > 0 {
-            mir_print_terminator(block.terminator[0])
-        }
-    }
-    println("")
-}
-
-fn mir_print_module(module: MirModule) {
-    println("=== MIR Module ===")
-    println("")
-    // Print struct defs
-    for i in range(0, len(module.struct_defs)) {
-        let sd = module.struct_defs[i]
-        let mut s = "struct " + sd.name + "("
-        for j in range(0, len(sd.field_names)) {
-            if j > 0 {
-                s = s + ", "
-            }
-            s = s + sd.field_names[j] + "=" + mir_ty_name(sd.field_types[j])
-        }
-        println(s + ")")
-    }
-    // Print enum defs
-    for i in range(0, len(module.enum_defs)) {
-        let ed = module.enum_defs[i]
-        let mut s = "enum " + ed.name + "("
-        for j in range(0, len(ed.variant_names)) {
-            if j > 0 {
-                s = s + ", "
-            }
-            s = s + ed.variant_names[j]
-        }
-        println(s + ")")
-    }
-    if len(module.struct_defs) > 0 or len(module.enum_defs) > 0 {
-        println("")
-    }
-    // Print functions
-    for i in range(0, len(module.functions)) {
-        mir_print_function(module.functions[i])
-    }
-    println("=== End MIR ===")
-}
+// mir_print_instruction, mir_print_terminator, mir_print_function,
+// and mir_print_module are defined in lower.kry to avoid duplicates
+// in the single-compilation-unit concatenation.

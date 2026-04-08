@@ -3,6 +3,14 @@
 //!
 //! Every public function in the submodules is `#[no_mangle] pub extern "C"` so
 //! compiled Kryos object code can link directly against this crate's static library.
+//!
+//! # Safety
+//!
+//! All public functions are FFI boundary functions called exclusively from
+//! Kryos-compiled machine code via the C ABI. Pointer validity is guaranteed
+//! by the Kryos compiler's ownership analysis and codegen.
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(clippy::missing_safety_doc)]
 
 pub mod io;
 pub mod net;

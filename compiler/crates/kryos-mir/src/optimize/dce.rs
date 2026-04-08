@@ -198,6 +198,10 @@ fn collect_locals_in_instruction(inst: &Instruction, used: &mut HashSet<u32>) {
             used.insert(state_ptr.0);
             collect_locals_in_operand(value, used);
         }
+        Instruction::StoreField { object, value, .. } => {
+            collect_locals_in_operand(object, used);
+            collect_locals_in_operand(value, used);
+        }
         Instruction::StoreDeref { ptr, value } => {
             collect_locals_in_operand(ptr, used);
             collect_locals_in_operand(value, used);

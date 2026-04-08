@@ -44,6 +44,7 @@ pub fn execute(file: &str, args: &[String]) -> Result<(), String> {
         target: None,
         capabilities: Vec::new(),
         verbose: false,
+        skip_ownership: false,
     };
 
     // Compile first, then execute.

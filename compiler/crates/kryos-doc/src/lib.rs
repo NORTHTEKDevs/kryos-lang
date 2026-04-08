@@ -173,7 +173,7 @@ fn extract_preceding_doc_comment(source: &str, decl_start: u32) -> String {
     doc_lines.reverse();
 
     // Trim trailing blank lines
-    while doc_lines.last().map_or(false, |l| l.is_empty()) {
+    while doc_lines.last().is_some_and(|l| l.is_empty()) {
         doc_lines.pop();
     }
 

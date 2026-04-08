@@ -187,12 +187,10 @@ fn render_diagnostic_impl(diag: &Diagnostic, source_map: &SourceMap, color: bool
                 msg = diag.message,
             ));
         }
+    } else if let Some(ref code) = diag.code {
+        out.push_str(&format!("{level_str}[{code}]: {}\n", diag.message));
     } else {
-        if let Some(ref code) = diag.code {
-            out.push_str(&format!("{level_str}[{code}]: {}\n", diag.message));
-        } else {
-            out.push_str(&format!("{level_str}: {}\n", diag.message));
-        }
+        out.push_str(&format!("{level_str}: {}\n", diag.message));
     }
 
     for label in &diag.labels {

@@ -197,7 +197,7 @@ pub fn run_test(test: &TestCase) -> TestResult {
     }
 
     let start = Instant::now();
-    let config = BuildConfig::for_file(&test.source_path.to_string_lossy().to_string());
+    let config = BuildConfig::for_file(test.source_path.to_string_lossy().to_string());
     let result = compile_source(&test.source, &test.name, &config);
     let duration = start.elapsed();
 
@@ -277,7 +277,7 @@ pub fn run_test(test: &TestCase) -> TestResult {
             }
 
             // Write source to a temp file, compile to binary, execute, check stdout
-            let safe_name = test.name.replace('/', "_").replace('\\', "_");
+            let safe_name = test.name.replace(['/', '\\'], "_");
             let temp_dir = std::env::temp_dir().join("kryos_test_runner");
             let _ = fs::create_dir_all(&temp_dir);
             let temp_src = temp_dir.join(format!("{safe_name}.kry"));
@@ -336,6 +336,7 @@ pub fn run_test(test: &TestCase) -> TestResult {
                 target: None,
                 capabilities: Vec::new(),
                 verbose: false,
+                skip_ownership: false,
             };
 
             let backend = CraneliftBackend::new();

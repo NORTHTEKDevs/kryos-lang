@@ -273,6 +273,11 @@ fn remap_instruction(inst: &Instruction, offset: u32) -> Instruction {
             field_offset: *field_offset,
             value: remap_operand(value, offset),
         },
+        Instruction::StoreField { object, field, value } => Instruction::StoreField {
+            object: remap_operand(object, offset),
+            field: field.clone(),
+            value: remap_operand(value, offset),
+        },
         Instruction::StoreDeref { ptr, value } => Instruction::StoreDeref {
             ptr: remap_operand(ptr, offset),
             value: remap_operand(value, offset),

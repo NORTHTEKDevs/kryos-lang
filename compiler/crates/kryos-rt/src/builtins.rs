@@ -519,7 +519,7 @@ pub extern "C" fn kryos_builtin_char_code(s_handle: i64) -> i64 {
 /// point. Returns an empty string if the code point is invalid.
 #[no_mangle]
 pub extern "C" fn kryos_builtin_char_from(code: i64) -> i64 {
-    let ch = if code >= 0 && code <= 0x10FFFF {
+    let ch = if (0..=0x10FFFF).contains(&code) {
         char::from_u32(code as u32)
     } else {
         None

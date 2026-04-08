@@ -27,7 +27,8 @@
 struct Parser {
     tokens: [Token],
     pos: i32,
-    errors: [str]
+    errors: [str],
+    no_struct_lit: bool
 }
 
 // -------------------------------------------------------------------
@@ -83,7 +84,7 @@ let POSTFIX_BP = 28
 
 fn parser_new(tokens: [Token]) -> Parser {
     let errors: [str] = []
-    return Parser { tokens: tokens, pos: 0, errors: errors }
+    return Parser { tokens: tokens, pos: 0, errors: errors, no_struct_lit: false }
 }
 
 // -------------------------------------------------------------------
@@ -1091,7 +1092,7 @@ fn parse_return(p: Parser) -> ParseStmtResult {
 fn parse_if_stmt(p: Parser) -> ParseStmtResult {
     let mut pp = p_expect(p, TK_IF)
     let start = p_peek(p).start
-    let cond_result = parse_expr(pp)
+    let cond_result = parse_expr_no_struct_lit(pp)
     pp = cond_result.p
     let then_result = parse_block(pp)
     pp = then_result.p
@@ -1100,7 +1101,7 @@ fn parse_if_stmt(p: Parser) -> ParseStmtResult {
     let mut elif_blocks: [[Stmt]] = []
     while p_check(pp, TK_ELIF) {
         pp = p_advance(pp)
-        let ecr = parse_expr(pp)
+        let ecr = parse_expr_no_struct_lit(pp)
         pp = ecr.p
         let ebr = parse_block(pp)
         pp = ebr.p
@@ -1126,7 +1127,7 @@ fn parse_for(p: Parser) -> ParseStmtResult {
     let pr = parse_pattern(pp)
     pp = pr.p
     pp = p_expect(pp, TK_IN)
-    let er = parse_expr(pp)
+    let er = parse_expr_no_struct_lit(pp)
     pp = er.p
     let br = parse_block(pp)
     pp = br.p
@@ -1139,7 +1140,7 @@ fn parse_for(p: Parser) -> ParseStmtResult {
 fn parse_while(p: Parser) -> ParseStmtResult {
     let mut pp = p_expect(p, TK_WHILE)
     let start = p_peek(p).start
-    let er = parse_expr(pp)
+    let er = parse_expr_no_struct_lit(pp)
     pp = er.p
     let br = parse_block(pp)
     pp = br.p
@@ -1250,6 +1251,16 @@ fn parse_expr_or_assign(p: Parser) -> ParseStmtResult {
 
 fn parse_expr(p: Parser) -> ParseExprResult {
     return parse_expr_bp(p, 0)
+}
+
+// Used in if/while/for/match conditions where { starts a block, not a struct literal.
+fn parse_expr_no_struct_lit(p: Parser) -> ParseExprResult {
+    let mut pp = p
+    pp.no_struct_lit = true
+    let result = parse_expr_bp(pp, 0)
+    let mut rp = result.p
+    rp.no_struct_lit = p.no_struct_lit
+    return ParseExprResult { p: rp, expr: result.expr }
 }
 
 fn parse_expr_bp(p: Parser, min_bp: i32) -> ParseExprResult {
@@ -1550,7 +1561,8 @@ fn parse_primary(p: Parser) -> ParseExprResult {
         let pp = p_advance(p)
         let name = tok.text
         // Check for struct literal: Name { ... }
-        if p_check(pp, TK_LBRACE) and looks_like_type_name(name) {
+        // Skip if no_struct_lit is set (we're in an if/while/for/match condition)
+        if p_check(pp, TK_LBRACE) and looks_like_type_name(name) and not p.no_struct_lit {
             return parse_struct_literal(pp, name, tok.start)
         }
         let expr = mk_ident(name, tok.start, tok.end)
@@ -1663,7 +1675,7 @@ fn parse_lambda(p: Parser) -> ParseExprResult {
 fn parse_if_expr(p: Parser) -> ParseExprResult {
     let mut pp = p_expect(p, TK_IF)
     let start = p_peek(p).start
-    let cr = parse_expr(pp)
+    let cr = parse_expr_no_struct_lit(pp)
     pp = cr.p
     let then_br = parse_block(pp)
     pp = then_br.p
@@ -1696,7 +1708,7 @@ fn parse_if_expr(p: Parser) -> ParseExprResult {
 fn parse_match_expr(p: Parser) -> ParseExprResult {
     let mut pp = p_expect(p, TK_MATCH)
     let start = p_peek(p).start
-    let sr = parse_expr(pp)
+    let sr = parse_expr_no_struct_lit(pp)
     pp = sr.p
     pp = p_expect(pp, TK_LBRACE)
 
@@ -1707,7 +1719,7 @@ fn parse_match_expr(p: Parser) -> ParseExprResult {
         let mut guard: [Expr] = []
         if p_check(pp, TK_IF) {
             pp = p_advance(pp)
-            let gr = parse_expr(pp)
+            let gr = parse_expr_no_struct_lit(pp)
             pp = gr.p
             push(guard, gr.expr)
         }
@@ -1744,6 +1756,7 @@ fn parse_match_expr(p: Parser) -> ParseExprResult {
 
 fn parse_array_literal(p: Parser) -> ParseExprResult {
     let mut pp = p_expect(p, TK_LBRACKET)
+    pp.no_struct_lit = false
     let start = p_peek(p).start
     let mut elements: [Expr] = []
     while not p_check(pp, TK_RBRACKET) and not p_at_end(pp) {
@@ -1765,6 +1778,7 @@ fn parse_array_literal(p: Parser) -> ParseExprResult {
 
 fn parse_paren_or_tuple(p: Parser) -> ParseExprResult {
     let mut pp = p_expect(p, TK_LPAREN)
+    pp.no_struct_lit = false
     let start = p_peek(p).start
 
     // Empty tuple
@@ -1899,6 +1913,7 @@ struct ParseArgsResult {
 
 fn parse_arg_list(p: Parser) -> ParseArgsResult {
     let mut pp = p
+    pp.no_struct_lit = false
     let mut args: [Expr] = []
     while not p_check(pp, TK_RPAREN) and not p_at_end(pp) {
         let er = parse_expr(pp)

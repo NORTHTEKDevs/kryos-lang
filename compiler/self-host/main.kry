@@ -317,7 +317,7 @@ fn detect_target_os() -> str {
 // -------------------------------------------------------------------
 
 fn compile_file(filename: str, output: str) {
-    let source = std.io.read_file(filename)
+    let source = file_read(filename)
     if len(source) == 0 {
         println("error: could not read file: " + filename)
         exit(1)
@@ -352,9 +352,9 @@ fn compile_file(filename: str, output: str) {
     }
 
     // Phase 3: Type check
-    let tc = tc_new()
-    tc_register_builtins(tc)
-    tc_check_module(tc, module)
+    let mut tc = tc_new()
+    tc = tc_register_builtins(tc)
+    tc = tc_check_module(tc, module)
     if len(tc.errors) > 0 {
         println("Type errors: " + to_string(len(tc.errors)))
         for i in range(0, len(tc.errors)) {
@@ -370,7 +370,7 @@ fn compile_file(filename: str, output: str) {
     println("MIR functions: " + to_string(len(mir_mod.functions)))
 
     // Phase 5: Optimize
-    opt_module(mir_mod)
+    optimize(mir_mod)
     println("Optimization: done")
 
     // Phase 6: Compile to executable
@@ -390,7 +390,7 @@ fn compile_file(filename: str, output: str) {
 // -------------------------------------------------------------------
 
 fn check_file(filename: str) {
-    let source = std.io.read_file(filename)
+    let source = file_read(filename)
     if len(source) == 0 {
         println("error: could not read file: " + filename)
         exit(1)
@@ -411,8 +411,8 @@ fn check_file(filename: str) {
     }
 
     let tc = tc_new()
-    tc_register_builtins(tc)
-    tc_check_module(tc, module)
+    tc = tc_register_builtins(tc)
+    tc = tc_check_module(tc, module)
     if len(tc.errors) > 0 {
         println("Type errors: " + to_string(len(tc.errors)))
         for i in range(0, len(tc.errors)) {
@@ -430,7 +430,7 @@ fn check_file(filename: str) {
 // -------------------------------------------------------------------
 
 fn dump_ast(filename: str) {
-    let source = std.io.read_file(filename)
+    let source = file_read(filename)
     if len(source) == 0 {
         println("error: could not read file: " + filename)
         return
@@ -479,9 +479,9 @@ fn dump_ast(filename: str) {
 // -------------------------------------------------------------------
 
 fn main() {
-    let args = std.process.args()
+    let cli_args = args()
 
-    if len(args) < 2 {
+    if len(cli_args) < 2 {
         println("Kryos Self-Hosted Compiler")
         println("")
         println("Usage:")
@@ -491,39 +491,39 @@ fn main() {
         return
     }
 
-    let command = args[1]
+    let command = cli_args[1]
 
     if command == "compile" {
-        if len(args) < 3 {
+        if len(cli_args) < 3 {
             println("error: compile requires an input file")
             exit(1)
             return
         }
-        let input = args[2]
+        let input = cli_args[2]
         let mut output = "a.out"
-        if len(args) >= 5 && args[3] == "-o" {
-            output = args[4]
+        if len(cli_args) >= 5 and cli_args[3] == "-o" {
+            output = cli_args[4]
         }
         compile_file(input, output)
     } elif command == "check" {
-        if len(args) < 3 {
+        if len(cli_args) < 3 {
             println("error: check requires an input file")
             exit(1)
             return
         }
-        check_file(args[2])
+        check_file(cli_args[2])
     } elif command == "ast" {
-        if len(args) < 3 {
+        if len(cli_args) < 3 {
             println("error: ast requires an input file")
             exit(1)
             return
         }
-        dump_ast(args[2])
+        dump_ast(cli_args[2])
     } else {
         // Default: treat first arg as filename for backward compat
         dump_ast(command)
     }
 }
 
-// Run
-main()
+// The entry point is fn main() -- called automatically by the runtime.
+// For self-compiled binaries, the _start function calls main().

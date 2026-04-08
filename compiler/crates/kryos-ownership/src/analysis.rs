@@ -69,6 +69,12 @@ pub struct OwnershipAnalyzer {
     fn_copy_returns: HashMap<String, bool>,
 }
 
+impl Default for OwnershipAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OwnershipAnalyzer {
     pub fn new() -> Self {
         Self {

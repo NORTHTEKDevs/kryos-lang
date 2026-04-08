@@ -130,9 +130,7 @@ impl CapabilityChecker {
                         excess_names.join(", ")
                     ))
                     .with_label(span, "declared here")
-                    .with_note(format!(
-                        "child scope cannot add capabilities not granted by parent"
-                    ))
+                    .with_note("child scope cannot add capabilities not granted by parent".to_string())
                     .with_code("E-CAP-ATTENUATION"),
                 );
             }
@@ -519,10 +517,8 @@ impl CapabilityChecker {
                                 "unknown capability `{arg}` in @capabilities annotation"
                             ))
                             .with_label(ann.span, format!("`{arg}` is not recognized"))
-                            .with_note(format!(
-                                "known capabilities: net, io, ffi, compute, crypto, \
-                                 process, env, term, db, time, all"
-                            ))
+                            .with_note("known capabilities: net, io, ffi, compute, crypto, \
+                                 process, env, term, db, time, all".to_string())
                             .with_code("W-CAP-UNKNOWN"),
                         );
                     }

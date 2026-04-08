@@ -92,6 +92,9 @@ impl fmt::Display for Instruction {
             Instruction::ActorStateStore { state_ptr, field_offset, value } => {
                 write!(f, "actor_state_store({state_ptr}, offset={field_offset}, {value})")
             }
+            Instruction::StoreField { object, field, value } => {
+                write!(f, "store_field({object}.{field} = {value})")
+            }
             Instruction::StoreDeref { ptr, value } => {
                 write!(f, "store_deref(*{ptr} = {value})")
             }

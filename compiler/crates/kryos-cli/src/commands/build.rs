@@ -14,6 +14,7 @@ pub fn execute(
     emit_mir: bool,
     emit_llvm: bool,
     verbose: bool,
+    skip_ownership: bool,
 ) -> Result<(), String> {
     let mode = if release {
         BuildMode::Release
@@ -37,6 +38,7 @@ pub fn execute(
         target: target.map(|s| s.to_string()),
         capabilities: Vec::new(),
         verbose,
+        skip_ownership,
     };
 
     if verbose {

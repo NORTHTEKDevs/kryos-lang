@@ -49,6 +49,7 @@ fn compile_valid_source_succeeds() {
         target: None,
         capabilities: Vec::new(),
         verbose: false,
+        skip_ownership: false,
     };
 
     let result = compile_file(&path, &config);
@@ -83,6 +84,7 @@ fn compile_syntax_error_fails() {
         target: None,
         capabilities: Vec::new(),
         verbose: false,
+        skip_ownership: false,
     };
 
     let result = compile_file(&path, &config);
@@ -110,6 +112,7 @@ fn compile_type_error_fails() {
         target: None,
         capabilities: Vec::new(),
         verbose: false,
+        skip_ownership: false,
     };
 
     let result = compile_file(&path, &config);
@@ -195,6 +198,7 @@ fn compile_source_valid() {
         target: None,
         capabilities: Vec::new(),
         verbose: false,
+        skip_ownership: false,
     };
 
     let result = compile_source(VALID_SOURCE, "inline.kry", &config);
@@ -216,6 +220,7 @@ fn compile_source_with_binary_output_no_backend() {
         target: None,
         capabilities: Vec::new(),
         verbose: false,
+        skip_ownership: false,
     };
 
     let result = compile_source(VALID_SOURCE, "inline.kry", &config);
@@ -261,6 +266,7 @@ fn build_config_derive_output_path() {
         target: None,
         capabilities: Vec::new(),
         verbose: false,
+        skip_ownership: false,
     };
 
     let derived = config.derive_output_path();
@@ -277,6 +283,7 @@ fn build_config_derive_output_mir() {
         target: None,
         capabilities: Vec::new(),
         verbose: false,
+        skip_ownership: false,
     };
 
     let derived = config.derive_output_path();
@@ -293,6 +300,7 @@ fn build_config_explicit_output_overrides_derived() {
         target: None,
         capabilities: Vec::new(),
         verbose: false,
+        skip_ownership: false,
     };
 
     let derived = config.derive_output_path();
@@ -338,6 +346,7 @@ fn main() {
         target: None,
         capabilities: Vec::new(),
         verbose: true,
+        skip_ownership: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -396,6 +405,7 @@ fn main() {
         target: None,
         capabilities: Vec::new(),
         verbose: false,
+        skip_ownership: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -452,6 +462,7 @@ fn main() {
         target: None,
         capabilities: Vec::new(),
         verbose: true,
+        skip_ownership: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -528,6 +539,7 @@ fn main() {
         target: None,
         capabilities: Vec::new(),
         verbose: true,
+        skip_ownership: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -631,6 +643,7 @@ fn main() {
         target: None,
         capabilities: Vec::new(),
         verbose: true,
+        skip_ownership: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -681,6 +694,7 @@ fn main() {
         target: None,
         capabilities: Vec::new(),
         verbose: true,
+        skip_ownership: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -726,6 +740,7 @@ fn main() {
         target: None,
         capabilities: Vec::new(),
         verbose: true,
+        skip_ownership: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -852,6 +867,7 @@ fn compile_file_with_std_import() {
         target: None,
         capabilities: Vec::new(),
         verbose: false,
+        skip_ownership: false,
     };
 
     let result = compile_file(&main_path, &config);

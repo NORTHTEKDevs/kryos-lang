@@ -186,20 +186,20 @@ impl FromStr for VersionReq {
             return Err("empty version requirement".to_string());
         }
 
-        let (op, rest) = if s.starts_with(">=") {
-            (Op::GreaterEq, &s[2..])
-        } else if s.starts_with("<=") {
-            (Op::LessEq, &s[2..])
-        } else if s.starts_with('>') {
-            (Op::Greater, &s[1..])
-        } else if s.starts_with('<') {
-            (Op::Less, &s[1..])
-        } else if s.starts_with('^') {
-            (Op::Caret, &s[1..])
-        } else if s.starts_with('~') {
-            (Op::Tilde, &s[1..])
-        } else if s.starts_with('=') {
-            (Op::Exact, &s[1..])
+        let (op, rest) = if let Some(r) = s.strip_prefix(">=") {
+            (Op::GreaterEq, r)
+        } else if let Some(r) = s.strip_prefix("<=") {
+            (Op::LessEq, r)
+        } else if let Some(r) = s.strip_prefix('>') {
+            (Op::Greater, r)
+        } else if let Some(r) = s.strip_prefix('<') {
+            (Op::Less, r)
+        } else if let Some(r) = s.strip_prefix('^') {
+            (Op::Caret, r)
+        } else if let Some(r) = s.strip_prefix('~') {
+            (Op::Tilde, r)
+        } else if let Some(r) = s.strip_prefix('=') {
+            (Op::Exact, r)
         } else {
             // bare version treated as caret
             (Op::Caret, s)

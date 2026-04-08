@@ -56,9 +56,9 @@ fn cg_new(target_os: str) -> CodegenCtx {
     let empty_ints: [i32] = []
     let empty_patches: [BranchPatch] = []
     return CodegenCtx {
-        text_buf: buf_new(),
-        data_buf: buf_new(),
-        rodata_buf: buf_new(),
+        text_buf: buf_new(4096),
+        data_buf: buf_new(4096),
+        rodata_buf: buf_new(4096),
         symbols: empty_syms,
         relocations: empty_relocs,
         string_offsets: empty_strs,
@@ -92,7 +92,7 @@ fn cg_intern_string(ctx: CodegenCtx, s: str) -> i32 {
     let mut j = 0
     let slen = len(s)
     while j < slen {
-        buf_write_byte(ctx.rodata_buf, char_at(s, j))
+        buf_write_byte(ctx.rodata_buf, char_code(substr(s, j, j + 1)))
         j = j + 1
     }
     buf_write_byte(ctx.rodata_buf, 0)  // null terminator
@@ -254,7 +254,7 @@ fn cg_load_operand(ctx: CodegenCtx, ra: RegAllocResult, op: Operand, target_reg:
     let buf = ctx.text_buf
     if op.const_kind == RV_CONST_INT {
         let val = op.int_val
-        if val >= -2147483648 && val <= 2147483647 {
+        if val >= -2147483648 and val <= 2147483647 {
             x86_mov_reg_imm32(buf, target_reg, val)
         } else {
             // Need 64-bit immediate
@@ -322,7 +322,7 @@ fn mir_binop_to_cc(op: i32) -> i32 {
 // ===================================================================
 
 fn is_comparison_op(op: i32) -> bool {
-    return op == MIR_EQ || op == MIR_NEQ || op == MIR_LT || op == MIR_GT || op == MIR_LT_EQ || op == MIR_GT_EQ
+    return op == MIR_EQ or op == MIR_NEQ or op == MIR_LT or op == MIR_GT or op == MIR_LT_EQ or op == MIR_GT_EQ
 }
 
 // ===================================================================
@@ -703,7 +703,7 @@ fn cg_emit_field_access(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_re
 
 fn cg_emit_index(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) {
     let buf = ctx.text_buf
-    if len(rv.index_obj) > 0 && len(rv.index_idx) > 0 {
+    if len(rv.index_obj) > 0 and len(rv.index_idx) > 0 {
         let arr_reg = cg_load_operand(ctx, ra, rv.index_obj[0], REG_R10)
         let idx_reg = cg_load_operand(ctx, ra, rv.index_idx[0], REG_R11)
         // Array elements are 8 bytes each
@@ -828,15 +828,15 @@ fn cg_emit_cast(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) 
     // Narrowing casts: AND with mask
     if len(rv.cast_ty) > 0 {
         let target_ty = rv.cast_ty[0]
-        if target_ty.kind == MIR_TY_I8 || target_ty.kind == MIR_TY_U8 {
+        if target_ty.kind == MIR_TY_I8 or target_ty.kind == MIR_TY_U8 {
             x86_and_reg_reg(buf, dest_reg, dest_reg)  // clear upper bits via movzx
             // AND with 0xFF
             x86_mov_reg_imm32(buf, REG_R11, 255)
             x86_and_reg_reg(buf, dest_reg, REG_R11)
-        } elif target_ty.kind == MIR_TY_I16 || target_ty.kind == MIR_TY_U16 {
+        } elif target_ty.kind == MIR_TY_I16 or target_ty.kind == MIR_TY_U16 {
             x86_mov_reg_imm32(buf, REG_R11, 65535)
             x86_and_reg_reg(buf, dest_reg, REG_R11)
-        } elif target_ty.kind == MIR_TY_I32 || target_ty.kind == MIR_TY_U32 {
+        } elif target_ty.kind == MIR_TY_I32 or target_ty.kind == MIR_TY_U32 {
             // MOV r32 already zero-extends to r64
             // Use: mov eax, eax  (clears upper 32 bits)
             // Actually for signed i32: movsxd
@@ -922,7 +922,7 @@ fn cg_emit_instruction(ctx: CodegenCtx, ra: RegAllocResult, inst: Instruction) {
 
     } elif inst.kind == INST_STORE_DEREF {
         // *ptr = value
-        if len(inst.ptr_operand) > 0 && len(inst.store_value) > 0 {
+        if len(inst.ptr_operand) > 0 and len(inst.store_value) > 0 {
             let ptr_reg = cg_load_operand(ctx, ra, inst.ptr_operand[0], REG_R10)
             let val_reg = cg_load_operand(ctx, ra, inst.store_value[0], REG_R11)
             x86_mov_mem_reg(buf, ptr_reg, 0, val_reg)

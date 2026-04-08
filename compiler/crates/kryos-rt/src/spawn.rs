@@ -122,7 +122,6 @@ pub extern "C" fn kryos_sleep(seconds_bits: i64) {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicI64, Ordering};
-    use std::sync::Arc;
 
     // Use test-specific counters to avoid parallel test contamination.
     static COUNTER_A: AtomicI64 = AtomicI64::new(0);
@@ -141,7 +140,7 @@ mod tests {
     #[test]
     fn spawn_no_args() {
         COUNTER_A.store(0, Ordering::SeqCst);
-        let fn_ptr = increment_a as usize as i64;
+        let fn_ptr = increment_a as *const () as usize as i64;
         assert_eq!(kryos_spawn(fn_ptr, std::ptr::null(), 0), 0);
         // Give the thread time to run and join.
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -151,7 +150,7 @@ mod tests {
     #[test]
     fn spawn_one_arg() {
         COUNTER_B.store(0, Ordering::SeqCst);
-        let fn_ptr = add_value_b as usize as i64;
+        let fn_ptr = add_value_b as *const () as usize as i64;
         let args: [i64; 1] = [42];
         assert_eq!(kryos_spawn(fn_ptr, args.as_ptr(), 1), 0);
         std::thread::sleep(std::time::Duration::from_millis(100));

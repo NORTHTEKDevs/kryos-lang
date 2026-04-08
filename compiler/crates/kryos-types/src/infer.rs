@@ -181,7 +181,8 @@ impl InferenceEngine {
                 }
             }
 
-            // Array: element types must match, sizes must match.
+            // Array: element types must match. Fixed-size arrays are
+            // assignable to dynamic arrays (e.g. `[T; 0]` → `[T]`).
             (
                 Type::Array {
                     element: e1,
@@ -192,11 +193,15 @@ impl InferenceEngine {
                     size: s2,
                 },
             ) => {
-                if s1 != s2 {
-                    return Err(
-                        Diagnostic::error(format!("array size mismatch: {s1:?} vs {s2:?}"))
-                            .with_label(span, "incompatible array sizes"),
-                    );
+                // Allow coercion: fixed-size → dynamic, dynamic → dynamic.
+                // Only reject when BOTH have known sizes that differ.
+                if let (Some(n1), Some(n2)) = (s1, s2) {
+                    if n1 != n2 {
+                        return Err(
+                            Diagnostic::error(format!("array size mismatch: {s1:?} vs {s2:?}"))
+                                .with_label(span, "incompatible array sizes"),
+                        );
+                    }
                 }
                 self.unify(e1, e2, span)
             }
@@ -414,9 +419,7 @@ impl InferenceEngine {
         // In practice, integer/float literals get constrained during checking;
         // any truly unconstrained vars are errors.
         for id in unresolved {
-            if !self.substitutions.contains_key(&id) {
-                self.substitutions.insert(id, Type::Error);
-            }
+            self.substitutions.entry(id).or_insert(Type::Error);
         }
     }
 

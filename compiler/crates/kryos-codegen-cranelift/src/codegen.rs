@@ -90,7 +90,7 @@ fn is_string_operand(operand: &Operand, locals: &[kryos_mir::ir::MirLocal]) -> b
         Operand::Local(id) => locals
             .iter()
             .find(|l| l.id == *id)
-            .map_or(false, |l| l.ty == kryos_mir::ir::MirType::Str),
+            .is_some_and(|l| l.ty == kryos_mir::ir::MirType::Str),
         Operand::Constant(Constant::Str(_)) => true,
         _ => false,
     }
@@ -102,7 +102,7 @@ fn is_bool_operand(operand: &Operand, locals: &[kryos_mir::ir::MirLocal]) -> boo
         Operand::Local(id) => locals
             .iter()
             .find(|l| l.id == *id)
-            .map_or(false, |l| l.ty == kryos_mir::ir::MirType::Bool),
+            .is_some_and(|l| l.ty == kryos_mir::ir::MirType::Bool),
         Operand::Constant(Constant::Bool(_)) => true,
         _ => false,
     }
@@ -114,7 +114,7 @@ fn is_float_operand(operand: &Operand, locals: &[kryos_mir::ir::MirLocal]) -> bo
         Operand::Local(id) => locals
             .iter()
             .find(|l| l.id == *id)
-            .map_or(false, |l| matches!(l.ty, kryos_mir::ir::MirType::F32 | kryos_mir::ir::MirType::F64)),
+            .is_some_and(|l| matches!(l.ty, kryos_mir::ir::MirType::F32 | kryos_mir::ir::MirType::F64)),
         Operand::Constant(Constant::Float(_)) => true,
         _ => false,
     }
@@ -596,6 +596,17 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
         func_ids.insert("kryos_string_find".to_string(), sf_id);
         func_ids.insert("kryos_string_free".to_string(), sfr_id);
 
+        // kryos_string_char_at(s_handle, idx) -> i64  (same sig as array_get)
+        let string_char_at_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // s_handle
+            sig.params.push(AbiParam::new(types::I64)); // idx
+            sig.returns.push(AbiParam::new(types::I64)); // char handle
+            sig
+        };
+        let sca_id = object_module.declare_function("kryos_string_char_at", Linkage::Import, &string_char_at_sig)?;
+        func_ids.insert("kryos_string_char_at".to_string(), sca_id);
+
         // Array functions.
         let array_new_sig = {
             let mut sig = Signature::new(call_conv);
@@ -813,7 +824,7 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
         let mut ctx = Context::for_function(cl_func);
         object_module
             .define_function(main_id, &mut ctx)
-            .map_err(|e| CodegenError::Module(e))?;
+            .map_err(CodegenError::Module)?;
     }
 
     let product = object_module.finish();
@@ -1075,7 +1086,7 @@ fn translate_instruction<M: Module>(
                 .locals
                 .iter()
                 .find(|l| l.id == *local)
-                .map_or(false, |l| l.ty == kryos_mir::ir::MirType::Str);
+                .is_some_and(|l| l.ty == kryos_mir::ir::MirType::Str);
             if is_str {
                 if let Some(&var) = translator.variables.get(&local.0) {
                     let val = builder.use_var(var);
@@ -1084,6 +1095,70 @@ fn translate_instruction<M: Module>(
                     )?;
                     builder.ins().call(free_ref, &[val]);
                 }
+            }
+        }
+        Instruction::StoreField { object, field, value } => {
+            // Store a value into a struct field at its computed offset.
+            let ptr = translate_operand(object, builder, translator, module)?;
+            let val = translate_operand(value, builder, translator, module)?;
+
+            // Determine the struct type from the object operand.
+            let struct_name = match object {
+                Operand::Local(id) => {
+                    translator
+                        .mir_func
+                        .locals
+                        .iter()
+                        .find(|l| l.id == *id)
+                        .and_then(|l| match &l.ty {
+                            MirType::Struct(name) => Some(name.clone()),
+                            _ => None,
+                        })
+                }
+                _ => None,
+            };
+
+            if let Some(name) = struct_name {
+                if let Some(struct_def) = translator.struct_defs.get(&name) {
+                    let layout = compute_struct_layout(struct_def)?;
+                    if let Some((_, offset, cl_ty)) = layout
+                        .field_offsets
+                        .iter()
+                        .find(|(n, _, _)| n == field)
+                    {
+                        // Coerce value to the field's Cranelift type if needed.
+                        let val_ty = builder.func.dfg.value_type(val);
+                        let coerced = if val_ty != *cl_ty {
+                            if is_float_type(val_ty) && !is_float_type(*cl_ty) {
+                                builder.ins().bitcast(*cl_ty, MemFlags::new(), val)
+                            } else if !is_float_type(val_ty) && is_float_type(*cl_ty) {
+                                builder.ins().bitcast(*cl_ty, MemFlags::new(), val)
+                            } else if val_ty.bits() < cl_ty.bits() {
+                                builder.ins().sextend(*cl_ty, val)
+                            } else if val_ty.bits() > cl_ty.bits() {
+                                builder.ins().ireduce(*cl_ty, val)
+                            } else {
+                                val
+                            }
+                        } else {
+                            val
+                        };
+                        builder.ins().store(
+                            MemFlags::new(),
+                            coerced,
+                            ptr,
+                            *offset as i32,
+                        );
+                    } else {
+                        eprintln!("warning: StoreField '{}' not found in struct '{}'", field, name);
+                    }
+                } else {
+                    eprintln!("warning: StoreField struct '{}' not in struct_defs", name);
+                }
+            } else {
+                // Fallback: store at offset 0 (useful for dynamic/untyped stores).
+                eprintln!("warning: StoreField '{}' on unknown struct type — storing at offset 0", field);
+                builder.ins().store(MemFlags::new(), val, ptr, 0);
             }
         }
         Instruction::StoreDeref { ptr, value } => {
@@ -1437,7 +1512,14 @@ fn translate_rvalue<M: Module>(
                 let check_ref = ensure_func_ref_with_args(
                     "kryos_check_div_zero_i64", builder, translator, module, 1,
                 )?;
-                builder.ins().call(check_ref, &[rhs]);
+                // Widen rhs to i64 for the runtime check (which uses all-i64 ABI).
+                let rhs_ty = builder.func.dfg.value_type(rhs);
+                let rhs_wide = if rhs_ty.is_int() && rhs_ty.bits() < 64 {
+                    builder.ins().sextend(types::I64, rhs)
+                } else {
+                    rhs
+                };
+                builder.ins().call(check_ref, &[rhs_wide]);
             }
 
             let val = translate_binop(*op, lhs, rhs, is_float, builder)?;
@@ -1706,11 +1788,19 @@ fn translate_rvalue<M: Module>(
             for (i, arg) in arg_vals.iter_mut().enumerate() {
                 if let Some(&expected_ty) = param_types.get(i) {
                     let actual_ty = builder.func.dfg.value_type(*arg);
-                    if actual_ty != expected_ty && !is_float_type(actual_ty) && !is_float_type(expected_ty) {
-                        if actual_ty.bits() < expected_ty.bits() {
-                            *arg = builder.ins().sextend(expected_ty, *arg);
-                        } else if actual_ty.bits() > expected_ty.bits() {
-                            *arg = builder.ins().ireduce(expected_ty, *arg);
+                    if actual_ty != expected_ty {
+                        if is_float_type(actual_ty) && !is_float_type(expected_ty) {
+                            // Float → int: bitcast to preserve bits (e.g. f64 stored as i64).
+                            *arg = builder.ins().bitcast(expected_ty, MemFlags::new(), *arg);
+                        } else if !is_float_type(actual_ty) && is_float_type(expected_ty) {
+                            // Int → float: bitcast to interpret bits as float.
+                            *arg = builder.ins().bitcast(expected_ty, MemFlags::new(), *arg);
+                        } else if !is_float_type(actual_ty) && !is_float_type(expected_ty) {
+                            if actual_ty.bits() < expected_ty.bits() {
+                                *arg = builder.ins().sextend(expected_ty, *arg);
+                            } else if actual_ty.bits() > expected_ty.bits() {
+                                *arg = builder.ins().ireduce(expected_ty, *arg);
+                            }
                         }
                     }
                 }
@@ -1761,41 +1851,64 @@ fn translate_rvalue<M: Module>(
         }
 
         RValue::Array(elems) => {
-            // Array layout: [elem0: i64, elem1: i64, ...] — 8 bytes per element.
-            let total_size = (elems.len().max(1) as u32) * 8;
-            let slot = builder.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                total_size,
-                0,
-            ));
-            let ptr = builder.ins().stack_addr(types::I64, slot, 0);
+            // Create a KryosArray via runtime API for consistency with
+            // runtime functions (args, push, len, kryos_array_get).
+            let elem_size_val = builder.ins().iconst(types::I64, 8);
+            let cap_val = builder.ins().iconst(types::I64, elems.len().max(1) as i64);
+            let new_ref = ensure_func_ref_with_args(
+                "kryos_array_new", builder, translator, module, 2,
+            )?;
+            let call = builder.ins().call(new_ref, &[elem_size_val, cap_val]);
+            let arr_ptr = builder.inst_results(call)[0];
 
-            for (i, elem) in elems.iter().enumerate() {
+            // Push each element.
+            let push_ref = ensure_func_ref_with_args(
+                "kryos_array_push", builder, translator, module, 2,
+            )?;
+            for elem in elems.iter() {
                 let val = translate_operand(elem, builder, translator, module)?;
-                let offset = (i * 8) as i32;
-                builder.ins().store(MemFlags::trusted(), val, ptr, offset);
+                // Widen or bitcast value to i64 for the push function.
+                let val_ty = builder.func.dfg.value_type(val);
+                let val_i64 = if is_float_type(val_ty) {
+                    builder.ins().bitcast(types::I64, MemFlags::new(), val)
+                } else if val_ty.is_int() && val_ty.bits() < 64 {
+                    builder.ins().sextend(types::I64, val)
+                } else {
+                    val
+                };
+                builder.ins().call(push_ref, &[arr_ptr, val_i64]);
             }
 
-            Ok(Some(ptr))
+            Ok(Some(arr_ptr))
         }
 
         RValue::Tuple(elems) => {
-            // Tuple layout: same as array — [elem0: i64, elem1: i64, ...].
-            let total_size = (elems.len().max(1) as u32) * 8;
-            let slot = builder.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                total_size,
-                0,
-            ));
-            let ptr = builder.ins().stack_addr(types::I64, slot, 0);
+            // Use KryosArray for tuples (same runtime representation as arrays).
+            let elem_size_val = builder.ins().iconst(types::I64, 8);
+            let cap_val = builder.ins().iconst(types::I64, elems.len().max(1) as i64);
+            let new_ref = ensure_func_ref_with_args(
+                "kryos_array_new", builder, translator, module, 2,
+            )?;
+            let call = builder.ins().call(new_ref, &[elem_size_val, cap_val]);
+            let arr_ptr = builder.inst_results(call)[0];
 
-            for (i, elem) in elems.iter().enumerate() {
+            let push_ref = ensure_func_ref_with_args(
+                "kryos_array_push", builder, translator, module, 2,
+            )?;
+            for elem in elems.iter() {
                 let val = translate_operand(elem, builder, translator, module)?;
-                let offset = (i * 8) as i32;
-                builder.ins().store(MemFlags::trusted(), val, ptr, offset);
+                let val_ty = builder.func.dfg.value_type(val);
+                let val_i64 = if is_float_type(val_ty) {
+                    builder.ins().bitcast(types::I64, MemFlags::new(), val)
+                } else if val_ty.is_int() && val_ty.bits() < 64 {
+                    builder.ins().sextend(types::I64, val)
+                } else {
+                    val
+                };
+                builder.ins().call(push_ref, &[arr_ptr, val_i64]);
             }
 
-            Ok(Some(ptr))
+            Ok(Some(arr_ptr))
         }
 
         RValue::Struct { name, fields } => {
@@ -1903,14 +2016,22 @@ fn translate_rvalue<M: Module>(
         }
 
         RValue::Index { object, index } => {
-            // Load element from pointer: ptr + index * 8.
+            // Use the runtime kryos_array_get(arr, idx) function which
+            // handles both KryosArray heap objects and bounds checking.
             let ptr = translate_operand(object, builder, translator, module)?;
-            let idx = translate_operand(index, builder, translator, module)?;
-            let elem_size = builder.ins().iconst(types::I64, 8);
-            let byte_offset = builder.ins().imul(idx, elem_size);
-            let addr = builder.ins().iadd(ptr, byte_offset);
-            let val = builder.ins().load(types::I64, MemFlags::trusted(), addr, 0);
-            Ok(Some(val))
+            let idx_raw = translate_operand(index, builder, translator, module)?;
+            // Widen index to i64 if it's i32 (e.g. struct field used as index).
+            let idx_ty = builder.func.dfg.value_type(idx_raw);
+            let idx = if idx_ty.is_int() && idx_ty.bits() < 64 {
+                builder.ins().sextend(types::I64, idx_raw)
+            } else {
+                idx_raw
+            };
+            let get_ref = ensure_func_ref_with_args(
+                "kryos_array_get", builder, translator, module, 2,
+            )?;
+            let call = builder.ins().call(get_ref, &[ptr, idx]);
+            Ok(Some(builder.inst_results(call)[0]))
         }
 
         RValue::ArcAlloc { inner } => {

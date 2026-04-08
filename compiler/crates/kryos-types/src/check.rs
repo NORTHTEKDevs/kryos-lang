@@ -996,6 +996,10 @@ impl TypeChecker {
                         }
                         *value.clone()
                     }
+                    // String indexing: str[i] -> str (single character)
+                    Type::Str => {
+                        Type::Str
+                    }
                     Type::Error => Type::Error,
                     _ => {
                         self.error(
@@ -2182,7 +2186,7 @@ fn stmt_returns(stmt: &Stmt) -> bool {
             // All branches must return, including else.
             let then_ok = block_returns(then_block);
             let elifs_ok = elif_clauses.iter().all(|(_, b)| block_returns(b));
-            let else_ok = else_block.as_ref().is_some_and(|b| block_returns(b));
+            let else_ok = else_block.as_ref().is_some_and(block_returns);
             then_ok && elifs_ok && else_ok
         }
         Stmt::TryCatch {

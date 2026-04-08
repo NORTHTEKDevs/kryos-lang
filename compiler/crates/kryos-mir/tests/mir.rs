@@ -108,14 +108,6 @@ fn make_generic_param(name: &str) -> ast::decl::GenericParam {
     }
 }
 
-fn make_generic_param_bounded(name: &str, bounds: Vec<&str>) -> ast::decl::GenericParam {
-    ast::decl::GenericParam {
-        name: name.to_string(),
-        bounds: bounds.into_iter().map(|s| s.to_string()).collect(),
-        span: S,
-    }
-}
-
 fn make_param(name: &str, ty: &str) -> Param {
     Param {
         name: name.to_string(),

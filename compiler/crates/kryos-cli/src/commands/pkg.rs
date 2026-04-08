@@ -130,7 +130,7 @@ pub fn remove(dependency: &str) -> Result<(), String> {
 /// `kryos pkg update` — resolve dependencies and update lock file.
 pub fn update() -> Result<(), String> {
     let manifest_path = Path::new("kryos.toml");
-    let manifest = load_manifest(&manifest_path)?;
+    let manifest = load_manifest(manifest_path)?;
 
     if manifest.dependencies.is_empty() {
         eprintln!("no dependencies to resolve");
