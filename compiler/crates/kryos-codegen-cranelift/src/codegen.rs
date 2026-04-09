@@ -1478,7 +1478,7 @@ fn translate_instruction<M: Module>(
             // Store a value through a reference/pointer.
             let ptr_val = translate_operand(ptr, builder, translator, module)?;
             let val = translate_operand(value, builder, translator, module)?;
-            builder.ins().store(MemFlags::trusted(), val, ptr_val, 0);
+            builder.ins().store(MemFlags::new(), val, ptr_val, 0);
         }
         Instruction::Nop => {}
         Instruction::Spawn { func, args } => {
@@ -2432,7 +2432,7 @@ fn translate_rvalue<M: Module>(
         RValue::EnumTag { operand } => {
             // Load the tag (i64) from offset 0 of the enum value pointer.
             let ptr = translate_operand(operand, builder, translator, module)?;
-            let tag = builder.ins().load(types::I64, MemFlags::trusted(), ptr, 0);
+            let tag = builder.ins().load(types::I64, MemFlags::new(), ptr, 0);
             Ok(Some(tag))
         }
 
@@ -2440,7 +2440,7 @@ fn translate_rvalue<M: Module>(
             // Load the field value from offset (1 + field_idx) * 8.
             let ptr = translate_operand(operand, builder, translator, module)?;
             let offset = ((field_idx + 1) * 8) as i32;
-            let val = builder.ins().load(types::I64, MemFlags::trusted(), ptr, offset);
+            let val = builder.ins().load(types::I64, MemFlags::new(), ptr, offset);
             Ok(Some(val))
         }
 
@@ -2612,7 +2612,7 @@ fn translate_rvalue<M: Module>(
                         .and_then(|l| mir_type_to_cl(&l.ty).ok().flatten())
                 })
                 .unwrap_or(types::I64);
-            let val = builder.ins().load(cl_ty, MemFlags::trusted(), ptr, 0);
+            let val = builder.ins().load(cl_ty, MemFlags::new(), ptr, 0);
             Ok(Some(val))
         }
 
@@ -2662,10 +2662,10 @@ fn translate_rvalue<M: Module>(
             let fat_ptr = translate_operand(object, builder, translator, module)?;
 
             // Load the data pointer (offset 0).
-            let data_ptr = builder.ins().load(types::I64, MemFlags::trusted(), fat_ptr, 0);
+            let data_ptr = builder.ins().load(types::I64, MemFlags::new(), fat_ptr, 0);
             // Load the method fn_ptr (offset 8 + 8 * method_index).
             let fn_offset = 8 + 8 * (*method_index as i32);
-            let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), fat_ptr, fn_offset);
+            let fn_ptr = builder.ins().load(types::I64, MemFlags::new(), fat_ptr, fn_offset);
 
             // Build argument list: data_ptr (self) + any extra args.
             let mut sig = module.make_signature();
