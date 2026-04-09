@@ -1,0 +1,14 @@
+// skip
+// expect-stdout: 42
+// Test: returning a closure that captures a variable from the enclosing
+// function. The captured environment must be heap-allocated so it survives
+// after the creating function's stack frame is popped.
+// TODO: heap allocation works but closure call mechanism needs fixes.
+fn make_multiplier(factor: i64) -> fn(i64) -> i64 {
+    return fn(x: i64) -> i64 { return x * factor }
+}
+
+fn main() {
+    let double = make_multiplier(2)
+    println(double(21))
+}

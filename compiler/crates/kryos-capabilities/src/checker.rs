@@ -841,7 +841,7 @@ mod tests {
             span: span(),
         };
         let diags = check_capabilities(&module);
-        assert!(diags.len() >= 1);
+        assert!(!diags.is_empty());
         assert!(diags
             .iter()
             .any(|d| d.code.as_deref() == Some("E-CAP-ESCALATION")));
@@ -871,7 +871,7 @@ mod tests {
             span: span(),
         };
         let diags = check_capabilities(&module);
-        assert!(diags.len() >= 1);
+        assert!(!diags.is_empty());
         assert!(diags
             .iter()
             .any(|d| d.code.as_deref() == Some("E-CAP-ESCALATION")));

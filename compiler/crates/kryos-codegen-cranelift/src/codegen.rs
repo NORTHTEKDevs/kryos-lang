@@ -638,12 +638,22 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
         let array_len_sig = string_len_sig.clone();
         let array_free_sig = string_free_sig.clone();
 
+        // kryos_array_concat(a: i64, b: i64) -> i64
+        let array_concat_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // a
+            sig.params.push(AbiParam::new(types::I64)); // b
+            sig.returns.push(AbiParam::new(types::I64)); // new arr
+            sig
+        };
+
         let an_id = object_module.declare_function("kryos_array_new", Linkage::Import, &array_new_sig)?;
         let ap_id = object_module.declare_function("kryos_array_push", Linkage::Import, &array_push_sig)?;
         let ag_id = object_module.declare_function("kryos_array_get", Linkage::Import, &array_get_sig)?;
         let as_id = object_module.declare_function("kryos_array_set", Linkage::Import, &array_set_sig)?;
         let al_id = object_module.declare_function("kryos_array_len", Linkage::Import, &array_len_sig)?;
         let af_id = object_module.declare_function("kryos_array_free", Linkage::Import, &array_free_sig)?;
+        let ac_id = object_module.declare_function("kryos_array_concat", Linkage::Import, &array_concat_sig)?;
 
         func_ids.insert("kryos_array_new".to_string(), an_id);
         func_ids.insert("kryos_array_push".to_string(), ap_id);
@@ -651,6 +661,7 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
         func_ids.insert("kryos_array_set".to_string(), as_id);
         func_ids.insert("kryos_array_len".to_string(), al_id);
         func_ids.insert("kryos_array_free".to_string(), af_id);
+        func_ids.insert("kryos_array_concat".to_string(), ac_id);
 
         // Map functions.
         let map_new_sig = {
@@ -2241,24 +2252,28 @@ fn translate_rvalue<M: Module>(
                 let fptr = resolve_func_ref(builder, translator, module, 0)?;
                 Ok(Some(fptr))
             } else {
-                // With captures: allocate [func_ptr, cap0, cap1, ...] on stack.
-                let env_size = ((1 + captures.len()) * 8) as u32;
-                let slot = builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot,
-                    env_size,
-                    0,
-                ));
-                let ptr = builder.ins().stack_addr(types::I64, slot, 0);
+                // With captures: allocate [func_ptr, cap0, cap1, ...] on the heap
+                // via malloc so the environment survives after the creating function
+                // returns. Stack slots are invalidated when the callee's frame is
+                // popped, causing dangling-pointer crashes (segfaults) when a
+                // returned closure tries to read its captured variables.
+                let env_size = ((1 + captures.len()) * 8) as i64;
+                let size_val = builder.ins().iconst(types::I64, env_size);
+                let malloc_ref = ensure_func_ref_with_args(
+                    "malloc", builder, translator, module, 1,
+                )?;
+                let call = builder.ins().call(malloc_ref, &[size_val]);
+                let ptr = builder.inst_results(call)[0];
 
                 // Store function pointer at offset 0.
                 let fptr = resolve_func_ref(builder, translator, module, captures.len())?;
-                builder.ins().store(MemFlags::trusted(), fptr, ptr, 0);
+                builder.ins().store(MemFlags::new(), fptr, ptr, 0);
 
                 // Store captures at offsets 8, 16, ...
                 for (i, cap) in captures.iter().enumerate() {
                     let val = translate_operand(cap, builder, translator, module)?;
                     let offset = ((i + 1) * 8) as i32;
-                    builder.ins().store(MemFlags::trusted(), val, ptr, offset);
+                    builder.ins().store(MemFlags::new(), val, ptr, offset);
                 }
 
                 Ok(Some(ptr))

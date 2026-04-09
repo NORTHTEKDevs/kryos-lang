@@ -1,4 +1,5 @@
 //! Integration tests for the Kryos parser.
+#![allow(clippy::approx_constant)]
 
 use kryos_lexer::Lexer;
 use kryos_parser::parse;

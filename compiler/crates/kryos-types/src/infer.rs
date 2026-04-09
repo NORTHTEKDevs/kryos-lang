@@ -181,28 +181,23 @@ impl InferenceEngine {
                 }
             }
 
-            // Array: element types must match. Fixed-size arrays are
-            // assignable to dynamic arrays (e.g. `[T; 0]` → `[T]`).
+            // Array: element types must match. When combining arrays of
+            // different fixed sizes, silently coerce to a dynamic array
+            // (size = None) so that concatenation and accumulation patterns
+            // work without errors.
             (
                 Type::Array {
                     element: e1,
-                    size: s1,
+                    size: _,
                 },
                 Type::Array {
                     element: e2,
-                    size: s2,
+                    size: _,
                 },
             ) => {
-                // Allow coercion: fixed-size → dynamic, dynamic → dynamic.
-                // Only reject when BOTH have known sizes that differ.
-                if let (Some(n1), Some(n2)) = (s1, s2) {
-                    if n1 != n2 {
-                        return Err(
-                            Diagnostic::error(format!("array size mismatch: {s1:?} vs {s2:?}"))
-                                .with_label(span, "incompatible array sizes"),
-                        );
-                    }
-                }
+                // Unify element types. Size mismatches are allowed — different
+                // fixed sizes unify successfully, treating the result as a
+                // dynamic array [T]. No error on [T; N] vs [T; M].
                 self.unify(e1, e2, span)
             }
 

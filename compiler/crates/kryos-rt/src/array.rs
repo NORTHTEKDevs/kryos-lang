@@ -127,6 +127,36 @@ pub unsafe extern "C" fn kryos_array_len(arr: *const KryosArray) -> i64 {
     (*arr).len
 }
 
+/// Concatenate two KryosArrays, returning a new array containing all elements
+/// from `a` followed by all elements from `b`. The originals are not freed.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_array_concat(
+    a: *const KryosArray,
+    b: *const KryosArray,
+) -> *mut KryosArray {
+    let a_len = if a.is_null() { 0 } else { (*a).len };
+    let b_len = if b.is_null() { 0 } else { (*b).len };
+    let total = a_len + b_len;
+
+    let result = kryos_array_new(8, total.max(4));
+    if result.is_null() {
+        return result;
+    }
+
+    // Copy elements from a.
+    for i in 0..a_len {
+        let val = kryos_array_get(a, i);
+        kryos_array_push(result, val);
+    }
+    // Copy elements from b.
+    for i in 0..b_len {
+        let val = kryos_array_get(b, i);
+        kryos_array_push(result, val);
+    }
+
+    result
+}
+
 /// Free a KryosArray and its data buffer.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
@@ -222,6 +252,63 @@ mod tests {
             assert_eq!(kryos_array_get(std::ptr::null(), 0), 0);
             kryos_array_push(std::ptr::null_mut(), 1); // should not crash
             kryos_array_free(std::ptr::null_mut()); // should not crash
+        }
+    }
+
+    #[test]
+    fn concat_two_arrays() {
+        unsafe {
+            let a = kryos_array_new(8, 4);
+            kryos_array_push(a, 1);
+            kryos_array_push(a, 2);
+            kryos_array_push(a, 3);
+
+            let b = kryos_array_new(8, 4);
+            kryos_array_push(b, 4);
+
+            let c = kryos_array_concat(a, b);
+            assert_eq!(kryos_array_len(c), 4);
+            assert_eq!(kryos_array_get(c, 0), 1);
+            assert_eq!(kryos_array_get(c, 1), 2);
+            assert_eq!(kryos_array_get(c, 2), 3);
+            assert_eq!(kryos_array_get(c, 3), 4);
+
+            kryos_array_free(a);
+            kryos_array_free(b);
+            kryos_array_free(c);
+        }
+    }
+
+    #[test]
+    fn concat_with_null() {
+        unsafe {
+            let a = kryos_array_new(8, 4);
+            kryos_array_push(a, 10);
+
+            let c = kryos_array_concat(a, std::ptr::null());
+            assert_eq!(kryos_array_len(c), 1);
+            assert_eq!(kryos_array_get(c, 0), 10);
+
+            let d = kryos_array_concat(std::ptr::null(), a);
+            assert_eq!(kryos_array_len(d), 1);
+            assert_eq!(kryos_array_get(d, 0), 10);
+
+            kryos_array_free(a);
+            kryos_array_free(c);
+            kryos_array_free(d);
+        }
+    }
+
+    #[test]
+    fn concat_empty_arrays() {
+        unsafe {
+            let a = kryos_array_new(8, 4);
+            let b = kryos_array_new(8, 4);
+            let c = kryos_array_concat(a, b);
+            assert_eq!(kryos_array_len(c), 0);
+            kryos_array_free(a);
+            kryos_array_free(b);
+            kryos_array_free(c);
         }
     }
 }

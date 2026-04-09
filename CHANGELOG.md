@@ -47,6 +47,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `kryos check` now supports `--skip-ownership` flag
 
 ### Added
+- Array concatenation operator: `a + b` and `a += b` for arrays (type-checked, MIR-lowered, both backends)
+- `kryos_array_concat` runtime function for array concatenation
+- Closure environments heap-allocated via `malloc` (fixes segfault when closures escape their creating function)
+- `push(arr, val)` and `pop(arr)` now borrow the array instead of moving it in ownership analysis
+- Native test runner prefers release binary over debug (matches `--release` build workflow)
 - `StoreField` MIR instruction for proper struct field mutation (replaces `__kryos_field_store` hack)
 - Full `StoreField` implementation in both Cranelift and LLVM backends
 - `--skip-ownership` CLI flag for self-host bootstrap (ownership checker fires on refcounted patterns)

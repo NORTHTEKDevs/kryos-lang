@@ -287,7 +287,7 @@ fn find_system_linker_on_current_host() {
     // available. This test verifies the search logic works end-to-end.
     match find_system_linker(&host) {
         Ok(path) => {
-            assert!(path.to_string_lossy().len() > 0);
+            assert!(!path.to_string_lossy().is_empty());
         }
         Err(msg) => {
             // On minimal systems without a C toolchain, this is acceptable

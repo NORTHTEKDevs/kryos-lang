@@ -769,6 +769,21 @@ impl OwnershipAnalyzer {
                         self.analyze_expr_move(&args[1]); // value is moved
                         return;
                     }
+                    // push(arr, val) and pop(arr): the array is borrowed
+                    // (mutated in-place), not moved. Only the value is moved.
+                    if name == "push" && args.len() == 2 {
+                        self.analyze_expr_use(&args[0]); // array is used, not moved
+                        if self.expr_is_copy(&args[1]) {
+                            self.analyze_expr_use(&args[1]);
+                        } else {
+                            self.analyze_expr_move(&args[1]); // value is moved into array
+                        }
+                        return;
+                    }
+                    if name == "pop" && args.len() == 1 {
+                        self.analyze_expr_use(&args[0]); // array is used, not moved
+                        return;
+                    }
                 }
                 // Regular function call: each argument is moved (unless copy).
                 for arg in args {

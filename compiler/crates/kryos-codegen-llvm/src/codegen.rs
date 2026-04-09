@@ -223,6 +223,7 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_array_set(ptr, i64, i64)");
         self.emit_line("declare i64 @kryos_array_len(ptr)");
         self.emit_line("declare void @kryos_array_free(ptr)");
+        self.emit_line("declare ptr @kryos_array_concat(ptr, ptr)");
         self.emit_line("; Map runtime");
         self.emit_line("declare i64 @kryos_map_new()");
         self.emit_line("declare void @kryos_map_insert(i64, i64, i64)");

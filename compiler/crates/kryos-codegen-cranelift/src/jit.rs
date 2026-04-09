@@ -102,6 +102,7 @@ impl JitCompiler {
         jit_builder.symbol("kryos_array_set", kryos_rt::array::kryos_array_set as *const u8);
         jit_builder.symbol("kryos_array_len", kryos_rt::array::kryos_array_len as *const u8);
         jit_builder.symbol("kryos_array_free", kryos_rt::array::kryos_array_free as *const u8);
+        jit_builder.symbol("kryos_array_concat", kryos_rt::array::kryos_array_concat as *const u8);
 
         // Map operations
         jit_builder.symbol("kryos_map_new", kryos_rt::map::kryos_map_new as *const u8);

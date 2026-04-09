@@ -1127,6 +1127,27 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 ast::AssignOp::Assign => unreachable!(),
                             };
                             let rhs = lower_expr_to_operand(ctx, value);
+
+                            // Array += : desugar to kryos_array_concat call.
+                            if *op == ast::AssignOp::AddAssign {
+                                let dest_ty = ctx.locals.iter()
+                                    .find(|l| l.id == dest)
+                                    .map(|l| l.ty.clone());
+                                let rhs_ty = infer_expr_type(ctx, value);
+                                if matches!((&dest_ty, &rhs_ty),
+                                    (Some(MirType::Array(_, _)), MirType::Array(_, _)))
+                                {
+                                    ctx.emit(Instruction::Assign {
+                                        dest,
+                                        value: RValue::Call {
+                                            func: "kryos_array_concat".to_string(),
+                                            args: vec![Operand::Local(dest), rhs],
+                                        },
+                                    });
+                                    return;
+                                }
+                            }
+
                             ctx.emit(Instruction::Assign {
                                 dest,
                                 value: RValue::BinOp {
@@ -2559,6 +2580,14 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
             // either side is float, the result is float.
             let lty = infer_expr_type(ctx, left);
             let rty = infer_expr_type(ctx, right);
+
+            // Array concatenation with + produces a dynamic array.
+            if *op == ast::BinOp::Add {
+                if let (MirType::Array(e1, _), MirType::Array(_, _)) = (&lty, &rty) {
+                    return MirType::Array(e1.clone(), None);
+                }
+            }
+
             match (&lty, &rty) {
                 (MirType::F64, _) | (_, MirType::F64) => MirType::F64,
                 (MirType::F32, _) | (_, MirType::F32) => MirType::F32,
@@ -2822,6 +2851,20 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
         ast::Expr::BinaryOp {
             op, left, right, ..
         } => {
+            // Array concatenation: a + b → kryos_array_concat(a, b)
+            if *op == ast::BinOp::Add {
+                let lty = infer_expr_type(ctx, left);
+                let rty = infer_expr_type(ctx, right);
+                if matches!((&lty, &rty), (MirType::Array(_, _), MirType::Array(_, _))) {
+                    let lhs = lower_expr_to_operand(ctx, left);
+                    let rhs = lower_expr_to_operand(ctx, right);
+                    return RValue::Call {
+                        func: "kryos_array_concat".to_string(),
+                        args: vec![lhs, rhs],
+                    };
+                }
+            }
+
             let lhs = lower_expr_to_operand(ctx, left);
             let rhs = lower_expr_to_operand(ctx, right);
             RValue::BinOp {

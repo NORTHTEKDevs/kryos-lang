@@ -48,17 +48,21 @@ fn parse_native_test(path: &Path) -> NativeTest {
 
 fn kryos_binary() -> PathBuf {
     // Locate the kryos binary in the workspace target directory.
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/debug/kryos");
-    if cfg!(windows) {
-        path.set_extension("exe");
+    // Prefer release binary (always built with --release due to memory
+    // constraints), fall back to debug.
+    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for profile in &["release", "debug"] {
+        let mut path = base.join("target").join(profile).join("kryos");
+        if cfg!(windows) {
+            path.set_extension("exe");
+        }
+        if path.exists() {
+            return path;
+        }
     }
-    assert!(
-        path.exists(),
-        "kryos binary not found at {}. Run `cargo build -p kryos-cli` first.",
-        path.display()
+    panic!(
+        "kryos binary not found. Run `cargo build --release -p kryos-cli -j 4` first."
     );
-    path
 }
 
 fn run_native_test(test: &NativeTest) -> Result<(), String> {
@@ -143,7 +147,7 @@ fn native_build_tests() {
     let mut entries: Vec<_> = fs::read_dir(&test_dir)
         .expect("read native test dir")
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "kry"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "kry"))
         .collect();
     entries.sort_by_key(|e| e.path());
 

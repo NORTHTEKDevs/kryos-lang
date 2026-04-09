@@ -1,4 +1,5 @@
 //! Integration tests for the kryos-types crate.
+#![allow(clippy::approx_constant)]
 
 use kryos_ast::*;
 use kryos_errors::Span;

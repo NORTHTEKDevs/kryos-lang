@@ -1,4 +1,5 @@
 //! Integration tests for kryos-mir: lowering, CFG construction, ARC ops, drops.
+#![allow(clippy::approx_constant, clippy::match_like_matches_macro)]
 
 use kryos_errors::Span;
 use kryos_ast::{

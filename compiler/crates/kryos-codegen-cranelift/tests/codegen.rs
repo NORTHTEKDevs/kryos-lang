@@ -1,4 +1,5 @@
 //! Integration tests for the Cranelift codegen backend.
+#![allow(clippy::approx_constant)]
 
 use std::collections::HashMap;
 use kryos_mir::ir::*;

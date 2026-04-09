@@ -1665,6 +1665,29 @@ impl TypeChecker {
         match op {
             // Arithmetic: both sides must be the same numeric type.
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow => {
+                // Special case: array concatenation with +.
+                if op == BinOp::Add {
+                    let resolved_left = self.engine.resolve(&left_ty);
+                    let resolved_right = self.engine.resolve(&right_ty);
+                    if let (
+                        Type::Array { element: e1, .. },
+                        Type::Array { element: e2, .. },
+                    ) = (&resolved_left, &resolved_right)
+                    {
+                        // Unify element types.
+                        if let Err(diag) = self.engine.unify(e1, e2, span) {
+                            self.diagnostics.push(diag);
+                            return Type::Error;
+                        }
+                        let elem = self.engine.resolve(e1);
+                        // Array concatenation always produces a dynamic array.
+                        return Type::Array {
+                            element: Box::new(elem),
+                            size: None,
+                        };
+                    }
+                }
+
                 if let Err(diag) = self.engine.unify(&left_ty, &right_ty, span) {
                     self.diagnostics.push(diag);
                     return Type::Error;

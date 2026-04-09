@@ -805,11 +805,8 @@ fn test_full_jsonrpc_conversation() {
     // Parse responses from output buffer
     let mut out_reader = std::io::Cursor::new(output_buf);
     let mut responses: Vec<Value> = Vec::new();
-    loop {
-        match protocol::read_message(&mut out_reader) {
-            Ok(Some(v)) => responses.push(v),
-            _ => break,
-        }
+    while let Ok(Some(v)) = protocol::read_message(&mut out_reader) {
+        responses.push(v);
     }
 
     // Should have exactly 2 responses: initialize result + shutdown result
