@@ -68,6 +68,15 @@ impl CraneliftBackend {
         codegen::compile_module(module)
     }
 
+    /// AOT compile with explicit options (e.g. checked arithmetic).
+    pub fn compile_module_with_options(
+        &self,
+        module: &kryos_mir::ir::MirModule,
+        options: &codegen::CodegenOptions,
+    ) -> Result<Vec<u8>, CodegenError> {
+        codegen::compile_module_with_options(module, options)
+    }
+
     /// JIT compile a single MIR function and return a pointer to executable memory.
     pub fn jit_compile_function(
         &self,

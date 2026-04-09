@@ -22,6 +22,17 @@ use kryos_mir::ir::{
 use crate::CodegenError;
 
 // ---------------------------------------------------------------------------
+// Codegen options
+// ---------------------------------------------------------------------------
+
+/// Options controlling code generation behavior.
+#[derive(Debug, Clone, Default)]
+pub struct CodegenOptions {
+    /// Emit overflow checks for integer add/sub/mul.
+    pub checked_arithmetic: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Type mapping
 // ---------------------------------------------------------------------------
 
@@ -213,6 +224,11 @@ fn compute_struct_layout(fields: &[(String, MirType)]) -> Result<StructLayout, C
 
 /// Compile a MIR module into object file bytes (ELF / COFF / Mach-O).
 pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
+    compile_module_with_options(module, &CodegenOptions::default())
+}
+
+/// Compile a MIR module with explicit codegen options.
+pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions) -> Result<Vec<u8>, CodegenError> {
     // Build ISA for the host.
     let mut flag_builder = settings::builder();
     flag_builder
@@ -836,6 +852,7 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
                 &module.enum_defs,
                 &mut global_str_counter,
                 &module.trait_vtables,
+                options.checked_arithmetic,
             )?;
             builder.seal_all_blocks();
             builder.finalize();
@@ -1084,6 +1101,8 @@ struct FuncTranslator<'a> {
     /// When true, the codegen does NOT emit its own post-call exception
     /// checks because the MIR checks handle routing to catch blocks.
     has_mir_exception_checks: bool,
+    /// Emit overflow checks for integer arithmetic.
+    checked_arithmetic: bool,
 }
 
 /// Translate a MIR function body into Cranelift IR instructions.
@@ -1096,6 +1115,7 @@ pub fn translate_function<M: Module>(
     enum_defs: &HashMap<String, Vec<EnumVariantDef>>,
     string_counter: &mut u32,
     trait_vtables: &HashMap<(String, String), Vec<String>>,
+    checked_arithmetic: bool,
 ) -> Result<(), CodegenError> {
     // Check if this function already contains MIR-level exception checks
     // (from try/catch lowering).  If so, the codegen must NOT add its own
@@ -1120,6 +1140,7 @@ pub fn translate_function<M: Module>(
         borrow_slots: HashMap::new(),
         mir_module_trait_methods: trait_vtables.clone(),
         has_mir_exception_checks,
+        checked_arithmetic,
     };
 
     // Create Cranelift blocks for each MIR basic block.
@@ -1835,7 +1856,7 @@ fn translate_rvalue<M: Module>(
                 builder.ins().call(check_ref, &[rhs_wide]);
             }
 
-            let val = translate_binop(*op, lhs, rhs, is_float, builder)?;
+            let val = translate_binop(*op, lhs, rhs, is_float, builder, translator.checked_arithmetic)?;
             Ok(Some(val))
         }
 
@@ -2756,11 +2777,12 @@ fn translate_binop(
     rhs: cranelift_codegen::ir::Value,
     is_float: bool,
     builder: &mut FunctionBuilder,
+    checked: bool,
 ) -> Result<cranelift_codegen::ir::Value, CodegenError> {
     if is_float {
         translate_binop_float(op, lhs, rhs, builder)
     } else {
-        translate_binop_int(op, lhs, rhs, builder)
+        translate_binop_int(op, lhs, rhs, builder, checked)
     }
 }
 
@@ -2769,8 +2791,45 @@ fn translate_binop_int(
     lhs: cranelift_codegen::ir::Value,
     rhs: cranelift_codegen::ir::Value,
     builder: &mut FunctionBuilder,
+    checked: bool,
 ) -> Result<cranelift_codegen::ir::Value, CodegenError> {
     let val = match op {
+        MirBinOp::Add if checked => {
+            let (result, overflow) = builder.ins().sadd_overflow(lhs, rhs);
+            let trap_block = builder.create_block();
+            let ok_block = builder.create_block();
+            builder.ins().brif(overflow, trap_block, &[], ok_block, &[]);
+            builder.switch_to_block(trap_block);
+            builder.seal_block(trap_block);
+            builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(2));
+            builder.switch_to_block(ok_block);
+            builder.seal_block(ok_block);
+            result
+        }
+        MirBinOp::Sub if checked => {
+            let (result, overflow) = builder.ins().ssub_overflow(lhs, rhs);
+            let trap_block = builder.create_block();
+            let ok_block = builder.create_block();
+            builder.ins().brif(overflow, trap_block, &[], ok_block, &[]);
+            builder.switch_to_block(trap_block);
+            builder.seal_block(trap_block);
+            builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(2));
+            builder.switch_to_block(ok_block);
+            builder.seal_block(ok_block);
+            result
+        }
+        MirBinOp::Mul if checked => {
+            let (result, overflow) = builder.ins().smul_overflow(lhs, rhs);
+            let trap_block = builder.create_block();
+            let ok_block = builder.create_block();
+            builder.ins().brif(overflow, trap_block, &[], ok_block, &[]);
+            builder.switch_to_block(trap_block);
+            builder.seal_block(trap_block);
+            builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(2));
+            builder.switch_to_block(ok_block);
+            builder.seal_block(ok_block);
+            result
+        }
         MirBinOp::Add => builder.ins().iadd(lhs, rhs),
         MirBinOp::Sub => builder.ins().isub(lhs, rhs),
         MirBinOp::Mul => builder.ins().imul(lhs, rhs),

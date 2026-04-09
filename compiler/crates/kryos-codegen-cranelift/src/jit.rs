@@ -380,6 +380,7 @@ impl JitCompiler {
                 &empty_enum_defs,
                 &mut str_counter,
                 &empty_trait_vtables,
+                false, // no checked arithmetic in JIT/REPL
             )?;
             builder.seal_all_blocks();
             builder.finalize();
