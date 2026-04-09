@@ -13,6 +13,10 @@
 //   types.kry  -- TypeInfo, TypeChecker, resolve_type_expr
 // ============================================================
 
+use ast
+use mir
+use types
+
 // ===================================================================
 // Lowering context
 //

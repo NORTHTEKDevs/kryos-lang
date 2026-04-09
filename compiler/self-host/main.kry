@@ -15,6 +15,15 @@
 //   parser.kry -- parse_module(parser) -> Module
 // ============================================================
 
+use token
+use lexer
+use ast
+use parser
+use types
+use lower
+use optimize
+use codegen
+
 // -------------------------------------------------------------------
 // AST printing helpers
 // -------------------------------------------------------------------

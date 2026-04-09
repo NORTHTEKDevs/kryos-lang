@@ -14,6 +14,7 @@
 //   mir.kry -- MIR data structures and constructors
 // ============================================================
 
+use mir
 
 // ===================================================================
 // Helper: operand classification and extraction
