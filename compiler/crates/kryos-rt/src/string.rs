@@ -215,6 +215,120 @@ pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {
 }
 
 // ---------------------------------------------------------------------------
+// String utilities
+// ---------------------------------------------------------------------------
+
+/// Check if a string starts with a prefix.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_string_starts_with(
+    s: *const KryosString,
+    prefix: *const KryosString,
+) -> i64 {
+    if s.is_null() || prefix.is_null() {
+        return 0;
+    }
+    let s_slice = std::slice::from_raw_parts((*s).data, (*s).len as usize);
+    let p_slice = std::slice::from_raw_parts((*prefix).data, (*prefix).len as usize);
+    if s_slice.starts_with(p_slice) { 1 } else { 0 }
+}
+
+/// Check if a string ends with a suffix.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_string_ends_with(
+    s: *const KryosString,
+    suffix: *const KryosString,
+) -> i64 {
+    if s.is_null() || suffix.is_null() {
+        return 0;
+    }
+    let s_slice = std::slice::from_raw_parts((*s).data, (*s).len as usize);
+    let p_slice = std::slice::from_raw_parts((*suffix).data, (*suffix).len as usize);
+    if s_slice.ends_with(p_slice) { 1 } else { 0 }
+}
+
+/// Check if a string contains a needle.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_string_contains(
+    s: *const KryosString,
+    needle: *const KryosString,
+) -> i64 {
+    if s.is_null() || needle.is_null() {
+        return 0;
+    }
+    let s_str = std::str::from_utf8_unchecked(
+        std::slice::from_raw_parts((*s).data, (*s).len as usize),
+    );
+    let n_str = std::str::from_utf8_unchecked(
+        std::slice::from_raw_parts((*needle).data, (*needle).len as usize),
+    );
+    if s_str.contains(n_str) { 1 } else { 0 }
+}
+
+/// Trim whitespace from both ends.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_string_trim(s: *const KryosString) -> *mut KryosString {
+    if s.is_null() {
+        return kryos_string_new(ptr::null(), 0);
+    }
+    let src = std::str::from_utf8_unchecked(
+        std::slice::from_raw_parts((*s).data, (*s).len as usize),
+    );
+    let trimmed = src.trim();
+    kryos_string_new(trimmed.as_ptr(), trimmed.len() as i64)
+}
+
+/// Convert to uppercase.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_string_to_upper(s: *const KryosString) -> *mut KryosString {
+    if s.is_null() {
+        return kryos_string_new(ptr::null(), 0);
+    }
+    let src = std::str::from_utf8_unchecked(
+        std::slice::from_raw_parts((*s).data, (*s).len as usize),
+    );
+    let upper = src.to_uppercase();
+    kryos_string_new(upper.as_ptr(), upper.len() as i64)
+}
+
+/// Convert to lowercase.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_string_to_lower(s: *const KryosString) -> *mut KryosString {
+    if s.is_null() {
+        return kryos_string_new(ptr::null(), 0);
+    }
+    let src = std::str::from_utf8_unchecked(
+        std::slice::from_raw_parts((*s).data, (*s).len as usize),
+    );
+    let lower = src.to_lowercase();
+    kryos_string_new(lower.as_ptr(), lower.len() as i64)
+}
+
+/// Replace all occurrences of `from` with `to` in `s`.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_string_replace(
+    s: *const KryosString,
+    from: *const KryosString,
+    to: *const KryosString,
+) -> *mut KryosString {
+    if s.is_null() || from.is_null() || to.is_null() {
+        return kryos_string_new(ptr::null(), 0);
+    }
+    let s_str = std::str::from_utf8_unchecked(
+        std::slice::from_raw_parts((*s).data, (*s).len as usize),
+    );
+    let from_str = std::str::from_utf8_unchecked(
+        std::slice::from_raw_parts((*from).data, (*from).len as usize),
+    );
+    let to_str = std::str::from_utf8_unchecked(
+        std::slice::from_raw_parts((*to).data, (*to).len as usize),
+    );
+    let result = s_str.replace(from_str, to_str);
+    kryos_string_new(result.as_ptr(), result.len() as i64)
+}
+
+// Note: kryos_string_char_at is defined in builtins.rs
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
