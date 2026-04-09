@@ -207,6 +207,54 @@ pub fn update() -> Result<(), String> {
     Ok(())
 }
 
+/// `kryos pkg install` — resolve and fetch all dependencies.
+pub fn install() -> Result<(), String> {
+    let manifest_path = Path::new("kryos.toml");
+    let manifest = load_manifest(manifest_path)?;
+
+    if manifest.dependencies.is_empty() {
+        eprintln!("no dependencies to install");
+        return Ok(());
+    }
+
+    // First resolve.
+    let mut registry = kryos_package::resolve::PackageRegistry::new();
+    for (name, dep) in &manifest.dependencies {
+        if let kryos_package::DepSpec::Path { path } = dep {
+            let dep_manifest_path = Path::new(path).join("kryos.toml");
+            if dep_manifest_path.exists() {
+                let dep_manifest = Manifest::from_file(&dep_manifest_path)?;
+                let version: kryos_package::Version = dep_manifest.package.version.parse()
+                    .map_err(|e| format!("bad version in {}: {e}", name))?;
+                registry.add(kryos_package::resolve::AvailablePackage {
+                    name: name.clone(),
+                    version,
+                    source: path.clone(),
+                    dependencies: std::collections::HashMap::new(),
+                });
+            }
+        }
+    }
+
+    let graph = kryos_package::resolve::resolve(&manifest.dependencies, &registry)
+        .map_err(|e| format!("dependency resolution failed: {e}"))?;
+
+    // Fetch all remote packages.
+    let fetched = kryos_package::fetch::fetch_resolved(&graph)?;
+
+    // Write lock file.
+    let lock = kryos_package::LockFile::from_resolved(&graph);
+    lock.write_to_file(Path::new("kryos.lock"))?;
+
+    eprintln!("installed {} dependencies", fetched.len());
+    for (name, path) in &fetched {
+        eprintln!("  {} -> {}", name, path.display());
+    }
+    eprintln!("wrote kryos.lock");
+
+    Ok(())
+}
+
 /// `kryos pkg lock` — regenerate the lock file (alias for update).
 pub fn lock() -> Result<(), String> {
     update()

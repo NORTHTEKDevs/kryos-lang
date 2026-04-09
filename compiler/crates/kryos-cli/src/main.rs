@@ -156,6 +156,9 @@ enum PkgAction {
     /// Update dependencies to latest compatible versions
     Update,
 
+    /// Resolve and fetch all dependencies
+    Install,
+
     /// Regenerate the lock file
     Lock,
 
@@ -204,6 +207,7 @@ fn main() {
             PkgAction::Add { dependency } => commands::pkg::add(&dependency),
             PkgAction::Remove { dependency } => commands::pkg::remove(&dependency),
             PkgAction::Update => commands::pkg::update(),
+            PkgAction::Install => commands::pkg::install(),
             PkgAction::Lock => commands::pkg::lock(),
             PkgAction::Publish => commands::pkg::publish(),
         },

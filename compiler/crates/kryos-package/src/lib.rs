@@ -8,6 +8,7 @@ pub mod manifest;
 pub mod resolve;
 pub mod lock;
 pub mod registry;
+pub mod fetch;
 
 pub use manifest::{Manifest, PackageInfo, DepSpec, CapabilitiesConfig, BuildConfig};
 pub use semver::{Version, VersionReq, Op};
