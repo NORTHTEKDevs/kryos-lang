@@ -27,14 +27,23 @@ jobs:
         working-directory: compiler
         run: cargo build --release -j 4
 
-      - name: Test
+      - name: Test (release)
         working-directory: compiler
-        run: cargo test -j 4
+        run: cargo test --release -j 4
 
-      - name: Clippy
+      - name: Clippy (release)
         working-directory: compiler
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --release -j 4 -- -D warnings
 
       - name: Format check
         working-directory: compiler
         run: cargo fmt -- --check
+
+      - name: Smoke test (kryos run)
+        working-directory: compiler
+        run: |
+          cargo run --release -p kryos-cli -- run tests/smoke.kry > smoke_output.txt 2>&1
+          echo "30" > expected.txt
+          echo "2" >> expected.txt
+          echo "Kryos" >> expected.txt
+          diff expected.txt smoke_output.txt

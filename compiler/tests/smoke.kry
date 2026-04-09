@@ -1,0 +1,16 @@
+// Smoke test — exercises core language features.
+struct Point { x: i64, y: i64 }
+
+fn add(a: i64, b: i64) -> i64 {
+    return a + b
+}
+
+fn main() {
+    let p = Point { x: 10, y: 20 }
+    let sum = add(p.x, p.y)
+    println(sum)
+    let arr = [1, 2, 3]
+    println(arr[1])
+    let name = "Kryos"
+    println(name)
+}
