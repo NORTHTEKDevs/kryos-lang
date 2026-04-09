@@ -54,7 +54,8 @@ pub unsafe extern "C" fn kryos_array_new(elem_size: i64, cap: i64) -> *mut Kryos
 #[no_mangle]
 pub unsafe extern "C" fn kryos_array_push(arr: *mut KryosArray, val: i64) {
     if arr.is_null() {
-        return;
+        let msg = b"array is null";
+        crate::panic::kryos_panic(msg.as_ptr(), msg.len());
     }
     let len = (*arr).len as usize;
     let cap = (*arr).cap as usize;
@@ -66,8 +67,8 @@ pub unsafe extern "C" fn kryos_array_push(arr: *mut KryosArray, val: i64) {
         let new_size = new_cap * ELEM_SIZE;
         let new_data = realloc((*arr).data, old_layout, new_size);
         if new_data.is_null() {
-            // Allocation failed — silently drop the push.
-            return;
+            let msg = b"array push: allocation failed";
+            crate::panic::kryos_panic(msg.as_ptr(), msg.len());
         }
         // Zero new region.
         ptr::write_bytes(new_data.add(cap * ELEM_SIZE), 0, (new_cap - cap) * ELEM_SIZE);
@@ -80,39 +81,33 @@ pub unsafe extern "C" fn kryos_array_push(arr: *mut KryosArray, val: i64) {
     (*arr).len = (len + 1) as i64;
 }
 
-/// Get the element at `idx`. Bounds-checked: returns 0 and prints an error
-/// message on out-of-bounds access (trapping would require platform-specific
-/// code; for now we return a safe default).
+/// Get the element at `idx`. Bounds-checked: panics on out-of-bounds access.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_array_get(arr: *const KryosArray, idx: i64) -> i64 {
     if arr.is_null() {
-        return 0;
+        let msg = b"array is null";
+        crate::panic::kryos_panic(msg.as_ptr(), msg.len());
     }
     let len = (*arr).len;
     if idx < 0 || idx >= len {
-        eprintln!(
-            "kryos: array index out of bounds: index {} but length is {}",
-            idx, len
-        );
-        return 0;
+        let msg = format!("array index out of bounds: index {} but length is {}", idx, len);
+        crate::panic::kryos_panic(msg.as_ptr(), msg.len());
     }
     let slot = (*arr).data.add(idx as usize * ELEM_SIZE) as *const i64;
     *slot
 }
 
-/// Set the element at `idx`. Bounds-checked.
+/// Set the element at `idx`. Bounds-checked: panics on out-of-bounds access.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_array_set(arr: *mut KryosArray, idx: i64, val: i64) {
     if arr.is_null() {
-        return;
+        let msg = b"array is null";
+        crate::panic::kryos_panic(msg.as_ptr(), msg.len());
     }
     let len = (*arr).len;
     if idx < 0 || idx >= len {
-        eprintln!(
-            "kryos: array index out of bounds: index {} but length is {}",
-            idx, len
-        );
-        return;
+        let msg = format!("array index out of bounds: index {} but length is {}", idx, len);
+        crate::panic::kryos_panic(msg.as_ptr(), msg.len());
     }
     let slot = (*arr).data.add(idx as usize * ELEM_SIZE) as *mut i64;
     *slot = val;
@@ -232,26 +227,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn out_of_bounds_returns_zero() {
-        unsafe {
-            let arr = kryos_array_new(8, 4);
-            kryos_array_push(arr, 42);
-            // Index 5 is out of bounds.
-            assert_eq!(kryos_array_get(arr, 5), 0);
-            // Negative index.
-            assert_eq!(kryos_array_get(arr, -1), 0);
-            kryos_array_free(arr);
-        }
-    }
+    // out_of_bounds and null_safety tests removed — these now abort via
+    // kryos_panic instead of returning silent defaults.
 
     #[test]
-    fn null_safety() {
+    fn null_len_returns_zero() {
         unsafe {
+            // kryos_array_len still returns 0 for null (no abort).
             assert_eq!(kryos_array_len(std::ptr::null()), 0);
-            assert_eq!(kryos_array_get(std::ptr::null(), 0), 0);
-            kryos_array_push(std::ptr::null_mut(), 1); // should not crash
-            kryos_array_free(std::ptr::null_mut()); // should not crash
+            // kryos_array_free is a no-op for null (no abort).
+            kryos_array_free(std::ptr::null_mut());
         }
     }
 
