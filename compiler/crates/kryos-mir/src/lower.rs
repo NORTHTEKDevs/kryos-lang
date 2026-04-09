@@ -66,6 +66,8 @@ pub struct LoweringContext {
     closure_locals: HashMap<String, (String, Vec<Operand>)>,
     /// Actor definitions: actor_name -> ordered list of (handler_name, param_count).
     actor_defs: HashMap<String, Vec<(String, usize)>>,
+    /// The current `Self` type name — set when lowering trait/impl blocks.
+    current_self_type: Option<String>,
     /// Actor state field layouts: actor_name -> ordered list of (field_name, field_index).
     /// Each field occupies one i64 slot at offset field_index * 8.
     actor_state_fields: HashMap<String, Vec<(String, u32)>>,
@@ -129,6 +131,7 @@ impl LoweringContext {
             func_param_types: HashMap::new(),
             dropped_locals: HashSet::new(),
             current_ret_ty: MirType::Void,
+            current_self_type: None,
         }
     }
 
@@ -143,6 +146,12 @@ impl LoweringContext {
     fn resolve_type(&self, ty: &ast::TypeExpr) -> MirType {
         let mir_ty = lower_type_expr(ty);
         if let MirType::Struct(ref name) = mir_ty {
+            // Resolve `Self` to the current impl/trait target type.
+            if name == "Self" {
+                if let Some(ref self_ty) = self.current_self_type {
+                    return MirType::Struct(self_ty.clone());
+                }
+            }
             // Check enum definitions first — enum types must be distinguished
             // from struct types so that match lowering emits tag extraction.
             if self.enum_defs.contains_key(name.as_str()) {
@@ -461,6 +470,9 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                 }
             }
             ast::Decl::Impl { target, trait_name, methods, .. } => {
+                let prev_self = ctx.current_self_type.take();
+                ctx.current_self_type = Some(target.clone());
+
                 // Register mangled method names in func_ret_types.
                 for method in methods {
                     if let ast::Decl::Function { name, ret_ty, .. } = method {
@@ -538,6 +550,8 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                         mangled_names,
                     );
                 }
+
+                ctx.current_self_type = prev_self;
             }
             ast::Decl::TypeAlias { name, ty, .. } => {
                 let mir_ty = ctx.resolve_type(ty);
@@ -620,6 +634,9 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                 functions.push(func);
             }
             ast::Decl::Impl { target, trait_name, methods, .. } => {
+                let prev_self = ctx.current_self_type.take();
+                ctx.current_self_type = Some(target.clone());
+
                 // Lower each method as a free function with mangled name.
                 let mut impl_method_names = Vec::new();
                 for method in methods {
@@ -743,6 +760,8 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                         impl_method_names,
                     );
                 }
+
+                ctx.current_self_type = prev_self;
             }
             ast::Decl::Actor { name, handlers, .. } => {
                 // Lower each message handler as a free function: ActorName__handler_name.

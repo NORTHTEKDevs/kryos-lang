@@ -1,0 +1,16 @@
+// expect-stdout: 10
+struct Counter {
+    value: i64
+}
+
+impl Counter {
+    fn double(self) -> Self {
+        return Counter { value: self.value * 2 }
+    }
+}
+
+fn main() {
+    let c = Counter { value: 5 }
+    let d = c.double()
+    println(d.value)
+}

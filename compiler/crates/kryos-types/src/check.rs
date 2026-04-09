@@ -26,6 +26,8 @@ pub struct TypeChecker {
     pure_functions: std::collections::HashSet<String>,
     /// Whether we are currently inside a @pure function body.
     in_pure_function: bool,
+    /// The current `Self` type — set when checking trait/impl blocks.
+    current_self_type: Option<Type>,
 }
 
 impl Default for TypeChecker {
@@ -44,6 +46,7 @@ impl TypeChecker {
             deprecated_functions: std::collections::HashSet::new(),
             pure_functions: std::collections::HashSet::new(),
             in_pure_function: false,
+            current_self_type: None,
         }
     }
 
@@ -65,6 +68,15 @@ impl TypeChecker {
     pub fn resolve_type_expr(&mut self, te: &TypeExpr) -> Type {
         match te {
             TypeExpr::Simple { name, span } => {
+                // Resolve `Self` to the current impl/trait target type.
+                if name == "Self" {
+                    return if let Some(ref self_ty) = self.current_self_type {
+                        self_ty.clone()
+                    } else {
+                        self.error("`Self` used outside of impl or trait block", *span);
+                        Type::Error
+                    };
+                }
                 if let Some(ty) = Type::from_name(name) {
                     ty
                 } else {
@@ -391,6 +403,9 @@ impl TypeChecker {
                 methods,
                 ..
             } => {
+                // Set Self type for the duration of this impl block registration.
+                let prev_self = self.current_self_type.take();
+
                 // Resolve the impl target type once for binding `self` params.
                 let impl_target_ty = if self.env.lookup_struct(target).is_some() {
                     Some(Type::Struct {
@@ -405,6 +420,8 @@ impl TypeChecker {
                 } else {
                     None
                 };
+
+                self.current_self_type = impl_target_ty.clone();
 
                 let method_sigs: Vec<FunctionSig> = methods
                     .iter()
@@ -499,6 +516,8 @@ impl TypeChecker {
 
                 self.env
                     .define_impl(target.clone(), trait_name.clone(), all_method_sigs);
+
+                self.current_self_type = prev_self;
             }
             Decl::Trait {
                 name,
@@ -645,6 +664,9 @@ impl TypeChecker {
                 let _ = span; // suppress unused warning
             }
             Decl::Impl { target, methods, .. } => {
+                // Set Self type for the duration of this impl block.
+                let prev_self = self.current_self_type.take();
+
                 // Resolve the target type so we can bind `self` in methods.
                 let target_ty = if self.env.lookup_struct(target).is_some() {
                     Some(Type::Struct {
@@ -659,6 +681,8 @@ impl TypeChecker {
                 } else {
                     None
                 };
+
+                self.current_self_type = target_ty.clone();
 
                 for method in methods {
                     if let (Some(ref ty), Decl::Function { name: mname, body: Some(_), .. }) =
@@ -686,6 +710,8 @@ impl TypeChecker {
                         self.check_decl(method);
                     }
                 }
+
+                self.current_self_type = prev_self;
             }
             _ => {}
         }
