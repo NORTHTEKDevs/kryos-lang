@@ -1585,6 +1585,39 @@ impl TypeChecker {
                         result_ty = Some(arm_ty);
                     }
                 }
+
+                // --- Exhaustiveness check ---
+                let resolved = self.engine.resolve(&subject_ty);
+                let type_name = match &resolved {
+                    Type::Bool => "bool".to_string(),
+                    Type::I8 => "i8".to_string(),
+                    Type::I16 => "i16".to_string(),
+                    Type::I32 => "i32".to_string(),
+                    Type::I64 => "i64".to_string(),
+                    Type::I128 => "i128".to_string(),
+                    Type::U8 => "u8".to_string(),
+                    Type::U16 => "u16".to_string(),
+                    Type::U32 => "u32".to_string(),
+                    Type::U64 => "u64".to_string(),
+                    Type::U128 => "u128".to_string(),
+                    Type::Str => "str".to_string(),
+                    Type::Char => "char".to_string(),
+                    Type::Struct { name, .. } | Type::Enum { name, .. } => name.clone(),
+                    _ => String::new(),
+                };
+                if !type_name.is_empty() {
+                    let enum_def = self.env.lookup_enum(&type_name).cloned();
+                    let pats: Vec<&kryos_ast::Pattern> =
+                        arms.iter().map(|a| &a.pattern).collect();
+                    let warnings = crate::exhaustive::check_exhaustive(
+                        &type_name,
+                        &pats,
+                        enum_def.as_ref(),
+                        *span,
+                    );
+                    self.diagnostics.extend(warnings);
+                }
+
                 result_ty.unwrap_or(Type::Void)
             }
 

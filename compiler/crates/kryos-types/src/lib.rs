@@ -10,6 +10,7 @@ pub mod ty;
 pub mod env;
 pub mod infer;
 pub mod check;
+pub mod exhaustive;
 
 pub use ty::Type;
 pub use env::TypeEnv;

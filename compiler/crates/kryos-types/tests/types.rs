@@ -1117,3 +1117,323 @@ fn multiple_trait_impls_self_resolves_correctly() {
         diags.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+// ── Pattern exhaustiveness ──────────────────────────────────────────
+
+/// Helper: build a match expression inside a function and type-check.
+fn check_match_exhaustive(
+    subject: Expr,
+    arms: Vec<MatchArm>,
+) -> Vec<kryos_errors::Diagnostic> {
+    let match_expr = Expr::MatchExpr {
+        subject: Box::new(subject),
+        arms,
+        span: S,
+    };
+    // Wrap in a function body so type_check can process it.
+    check_module(vec![Decl::Function {
+        name: "test_fn".to_string(),
+        generics: vec![],
+        params: vec![],
+        ret_ty: None,
+        body: Some(Block {
+            stmts: vec![Stmt::Expr {
+                expr: match_expr,
+                span: S,
+            }],
+            span: S,
+        }),
+        public: false,
+        annotations: vec![],
+        doc_comments: vec![],
+        span: S,
+    }])
+}
+
+#[test]
+fn exhaustive_bool_complete() {
+    use kryos_errors::Level;
+
+    let diags = check_match_exhaustive(
+        Expr::BoolLiteral { value: true, span: S },
+        vec![
+            MatchArm {
+                pattern: Pattern::Literal {
+                    expr: Box::new(Expr::BoolLiteral { value: true, span: S }),
+                    span: S,
+                },
+                guard: None,
+                body: Box::new(Expr::IntLiteral { value: 1, span: S }),
+                span: S,
+            },
+            MatchArm {
+                pattern: Pattern::Literal {
+                    expr: Box::new(Expr::BoolLiteral { value: false, span: S }),
+                    span: S,
+                },
+                guard: None,
+                body: Box::new(Expr::IntLiteral { value: 0, span: S }),
+                span: S,
+            },
+        ],
+    );
+    let warnings: Vec<_> = diags.iter().filter(|d| d.level == Level::Warning).collect();
+    assert!(
+        warnings.iter().all(|w| !w.message.contains("non-exhaustive")),
+        "complete bool match should not warn, got: {:?}",
+        warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn exhaustive_bool_missing_false() {
+    use kryos_errors::Level;
+
+    let diags = check_match_exhaustive(
+        Expr::BoolLiteral { value: true, span: S },
+        vec![MatchArm {
+            pattern: Pattern::Literal {
+                expr: Box::new(Expr::BoolLiteral { value: true, span: S }),
+                span: S,
+            },
+            guard: None,
+            body: Box::new(Expr::IntLiteral { value: 1, span: S }),
+            span: S,
+        }],
+    );
+    let warnings: Vec<_> = diags
+        .iter()
+        .filter(|d| d.level == Level::Warning && d.message.contains("non-exhaustive"))
+        .collect();
+    assert!(
+        !warnings.is_empty(),
+        "bool match missing false should warn"
+    );
+    assert!(
+        warnings[0].message.contains("false"),
+        "warning should mention `false`, got: {}",
+        warnings[0].message
+    );
+}
+
+#[test]
+fn exhaustive_enum_complete() {
+    use kryos_errors::Level;
+
+    // enum Color { Red, Green, Blue }
+    // fn test_fn(c: Color) { match c { Color::Red => 1, ... } }
+    let decls = vec![
+        Decl::Enum {
+            name: "Color".to_string(),
+            generics: vec![],
+            variants: vec![
+                EnumVariant { name: "Red".to_string(), fields: vec![], span: S },
+                EnumVariant { name: "Green".to_string(), fields: vec![], span: S },
+                EnumVariant { name: "Blue".to_string(), fields: vec![], span: S },
+            ],
+            public: false,
+            annotations: vec![],
+            doc_comments: vec![],
+            span: S,
+        },
+        Decl::Function {
+            name: "test_fn".to_string(),
+            generics: vec![],
+            params: vec![Param {
+                name: "c".to_string(),
+                ty: Some(TypeExpr::Simple { name: "Color".to_string(), span: S }),
+                default: None,
+                span: S,
+            }],
+            ret_ty: None,
+            body: Some(Block {
+                stmts: vec![Stmt::Expr {
+                    expr: Expr::MatchExpr {
+                        subject: Box::new(Expr::Identifier { name: "c".to_string(), span: S }),
+                        arms: vec![
+                            MatchArm {
+                                pattern: Pattern::Enum {
+                                    name: "Color".to_string(),
+                                    variant: "Red".to_string(),
+                                    fields: vec![],
+                                    span: S,
+                                },
+                                guard: None,
+                                body: Box::new(Expr::IntLiteral { value: 1, span: S }),
+                                span: S,
+                            },
+                            MatchArm {
+                                pattern: Pattern::Enum {
+                                    name: "Color".to_string(),
+                                    variant: "Green".to_string(),
+                                    fields: vec![],
+                                    span: S,
+                                },
+                                guard: None,
+                                body: Box::new(Expr::IntLiteral { value: 2, span: S }),
+                                span: S,
+                            },
+                            MatchArm {
+                                pattern: Pattern::Enum {
+                                    name: "Color".to_string(),
+                                    variant: "Blue".to_string(),
+                                    fields: vec![],
+                                    span: S,
+                                },
+                                guard: None,
+                                body: Box::new(Expr::IntLiteral { value: 3, span: S }),
+                                span: S,
+                            },
+                        ],
+                        span: S,
+                    },
+                    span: S,
+                }],
+                span: S,
+            }),
+            public: false,
+            annotations: vec![],
+            doc_comments: vec![],
+            span: S,
+        },
+    ];
+    let diags = check_module(decls);
+    let warnings: Vec<_> = diags.iter().filter(|d| d.level == Level::Warning).collect();
+    assert!(
+        warnings.iter().all(|w| !w.message.contains("non-exhaustive")),
+        "complete enum match should not warn, got: {:?}",
+        warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn exhaustive_enum_missing_variant() {
+    use kryos_errors::Level;
+
+    let decls = vec![
+        Decl::Enum {
+            name: "Color".to_string(),
+            generics: vec![],
+            variants: vec![
+                EnumVariant { name: "Red".to_string(), fields: vec![], span: S },
+                EnumVariant { name: "Green".to_string(), fields: vec![], span: S },
+                EnumVariant { name: "Blue".to_string(), fields: vec![], span: S },
+            ],
+            public: false,
+            annotations: vec![],
+            doc_comments: vec![],
+            span: S,
+        },
+        Decl::Function {
+            name: "test_fn".to_string(),
+            generics: vec![],
+            params: vec![Param {
+                name: "c".to_string(),
+                ty: Some(TypeExpr::Simple { name: "Color".to_string(), span: S }),
+                default: None,
+                span: S,
+            }],
+            ret_ty: None,
+            body: Some(Block {
+                stmts: vec![Stmt::Expr {
+                    expr: Expr::MatchExpr {
+                        subject: Box::new(Expr::Identifier { name: "c".to_string(), span: S }),
+                        arms: vec![MatchArm {
+                            pattern: Pattern::Enum {
+                                name: "Color".to_string(),
+                                variant: "Red".to_string(),
+                                fields: vec![],
+                                span: S,
+                            },
+                            guard: None,
+                            body: Box::new(Expr::IntLiteral { value: 1, span: S }),
+                            span: S,
+                        }],
+                        span: S,
+                    },
+                    span: S,
+                }],
+                span: S,
+            }),
+            public: false,
+            annotations: vec![],
+            doc_comments: vec![],
+            span: S,
+        },
+    ];
+    let diags = check_module(decls);
+    let warnings: Vec<_> = diags
+        .iter()
+        .filter(|d| d.level == Level::Warning && d.message.contains("non-exhaustive"))
+        .collect();
+    assert!(
+        !warnings.is_empty(),
+        "enum match missing variants should warn"
+    );
+    assert!(
+        warnings[0].message.contains("Blue") && warnings[0].message.contains("Green"),
+        "warning should list missing variants, got: {}",
+        warnings[0].message
+    );
+}
+
+#[test]
+fn exhaustive_int_without_wildcard() {
+    use kryos_errors::Level;
+
+    let diags = check_match_exhaustive(
+        Expr::IntLiteral { value: 42, span: S },
+        vec![MatchArm {
+            pattern: Pattern::Literal {
+                expr: Box::new(Expr::IntLiteral { value: 42, span: S }),
+                span: S,
+            },
+            guard: None,
+            body: Box::new(Expr::IntLiteral { value: 1, span: S }),
+            span: S,
+        }],
+    );
+    let warnings: Vec<_> = diags
+        .iter()
+        .filter(|d| d.level == Level::Warning && d.message.contains("non-exhaustive"))
+        .collect();
+    assert!(
+        !warnings.is_empty(),
+        "integer match without wildcard should warn"
+    );
+}
+
+#[test]
+fn exhaustive_wildcard_covers_all() {
+    use kryos_errors::Level;
+
+    let diags = check_match_exhaustive(
+        Expr::IntLiteral { value: 42, span: S },
+        vec![
+            MatchArm {
+                pattern: Pattern::Literal {
+                    expr: Box::new(Expr::IntLiteral { value: 42, span: S }),
+                    span: S,
+                },
+                guard: None,
+                body: Box::new(Expr::IntLiteral { value: 1, span: S }),
+                span: S,
+            },
+            MatchArm {
+                pattern: Pattern::Wildcard { span: S },
+                guard: None,
+                body: Box::new(Expr::IntLiteral { value: 0, span: S }),
+                span: S,
+            },
+        ],
+    );
+    let warnings: Vec<_> = diags
+        .iter()
+        .filter(|d| d.level == Level::Warning && d.message.contains("non-exhaustive"))
+        .collect();
+    assert!(
+        warnings.is_empty(),
+        "wildcard should satisfy exhaustiveness, got: {:?}",
+        warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
