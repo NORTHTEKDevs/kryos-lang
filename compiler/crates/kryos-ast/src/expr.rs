@@ -97,6 +97,9 @@ pub enum Expr {
 
     Cast { expr: Box<Expr>, ty: TypeExpr, span: Span },
     Block { block: Block, span: Span },
+
+    /// Await expression: `await expr`
+    Await { value: Box<Expr>, span: Span },
 }
 
 impl Expr {
@@ -119,7 +122,8 @@ impl Expr {
             Self::SharedExpr { span, .. } |
             Self::MoveExpr { span, .. } | Self::WeakExpr { span, .. } |
             Self::ComptimeBlock { span, .. } | Self::QuantumBlock { span, .. } |
-            Self::Cast { span, .. } | Self::Block { span, .. } => *span,
+            Self::Cast { span, .. } | Self::Block { span, .. } |
+            Self::Await { span, .. } => *span,
         }
     }
 }

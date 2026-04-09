@@ -54,8 +54,8 @@ fn prefix_binding_power(kind: TokenKind) -> Option<u8> {
         TokenKind::Minus | TokenKind::Not | TokenKind::Tilde | TokenKind::Star => Some(24),
         // & (borrow / address-of) — same precedence as other unary prefix ops
         TokenKind::Amp => Some(24),
-        // shared / move / weak — prefix keyword operators (very low, just above range)
-        TokenKind::Shared | TokenKind::Move | TokenKind::Weak => Some(3),
+        // shared / move / weak / await — prefix keyword operators (very low, just above range)
+        TokenKind::Shared | TokenKind::Move | TokenKind::Weak | TokenKind::Await => Some(3),
         _ => None,
     }
 }
@@ -265,7 +265,17 @@ impl Parser {
         let public = self.eat(TokenKind::Pub);
 
         match self.peek_kind() {
-            TokenKind::Fn => Some(self.parse_fn_decl(public, annotations, doc_comments)),
+            TokenKind::Fn => Some(self.parse_fn_decl(public, false, annotations, doc_comments)),
+            TokenKind::Async => {
+                self.advance(); // consume `async`
+                if self.check(TokenKind::Fn) {
+                    Some(self.parse_fn_decl(public, true, annotations, doc_comments))
+                } else {
+                    let span = self.peek().span;
+                    self.error("expected `fn` after `async`".to_string(), span);
+                    None
+                }
+            }
             TokenKind::Struct => Some(self.parse_struct_decl(public, annotations, doc_comments)),
             TokenKind::Enum => Some(self.parse_enum_decl(public, annotations, doc_comments)),
             TokenKind::Trait => Some(self.parse_trait_decl(public, doc_comments)),
@@ -335,7 +345,7 @@ impl Parser {
         generics
     }
 
-    fn parse_fn_decl(&mut self, public: bool, annotations: Vec<Annotation>, doc_comments: Vec<String>) -> Decl {
+    fn parse_fn_decl(&mut self, public: bool, is_async: bool, annotations: Vec<Annotation>, doc_comments: Vec<String>) -> Decl {
         let fn_tok = self.expect(TokenKind::Fn);
         let start = fn_tok.span;
         let (name, _) = self.expect_name();
@@ -366,6 +376,7 @@ impl Parser {
             ret_ty,
             body,
             public,
+            is_async,
             annotations,
             doc_comments,
             span: start.merge(end),
@@ -517,7 +528,7 @@ impl Parser {
         let mut methods = Vec::new();
         while !self.check(TokenKind::RBrace) && !self.at_end() {
             let method_docs = self.collect_doc_comments();
-            methods.push(self.parse_fn_decl(false, Vec::new(), method_docs));
+            methods.push(self.parse_fn_decl(false, false, Vec::new(), method_docs));
         }
         let rbrace = self.expect(TokenKind::RBrace);
         Decl::Trait {
@@ -550,7 +561,7 @@ impl Parser {
         while !self.check(TokenKind::RBrace) && !self.at_end() {
             let method_docs = self.collect_doc_comments();
             let pub_method = self.eat(TokenKind::Pub);
-            methods.push(self.parse_fn_decl(pub_method, Vec::new(), method_docs));
+            methods.push(self.parse_fn_decl(pub_method, false, Vec::new(), method_docs));
         }
         let rbrace = self.expect(TokenKind::RBrace);
         Decl::Impl {
@@ -731,7 +742,7 @@ impl Parser {
         self.expect(TokenKind::LBrace);
         let mut items = Vec::new();
         while !self.check(TokenKind::RBrace) && !self.at_end() {
-            items.push(self.parse_fn_decl(false, Vec::new(), Vec::new()));
+            items.push(self.parse_fn_decl(false, false, Vec::new(), Vec::new()));
         }
         let rbrace = self.expect(TokenKind::RBrace);
         Decl::Extern {
@@ -1291,6 +1302,11 @@ impl Parser {
                     let inner = self.parse_expr_bp(bp);
                     let end = inner.span();
                     Expr::WeakExpr { inner: Box::new(inner), span: start.merge(end) }
+                }
+                TokenKind::Await => {
+                    let value = self.parse_expr_bp(bp);
+                    let end = value.span();
+                    Expr::Await { value: Box::new(value), span: start.merge(end) }
                 }
                 _ => unreachable!(),
             }

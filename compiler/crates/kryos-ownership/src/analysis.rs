@@ -937,6 +937,9 @@ impl OwnershipAnalyzer {
                 self.analyze_block(body);
                 self.pop_scope();
             }
+            Expr::Await { value, .. } => {
+                self.analyze_expr_use(value);
+            }
             // Literals don't involve ownership.
             Expr::IntLiteral { .. }
             | Expr::FloatLiteral { .. }

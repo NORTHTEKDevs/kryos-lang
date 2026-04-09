@@ -51,6 +51,7 @@ fn fn_decl(name: &str, annotations: Vec<Annotation>, body_stmts: Vec<Stmt>) -> D
             span: span(),
         }),
         public: false,
+        is_async: false,
         annotations,
         doc_comments: vec![],
         span: span(),

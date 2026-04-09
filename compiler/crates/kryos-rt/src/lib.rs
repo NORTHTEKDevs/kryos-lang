@@ -27,5 +27,6 @@ pub mod panic;
 pub mod spawn;
 pub mod string;
 pub mod tensor;
+pub mod future;
 pub mod stack_guard;
 pub mod trace;

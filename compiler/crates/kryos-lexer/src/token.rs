@@ -28,6 +28,7 @@ pub enum TokenKind {
     Parallel, Quantum, Comptime,
     Match, And, Or, Not,
     Try, Catch, Throw,
+    Async, Await,
     Shared, Weak, Move,
 
     // --- Operators ---
@@ -72,6 +73,7 @@ impl TokenKind {
             Self::Ask | Self::Chan | Self::Parallel | Self::Quantum | Self::Comptime |
             Self::Match | Self::And | Self::Or | Self::Not |
             Self::Try | Self::Catch | Self::Throw |
+            Self::Async | Self::Await |
             Self::Shared | Self::Weak | Self::Move |
             Self::True | Self::False | Self::None
         )
@@ -141,6 +143,8 @@ pub fn keyword_lookup(word: &str) -> Option<TokenKind> {
         "try" => TokenKind::Try,
         "catch" => TokenKind::Catch,
         "throw" => TokenKind::Throw,
+        "async" => TokenKind::Async,
+        "await" => TokenKind::Await,
         "shared" => TokenKind::Shared,
         "weak" => TokenKind::Weak,
         "move" => TokenKind::Move,

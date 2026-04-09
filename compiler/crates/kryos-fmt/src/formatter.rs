@@ -124,9 +124,10 @@ impl Formatter {
                 ret_ty,
                 body,
                 public,
+                is_async,
                 annotations,
                 ..
-            } => self.fmt_function(name, generics, params, ret_ty, body, *public, annotations),
+            } => self.fmt_function(name, generics, params, ret_ty, body, *public, *is_async, annotations),
 
             Decl::Struct {
                 name,
@@ -248,10 +249,14 @@ impl Formatter {
         ret_ty: &Option<TypeExpr>,
         body: &Option<Block>,
         public: bool,
+        is_async: bool,
         annotations: &[Annotation],
     ) {
         self.fmt_annotations(annotations);
         self.write_indent();
+        if is_async {
+            self.write("async ");
+        }
 
         // Build the one-line signature to measure length
         let sig_oneline = self.build_fn_signature_oneline(name, generics, params, ret_ty, public);
@@ -1130,6 +1135,10 @@ impl Formatter {
                 s.push_str(&indent_str);
                 s.push('}');
                 s
+            }
+
+            Expr::Await { value, .. } => {
+                format!("await {}", self.fmt_expr_to_string(value))
             }
         }
     }

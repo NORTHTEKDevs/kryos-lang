@@ -59,6 +59,7 @@ pub enum Decl {
         ret_ty: Option<TypeExpr>,
         body: Option<Block>,
         public: bool,
+        is_async: bool,
         annotations: Vec<Annotation>,
         doc_comments: Vec<String>,
         span: Span,

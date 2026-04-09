@@ -3597,6 +3597,11 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             RValue::ConstNone
         }
 
+        // Await — for MVP, lower as a direct call (no coroutine transform).
+        ast::Expr::Await { value, .. } => {
+            lower_expr_to_rvalue(ctx, value)
+        }
+
     }
 }
 

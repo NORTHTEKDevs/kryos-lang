@@ -479,6 +479,9 @@ impl CapabilityChecker {
             Expr::Block { block, .. } => {
                 self.check_block(block);
             }
+            Expr::Await { value, .. } => {
+                self.check_expr(value);
+            }
             Expr::RangeExpr { start, end, .. } => {
                 if let Some(s) = start {
                     self.check_expr(s);
@@ -728,6 +731,7 @@ mod tests {
                 span: span(),
             }),
             public: false,
+            is_async: false,
             annotations: if caps.is_empty() {
                 vec![]
             } else {
@@ -921,6 +925,7 @@ mod tests {
                 ret_ty: None,
                 body: Some(empty_block()),
                 public: false,
+                is_async: false,
                 annotations: vec![ann("capabilities", vec!["net", "banana"])],
                 doc_comments: vec![],
                 span: span(),

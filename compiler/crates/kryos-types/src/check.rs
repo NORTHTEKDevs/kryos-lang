@@ -1783,6 +1783,12 @@ impl TypeChecker {
                 self.env.pop_scope();
                 Type::Void
             }
+
+            // Await expression — for now, just pass through the inner type.
+            // A full implementation would unwrap Future<T> → T.
+            Expr::Await { value, .. } => {
+                self.infer_expr(value)
+            }
         }
     }
 
