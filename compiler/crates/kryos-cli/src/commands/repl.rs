@@ -25,6 +25,12 @@ pub fn execute() -> Result<(), String> {
     let mut reader = stdin.lock();
     let mut line = String::new();
 
+    // Accumulated state across REPL inputs.
+    // `decl_history` holds top-level items (fn, struct, enum, impl, trait, const).
+    // `let_history` holds let/const bindings that go inside the wrapper function.
+    let mut decl_history: Vec<String> = Vec::new();
+    let mut let_history: Vec<String> = Vec::new();
+
     loop {
         if !running.load(std::sync::atomic::Ordering::SeqCst) {
             eprintln!("\ninterrupted");
@@ -55,6 +61,7 @@ pub fn execute() -> Result<(), String> {
                 println!("  :quit, :q     Exit the REPL");
                 println!("  :type <expr>  Show the type of an expression");
                 println!("  :clear        Clear the screen");
+                println!("  :reset        Clear accumulated definitions");
                 println!();
                 println!("Enter any Kryos expression or statement to evaluate.");
             }
@@ -63,10 +70,17 @@ pub fn execute() -> Result<(), String> {
                 print!("\x1b[2J\x1b[H");
                 stdout.flush().map_err(|e| e.to_string())?;
             }
+            ":reset" => {
+                decl_history.clear();
+                let_history.clear();
+                println!("(state cleared)");
+            }
             input if input.starts_with(":type ") => {
                 let expr = &input[6..];
-                // Wrap in a function so the parser can handle it
-                let wrapper = format!("fn __repl_type_check__() {{ let __result__ = {expr}; }}");
+                // Wrap in a function with accumulated state so prior definitions are visible.
+                let preamble = decl_history.join("\n");
+                let lets = let_history.join("\n");
+                let wrapper = format!("{preamble}\nfn __repl_type_check__() {{ {lets}\nlet __result__ = {expr}; }}");
                 let (diags, sm) = kryos_driver::check_source(&wrapper, "<repl>");
                 if diags.iter().any(|d| d.is_error()) {
                     for d in &diags {
@@ -81,12 +95,28 @@ pub fn execute() -> Result<(), String> {
                 }
             }
             input => {
-                // Wrap input as a function body so the pipeline can handle it.
-                let wrapper = if input.contains("let ") || input.contains('=') || input.ends_with(';') {
-                    format!("fn __repl_eval__() {{ {input} }}")
+                // Classify input: declaration (top-level) vs let-binding vs expression.
+                let is_decl = input.starts_with("fn ")
+                    || input.starts_with("struct ")
+                    || input.starts_with("enum ")
+                    || input.starts_with("impl ")
+                    || input.starts_with("trait ")
+                    || input.starts_with("const ");
+                let is_let = input.starts_with("let ");
+
+                // Build the source with accumulated state.
+                let preamble = decl_history.join("\n");
+                let lets = let_history.join("\n");
+
+                let wrapper = if is_decl {
+                    // Top-level declaration — place it alongside history,
+                    // with an empty eval body just to validate.
+                    format!("{preamble}\n{input}\nfn __repl_eval__() {{ {lets} }}")
+                } else if is_let || input.contains('=') || input.ends_with(';') {
+                    format!("{preamble}\nfn __repl_eval__() {{ {lets}\n{input} }}")
                 } else {
                     // Bare expression — wrap as a let binding so the parser accepts it.
-                    format!("fn __repl_eval__() {{ let __expr__ = {input} }}")
+                    format!("{preamble}\nfn __repl_eval__() {{ {lets}\nlet __expr__ = {input} }}")
                 };
 
                 let config = kryos_driver::BuildConfig::for_file("<repl>");
@@ -97,28 +127,37 @@ pub fn execute() -> Result<(), String> {
                         let rendered = kryos_errors::render_diagnostic(d, &result.source_map);
                         eprint!("{rendered}");
                     }
-                } else if let Some(ref mir) = result.mir {
-                    // Try JIT compilation via the Cranelift backend.
-                    let backend = kryos_codegen_cranelift::CraneliftBackend::new();
-                    // Find the __repl_eval__ function in MIR.
-                    if let Some(func) = mir.functions.iter().find(|f| f.name == "__repl_eval__") {
-                        match backend.jit_compile_function(func) {
-                            Ok(ptr) => {
-                                // Execute the JIT'd function.
-                                // Safety: `ptr` points to JIT-compiled code with the
-                                // signature `fn()` produced by the Cranelift backend.
-                                let f: fn() = unsafe { std::mem::transmute(ptr) };
-                                f();
+                } else {
+                    // Compilation succeeded — accumulate into history.
+                    if is_decl {
+                        decl_history.push(input.to_string());
+                    } else if is_let {
+                        let_history.push(input.to_string());
+                    }
+
+                    if let Some(ref mir) = result.mir {
+                        // Try JIT compilation via the Cranelift backend.
+                        let backend = kryos_codegen_cranelift::CraneliftBackend::new();
+                        // Find the __repl_eval__ function in MIR.
+                        if let Some(func) = mir.functions.iter().find(|f| f.name == "__repl_eval__") {
+                            match backend.jit_compile_function(func) {
+                                Ok(ptr) => {
+                                    // Execute the JIT'd function.
+                                    // Safety: `ptr` points to JIT-compiled code with the
+                                    // signature `fn()` produced by the Cranelift backend.
+                                    let f: fn() = unsafe { std::mem::transmute(ptr) };
+                                    f();
+                                }
+                                Err(e) => {
+                                    eprintln!("JIT error: {e}");
+                                }
                             }
-                            Err(e) => {
-                                eprintln!("JIT error: {e}");
-                            }
+                        } else {
+                            eprintln!("(internal: __repl_eval__ not found in MIR)");
                         }
                     } else {
-                        eprintln!("(internal: __repl_eval__ not found in MIR)");
+                        println!("(no output)");
                     }
-                } else {
-                    println!("(no output)");
                 }
             }
         }
