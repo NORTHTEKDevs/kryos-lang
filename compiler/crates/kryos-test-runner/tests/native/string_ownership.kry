@@ -1,0 +1,8 @@
+// expect-stdout: hello
+// expect-stdout: world
+fn main() {
+    let s = "hello"
+    println(s)
+    let t = "world"
+    println(t)
+}

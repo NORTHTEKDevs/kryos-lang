@@ -43,9 +43,10 @@ impl OwnershipScope {
     }
 }
 
-/// Set of known copy type names (primitives + builtins).
-/// `str` is included because at runtime strings are immutable i64
-/// handles — copying the handle is cheap and safe (no aliased mutation).
+/// Set of known copy type names (primitives only).
+/// Strings are NOT copy — they are heap-allocated and tracked by
+/// ownership.  String *literals* are still considered copy via
+/// `expr_is_copy` (they are interned/static data).
 fn is_primitive_copy_type(name: &str) -> bool {
     matches!(
         name,
@@ -54,7 +55,6 @@ fn is_primitive_copy_type(name: &str) -> bool {
             | "f32" | "f64"
             | "bool" | "char"
             | "usize" | "isize"
-            | "str"
     )
 }
 
@@ -185,8 +185,9 @@ impl OwnershipAnalyzer {
             // Function calls: check builtins, then declared function return types.
             Expr::FnCall { callee, .. } => {
                 if let Expr::Identifier { name, .. } = callee.as_ref() {
-                    // Known builtins that return copy types (including str,
-                    // which is copy in Kryos).
+                    // Known builtins that return copy types.  String-returning
+                    // builtins (to_string, substr, etc.) are copy because they
+                    // produce fresh allocations the caller fully owns.
                     if matches!(
                         name.as_str(),
                         "len" | "parse_int" | "parse_float" | "time_now" | "abs"
