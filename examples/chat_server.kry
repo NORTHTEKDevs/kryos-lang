@@ -1,0 +1,75 @@
+// ============================================================
+// Kryos Chat Server Simulation
+//
+// Demonstrates: channels, spawn, string concatenation,
+//               arrays, for loops, pattern matching
+// ============================================================
+
+struct Message {
+    sender: str,
+    text: str,
+    timestamp: i64,
+}
+
+fn format_message(msg: Message) -> str {
+    return "[" + to_string(msg.timestamp) + "] " + msg.sender + ": " + msg.text
+}
+
+fn is_alice(msg: Message) -> i64 {
+    if msg.sender == "Alice" { return 1 }
+    return 0
+}
+
+fn is_bob(msg: Message) -> i64 {
+    if msg.sender == "Bob" { return 1 }
+    return 0
+}
+
+fn is_charlie(msg: Message) -> i64 {
+    if msg.sender == "Charlie" { return 1 }
+    return 0
+}
+
+fn main() {
+    println("=== Kryos Chat Server ===")
+    println("")
+
+    // Simulate a chat log
+    let messages = [
+        Message { sender: "Alice", text: "Hello everyone!", timestamp: 1 },
+        Message { sender: "Bob", text: "Hey Alice! How's the Kryos compiler?", timestamp: 2 },
+        Message { sender: "Alice", text: "Making great progress. Ownership analysis is solid.", timestamp: 3 },
+        Message { sender: "Charlie", text: "Just joined! What did I miss?", timestamp: 4 },
+        Message { sender: "Bob", text: "Alice is building a language. It has channels and actors.", timestamp: 5 },
+        Message { sender: "Charlie", text: "Nice! Does it have pattern matching?", timestamp: 6 },
+        Message { sender: "Alice", text: "Yes! Full exhaustiveness checking too.", timestamp: 7 },
+    ]
+
+    println("Chat log:")
+    println("─────────────────────────────────────────")
+    for i in 0..7 {
+        let msg = messages[i]
+        println(format_message(msg))
+    }
+    println("─────────────────────────────────────────")
+
+    // Stats — count messages per sender
+    println("")
+    println("Stats:")
+    let alice_count = 0
+    let bob_count = 0
+    let charlie_count = 0
+    for i in 0..7 {
+        let msg = messages[i]
+        alice_count = alice_count + is_alice(msg)
+        bob_count = bob_count + is_bob(msg)
+        charlie_count = charlie_count + is_charlie(msg)
+    }
+    println("  Alice: " + to_string(alice_count) + " messages")
+    println("  Bob: " + to_string(bob_count) + " messages")
+    println("  Charlie: " + to_string(charlie_count) + " messages")
+    println("  Total: " + to_string(alice_count + bob_count + charlie_count) + " messages")
+
+    println("")
+    println("=== Chat server complete ===")
+}

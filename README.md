@@ -110,6 +110,8 @@ kryos doc <file>              Generate documentation
 kryos bindgen <header>        Generate Kryos bindings from C headers
 kryos pkg init                Create new project
 kryos pkg add <dep>           Add dependency
+kryos pkg install             Resolve and fetch dependencies
+kryos pkg publish             Package for registry
 kryos version                 Print version info
 ```
 
@@ -189,10 +191,78 @@ fn fetch() {
 
 See the [language manual](docs/README.md) for complete documentation.
 
+## Showcase
+
+**Ray Tracer** -- structs, impl methods, and nested math in pure Kryos:
+
+```
+struct Vec3 { x: i64, y: i64, z: i64 }
+
+impl Vec3 {
+    fn dot(self, other: Vec3) -> i64 {
+        return self.x * other.x + self.y * other.y + self.z * other.z
+    }
+
+    fn sub(self, other: Vec3) -> Vec3 {
+        return Vec3 {
+            x: self.x - other.x,
+            y: self.y - other.y,
+            z: self.z - other.z,
+        }
+    }
+}
+
+fn hit_sphere(sphere: Sphere, ray: Ray) -> i64 {
+    let oc_x = ray.ox - sphere.cx
+    let a = ray.dx * ray.dx + ray.dy * ray.dy + ray.dz * ray.dz
+    let b = 2 * (oc_x * ray.dx + oc_y * ray.dy + oc_z * ray.dz)
+    let discriminant = b * b - 4 * a * c
+    if discriminant >= 0 { return 1 }
+    return 0
+}
+```
+
+Renders a sphere as ASCII art (see [`ray_tracer.kry`](examples/ray_tracer.kry)).
+
+**Neural Network** -- fixed-point XOR gate that solves 4/4:
+
+```
+struct Neuron { w1: i64, w2: i64, bias: i64 }
+
+fn sigmoid(x: i64) -> i64 {
+    let result = 50 + x / 4
+    if result < 0 { return 0 }
+    if result > 100 { return 100 }
+    return result
+}
+
+fn neuron_forward(n: Neuron, x1: i64, x2: i64) -> i64 {
+    let sum = n.w1 * x1 + n.w2 * x2 + n.bias * 100
+    return sigmoid(sum / 100)
+}
+```
+
+Full network with forward pass and accuracy table (see [`neural_net.kry`](examples/neural_net.kry)).
+
+**Chat Server** -- structs, arrays, string ops, function dispatch:
+
+```
+struct Message { sender: str, text: str, timestamp: i64 }
+
+fn format_message(msg: Message) -> str {
+    return "[" + to_string(msg.timestamp) + "] " + msg.sender + ": " + msg.text
+}
+```
+
+Iterates a chat log and computes per-user message stats (see [`chat_server.kry`](examples/chat_server.kry)).
+
 ## Examples
 
 | File | Demonstrates |
 |------|-------------|
+| [`ray_tracer.kry`](examples/ray_tracer.kry) | Structs, impl methods, ray-sphere intersection, ASCII rendering |
+| [`neural_net.kry`](examples/neural_net.kry) | Fixed-point neural network, XOR gate, forward pass |
+| [`chat_server.kry`](examples/chat_server.kry) | Struct arrays, string concatenation, function dispatch, stats |
 | [`demo.kry`](examples/demo.kry) | Recursion, higher-order functions, float math, error handling, maps, structs, arrays, strings |
 | [`imports_demo.kry`](examples/imports_demo.kry) | Multi-file imports with `use mylib` |
 | [`math_imports_demo.kry`](examples/math_imports_demo.kry) | Selective stdlib imports with `use std::math::{abs, min, max}` |
@@ -222,7 +292,7 @@ stage-2 == stage-3        -> compiler faithfully reproduces itself
 
 ## Status
 
-**v0.2.0** -- 21-crate Rust compiler with 748 passing tests and zero clippy warnings. Core language features are fully implemented: type inference, ownership analysis, generics with monomorphization, `dyn Trait`, `comptime`, pattern matching, concurrency primitives, cross-function error propagation, module imports, and capability enforcement. Dual backends: Cranelift for fast builds, LLVM for optimized release binaries. The self-hosted compiler type-checks cleanly and produces a working stage-1 native binary.
+**v0.3.1** -- 21-crate Rust compiler with 765 passing tests and zero clippy warnings. Core language features are fully implemented: type inference, ownership analysis, generics with monomorphization, `dyn Trait`, `comptime`, pattern matching, async/await, concurrency primitives, cross-function error propagation, module imports, and capability enforcement. Runtime safety: bounds-checked arrays, null-safe struct access, integer overflow detection, stack overflow protection. Structured error codes (E0001--E0302) with "did you mean?" suggestions. Dual backends: Cranelift for fast builds, LLVM for optimized release binaries. Full package manager with dependency resolution, lock files, and remote fetching. The self-hosted compiler type-checks cleanly and produces a working stage-1 native binary.
 
 ### Roadmap
 
