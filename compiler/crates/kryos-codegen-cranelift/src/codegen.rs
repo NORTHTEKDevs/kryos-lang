@@ -270,6 +270,59 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Closure env-wrapper (thunk) generation
+    // -----------------------------------------------------------------------
+    // Scan all MIR functions for RValue::Closure to collect info about which
+    // functions are used as closure values and how many captures they have.
+    // For each, we generate a thunk `{name}_env(env, user_args...) -> i64`
+    // that unpacks captures from the env pointer and calls the original.
+    // This gives ALL function values a uniform env-based calling convention:
+    //   env layout: [thunk_fn_ptr, cap0, cap1, ...]
+    //   CallIndirect: load fn from env[0], call fn(env, user_args...)
+    let mir_func_map: HashMap<&str, &MirFunction> = module.functions.iter()
+        .map(|f| (f.name.as_str(), f))
+        .collect();
+
+    // Maps func_name -> (num_captures, user_param_count).
+    let mut closure_info: HashMap<String, (usize, usize)> = HashMap::new();
+    for mir_func in &module.functions {
+        for bb in &mir_func.blocks {
+            for inst in &bb.instructions {
+                if let Instruction::Assign { value: RValue::Closure { func_name, captures }, .. } = inst {
+                    if !closure_info.contains_key(func_name.as_str()) {
+                        let user_params = if let Some(f) = mir_func_map.get(func_name.as_str()) {
+                            f.params.len().saturating_sub(captures.len())
+                        } else {
+                            0
+                        };
+                        closure_info.insert(func_name.clone(), (captures.len(), user_params));
+                    }
+                }
+            }
+        }
+    }
+
+    // Declare thunk functions in the module.
+    let mut thunk_ids: HashMap<String, FuncId> = HashMap::new();
+    {
+        let call_conv = object_module.isa().default_call_conv();
+        for (func_name, (_, user_param_count)) in &closure_info {
+            let env_thunk_name = format!("{func_name}_env");
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // env pointer
+            for _ in 0..*user_param_count {
+                sig.params.push(AbiParam::new(types::I64));
+            }
+            sig.returns.push(AbiParam::new(types::I64));
+            let id = object_module.declare_function(
+                &env_thunk_name, Linkage::Export, &sig,
+            )?;
+            thunk_ids.insert(func_name.clone(), id);
+            func_ids.insert(env_thunk_name, id);
+        }
+    }
+
     // Declare and define ARC runtime stub functions.
     // These are no-op stubs until a proper runtime library is linked.
     // We define them locally so the linker doesn't require an external runtime.
@@ -796,6 +849,113 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
                 eprintln!("[kryos] full error details: {e:#?}");
                 CodegenError::Module(e)
             })?;
+    }
+
+    // Generate env-wrapper (thunk) function bodies for closures.
+    for (func_name, (num_captures, user_param_count)) in &closure_info {
+        let env_thunk_id = thunk_ids[func_name.as_str()];
+        let call_conv = object_module.isa().default_call_conv();
+
+        let mut sig = Signature::new(call_conv);
+        sig.params.push(AbiParam::new(types::I64)); // env
+        for _ in 0..*user_param_count {
+            sig.params.push(AbiParam::new(types::I64));
+        }
+        sig.returns.push(AbiParam::new(types::I64));
+
+        let mut cl_func = Function::with_name_signature(
+            UserFuncName::user(0, env_thunk_id.as_u32()),
+            sig,
+        );
+
+        {
+            let mut builder = FunctionBuilder::new(&mut cl_func, &mut fb_ctx);
+            let entry = builder.create_block();
+            builder.append_block_params_for_function_params(entry);
+            builder.switch_to_block(entry);
+
+            let block_params: Vec<_> = builder.block_params(entry).to_vec();
+            let env_val = block_params[0];
+
+            // Load captures from env at offsets 8, 16, ...
+            let mut call_args: Vec<cranelift_codegen::ir::Value> = Vec::new();
+            for i in 0..*num_captures {
+                let offset = ((i + 1) * 8) as i32;
+                let cap = builder.ins().load(types::I64, MemFlags::new(), env_val, offset);
+                call_args.push(cap);
+            }
+
+            // Append user args from thunk parameters (indices 1..)
+            for i in 0..*user_param_count {
+                call_args.push(block_params[1 + i]);
+            }
+
+            // Get reference to the original function.
+            let orig_id = func_ids[func_name.as_str()];
+
+            // Coerce args to match original function's signature types.
+            let orig_sig = if let Some(f) = mir_func_map.get(func_name.as_str()) {
+                build_signature(f, call_conv)
+            } else {
+                let mut s = Signature::new(call_conv);
+                for _ in 0..call_args.len() {
+                    s.params.push(AbiParam::new(types::I64));
+                }
+                s.returns.push(AbiParam::new(types::I64));
+                s
+            };
+
+            for (i, arg) in call_args.iter_mut().enumerate() {
+                if i < orig_sig.params.len() {
+                    let expected = orig_sig.params[i].value_type;
+                    let actual = builder.func.dfg.value_type(*arg);
+                    if expected != actual {
+                        if expected.is_int() && actual.is_int() {
+                            if expected.bits() < actual.bits() {
+                                *arg = builder.ins().ireduce(expected, *arg);
+                            } else {
+                                *arg = builder.ins().sextend(expected, *arg);
+                            }
+                        } else if expected.is_float() && actual.is_int() {
+                            *arg = builder.ins().bitcast(expected, MemFlags::new(), *arg);
+                        } else if expected.is_int() && actual.is_float() {
+                            *arg = builder.ins().bitcast(expected, MemFlags::new(), *arg);
+                        }
+                    }
+                }
+            }
+
+            // Call original function.
+            let orig_ref = object_module.declare_func_in_func(orig_id, builder.func);
+            let call_inst = builder.ins().call(orig_ref, &call_args);
+
+            // Widen return value to i64.
+            let results = builder.inst_results(call_inst).to_vec();
+            let ret_val = if results.is_empty() {
+                builder.ins().iconst(types::I64, 0)
+            } else {
+                let result = results[0];
+                let result_ty = builder.func.dfg.value_type(result);
+                if result_ty == types::I64 {
+                    result
+                } else if result_ty.is_int() && result_ty.bits() < 64 {
+                    builder.ins().sextend(types::I64, result)
+                } else if is_float_type(result_ty) {
+                    builder.ins().bitcast(types::I64, MemFlags::new(), result)
+                } else {
+                    result
+                }
+            };
+
+            builder.ins().return_(&[ret_val]);
+            builder.seal_all_blocks();
+            builder.finalize();
+        }
+
+        let mut ctx = Context::for_function(cl_func);
+        object_module
+            .define_function(env_thunk_id, &mut ctx)
+            .map_err(CodegenError::Module)?;
     }
 
     // If the user's main returns void, emit a C-compatible `main` wrapper:
@@ -1992,15 +2152,21 @@ fn translate_rvalue<M: Module>(
         }
 
         RValue::CallIndirect { callee, args } => {
-            // Indirect call: callee is a function pointer (i64 value).
-            let fn_ptr = translate_operand(callee, builder, translator, module)?;
+            // Indirect call via env-based calling convention.
+            // The callee is an env pointer: [thunk_fn_ptr, cap0, cap1, ...]
+            // Load the thunk function pointer from env[0], then call
+            // thunk(env, user_arg0, user_arg1, ...).
+            let env_ptr = translate_operand(callee, builder, translator, module)?;
+            let fn_ptr = builder.ins().load(types::I64, MemFlags::new(), env_ptr, 0);
 
-            // Build argument values, widening to i64 as needed.
-            let mut arg_vals: Vec<cranelift_codegen::ir::Value> = args
-                .iter()
-                .map(|a| translate_operand(a, builder, translator, module))
-                .collect::<Result<_, _>>()?;
+            // Build argument values: [env_ptr, user_args...]
+            let mut arg_vals: Vec<cranelift_codegen::ir::Value> = vec![env_ptr];
+            for arg in args.iter() {
+                let val = translate_operand(arg, builder, translator, module)?;
+                arg_vals.push(val);
+            }
 
+            // Widen all arguments to i64.
             for arg in arg_vals.iter_mut() {
                 let ty = builder.func.dfg.value_type(*arg);
                 if ty.is_int() && ty.bits() < 64 {
@@ -2008,10 +2174,10 @@ fn translate_rvalue<M: Module>(
                 }
             }
 
-            // Build an all-i64 signature (Kryos uniform slot model).
+            // Build an all-i64 signature: (env, user_args...) -> i64.
             let call_conv = module.isa().default_call_conv();
             let mut sig = Signature::new(call_conv);
-            for _ in 0..args.len() {
+            for _ in 0..arg_vals.len() {
                 sig.params.push(AbiParam::new(types::I64));
             }
             sig.returns.push(AbiParam::new(types::I64));
@@ -2273,29 +2439,18 @@ fn translate_rvalue<M: Module>(
         }
 
         RValue::Closure { func_name, captures } => {
-            // Resolve the function reference. If it's not yet in scope,
-            // declare it as an import so we get a valid function pointer
-            // (not a null).
-            let resolve_func_ref = |builder: &mut FunctionBuilder,
-                                     translator: &mut FuncTranslator,
-                                     module: &mut M,
-                                     captures_len: usize|
-                                    -> Result<cranelift_codegen::ir::Value, CodegenError> {
-                let func_ref = ensure_func_ref_with_args(
-                    func_name, builder, translator, module, captures_len,
-                )?;
-                Ok(builder.ins().func_addr(types::I64, func_ref))
-            };
+            // Uniform env-based calling convention for ALL function values.
+            // Layout: [thunk_fn_ptr, cap0, cap1, ...]
+            // CallIndirect loads fn from env[0] and calls thunk(env, user_args...).
+            // The thunk unpacks captures and calls the original function.
 
-            if captures.is_empty() {
-                // No captures — closure is just a function pointer.
-                let fptr = resolve_func_ref(builder, translator, module, 0)?;
-                Ok(Some(fptr))
-            } else {
-                // With captures: allocate [func_ptr, cap0, cap1, ...] on the heap
-                // via ARC so the environment is reference-counted. This prevents
-                // use-after-free when closures are copied or stored in structs.
-                let env_size = ((1 + captures.len()) * 8) as i64;
+            let env_thunk_name = format!("{func_name}_env");
+            let has_thunk = translator.func_ids.contains_key(&env_thunk_name);
+
+            if has_thunk {
+                // Allocate env via ARC: [thunk_ptr, cap0, cap1, ...]
+                let env_slots = 1 + captures.len();
+                let env_size = (env_slots * 8) as i64;
                 let size_val = builder.ins().iconst(types::I64, env_size);
                 let align_val = builder.ins().iconst(types::I64, 8);
                 let arc_alloc_ref = ensure_func_ref_with_args(
@@ -2304,9 +2459,13 @@ fn translate_rvalue<M: Module>(
                 let call = builder.ins().call(arc_alloc_ref, &[size_val, align_val]);
                 let ptr = builder.inst_results(call)[0];
 
-                // Store function pointer at offset 0.
-                let fptr = resolve_func_ref(builder, translator, module, captures.len())?;
-                builder.ins().store(MemFlags::new(), fptr, ptr, 0);
+                // Store thunk function pointer at offset 0.
+                let thunk_ref = ensure_func_ref_with_args(
+                    &env_thunk_name, builder, translator, module,
+                    1 + captures.len(),
+                )?;
+                let thunk_addr = builder.ins().func_addr(types::I64, thunk_ref);
+                builder.ins().store(MemFlags::new(), thunk_addr, ptr, 0);
 
                 // Store captures at offsets 8, 16, ...
                 for (i, cap) in captures.iter().enumerate() {
@@ -2316,6 +2475,12 @@ fn translate_rvalue<M: Module>(
                 }
 
                 Ok(Some(ptr))
+            } else {
+                // No thunk generated — raw function pointer (built-in).
+                let func_ref = ensure_func_ref_with_args(
+                    func_name, builder, translator, module, captures.len(),
+                )?;
+                Ok(Some(builder.ins().func_addr(types::I64, func_ref)))
             }
         }
 
