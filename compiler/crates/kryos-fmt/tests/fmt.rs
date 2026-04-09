@@ -475,3 +475,38 @@ fn test_bool_and_none_literals() {
     assert!(out.contains("false"));
     assert!(out.contains("none"));
 }
+
+// ======================== Doc comment formatting ========================
+
+#[test]
+fn test_doc_comment_on_function() {
+    let out = fmt("/// Adds two numbers.\nfn add(x: i32, y: i32) -> i32 { return x + y }");
+    assert!(out.contains("/// Adds two numbers."), "doc comment missing, got:\n{}", out);
+    assert!(out.contains("fn add(x: i32, y: i32) -> i32"), "function missing, got:\n{}", out);
+}
+
+#[test]
+fn test_doc_comment_multiline() {
+    let out = fmt("/// First line.\n/// Second line.\nfn foo() { }");
+    assert!(out.contains("/// First line.\n/// Second line.\nfn foo()"), "multiline doc missing, got:\n{}", out);
+}
+
+#[test]
+fn test_doc_comment_on_struct() {
+    let out = fmt("/// A point in 2D space.\nstruct Point { x: f64, y: f64 }");
+    assert!(out.contains("/// A point in 2D space."), "struct doc comment missing, got:\n{}", out);
+    assert!(out.contains("struct Point {"), "struct missing, got:\n{}", out);
+}
+
+#[test]
+fn test_doc_comment_round_trip() {
+    assert_round_trip("/// Documented function.\nfn documented() { }");
+}
+
+#[test]
+fn test_doc_comment_idempotent() {
+    let src = "/// Hello world.\nfn hello() { }";
+    let first = fmt(src);
+    let second = fmt(&first);
+    assert_eq!(first, second, "doc comment format not idempotent:\nfirst:\n{}\nsecond:\n{}", first, second);
+}

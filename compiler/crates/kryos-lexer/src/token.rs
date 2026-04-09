@@ -54,6 +54,7 @@ pub enum TokenKind {
     LBracket, RBracket,
 
     // --- Special ---
+    DocComment,
     Newline,
     Eof,
     Error,

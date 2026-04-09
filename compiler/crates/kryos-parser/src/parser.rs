@@ -237,7 +237,19 @@ impl Parser {
     // Declarations
     // -----------------------------------------------------------------------
 
+    fn collect_doc_comments(&mut self) -> Vec<String> {
+        let mut docs = Vec::new();
+        while self.check(TokenKind::DocComment) {
+            let tok = self.advance().clone();
+            docs.push(tok.text.clone());
+        }
+        docs
+    }
+
     fn parse_declaration(&mut self) -> Option<Decl> {
+        // Collect doc comments before annotations/modifiers
+        let doc_comments = self.collect_doc_comments();
+
         // Collect annotations
         let mut annotations = Vec::new();
         while self.check(TokenKind::At) {
@@ -247,16 +259,16 @@ impl Parser {
         let public = self.eat(TokenKind::Pub);
 
         match self.peek_kind() {
-            TokenKind::Fn => Some(self.parse_fn_decl(public, annotations)),
-            TokenKind::Struct => Some(self.parse_struct_decl(public, annotations)),
-            TokenKind::Enum => Some(self.parse_enum_decl(public, annotations)),
-            TokenKind::Trait => Some(self.parse_trait_decl(public)),
-            TokenKind::Impl => Some(self.parse_impl_decl()),
+            TokenKind::Fn => Some(self.parse_fn_decl(public, annotations, doc_comments)),
+            TokenKind::Struct => Some(self.parse_struct_decl(public, annotations, doc_comments)),
+            TokenKind::Enum => Some(self.parse_enum_decl(public, annotations, doc_comments)),
+            TokenKind::Trait => Some(self.parse_trait_decl(public, doc_comments)),
+            TokenKind::Impl => Some(self.parse_impl_decl(doc_comments)),
             TokenKind::Actor => Some(self.parse_actor_decl(annotations)),
             TokenKind::Type => Some(self.parse_type_alias(public)),
             TokenKind::Use => Some(self.parse_import()),
             TokenKind::Extern => Some(self.parse_extern()),
-            TokenKind::Let => Some(self.parse_const_decl(public)),
+            TokenKind::Let => Some(self.parse_const_decl(public, doc_comments)),
             _ => {
                 if !annotations.is_empty() || public {
                     let span = self.peek().span;
@@ -317,7 +329,7 @@ impl Parser {
         generics
     }
 
-    fn parse_fn_decl(&mut self, public: bool, annotations: Vec<Annotation>) -> Decl {
+    fn parse_fn_decl(&mut self, public: bool, annotations: Vec<Annotation>, doc_comments: Vec<String>) -> Decl {
         let fn_tok = self.expect(TokenKind::Fn);
         let start = fn_tok.span;
         let (name, _) = self.expect_name();
@@ -349,6 +361,7 @@ impl Parser {
             body,
             public,
             annotations,
+            doc_comments,
             span: start.merge(end),
         }
     }
@@ -404,7 +417,7 @@ impl Parser {
         params
     }
 
-    fn parse_struct_decl(&mut self, public: bool, annotations: Vec<Annotation>) -> Decl {
+    fn parse_struct_decl(&mut self, public: bool, annotations: Vec<Annotation>, doc_comments: Vec<String>) -> Decl {
         let kw = self.expect(TokenKind::Struct);
         let start = kw.span;
         let (name, _) = self.expect_name();
@@ -441,11 +454,12 @@ impl Parser {
             fields,
             public,
             annotations,
+            doc_comments,
             span: start.merge(rbrace.span),
         }
     }
 
-    fn parse_enum_decl(&mut self, public: bool, annotations: Vec<Annotation>) -> Decl {
+    fn parse_enum_decl(&mut self, public: bool, annotations: Vec<Annotation>, doc_comments: Vec<String>) -> Decl {
         let kw = self.expect(TokenKind::Enum);
         let start = kw.span;
         let (name, _) = self.expect_name();
@@ -482,11 +496,12 @@ impl Parser {
             variants,
             public,
             annotations,
+            doc_comments,
             span: start.merge(rbrace.span),
         }
     }
 
-    fn parse_trait_decl(&mut self, public: bool) -> Decl {
+    fn parse_trait_decl(&mut self, public: bool, doc_comments: Vec<String>) -> Decl {
         let kw = self.expect(TokenKind::Trait);
         let start = kw.span;
         let (name, _) = self.expect_name();
@@ -495,8 +510,8 @@ impl Parser {
 
         let mut methods = Vec::new();
         while !self.check(TokenKind::RBrace) && !self.at_end() {
-            let ann = Vec::new();
-            methods.push(self.parse_fn_decl(false, ann));
+            let method_docs = self.collect_doc_comments();
+            methods.push(self.parse_fn_decl(false, Vec::new(), method_docs));
         }
         let rbrace = self.expect(TokenKind::RBrace);
         Decl::Trait {
@@ -504,11 +519,12 @@ impl Parser {
             generics,
             methods,
             public,
+            doc_comments,
             span: start.merge(rbrace.span),
         }
     }
 
-    fn parse_impl_decl(&mut self) -> Decl {
+    fn parse_impl_decl(&mut self, doc_comments: Vec<String>) -> Decl {
         let kw = self.expect(TokenKind::Impl);
         let start = kw.span;
 
@@ -526,8 +542,9 @@ impl Parser {
         self.expect(TokenKind::LBrace);
         let mut methods = Vec::new();
         while !self.check(TokenKind::RBrace) && !self.at_end() {
+            let method_docs = self.collect_doc_comments();
             let pub_method = self.eat(TokenKind::Pub);
-            methods.push(self.parse_fn_decl(pub_method, Vec::new()));
+            methods.push(self.parse_fn_decl(pub_method, Vec::new(), method_docs));
         }
         let rbrace = self.expect(TokenKind::RBrace);
         Decl::Impl {
@@ -535,6 +552,7 @@ impl Parser {
             trait_name,
             generics,
             methods,
+            doc_comments,
             span: start.merge(rbrace.span),
         }
     }
@@ -615,7 +633,7 @@ impl Parser {
         }
     }
 
-    fn parse_const_decl(&mut self, public: bool) -> Decl {
+    fn parse_const_decl(&mut self, public: bool, doc_comments: Vec<String>) -> Decl {
         let kw = self.expect(TokenKind::Let);
         let start = kw.span;
         // Skip optional 'mut' (top-level let is always immutable, but accept it gracefully)
@@ -634,6 +652,7 @@ impl Parser {
             ty,
             value: Box::new(value),
             public,
+            doc_comments,
             span: start.merge(end),
         }
     }
@@ -706,7 +725,7 @@ impl Parser {
         self.expect(TokenKind::LBrace);
         let mut items = Vec::new();
         while !self.check(TokenKind::RBrace) && !self.at_end() {
-            items.push(self.parse_fn_decl(false, Vec::new()));
+            items.push(self.parse_fn_decl(false, Vec::new(), Vec::new()));
         }
         let rbrace = self.expect(TokenKind::RBrace);
         Decl::Extern {

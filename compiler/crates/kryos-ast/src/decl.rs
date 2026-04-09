@@ -60,6 +60,7 @@ pub enum Decl {
         body: Option<Block>,
         public: bool,
         annotations: Vec<Annotation>,
+        doc_comments: Vec<String>,
         span: Span,
     },
     Struct {
@@ -68,6 +69,7 @@ pub enum Decl {
         fields: Vec<StructField>,
         public: bool,
         annotations: Vec<Annotation>,
+        doc_comments: Vec<String>,
         span: Span,
     },
     Enum {
@@ -76,6 +78,7 @@ pub enum Decl {
         variants: Vec<EnumVariant>,
         public: bool,
         annotations: Vec<Annotation>,
+        doc_comments: Vec<String>,
         span: Span,
     },
     Trait {
@@ -83,6 +86,7 @@ pub enum Decl {
         generics: Vec<GenericParam>,
         methods: Vec<Decl>,
         public: bool,
+        doc_comments: Vec<String>,
         span: Span,
     },
     Impl {
@@ -90,6 +94,7 @@ pub enum Decl {
         trait_name: Option<String>,
         generics: Vec<GenericParam>,
         methods: Vec<Decl>,
+        doc_comments: Vec<String>,
         span: Span,
     },
     Actor {
@@ -118,6 +123,7 @@ pub enum Decl {
         ty: Option<TypeExpr>,
         value: Box<crate::Expr>,
         public: bool,
+        doc_comments: Vec<String>,
         span: Span,
     },
 }

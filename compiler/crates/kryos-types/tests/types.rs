@@ -240,6 +240,7 @@ fn check_valid_add_function() {
         }),
         public: false,
         annotations: vec![],
+        doc_comments: vec![],
         span: S,
     }]);
     assert!(diags.is_empty(), "expected no errors, got: {diags:?}");
@@ -268,6 +269,7 @@ fn check_return_type_mismatch() {
         }),
         public: false,
         annotations: vec![],
+        doc_comments: vec![],
         span: S,
     }]);
     assert!(!diags.is_empty(), "expected type error for return mismatch");
@@ -302,6 +304,7 @@ fn check_binary_op_int_plus_float_error() {
         }),
         public: false,
         annotations: vec![],
+        doc_comments: vec![],
         span: S,
     }]);
     assert!(
@@ -337,6 +340,7 @@ fn check_binary_op_int_plus_int() {
             }),
             public: false,
             annotations: vec![],
+            doc_comments: vec![],
             span: S,
         }],
         span: S,
@@ -377,6 +381,7 @@ fn check_comparison_returns_bool() {
             }),
             public: false,
             annotations: vec![],
+            doc_comments: vec![],
             span: S,
         }],
         span: S,
@@ -738,6 +743,7 @@ fn deprecated_function_emits_warning() {
                 }),
                 annotations: vec![kryos_ast::Annotation { name: "deprecated".into(), args: vec![], span: S }],
                 public: false,
+                doc_comments: vec![],
                 span: S,
             },
             // fn main() -> i64 { return old_fn() }
@@ -759,6 +765,7 @@ fn deprecated_function_emits_warning() {
                 }),
                 annotations: vec![],
                 public: false,
+                doc_comments: vec![],
                 span: S,
             },
         ],
@@ -807,6 +814,7 @@ fn pure_function_rejects_io_call() {
                 }),
                 annotations: vec![kryos_ast::Annotation { name: "pure".into(), args: vec![], span: S }],
                 public: false,
+                doc_comments: vec![],
                 span: S,
             },
         ],
@@ -852,6 +860,7 @@ fn pure_function_allows_pure_calls() {
                 }),
                 annotations: vec![kryos_ast::Annotation { name: "pure".into(), args: vec![], span: S }],
                 public: false,
+                doc_comments: vec![],
                 span: S,
             },
             // @pure fn double(x: i64) -> i64 { return add(x, x) }
@@ -878,6 +887,7 @@ fn pure_function_allows_pure_calls() {
                 }),
                 annotations: vec![kryos_ast::Annotation { name: "pure".into(), args: vec![], span: S }],
                 public: false,
+                doc_comments: vec![],
                 span: S,
             },
         ],
@@ -924,9 +934,11 @@ fn multiple_trait_impls_self_resolves_correctly() {
                 body: None,
                 public: false,
                 annotations: vec![],
+                doc_comments: vec![],
                 span: S,
             }],
             public: false,
+            doc_comments: vec![],
             span: S,
         },
         // struct Circle { radius: i64 }
@@ -942,6 +954,7 @@ fn multiple_trait_impls_self_resolves_correctly() {
             }],
             public: false,
             annotations: vec![],
+            doc_comments: vec![],
             span: S,
         },
         // impl Area for Circle { fn area(self: Circle) -> i64 { return self.radius * self.radius * 3 } }
@@ -986,8 +999,10 @@ fn multiple_trait_impls_self_resolves_correctly() {
                 }),
                 public: false,
                 annotations: vec![],
+                doc_comments: vec![],
                 span: S,
             }],
+            doc_comments: vec![],
             span: S,
         },
         // struct Rect { w: i64, h: i64 }
@@ -1012,6 +1027,7 @@ fn multiple_trait_impls_self_resolves_correctly() {
             ],
             public: false,
             annotations: vec![],
+            doc_comments: vec![],
             span: S,
         },
         // impl Area for Rect { fn area(self: Rect) -> i64 { return self.w * self.h } }
@@ -1051,8 +1067,10 @@ fn multiple_trait_impls_self_resolves_correctly() {
                 }),
                 public: false,
                 annotations: vec![],
+                doc_comments: vec![],
                 span: S,
             }],
+            doc_comments: vec![],
             span: S,
         },
         // fn main() { let c = Circle { radius: 5 }; c.area() }
@@ -1089,6 +1107,7 @@ fn multiple_trait_impls_self_resolves_correctly() {
             }),
             public: false,
             annotations: vec![],
+            doc_comments: vec![],
             span: S,
         },
     ]);

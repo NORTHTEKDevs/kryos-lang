@@ -728,6 +728,7 @@ mod tests {
             } else {
                 vec![ann("capabilities", caps)]
             },
+            doc_comments: vec![],
             span: span(),
         }
     }
@@ -916,6 +917,7 @@ mod tests {
                 body: Some(empty_block()),
                 public: false,
                 annotations: vec![ann("capabilities", vec!["net", "banana"])],
+                doc_comments: vec![],
                 span: span(),
             }],
             span: span(),

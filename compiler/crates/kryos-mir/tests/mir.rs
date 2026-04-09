@@ -78,6 +78,7 @@ fn make_fn(name: &str, params: Vec<Param>, ret_ty: Option<TypeExpr>, body: Block
         body: Some(body),
         public: false,
         annotations: vec![],
+        doc_comments: vec![],
         span: S,
     }
 }
@@ -97,6 +98,7 @@ fn make_generic_fn(
         body: Some(body),
         public: false,
         annotations: vec![],
+        doc_comments: vec![],
         span: S,
     }
 }
@@ -950,9 +952,11 @@ fn trait_definition_tracked() {
                 body: None,
                 public: false,
                 annotations: vec![],
+                doc_comments: vec![],
                 span: S,
             }],
             public: false,
+            doc_comments: vec![],
             span: S,
         },
         make_fn("main", vec![], None, block(vec![])),
@@ -986,9 +990,11 @@ fn impl_for_trait_methods() {
                 body: None,
                 public: false,
                 annotations: vec![],
+                doc_comments: vec![],
                 span: S,
             }],
             public: false,
+            doc_comments: vec![],
             span: S,
         },
         Decl::Struct {
@@ -1003,6 +1009,7 @@ fn impl_for_trait_methods() {
             }],
             public: false,
             annotations: vec![],
+            doc_comments: vec![],
             span: S,
         },
         Decl::Impl {
@@ -1017,8 +1024,10 @@ fn impl_for_trait_methods() {
                 body: Some(block(vec![Stmt::Return { value: Some(int_lit(42)), span: S }])),
                 public: false,
                 annotations: vec![],
+                doc_comments: vec![],
                 span: S,
             }],
+            doc_comments: vec![],
             span: S,
         },
         make_fn("main", vec![], None, block(vec![])),
@@ -1601,6 +1610,7 @@ fn extern_block_registers_signatures() {
                 body: None,
                 public: false,
                 annotations: vec![],
+                doc_comments: vec![],
                 span: S,
             }],
             span: S,

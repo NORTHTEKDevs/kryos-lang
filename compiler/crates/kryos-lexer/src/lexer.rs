@@ -77,6 +77,23 @@ impl<'src> Lexer<'src> {
                 return;
             }
             if self.peek() == b'/' && self.peek_at(1) == b'/' {
+                if self.peek_at(2) == b'/' && self.peek_at(3) != b'/' {
+                    // Doc comment: /// ...
+                    let start = self.pos;
+                    self.advance(); self.advance(); self.advance(); // skip ///
+                    // Skip leading space after ///
+                    if !self.at_end() && self.peek() == b' ' {
+                        self.advance();
+                    }
+                    let content_start = self.pos;
+                    while !self.at_end() && self.peek() != b'\n' {
+                        self.advance();
+                    }
+                    let content = self.src[content_start..self.pos].trim_end().to_string();
+                    self.emit(TokenKind::DocComment, start, self.pos, content);
+                    continue;
+                }
+                // Regular comment: skip
                 while !self.at_end() && self.peek() != b'\n' {
                     self.advance();
                 }

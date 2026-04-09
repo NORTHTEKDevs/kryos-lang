@@ -92,7 +92,30 @@ impl Formatter {
     // Declarations
     // -----------------------------------------------------------------------
 
+    fn fmt_doc_comments(&mut self, docs: &[String]) {
+        for line in docs {
+            self.write_indent();
+            if line.is_empty() {
+                self.writeln("///");
+            } else {
+                self.write("/// ");
+                self.writeln(line);
+            }
+        }
+    }
+
     fn fmt_decl(&mut self, decl: &Decl) {
+        // Emit doc comments before the declaration
+        match decl {
+            Decl::Function { doc_comments, .. } |
+            Decl::Struct { doc_comments, .. } |
+            Decl::Enum { doc_comments, .. } |
+            Decl::Trait { doc_comments, .. } |
+            Decl::Impl { doc_comments, .. } |
+            Decl::Const { doc_comments, .. } => self.fmt_doc_comments(doc_comments),
+            _ => {}
+        }
+
         match decl {
             Decl::Function {
                 name,
