@@ -145,7 +145,7 @@ pub unsafe extern "C" fn kryos_string_eq(
 
 /// Extract a substring [start..end). Returns a new heap-allocated string.
 ///
-/// Clamps indices to valid range.
+/// Panics on out-of-bounds indices.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_string_slice(
     s: *const KryosString,
@@ -153,16 +153,24 @@ pub unsafe extern "C" fn kryos_string_slice(
     end: i64,
 ) -> *mut KryosString {
     if s.is_null() {
+        let msg = b"string is null";
+        crate::panic::kryos_panic(msg.as_ptr(), msg.len());
+    }
+    let len = (*s).len;
+    if start < 0 || end < 0 || start > len || end > len || start > end {
+        let msg = format!(
+            "string slice out of bounds: [{}..{}) but length is {}",
+            start, end, len
+        );
+        crate::panic::kryos_panic(msg.as_ptr(), msg.len());
+    }
+    let start_usize = start as usize;
+    let end_usize = end as usize;
+    let slice_len = end_usize - start_usize;
+    if slice_len == 0 {
         return kryos_string_new(ptr::null(), 0);
     }
-    let len = (*s).len as usize;
-    let start = (start.max(0) as usize).min(len);
-    let end = (end.max(0) as usize).min(len);
-    if start >= end {
-        return kryos_string_new(ptr::null(), 0);
-    }
-    let slice_len = end - start;
-    kryos_string_new((*s).data.add(start), slice_len as i64)
+    kryos_string_new((*s).data.add(start_usize), slice_len as i64)
 }
 
 /// Find the first occurrence of `needle` in `s`. Returns the byte offset,
