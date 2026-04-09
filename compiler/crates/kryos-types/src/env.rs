@@ -246,4 +246,55 @@ impl TypeEnv {
     fn current_scope_mut(&mut self) -> &mut Scope {
         self.scopes.last_mut().expect("at least one scope must exist")
     }
+
+    // ── Name collection (for "did you mean?" suggestions) ────────────
+
+    /// Collect all variable names visible in the current scope chain.
+    pub fn all_var_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        for scope in self.scopes.iter().rev() {
+            for name in scope.variables.keys() {
+                if !names.contains(name) {
+                    names.push(name.clone());
+                }
+            }
+            for name in scope.functions.keys() {
+                if !names.contains(name) {
+                    names.push(name.clone());
+                }
+            }
+        }
+        names
+    }
+
+    /// Collect all type names (structs + enums) visible in scope.
+    pub fn all_type_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        for scope in self.scopes.iter().rev() {
+            for name in scope.structs.keys() {
+                if !names.contains(name) {
+                    names.push(name.clone());
+                }
+            }
+            for name in scope.enums.keys() {
+                if !names.contains(name) {
+                    names.push(name.clone());
+                }
+            }
+        }
+        names
+    }
+
+    /// Collect all struct names visible in scope.
+    pub fn all_struct_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        for scope in self.scopes.iter().rev() {
+            for name in scope.structs.keys() {
+                if !names.contains(name) {
+                    names.push(name.clone());
+                }
+            }
+        }
+        names
+    }
 }

@@ -11,6 +11,7 @@ pub mod env;
 pub mod infer;
 pub mod check;
 pub mod exhaustive;
+pub mod suggest;
 
 pub use ty::Type;
 pub use env::TypeEnv;

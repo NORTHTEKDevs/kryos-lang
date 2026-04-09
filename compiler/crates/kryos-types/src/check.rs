@@ -96,6 +96,12 @@ impl TypeChecker {
                         ty.clone()
                     } else {
                         self.error(format!("unknown type `{name}`"), *span);
+                        let known = self.env.all_type_names();
+                        if let Some(suggestion) = crate::suggest::closest_match(name, known.iter().map(|s| s.as_str())) {
+                            if let Some(diag) = self.diagnostics.last_mut() {
+                                diag.notes.push(format!("did you mean `{suggestion}`?"));
+                            }
+                        }
                         Type::Error
                     }
                 }
@@ -964,6 +970,12 @@ impl TypeChecker {
                     }
                 } else {
                     self.error(format!("undefined variable `{name}`"), *span);
+                    let known = self.env.all_var_names();
+                    if let Some(suggestion) = crate::suggest::closest_match(name, known.iter().map(|s| s.as_str())) {
+                        if let Some(diag) = self.diagnostics.last_mut() {
+                            diag.notes.push(format!("did you mean `{suggestion}`?"));
+                        }
+                    }
                     Type::Error
                 }
             }
@@ -1487,6 +1499,12 @@ impl TypeChecker {
                     }
                 } else {
                     self.error(format!("unknown struct `{name}`"), *span);
+                    let known = self.env.all_struct_names();
+                    if let Some(suggestion) = crate::suggest::closest_match(name, known.iter().map(|s| s.as_str())) {
+                        if let Some(diag) = self.diagnostics.last_mut() {
+                            diag.notes.push(format!("did you mean `{suggestion}`?"));
+                        }
+                    }
                     Type::Error
                 }
             }
