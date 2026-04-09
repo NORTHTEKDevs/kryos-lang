@@ -56,6 +56,12 @@ impl TypeChecker {
             .push(Diagnostic::error(msg).with_label(span, "here"));
     }
 
+    /// Report an error diagnostic with an error code.
+    fn error_with_code(&mut self, msg: impl Into<String>, span: Span, code: &str) {
+        self.diagnostics
+            .push(Diagnostic::error(msg).with_label(span, "here").with_code(code));
+    }
+
     /// Report a warning diagnostic.
     fn warning(&mut self, msg: impl Into<String>, span: Span) {
         self.diagnostics
@@ -73,7 +79,7 @@ impl TypeChecker {
                     return if let Some(ref self_ty) = self.current_self_type {
                         self_ty.clone()
                     } else {
-                        self.error("`Self` used outside of impl or trait block", *span);
+                        self.error_with_code("`Self` used outside of impl or trait block", *span, kryos_errors::codes::E0109);
                         Type::Error
                     };
                 }
@@ -95,7 +101,7 @@ impl TypeChecker {
                         // Type alias or generic parameter registered as a variable.
                         ty.clone()
                     } else {
-                        self.error(format!("unknown type `{name}`"), *span);
+                        self.error_with_code(format!("unknown type `{name}`"), *span, kryos_errors::codes::E0101);
                         let known = self.env.all_type_names();
                         if let Some(suggestion) = crate::suggest::closest_match(name, known.iter().map(|s| s.as_str())) {
                             if let Some(diag) = self.diagnostics.last_mut() {
@@ -228,7 +234,7 @@ impl TypeChecker {
             TypeExpr::DynTrait { trait_name, span } => {
                 // Verify the trait exists.
                 if self.env.lookup_trait(trait_name).is_none() {
-                    self.error(format!("unknown trait `{trait_name}`"), *span);
+                    self.error_with_code(format!("unknown trait `{trait_name}`"), *span, kryos_errors::codes::E0105);
                     return Type::Error;
                 }
                 Type::DynTrait { trait_name: trait_name.clone() }
@@ -969,7 +975,7 @@ impl TypeChecker {
                         generics: vec![],
                     }
                 } else {
-                    self.error(format!("undefined variable `{name}`"), *span);
+                    self.error_with_code(format!("undefined variable `{name}`"), *span, kryos_errors::codes::E0102);
                     let known = self.env.all_var_names();
                     if let Some(suggestion) = crate::suggest::closest_match(name, known.iter().map(|s| s.as_str())) {
                         if let Some(diag) = self.diagnostics.last_mut() {
@@ -993,9 +999,10 @@ impl TypeChecker {
                         if let Some(fty) = self.env.lookup_field(name, field) {
                             fty.clone()
                         } else {
-                            self.error(
+                            self.error_with_code(
                                 format!("no field `{field}` on type `{name}`"),
                                 *span,
+                                kryos_errors::codes::E0106,
                             );
                             Type::Error
                         }
@@ -1368,9 +1375,10 @@ impl TypeChecker {
                     }
                 }
 
-                self.error(
+                self.error_with_code(
                     format!("no method `{method}` found for type `{obj_ty}`"),
                     *span,
+                    kryos_errors::codes::E0107,
                 );
                 Type::Error
             }
@@ -1498,7 +1506,7 @@ impl TypeChecker {
                             .collect(),
                     }
                 } else {
-                    self.error(format!("unknown struct `{name}`"), *span);
+                    self.error_with_code(format!("unknown struct `{name}`"), *span, kryos_errors::codes::E0103);
                     let known = self.env.all_struct_names();
                     if let Some(suggestion) = crate::suggest::closest_match(name, known.iter().map(|s| s.as_str())) {
                         if let Some(diag) = self.diagnostics.last_mut() {

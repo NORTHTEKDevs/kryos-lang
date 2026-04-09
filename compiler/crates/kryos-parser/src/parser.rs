@@ -158,7 +158,7 @@ impl Parser {
             }
             _ => {
                 let span = tok.span;
-                self.error(format!("expected identifier, found {:?}", tok.kind), span);
+                self.error_with_code(format!("expected identifier, found {:?}", tok.kind), span, kryos_errors::codes::E0002);
                 ("<error>".to_string(), span)
             }
         }
@@ -182,6 +182,12 @@ impl Parser {
     fn error(&mut self, message: String, span: Span) {
         self.diagnostics.push(
             Diagnostic::error(message).with_label(span, "here"),
+        );
+    }
+
+    fn error_with_code(&mut self, message: String, span: Span, code: &str) {
+        self.diagnostics.push(
+            Diagnostic::error(message).with_label(span, "here").with_code(code),
         );
     }
 
@@ -218,7 +224,7 @@ impl Parser {
                 None => {
                     if !self.at_end() {
                         let span = self.peek().span;
-                        self.error(format!("unexpected token {:?}", self.peek_kind()), span);
+                        self.error_with_code(format!("unexpected token {:?}", self.peek_kind()), span, kryos_errors::codes::E0001);
                         self.synchronize();
                     }
                 }
@@ -1443,7 +1449,7 @@ impl Parser {
 
             _ => {
                 let span = tok.span;
-                self.error(format!("expected expression, found {:?}", tok.kind), span);
+                self.error_with_code(format!("expected expression, found {:?}", tok.kind), span, kryos_errors::codes::E0003);
                 self.advance();
                 Expr::Identifier { name: "<error>".to_string(), span }
             }
@@ -1927,7 +1933,7 @@ impl Parser {
             }
             _ => {
                 let span = tok.span;
-                self.error(format!("expected type, found {:?}", tok.kind), span);
+                self.error_with_code(format!("expected type, found {:?}", tok.kind), span, kryos_errors::codes::E0004);
                 self.advance();
                 TypeExpr::Inferred { span }
             }

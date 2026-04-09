@@ -313,7 +313,7 @@ impl OwnershipAnalyzer {
     fn error_use_after_move(&mut self, name: &str, use_span: Span, moved_span: Span) {
         self.diagnostics.push(
             Diagnostic::error(format!("use of moved value: `{name}`"))
-                .with_code("E0382")
+                .with_code(kryos_errors::codes::E0300)
                 .with_label(use_span, format!("`{name}` used here after move"))
                 .with_label(moved_span, format!("`{name}` moved here"))
                 .with_note("values are moved on assignment or when passed to functions"),
@@ -323,7 +323,7 @@ impl OwnershipAnalyzer {
     fn error_use_uninitialized(&mut self, name: &str, use_span: Span, decl_span: Span) {
         self.diagnostics.push(
             Diagnostic::error(format!("use of uninitialized variable: `{name}`"))
-                .with_code("E0381")
+                .with_code(kryos_errors::codes::E0301)
                 .with_label(use_span, format!("`{name}` used here but not initialized"))
                 .with_label(decl_span, format!("`{name}` declared here")),
         );
