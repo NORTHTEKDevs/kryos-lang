@@ -164,6 +164,10 @@ impl OwnershipAnalyzer {
             | Expr::CharLiteral { .. }
             | Expr::StringLiteral { .. } => true,
 
+            // Lambda/closure expressions produce copy values — bare function
+            // pointers are i64, closure envs are ARC-managed.
+            Expr::Lambda { .. } => true,
+
             // Identifiers: check the variable's is_copy flag.
             Expr::Identifier { name, .. } => {
                 if let Some(info) = self.lookup_var(name) {
@@ -1257,6 +1261,9 @@ impl OwnershipAnalyzer {
             kryos_ast::TypeExpr::Tuple { elements, .. } => {
                 elements.iter().all(|e| self.is_type_expr_copy(e))
             }
+            // Function values are copy — bare function pointers are i64,
+            // and closure envs are ARC-managed (retain on copy, release on drop).
+            kryos_ast::TypeExpr::Function { .. } => true,
             // References, shared, weak are not copy.
             _ => false,
         }

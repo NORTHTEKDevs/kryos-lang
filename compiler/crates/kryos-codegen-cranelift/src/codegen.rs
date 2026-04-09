@@ -499,7 +499,36 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
     )?;
     func_ids.insert("kryos_ipow".to_string(), ipow_id);
 
-    // ARC functions are now imported from libkryos_rt — no local stubs needed.
+    // Declare ARC runtime functions (from libkryos_rt) as imports.
+    {
+        // kryos_arc_alloc(size: i64, align: i64) -> ptr
+        let arc_alloc_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            sig
+        };
+        // kryos_arc_retain(ptr: i64)
+        let arc_retain_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig
+        };
+        // kryos_arc_release(ptr: i64)
+        let arc_release_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig
+        };
+
+        let aa_id = object_module.declare_function("kryos_arc_alloc", Linkage::Import, &arc_alloc_sig)?;
+        let ar_id = object_module.declare_function("kryos_arc_retain", Linkage::Import, &arc_retain_sig)?;
+        let are_id = object_module.declare_function("kryos_arc_release", Linkage::Import, &arc_release_sig)?;
+        func_ids.insert("kryos_arc_alloc".to_string(), aa_id);
+        func_ids.insert("kryos_arc_retain".to_string(), ar_id);
+        func_ids.insert("kryos_arc_release".to_string(), are_id);
+    }
 
     // Declare C heap functions as imports.
     {
@@ -1178,21 +1207,32 @@ fn translate_instruction<M: Module>(
             builder.ins().call(func_ref, &[val]);
         }
         Instruction::Drop { local } => {
-            // For string locals, call kryos_string_free to release the heap
-            // allocation. Other types rely on ARC retain/release or are stack-allocated.
-            let is_str = translator
+            let local_ty = translator
                 .mir_func
                 .locals
                 .iter()
                 .find(|l| l.id == *local)
-                .is_some_and(|l| l.ty == kryos_mir::ir::MirType::Str);
-            if is_str {
+                .map(|l| l.ty.clone());
+
+            if let Some(ref ty) = local_ty {
                 if let Some(&var) = translator.variables.get(&local.0) {
                     let val = builder.use_var(var);
-                    let free_ref = ensure_func_ref_with_args(
-                        "kryos_string_free", builder, translator, module, 1,
-                    )?;
-                    builder.ins().call(free_ref, &[val]);
+                    match ty {
+                        kryos_mir::ir::MirType::Str => {
+                            let free_ref = ensure_func_ref_with_args(
+                                "kryos_string_free", builder, translator, module, 1,
+                            )?;
+                            builder.ins().call(free_ref, &[val]);
+                        }
+                        kryos_mir::ir::MirType::Function { .. } => {
+                            // Closure env is ARC-managed; release our reference.
+                            let release_ref = ensure_func_ref_with_args(
+                                "kryos_arc_release", builder, translator, module, 1,
+                            )?;
+                            builder.ins().call(release_ref, &[val]);
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
@@ -2253,16 +2293,15 @@ fn translate_rvalue<M: Module>(
                 Ok(Some(fptr))
             } else {
                 // With captures: allocate [func_ptr, cap0, cap1, ...] on the heap
-                // via malloc so the environment survives after the creating function
-                // returns. Stack slots are invalidated when the callee's frame is
-                // popped, causing dangling-pointer crashes (segfaults) when a
-                // returned closure tries to read its captured variables.
+                // via ARC so the environment is reference-counted. This prevents
+                // use-after-free when closures are copied or stored in structs.
                 let env_size = ((1 + captures.len()) * 8) as i64;
                 let size_val = builder.ins().iconst(types::I64, env_size);
-                let malloc_ref = ensure_func_ref_with_args(
-                    "malloc", builder, translator, module, 1,
+                let align_val = builder.ins().iconst(types::I64, 8);
+                let arc_alloc_ref = ensure_func_ref_with_args(
+                    "kryos_arc_alloc", builder, translator, module, 2,
                 )?;
-                let call = builder.ins().call(malloc_ref, &[size_val]);
+                let call = builder.ins().call(arc_alloc_ref, &[size_val, align_val]);
                 let ptr = builder.inst_results(call)[0];
 
                 // Store function pointer at offset 0.

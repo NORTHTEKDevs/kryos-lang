@@ -1,0 +1,8 @@
+// expect-stdout: 10
+// expect-stdout: 20
+fn main() {
+    let f = fn(x: i64) -> i64 { return x * 2 }
+    let g = f
+    println(f(5))
+    println(g(10))
+}
