@@ -161,23 +161,28 @@ fn move_on_assignment_error() {
     );
 }
 
-// ── Test: Move on function call ─────────────────────────────────
+// ── Test: Function call borrows (does not move) ────────────────
 
 #[test]
-fn move_on_function_call_error() {
+fn function_call_borrows_not_moves() {
     // let x = make_obj()   (non-copy)
-    // func(x)              ← moves x
-    // use(x)               ← error: use of moved value
+    // func(x)              ← borrows x (passed by pointer in codegen)
+    // use(x)               ← OK: x is still owned
     let module = module_with_fn(vec![
         let_move("x", non_copy_val("obj")),
         expr_stmt(call("func", vec![ident("x")])),
         expr_stmt(call("use", vec![ident("x")])),
     ]);
     let result = analyze_ownership(&module);
+    let move_errors: Vec<_> = result
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("use of moved value"))
+        .collect();
     assert!(
-        result.errors.iter().any(|e| e.message.contains("use of moved value")),
-        "expected 'use of moved value' error, got: {:?}",
-        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        move_errors.is_empty(),
+        "function args are implicit borrows, should not move, got: {:?}",
+        move_errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 }
 

@@ -798,32 +798,26 @@ impl OwnershipAnalyzer {
                         return;
                     }
                 }
-                // Regular function call: each argument is moved (unless copy).
+                // Regular function call: arguments are analyzed.
+                // Struct/enum values are passed by pointer in codegen,
+                // so they are implicitly borrowed — not moved.
                 for arg in args {
-                    if self.expr_is_copy(arg) {
-                        self.analyze_expr_use(arg);
-                    } else {
-                        self.analyze_expr_move(arg);
-                    }
+                    // Always treat as use (borrow), not move.
+                    // True ownership transfer requires explicit `move` keyword
+                    // (not yet implemented). This prevents false "use after move"
+                    // errors for the common pattern of passing structs to functions.
+                    self.analyze_expr_use(arg);
                 }
             }
             Expr::MethodCall { object, args, .. } => {
                 self.analyze_expr_use(object);
                 for arg in args {
-                    if self.expr_is_copy(arg) {
-                        self.analyze_expr_use(arg);
-                    } else {
-                        self.analyze_expr_move(arg);
-                    }
+                    self.analyze_expr_use(arg);
                 }
             }
             Expr::StaticMethodCall { args, .. } => {
                 for arg in args {
-                    if self.expr_is_copy(arg) {
-                        self.analyze_expr_use(arg);
-                    } else {
-                        self.analyze_expr_move(arg);
-                    }
+                    self.analyze_expr_use(arg);
                 }
             }
             Expr::BinaryOp { left, right, .. } => {
