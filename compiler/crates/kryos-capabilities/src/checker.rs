@@ -398,6 +398,11 @@ impl CapabilityChecker {
                     self.check_expr(arg);
                 }
             }
+            Expr::StaticMethodCall { args, .. } => {
+                for arg in args {
+                    self.check_expr(arg);
+                }
+            }
             Expr::FieldAccess { object, .. } => {
                 self.check_expr(object);
             }

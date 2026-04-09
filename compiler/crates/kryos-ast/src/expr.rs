@@ -68,6 +68,7 @@ pub enum Expr {
 
     FnCall { callee: Box<Expr>, args: Vec<Expr>, span: Span },
     MethodCall { object: Box<Expr>, method: String, args: Vec<Expr>, span: Span },
+    StaticMethodCall { type_name: String, method: String, args: Vec<Expr>, span: Span },
 
     ArrayLiteral { elements: Vec<Expr>, span: Span },
     TupleLiteral { elements: Vec<Expr>, span: Span },
@@ -108,6 +109,7 @@ impl Expr {
             Self::FieldAccess { span, .. } | Self::IndexAccess { span, .. } |
             Self::BinaryOp { span, .. } | Self::UnaryOp { span, .. } |
             Self::FnCall { span, .. } | Self::MethodCall { span, .. } |
+            Self::StaticMethodCall { span, .. } |
             Self::ArrayLiteral { span, .. } | Self::TupleLiteral { span, .. } |
             Self::MapLiteral { span, .. } | Self::StructLiteral { span, .. } |
             Self::Lambda { span, .. } | Self::IfExpr { span, .. } |

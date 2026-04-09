@@ -1363,6 +1363,51 @@ impl TypeChecker {
                 Type::Error
             }
 
+            Expr::StaticMethodCall {
+                type_name,
+                method,
+                args,
+                span,
+            } => {
+                // Look up the method on the type (mangled as TypeName__method).
+                if let Some(sig) = self.env.lookup_method(type_name, method).cloned() {
+                    // Static call — skip 'self' parameter.
+                    let expected_params: Vec<_> = if sig.params.first().map(|(n, _)| n.as_str())
+                        == Some("self")
+                    {
+                        sig.params[1..].to_vec()
+                    } else {
+                        sig.params.clone()
+                    };
+                    if args.len() != expected_params.len() {
+                        self.error(
+                            format!(
+                                "static method `{type_name}::{method}` expects {} arguments, found {}",
+                                expected_params.len(),
+                                args.len()
+                            ),
+                            *span,
+                        );
+                    } else {
+                        for (arg, (_, param_ty)) in args.iter().zip(expected_params.iter()) {
+                            let arg_ty = self.infer_expr(arg);
+                            if let Err(diag) =
+                                self.engine.unify(param_ty, &arg_ty, arg.span())
+                            {
+                                self.diagnostics.push(diag);
+                            }
+                        }
+                    }
+                    sig.ret.clone()
+                } else {
+                    self.error(
+                        format!("no method `{method}` found on type `{type_name}`"),
+                        *span,
+                    );
+                    Type::Error
+                }
+            }
+
             // Literals: array, tuple, map, struct.
             Expr::ArrayLiteral { elements, span } => {
                 if elements.is_empty() {

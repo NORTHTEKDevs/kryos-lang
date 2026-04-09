@@ -1,4 +1,3 @@
-// skip
 // expect-stdout: 5
 // expect-stdout: 10
 struct Counter {

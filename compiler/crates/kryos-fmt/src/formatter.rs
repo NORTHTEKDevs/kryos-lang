@@ -939,6 +939,16 @@ impl Formatter {
                 format!("{}.{}({})", obj_str, method, args_str.join(", "))
             }
 
+            Expr::StaticMethodCall {
+                type_name,
+                method,
+                args,
+                ..
+            } => {
+                let args_str: Vec<String> = args.iter().map(|a| self.fmt_expr_to_string(a)).collect();
+                format!("{}::{}({})", type_name, method, args_str.join(", "))
+            }
+
             Expr::ArrayLiteral { elements, .. } => {
                 let elems: Vec<String> = elements.iter().map(|e| self.fmt_expr_to_string(e)).collect();
                 format!("[{}]", elems.join(", "))

@@ -1376,8 +1376,28 @@ impl Parser {
                     return self.parse_struct_literal(name, start);
                 }
 
-                // Check for enum path: `Name::Variant`
-                // (we keep it as an identifier for now; paths handled at a higher level)
+                // Check for static method call: `Type::method(args)`
+                if self.check(TokenKind::ColonColon) {
+                    self.advance(); // consume ::
+                    let (method, _) = self.expect_name();
+                    if self.check(TokenKind::LParen) {
+                        self.advance(); // consume (
+                        let args = self.parse_arg_list();
+                        let end = self.expect(TokenKind::RParen);
+                        return Expr::StaticMethodCall {
+                            type_name: name,
+                            method,
+                            args,
+                            span: start.merge(end.span),
+                        };
+                    }
+                    // Not a call — treat as enum variant: Name::Variant
+                    return Expr::Identifier {
+                        name: format!("{name}::{method}"),
+                        span: start,
+                    };
+                }
+
                 Expr::Identifier { name, span: start }
             }
 

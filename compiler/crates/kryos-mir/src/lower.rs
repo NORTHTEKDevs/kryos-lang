@@ -672,15 +672,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                                 }
                             }
                         } else {
-                            all_params.push(ast::Param {
-                                name: "self".into(),
-                                ty: Some(ast::TypeExpr::Simple {
-                                    name: target.clone(),
-                                    span: kryos_errors::Span::DUMMY,
-                                }),
-                                default: None,
-                                span: kryos_errors::Span::DUMMY,
-                            });
+                            // Static method — no self param.
                             all_params.extend_from_slice(params);
                         }
                         let mut func = lower_function(&mut ctx, &mangled, &all_params, ret_ty, body);
@@ -2687,6 +2679,14 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
             MirType::I64
         }
 
+        ast::Expr::StaticMethodCall { type_name, method, .. } => {
+            let mangled = format!("{type_name}__{method}");
+            if let Some(ret_ty) = ctx.func_ret_types.get(&mangled) {
+                return ret_ty.clone();
+            }
+            MirType::I64
+        }
+
         ast::Expr::StructLiteral { name, .. } => MirType::Struct(name.clone()),
         ast::Expr::ArrayLiteral { .. } => MirType::I64,
         ast::Expr::TupleLiteral { .. } => MirType::I64,
@@ -3142,6 +3142,27 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 method.clone()
             };
 
+            RValue::Call {
+                func: func_name,
+                args: mir_args,
+            }
+        }
+
+        ast::Expr::StaticMethodCall {
+            type_name,
+            method,
+            args,
+            ..
+        } => {
+            let mir_args: Vec<Operand> = args
+                .iter()
+                .map(|a| lower_expr_to_operand(ctx, a))
+                .collect();
+            let func_name = ctx
+                .method_owners
+                .get(&(type_name.clone(), method.clone()))
+                .cloned()
+                .unwrap_or_else(|| format!("{type_name}__{method}"));
             RValue::Call {
                 func: func_name,
                 args: mir_args,
@@ -3827,6 +3848,11 @@ fn collect_identifiers(
         }
         ast::Expr::MethodCall { object, args, .. } => {
             collect_identifiers(object, bound, free_vars, seen, ctx);
+            for a in args {
+                collect_identifiers(a, bound, free_vars, seen, ctx);
+            }
+        }
+        ast::Expr::StaticMethodCall { args, .. } => {
             for a in args {
                 collect_identifiers(a, bound, free_vars, seen, ctx);
             }

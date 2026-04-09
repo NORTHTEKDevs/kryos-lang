@@ -231,6 +231,14 @@ impl OwnershipAnalyzer {
                 false
             }
 
+            Expr::StaticMethodCall { type_name, method, .. } => {
+                let mangled = format!("{type_name}__{method}");
+                if let Some(&is_copy) = self.fn_copy_returns.get(mangled.as_str()) {
+                    return is_copy;
+                }
+                false
+            }
+
             // Match expression: copy if ALL arms produce copy values.
             Expr::MatchExpr { arms, .. } => {
                 !arms.is_empty() && arms.iter().all(|arm| self.expr_is_copy(&arm.body))
@@ -804,6 +812,15 @@ impl OwnershipAnalyzer {
                     }
                 }
             }
+            Expr::StaticMethodCall { args, .. } => {
+                for arg in args {
+                    if self.expr_is_copy(arg) {
+                        self.analyze_expr_use(arg);
+                    } else {
+                        self.analyze_expr_move(arg);
+                    }
+                }
+            }
             Expr::BinaryOp { left, right, .. } => {
                 self.analyze_expr_use(left);
                 self.analyze_expr_use(right);
@@ -1067,6 +1084,11 @@ impl OwnershipAnalyzer {
             }
             Expr::MethodCall { object, args, .. } => {
                 self.collect_captures(object, locals, out);
+                for arg in args {
+                    self.collect_captures(arg, locals, out);
+                }
+            }
+            Expr::StaticMethodCall { args, .. } => {
                 for arg in args {
                     self.collect_captures(arg, locals, out);
                 }
