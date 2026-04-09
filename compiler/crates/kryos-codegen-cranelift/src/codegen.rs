@@ -1002,6 +1002,16 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
             builder.switch_to_block(entry);
             builder.append_block_params_for_function_params(entry);
 
+            // Initialize runtime (stack guard, panic hook, etc.).
+            let init_sig = Signature::new(call_conv);
+            let init_id = object_module.declare_function(
+                "kryos_rt_init",
+                Linkage::Import,
+                &init_sig,
+            )?;
+            let init_ref = object_module.declare_func_in_func(init_id, builder.func);
+            builder.ins().call(init_ref, &[]);
+
             // Call _kryos_main().
             let main_func = module.functions.iter().find(|f| f.name == "main")
                 .ok_or_else(|| CodegenError::Internal(
