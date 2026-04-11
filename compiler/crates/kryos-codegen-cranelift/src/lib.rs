@@ -84,6 +84,15 @@ impl CraneliftBackend {
     ) -> Result<*const u8, CodegenError> {
         jit::jit_compile_function(func)
     }
+
+    /// JIT compile all functions in a MIR module, returning a map of names to
+    /// executable pointers. Cross-function calls are resolved correctly.
+    pub fn jit_compile_module(
+        &self,
+        module: &kryos_mir::ir::MirModule,
+    ) -> Result<std::collections::HashMap<String, *const u8>, CodegenError> {
+        jit::jit_compile_module(module)
+    }
 }
 
 impl Default for CraneliftBackend {

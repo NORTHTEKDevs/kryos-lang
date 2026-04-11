@@ -36,16 +36,13 @@ pub fn jit_compile_function(func: &MirFunction) -> Result<*const u8, CodegenErro
 
 /// JIT compile all functions in a MIR module, returning a map of function
 /// names to executable pointers.
+///
+/// All functions are declared first so cross-function calls resolve correctly.
 pub fn jit_compile_module(
     module: &MirModule,
 ) -> Result<HashMap<String, *const u8>, CodegenError> {
     let mut jit = JitCompiler::new()?;
-    let mut result = HashMap::new();
-    for func in &module.functions {
-        let ptr = jit.compile_function(func)?;
-        result.insert(func.name.clone(), ptr);
-    }
-    Ok(result)
+    jit.compile_all(&module.functions)
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +298,110 @@ impl JitCompiler {
             fb_ctx: FunctionBuilderContext::new(),
             func_counter: 0,
         })
+    }
+
+    /// Compile all MIR functions together so cross-function calls resolve.
+    ///
+    /// Declares every function first, then translates each body, then
+    /// finalizes once. Returns a map of function name -> executable pointer.
+    pub fn compile_all(
+        &mut self,
+        functions: &[MirFunction],
+    ) -> Result<HashMap<String, *const u8>, CodegenError> {
+        use cranelift_module::FuncId;
+
+        let call_conv = self.module.isa().default_call_conv();
+
+        // Declare ARC runtime (same as compile_function).
+        let arc_retain_sig = {
+            let mut s = Signature::new(call_conv);
+            s.params.push(AbiParam::new(types::I64));
+            s
+        };
+        let arc_release_sig = arc_retain_sig.clone();
+        let arc_alloc_sig = {
+            let mut s = Signature::new(call_conv);
+            s.params.push(AbiParam::new(types::I64));
+            s.returns.push(AbiParam::new(types::I64));
+            s
+        };
+
+        let mut func_ids: HashMap<String, FuncId> = HashMap::new();
+
+        let arc_retain_id = self.module.declare_function(
+            "kryos_arc_retain_i64", Linkage::Import, &arc_retain_sig,
+        )?;
+        let arc_release_id = self.module.declare_function(
+            "kryos_arc_release_i64", Linkage::Import, &arc_release_sig,
+        )?;
+        let arc_alloc_id = self.module.declare_function(
+            "kryos_arc_alloc_i64", Linkage::Import, &arc_alloc_sig,
+        )?;
+
+        func_ids.insert("kryos_arc_retain".to_string(), arc_retain_id);
+        func_ids.insert("kryos_arc_release".to_string(), arc_release_id);
+        func_ids.insert("kryos_arc_alloc".to_string(), arc_alloc_id);
+        func_ids.insert("kryos_arc_alloc_i64".to_string(), arc_alloc_id);
+
+        // Phase 1: Declare ALL user functions so cross-calls resolve.
+        let mut declared: Vec<FuncId> = Vec::new();
+        for mir_func in functions {
+            let sig = build_signature(mir_func, call_conv);
+            let func_id = self.module.declare_function(
+                &mir_func.name, Linkage::Export, &sig,
+            )?;
+            func_ids.insert(mir_func.name.clone(), func_id);
+            declared.push(func_id);
+        }
+
+        // Phase 2: Translate each function body.
+        for (mir_func, &func_id) in functions.iter().zip(declared.iter()) {
+            let sig = build_signature(mir_func, call_conv);
+            let func_index = self.func_counter;
+            self.func_counter += 1;
+
+            let mut cl_func = Function::with_name_signature(
+                UserFuncName::user(0, func_index),
+                sig,
+            );
+
+            {
+                let empty_struct_defs = std::collections::HashMap::new();
+                let empty_enum_defs = std::collections::HashMap::new();
+                let empty_trait_vtables = std::collections::HashMap::new();
+                let mut str_counter = 0u32;
+                let mut builder = FunctionBuilder::new(&mut cl_func, &mut self.fb_ctx);
+                crate::codegen::translate_function(
+                    mir_func,
+                    &mut builder,
+                    &func_ids,
+                    &mut self.module,
+                    &empty_struct_defs,
+                    &empty_enum_defs,
+                    &mut str_counter,
+                    &empty_trait_vtables,
+                    false,
+                )?;
+                builder.seal_all_blocks();
+                builder.finalize();
+            }
+
+            let mut ctx = Context::for_function(cl_func);
+            self.module
+                .define_function(func_id, &mut ctx)
+                .map_err(CodegenError::Module)?;
+        }
+
+        // Phase 3: Finalize once.
+        self.module.finalize_definitions()
+            .map_err(|e| CodegenError::Internal(e.to_string()))?;
+
+        let mut result = HashMap::new();
+        for (mir_func, &func_id) in functions.iter().zip(declared.iter()) {
+            let ptr = self.module.get_finalized_function(func_id);
+            result.insert(mir_func.name.clone(), ptr);
+        }
+        Ok(result)
     }
 
     /// Compile a single MIR function and return its executable pointer.

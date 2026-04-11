@@ -136,24 +136,22 @@ pub fn execute() -> Result<(), String> {
                     }
 
                     if let Some(ref mir) = result.mir {
-                        // Try JIT compilation via the Cranelift backend.
+                        // JIT compile ALL functions so cross-function calls work.
                         let backend = kryos_codegen_cranelift::CraneliftBackend::new();
-                        // Find the __repl_eval__ function in MIR.
-                        if let Some(func) = mir.functions.iter().find(|f| f.name == "__repl_eval__") {
-                            match backend.jit_compile_function(func) {
-                                Ok(ptr) => {
-                                    // Execute the JIT'd function.
+                        match backend.jit_compile_module(mir) {
+                            Ok(ptrs) => {
+                                if let Some(&ptr) = ptrs.get("__repl_eval__") {
                                     // Safety: `ptr` points to JIT-compiled code with the
                                     // signature `fn()` produced by the Cranelift backend.
                                     let f: fn() = unsafe { std::mem::transmute(ptr) };
                                     f();
-                                }
-                                Err(e) => {
-                                    eprintln!("JIT error: {e}");
+                                } else {
+                                    eprintln!("(internal: __repl_eval__ not found in MIR)");
                                 }
                             }
-                        } else {
-                            eprintln!("(internal: __repl_eval__ not found in MIR)");
+                            Err(e) => {
+                                eprintln!("JIT error: {e}");
+                            }
                         }
                     } else {
                         println!("(no output)");
