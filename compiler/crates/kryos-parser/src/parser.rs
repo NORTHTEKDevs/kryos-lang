@@ -815,6 +815,16 @@ impl Parser {
                 }
             }
             TokenKind::RBrace => None, // End of block — caller handles
+            TokenKind::Semicolon => {
+                let tok = self.advance().clone();
+                self.diagnostics.push(
+                    Diagnostic::error("unexpected `;`".to_string())
+                        .with_label(tok.span, "here")
+                        .with_note("Kryos does not use semicolons to terminate statements"),
+                );
+                // Try to continue parsing the next statement
+                self.parse_statement()
+            }
             _ => Some(self.parse_expr_or_assign()),
         }
     }
@@ -1494,7 +1504,18 @@ impl Parser {
             let value = self.parse_expr();
             fields.push((fname, value));
             if !self.check(TokenKind::RBrace) {
-                self.expect(TokenKind::Comma);
+                if !self.eat(TokenKind::Comma) {
+                    let span = self.peek().span;
+                    if self.check(TokenKind::Ident) || self.check(TokenKind::TypeIdent) {
+                        self.diagnostics.push(
+                            Diagnostic::error("expected `,` or `}` in struct literal".to_string())
+                                .with_label(span, "here")
+                                .with_note("did you forget a comma between fields?"),
+                        );
+                    } else {
+                        self.error(format!("expected `,` or `}}`, found {}", self.peek_kind()), span);
+                    }
+                }
             }
         }
         let rbrace = self.expect(TokenKind::RBrace);
@@ -1584,6 +1605,15 @@ impl Parser {
                 None
             };
             self.expect(TokenKind::FatArrow);
+            if self.check(TokenKind::Return) {
+                let ret_span = self.peek().span;
+                self.diagnostics.push(
+                    Diagnostic::error("unexpected `return` in match arm".to_string())
+                        .with_label(ret_span, "here")
+                        .with_note("match arms are expressions; remove `return` and use the expression directly"),
+                );
+                self.advance(); // skip `return` and parse the expression
+            }
             let body = Box::new(self.parse_expr());
             let arm_end = body.span();
             arms.push(MatchArm {
