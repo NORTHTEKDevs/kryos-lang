@@ -279,7 +279,7 @@ Iterates a chat log and computes per-user message stats (see [`chat_server.kry`]
 
 An 18,700-line self-hosted compiler written entirely in Kryos lives in `compiler/self-host/` (15 files + runtime). It implements the complete pipeline: lexer, parser, type checker, MIR lowering, 5-pass optimizer, register allocator, x86_64 machine code emission, and ELF/COFF linking -- with zero external dependencies beyond the OS kernel.
 
-The concatenated self-host type-checks cleanly through the Rust compiler (0 errors). The stage-1 binary (1MB PE32+ on Windows) compiles and runs, successfully parsing and tokenizing Kryos source files.
+The concatenated self-host type-checks cleanly through the Rust compiler with `--skip-ownership` (the ownership analyzer has known false positives on self-referential compiler patterns). The stage-1 binary (1MB PE32+ on Windows) compiles and runs, successfully parsing and tokenizing Kryos source files.
 
 Bootstrap verification follows the same 3-stage technique used by GCC, Rust, and Go:
 
@@ -292,7 +292,7 @@ stage-2 == stage-3        -> compiler faithfully reproduces itself
 
 ## Status
 
-**v0.3.1** -- 21-crate Rust compiler with 765 passing tests and zero clippy warnings. Core language features are fully implemented: type inference, ownership analysis, generics with monomorphization, `dyn Trait`, `comptime`, pattern matching, async/await, concurrency primitives, cross-function error propagation, module imports, and capability enforcement. Runtime safety: bounds-checked arrays, null-safe struct access, integer overflow detection, stack overflow protection. Structured error codes (E0001--E0302) with "did you mean?" suggestions. Dual backends: Cranelift for fast builds, LLVM for optimized release binaries. Full package manager with dependency resolution, lock files, and remote fetching. The self-hosted compiler type-checks cleanly and produces a working stage-1 native binary.
+**v0.3.2** -- 21-crate Rust compiler with 765 passing tests and zero clippy warnings. Core language features are fully implemented: type inference, ownership analysis, generics with monomorphization, `dyn Trait`, `comptime`, `else if` chains, pattern matching, async/await, concurrency primitives, cross-function error propagation, module imports, and capability enforcement. Runtime safety: bounds-checked arrays, null-safe struct access, integer overflow detection, stack overflow protection, ownership-tracked Drop (no double-free on parameters or borrowed array elements). Structured error codes (E0001--E0302) with "did you mean?" suggestions. Dual backends: Cranelift for fast builds, LLVM for optimized release binaries. Full package manager with dependency resolution, lock files, and remote fetching. The self-hosted compiler type-checks cleanly with `--skip-ownership` and produces a working stage-1 native binary.
 
 ### Roadmap
 
