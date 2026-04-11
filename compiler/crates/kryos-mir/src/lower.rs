@@ -3970,17 +3970,9 @@ fn collect_identifiers(
         }
         ast::Expr::IfExpr { condition, then_branch, else_branch, .. } => {
             collect_identifiers(condition, bound, free_vars, seen, ctx);
-            for s in &then_branch.stmts {
-                if let ast::Stmt::Expr { expr, .. } = s {
-                    collect_identifiers(expr, bound, free_vars, seen, ctx);
-                }
-            }
+            collect_identifiers_block(&then_branch.stmts, bound, free_vars, seen, ctx);
             if let Some(eb) = else_branch {
-                for s in &eb.stmts {
-                    if let ast::Stmt::Expr { expr, .. } = s {
-                        collect_identifiers(expr, bound, free_vars, seen, ctx);
-                    }
-                }
+                collect_identifiers_block(&eb.stmts, bound, free_vars, seen, ctx);
             }
         }
         ast::Expr::Borrow { inner, .. } | ast::Expr::Deref { inner, .. } => {

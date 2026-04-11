@@ -1424,55 +1424,10 @@ fn translate_instruction<M: Module>(
                             )?;
                             builder.ins().call(release_ref, &[val]);
                         }
-                        kryos_mir::ir::MirType::Struct(ref name) => {
-                            // Recursively free heap-allocated fields before
-                            // freeing the struct itself.
-                            if let Some(struct_def) = translator.struct_defs.get(name) {
-                                if let Ok(layout) = compute_struct_layout(struct_def) {
-                                    for (field_name, field_ty) in struct_def.iter() {
-                                        let field_offset = layout.field_offsets.iter()
-                                            .find(|(n, _, _)| n == field_name)
-                                            .map(|(_, off, _)| *off as i32);
-                                        if let Some(offset) = field_offset {
-                                            match field_ty {
-                                                kryos_mir::ir::MirType::Str => {
-                                                    let field_val = builder.ins().load(
-                                                        types::I64, MemFlags::new(), val, offset,
-                                                    );
-                                                    let sfree = ensure_func_ref_with_args(
-                                                        "kryos_string_free", builder, translator, module, 1,
-                                                    )?;
-                                                    builder.ins().call(sfree, &[field_val]);
-                                                }
-                                                kryos_mir::ir::MirType::Array(_, _) => {
-                                                    let field_val = builder.ins().load(
-                                                        types::I64, MemFlags::new(), val, offset,
-                                                    );
-                                                    let afree = ensure_func_ref_with_args(
-                                                        "kryos_array_free", builder, translator, module, 1,
-                                                    )?;
-                                                    builder.ins().call(afree, &[field_val]);
-                                                }
-                                                kryos_mir::ir::MirType::Struct(_) => {
-                                                    let field_val = builder.ins().load(
-                                                        types::I64, MemFlags::new(), val, offset,
-                                                    );
-                                                    let nfree = ensure_func_ref_with_args(
-                                                        "free", builder, translator, module, 1,
-                                                    )?;
-                                                    builder.ins().call(nfree, &[field_val]);
-                                                }
-                                                _ => {}
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            // Free the struct itself.
-                            let free_ref = ensure_func_ref_with_args(
-                                "free", builder, translator, module, 1,
-                            )?;
-                            builder.ins().call(free_ref, &[val]);
+                        kryos_mir::ir::MirType::Struct(_) => {
+                            // Delegate to shared helper which recursively
+                            // frees nested owned fields before the struct.
+                            emit_drop_for_value(val, ty, builder, translator, module)?;
                         }
                         kryos_mir::ir::MirType::Enum(_) => {
                             // Enums use a tagged-union representation: [tag: i64, payload: i64].
@@ -3397,32 +3352,14 @@ fn emit_drop_for_value<M: Module>(
                             .map(|(_, off, _)| *off as i32);
                         if let Some(offset) = field_offset {
                             match field_ty {
-                                MirType::Str => {
+                                MirType::Str | MirType::Array(_, _)
+                                | MirType::Struct(_) | MirType::Function { .. } => {
                                     let field_val = builder.ins().load(
                                         types::I64, MemFlags::new(), val, offset,
                                     );
-                                    let sfree = ensure_func_ref_with_args(
-                                        "kryos_string_free", builder, translator, module, 1,
+                                    emit_drop_for_value(
+                                        field_val, field_ty, builder, translator, module,
                                     )?;
-                                    builder.ins().call(sfree, &[field_val]);
-                                }
-                                MirType::Array(_, _) => {
-                                    let field_val = builder.ins().load(
-                                        types::I64, MemFlags::new(), val, offset,
-                                    );
-                                    let afree = ensure_func_ref_with_args(
-                                        "kryos_array_free", builder, translator, module, 1,
-                                    )?;
-                                    builder.ins().call(afree, &[field_val]);
-                                }
-                                MirType::Struct(_) => {
-                                    let field_val = builder.ins().load(
-                                        types::I64, MemFlags::new(), val, offset,
-                                    );
-                                    let nfree = ensure_func_ref_with_args(
-                                        "free", builder, translator, module, 1,
-                                    )?;
-                                    builder.ins().call(nfree, &[field_val]);
                                 }
                                 _ => {}
                             }
