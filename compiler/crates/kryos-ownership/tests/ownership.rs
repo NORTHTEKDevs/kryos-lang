@@ -931,9 +931,9 @@ fn fn_call_with_copy_return_type() {
 
 #[test]
 fn fn_call_with_non_copy_return_moves() {
-    // fn create() -> String { "hello" }
+    // fn create() -> MyStruct { ... }
     // fn main() {
-    //   let x = create()   ← returns String (non-copy)
+    //   let x = create()   ← returns MyStruct (non-copy)
     //   let a = x           ← moves x
     //   use(x)              ← error: x was moved
     // }
@@ -945,7 +945,7 @@ fn fn_call_with_non_copy_return_moves() {
                 generics: vec![],
                 params: vec![],
                 ret_ty: Some(TypeExpr::Simple {
-                    name: "String".into(),
+                    name: "MyStruct".into(),
                     span: dummy_span(),
                 }),
                 body: Some(Block {

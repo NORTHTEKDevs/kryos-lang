@@ -43,10 +43,9 @@ impl OwnershipScope {
     }
 }
 
-/// Set of known copy type names (primitives only).
-/// Strings are NOT copy — they are heap-allocated and tracked by
-/// ownership.  String *literals* are still considered copy via
-/// `expr_is_copy` (they are interned/static data).
+/// Set of known copy type names (primitives + strings).
+/// Strings are reference-counted, so copying the handle (pointer)
+/// is safe — it just increments the refcount.
 fn is_primitive_copy_type(name: &str) -> bool {
     matches!(
         name,
@@ -55,6 +54,7 @@ fn is_primitive_copy_type(name: &str) -> bool {
             | "f32" | "f64"
             | "bool" | "char"
             | "usize" | "isize"
+            | "str" | "string" | "String"
     )
 }
 
@@ -292,6 +292,9 @@ impl OwnershipAnalyzer {
 
             // Struct literal: copy if the struct is annotated @copy.
             Expr::StructLiteral { name, .. } => self.copy_structs.contains(name),
+
+            // Empty array literals are implicitly copy (they contain no data).
+            Expr::ArrayLiteral { elements, .. } => elements.is_empty(),
 
             _ => false,
         }
@@ -768,7 +771,9 @@ impl OwnershipAnalyzer {
                 // Check for partial move on the field.
                 if let Expr::Identifier { name, .. } = object.as_ref() {
                     if let Some(info) = self.lookup_var(name) {
-                        if info.moved_fields.contains(field) {
+                        // @copy structs don't have partial moves — field access
+                        // copies the field value, leaving the parent intact.
+                        if !info.is_copy && info.moved_fields.contains(field) {
                             self.error_partial_move(name, field, *span);
                             return;
                         }
@@ -974,6 +979,13 @@ impl OwnershipAnalyzer {
                 // Partial move of a struct field.
                 if let Expr::Identifier { name, .. } = object.as_ref() {
                     self.check_usable(name, *span);
+                    // @copy structs: field access copies the value,
+                    // so the parent is never partially moved.
+                    if let Some(info) = self.lookup_var(name) {
+                        if info.is_copy || info.state == OwnershipState::Shared {
+                            return;
+                        }
+                    }
                     if let Some(info) = self.lookup_var_mut(name) {
                         info.moved_fields.insert(field.clone());
                         if info.state == OwnershipState::Owned {
