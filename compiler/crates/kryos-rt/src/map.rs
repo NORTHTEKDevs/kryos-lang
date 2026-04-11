@@ -430,7 +430,7 @@ pub extern "C" fn kryos_map_delete_str(map: i64, key: i64) -> i64 {
                 (*header).len -= 1;
                 // Backward-shift for string-keyed entries.
                 let mut j = (idx + 1) % capacity;
-                loop {
+                for _ in 0..capacity {
                     let next = &*entries.add(j);
                     if !next.occupied {
                         break;

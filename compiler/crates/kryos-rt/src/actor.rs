@@ -64,7 +64,10 @@ pub extern "C" fn kryos_actor_spawn(
 
     // Register before spawning so early sends don't race.
     {
-        let mut reg = get_registry().lock().unwrap();
+        let mut reg = match get_registry().lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
         reg.insert(actor_id, entry.clone());
     }
 
@@ -81,7 +84,10 @@ pub extern "C" fn kryos_actor_spawn(
 
         // Mark mailbox closed after actor function returns.
         {
-            let mut mb = entry_for_thread.mailbox.lock().unwrap();
+            let mut mb = match entry_for_thread.mailbox.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
             mb.closed = true;
         }
         entry_for_thread.condvar.notify_all();
@@ -102,14 +108,20 @@ pub extern "C" fn kryos_actor_send(actor_id: u64, msg_ptr: *const u8, msg_len: u
 
     // Look up the actor entry (brief registry lock).
     let entry = {
-        let reg = get_registry().lock().unwrap();
+        let reg = match get_registry().lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
         match reg.get(&actor_id) {
             Some(e) => e.clone(),
             None => return -1,
         }
     };
 
-    let mut mb = entry.mailbox.lock().unwrap();
+    let mut mb = match entry.mailbox.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
     if mb.closed {
         return -1;
     }
@@ -142,14 +154,20 @@ pub extern "C" fn kryos_actor_recv(buf_ptr: *mut u8, buf_len: usize) -> i32 {
 
     // Look up own entry (brief registry lock).
     let entry = {
-        let reg = get_registry().lock().unwrap();
+        let reg = match get_registry().lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
         match reg.get(&actor_id) {
             Some(e) => e.clone(),
             None => return -1,
         }
     };
 
-    let mut mb = entry.mailbox.lock().unwrap();
+    let mut mb = match entry.mailbox.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
 
     loop {
         if let Some(data) = mb.queue.pop_front() {
@@ -162,7 +180,10 @@ pub extern "C" fn kryos_actor_recv(buf_ptr: *mut u8, buf_len: usize) -> i32 {
         if mb.closed {
             return 0;
         }
-        mb = entry.condvar.wait(mb).unwrap();
+        mb = match entry.condvar.wait(mb) {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
     }
 }
 
@@ -172,7 +193,10 @@ pub extern "C" fn kryos_actor_recv(buf_ptr: *mut u8, buf_len: usize) -> i32 {
 #[no_mangle]
 pub extern "C" fn kryos_actor_lock(actor_id: u64) -> i32 {
     let entry = {
-        let reg = get_registry().lock().unwrap();
+        let reg = match get_registry().lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
         match reg.get(&actor_id) {
             Some(e) => e.clone(),
             None => return -1,
@@ -193,7 +217,10 @@ pub extern "C" fn kryos_actor_lock(actor_id: u64) -> i32 {
 #[no_mangle]
 pub extern "C" fn kryos_actor_unlock(actor_id: u64) -> i32 {
     let entry = {
-        let reg = get_registry().lock().unwrap();
+        let reg = match get_registry().lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
         match reg.get(&actor_id) {
             Some(e) => e.clone(),
             None => return -1,
