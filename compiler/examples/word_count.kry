@@ -1,0 +1,50 @@
+// word_count.kry — Count words by iterating characters and counting spaces
+
+fn count_words(text: str) -> i64 {
+    let length = len(text)
+    if length == 0 {
+        return 0
+    }
+
+    let mut words = 1
+    let mut i = 0
+    while i < length {
+        let ch = substr(text, i, i + 1)
+        if ch == " " {
+            words = words + 1
+        }
+        i = i + 1
+    }
+    return words
+}
+
+fn count_chars(text: str) -> i64 {
+    return len(text)
+}
+
+fn main() {
+    println("=== Word Count ===")
+    println("")
+
+    let lines = [
+        "The quick brown fox jumps over the lazy dog",
+        "Kryos is a systems programming language",
+        "Pattern matching makes code clear and concise",
+        "Channels enable safe concurrent communication",
+        "Hello world",
+    ]
+
+    let mut total_words = 0
+    let mut total_chars = 0
+
+    for line in lines {
+        let words = count_words(line)
+        let chars = count_chars(line)
+        total_words = total_words + words
+        total_chars = total_chars + chars
+        println(to_string(words) + " words, " + to_string(chars) + " chars: \"" + line + "\"")
+    }
+
+    println("")
+    println("Total: " + to_string(total_words) + " words, " + to_string(total_chars) + " characters across " + to_string(len(lines)) + " lines")
+}
