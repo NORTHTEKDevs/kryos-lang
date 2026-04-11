@@ -22,6 +22,12 @@ impl KryosString {
     }
 }
 
+/// Safely convert raw bytes to a &str. Returns empty string on invalid UTF-8.
+unsafe fn bytes_to_str<'a>(ptr: *const u8, len: usize) -> &'a str {
+    let slice = std::slice::from_raw_parts(ptr, len);
+    std::str::from_utf8(slice).unwrap_or("")
+}
+
 /// Create a new KryosString by copying `len` bytes from `ptr`.
 ///
 /// The caller retains ownership of `ptr`. The returned string is independently
@@ -255,12 +261,8 @@ pub unsafe extern "C" fn kryos_string_contains(
     if s.is_null() || needle.is_null() {
         return 0;
     }
-    let s_str = std::str::from_utf8_unchecked(
-        std::slice::from_raw_parts((*s).data, (*s).len as usize),
-    );
-    let n_str = std::str::from_utf8_unchecked(
-        std::slice::from_raw_parts((*needle).data, (*needle).len as usize),
-    );
+    let s_str = bytes_to_str((*s).data, (*s).len as usize);
+    let n_str = bytes_to_str((*needle).data, (*needle).len as usize);
     if s_str.contains(n_str) { 1 } else { 0 }
 }
 
@@ -270,9 +272,7 @@ pub unsafe extern "C" fn kryos_string_trim(s: *const KryosString) -> *mut KryosS
     if s.is_null() {
         return kryos_string_new(ptr::null(), 0);
     }
-    let src = std::str::from_utf8_unchecked(
-        std::slice::from_raw_parts((*s).data, (*s).len as usize),
-    );
+    let src = bytes_to_str((*s).data, (*s).len as usize);
     let trimmed = src.trim();
     kryos_string_new(trimmed.as_ptr(), trimmed.len() as i64)
 }
@@ -283,9 +283,7 @@ pub unsafe extern "C" fn kryos_string_to_upper(s: *const KryosString) -> *mut Kr
     if s.is_null() {
         return kryos_string_new(ptr::null(), 0);
     }
-    let src = std::str::from_utf8_unchecked(
-        std::slice::from_raw_parts((*s).data, (*s).len as usize),
-    );
+    let src = bytes_to_str((*s).data, (*s).len as usize);
     let upper = src.to_uppercase();
     kryos_string_new(upper.as_ptr(), upper.len() as i64)
 }
@@ -296,9 +294,7 @@ pub unsafe extern "C" fn kryos_string_to_lower(s: *const KryosString) -> *mut Kr
     if s.is_null() {
         return kryos_string_new(ptr::null(), 0);
     }
-    let src = std::str::from_utf8_unchecked(
-        std::slice::from_raw_parts((*s).data, (*s).len as usize),
-    );
+    let src = bytes_to_str((*s).data, (*s).len as usize);
     let lower = src.to_lowercase();
     kryos_string_new(lower.as_ptr(), lower.len() as i64)
 }
@@ -313,15 +309,9 @@ pub unsafe extern "C" fn kryos_string_replace(
     if s.is_null() || from.is_null() || to.is_null() {
         return kryos_string_new(ptr::null(), 0);
     }
-    let s_str = std::str::from_utf8_unchecked(
-        std::slice::from_raw_parts((*s).data, (*s).len as usize),
-    );
-    let from_str = std::str::from_utf8_unchecked(
-        std::slice::from_raw_parts((*from).data, (*from).len as usize),
-    );
-    let to_str = std::str::from_utf8_unchecked(
-        std::slice::from_raw_parts((*to).data, (*to).len as usize),
-    );
+    let s_str = bytes_to_str((*s).data, (*s).len as usize);
+    let from_str = bytes_to_str((*from).data, (*from).len as usize);
+    let to_str = bytes_to_str((*to).data, (*to).len as usize);
     let result = s_str.replace(from_str, to_str);
     kryos_string_new(result.as_ptr(), result.len() as i64)
 }

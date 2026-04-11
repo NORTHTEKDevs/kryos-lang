@@ -84,14 +84,17 @@ pub extern "C" fn kryos_spawn(fn_ptr: i64, args_ptr: *const i64, arg_count: i64)
                     f(args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7]);
                 }
                 _ => {
-                    // Too many args — silently ignore.
-                    eprintln!("[spawn error] too many arguments ({} > 8)", args.len());
+                    eprintln!("[spawn warning] function has {} arguments; \
+                               spawned functions support at most 8 arguments directly", args.len());
                 }
             }
         }
     });
 
-    let mut handles = get_handles().lock().unwrap();
+    let mut handles = match get_handles().lock() {
+        Ok(h) => h,
+        Err(p) => p.into_inner(),
+    };
     handles.push(handle);
     0
 }
@@ -102,7 +105,10 @@ pub extern "C" fn kryos_spawn(fn_ptr: i64, args_ptr: *const i64, arg_count: i64)
 /// before the process exits.
 #[no_mangle]
 pub extern "C" fn kryos_spawn_wait_all() {
-    let mut handles = get_handles().lock().unwrap();
+    let mut handles = match get_handles().lock() {
+        Ok(h) => h,
+        Err(p) => p.into_inner(),
+    };
     for h in handles.drain(..) {
         let _ = h.join();
     }

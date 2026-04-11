@@ -83,6 +83,9 @@ pub struct LoweringContext {
     /// Locals that are function parameters — must NOT be dropped by the callee
     /// because the caller owns them.
     param_locals: HashSet<u32>,
+    /// Locals that borrow from another local (e.g., struct field access into a new
+    /// struct). These must not be dropped because the source local owns the memory.
+    borrowed_locals: HashSet<u32>,
     /// Return type of the function currently being lowered.  Used by `throw`
     /// outside a `try` block to emit a properly-typed early return.
     current_ret_ty: MirType,
@@ -134,6 +137,7 @@ impl LoweringContext {
             func_param_types: HashMap::new(),
             dropped_locals: HashSet::new(),
             param_locals: HashSet::new(),
+            borrowed_locals: HashSet::new(),
             current_ret_ty: MirType::Void,
             current_self_type: None,
         }
@@ -872,7 +876,9 @@ pub fn lower_function(
                 if ctx.locals[i].name.is_some() {
                     let local_id = ctx.locals[i].id;
                     // Skip function parameters — caller owns them.
-                    if ctx.param_locals.contains(&local_id.0) {
+                    if ctx.param_locals.contains(&local_id.0)
+                        || ctx.borrowed_locals.contains(&local_id.0)
+                    {
                         continue;
                     }
                     if !ctx.dropped_locals.contains(&local_id.0)
@@ -931,7 +937,9 @@ fn lower_block_stmts(ctx: &mut LoweringContext, stmts: &[ast::Stmt]) {
         if ctx.locals[i].name.is_some() {
             let local_id = ctx.locals[i].id;
             // Skip function parameters — the caller owns them, not the callee.
-            if ctx.param_locals.contains(&local_id.0) {
+            if ctx.param_locals.contains(&local_id.0)
+                || ctx.borrowed_locals.contains(&local_id.0)
+            {
                 continue;
             }
             if !ctx.dropped_locals.contains(&local_id.0) {
@@ -976,8 +984,9 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                         for (_fname, fexpr) in fields {
                             if let ast::Expr::FieldAccess { object, .. } = fexpr {
                                 if let ast::Expr::Identifier { name: src_name, .. } = object.as_ref() {
-                                    let src_local = find_local_by_name(ctx, src_name);
-                                    ctx.param_locals.insert(src_local.0);
+                                    if let Some(src_local) = find_local_by_name(ctx, src_name) {
+                                        ctx.borrowed_locals.insert(src_local.0);
+                                    }
                                 }
                             }
                         }
@@ -1012,7 +1021,7 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
 
             if let Some((rvalue, mark_non_owning, closure_info, is_shared)) = rvalue_and_meta {
                 if mark_non_owning {
-                    ctx.param_locals.insert(local.0);
+                    ctx.borrowed_locals.insert(local.0);
                 }
                 if let Some((func_name, captures)) = closure_info {
                     ctx.closure_locals.insert(
@@ -1041,7 +1050,8 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             let actor_field_target = if let ast::Expr::FieldAccess { object, field, .. } = target {
                 if let ast::Expr::Identifier { name, .. } = object.as_ref() {
                     if name == "self" {
-                        let self_local = find_local_by_name(ctx, "self");
+                        let self_local = find_local_by_name(ctx, "self")
+                            .expect("internal: 'self' local not found in actor handler");
                         let actor_name = ctx.locals.iter()
                             .find(|l| l.id == self_local)
                             .and_then(|l| match &l.ty {
@@ -1116,7 +1126,8 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     ast::AssignOp::Assign => {
                         // For simple assignment to an identifier, find the local.
                         if let ast::Expr::Identifier { name, .. } = target {
-                            let dest = find_local_by_name(ctx, name);
+                            let dest = find_local_by_name(ctx, name)
+                                .expect("internal: assign target local not found");
                             let rvalue = lower_expr_to_rvalue(ctx, value);
                             ctx.emit(Instruction::Assign {
                                 dest,
@@ -1185,7 +1196,8 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     _ => {
                         // Compound assignment (+=, -=, etc.) — desugar to bin-op + assign.
                         if let ast::Expr::Identifier { name, .. } = target {
-                            let dest = find_local_by_name(ctx, name);
+                            let dest = find_local_by_name(ctx, name)
+                                .expect("internal: compound assign target local not found");
                             let mir_op = match op {
                                 ast::AssignOp::AddAssign => MirBinOp::Add,
                                 ast::AssignOp::SubAssign => MirBinOp::Sub,
@@ -1737,7 +1749,7 @@ fn lower_for(
     };
     let loop_var = ctx.alloc_local(Some(loop_var_name), elem_type, false);
     // Loop variable borrows from the array — must NOT be freed on scope exit.
-    ctx.param_locals.insert(loop_var.0);
+    ctx.borrowed_locals.insert(loop_var.0);
     ctx.emit(Instruction::Assign {
         dest: loop_var,
         value: RValue::Index {
@@ -2116,7 +2128,8 @@ fn lower_spawn_block(ctx: &mut LoweringContext, stmts: &[ast::Stmt]) {
     let capture_ops: Vec<Operand> = captures
         .iter()
         .map(|name| {
-            let local = find_local_by_name(ctx, name);
+            let local = find_local_by_name(ctx, name)
+                .expect("internal: spawn capture local not found");
             Operand::Local(local)
         })
         .collect();
@@ -2570,8 +2583,9 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
 /// Best-effort inference of a MIR type for an AST expression.
 ///
 /// Uses struct definitions and function return types collected during the
-/// pre-pass to resolve field accesses and call results.  Falls back to I64
-/// for anything it can't resolve.
+/// pre-pass to resolve field accesses and call results.  Falls back to Void
+/// for unknown function calls and the terminal catch-all; falls back to I64
+/// for literals, identifiers, and structural sub-expression types.
 fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
     match expr {
         ast::Expr::IntLiteral { .. } => MirType::I64,
@@ -2722,7 +2736,7 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
                     }
                 }
             }
-            MirType::I64
+            MirType::Void
         }
 
         ast::Expr::MethodCall { object, method, .. } => {
@@ -2751,7 +2765,7 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
             if let Some(ret_ty) = ctx.func_ret_types.get(method.as_str()) {
                 return ret_ty.clone();
             }
-            MirType::I64
+            MirType::Void
         }
 
         ast::Expr::StaticMethodCall { type_name, method, .. } => {
@@ -2759,7 +2773,7 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
             if let Some(ret_ty) = ctx.func_ret_types.get(&mangled) {
                 return ret_ty.clone();
             }
-            MirType::I64
+            MirType::Void
         }
 
         ast::Expr::StructLiteral { name, .. } => MirType::Struct(name.clone()),
@@ -2848,7 +2862,7 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
                 .unwrap_or(MirType::I64)
         }
 
-        _ => MirType::I64,
+        _ => MirType::Void,
     }
 }
 
@@ -2890,7 +2904,8 @@ fn lower_expr_to_operand(ctx: &mut LoweringContext, expr: &ast::Expr) -> Operand
                 });
                 return Operand::Local(temp);
             }
-            let local = find_local_by_name(ctx, name);
+            let local = find_local_by_name(ctx, name)
+                .unwrap_or_else(|| ctx.alloc_local(Some(name.to_string()), MirType::I64, false));
             Operand::Local(local)
         }
         _ => {
@@ -2945,7 +2960,8 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     captures: vec![],
                 };
             }
-            let local = find_local_by_name(ctx, name);
+            let local = find_local_by_name(ctx, name)
+                .unwrap_or_else(|| ctx.alloc_local(Some(name.to_string()), MirType::I64, false));
             RValue::Use(Operand::Local(local))
         }
 
@@ -3086,7 +3102,8 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         };
                     }
 
-                    let callee_local = find_local_by_name(ctx, &func_name);
+                    let callee_local = find_local_by_name(ctx, &func_name)
+                        .expect("internal: indirect call callee local not found");
                     let mir_args: Vec<Operand> = args
                         .iter()
                         .map(|a| lower_expr_to_operand(ctx, a))
@@ -3298,7 +3315,8 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             if let ast::Expr::Identifier { name, .. } = object.as_ref() {
                 if name == "self" {
                     // Determine the actor type from the self param's struct type.
-                    let self_local = find_local_by_name(ctx, "self");
+                    let self_local = find_local_by_name(ctx, "self")
+                        .expect("internal: 'self' local not found in field access");
                     let actor_name = ctx.locals.iter()
                         .find(|l| l.id == self_local)
                         .and_then(|l| match &l.ty {
@@ -3381,7 +3399,8 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
         ast::Expr::Borrow { inner, mutable, .. } => {
             // &x → take address of local
             if let ast::Expr::Identifier { name, .. } = inner.as_ref() {
-                let local = find_local_by_name(ctx, name);
+                let local = find_local_by_name(ctx, name)
+                    .expect("internal: borrow target local not found");
                 RValue::AddrOf { local, mutable: *mutable }
             } else {
                 // For non-identifier expressions, lower to a temp first,
@@ -3552,7 +3571,8 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             let capture_ops: Vec<Operand> = captures
                 .iter()
                 .map(|name| {
-                    let local = find_local_by_name(ctx, name);
+                    let local = find_local_by_name(ctx, name)
+                        .expect("internal: lambda capture local not found");
                     Operand::Local(local)
                 })
                 .collect();
@@ -3849,16 +3869,11 @@ pub fn lower_resolved_type(ty: &Type) -> MirType {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Look up a local by name. Returns the local id if found, otherwise allocates
-/// a new temporary (graceful degradation for unresolved names).
-fn find_local_by_name(ctx: &mut LoweringContext, name: &str) -> LocalId {
-    for local in ctx.locals.iter().rev() {
-        if local.name.as_deref() == Some(name) {
-            return local.id;
-        }
-    }
-    // Not found — allocate a placeholder local.
-    ctx.alloc_local(Some(name.to_string()), MirType::I64, false)
+/// Look up a local by name. Returns `Some(id)` if found, `None` otherwise.
+fn find_local_by_name(ctx: &LoweringContext, name: &str) -> Option<LocalId> {
+    ctx.locals.iter().rev()
+        .find(|l| l.name.as_deref() == Some(name))
+        .map(|l| l.id)
 }
 
 /// Infer the type name of an expression (for method call resolution).
@@ -3984,8 +3999,72 @@ fn collect_identifiers(
             }
             collect_identifiers(body, &inner_bound, free_vars, seen, ctx);
         }
-        // For other expression types, we don't recurse deeper.
-        _ => {}
+        ast::Expr::StructLiteral { fields, .. } => {
+            for (_, val) in fields {
+                collect_identifiers(val, bound, free_vars, seen, ctx);
+            }
+        }
+        ast::Expr::ArrayLiteral { elements, .. }
+        | ast::Expr::TupleLiteral { elements, .. } => {
+            for e in elements {
+                collect_identifiers(e, bound, free_vars, seen, ctx);
+            }
+        }
+        ast::Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                collect_identifiers(k, bound, free_vars, seen, ctx);
+                collect_identifiers(v, bound, free_vars, seen, ctx);
+            }
+        }
+        ast::Expr::MatchExpr { subject, arms, .. } => {
+            collect_identifiers(subject, bound, free_vars, seen, ctx);
+            for arm in arms {
+                let mut arm_bound = bound.clone();
+                collect_pattern_names(&arm.pattern, &mut arm_bound);
+                if let Some(guard) = &arm.guard {
+                    collect_identifiers(guard, &arm_bound, free_vars, seen, ctx);
+                }
+                collect_identifiers(&arm.body, &arm_bound, free_vars, seen, ctx);
+            }
+        }
+        ast::Expr::RangeExpr { start, end, .. } => {
+            if let Some(s) = start {
+                collect_identifiers(s, bound, free_vars, seen, ctx);
+            }
+            if let Some(e) = end {
+                collect_identifiers(e, bound, free_vars, seen, ctx);
+            }
+        }
+        ast::Expr::Await { value, .. } => {
+            collect_identifiers(value, bound, free_vars, seen, ctx);
+        }
+        ast::Expr::SharedExpr { inner, .. }
+        | ast::Expr::MoveExpr { inner, .. }
+        | ast::Expr::WeakExpr { inner, .. } => {
+            collect_identifiers(inner, bound, free_vars, seen, ctx);
+        }
+        ast::Expr::PipeExpr { left, right, .. } => {
+            collect_identifiers(left, bound, free_vars, seen, ctx);
+            collect_identifiers(right, bound, free_vars, seen, ctx);
+        }
+        ast::Expr::InterpolatedString { parts, .. } => {
+            for part in parts {
+                if let ast::StringPart::Expr(e) = part {
+                    collect_identifiers(e, bound, free_vars, seen, ctx);
+                }
+            }
+        }
+        ast::Expr::ComptimeBlock { body, .. }
+        | ast::Expr::QuantumBlock { body, .. } => {
+            collect_identifiers_block(&body.stmts, bound, free_vars, seen, ctx);
+        }
+        // Leaf literals — no sub-expressions to recurse into.
+        ast::Expr::IntLiteral { .. }
+        | ast::Expr::FloatLiteral { .. }
+        | ast::Expr::StringLiteral { .. }
+        | ast::Expr::CharLiteral { .. }
+        | ast::Expr::BoolLiteral { .. }
+        | ast::Expr::NoneLiteral { .. } => {}
     }
 }
 

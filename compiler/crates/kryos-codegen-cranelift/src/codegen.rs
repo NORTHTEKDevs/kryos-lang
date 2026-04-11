@@ -1350,10 +1350,12 @@ fn translate_instruction<M: Module>(
                         .ins()
                         .brif(is_pending, exc_return_block, &[], continue_block, &[]);
 
-                    // Early-return block: emit trace_exit and return a default
-                    // value to propagate the exception up the call stack.
+                    // Early-return block: drop live locals, emit trace_exit,
+                    // and return a default value to propagate the exception
+                    // up the call stack.
                     builder.switch_to_block(exc_return_block);
                     builder.seal_block(exc_return_block);
+                    emit_exception_cleanup_drops(builder, translator, module)?;
                     emit_trace_exit(builder, translator, module)?;
                     if builder.func.signature.returns.is_empty() {
                         builder.ins().return_(&[]);
@@ -1422,15 +1424,64 @@ fn translate_instruction<M: Module>(
                             )?;
                             builder.ins().call(release_ref, &[val]);
                         }
-                        kryos_mir::ir::MirType::Struct(_) => {
-                            // Struct was heap-allocated via malloc; free it.
+                        kryos_mir::ir::MirType::Struct(ref name) => {
+                            // Recursively free heap-allocated fields before
+                            // freeing the struct itself.
+                            if let Some(struct_def) = translator.struct_defs.get(name) {
+                                if let Ok(layout) = compute_struct_layout(struct_def) {
+                                    for (field_name, field_ty) in struct_def.iter() {
+                                        let field_offset = layout.field_offsets.iter()
+                                            .find(|(n, _, _)| n == field_name)
+                                            .map(|(_, off, _)| *off as i32);
+                                        if let Some(offset) = field_offset {
+                                            match field_ty {
+                                                kryos_mir::ir::MirType::Str => {
+                                                    let field_val = builder.ins().load(
+                                                        types::I64, MemFlags::new(), val, offset,
+                                                    );
+                                                    let sfree = ensure_func_ref_with_args(
+                                                        "kryos_string_free", builder, translator, module, 1,
+                                                    )?;
+                                                    builder.ins().call(sfree, &[field_val]);
+                                                }
+                                                kryos_mir::ir::MirType::Array(_, _) => {
+                                                    let field_val = builder.ins().load(
+                                                        types::I64, MemFlags::new(), val, offset,
+                                                    );
+                                                    let afree = ensure_func_ref_with_args(
+                                                        "kryos_array_free", builder, translator, module, 1,
+                                                    )?;
+                                                    builder.ins().call(afree, &[field_val]);
+                                                }
+                                                kryos_mir::ir::MirType::Struct(_) => {
+                                                    let field_val = builder.ins().load(
+                                                        types::I64, MemFlags::new(), val, offset,
+                                                    );
+                                                    let nfree = ensure_func_ref_with_args(
+                                                        "free", builder, translator, module, 1,
+                                                    )?;
+                                                    builder.ins().call(nfree, &[field_val]);
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // Free the struct itself.
                             let free_ref = ensure_func_ref_with_args(
                                 "free", builder, translator, module, 1,
                             )?;
                             builder.ins().call(free_ref, &[val]);
                         }
                         kryos_mir::ir::MirType::Enum(_) => {
-                            // Enums are stack-allocated — do NOT free.
+                            // Enums use a tagged-union representation: [tag: i64, payload: i64].
+                            // The payload may hold a heap pointer (String, Struct) but we
+                            // can't determine which variant is active at compile time.
+                            // For now, this is a known limitation — enum payloads that hold
+                            // heap data will leak. A runtime-tracked variant tag would fix
+                            // this but requires emitting a match on the tag at every drop site.
+                            // TODO: runtime variant dispatch for enum Drop.
                         }
                         kryos_mir::ir::MirType::Array(_, _) => {
                             // Array cleanup via runtime.
@@ -2656,8 +2707,8 @@ fn translate_rvalue<M: Module>(
         }
 
         RValue::MakeTraitObject { value, concrete_type, trait_name } => {
-            // Dynamic dispatch: create a fat pointer [data, vtable_entry...].
-            // For now, store (data_ptr, fn_ptr_0, fn_ptr_1, ...) on the stack.
+            // Dynamic dispatch: heap-allocate a fat pointer [data, vtable_entry...].
+            // Heap allocation ensures the fat pointer survives the current scope.
             let data_val = translate_operand(value, builder, translator, module)?;
 
             // Look up the trait method(s) for this concrete type.
@@ -2665,17 +2716,19 @@ fn translate_rvalue<M: Module>(
             let method_names = translator.mir_module_trait_methods
                 .get(&vtable_key).cloned().unwrap_or_default();
 
-            // Allocate stack slot for fat pointer: [data (i64), fn_ptr_0, fn_ptr_1, ...]
+            // Heap-allocate fat pointer: [data (i64), fn_ptr_0, fn_ptr_1, ...]
             let num_methods = method_names.len().max(1) as u32;
-            let slot_size = 8 + 8 * num_methods;
-            let slot = builder.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                slot_size,
-                0,
-            ));
+            let alloc_size = (8 + 8 * num_methods) as i64;
+
+            let malloc_ref = ensure_func_ref_with_args(
+                "malloc", builder, translator, module, 1,
+            )?;
+            let size_val = builder.ins().iconst(types::I64, alloc_size);
+            let call_inst = builder.ins().call(malloc_ref, &[size_val]);
+            let fat_ptr = builder.inst_results(call_inst)[0];
 
             // Store the data value.
-            builder.ins().stack_store(data_val, slot, 0);
+            builder.ins().store(MemFlags::new(), data_val, fat_ptr, 0);
 
             // Store each method function pointer.
             for (i, method_name) in method_names.iter().enumerate() {
@@ -2683,12 +2736,10 @@ fn translate_rvalue<M: Module>(
                     method_name, builder, translator, module, 1,
                 )?;
                 let fn_addr = builder.ins().func_addr(types::I64, func_ref);
-                builder.ins().stack_store(fn_addr, slot, 8 + 8 * i as i32);
+                builder.ins().store(MemFlags::new(), fn_addr, fat_ptr, 8 + 8 * i as i32);
             }
 
-            // Return the address of the fat pointer.
-            let addr = builder.ins().stack_addr(types::I64, slot, 0);
-            Ok(Some(addr))
+            Ok(Some(fat_ptr))
         }
 
         RValue::VtableCall { object, method_index, args, return_ty } => {
@@ -3308,4 +3359,153 @@ fn ensure_func_ref_f64<M: Module>(
     let func_ref = module.declare_func_in_func(func_id, builder.func);
     translator.func_refs.insert(name.to_string(), func_ref);
     Ok(func_ref)
+}
+
+// ---------------------------------------------------------------------------
+// Exception cleanup: drop live locals on early-return
+// ---------------------------------------------------------------------------
+
+/// Emit a drop (free) for a single Cranelift value of the given MIR type.
+/// The caller is responsible for null-checking the value before calling this.
+fn emit_drop_for_value<M: Module>(
+    val: cranelift_codegen::ir::Value,
+    ty: &MirType,
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+) -> Result<(), CodegenError> {
+    match ty {
+        MirType::Str => {
+            let free_ref = ensure_func_ref_with_args(
+                "kryos_string_free", builder, translator, module, 1,
+            )?;
+            builder.ins().call(free_ref, &[val]);
+        }
+        MirType::Function { .. } => {
+            let release_ref = ensure_func_ref_with_args(
+                "kryos_arc_release", builder, translator, module, 1,
+            )?;
+            builder.ins().call(release_ref, &[val]);
+        }
+        MirType::Struct(ref name) => {
+            // Recursively free heap-allocated fields, then free the struct.
+            if let Some(struct_def) = translator.struct_defs.get(name).cloned() {
+                if let Ok(layout) = compute_struct_layout(&struct_def) {
+                    for (field_name, field_ty) in struct_def.iter() {
+                        let field_offset = layout.field_offsets.iter()
+                            .find(|(n, _, _)| n == field_name)
+                            .map(|(_, off, _)| *off as i32);
+                        if let Some(offset) = field_offset {
+                            match field_ty {
+                                MirType::Str => {
+                                    let field_val = builder.ins().load(
+                                        types::I64, MemFlags::new(), val, offset,
+                                    );
+                                    let sfree = ensure_func_ref_with_args(
+                                        "kryos_string_free", builder, translator, module, 1,
+                                    )?;
+                                    builder.ins().call(sfree, &[field_val]);
+                                }
+                                MirType::Array(_, _) => {
+                                    let field_val = builder.ins().load(
+                                        types::I64, MemFlags::new(), val, offset,
+                                    );
+                                    let afree = ensure_func_ref_with_args(
+                                        "kryos_array_free", builder, translator, module, 1,
+                                    )?;
+                                    builder.ins().call(afree, &[field_val]);
+                                }
+                                MirType::Struct(_) => {
+                                    let field_val = builder.ins().load(
+                                        types::I64, MemFlags::new(), val, offset,
+                                    );
+                                    let nfree = ensure_func_ref_with_args(
+                                        "free", builder, translator, module, 1,
+                                    )?;
+                                    builder.ins().call(nfree, &[field_val]);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+            let free_ref = ensure_func_ref_with_args(
+                "free", builder, translator, module, 1,
+            )?;
+            builder.ins().call(free_ref, &[val]);
+        }
+        MirType::Array(_, _) => {
+            let free_ref = ensure_func_ref_with_args(
+                "kryos_array_free", builder, translator, module, 1,
+            )?;
+            builder.ins().call(free_ref, &[val]);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Emit cleanup drops for all live locals in the exception early-return path.
+///
+/// Iterates locals in reverse order, skipping function parameters.  For each
+/// local of a droppable type (Str, Function, Struct, Array), loads the
+/// variable, null-checks it, and conditionally calls the appropriate free
+/// function.  This is safe because all non-parameter locals are
+/// zero-initialized, so an uninitialized local will have value 0 and the
+/// null-check will skip the free.
+fn emit_exception_cleanup_drops<M: Module>(
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+) -> Result<(), CodegenError> {
+    let param_ids: std::collections::HashSet<u32> =
+        translator.mir_func.params.iter().map(|p| p.local.0).collect();
+
+    // Collect the locals we need to drop: non-parameter, droppable types.
+    let locals_to_drop: Vec<(u32, MirType)> = translator
+        .mir_func
+        .locals
+        .iter()
+        .filter(|l| !param_ids.contains(&l.id.0))
+        .filter(|l| matches!(
+            l.ty,
+            MirType::Str
+                | MirType::Function { .. }
+                | MirType::Struct(_)
+                | MirType::Array(_, _)
+        ))
+        .map(|l| (l.id.0, l.ty.clone()))
+        .collect();
+
+    // Emit drops in reverse order (last-declared first).
+    for (local_id, ty) in locals_to_drop.iter().rev() {
+        if let Some(&var) = translator.variables.get(local_id) {
+            let val = builder.use_var(var);
+            let zero = builder.ins().iconst(types::I64, 0);
+            let is_nonnull =
+                builder.ins().icmp(IntCC::NotEqual, val, zero);
+
+            let do_drop_block = builder.create_block();
+            let after_drop_block = builder.create_block();
+
+            builder.ins().brif(
+                is_nonnull,
+                do_drop_block,
+                &[],
+                after_drop_block,
+                &[],
+            );
+
+            builder.switch_to_block(do_drop_block);
+            builder.seal_block(do_drop_block);
+            emit_drop_for_value(val, ty, builder, translator, module)?;
+            builder.ins().jump(after_drop_block, &[]);
+
+            builder.switch_to_block(after_drop_block);
+            builder.seal_block(after_drop_block);
+        }
+    }
+
+    Ok(())
 }

@@ -59,7 +59,10 @@ pub extern "C" fn kryos_chan_send(handle: *mut u8, data_ptr: *const u8, data_len
     let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) }.to_vec();
 
     {
-        let mut queue = inner.queue.lock().unwrap();
+        let mut queue = match inner.queue.lock() {
+            Ok(q) => q,
+            Err(p) => p.into_inner(),
+        };
         queue.push_back(data);
     }
     inner.not_empty.notify_one();
@@ -80,14 +83,20 @@ pub extern "C" fn kryos_chan_recv(handle: *mut u8, buf_ptr: *mut u8, buf_len: us
     }
     let inner = unsafe { &*(handle as *const ChannelInner) };
 
-    let mut queue = inner.queue.lock().unwrap();
+    let mut queue = match inner.queue.lock() {
+        Ok(q) => q,
+        Err(p) => p.into_inner(),
+    };
 
     // Wait until there is data or the channel is closed.
     while queue.is_empty() {
         if inner.closed.load(Ordering::Acquire) {
             return 0;
         }
-        queue = inner.not_empty.wait(queue).unwrap();
+        queue = match inner.not_empty.wait(queue) {
+            Ok(q) => q,
+            Err(p) => p.into_inner(),
+        };
     }
 
     let data = match queue.pop_front() {
@@ -114,7 +123,10 @@ pub extern "C" fn kryos_chan_try_recv(handle: *mut u8, buf_ptr: *mut u8, buf_len
     }
     let inner = unsafe { &*(handle as *const ChannelInner) };
 
-    let mut queue = inner.queue.lock().unwrap();
+    let mut queue = match inner.queue.lock() {
+        Ok(q) => q,
+        Err(p) => p.into_inner(),
+    };
     let data = match queue.pop_front() {
         Some(d) => d,
         None => {

@@ -907,5 +907,5 @@ fn compile_file_with_std_import() {
 
 #[test]
 fn version_is_correct() {
-    assert_eq!(kryos_driver::version(), "0.1.0");
+    assert_eq!(kryos_driver::version(), env!("CARGO_PKG_VERSION"));
 }
