@@ -89,6 +89,8 @@ pub struct LoweringContext {
     /// Return type of the function currently being lowered.  Used by `throw`
     /// outside a `try` block to emit a properly-typed early return.
     current_ret_ty: MirType,
+    /// Structs annotated with `@copy` — forwarded to `MirModule` for codegen.
+    copy_structs: HashSet<String>,
 }
 
 /// Context passed to `throw` statements inside a `try` block.
@@ -140,6 +142,7 @@ impl LoweringContext {
             borrowed_locals: HashSet::new(),
             current_ret_ty: MirType::Void,
             current_self_type: None,
+            copy_structs: HashSet::new(),
         }
     }
 
@@ -396,12 +399,15 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
     // lowerer can infer correct types for field accesses and call results.
     for decl in &module.declarations {
         match decl {
-            ast::Decl::Struct { name, fields, .. } => {
+            ast::Decl::Struct { name, fields, annotations, .. } => {
                 let field_list: Vec<(String, MirType)> = fields
                     .iter()
                     .map(|f| (f.name.clone(), ctx.resolve_type(&f.ty)))
                     .collect();
                 ctx.struct_defs.insert(name.clone(), field_list);
+                if annotations.iter().any(|a| a.name == "copy") {
+                    ctx.copy_structs.insert(name.clone());
+                }
             }
             ast::Decl::Enum { name, variants, .. } => {
                 let variant_defs: Vec<EnumVariantDef> = variants
@@ -807,6 +813,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         struct_defs: ctx.struct_defs.clone(),
         enum_defs: ctx.enum_defs.clone(),
         trait_vtables: ctx.impl_map.clone(),
+        copy_structs: ctx.copy_structs.clone(),
     }
 }
 

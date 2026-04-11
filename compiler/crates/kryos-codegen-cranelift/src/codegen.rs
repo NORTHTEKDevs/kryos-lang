@@ -1,6 +1,6 @@
 //! AOT compilation: MIR -> Cranelift IR -> object file bytes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use cranelift_codegen::ir::{
     types, AbiParam, Function, InstBuilder, MemFlags, Signature, StackSlotData, StackSlotKind,
@@ -853,6 +853,7 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
                 &mut global_str_counter,
                 &module.trait_vtables,
                 options.checked_arithmetic,
+                &module.copy_structs,
             )?;
             builder.seal_all_blocks();
             builder.finalize();
@@ -1113,6 +1114,8 @@ struct FuncTranslator<'a> {
     has_mir_exception_checks: bool,
     /// Emit overflow checks for integer arithmetic.
     checked_arithmetic: bool,
+    /// Structs annotated with `@copy` — assignment deep-copies the struct.
+    copy_structs: &'a HashSet<String>,
 }
 
 /// Translate a MIR function body into Cranelift IR instructions.
@@ -1126,6 +1129,7 @@ pub fn translate_function<M: Module>(
     string_counter: &mut u32,
     trait_vtables: &HashMap<(String, String), Vec<String>>,
     checked_arithmetic: bool,
+    copy_structs: &HashSet<String>,
 ) -> Result<(), CodegenError> {
     // Check if this function already contains MIR-level exception checks
     // (from try/catch lowering).  If so, the codegen must NOT add its own
@@ -1151,6 +1155,7 @@ pub fn translate_function<M: Module>(
         mir_module_trait_methods: trait_vtables.clone(),
         has_mir_exception_checks,
         checked_arithmetic,
+        copy_structs,
     };
 
     // Create Cranelift blocks for each MIR basic block.
@@ -1695,6 +1700,53 @@ fn translate_rvalue<M: Module>(
     match rvalue {
         RValue::Use(operand) => {
             let val = translate_operand(operand, builder, translator, module)?;
+
+            // If the source is a @copy struct, deep-copy: malloc + field copy.
+            if let Operand::Local(id) = operand {
+                let struct_name = translator
+                    .mir_func
+                    .locals
+                    .iter()
+                    .find(|l| l.id == *id)
+                    .and_then(|l| match &l.ty {
+                        MirType::Struct(name) => Some(name.clone()),
+                        _ => None,
+                    });
+                if let Some(ref sname) = struct_name {
+                    if translator.copy_structs.contains(sname) {
+                        if let Some(struct_def) = translator.struct_defs.get(sname) {
+                            let layout = compute_struct_layout(struct_def)?;
+                            let size_val = builder
+                                .ins()
+                                .iconst(types::I64, layout.total_size as i64);
+                            let malloc_ref = ensure_func_ref_with_args(
+                                "malloc", builder, translator, module, 1,
+                            )?;
+                            let alloc_call = builder.ins().call(malloc_ref, &[size_val]);
+                            let new_ptr = builder.inst_results(alloc_call)[0];
+
+                            // Copy each field from old pointer to new pointer.
+                            for (_, offset, cl_ty) in &layout.field_offsets {
+                                let field_val = builder.ins().load(
+                                    *cl_ty,
+                                    MemFlags::new(),
+                                    val,
+                                    *offset as i32,
+                                );
+                                builder.ins().store(
+                                    MemFlags::new(),
+                                    field_val,
+                                    new_ptr,
+                                    *offset as i32,
+                                );
+                            }
+
+                            return Ok(Some(new_ptr));
+                        }
+                    }
+                }
+            }
+
             Ok(Some(val))
         }
 

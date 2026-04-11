@@ -495,6 +495,7 @@ mod tests {
             struct_defs: Default::default(),
             enum_defs: Default::default(),
             trait_vtables: Default::default(),
+            copy_structs: Default::default(),
         }
     }
 
@@ -554,6 +555,7 @@ mod tests {
             struct_defs: Default::default(),
             enum_defs: Default::default(),
             trait_vtables: Default::default(),
+            copy_structs: Default::default(),
         };
 
         inline_functions(&mut module, 20);
@@ -629,6 +631,7 @@ mod tests {
             struct_defs: Default::default(),
             enum_defs: Default::default(),
             trait_vtables: Default::default(),
+            copy_structs: Default::default(),
         };
         inline_functions(&mut module, 20);
     }

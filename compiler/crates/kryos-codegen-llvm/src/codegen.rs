@@ -43,6 +43,8 @@ pub struct LlvmCodegen {
     /// Tracks the actual LLVM type of each SSA temp (%tN -> type string).
     /// Used to know the real type of a value when coercing between ptr/i64/double.
     value_types: HashMap<String, String>,
+    /// Structs annotated with `@copy` — assignment deep-copies the struct.
+    copy_structs: HashSet<String>,
 }
 
 impl LlvmCodegen {
@@ -61,6 +63,7 @@ impl LlvmCodegen {
             enum_defs: HashMap::new(),
             mutable_locals: HashSet::new(),
             value_types: HashMap::new(),
+            copy_structs: HashSet::new(),
         }
     }
 
@@ -79,6 +82,7 @@ impl LlvmCodegen {
         self.func_param_types.clear();
         self.struct_defs = module.struct_defs.clone();
         self.enum_defs = module.enum_defs.clone();
+        self.copy_structs = module.copy_structs.clone();
 
         // Pre-scan: collect string constants, detect ARC usage, and record
         // function signatures for type-correct call emission.

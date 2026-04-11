@@ -2075,7 +2075,7 @@ fn inclusive_range_expression() {
 #[test]
 fn comptime_folds_int_addition() {
     use kryos_mir::consteval::run_comptime_pass;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     let mut module = MirModule {
         functions: vec![MirFunction {
@@ -2105,6 +2105,7 @@ fn comptime_folds_int_addition() {
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
 
     run_comptime_pass(&mut module);
@@ -2128,7 +2129,7 @@ fn comptime_folds_int_addition() {
 #[test]
 fn comptime_non_const_unwraps() {
     use kryos_mir::consteval::run_comptime_pass;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     let mut module = MirModule {
         functions: vec![MirFunction {
@@ -2155,6 +2156,7 @@ fn comptime_non_const_unwraps() {
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
 
     run_comptime_pass(&mut module);
@@ -2178,7 +2180,7 @@ fn comptime_non_const_unwraps() {
 #[test]
 fn comptime_folds_bool_logic() {
     use kryos_mir::consteval::run_comptime_pass;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     let mut module = MirModule {
         functions: vec![MirFunction {
@@ -2208,6 +2210,7 @@ fn comptime_folds_bool_logic() {
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
 
     run_comptime_pass(&mut module);
@@ -2230,7 +2233,7 @@ fn comptime_folds_bool_logic() {
 #[test]
 fn comptime_folds_unary_neg() {
     use kryos_mir::consteval::run_comptime_pass;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     let mut module = MirModule {
         functions: vec![MirFunction {
@@ -2259,6 +2262,7 @@ fn comptime_folds_unary_neg() {
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
 
     run_comptime_pass(&mut module);
@@ -2281,7 +2285,7 @@ fn comptime_folds_unary_neg() {
 #[test]
 fn comptime_folds_float_mul() {
     use kryos_mir::consteval::run_comptime_pass;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     let mut module = MirModule {
         functions: vec![MirFunction {
@@ -2311,6 +2315,7 @@ fn comptime_folds_float_mul() {
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
 
     run_comptime_pass(&mut module);

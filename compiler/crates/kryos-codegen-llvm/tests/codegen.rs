@@ -1,6 +1,6 @@
 //! Integration tests for the LLVM IR text emitter.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use kryos_codegen_llvm::{emit_module, EmitOptions, OptLevel};
 use kryos_mir::ir::*;
 
@@ -15,6 +15,7 @@ fn module_with(func: MirFunction) -> MirModule {
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     }
 }
 
@@ -778,6 +779,7 @@ fn test_multiple_functions() {
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
 
@@ -1032,6 +1034,7 @@ fn test_mutable_variable_in_loop() {
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
 
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
@@ -1104,6 +1107,7 @@ fn test_struct_field_access_correct_index() {
         struct_defs,
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
 
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
@@ -1141,6 +1145,7 @@ fn test_struct_field_access_first_field() {
         struct_defs,
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
 
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
@@ -1293,6 +1298,7 @@ fn test_enum_unit_variant() {
         struct_defs: HashMap::new(),
         enum_defs,
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
 
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
@@ -1339,6 +1345,7 @@ fn test_enum_variant_with_fields() {
         struct_defs: HashMap::new(),
         enum_defs,
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
 
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
@@ -1379,6 +1386,7 @@ fn test_enum_tag_extraction() {
         struct_defs: HashMap::new(),
         enum_defs,
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
 
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
@@ -1424,6 +1432,7 @@ fn test_enum_payload_extraction() {
         struct_defs: HashMap::new(),
         enum_defs,
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
 
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();

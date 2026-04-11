@@ -369,6 +369,7 @@ impl JitCompiler {
                 let empty_struct_defs = std::collections::HashMap::new();
                 let empty_enum_defs = std::collections::HashMap::new();
                 let empty_trait_vtables = std::collections::HashMap::new();
+                let empty_copy_structs = std::collections::HashSet::new();
                 let mut str_counter = 0u32;
                 let mut builder = FunctionBuilder::new(&mut cl_func, &mut self.fb_ctx);
                 crate::codegen::translate_function(
@@ -381,6 +382,7 @@ impl JitCompiler {
                     &mut str_counter,
                     &empty_trait_vtables,
                     false,
+                    &empty_copy_structs,
                 )?;
                 builder.seal_all_blocks();
                 builder.finalize();
@@ -470,6 +472,7 @@ impl JitCompiler {
             let empty_struct_defs = std::collections::HashMap::new();
             let empty_enum_defs = std::collections::HashMap::new();
             let empty_trait_vtables = std::collections::HashMap::new();
+            let empty_copy_structs = std::collections::HashSet::new();
             let mut str_counter = 0u32;
             let mut builder = FunctionBuilder::new(&mut cl_func, &mut self.fb_ctx);
             crate::codegen::translate_function(
@@ -482,6 +485,7 @@ impl JitCompiler {
                 &mut str_counter,
                 &empty_trait_vtables,
                 false, // no checked arithmetic in JIT/REPL
+                &empty_copy_structs,
             )?;
             builder.seal_all_blocks();
             builder.finalize();

@@ -193,6 +193,7 @@ mod tests {
             struct_defs: Default::default(),
             enum_defs: Default::default(),
             trait_vtables: Default::default(),
+            copy_structs: Default::default(),
         };
 
         optimize_tail_calls(&mut module);
@@ -269,6 +270,7 @@ mod tests {
             struct_defs: Default::default(),
             enum_defs: Default::default(),
             trait_vtables: Default::default(),
+            copy_structs: Default::default(),
         };
 
         optimize_tail_calls(&mut module);
@@ -314,6 +316,7 @@ mod tests {
             struct_defs: Default::default(),
             enum_defs: Default::default(),
             trait_vtables: Default::default(),
+            copy_structs: Default::default(),
         };
 
         optimize_tail_calls(&mut module);
@@ -351,6 +354,7 @@ mod tests {
             struct_defs: Default::default(),
             enum_defs: Default::default(),
             trait_vtables: Default::default(),
+            copy_structs: Default::default(),
         };
 
         optimize_tail_calls(&mut module);

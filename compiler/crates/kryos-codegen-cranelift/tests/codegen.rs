@@ -1,7 +1,7 @@
 //! Integration tests for the Cranelift codegen backend.
 #![allow(clippy::approx_constant)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use kryos_mir::ir::*;
 use kryos_codegen_cranelift::jit;
 use kryos_codegen_cranelift::codegen;
@@ -277,6 +277,7 @@ fn aot_arc_calls_emitted() {
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
 
     let obj_bytes = codegen::compile_module(&module).expect("AOT compilation failed");
@@ -456,6 +457,7 @@ fn aot_compile_simple_module() {
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
 
     let obj_bytes = codegen::compile_module(&module).expect("AOT compilation failed");
@@ -595,6 +597,7 @@ fn aot_struct_field_access() {
         struct_defs,
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
 
     let obj_bytes = codegen::compile_module(&module).expect("AOT compilation of struct access failed");
@@ -675,6 +678,7 @@ fn aot_struct_f64_field_access() {
         struct_defs,
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
 
     let obj_bytes =
@@ -1344,6 +1348,7 @@ fn aot_call_other_function() {
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
 
     let obj_bytes = codegen::compile_module(&module).expect("AOT cross-call failed");
@@ -1436,6 +1441,7 @@ fn aot_recursive_factorial() {
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
     let obj_bytes = codegen::compile_module(&module).expect("AOT recursive factorial failed");
     assert!(obj_bytes.len() > 10, "object file too small");
@@ -1640,6 +1646,7 @@ fn aot_call_chain() {
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
     let obj_bytes = codegen::compile_module(&module).expect("AOT call chain failed");
     assert!(obj_bytes.len() > 10, "object file too small");
@@ -1715,6 +1722,7 @@ fn aot_struct_three_fields() {
         struct_defs,
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
     let obj_bytes = codegen::compile_module(&module).expect("AOT failed");
     assert!(obj_bytes.len() > 10);
@@ -1782,6 +1790,7 @@ fn aot_struct_mixed_types() {
         struct_defs,
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
     let obj_bytes = codegen::compile_module(&module).expect("AOT failed");
     assert!(obj_bytes.len() > 10);
@@ -1887,6 +1896,7 @@ fn aot_multiple_struct_defs() {
         struct_defs,
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
     let obj_bytes = codegen::compile_module(&module).expect("AOT failed");
     assert!(obj_bytes.len() > 10);
@@ -1947,6 +1957,7 @@ fn aot_struct_first_field() {
         struct_defs,
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
     let obj_bytes = codegen::compile_module(&module).expect("AOT failed");
     assert!(obj_bytes.len() > 10);
@@ -1971,6 +1982,7 @@ fn aot_nop_instruction() {
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
     let obj_bytes = codegen::compile_module(&module).expect("AOT failed");
     assert!(obj_bytes.len() > 10);
@@ -2007,6 +2019,7 @@ fn aot_drop_string() {
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
     let obj_bytes = codegen::compile_module(&module).expect("AOT compilation failed");
     assert!(!obj_bytes.is_empty());
@@ -2049,6 +2062,7 @@ fn aot_drop_array() {
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
     let obj_bytes = codegen::compile_module(&module).expect("AOT compilation failed");
     assert!(!obj_bytes.is_empty());
@@ -2103,6 +2117,7 @@ fn aot_drop_struct() {
         struct_defs,
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
     let obj_bytes = codegen::compile_module(&module).expect("AOT compilation failed");
     assert!(!obj_bytes.is_empty());
@@ -2135,6 +2150,7 @@ fn aot_drop_primitive_noop() {
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
     let obj_bytes = codegen::compile_module(&module).expect("AOT compilation failed");
     // A primitive i64 Drop should compile without error (it's a no-op at runtime).
@@ -2175,6 +2191,7 @@ fn aot_multiple_drops() {
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
     let obj_bytes = codegen::compile_module(&module).expect("AOT compilation failed");
     assert!(!obj_bytes.is_empty());
@@ -2933,6 +2950,7 @@ fn aot_arc_retain_release() {
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
         trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
     };
     let obj_bytes = codegen::compile_module(&module).expect("AOT failed");
     assert!(!obj_bytes.is_empty());

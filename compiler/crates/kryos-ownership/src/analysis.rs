@@ -290,6 +290,9 @@ impl OwnershipAnalyzer {
             // Move of a copy type is still copy.
             Expr::MoveExpr { inner, .. } => self.expr_is_copy(inner),
 
+            // Struct literal: copy if the struct is annotated @copy.
+            Expr::StructLiteral { name, .. } => self.copy_structs.contains(name),
+
             _ => false,
         }
     }

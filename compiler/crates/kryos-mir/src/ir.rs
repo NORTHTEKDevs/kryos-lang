@@ -4,7 +4,7 @@
 //! backends (Cranelift / LLVM). It uses a control-flow graph of basic blocks
 //! where each block contains a list of instructions and a single terminator.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 // ---------------------------------------------------------------------------
@@ -160,6 +160,9 @@ pub struct MirModule {
     /// Trait vtable map: (concrete_type, trait_name) -> ordered list of mangled method names.
     /// Used by codegen to build vtables for dynamic dispatch.
     pub trait_vtables: HashMap<(String, String), Vec<String>>,
+    /// Structs annotated with `@copy` — assignment copies the value instead of
+    /// moving the pointer.  Used by codegen to emit deep copies.
+    pub copy_structs: HashSet<String>,
 }
 
 /// Metadata attributes preserved from source annotations.
