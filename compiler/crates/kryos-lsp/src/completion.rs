@@ -73,6 +73,55 @@ pub fn get_completions(source: &str, line: u32, character: u32) -> Vec<Value> {
         }
     }
 
+    // Offer built-in functions
+    let builtins: &[(&str, &str, &str)] = &[
+        // I/O
+        ("println", "fn(s: str)", "Print string with newline"),
+        ("print", "fn(s: str)", "Print string without newline"),
+        ("eprintln", "fn(s: str)", "Print to stderr with newline"),
+        // Conversion
+        ("to_string", "fn(x) -> str", "Convert any value to string"),
+        ("parse_int", "fn(s: str) -> i64", "Parse string to integer"),
+        ("parse_float", "fn(s: str) -> f64", "Parse string to float"),
+        // Collections
+        ("len", "fn(x) -> i64", "Length of string, array, or map"),
+        ("push", "fn(arr, val)", "Append value to array"),
+        ("pop", "fn(arr) -> val", "Remove and return last element of array"),
+        // String
+        ("substr", "fn(s: str, start: i64, end: i64) -> str", "Extract substring"),
+        ("contains", "fn(s: str, needle: str) -> bool", "Check if string contains substring"),
+        ("starts_with", "fn(s: str, prefix: str) -> bool", "Check if string starts with prefix"),
+        ("ends_with", "fn(s: str, suffix: str) -> bool", "Check if string ends with suffix"),
+        ("trim", "fn(s: str) -> str", "Trim leading and trailing whitespace"),
+        ("to_upper", "fn(s: str) -> str", "Convert string to uppercase"),
+        ("to_lower", "fn(s: str) -> str", "Convert string to lowercase"),
+        ("replace", "fn(s: str, from: str, to: str) -> str", "Replace occurrences in string"),
+        // Math
+        ("abs", "fn(x) -> i64/f64", "Absolute value"),
+        ("min", "fn(a: i64, b: i64) -> i64", "Return the smaller value"),
+        ("max", "fn(a: i64, b: i64) -> i64", "Return the larger value"),
+        ("sqrt", "fn(x: f64) -> f64", "Square root"),
+        ("floor", "fn(x: f64) -> f64", "Round down to nearest integer"),
+        ("ceil", "fn(x: f64) -> f64", "Round up to nearest integer"),
+        // Other
+        ("assert", "fn(cond: bool, msg: str)", "Assert condition or panic with message"),
+        ("time_now", "fn() -> i64", "Current unix timestamp in seconds"),
+        ("file_read", "fn(path: str) -> str", "Read file contents as string"),
+        ("file_write", "fn(path: str, content: str)", "Write string to file"),
+        ("env_get", "fn(key: str) -> str", "Get environment variable value"),
+    ];
+
+    for (name, detail, doc) in builtins {
+        if prefix.is_empty() || name.starts_with(&prefix) {
+            items.push(serde_json::json!({
+                "label": name,
+                "kind": KIND_FUNCTION,
+                "detail": detail,
+                "documentation": doc,
+            }));
+        }
+    }
+
     // Parse the current file to offer local declarations
     let tokens = kryos_lexer::Lexer::new(source, 0).tokenize();
     if let Ok(module) = kryos_parser::parse(tokens) {

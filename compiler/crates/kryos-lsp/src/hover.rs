@@ -27,6 +27,16 @@ pub fn get_hover(source: &str, line: u32, character: u32) -> Option<Value> {
         }));
     }
 
+    // Check if it's a builtin function
+    if let Some(info) = builtin_fn_info(&word) {
+        return Some(serde_json::json!({
+            "contents": {
+                "kind": "markdown",
+                "value": info,
+            }
+        }));
+    }
+
     // Try to find the symbol in the parsed AST
     let tokens = kryos_lexer::Lexer::new(source, 0).tokenize();
     if let Ok(module) = kryos_parser::parse(tokens) {
@@ -121,6 +131,46 @@ fn type_info(word: &str) -> Option<String> {
         "Set" => "`Set<T>` — hash set".to_string(),
         "Option" => "`Option<T>` — optional value (`Some(T)` or `None`)".to_string(),
         "Result" => "`Result<T, E>` — success or error".to_string(),
+        _ => return None,
+    })
+}
+
+fn builtin_fn_info(word: &str) -> Option<String> {
+    Some(match word {
+        // I/O
+        "println" => "```kryos\nfn println(s: str)\n```\nPrint string to stdout with a trailing newline.".to_string(),
+        "print" => "```kryos\nfn print(s: str)\n```\nPrint string to stdout without a trailing newline.".to_string(),
+        "eprintln" => "```kryos\nfn eprintln(s: str)\n```\nPrint string to stderr with a trailing newline.".to_string(),
+        // Conversion
+        "to_string" => "```kryos\nfn to_string(x) -> str\n```\nConvert any value to its string representation.".to_string(),
+        "parse_int" => "```kryos\nfn parse_int(s: str) -> i64\n```\nParse a string as a 64-bit integer.".to_string(),
+        "parse_float" => "```kryos\nfn parse_float(s: str) -> f64\n```\nParse a string as a 64-bit float.".to_string(),
+        // Collections
+        "len" => "```kryos\nfn len(x) -> i64\n```\nReturn the length of a string, array, or map.".to_string(),
+        "push" => "```kryos\nfn push(arr, val)\n```\nAppend a value to the end of an array.".to_string(),
+        "pop" => "```kryos\nfn pop(arr) -> val\n```\nRemove and return the last element of an array.".to_string(),
+        // String
+        "substr" => "```kryos\nfn substr(s: str, start: i64, end: i64) -> str\n```\nExtract a substring from start (inclusive) to end (exclusive).".to_string(),
+        "contains" => "```kryos\nfn contains(haystack: str, needle: str) -> bool\n```\nReturn true if haystack contains the needle substring.".to_string(),
+        "starts_with" => "```kryos\nfn starts_with(s: str, prefix: str) -> bool\n```\nReturn true if the string starts with the given prefix.".to_string(),
+        "ends_with" => "```kryos\nfn ends_with(s: str, suffix: str) -> bool\n```\nReturn true if the string ends with the given suffix.".to_string(),
+        "trim" => "```kryos\nfn trim(s: str) -> str\n```\nReturn the string with leading and trailing whitespace removed.".to_string(),
+        "to_upper" => "```kryos\nfn to_upper(s: str) -> str\n```\nConvert all characters in the string to uppercase.".to_string(),
+        "to_lower" => "```kryos\nfn to_lower(s: str) -> str\n```\nConvert all characters in the string to lowercase.".to_string(),
+        "replace" => "```kryos\nfn replace(s: str, from: str, to: str) -> str\n```\nReplace all occurrences of `from` with `to` in the string.".to_string(),
+        // Math
+        "abs" => "```kryos\nfn abs(x) -> i64/f64\n```\nReturn the absolute value of a number.".to_string(),
+        "min" => "```kryos\nfn min(a: i64, b: i64) -> i64\n```\nReturn the smaller of two values.".to_string(),
+        "max" => "```kryos\nfn max(a: i64, b: i64) -> i64\n```\nReturn the larger of two values.".to_string(),
+        "sqrt" => "```kryos\nfn sqrt(x: f64) -> f64\n```\nReturn the square root of a number.".to_string(),
+        "floor" => "```kryos\nfn floor(x: f64) -> f64\n```\nRound a float down to the nearest integer value.".to_string(),
+        "ceil" => "```kryos\nfn ceil(x: f64) -> f64\n```\nRound a float up to the nearest integer value.".to_string(),
+        // Other
+        "assert" => "```kryos\nfn assert(cond: bool, msg: str)\n```\nAssert that a condition is true, or panic with the given message.".to_string(),
+        "time_now" => "```kryos\nfn time_now() -> i64\n```\nReturn the current unix timestamp in seconds.".to_string(),
+        "file_read" => "```kryos\nfn file_read(path: str) -> str\n```\nRead the entire contents of a file as a string.".to_string(),
+        "file_write" => "```kryos\nfn file_write(path: str, content: str)\n```\nWrite a string to a file, creating or overwriting it.".to_string(),
+        "env_get" => "```kryos\nfn env_get(key: str) -> str\n```\nGet the value of an environment variable.".to_string(),
         _ => return None,
     })
 }
