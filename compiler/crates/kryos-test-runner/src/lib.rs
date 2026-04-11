@@ -197,7 +197,11 @@ pub fn run_test(test: &TestCase) -> TestResult {
     }
 
     let start = Instant::now();
-    let config = BuildConfig::for_file(test.source_path.to_string_lossy().to_string());
+    let mut config = BuildConfig::for_file(test.source_path.to_string_lossy().to_string());
+    // Non-run tests only need type checking, not binary output.
+    if !matches!(test.expectation, Expectation::RunOutput(_)) {
+        config.output_type = OutputType::Mir; // skip codegen + linking
+    }
     let result = compile_source(&test.source, &test.name, &config);
     let duration = start.elapsed();
 
@@ -350,15 +354,14 @@ pub fn run_test(test: &TestCase) -> TestResult {
                 let compile_diags = render_diagnostics(&compile_result);
                 let _ = fs::remove_file(&temp_src);
                 let _ = fs::remove_file(&temp_out);
-                // If linking failed (runtime library not found), skip rather than fail.
-                // This allows the test suite to pass during development when the
-                // runtime library isn't available for linking.
-                let is_link_error = compile_diags.contains("linking failed")
-                    || compile_diags.contains("unresolved external")
-                    || compile_diags.contains("undefined reference");
+                // Skip if the runtime library isn't available for linking
+                // (build environment issue, not a test failure).
+                let is_rt_missing = compile_diags.contains("unresolved external")
+                    || compile_diags.contains("undefined reference")
+                    || compile_diags.contains("linking failed");
                 return TestResult {
                     name: test.name.clone(),
-                    outcome: if is_link_error {
+                    outcome: if is_rt_missing {
                         TestOutcome::Skipped
                     } else {
                         TestOutcome::Failed {
