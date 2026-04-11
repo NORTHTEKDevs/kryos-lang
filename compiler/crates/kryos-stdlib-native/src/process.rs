@@ -88,7 +88,8 @@ pub extern "C" fn kryos_process_exec(
                 let s = unsafe {
                     let data = (*ks).data;
                     let len = (*ks).len as usize;
-                    std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len))
+                    let slice = std::slice::from_raw_parts(data, len);
+                    std::str::from_utf8(slice).unwrap_or("")
                 };
                 command.arg(s);
             }
