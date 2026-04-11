@@ -316,6 +316,25 @@ fn compile_module_impl(
         );
     }
 
+    // 9d. Check for main() — binary targets require an entry point.
+    if config.output_type == OutputType::Binary {
+        let has_main = mir.functions.iter().any(|f| f.name == "main");
+        if !has_main {
+            diagnostics.push(
+                Diagnostic::error("no `main` function found — binary programs require a main() entry point")
+            );
+            return CompileResult {
+                diagnostics,
+                source_map,
+                success: false,
+                output_path: None,
+                mir: Some(mir),
+                object_bytes: None,
+                llvm_ir: None,
+            };
+        }
+    }
+
     // 10. If only MIR dump is requested, we are done
     if config.output_type == OutputType::Mir {
         return CompileResult {
