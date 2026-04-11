@@ -138,7 +138,7 @@ impl Parser {
             self.advance().clone()
         } else {
             let span = self.peek().span;
-            self.error(format!("expected {:?}, found {:?}", kind, self.peek_kind()), span);
+            self.error(format!("expected {}, found {}", kind, self.peek_kind()), span);
             // Return a dummy token so callers can keep going.
             Token::new(kind, span, "")
         }
@@ -158,7 +158,7 @@ impl Parser {
             }
             _ => {
                 let span = tok.span;
-                self.error_with_code(format!("expected identifier, found {:?}", tok.kind), span, kryos_errors::codes::E0002);
+                self.error_with_code(format!("expected identifier, found {}", tok.kind), span, kryos_errors::codes::E0002);
                 ("<error>".to_string(), span)
             }
         }
@@ -173,7 +173,7 @@ impl Parser {
             }
             _ => {
                 let span = tok.span;
-                self.error(format!("expected name, found {:?}", tok.kind), span);
+                self.error(format!("expected name, found {}", tok.kind), span);
                 ("<error>".to_string(), span)
             }
         }
@@ -224,7 +224,7 @@ impl Parser {
                 None => {
                     if !self.at_end() {
                         let span = self.peek().span;
-                        self.error_with_code(format!("unexpected token {:?}", self.peek_kind()), span, kryos_errors::codes::E0001);
+                        self.error_with_code(format!("unexpected token {}", self.peek_kind()), span, kryos_errors::codes::E0001);
                         self.synchronize();
                     }
                 }
@@ -767,7 +767,7 @@ impl Parser {
                 None => {
                     if !self.check(TokenKind::RBrace) && !self.at_end() {
                         let span = self.peek().span;
-                        self.error(format!("unexpected token {:?} in block", self.peek_kind()), span);
+                        self.error(format!("unexpected token {} in block", self.peek_kind()), span);
                         self.advance();
                     }
                 }
@@ -1477,7 +1477,7 @@ impl Parser {
 
             _ => {
                 let span = tok.span;
-                self.error_with_code(format!("expected expression, found {:?}", tok.kind), span, kryos_errors::codes::E0003);
+                self.error_with_code(format!("expected expression, found {}", tok.kind), span, kryos_errors::codes::E0003);
                 self.advance();
                 Expr::Identifier { name: "<error>".to_string(), span }
             }
@@ -1829,7 +1829,7 @@ impl Parser {
             }
             _ => {
                 let span = tok.span;
-                self.error(format!("expected pattern, found {:?}", tok.kind), span);
+                self.error(format!("expected pattern, found {}", tok.kind), span);
                 self.advance();
                 Pattern::Wildcard { span }
             }
@@ -1971,7 +1971,7 @@ impl Parser {
             }
             _ => {
                 let span = tok.span;
-                self.error_with_code(format!("expected type, found {:?}", tok.kind), span, kryos_errors::codes::E0004);
+                self.error_with_code(format!("expected type, found {}", tok.kind), span, kryos_errors::codes::E0004);
                 self.advance();
                 TypeExpr::Inferred { span }
             }

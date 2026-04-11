@@ -1,3 +1,5 @@
+use std::fmt;
+
 use kryos_errors::Span;
 
 /// Every token kind the Kryos lexer produces.
@@ -77,6 +79,127 @@ impl TokenKind {
             Self::Shared | Self::Weak | Self::Move |
             Self::True | Self::False | Self::None
         )
+    }
+}
+
+impl fmt::Display for TokenKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            // Literals
+            Self::Integer => "integer literal",
+            Self::Float => "float literal",
+            Self::String => "string literal",
+            Self::StringPart => "string interpolation part",
+            Self::InterpStart => "interpolation start",
+            Self::InterpEnd => "interpolation end",
+            Self::Char => "character literal",
+            Self::True => "'true'",
+            Self::False => "'false'",
+            Self::None => "'none'",
+
+            // Identifiers
+            Self::Ident => "identifier",
+            Self::TypeIdent => "type identifier",
+
+            // Keywords
+            Self::Let => "'let'",
+            Self::Mut => "'mut'",
+            Self::Fn => "'fn'",
+            Self::Return => "'return'",
+            Self::If => "'if'",
+            Self::Else => "'else'",
+            Self::Elif => "'elif'",
+            Self::For => "'for'",
+            Self::While => "'while'",
+            Self::In => "'in'",
+            Self::Break => "'break'",
+            Self::Continue => "'continue'",
+            Self::Struct => "'struct'",
+            Self::Enum => "'enum'",
+            Self::Impl => "'impl'",
+            Self::Trait => "'trait'",
+            Self::Dyn => "'dyn'",
+            Self::Pub => "'pub'",
+            Self::Use => "'use'",
+            Self::Extern => "'extern'",
+            Self::As => "'as'",
+            Self::Mod => "'mod'",
+            Self::Type => "'type'",
+            Self::Actor => "'actor'",
+            Self::Spawn => "'spawn'",
+            Self::Select => "'select'",
+            Self::Send => "'send'",
+            Self::Recv => "'recv'",
+            Self::Ask => "'ask'",
+            Self::Chan => "'chan'",
+            Self::Parallel => "'parallel'",
+            Self::Quantum => "'quantum'",
+            Self::Comptime => "'comptime'",
+            Self::Match => "'match'",
+            Self::And => "'and'",
+            Self::Or => "'or'",
+            Self::Not => "'not'",
+            Self::Try => "'try'",
+            Self::Catch => "'catch'",
+            Self::Throw => "'throw'",
+            Self::Async => "'async'",
+            Self::Await => "'await'",
+            Self::Shared => "'shared'",
+            Self::Weak => "'weak'",
+            Self::Move => "'move'",
+
+            // Operators
+            Self::Plus => "'+'",
+            Self::Minus => "'-'",
+            Self::Star => "'*'",
+            Self::Slash => "'/'",
+            Self::Percent => "'%'",
+            Self::Power => "'**'",
+            Self::At => "'@'",
+            Self::EqEq => "'=='",
+            Self::BangEq => "'!='",
+            Self::Lt => "'<'",
+            Self::Gt => "'>'",
+            Self::LtEq => "'<='",
+            Self::GtEq => "'>='",
+            Self::Eq => "'='",
+            Self::PlusEq => "'+='",
+            Self::MinusEq => "'-='",
+            Self::StarEq => "'*='",
+            Self::SlashEq => "'/='",
+            Self::Amp => "'&'",
+            Self::Pipe => "'|'",
+            Self::Caret => "'^'",
+            Self::Tilde => "'~'",
+            Self::Shl => "'<<'",
+            Self::Shr => "'>>'",
+
+            // Punctuation
+            Self::Arrow => "'->'",
+            Self::FatArrow => "'=>'",
+            Self::ColonColon => "'::'",
+            Self::DotDot => "'..'",
+            Self::DotDotEq => "'..='",
+            Self::Dot => "'.'",
+            Self::Colon => "':'",
+            Self::Semicolon => "';'",
+            Self::Comma => "','",
+
+            // Grouping
+            Self::LParen => "'('",
+            Self::RParen => "')'",
+            Self::LBrace => "'{'",
+            Self::RBrace => "'}'",
+            Self::LBracket => "'['",
+            Self::RBracket => "']'",
+
+            // Special
+            Self::DocComment => "doc comment",
+            Self::Newline => "newline",
+            Self::Eof => "end of file",
+            Self::Error => "error",
+        };
+        f.write_str(s)
     }
 }
 
