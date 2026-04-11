@@ -27,6 +27,10 @@ BUILD_DIR="$COMPILER_DIR/target/bootstrap"
 
 VERBOSE="${1:-}"
 
+# Modules that are concatenated (in dependency order).
+# `use` statements referencing these will be stripped from the combined file.
+SELFHOST_MODULES="token lexer ast parser types mir lower optimize regalloc x86 codegen elf coff linker runtime main"
+
 log() {
     echo "=== $1 ==="
 }
@@ -39,6 +43,24 @@ info() {
 
 # Create build directory
 mkdir -p "$BUILD_DIR"
+
+# ── Helper: strip internal `use` statements ──────────────────
+# After concatenation, `use token` etc. refer to modules already
+# present in the combined file. The compiler's module resolver
+# cannot find them as separate files, so we strip them.
+strip_internal_uses() {
+    local file="$1"
+    local tmpfile="$file.tmp"
+    local pattern=""
+    for mod in $SELFHOST_MODULES; do
+        if [ -n "$pattern" ]; then
+            pattern="$pattern|"
+        fi
+        pattern="${pattern}^use ${mod}\$"
+    done
+    grep -vE "$pattern" "$file" > "$tmpfile"
+    mv "$tmpfile" "$file"
+}
 
 # ── Combine source files ─────────────────────────────────────
 # Stage-0 source: core compiler without runtime (Rust provides builtins)
@@ -61,6 +83,7 @@ cat \
     "$SELFHOST_DIR/linker.kry" \
     "$SELFHOST_DIR/main.kry" \
     > "$STAGE0_SRC"
+strip_internal_uses "$STAGE0_SRC"
 
 # Stage-1+ source: compiler with runtime (self-contained binary)
 SELFHOST_SRC="$BUILD_DIR/kryos-sh-full.kry"
@@ -83,6 +106,7 @@ cat \
     "$SELFHOST_DIR/linker.kry" \
     "$SELFHOST_DIR/main.kry" \
     > "$SELFHOST_SRC"
+strip_internal_uses "$SELFHOST_SRC"
 
 LINES0=$(wc -l < "$STAGE0_SRC")
 LINES1=$(wc -l < "$SELFHOST_SRC")
@@ -99,13 +123,66 @@ if [ ! -f "$KRYOS_RS" ] && [ -f "$KRYOS_RS.exe" ]; then
 fi
 info "Rust compiler: $KRYOS_RS"
 
+# ── Pre-flight: Check individual files ───────────────────────
+log "Pre-flight: Type-checking self-host files"
+
+PASS_COUNT=0
+PASS_SKIP_COUNT=0
+FAIL_NAMES=""
+TOTAL_ERRORS=0
+
+for mod in token lexer ast parser types mir lower optimize regalloc x86 codegen elf coff linker runtime main; do
+    SRC="$SELFHOST_DIR/$mod.kry"
+
+    # Check with full ownership
+    OUTPUT=$("$KRYOS_RS" check "$SRC" 2>&1) || true
+    if echo "$OUTPUT" | grep -q "check failed"; then
+        ERRS=$(echo "$OUTPUT" | grep -oP '\d+ error' | grep -oP '\d+')
+        TOTAL_ERRORS=$((TOTAL_ERRORS + ERRS))
+
+        # Check with --skip-ownership
+        OUTPUT_SKIP=$("$KRYOS_RS" check "$SRC" --skip-ownership 2>&1) || true
+        if echo "$OUTPUT_SKIP" | grep -q "check failed"; then
+            SKIP_ERRS=$(echo "$OUTPUT_SKIP" | grep -oP '\d+ error' | grep -oP '\d+')
+            info "FAIL  $mod.kry ($ERRS errors, $SKIP_ERRS with --skip-ownership)"
+            FAIL_NAMES="$FAIL_NAMES $mod"
+        else
+            PASS_SKIP_COUNT=$((PASS_SKIP_COUNT + 1))
+            info "OWNER $mod.kry ($ERRS ownership errors, pass with --skip-ownership)"
+        fi
+    else
+        PASS_COUNT=$((PASS_COUNT + 1))
+        info "PASS  $mod.kry"
+    fi
+done
+
+echo ""
+echo "  Files passing check:                 $PASS_COUNT / 16"
+echo "  Files passing with --skip-ownership: $((PASS_COUNT + PASS_SKIP_COUNT)) / 16"
+echo "  Total ownership errors:              $TOTAL_ERRORS"
+if [ -n "$FAIL_NAMES" ]; then
+    echo "  Files failing even with --skip-ownership:$FAIL_NAMES"
+fi
+echo ""
+
 # ── Stage 1: Compile self-host with Rust compiler ──────────
 log "Stage 1: Compiling self-host with Rust compiler -> stage-1"
 STAGE1="$BUILD_DIR/kryos-stage1"
 "$KRYOS_RS" build "$STAGE0_SRC" -o "$STAGE1" --skip-ownership 2>&1 || {
-    echo "FAIL: Stage 1 compilation failed"
-    echo "The Rust-based compiler could not compile the self-host."
-    echo "This is expected during early development."
+    echo ""
+    echo "============================================"
+    echo "  STAGE 1 FAILED"
+    echo "  The Rust-based compiler could not compile"
+    echo "  the self-host (even with --skip-ownership)."
+    echo ""
+    echo "  Blockers:"
+    echo "    - $TOTAL_ERRORS ownership errors (need implicit Copy for primitives)"
+    if [ -n "$FAIL_NAMES" ]; then
+        echo "    - Non-ownership failures in:$FAIL_NAMES"
+    fi
+    echo ""
+    echo "  See self-host/README.md for details."
+    echo "============================================"
     exit 1
 }
 info "Stage 1 binary: $STAGE1"
