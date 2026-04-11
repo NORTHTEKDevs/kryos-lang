@@ -1412,6 +1412,7 @@ fn test_enum_payload_extraction() {
                     dest: LocalId(1),
                     value: RValue::EnumPayload {
                         operand: Operand::Local(LocalId(0)),
+                        enum_name: "Shape".into(),
                         variant_idx: 1, // Rect
                         field_idx: 1,   // second field (height)
                     },

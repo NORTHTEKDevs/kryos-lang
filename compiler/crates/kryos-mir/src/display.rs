@@ -177,8 +177,8 @@ impl fmt::Display for RValue {
                 write!(f, ")")
             }
             RValue::EnumTag { operand } => write!(f, "enum_tag({operand})"),
-            RValue::EnumPayload { operand, variant_idx, field_idx } => {
-                write!(f, "enum_payload({operand}, variant={variant_idx}, field={field_idx})")
+            RValue::EnumPayload { operand, enum_name, variant_idx, field_idx } => {
+                write!(f, "enum_payload({operand}, {enum_name}::v{variant_idx}, field={field_idx})")
             }
             RValue::Closure { func_name, captures } => {
                 write!(f, "closure({func_name}, [")?;

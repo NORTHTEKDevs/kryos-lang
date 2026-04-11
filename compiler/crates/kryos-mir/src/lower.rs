@@ -2344,6 +2344,7 @@ fn lower_try_catch(
         dest: ok_payload,
         value: RValue::EnumPayload {
             operand: Operand::Local(result_local),
+            enum_name: "Result".into(),
             variant_idx: 0,
             field_idx: 0,
         },
@@ -2356,6 +2357,7 @@ fn lower_try_catch(
         dest: err_payload,
         value: RValue::EnumPayload {
             operand: Operand::Local(result_local),
+            enum_name: "Result".into(),
             variant_idx: 1,
             field_idx: 0,
         },
@@ -2368,8 +2370,9 @@ fn lower_try_catch(
 // Match lowering
 // ---------------------------------------------------------------------------
 
-/// Per-arm enum binding: (variant_idx, field_patterns).
+/// Per-arm enum binding: (enum_name, variant_idx, field_patterns).
 struct EnumBinding {
+    enum_name: String,
     variant_idx: u32,
     field_patterns: Vec<ast::Pattern>,
 }
@@ -2421,6 +2424,7 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                     if let Some(idx) = variants.iter().position(|v| v.name == *variant) {
                         targets.push((idx as i64, arm_bb));
                         arm_blocks.push((arm_bb, &arm.body, Some(EnumBinding {
+                            enum_name: name.clone(),
                             variant_idx: idx as u32,
                             field_patterns: fields.clone(),
                         })));
@@ -2534,11 +2538,19 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
         if let Some(binding) = enum_binding {
             for (field_idx, pat) in binding.field_patterns.iter().enumerate() {
                 if let ast::Pattern::Ident { name, .. } = pat {
-                    let local = ctx.alloc_local(Some(name.clone()), MirType::I64, false);
+                    // Look up the actual field type from enum_defs so
+                    // the local has the correct type (e.g. f64 not i64).
+                    let field_type = ctx.enum_defs.get(binding.enum_name.as_str())
+                        .and_then(|variants| variants.get(binding.variant_idx as usize))
+                        .and_then(|variant| variant.fields.get(field_idx))
+                        .cloned()
+                        .unwrap_or(MirType::I64);
+                    let local = ctx.alloc_local(Some(name.clone()), field_type, false);
                     ctx.emit(Instruction::Assign {
                         dest: local,
                         value: RValue::EnumPayload {
                             operand: subj_op.clone(),
+                            enum_name: binding.enum_name.clone(),
                             variant_idx: binding.variant_idx,
                             field_idx: field_idx as u32,
                         },

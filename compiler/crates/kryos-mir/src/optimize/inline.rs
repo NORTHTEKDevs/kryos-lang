@@ -351,10 +351,12 @@ fn remap_rvalue(rv: &RValue, offset: u32) -> RValue {
         },
         RValue::EnumPayload {
             operand,
+            enum_name,
             variant_idx,
             field_idx,
         } => RValue::EnumPayload {
             operand: remap_operand(operand, offset),
+            enum_name: enum_name.clone(),
             variant_idx: *variant_idx,
             field_idx: *field_idx,
         },

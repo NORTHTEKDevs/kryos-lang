@@ -374,6 +374,7 @@ pub enum RValue {
     /// Extract a payload field from an enum value.
     EnumPayload {
         operand: Operand,
+        enum_name: String,
         variant_idx: u32,
         field_idx: u32,
     },

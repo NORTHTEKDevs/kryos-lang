@@ -2472,11 +2472,30 @@ fn translate_rvalue<M: Module>(
             Ok(Some(tag))
         }
 
-        RValue::EnumPayload { operand, field_idx, .. } => {
+        RValue::EnumPayload { operand, enum_name, variant_idx, field_idx } => {
             // Load the field value from offset (1 + field_idx) * 8.
             let ptr = translate_operand(operand, builder, translator, module)?;
             let offset = ((field_idx + 1) * 8) as i32;
-            let val = builder.ins().load(types::I64, MemFlags::new(), ptr, offset);
+
+            // Look up the actual field type from enum_defs so we load with
+            // the correct Cranelift type (e.g. f64 instead of i64).
+            let cl_ty = translator.enum_defs.get(enum_name.as_str())
+                .and_then(|variants| variants.get(*variant_idx as usize))
+                .and_then(|variant| variant.fields.get(*field_idx as usize))
+                .map(|mir_ty| match mir_ty {
+                    MirType::F64 => types::F64,
+                    MirType::F32 => types::F32,
+                    MirType::Bool => types::I8,
+                    _ => types::I64,
+                })
+                .unwrap_or(types::I64);
+            let val = builder.ins().load(cl_ty, MemFlags::new(), ptr, offset);
+            // Widen bools back to i64 for consistency with the rest of codegen.
+            let val = if cl_ty == types::I8 {
+                builder.ins().uextend(types::I64, val)
+            } else {
+                val
+            };
             Ok(Some(val))
         }
 

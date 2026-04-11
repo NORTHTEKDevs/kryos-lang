@@ -1,0 +1,216 @@
+// ============================================================
+// Kryos Proof Program — exercises every major feature path
+// ============================================================
+
+// --- Structs with string fields (ownership/Drop) ---
+
+struct User {
+    name: str,
+    email: str,
+    age: i64,
+}
+
+fn make_user(name: str, email: str, age: i64) -> User {
+    return User { name: name, email: email, age: age }
+}
+
+fn describe_user(u: User) -> str {
+    return u.name + " (" + u.email + "), age " + to_string(u.age)
+}
+
+// --- Nested structs ---
+
+struct Address {
+    city: str,
+    state: str,
+}
+
+struct Profile {
+    user: User,
+    address: Address,
+}
+
+// --- Enums with payloads (variant-aware Drop) ---
+
+enum Status {
+    Ok(i64),
+    Err(i64),
+}
+
+enum Shape {
+    Circle(f64),
+    Rectangle(f64, f64),
+    Point,
+}
+
+// --- Functions calling functions ---
+
+fn area(s: Shape) -> f64 {
+    match s {
+        Shape::Circle(r) => 3.14159 * r * r,
+        Shape::Rectangle(w, h) => w * h,
+        Shape::Point => 0.0,
+    }
+}
+
+fn classify_area(a: f64) -> str {
+    if a > 100.0 {
+        return "large"
+    } elif a > 10.0 {
+        return "medium"
+    } else {
+        return "small"
+    }
+}
+
+// --- Recursive function ---
+
+fn fibonacci(n: i64) -> i64 {
+    if n <= 1 {
+        return n
+    }
+    return fibonacci(n - 1) + fibonacci(n - 2)
+}
+
+// --- Higher-order function ---
+
+fn apply_twice(f: fn(i64) -> i64, x: i64) -> i64 {
+    return f(f(x))
+}
+
+fn triple(x: i64) -> i64 {
+    return x * 3
+}
+
+// --- Main entry point ---
+
+fn main() {
+    println("=== Kryos Proof Program ===")
+    println("")
+
+    // 1. Basic arithmetic
+    let x = 10 + 20
+    let y = x * 3
+    println("1. Arithmetic: " + to_string(x) + " * 3 = " + to_string(y))
+
+    // 2. String operations
+    let greeting = "Hello" + ", " + "World"
+    println("2. Strings: " + greeting)
+
+    // 3. Struct creation and field access
+    let alice = make_user("Alice", "alice@kryos.dev", 28)
+    println("3. Struct: " + describe_user(alice))
+
+    // 4. Mutable variables
+    let mut counter = 0
+    counter = counter + 1
+    counter = counter + 1
+    counter = counter + 1
+    println("4. Mutation: counter = " + to_string(counter))
+
+    // 5. If/elif/else
+    if counter > 5 {
+        println("5. Branch: high")
+    } elif counter > 2 {
+        println("5. Branch: medium")
+    } else {
+        println("5. Branch: low")
+    }
+
+    // 6. While loop
+    let mut sum = 0
+    let mut i = 1
+    while i <= 10 {
+        sum = sum + i
+        i = i + 1
+    }
+    println("6. While loop: sum(1..10) = " + to_string(sum))
+
+    // 7. For loop with array
+    let nums = [10, 20, 30, 40, 50]
+    let mut total = 0
+    for n in nums {
+        total = total + n
+    }
+    println("7. For loop: sum([10,20,30,40,50]) = " + to_string(total))
+
+    // 8. Enum construction and match
+    let c = Shape.Circle(5.0)
+    let r = Shape.Rectangle(4.0, 6.0)
+    let p = Shape.Point
+    println("8. Match: circle area = " + to_string(area(c)))
+    println("   rect area = " + to_string(area(r)))
+    println("   point area = " + to_string(area(p)))
+
+    // 9. Cross-function calls
+    let circle_area = area(Shape.Circle(12.0))
+    let size = classify_area(circle_area)
+    println("9. Cross-call: circle(12) is " + size)
+
+    // 10. Recursion
+    let fib10 = fibonacci(10)
+    println("10. Recursion: fib(10) = " + to_string(fib10))
+
+    // 11. Higher-order functions
+    let result = apply_twice(triple, 2)
+    println("11. Higher-order: triple(triple(2)) = " + to_string(result))
+
+    // 12. Boolean logic
+    let a = true
+    let b = false
+    if a and not b {
+        println("12. Boolean: true and not false = true")
+    }
+
+    // 13. Nested if
+    let score = 85
+    let mut grade = "F"
+    if score >= 90 {
+        grade = "A"
+    } elif score >= 80 {
+        grade = "B"
+    } elif score >= 70 {
+        grade = "C"
+    }
+    println("13. Grading: score " + to_string(score) + " = " + grade)
+
+    // 14. Type conversions
+    let float_val = 3.14
+    let int_val = 42
+    println("14. Types: float = " + to_string(float_val) + ", int = " + to_string(int_val))
+
+    // 15. Multiple struct instances (tests Drop doesn't double-free)
+    let u1 = make_user("Bob", "bob@test.com", 35)
+    let u2 = make_user("Eve", "eve@test.com", 22)
+    println("15. Multi-struct: " + u1.name + " and " + u2.name)
+
+    // 16. Enum with payload (tests variant-aware Drop)
+    let ok_val = Status.Ok(42)
+    let err_val = Status.Err(99)
+    match ok_val {
+        Status::Ok(v) => println("16. Enum match: Ok(" + to_string(v) + ")"),
+        Status::Err(code) => println("16. Enum match: Err(" + to_string(code) + ")"),
+    }
+    match err_val {
+        Status::Ok(v) => println("    unreachable"),
+        Status::Err(code) => println("    Err variant: code=" + to_string(code)),
+    }
+
+    // 17. Break and continue
+    let mut found = 0
+    let mut j = 0
+    while j < 100 {
+        j = j + 1
+        if j < 5 {
+            continue
+        }
+        if j > 7 {
+            break
+        }
+        found = found + j
+    }
+    println("17. Break/continue: sum(5..7) = " + to_string(found))
+
+    println("")
+    println("=== All 17 tests passed ===")
+}
