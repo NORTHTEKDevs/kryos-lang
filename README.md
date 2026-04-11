@@ -1,307 +1,136 @@
 # Kryos
 
-A compiled systems language with ownership-based memory safety, compile-time capability enforcement, and a native AI runtime.
+A compiled systems language with ownership-based memory safety, capability enforcement, and dual-backend native compilation.
 
-## Key Features
+---
 
-- **Ownership without lifetimes** -- move semantics and borrowing enforced at compile time, no lifetime annotations
-- **Dual-backend compilation** -- Cranelift for fast development builds, LLVM for optimized release binaries
-- **AI-native primitives** -- tensors, agents, probability types, and reactive streams as language-level constructs
-- **Capability-based security** -- functions declare required system resources; the compiler enforces deny-by-default access within annotated scopes
-- **Compile-time evaluation** -- `comptime` blocks evaluate arbitrary expressions during compilation
-- **Module system** -- `use` imports with stdlib resolution, selective imports, transitive dependencies, and diamond deduplication
-- **Full toolchain** -- LSP, formatter, doc generator, package manager, test runner, REPL, C bindgen
+## Features
+
+- **Ownership without lifetimes** -- ARC-based move semantics enforced at compile time, no borrow checker or lifetime annotations.
+- **Capability-safe functions** -- `@capabilities` and `@pure` annotations enable deny-by-default resource access, checked at compile time.
+- **Dual-backend compilation** -- Cranelift for fast JIT/debug builds, LLVM for optimized AOT release binaries.
+- **Pattern matching** -- Enums with typed payloads, destructuring, and exhaustive match expressions.
+- **Structs with methods** -- `impl` blocks, nested structs, and field access with ownership-tracked Drop.
+- **Closures and higher-order functions** -- First-class function values, lambdas, and function parameters.
+- **Channels and actors** -- `chan()`, `spawn`, `send`, and `recv` for structured concurrency.
+- **Full toolchain** -- REPL, LSP, formatter, documentation generator, test runner, package manager, and C bindgen.
+- **Self-hosting compiler** -- 19K lines of Kryos reimplementing the full compilation pipeline (work in progress).
 
 ## Quick Start
 
+### Install
+
 ```bash
 git clone https://github.com/FrostbyteDevTeam/kryos-lang.git
-cd kryos-lang/compiler && cargo build --release -j 4
-cargo run --release -- run ../examples/demo.kry
+cd kryos-lang/compiler
+cargo build --release -j 4
 ```
 
-Hello world:
+### Hello World
 
-```
+Create a file called `hello.kry`:
+
+```kryos
 fn main() {
     println("Hello, Kryos!")
 }
 ```
 
-## Architecture
+Run it:
 
-```
-Source (.kry)
-  |
-  v
-Lexer .......... 80+ token types, string interpolation
-  |
-  v
-Parser ......... Recursive descent, Pratt expression parsing
-  |
-  v
-Type Checker ... Inference, generics, monomorphization
-  |
-  v
-Ownership ...... Move tracking, use-after-move detection
-  |
-  v
-Capabilities ... Deny-by-default resource enforcement
-  |
-  v
-MIR ............ SSA basic blocks, optimization passes
-  |
-  +-- Constant folding, DCE, inlining, TCO, strength reduction
-  |
-  +---> Cranelift codegen (fast native binaries)
-  +---> LLVM codegen (optimized release builds)
-  +---> LSP server (diagnostics, hover, completion)
+```bash
+cargo run --release -- run hello.kry
 ```
 
-### 21 Compiler Crates
+### Run the proof program
+
+```bash
+cargo run --release -- run examples/proof.kry
+```
+
+## Code Example
+
+Enums with typed payloads, pattern matching, and functions calling functions:
+
+```kryos
+enum Shape {
+    Circle(f64),
+    Rectangle(f64, f64),
+    Point,
+}
+
+fn area(s: Shape) -> f64 {
+    match s {
+        Shape::Circle(r) => 3.14159 * r * r,
+        Shape::Rectangle(w, h) => w * h,
+        Shape::Point => 0.0,
+    }
+}
+
+fn classify_area(a: f64) -> str {
+    if a > 100.0 {
+        return "large"
+    } elif a > 10.0 {
+        return "medium"
+    } else {
+        return "small"
+    }
+}
+
+fn main() {
+    let c = Shape.Circle(12.0)
+    let circle_area = area(c)
+    let size = classify_area(circle_area)
+    println("circle(12) is " + size)
+}
+```
+
+## Project Status
+
+Kryos is **v0.2.0 alpha**. The core language is functional and the compiler passes 690+ Rust tests and 132 `.kry` end-to-end test files. Ownership analysis, type inference, generics with monomorphization, pattern matching, concurrency primitives, and capability enforcement all work. Both Cranelift and LLVM backends produce native binaries.
+
+This is pre-1.0 software. The language design, standard library surface, and toolchain interfaces may change without notice. It is not yet suitable for production use.
+
+The self-hosting compiler (19K lines of Kryos in `compiler/self-host/`) produces a working stage-1 native binary. Three-stage bootstrap verification is in progress.
+
+## Project Structure
+
+The compiler is organized as 21 Rust crates under `compiler/crates/`:
 
 | Crate | Purpose |
 |-------|---------|
-| `kryos-cli` | CLI entry point |
+| `kryos-cli` | Command-line entry point |
 | `kryos-lexer` | Tokenizer |
-| `kryos-parser` | Recursive descent parser |
-| `kryos-ast` | AST node types |
+| `kryos-parser` | Recursive-descent parser with Pratt expression parsing |
+| `kryos-ast` | AST node definitions |
 | `kryos-types` | Type checker with inference and generics |
 | `kryos-ownership` | Move tracking, use-after-move detection |
 | `kryos-capabilities` | Compile-time capability enforcement |
-| `kryos-mir` | Mid-level IR (SSA, basic blocks, monomorphization) |
-| `kryos-codegen-cranelift` | Cranelift native backend |
-| `kryos-codegen-llvm` | LLVM IR backend |
+| `kryos-mir` | Mid-level IR -- SSA, basic blocks, monomorphization |
+| `kryos-codegen-cranelift` | Cranelift native backend (JIT/debug) |
+| `kryos-codegen-llvm` | LLVM IR backend (AOT/release) |
 | `kryos-linker` | Native binary linking |
 | `kryos-driver` | Compilation pipeline and module resolution |
-| `kryos-rt` | Runtime (strings, arrays, maps, tensors, channels, spawn) |
-| `kryos-stdlib-native` | Native stdlib (process, file I/O, terminal) |
-| `kryos-lsp` | Language Server Protocol |
+| `kryos-rt` | Runtime -- strings, arrays, maps, channels, spawn |
+| `kryos-stdlib-native` | Native stdlib -- process, file I/O, terminal |
+| `kryos-lsp` | Language Server Protocol implementation |
 | `kryos-fmt` | Code formatter |
 | `kryos-doc` | Documentation generator |
 | `kryos-bindgen` | C header to Kryos binding generator |
-| `kryos-package` | Package manager |
+| `kryos-package` | Package manager with dependency resolution |
 | `kryos-test-runner` | Test framework |
-| `kryos-errors` | Diagnostic reporting |
+| `kryos-errors` | Diagnostic reporting with structured error codes |
 
-## Performance
+## Documentation
 
-| Benchmark | Kryos (Cranelift) | Kryos (LLVM) | Rust (release) | Go |
-|-----------|-------------------|--------------|----------------|----|
-| fib(42) | 1190ms | 594ms | 594ms | 1094ms |
-| Sum 100M | 46ms | ~5ms | 5ms | 27ms |
-| Nested 1Kx1K | 5ms | 5ms | 5ms | 6ms |
-| Compilation | ~500ms | -- | ~600ms | ~720ms |
-
-LLVM release builds match Rust. Five MIR-level optimization passes (constant folding, dead code elimination, function inlining, tail-call optimization, strength reduction) improve debug builds and compound with LLVM's own optimizations in release mode.
-
-## Toolchain
-
-```
-kryos build <file>            Compile to native binary (Cranelift)
-kryos build <file> --release  Compile with LLVM optimizations
-kryos run <file>              Compile and execute
-kryos check <file>            Type-check without codegen
-kryos test                    Run project tests
-kryos repl                    Interactive REPL
-kryos fmt <file>              Format source code
-kryos lsp                     Start language server
-kryos doc <file>              Generate documentation
-kryos bindgen <header>        Generate Kryos bindings from C headers
-kryos pkg init                Create new project
-kryos pkg add <dep>           Add dependency
-kryos pkg install             Resolve and fetch dependencies
-kryos pkg publish             Package for registry
-kryos version                 Print version info
-```
-
-## Language Overview
-
-```
-let x: i64 = 42                            // Immutable by default
-let mut counter = 0                         // Explicit mutability
-
-fn fib(n: i64) -> i64 {                    // First-class functions
-    if n <= 1 { return n }
-    return fib(n - 1) + fib(n - 2)
-}
-
-struct Point { x: f64, y: f64 }            // Structs with impl blocks
-impl Point {
-    fn magnitude(self: Point) -> f64 {
-        return (self.x * self.x + self.y * self.y) ** 0.5
-    }
-}
-
-trait Printable { fn display(self: Self) -> str }   // Traits
-
-match direction {                           // Pattern matching
-    "north" => go_up()
-    _ => stay()
-}
-
-try { throw "error" } catch e { println(e) }       // Error handling
-
-let ch = chan()                             // Channels + spawn
-spawn { send(ch, 42) }
-let value = recv(ch)
-
-let size = comptime { 2 * 2 * 2 * 2 }     // Compile-time evaluation
-
-use std::math::{abs, min, max}             // Module imports
-
-@capabilities(net, io)                      // Capability-based security
-fn download(url: str, path: str) { }
-```
-
-## Module System
-
-Kryos supports file-based modules with `use` imports:
-
-```
-use mylib                           // Import sibling file mylib.kry
-use utils::helpers                  // Import utils/helpers.kry
-use std::math::{abs, min, max}     // Selective stdlib import
-use std::json                       // Full stdlib module import
-```
-
-The module resolver supports transitive imports, diamond deduplication, and cycle detection. 28 stdlib modules are available via the `std::` prefix.
-
-## Capability-Based Security
-
-Functions annotated with `@capabilities` are subject to compile-time resource enforcement:
-
-```
-@capabilities(io)
-fn save(data: str) {
-    file_write("output.txt", data)      // OK -- has io capability
-}
-
-@capabilities(net)
-fn fetch() {
-    file_write("output.txt", "sneaky")  // COMPILE ERROR -- net != io
-}
-```
-
-35 builtin functions are mapped to 7 capability categories (io, net, process, term, crypto, time, ffi). Functions without `@capabilities` annotations have ambient authority and are unconstrained.
-
-## Standard Library
-
-28 modules covering strings, math, collections, I/O, networking, cryptography, JSON, regex, datetime, terminal, process management, tensors, agents, probability types, reactive streams, data lineage, and cost tracking. All 847 functions are implemented -- zero stubs.
-
-See the [language manual](docs/README.md) for complete documentation.
-
-## Showcase
-
-**Ray Tracer** -- structs, impl methods, and nested math in pure Kryos:
-
-```
-struct Vec3 { x: i64, y: i64, z: i64 }
-
-impl Vec3 {
-    fn dot(self, other: Vec3) -> i64 {
-        return self.x * other.x + self.y * other.y + self.z * other.z
-    }
-
-    fn sub(self, other: Vec3) -> Vec3 {
-        return Vec3 {
-            x: self.x - other.x,
-            y: self.y - other.y,
-            z: self.z - other.z,
-        }
-    }
-}
-
-fn hit_sphere(sphere: Sphere, ray: Ray) -> i64 {
-    let oc_x = ray.ox - sphere.cx
-    let a = ray.dx * ray.dx + ray.dy * ray.dy + ray.dz * ray.dz
-    let b = 2 * (oc_x * ray.dx + oc_y * ray.dy + oc_z * ray.dz)
-    let discriminant = b * b - 4 * a * c
-    if discriminant >= 0 { return 1 }
-    return 0
-}
-```
-
-Renders a sphere as ASCII art (see [`ray_tracer.kry`](examples/ray_tracer.kry)).
-
-**Neural Network** -- fixed-point XOR gate that solves 4/4:
-
-```
-struct Neuron { w1: i64, w2: i64, bias: i64 }
-
-fn sigmoid(x: i64) -> i64 {
-    let result = 50 + x / 4
-    if result < 0 { return 0 }
-    if result > 100 { return 100 }
-    return result
-}
-
-fn neuron_forward(n: Neuron, x1: i64, x2: i64) -> i64 {
-    let sum = n.w1 * x1 + n.w2 * x2 + n.bias * 100
-    return sigmoid(sum / 100)
-}
-```
-
-Full network with forward pass and accuracy table (see [`neural_net.kry`](examples/neural_net.kry)).
-
-**Chat Server** -- structs, arrays, string ops, function dispatch:
-
-```
-struct Message { sender: str, text: str, timestamp: i64 }
-
-fn format_message(msg: Message) -> str {
-    return "[" + to_string(msg.timestamp) + "] " + msg.sender + ": " + msg.text
-}
-```
-
-Iterates a chat log and computes per-user message stats (see [`chat_server.kry`](examples/chat_server.kry)).
-
-## Examples
-
-| File | Demonstrates |
-|------|-------------|
-| [`ray_tracer.kry`](examples/ray_tracer.kry) | Structs, impl methods, ray-sphere intersection, ASCII rendering |
-| [`neural_net.kry`](examples/neural_net.kry) | Fixed-point neural network, XOR gate, forward pass |
-| [`chat_server.kry`](examples/chat_server.kry) | Struct arrays, string concatenation, function dispatch, stats |
-| [`demo.kry`](examples/demo.kry) | Recursion, higher-order functions, float math, error handling, maps, structs, arrays, strings |
-| [`imports_demo.kry`](examples/imports_demo.kry) | Multi-file imports with `use mylib` |
-| [`math_imports_demo.kry`](examples/math_imports_demo.kry) | Selective stdlib imports with `use std::math::{abs, min, max}` |
-| [`http_server.kry`](examples/http_server.kry) | Structs, string match, error handling, request routing |
-| [`pipeline.kry`](examples/pipeline.kry) | Channels, spawn, concurrency, data processing pipeline |
-| [`fibonacci_showcase.kry`](examples/fibonacci_showcase.kry) | Recursion, tail-call optimization, comptime, higher-order functions |
-| [`calculator.kry`](examples/calculator.kry) | String match, tail expressions, function composition |
-| [`word_count.kry`](examples/word_count.kry) | String operations, for loops, builtins |
-| [`json_counter.kry`](examples/json_counter.kry) | Structs, channels, spawn, try/catch, integer match |
-| [`mini_grep.kry`](examples/mini_grep.kry) | File I/O, error handling, string search |
-| [`all_features.kry`](examples/all_features.kry) | Comprehensive showcase of all language features |
-
-## Self-Hosting
-
-An 18,700-line self-hosted compiler written entirely in Kryos lives in `compiler/self-host/` (15 files + runtime). It implements the complete pipeline: lexer, parser, type checker, MIR lowering, 5-pass optimizer, register allocator, x86_64 machine code emission, and ELF/COFF linking -- with zero external dependencies beyond the OS kernel.
-
-The concatenated self-host type-checks cleanly through the Rust compiler with `--skip-ownership` (the ownership analyzer has known false positives on self-referential compiler patterns). The stage-1 binary (1MB PE32+ on Windows) compiles and runs, successfully parsing and tokenizing Kryos source files.
-
-Bootstrap verification follows the same 3-stage technique used by GCC, Rust, and Go:
-
-```
-stage-0 (Rust/Cranelift) -> stage-1 binary
-stage-1 (Kryos)          -> stage-2 binary
-stage-2 (Kryos)          -> stage-3 binary
-stage-2 == stage-3        -> compiler faithfully reproduces itself
-```
-
-## Status
-
-**v0.3.2** -- 21-crate Rust compiler with 765 passing tests and zero clippy warnings. Core language features are fully implemented: type inference, ownership analysis, generics with monomorphization, `dyn Trait`, `comptime`, `else if` chains, pattern matching, async/await, concurrency primitives, cross-function error propagation, module imports, and capability enforcement. Runtime safety: bounds-checked arrays, null-safe struct access, integer overflow detection, stack overflow protection, ownership-tracked Drop (no double-free on parameters or borrowed array elements). Structured error codes (E0001--E0302) with "did you mean?" suggestions. Dual backends: Cranelift for fast builds, LLVM for optimized release binaries. Full package manager with dependency resolution, lock files, and remote fetching. The self-hosted compiler type-checks cleanly with `--skip-ownership` and produces a working stage-1 native binary.
-
-### Roadmap
-
-- Complete self-hosting bootstrap verification (stage-2 == stage-3)
-- Namespace-scoped module imports (`use math as m; m.abs(-5)`)
-- Async runtime with structured concurrency
-- GPU compute backend via capability annotations
-- Package registry
-- Incremental compilation
+- [Language Manual](docs/README.md) -- complete reference for the Kryos language
+- [Getting Started](docs/01-getting-started.md) -- installation and first program
+- [Structs and Enums](docs/05-structs-and-enums.md) -- data types with ownership
+- [Ownership](docs/06-ownership.md) -- move semantics and memory safety
+- [Capabilities](docs/10-capabilities.md) -- compile-time resource enforcement
+- [Concurrency](docs/09-concurrency.md) -- channels, spawn, and actors
+- [Modules and Packages](docs/12-modules-and-packages.md) -- the module system and package manager
+- [Grammar](docs/grammar.md) -- formal grammar specification
 
 ## Requirements
 
@@ -310,8 +139,4 @@ stage-2 == stage-3        -> compiler faithfully reproduces itself
 
 ## License
 
-Proprietary. Copyright FrostByte Digital. All rights reserved.
-
----
-
-Built by [FrostByte Digital](https://frostbytedigital.io)
+Proprietary. Copyright (c) 2026 FrostByte Digital. All rights reserved.
