@@ -165,10 +165,14 @@ pub fn update() -> Result<(), String> {
         return Ok(());
     }
 
-    // Resolve dependencies using the package resolver.
-    let mut registry = kryos_package::resolve::PackageRegistry::new();
+    eprintln!(
+        "resolving dependencies for {} v{} ...",
+        manifest.package.name, manifest.package.version
+    );
 
-    // For path dependencies, register them in the registry so the resolver can find them.
+    // Build registry for remote dependencies.
+    // Path deps are resolved directly by the resolver from their manifests.
+    let mut registry = kryos_package::resolve::PackageRegistry::new();
     for (name, dep) in &manifest.dependencies {
         if let kryos_package::DepSpec::Path { path } = dep {
             let dep_manifest_path = Path::new(path).join("kryos.toml");
@@ -186,14 +190,12 @@ pub fn update() -> Result<(), String> {
         }
     }
 
-    // resolve() accepts HashMap<String, DepSpec> directly.
     match kryos_package::resolve::resolve(&manifest.dependencies, &registry) {
         Ok(graph) => {
-            // Write lock file.
             let lock = kryos_package::LockFile::from_resolved(&graph);
             lock.write_to_file(Path::new("kryos.lock"))?;
 
-            eprintln!("resolved {} dependencies", graph.packages.len());
+            eprintln!("resolved {} package{}", graph.packages.len(), if graph.packages.len() == 1 { "" } else { "s" });
             for pkg in &graph.packages {
                 eprintln!("  {} v{}", pkg.name, pkg.version);
             }
@@ -214,10 +216,17 @@ pub fn install() -> Result<(), String> {
 
     if manifest.dependencies.is_empty() {
         eprintln!("no dependencies to install");
+        eprintln!("  0 packages installed");
         return Ok(());
     }
 
-    // First resolve.
+    eprintln!(
+        "resolving dependencies for {} v{} ...",
+        manifest.package.name, manifest.package.version
+    );
+
+    // Build a registry for remote dependencies.
+    // Path deps are resolved directly by the resolver from their manifests.
     let mut registry = kryos_package::resolve::PackageRegistry::new();
     for (name, dep) in &manifest.dependencies {
         if let kryos_package::DepSpec::Path { path } = dep {
@@ -239,16 +248,55 @@ pub fn install() -> Result<(), String> {
     let graph = kryos_package::resolve::resolve(&manifest.dependencies, &registry)
         .map_err(|e| format!("dependency resolution failed: {e}"))?;
 
-    // Fetch all remote packages.
+    // Fetch all remote packages to the cache.
+    eprintln!("fetching packages ...");
     let fetched = kryos_package::fetch::fetch_resolved(&graph)?;
+
+    // Create .kryos/deps/ directory and link fetched packages.
+    let deps_dir = PathBuf::from(".kryos").join("deps");
+    std::fs::create_dir_all(&deps_dir)
+        .map_err(|e| format!("failed to create .kryos/deps/: {e}"))?;
+
+    for (name, src_path) in &fetched {
+        let link_path = deps_dir.join(name);
+        // Remove stale link/directory if present.
+        if link_path.exists() {
+            if link_path.is_dir() {
+                let _ = std::fs::remove_dir_all(&link_path);
+            } else {
+                let _ = std::fs::remove_file(&link_path);
+            }
+        }
+        // Copy (or symlink if supported) the dependency source into .kryos/deps/<name>.
+        // For path deps, create a small marker file pointing to the real location.
+        // For remote deps, the cache path is canonical; just store a redirect.
+        let redirect_content = format!("# kryos dep redirect\npath = \"{}\"\n", src_path.display());
+        std::fs::write(
+            deps_dir.join(format!("{name}.redirect")),
+            redirect_content,
+        ).map_err(|e| format!("failed to write dep redirect for {name}: {e}"))?;
+    }
 
     // Write lock file.
     let lock = kryos_package::LockFile::from_resolved(&graph);
     lock.write_to_file(Path::new("kryos.lock"))?;
 
-    eprintln!("installed {} dependencies", fetched.len());
+    // Summary.
+    let path_count = fetched.iter().filter(|(_, p)| !p.starts_with(kryos_package::fetch::cache_dir())).count();
+    let remote_count = fetched.len() - path_count;
+
+    eprintln!();
+    eprintln!("installed {} package{}", fetched.len(), if fetched.len() == 1 { "" } else { "s" });
     for (name, path) in &fetched {
-        eprintln!("  {} -> {}", name, path.display());
+        let is_path = !path.starts_with(kryos_package::fetch::cache_dir());
+        if is_path {
+            eprintln!("  {name} (path: {})", path.display());
+        } else {
+            eprintln!("  {name} (cached: {})", path.display());
+        }
+    }
+    if remote_count > 0 {
+        eprintln!("  {} remote, {} local path", remote_count, path_count);
     }
     eprintln!("wrote kryos.lock");
 

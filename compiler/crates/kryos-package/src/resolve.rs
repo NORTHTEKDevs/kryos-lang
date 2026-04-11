@@ -141,6 +141,9 @@ impl ResolvedGraph {
 /// 2. Recursively resolve transitive dependencies.
 /// 3. Detect version conflicts (same package required at incompatible versions).
 /// 4. Detect circular dependencies via DFS cycle detection.
+///
+/// Path dependencies read version info and transitive deps from their
+/// `kryos.toml` manifests on disk, so they participate fully in the graph.
 pub fn resolve(
     root_deps: &HashMap<String, DepSpec>,
     registry: &PackageRegistry,
@@ -154,17 +157,54 @@ pub fn resolve(
     for (name, spec) in root_deps {
         match spec {
             DepSpec::Path { path } => {
-                // Path dependencies are resolved directly — no version checking.
-                if !resolved.contains_key(name) {
-                    resolved.insert(
-                        name.clone(),
-                        ResolvedPackage {
-                            name: name.clone(),
-                            version: Version::new(0, 0, 0),
-                            source: PackageSource::Path(path.clone()),
-                            dependencies: Vec::new(),
-                        },
-                    );
+                if resolved.contains_key(name) {
+                    continue;
+                }
+                // Read version and transitive deps from the path dep's manifest.
+                let (version, transitive_deps) = read_path_dep_info(name, path);
+                let dep_names: Vec<String> = transitive_deps.keys().cloned().collect();
+
+                resolved.insert(
+                    name.clone(),
+                    ResolvedPackage {
+                        name: name.clone(),
+                        version,
+                        source: PackageSource::Path(path.clone()),
+                        dependencies: dep_names,
+                    },
+                );
+
+                // Recursively resolve the path dependency's own dependencies.
+                for (dep_name, dep_spec) in &transitive_deps {
+                    match dep_spec {
+                        DepSpec::Path { path: dep_path } => {
+                            if !resolved.contains_key(dep_name) {
+                                let (v, _) = read_path_dep_info(dep_name, dep_path);
+                                resolved.insert(
+                                    dep_name.clone(),
+                                    ResolvedPackage {
+                                        name: dep_name.clone(),
+                                        version: v,
+                                        source: PackageSource::Path(dep_path.clone()),
+                                        dependencies: Vec::new(),
+                                    },
+                                );
+                            }
+                        }
+                        DepSpec::Remote { source, version_req } => {
+                            resolve_recursive(
+                                dep_name,
+                                version_req,
+                                source,
+                                name,
+                                registry,
+                                &mut resolved,
+                                &mut version_constraints,
+                                &mut visiting,
+                                &mut visit_stack,
+                            )?;
+                        }
+                    }
                 }
             }
             DepSpec::Remote { source, version_req } => {
@@ -186,6 +226,40 @@ pub fn resolve(
     Ok(ResolvedGraph {
         packages: resolved.into_values().collect(),
     })
+}
+
+/// Read version and dependencies from a path dependency's `kryos.toml`.
+///
+/// Returns `(version, dependencies)`. Falls back to `0.0.0` with no deps
+/// if the manifest cannot be read (the directory may not contain one yet).
+fn read_path_dep_info(
+    name: &str,
+    path: &str,
+) -> (Version, HashMap<String, DepSpec>) {
+    let manifest_path = std::path::Path::new(path).join("kryos.toml");
+    if !manifest_path.exists() {
+        return (Version::new(0, 0, 0), HashMap::new());
+    }
+    match crate::manifest::Manifest::from_file(&manifest_path) {
+        Ok(manifest) => {
+            let version = manifest
+                .package
+                .version
+                .parse::<Version>()
+                .unwrap_or_else(|_| {
+                    eprintln!(
+                        "warning: invalid version in {}/kryos.toml, using 0.0.0",
+                        name
+                    );
+                    Version::new(0, 0, 0)
+                });
+            (version, manifest.dependencies)
+        }
+        Err(e) => {
+            eprintln!("warning: cannot read {}/kryos.toml: {e}", name);
+            (Version::new(0, 0, 0), HashMap::new())
+        }
+    }
 }
 
 fn resolve_recursive(
