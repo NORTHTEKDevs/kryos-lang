@@ -1,0 +1,19 @@
+// string_concat.kry -- Concatenate "x" to a string 50,000 times, timed
+//
+// Expected result: length 50000
+// Tests: string allocation, concatenation, and GC/drop performance
+
+fn main() {
+    let start = time_now()
+    let mut s = ""
+    let mut i = 0
+    while i < 50000 {
+        s = s + "x"
+        i = i + 1
+    }
+    let result = len(s)
+    let elapsed = time_now() - start
+    println("=== String Concat Benchmark ===")
+    println("length = " + to_string(result))
+    println("Time: " + to_string(elapsed) + "s")
+}

@@ -1,0 +1,26 @@
+// nested_loops.kry -- Triple-nested loop (500 x 500 x 500), timed
+//
+// Expected result: 125000000 iterations
+// Tests: loop overhead, counter increment throughput
+
+fn main() {
+    let start = time_now()
+    let mut count = 0
+    let mut i = 0
+    while i < 500 {
+        let mut j = 0
+        while j < 500 {
+            let mut k = 0
+            while k < 500 {
+                count = count + 1
+                k = k + 1
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    let elapsed = time_now() - start
+    println("=== Nested Loops Benchmark ===")
+    println("iterations = " + to_string(count))
+    println("Time: " + to_string(elapsed) + "s")
+}
