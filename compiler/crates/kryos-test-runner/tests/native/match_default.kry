@@ -1,0 +1,17 @@
+// expect-stdout: one
+// expect-stdout: three
+// expect-stdout: other
+fn label(x: i64) -> str {
+    match x {
+        1 => "one",
+        2 => "two",
+        3 => "three",
+        _ => "other",
+    }
+}
+
+fn main() {
+    println(label(1))
+    println(label(3))
+    println(label(99))
+}

@@ -1,0 +1,19 @@
+// expect-stdout: 78.53975
+enum Shape {
+    Circle(f64),
+    Rect(f64, f64),
+    Point,
+}
+
+fn area(s: Shape) -> f64 {
+    match s {
+        Shape::Circle(r) => 3.14159 * r * r,
+        Shape::Rect(w, h) => w * h,
+        Shape::Point => 0.0,
+    }
+}
+
+fn main() {
+    let c = Shape.Circle(5.0)
+    println(area(c))
+}

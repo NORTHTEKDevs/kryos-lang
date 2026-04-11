@@ -1,0 +1,11 @@
+// expect-stdout: Hello, Alice!
+struct Greeting {
+    name: str,
+    prefix: str,
+}
+
+fn main() {
+    let g = Greeting { name: "Alice", prefix: "Hello" }
+    let msg = g.prefix + ", " + g.name + "!"
+    println(msg)
+}

@@ -1,0 +1,14 @@
+// expect-stdout: 30
+struct Inner {
+    x: i64,
+}
+
+struct Outer {
+    inner: Inner,
+    y: i64,
+}
+
+fn main() {
+    let o = Outer { inner: Inner { x: 10 }, y: 20 }
+    println(o.inner.x + o.y)
+}

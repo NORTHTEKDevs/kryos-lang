@@ -1,0 +1,22 @@
+// expect-stdout: int: 42
+// expect-stdout: float: 3.14
+// expect-stdout: none
+enum Value {
+    Int(i64),
+    Float(f64),
+    None,
+}
+
+fn describe(v: Value) -> str {
+    match v {
+        Value::Int(n) => "int: " + to_string(n),
+        Value::Float(f) => "float: " + to_string(f),
+        Value::None => "none",
+    }
+}
+
+fn main() {
+    println(describe(Value.Int(42)))
+    println(describe(Value.Float(3.14)))
+    println(describe(Value.None))
+}

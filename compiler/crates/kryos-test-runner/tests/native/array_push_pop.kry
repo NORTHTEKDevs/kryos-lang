@@ -1,0 +1,11 @@
+// expect-stdout: 3
+// expect-stdout: 30
+// expect-stdout: 2
+fn main() {
+    let mut arr = [10, 20]
+    push(arr, 30)
+    println(len(arr))
+    let last = pop(arr)
+    println(last)
+    println(len(arr))
+}
