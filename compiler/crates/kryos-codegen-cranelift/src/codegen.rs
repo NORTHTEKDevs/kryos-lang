@@ -1430,13 +1430,9 @@ fn translate_instruction<M: Module>(
                             emit_drop_for_value(val, ty, builder, translator, module)?;
                         }
                         kryos_mir::ir::MirType::Enum(_) => {
-                            // Enums use a tagged-union representation: [tag: i64, payload: i64].
-                            // The payload may hold a heap pointer (String, Struct) but we
-                            // can't determine which variant is active at compile time.
-                            // For now, this is a known limitation — enum payloads that hold
-                            // heap data will leak. A runtime-tracked variant tag would fix
-                            // this but requires emitting a match on the tag at every drop site.
-                            // TODO: runtime variant dispatch for enum Drop.
+                            // Runtime variant-aware Drop: dispatch on tag to
+                            // free heap-owning payload fields.
+                            emit_drop_for_value(val, ty, builder, translator, module)?;
                         }
                         kryos_mir::ir::MirType::Array(_, _) => {
                             // Array cleanup via runtime.
@@ -3377,6 +3373,77 @@ fn emit_drop_for_value<M: Module>(
                 "kryos_array_free", builder, translator, module, 1,
             )?;
             builder.ins().call(free_ref, &[val]);
+        }
+        MirType::Enum(ref enum_name) => {
+            // Runtime variant-aware Drop: load the tag, dispatch on it,
+            // and free heap-owning payload fields for the active variant.
+            if let Some(variants) = translator.enum_defs.get(enum_name).cloned() {
+                // Check if any variant holds droppable fields.
+                let has_droppable = variants.iter().any(|v| {
+                    v.fields.iter().any(|f| matches!(f,
+                        MirType::Str | MirType::Array(_, _)
+                        | MirType::Struct(_) | MirType::Function { .. }
+                        | MirType::Enum(_)
+                    ))
+                });
+
+                if has_droppable {
+                    // Load the tag from offset 0.
+                    let tag = builder.ins().load(types::I64, MemFlags::new(), val, 0);
+
+                    // Create a merge block where all variant cleanup paths converge.
+                    let merge_block = builder.create_block();
+
+                    for (idx, variant) in variants.iter().enumerate() {
+                        let droppable_fields: Vec<(usize, &MirType)> = variant.fields.iter()
+                            .enumerate()
+                            .filter(|(_, f)| matches!(f,
+                                MirType::Str | MirType::Array(_, _)
+                                | MirType::Struct(_) | MirType::Function { .. }
+                                | MirType::Enum(_)
+                            ))
+                            .collect();
+
+                        if droppable_fields.is_empty() {
+                            continue;
+                        }
+
+                        let variant_block = builder.create_block();
+                        let skip_block = builder.create_block();
+
+                        let tag_const = builder.ins().iconst(types::I64, idx as i64);
+                        let is_match = builder.ins().icmp(
+                            cranelift_codegen::ir::condcodes::IntCC::Equal,
+                            tag, tag_const,
+                        );
+                        builder.ins().brif(is_match, variant_block, &[], skip_block, &[]);
+
+                        builder.seal_block(variant_block);
+                        builder.switch_to_block(variant_block);
+
+                        // Drop each heap-owning field in this variant.
+                        for (field_idx, field_ty) in &droppable_fields {
+                            let offset = ((*field_idx + 1) * 8) as i32;
+                            let field_val = builder.ins().load(
+                                types::I64, MemFlags::new(), val, offset,
+                            );
+                            emit_drop_for_value(
+                                field_val, field_ty, builder, translator, module,
+                            )?;
+                        }
+                        builder.ins().jump(merge_block, &[]);
+
+                        builder.seal_block(skip_block);
+                        builder.switch_to_block(skip_block);
+                    }
+
+                    // Final skip block falls through to merge.
+                    builder.ins().jump(merge_block, &[]);
+                    builder.seal_block(merge_block);
+                    builder.switch_to_block(merge_block);
+                }
+                // Enum is stack-allocated — no free() needed for the enum itself.
+            }
         }
         _ => {}
     }
