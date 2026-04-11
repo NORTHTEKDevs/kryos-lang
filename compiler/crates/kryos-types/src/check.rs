@@ -537,6 +537,13 @@ impl TypeChecker {
                 methods,
                 ..
             } => {
+                // Set Self to DynTrait so `self: Self` in trait method
+                // signatures resolves correctly.
+                let prev_self = self.current_self_type.take();
+                self.current_self_type = Some(Type::DynTrait {
+                    trait_name: name.clone(),
+                });
+
                 let method_sigs: Vec<FunctionSig> = methods
                     .iter()
                     .filter_map(|m| {
@@ -580,6 +587,8 @@ impl TypeChecker {
                     generic_params: generics.iter().map(|g| g.name.clone()).collect(),
                     methods: method_sigs,
                 });
+
+                self.current_self_type = prev_self;
             }
             Decl::TypeAlias { name, ty, .. } => {
                 let resolved = self.resolve_type_expr(ty);
