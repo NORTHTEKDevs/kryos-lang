@@ -4108,7 +4108,27 @@ fn collect_identifiers_block(
                 collect_pattern_names(pattern, &mut for_bound);
                 collect_identifiers_block(&body.stmts, &for_bound, free_vars, seen, ctx);
             }
-            _ => {}
+            ast::Stmt::TryCatch { try_block, catch_name, catch_block, .. } => {
+                collect_identifiers_block(&try_block.stmts, &local_bound, free_vars, seen, ctx);
+                let mut catch_bound = local_bound.clone();
+                catch_bound.insert(catch_name.clone());
+                collect_identifiers_block(&catch_block.stmts, &catch_bound, free_vars, seen, ctx);
+            }
+            ast::Stmt::Throw { expr, .. } => {
+                collect_identifiers(expr, &local_bound, free_vars, seen, ctx);
+            }
+            ast::Stmt::Select { branches, .. } => {
+                for branch in branches {
+                    collect_identifiers(&branch.channel, &local_bound, free_vars, seen, ctx);
+                    let mut branch_bound = local_bound.clone();
+                    branch_bound.insert(branch.pattern.clone());
+                    collect_identifiers_block(&branch.body.stmts, &branch_bound, free_vars, seen, ctx);
+                }
+            }
+            // Leaf statements with no sub-expressions.
+            ast::Stmt::Return { value: None, .. }
+            | ast::Stmt::Break { .. }
+            | ast::Stmt::Continue { .. } => {}
         }
     }
 }
