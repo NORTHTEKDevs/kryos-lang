@@ -80,6 +80,9 @@ pub struct LoweringContext {
     /// Tracks locals that have already been dropped by an inner scope to prevent
     /// double-free when the outer scope's drop loop runs.
     dropped_locals: HashSet<u32>,
+    /// Locals that are function parameters — must NOT be dropped by the callee
+    /// because the caller owns them.
+    param_locals: HashSet<u32>,
     /// Return type of the function currently being lowered.  Used by `throw`
     /// outside a `try` block to emit a properly-typed early return.
     current_ret_ty: MirType,
@@ -130,6 +133,7 @@ impl LoweringContext {
             const_defs: HashMap::new(),
             func_param_types: HashMap::new(),
             dropped_locals: HashSet::new(),
+            param_locals: HashSet::new(),
             current_ret_ty: MirType::Void,
             current_self_type: None,
         }
@@ -229,6 +233,7 @@ impl LoweringContext {
         self.loop_headers.clear();
         self.loop_exits.clear();
         self.dropped_locals.clear();
+        self.param_locals.clear();
     }
 
     /// Save the per-function state so we can restore it after monomorphization.
@@ -833,6 +838,8 @@ pub fn lower_function(
                 .map(|t| ctx.resolve_type(t))
                 .unwrap_or(MirType::I64);
             let local = ctx.alloc_local(Some(p.name.clone()), ty.clone(), false);
+            // Mark as parameter — callee must NOT drop/free these; the caller owns them.
+            ctx.param_locals.insert(local.0);
             MirParam { local, ty }
         })
         .collect();
@@ -864,6 +871,10 @@ pub fn lower_function(
             for i in (scope_start..scope_end).rev() {
                 if ctx.locals[i].name.is_some() {
                     let local_id = ctx.locals[i].id;
+                    // Skip function parameters — caller owns them.
+                    if ctx.param_locals.contains(&local_id.0) {
+                        continue;
+                    }
                     if !ctx.dropped_locals.contains(&local_id.0)
                         && tail_local_id != Some(local_id.0)
                     {
@@ -919,6 +930,10 @@ fn lower_block_stmts(ctx: &mut LoweringContext, stmts: &[ast::Stmt]) {
     for i in (scope_start..scope_end).rev() {
         if ctx.locals[i].name.is_some() {
             let local_id = ctx.locals[i].id;
+            // Skip function parameters — the caller owns them, not the callee.
+            if ctx.param_locals.contains(&local_id.0) {
+                continue;
+            }
             if !ctx.dropped_locals.contains(&local_id.0) {
                 ctx.emit(Instruction::Drop { local: local_id });
                 ctx.dropped_locals.insert(local_id.0);

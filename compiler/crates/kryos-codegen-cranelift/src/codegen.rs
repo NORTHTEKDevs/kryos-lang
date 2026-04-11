@@ -1422,12 +1422,15 @@ fn translate_instruction<M: Module>(
                             )?;
                             builder.ins().call(release_ref, &[val]);
                         }
-                        kryos_mir::ir::MirType::Struct(_) | kryos_mir::ir::MirType::Enum(_) => {
-                            // Struct/enum was heap-allocated via malloc; free it.
+                        kryos_mir::ir::MirType::Struct(_) => {
+                            // Struct was heap-allocated via malloc; free it.
                             let free_ref = ensure_func_ref_with_args(
                                 "free", builder, translator, module, 1,
                             )?;
                             builder.ins().call(free_ref, &[val]);
+                        }
+                        kryos_mir::ir::MirType::Enum(_) => {
+                            // Enums are stack-allocated — do NOT free.
                         }
                         kryos_mir::ir::MirType::Array(_, _) => {
                             // Array cleanup via runtime.
