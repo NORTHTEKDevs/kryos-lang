@@ -107,6 +107,7 @@ let ASSIGN_DIV_EQ = 5
 // selects the variant, and only the relevant payload fields are set.
 // ===================================================================
 
+@copy
 struct Expr {
     kind: i32,
     // Scalar payloads
@@ -149,6 +150,7 @@ struct Expr {
 // StringPart -- a piece of an interpolated string
 // ===================================================================
 
+@copy
 struct StringPart {
     is_expr: bool,
     text: str,
@@ -159,6 +161,7 @@ struct StringPart {
 // Param -- function/lambda parameter
 // ===================================================================
 
+@copy
 struct Param {
     name: str,
     ty: [TypeExpr],
@@ -171,6 +174,7 @@ struct Param {
 // MatchArm -- a single arm in a match expression
 // ===================================================================
 
+@copy
 struct MatchArm {
     pattern: Pattern,
     guard: [Expr],
@@ -192,6 +196,7 @@ let PAT_STRUCT   = 5
 let PAT_ENUM     = 6
 let PAT_OR       = 7
 
+@copy
 struct Pattern {
     kind: i32,
     name: str,
@@ -228,6 +233,7 @@ let TYPE_WEAK      = 9
 let TYPE_POINTER   = 10
 let TYPE_INFERRED  = 11
 
+@copy
 struct TypeExpr {
     kind: i32,
     name: str,
@@ -267,6 +273,7 @@ let STMT_SELECT    = 11
 let STMT_TRY_CATCH = 12
 let STMT_THROW     = 13
 
+@copy
 struct Stmt {
     kind: i32,
     // Let
@@ -315,6 +322,7 @@ struct Stmt {
 // SelectBranch -- a branch in a select statement
 // ===================================================================
 
+@copy
 struct SelectBranch {
     pattern: str,
     channel: [Expr],
@@ -338,6 +346,7 @@ let DECL_TYPE_ALIAS = 7
 let DECL_IMPORT     = 8
 let DECL_EXTERN     = 9
 
+@copy
 struct Annotation {
     name: str,
     args: [str],
@@ -345,6 +354,7 @@ struct Annotation {
     end: i32
 }
 
+@copy
 struct GenericParam {
     name: str,
     bounds: [str],
@@ -352,6 +362,7 @@ struct GenericParam {
     end: i32
 }
 
+@copy
 struct StructField {
     name: str,
     ty: TypeExpr,
@@ -361,6 +372,7 @@ struct StructField {
     end: i32
 }
 
+@copy
 struct EnumVariant {
     name: str,
     fields: [TypeExpr],
@@ -368,6 +380,7 @@ struct EnumVariant {
     end: i32
 }
 
+@copy
 struct MessageHandler {
     name: str,
     params: [Param],
@@ -377,6 +390,7 @@ struct MessageHandler {
     end: i32
 }
 
+@copy
 struct ImportPath {
     segments: [str],
     alias: str,
@@ -385,6 +399,7 @@ struct ImportPath {
     end: i32
 }
 
+@copy
 struct Decl {
     kind: i32,
     name: str,
@@ -422,6 +437,7 @@ struct Decl {
 // Module -- the root of a parsed file
 // ===================================================================
 
+@copy
 struct Module {
     name: str,
     declarations: [Decl],

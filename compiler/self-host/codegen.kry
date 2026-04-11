@@ -31,6 +31,7 @@ use linker
 // Code generation context
 // ===================================================================
 
+@copy
 struct CodegenCtx {
     text_buf: i64,               // byte buffer for .text section
     data_buf: i64,               // byte buffer for .data section
@@ -47,6 +48,7 @@ struct CodegenCtx {
 }
 
 // A forward branch that needs patching once we know the target block offset
+@copy
 struct BranchPatch {
     patch_offset: i32,  // offset in text_buf where the rel32 is
     target_block: i32   // which basic block we're jumping to

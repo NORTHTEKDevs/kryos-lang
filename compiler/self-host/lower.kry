@@ -23,6 +23,7 @@ use types
 // Tracks state while lowering a single function body.
 // ===================================================================
 
+@copy
 struct LowerCtx {
     func: MirFunction,
     current_block: i32,

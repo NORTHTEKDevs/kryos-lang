@@ -39,6 +39,7 @@ let CHR_RBRACE = char_from(125)
 // Lexer struct
 // -------------------------------------------------------------------
 
+@copy
 struct Lexer {
     src: str,
     pos: i32,

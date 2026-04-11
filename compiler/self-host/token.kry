@@ -133,6 +133,7 @@ let TK_ERROR        = 96
 // Token struct
 // -------------------------------------------------------------------
 
+@copy
 struct Token {
     kind: i32,
     text: str,

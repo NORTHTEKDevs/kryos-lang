@@ -55,6 +55,7 @@ let TY_ERROR    = 26
 // TypeInfo -- resolved type representation
 // ===================================================================
 
+@copy
 struct TypeInfo {
     kind: i32,
     name: str,
@@ -336,6 +337,7 @@ fn ty_compatible(a: TypeInfo, b: TypeInfo) -> bool {
 // Symbol and Scope
 // ===================================================================
 
+@copy
 struct Symbol {
     name: str,
     ty: TypeInfo,
@@ -343,6 +345,7 @@ struct Symbol {
     defined: bool
 }
 
+@copy
 struct Scope {
     symbols: [Symbol],
     parent_idx: i32
@@ -352,29 +355,34 @@ struct Scope {
 // StructDef / EnumDef / FnSig -- type registry entries
 // ===================================================================
 
+@copy
 struct StructDef {
     name: str,
     field_names: [str],
     field_types: [TypeInfo]
 }
 
+@copy
 struct EnumDef {
     name: str,
     variant_names: [str],
     variant_types: [[TypeInfo]]
 }
 
+@copy
 struct FnSig {
     name: str,
     param_types: [TypeInfo],
     ret_type: TypeInfo
 }
 
+@copy
 struct TraitDef {
     name: str,
     method_names: [str]
 }
 
+@copy
 struct TypeAlias {
     name: str,
     target: TypeInfo
@@ -384,6 +392,7 @@ struct TypeAlias {
 // TypeChecker struct
 // ===================================================================
 
+@copy
 struct TypeChecker {
     scopes: [Scope],
     current_scope: i32,
@@ -511,6 +520,7 @@ fn tc_define(tc: TypeChecker, name: str, t: TypeInfo, is_mut: bool) -> TypeCheck
 }
 
 // Result for symbol lookup
+@copy
 struct LookupResult {
     found: bool,
     sym: Symbol
@@ -728,6 +738,7 @@ fn resolve_simple_type(tc: TypeChecker, name: str) -> TypeInfo {
 // ===================================================================
 
 // Result wrapper for expression checking
+@copy
 struct TCExprResult {
     tc: TypeChecker,
     ty: TypeInfo

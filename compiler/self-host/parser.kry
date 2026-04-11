@@ -28,6 +28,7 @@ use ast
 // Parser struct
 // -------------------------------------------------------------------
 
+@copy
 struct Parser {
     tokens: [Token],
     pos: i32,
@@ -42,33 +43,39 @@ struct Parser {
 // structs to return (updated parser, result).
 // -------------------------------------------------------------------
 
+@copy
 struct ParseExprResult {
     p: Parser,
     expr: Expr
 }
 
+@copy
 struct ParseStmtResult {
     p: Parser,
     stmt: Stmt,
     ok: bool
 }
 
+@copy
 struct ParseDeclResult {
     p: Parser,
     decl: Decl,
     ok: bool
 }
 
+@copy
 struct ParseTypeResult {
     p: Parser,
     ty: TypeExpr
 }
 
+@copy
 struct ParsePatternResult {
     p: Parser,
     pattern: Pattern
 }
 
+@copy
 struct ParseNameResult {
     p: Parser,
     name: str,
@@ -486,6 +493,7 @@ fn parse_declaration(p: Parser) -> ParseDeclResult {
 // Annotation parsing: @name or @name(arg1, arg2)
 // -------------------------------------------------------------------
 
+@copy
 struct ParseAnnotationResult {
     p: Parser,
     decl: Annotation
@@ -524,6 +532,7 @@ fn parse_annotation(p: Parser) -> ParseAnnotationResult {
 // Generics parsing: <T, U: Bound>
 // -------------------------------------------------------------------
 
+@copy
 struct ParseGenericsResult {
     p: Parser,
     generics: [GenericParam]
@@ -606,6 +615,7 @@ fn parse_fn_decl(p: Parser, public: bool, annotations: [Annotation]) -> ParseDec
 // Parameter list parsing
 // -------------------------------------------------------------------
 
+@copy
 struct ParseParamsResult {
     p: Parser,
     params: [Param]
@@ -968,6 +978,7 @@ fn parse_extern(p: Parser) -> ParseDeclResult {
 // BLOCK PARSING
 // ===================================================================
 
+@copy
 struct ParseBlockResult {
     p: Parser,
     stmts: [Stmt]
@@ -1910,6 +1921,7 @@ fn parse_map_or_block_expr(p: Parser) -> ParseExprResult {
 // Argument list: expr, expr, ...
 // -------------------------------------------------------------------
 
+@copy
 struct ParseArgsResult {
     p: Parser,
     args: [Expr]

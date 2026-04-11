@@ -12,8 +12,9 @@ during parsing or later phases.
 
 - **Stage-1 binary compiles** (15.2 MB) using the Rust compiler with `--skip-ownership`
 - **Stage-1 runs** and successfully tokenizes 97K+ tokens from its own source
-- **6 of 16 files pass `check` cleanly**: `token.kry`, `lexer.kry` (1 warning),
-  `ast.kry`, `x86.kry`, `elf.kry`, `coff.kry`
+- **`@copy` annotations** added to all self-host structs, reducing ownership errors
+  from 153 to 127 (17% reduction, 26 errors eliminated)
+- **0 non-ownership errors** -- the self-host passes `check --skip-ownership` cleanly
 - **15 of 16 files pass with `--skip-ownership`** -- only `runtime.kry` still fails
   (89 undefined-builtin errors for `syscall6`, `mem_read_i64`, etc.)
 
@@ -22,40 +23,52 @@ during parsing or later phases.
 - **Stage 2 segfault**: The Stage-1 binary crashes after tokenizing when it tries
   to compile itself. This is likely a codegen bug in the Rust compiler's handling
   of complex struct operations under `--skip-ownership` mode.
-- **580 ownership errors** prevent compilation without `--skip-ownership`.
+- **127 ownership errors** prevent compilation without `--skip-ownership`.
+  These fall into two categories that `@copy` cannot fix:
+  1. **Array sentinel reuse** (~100 errors): Variables like `empty_ti: [TypeInfo] = []`
+     are moved into struct fields and then reused. `@copy` applies to struct types,
+     not array types.
+  2. **Partial-move checker bug** (~22 errors): The ownership checker tracks partial
+     moves on `@copy` structs (e.g., `tok.start` on a `@copy Token`), but it should
+     skip partial-move tracking for copy types entirely. This is a Rust compiler bug.
 
-### What fails
+### Remaining ownership errors (127 total in main.kry)
 
-| File | Errors | Category |
-|------|--------|----------|
-| `token.kry` | 0 | PASS |
-| `lexer.kry` | 0 (1 warning) | PASS |
-| `ast.kry` | 0 | PASS |
-| `x86.kry` | 0 | PASS |
-| `elf.kry` | 0 | PASS |
-| `coff.kry` | 0 | PASS |
-| `linker.kry` | 4 | E0300: use of moved value (`output_path`) |
-| `types.kry` | 33 | E0300/E0382: ownership moves in struct construction |
-| `mir.kry` | 37 | E0300: moved values in struct literals |
-| `regalloc.kry` | 38 | E0300: moved values in loops |
-| `codegen.kry` | 45 | E0300/E0382: moved values in conditional branches |
-| `parser.kry` | 48 | E0300: moved values in struct construction (`empty_ex`) |
-| `optimize.kry` | 48 | E0300: moved values in struct construction |
-| `lower.kry` | 85 | E0300/E0382: moved values in MIR node construction |
-| `runtime.kry` | 89 | E0102: undefined builtins (`syscall6`, `mem_read_i64`, etc.) |
-| `main.kry` | 153 | E0300/E0382: accumulated from imported modules + own code |
-| **Total** | **580** | |
+| Error type | Count | Cause |
+|------------|-------|-------|
+| E0300: array sentinel reuse | ~85 | `empty_ti`, `empty_mt`, `empty_op`, `empty_ex`, etc. -- array variables moved into struct fields then reused |
+| E0382: partial move on @copy struct | ~18 | `tok.start`/`tok.end` on @copy Token -- checker bug, should skip for copy types |
+| E0300: string variable reuse | ~15 | `output_path`, `target`, `name`, `params` -- str is not copy |
+| E0382: other partial moves | ~4 | `d.name`, `ty.name`, `pr.pattern` -- str fields in @copy structs |
+| W0383: conditional move | 2 | `esc`, `stack_offset` -- warnings only |
 
-All 491 non-runtime errors fall into two categories:
-- **E0300** (128 in main.kry alone): Use of moved value -- variables like `id`,
-  `name`, `empty_ex` are moved into struct literals and then used again.
-- **E0382** (25 in main.kry): Use of partially moved value -- accessing a struct
-  field after another field was moved.
+### @copy annotations applied (2026-04-11)
 
-These are not bugs in the self-host code. They reflect a gap between what the
-ownership checker enforces and what the language needs: either implicit `Copy` for
-small/primitive types, shared borrows for struct field access, or a `clone()`
-mechanism.
+All 65 structs across 10 files now have `@copy`. Key structs annotated:
+- **token.kry**: `Token`
+- **ast.kry**: `Expr`, `Stmt`, `Decl`, `Pattern`, `TypeExpr`, `Param`, `MatchArm`,
+  `StringPart`, `SelectBranch`, `Annotation`, `GenericParam`, `StructField`,
+  `EnumVariant`, `MessageHandler`, `ImportPath`, `Module`
+- **parser.kry**: `Parser`, `ParseExprResult`, `ParseStmtResult`, `ParseDeclResult`,
+  `ParseTypeResult`, `ParsePatternResult`, `ParseNameResult`, `ParseAnnotationResult`,
+  `ParseGenericsResult`, `ParseParamsResult`, `ParseBlockResult`, `ParseArgsResult`
+- **types.kry**: `TypeInfo`, `Symbol`, `Scope`, `StructDef`, `EnumDef`, `FnSig`,
+  `TraitDef`, `TypeAlias`, `TypeChecker`, `LookupResult`, `TCExprResult`
+- **mir.kry**: `MirType`, `Operand`, `RValue`, `Instruction`, `Terminator`,
+  `BasicBlock`, `MirLocal`, `MirParam`, `MirFunction`, `MirStructDef`, `MirEnumDef`,
+  `MirModule`
+- **Other**: `Lexer`, `LowerCtx`, `CodegenCtx`, `BranchPatch`, `LiveInterval`,
+  `RegAllocResult`, `LivenessMap`, `RegPool`, `PrologueInfo`, `LinkerSymbol`,
+  `LinkerReloc`, `LinkerInput`, `LinkerMerged`, `ResolvedSymbol`, `LinkerResult`,
+  `ElfObject`, `ShstrtabResult`, `CoffObject`
+
+These are not bugs in the self-host code. They reflect two gaps:
+1. **Array types are not copyable** -- `[T]` arrays are always moved, even when `T`
+   is `@copy`. The self-host uses empty array sentinels (`let empty_ti: [TypeInfo] = []`)
+   that get moved into struct fields and cannot be reused.
+2. **Ownership checker partial-move bug** -- the checker tracks field moves on `@copy`
+   structs, but `@copy` means the whole struct (and its fields) should be implicitly
+   copied, making partial-move tracking unnecessary.
 
 ## Architecture
 
@@ -154,7 +167,7 @@ cargo run --release -- check self-host/coff.kry
 # Pass with --skip-ownership (15 of 16 files):
 cargo run --release -- check self-host/main.kry --skip-ownership
 
-# Full check (currently 153 errors in main.kry):
+# Full check (currently 127 errors in main.kry):
 cargo run --release -- check self-host/main.kry
 ```
 
@@ -177,7 +190,7 @@ Stage 2 segfaults.
   ...
   Files passing check:                 6 / 16
   Files passing with --skip-ownership: 15 / 16
-  Total ownership errors:              580
+  Total ownership errors:              127
 
 === Stage 1: Compiling self-host with Rust compiler -> stage-1 ===
   Stage 1 binary: .../kryos-stage1
@@ -205,16 +218,23 @@ leading to dangling pointers or corrupt data at runtime. Debugging approach:
 - Check if the crash is in parser, type-checker, or lowering
 - May require fixing the ownership errors first (see item 2)
 
-### 2. Implicit Copy for primitives (blocks 491 ownership errors)
-Values of type `i32`, `i64`, `f64`, `bool`, and `str` are moved on assignment and
-struct construction. The self-host code passes the same integer ID or string name
-into multiple struct fields -- legal in most languages, illegal under Kryos's current
-move semantics. Options:
-- Make primitive types implicitly `Copy` (like Rust)
-- Add a `clone()` builtin or `.copy()` method
-- Add shared/immutable borrow semantics for reads
+### 2. Fix remaining ownership errors (127 errors)
+With `@copy` on all structs, 127 errors remain. Two fixes needed in the Rust compiler:
 
-Fixing this would eliminate 491 errors across 10 files and remove the need for
+**a. Fix partial-move tracking for @copy structs** (~22 errors):
+The ownership checker should skip `moved_fields` tracking when `info.is_copy` is true.
+In `analysis.rs`, the `FieldAccess` case in `analyze_expr_use` (line ~770) and
+`analyze_expr_move` (line ~975) should check `info.is_copy` before recording/checking
+partial moves. This would fix all `tok.start`/`tok.end` errors on `@copy Token`.
+
+**b. Make `str` and array literals copy types** (~100 errors):
+String variables and empty array sentinels (`let empty_ti: [TypeInfo] = []`) are
+reused across struct construction but tracked as moves. Options:
+- Treat `str` as a primitive copy type (add to `is_primitive_copy_type`)
+- Treat empty array literals `[]` as copy (they allocate nothing)
+- Add a `clone()` builtin for explicit array/string duplication
+
+Fixing both would eliminate all 127 remaining errors and remove the need for
 `--skip-ownership`, which would likely also fix the Stage-2 segfault.
 
 ### 3. Runtime builtins as intrinsics (blocks runtime.kry -- 89 errors)
@@ -231,8 +251,8 @@ builds where the self-host must be fully self-contained.
 
 ### Priority path to self-hosting
 
-1. **Implicit Copy for primitives** -- eliminates 491 ownership errors, removes
-   need for `--skip-ownership`, likely fixes Stage-2 segfault
+1. **Fix ownership checker for @copy + str/array copy** -- eliminates 127 remaining
+   ownership errors, removes need for `--skip-ownership`, likely fixes Stage-2 segfault
 2. **Debug Stage-2 crash** -- if it persists after ownership fixes, investigate
    codegen correctness in the Rust compiler
 3. **Compiler intrinsics for runtime** -- makes runtime.kry compilable for

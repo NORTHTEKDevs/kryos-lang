@@ -114,6 +114,7 @@ let SEC_RELA     = 8
 // struct-of-arrays ownership issues in the checker.
 // ===================================================================
 
+@copy
 struct ElfObject {
     // Symbol parallel arrays
     sym_names: [str],
@@ -209,6 +210,7 @@ fn elf_write_u16_le(buf: i64, val: i64) {
 // Build section header string table (.shstrtab)
 // ===================================================================
 
+@copy
 struct ShstrtabResult {
     buf: i64,
     off_null: i64,

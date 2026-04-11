@@ -57,6 +57,7 @@ let ARG_REG_COUNT = 6
 // Data structures
 // ===================================================================
 
+@copy
 struct LiveInterval {
     local_id: i32,
     start: i32,
@@ -66,22 +67,26 @@ struct LiveInterval {
     is_fixed: bool
 }
 
+@copy
 struct RegAllocResult {
     intervals: [LiveInterval],
     stack_size: i32,
     callee_saved: [i32]
 }
 
+@copy
 struct LivenessMap {
     max_id: i32,
     defs: [i32],
     uses: [i32]
 }
 
+@copy
 struct RegPool {
     used: [bool]
 }
 
+@copy
 struct PrologueInfo {
     pushes: [i32],
     sub_rsp: i32

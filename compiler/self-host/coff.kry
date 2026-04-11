@@ -98,6 +98,7 @@ let COFF_SEC_RDATA = 3
 // arrays that trigger move issues in the checker.
 // ===================================================================
 
+@copy
 struct CoffObject {
     // Symbol parallel arrays
     sym_names: [str],

@@ -138,6 +138,7 @@ let MIR_BIT_NOT = 3
 // MirType -- simplified type representation for MIR
 // ===================================================================
 
+@copy
 struct MirType {
     kind: i32,
     name: str,
@@ -153,6 +154,7 @@ struct MirType {
 // Operand -- either a local reference or a constant
 // ===================================================================
 
+@copy
 struct Operand {
     is_local: bool,
     local_id: i32,
@@ -167,6 +169,7 @@ struct Operand {
 // RValue -- the right side of an assignment
 // ===================================================================
 
+@copy
 struct RValue {
     kind: i32,
     // For RV_BINOP / RV_UNOP
@@ -228,6 +231,7 @@ struct RValue {
 // Instruction -- a single instruction in a basic block
 // ===================================================================
 
+@copy
 struct Instruction {
     kind: i32,
     dest: i32,
@@ -252,6 +256,7 @@ struct Instruction {
 // Terminator -- how a basic block exits
 // ===================================================================
 
+@copy
 struct Terminator {
     kind: i32,
     // For TERM_RETURN
@@ -273,6 +278,7 @@ struct Terminator {
 // BasicBlock -- a basic block in a function
 // ===================================================================
 
+@copy
 struct BasicBlock {
     id: i32,
     instructions: [Instruction],
@@ -283,6 +289,7 @@ struct BasicBlock {
 // MirLocal -- a local variable in a function
 // ===================================================================
 
+@copy
 struct MirLocal {
     id: i32,
     name: str,
@@ -294,6 +301,7 @@ struct MirLocal {
 // MirParam -- a function parameter
 // ===================================================================
 
+@copy
 struct MirParam {
     local_id: i32,
     ty: MirType,
@@ -304,6 +312,7 @@ struct MirParam {
 // MirFunction -- a complete function in MIR
 // ===================================================================
 
+@copy
 struct MirFunction {
     name: str,
     params: [MirParam],
@@ -318,6 +327,7 @@ struct MirFunction {
 // MirStructDef -- struct definition for codegen
 // ===================================================================
 
+@copy
 struct MirStructDef {
     name: str,
     field_names: [str],
@@ -328,6 +338,7 @@ struct MirStructDef {
 // MirEnumDef -- enum definition for codegen
 // ===================================================================
 
+@copy
 struct MirEnumDef {
     name: str,
     variant_names: [str],
@@ -338,6 +349,7 @@ struct MirEnumDef {
 // MirModule -- the complete MIR module
 // ===================================================================
 
+@copy
 struct MirModule {
     functions: [MirFunction],
     struct_defs: [MirStructDef],
