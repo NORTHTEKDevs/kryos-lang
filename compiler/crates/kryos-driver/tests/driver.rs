@@ -18,8 +18,12 @@ fn temp_kry_file(name: &str, contents: &str) -> PathBuf {
 }
 
 /// Valid Kryos source that should compile through to MIR without errors.
-const VALID_SOURCE: &str = r#"fn add(a: i32, b: i32) -> i32 {
+const VALID_SOURCE: &str = r#"fn add(a: i64, b: i64) -> i64 {
     return a + b
+}
+
+fn main() {
+    let x = add(1, 2)
 }
 "#;
 

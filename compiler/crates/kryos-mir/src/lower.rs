@@ -961,6 +961,12 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             };
             let local = ctx.alloc_local(Some(name.clone()), mir_ty, *mutable);
 
+            // If the initializer is an array index, the local borrows from the
+            // array — it must NOT be freed on scope exit.
+            if let Some(ast::Expr::IndexAccess { .. }) = value.as_ref() {
+                ctx.param_locals.insert(local.0);
+            }
+
             if let Some(expr) = value {
                 let rvalue = lower_expr_to_rvalue(ctx, expr);
 
@@ -1634,6 +1640,14 @@ fn lower_for(
     //       _idx += 1;
     //   }
 
+    // Infer the element type for array iteration so loop variables
+    // carry struct/enum type info (needed for field access codegen).
+    let iter_type = infer_expr_type(ctx, iterable);
+    let elem_type = match &iter_type {
+        MirType::Array(elem, _) => *elem.clone(),
+        _ => MirType::I64,
+    };
+
     let iter_local = ctx.alloc_temp(MirType::I64);
     let iter_rvalue = lower_expr_to_rvalue(ctx, iterable);
     ctx.emit(Instruction::Assign {
@@ -1686,7 +1700,9 @@ fn lower_for(
         ast::Pattern::Ident { name, .. } => name.clone(),
         _ => "_anon".into(),
     };
-    let loop_var = ctx.alloc_local(Some(loop_var_name), MirType::I64, false);
+    let loop_var = ctx.alloc_local(Some(loop_var_name), elem_type, false);
+    // Loop variable borrows from the array — must NOT be freed on scope exit.
+    ctx.param_locals.insert(loop_var.0);
     ctx.emit(Instruction::Assign {
         dest: loop_var,
         value: RValue::Index {
@@ -2712,7 +2728,14 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
         }
 
         ast::Expr::StructLiteral { name, .. } => MirType::Struct(name.clone()),
-        ast::Expr::ArrayLiteral { .. } => MirType::I64,
+        ast::Expr::ArrayLiteral { elements, .. } => {
+            // Infer element type from the first element.
+            let elem_ty = elements
+                .first()
+                .map(|e| infer_expr_type(ctx, e))
+                .unwrap_or(MirType::I64);
+            MirType::Array(Box::new(elem_ty), Some(elements.len() as u64))
+        }
         ast::Expr::TupleLiteral { .. } => MirType::I64,
 
         ast::Expr::Cast { ty, .. } => ctx.resolve_type(ty),
