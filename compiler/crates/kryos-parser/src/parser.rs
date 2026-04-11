@@ -897,6 +897,18 @@ impl Parser {
             elif_clauses.push((cond, block));
         }
 
+        // Also accept `else if` (two tokens) as an elif clause.
+        while self.peek_kind() == TokenKind::Else
+            && self.pos + 1 < self.tokens.len()
+            && self.tokens[self.pos + 1].kind == TokenKind::If
+        {
+            self.advance(); // eat `else`
+            self.advance(); // eat `if`
+            let cond = self.parse_expr_no_struct_lit();
+            let block = self.parse_block();
+            elif_clauses.push((cond, block));
+        }
+
         let else_block = if self.eat(TokenKind::Else) {
             Some(self.parse_block())
         } else {
@@ -1534,7 +1546,17 @@ impl Parser {
         let condition = self.parse_expr_no_struct_lit();
         let then_branch = self.parse_block();
         let else_branch = if self.eat(TokenKind::Else) {
-            Some(self.parse_block())
+            if self.peek_kind() == TokenKind::If {
+                // `else if` — parse as a single-statement block containing the nested if.
+                let nested_if = self.parse_if_expr();
+                let span = nested_if.span();
+                Some(Block {
+                    stmts: vec![Stmt::Expr { expr: nested_if, span }],
+                    span,
+                })
+            } else {
+                Some(self.parse_block())
+            }
         } else {
             None
         };
