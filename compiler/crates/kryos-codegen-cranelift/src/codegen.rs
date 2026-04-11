@@ -1319,6 +1319,7 @@ fn translate_instruction<M: Module>(
                                 func.as_str(),
                                 "println" | "print" | "eprintln"
                                     | "sleep" | "sqrt" | "floor" | "ceil" | "abs"
+                                    | "min" | "max"
                                     | "assert" | "len" | "range" | "to_string"
                                     | "exit"
                             )
@@ -1979,6 +1980,20 @@ fn translate_rvalue<M: Module>(
                 }
                 // For non-float sqrt/floor/ceil, fall through (should be
                 // a type error, but let the generic path handle it).
+            }
+
+            // Handle min/max builtins using Cranelift comparison + select.
+            if matches!(func.as_str(), "min" | "max") && args.len() == 2 {
+                let a = translate_operand(&args[0], builder, translator, module)?;
+                let b = translate_operand(&args[1], builder, translator, module)?;
+                let cmp = if func == "min" {
+                    IntCC::SignedLessThan
+                } else {
+                    IntCC::SignedGreaterThan
+                };
+                let cond = builder.ins().icmp(cmp, a, b);
+                let result = builder.ins().select(cond, a, b);
+                return Ok(Some(result));
             }
 
             // Handle to_string() with type dispatch: str → pass-through,

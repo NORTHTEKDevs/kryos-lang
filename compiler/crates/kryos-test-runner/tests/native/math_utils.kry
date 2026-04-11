@@ -1,0 +1,18 @@
+// expect-stdout: abs: 42
+// expect-stdout: abs_neg: 7
+// expect-stdout: min: 3
+// expect-stdout: max: 7
+// expect-stdout: floor: 3
+// expect-stdout: ceil: 4
+// expect-stdout: sqrt: 5
+// expect-stdout: all passed
+fn main() {
+    println("abs: " + to_string(abs(-42)))
+    println("abs_neg: " + to_string(abs(7)))
+    println("min: " + to_string(min(3, 7)))
+    println("max: " + to_string(max(3, 7)))
+    println("floor: " + to_string(floor(3.7)))
+    println("ceil: " + to_string(ceil(3.2)))
+    println("sqrt: " + to_string(sqrt(25.0)))
+    println("all passed")
+}

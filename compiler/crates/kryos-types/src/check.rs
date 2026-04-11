@@ -2209,6 +2209,24 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         ret: Type::Error,
     });
 
+    // min(a: i64, b: i64) -> i64 — minimum of two integers
+    checker.env.define_function(FunctionSig {
+        name: "min".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("a".to_string(), Type::I64), ("b".to_string(), Type::I64)],
+        ret: Type::I64,
+    });
+
+    // max(a: i64, b: i64) -> i64 — maximum of two integers
+    checker.env.define_function(FunctionSig {
+        name: "max".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("a".to_string(), Type::I64), ("b".to_string(), Type::I64)],
+        ret: Type::I64,
+    });
+
     // log(x: f64) -> f64 — natural logarithm
     checker.env.define_function(FunctionSig {
         name: "log".to_string(),

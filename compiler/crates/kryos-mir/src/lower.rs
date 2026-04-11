@@ -335,6 +335,8 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("format", MirType::Str),
         ("len", MirType::I64),
         ("abs", MirType::I64),
+        ("min", MirType::I64),
+        ("max", MirType::I64),
         ("sqrt", MirType::F64),
         ("floor", MirType::F64),
         ("ceil", MirType::F64),
