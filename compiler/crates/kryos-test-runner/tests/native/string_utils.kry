@@ -1,0 +1,32 @@
+// expect-stdout: contains: ok
+// expect-stdout: starts_with: ok
+// expect-stdout: ends_with: ok
+// expect-stdout: trim: hello
+// expect-stdout: upper: HELLO
+// expect-stdout: lower: hello
+// expect-stdout: replace: hello kryos
+// expect-stdout: all passed
+fn main() {
+    // contains
+    if contains("hello world", "world") {
+        println("contains: ok")
+    }
+    // starts_with
+    if starts_with("hello", "hel") {
+        println("starts_with: ok")
+    }
+    // ends_with
+    if ends_with("hello", "llo") {
+        println("ends_with: ok")
+    }
+    // trim
+    let trimmed = trim("  hello  ")
+    println("trim: " + trimmed)
+    // to_upper
+    println("upper: " + to_upper("hello"))
+    // to_lower
+    println("lower: " + to_lower("HELLO"))
+    // replace
+    println("replace: " + replace("hello world", "world", "kryos"))
+    println("all passed")
+}

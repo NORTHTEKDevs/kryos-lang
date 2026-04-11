@@ -547,6 +547,90 @@ pub extern "C" fn kryos_builtin_substr(s_handle: i64, start: i64, end: i64) -> i
 }
 
 // ---------------------------------------------------------------------------
+// String utility builtins — contains, starts_with, ends_with, trim,
+// to_upper, to_lower, replace
+// ---------------------------------------------------------------------------
+
+/// `contains(haystack, needle)` — Check if haystack contains needle.
+/// Returns 1 (true) or 0 (false).
+#[no_mangle]
+pub extern "C" fn kryos_builtin_contains(haystack: i64, needle: i64) -> i64 {
+    if haystack == 0 || needle == 0 {
+        return 0;
+    }
+    let ks_h = haystack as *const crate::string::KryosString;
+    let ks_n = needle as *const crate::string::KryosString;
+    unsafe { crate::string::kryos_string_contains(ks_h, ks_n) }
+}
+
+/// `starts_with(s, prefix)` — Check if s starts with prefix.
+/// Returns 1 (true) or 0 (false).
+#[no_mangle]
+pub extern "C" fn kryos_builtin_starts_with(s: i64, prefix: i64) -> i64 {
+    if s == 0 || prefix == 0 {
+        return 0;
+    }
+    let ks_s = s as *const crate::string::KryosString;
+    let ks_p = prefix as *const crate::string::KryosString;
+    unsafe { crate::string::kryos_string_starts_with(ks_s, ks_p) }
+}
+
+/// `ends_with(s, suffix)` — Check if s ends with suffix.
+/// Returns 1 (true) or 0 (false).
+#[no_mangle]
+pub extern "C" fn kryos_builtin_ends_with(s: i64, suffix: i64) -> i64 {
+    if s == 0 || suffix == 0 {
+        return 0;
+    }
+    let ks_s = s as *const crate::string::KryosString;
+    let ks_sf = suffix as *const crate::string::KryosString;
+    unsafe { crate::string::kryos_string_ends_with(ks_s, ks_sf) }
+}
+
+/// `trim(s)` — Trim whitespace from both ends, returning a new string.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_trim(s: i64) -> i64 {
+    if s == 0 {
+        return unsafe { kryos_string_new(std::ptr::null(), 0) as i64 };
+    }
+    let ks = s as *const crate::string::KryosString;
+    unsafe { crate::string::kryos_string_trim(ks) as i64 }
+}
+
+/// `to_upper(s)` — Convert string to uppercase, returning a new string.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_to_upper(s: i64) -> i64 {
+    if s == 0 {
+        return unsafe { kryos_string_new(std::ptr::null(), 0) as i64 };
+    }
+    let ks = s as *const crate::string::KryosString;
+    unsafe { crate::string::kryos_string_to_upper(ks) as i64 }
+}
+
+/// `to_lower(s)` — Convert string to lowercase, returning a new string.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_to_lower(s: i64) -> i64 {
+    if s == 0 {
+        return unsafe { kryos_string_new(std::ptr::null(), 0) as i64 };
+    }
+    let ks = s as *const crate::string::KryosString;
+    unsafe { crate::string::kryos_string_to_lower(ks) as i64 }
+}
+
+/// `replace(s, from, to)` — Replace all occurrences of `from` with `to`,
+/// returning a new string.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_replace(s: i64, from: i64, to_str: i64) -> i64 {
+    if s == 0 || from == 0 || to_str == 0 {
+        return unsafe { kryos_string_new(std::ptr::null(), 0) as i64 };
+    }
+    let ks_s = s as *const crate::string::KryosString;
+    let ks_f = from as *const crate::string::KryosString;
+    let ks_t = to_str as *const crate::string::KryosString;
+    unsafe { crate::string::kryos_string_replace(ks_s, ks_f, ks_t) as i64 }
+}
+
+// ---------------------------------------------------------------------------
 // Numeric conversion builtins — int, float
 // ---------------------------------------------------------------------------
 

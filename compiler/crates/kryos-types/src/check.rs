@@ -2437,6 +2437,84 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         },
     });
 
+    // ── String utility builtins ────────────────────────────────────
+
+    // contains(haystack: str, needle: str) -> bool
+    checker.env.define_function(FunctionSig {
+        name: "contains".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("haystack".to_string(), Type::Str),
+            ("needle".to_string(), Type::Str),
+        ],
+        ret: Type::Bool,
+    });
+
+    // starts_with(s: str, prefix: str) -> bool
+    checker.env.define_function(FunctionSig {
+        name: "starts_with".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("s".to_string(), Type::Str),
+            ("prefix".to_string(), Type::Str),
+        ],
+        ret: Type::Bool,
+    });
+
+    // ends_with(s: str, suffix: str) -> bool
+    checker.env.define_function(FunctionSig {
+        name: "ends_with".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("s".to_string(), Type::Str),
+            ("suffix".to_string(), Type::Str),
+        ],
+        ret: Type::Bool,
+    });
+
+    // trim(s: str) -> str
+    checker.env.define_function(FunctionSig {
+        name: "trim".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("s".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+
+    // to_upper(s: str) -> str
+    checker.env.define_function(FunctionSig {
+        name: "to_upper".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("s".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+
+    // to_lower(s: str) -> str
+    checker.env.define_function(FunctionSig {
+        name: "to_lower".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("s".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+
+    // replace(s: str, from: str, to: str) -> str
+    checker.env.define_function(FunctionSig {
+        name: "replace".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("s".to_string(), Type::Str),
+            ("from".to_string(), Type::Str),
+            ("to".to_string(), Type::Str),
+        ],
+        ret: Type::Str,
+    });
+
     checker.check_module(module);
     checker.diagnostics
 }
