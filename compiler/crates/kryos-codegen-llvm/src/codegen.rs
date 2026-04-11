@@ -1624,7 +1624,7 @@ impl LlvmCodegen {
                 }
             }
 
-            RValue::VtableCall { object, method_index: _, args } => {
+            RValue::VtableCall { object, method_index: _, args, .. } => {
                 // LLVM release mode: for now, emit a placeholder.
                 // Full vtable dispatch for LLVM deferred to Ring 3.
                 let obj_val = self.operand_to_llvm(object, func);

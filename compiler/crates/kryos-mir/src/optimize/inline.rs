@@ -404,10 +404,12 @@ fn remap_rvalue(rv: &RValue, offset: u32) -> RValue {
             object,
             method_index,
             args,
+            return_ty,
         } => RValue::VtableCall {
             object: remap_operand(object, offset),
             method_index: *method_index,
             args: args.iter().map(|a| remap_operand(a, offset)).collect(),
+            return_ty: return_ty.clone(),
         },
     }
 }

@@ -2681,6 +2681,15 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
                     return MirType::Enum(name.clone());
                 }
             }
+            // Check dyn Trait — look up method return type from trait definition.
+            let obj_ty = infer_expr_type(ctx, object);
+            if let MirType::DynTrait(ref trait_name) = obj_ty {
+                if let Some(methods) = ctx.trait_defs.get(trait_name.as_str()) {
+                    if let Some(m) = methods.iter().find(|m| m.name == *method) {
+                        return m.ret_ty.clone();
+                    }
+                }
+            }
             // Try mangled name first (TypeName__method), then bare method name.
             if let Some(type_name) = infer_type_name(ctx, object) {
                 let mangled = format!("{type_name}__{method}");
@@ -3126,6 +3135,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 // Look up the method index in the trait definition.
                 if let Some(methods) = ctx.trait_defs.get(trait_name.as_str()).cloned() {
                     if let Some(method_idx) = methods.iter().position(|m| m.name == *method) {
+                        let ret_ty = methods[method_idx].ret_ty.clone();
                         let obj = lower_expr_to_operand(ctx, object);
                         let mut call_args: Vec<Operand> = Vec::new();
                         for a in args {
@@ -3135,6 +3145,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                             object: obj,
                             method_index: method_idx as u32,
                             args: call_args,
+                            return_ty: ret_ty,
                         };
                     }
                 }

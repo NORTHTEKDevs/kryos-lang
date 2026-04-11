@@ -427,6 +427,7 @@ pub enum RValue {
         object: Operand,
         method_index: u32,
         args: Vec<Operand>,
+        return_ty: MirType,
     },
 }
 

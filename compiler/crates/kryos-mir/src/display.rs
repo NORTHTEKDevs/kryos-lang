@@ -225,7 +225,7 @@ impl fmt::Display for RValue {
             RValue::MakeTraitObject { value, concrete_type, trait_name } => {
                 write!(f, "make_trait_object({value}, {concrete_type} as dyn {trait_name})")
             }
-            RValue::VtableCall { object, method_index, args } => {
+            RValue::VtableCall { object, method_index, args, .. } => {
                 write!(f, "vtable_call({object}, method#{method_index}")?;
                 for a in args {
                     write!(f, ", {a}")?;

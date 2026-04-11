@@ -2691,7 +2691,7 @@ fn translate_rvalue<M: Module>(
             Ok(Some(addr))
         }
 
-        RValue::VtableCall { object, method_index, args } => {
+        RValue::VtableCall { object, method_index, args, return_ty } => {
             // Dynamic dispatch: load data and method fn_ptr from the fat pointer.
             let fat_ptr = translate_operand(object, builder, translator, module)?;
 
@@ -2707,7 +2707,18 @@ fn translate_rvalue<M: Module>(
             for _ in args {
                 sig.params.push(AbiParam::new(types::I64));
             }
-            sig.returns.push(AbiParam::new(types::I64)); // assume i64 return
+
+            // Use the actual return type from the trait method signature.
+            let ret_cranelift_ty = match return_ty {
+                kryos_mir::ir::MirType::F64 => types::F64,
+                kryos_mir::ir::MirType::Bool => types::I64, // bools are i64 at ABI level
+                kryos_mir::ir::MirType::Void => types::I64, // void methods still return 0
+                _ => types::I64, // i64, str (pointer), struct (pointer), etc.
+            };
+            let is_void = matches!(return_ty, kryos_mir::ir::MirType::Void);
+            if !is_void {
+                sig.returns.push(AbiParam::new(ret_cranelift_ty));
+            }
 
             let sig_ref = builder.import_signature(sig);
             let mut call_args = vec![data_ptr];
@@ -2717,8 +2728,12 @@ fn translate_rvalue<M: Module>(
             }
 
             let call = builder.ins().call_indirect(sig_ref, fn_ptr, &call_args);
-            let result = builder.inst_results(call)[0];
-            Ok(Some(result))
+            if is_void {
+                Ok(Some(builder.ins().iconst(types::I64, 0)))
+            } else {
+                let result = builder.inst_results(call)[0];
+                Ok(Some(result))
+            }
         }
     }
 }
