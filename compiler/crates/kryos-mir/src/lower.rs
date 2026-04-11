@@ -959,39 +959,74 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             } else {
                 MirType::I64
             };
-            let local = ctx.alloc_local(Some(name.clone()), mir_ty, *mutable);
 
-            // If the initializer is an array index, the local borrows from the
-            // array — it must NOT be freed on scope exit.
-            if let Some(ast::Expr::IndexAccess { .. }) = value.as_ref() {
-                ctx.param_locals.insert(local.0);
-            }
-
-            if let Some(expr) = value {
-                let rvalue = lower_expr_to_rvalue(ctx, expr);
-
-                // Track closures with captures for direct-call optimization.
-                if let RValue::Closure { ref func_name, ref captures } = rvalue {
-                    if !captures.is_empty() {
-                        ctx.closure_locals.insert(
-                            name.clone(),
-                            (func_name.clone(), captures.clone()),
-                        );
+            // Lower the RHS BEFORE allocating the new local.  This ensures
+            // that variable name lookups in the initializer resolve to the
+            // previous binding (important for `let x = f(x)` shadowing).
+            let rvalue_and_meta = if let Some(expr) = value {
+                // Mark source locals as non-owning when the initializer
+                // borrows from another value.
+                match expr {
+                    ast::Expr::IndexAccess { .. } | ast::Expr::FieldAccess { .. } => {
+                        // The new local itself will be marked after allocation.
                     }
+                    ast::Expr::StructLiteral { fields, .. } => {
+                        // If struct field values come from FieldAccess on other
+                        // locals, mark those sources as non-owning.
+                        for (_fname, fexpr) in fields {
+                            if let ast::Expr::FieldAccess { object, .. } = fexpr {
+                                if let ast::Expr::Identifier { name: src_name, .. } = object.as_ref() {
+                                    let src_local = find_local_by_name(ctx, src_name);
+                                    ctx.param_locals.insert(src_local.0);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
                 }
 
-                // If the value is Shared, emit ArcRetain.
-                if matches!(expr, ast::Expr::SharedExpr { .. }) {
-                    ctx.emit(Instruction::Assign {
-                        dest: local,
-                        value: rvalue,
-                    });
-                    ctx.emit(Instruction::ArcRetain { ptr: local });
+                let is_shared = matches!(expr, ast::Expr::SharedExpr { .. });
+                let rvalue = lower_expr_to_rvalue(ctx, expr);
+                let mark_non_owning = matches!(expr,
+                    ast::Expr::IndexAccess { .. } | ast::Expr::FieldAccess { .. }
+                );
+
+                // Track closures with captures for direct-call optimization.
+                let closure_info = if let RValue::Closure { ref func_name, ref captures } = rvalue {
+                    if !captures.is_empty() {
+                        Some((func_name.clone(), captures.clone()))
+                    } else {
+                        None
+                    }
                 } else {
-                    ctx.emit(Instruction::Assign {
-                        dest: local,
-                        value: rvalue,
-                    });
+                    None
+                };
+
+                Some((rvalue, mark_non_owning, closure_info, is_shared))
+            } else {
+                None
+            };
+
+            // Now allocate the new local (after RHS is evaluated).
+            let local = ctx.alloc_local(Some(name.clone()), mir_ty, *mutable);
+
+            if let Some((rvalue, mark_non_owning, closure_info, is_shared)) = rvalue_and_meta {
+                if mark_non_owning {
+                    ctx.param_locals.insert(local.0);
+                }
+                if let Some((func_name, captures)) = closure_info {
+                    ctx.closure_locals.insert(
+                        name.clone(),
+                        (func_name, captures),
+                    );
+                }
+
+                ctx.emit(Instruction::Assign {
+                    dest: local,
+                    value: rvalue,
+                });
+                if is_shared {
+                    ctx.emit(Instruction::ArcRetain { ptr: local });
                 }
             }
         }
