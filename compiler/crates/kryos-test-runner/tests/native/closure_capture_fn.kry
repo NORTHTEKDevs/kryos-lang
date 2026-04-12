@@ -1,0 +1,21 @@
+// Verify closures can capture and call function-typed variables.
+// expect-stdout: 11
+// expect-stdout: 30
+fn compose(f: fn(i64) -> i64, g: fn(i64) -> i64) -> fn(i64) -> i64 {
+    return fn(x: i64) -> i64 {
+        return f(g(x))
+    }
+}
+
+fn main() {
+    let double = fn(x: i64) -> i64 { return x * 2 }
+    let inc = fn(x: i64) -> i64 { return x + 1 }
+    let double_then_inc = compose(inc, double)
+    println(to_string(double_then_inc(5)))
+
+    let make_multiplier = fn(factor: i64) -> fn(i64) -> i64 {
+        return fn(x: i64) -> i64 { return x * factor }
+    }
+    let times5 = make_multiplier(5)
+    println(to_string(times5(6)))
+}

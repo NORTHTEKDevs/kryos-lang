@@ -750,6 +750,7 @@ impl TypeChecker {
         match stmt {
             Stmt::Let {
                 name,
+                mutable,
                 ty,
                 value,
                 span,
@@ -774,7 +775,11 @@ impl TypeChecker {
                     }
                 };
 
-                self.env.define_var(name.clone(), final_ty);
+                if *mutable {
+                    self.env.define_var_mut(name.clone(), final_ty);
+                } else {
+                    self.env.define_var(name.clone(), final_ty);
+                }
             }
             Stmt::Assign {
                 target,
@@ -786,6 +791,19 @@ impl TypeChecker {
                 let value_ty = self.infer_expr(value);
                 if let Err(diag) = self.engine.unify(&target_ty, &value_ty, *span) {
                     self.diagnostics.push(diag);
+                }
+                // Enforce immutability: only `let mut` variables can be reassigned.
+                // Currently a warning — will promote to error once the self-host
+                // is updated to use `let mut` consistently.
+                if let Expr::Identifier { name, .. } = target {
+                    if !self.env.is_mutable(name) {
+                        self.diagnostics.push(
+                            Diagnostic::warning(format!(
+                                "assignment to immutable variable `{name}`"
+                            ))
+                            .with_label(*span, "help: consider declaring with `let mut`"),
+                        );
+                    }
                 }
             }
             Stmt::Return { value, span } => {
@@ -852,7 +870,7 @@ impl TypeChecker {
                 let iter_ty = self.infer_expr(iterable);
                 let elem_ty = match &iter_ty {
                     Type::Array { element, .. } => *element.clone(),
-                    _ => Type::I32, // default for range() and other builtins
+                    _ => Type::I64, // default for range() and other builtins
                 };
 
                 self.env.push_scope();
@@ -881,7 +899,7 @@ impl TypeChecker {
                 self.check_block(try_block);
                 self.env.pop_scope();
                 self.env.push_scope();
-                self.env.define_var(catch_name.clone(), Type::Error);
+                self.env.define_var(catch_name.clone(), Type::Str);
                 self.check_block(catch_block);
                 self.env.pop_scope();
             }
@@ -917,14 +935,13 @@ impl TypeChecker {
                     self.bind_pattern(pat, &tv);
                 }
             }
-            Pattern::Enum { name, fields, .. } => {
-                // Look up the enum variant's field types if available.
+            Pattern::Enum { name, variant, fields, .. } => {
+                // Look up the enum variant's field types by variant name.
                 let field_types: Vec<Type> =
                     if let Some(edef) = self.env.lookup_enum(name).cloned() {
-                        // Find variant types (already stored as Vec<Type> per variant)
                         edef.variants
                             .iter()
-                            .find(|(_, _)| true) // We'd need variant name here
+                            .find(|(v, _)| v == variant)
                             .map(|(_, tys)| tys.clone())
                             .unwrap_or_default()
                     } else {
@@ -953,7 +970,7 @@ impl TypeChecker {
     pub fn infer_expr(&mut self, expr: &Expr) -> Type {
         match expr {
             // Literals.
-            Expr::IntLiteral { .. } => Type::I32,
+            Expr::IntLiteral { .. } => Type::I64,
             Expr::FloatLiteral { .. } => Type::F64,
             Expr::StringLiteral { .. } | Expr::InterpolatedString { .. } => Type::Str,
             Expr::CharLiteral { .. } => Type::Char,
@@ -1106,7 +1123,7 @@ impl TypeChecker {
                     Type::Array { element, .. } => {
                         // Index must be an integer.
                         if !self.engine.resolve(&idx_ty).is_integer() {
-                            if let Err(diag) = self.engine.unify(&Type::I32, &idx_ty, *span) {
+                            if let Err(diag) = self.engine.unify(&Type::I64, &idx_ty, *span) {
                                 self.diagnostics.push(diag);
                             }
                         }
@@ -1950,27 +1967,27 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         ret: Type::Void,
     });
 
-    // exit(code: i32) -> void
+    // exit(code: i64) -> void
     checker.env.define_function(FunctionSig {
         name: "exit".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
-        params: vec![("code".to_string(), Type::I32)],
+        params: vec![("code".to_string(), Type::I64)],
         ret: Type::Void,
     });
 
-    // range(start, end) -> [i32]  (conceptually returns an integer sequence;
+    // range(start, end) -> [i64]  (conceptually returns an integer sequence;
     // the MIR lowering special-cases this into a counter loop)
     checker.env.define_function(FunctionSig {
         name: "range".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
         params: vec![
-            ("start".to_string(), Type::I32),
-            ("end".to_string(), Type::I32),
+            ("start".to_string(), Type::I64),
+            ("end".to_string(), Type::I64),
         ],
         ret: Type::Array {
-            element: Box::new(Type::I32),
+            element: Box::new(Type::I64),
             size: None,
         },
     });
@@ -2200,36 +2217,102 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         ret: Type::F64,
     });
 
-    // abs(x: any) -> any — absolute value
+    // round(x: f64) -> f64 — round to nearest integer (ties to even)
     checker.env.define_function(FunctionSig {
-        name: "abs".to_string(),
+        name: "round".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
-        params: vec![("x".to_string(), Type::Error)],
-        ret: Type::Error,
+        params: vec![("x".to_string(), Type::F64)],
+        ret: Type::F64,
     });
 
-    // min(a: i64, b: i64) -> i64 — minimum of two integers
+    // abs(x: T) -> T — absolute value (polymorphic: i64 or f64)
+    {
+        let abs_tv = checker.engine.fresh_var();
+        let abs_var_id = if let Type::Var(id) = &abs_tv { vec![*id] } else { vec![] };
+        checker.env.define_function(FunctionSig {
+            name: "abs".to_string(),
+            generic_params: vec!["T".to_string()],
+            generic_var_ids: abs_var_id,
+            params: vec![("x".to_string(), abs_tv.clone())],
+            ret: abs_tv,
+        });
+    }
+
+    // min(a: T, b: T) -> T — minimum of two values (polymorphic: i64 or f64)
+    {
+        let min_tv = checker.engine.fresh_var();
+        let min_var_id = if let Type::Var(id) = &min_tv { vec![*id] } else { vec![] };
+        checker.env.define_function(FunctionSig {
+            name: "min".to_string(),
+            generic_params: vec!["T".to_string()],
+            generic_var_ids: min_var_id,
+            params: vec![("a".to_string(), min_tv.clone()), ("b".to_string(), min_tv.clone())],
+            ret: min_tv,
+        });
+    }
+
+    // max(a: T, b: T) -> T — maximum of two values (polymorphic: i64 or f64)
+    {
+        let max_tv = checker.engine.fresh_var();
+        let max_var_id = if let Type::Var(id) = &max_tv { vec![*id] } else { vec![] };
+        checker.env.define_function(FunctionSig {
+            name: "max".to_string(),
+            generic_params: vec!["T".to_string()],
+            generic_var_ids: max_var_id,
+            params: vec![("a".to_string(), max_tv.clone()), ("b".to_string(), max_tv.clone())],
+            ret: max_tv,
+        });
+    }
+
+    // sin(x: f64) -> f64
     checker.env.define_function(FunctionSig {
-        name: "min".to_string(),
+        name: "sin".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
-        params: vec![("a".to_string(), Type::I64), ("b".to_string(), Type::I64)],
-        ret: Type::I64,
+        params: vec![("x".to_string(), Type::F64)],
+        ret: Type::F64,
     });
 
-    // max(a: i64, b: i64) -> i64 — maximum of two integers
+    // cos(x: f64) -> f64
     checker.env.define_function(FunctionSig {
-        name: "max".to_string(),
+        name: "cos".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
-        params: vec![("a".to_string(), Type::I64), ("b".to_string(), Type::I64)],
-        ret: Type::I64,
+        params: vec![("x".to_string(), Type::F64)],
+        ret: Type::F64,
+    });
+
+    // tan(x: f64) -> f64
+    checker.env.define_function(FunctionSig {
+        name: "tan".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("x".to_string(), Type::F64)],
+        ret: Type::F64,
     });
 
     // log(x: f64) -> f64 — natural logarithm
     checker.env.define_function(FunctionSig {
         name: "log".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("x".to_string(), Type::F64)],
+        ret: Type::F64,
+    });
+
+    // log2(x: f64) -> f64
+    checker.env.define_function(FunctionSig {
+        name: "log2".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("x".to_string(), Type::F64)],
+        ret: Type::F64,
+    });
+
+    // log10(x: f64) -> f64
+    checker.env.define_function(FunctionSig {
+        name: "log10".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
         params: vec![("x".to_string(), Type::F64)],
@@ -2431,15 +2514,6 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         generic_params: vec![],
         generic_var_ids: vec![],
         params: vec![("handle".to_string(), Type::I64)],
-        ret: Type::Void,
-    });
-
-    // exit(code: i64) -> void — terminate the process
-    checker.env.define_function(FunctionSig {
-        name: "exit".to_string(),
-        generic_params: vec![],
-        generic_var_ids: vec![],
-        params: vec![("code".to_string(), Type::I64)],
         ret: Type::Void,
     });
 

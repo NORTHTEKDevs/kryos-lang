@@ -2,8 +2,8 @@
 //!
 //! After type-checking match arms, this module verifies that the patterns
 //! cover all possible values of the subject type.  Non-exhaustive matches
-//! produce warnings (not errors) — this is deliberately lenient since the
-//! language is still young and hard errors would break existing code.
+//! on finite types (bool, enums) produce errors; infinite types (int, string)
+//! produce warnings suggesting a wildcard catch-all.
 
 use std::collections::HashSet;
 
@@ -89,9 +89,9 @@ fn check_bool(patterns: &[&Pattern], span: Span) -> Vec<Diagnostic> {
         _ => "`true` and `false`",
     };
 
-    vec![Diagnostic::warning(
+    vec![Diagnostic::error(
         format!("non-exhaustive match: missing {missing}"),
-    ).with_label(span, "this match is not exhaustive")]
+    ).with_label(span, "add the missing case(s) or a wildcard `_`")]
 }
 
 /// Enum: must cover all variants.
@@ -125,9 +125,9 @@ fn check_enum(patterns: &[&Pattern], enum_def: &EnumDef, span: Span) -> Vec<Diag
         .collect::<Vec<_>>()
         .join(", ");
 
-    vec![Diagnostic::warning(
+    vec![Diagnostic::error(
         format!("non-exhaustive match: missing variant(s) {names}"),
-    ).with_label(span, "this match is not exhaustive")]
+    ).with_label(span, "add the missing variant(s) or a wildcard `_`")]
 }
 
 /// Collect covered enum variant names from a pattern (handles Or-patterns).

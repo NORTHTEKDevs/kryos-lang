@@ -1,0 +1,17 @@
+// Verify polymorphic builtins (min, max, abs) work with both i64 and f64.
+// expect-stdout: 3
+// expect-stdout: 7
+// expect-stdout: 5
+// expect-stdout: 3
+// expect-stdout: 7
+// expect-stdout: 5
+// expect-stdout: 4
+fn main() {
+    println(to_string(min(3.0, 7.0)))
+    println(to_string(max(3.0, 7.0)))
+    println(to_string(abs(-5.0)))
+    println(to_string(min(3, 7)))
+    println(to_string(max(3, 7)))
+    println(to_string(abs(-5)))
+    println(to_string(sqrt(16.0)))
+}

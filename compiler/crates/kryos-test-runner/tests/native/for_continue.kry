@@ -1,0 +1,14 @@
+// Verify that `continue` in a for loop does not cause infinite loop.
+// The loop counter must still advance past skipped iterations.
+// expect-stdout: 1
+// expect-stdout: 3
+// expect-stdout: 5
+fn main() {
+    let arr = [1, 2, 3, 4, 5, 6]
+    for x in arr {
+        if x % 2 == 0 {
+            continue
+        }
+        println(to_string(x))
+    }
+}

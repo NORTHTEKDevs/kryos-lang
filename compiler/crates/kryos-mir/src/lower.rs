@@ -91,6 +91,11 @@ pub struct LoweringContext {
     current_ret_ty: MirType,
     /// Structs annotated with `@copy` — forwarded to `MirModule` for codegen.
     copy_structs: HashSet<String>,
+    /// Locals hidden from name resolution after their enclosing scope exits.
+    /// Prevents inner-scope variables from shadowing outer ones after the
+    /// inner block ends (e.g., `let x = 1; if true { let x = 2 }; println(x)`
+    /// must print 1, not 2).
+    hidden_locals: HashSet<u32>,
 }
 
 /// Context passed to `throw` statements inside a `try` block.
@@ -143,6 +148,7 @@ impl LoweringContext {
             current_ret_ty: MirType::Void,
             current_self_type: None,
             copy_structs: HashSet::new(),
+            hidden_locals: HashSet::new(),
         }
     }
 
@@ -241,6 +247,7 @@ impl LoweringContext {
         self.loop_exits.clear();
         self.dropped_locals.clear();
         self.param_locals.clear();
+        self.hidden_locals.clear();
     }
 
     /// Save the per-function state so we can restore it after monomorphization.
@@ -254,6 +261,7 @@ impl LoweringContext {
             next_block: self.next_block,
             loop_headers: self.loop_headers.clone(),
             loop_exits: self.loop_exits.clone(),
+            hidden_locals: self.hidden_locals.clone(),
         }
     }
 
@@ -267,6 +275,7 @@ impl LoweringContext {
         self.next_block = state.next_block;
         self.loop_headers = state.loop_headers;
         self.loop_exits = state.loop_exits;
+        self.hidden_locals = state.hidden_locals;
     }
 }
 
@@ -280,6 +289,7 @@ struct FunctionState {
     next_block: u32,
     loop_headers: Vec<BlockId>,
     loop_exits: Vec<BlockId>,
+    hidden_locals: HashSet<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -346,6 +356,9 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("round", MirType::F64),
         ("sin", MirType::F64),
         ("cos", MirType::F64),
+        ("tan", MirType::F64),
+        ("log2", MirType::F64),
+        ("log10", MirType::F64),
         ("parse_int", MirType::I64),
         ("parse_float", MirType::F64),
         ("file_read", MirType::Str),
@@ -362,13 +375,17 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("pop", MirType::I64),
         ("send", MirType::Void),
         ("sleep", MirType::Void),
+        ("contains", MirType::Bool),
+        ("starts_with", MirType::Bool),
+        ("ends_with", MirType::Bool),
+        ("log", MirType::F64),
         ("char_code", MirType::I64),
         ("char_from", MirType::Str),
         ("int", MirType::I64),
         ("float", MirType::F64),
         ("keys", MirType::I64),       // returns array handle
-        ("map_has", MirType::I64),
-        ("map_has_str", MirType::I64),
+        ("map_has", MirType::Bool),
+        ("map_has_str", MirType::Bool),
         ("map_delete", MirType::I64),
         ("map_delete_str", MirType::I64),
         ("map_keys", MirType::I64),   // returns array handle
@@ -956,6 +973,101 @@ fn lower_block_stmts(ctx: &mut LoweringContext, stmts: &[ast::Stmt]) {
                 ctx.dropped_locals.insert(local_id.0);
             }
         }
+    }
+
+    // Hide scoped locals from name resolution so outer scopes don't
+    // see inner bindings (prevents variable shadowing leaks like
+    // `let x = 100; if true { let x = 999 } println(x)` printing 999).
+    // We add them to hidden_locals rather than clearing names, so the
+    // final MIR output still has names for debugging/introspection.
+    for i in scope_start..scope_end {
+        if ctx.locals[i].name.is_some() {
+            ctx.hidden_locals.insert(ctx.locals[i].id.0);
+        }
+    }
+}
+
+/// Lower a block's statements, treating the last statement as a value
+/// that gets assigned to `result_local`. Handles `Stmt::Expr` (expressions),
+/// `Stmt::If` (nested if-statements used as values), and `Stmt::Match`.
+fn lower_block_as_value(ctx: &mut LoweringContext, stmts: &[ast::Stmt], result_local: LocalId) {
+    if stmts.is_empty() {
+        return;
+    }
+    // Lower all statements except the last normally.
+    for stmt in &stmts[..stmts.len() - 1] {
+        lower_stmt(ctx, stmt);
+    }
+    // Lower the last statement as a value.
+    match stmts.last().unwrap() {
+        ast::Stmt::Expr { expr, .. } => {
+            let rv = lower_expr_to_rvalue(ctx, expr);
+            ctx.emit(Instruction::Assign {
+                dest: result_local,
+                value: rv,
+            });
+        }
+        ast::Stmt::If {
+            condition,
+            then_block,
+            elif_clauses,
+            else_block,
+            ..
+        } => {
+            // Lower an if-statement as a value-producing expression.
+            let cond_op = lower_expr_to_operand(ctx, condition);
+            let then_bb = ctx.alloc_block();
+            let else_bb = ctx.alloc_block();
+            let merge_bb = ctx.alloc_block();
+
+            ctx.finish_block(
+                Terminator::Branch {
+                    cond: cond_op,
+                    then_block: then_bb,
+                    else_block: else_bb,
+                },
+                then_bb,
+            );
+
+            // Then branch — recursively handle nested if-as-value.
+            lower_block_as_value(ctx, &then_block.stmts, result_local);
+            ctx.finish_block(Terminator::Goto(merge_bb), else_bb);
+
+            // Elif/else chain.
+            if !elif_clauses.is_empty() {
+                for (i, (elif_cond, elif_body)) in elif_clauses.iter().enumerate() {
+                    let elif_cond_op = lower_expr_to_operand(ctx, elif_cond);
+                    let elif_then_bb = ctx.alloc_block();
+                    let elif_else_bb = if i + 1 < elif_clauses.len() || else_block.is_some() {
+                        ctx.alloc_block()
+                    } else {
+                        merge_bb
+                    };
+                    ctx.finish_block(
+                        Terminator::Branch {
+                            cond: elif_cond_op,
+                            then_block: elif_then_bb,
+                            else_block: elif_else_bb,
+                        },
+                        elif_then_bb,
+                    );
+                    lower_block_as_value(ctx, &elif_body.stmts, result_local);
+                    ctx.finish_block(Terminator::Goto(merge_bb), elif_else_bb);
+                }
+                if let Some(else_blk) = else_block {
+                    lower_block_as_value(ctx, &else_blk.stmts, result_local);
+                    ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
+                }
+            } else if let Some(else_blk) = else_block {
+                lower_block_as_value(ctx, &else_blk.stmts, result_local);
+                ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
+            } else {
+                ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
+            }
+        }
+        // For any other statement kind (let, return, etc.), just lower it
+        // normally — it doesn't produce a value.
+        other => lower_stmt(ctx, other),
     }
 }
 
@@ -1719,6 +1831,7 @@ fn lower_for(
 
     let header_bb = ctx.alloc_block();
     let body_bb = ctx.alloc_block();
+    let increment_bb = ctx.alloc_block();
     let exit_bb = ctx.alloc_block();
 
     // Jump to header.
@@ -1767,13 +1880,18 @@ fn lower_for(
         },
     });
 
-    ctx.loop_headers.push(header_bb);
+    // `continue` must jump to increment_bb (not header), otherwise _idx
+    // never advances and the loop spins forever.
+    ctx.loop_headers.push(increment_bb);
     ctx.loop_exits.push(exit_bb);
     lower_block_stmts(ctx, &body.stmts);
     ctx.loop_headers.pop();
     ctx.loop_exits.pop();
 
-    // Increment idx.
+    // Fall through to increment block.
+    ctx.finish_block(Terminator::Goto(increment_bb), increment_bb);
+
+    // Increment block: _idx += 1, then back-edge to header.
     ctx.emit(Instruction::Assign {
         dest: idx_local,
         value: RValue::BinOp {
@@ -1782,8 +1900,6 @@ fn lower_for(
             right: Operand::Constant(Constant::Int(1)),
         },
     });
-
-    // Back-edge.
     ctx.finish_block(Terminator::Goto(header_bb), exit_bb);
 }
 
@@ -1826,6 +1942,7 @@ fn lower_for_range(
 
     let header_bb = ctx.alloc_block();
     let body_bb = ctx.alloc_block();
+    let increment_bb = ctx.alloc_block();
     let exit_bb = ctx.alloc_block();
 
     // Jump to header.
@@ -1861,13 +1978,17 @@ fn lower_for_range(
         value: RValue::Use(Operand::Local(idx_local)),
     });
 
-    ctx.loop_headers.push(header_bb);
+    // `continue` must jump to increment_bb so _idx advances.
+    ctx.loop_headers.push(increment_bb);
     ctx.loop_exits.push(exit_bb);
     lower_block_stmts(ctx, &body.stmts);
     ctx.loop_headers.pop();
     ctx.loop_exits.pop();
 
-    // Increment: _idx += 1
+    // Fall through to increment block.
+    ctx.finish_block(Terminator::Goto(increment_bb), increment_bb);
+
+    // Increment block: _idx += 1, then back-edge to header.
     ctx.emit(Instruction::Assign {
         dest: idx_local,
         value: RValue::BinOp {
@@ -1876,8 +1997,6 @@ fn lower_for_range(
             right: Operand::Constant(Constant::Int(1)),
         },
     });
-
-    // Back-edge.
     ctx.finish_block(Terminator::Goto(header_bb), exit_bb);
 }
 
@@ -2626,12 +2745,26 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
                 return mir_ty.clone();
             }
             // Look up the local's MIR type.
-            ctx.locals
+            if let Some(local_ty) = ctx.locals
                 .iter()
                 .rev()
                 .find(|l| l.name.as_deref() == Some(name))
                 .map(|l| l.ty.clone())
-                .unwrap_or(MirType::I64)
+            {
+                return local_ty;
+            }
+            // Check if it's a function name used as a value.
+            if let Some(ret_ty) = ctx.func_ret_types.get(name.as_str()) {
+                let params = ctx.func_param_types
+                    .get(name.as_str())
+                    .cloned()
+                    .unwrap_or_default();
+                return MirType::Function {
+                    params,
+                    ret: Box::new(ret_ty.clone()),
+                };
+            }
+            MirType::I64
         }
 
         ast::Expr::Borrow { inner, mutable, .. } => {
@@ -2743,6 +2876,15 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
                     return MirType::Void;
                 }
                 if let Some(ret_ty) = ctx.func_ret_types.get(name.as_str()) {
+                    // Polymorphic builtins: return type matches argument type
+                    if matches!(name.as_str(), "min" | "max" | "abs") {
+                        if let Some(first_arg) = args.first() {
+                            let arg_ty = infer_expr_type(ctx, first_arg);
+                            if arg_ty == MirType::F64 {
+                                return MirType::F64;
+                            }
+                        }
+                    }
                     return ret_ty.clone();
                 }
                 // Check if callee is a function-typed local (indirect call).
@@ -2989,6 +3131,62 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
         ast::Expr::BinaryOp {
             op, left, right, ..
         } => {
+            // Short-circuit evaluation for logical and/or:
+            //   a and b  →  let _r = a; if _r { _r = b }; use _r
+            //   a or  b  →  let _r = a; if !_r { _r = b }; use _r
+            if *op == ast::BinOp::And {
+                let result = ctx.alloc_temp(MirType::Bool);
+                let lhs = lower_expr_to_operand(ctx, left);
+                ctx.emit(Instruction::Assign {
+                    dest: result,
+                    value: RValue::Use(lhs),
+                });
+                let then_bb = ctx.alloc_block();
+                let merge_bb = ctx.alloc_block();
+                ctx.finish_block(
+                    Terminator::Branch {
+                        cond: Operand::Local(result),
+                        then_block: then_bb,
+                        else_block: merge_bb,
+                    },
+                    then_bb,
+                );
+                // LHS was truthy — evaluate RHS.
+                let rhs = lower_expr_to_operand(ctx, right);
+                ctx.emit(Instruction::Assign {
+                    dest: result,
+                    value: RValue::Use(rhs),
+                });
+                ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
+                return RValue::Use(Operand::Local(result));
+            }
+            if *op == ast::BinOp::Or {
+                let result = ctx.alloc_temp(MirType::Bool);
+                let lhs = lower_expr_to_operand(ctx, left);
+                ctx.emit(Instruction::Assign {
+                    dest: result,
+                    value: RValue::Use(lhs),
+                });
+                let else_bb = ctx.alloc_block();
+                let merge_bb = ctx.alloc_block();
+                ctx.finish_block(
+                    Terminator::Branch {
+                        cond: Operand::Local(result),
+                        then_block: merge_bb,
+                        else_block: else_bb,
+                    },
+                    else_bb,
+                );
+                // LHS was falsy — evaluate RHS.
+                let rhs = lower_expr_to_operand(ctx, right);
+                ctx.emit(Instruction::Assign {
+                    dest: result,
+                    value: RValue::Use(rhs),
+                });
+                ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
+                return RValue::Use(Operand::Local(result));
+            }
+
             // Array concatenation: a + b → kryos_array_concat(a, b)
             if *op == ast::BinOp::Add {
                 let lty = infer_expr_type(ctx, left);
@@ -3484,24 +3682,12 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             );
 
             // Then.
-            if let Some(ast::Stmt::Expr { expr, .. }) = then_branch.stmts.last() {
-                let rv = lower_expr_to_rvalue(ctx, expr);
-                ctx.emit(Instruction::Assign {
-                    dest: result_local,
-                    value: rv,
-                });
-            }
+            lower_block_as_value(ctx, &then_branch.stmts, result_local);
             ctx.finish_block(Terminator::Goto(merge_bb), else_bb);
 
             // Else.
             if let Some(else_blk) = else_branch {
-                if let Some(ast::Stmt::Expr { expr, .. }) = else_blk.stmts.last() {
-                    let rv = lower_expr_to_rvalue(ctx, expr);
-                    ctx.emit(Instruction::Assign {
-                        dest: result_local,
-                        value: rv,
-                    });
-                }
+                lower_block_as_value(ctx, &else_blk.stmts, result_local);
             }
             ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
 
@@ -3538,13 +3724,23 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             let saved = ctx.save_function_state();
 
             // Build params: captures first (as extra params), then declared params.
+            // Look up each capture's MIR type from the enclosing scope so that
+            // function-typed captures are correctly lowered as indirect calls.
             let mut all_params: Vec<ast::Param> = captures
                 .iter()
-                .map(|name| ast::Param {
-                    name: name.clone(),
-                    ty: None,
-                    default: None,
-                    span: kryos_errors::Span::DUMMY,
+                .map(|name| {
+                    let ty = ctx
+                        .locals
+                        .iter()
+                        .rev()
+                        .find(|l| l.name.as_deref() == Some(name.as_str()))
+                        .and_then(|l| mir_type_to_type_expr(&l.ty));
+                    ast::Param {
+                        name: name.clone(),
+                        ty,
+                        default: None,
+                        span: kryos_errors::Span::DUMMY,
+                    }
                 })
                 .collect();
             all_params.extend_from_slice(params);
@@ -3890,10 +4086,52 @@ pub fn lower_resolved_type(ty: &Type) -> MirType {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Convert a MirType back to an AST TypeExpr for use in synthesized parameters
+/// (e.g. lambda captures). Returns `None` for simple i64 (the default).
+fn mir_type_to_type_expr(ty: &MirType) -> Option<ast::TypeExpr> {
+    let span = kryos_errors::Span::DUMMY;
+    match ty {
+        MirType::I64 => None, // default, no annotation needed
+        MirType::F64 => Some(ast::TypeExpr::Simple { name: "f64".to_string(), span }),
+        MirType::Bool => Some(ast::TypeExpr::Simple { name: "bool".to_string(), span }),
+        MirType::Str => Some(ast::TypeExpr::Simple { name: "str".to_string(), span }),
+        MirType::Void => Some(ast::TypeExpr::Simple { name: "void".to_string(), span }),
+        MirType::Struct(name) | MirType::Enum(name) => {
+            Some(ast::TypeExpr::Simple { name: name.clone(), span })
+        }
+        MirType::Function { params, ret } => {
+            let param_tys: Vec<ast::TypeExpr> = params
+                .iter()
+                .map(|p| mir_type_to_type_expr(p).unwrap_or_else(|| {
+                    ast::TypeExpr::Simple { name: "i64".to_string(), span }
+                }))
+                .collect();
+            let ret_ty = mir_type_to_type_expr(ret).unwrap_or_else(|| {
+                ast::TypeExpr::Simple { name: "i64".to_string(), span }
+            });
+            Some(ast::TypeExpr::Function {
+                params: param_tys,
+                ret: Box::new(ret_ty),
+                span,
+            })
+        }
+        MirType::Array(elem, size) => {
+            let elem_ty = mir_type_to_type_expr(elem).unwrap_or_else(|| {
+                ast::TypeExpr::Simple { name: "i64".to_string(), span }
+            });
+            Some(ast::TypeExpr::Array { element: Box::new(elem_ty), size: *size, span })
+        }
+        MirType::DynTrait(name) => {
+            Some(ast::TypeExpr::DynTrait { trait_name: name.clone(), span })
+        }
+        _ => None, // fall back to default i64
+    }
+}
+
 /// Look up a local by name. Returns `Some(id)` if found, `None` otherwise.
 fn find_local_by_name(ctx: &LoweringContext, name: &str) -> Option<LocalId> {
     ctx.locals.iter().rev()
-        .find(|l| l.name.as_deref() == Some(name))
+        .find(|l| l.name.as_deref() == Some(name) && !ctx.hidden_locals.contains(&l.id.0))
         .map(|l| l.id)
 }
 

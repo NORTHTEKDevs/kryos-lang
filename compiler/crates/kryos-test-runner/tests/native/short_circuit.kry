@@ -1,0 +1,21 @@
+// Verify that `and` / `or` short-circuit (don't evaluate RHS when unnecessary).
+// expect-stdout: false
+// expect-stdout: true
+// expect-stdout: ok
+fn main() {
+    // `and` short-circuits: false and <anything> = false without evaluating RHS.
+    let a = false and panic_bool()
+    println(to_string(a))
+
+    // `or` short-circuits: true or <anything> = true without evaluating RHS.
+    let b = true or panic_bool()
+    println(to_string(b))
+
+    println("ok")
+}
+
+fn panic_bool() -> bool {
+    // If this is ever called, the test should crash or print an error.
+    println("ERROR: RHS was evaluated!")
+    return true
+}

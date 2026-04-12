@@ -207,6 +207,15 @@ pub unsafe extern "C" fn kryos_string_find(
     -1
 }
 
+/// Clone a KryosString — create a new string with the same content.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_string_clone(s: *const KryosString) -> *mut KryosString {
+    if s.is_null() {
+        return kryos_string_new(ptr::null(), 0);
+    }
+    kryos_string_new((*s).data, (*s).len)
+}
+
 /// Free a KryosString and its data buffer.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {

@@ -1564,9 +1564,54 @@ impl Parser {
         let start = kw.span;
         let condition = self.parse_expr_no_struct_lit();
         let then_branch = self.parse_block();
-        let else_branch = if self.eat(TokenKind::Else) {
+        let else_branch = if self.peek_kind() == TokenKind::Elif {
+            // `elif` in expression context — desugar to `else { if ... }`
+            self.advance(); // eat `elif`
+            let nested_if = self.parse_if_expr_after_if(start);
+            let span = nested_if.span();
+            Some(Block {
+                stmts: vec![Stmt::Expr { expr: nested_if, span }],
+                span,
+            })
+        } else if self.eat(TokenKind::Else) {
             if self.peek_kind() == TokenKind::If {
                 // `else if` — parse as a single-statement block containing the nested if.
+                let nested_if = self.parse_if_expr();
+                let span = nested_if.span();
+                Some(Block {
+                    stmts: vec![Stmt::Expr { expr: nested_if, span }],
+                    span,
+                })
+            } else {
+                Some(self.parse_block())
+            }
+        } else {
+            None
+        };
+        let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
+        Expr::IfExpr {
+            condition: Box::new(condition),
+            then_branch,
+            else_branch,
+            span: start.merge(end),
+        }
+    }
+
+    /// Parse an if-expression body after the `if` keyword has already been consumed
+    /// (used for `elif` desugaring in expression context).
+    fn parse_if_expr_after_if(&mut self, start: Span) -> Expr {
+        let condition = self.parse_expr_no_struct_lit();
+        let then_branch = self.parse_block();
+        let else_branch = if self.peek_kind() == TokenKind::Elif {
+            self.advance();
+            let nested_if = self.parse_if_expr_after_if(start);
+            let span = nested_if.span();
+            Some(Block {
+                stmts: vec![Stmt::Expr { expr: nested_if, span }],
+                span,
+            })
+        } else if self.eat(TokenKind::Else) {
+            if self.peek_kind() == TokenKind::If {
                 let nested_if = self.parse_if_expr();
                 let span = nested_if.span();
                 Some(Block {

@@ -568,36 +568,10 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
     )?;
     func_ids.insert("kryos_ipow".to_string(), ipow_id);
 
-    // Declare ARC runtime functions (from libkryos_rt) as imports.
-    {
-        // kryos_arc_alloc(size: i64, align: i64) -> ptr
-        let arc_alloc_sig = {
-            let mut sig = Signature::new(call_conv);
-            sig.params.push(AbiParam::new(types::I64));
-            sig.params.push(AbiParam::new(types::I64));
-            sig.returns.push(AbiParam::new(types::I64));
-            sig
-        };
-        // kryos_arc_retain(ptr: i64)
-        let arc_retain_sig = {
-            let mut sig = Signature::new(call_conv);
-            sig.params.push(AbiParam::new(types::I64));
-            sig
-        };
-        // kryos_arc_release(ptr: i64)
-        let arc_release_sig = {
-            let mut sig = Signature::new(call_conv);
-            sig.params.push(AbiParam::new(types::I64));
-            sig
-        };
-
-        let aa_id = object_module.declare_function("kryos_arc_alloc", Linkage::Import, &arc_alloc_sig)?;
-        let ar_id = object_module.declare_function("kryos_arc_retain", Linkage::Import, &arc_retain_sig)?;
-        let are_id = object_module.declare_function("kryos_arc_release", Linkage::Import, &arc_release_sig)?;
-        func_ids.insert("kryos_arc_alloc".to_string(), aa_id);
-        func_ids.insert("kryos_arc_retain".to_string(), ar_id);
-        func_ids.insert("kryos_arc_release".to_string(), are_id);
-    }
+    // NOTE: ARC runtime functions (kryos_arc_alloc, kryos_arc_retain,
+    // kryos_arc_release) are declared above via kryos_arc_*_i64 wrappers.
+    // Do NOT re-declare them here — the i64 wrappers use the correct
+    // 1-param signatures matching the codegen calling convention.
 
     // Declare C heap functions as imports.
     {
@@ -1323,7 +1297,7 @@ fn translate_instruction<M: Module>(
                             && !matches!(
                                 func.as_str(),
                                 "println" | "print" | "eprintln"
-                                    | "sleep" | "sqrt" | "floor" | "ceil" | "abs"
+                                    | "sleep" | "sqrt" | "floor" | "ceil" | "round" | "abs"
                                     | "min" | "max"
                                     | "assert" | "len" | "range" | "to_string"
                                     | "exit"
@@ -1714,8 +1688,8 @@ fn translate_rvalue<M: Module>(
                     });
                 if let Some(ref sname) = struct_name {
                     if translator.copy_structs.contains(sname) {
-                        if let Some(struct_def) = translator.struct_defs.get(sname) {
-                            let layout = compute_struct_layout(struct_def)?;
+                        if let Some(struct_def) = translator.struct_defs.get(sname).cloned() {
+                            let layout = compute_struct_layout(&struct_def)?;
                             let size_val = builder
                                 .ins()
                                 .iconst(types::I64, layout.total_size as i64);
@@ -1725,17 +1699,53 @@ fn translate_rvalue<M: Module>(
                             let alloc_call = builder.ins().call(malloc_ref, &[size_val]);
                             let new_ptr = builder.inst_results(alloc_call)[0];
 
-                            // Copy each field from old pointer to new pointer.
-                            for (_, offset, cl_ty) in &layout.field_offsets {
+                            // Deep-copy each field: clone heap-allocated fields
+                            // (arrays, strings) so each copy owns its own data.
+                            for (field_name, offset, cl_ty) in &layout.field_offsets {
                                 let field_val = builder.ins().load(
                                     *cl_ty,
                                     MemFlags::new(),
                                     val,
                                     *offset as i32,
                                 );
+                                // Look up the MIR type for this field.
+                                let field_mir_ty = struct_def.iter()
+                                    .find(|(n, _)| n == field_name)
+                                    .map(|(_, t)| t);
+                                let stored_val = match field_mir_ty {
+                                    Some(MirType::Array(_, _)) => {
+                                        let clone_ref = ensure_func_ref_with_args(
+                                            "kryos_array_clone", builder, translator, module, 1,
+                                        )?;
+                                        let call = builder.ins().call(clone_ref, &[field_val]);
+                                        builder.inst_results(call)[0]
+                                    }
+                                    Some(MirType::Str) => {
+                                        let clone_ref = ensure_func_ref_with_args(
+                                            "kryos_string_clone", builder, translator, module, 1,
+                                        )?;
+                                        let call = builder.ins().call(clone_ref, &[field_val]);
+                                        builder.inst_results(call)[0]
+                                    }
+                                    Some(MirType::Struct(inner_name)) => {
+                                        // Recursively deep-copy nested @copy structs.
+                                        if translator.copy_structs.contains(inner_name) {
+                                            if let Some(inner_def) = translator.struct_defs.get(inner_name).cloned() {
+                                                emit_deep_copy_struct(
+                                                    field_val, &inner_def, builder, translator, module,
+                                                )?
+                                            } else {
+                                                field_val
+                                            }
+                                        } else {
+                                            field_val
+                                        }
+                                    }
+                                    _ => field_val,
+                                };
                                 builder.ins().store(
                                     MemFlags::new(),
-                                    field_val,
+                                    stored_val,
                                     new_ptr,
                                     *offset as i32,
                                 );
@@ -2009,7 +2019,7 @@ fn translate_rvalue<M: Module>(
             // Handle math builtins that map to native Cranelift f64 instructions.
             // sqrt, floor, ceil use Cranelift's native instructions directly;
             // abs dispatches to fabs for floats or integer negation for ints.
-            if matches!(func.as_str(), "sqrt" | "floor" | "ceil" | "abs") && args.len() == 1 {
+            if matches!(func.as_str(), "sqrt" | "floor" | "ceil" | "round" | "abs") && args.len() == 1 {
                 let val = translate_operand(&args[0], builder, translator, module)?;
                 let val_ty = builder.func.dfg.value_type(val);
 
@@ -2018,6 +2028,7 @@ fn translate_rvalue<M: Module>(
                         "sqrt"  => builder.ins().sqrt(val),
                         "floor" => builder.ins().floor(val),
                         "ceil"  => builder.ins().ceil(val),
+                        "round" => builder.ins().nearest(val),
                         "abs"   => builder.ins().fabs(val),
                         _       => unreachable!(),
                     };
@@ -2038,13 +2049,60 @@ fn translate_rvalue<M: Module>(
             if matches!(func.as_str(), "min" | "max") && args.len() == 2 {
                 let a = translate_operand(&args[0], builder, translator, module)?;
                 let b = translate_operand(&args[1], builder, translator, module)?;
-                let cmp = if func == "min" {
-                    IntCC::SignedLessThan
+                let a_ty = builder.func.dfg.value_type(a);
+                if is_float_type(a_ty) {
+                    // Float min/max using fcmp + select.
+                    let cmp = if func == "min" {
+                        FloatCC::LessThan
+                    } else {
+                        FloatCC::GreaterThan
+                    };
+                    let cond = builder.ins().fcmp(cmp, a, b);
+                    let result = builder.ins().select(cond, a, b);
+                    return Ok(Some(result));
                 } else {
-                    IntCC::SignedGreaterThan
-                };
-                let cond = builder.ins().icmp(cmp, a, b);
-                let result = builder.ins().select(cond, a, b);
+                    let cmp = if func == "min" {
+                        IntCC::SignedLessThan
+                    } else {
+                        IntCC::SignedGreaterThan
+                    };
+                    let cond = builder.ins().icmp(cmp, a, b);
+                    let result = builder.ins().select(cond, a, b);
+                    return Ok(Some(result));
+                }
+            }
+
+            // Handle f64→f64 math builtins (sin, cos, tan, log, log2, log10)
+            // via runtime calls with proper f64 signatures.
+            if matches!(func.as_str(), "sin" | "cos" | "tan" | "log" | "log2" | "log10") && args.len() == 1 {
+                let val = translate_operand(&args[0], builder, translator, module)?;
+                let rt_name = format!("kryos_builtin_{func}");
+                let func_ref = ensure_func_ref_f64_f64(&rt_name, builder, translator, module)?;
+                let call_inst = builder.ins().call(func_ref, &[val]);
+                return Ok(Some(builder.inst_results(call_inst)[0]));
+            }
+
+            // Handle int() and float() conversions using Cranelift native instructions.
+            if func == "int" && args.len() == 1 {
+                let val = translate_operand(&args[0], builder, translator, module)?;
+                let val_ty = builder.func.dfg.value_type(val);
+                if is_float_type(val_ty) {
+                    // f64 → i64: truncate
+                    let result = builder.ins().fcvt_to_sint(types::I64, val);
+                    return Ok(Some(result));
+                }
+                // Already an integer — identity.
+                return Ok(Some(val));
+            }
+            if func == "float" && args.len() == 1 {
+                let val = translate_operand(&args[0], builder, translator, module)?;
+                let val_ty = builder.func.dfg.value_type(val);
+                if is_float_type(val_ty) {
+                    // Already float — identity.
+                    return Ok(Some(val));
+                }
+                // i64 → f64: convert
+                let result = builder.ins().fcvt_from_sint(types::F64, val);
                 return Ok(Some(result));
             }
 
@@ -2381,8 +2439,9 @@ fn translate_rvalue<M: Module>(
 
         RValue::Struct { name, fields } => {
             // Look up the struct definition to compute its memory layout.
-            if let Some(struct_def) = translator.struct_defs.get(name) {
-                let layout = compute_struct_layout(struct_def)?;
+            if let Some(struct_def) = translator.struct_defs.get(name).cloned() {
+                let layout = compute_struct_layout(&struct_def)?;
+                let is_copy = translator.copy_structs.contains(name);
 
                 // Heap-allocate the struct via malloc so the pointer survives
                 // across function returns (stack slots are invalidated when the
@@ -2395,6 +2454,9 @@ fn translate_rvalue<M: Module>(
                 let ptr = builder.inst_results(call)[0];
 
                 // Store each field value at its computed offset.
+                // For @copy structs, clone heap-allocated fields (arrays,
+                // strings) so the new struct owns its own copies and is
+                // safe to drop independently.
                 for (field_name, operand) in fields {
                     if let Some((_, offset, _cl_ty)) = layout
                         .field_offsets
@@ -2402,9 +2464,46 @@ fn translate_rvalue<M: Module>(
                         .find(|(n, _, _)| n == field_name)
                     {
                         let val = translate_operand(operand, builder, translator, module)?;
+                        let stored_val = if is_copy {
+                            let field_mir_ty = struct_def.iter()
+                                .find(|(n, _)| n == field_name)
+                                .map(|(_, t)| t);
+                            match field_mir_ty {
+                                Some(MirType::Array(_, _)) => {
+                                    let clone_ref = ensure_func_ref_with_args(
+                                        "kryos_array_clone", builder, translator, module, 1,
+                                    )?;
+                                    let c = builder.ins().call(clone_ref, &[val]);
+                                    builder.inst_results(c)[0]
+                                }
+                                Some(MirType::Str) => {
+                                    let clone_ref = ensure_func_ref_with_args(
+                                        "kryos_string_clone", builder, translator, module, 1,
+                                    )?;
+                                    let c = builder.ins().call(clone_ref, &[val]);
+                                    builder.inst_results(c)[0]
+                                }
+                                Some(MirType::Struct(inner_name)) => {
+                                    if translator.copy_structs.contains(inner_name) {
+                                        if let Some(inner_def) = translator.struct_defs.get(inner_name).cloned() {
+                                            emit_deep_copy_struct(
+                                                val, &inner_def, builder, translator, module,
+                                            )?
+                                        } else {
+                                            val
+                                        }
+                                    } else {
+                                        val
+                                    }
+                                }
+                                _ => val,
+                            }
+                        } else {
+                            val
+                        };
                         builder
                             .ins()
-                            .store(MemFlags::new(), val, ptr, *offset as i32);
+                            .store(MemFlags::new(), stored_val, ptr, *offset as i32);
                     }
                 }
 
@@ -2436,8 +2535,8 @@ fn translate_rvalue<M: Module>(
             };
 
             if let Some(name) = struct_name {
-                if let Some(struct_def) = translator.struct_defs.get(&name) {
-                    let layout = compute_struct_layout(struct_def)?;
+                if let Some(struct_def) = translator.struct_defs.get(&name).cloned() {
+                    let layout = compute_struct_layout(&struct_def)?;
                     if let Some((_, offset, cl_ty)) = layout
                         .field_offsets
                         .iter()
@@ -2449,6 +2548,24 @@ fn translate_rvalue<M: Module>(
                             ptr,
                             *offset as i32,
                         );
+                        // If the field is a @copy struct, deep-copy it so
+                        // the extracted value is independent from the parent.
+                        // Without this, dropping the parent would free the
+                        // shared heap data (arrays, strings) still aliased
+                        // by the extracted field value.
+                        let field_mir_ty = struct_def.iter()
+                            .find(|(n, _)| n == field)
+                            .map(|(_, t)| t.clone());
+                        if let Some(MirType::Struct(ref inner_name)) = field_mir_ty {
+                            if translator.copy_structs.contains(inner_name) {
+                                if let Some(inner_def) = translator.struct_defs.get(inner_name).cloned() {
+                                    let copied = emit_deep_copy_struct(
+                                        val, &inner_def, builder, translator, module,
+                                    )?;
+                                    return Ok(Some(copied));
+                                }
+                            }
+                        }
                         return Ok(Some(val));
                     }
                 }
@@ -2503,29 +2620,39 @@ fn translate_rvalue<M: Module>(
         }
 
         RValue::ArcAlloc { inner } => {
+            // shared <expr>: allocate ARC storage, store the value, return ptr.
+            // 1. Evaluate the inner expression.
+            let val = translate_operand(inner, builder, translator, module)?;
+            // 2. Allocate 8 bytes (one i64 slot) via kryos_arc_alloc_i64(8).
             let func_ref =
                 ensure_func_ref("kryos_arc_alloc", builder, translator, module)?;
-            let val = translate_operand(inner, builder, translator, module)?;
-            let call_inst = builder.ins().call(func_ref, &[val]);
-            let results = builder.inst_results(call_inst);
-            Ok(Some(results[0]))
+            let size = builder.ins().iconst(types::I64, 8);
+            let call_inst = builder.ins().call(func_ref, &[size]);
+            let ptr = builder.inst_results(call_inst)[0];
+            // 3. Store the inner value at the allocated pointer.
+            builder.ins().store(MemFlags::new(), val, ptr, 0);
+            Ok(Some(ptr))
         }
 
         RValue::EnumVariant { enum_name, variant_idx, fields } => {
             // Enum layout: [tag: i64, field0: i64, field1: i64, ...]
             // All fields are stored as i64 (8 bytes each) for uniform layout.
+            //
+            // Heap-allocate via malloc so the pointer survives across function
+            // returns (stack slots are invalidated when the frame is popped,
+            // causing dangling-pointer crashes for returned enums).
             let max_fields = translator.enum_defs
                 .get(enum_name.as_str())
                 .map(|vs| vs.iter().map(|v| v.fields.len()).max().unwrap_or(0))
                 .unwrap_or(0);
             let total_size = (1 + max_fields) as u32 * 8;
 
-            let slot = builder.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                total_size,
-                0,
-            ));
-            let ptr = builder.ins().stack_addr(types::I64, slot, 0);
+            let size_val = builder.ins().iconst(types::I64, total_size as i64);
+            let malloc_ref = ensure_func_ref_with_args(
+                "malloc", builder, translator, module, 1,
+            )?;
+            let call = builder.ins().call(malloc_ref, &[size_val]);
+            let ptr = builder.inst_results(call)[0];
 
             // Store tag at offset 0.
             let tag = builder.ins().iconst(types::I64, *variant_idx as i64);
@@ -2597,11 +2724,10 @@ fn translate_rvalue<M: Module>(
                 let env_slots = 1 + captures.len();
                 let env_size = (env_slots * 8) as i64;
                 let size_val = builder.ins().iconst(types::I64, env_size);
-                let align_val = builder.ins().iconst(types::I64, 8);
-                let arc_alloc_ref = ensure_func_ref_with_args(
-                    "kryos_arc_alloc", builder, translator, module, 2,
+                let arc_alloc_ref = ensure_func_ref(
+                    "kryos_arc_alloc", builder, translator, module,
                 )?;
-                let call = builder.ins().call(arc_alloc_ref, &[size_val, align_val]);
+                let call = builder.ins().call(arc_alloc_ref, &[size_val]);
                 let ptr = builder.inst_results(call)[0];
 
                 // Store thunk function pointer at offset 0.
@@ -2679,12 +2805,13 @@ fn translate_rvalue<M: Module>(
 
         RValue::Range { start, end, inclusive } => {
             // Range layout: [start: i64, end: i64, inclusive: i64] — 24 bytes.
-            let slot = builder.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                24,
-                0,
-            ));
-            let ptr = builder.ins().stack_addr(types::I64, slot, 0);
+            // Heap-allocate so the pointer survives across function returns.
+            let size_val = builder.ins().iconst(types::I64, 24);
+            let malloc_ref = ensure_func_ref_with_args(
+                "malloc", builder, translator, module, 1,
+            )?;
+            let call = builder.ins().call(malloc_ref, &[size_val]);
+            let ptr = builder.inst_results(call)[0];
 
             let start_val = match start {
                 Some(op) => translate_operand(op, builder, translator, module)?,
@@ -3268,6 +3395,31 @@ fn ensure_func_ref_with_args<M: Module>(
     Ok(func_ref)
 }
 
+/// Ensure a FuncRef for an f64→f64 function (math builtins like sin, cos, log).
+fn ensure_func_ref_f64_f64<M: Module>(
+    name: &str,
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+) -> Result<cranelift_codegen::ir::FuncRef, CodegenError> {
+    if let Some(func_ref) = translator.func_refs.get(name) {
+        return Ok(*func_ref);
+    }
+
+    let func_id = if let Some(id) = translator.func_ids.get(name) {
+        *id
+    } else {
+        let mut sig = Signature::new(module.isa().default_call_conv());
+        sig.params.push(AbiParam::new(types::F64));
+        sig.returns.push(AbiParam::new(types::F64));
+        module.declare_function(name, Linkage::Import, &sig)?
+    };
+
+    let func_ref = module.declare_func_in_func(func_id, builder.func);
+    translator.func_refs.insert(name.to_string(), func_ref);
+    Ok(func_ref)
+}
+
 /// Ensure a FuncRef for a void-return function with the given number of I64 params.
 /// Used for trace runtime functions that return nothing.
 fn ensure_func_ref_void<M: Module>(
@@ -3405,6 +3557,64 @@ fn ensure_func_ref_f64<M: Module>(
     let func_ref = module.declare_func_in_func(func_id, builder.func);
     translator.func_refs.insert(name.to_string(), func_ref);
     Ok(func_ref)
+}
+
+// ---------------------------------------------------------------------------
+// Deep copy for @copy structs
+// ---------------------------------------------------------------------------
+
+/// Emit a deep copy of a @copy struct: malloc a new struct, clone all
+/// heap-allocated fields (arrays, strings, nested @copy structs).
+fn emit_deep_copy_struct<M: Module>(
+    src_ptr: cranelift_codegen::ir::Value,
+    struct_def: &[(String, MirType)],
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    let layout = compute_struct_layout(struct_def)?;
+    let size_val = builder.ins().iconst(types::I64, layout.total_size as i64);
+    let malloc_ref = ensure_func_ref_with_args("malloc", builder, translator, module, 1)?;
+    let alloc_call = builder.ins().call(malloc_ref, &[size_val]);
+    let new_ptr = builder.inst_results(alloc_call)[0];
+
+    for (field_name, offset, cl_ty) in &layout.field_offsets {
+        let field_val = builder.ins().load(*cl_ty, MemFlags::new(), src_ptr, *offset as i32);
+        let field_mir_ty = struct_def.iter()
+            .find(|(n, _)| n == field_name)
+            .map(|(_, t)| t);
+        let stored_val = match field_mir_ty {
+            Some(MirType::Array(_, _)) => {
+                let clone_ref = ensure_func_ref_with_args(
+                    "kryos_array_clone", builder, translator, module, 1,
+                )?;
+                let call = builder.ins().call(clone_ref, &[field_val]);
+                builder.inst_results(call)[0]
+            }
+            Some(MirType::Str) => {
+                let clone_ref = ensure_func_ref_with_args(
+                    "kryos_string_clone", builder, translator, module, 1,
+                )?;
+                let call = builder.ins().call(clone_ref, &[field_val]);
+                builder.inst_results(call)[0]
+            }
+            Some(MirType::Struct(inner_name)) => {
+                if translator.copy_structs.contains(inner_name) {
+                    if let Some(inner_def) = translator.struct_defs.get(inner_name).cloned() {
+                        emit_deep_copy_struct(field_val, &inner_def, builder, translator, module)?
+                    } else {
+                        field_val
+                    }
+                } else {
+                    field_val
+                }
+            }
+            _ => field_val,
+        };
+        builder.ins().store(MemFlags::new(), stored_val, new_ptr, *offset as i32);
+    }
+
+    Ok(new_ptr)
 }
 
 // ---------------------------------------------------------------------------

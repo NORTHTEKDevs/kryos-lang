@@ -152,6 +152,29 @@ pub unsafe extern "C" fn kryos_array_concat(
     result
 }
 
+/// Clone a KryosArray — create a new array with the same elements (shallow element copy).
+///
+/// Each element value (i64) is copied as-is. For arrays of pointers (structs,
+/// strings, nested arrays), this creates aliased references — the caller must
+/// handle deep cloning of elements separately if needed.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_array_clone(arr: *const KryosArray) -> *mut KryosArray {
+    if arr.is_null() {
+        return kryos_array_new(8, 4);
+    }
+    let len = (*arr).len;
+    let result = kryos_array_new((*arr).elem_size, len.max(4));
+    if result.is_null() {
+        return result;
+    }
+    // Bulk copy the data buffer.
+    if len > 0 && !(*arr).data.is_null() {
+        ptr::copy_nonoverlapping((*arr).data, (*result).data, len as usize * ELEM_SIZE);
+        (*result).len = len;
+    }
+    result
+}
+
 /// Free a KryosArray and its data buffer.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {

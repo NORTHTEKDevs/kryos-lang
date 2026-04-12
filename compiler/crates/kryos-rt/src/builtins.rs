@@ -693,6 +693,40 @@ pub extern "C" fn kryos_builtin_join(arr_handle: i64, sep: i64) -> i64 {
 }
 
 // ---------------------------------------------------------------------------
+// Math builtins — sin, cos, tan, log, log2, log10
+// ---------------------------------------------------------------------------
+
+#[no_mangle]
+pub extern "C" fn kryos_builtin_sin(x: f64) -> f64 {
+    x.sin()
+}
+
+#[no_mangle]
+pub extern "C" fn kryos_builtin_cos(x: f64) -> f64 {
+    x.cos()
+}
+
+#[no_mangle]
+pub extern "C" fn kryos_builtin_tan(x: f64) -> f64 {
+    x.tan()
+}
+
+#[no_mangle]
+pub extern "C" fn kryos_builtin_log(x: f64) -> f64 {
+    x.ln()
+}
+
+#[no_mangle]
+pub extern "C" fn kryos_builtin_log2(x: f64) -> f64 {
+    x.log2()
+}
+
+#[no_mangle]
+pub extern "C" fn kryos_builtin_log10(x: f64) -> f64 {
+    x.log10()
+}
+
+// ---------------------------------------------------------------------------
 // Numeric conversion builtins — int, float
 // ---------------------------------------------------------------------------
 

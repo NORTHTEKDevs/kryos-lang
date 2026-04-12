@@ -1,21 +1,14 @@
-// hello.kry — Hello world with string variables and concatenation
-
 fn main() {
     let name = "Kryos"
     let version = "0.2"
     let greeting = "Hello, " + name + " v" + version + "!"
-
     println(greeting)
     println("")
-
-    // String building with concatenation
     let lang = "Kryos"
     let desc = "a systems language"
     let designed = "for clarity and speed"
     let sentence = lang + " is " + desc + " " + designed + "."
     println(sentence)
-
-    // Multi-part greeting
     let first = "Jane"
     let last = "Doe"
     let full = first + " " + last

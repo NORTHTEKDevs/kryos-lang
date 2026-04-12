@@ -1,0 +1,12 @@
+// Verify that `continue` in a range-based for loop advances the counter.
+// expect-stdout: 1
+// expect-stdout: 3
+// expect-stdout: 5
+fn main() {
+    for i in range(0, 6) {
+        if i % 2 == 0 {
+            continue
+        }
+        println(to_string(i))
+    }
+}

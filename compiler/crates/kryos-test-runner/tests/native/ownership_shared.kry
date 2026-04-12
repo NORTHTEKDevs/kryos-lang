@@ -1,10 +1,11 @@
 // Shared references — verify shared values can be used after aliasing.
-// Note: the `shared` keyword wraps a value in ARC. Both x and y
+// The `shared` keyword wraps a value in ARC. Both a and b
 // hold a reference-counted handle to the same underlying data.
-//
-// SKIP: shared codegen has a Cranelift verifier issue (tracked separately).
-// This test is kept as documentation of the intended behavior.
-// expect-stdout: placeholder
+// expect-stdout: 42
+// expect-stdout: 42
 fn main() {
-    println("placeholder")
+    let a = shared 42
+    let b = a
+    println(to_string(*a))
+    println(to_string(*b))
 }

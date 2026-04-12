@@ -1,0 +1,18 @@
+// Verify that variables scoped inside blocks do not leak out.
+// expect-stdout: 100
+// expect-stdout: 42
+fn main() {
+    let x = 100
+    if true {
+        let x = 999
+    }
+    println(to_string(x))
+
+    let y = 42
+    let mut z = 0
+    while z < 1 {
+        let y = 777
+        z = z + 1
+    }
+    println(to_string(y))
+}

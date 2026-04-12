@@ -133,7 +133,7 @@ fn infer_let_int_literal() {
     let (diags, checker) = check_let_infer("x", Expr::IntLiteral { value: 42, span: S });
     assert!(diags.is_empty(), "unexpected errors: {diags:?}");
     let ty = checker.env.lookup_var("x");
-    assert_eq!(ty, Some(&Type::I32));
+    assert_eq!(ty, Some(&Type::I64));
 }
 
 #[test]
@@ -1216,18 +1216,18 @@ fn exhaustive_bool_missing_false() {
             span: S,
         }],
     );
-    let warnings: Vec<_> = diags
+    let errors: Vec<_> = diags
         .iter()
-        .filter(|d| d.level == Level::Warning && d.message.contains("non-exhaustive"))
+        .filter(|d| d.level == Level::Error && d.message.contains("non-exhaustive"))
         .collect();
     assert!(
-        !warnings.is_empty(),
-        "bool match missing false should warn"
+        !errors.is_empty(),
+        "bool match missing false should error"
     );
     assert!(
-        warnings[0].message.contains("false"),
-        "warning should mention `false`, got: {}",
-        warnings[0].message
+        errors[0].message.contains("false"),
+        "error should mention `false`, got: {}",
+        errors[0].message
     );
 }
 
@@ -1379,18 +1379,18 @@ fn exhaustive_enum_missing_variant() {
         },
     ];
     let diags = check_module(decls);
-    let warnings: Vec<_> = diags
+    let errors: Vec<_> = diags
         .iter()
-        .filter(|d| d.level == Level::Warning && d.message.contains("non-exhaustive"))
+        .filter(|d| d.level == Level::Error && d.message.contains("non-exhaustive"))
         .collect();
     assert!(
-        !warnings.is_empty(),
-        "enum match missing variants should warn"
+        !errors.is_empty(),
+        "enum match missing variants should error"
     );
     assert!(
-        warnings[0].message.contains("Blue") && warnings[0].message.contains("Green"),
-        "warning should list missing variants, got: {}",
-        warnings[0].message
+        errors[0].message.contains("Blue") && errors[0].message.contains("Green"),
+        "error should list missing variants, got: {}",
+        errors[0].message
     );
 }
 

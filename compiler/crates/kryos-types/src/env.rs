@@ -3,7 +3,7 @@
 //! Tracks variable types, function signatures, struct/enum definitions,
 //! trait methods, and impl blocks across nested lexical scopes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ty::Type;
 
@@ -49,6 +49,8 @@ pub struct TraitDef {
 struct Scope {
     /// Variable name -> type
     variables: HashMap<String, Type>,
+    /// Variables declared with `let mut` — assignment allowed.
+    mutable_vars: HashSet<String>,
     /// Function name -> signature
     functions: HashMap<String, FunctionSig>,
     /// Struct name -> definition
@@ -65,6 +67,7 @@ impl Scope {
     fn new() -> Self {
         Self {
             variables: HashMap::new(),
+            mutable_vars: HashSet::new(),
             functions: HashMap::new(),
             structs: HashMap::new(),
             enums: HashMap::new(),
@@ -113,6 +116,23 @@ impl TypeEnv {
     /// Define a variable in the current scope.
     pub fn define_var(&mut self, name: String, ty: Type) {
         self.current_scope_mut().variables.insert(name, ty);
+    }
+
+    /// Define a mutable variable in the current scope.
+    pub fn define_var_mut(&mut self, name: String, ty: Type) {
+        let scope = self.current_scope_mut();
+        scope.variables.insert(name.clone(), ty);
+        scope.mutable_vars.insert(name);
+    }
+
+    /// Check whether a variable is mutable (declared with `let mut`).
+    pub fn is_mutable(&self, name: &str) -> bool {
+        for scope in self.scopes.iter().rev() {
+            if scope.variables.contains_key(name) {
+                return scope.mutable_vars.contains(name);
+            }
+        }
+        false
     }
 
     /// Look up a variable, searching from innermost to outermost scope.
