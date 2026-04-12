@@ -2533,6 +2533,36 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         ret: Type::Str,
     });
 
+    // split(s: str, delimiter: str) -> [str]
+    checker.env.define_function(FunctionSig {
+        name: "split".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("s".to_string(), Type::Str),
+            ("delimiter".to_string(), Type::Str),
+        ],
+        ret: Type::Array {
+            element: Box::new(Type::Str),
+            size: None,
+        },
+    });
+
+    // join(arr: [str], separator: str) -> str
+    checker.env.define_function(FunctionSig {
+        name: "join".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("arr".to_string(), Type::Array {
+                element: Box::new(Type::Str),
+                size: None,
+            }),
+            ("separator".to_string(), Type::Str),
+        ],
+        ret: Type::Str,
+    });
+
     checker.check_module(module);
     checker.diagnostics
 }

@@ -1,0 +1,9 @@
+// expect-stdout: 42
+// expect-stdout: 42
+
+fn main() {
+    let x = 42
+    let y = x
+    println(x)
+    println(y)
+}

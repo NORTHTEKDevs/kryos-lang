@@ -164,6 +164,21 @@ enum PkgAction {
 
     /// Package and publish to the registry
     Publish,
+
+    /// Search the registry for packages
+    Search {
+        /// Search query (substring match)
+        query: String,
+    },
+
+    /// Show package info from the registry
+    Info {
+        /// Package name
+        name: String,
+    },
+
+    /// Sync the registry index
+    Sync,
 }
 
 fn main() {
@@ -210,6 +225,9 @@ fn main() {
             PkgAction::Install => commands::pkg::install(),
             PkgAction::Lock => commands::pkg::lock(),
             PkgAction::Publish => commands::pkg::publish(),
+            PkgAction::Search { query } => commands::pkg::search(&query),
+            PkgAction::Info { name } => commands::pkg::info(&name),
+            PkgAction::Sync => commands::pkg::sync(),
         },
 
         Commands::Lsp => commands::lsp::execute(),

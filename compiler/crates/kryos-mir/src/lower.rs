@@ -332,7 +332,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("to_upper", MirType::Str),
         ("to_lower", MirType::Str),
         ("replace", MirType::Str),
-        ("split", MirType::I64),      // returns array handle
+        ("split", MirType::Array(Box::new(MirType::Str), None)),
         ("join", MirType::Str),
         ("type_of", MirType::Str),
         ("format", MirType::Str),

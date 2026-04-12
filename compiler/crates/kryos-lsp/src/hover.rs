@@ -158,6 +158,8 @@ fn builtin_fn_info(word: &str) -> Option<String> {
         "to_upper" => "```kryos\nfn to_upper(s: str) -> str\n```\nConvert all characters in the string to uppercase.".to_string(),
         "to_lower" => "```kryos\nfn to_lower(s: str) -> str\n```\nConvert all characters in the string to lowercase.".to_string(),
         "replace" => "```kryos\nfn replace(s: str, from: str, to: str) -> str\n```\nReplace all occurrences of `from` with `to` in the string.".to_string(),
+        "split" => "```kryos\nfn split(s: str, delimiter: str) -> [str]\n```\nSplit a string by delimiter, returning an array of strings.".to_string(),
+        "join" => "```kryos\nfn join(arr: [str], separator: str) -> str\n```\nJoin an array of strings with a separator.".to_string(),
         // Math
         "abs" => "```kryos\nfn abs(x) -> i64/f64\n```\nReturn the absolute value of a number.".to_string(),
         "min" => "```kryos\nfn min(a: i64, b: i64) -> i64\n```\nReturn the smaller of two values.".to_string(),

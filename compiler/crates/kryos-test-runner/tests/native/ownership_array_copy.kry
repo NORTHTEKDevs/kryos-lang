@@ -1,0 +1,9 @@
+// expect-stdout: 3
+// expect-stdout: 3
+
+fn main() {
+    let a = [1, 2, 3]
+    let b = a
+    println(len(a))
+    println(len(b))
+}

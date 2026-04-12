@@ -332,6 +332,68 @@ pub fn publish() -> Result<(), String> {
     Ok(())
 }
 
+/// `kryos pkg search <query>` — search the registry for packages.
+pub fn search(query: &str) -> Result<(), String> {
+    let client = kryos_package::RegistryClient::new();
+
+    let results = client.search(query)?;
+
+    if results.is_empty() {
+        eprintln!("no packages found matching `{query}`");
+    } else {
+        eprintln!("packages matching `{query}`:");
+        for name in &results {
+            // Try to get version info.
+            if let Ok(Some(entries)) = client.lookup(name) {
+                if let Some(latest) = entries.last() {
+                    eprintln!("  {name} v{}", latest.version);
+                } else {
+                    eprintln!("  {name}");
+                }
+            } else {
+                eprintln!("  {name}");
+            }
+        }
+        eprintln!("{} package{} found", results.len(), if results.len() == 1 { "" } else { "s" });
+    }
+
+    Ok(())
+}
+
+/// `kryos pkg info <name>` — show package info from the registry.
+pub fn info(name: &str) -> Result<(), String> {
+    let client = kryos_package::RegistryClient::new();
+
+    match client.lookup(name)? {
+        Some(entries) => {
+            eprintln!("{name}");
+            eprintln!("  versions:");
+            for entry in &entries {
+                eprintln!("    v{}", entry.version);
+            }
+            if let Some(latest) = entries.last() {
+                eprintln!("  latest: v{}", latest.version);
+                eprintln!("  checksum: {}", latest.checksum);
+            }
+        }
+        None => {
+            eprintln!("package `{name}` not found in registry");
+            eprintln!("  try `kryos pkg sync` to update the index");
+        }
+    }
+
+    Ok(())
+}
+
+/// `kryos pkg sync` — sync the registry index.
+pub fn sync() -> Result<(), String> {
+    eprintln!("syncing registry index...");
+    let client = kryos_package::RegistryClient::new();
+    client.sync()?;
+    eprintln!("registry index up to date");
+    Ok(())
+}
+
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 fn load_manifest(path: &Path) -> Result<Manifest, String> {

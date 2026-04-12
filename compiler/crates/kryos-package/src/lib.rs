@@ -14,3 +14,4 @@ pub use manifest::{Manifest, PackageInfo, DepSpec, CapabilitiesConfig, BuildConf
 pub use semver::{Version, VersionReq, Op};
 pub use resolve::{resolve, ResolvedGraph, ResolvedPackage, PackageSource, PackageRegistry, AvailablePackage, ResolveError};
 pub use lock::{LockFile, LockEntry};
+pub use registry::{RegistryClient, RegistryConfig, RegistryEntry};

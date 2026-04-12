@@ -96,6 +96,8 @@ pub fn get_completions(source: &str, line: u32, character: u32) -> Vec<Value> {
         ("to_upper", "fn(s: str) -> str", "Convert string to uppercase"),
         ("to_lower", "fn(s: str) -> str", "Convert string to lowercase"),
         ("replace", "fn(s: str, from: str, to: str) -> str", "Replace occurrences in string"),
+        ("split", "fn(s: str, delimiter: str) -> [str]", "Split string by delimiter"),
+        ("join", "fn(arr: [str], separator: str) -> str", "Join array of strings with separator"),
         // Math
         ("abs", "fn(x) -> i64/f64", "Absolute value"),
         ("min", "fn(a: i64, b: i64) -> i64", "Return the smaller value"),

@@ -1,0 +1,119 @@
+// markdown.kry — A simple Markdown-to-text converter
+//
+// Demonstrates string manipulation, control flow, loops, and
+// helper functions by stripping basic Markdown formatting.
+
+fn strip_prefix(text: str, prefix: str) -> str {
+    let plen = len(prefix)
+    if len(text) >= plen {
+        let head = substr(text, 0, plen)
+        if head == prefix {
+            return substr(text, plen, len(text))
+        }
+    }
+    return text
+}
+
+fn repeat_char(ch: str, n: i64) -> str {
+    let mut result = ""
+    let mut i = 0
+    while i < n {
+        result = result + ch
+        i = i + 1
+    }
+    return result
+}
+
+fn process_heading(line: str) -> str {
+    // Count leading '#' characters
+    let mut level = 0
+    while level < len(line) {
+        let ch = substr(line, level, level + 1)
+        if ch != "#" {
+            // done counting
+            level = level  // no-op to break
+            let title = strip_prefix(line, repeat_char("#", level))
+            let title2 = strip_prefix(title, " ")
+            let underline = repeat_char("=", len(title2))
+            if level == 1 {
+                return to_upper(title2) + "\n" + underline
+            }
+            return title2 + "\n" + repeat_char("-", len(title2))
+        }
+        level = level + 1
+    }
+    return line
+}
+
+fn process_line(line: str) -> str {
+    if len(line) == 0 {
+        return ""
+    }
+
+    // Headings
+    let first = substr(line, 0, 1)
+    if first == "#" {
+        return process_heading(line)
+    }
+
+    // Unordered list items: "- item" -> "  * item"
+    if len(line) >= 2 {
+        let prefix2 = substr(line, 0, 2)
+        if prefix2 == "- " {
+            let rest = substr(line, 2, len(line))
+            return "  * " + rest
+        }
+    }
+
+    // Blockquotes: "> text" -> "  | text"
+    if len(line) >= 2 {
+        let prefix2 = substr(line, 0, 2)
+        if prefix2 == "> " {
+            let rest = substr(line, 2, len(line))
+            return "  | " + rest
+        }
+    }
+
+    // Horizontal rule
+    if line == "---" or line == "***" or line == "___" {
+        return repeat_char("-", 40)
+    }
+
+    // Plain text — pass through
+    return line
+}
+
+fn main() {
+    println("=== Kryos Markdown Processor ===")
+    println("")
+
+    // Simulate a Markdown document as an array of lines
+    let doc = [
+        "# Welcome to Kryos",
+        "",
+        "Kryos is a modern systems programming language designed for",
+        "clarity, safety, and performance.",
+        "",
+        "## Features",
+        "",
+        "- Pattern matching",
+        "- Ownership system",
+        "- Channel-based concurrency",
+        "- Native compilation via Cranelift",
+        "",
+        "## Philosophy",
+        "",
+        "> Write code that is clear today and correct tomorrow.",
+        "",
+        "---",
+        "",
+        "Built with care.",
+    ]
+
+    let mut i = 0
+    while i < len(doc) {
+        let output = process_line(doc[i])
+        println(output)
+        i = i + 1
+    }
+}

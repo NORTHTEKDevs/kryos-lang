@@ -293,8 +293,10 @@ impl OwnershipAnalyzer {
             // Struct literal: copy if the struct is annotated @copy.
             Expr::StructLiteral { name, .. } => self.copy_structs.contains(name),
 
-            // Empty array literals are implicitly copy (they contain no data).
-            Expr::ArrayLiteral { elements, .. } => elements.is_empty(),
+            // Array handles are pointer-sized values (i64) — copying the handle
+            // aliases the backing store.  Safe because array lifetime is managed
+            // by the runtime (GC / ARC).
+            Expr::ArrayLiteral { .. } => true,
 
             _ => false,
         }
@@ -1276,6 +1278,10 @@ impl OwnershipAnalyzer {
             // Function values are copy — bare function pointers are i64,
             // and closure envs are ARC-managed (retain on copy, release on drop).
             kryos_ast::TypeExpr::Function { .. } => true,
+            // Arrays are heap-allocated and passed as i64 handles (pointer copy).
+            // Copying the handle aliases the backing store — safe because the
+            // runtime manages array lifetime via the GC / ARC layer.
+            kryos_ast::TypeExpr::Array { .. } => true,
             // References, shared, weak are not copy.
             _ => false,
         }

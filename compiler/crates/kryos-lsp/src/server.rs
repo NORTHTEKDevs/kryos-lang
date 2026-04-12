@@ -17,6 +17,8 @@ pub struct LspServer {
     initialized: bool,
     /// Whether shutdown was requested.
     shutdown_requested: bool,
+    /// Workspace root URI from the initialize request (e.g. "file:///C:/project").
+    workspace_root: Option<String>,
 }
 
 impl LspServer {
@@ -25,6 +27,7 @@ impl LspServer {
             documents: HashMap::new(),
             initialized: false,
             shutdown_requested: false,
+            workspace_root: None,
         }
     }
 
@@ -73,6 +76,19 @@ impl LspServer {
         match method {
             "initialize" => {
                 self.initialized = true;
+                // Capture workspace root URI for cross-file features.
+                // Try rootUri first (LSP 3.x), fall back to rootPath.
+                if let Some(root_uri) = params.get("rootUri").and_then(|v| v.as_str()) {
+                    self.workspace_root = Some(root_uri.to_string());
+                } else if let Some(root_path) = params.get("rootPath").and_then(|v| v.as_str()) {
+                    // Convert rootPath to a URI
+                    let normalized = root_path.replace('\\', "/");
+                    if normalized.starts_with('/') {
+                        self.workspace_root = Some(format!("file://{normalized}"));
+                    } else {
+                        self.workspace_root = Some(format!("file:///{normalized}"));
+                    }
+                }
                 Some(protocol::make_response(id.clone(), serde_json::json!({
                     "capabilities": {
                         "textDocumentSync": {
@@ -128,13 +144,28 @@ impl LspServer {
                 let character = params.pointer("/position/character")?.as_u64()? as u32;
 
                 if let Some(source) = self.documents.get(uri) {
+                    // First: try to find the definition in the current file.
                     if let Some(location) = goto_def::goto_definition(source, line, character) {
                         let mut result = location;
                         result["uri"] = Value::String(uri.to_string());
-                        Some(protocol::make_response(id.clone(), result))
-                    } else {
-                        Some(protocol::make_response(id.clone(), Value::Null))
+                        return Some(protocol::make_response(id.clone(), result));
                     }
+
+                    // Second: cross-file lookup — scan workspace .kry files.
+                    if let Some(ref workspace_root) = self.workspace_root {
+                        if let Some(word) = goto_def::word_at_position(source, line, character) {
+                            if let Some(location) = goto_def::goto_definition_cross_file(
+                                &word,
+                                uri,
+                                workspace_root,
+                                &self.documents,
+                            ) {
+                                return Some(protocol::make_response(id.clone(), location));
+                            }
+                        }
+                    }
+
+                    Some(protocol::make_response(id.clone(), Value::Null))
                 } else {
                     Some(protocol::make_response(id.clone(), Value::Null))
                 }

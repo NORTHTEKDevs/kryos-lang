@@ -5,6 +5,12 @@
 
 use crate::string::kryos_string_new;
 
+/// Safely convert raw bytes to a &str. Returns empty string on invalid UTF-8.
+unsafe fn bytes_to_str<'a>(ptr: *const u8, len: usize) -> &'a str {
+    let slice = std::slice::from_raw_parts(ptr, len);
+    std::str::from_utf8(slice).unwrap_or("")
+}
+
 /// Generic `len()` for any Kryos collection.
 ///
 /// Works because KryosString, KryosArray, and MapHeader all have `len: i64`
@@ -628,6 +634,62 @@ pub extern "C" fn kryos_builtin_replace(s: i64, from: i64, to_str: i64) -> i64 {
     let ks_f = from as *const crate::string::KryosString;
     let ks_t = to_str as *const crate::string::KryosString;
     unsafe { crate::string::kryos_string_replace(ks_s, ks_f, ks_t) as i64 }
+}
+
+// ---------------------------------------------------------------------------
+// String split / join builtins
+// ---------------------------------------------------------------------------
+
+/// `split(s, delimiter)` — Split a string by delimiter, returning a [str] array.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_split(s: i64, delimiter: i64) -> i64 {
+    if s == 0 || delimiter == 0 {
+        // Return an empty array.
+        return unsafe { crate::array::kryos_array_new(8, 0) as i64 };
+    }
+    let ks_s = s as *const crate::string::KryosString;
+    let ks_d = delimiter as *const crate::string::KryosString;
+    unsafe {
+        let s_str = bytes_to_str((*ks_s).data, (*ks_s).len as usize);
+        let d_str = bytes_to_str((*ks_d).data, (*ks_d).len as usize);
+        let parts: Vec<&str> = s_str.split(d_str).collect();
+        let arr = crate::array::kryos_array_new(8, parts.len() as i64);
+        for part in &parts {
+            let ks = crate::string::kryos_string_new(part.as_ptr(), part.len() as i64);
+            crate::array::kryos_array_push(arr, ks as i64);
+        }
+        arr as i64
+    }
+}
+
+/// `join(arr, separator)` — Join an array of strings with a separator, returning a new string.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_join(arr_handle: i64, sep: i64) -> i64 {
+    if arr_handle == 0 {
+        return unsafe { kryos_string_new(std::ptr::null(), 0) as i64 };
+    }
+    let arr = arr_handle as *const crate::array::KryosArray;
+    let sep_str = if sep == 0 {
+        ""
+    } else {
+        let ks_sep = sep as *const crate::string::KryosString;
+        unsafe { bytes_to_str((*ks_sep).data, (*ks_sep).len as usize) }
+    };
+    unsafe {
+        let len = crate::array::kryos_array_len(arr);
+        let mut parts: Vec<&str> = Vec::new();
+        for i in 0..len {
+            let elem = crate::array::kryos_array_get(arr, i);
+            if elem == 0 {
+                parts.push("");
+            } else {
+                let ks = elem as *const crate::string::KryosString;
+                parts.push(bytes_to_str((*ks).data, (*ks).len as usize));
+            }
+        }
+        let joined = parts.join(sep_str);
+        kryos_string_new(joined.as_ptr(), joined.len() as i64) as i64
+    }
 }
 
 // ---------------------------------------------------------------------------

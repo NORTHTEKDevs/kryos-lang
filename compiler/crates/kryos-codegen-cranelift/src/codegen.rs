@@ -2202,6 +2202,8 @@ fn translate_rvalue<M: Module>(
                 "to_upper"     => ("kryos_builtin_to_upper", 1),
                 "to_lower"     => ("kryos_builtin_to_lower", 1),
                 "replace"      => ("kryos_builtin_replace", 3),
+                "split"        => ("kryos_builtin_split", 2),
+                "join"         => ("kryos_builtin_join", 2),
                 "push"         => ("kryos_builtin_push", 2),
                 "pop"          => ("kryos_builtin_pop", 1),
                 "int"          => ("kryos_builtin_int", 1),

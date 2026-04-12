@@ -154,6 +154,175 @@ pub fn generate_index_entry(pkg: &PublishPackage) -> String {
     )
 }
 
+// ─── registry client ───────────────────────────────────────────────────────
+
+/// Client for querying the local registry index cache.
+pub struct RegistryClient {
+    config: RegistryConfig,
+}
+
+impl RegistryClient {
+    /// Create a new registry client with default configuration.
+    pub fn new() -> Self {
+        Self {
+            config: RegistryConfig::default(),
+        }
+    }
+
+    /// Create a registry client with custom configuration.
+    pub fn with_config(config: RegistryConfig) -> Self {
+        Self { config }
+    }
+
+    /// Sync (clone or pull) the registry index to the local cache.
+    pub fn sync(&self) -> Result<(), String> {
+        let cache = &self.config.cache_dir;
+        std::fs::create_dir_all(cache)
+            .map_err(|e| format!("failed to create cache dir: {e}"))?;
+
+        let index_dir = cache.join("index");
+        if index_dir.exists() {
+            // Pull latest.
+            let output = std::process::Command::new("git")
+                .args(["pull", "--ff-only"])
+                .current_dir(&index_dir)
+                .output()
+                .map_err(|e| format!("git pull failed: {e}"))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("registry sync failed: {stderr}"));
+            }
+        } else {
+            // Clone fresh.
+            let output = std::process::Command::new("git")
+                .args(["clone", "--depth", "1", &self.config.url])
+                .arg(&index_dir)
+                .output()
+                .map_err(|e| format!("git clone failed: {e}"))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("registry clone failed: {stderr}"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Look up a package in the local index cache.
+    /// Index layout: `<first-two-chars>/<name>.json`
+    pub fn lookup(&self, name: &str) -> Result<Option<Vec<RegistryEntry>>, String> {
+        let index_dir = self.config.cache_dir.join("index");
+        if !index_dir.exists() {
+            return Err("registry not synced — run `kryos pkg sync` first".to_string());
+        }
+
+        let prefix = if name.len() >= 2 {
+            &name[..2]
+        } else {
+            name
+        };
+
+        let json_path = index_dir.join(prefix).join(format!("{name}.json"));
+        if !json_path.exists() {
+            return Ok(None);
+        }
+
+        let content = std::fs::read_to_string(&json_path)
+            .map_err(|e| format!("failed to read index entry: {e}"))?;
+
+        // Parse newline-delimited JSON entries (one per version).
+        let mut entries = Vec::new();
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some(entry) = parse_index_entry(line, name) {
+                entries.push(entry);
+            }
+        }
+
+        if entries.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(entries))
+        }
+    }
+
+    /// Search for packages matching a query string (substring match on name).
+    pub fn search(&self, query: &str) -> Result<Vec<String>, String> {
+        let index_dir = self.config.cache_dir.join("index");
+        if !index_dir.exists() {
+            return Err("registry not synced — run `kryos pkg sync` first".to_string());
+        }
+
+        let query_lower = query.to_lowercase();
+        let mut results = Vec::new();
+
+        // Walk the index directory looking for matching .json files.
+        if let Ok(entries) = std::fs::read_dir(&index_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() && path.file_name().map(|n| n != ".git").unwrap_or(false) {
+                    if let Ok(sub_entries) = std::fs::read_dir(&path) {
+                        for sub in sub_entries.flatten() {
+                            let sub_path = sub.path();
+                            if sub_path.extension().map(|e| e == "json").unwrap_or(false) {
+                                if let Some(name) = sub_path.file_stem() {
+                                    let name_str = name.to_string_lossy();
+                                    if name_str.to_lowercase().contains(&query_lower) {
+                                        results.push(name_str.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        results.sort();
+        Ok(results)
+    }
+}
+
+/// Parse a single JSON index entry line.
+/// Minimal parser — avoids serde dependency.
+fn parse_index_entry(json: &str, name: &str) -> Option<RegistryEntry> {
+    // Extract version field.
+    let version_str = extract_json_string(json, "version")?;
+    let version = version_str.parse::<Version>().ok()?;
+
+    let checksum = extract_json_string(json, "checksum").unwrap_or_default();
+
+    // Extract download_url if present.
+    let download_url = extract_json_string(json, "download_url")
+        .unwrap_or_else(|| format!("{}/releases/download/v{}/{}-{}.tar.gz",
+            DEFAULT_REGISTRY.trim_end_matches(".git"),
+            version, name, version));
+
+    Some(RegistryEntry {
+        name: name.to_string(),
+        version,
+        checksum,
+        dependencies: HashMap::new(), // TODO: parse deps object
+        download_url,
+    })
+}
+
+/// Extract a string value from a JSON object by key.
+/// Minimal parser — no serde dependency.
+fn extract_json_string(json: &str, key: &str) -> Option<String> {
+    let pattern = format!("\"{}\"", key);
+    let start = json.find(&pattern)?;
+    let after_key = &json[start + pattern.len()..];
+    // Skip `: "`
+    let colon = after_key.find('"')?;
+    let value_start = colon + 1;
+    let after_value_start = &after_key[value_start..];
+    let value_end = after_value_start.find('"')?;
+    Some(after_value_start[..value_end].to_string())
+}
+
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 fn collect_kry_files(

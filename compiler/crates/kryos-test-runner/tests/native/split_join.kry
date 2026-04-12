@@ -1,0 +1,13 @@
+// expect-stdout: hello
+// expect-stdout: world
+// expect-stdout: hello-world
+// expect-stdout: 2
+
+fn main() {
+    let parts = split("hello world", " ")
+    println(parts[0])
+    println(parts[1])
+    let joined = join(parts, "-")
+    println(joined)
+    println(to_string(len(parts)))
+}

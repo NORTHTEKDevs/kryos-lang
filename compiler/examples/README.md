@@ -18,6 +18,7 @@ cargo run --release -- run examples/<name>.kry
 | `shapes.kry` | Shape enum (Circle, Rectangle, Triangle) with area, perimeter, and size classification |
 | `channels.kry` | Spawn 3 concurrent workers that send results on a channel, main collects and sums |
 | `proof.kry` | Comprehensive proof program exercising 17 language features end-to-end |
+| `markdown.kry` | Markdown-to-text converter demonstrating string manipulation, helpers, loops |
 
 ## Language Features Covered
 
