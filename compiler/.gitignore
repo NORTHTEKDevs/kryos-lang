@@ -1,4 +1,32 @@
+# Build artifacts
 /target/
 *.exe
 *.pdb
 *.obj
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Kryos package manager
+.kryos/
+kryos.lock
+
+# Test scratch files
+/scratch/
+
+# Python cache (from test tooling)
+__pycache__/
+.pytest_cache/

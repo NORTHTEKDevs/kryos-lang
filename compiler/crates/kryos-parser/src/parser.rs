@@ -1503,18 +1503,16 @@ impl Parser {
             self.expect(TokenKind::Colon);
             let value = self.parse_expr();
             fields.push((fname, value));
-            if !self.check(TokenKind::RBrace) {
-                if !self.eat(TokenKind::Comma) {
-                    let span = self.peek().span;
-                    if self.check(TokenKind::Ident) || self.check(TokenKind::TypeIdent) {
-                        self.diagnostics.push(
-                            Diagnostic::error("expected `,` or `}` in struct literal".to_string())
-                                .with_label(span, "here")
-                                .with_note("did you forget a comma between fields?"),
-                        );
-                    } else {
-                        self.error(format!("expected `,` or `}}`, found {}", self.peek_kind()), span);
-                    }
+            if !self.check(TokenKind::RBrace) && !self.eat(TokenKind::Comma) {
+                let span = self.peek().span;
+                if self.check(TokenKind::Ident) || self.check(TokenKind::TypeIdent) {
+                    self.diagnostics.push(
+                        Diagnostic::error("expected `,` or `}` in struct literal".to_string())
+                            .with_label(span, "here")
+                            .with_note("did you forget a comma between fields?"),
+                    );
+                } else {
+                    self.error(format!("expected `,` or `}}`, found {}", self.peek_kind()), span);
                 }
             }
         }

@@ -157,6 +157,7 @@ pub fn generate_index_entry(pkg: &PublishPackage) -> String {
 // ─── registry client ───────────────────────────────────────────────────────
 
 /// Client for querying the local registry index cache.
+#[derive(Default)]
 pub struct RegistryClient {
     config: RegistryConfig,
 }
@@ -164,9 +165,7 @@ pub struct RegistryClient {
 impl RegistryClient {
     /// Create a new registry client with default configuration.
     pub fn new() -> Self {
-        Self {
-            config: RegistryConfig::default(),
-        }
+        Self::default()
     }
 
     /// Create a registry client with custom configuration.
