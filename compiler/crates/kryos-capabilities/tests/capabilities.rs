@@ -227,6 +227,7 @@ fn attenuation_child_subset_of_parent_no_error() {
             span: span(),
         }],
         annotations: vec![ann("capabilities", vec!["net", "io"])],
+        doc_comments: vec![],
         span: span(),
     }]);
 

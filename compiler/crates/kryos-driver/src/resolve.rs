@@ -192,7 +192,7 @@ pub fn extract_imports(module: &Module) -> Vec<(ImportPath, kryos_errors::Span)>
         .declarations
         .iter()
         .filter_map(|decl| {
-            if let Decl::Import { path, span } = decl {
+            if let Decl::Import { path, span, .. } = decl {
                 Some((path.clone(), *span))
             } else {
                 None

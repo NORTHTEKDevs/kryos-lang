@@ -112,8 +112,11 @@ impl Formatter {
             Decl::Enum { doc_comments, .. } |
             Decl::Trait { doc_comments, .. } |
             Decl::Impl { doc_comments, .. } |
-            Decl::Const { doc_comments, .. } => self.fmt_doc_comments(doc_comments),
-            _ => {}
+            Decl::Const { doc_comments, .. } |
+            Decl::Actor { doc_comments, .. } |
+            Decl::TypeAlias { doc_comments, .. } |
+            Decl::Import { doc_comments, .. } |
+            Decl::Extern { doc_comments, .. } => self.fmt_doc_comments(doc_comments),
         }
 
         match decl {

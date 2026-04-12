@@ -103,6 +103,7 @@ pub enum Decl {
         state_fields: Vec<StructField>,
         handlers: Vec<MessageHandler>,
         annotations: Vec<Annotation>,
+        doc_comments: Vec<String>,
         span: Span,
     },
     TypeAlias {
@@ -110,12 +111,14 @@ pub enum Decl {
         generics: Vec<GenericParam>,
         ty: TypeExpr,
         public: bool,
+        doc_comments: Vec<String>,
         span: Span,
     },
-    Import { path: ImportPath, span: Span },
+    Import { path: ImportPath, doc_comments: Vec<String>, span: Span },
     Extern {
         abi: String,
         items: Vec<Decl>,
+        doc_comments: Vec<String>,
         span: Span,
     },
     /// Top-level constant: `let NAME = expr`

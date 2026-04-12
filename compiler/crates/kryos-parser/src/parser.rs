@@ -280,10 +280,10 @@ impl Parser {
             TokenKind::Enum => Some(self.parse_enum_decl(public, annotations, doc_comments)),
             TokenKind::Trait => Some(self.parse_trait_decl(public, doc_comments)),
             TokenKind::Impl => Some(self.parse_impl_decl(doc_comments)),
-            TokenKind::Actor => Some(self.parse_actor_decl(annotations)),
-            TokenKind::Type => Some(self.parse_type_alias(public)),
-            TokenKind::Use => Some(self.parse_import()),
-            TokenKind::Extern => Some(self.parse_extern()),
+            TokenKind::Actor => Some(self.parse_actor_decl(annotations, doc_comments)),
+            TokenKind::Type => Some(self.parse_type_alias(public, doc_comments)),
+            TokenKind::Use => Some(self.parse_import(doc_comments)),
+            TokenKind::Extern => Some(self.parse_extern(doc_comments)),
             TokenKind::Let => Some(self.parse_const_decl(public, doc_comments)),
             _ => {
                 if !annotations.is_empty() || public {
@@ -574,7 +574,7 @@ impl Parser {
         }
     }
 
-    fn parse_actor_decl(&mut self, annotations: Vec<Annotation>) -> Decl {
+    fn parse_actor_decl(&mut self, annotations: Vec<Annotation>, doc_comments: Vec<String>) -> Decl {
         let kw = self.expect(TokenKind::Actor);
         let start = kw.span;
         let (name, _) = self.expect_name();
@@ -629,11 +629,12 @@ impl Parser {
             state_fields,
             handlers,
             annotations,
+            doc_comments,
             span: start.merge(rbrace.span),
         }
     }
 
-    fn parse_type_alias(&mut self, public: bool) -> Decl {
+    fn parse_type_alias(&mut self, public: bool, doc_comments: Vec<String>) -> Decl {
         let kw = self.expect(TokenKind::Type);
         let start = kw.span;
         let (name, _) = self.expect_name();
@@ -646,6 +647,7 @@ impl Parser {
             generics,
             ty,
             public,
+            doc_comments,
             span: start.merge(end),
         }
     }
@@ -674,7 +676,7 @@ impl Parser {
         }
     }
 
-    fn parse_import(&mut self) -> Decl {
+    fn parse_import(&mut self, doc_comments: Vec<String>) -> Decl {
         let kw = self.expect(TokenKind::Use);
         let start = kw.span;
         let mut segments = Vec::new();
@@ -702,6 +704,7 @@ impl Parser {
                         items,
                         span: start.merge(rbrace.span),
                     },
+                    doc_comments,
                     span: start.merge(rbrace.span),
                 };
             }
@@ -724,11 +727,12 @@ impl Parser {
                 items: Vec::new(),
                 span: start.merge(end),
             },
+            doc_comments,
             span: start.merge(end),
         }
     }
 
-    fn parse_extern(&mut self) -> Decl {
+    fn parse_extern(&mut self, doc_comments: Vec<String>) -> Decl {
         let kw = self.expect(TokenKind::Extern);
         let start = kw.span;
 
@@ -748,6 +752,7 @@ impl Parser {
         Decl::Extern {
             abi,
             items,
+            doc_comments,
             span: start.merge(rbrace.span),
         }
     }

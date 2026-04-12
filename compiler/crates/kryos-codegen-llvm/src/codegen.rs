@@ -236,6 +236,9 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_map_get_str(i64, i64)");
         self.emit_line("declare i64 @kryos_map_len(i64)");
         self.emit_line("declare void @kryos_map_free(i64)");
+        self.emit_line("declare i64 @kryos_map_clone(i64)");
+        self.emit_line("declare ptr @kryos_string_clone(ptr)");
+        self.emit_line("declare ptr @kryos_array_clone(ptr)");
         self.emit_line("; Builtin runtime");
         self.emit_line("declare i64 @kryos_builtin_len(i64)");
         self.emit_line("declare i64 @kryos_builtin_to_string(i64)");
@@ -650,23 +653,45 @@ impl LlvmCodegen {
                 ));
             }
             Instruction::Drop { local } => {
-                // For string locals, call kryos_string_free to release the heap allocation.
-                let is_str = func
+                let local_ty = func
                     .locals
                     .iter()
                     .find(|l| l.id == *local)
-                    .is_some_and(|l| l.ty == MirType::Str);
-                if is_str {
-                    let val = if self.mutable_locals.contains(&local.0) {
-                        let tmp = self.next_temp();
-                        self.emit_line(&format!("  {tmp} = load ptr, ptr %_{}.addr", local.0));
-                        tmp
-                    } else {
-                        format!("%_{}", local.0)
-                    };
-                    self.emit_line(&format!("  call void @kryos_string_free(ptr {val})"));
+                    .map(|l| l.ty.clone());
+                let val = if self.mutable_locals.contains(&local.0) {
+                    let tmp = self.next_temp();
+                    self.emit_line(&format!("  {tmp} = load ptr, ptr %_{}.addr", local.0));
+                    tmp
                 } else {
-                    self.emit_line("  ; drop (no-op)");
+                    format!("%_{}", local.0)
+                };
+                match local_ty.as_ref() {
+                    Some(MirType::Str) => {
+                        self.emit_line(&format!("  call void @kryos_string_free(ptr {val})"));
+                    }
+                    Some(MirType::Array(_, _)) => {
+                        self.emit_line(&format!("  call void @kryos_array_free(ptr {val})"));
+                    }
+                    Some(MirType::Function { .. }) => {
+                        self.emit_line(&format!("  call void @kryos_arc_release(ptr {val})"));
+                    }
+                    Some(MirType::Struct(name)) if name == "Map" => {
+                        // Map uses i64 handle, coerce ptr to i64 for the call.
+                        let i64_val = self.next_temp();
+                        self.emit_line(&format!("  {i64_val} = ptrtoint ptr {val} to i64"));
+                        self.emit_line(&format!("  call void @kryos_map_free(i64 {i64_val})"));
+                    }
+                    Some(MirType::Struct(name)) => {
+                        // Recursively free heap-allocated fields, then free the struct.
+                        self.emit_struct_drop(&val, name, func);
+                        self.emit_line(&format!("  call void @free(ptr {val})"));
+                    }
+                    Some(MirType::Enum(name)) => {
+                        self.emit_enum_drop(&val, name, func);
+                    }
+                    _ => {
+                        self.emit_line("  ; drop (no-op)");
+                    }
                 }
             }
             Instruction::StoreDeref { ptr, value } => {
@@ -2331,6 +2356,192 @@ impl LlvmCodegen {
 
     fn emit_blank(&mut self) {
         self.output.push('\n');
+    }
+
+    // -----------------------------------------------------------------------
+    // Drop helpers
+    // -----------------------------------------------------------------------
+
+    /// Emit drop logic for a struct value: recursively free heap-allocated
+    /// fields (strings, arrays, maps, enums, nested structs), then free the
+    /// struct pointer itself.
+    fn emit_struct_drop(&mut self, val: &str, struct_name: &str, _func: &MirFunction) {
+        let struct_def = match self.struct_defs.get(struct_name).cloned() {
+            Some(def) => def,
+            None => return,
+        };
+
+        for (field_idx, (_field_name, field_ty)) in struct_def.iter().enumerate() {
+            match field_ty {
+                MirType::Str => {
+                    let gep = self.next_temp();
+                    let fv = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {gep} = getelementptr i64, ptr {val}, i32 {field_idx}"
+                    ));
+                    self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                    self.emit_line(&format!("  call void @kryos_string_free(ptr {fv})"));
+                }
+                MirType::Array(_, _) => {
+                    let gep = self.next_temp();
+                    let fv = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {gep} = getelementptr i64, ptr {val}, i32 {field_idx}"
+                    ));
+                    self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                    self.emit_line(&format!("  call void @kryos_array_free(ptr {fv})"));
+                }
+                MirType::Function { .. } => {
+                    let gep = self.next_temp();
+                    let fv = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {gep} = getelementptr i64, ptr {val}, i32 {field_idx}"
+                    ));
+                    self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                    self.emit_line(&format!("  call void @kryos_arc_release(ptr {fv})"));
+                }
+                MirType::Struct(inner_name) if inner_name == "Map" => {
+                    let gep = self.next_temp();
+                    let fv = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {gep} = getelementptr i64, ptr {val}, i32 {field_idx}"
+                    ));
+                    self.emit_line(&format!("  {fv} = load i64, ptr {gep}"));
+                    self.emit_line(&format!("  call void @kryos_map_free(i64 {fv})"));
+                }
+                MirType::Struct(inner_name) => {
+                    let gep = self.next_temp();
+                    let fv = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {gep} = getelementptr i64, ptr {val}, i32 {field_idx}"
+                    ));
+                    self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                    let inner = inner_name.clone();
+                    self.emit_struct_drop(&fv, &inner, _func);
+                    self.emit_line(&format!("  call void @free(ptr {fv})"));
+                }
+                MirType::Enum(inner_name) => {
+                    let gep = self.next_temp();
+                    let fv = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {gep} = getelementptr i64, ptr {val}, i32 {field_idx}"
+                    ));
+                    self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                    let inner = inner_name.clone();
+                    self.emit_enum_drop(&fv, &inner, _func);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Emit drop logic for an enum value: load the tag, dispatch on it to
+    /// drop heap-owning payload fields for the active variant, then free
+    /// the enum pointer.
+    fn emit_enum_drop(&mut self, val: &str, enum_name: &str, func: &MirFunction) {
+        let variants = match self.enum_defs.get(enum_name).cloned() {
+            Some(v) => v,
+            None => {
+                // Unknown enum — just free the pointer.
+                self.emit_line(&format!("  call void @free(ptr {val})"));
+                return;
+            }
+        };
+
+        let has_droppable = variants.iter().any(|v| {
+            v.fields.iter().any(|f| matches!(f,
+                MirType::Str | MirType::Array(_, _)
+                | MirType::Struct(_) | MirType::Function { .. }
+                | MirType::Enum(_)
+            ))
+        });
+
+        if has_droppable {
+            // Load the tag (i64 at offset 0).
+            let tag = self.next_temp();
+            self.emit_line(&format!("  {tag} = load i64, ptr {val}"));
+
+            let merge_label = format!("enum_drop_merge_{}", self.temp_counter);
+            self.temp_counter += 1;
+
+            for (idx, variant) in variants.iter().enumerate() {
+                let droppable_fields: Vec<(usize, &MirType)> = variant.fields.iter()
+                    .enumerate()
+                    .filter(|(_, f)| matches!(f,
+                        MirType::Str | MirType::Array(_, _)
+                        | MirType::Struct(_) | MirType::Function { .. }
+                        | MirType::Enum(_)
+                    ))
+                    .collect();
+
+                if droppable_fields.is_empty() {
+                    continue;
+                }
+
+                let cmp = self.next_temp();
+                let variant_label = format!("enum_drop_v{}_{}", idx, self.temp_counter);
+                let skip_label = format!("enum_drop_skip{}_{}", idx, self.temp_counter);
+                self.temp_counter += 1;
+
+                self.emit_line(&format!(
+                    "  {cmp} = icmp eq i64 {tag}, {idx}"
+                ));
+                self.emit_line(&format!(
+                    "  br i1 {cmp}, label %{variant_label}, label %{skip_label}"
+                ));
+                self.emit_line(&format!("{variant_label}:"));
+
+                for (field_idx, field_ty) in &droppable_fields {
+                    let offset = (*field_idx + 1) as u32; // +1 to skip tag
+                    let gep = self.next_temp();
+                    let fv = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {gep} = getelementptr i64, ptr {val}, i32 {offset}"
+                    ));
+
+                    match field_ty {
+                        MirType::Str => {
+                            self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                            self.emit_line(&format!("  call void @kryos_string_free(ptr {fv})"));
+                        }
+                        MirType::Array(_, _) => {
+                            self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                            self.emit_line(&format!("  call void @kryos_array_free(ptr {fv})"));
+                        }
+                        MirType::Function { .. } => {
+                            self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                            self.emit_line(&format!("  call void @kryos_arc_release(ptr {fv})"));
+                        }
+                        MirType::Struct(name) if name == "Map" => {
+                            self.emit_line(&format!("  {fv} = load i64, ptr {gep}"));
+                            self.emit_line(&format!("  call void @kryos_map_free(i64 {fv})"));
+                        }
+                        MirType::Struct(name) => {
+                            self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                            let inner = name.clone();
+                            self.emit_struct_drop(&fv, &inner, func);
+                            self.emit_line(&format!("  call void @free(ptr {fv})"));
+                        }
+                        MirType::Enum(name) => {
+                            self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                            let inner = name.clone();
+                            self.emit_enum_drop(&fv, &inner, func);
+                        }
+                        _ => {}
+                    }
+                }
+
+                self.emit_line(&format!("  br label %{merge_label}"));
+                self.emit_line(&format!("{skip_label}:"));
+            }
+
+            // Final skip block falls through to merge.
+            self.emit_line(&format!("  br label %{merge_label}"));
+            self.emit_line(&format!("{merge_label}:"));
+        }
+
+        // Free the heap-allocated enum itself.
+        self.emit_line(&format!("  call void @free(ptr {val})"));
     }
 }
 

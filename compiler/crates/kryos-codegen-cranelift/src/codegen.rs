@@ -1728,8 +1728,15 @@ fn translate_rvalue<M: Module>(
                                         builder.inst_results(call)[0]
                                     }
                                     Some(MirType::Struct(inner_name)) => {
-                                        // Recursively deep-copy nested @copy structs.
-                                        if translator.copy_structs.contains(inner_name) {
+                                        if inner_name == "Map" {
+                                            // Deep-clone maps via kryos_map_clone.
+                                            let clone_ref = ensure_func_ref_with_args(
+                                                "kryos_map_clone", builder, translator, module, 1,
+                                            )?;
+                                            let call = builder.ins().call(clone_ref, &[field_val]);
+                                            builder.inst_results(call)[0]
+                                        } else if translator.copy_structs.contains(inner_name) {
+                                            // Recursively deep-copy nested @copy structs.
                                             if let Some(inner_def) = translator.struct_defs.get(inner_name).cloned() {
                                                 emit_deep_copy_struct(
                                                     field_val, &inner_def, builder, translator, module,
@@ -3599,7 +3606,14 @@ fn emit_deep_copy_struct<M: Module>(
                 builder.inst_results(call)[0]
             }
             Some(MirType::Struct(inner_name)) => {
-                if translator.copy_structs.contains(inner_name) {
+                if inner_name == "Map" {
+                    // Deep-clone maps via kryos_map_clone.
+                    let clone_ref = ensure_func_ref_with_args(
+                        "kryos_map_clone", builder, translator, module, 1,
+                    )?;
+                    let call = builder.ins().call(clone_ref, &[field_val]);
+                    builder.inst_results(call)[0]
+                } else if translator.copy_structs.contains(inner_name) {
                     if let Some(inner_def) = translator.struct_defs.get(inner_name).cloned() {
                         emit_deep_copy_struct(field_val, &inner_def, builder, translator, module)?
                     } else {
@@ -3643,6 +3657,13 @@ fn emit_drop_for_value<M: Module>(
             )?;
             builder.ins().call(release_ref, &[val]);
         }
+        MirType::Struct(ref name) if name == "Map" => {
+            // Maps use their own allocator — call kryos_map_free directly.
+            let free_ref = ensure_func_ref_with_args(
+                "kryos_map_free", builder, translator, module, 1,
+            )?;
+            builder.ins().call(free_ref, &[val]);
+        }
         MirType::Struct(ref name) => {
             // Recursively free heap-allocated fields, then free the struct.
             if let Some(struct_def) = translator.struct_defs.get(name).cloned() {
@@ -3654,7 +3675,8 @@ fn emit_drop_for_value<M: Module>(
                         if let Some(offset) = field_offset {
                             match field_ty {
                                 MirType::Str | MirType::Array(_, _)
-                                | MirType::Struct(_) | MirType::Function { .. } => {
+                                | MirType::Struct(_) | MirType::Function { .. }
+                                | MirType::Enum(_) => {
                                     let field_val = builder.ins().load(
                                         types::I64, MemFlags::new(), val, offset,
                                     );
@@ -3747,8 +3769,12 @@ fn emit_drop_for_value<M: Module>(
                     builder.seal_block(merge_block);
                     builder.switch_to_block(merge_block);
                 }
-                // Enum is stack-allocated — no free() needed for the enum itself.
             }
+            // Enum is heap-allocated via malloc — free the enum pointer.
+            let free_ref = ensure_func_ref_with_args(
+                "free", builder, translator, module, 1,
+            )?;
+            builder.ins().call(free_ref, &[val]);
         }
         _ => {}
     }
@@ -3783,6 +3809,7 @@ fn emit_exception_cleanup_drops<M: Module>(
                 | MirType::Function { .. }
                 | MirType::Struct(_)
                 | MirType::Array(_, _)
+                | MirType::Enum(_)
         ))
         .map(|l| (l.id.0, l.ty.clone()))
         .collect();

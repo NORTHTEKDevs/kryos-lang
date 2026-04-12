@@ -677,6 +677,7 @@ fn actor_state_arc_boundary() {
             }],
             handlers: vec![],
             annotations: vec![],
+            doc_comments: vec![],
             span: Span::new(0, 0, 100),
         }],
         span: dummy_span(),

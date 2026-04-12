@@ -1580,6 +1580,7 @@ fn type_alias_tracked() {
             generics: vec![],
             ty: simple_ty("i64"),
             public: false,
+            doc_comments: vec![],
             span: S,
         },
         make_fn("main", vec![], None, block(vec![])),
@@ -1619,6 +1620,7 @@ fn extern_block_registers_signatures() {
                 doc_comments: vec![],
                 span: S,
             }],
+            doc_comments: vec![],
             span: S,
         },
         make_fn(
@@ -1852,6 +1854,7 @@ fn actor_handlers_lowered() {
                 span: S,
             }],
             annotations: vec![],
+            doc_comments: vec![],
             span: S,
         },
         make_fn("main", vec![], None, block(vec![])),
@@ -2370,6 +2373,7 @@ fn actor_generates_dispatch_and_handlers() {
                 },
             ],
             annotations: vec![],
+            doc_comments: vec![],
             span: S,
         },
         make_fn("main", vec![], None, block(vec![
@@ -2447,6 +2451,7 @@ fn actor_method_call_generates_actor_send() {
                 span: S,
             }],
             annotations: vec![],
+            doc_comments: vec![],
             span: S,
         },
         make_fn("main", vec![], None, block(vec![

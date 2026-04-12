@@ -144,16 +144,19 @@ fn const_to_operand(c: &Constant) -> Operand {
 
 fn eval_binop(op: MirBinOp, left: &Constant, right: &Constant) -> RValue {
     match (op, left, right) {
-        // ----- Integer arithmetic -----
-        (MirBinOp::Add, Constant::Int(a), Constant::Int(b)) => {
-            RValue::ConstInt(a.wrapping_add(*b))
-        }
-        (MirBinOp::Sub, Constant::Int(a), Constant::Int(b)) => {
-            RValue::ConstInt(a.wrapping_sub(*b))
-        }
-        (MirBinOp::Mul, Constant::Int(a), Constant::Int(b)) => {
-            RValue::ConstInt(a.wrapping_mul(*b))
-        }
+        // ----- Integer arithmetic (checked — overflow is unfoldable) -----
+        (MirBinOp::Add, Constant::Int(a), Constant::Int(b)) => match a.checked_add(*b) {
+            Some(v) => RValue::ConstInt(v),
+            None => RValue::BinOp { op, left: const_to_operand(left), right: const_to_operand(right) },
+        },
+        (MirBinOp::Sub, Constant::Int(a), Constant::Int(b)) => match a.checked_sub(*b) {
+            Some(v) => RValue::ConstInt(v),
+            None => RValue::BinOp { op, left: const_to_operand(left), right: const_to_operand(right) },
+        },
+        (MirBinOp::Mul, Constant::Int(a), Constant::Int(b)) => match a.checked_mul(*b) {
+            Some(v) => RValue::ConstInt(v),
+            None => RValue::BinOp { op, left: const_to_operand(left), right: const_to_operand(right) },
+        },
         (MirBinOp::Div, Constant::Int(a), Constant::Int(b)) if *b != 0 => {
             RValue::ConstInt(a / b)
         }
@@ -161,7 +164,10 @@ fn eval_binop(op: MirBinOp, left: &Constant, right: &Constant) -> RValue {
             RValue::ConstInt(a % b)
         }
         (MirBinOp::Pow, Constant::Int(a), Constant::Int(b)) if *b >= 0 => {
-            RValue::ConstInt(a.wrapping_pow(*b as u32))
+            match a.checked_pow(*b as u32) {
+                Some(v) => RValue::ConstInt(v),
+                None => RValue::BinOp { op, left: const_to_operand(left), right: const_to_operand(right) },
+            }
         }
 
         // ----- Float arithmetic -----
@@ -196,12 +202,14 @@ fn eval_binop(op: MirBinOp, left: &Constant, right: &Constant) -> RValue {
         (MirBinOp::BitAnd, Constant::Int(a), Constant::Int(b)) => RValue::ConstInt(a & b),
         (MirBinOp::BitOr, Constant::Int(a), Constant::Int(b)) => RValue::ConstInt(a | b),
         (MirBinOp::BitXor, Constant::Int(a), Constant::Int(b)) => RValue::ConstInt(a ^ b),
-        (MirBinOp::Shl, Constant::Int(a), Constant::Int(b)) => {
-            RValue::ConstInt(a.wrapping_shl(*b as u32))
-        }
-        (MirBinOp::Shr, Constant::Int(a), Constant::Int(b)) => {
-            RValue::ConstInt(a.wrapping_shr(*b as u32))
-        }
+        (MirBinOp::Shl, Constant::Int(a), Constant::Int(b)) => match a.checked_shl(*b as u32) {
+            Some(v) => RValue::ConstInt(v),
+            None => RValue::BinOp { op, left: const_to_operand(left), right: const_to_operand(right) },
+        },
+        (MirBinOp::Shr, Constant::Int(a), Constant::Int(b)) => match a.checked_shr(*b as u32) {
+            Some(v) => RValue::ConstInt(v),
+            None => RValue::BinOp { op, left: const_to_operand(left), right: const_to_operand(right) },
+        },
 
         // ----- String concatenation -----
         (MirBinOp::Add, Constant::Str(a), Constant::Str(b)) => {
@@ -223,7 +231,10 @@ fn eval_binop(op: MirBinOp, left: &Constant, right: &Constant) -> RValue {
 
 fn eval_unop(op: MirUnOp, operand: &Constant) -> RValue {
     match (op, operand) {
-        (MirUnOp::Neg, Constant::Int(v)) => RValue::ConstInt(v.wrapping_neg()),
+        (MirUnOp::Neg, Constant::Int(v)) => match v.checked_neg() {
+            Some(n) => RValue::ConstInt(n),
+            None => RValue::UnOp { op, operand: const_to_operand(operand) },
+        },
         (MirUnOp::Neg, Constant::Float(v)) => RValue::ConstFloat(-v),
         (MirUnOp::Not, Constant::Bool(v)) => RValue::ConstBool(!v),
         (MirUnOp::BitNot, Constant::Int(v)) => RValue::ConstInt(!v),
@@ -442,6 +453,44 @@ mod tests {
         match fold(inner) {
             RValue::ConstInt(99) => {}
             other => panic!("expected ConstInt(99), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fold_int_add_overflow_is_unfoldable() {
+        let rv = RValue::BinOp {
+            op: MirBinOp::Add,
+            left: Operand::Constant(Constant::Int(i64::MAX)),
+            right: Operand::Constant(Constant::Int(1)),
+        };
+        match fold(rv) {
+            RValue::BinOp { .. } => {}
+            other => panic!("expected BinOp (unfoldable), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fold_int_mul_overflow_is_unfoldable() {
+        let rv = RValue::BinOp {
+            op: MirBinOp::Mul,
+            left: Operand::Constant(Constant::Int(i64::MAX)),
+            right: Operand::Constant(Constant::Int(2)),
+        };
+        match fold(rv) {
+            RValue::BinOp { .. } => {}
+            other => panic!("expected BinOp (unfoldable), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fold_int_neg_overflow_is_unfoldable() {
+        let rv = RValue::UnOp {
+            op: MirUnOp::Neg,
+            operand: Operand::Constant(Constant::Int(i64::MIN)),
+        };
+        match fold(rv) {
+            RValue::UnOp { .. } => {}
+            other => panic!("expected UnOp (unfoldable), got {other:?}"),
         }
     }
 

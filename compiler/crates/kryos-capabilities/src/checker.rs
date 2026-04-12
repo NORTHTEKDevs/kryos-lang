@@ -808,6 +808,7 @@ mod tests {
                 span: span(),
             }],
             annotations: vec![ann("capabilities", vec!["net"])],
+            doc_comments: vec![],
             span: span(),
         };
 
