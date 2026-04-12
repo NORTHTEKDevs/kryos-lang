@@ -1700,6 +1700,10 @@ impl LlvmCodegen {
                         self.emit_line(&format!(
                             "  {next_acc} = call ptr @kryos_string_concat(ptr {acc}, ptr {next_val})"
                         ));
+                        // Free the intermediate concat result that was just replaced.
+                        self.emit_line(&format!(
+                            "  call void @kryos_string_free(ptr {acc})"
+                        ));
                         acc = next_acc;
                     }
                     if is_mutable {

@@ -2477,6 +2477,8 @@ fn lower_try_catch(
             field_idx: 0,
         },
     });
+    // Drop the result enum shell (payload was moved out by EnumPayload).
+    ctx.emit(Instruction::Drop { local: result_local });
     ctx.finish_block(Terminator::Goto(merge_bb), err_bb);
 
     // Err path: bind error value to catch_name, execute handler.
@@ -2490,6 +2492,8 @@ fn lower_try_catch(
             field_idx: 0,
         },
     });
+    // Drop the result enum shell (payload was moved out by EnumPayload).
+    ctx.emit(Instruction::Drop { local: result_local });
     lower_block_stmts(ctx, &catch_block.stmts);
     ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
 }

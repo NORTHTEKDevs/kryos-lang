@@ -2700,6 +2700,10 @@ fn translate_rvalue<M: Module>(
                 })
                 .unwrap_or(types::I64);
             let val = builder.ins().load(cl_ty, MemFlags::new(), ptr, offset);
+            // Null out the slot to transfer ownership (move-out semantics).
+            // This prevents double-free when the enum is later dropped.
+            let zero = builder.ins().iconst(types::I64, 0);
+            builder.ins().store(MemFlags::new(), zero, ptr, offset);
             // Widen bools back to i64 for consistency with the rest of codegen.
             let val = if cl_ty == types::I8 {
                 builder.ins().uextend(types::I64, val)
@@ -2801,10 +2805,15 @@ fn translate_rvalue<M: Module>(
                 let second = coerce_to_string(&parts[1], builder, translator, module)?;
                 let call = builder.ins().call(func_ref, &[first, second]);
                 let mut acc = builder.inst_results(call)[0];
+                let free_ref =
+                    ensure_func_ref_with_args("kryos_string_free", builder, translator, module, 1)?;
                 for part in &parts[2..] {
                     let next_val = coerce_to_string(part, builder, translator, module)?;
+                    let old_acc = acc;
                     let call = builder.ins().call(func_ref, &[acc, next_val]);
                     acc = builder.inst_results(call)[0];
+                    // Free the intermediate concat result that was just replaced.
+                    builder.ins().call(free_ref, &[old_acc]);
                 }
                 Ok(Some(acc))
             }
