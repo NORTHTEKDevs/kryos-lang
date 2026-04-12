@@ -669,10 +669,11 @@ impl LlvmCodegen {
                     Some(MirType::Str) => {
                         self.emit_line(&format!("  call void @kryos_string_free(ptr {val})"));
                     }
-                    Some(MirType::Array(_, _)) => {
-                        self.emit_line(&format!("  call void @kryos_array_free(ptr {val})"));
+                    Some(MirType::Array(ref elem_ty, _)) => {
+                        let et = elem_ty.as_ref().clone();
+                        self.emit_array_drop(&val, &et, func);
                     }
-                    Some(MirType::Function { .. }) => {
+                    Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                         self.emit_line(&format!("  call void @kryos_arc_release(ptr {val})"));
                     }
                     Some(MirType::Struct(name)) if name == "Map" => {
@@ -734,8 +735,44 @@ impl LlvmCodegen {
                         self.emit_line(&format!(
                             "  {gep} = getelementptr i64, ptr {arr}, i32 {i}"
                         ));
+                        // Clone heap-typed args for thread ownership.
+                        let arg_ty = match arg {
+                            Operand::Local(id) => func.locals.iter()
+                                .find(|l| l.id == *id).map(|l| l.ty.clone()),
+                            _ => None,
+                        };
+                        let store_val = match arg_ty.as_ref() {
+                            Some(MirType::Str) => {
+                                let cl = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {cl} = call ptr @kryos_string_clone(ptr {val})"
+                                ));
+                                cl
+                            }
+                            Some(MirType::Array(_, _)) => {
+                                let cl = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {cl} = call ptr @kryos_array_clone(ptr {val})"
+                                ));
+                                cl
+                            }
+                            Some(MirType::Struct(n)) if n == "Map" => {
+                                let cl = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {cl} = call i64 @kryos_map_clone(i64 {val})"
+                                ));
+                                cl
+                            }
+                            Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
+                                self.emit_line(&format!(
+                                    "  call void @kryos_arc_retain(ptr {val})"
+                                ));
+                                val
+                            }
+                            _ => val,
+                        };
                         self.emit_line(&format!(
-                            "  store i64 {val}, ptr {gep}"
+                            "  store i64 {store_val}, ptr {gep}"
                         ));
                     }
                     self.emit_line(&format!(
@@ -749,8 +786,45 @@ impl LlvmCodegen {
                 let val_op = Operand::Local(*value);
                 let ch = self.operand_to_llvm(&ch_op, func);
                 let val = self.operand_to_llvm(&val_op, func);
+
+                // Clone heap-typed values before sending to prevent double-free.
+                let val_ty = func.locals.iter()
+                    .find(|l| l.id == *value)
+                    .map(|l| l.ty.clone());
+
+                let send_val = match val_ty.as_ref() {
+                    Some(MirType::Str) => {
+                        let cloned = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {cloned} = call ptr @kryos_string_clone(ptr {val})"
+                        ));
+                        cloned
+                    }
+                    Some(MirType::Array(_, _)) => {
+                        let cloned = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {cloned} = call ptr @kryos_array_clone(ptr {val})"
+                        ));
+                        cloned
+                    }
+                    Some(MirType::Struct(n)) if n == "Map" => {
+                        let cloned = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {cloned} = call i64 @kryos_map_clone(i64 {val})"
+                        ));
+                        cloned
+                    }
+                    Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
+                        self.emit_line(&format!(
+                            "  call void @kryos_arc_retain(ptr {val})"
+                        ));
+                        val
+                    }
+                    _ => val,
+                };
+
                 self.emit_line(&format!(
-                    "  call i64 @kryos_chan_send_i64(i64 {ch}, i64 {val})"
+                    "  call i64 @kryos_chan_send_i64(i64 {ch}, i64 {send_val})"
                 ));
             }
             Instruction::Receive { dest, channel } => {
@@ -802,11 +876,46 @@ impl LlvmCodegen {
                 self.emit_line(&format!(
                     "  call i64 @kryos_actor_send_i64(i64 {actor_val}, i64 {handler_tag})"
                 ));
-                // Send each argument.
+                // Send each argument (clone heap-typed values to prevent double-free).
                 for arg in args {
                     let val = self.operand_to_llvm(arg, func);
+                    let arg_ty = match arg {
+                        Operand::Local(id) => func.locals.iter()
+                            .find(|l| l.id == *id).map(|l| l.ty.clone()),
+                        _ => None,
+                    };
+                    let send_val = match arg_ty.as_ref() {
+                        Some(MirType::Str) => {
+                            let cloned = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {cloned} = call ptr @kryos_string_clone(ptr {val})"
+                            ));
+                            cloned
+                        }
+                        Some(MirType::Array(_, _)) => {
+                            let cloned = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {cloned} = call ptr @kryos_array_clone(ptr {val})"
+                            ));
+                            cloned
+                        }
+                        Some(MirType::Struct(n)) if n == "Map" => {
+                            let cloned = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {cloned} = call i64 @kryos_map_clone(i64 {val})"
+                            ));
+                            cloned
+                        }
+                        Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
+                            self.emit_line(&format!(
+                                "  call void @kryos_arc_retain(ptr {val})"
+                            ));
+                            val
+                        }
+                        _ => val,
+                    };
                     self.emit_line(&format!(
-                        "  call i64 @kryos_actor_send_i64(i64 {actor_val}, i64 {val})"
+                        "  call i64 @kryos_actor_send_i64(i64 {actor_val}, i64 {send_val})"
                     ));
                 }
                 // Unlock.
@@ -1465,11 +1574,15 @@ impl LlvmCodegen {
                         }
                     }
                 } else {
-                    // Allocate closure env: [func_ptr: i64, cap0: i64, cap1: i64, ...]
+                    // Allocate closure env via ARC: [func_ptr: i64, cap0: i64, cap1: i64, ...]
                     let env_size = (1 + captures.len()) * 8;
+                    let env_i64 = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {env_i64} = call i64 @kryos_arc_alloc_i64(i64 {env_size})"
+                    ));
                     let env_ptr = self.next_temp();
                     self.emit_line(&format!(
-                        "  {env_ptr} = call ptr @malloc(i64 {env_size})"
+                        "  {env_ptr} = inttoptr i64 {env_i64} to ptr"
                     ));
                     // Store function pointer at offset 0.
                     let fptr = self.next_temp();
@@ -1478,6 +1591,8 @@ impl LlvmCodegen {
                     ));
                     self.emit_line(&format!("  store i64 {fptr}, ptr {env_ptr}"));
                     // Store each capture at offset (i+1)*8.
+                    // Clone/retain heap-typed captures so the closure owns them
+                    // independently of the original local's lifetime.
                     for (i, cap) in captures.iter().enumerate() {
                         let cap_val = self.operand_to_llvm(cap, func);
                         let cap_ptr = self.next_temp();
@@ -1485,7 +1600,47 @@ impl LlvmCodegen {
                             "  {cap_ptr} = getelementptr i64, ptr {env_ptr}, i64 {}",
                             i + 1
                         ));
-                        self.emit_line(&format!("  store i64 {cap_val}, ptr {cap_ptr}"));
+
+                        let cap_mir_ty = match cap {
+                            Operand::Local(id) => func.locals
+                                .iter()
+                                .find(|l| l.id == *id)
+                                .map(|l| l.ty.clone()),
+                            _ => None,
+                        };
+
+                        match cap_mir_ty.as_ref() {
+                            Some(MirType::Str) => {
+                                let cloned = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {cloned} = call ptr @kryos_string_clone(ptr {cap_val})"
+                                ));
+                                self.emit_line(&format!("  store ptr {cloned}, ptr {cap_ptr}"));
+                            }
+                            Some(MirType::Array(_, _)) => {
+                                let cloned = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {cloned} = call ptr @kryos_array_clone(ptr {cap_val})"
+                                ));
+                                self.emit_line(&format!("  store ptr {cloned}, ptr {cap_ptr}"));
+                            }
+                            Some(MirType::Struct(n)) if n == "Map" => {
+                                let cloned = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {cloned} = call i64 @kryos_map_clone(i64 {cap_val})"
+                                ));
+                                self.emit_line(&format!("  store i64 {cloned}, ptr {cap_ptr}"));
+                            }
+                            Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
+                                self.emit_line(&format!(
+                                    "  call void @kryos_arc_retain(ptr {cap_val})"
+                                ));
+                                self.emit_line(&format!("  store i64 {cap_val}, ptr {cap_ptr}"));
+                            }
+                            _ => {
+                                self.emit_line(&format!("  store i64 {cap_val}, ptr {cap_ptr}"));
+                            }
+                        }
                     }
                     if dest_ty == "ptr" {
                         // Dest expects ptr -- use env_ptr directly.
@@ -2386,14 +2541,15 @@ impl LlvmCodegen {
                     self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                     self.emit_line(&format!("  call void @kryos_string_free(ptr {fv})"));
                 }
-                MirType::Array(_, _) => {
+                MirType::Array(ref inner_elem, _) => {
                     let gep = self.next_temp();
                     let fv = self.next_temp();
                     self.emit_line(&format!(
                         "  {gep} = getelementptr i64, ptr {val}, i32 {field_idx}"
                     ));
                     self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
-                    self.emit_line(&format!("  call void @kryos_array_free(ptr {fv})"));
+                    let et = inner_elem.as_ref().clone();
+                    self.emit_array_drop(&fv, &et, _func);
                 }
                 MirType::Function { .. } => {
                     let gep = self.next_temp();
@@ -2434,9 +2590,117 @@ impl LlvmCodegen {
                     let inner = inner_name.clone();
                     self.emit_enum_drop(&fv, &inner, _func);
                 }
+                MirType::Shared(_) => {
+                    let gep = self.next_temp();
+                    let fv = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {gep} = getelementptr i64, ptr {val}, i32 {field_idx}"
+                    ));
+                    self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                    self.emit_line(&format!("  call void @kryos_arc_release(ptr {fv})"));
+                }
                 _ => {}
             }
         }
+    }
+
+    /// Emit drop logic for an array value: iterate elements and drop each
+    /// heap-allocated element, then call kryos_array_free.
+    fn emit_array_drop(&mut self, val: &str, elem_ty: &MirType, _func: &MirFunction) {
+        let is_droppable = matches!(elem_ty,
+            MirType::Str | MirType::Array(_, _)
+            | MirType::Struct(_) | MirType::Function { .. }
+            | MirType::Enum(_) | MirType::Shared(_)
+        );
+
+        if is_droppable {
+            let uid = self.temp_counter;
+            self.temp_counter += 1;
+
+            let null_ck_label = format!("arr_nullck_{uid}");
+            let pre_label = format!("arr_pre_{uid}");
+            let hdr_label = format!("arr_hdr_{uid}");
+            let body_label = format!("arr_body_{uid}");
+            let tail_label = format!("arr_tail_{uid}");
+            let exit_label = format!("arr_exit_{uid}");
+            let skip_label = format!("arr_skip_{uid}");
+            let i_name = format!("%arr_i_{uid}");
+            let i_next_name = format!("%arr_inext_{uid}");
+
+            // Null guard: skip element cleanup for null arrays.
+            self.emit_line(&format!("  br label %{null_ck_label}"));
+            self.emit_line(&format!("{null_ck_label}:"));
+            let null_cmp = self.next_temp();
+            self.emit_line(&format!(
+                "  {null_cmp} = icmp ne ptr {val}, null"
+            ));
+            self.emit_line(&format!(
+                "  br i1 {null_cmp}, label %{pre_label}, label %{skip_label}"
+            ));
+
+            // Pre-block: load array length and data pointer.
+            self.emit_line(&format!("{pre_label}:"));
+            let len = self.next_temp();
+            self.emit_line(&format!("  {len} = load i64, ptr {val}"));
+            let data_gep = self.next_temp();
+            self.emit_line(&format!(
+                "  {data_gep} = getelementptr i8, ptr {val}, i64 24"
+            ));
+            let data = self.next_temp();
+            self.emit_line(&format!("  {data} = load ptr, ptr {data_gep}"));
+            self.emit_line(&format!("  br label %{hdr_label}"));
+
+            // Header: loop counter phi, compare against length.
+            self.emit_line(&format!("{hdr_label}:"));
+            self.emit_line(&format!(
+                "  {i_name} = phi i64 [0, %{pre_label}], [{i_next_name}, %{tail_label}]"
+            ));
+            let cmp = self.next_temp();
+            self.emit_line(&format!(
+                "  {cmp} = icmp sge i64 {i_name}, {len}"
+            ));
+            self.emit_line(&format!(
+                "  br i1 {cmp}, label %{exit_label}, label %{body_label}"
+            ));
+
+            // Body: load element, drop based on type.
+            self.emit_line(&format!("{body_label}:"));
+            let elem_gep = self.next_temp();
+            self.emit_line(&format!(
+                "  {elem_gep} = getelementptr i64, ptr {data}, i64 {i_name}"
+            ));
+
+            // Use direct free calls (no recursive emit_*_drop) to avoid
+            // infinite recursion on self-referential types.
+            let (load_ty, free_call) = match elem_ty {
+                MirType::Str => ("ptr", "call void @kryos_string_free(ptr {fv})"),
+                MirType::Array(_, _) => ("ptr", "call void @kryos_array_free(ptr {fv})"),
+                MirType::Function { .. } | MirType::Shared(_) => ("ptr", "call void @kryos_arc_release(ptr {fv})"),
+                MirType::Struct(n) if n == "Map" => ("i64", "call void @kryos_map_free(i64 {fv})"),
+                MirType::Struct(_) => ("ptr", "call void @free(ptr {fv})"),
+                MirType::Enum(_) => ("ptr", "call void @free(ptr {fv})"),
+                _ => ("i64", ""),
+            };
+            if !free_call.is_empty() {
+                let fv = self.next_temp();
+                self.emit_line(&format!("  {fv} = load {load_ty}, ptr {elem_gep}"));
+                self.emit_line(&format!("  {}", free_call.replace("{fv}", &fv)));
+            }
+
+            // Tail: increment counter, loop back.
+            self.emit_line(&format!("  br label %{tail_label}"));
+            self.emit_line(&format!("{tail_label}:"));
+            self.emit_line(&format!(
+                "  {i_next_name} = add i64 {i_name}, 1"
+            ));
+            self.emit_line(&format!("  br label %{hdr_label}"));
+
+            self.emit_line(&format!("{exit_label}:"));
+            self.emit_line(&format!("  br label %{skip_label}"));
+            self.emit_line(&format!("{skip_label}:"));
+        }
+
+        self.emit_line(&format!("  call void @kryos_array_free(ptr {val})"));
     }
 
     /// Emit drop logic for an enum value: load the tag, dispatch on it to
@@ -2456,7 +2720,7 @@ impl LlvmCodegen {
             v.fields.iter().any(|f| matches!(f,
                 MirType::Str | MirType::Array(_, _)
                 | MirType::Struct(_) | MirType::Function { .. }
-                | MirType::Enum(_)
+                | MirType::Enum(_) | MirType::Shared(_)
             ))
         });
 
@@ -2474,7 +2738,7 @@ impl LlvmCodegen {
                     .filter(|(_, f)| matches!(f,
                         MirType::Str | MirType::Array(_, _)
                         | MirType::Struct(_) | MirType::Function { .. }
-                        | MirType::Enum(_)
+                        | MirType::Enum(_) | MirType::Shared(_)
                     ))
                     .collect();
 
@@ -2508,9 +2772,10 @@ impl LlvmCodegen {
                             self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                             self.emit_line(&format!("  call void @kryos_string_free(ptr {fv})"));
                         }
-                        MirType::Array(_, _) => {
+                        MirType::Array(inner_elem, _) => {
                             self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
-                            self.emit_line(&format!("  call void @kryos_array_free(ptr {fv})"));
+                            let et = inner_elem.as_ref().clone();
+                            self.emit_array_drop(&fv, &et, func);
                         }
                         MirType::Function { .. } => {
                             self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
@@ -2530,6 +2795,10 @@ impl LlvmCodegen {
                             self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                             let inner = name.clone();
                             self.emit_enum_drop(&fv, &inner, func);
+                        }
+                        MirType::Shared(_) => {
+                            self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                            self.emit_line(&format!("  call void @kryos_arc_release(ptr {fv})"));
                         }
                         _ => {}
                     }

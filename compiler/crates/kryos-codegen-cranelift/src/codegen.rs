@@ -1397,8 +1397,9 @@ fn translate_instruction<M: Module>(
                             )?;
                             builder.ins().call(free_ref, &[val]);
                         }
-                        kryos_mir::ir::MirType::Function { .. } => {
-                            // Closure env is ARC-managed; release our reference.
+                        kryos_mir::ir::MirType::Function { .. }
+                        | kryos_mir::ir::MirType::Shared(_) => {
+                            // ARC-managed; release our reference.
                             let release_ref = ensure_func_ref_with_args(
                                 "kryos_arc_release", builder, translator, module, 1,
                             )?;
@@ -1415,11 +1416,8 @@ fn translate_instruction<M: Module>(
                             emit_drop_for_value(val, ty, builder, translator, module)?;
                         }
                         kryos_mir::ir::MirType::Array(_, _) => {
-                            // Array cleanup via runtime.
-                            let free_ref = ensure_func_ref_with_args(
-                                "kryos_array_free", builder, translator, module, 1,
-                            )?;
-                            builder.ins().call(free_ref, &[val]);
+                            // Drop array elements, then free the array.
+                            emit_drop_for_value(val, ty, builder, translator, module)?;
                         }
                         _ => {}
                     }
@@ -1524,9 +1522,46 @@ fn translate_instruction<M: Module>(
 
                 for (i, arg_op) in args.iter().enumerate() {
                     let val = translate_operand(arg_op, builder, translator, module)?;
+                    // Clone heap-typed args so the spawned thread owns its copies.
+                    let arg_ty = match arg_op {
+                        Operand::Local(id) => translator.mir_func.locals
+                            .iter().find(|l| l.id == *id).map(|l| l.ty.clone()),
+                        _ => None,
+                    };
+                    let store_val = match arg_ty.as_ref() {
+                        Some(MirType::Str) => {
+                            let f = ensure_func_ref_with_args(
+                                "kryos_string_clone", builder, translator, module, 1,
+                            )?;
+                            let c = builder.ins().call(f, &[val]);
+                            builder.inst_results(c)[0]
+                        }
+                        Some(MirType::Array(_, _)) => {
+                            let f = ensure_func_ref_with_args(
+                                "kryos_array_clone", builder, translator, module, 1,
+                            )?;
+                            let c = builder.ins().call(f, &[val]);
+                            builder.inst_results(c)[0]
+                        }
+                        Some(MirType::Struct(n)) if n == "Map" => {
+                            let f = ensure_func_ref_with_args(
+                                "kryos_map_clone", builder, translator, module, 1,
+                            )?;
+                            let c = builder.ins().call(f, &[val]);
+                            builder.inst_results(c)[0]
+                        }
+                        Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
+                            let f = ensure_func_ref_with_args(
+                                "kryos_arc_retain", builder, translator, module, 1,
+                            )?;
+                            builder.ins().call(f, &[val]);
+                            val
+                        }
+                        _ => val,
+                    };
                     builder.ins().store(
                         MemFlags::trusted(),
-                        val,
+                        store_val,
                         args_ptr,
                         (i * 8) as i32,
                     );
@@ -1542,10 +1577,50 @@ fn translate_instruction<M: Module>(
         Instruction::Send { channel, value } => {
             let ch_val = builder.use_var(translator.variables[&channel.0]);
             let v_val = builder.use_var(translator.variables[&value.0]);
+
+            // Clone heap-typed values before sending to prevent double-free.
+            // The runtime copies the raw i64; without cloning, both sender
+            // and receiver hold the same pointer and both will free it.
+            let val_ty = translator.mir_func.locals.iter()
+                .find(|l| l.id == *value)
+                .map(|l| l.ty.clone());
+
+            let send_val = match val_ty.as_ref() {
+                Some(MirType::Str) => {
+                    let f = ensure_func_ref_with_args(
+                        "kryos_string_clone", builder, translator, module, 1,
+                    )?;
+                    let c = builder.ins().call(f, &[v_val]);
+                    builder.inst_results(c)[0]
+                }
+                Some(MirType::Array(_, _)) => {
+                    let f = ensure_func_ref_with_args(
+                        "kryos_array_clone", builder, translator, module, 1,
+                    )?;
+                    let c = builder.ins().call(f, &[v_val]);
+                    builder.inst_results(c)[0]
+                }
+                Some(MirType::Struct(n)) if n == "Map" => {
+                    let f = ensure_func_ref_with_args(
+                        "kryos_map_clone", builder, translator, module, 1,
+                    )?;
+                    let c = builder.ins().call(f, &[v_val]);
+                    builder.inst_results(c)[0]
+                }
+                Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
+                    let f = ensure_func_ref_with_args(
+                        "kryos_arc_retain", builder, translator, module, 1,
+                    )?;
+                    builder.ins().call(f, &[v_val]);
+                    v_val
+                }
+                _ => v_val,
+            };
+
             let send_ref = ensure_func_ref_with_args(
                 "kryos_chan_send_i64", builder, translator, module, 2,
             )?;
-            builder.ins().call(send_ref, &[ch_val, v_val]);
+            builder.ins().call(send_ref, &[ch_val, send_val]);
         }
         Instruction::Receive { dest, channel } => {
             let ch_val = builder.use_var(translator.variables[&channel.0]);
@@ -1586,10 +1661,46 @@ fn translate_instruction<M: Module>(
                 "kryos_actor_send_i64", builder, translator, module, 2,
             )?;
             builder.ins().call(send_ref, &[actor_val, tag_val]);
-            // Send each argument.
+            // Send each argument (clone heap-typed values to prevent double-free).
             for arg in args {
                 let val = translate_operand(arg, builder, translator, module)?;
-                builder.ins().call(send_ref, &[actor_val, val]);
+                let arg_ty = match arg {
+                    Operand::Local(id) => translator.mir_func.locals
+                        .iter().find(|l| l.id == *id).map(|l| l.ty.clone()),
+                    _ => None,
+                };
+                let send_val = match arg_ty.as_ref() {
+                    Some(MirType::Str) => {
+                        let f = ensure_func_ref_with_args(
+                            "kryos_string_clone", builder, translator, module, 1,
+                        )?;
+                        let c = builder.ins().call(f, &[val]);
+                        builder.inst_results(c)[0]
+                    }
+                    Some(MirType::Array(_, _)) => {
+                        let f = ensure_func_ref_with_args(
+                            "kryos_array_clone", builder, translator, module, 1,
+                        )?;
+                        let c = builder.ins().call(f, &[val]);
+                        builder.inst_results(c)[0]
+                    }
+                    Some(MirType::Struct(n)) if n == "Map" => {
+                        let f = ensure_func_ref_with_args(
+                            "kryos_map_clone", builder, translator, module, 1,
+                        )?;
+                        let c = builder.ins().call(f, &[val]);
+                        builder.inst_results(c)[0]
+                    }
+                    Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
+                        let f = ensure_func_ref_with_args(
+                            "kryos_arc_retain", builder, translator, module, 1,
+                        )?;
+                        builder.ins().call(f, &[val]);
+                        val
+                    }
+                    _ => val,
+                };
+                builder.ins().call(send_ref, &[actor_val, send_val]);
             }
             // Unlock.
             let unlock_ref = ensure_func_ref_with_args(
@@ -1747,6 +1858,13 @@ fn translate_rvalue<M: Module>(
                                         } else {
                                             field_val
                                         }
+                                    }
+                                    Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
+                                        let retain_ref = ensure_func_ref_with_args(
+                                            "kryos_arc_retain", builder, translator, module, 1,
+                                        )?;
+                                        builder.ins().call(retain_ref, &[field_val]);
+                                        field_val
                                     }
                                     _ => field_val,
                                 };
@@ -2503,6 +2621,13 @@ fn translate_rvalue<M: Module>(
                                         val
                                     }
                                 }
+                                Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
+                                    let retain_ref = ensure_func_ref_with_args(
+                                        "kryos_arc_retain", builder, translator, module, 1,
+                                    )?;
+                                    builder.ins().call(retain_ref, &[val]);
+                                    val
+                                }
                                 _ => val,
                             }
                         } else {
@@ -2750,10 +2875,53 @@ fn translate_rvalue<M: Module>(
                 builder.ins().store(MemFlags::new(), thunk_addr, ptr, 0);
 
                 // Store captures at offsets 8, 16, ...
+                // Clone/retain heap-typed captures so the closure owns them
+                // independently of the original local's lifetime.
                 for (i, cap) in captures.iter().enumerate() {
                     let val = translate_operand(cap, builder, translator, module)?;
                     let offset = ((i + 1) * 8) as i32;
-                    builder.ins().store(MemFlags::new(), val, ptr, offset);
+
+                    let cap_ty = match cap {
+                        Operand::Local(id) => translator.mir_func.locals
+                            .iter()
+                            .find(|l| l.id == *id)
+                            .map(|l| l.ty.clone()),
+                        _ => None,
+                    };
+
+                    let store_val = match cap_ty.as_ref() {
+                        Some(MirType::Str) => {
+                            let f = ensure_func_ref_with_args(
+                                "kryos_string_clone", builder, translator, module, 1,
+                            )?;
+                            let c = builder.ins().call(f, &[val]);
+                            builder.inst_results(c)[0]
+                        }
+                        Some(MirType::Array(_, _)) => {
+                            let f = ensure_func_ref_with_args(
+                                "kryos_array_clone", builder, translator, module, 1,
+                            )?;
+                            let c = builder.ins().call(f, &[val]);
+                            builder.inst_results(c)[0]
+                        }
+                        Some(MirType::Struct(n)) if n == "Map" => {
+                            let f = ensure_func_ref_with_args(
+                                "kryos_map_clone", builder, translator, module, 1,
+                            )?;
+                            let c = builder.ins().call(f, &[val]);
+                            builder.inst_results(c)[0]
+                        }
+                        Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
+                            let f = ensure_func_ref_with_args(
+                                "kryos_arc_retain", builder, translator, module, 1,
+                            )?;
+                            builder.ins().call(f, &[val]);
+                            val
+                        }
+                        _ => val,
+                    };
+
+                    builder.ins().store(MemFlags::new(), store_val, ptr, offset);
                 }
 
                 Ok(Some(ptr))
@@ -3632,6 +3800,14 @@ fn emit_deep_copy_struct<M: Module>(
                     field_val
                 }
             }
+            Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
+                // ARC-managed: retain to share ownership with the copy.
+                let retain_ref = ensure_func_ref_with_args(
+                    "kryos_arc_retain", builder, translator, module, 1,
+                )?;
+                builder.ins().call(retain_ref, &[field_val]);
+                field_val
+            }
             _ => field_val,
         };
         builder.ins().store(MemFlags::new(), stored_val, new_ptr, *offset as i32);
@@ -3660,7 +3836,7 @@ fn emit_drop_for_value<M: Module>(
             )?;
             builder.ins().call(free_ref, &[val]);
         }
-        MirType::Function { .. } => {
+        MirType::Function { .. } | MirType::Shared(_) => {
             let release_ref = ensure_func_ref_with_args(
                 "kryos_arc_release", builder, translator, module, 1,
             )?;
@@ -3685,7 +3861,7 @@ fn emit_drop_for_value<M: Module>(
                             match field_ty {
                                 MirType::Str | MirType::Array(_, _)
                                 | MirType::Struct(_) | MirType::Function { .. }
-                                | MirType::Enum(_) => {
+                                | MirType::Enum(_) | MirType::Shared(_) => {
                                     let field_val = builder.ins().load(
                                         types::I64, MemFlags::new(), val, offset,
                                     );
@@ -3704,7 +3880,81 @@ fn emit_drop_for_value<M: Module>(
             )?;
             builder.ins().call(free_ref, &[val]);
         }
-        MirType::Array(_, _) => {
+        MirType::Array(ref elem_ty, _) => {
+            // Determine the per-element free function for heap element types.
+            // We use direct free calls (no recursive emit_drop_for_value) to
+            // avoid infinite recursion on self-referential types like
+            // struct Foo { children: [Foo] }.
+            let elem_free_fn: Option<&str> = match elem_ty.as_ref() {
+                MirType::Str => Some("kryos_string_free"),
+                MirType::Array(_, _) => Some("kryos_array_free"),
+                MirType::Function { .. } | MirType::Shared(_) => Some("kryos_arc_release"),
+                MirType::Struct(n) if n == "Map" => Some("kryos_map_free"),
+                MirType::Struct(_) => Some("free"),
+                MirType::Enum(_) => Some("free"),
+                _ => None,
+            };
+
+            if let Some(free_fn) = elem_free_fn {
+                // Guard: skip element cleanup if array pointer is null.
+                let zero_ptr = builder.ins().iconst(types::I64, 0);
+                let is_nonnull = builder.ins().icmp(
+                    cranelift_codegen::ir::condcodes::IntCC::NotEqual,
+                    val, zero_ptr,
+                );
+                let elem_drop_block = builder.create_block();
+                let after_elem_block = builder.create_block();
+                builder.ins().brif(
+                    is_nonnull, elem_drop_block, &[],
+                    after_elem_block, &[],
+                );
+                builder.seal_block(elem_drop_block);
+                builder.switch_to_block(elem_drop_block);
+
+                // KryosArray layout: { len: i64 @0, cap: i64 @8,
+                //                      elem_size: i64 @16, data: ptr @24 }
+                let len = builder.ins().load(types::I64, MemFlags::new(), val, 0);
+                let data = builder.ins().load(types::I64, MemFlags::new(), val, 24);
+
+                let loop_header = builder.create_block();
+                builder.append_block_param(loop_header, types::I64);
+                let loop_body = builder.create_block();
+                let exit_block = builder.create_block();
+
+                let zero = builder.ins().iconst(types::I64, 0);
+                builder.ins().jump(loop_header, &[zero]);
+
+                builder.switch_to_block(loop_header);
+                let i = builder.block_params(loop_header)[0];
+                let done = builder.ins().icmp(
+                    cranelift_codegen::ir::condcodes::IntCC::SignedGreaterThanOrEqual,
+                    i, len,
+                );
+                builder.ins().brif(done, exit_block, &[], loop_body, &[]);
+                builder.seal_block(loop_body);
+
+                builder.switch_to_block(loop_body);
+                let byte_off = builder.ins().imul_imm(i, 8);
+                let elem_addr = builder.ins().iadd(data, byte_off);
+                let elem = builder.ins().load(
+                    types::I64, MemFlags::new(), elem_addr, 0,
+                );
+                let elem_free_ref = ensure_func_ref_with_args(
+                    free_fn, builder, translator, module, 1,
+                )?;
+                builder.ins().call(elem_free_ref, &[elem]);
+                let i_next = builder.ins().iadd_imm(i, 1);
+                builder.ins().jump(loop_header, &[i_next]);
+
+                builder.seal_block(loop_header);
+                builder.seal_block(exit_block);
+                builder.switch_to_block(exit_block);
+                builder.ins().jump(after_elem_block, &[]);
+
+                builder.seal_block(after_elem_block);
+                builder.switch_to_block(after_elem_block);
+            }
+
             let free_ref = ensure_func_ref_with_args(
                 "kryos_array_free", builder, translator, module, 1,
             )?;
@@ -3719,7 +3969,7 @@ fn emit_drop_for_value<M: Module>(
                     v.fields.iter().any(|f| matches!(f,
                         MirType::Str | MirType::Array(_, _)
                         | MirType::Struct(_) | MirType::Function { .. }
-                        | MirType::Enum(_)
+                        | MirType::Enum(_) | MirType::Shared(_)
                     ))
                 });
 
@@ -3736,7 +3986,7 @@ fn emit_drop_for_value<M: Module>(
                             .filter(|(_, f)| matches!(f,
                                 MirType::Str | MirType::Array(_, _)
                                 | MirType::Struct(_) | MirType::Function { .. }
-                                | MirType::Enum(_)
+                                | MirType::Enum(_) | MirType::Shared(_)
                             ))
                             .collect();
 
@@ -3819,6 +4069,7 @@ fn emit_exception_cleanup_drops<M: Module>(
                 | MirType::Struct(_)
                 | MirType::Array(_, _)
                 | MirType::Enum(_)
+                | MirType::Shared(_)
         ))
         .map(|l| (l.id.0, l.ty.clone()))
         .collect();
