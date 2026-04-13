@@ -95,14 +95,26 @@ pub fn execute() -> Result<(), String> {
                 }
             }
             input => {
-                // Classify input: declaration (top-level) vs let-binding vs expression.
+                // Classify input: declaration (top-level) vs let-binding vs
+                // expression/statement. The REPL persists state by accumulating
+                // source strings and re-compiling them each iteration.
                 let is_decl = input.starts_with("fn ")
                     || input.starts_with("struct ")
                     || input.starts_with("enum ")
                     || input.starts_with("impl ")
                     || input.starts_with("trait ")
-                    || input.starts_with("const ");
+                    || input.starts_with("const ")
+                    || input.starts_with("use ")
+                    || input.starts_with("type ")
+                    || input.starts_with("extern ")
+                    || input.starts_with("actor ")
+                    || input.starts_with("pub ")
+                    || input.starts_with("@");
                 let is_let = input.starts_with("let ");
+
+                // Detect assignment statements (e.g. `x = 10`, `arr[0] = 5`).
+                // These must be persisted so mutations carry across REPL lines.
+                let is_assignment = !is_let && !is_decl && is_assignment_stmt(input);
 
                 // Build the source with accumulated state.
                 let preamble = decl_history.join("\n");
@@ -112,7 +124,7 @@ pub fn execute() -> Result<(), String> {
                     // Top-level declaration — place it alongside history,
                     // with an empty eval body just to validate.
                     format!("{preamble}\n{input}\nfn __repl_eval__() {{ {lets} }}")
-                } else if is_let || input.contains('=') || input.ends_with(';') {
+                } else if is_let || is_assignment || input.ends_with(';') {
                     format!("{preamble}\nfn __repl_eval__() {{ {lets}\n{input} }}")
                 } else {
                     // Bare expression — wrap as a let binding so the parser accepts it.
@@ -128,10 +140,11 @@ pub fn execute() -> Result<(), String> {
                         eprint!("{rendered}");
                     }
                 } else {
-                    // Compilation succeeded — accumulate into history.
+                    // Compilation succeeded — accumulate into history so
+                    // subsequent lines see these definitions/bindings.
                     if is_decl {
                         decl_history.push(input.to_string());
-                    } else if is_let {
+                    } else if is_let || is_assignment {
                         let_history.push(input.to_string());
                     }
 
@@ -162,6 +175,35 @@ pub fn execute() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Detect simple assignment statements like `x = 10`, `point.x = 5`, etc.
+/// Returns false for comparisons (`==`, `!=`, `<=`, `>=`) and `let` bindings.
+fn is_assignment_stmt(input: &str) -> bool {
+    // Find the first `=` that isn't part of `==`, `!=`, `<=`, `>=`, `=>`.
+    let bytes = input.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'=' {
+            // Skip compound operators
+            if i > 0 && matches!(bytes[i - 1], b'!' | b'<' | b'>' | b'=') {
+                continue;
+            }
+            if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
+                continue;
+            }
+            if i + 1 < bytes.len() && bytes[i + 1] == b'>' {
+                continue; // `=>`
+            }
+            // The left-hand side should look like an identifier or field access.
+            let lhs = input[..i].trim();
+            if !lhs.is_empty()
+                && lhs.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '[' || c == ']')
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Minimal Ctrl+C handler installation.
