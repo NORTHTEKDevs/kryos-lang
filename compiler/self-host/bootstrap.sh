@@ -62,28 +62,11 @@ strip_internal_uses() {
     mv "$tmpfile" "$file"
 }
 
-# ── Combine source files ─────────────────────────────────────
-# Stage-0 source: core compiler without runtime (Rust provides builtins)
-STAGE0_SRC="$BUILD_DIR/kryos-sh.kry"
-log "Combining self-host source files (stage-0, no runtime)"
-cat \
-    "$SELFHOST_DIR/token.kry" \
-    "$SELFHOST_DIR/lexer.kry" \
-    "$SELFHOST_DIR/ast.kry" \
-    "$SELFHOST_DIR/parser.kry" \
-    "$SELFHOST_DIR/types.kry" \
-    "$SELFHOST_DIR/mir.kry" \
-    "$SELFHOST_DIR/lower.kry" \
-    "$SELFHOST_DIR/optimize.kry" \
-    "$SELFHOST_DIR/regalloc.kry" \
-    "$SELFHOST_DIR/x86.kry" \
-    "$SELFHOST_DIR/codegen.kry" \
-    "$SELFHOST_DIR/elf.kry" \
-    "$SELFHOST_DIR/coff.kry" \
-    "$SELFHOST_DIR/linker.kry" \
-    "$SELFHOST_DIR/main.kry" \
-    > "$STAGE0_SRC"
-strip_internal_uses "$STAGE0_SRC"
+# ── Stage-0 source: use the module system directly ───────────
+# The Rust stage-0 compiler supports multi-file module resolution.
+# We compile via main.kry and let `use` imports pull in dependencies.
+# This showcases the module system and avoids a concatenation step.
+STAGE0_SRC="$SELFHOST_DIR/main.kry"
 
 # Stage-1+ source: compiler with runtime (self-contained binary)
 SELFHOST_SRC="$BUILD_DIR/kryos-sh-full.kry"
@@ -108,10 +91,16 @@ cat \
     > "$SELFHOST_SRC"
 strip_internal_uses "$SELFHOST_SRC"
 
-LINES0=$(wc -l < "$STAGE0_SRC")
+LINES0=$(cat \
+    "$SELFHOST_DIR/token.kry" "$SELFHOST_DIR/lexer.kry" "$SELFHOST_DIR/ast.kry" \
+    "$SELFHOST_DIR/parser.kry" "$SELFHOST_DIR/types.kry" "$SELFHOST_DIR/mir.kry" \
+    "$SELFHOST_DIR/lower.kry" "$SELFHOST_DIR/optimize.kry" "$SELFHOST_DIR/regalloc.kry" \
+    "$SELFHOST_DIR/x86.kry" "$SELFHOST_DIR/codegen.kry" "$SELFHOST_DIR/elf.kry" \
+    "$SELFHOST_DIR/coff.kry" "$SELFHOST_DIR/linker.kry" "$SELFHOST_DIR/main.kry" \
+    | wc -l)
 LINES1=$(wc -l < "$SELFHOST_SRC")
-info "Stage-0 source: $LINES0 lines"
-info "Full source: $LINES1 lines"
+info "Stage-0 source: $LINES0 lines (15 files via module system)"
+info "Full source: $LINES1 lines (concatenated with runtime)"
 
 # ── Stage 0: Build the Rust-based compiler ─────────────────
 log "Stage 0: Building Rust-based compiler"
@@ -232,7 +221,7 @@ if [ "$HASH2" = "$HASH3" ]; then
     echo "Source:  $LINES1 lines (16 files)"
     echo ""
     echo "Chain:"
-    echo "  stage-0 (Rust/Cranelift) -> stage-1  ($LINES0 lines)"
+    echo "  stage-0 (Rust/Cranelift) -> stage-1  ($LINES0 lines, 15 modules via 'use' imports)"
     echo "  stage-1 (Kryos)          -> stage-2  ($LINES1 lines)"
     echo "  stage-2 (Kryos)          -> stage-3  ($LINES1 lines)"
     echo "  stage-2 == stage-3  [PASS]"
