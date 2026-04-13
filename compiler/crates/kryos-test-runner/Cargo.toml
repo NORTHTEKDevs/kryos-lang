@@ -8,3 +8,4 @@ kryos-driver.workspace = true
 kryos-errors.workspace = true
 kryos-codegen-cranelift.workspace = true
 kryos-linker.workspace = true
+kryos-rt.workspace = true

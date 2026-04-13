@@ -565,6 +565,211 @@ pub fn format_report_plain(report: &TestReport) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// @test annotation runner — discover and JIT-execute @test functions
+// ---------------------------------------------------------------------------
+
+/// Discover `.kry` files containing `@test`-annotated functions in a directory.
+///
+/// Each file is compiled to MIR, and functions with the `@test` attribute
+/// are collected. Returns a list of (file_path, test_function_names).
+pub fn discover_annotated_tests(dir: &Path) -> Vec<(PathBuf, Vec<String>)> {
+    let mut results = Vec::new();
+    discover_annotated_recursive(dir, &mut results);
+    results.sort_by(|a, b| a.0.cmp(&b.0));
+    results
+}
+
+fn discover_annotated_recursive(dir: &Path, results: &mut Vec<(PathBuf, Vec<String>)>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            discover_annotated_recursive(&path, results);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("kry") {
+            if let Ok(source) = fs::read_to_string(&path) {
+                // Quick pre-filter: skip files that don't contain @test at all.
+                if !source.contains("@test") {
+                    continue;
+                }
+                let config = BuildConfig::for_file(path.to_string_lossy().to_string());
+                let result = compile_source(&source, &path.to_string_lossy(), &config);
+                if !result.success {
+                    continue;
+                }
+                if let Some(ref mir) = result.mir {
+                    let test_fns: Vec<String> = mir
+                        .functions
+                        .iter()
+                        .filter(|f| f.attributes.test)
+                        .map(|f| f.name.clone())
+                        .collect();
+                    if !test_fns.is_empty() {
+                        results.push((path, test_fns));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Run all `@test`-annotated functions found in `.kry` files under `dir`.
+///
+/// Each file is compiled via the driver, then JIT-compiled using the
+/// Cranelift backend. Each `@test` function is called as `fn()` — a panic
+/// from `assert()` or `panic()` counts as a failure.
+pub fn run_annotated_tests(
+    dir: &Path,
+    filter: Option<&str>,
+) -> TestReport {
+    let start = Instant::now();
+    let mut results = Vec::new();
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+    let mut skipped = 0usize;
+
+    let discovered = discover_annotated_tests(dir);
+
+    // Enable test mode so assert/panic raise catchable panics instead of
+    // aborting the process.
+    kryos_rt::set_test_mode(true);
+
+    for (path, test_fns) in &discovered {
+        let source = match fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let config = BuildConfig::for_file(path.to_string_lossy().to_string());
+        let result = compile_source(&source, &path.to_string_lossy(), &config);
+        if !result.success {
+            // File-level compilation failure — report all test fns as failed.
+            let diags = render_diagnostics(&result);
+            for fn_name in test_fns {
+                if let Some(f) = filter {
+                    if !fn_name.contains(f) {
+                        skipped += 1;
+                        results.push(TestResult {
+                            name: fn_name.clone(),
+                            outcome: TestOutcome::Skipped,
+                            duration: Duration::ZERO,
+                            actual_output: String::new(),
+                        });
+                        continue;
+                    }
+                }
+                failed += 1;
+                results.push(TestResult {
+                    name: fn_name.clone(),
+                    outcome: TestOutcome::Failed {
+                        reason: format!("compilation failed:\n{diags}"),
+                    },
+                    duration: Duration::ZERO,
+                    actual_output: diags.clone(),
+                });
+            }
+            continue;
+        }
+
+        let mir = match result.mir {
+            Some(ref m) => m,
+            None => continue,
+        };
+
+        // JIT compile the module so all functions are available.
+        let backend = CraneliftBackend::new();
+        let ptrs = match backend.jit_compile_module(mir) {
+            Ok(p) => p,
+            Err(e) => {
+                for fn_name in test_fns {
+                    failed += 1;
+                    results.push(TestResult {
+                        name: fn_name.clone(),
+                        outcome: TestOutcome::Failed {
+                            reason: format!("JIT compilation failed: {e}"),
+                        },
+                        duration: Duration::ZERO,
+                        actual_output: String::new(),
+                    });
+                }
+                continue;
+            }
+        };
+
+        // Execute each @test function.
+        for fn_name in test_fns {
+            if let Some(f) = filter {
+                if !fn_name.contains(f) {
+                    skipped += 1;
+                    results.push(TestResult {
+                        name: fn_name.clone(),
+                        outcome: TestOutcome::Skipped,
+                        duration: Duration::ZERO,
+                        actual_output: String::new(),
+                    });
+                    continue;
+                }
+            }
+
+            let test_start = Instant::now();
+            if let Some(&ptr) = ptrs.get(fn_name.as_str()) {
+                // Safety: the JIT-compiled function has signature `fn()` — @test
+                // functions take no parameters and return void.
+                let f: fn() = unsafe { std::mem::transmute(ptr) };
+                // Clear any previous failure, call the test, then check the
+                // thread-local flag.  We use a flag instead of catch_unwind
+                // because Cranelift JIT frames lack OS unwind info on Windows,
+                // so panics cannot propagate through JIT-compiled code.
+                let _ = kryos_rt::take_test_failure(); // clear
+                f();
+                let failure = kryos_rt::take_test_failure();
+                let duration = test_start.elapsed();
+                if let Some(msg) = failure {
+                    failed += 1;
+                    results.push(TestResult {
+                        name: fn_name.clone(),
+                        outcome: TestOutcome::Failed { reason: msg.clone() },
+                        duration,
+                        actual_output: msg,
+                    });
+                } else {
+                    passed += 1;
+                    results.push(TestResult {
+                        name: fn_name.clone(),
+                        outcome: TestOutcome::Passed,
+                        duration,
+                        actual_output: String::new(),
+                    });
+                }
+            } else {
+                failed += 1;
+                results.push(TestResult {
+                    name: fn_name.clone(),
+                    outcome: TestOutcome::Failed {
+                        reason: format!("function `{fn_name}` not found in JIT output"),
+                    },
+                    duration: Duration::ZERO,
+                    actual_output: String::new(),
+                });
+            }
+        }
+    }
+
+    kryos_rt::set_test_mode(false);
+
+    TestReport {
+        total: results.len(),
+        passed,
+        failed,
+        skipped,
+        duration: start.elapsed(),
+        results,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

@@ -436,6 +436,10 @@ pub extern "C" fn kryos_builtin_assert(condition: i64, msg_handle: i64) -> i64 {
             }
         }
     };
+    if crate::is_test_mode() {
+        crate::set_test_failure(format!("assertion failed: {}", msg));
+        return 0;
+    }
     eprintln!("assertion failed: {}", msg);
     std::process::abort();
 }

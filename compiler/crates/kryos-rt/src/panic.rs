@@ -30,6 +30,12 @@ pub extern "C" fn kryos_panic(msg_ptr: *const u8, msg_len: usize) -> ! {
     };
 
     let formatted = format_panic_message(msg);
+    if crate::is_test_mode() {
+        crate::set_test_failure(formatted.clone());
+        // In test mode we still abort — panic cannot unwind through JIT
+        // frames on Windows. The test runner checks the failure flag for
+        // assertion results; kryos_panic is a last-resort path.
+    }
     let stack = crate::trace::format_stack_trace();
     let _ = writeln!(std::io::stderr(), "{}{}", formatted, stack);
     std::process::abort();
@@ -66,6 +72,9 @@ pub extern "C" fn kryos_panic_with_location(
     };
 
     let formatted = format_panic_with_location(msg, file, line, col);
+    if crate::is_test_mode() {
+        crate::set_test_failure(formatted.clone());
+    }
     let stack = crate::trace::format_stack_trace();
     let _ = writeln!(std::io::stderr(), "{}{}", formatted, stack);
     std::process::abort();

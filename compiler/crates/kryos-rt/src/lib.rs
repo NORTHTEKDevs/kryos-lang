@@ -15,6 +15,41 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 #![allow(clippy::missing_safety_doc)]
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::cell::RefCell;
+
+/// When true, runtime functions (assert) store failure info in a thread-local
+/// instead of aborting — used by the `@test` annotation runner.
+static TEST_MODE: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    static TEST_FAILURE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Enable or disable test mode.
+pub fn set_test_mode(enabled: bool) {
+    TEST_MODE.store(enabled, Ordering::SeqCst);
+    if enabled {
+        // Clear any stale failure.
+        TEST_FAILURE.with(|f| *f.borrow_mut() = None);
+    }
+}
+
+/// Returns true if the runtime is in test mode.
+pub fn is_test_mode() -> bool {
+    TEST_MODE.load(Ordering::SeqCst)
+}
+
+/// Record a test failure message (called from assert in test mode).
+pub fn set_test_failure(msg: String) {
+    TEST_FAILURE.with(|f| *f.borrow_mut() = Some(msg));
+}
+
+/// Take the stored test failure message (if any), clearing it.
+pub fn take_test_failure() -> Option<String> {
+    TEST_FAILURE.with(|f| f.borrow_mut().take())
+}
+
 pub mod alloc;
 pub mod arc;
 pub mod array;

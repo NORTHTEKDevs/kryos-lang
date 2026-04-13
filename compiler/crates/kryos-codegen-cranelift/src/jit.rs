@@ -63,6 +63,11 @@ impl JitCompiler {
         flag_builder
             .set("opt_level", "speed")
             .map_err(|e| CodegenError::Target(e.to_string()))?;
+        // Enable unwind info so panics can propagate through JIT-compiled
+        // frames (required for @test assertion failure reporting).
+        flag_builder
+            .set("unwind_info", "true")
+            .map_err(|e| CodegenError::Target(e.to_string()))?;
 
         let isa_builder = cranelift_native::builder()
             .map_err(|e| CodegenError::Target(e.to_string()))?;
@@ -91,6 +96,7 @@ impl JitCompiler {
         jit_builder.symbol("kryos_string_slice", kryos_rt::string::kryos_string_slice as *const u8);
         jit_builder.symbol("kryos_string_find", kryos_rt::string::kryos_string_find as *const u8);
         jit_builder.symbol("kryos_string_free", kryos_rt::string::kryos_string_free as *const u8);
+        jit_builder.symbol("kryos_string_clone", kryos_rt::string::kryos_string_clone as *const u8);
 
         // Array operations
         jit_builder.symbol("kryos_array_new", kryos_rt::array::kryos_array_new as *const u8);
@@ -100,6 +106,7 @@ impl JitCompiler {
         jit_builder.symbol("kryos_array_len", kryos_rt::array::kryos_array_len as *const u8);
         jit_builder.symbol("kryos_array_free", kryos_rt::array::kryos_array_free as *const u8);
         jit_builder.symbol("kryos_array_concat", kryos_rt::array::kryos_array_concat as *const u8);
+        jit_builder.symbol("kryos_array_clone", kryos_rt::array::kryos_array_clone as *const u8);
 
         // Map operations
         jit_builder.symbol("kryos_map_new", kryos_rt::map::kryos_map_new as *const u8);
@@ -115,6 +122,15 @@ impl JitCompiler {
         jit_builder.symbol("kryos_map_keys", kryos_rt::map::kryos_map_keys as *const u8);
         jit_builder.symbol("kryos_map_keys_str", kryos_rt::map::kryos_map_keys_str as *const u8);
         jit_builder.symbol("kryos_map_free", kryos_rt::map::kryos_map_free as *const u8);
+        jit_builder.symbol("kryos_map_clone", kryos_rt::map::kryos_map_clone as *const u8);
+
+        // Exception handling
+        jit_builder.symbol("kryos_exception_check", kryos_rt::exception::kryos_exception_check as *const u8);
+        jit_builder.symbol("kryos_exception_throw", kryos_rt::exception::kryos_exception_throw as *const u8);
+        jit_builder.symbol("kryos_exception_take", kryos_rt::exception::kryos_exception_take as *const u8);
+
+        // ARC drop function registration
+        jit_builder.symbol("kryos_arc_set_drop_i64", kryos_rt::builtins::kryos_arc_set_drop_i64 as *const u8);
 
         // Panic handler and runtime checks
         jit_builder.symbol("kryos_panic", kryos_rt::panic::kryos_panic as *const u8);
@@ -343,6 +359,11 @@ impl JitCompiler {
         func_ids.insert("kryos_arc_alloc".to_string(), arc_alloc_id);
         func_ids.insert("kryos_arc_alloc_i64".to_string(), arc_alloc_id);
 
+        // Declare runtime builtin functions with the same name mapping the
+        // AOT codegen uses, so translate_function() can look them up. Each
+        // symbol was already registered with the JIT builder in new().
+        declare_runtime_builtins(&mut self.module, call_conv, &mut func_ids)?;
+
         // Phase 1: Declare ALL user functions so cross-calls resolve.
         let mut declared: Vec<FuncId> = Vec::new();
         for mir_func in functions {
@@ -355,6 +376,9 @@ impl JitCompiler {
         }
 
         // Phase 2: Translate each function body.
+        // string_counter is module-wide so data section names are unique
+        // across all functions (e.g. `.trace_name.0`, `.trace_name.1`, ...).
+        let mut str_counter = 0u32;
         for (mir_func, &func_id) in functions.iter().zip(declared.iter()) {
             let sig = build_signature(mir_func, call_conv);
             let func_index = self.func_counter;
@@ -370,7 +394,6 @@ impl JitCompiler {
                 let empty_enum_defs = std::collections::HashMap::new();
                 let empty_trait_vtables = std::collections::HashMap::new();
                 let empty_copy_structs = std::collections::HashSet::new();
-                let mut str_counter = 0u32;
                 let mut builder = FunctionBuilder::new(&mut cl_func, &mut self.fb_ctx);
                 crate::codegen::translate_function(
                     mir_func,
@@ -506,3 +529,128 @@ impl JitCompiler {
 }
 
 // ARC runtime functions are now provided by kryos-rt (no stubs needed).
+
+/// Declare all runtime builtin functions in the JIT module so the codegen's
+/// `ensure_func_ref_with_args` can find them by the names it expects (e.g.,
+/// `"len"` → `kryos_builtin_len`, `"println"` → `kryos_println_str`).
+///
+/// This mirrors the declarations in `codegen::emit_module` for the AOT path.
+fn declare_runtime_builtins<M: Module>(
+    module: &mut M,
+    call_conv: cranelift_codegen::isa::CallConv,
+    func_ids: &mut HashMap<String, cranelift_module::FuncId>,
+) -> Result<(), CodegenError> {
+    // All signatures use i64 params and i64 return (matching the generic
+    // signature that `ensure_func_ref_with_args` creates). This prevents
+    // signature conflicts when the codegen dynamically re-declares a function.
+    // Functions that actually return void will have an unused return value,
+    // which is harmless at the ABI level.
+    let sig = |n: usize| -> Signature {
+        let mut s = Signature::new(call_conv);
+        for _ in 0..n {
+            s.params.push(AbiParam::new(types::I64));
+        }
+        s.returns.push(AbiParam::new(types::I64));
+        s
+    };
+
+    // Declare a function and insert name mapping(s). The codegen_name is
+    // what translate_function looks up in func_ids; the symbol_name is the
+    // actual runtime symbol registered in the JIT builder.
+    macro_rules! decl {
+        ($codegen_name:expr, $symbol_name:expr, $sig:expr) => {
+            let id = module.declare_function($symbol_name, Linkage::Import, &$sig)?;
+            func_ids.insert($codegen_name.to_string(), id);
+            // Also store under symbol name if different, so the codegen can
+            // find it regardless of which name path it uses.
+            if $codegen_name != $symbol_name {
+                func_ids.insert($symbol_name.to_string(), id);
+            }
+        };
+    }
+
+    // --- I/O builtins (codegen uses runtime name directly) ---
+    decl!("println", "kryos_println_str", sig(1));
+    decl!("print", "kryos_print_str", sig(1));
+    decl!("eprintln", "kryos_eprintln_str", sig(1));
+
+    // --- Utility builtins ---
+    decl!("exit", "kryos_builtin_exit", sig(1));
+    decl!("len", "kryos_builtin_len", sig(1));
+    decl!("to_string", "kryos_builtin_to_string", sig(1));
+    decl!("kryos_f64_to_string", "kryos_f64_to_string", sig(1));
+    decl!("kryos_bool_to_string", "kryos_bool_to_string", sig(1));
+    decl!("kryos_i64_to_string", "kryos_i64_to_string", sig(1));
+    decl!("kryos_ipow", "kryos_ipow", sig(2));
+    decl!("kryos_builtin_assert", "kryos_builtin_assert", sig(2));
+    decl!("kryos_builtin_type_of", "kryos_builtin_type_of", sig(1));
+    decl!("kryos_builtin_parse_int", "kryos_builtin_parse_int", sig(1));
+    decl!("kryos_builtin_parse_float", "kryos_builtin_parse_float", sig(1));
+
+    // --- Memory management ---
+    decl!("malloc", "malloc", sig(1));
+    decl!("free", "free", sig(1));
+    decl!("realloc", "realloc", sig(2));
+
+    // --- String runtime ---
+    decl!("kryos_string_new", "kryos_string_new", sig(2));
+    decl!("kryos_string_concat", "kryos_string_concat", sig(2));
+    decl!("kryos_string_len", "kryos_string_len", sig(1));
+    decl!("kryos_string_eq", "kryos_string_eq", sig(2));
+    decl!("kryos_string_slice", "kryos_string_slice", sig(3));
+    decl!("kryos_string_find", "kryos_string_find", sig(2));
+    decl!("kryos_string_free", "kryos_string_free", sig(1));
+    decl!("kryos_string_clone", "kryos_string_clone", sig(1));
+
+    // --- Array runtime ---
+    decl!("kryos_array_new", "kryos_array_new", sig(1));
+    decl!("kryos_array_push", "kryos_array_push", sig(2));
+    decl!("kryos_array_get", "kryos_array_get", sig(2));
+    decl!("kryos_array_set", "kryos_array_set", sig(3));
+    decl!("kryos_array_len", "kryos_array_len", sig(1));
+    decl!("kryos_array_free", "kryos_array_free", sig(1));
+    decl!("kryos_array_concat", "kryos_array_concat", sig(2));
+    decl!("kryos_array_clone", "kryos_array_clone", sig(1));
+
+    // --- Map runtime ---
+    decl!("kryos_map_new", "kryos_map_new", sig(0));
+    decl!("kryos_map_insert", "kryos_map_insert", sig(3));
+    decl!("kryos_map_insert_str", "kryos_map_insert_str", sig(3));
+    decl!("kryos_map_get", "kryos_map_get", sig(2));
+    decl!("kryos_map_get_str", "kryos_map_get_str", sig(2));
+    decl!("kryos_map_len", "kryos_map_len", sig(1));
+    decl!("kryos_map_free", "kryos_map_free", sig(1));
+    decl!("kryos_map_clone", "kryos_map_clone", sig(1));
+    decl!("kryos_map_has", "kryos_map_has", sig(2));
+    decl!("kryos_map_has_str", "kryos_map_has_str", sig(2));
+    decl!("kryos_map_delete", "kryos_map_delete", sig(2));
+    decl!("kryos_map_delete_str", "kryos_map_delete_str", sig(2));
+    decl!("kryos_map_keys", "kryos_map_keys", sig(1));
+    decl!("kryos_map_keys_str", "kryos_map_keys_str", sig(1));
+
+    // --- Trace runtime (uses ensure_func_ref_void in codegen, but we
+    //     declare with i64 return for consistency — unused return is fine) ---
+    decl!("kryos_trace_enter", "kryos_trace_enter", sig(5));
+    decl!("kryos_trace_exit", "kryos_trace_exit", sig(0));
+
+    // --- Panic ---
+    decl!("kryos_panic", "kryos_panic", sig(1));
+    decl!("kryos_panic_with_location", "kryos_panic_with_location", sig(3));
+    decl!("kryos_check_div_zero_i64", "kryos_check_div_zero_i64", sig(1));
+
+    // --- Channel / Actor / Spawn ---
+    decl!("kryos_chan_new_i64", "kryos_chan_new_i64", sig(0));
+    decl!("kryos_chan_send_i64", "kryos_chan_send_i64", sig(2));
+    decl!("kryos_chan_recv_i64", "kryos_chan_recv_i64", sig(1));
+    decl!("kryos_spawn", "kryos_spawn", sig(2));
+    decl!("kryos_spawn_wait_all", "kryos_spawn_wait_all", sig(0));
+    decl!("kryos_sleep", "kryos_sleep", sig(1));
+
+    // --- ARC set_drop ---
+    decl!("kryos_arc_set_drop", "kryos_arc_set_drop_i64", sig(2));
+
+    // --- Exception check ---
+    decl!("kryos_exception_check", "kryos_exception_check", sig(0));
+
+    Ok(())
+}

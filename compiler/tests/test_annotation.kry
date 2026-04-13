@@ -1,0 +1,35 @@
+// Verify @test annotation discovery and execution.
+
+@test
+fn test_arithmetic() {
+    let x = 2 + 2
+    assert(x == 4)
+}
+
+@test
+fn test_string_equality() {
+    let a = "hello"
+    let b = "hello"
+    assert(a == b)
+}
+
+@test
+fn test_boolean_logic() {
+    assert(true and true)
+    assert(true or false)
+    assert(not false)
+}
+
+fn helper(n: i64) -> i64 {
+    n * 2
+}
+
+@test
+fn test_function_call() {
+    let result = helper(21)
+    assert(result == 42)
+}
+
+fn main() {
+    println("This is not a test")
+}
