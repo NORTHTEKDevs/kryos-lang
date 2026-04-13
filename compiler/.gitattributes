@@ -1,0 +1,2 @@
+# Kryos language compiler — the compiler is Rust, the language is Kryos
+*.kry linguist-language=Kryos linguist-detectable
