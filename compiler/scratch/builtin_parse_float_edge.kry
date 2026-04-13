@@ -1,0 +1,4 @@
+// Test parse_float with invalid input
+fn main() {
+    println("parse_float 'not_a_number': " + to_string(parse_float("not_a_number")))
+}

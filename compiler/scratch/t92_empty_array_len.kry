@@ -1,0 +1,14 @@
+// Test 92: Operations on empty collections
+fn main() {
+    let empty_arr: [i64] = []
+    println(len(empty_arr))  // should be 0
+
+    let empty_str = ""
+    println(len(empty_str))  // should be 0
+
+    // Iterate empty array (should do nothing)
+    for item in empty_arr {
+        println("should not print")
+    }
+    println("done")
+}

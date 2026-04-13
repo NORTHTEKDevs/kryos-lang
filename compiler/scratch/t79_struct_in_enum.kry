@@ -1,0 +1,23 @@
+// Test 79: Passing struct as enum payload
+struct Coord {
+    x: f64,
+    y: f64,
+}
+
+enum Shape {
+    Circle(f64),
+    Rectangle(f64, f64),
+    Point,
+}
+
+fn main() {
+    let shapes = [Shape.Circle(5.0), Shape.Rectangle(3.0, 4.0), Shape.Point]
+    for sh in shapes {
+        let desc = match sh {
+            Shape::Circle(r) => "circle r=" + to_string(r),
+            Shape::Rectangle(w, h) => "rect " + to_string(w) + "x" + to_string(h),
+            Shape::Point => "point",
+        }
+        println(desc)
+    }
+}

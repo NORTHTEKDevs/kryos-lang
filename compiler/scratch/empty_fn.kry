@@ -1,0 +1,8 @@
+// Test empty function body
+fn do_nothing() {
+}
+
+fn main() {
+    do_nothing()
+    println("empty function ok")
+}

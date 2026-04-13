@@ -1,0 +1,23 @@
+// Test 70c: exact copy of test 01 structure
+struct Inner {
+    value: i64,
+}
+
+struct Middle {
+    inner: Inner,
+    name: str,
+}
+
+struct Outer {
+    middle: Middle,
+    id: i64,
+}
+
+fn main() {
+    let inner = Inner { value: 42 }
+    let mid = Middle { inner: inner, name: "test" }
+    let outer = Outer { middle: mid, id: 1 }
+    println(outer.id)
+    println(outer.middle.name)
+    println(outer.middle.inner.value)
+}

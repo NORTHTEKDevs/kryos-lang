@@ -1,0 +1,17 @@
+// Test explicit use-after-move: pass struct to function, then access it
+struct Data {
+    value: i64,
+    name: str
+}
+
+fn consume(d: Data) -> str {
+    return d.name
+}
+
+fn main() {
+    let d = Data { value: 42, name: "hello" }
+    let name = consume(d)
+    println("name: " + name)
+    // d should be moved - accessing d.value should be an error
+    println("value: " + to_string(d.value))
+}

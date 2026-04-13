@@ -1,0 +1,16 @@
+// Test 18: Function with many parameters (10+)
+fn sum10(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, h: i64, i: i64, j: i64) -> i64 {
+    return a + b + c + d + e + f + g + h + i + j
+}
+
+fn sum12(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, h: i64, i: i64, j: i64, k: i64, l: i64) -> i64 {
+    return a + b + c + d + e + f + g + h + i + j + k + l
+}
+
+fn main() {
+    let r1 = sum10(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+    println(r1)  // should be 55
+
+    let r2 = sum12(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+    println(r2)  // should be 78
+}

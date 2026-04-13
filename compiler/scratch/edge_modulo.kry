@@ -1,0 +1,7 @@
+fn main() {
+    println(to_string(10 % 3))
+    println(to_string(-10 % 3))
+    println(to_string(10 % -3))
+    println(to_string(0 % 5))
+    println(to_string(7 % 1))
+}

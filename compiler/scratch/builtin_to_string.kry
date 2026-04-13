@@ -1,0 +1,10 @@
+// Test to_string on all types
+fn main() {
+    println("i64: " + to_string(42))
+    println("f64: " + to_string(3.14))
+    println("bool true: " + to_string(true))
+    println("bool false: " + to_string(false))
+    println("str: " + to_string("hello"))
+    let arr = [1, 2, 3]
+    println("arr: " + to_string(arr))
+}

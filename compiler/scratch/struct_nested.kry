@@ -1,0 +1,17 @@
+// Test nested structs
+struct Inner {
+    x: i64,
+    y: i64
+}
+
+struct Outer {
+    inner: Inner,
+    name: str
+}
+
+fn main() {
+    let o = Outer { inner: Inner { x: 10, y: 20 }, name: "test" }
+    println("outer.inner.x: " + to_string(o.inner.x))
+    println("outer.inner.y: " + to_string(o.inner.y))
+    println("outer.name: " + o.name)
+}

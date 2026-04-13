@@ -1,0 +1,13 @@
+// Test spawn with captures
+fn main() {
+    let ch = chan()
+    let msg = "hello from spawn"
+    let value = 42
+
+    spawn {
+        send(ch, value)
+    }
+
+    let result = recv(ch)
+    println("received: " + to_string(result))
+}

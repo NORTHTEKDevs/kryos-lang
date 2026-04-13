@@ -1,0 +1,9 @@
+// Test 34: Integer overflow
+fn main() {
+    let max = 9223372036854775807  // i64 max
+    let result = max + 1
+    println(result)
+
+    let min = -9223372036854775808  // i64 min (if negative literals work)
+    println(min)
+}

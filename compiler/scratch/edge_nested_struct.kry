@@ -1,0 +1,19 @@
+@copy
+struct Inner {
+    value: i64
+}
+
+@copy
+struct Outer {
+    inner: Inner,
+    name: str
+}
+
+fn main() {
+    let o = Outer { inner: Inner { value: 42 }, name: "test" }
+    let p = o
+    println(to_string(o.inner.value))
+    println(to_string(p.inner.value))
+    println(o.name)
+    println(p.name)
+}

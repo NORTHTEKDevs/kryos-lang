@@ -1,0 +1,11 @@
+// Test 68: Mutating a field on an immutable struct
+struct Point {
+    x: i64,
+    y: i64,
+}
+
+fn main() {
+    let p = Point { x: 1, y: 2 }  // NOT mut
+    p.x = 99
+    println(p.x)
+}

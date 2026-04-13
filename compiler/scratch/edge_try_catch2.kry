@@ -1,0 +1,22 @@
+fn risky(x: i64) -> i64 {
+    if x == 0 {
+        throw "cannot be zero"
+    }
+    return 100 / x
+}
+
+fn main() {
+    try {
+        let r = risky(5)
+        println(to_string(r))
+    } catch e {
+        println("caught: " + e)
+    }
+    
+    try {
+        let r = risky(0)
+        println(to_string(r))
+    } catch e {
+        println("caught: " + e)
+    }
+}

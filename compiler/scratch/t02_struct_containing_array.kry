@@ -1,0 +1,13 @@
+// Test 02: Struct containing array
+struct Container {
+    items: [i64],
+    label: str,
+}
+
+fn main() {
+    let c = Container { items: [1, 2, 3, 4, 5], label: "numbers" }
+    println(c.label)
+    println(len(c.items))
+    println(c.items[0])
+    println(c.items[4])
+}

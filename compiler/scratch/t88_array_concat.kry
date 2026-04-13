@@ -1,0 +1,10 @@
+// Test 88: Array concatenation (if supported)
+fn main() {
+    let a = [1, 2, 3]
+    let b = [4, 5, 6]
+    let c = a + b
+    println(len(c))
+    for item in c {
+        println(item)
+    }
+}

@@ -1,0 +1,22 @@
+// Test 57: Enum with data, try to match twice (ownership issue?)
+enum Result {
+    Ok(i64),
+    Err(str),
+}
+
+fn main() {
+    let r = Result.Ok(42)
+
+    let val = match r {
+        Result::Ok(v) => v,
+        Result::Err(e) => -1,
+    }
+    println(val)
+
+    // Try to match the same enum again
+    let val2 = match r {
+        Result::Ok(v) => v + 100,
+        Result::Err(e) => -2,
+    }
+    println(val2)
+}

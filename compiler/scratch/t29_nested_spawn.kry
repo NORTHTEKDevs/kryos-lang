@@ -1,0 +1,13 @@
+// Test 29: Spawn inside spawn (nested)
+fn main() {
+    let ch = chan()
+
+    spawn {
+        spawn {
+            send(ch, 42)
+        }
+    }
+
+    let result = recv(ch)
+    println(result)  // should be 42
+}

@@ -1,0 +1,18 @@
+// Test array of structs
+@copy
+struct Item {
+    name: str,
+    value: i64
+}
+
+fn main() {
+    let items = [
+        Item { name: "a", value: 1 },
+        Item { name: "b", value: 2 },
+        Item { name: "c", value: 3 },
+    ]
+    for item in items {
+        println(item.name + ": " + to_string(item.value))
+    }
+    println("len: " + to_string(len(items)))
+}

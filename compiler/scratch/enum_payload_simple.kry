@@ -1,0 +1,19 @@
+// Test: enum with i64 payload -- does it crash on drop?
+enum Wrapper {
+    Val(i64),
+    None,
+}
+
+fn main() {
+    let a = Wrapper.Val(42)
+    let b = Wrapper.None
+    match a {
+        Wrapper::Val(v) => println("val: " + to_string(v)),
+        Wrapper::None => println("none"),
+    }
+    match b {
+        Wrapper::Val(v) => println("val: " + to_string(v)),
+        Wrapper::None => println("none"),
+    }
+    println("done - no crash?")
+}

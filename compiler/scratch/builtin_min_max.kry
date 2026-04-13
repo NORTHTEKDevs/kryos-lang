@@ -1,0 +1,9 @@
+// Test min/max builtins
+fn main() {
+    println("min(3, 5): " + to_string(min(3, 5)))
+    println("min(-1, 1): " + to_string(min(-1, 1)))
+    println("max(3, 5): " + to_string(max(3, 5)))
+    println("max(-1, 1): " + to_string(max(-1, 1)))
+    println("min(0, 0): " + to_string(min(0, 0)))
+    println("max(0, 0): " + to_string(max(0, 0)))
+}

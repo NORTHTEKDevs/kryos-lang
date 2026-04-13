@@ -1,0 +1,2 @@
+let x = shared 42
+println(to_string(*x))

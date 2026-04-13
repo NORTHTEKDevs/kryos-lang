@@ -1,0 +1,9 @@
+// Test integer overflow behavior
+fn main() {
+    let max_i64 = 9223372036854775807
+    let result = max_i64 + 1
+    println("max_i64 + 1 = " + to_string(result))
+    let min_i64 = -9223372036854775808
+    let result2 = min_i64 - 1
+    println("min_i64 - 1 = " + to_string(result2))
+}

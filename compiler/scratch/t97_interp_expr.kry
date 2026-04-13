@@ -1,0 +1,7 @@
+// Test 97: String interpolation with expressions
+fn main() {
+    let x = 5
+    // Can we do math inside interpolation?
+    println("x = {x}")
+    println("x + 1 = {x + 1}")
+}

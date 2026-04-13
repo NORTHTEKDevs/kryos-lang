@@ -1,0 +1,12 @@
+// Test 51: Function with return only in some branches (missing return)
+fn maybe_return(x: i64) -> i64 {
+    if x > 0 {
+        return x * 2
+    }
+    // No return for x <= 0 -- what happens?
+}
+
+fn main() {
+    println(maybe_return(5))   // should be 10
+    println(maybe_return(-1))  // undefined behavior?
+}

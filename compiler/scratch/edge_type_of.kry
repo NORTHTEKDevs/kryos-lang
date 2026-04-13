@@ -1,0 +1,7 @@
+fn main() {
+    println(type_of(42))
+    println(type_of(3.14))
+    println(type_of(true))
+    println(type_of("hello"))
+    println(type_of([1, 2, 3]))
+}

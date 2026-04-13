@@ -1,0 +1,17 @@
+// Test empty string operations
+fn main() {
+    let empty = ""
+    println("len empty: " + to_string(len(empty)))
+    println("contains empty in hello: " + to_string(contains("hello", empty)))
+    println("contains hello in empty: " + to_string(contains(empty, "hello")))
+    let parts = split(empty, ",")
+    println("split empty by comma, len: " + to_string(len(parts)))
+    let sub = substr(empty, 0, 0)
+    println("substr empty 0,0: '" + sub + "'")
+    println("trim empty: '" + trim(empty) + "'")
+    println("to_upper empty: '" + to_upper(empty) + "'")
+    println("to_lower empty: '" + to_lower(empty) + "'")
+    println("replace in empty: '" + replace(empty, "a", "b") + "'")
+    println("starts_with empty: " + to_string(starts_with(empty, "")))
+    println("ends_with empty: " + to_string(ends_with(empty, "")))
+}

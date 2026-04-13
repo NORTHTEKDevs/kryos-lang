@@ -1,0 +1,6 @@
+// Test negating i64 min
+fn main() {
+    let min_i64 = -9223372036854775808
+    let negated = 0 - min_i64
+    println("-(min_i64) = " + to_string(negated))
+}

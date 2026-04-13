@@ -1,0 +1,9 @@
+// Test 37: Throw string and print directly from catch variable
+fn main() {
+    try {
+        throw "hello error"
+    } catch e {
+        // Try printing e directly without to_string
+        println(e)
+    }
+}

@@ -1,0 +1,22 @@
+// Test mutual recursion
+fn is_even(n: i64) -> bool {
+    if n == 0 {
+        return true
+    }
+    return is_odd(n - 1)
+}
+
+fn is_odd(n: i64) -> bool {
+    if n == 0 {
+        return false
+    }
+    return is_even(n - 1)
+}
+
+fn main() {
+    println("is_even(0): " + to_string(is_even(0)))
+    println("is_even(1): " + to_string(is_even(1)))
+    println("is_even(10): " + to_string(is_even(10)))
+    println("is_odd(7): " + to_string(is_odd(7)))
+    println("is_odd(100): " + to_string(is_odd(100)))
+}

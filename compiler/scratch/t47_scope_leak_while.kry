@@ -1,0 +1,13 @@
+// Test 47: Variable scope leak in while loop
+fn main() {
+    let x = 100
+
+    let mut i = 0
+    while i < 3 {
+        let x = i * 10
+        println(x)
+        i = i + 1
+    }
+
+    println(x)  // should be 100, not 20
+}

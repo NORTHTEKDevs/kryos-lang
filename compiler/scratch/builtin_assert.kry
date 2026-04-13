@@ -1,0 +1,10 @@
+// Test assert builtin
+fn main() {
+    assert(true, "this should pass")
+    println("assert true passed")
+    assert(1 == 1, "1 should equal 1")
+    println("assert 1==1 passed")
+    // This should panic
+    assert(false, "this should fail")
+    println("this should not print")
+}

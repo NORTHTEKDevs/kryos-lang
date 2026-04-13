@@ -1,0 +1,15 @@
+// Test mutable rebinding
+fn main() {
+    let mut x = 10
+    println("x = " + to_string(x))
+    x = 20
+    println("x = " + to_string(x))
+    x = x + 5
+    println("x = " + to_string(x))
+
+    // Rebind with let
+    let mut s = "hello"
+    println("s = " + s)
+    s = "world"
+    println("s = " + s)
+}

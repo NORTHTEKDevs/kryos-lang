@@ -1,0 +1,6 @@
+// Test 27: Negative array index
+fn main() {
+    let arr = [10, 20, 30]
+    // This should produce a runtime error or be caught
+    println(arr[-1])
+}

@@ -1,0 +1,6 @@
+// Test 65: Assign wrong type to variable
+fn main() {
+    let mut x = 42
+    x = "hello"  // should be type error
+    println(x)
+}

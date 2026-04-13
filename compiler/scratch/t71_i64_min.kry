@@ -1,0 +1,13 @@
+// Test 71: i64 min value parsing
+fn main() {
+    // Test negative number parsing
+    let a = -1
+    println(a)
+
+    let b = -9223372036854775807
+    println(b)
+
+    // i64::MIN as expression
+    let c = 0 - 9223372036854775807 - 1
+    println(c)
+}

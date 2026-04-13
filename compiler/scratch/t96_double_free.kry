@@ -1,0 +1,11 @@
+// Test 96: String passed to two functions (potential double-free)
+fn print_it(s: str) {
+    println(s)
+}
+
+fn main() {
+    let msg = "hello world"
+    print_it(msg)
+    print_it(msg)
+    println(msg)
+}

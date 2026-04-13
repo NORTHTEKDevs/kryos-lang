@@ -1,0 +1,6 @@
+// Test exit with code
+fn main() {
+    println("before exit")
+    exit(0)
+    println("after exit - should not print")
+}

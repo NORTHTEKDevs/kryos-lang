@@ -1,0 +1,19 @@
+// Test: struct passed to function, then used AFTER the call
+// This is the struct_fn_param.kry case where p1/p2 are used after add_points
+struct Point {
+    x: f64,
+    y: f64
+}
+
+fn add_points(a: Point, b: Point) -> Point {
+    return Point { x: a.x + b.x, y: a.y + b.y }
+}
+
+fn main() {
+    let p1 = Point { x: 1.0, y: 2.0 }
+    let p2 = Point { x: 3.0, y: 4.0 }
+    let p3 = add_points(p1, p2)
+    // p1 and p2 should be moved. Can we still use them?
+    println("p1.x after move: " + to_string(p1.x))
+    println("p3.x: " + to_string(p3.x))
+}

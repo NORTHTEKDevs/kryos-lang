@@ -1,0 +1,142 @@
+// Test: simulate the parse_fn_decl -> parse_block pattern more closely
+
+@copy
+struct Parser {
+    tokens: [i32],
+    pos: i32,
+    errors: [str],
+    no_struct_lit: bool
+}
+
+@copy
+struct NameResult {
+    p: Parser,
+    name: str
+}
+
+@copy
+struct GenResult {
+    p: Parser,
+    gens: [str]
+}
+
+@copy
+struct ParamResult {
+    p: Parser,
+    params: [str]
+}
+
+@copy
+struct BlockResult {
+    p: Parser,
+    stmts: [i32]
+}
+
+fn mk_parser(tokens: [i32]) -> Parser {
+    let errors: [str] = []
+    return Parser { tokens: tokens, pos: 0, errors: errors, no_struct_lit: false }
+}
+
+fn p_peek(p: Parser) -> i32 {
+    let mut idx = p.pos
+    if idx >= len(p.tokens) {
+        idx = len(p.tokens) - 1
+    }
+    return p.tokens[idx]
+}
+
+fn p_at_end(p: Parser) -> bool {
+    return p.pos >= len(p.tokens)
+}
+
+fn p_advance(p: Parser) -> Parser {
+    if p_at_end(p) {
+        return p
+    }
+    return Parser { tokens: p.tokens, pos: p.pos + 1, errors: p.errors }
+}
+
+fn p_check(p: Parser, kind: i32) -> bool {
+    return p_peek(p) == kind
+}
+
+fn p_expect(p: Parser, kind: i32) -> Parser {
+    if p_check(p, kind) {
+        return p_advance(p)
+    }
+    let mut errors = p.errors
+    push(errors, "expected error")
+    return Parser { tokens: p.tokens, pos: p.pos, errors: errors }
+}
+
+fn p_expect_name(p: Parser) -> NameResult {
+    let np = p_advance(p)
+    return NameResult { p: np, name: "test" }
+}
+
+fn parse_generics(p: Parser) -> GenResult {
+    let mut pp = p
+    let gens: [str] = []
+    return GenResult { p: pp, gens: gens }
+}
+
+fn parse_params(p: Parser) -> ParamResult {
+    let mut pp = p
+    let params: [str] = []
+    return ParamResult { p: pp, params: params }
+}
+
+fn parse_block(p: Parser) -> BlockResult {
+    println("  parse_block: entered")
+    println("  parse_block: about to p_expect")
+    let mut pp = p_expect(p, 90)
+    println("  parse_block: p_expect succeeded")
+    let stmts: [i32] = []
+    pp = p_expect(pp, 91)
+    return BlockResult { p: pp, stmts: stmts }
+}
+
+fn parse_fn(p: Parser) -> Parser {
+    println("parse_fn: start")
+    let mut pp = p_expect(p, 15)
+    println("parse_fn: after p_expect(FN)")
+
+    let nr = p_expect_name(pp)
+    pp = nr.p
+    println("parse_fn: after expect_name")
+
+    let gr = parse_generics(pp)
+    pp = gr.p
+    println("parse_fn: after parse_generics")
+
+    pp = p_expect(pp, 88)
+    println("parse_fn: after expect LPAREN")
+
+    let pr = parse_params(pp)
+    pp = pr.p
+    println("parse_fn: after parse_params")
+
+    pp = p_expect(pp, 89)
+    println("parse_fn: after expect RPAREN")
+
+    println("parse_fn: checking for LBRACE (90)")
+    if p_check(pp, 90) {
+        println("parse_fn: found LBRACE, calling parse_block")
+        let br = parse_block(pp)
+        pp = br.p
+        println("parse_fn: after parse_block")
+    }
+
+    println("parse_fn: done")
+    return pp
+}
+
+fn main() {
+    // Tokens: FN=15, IDENT=100, LPAREN=88, RPAREN=89, LBRACE=90, RBRACE=91, EOF=0
+    let tokens: [i32] = [15, 100, 88, 89, 90, 91, 0]
+    let p = mk_parser(tokens)
+    println("Parser created, tokens: " + to_string(len(p.tokens)))
+
+    let result = parse_fn(p)
+    println("All done!")
+}

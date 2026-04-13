@@ -1,0 +1,9 @@
+// Test 74: Continue in for loop
+fn main() {
+    for i in 0..10 {
+        if i % 2 == 0 {
+            continue
+        }
+        println(i)
+    }
+}

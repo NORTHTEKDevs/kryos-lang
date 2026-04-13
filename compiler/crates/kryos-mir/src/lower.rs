@@ -3451,6 +3451,40 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 }
             }
 
+            // Check if this is a Function-typed struct field being called
+            // (e.g. `t.transform(5)` where `transform: fn(i64) -> i64`).
+            if let Some(ref tn) = type_name {
+                let is_fn_field = ctx
+                    .struct_defs
+                    .get(tn.as_str())
+                    .and_then(|fields| fields.iter().find(|(n, _)| n == method))
+                    .map(|(_, ty)| matches!(ty, MirType::Function { .. }))
+                    .unwrap_or(false);
+                if is_fn_field {
+                    let obj_val = lower_expr_to_operand(ctx, object);
+                    // Load the closure (Function) from the struct field.
+                    let fn_ptr_temp = ctx.alloc_temp(MirType::Function {
+                        params: vec![],
+                        ret: Box::new(MirType::I64),
+                    });
+                    ctx.emit(Instruction::Assign {
+                        dest: fn_ptr_temp,
+                        value: RValue::Field {
+                            object: obj_val,
+                            field: method.clone(),
+                        },
+                    });
+                    let mir_args: Vec<Operand> = args
+                        .iter()
+                        .map(|a| lower_expr_to_operand(ctx, a))
+                        .collect();
+                    return RValue::CallIndirect {
+                        callee: Operand::Local(fn_ptr_temp),
+                        args: mir_args,
+                    };
+                }
+            }
+
             let obj = lower_expr_to_operand(ctx, object);
             let mut mir_args: Vec<Operand> = vec![obj];
             for a in args {

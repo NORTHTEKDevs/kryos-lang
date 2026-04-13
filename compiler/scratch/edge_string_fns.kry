@@ -1,0 +1,20 @@
+fn main() {
+    let s = "Hello, World!"
+    println(to_string(len(s)))
+    println(substr(s, 0, 5))
+    println(to_string(contains(s, "World")))
+    println(to_string(contains(s, "Foo")))
+    println(to_upper("hello"))
+    println(to_lower("HELLO"))
+    println(trim("  hi  "))
+    println(replace("foo bar baz", "bar", "qux"))
+    
+    let parts = split("a,b,c", ",")
+    println(to_string(len(parts)))
+    println(parts[0])
+    println(parts[1])
+    println(parts[2])
+    
+    let joined = join(parts, "-")
+    println(joined)
+}

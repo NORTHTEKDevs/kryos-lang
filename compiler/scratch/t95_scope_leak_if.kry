@@ -1,0 +1,10 @@
+// Test 95: Scope leak specifically in if blocks
+fn main() {
+    let x = "outer"
+    if true {
+        let y = "inner"
+        println(y)
+    }
+    // y should NOT be accessible here
+    println(y)
+}

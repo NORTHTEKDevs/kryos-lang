@@ -1,0 +1,10 @@
+struct Point {
+    x: f64,
+    y: f64
+}
+
+fn main() {
+    let p = shared Point { x: 3.0, y: 4.0 }
+    let q = p
+    println("shared struct works")
+}

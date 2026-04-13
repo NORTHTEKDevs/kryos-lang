@@ -1,0 +1,7 @@
+// Test 83: push() on an immutable array (should fail?)
+fn main() {
+    let arr = [1, 2, 3]  // NOT mut
+    push(arr, 4)
+    println(len(arr))
+    println(arr[3])
+}

@@ -1,0 +1,17 @@
+// Test 76: break inside match arm (regression for earlier finding)
+fn main() {
+    let mut i = 0
+    while i < 10 {
+        let x = i % 3
+        match x {
+            0 => println("zero"),
+            1 => println("one"),
+            _ => println("other"),
+        }
+        if i == 5 {
+            break
+        }
+        i = i + 1
+    }
+    println("done: " + to_string(i))
+}

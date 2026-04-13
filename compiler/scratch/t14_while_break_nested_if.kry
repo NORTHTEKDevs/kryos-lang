@@ -1,0 +1,19 @@
+// Test 14: While loop with break inside nested if
+fn main() {
+    let mut i = 0
+    let mut found = -1
+
+    while i < 100 {
+        if i > 10 {
+            if i % 7 == 0 {
+                if i % 3 == 0 {
+                    found = i
+                    break
+                }
+            }
+        }
+        i = i + 1
+    }
+
+    println(found)  // should be 21 (first number > 10 divisible by both 7 and 3)
+}

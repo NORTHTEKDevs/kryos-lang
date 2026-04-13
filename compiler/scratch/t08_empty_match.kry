@@ -1,0 +1,7 @@
+// Test 08: Empty match expression
+fn main() {
+    let x = 5
+    let result = match x {
+    }
+    println(result)
+}

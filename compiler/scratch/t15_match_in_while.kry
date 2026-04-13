@@ -1,0 +1,38 @@
+// Test 15: Match inside a while loop
+enum State {
+    Running,
+    Paused,
+    Done,
+}
+
+fn next_state(s: State, step: i64) -> State {
+    if step >= 5 {
+        return State.Done
+    }
+    if step == 3 {
+        return State.Paused
+    }
+    return State.Running
+}
+
+fn main() {
+    let mut state = State.Running
+    let mut step = 0
+
+    while step < 10 {
+        let label = match state {
+            Running => "running",
+            Paused => "paused",
+            Done => "done",
+        }
+        println(to_string(step) + ": " + label)
+
+        match state {
+            Done => break,
+            _ => {},
+        }
+
+        step = step + 1
+        state = next_state(state, step)
+    }
+}

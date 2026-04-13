@@ -1,0 +1,21 @@
+// Test 70b: 3-level nested struct (reproduce heap corruption)
+struct A {
+    val: i64,
+}
+
+struct B {
+    a: A,
+    name: str,
+}
+
+struct C {
+    b: B,
+    id: i64,
+}
+
+fn main() {
+    let c = C { b: B { a: A { val: 42 }, name: "test" }, id: 1 }
+    println(c.id)
+    println(c.b.name)
+    println(c.b.a.val)
+}

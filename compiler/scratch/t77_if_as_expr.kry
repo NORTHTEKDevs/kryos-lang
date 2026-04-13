@@ -1,0 +1,6 @@
+// Test 77: If as expression (value-returning if)
+fn main() {
+    let x = 5
+    let result = if x > 3 { "big" } else { "small" }
+    println(result)
+}

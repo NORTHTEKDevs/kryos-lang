@@ -1,0 +1,8 @@
+// Test 61: to_string on various types
+fn main() {
+    println(to_string(42))
+    println(to_string(3.14))
+    println(to_string(true))
+    println(to_string(false))
+    println(to_string("hello"))
+}

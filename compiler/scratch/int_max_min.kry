@@ -1,0 +1,9 @@
+// Test max/min i64 values
+fn main() {
+    let max_i64 = 9223372036854775807
+    let min_i64 = -9223372036854775808
+    println("max i64: " + to_string(max_i64))
+    println("min i64: " + to_string(min_i64))
+    println("max + 0: " + to_string(max_i64 + 0))
+    println("min + 0: " + to_string(min_i64 + 0))
+}

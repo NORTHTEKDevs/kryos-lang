@@ -1,0 +1,17 @@
+// Test 52: String escape sequences
+fn main() {
+    // Newline
+    println("line1\nline2")
+
+    // Tab
+    println("col1\tcol2")
+
+    // Backslash
+    println("back\\slash")
+
+    // Quote
+    println("he said \"hello\"")
+
+    // Null byte?
+    println("before\0after")
+}

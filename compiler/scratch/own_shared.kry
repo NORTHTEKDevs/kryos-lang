@@ -1,0 +1,11 @@
+// Test shared references
+struct Data {
+    value: i64
+}
+
+fn main() {
+    let s = shared Data { value: 42 }
+    let t = s
+    println("s.value: " + to_string(s.value))
+    println("t.value: " + to_string(t.value))
+}

@@ -1,0 +1,13 @@
+// Test function that should return a value but doesn't in all paths
+fn maybe_return(x: i64) -> i64 {
+    if x > 0 {
+        return x
+    }
+    // Missing return for x <= 0
+}
+
+fn main() {
+    println("positive: " + to_string(maybe_return(5)))
+    println("zero: " + to_string(maybe_return(0)))
+    println("negative: " + to_string(maybe_return(-1)))
+}

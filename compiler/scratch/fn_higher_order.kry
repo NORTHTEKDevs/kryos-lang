@@ -1,0 +1,23 @@
+// Test higher-order functions
+fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
+    return f(x)
+}
+
+fn double(x: i64) -> i64 {
+    return x * 2
+}
+
+fn negate(x: i64) -> i64 {
+    return 0 - x
+}
+
+fn compose(f: fn(i64) -> i64, g: fn(i64) -> i64, x: i64) -> i64 {
+    return f(g(x))
+}
+
+fn main() {
+    println("apply(double, 5): " + to_string(apply(double, 5)))
+    println("apply(negate, 5): " + to_string(apply(negate, 5)))
+    println("compose(double, negate, 5): " + to_string(compose(double, negate, 5)))
+    println("compose(negate, double, 5): " + to_string(compose(negate, double, 5)))
+}

@@ -1,0 +1,6 @@
+// Test 67: Assign to non-mutable variable
+fn main() {
+    let x = 42
+    x = 99
+    println(x)
+}

@@ -1,0 +1,10 @@
+// Test 07: Match with no default arm and value not covered
+fn main() {
+    let x = 99
+    let result = match x {
+        1 => "one",
+        2 => "two",
+        3 => "three",
+    }
+    println(result)
+}

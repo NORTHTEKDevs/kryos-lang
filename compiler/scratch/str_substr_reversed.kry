@@ -1,0 +1,6 @@
+// Test substr start > end
+fn main() {
+    let s = "hello"
+    let sub = substr(s, 3, 1)
+    println("result: '" + sub + "'")
+}

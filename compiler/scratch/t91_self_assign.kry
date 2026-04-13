@@ -1,0 +1,10 @@
+// Test 91: Self-assignment edge case
+fn main() {
+    let mut x = 42
+    x = x
+    println(x)  // should be 42
+
+    let mut arr = [1, 2, 3]
+    arr[0] = arr[0]
+    println(arr[0])  // should be 1
+}

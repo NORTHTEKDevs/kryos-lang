@@ -1,0 +1,31 @@
+// Test nested enum payloads
+enum Inner {
+    A(i64),
+    B(str),
+}
+
+enum Outer {
+    Wrap(Inner),
+    Plain(i64),
+}
+
+fn describe(o: Outer) -> str {
+    match o {
+        Outer::Wrap(inner) => {
+            match inner {
+                Inner::A(n) => "Wrap(A(" + to_string(n) + "))",
+                Inner::B(s) => "Wrap(B(" + s + "))",
+            }
+        },
+        Outer::Plain(n) => "Plain(" + to_string(n) + ")",
+    }
+}
+
+fn main() {
+    let a = Outer.Wrap(Inner.A(42))
+    let b = Outer.Wrap(Inner.B("hello"))
+    let c = Outer.Plain(99)
+    println(describe(a))
+    println(describe(b))
+    println(describe(c))
+}

@@ -1,0 +1,11 @@
+// Test 48: Variable scope leak in for loop
+fn main() {
+    let x = 42
+
+    for i in 0..3 {
+        let x = i + 100
+        println(x)
+    }
+
+    println(x)  // should be 42
+}

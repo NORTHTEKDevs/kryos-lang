@@ -1,0 +1,27 @@
+// Test enum as struct field
+enum Status {
+    Active,
+    Inactive,
+    Pending(str),
+}
+
+struct User {
+    name: str,
+    status: Status
+}
+
+fn describe(u: User) -> str {
+    let status_str = match u.status {
+        Status::Active => "active",
+        Status::Inactive => "inactive",
+        Status::Pending(reason) => "pending: " + reason,
+    }
+    return u.name + " is " + status_str
+}
+
+fn main() {
+    let u1 = User { name: "Alice", status: Status.Active }
+    let u2 = User { name: "Bob", status: Status.Pending("review") }
+    println(describe(u1))
+    println(describe(u2))
+}

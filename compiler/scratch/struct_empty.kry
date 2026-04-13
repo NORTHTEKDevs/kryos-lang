@@ -1,0 +1,7 @@
+// Test struct with no fields
+struct Empty {}
+
+fn main() {
+    let e = Empty {}
+    println("empty struct created")
+}

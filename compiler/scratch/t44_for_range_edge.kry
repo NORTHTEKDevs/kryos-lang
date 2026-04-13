@@ -1,0 +1,30 @@
+// Test 44: for-in range edge cases
+fn main() {
+    // Empty range
+    let mut count = 0
+    for i in 5..5 {
+        count = count + 1
+    }
+    println(count)  // should be 0
+
+    // Negative range (should be empty or error)
+    let mut count2 = 0
+    for i in 5..3 {
+        count2 = count2 + 1
+    }
+    println(count2)  // should be 0
+
+    // Large range
+    let mut sum = 0
+    for i in 0..1000 {
+        sum = sum + i
+    }
+    println(sum)  // should be 499500
+
+    // Single element range
+    let mut count3 = 0
+    for i in 0..1 {
+        count3 = count3 + 1
+    }
+    println(count3)  // should be 1
+}

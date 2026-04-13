@@ -1,0 +1,12 @@
+// Test i64 min literal parsing
+fn main() {
+    let a = -9223372036854775808
+    println("a = " + to_string(a))
+    let b = -9223372036854775807
+    println("b = " + to_string(b))
+    let c = 9223372036854775807
+    println("c = " + to_string(c))
+    // Max + 1 as literal
+    let d = 9223372036854775808
+    println("d = " + to_string(d))
+}

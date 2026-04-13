@@ -1,0 +1,6 @@
+// Test assignment to immutable variable
+fn main() {
+    let x = 42
+    x = 43
+    println(to_string(x))
+}

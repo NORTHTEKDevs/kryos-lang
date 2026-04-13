@@ -1,0 +1,21 @@
+// Test 60: Try/catch inside a loop
+fn main() {
+    let mut i = 0
+    let mut caught = 0
+    while i < 5 {
+        try {
+            if i == 2 {
+                throw "error at 2"
+            }
+            if i == 4 {
+                throw "error at 4"
+            }
+            println("ok: " + to_string(i))
+        } catch e {
+            caught = caught + 1
+            println("caught #" + to_string(caught))
+        }
+        i = i + 1
+    }
+    println("total caught: " + to_string(caught))
+}

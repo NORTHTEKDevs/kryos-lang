@@ -1,0 +1,5 @@
+// Test 84: String + integer (without to_string)
+fn main() {
+    let s = "value: " + 42
+    println(s)
+}

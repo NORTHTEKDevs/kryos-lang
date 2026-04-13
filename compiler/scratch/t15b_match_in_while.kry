@@ -1,0 +1,40 @@
+// Test 15b: Match inside a while loop (using if instead of match-break)
+enum State {
+    Running,
+    Paused,
+    Done,
+}
+
+fn is_done(s: State) -> bool {
+    match s {
+        Done => true,
+        _ => false,
+    }
+}
+
+fn main() {
+    let mut state = State.Running
+    let mut step = 0
+
+    while step < 10 {
+        let label = match state {
+            Running => "running",
+            Paused => "paused",
+            Done => "done",
+        }
+        println(to_string(step) + ": " + label)
+
+        if is_done(state) {
+            break
+        }
+
+        step = step + 1
+        if step >= 5 {
+            state = State.Done
+        } elif step == 3 {
+            state = State.Paused
+        } else {
+            state = State.Running
+        }
+    }
+}

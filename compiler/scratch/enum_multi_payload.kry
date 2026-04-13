@@ -1,0 +1,19 @@
+// Test enum variant with multiple payloads
+enum Result {
+    Ok(i64, str),
+    Err(i64, str),
+}
+
+fn describe(r: Result) -> str {
+    match r {
+        Result::Ok(code, msg) => "Ok(" + to_string(code) + ", " + msg + ")",
+        Result::Err(code, msg) => "Err(" + to_string(code) + ", " + msg + ")",
+    }
+}
+
+fn main() {
+    let ok = Result.Ok(200, "success")
+    let err = Result.Err(404, "not found")
+    println(describe(ok))
+    println(describe(err))
+}

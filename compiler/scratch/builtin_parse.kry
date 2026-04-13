@@ -1,0 +1,10 @@
+// Test parse_int and parse_float edge cases
+fn main() {
+    println("parse_int '42': " + to_string(parse_int("42")))
+    println("parse_int '-100': " + to_string(parse_int("-100")))
+    println("parse_int '0': " + to_string(parse_int("0")))
+    println("parse_float '3.14': " + to_string(parse_float("3.14")))
+    println("parse_float '-2.5': " + to_string(parse_float("-2.5")))
+    // Edge: invalid string
+    println("parse_int 'abc': " + to_string(parse_int("abc")))
+}

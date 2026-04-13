@@ -1,0 +1,11 @@
+fn main() {
+    let a = shared 100
+    let b = a
+    println(to_string(*a))
+    println(to_string(*b))
+    
+    let c = shared 200
+    let d = c
+    let e = d
+    println(to_string(*e))
+}

@@ -1399,6 +1399,33 @@ impl TypeChecker {
                         }
                         return sig.ret.clone();
                     }
+
+                    // Check if this is a Function-typed struct field being called
+                    // (e.g. `t.transform(5)` where `transform: fn(i64) -> i64`).
+                    if let Some(Type::Function { params: fn_params, ret: fn_ret }) =
+                        self.env.lookup_field(tname, method).cloned()
+                    {
+                        if args.len() != fn_params.len() {
+                            self.error(
+                                format!(
+                                    "closure field `{method}` expects {} arguments, found {}",
+                                    fn_params.len(),
+                                    args.len()
+                                ),
+                                *span,
+                            );
+                        } else {
+                            for (arg, param_ty) in args.iter().zip(fn_params.iter()) {
+                                let arg_ty = self.infer_expr(arg);
+                                if let Err(diag) =
+                                    self.engine.unify(&param_ty, &arg_ty, arg.span())
+                                {
+                                    self.diagnostics.push(diag);
+                                }
+                            }
+                        }
+                        return *fn_ret;
+                    }
                 }
 
                 self.error_with_code(

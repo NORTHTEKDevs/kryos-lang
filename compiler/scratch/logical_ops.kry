@@ -1,0 +1,27 @@
+// Test logical operators and short-circuit evaluation
+fn side_effect(msg: str) -> bool {
+    println("evaluated: " + msg)
+    return true
+}
+
+fn main() {
+    // Short circuit: false and X should not evaluate X
+    println("--- false and side_effect ---")
+    if false and side_effect("should not see this") {
+        println("branch taken")
+    } else {
+        println("branch not taken")
+    }
+
+    // Short circuit: true or X should not evaluate X
+    println("--- true or side_effect ---")
+    if true or side_effect("should not see this") {
+        println("branch taken")
+    } else {
+        println("branch not taken")
+    }
+
+    // not
+    println("not true: " + to_string(not true))
+    println("not false: " + to_string(not false))
+}

@@ -1,0 +1,5 @@
+// Test array negative index
+fn main() {
+    let arr = [10, 20, 30]
+    println("arr[-1]: " + to_string(arr[-1]))
+}

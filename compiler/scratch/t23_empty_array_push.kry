@@ -1,0 +1,10 @@
+// Test 23: Empty array, push, then index
+fn main() {
+    let mut arr: [i64] = []
+    push(arr, 10)
+    push(arr, 20)
+    push(arr, 30)
+    println(len(arr))   // should be 3
+    println(arr[0])     // should be 10
+    println(arr[2])     // should be 30
+}

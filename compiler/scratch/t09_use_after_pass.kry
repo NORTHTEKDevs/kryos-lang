@@ -1,0 +1,17 @@
+// Test 09: Using a struct field after passing the struct to a function
+struct Data {
+    value: i64,
+    name: str,
+}
+
+fn consume(d: Data) -> i64 {
+    return d.value
+}
+
+fn main() {
+    let d = Data { value: 42, name: "hello" }
+    let v = consume(d)
+    // Using d after it was passed to consume (potential use-after-move)
+    println(d.name)
+    println(v)
+}

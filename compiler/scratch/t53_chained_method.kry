@@ -1,0 +1,18 @@
+// Test 53: Chained operations / pipe operator
+fn double(x: i64) -> i64 {
+    return x * 2
+}
+
+fn add_ten(x: i64) -> i64 {
+    return x + 10
+}
+
+fn main() {
+    // Test pipe operator if supported
+    let result = 5 |> double |> add_ten
+    println(result)  // should be 20
+
+    // Multiple pipes
+    let result2 = 1 |> double |> double |> double
+    println(result2)  // should be 8
+}

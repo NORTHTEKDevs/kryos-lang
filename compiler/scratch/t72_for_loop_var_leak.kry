@@ -1,0 +1,8 @@
+// Test 72: For loop iteration variable leaking out
+fn main() {
+    for i in 0..5 {
+        // nothing
+    }
+    // i should NOT be accessible here
+    println(i)
+}

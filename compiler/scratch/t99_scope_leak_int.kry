@@ -1,0 +1,17 @@
+// Test 99: Shadow leak with integers (confirm it's not just string corruption)
+fn main() {
+    let x = 100
+    if true {
+        let x = 999
+        println(x)  // should print 999
+    }
+    println(x)  // should print 100
+
+    // In a block
+    let y = "hello"
+    if true {
+        let y = "goodbye"
+        println(y)  // should print "goodbye"
+    }
+    println(y)  // should print "hello"
+}

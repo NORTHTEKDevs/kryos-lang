@@ -1,0 +1,18 @@
+// Test scope-based drops
+struct Droppable {
+    name: str
+}
+
+fn make(name: str) -> Droppable {
+    return Droppable { name: name }
+}
+
+fn main() {
+    let a = make("outer")
+    if true {
+        let b = make("inner")
+        println("inside scope: " + b.name)
+        // b should be dropped here
+    }
+    println("after scope: " + a.name)
+}

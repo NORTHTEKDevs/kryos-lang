@@ -1,0 +1,13 @@
+// Test 70: Reproduce heap corruption from test 01 with simpler case
+struct Inner {
+    value: i64,
+}
+
+struct Outer {
+    inner: Inner,
+}
+
+fn main() {
+    let o = Outer { inner: Inner { value: 10 } }
+    println(o.inner.value)
+}

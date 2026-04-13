@@ -1,0 +1,27 @@
+// Test 49: Boolean operations edge cases
+fn main() {
+    // Short-circuit evaluation
+    let x = true or false
+    println(x)
+
+    let y = false and true
+    println(y)
+
+    // Not operator
+    let z = not true
+    println(z)
+
+    let w = not false
+    println(w)
+
+    // Chained
+    let a = true and true and false
+    println(a)
+
+    let b = false or false or true
+    println(b)
+
+    // Complex
+    let c = (true and false) or (not false)
+    println(c)
+}

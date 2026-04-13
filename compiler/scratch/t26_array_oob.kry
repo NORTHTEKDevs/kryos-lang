@@ -1,0 +1,6 @@
+// Test 26: Array index out of bounds
+fn main() {
+    let arr = [10, 20, 30]
+    // This should produce a runtime error or be caught
+    println(arr[5])
+}

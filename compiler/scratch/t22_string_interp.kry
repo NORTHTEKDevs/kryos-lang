@@ -1,0 +1,18 @@
+// Test 22: String interpolation
+fn main() {
+    let name = "world"
+    let count = 42
+
+    // Basic interpolation
+    println("hello {name}")
+
+    // Interpolation with number (may need to_string)
+    println("count is {count}")
+
+    // Multiple interpolations
+    println("{name} has {count} items")
+
+    // Interpolation in expression
+    let msg = "greeting: hello {name}"
+    println(msg)
+}

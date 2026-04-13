@@ -1,0 +1,17 @@
+fn main() {
+    let x = 10
+    let msg = if x > 5 { "big" } else { "small" }
+    println(msg)
+    
+    // Nested if as expression
+    let cat = if x > 20 {
+        "huge"
+    } elif x > 10 {
+        "large"
+    } elif x > 5 {
+        "medium"
+    } else {
+        "tiny"
+    }
+    println(cat)
+}

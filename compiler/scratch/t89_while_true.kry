@@ -1,0 +1,11 @@
+// Test 89: while true with break
+fn main() {
+    let mut count = 0
+    while true {
+        count = count + 1
+        if count >= 5 {
+            break
+        }
+    }
+    println(count)  // should be 5
+}

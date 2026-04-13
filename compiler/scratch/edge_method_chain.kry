@@ -1,0 +1,23 @@
+@copy
+struct Counter {
+    value: i64
+}
+
+impl Counter {
+    fn get(self) -> i64 {
+        return self.value
+    }
+}
+
+fn increment(c: Counter) -> Counter {
+    return Counter { value: c.value + 1 }
+}
+
+fn main() {
+    let c = Counter { value: 0 }
+    let c2 = increment(c)
+    let c3 = increment(c2)
+    println(to_string(c.get()))
+    println(to_string(c2.get()))
+    println(to_string(c3.get()))
+}

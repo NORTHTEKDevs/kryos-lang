@@ -1,0 +1,65 @@
+// Minimal test: struct with array field, passed through functions
+
+@copy
+struct Holder {
+    items: [i32],
+    pos: i32,
+    extra: [str]
+}
+
+fn holder_new(items: [i32]) -> Holder {
+    let extra: [str] = []
+    return Holder { items: items, pos: 0, extra: extra }
+}
+
+fn h_peek(h: Holder) -> i32 {
+    let idx = h.pos
+    if idx >= len(h.items) {
+        return -1
+    }
+    return h.items[idx]
+}
+
+fn h_advance(h: Holder) -> Holder {
+    return Holder { items: h.items, pos: h.pos + 1, extra: h.extra }
+}
+
+fn h_check(h: Holder, val: i32) -> bool {
+    return h_peek(h) == val
+}
+
+@copy
+struct HResult {
+    h: Holder,
+    stmts: [i32]
+}
+
+fn process(h: Holder) -> HResult {
+    let mut hh = h_advance(h)
+    let stmts: [i32] = []
+    return HResult { h: hh, stmts: stmts }
+}
+
+fn main() {
+    let items: [i32] = [10, 20, 30, 40, 50]
+    let h = holder_new(items)
+    println("Created holder with " + to_string(len(h.items)) + " items")
+
+    let val = h_peek(h)
+    println("Peek: " + to_string(val))
+
+    let h2 = h_advance(h)
+    println("After advance, peek: " + to_string(h_peek(h2)))
+
+    let check = h_check(h2, 20)
+    println("Check 20: " + to_string(check))
+
+    // This mirrors the pattern in parse_fn_decl -> parse_block
+    if h_check(h2, 20) {
+        println("Before process call")
+        let result = process(h2)
+        println("After process, peek: " + to_string(h_peek(result.h)))
+    }
+
+    println("Done!")
+}

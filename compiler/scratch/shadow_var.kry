@@ -1,0 +1,9 @@
+// Test variable shadowing
+fn main() {
+    let x = 10
+    println("x = " + to_string(x))
+    let x = 20
+    println("x = " + to_string(x))
+    let x = "hello"
+    println("x = " + x)
+}

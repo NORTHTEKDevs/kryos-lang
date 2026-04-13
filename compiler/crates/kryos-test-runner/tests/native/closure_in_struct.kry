@@ -1,0 +1,17 @@
+// Verify closures stored as struct fields are callable and properly dropped.
+// expect-stdout: 15
+// expect-stdout: done
+struct Transformer {
+    factor: i64,
+    transform: fn(i64) -> i64
+}
+
+fn main() {
+    let t = Transformer {
+        factor: 3,
+        transform: fn(x: i64) -> i64 { return x * 3 }
+    }
+    let result = t.transform(5)
+    println(to_string(result))
+    println("done")
+}

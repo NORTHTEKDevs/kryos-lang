@@ -1,0 +1,23 @@
+// Test 04: Enum with struct-like payload
+enum Message {
+    Text(str),
+    Number(i64),
+    Pair(i64, i64),
+    Empty,
+}
+
+fn describe(m: Message) -> str {
+    match m {
+        Message::Text(s) => "text: " + s,
+        Message::Number(n) => "number: " + to_string(n),
+        Message::Pair(a, b) => "pair: " + to_string(a) + "," + to_string(b),
+        Message::Empty => "empty",
+    }
+}
+
+fn main() {
+    println(describe(Message.Text("hello")))
+    println(describe(Message.Number(42)))
+    println(describe(Message.Pair(1, 2)))
+    println(describe(Message.Empty))
+}

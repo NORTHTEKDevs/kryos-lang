@@ -1,0 +1,6 @@
+// Test 36: Uncaught throw (no try/catch wrapper)
+fn main() {
+    println("before")
+    throw "fatal error"
+    println("after (unreachable)")
+}

@@ -1,0 +1,10 @@
+// Test array element assignment
+fn main() {
+    let mut arr = [1, 2, 3, 4, 5]
+    println("before: " + to_string(arr[2]))
+    arr[2] = 99
+    println("after: " + to_string(arr[2]))
+    // Test that other elements unchanged
+    println("arr[0]: " + to_string(arr[0]))
+    println("arr[4]: " + to_string(arr[4]))
+}

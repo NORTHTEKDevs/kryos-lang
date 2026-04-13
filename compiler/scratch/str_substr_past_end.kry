@@ -1,0 +1,6 @@
+// Test substr past end - should clamp or error?
+fn main() {
+    let s = "hello"
+    let sub = substr(s, 0, 100)
+    println("result: " + sub)
+}

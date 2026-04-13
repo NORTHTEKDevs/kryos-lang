@@ -1,0 +1,9 @@
+// Test empty array operations
+fn main() {
+    let empty: [i64] = []
+    println("len empty: " + to_string(len(empty)))
+    for item in empty {
+        println("should not print: " + to_string(item))
+    }
+    println("for over empty: ok")
+}
