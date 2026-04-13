@@ -154,6 +154,10 @@ impl LlvmCodegen {
         // Emit dropper functions for closures with heap-typed captures.
         self.emit_closure_droppers();
 
+        // Emit type drop helpers for struct/enum types with heap-owning fields.
+        // These enable array element drop to recursively clean up nested fields.
+        self.emit_type_drop_helpers();
+
         // Emit C-compatible main() wrapper if needed.
         if has_void_main {
             self.emit_main_wrapper();
@@ -440,6 +444,199 @@ impl LlvmCodegen {
                 }
             }
 
+            self.emit_line("  ret void");
+            self.emit_line("}");
+            self.emit_blank();
+        }
+    }
+
+    // Type drop helpers
+    // -----------------------------------------------------------------------
+
+    /// Emit named drop helper functions for struct/enum types with heap fields.
+    /// `__kryos_drop_MyStruct(ptr)` recursively frees nested heap fields then
+    /// frees the struct/enum allocation. Used by array element drop loops.
+    fn emit_type_drop_helpers(&mut self) {
+        let struct_defs: Vec<(String, Vec<(String, MirType)>)> =
+            self.struct_defs.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let enum_defs: Vec<(String, Vec<EnumVariantDef>)> =
+            self.enum_defs.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+
+        let has_heap_fields = |fields: &[(String, MirType)]| -> bool {
+            fields.iter().any(|(_, ty)| matches!(ty,
+                MirType::Str | MirType::Array(_, _) | MirType::Struct(_)
+                | MirType::Function { .. } | MirType::Enum(_) | MirType::Shared(_)
+            ))
+        };
+
+        // Struct drop helpers.
+        for (name, fields) in &struct_defs {
+            if name == "Map" || !has_heap_fields(fields) {
+                continue;
+            }
+            let drop_name = format!("__kryos_drop_{name}");
+            self.emit_line(&format!("; Type drop helper for struct {name}"));
+            self.emit_line(&format!("define internal void @{drop_name}(ptr %ptr) {{"));
+            self.emit_line("entry:");
+
+            for (field_idx, (_, field_ty)) in fields.iter().enumerate() {
+                let needs_drop = matches!(field_ty,
+                    MirType::Str | MirType::Array(_, _) | MirType::Struct(_)
+                    | MirType::Function { .. } | MirType::Enum(_) | MirType::Shared(_)
+                );
+                if !needs_drop { continue; }
+
+                let gep = self.next_temp();
+                self.emit_line(&format!(
+                    "  {gep} = getelementptr i64, ptr %ptr, i32 {field_idx}"
+                ));
+                let fv = self.next_temp();
+
+                match field_ty {
+                    MirType::Str => {
+                        self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                        self.emit_line(&format!("  call void @kryos_string_free(ptr {fv})"));
+                    }
+                    MirType::Array(_, _) => {
+                        self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                        self.emit_line(&format!("  call void @kryos_array_free(ptr {fv})"));
+                    }
+                    MirType::Struct(n) if n == "Map" => {
+                        self.emit_line(&format!("  {fv} = load i64, ptr {gep}"));
+                        self.emit_line(&format!("  call void @kryos_map_free(i64 {fv})"));
+                    }
+                    MirType::Function { .. } | MirType::Shared(_) => {
+                        self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                        self.emit_line(&format!("  call void @kryos_arc_release(ptr {fv})"));
+                    }
+                    MirType::Struct(n) => {
+                        let nested_drop = format!("__kryos_drop_{n}");
+                        self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                        // Check if nested struct has a drop helper; fall back to free.
+                        let has_nested = struct_defs.iter().any(|(sn, sf)| sn == n && sn != "Map" && has_heap_fields(sf));
+                        if has_nested {
+                            self.emit_line(&format!("  call void @{nested_drop}(ptr {fv})"));
+                        } else {
+                            self.emit_line(&format!("  call void @free(ptr {fv})"));
+                        }
+                    }
+                    MirType::Enum(n) => {
+                        let nested_drop = format!("__kryos_drop_{n}");
+                        self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                        let has_nested = enum_defs.iter().any(|(en, evs)| en == n && evs.iter().any(|v|
+                            v.fields.iter().any(|f| matches!(f,
+                                MirType::Str | MirType::Array(_, _) | MirType::Struct(_)
+                                | MirType::Function { .. } | MirType::Enum(_) | MirType::Shared(_)
+                            ))
+                        ));
+                        if has_nested {
+                            self.emit_line(&format!("  call void @{nested_drop}(ptr {fv})"));
+                        } else {
+                            self.emit_line(&format!("  call void @free(ptr {fv})"));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            self.emit_line("  call void @free(ptr %ptr)");
+            self.emit_line("  ret void");
+            self.emit_line("}");
+            self.emit_blank();
+        }
+
+        // Enum drop helpers.
+        for (name, variants) in &enum_defs {
+            let has_droppable = variants.iter().any(|v| {
+                v.fields.iter().any(|f| matches!(f,
+                    MirType::Str | MirType::Array(_, _) | MirType::Struct(_)
+                    | MirType::Function { .. } | MirType::Enum(_) | MirType::Shared(_)
+                ))
+            });
+            if !has_droppable { continue; }
+
+            let drop_name = format!("__kryos_drop_{name}");
+            self.emit_line(&format!("; Type drop helper for enum {name}"));
+            self.emit_line(&format!("define internal void @{drop_name}(ptr %ptr) {{"));
+            self.emit_line("entry:");
+
+            let uid = self.temp_counter;
+            self.temp_counter += 1;
+            let tag_tmp = self.next_temp();
+            self.emit_line(&format!("  {tag_tmp} = load i64, ptr %ptr"));
+
+            let merge_label = format!("edrop_merge_{uid}");
+            let mut prev_skip_label = String::new();
+
+            for (idx, variant) in variants.iter().enumerate() {
+                let droppable: Vec<(usize, &MirType)> = variant.fields.iter()
+                    .enumerate()
+                    .filter(|(_, f)| matches!(f,
+                        MirType::Str | MirType::Array(_, _) | MirType::Struct(_)
+                        | MirType::Function { .. } | MirType::Enum(_) | MirType::Shared(_)
+                    ))
+                    .collect();
+                if droppable.is_empty() { continue; }
+
+                let var_label = format!("edrop_v{idx}_{uid}");
+                let skip_label = format!("edrop_skip{idx}_{uid}");
+
+                if !prev_skip_label.is_empty() {
+                    // We're already in the previous skip block.
+                } else {
+                    // First variant check — we're in entry.
+                }
+
+                let cmp = self.next_temp();
+                self.emit_line(&format!(
+                    "  {cmp} = icmp eq i64 {tag_tmp}, {idx}"
+                ));
+                self.emit_line(&format!(
+                    "  br i1 {cmp}, label %{var_label}, label %{skip_label}"
+                ));
+
+                self.emit_line(&format!("{var_label}:"));
+                for (fi, fty) in &droppable {
+                    let offset = fi + 1;
+                    let fgep = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {fgep} = getelementptr i64, ptr %ptr, i64 {offset}"
+                    ));
+                    let fval = self.next_temp();
+                    match *fty {
+                        MirType::Str => {
+                            self.emit_line(&format!("  {fval} = load ptr, ptr {fgep}"));
+                            self.emit_line(&format!("  call void @kryos_string_free(ptr {fval})"));
+                        }
+                        MirType::Array(_, _) => {
+                            self.emit_line(&format!("  {fval} = load ptr, ptr {fgep}"));
+                            self.emit_line(&format!("  call void @kryos_array_free(ptr {fval})"));
+                        }
+                        MirType::Struct(ref n) if n == "Map" => {
+                            self.emit_line(&format!("  {fval} = load i64, ptr {fgep}"));
+                            self.emit_line(&format!("  call void @kryos_map_free(i64 {fval})"));
+                        }
+                        MirType::Function { .. } | MirType::Shared(_) => {
+                            self.emit_line(&format!("  {fval} = load ptr, ptr {fgep}"));
+                            self.emit_line(&format!("  call void @kryos_arc_release(ptr {fval})"));
+                        }
+                        MirType::Struct(ref n) | MirType::Enum(ref n) => {
+                            let nested = format!("__kryos_drop_{n}");
+                            self.emit_line(&format!("  {fval} = load ptr, ptr {fgep}"));
+                            self.emit_line(&format!("  call void @{nested}(ptr {fval})"));
+                        }
+                        _ => {}
+                    }
+                }
+                self.emit_line(&format!("  br label %{merge_label}"));
+
+                self.emit_line(&format!("{skip_label}:"));
+                prev_skip_label = skip_label;
+            }
+
+            self.emit_line(&format!("  br label %{merge_label}"));
+            self.emit_line(&format!("{merge_label}:"));
+            self.emit_line("  call void @free(ptr %ptr)");
             self.emit_line("  ret void");
             self.emit_line("}");
             self.emit_blank();
@@ -2791,16 +2988,23 @@ impl LlvmCodegen {
                 "  {elem_gep} = getelementptr i64, ptr {data}, i64 {i_name}"
             ));
 
-            // Use direct free calls (no recursive emit_*_drop) to avoid
-            // infinite recursion on self-referential types.
+            // For struct/enum elements, use named drop helpers that recursively
+            // free nested heap fields. This breaks compile-time recursion since
+            // the helpers are standalone functions that can call each other.
             let (load_ty, free_call) = match elem_ty {
-                MirType::Str => ("ptr", "call void @kryos_string_free(ptr {fv})"),
-                MirType::Array(_, _) => ("ptr", "call void @kryos_array_free(ptr {fv})"),
-                MirType::Function { .. } | MirType::Shared(_) => ("ptr", "call void @kryos_arc_release(ptr {fv})"),
-                MirType::Struct(n) if n == "Map" => ("i64", "call void @kryos_map_free(i64 {fv})"),
-                MirType::Struct(_) => ("ptr", "call void @free(ptr {fv})"),
-                MirType::Enum(_) => ("ptr", "call void @free(ptr {fv})"),
-                _ => ("i64", ""),
+                MirType::Str => ("ptr".to_string(), "call void @kryos_string_free(ptr {fv})".to_string()),
+                MirType::Array(_, _) => ("ptr".to_string(), "call void @kryos_array_free(ptr {fv})".to_string()),
+                MirType::Function { .. } | MirType::Shared(_) => ("ptr".to_string(), "call void @kryos_arc_release(ptr {fv})".to_string()),
+                MirType::Struct(n) if n == "Map" => ("i64".to_string(), "call void @kryos_map_free(i64 {fv})".to_string()),
+                MirType::Struct(n) => {
+                    let drop_name = format!("__kryos_drop_{n}");
+                    ("ptr".to_string(), format!("call void @{drop_name}(ptr {{fv}})"))
+                }
+                MirType::Enum(n) => {
+                    let drop_name = format!("__kryos_drop_{n}");
+                    ("ptr".to_string(), format!("call void @{drop_name}(ptr {{fv}})"))
+                }
+                _ => ("i64".to_string(), String::new()),
             };
             if !free_call.is_empty() {
                 let fv = self.next_temp();

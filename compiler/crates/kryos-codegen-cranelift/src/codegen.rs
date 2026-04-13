@@ -375,6 +375,46 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
         }
     }
 
+    // Declare named drop helpers for struct/enum types with heap-owning fields.
+    // These break compile-time recursion when array elements are structs/enums
+    // that themselves contain heap fields (e.g. strings inside structs inside arrays).
+    let mut type_drop_ids: HashMap<String, FuncId> = HashMap::new();
+    {
+        let call_conv = object_module.isa().default_call_conv();
+        let has_heap_fields = |fields: &[(String, MirType)]| -> bool {
+            fields.iter().any(|(_, ty)| matches!(ty,
+                MirType::Str | MirType::Array(_, _) | MirType::Struct(_)
+                | MirType::Function { .. } | MirType::Enum(_) | MirType::Shared(_)
+            ))
+        };
+        for (name, fields) in &module.struct_defs {
+            if name != "Map" && has_heap_fields(fields) {
+                let drop_name = format!("__kryos_drop_{name}");
+                let mut sig = Signature::new(call_conv);
+                sig.params.push(AbiParam::new(types::I64)); // struct ptr
+                let id = object_module.declare_function(&drop_name, Linkage::Local, &sig)?;
+                type_drop_ids.insert(name.clone(), id);
+                func_ids.insert(drop_name, id);
+            }
+        }
+        for (name, variants) in &module.enum_defs {
+            let has_droppable = variants.iter().any(|v| {
+                v.fields.iter().any(|f| matches!(f,
+                    MirType::Str | MirType::Array(_, _) | MirType::Struct(_)
+                    | MirType::Function { .. } | MirType::Enum(_) | MirType::Shared(_)
+                ))
+            });
+            if has_droppable {
+                let drop_name = format!("__kryos_drop_{name}");
+                let mut sig = Signature::new(call_conv);
+                sig.params.push(AbiParam::new(types::I64)); // enum ptr
+                let id = object_module.declare_function(&drop_name, Linkage::Local, &sig)?;
+                type_drop_ids.insert(name.clone(), id);
+                func_ids.insert(drop_name, id);
+            }
+        }
+    }
+
     // Declare and define ARC runtime stub functions.
     // These are no-op stubs until a proper runtime library is linked.
     // We define them locally so the linker doesn't require an external runtime.
@@ -1077,6 +1117,153 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
                 .define_function(dropper_id, &mut ctx)
                 .map_err(CodegenError::Module)?;
         }
+    }
+
+    // Generate type drop helper bodies for struct/enum types with heap fields.
+    // These enable array element drop to properly clean up nested struct/enum fields.
+    for (type_name, &drop_id) in &type_drop_ids {
+        let call_conv = object_module.isa().default_call_conv();
+        let mut sig = Signature::new(call_conv);
+        sig.params.push(AbiParam::new(types::I64)); // type ptr
+
+        let mut cl_func = Function::with_name_signature(
+            UserFuncName::user(0, drop_id.as_u32()),
+            sig,
+        );
+
+        {
+            let mut builder = FunctionBuilder::new(&mut cl_func, &mut fb_ctx);
+            let entry = builder.create_block();
+            builder.append_block_params_for_function_params(entry);
+            builder.switch_to_block(entry);
+            let ptr = builder.block_params(entry)[0];
+
+            if let Some(struct_def) = module.struct_defs.get(type_name) {
+                // Struct drop: free each heap-owning field, then free the struct.
+                if let Ok(layout) = compute_struct_layout(struct_def) {
+                    for (field_name, field_ty) in struct_def.iter() {
+                        let field_offset = layout.field_offsets.iter()
+                            .find(|(n, _, _)| n == field_name)
+                            .map(|(_, off, _)| *off as i32);
+                        if let Some(offset) = field_offset {
+                            let free_fn = match field_ty {
+                                MirType::Str => Some("kryos_string_free"),
+                                MirType::Array(_, _) => Some("kryos_array_free"),
+                                MirType::Struct(n) if n == "Map" => Some("kryos_map_free"),
+                                MirType::Function { .. } | MirType::Shared(_) => Some("kryos_arc_release"),
+                                MirType::Struct(n) => {
+                                    let dn = format!("__kryos_drop_{n}");
+                                    if func_ids.contains_key(&dn) {
+                                        // Will resolve below
+                                        None
+                                    } else {
+                                        Some("free")
+                                    }
+                                }
+                                MirType::Enum(n) => {
+                                    let dn = format!("__kryos_drop_{n}");
+                                    if func_ids.contains_key(&dn) {
+                                        None
+                                    } else {
+                                        Some("free")
+                                    }
+                                }
+                                _ => continue,
+                            };
+                            let field_val = builder.ins().load(types::I64, MemFlags::new(), ptr, offset);
+                            if let Some(fn_name) = free_fn {
+                                let func_id = func_ids[fn_name];
+                                let func_ref = object_module.declare_func_in_func(func_id, builder.func);
+                                builder.ins().call(func_ref, &[field_val]);
+                            } else {
+                                // Named type drop helper for nested struct/enum.
+                                let nested_name = match field_ty {
+                                    MirType::Struct(n) | MirType::Enum(n) => format!("__kryos_drop_{n}"),
+                                    _ => unreachable!(),
+                                };
+                                let nested_id = func_ids[&nested_name];
+                                let nested_ref = object_module.declare_func_in_func(nested_id, builder.func);
+                                builder.ins().call(nested_ref, &[field_val]);
+                            }
+                        }
+                    }
+                }
+            } else if let Some(variants) = module.enum_defs.get(type_name) {
+                // Enum drop: load tag, dispatch per-variant, free fields.
+                let tag = builder.ins().load(types::I64, MemFlags::new(), ptr, 0);
+                let merge_block = builder.create_block();
+
+                for (idx, variant) in variants.iter().enumerate() {
+                    let droppable_fields: Vec<(usize, &MirType)> = variant.fields.iter()
+                        .enumerate()
+                        .filter(|(_, f)| matches!(f,
+                            MirType::Str | MirType::Array(_, _) | MirType::Struct(_)
+                            | MirType::Function { .. } | MirType::Enum(_) | MirType::Shared(_)
+                        ))
+                        .collect();
+                    if droppable_fields.is_empty() {
+                        continue;
+                    }
+
+                    let variant_block = builder.create_block();
+                    let skip_block = builder.create_block();
+
+                    let tag_val = builder.ins().iconst(types::I64, idx as i64);
+                    let cmp = builder.ins().icmp(
+                        cranelift_codegen::ir::condcodes::IntCC::Equal, tag, tag_val,
+                    );
+                    builder.ins().brif(cmp, variant_block, &[], skip_block, &[]);
+                    builder.seal_block(variant_block);
+
+                    builder.switch_to_block(variant_block);
+                    for (field_idx, field_ty) in &droppable_fields {
+                        let offset = ((*field_idx + 1) * 8) as i32;
+                        let field_val = builder.ins().load(types::I64, MemFlags::new(), ptr, offset);
+                        let fn_name = match *field_ty {
+                            MirType::Str => "kryos_string_free",
+                            MirType::Array(_, _) => "kryos_array_free",
+                            MirType::Struct(ref n) if n == "Map" => "kryos_map_free",
+                            MirType::Function { .. } | MirType::Shared(_) => "kryos_arc_release",
+                            MirType::Struct(ref n) | MirType::Enum(ref n) => {
+                                let dn = format!("__kryos_drop_{n}");
+                                if func_ids.contains_key(&dn) {
+                                    let fid = func_ids[&dn];
+                                    let fref = object_module.declare_func_in_func(fid, builder.func);
+                                    builder.ins().call(fref, &[field_val]);
+                                    continue;
+                                }
+                                "free"
+                            }
+                            _ => continue,
+                        };
+                        let fid = func_ids[fn_name];
+                        let fref = object_module.declare_func_in_func(fid, builder.func);
+                        builder.ins().call(fref, &[field_val]);
+                    }
+                    builder.ins().jump(merge_block, &[]);
+
+                    builder.switch_to_block(skip_block);
+                    builder.seal_block(skip_block);
+                }
+                builder.ins().jump(merge_block, &[]);
+                builder.seal_block(merge_block);
+                builder.switch_to_block(merge_block);
+            }
+
+            // Free the struct/enum allocation itself.
+            let free_id = func_ids["free"];
+            let free_ref = object_module.declare_func_in_func(free_id, builder.func);
+            builder.ins().call(free_ref, &[ptr]);
+
+            builder.ins().return_(&[]);
+            builder.seal_all_blocks();
+            builder.finalize();
+        }
+
+        let mut ctx = Context::for_function(cl_func);
+        object_module
+            .define_function(drop_id, &mut ctx)
+            .map_err(CodegenError::Module)?;
     }
 
     // If the user's main returns void, emit a C-compatible `main` wrapper:
@@ -4024,21 +4211,35 @@ fn emit_drop_for_value<M: Module>(
             builder.ins().call(free_ref, &[val]);
         }
         MirType::Array(ref elem_ty, _) => {
-            // Determine the per-element free function for heap element types.
-            // We use direct free calls (no recursive emit_drop_for_value) to
-            // avoid infinite recursion on self-referential types like
-            // struct Foo { children: [Foo] }.
-            let elem_free_fn: Option<&str> = match elem_ty.as_ref() {
-                MirType::Str => Some("kryos_string_free"),
-                MirType::Array(_, _) => Some("kryos_array_free"),
-                MirType::Function { .. } | MirType::Shared(_) => Some("kryos_arc_release"),
-                MirType::Struct(n) if n == "Map" => Some("kryos_map_free"),
-                MirType::Struct(_) => Some("free"),
-                MirType::Enum(_) => Some("free"),
+            // Determine the per-element drop function for heap element types.
+            // For struct/enum elements, use a named drop helper (__kryos_drop_X)
+            // that recursively frees nested heap fields. This avoids compile-time
+            // infinite recursion while still cleaning up deeply nested structures.
+            let elem_free_fn: Option<String> = match elem_ty.as_ref() {
+                MirType::Str => Some("kryos_string_free".to_string()),
+                MirType::Array(_, _) => Some("kryos_array_free".to_string()),
+                MirType::Function { .. } | MirType::Shared(_) => Some("kryos_arc_release".to_string()),
+                MirType::Struct(n) if n == "Map" => Some("kryos_map_free".to_string()),
+                MirType::Struct(n) => {
+                    let drop_name = format!("__kryos_drop_{n}");
+                    if translator.func_ids.contains_key(&drop_name) {
+                        Some(drop_name)
+                    } else {
+                        Some("free".to_string())
+                    }
+                }
+                MirType::Enum(n) => {
+                    let drop_name = format!("__kryos_drop_{n}");
+                    if translator.func_ids.contains_key(&drop_name) {
+                        Some(drop_name)
+                    } else {
+                        Some("free".to_string())
+                    }
+                }
                 _ => None,
             };
 
-            if let Some(free_fn) = elem_free_fn {
+            if let Some(ref free_fn) = elem_free_fn {
                 // Guard: skip element cleanup if array pointer is null.
                 let zero_ptr = builder.ins().iconst(types::I64, 0);
                 let is_nonnull = builder.ins().icmp(
