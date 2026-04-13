@@ -827,6 +827,21 @@ pub extern "C" fn kryos_arc_release_i64(ptr: i64) {
     crate::arc::kryos_arc_release(ptr as *mut u8);
 }
 
+/// Set the drop function for an ARC-managed object (i64 wrapper).
+/// `drop_fn` is a function pointer cast to i64 with signature `fn(*mut u8)`.
+/// Called by codegen after allocating closure env buffers so that captured
+/// heap values (strings, arrays, maps, closures) are freed when the closure
+/// reference count reaches zero.
+#[no_mangle]
+pub extern "C" fn kryos_arc_set_drop_i64(ptr: i64, drop_fn: i64) {
+    if ptr == 0 || drop_fn == 0 {
+        return;
+    }
+    let fn_ptr: extern "C" fn(*mut u8) =
+        unsafe { core::mem::transmute(drop_fn as usize) };
+    crate::arc::kryos_arc_set_drop(ptr as *mut u8, fn_ptr);
+}
+
 // ---------------------------------------------------------------------------
 // Runtime checks — division by zero
 // ---------------------------------------------------------------------------

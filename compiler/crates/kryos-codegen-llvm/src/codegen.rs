@@ -45,6 +45,9 @@ pub struct LlvmCodegen {
     value_types: HashMap<String, String>,
     /// Structs annotated with `@copy` — assignment deep-copies the struct.
     copy_structs: HashSet<String>,
+    /// Closure capture types: func_name -> Vec of capture MIR types.
+    /// Used to generate per-closure dropper functions that free heap captures.
+    closure_cap_types: HashMap<String, Vec<Option<MirType>>>,
 }
 
 impl LlvmCodegen {
@@ -64,6 +67,7 @@ impl LlvmCodegen {
             mutable_locals: HashSet::new(),
             value_types: HashMap::new(),
             copy_structs: HashSet::new(),
+            closure_cap_types: HashMap::new(),
         }
     }
 
@@ -84,8 +88,9 @@ impl LlvmCodegen {
         self.enum_defs = module.enum_defs.clone();
         self.copy_structs = module.copy_structs.clone();
 
-        // Pre-scan: collect string constants, detect ARC usage, and record
-        // function signatures for type-correct call emission.
+        // Pre-scan: collect string constants, detect ARC usage, record
+        // function signatures, and collect closure capture types.
+        self.closure_cap_types.clear();
         for func in &module.functions {
             self.prescan_function(func);
             let param_types: Vec<String> = func
@@ -95,6 +100,26 @@ impl LlvmCodegen {
                 .collect();
             self.func_param_types
                 .insert(func.name.clone(), param_types);
+
+            // Collect closure capture types for dropper generation.
+            for bb in &func.blocks {
+                for inst in &bb.instructions {
+                    if let Instruction::Assign { value: RValue::Closure { func_name, captures }, .. } = inst {
+                        if !self.closure_cap_types.contains_key(func_name.as_str()) {
+                            let cap_types: Vec<Option<MirType>> = captures.iter().map(|cap| {
+                                match cap {
+                                    Operand::Local(id) => func.locals
+                                        .iter()
+                                        .find(|l| l.id == *id)
+                                        .map(|l| l.ty.clone()),
+                                    _ => None,
+                                }
+                            }).collect();
+                            self.closure_cap_types.insert(func_name.clone(), cap_types);
+                        }
+                    }
+                }
+            }
         }
 
         // Module header.
@@ -125,6 +150,9 @@ impl LlvmCodegen {
                 self.emit_function(func)?;
             }
         }
+
+        // Emit dropper functions for closures with heap-typed captures.
+        self.emit_closure_droppers();
 
         // Emit C-compatible main() wrapper if needed.
         if has_void_main {
@@ -189,6 +217,7 @@ impl LlvmCodegen {
         self.emit_line("declare ptr @kryos_arc_alloc(i64, ptr)");
         self.emit_line("declare void @kryos_arc_retain(ptr)");
         self.emit_line("declare void @kryos_arc_release(ptr)");
+        self.emit_line("declare void @kryos_arc_set_drop(ptr, ptr)");
         self.emit_line("declare i64 @kryos_arc_alloc_i64(i64)");
         self.emit_blank();
     }
@@ -342,6 +371,81 @@ impl LlvmCodegen {
     }
 
     // -----------------------------------------------------------------------
+    // Closure dropper functions
+    // -----------------------------------------------------------------------
+
+    /// Emit dropper functions for closures with heap-typed captures.
+    /// Each dropper has signature `void(ptr env)` and frees captured heap
+    /// values before the ARC system frees the env buffer itself.
+    fn emit_closure_droppers(&mut self) {
+        let cap_types_snapshot: Vec<(String, Vec<Option<MirType>>)> =
+            self.closure_cap_types.iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+
+        for (func_name, cap_types) in &cap_types_snapshot {
+            let has_heap_caps = cap_types.iter().any(|ct| matches!(ct,
+                Some(MirType::Str) | Some(MirType::Array(_, _))
+                | Some(MirType::Function { .. }) | Some(MirType::Shared(_))
+                | Some(MirType::Struct(_)) | Some(MirType::Enum(_))
+            ));
+            if !has_heap_caps {
+                continue;
+            }
+
+            let dropper_name = format!("{func_name}_drop");
+            self.emit_line(&format!("; Closure dropper for {func_name}"));
+            self.emit_line(&format!("define internal void @{dropper_name}(ptr %env) {{"));
+            self.emit_line("entry:");
+
+            for (i, cap_ty) in cap_types.iter().enumerate() {
+                let offset = i + 1;
+                let needs_free = matches!(cap_ty,
+                    Some(MirType::Str) | Some(MirType::Array(_, _))
+                    | Some(MirType::Function { .. }) | Some(MirType::Shared(_))
+                    | Some(MirType::Struct(_)) | Some(MirType::Enum(_))
+                );
+                if !needs_free {
+                    continue;
+                }
+
+                let cap_ptr = self.next_temp();
+                self.emit_line(&format!(
+                    "  {cap_ptr} = getelementptr i64, ptr %env, i64 {offset}"
+                ));
+                let cap_val = self.next_temp();
+
+                match cap_ty {
+                    Some(MirType::Str) => {
+                        self.emit_line(&format!("  {cap_val} = load ptr, ptr {cap_ptr}"));
+                        self.emit_line(&format!("  call void @kryos_string_free(ptr {cap_val})"));
+                    }
+                    Some(MirType::Array(_, _)) => {
+                        self.emit_line(&format!("  {cap_val} = load ptr, ptr {cap_ptr}"));
+                        self.emit_line(&format!("  call void @kryos_array_free(ptr {cap_val})"));
+                    }
+                    Some(MirType::Struct(n)) if n == "Map" => {
+                        self.emit_line(&format!("  {cap_val} = load i64, ptr {cap_ptr}"));
+                        self.emit_line(&format!("  call void @kryos_map_free(i64 {cap_val})"));
+                    }
+                    Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
+                        self.emit_line(&format!("  {cap_val} = load ptr, ptr {cap_ptr}"));
+                        self.emit_line(&format!("  call void @kryos_arc_release(ptr {cap_val})"));
+                    }
+                    Some(MirType::Struct(_)) | Some(MirType::Enum(_)) => {
+                        self.emit_line(&format!("  {cap_val} = load ptr, ptr {cap_ptr}"));
+                        self.emit_line(&format!("  call void @free(ptr {cap_val})"));
+                    }
+                    _ => {}
+                }
+            }
+
+            self.emit_line("  ret void");
+            self.emit_line("}");
+            self.emit_blank();
+        }
+    }
+
     // Main wrapper
     // -----------------------------------------------------------------------
 
@@ -1642,6 +1746,23 @@ impl LlvmCodegen {
                             }
                         }
                     }
+
+                    // Register dropper so captured heap values are freed when
+                    // the closure's ARC ref count reaches zero.
+                    let dropper_name = format!("{func_name}_drop");
+                    let has_dropper = self.closure_cap_types.get(func_name.as_str())
+                        .map(|cts| cts.iter().any(|ct| matches!(ct,
+                            Some(MirType::Str) | Some(MirType::Array(_, _))
+                            | Some(MirType::Function { .. }) | Some(MirType::Shared(_))
+                            | Some(MirType::Struct(_)) | Some(MirType::Enum(_))
+                        )))
+                        .unwrap_or(false);
+                    if has_dropper {
+                        self.emit_line(&format!(
+                            "  call void @kryos_arc_set_drop(ptr {env_ptr}, ptr @{dropper_name})"
+                        ));
+                    }
+
                     if dest_ty == "ptr" {
                         // Dest expects ptr -- use env_ptr directly.
                         if is_mutable {

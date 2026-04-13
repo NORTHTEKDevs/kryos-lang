@@ -300,8 +300,11 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
         .map(|f| (f.name.as_str(), f))
         .collect();
 
-    // Maps func_name -> (num_captures, user_param_count).
-    let mut closure_info: HashMap<String, (usize, usize)> = HashMap::new();
+    // Maps func_name -> (num_captures, user_param_count, capture_types).
+    // capture_types tracks the MIR type of each capture so we can generate
+    // a dropper function that frees heap-allocated captures when the closure
+    // env's ARC ref count reaches zero.
+    let mut closure_info: HashMap<String, (usize, usize, Vec<Option<MirType>>)> = HashMap::new();
     for mir_func in &module.functions {
         for bb in &mir_func.blocks {
             for inst in &bb.instructions {
@@ -312,7 +315,16 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
                         } else {
                             0
                         };
-                        closure_info.insert(func_name.clone(), (captures.len(), user_params));
+                        let cap_types: Vec<Option<MirType>> = captures.iter().map(|cap| {
+                            match cap {
+                                Operand::Local(id) => mir_func.locals
+                                    .iter()
+                                    .find(|l| l.id == *id)
+                                    .map(|l| l.ty.clone()),
+                                _ => None,
+                            }
+                        }).collect();
+                        closure_info.insert(func_name.clone(), (captures.len(), user_params, cap_types));
                     }
                 }
             }
@@ -323,7 +335,7 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
     let mut thunk_ids: HashMap<String, FuncId> = HashMap::new();
     {
         let call_conv = object_module.isa().default_call_conv();
-        for (func_name, (_, user_param_count)) in &closure_info {
+        for (func_name, (_, user_param_count, _)) in &closure_info {
             let env_thunk_name = format!("{func_name}_env");
             let mut sig = Signature::new(call_conv);
             sig.params.push(AbiParam::new(types::I64)); // env pointer
@@ -339,6 +351,30 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
         }
     }
 
+    // Declare dropper functions for closures with heap-typed captures.
+    // When ARC ref count reaches 0, the dropper frees each captured value.
+    let mut dropper_ids: HashMap<String, FuncId> = HashMap::new();
+    {
+        let call_conv = object_module.isa().default_call_conv();
+        for (func_name, (_, _, cap_types)) in &closure_info {
+            let has_heap_caps = cap_types.iter().any(|ct| matches!(ct,
+                Some(MirType::Str) | Some(MirType::Array(_, _))
+                | Some(MirType::Function { .. }) | Some(MirType::Shared(_))
+                | Some(MirType::Struct(_)) | Some(MirType::Enum(_))
+            ));
+            if has_heap_caps {
+                let dropper_name = format!("{func_name}_drop");
+                let mut sig = Signature::new(call_conv);
+                sig.params.push(AbiParam::new(types::I64)); // env ptr
+                let id = object_module.declare_function(
+                    &dropper_name, Linkage::Local, &sig,
+                )?;
+                dropper_ids.insert(func_name.clone(), id);
+                func_ids.insert(dropper_name, id);
+            }
+        }
+    }
+
     // Declare and define ARC runtime stub functions.
     // These are no-op stubs until a proper runtime library is linked.
     // We define them locally so the linker doesn't require an external runtime.
@@ -349,6 +385,12 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
         sig
     };
     let arc_release_sig = arc_retain_sig.clone();
+    let arc_set_drop_sig = {
+        let mut sig = Signature::new(call_conv);
+        sig.params.push(AbiParam::new(types::I64)); // ptr
+        sig.params.push(AbiParam::new(types::I64)); // drop_fn (fn ptr as i64)
+        sig
+    };
     let arc_alloc_sig = {
         let mut sig = Signature::new(call_conv);
         sig.params.push(AbiParam::new(types::I64));
@@ -372,9 +414,15 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
         Linkage::Import,
         &arc_alloc_sig,
     )?;
+    let arc_set_drop_id = object_module.declare_function(
+        "kryos_arc_set_drop_i64",
+        Linkage::Import,
+        &arc_set_drop_sig,
+    )?;
 
     func_ids.insert("kryos_arc_retain".to_string(), arc_retain_id);
     func_ids.insert("kryos_arc_release".to_string(), arc_release_id);
+    func_ids.insert("kryos_arc_set_drop".to_string(), arc_set_drop_id);
     func_ids.insert("kryos_arc_alloc".to_string(), arc_alloc_id);
     func_ids.insert("kryos_arc_alloc_i64".to_string(), arc_alloc_id);
 
@@ -844,7 +892,7 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
     }
 
     // Generate env-wrapper (thunk) function bodies for closures.
-    for (func_name, (num_captures, user_param_count)) in &closure_info {
+    for (func_name, (num_captures, user_param_count, _)) in &closure_info {
         let env_thunk_id = thunk_ids[func_name.as_str()];
         let call_conv = object_module.isa().default_call_conv();
 
@@ -948,6 +996,87 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
         object_module
             .define_function(env_thunk_id, &mut ctx)
             .map_err(CodegenError::Module)?;
+    }
+
+    // Generate dropper function bodies for closures with heap captures.
+    // Each dropper has signature `fn(env_ptr: i64)` and frees captured heap
+    // values at their known offsets before the ARC system frees the env buffer.
+    //
+    // Pre-declare runtime functions needed by droppers (idempotent if already declared).
+    {
+        let call_conv = object_module.isa().default_call_conv();
+        let one_arg_sig = |cc| {
+            let mut sig = Signature::new(cc);
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            sig
+        };
+        let one_arg_void_sig = |cc| {
+            let mut sig = Signature::new(cc);
+            sig.params.push(AbiParam::new(types::I64));
+            sig
+        };
+        for (rt_name, is_void) in [
+            ("kryos_string_free", true),
+            ("kryos_array_free", true),
+            ("kryos_map_free", true),
+            ("free", true),
+        ] {
+            if !func_ids.contains_key(rt_name) {
+                let sig = if is_void { one_arg_void_sig(call_conv) } else { one_arg_sig(call_conv) };
+                let id = object_module.declare_function(rt_name, Linkage::Import, &sig)?;
+                func_ids.insert(rt_name.to_string(), id);
+            }
+        }
+    }
+    for (func_name, (_, _, cap_types)) in &closure_info {
+        if let Some(&dropper_id) = dropper_ids.get(func_name.as_str()) {
+            let call_conv = object_module.isa().default_call_conv();
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // env ptr
+
+            let mut cl_func = Function::with_name_signature(
+                UserFuncName::user(0, dropper_id.as_u32()),
+                sig,
+            );
+
+            {
+                let mut builder = FunctionBuilder::new(&mut cl_func, &mut fb_ctx);
+                let entry = builder.create_block();
+                builder.append_block_params_for_function_params(entry);
+                builder.switch_to_block(entry);
+
+                let env_ptr = builder.block_params(entry)[0];
+
+                // Free each heap-typed capture at offset (i+1)*8.
+                for (i, cap_ty) in cap_types.iter().enumerate() {
+                    let offset = ((i + 1) * 8) as i32;
+                    let rt_fn_name = match cap_ty {
+                        Some(MirType::Str) => Some("kryos_string_free"),
+                        Some(MirType::Array(_, _)) => Some("kryos_array_free"),
+                        Some(MirType::Struct(n)) if n == "Map" => Some("kryos_map_free"),
+                        Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => Some("kryos_arc_release"),
+                        Some(MirType::Struct(_)) | Some(MirType::Enum(_)) => Some("free"),
+                        _ => None,
+                    };
+                    if let Some(fn_name) = rt_fn_name {
+                        let val = builder.ins().load(types::I64, MemFlags::new(), env_ptr, offset);
+                        let func_id = func_ids[fn_name];
+                        let func_ref = object_module.declare_func_in_func(func_id, builder.func);
+                        builder.ins().call(func_ref, &[val]);
+                    }
+                }
+
+                builder.ins().return_(&[]);
+                builder.seal_all_blocks();
+                builder.finalize();
+            }
+
+            let mut ctx = Context::for_function(cl_func);
+            object_module
+                .define_function(dropper_id, &mut ctx)
+                .map_err(CodegenError::Module)?;
+        }
     }
 
     // If the user's main returns void, emit a C-compatible `main` wrapper:
@@ -2922,6 +3051,20 @@ fn translate_rvalue<M: Module>(
                     };
 
                     builder.ins().store(MemFlags::new(), store_val, ptr, offset);
+                }
+
+                // Register a dropper function so captured heap values are freed
+                // when the closure's ARC ref count reaches zero.
+                let dropper_name = format!("{func_name}_drop");
+                if translator.func_ids.contains_key(&dropper_name) {
+                    let set_drop_ref = ensure_func_ref_with_args(
+                        "kryos_arc_set_drop", builder, translator, module, 2,
+                    )?;
+                    let dropper_ref = ensure_func_ref_with_args(
+                        &dropper_name, builder, translator, module, 1,
+                    )?;
+                    let dropper_addr = builder.ins().func_addr(types::I64, dropper_ref);
+                    builder.ins().call(set_drop_ref, &[ptr, dropper_addr]);
                 }
 
                 Ok(Some(ptr))
