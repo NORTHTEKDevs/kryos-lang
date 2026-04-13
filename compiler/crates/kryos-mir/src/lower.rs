@@ -3726,12 +3726,8 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // Analyze free variables in the lambda body (captures from enclosing scope).
             let captures = find_free_variables(ctx, body, params);
 
-            // Save state, lower the lambda as a standalone function.
-            let saved = ctx.save_function_state();
-
-            // Build params: captures first (as extra params), then declared params.
-            // Look up each capture's MIR type from the enclosing scope so that
-            // function-typed captures are correctly lowered as indirect calls.
+            // Build params BEFORE saving state — save_function_state() takes ctx.locals,
+            // so type lookups must happen while the enclosing scope is still live.
             let mut all_params: Vec<ast::Param> = captures
                 .iter()
                 .map(|name| {
@@ -3750,6 +3746,9 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 })
                 .collect();
             all_params.extend_from_slice(params);
+
+            // Save state, lower the lambda as a standalone function.
+            let saved = ctx.save_function_state();
 
             // Create a block from the body expression.
             let body_block = ast::Block {
