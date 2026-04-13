@@ -1,0 +1,24 @@
+// Demonstrate @pure annotation for side-effect-free functions.
+// The compiler can optimize duplicate calls and remove unused calls.
+
+@pure
+fn square(x: i64) -> i64 {
+    x * x
+}
+
+@pure
+fn add(a: i64, b: i64) -> i64 {
+    a + b
+}
+
+fn main() {
+    // These two calls have identical arguments — CSE can merge them.
+    let a = square(7)
+    let b = square(7)
+    println(to_string(a + b))  // 98
+
+    // Pure function with different args — no CSE.
+    let c = add(10, 20)
+    let d = add(10, 30)
+    println(to_string(c + d))  // 70
+}
