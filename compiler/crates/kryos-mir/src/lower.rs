@@ -251,17 +251,19 @@ impl LoweringContext {
     }
 
     /// Save the per-function state so we can restore it after monomorphization.
-    fn save_function_state(&self) -> FunctionState {
+    /// Uses `mem::take` to move data out (zero-cost) instead of cloning.
+    /// The caller must call `restore_function_state` to put the data back.
+    fn save_function_state(&mut self) -> FunctionState {
         FunctionState {
-            locals: self.locals.clone(),
-            blocks: self.blocks.clone(),
-            current_instructions: self.current_instructions.clone(),
+            locals: std::mem::take(&mut self.locals),
+            blocks: std::mem::take(&mut self.blocks),
+            current_instructions: std::mem::take(&mut self.current_instructions),
             current_block: self.current_block,
             next_local: self.next_local,
             next_block: self.next_block,
-            loop_headers: self.loop_headers.clone(),
-            loop_exits: self.loop_exits.clone(),
-            hidden_locals: self.hidden_locals.clone(),
+            loop_headers: std::mem::take(&mut self.loop_headers),
+            loop_exits: std::mem::take(&mut self.loop_exits),
+            hidden_locals: std::mem::take(&mut self.hidden_locals),
         }
     }
 
@@ -827,10 +829,10 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
 
     MirModule {
         functions,
-        struct_defs: ctx.struct_defs.clone(),
-        enum_defs: ctx.enum_defs.clone(),
-        trait_vtables: ctx.impl_map.clone(),
-        copy_structs: ctx.copy_structs.clone(),
+        struct_defs: ctx.struct_defs,
+        enum_defs: ctx.enum_defs,
+        trait_vtables: ctx.impl_map,
+        copy_structs: ctx.copy_structs,
     }
 }
 

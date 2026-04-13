@@ -1,0 +1,9 @@
+# Limit parallelism to prevent OOM during debug builds.
+# Debug builds of cranelift-codegen + kryos-codegen-cranelift consume
+# ~10-15GB per rustc invocation. With default parallelism, 4+ instances
+# compile simultaneously and exhaust 48GB+ RAM.
+#
+# Release builds are lighter due to smaller IR representations inside
+# rustc. Use `cargo build --release -j 4` for normal development.
+[build]
+jobs = 2

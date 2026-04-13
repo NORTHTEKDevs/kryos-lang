@@ -1397,7 +1397,7 @@ struct FuncTranslator<'a> {
     /// - After calls taking a &mut: slot value is loaded back into variable
     borrow_slots: HashMap<u32, cranelift_codegen::ir::StackSlot>,
     /// Trait method vtable map: (concrete_type, trait_name) -> [method_name, ...].
-    mir_module_trait_methods: HashMap<(String, String), Vec<String>>,
+    mir_module_trait_methods: &'a HashMap<(String, String), Vec<String>>,
     /// Whether this function has MIR-level exception checks (try/catch).
     /// When true, the codegen does NOT emit its own post-call exception
     /// checks because the MIR checks handle routing to catch blocks.
@@ -1442,7 +1442,7 @@ pub fn translate_function<M: Module>(
         struct_defs,
         enum_defs,
         borrow_slots: HashMap::new(),
-        mir_module_trait_methods: trait_vtables.clone(),
+        mir_module_trait_methods: trait_vtables,
         has_mir_exception_checks,
         checked_arithmetic,
         copy_structs,
