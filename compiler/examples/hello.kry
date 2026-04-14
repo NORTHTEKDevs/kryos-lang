@@ -1,6 +1,6 @@
 fn main() {
     let name = "Kryos"
-    let version = "0.2"
+    let version = "0.3.3"
     let greeting = "Hello, " + name + " v" + version + "!"
     println(greeting)
     println("")

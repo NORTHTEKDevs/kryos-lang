@@ -4,6 +4,67 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.3] - 2026-04-14
+
+### Added
+- `Self` type in trait method signatures resolves to the implementing type at each call site
+- `Type::method(args)` associated function syntax (`StaticMethodCall` AST node, parsed, type-checked, MIR-lowered, both backends)
+- `install.ps1` Windows PowerShell installer
+- `CONTRIBUTING.md` developer guide with compiler pipeline walkthrough
+
+### Fixed
+- Clippy: `&param_ty` double-reference in `kryos-types/src/check.rs:1421` (immediate deref lint)
+- Version bump: `compiler/Cargo.toml` 0.2.1 -> 0.3.3
+
+---
+
+## [0.3.2] - 2026-04-13
+
+### Added
+- Developer adoption sprint: stdlib completions, string safety improvements, DX ergonomics
+- Module system for stage-0 self-host build (`use` imports in bootstrap)
+- Calling closures stored as struct fields
+- Correct MirType for fn-typed captures in lambda thunks
+
+---
+
+## [0.3.1] - 2026-04-12
+
+### Added
+- `@pure` attribute optimization -- CSE (common subexpression elimination) and dead call elimination at MIR level
+- `@test` annotation runner -- discover and JIT-execute `@test` functions via `kryos test`
+
+### Fixed
+- REPL state persistence -- `use`/`type`/`extern`/`actor`/`pub` classified as declarations, persist across lines
+- Array element drop recursion -- named type drop helpers for struct/enum fields (prevents infinite recursion)
+- Closure capture memory leak -- per-closure dropper thunks generated for ARC env cleanup
+
+---
+
+## [0.2.2] - 2026-04-09
+
+### Fixed
+- Deep memory safety pass: ownership cloning, Shared drop, @copy ARC retain
+- String interpolation intermediate leak
+- try/catch result enum leak
+- LLVM backend drop parity (enum, struct, array, map, function)
+- Const eval overflow: checked arithmetic, unfoldable at compile time
+- Formatter: doc comments preserved on Actor, TypeAlias, Import, Extern declarations
+
+---
+
+## [0.2.1] - 2026-04-08
+
+### Fixed
+- Critical memory safety, control flow, and type system fixes
+- Exception cleanup includes MirType::Enum in droppable filter
+- CI/CD GitHub Actions matrix (Ubuntu + Windows + macOS)
+- Clippy clean (0 warnings)
+- @copy struct deep-copy: Function/Shared fields call kryos_arc_retain
+- ActorSend: heap-typed args cloned before send
+
+---
+
 ## [0.2.0] - 2026-04-08
 
 ### Self-Hosting Milestone

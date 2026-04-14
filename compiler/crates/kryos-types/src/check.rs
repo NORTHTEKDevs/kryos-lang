@@ -1418,7 +1418,7 @@ impl TypeChecker {
                             for (arg, param_ty) in args.iter().zip(fn_params.iter()) {
                                 let arg_ty = self.infer_expr(arg);
                                 if let Err(diag) =
-                                    self.engine.unify(&param_ty, &arg_ty, arg.span())
+                                    self.engine.unify(param_ty, &arg_ty, arg.span())
                                 {
                                     self.diagnostics.push(diag);
                                 }

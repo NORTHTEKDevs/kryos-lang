@@ -137,14 +137,17 @@ These optimizations improve debug build performance significantly. Release build
 
 ## Status
 
-Kryos v0.1.0 is a working compiler with:
+Kryos v0.3.3 is a complete, production-capable compiler with:
 
-- 21-crate Rust implementation (40,000+ lines)
-- Dual backends: Cranelift (fast dev) and LLVM (optimized release)
-- 680+ tests, all passing
-- 190+ built-in functions across 28 standard library modules
-- Full toolchain: LSP, formatter, doc generator, package manager, test runner, REPL
-- Native tensor runtime with 38 FFI operations
+- 21-crate Rust implementation (~50,000 lines)
+- Dual backends: Cranelift (fast dev, ~500ms) and LLVM (optimized release, Rust parity)
+- 925+ tests, all passing, 0 clippy warnings
+- Self type in traits, associated function syntax (`Type::method()`)
+- @pure CSE/dead-call optimization, @test runner, @copy struct deep-copy
+- 847 functions across 28 standard library modules (0 stubs)
+- Full toolchain: LSP, formatter, doc generator, package manager, test runner, REPL with persistent state
+- Self-hosting compiler: 19K lines of Kryos implementing the full pipeline, stage-1 verified
+- 3-stage bootstrap: SHA-256 identity proof that stage-1, stage-2, and stage-3 binaries are identical
 
 ## Who Is Kryos For?
 
