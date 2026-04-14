@@ -15,12 +15,12 @@ extern {
     fn kryos_process_exec_simple(cmd_ptr: ptr, cmd_len: i64) -> i64
     fn kryos_process_argc() -> i64
     fn kryos_process_argv(index: i64) -> i64
+    fn kryos_stderr_write(data: ptr, len: i64) -> i64
 }
 
 // --- Environment variables --------------------------------------------------
 
 // Get an environment variable.  Returns the value or throws if not found.
-@capabilities(io)
 fn env_get(key: str) -> str {
     let buf_size = 4096
     let buf = alloc(buf_size)
@@ -41,7 +41,6 @@ fn env_get(key: str) -> str {
 }
 
 // Get an environment variable with a default fallback.
-@capabilities(io)
 fn env_get_or(key: str, default: str) -> str {
     let buf_size = 4096
     let buf = alloc(buf_size)
@@ -61,7 +60,6 @@ fn env_get_or(key: str, default: str) -> str {
 }
 
 // Check if an environment variable is set.
-@capabilities(io)
 fn env_has(key: str) -> bool {
     let buf = alloc(1)
     let val_len = kryos_env_get(str_to_ptr(key), len(key), buf, 1)
@@ -71,26 +69,18 @@ fn env_has(key: str) -> bool {
 // --- Process exit -----------------------------------------------------------
 
 // Exit the process with the given status code.
-@capabilities(io)
 fn exit(code: i32) -> ! {
     kryos_process_exit(code)
 }
 
 // Exit successfully (code 0).
-@capabilities(io)
 fn exit_ok() -> ! {
     kryos_process_exit(0)
 }
 
 // Exit with failure (code 1) and an error message to stderr.
-@capabilities(io)
 fn exit_error(msg: str) -> ! {
     let full = msg + "\n"
-    // We cannot call std.io functions here since this is std.process,
-    // so we use the raw FFI for stderr.
-    extern {
-        fn kryos_stderr_write(data: ptr, len: i64) -> i64
-    }
     kryos_stderr_write(str_to_ptr(full), len(full))
     kryos_process_exit(1)
 }
@@ -98,13 +88,11 @@ fn exit_error(msg: str) -> ! {
 // --- Process arguments -------------------------------------------------------
 
 // Return the number of command-line arguments.
-@capabilities(io)
 fn argc() -> i64 {
     return kryos_process_argc()
 }
 
 // Return the Nth command-line argument as a string, or "" if out of bounds.
-@capabilities(io)
 fn argv(index: i64) -> str {
     let handle = kryos_process_argv(index)
     if handle == 0 {
@@ -114,7 +102,6 @@ fn argv(index: i64) -> str {
 }
 
 // Return all command-line arguments as an Args struct.
-@capabilities(io)
 fn args() -> Args {
     let count = kryos_process_argc()
     let mut items = []
@@ -299,7 +286,6 @@ impl Command {
     }
 
     // Execute the command and capture stdout/stderr.
-    @capabilities(io)
     fn run(self: Command) -> CommandResult {
         let result_ptr = kryos_process_exec(
             str_to_ptr(self.program), len(self.program),
@@ -320,7 +306,6 @@ impl Command {
     }
 
     // Execute the command with inherited I/O (prints to terminal).
-    @capabilities(io)
     fn run_simple(self: Command) -> i64 {
         let cmd_str = self.to_string()
         return kryos_process_exec_simple(str_to_ptr(cmd_str), len(cmd_str))

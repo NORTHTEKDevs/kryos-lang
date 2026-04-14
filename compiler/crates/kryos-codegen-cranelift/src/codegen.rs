@@ -2730,6 +2730,17 @@ fn translate_rvalue<M: Module>(
                 "map_delete_str"   => ("kryos_map_delete_str", 2),
                 "map_keys"         => ("kryos_map_keys", 1),
                 "map_keys_str"     => ("kryos_map_keys_str", 1),
+                "read_line"        => ("kryos_builtin_read_line", 0),
+                "file_exists"      => ("kryos_builtin_file_exists", 1),
+                "file_size"        => ("kryos_builtin_file_size", 1),
+                "create_dir"       => ("kryos_builtin_create_dir", 1),
+                "trim_start"       => ("kryos_builtin_trim_start", 1),
+                "trim_end"         => ("kryos_builtin_trim_end", 1),
+                "index_of"         => ("kryos_builtin_index_of", 2),
+                "sort"             => ("kryos_builtin_sort", 1),
+                "reverse"          => ("kryos_builtin_reverse", 1),
+                "append_file"      => ("kryos_builtin_file_append", 2),
+                "http_get"         => ("kryos_builtin_http_get", 1),
                 _ => (func.as_str(), args.len()),
             };
             let func_ref = ensure_func_ref_with_args(runtime_name, builder, translator, module, runtime_arg_count)?;
@@ -3064,7 +3075,33 @@ fn translate_rvalue<M: Module>(
                 "kryos_array_get", builder, translator, module, 2,
             )?;
             let call = builder.ins().call(get_ref, &[ptr, idx]);
-            Ok(Some(builder.inst_results(call)[0]))
+            let raw_result = builder.inst_results(call)[0];
+
+            // If the array element type is Str, clone the result so the caller
+            // owns an independent copy and avoids use-after-free when the array is dropped.
+            let result = if let Operand::Local(id) = object {
+                if let Some(local) = translator.mir_func.locals.iter().find(|l| l.id == *id) {
+                    if let MirType::Array(elem_ty, _) = &local.ty {
+                        if matches!(elem_ty.as_ref(), MirType::Str) {
+                            let clone_ref = ensure_func_ref_with_args(
+                                "kryos_string_clone", builder, translator, module, 1,
+                            )?;
+                            let clone_call = builder.ins().call(clone_ref, &[raw_result]);
+                            builder.inst_results(clone_call)[0]
+                        } else {
+                            raw_result
+                        }
+                    } else {
+                        raw_result
+                    }
+                } else {
+                    raw_result
+                }
+            } else {
+                raw_result
+            };
+
+            Ok(Some(result))
         }
 
         RValue::ArcAlloc { inner } => {
@@ -3141,10 +3178,30 @@ fn translate_rvalue<M: Module>(
                 })
                 .unwrap_or(types::I64);
             let val = builder.ins().load(cl_ty, MemFlags::new(), ptr, offset);
-            // Null out the slot to transfer ownership (move-out semantics).
-            // This prevents double-free when the enum is later dropped.
-            let zero = builder.ins().iconst(types::I64, 0);
-            builder.ins().store(MemFlags::new(), zero, ptr, offset);
+            // Only null out pointer-typed payloads (str, arrays, enums, structs).
+            // Value types (f64, i64, bool) are copied by value and must NOT be
+            // zeroed -- the same enum may be passed to multiple functions (e.g.
+            // shape_name(sh), area(sh), perimeter(sh)) and each call must read
+            // the original payload. Zeroing value-type slots causes all subsequent
+            // reads to return 0.
+            let payload_is_ptr = translator.enum_defs.get(enum_name.as_str())
+                .and_then(|variants| variants.get(*variant_idx as usize))
+                .and_then(|variant| variant.fields.get(*field_idx as usize))
+                .map(|mir_ty| matches!(
+                    mir_ty,
+                    MirType::Str
+                    | MirType::Array(..)
+                    | MirType::Enum(..)
+                    | MirType::Struct(..)
+                    | MirType::Ptr(..)
+                    | MirType::Ref { .. }
+                    | MirType::Shared(..)
+                ))
+                .unwrap_or(false);
+            if payload_is_ptr {
+                let zero = builder.ins().iconst(types::I64, 0);
+                builder.ins().store(MemFlags::new(), zero, ptr, offset);
+            }
             // Widen bools back to i64 for consistency with the rest of codegen.
             let val = if cl_ty == types::I8 {
                 builder.ins().uextend(types::I64, val)

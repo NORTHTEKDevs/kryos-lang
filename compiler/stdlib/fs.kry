@@ -23,7 +23,6 @@ extern {
 // --- Path existence and type ------------------------------------------------
 
 // Check if a path exists (file or directory).
-@capabilities(io)
 fn exists(path: str) -> bool {
     let result = kryos_path_exists(str_to_ptr(path), len(path))
     return result == 1
@@ -31,7 +30,6 @@ fn exists(path: str) -> bool {
 
 // Check if the path is a regular file.
 // Uses open-for-read as a heuristic: if we can open it, it is a file.
-@capabilities(io)
 fn is_file(path: str) -> bool {
     if not exists(path) {
         return false
@@ -46,7 +44,6 @@ fn is_file(path: str) -> bool {
 
 // Check if the path is a directory.
 // If the path exists but cannot be opened as a file, it is a directory.
-@capabilities(io)
 fn is_dir(path: str) -> bool {
     if not exists(path) {
         return false
@@ -63,7 +60,6 @@ fn is_dir(path: str) -> bool {
 // --- Directory operations ---------------------------------------------------
 
 // Create a single directory.  Throws if the parent does not exist.
-@capabilities(io)
 fn create_dir(path: str) -> bool {
     let result = kryos_dir_create(str_to_ptr(path), len(path))
     if result < 0 {
@@ -73,7 +69,6 @@ fn create_dir(path: str) -> bool {
 }
 
 // Create a directory and all parent directories.
-@capabilities(io)
 fn create_dir_all(path: str) -> bool {
     let result = kryos_dir_create(str_to_ptr(path), len(path))
     if result < 0 {
@@ -85,7 +80,6 @@ fn create_dir_all(path: str) -> bool {
 // Remove an empty directory.
 // Note: delegates to kryos_file_remove; the native layer calls remove_file.
 // For a directory-specific remove, this may need future native support.
-@capabilities(io)
 fn remove_dir(path: str) -> bool {
     let result = kryos_file_remove(str_to_ptr(path), len(path))
     if result < 0 {
@@ -97,7 +91,6 @@ fn remove_dir(path: str) -> bool {
 // --- File operations --------------------------------------------------------
 
 // Remove a file at the given path.
-@capabilities(io)
 fn remove_file(path: str) -> bool {
     let result = kryos_file_remove(str_to_ptr(path), len(path))
     if result < 0 {
@@ -107,7 +100,6 @@ fn remove_file(path: str) -> bool {
 }
 
 // Read the entire contents of a file as a string.
-@capabilities(io)
 fn read_file(path: str) -> str {
     let fd = kryos_file_open(str_to_ptr(path), len(path), 0)
     if fd < 0 {
@@ -134,7 +126,6 @@ fn read_file(path: str) -> str {
 }
 
 // Write a string to a file (creates or truncates).
-@capabilities(io)
 fn write_file(path: str, data: str) -> i64 {
     let fd = kryos_file_open(str_to_ptr(path), len(path), 1)
     if fd < 0 {
@@ -157,7 +148,6 @@ fn write_file(path: str, data: str) -> i64 {
 }
 
 // Append a string to a file (creates if it does not exist).
-@capabilities(io)
 fn append_file(path: str, data: str) -> i64 {
     let fd = kryos_file_open(str_to_ptr(path), len(path), 2)
     if fd < 0 {
@@ -180,7 +170,6 @@ fn append_file(path: str, data: str) -> i64 {
 }
 
 // Copy a file from src to dst.  Reads src entirely and writes to dst.
-@capabilities(io)
 fn copy(src: str, dst: str) -> i64 {
     let contents = read_file(src)
     return write_file(dst, contents)
@@ -188,7 +177,6 @@ fn copy(src: str, dst: str) -> i64 {
 
 // Rename (move) a file from old_path to new_path.
 // Implemented as copy + remove since the native layer lacks a rename syscall.
-@capabilities(io)
 fn rename(old_path: str, new_path: str) -> bool {
     copy(old_path, new_path)
     remove_file(old_path)
@@ -196,7 +184,6 @@ fn rename(old_path: str, new_path: str) -> bool {
 }
 
 // Return the size of a file in bytes.
-@capabilities(io)
 fn file_size(path: str) -> i64 {
     let contents = read_file(path)
     return len(contents)
@@ -212,7 +199,6 @@ struct DirEntry {
 }
 
 // List the contents of a directory. Returns entry names as strings.
-@capabilities(io)
 fn list_dir(path: str) -> [str] {
     if not exists(path) {
         throw "fs error: directory does not exist: " + path
@@ -235,7 +221,6 @@ fn list_dir(path: str) -> [str] {
 }
 
 // Walk a directory tree recursively, returning full paths.
-@capabilities(io)
 fn walk_dir(path: str) -> [str] {
     if not exists(path) {
         throw "fs error: directory does not exist: " + path

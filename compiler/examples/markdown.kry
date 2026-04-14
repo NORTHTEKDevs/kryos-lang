@@ -42,7 +42,7 @@ fn process_heading(line: str) -> str {
         }
         level = level + 1
     }
-    return line
+    return substr(line, 0, len(line))
 }
 
 fn process_line(line: str) -> str {
@@ -79,8 +79,9 @@ fn process_line(line: str) -> str {
         return repeat_char("-", 40)
     }
 
-    // Plain text — pass through
-    return line
+    // Plain text — pass through (return a fresh copy so the caller owns it,
+    // avoiding a double-free when the same pointer is also stored in an array)
+    return substr(line, 0, len(line))
 }
 
 fn main() {

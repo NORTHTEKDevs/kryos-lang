@@ -2,8 +2,7 @@
 // std.io -- File I/O, buffered readers/writers, and console I/O
 //
 // Wraps the kryos-stdlib-native FFI layer with safe, idiomatic
-// Kryos types.  Every public function that performs I/O carries
-// @capabilities(io).
+// Kryos types.
 // ============================================================
 
 // --- Native FFI declarations ------------------------------------------------
@@ -45,7 +44,6 @@ enum FileError {
 impl File {
     // Read up to `n` bytes from the file.  Returns the data read as a string.
     // Throws on error or if the file is already closed.
-    @capabilities(io)
     fn read(self: File, n: i64) -> str {
         if self.closed {
             throw "io error: read on closed file " + self.path
@@ -59,7 +57,6 @@ impl File {
     }
 
     // Read the entire file contents as a string.
-    @capabilities(io)
     fn read_all(self: File) -> str {
         if self.closed {
             throw "io error: read_all on closed file " + self.path
@@ -83,7 +80,6 @@ impl File {
     }
 
     // Write a string to the file.  Returns the number of bytes written.
-    @capabilities(io)
     fn write(self: File, data: str) -> i64 {
         if self.closed {
             throw "io error: write on closed file " + self.path
@@ -98,7 +94,6 @@ impl File {
     }
 
     // Write all data to the file, retrying until everything is written.
-    @capabilities(io)
     fn write_all(self: File, data: str) -> i64 {
         if self.closed {
             throw "io error: write_all on closed file " + self.path
@@ -119,7 +114,6 @@ impl File {
     }
 
     // Close the file.  Safe to call multiple times.
-    @capabilities(io)
     fn close(self: File) -> File {
         if not self.closed {
             let result = kryos_file_close(self.fd)
@@ -139,7 +133,6 @@ impl File {
 // --- File open helpers ------------------------------------------------------
 
 // Open a file for reading.
-@capabilities(io)
 fn open(path: str) -> File {
     let fd = kryos_file_open(str_to_ptr(path), len(path), MODE_READ)
     if fd < 0 {
@@ -149,7 +142,6 @@ fn open(path: str) -> File {
 }
 
 // Open a file for writing (creates or truncates).
-@capabilities(io)
 fn create(path: str) -> File {
     let fd = kryos_file_open(str_to_ptr(path), len(path), MODE_WRITE)
     if fd < 0 {
@@ -159,7 +151,6 @@ fn create(path: str) -> File {
 }
 
 // Open a file for appending (creates if it does not exist).
-@capabilities(io)
 fn open_append(path: str) -> File {
     let fd = kryos_file_open(str_to_ptr(path), len(path), MODE_APPEND)
     if fd < 0 {
@@ -169,7 +160,6 @@ fn open_append(path: str) -> File {
 }
 
 // Open a file with an explicit mode (0=read, 1=write, 2=append).
-@capabilities(io)
 fn open_with_mode(path: str, mode: i32) -> File {
     let fd = kryos_file_open(str_to_ptr(path), len(path), mode)
     if fd < 0 {
@@ -181,7 +171,6 @@ fn open_with_mode(path: str, mode: i32) -> File {
 // --- Console output ---------------------------------------------------------
 
 // Write a string to stdout (no trailing newline).
-@capabilities(io)
 fn print(msg: str) -> i64 {
     let ptr = str_to_ptr(msg)
     let n = kryos_stdout_write(ptr, len(msg))
@@ -192,7 +181,6 @@ fn print(msg: str) -> i64 {
 }
 
 // Write a string to stdout followed by a newline.
-@capabilities(io)
 fn println(msg: str) -> i64 {
     let full = msg + "\n"
     let ptr = str_to_ptr(full)
@@ -204,7 +192,6 @@ fn println(msg: str) -> i64 {
 }
 
 // Write a string to stderr (no trailing newline).
-@capabilities(io)
 fn eprint(msg: str) -> i64 {
     let ptr = str_to_ptr(msg)
     let n = kryos_stderr_write(ptr, len(msg))
@@ -215,7 +202,6 @@ fn eprint(msg: str) -> i64 {
 }
 
 // Write a string to stderr followed by a newline.
-@capabilities(io)
 fn eprintln(msg: str) -> i64 {
     let full = msg + "\n"
     let ptr = str_to_ptr(full)
@@ -229,7 +215,6 @@ fn eprintln(msg: str) -> i64 {
 // --- Console input ----------------------------------------------------------
 
 // Read a single line from stdin (up to 4096 bytes, strips trailing newline).
-@capabilities(io)
 fn read_line() -> str {
     let buf_size = 4096
     let buf = alloc(buf_size)
@@ -250,7 +235,6 @@ fn read_line() -> str {
 }
 
 // Read up to `n` bytes from stdin.
-@capabilities(io)
 fn read_stdin(n: i64) -> str {
     let buf = alloc(n)
     let bytes_read = kryos_stdin_read(buf, n)
@@ -272,7 +256,6 @@ struct BufReader {
 
 impl BufReader {
     // Fill the internal buffer from the underlying file.
-    @capabilities(io)
     fn fill(self: BufReader) -> BufReader {
         if self.eof {
             return self
@@ -298,7 +281,6 @@ impl BufReader {
 
     // Read a single line from the buffered reader.
     // Returns the line without the trailing newline.
-    @capabilities(io)
     fn read_line(self: BufReader) -> str {
         let mut reader = self
         // Keep filling until we find a newline or reach EOF
@@ -349,7 +331,6 @@ impl BufReader {
     }
 
     // Close the underlying file.
-    @capabilities(io)
     fn close(self: BufReader) -> BufReader {
         let closed_file = self.file.close()
         return BufReader {
@@ -392,7 +373,6 @@ struct BufWriter {
 
 impl BufWriter {
     // Write data to the internal buffer.  Flushes automatically when full.
-    @capabilities(io)
     fn write(self: BufWriter, data: str) -> BufWriter {
         let new_buf = self.buffer + data
         if len(new_buf) >= self.buf_size {
@@ -411,7 +391,6 @@ impl BufWriter {
     }
 
     // Flush any remaining data in the buffer to the underlying file.
-    @capabilities(io)
     fn flush(self: BufWriter) -> BufWriter {
         if len(self.buffer) > 0 {
             self.file.write_all(self.buffer)
@@ -424,7 +403,6 @@ impl BufWriter {
     }
 
     // Flush and close the underlying file.
-    @capabilities(io)
     fn close(self: BufWriter) -> BufWriter {
         let flushed = self.flush()
         let closed_file = flushed.file.close()
@@ -454,22 +432,3 @@ fn buf_writer_sized(file: File, size: i64) -> BufWriter {
     }
 }
 
-// --- Convenience: read/write entire files -----------------------------------
-
-// Read the entire contents of a file at the given path.
-@capabilities(io)
-fn read_file(path: str) -> str {
-    let f = open(path)
-    let contents = f.read_all()
-    f.close()
-    return contents
-}
-
-// Write a string to a file at the given path (creates or truncates).
-@capabilities(io)
-fn write_file(path: str, data: str) -> i64 {
-    let f = create(path)
-    let n = f.write_all(data)
-    f.close()
-    return n
-}

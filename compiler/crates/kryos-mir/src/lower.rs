@@ -410,6 +410,15 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("buf_free", MirType::Void),
         ("exit", MirType::Void),
         ("args", MirType::I64),
+        ("trim_start", MirType::Str),
+        ("trim_end", MirType::Str),
+        ("index_of", MirType::I64),
+        ("sort", MirType::Void),
+        ("reverse", MirType::Void),
+        ("append_file", MirType::I64),
+        ("http_get", MirType::Str),
+        ("read_line", MirType::Str),
+        ("file_exists", MirType::Bool),
     ] {
         ctx.func_ret_types.insert(name.to_string(), ret_ty);
     }

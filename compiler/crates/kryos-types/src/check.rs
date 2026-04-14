@@ -2090,6 +2090,69 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         ret: Type::I64,
     });
 
+    // file_exists(path: str) -> i64 — 1 if exists, 0 if not
+    checker.env.define_function(FunctionSig {
+        name: "file_exists".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("path".to_string(), Type::Str)],
+        ret: Type::I64,
+    });
+
+    // file_size(path: str) -> i64 — byte size of file, -1 on error
+    checker.env.define_function(FunctionSig {
+        name: "file_size".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("path".to_string(), Type::Str)],
+        ret: Type::I64,
+    });
+
+    // create_dir(path: str) -> i64 — create directory recursively
+    checker.env.define_function(FunctionSig {
+        name: "create_dir".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("path".to_string(), Type::Str)],
+        ret: Type::I64,
+    });
+
+    // read_line() -> str — read one line from stdin
+    checker.env.define_function(FunctionSig {
+        name: "read_line".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![],
+        ret: Type::Str,
+    });
+
+    // map_has(m, key: str) -> bool
+    checker.env.define_function(FunctionSig {
+        name: "map_has".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("m".to_string(), Type::Error), ("key".to_string(), Type::Str)],
+        ret: Type::Bool,
+    });
+
+    // map_delete(m, key: str) -> map
+    checker.env.define_function(FunctionSig {
+        name: "map_delete".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("m".to_string(), Type::Error), ("key".to_string(), Type::Str)],
+        ret: Type::Error,
+    });
+
+    // map_keys(m) -> [str]
+    checker.env.define_function(FunctionSig {
+        name: "map_keys".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("m".to_string(), Type::Error)],
+        ret: Type::Error,
+    });
+
     // env_get(key: str) -> str — get environment variable
     checker.env.define_function(FunctionSig {
         name: "env_get".to_string(),

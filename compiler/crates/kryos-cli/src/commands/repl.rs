@@ -127,8 +127,8 @@ pub fn execute() -> Result<(), String> {
                 } else if is_let || is_assignment || input.ends_with(';') {
                     format!("{preamble}\nfn __repl_eval__() {{ {lets}\n{input} }}")
                 } else {
-                    // Bare expression — wrap as a let binding so the parser accepts it.
-                    format!("{preamble}\nfn __repl_eval__() {{ {lets}\nlet __expr__ = {input} }}")
+                    // Bare expression or statement — wrap directly as a statement.
+                    format!("{preamble}\nfn __repl_eval__() {{ {lets}\n{input} }}")
                 };
 
                 let config = kryos_driver::BuildConfig::for_file("<repl>");

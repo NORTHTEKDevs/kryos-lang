@@ -16,7 +16,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use kryos_codegen_cranelift::CraneliftBackend;
-use kryos_driver::{BuildConfig, BuildMode, OutputType, compile_source, compile_file_with_backend, render_diagnostics};
+use kryos_driver::{BuildConfig, BuildMode, OutputType, compile_source, compile_file, compile_file_with_backend, render_diagnostics};
 
 // ---------------------------------------------------------------------------
 // Core types
@@ -202,7 +202,11 @@ pub fn run_test(test: &TestCase) -> TestResult {
     if !matches!(test.expectation, Expectation::RunOutput(_)) {
         config.output_type = OutputType::Mir; // skip codegen + linking
     }
-    let result = compile_source(&test.source, &test.name, &config);
+    let result = if test.source_path.exists() {
+        compile_file(&test.source_path, &config)
+    } else {
+        compile_source(&test.source, &test.name, &config)
+    };
     let duration = start.elapsed();
 
     let diagnostics_text = render_diagnostics(&result);

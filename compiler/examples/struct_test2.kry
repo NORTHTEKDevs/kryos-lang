@@ -1,142 +1,53 @@
-// Test: simulate the parse_fn_decl -> parse_block pattern more closely
+// struct_test2.kry — Demonstrates structs with methods and composition.
 
-@copy
-struct Parser {
-    tokens: [i32],
-    pos: i32,
-    errors: [str],
-    no_struct_lit: bool
+struct Point {
+    x: f64,
+    y: f64
 }
 
-@copy
-struct NameResult {
-    p: Parser,
-    name: str
+struct Rectangle {
+    origin: Point,
+    width: f64,
+    height: f64
 }
 
-@copy
-struct GenResult {
-    p: Parser,
-    gens: [str]
+fn point_distance(a: Point, b: Point) -> f64 {
+    let dx = a.x - b.x
+    let dy = a.y - b.y
+    return sqrt(dx * dx + dy * dy)
 }
 
-@copy
-struct ParamResult {
-    p: Parser,
-    params: [str]
+fn rect_area(r: Rectangle) -> f64 {
+    return r.width * r.height
 }
 
-@copy
-struct BlockResult {
-    p: Parser,
-    stmts: [i32]
+fn rect_perimeter(r: Rectangle) -> f64 {
+    return 2.0 * (r.width + r.height)
 }
 
-fn mk_parser(tokens: [i32]) -> Parser {
-    let errors: [str] = []
-    return Parser { tokens: tokens, pos: 0, errors: errors, no_struct_lit: false }
-}
-
-fn p_peek(p: Parser) -> i32 {
-    let mut idx = p.pos
-    if idx >= len(p.tokens) {
-        idx = len(p.tokens) - 1
-    }
-    return p.tokens[idx]
-}
-
-fn p_at_end(p: Parser) -> bool {
-    return p.pos >= len(p.tokens)
-}
-
-fn p_advance(p: Parser) -> Parser {
-    if p_at_end(p) {
-        return p
-    }
-    return Parser { tokens: p.tokens, pos: p.pos + 1, errors: p.errors }
-}
-
-fn p_check(p: Parser, kind: i32) -> bool {
-    return p_peek(p) == kind
-}
-
-fn p_expect(p: Parser, kind: i32) -> Parser {
-    if p_check(p, kind) {
-        return p_advance(p)
-    }
-    let mut errors = p.errors
-    push(errors, "expected error")
-    return Parser { tokens: p.tokens, pos: p.pos, errors: errors }
-}
-
-fn p_expect_name(p: Parser) -> NameResult {
-    let np = p_advance(p)
-    return NameResult { p: np, name: "test" }
-}
-
-fn parse_generics(p: Parser) -> GenResult {
-    let mut pp = p
-    let gens: [str] = []
-    return GenResult { p: pp, gens: gens }
-}
-
-fn parse_params(p: Parser) -> ParamResult {
-    let mut pp = p
-    let params: [str] = []
-    return ParamResult { p: pp, params: params }
-}
-
-fn parse_block(p: Parser) -> BlockResult {
-    println("  parse_block: entered")
-    println("  parse_block: about to p_expect")
-    let mut pp = p_expect(p, 90)
-    println("  parse_block: p_expect succeeded")
-    let stmts: [i32] = []
-    pp = p_expect(pp, 91)
-    return BlockResult { p: pp, stmts: stmts }
-}
-
-fn parse_fn(p: Parser) -> Parser {
-    println("parse_fn: start")
-    let mut pp = p_expect(p, 15)
-    println("parse_fn: after p_expect(FN)")
-
-    let nr = p_expect_name(pp)
-    pp = nr.p
-    println("parse_fn: after expect_name")
-
-    let gr = parse_generics(pp)
-    pp = gr.p
-    println("parse_fn: after parse_generics")
-
-    pp = p_expect(pp, 88)
-    println("parse_fn: after expect LPAREN")
-
-    let pr = parse_params(pp)
-    pp = pr.p
-    println("parse_fn: after parse_params")
-
-    pp = p_expect(pp, 89)
-    println("parse_fn: after expect RPAREN")
-
-    println("parse_fn: checking for LBRACE (90)")
-    if p_check(pp, 90) {
-        println("parse_fn: found LBRACE, calling parse_block")
-        let br = parse_block(pp)
-        pp = br.p
-        println("parse_fn: after parse_block")
-    }
-
-    println("parse_fn: done")
-    return pp
+fn rect_contains(r: Rectangle, p: Point) -> bool {
+    return p.x >= r.origin.x
+        and p.x <= r.origin.x + r.width
+        and p.y >= r.origin.y
+        and p.y <= r.origin.y + r.height
 }
 
 fn main() {
-    // Tokens: FN=15, IDENT=100, LPAREN=88, RPAREN=89, LBRACE=90, RBRACE=91, EOF=0
-    let tokens: [i32] = [15, 100, 88, 89, 90, 91, 0]
-    let p = mk_parser(tokens)
-    println("Parser created, tokens: " + to_string(len(p.tokens)))
+    let a = Point { x: 0.0, y: 0.0 }
+    let b = Point { x: 3.0, y: 4.0 }
+    let dist = point_distance(a, b)
+    println("distance(0,0 -> 3,4) = " + to_string(dist))
 
-    let result = parse_fn(p)
-    println("All done!")
+    let rect = Rectangle {
+        origin: Point { x: 1.0, y: 1.0 },
+        width: 10.0,
+        height: 5.0
+    }
+    println("area      = " + to_string(rect_area(rect)))
+    println("perimeter = " + to_string(rect_perimeter(rect)))
+
+    let inside = Point { x: 5.0, y: 3.0 }
+    let outside = Point { x: 15.0, y: 3.0 }
+    println("(5,3) inside?  " + to_string(rect_contains(rect, inside)))
+    println("(15,3) inside? " + to_string(rect_contains(rect, outside)))
 }

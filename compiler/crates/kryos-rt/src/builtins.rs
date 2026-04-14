@@ -1010,6 +1010,292 @@ pub unsafe extern "C" fn kryos_builtin_args() -> i64 {
     arr as i64
 }
 
+// ── Stdin read ────────────────────────────────────────────────────
+
+/// Read one line from stdin (blocking). Strips the trailing `\n` (and `\r\n`).
+/// Returns a KryosString handle. Returns an empty string on EOF or error.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_read_line() -> i64 {
+    use std::io::BufRead;
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+    match stdin.lock().read_line(&mut line) {
+        Ok(0) | Err(_) => {}
+        Ok(_) => {
+            if line.ends_with('\n') {
+                line.pop();
+                if line.ends_with('\r') {
+                    line.pop();
+                }
+            }
+        }
+    }
+    let bytes = line.as_bytes();
+    unsafe { kryos_string_new(bytes.as_ptr(), bytes.len() as i64) as i64 }
+}
+
+// ── Filesystem helpers ────────────────────────────────────────────
+
+/// Check whether a path exists on disk.
+/// `path_handle` is a KryosString handle.
+/// Returns 1 if the path exists, 0 otherwise.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_file_exists(path_handle: i64) -> i64 {
+    if path_handle == 0 {
+        return 0;
+    }
+    let ks = path_handle as *const crate::string::KryosString;
+    let path_str = unsafe {
+        let len = (*ks).len as usize;
+        let data = (*ks).data;
+        if data.is_null() || len == 0 {
+            return 0;
+        }
+        let slice = std::slice::from_raw_parts(data, len);
+        match std::str::from_utf8(slice) {
+            Ok(s) => s,
+            Err(_) => return 0,
+        }
+    };
+    if std::path::Path::new(path_str).exists() { 1 } else { 0 }
+}
+
+/// Return the size in bytes of a file.
+/// `path_handle` is a KryosString handle.
+/// Returns the byte count on success, -1 on error or if not a regular file.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_file_size(path_handle: i64) -> i64 {
+    if path_handle == 0 {
+        return -1;
+    }
+    let ks = path_handle as *const crate::string::KryosString;
+    let path_str = unsafe {
+        let len = (*ks).len as usize;
+        let data = (*ks).data;
+        if data.is_null() || len == 0 {
+            return -1;
+        }
+        let slice = std::slice::from_raw_parts(data, len);
+        match std::str::from_utf8(slice) {
+            Ok(s) => s,
+            Err(_) => return -1,
+        }
+    };
+    match std::fs::metadata(path_str) {
+        Ok(m) => m.len() as i64,
+        Err(_) => -1,
+    }
+}
+
+/// Create a directory (and all parent directories) at `path_handle`.
+/// `path_handle` is a KryosString handle.
+/// Returns 0 on success (including if the directory already exists), -1 on error.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_create_dir(path_handle: i64) -> i64 {
+    if path_handle == 0 {
+        return -1;
+    }
+    let ks = path_handle as *const crate::string::KryosString;
+    let path_str = unsafe {
+        let len = (*ks).len as usize;
+        let data = (*ks).data;
+        if data.is_null() || len == 0 {
+            return -1;
+        }
+        let slice = std::slice::from_raw_parts(data, len);
+        match std::str::from_utf8(slice) {
+            Ok(s) => s,
+            Err(_) => return -1,
+        }
+    };
+    match std::fs::create_dir_all(path_str) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Additional string builtins
+// ---------------------------------------------------------------------------
+
+/// `trim_start(s)` — Trim leading whitespace, returning a new string.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_trim_start(s: i64) -> i64 {
+    if s == 0 {
+        return unsafe { kryos_string_new(std::ptr::null(), 0) as i64 };
+    }
+    let ks = s as *const crate::string::KryosString;
+    unsafe {
+        let trimmed = bytes_to_str((*ks).data, (*ks).len as usize).trim_start();
+        kryos_string_new(trimmed.as_ptr(), trimmed.len() as i64) as i64
+    }
+}
+
+/// `trim_end(s)` — Trim trailing whitespace, returning a new string.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_trim_end(s: i64) -> i64 {
+    if s == 0 {
+        return unsafe { kryos_string_new(std::ptr::null(), 0) as i64 };
+    }
+    let ks = s as *const crate::string::KryosString;
+    unsafe {
+        let trimmed = bytes_to_str((*ks).data, (*ks).len as usize).trim_end();
+        kryos_string_new(trimmed.as_ptr(), trimmed.len() as i64) as i64
+    }
+}
+
+/// `index_of(s, sub)` — Return the first byte offset of `sub` in `s`, or -1.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_index_of(s: i64, sub: i64) -> i64 {
+    if s == 0 || sub == 0 {
+        return -1;
+    }
+    let ks_s = s as *const crate::string::KryosString;
+    let ks_sub = sub as *const crate::string::KryosString;
+    unsafe { crate::string::kryos_string_find(ks_s, ks_sub) }
+}
+
+// ---------------------------------------------------------------------------
+// Array builtins
+// ---------------------------------------------------------------------------
+
+/// `sort(arr)` — Sort a numeric array in-place (ascending i64 order).
+#[no_mangle]
+pub unsafe extern "C" fn kryos_builtin_sort(arr_handle: i64) {
+    if arr_handle == 0 {
+        return;
+    }
+    let arr = arr_handle as *mut crate::array::KryosArray;
+    let len = (*arr).len as usize;
+    if len <= 1 {
+        return;
+    }
+    let elems = std::slice::from_raw_parts_mut((*arr).data as *mut i64, len);
+    elems.sort_unstable();
+}
+
+/// `reverse(arr)` — Reverse an array in-place.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_builtin_reverse(arr_handle: i64) {
+    if arr_handle == 0 {
+        return;
+    }
+    let arr = arr_handle as *mut crate::array::KryosArray;
+    let len = (*arr).len as usize;
+    if len <= 1 {
+        return;
+    }
+    let elems = std::slice::from_raw_parts_mut((*arr).data as *mut i64, len);
+    elems.reverse();
+}
+
+// ---------------------------------------------------------------------------
+// Filesystem — append
+// ---------------------------------------------------------------------------
+
+/// `append_file(path, content)` — Append `content` to a file, creating it if
+/// it does not exist. Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_file_append(path_handle: i64, content_handle: i64) -> i64 {
+    if path_handle == 0 || content_handle == 0 {
+        return -1;
+    }
+    let ks_path = path_handle as *const crate::string::KryosString;
+    let ks_content = content_handle as *const crate::string::KryosString;
+    unsafe {
+        let path_bytes = std::slice::from_raw_parts((*ks_path).data, (*ks_path).len as usize);
+        let path_str = match std::str::from_utf8(path_bytes) {
+            Ok(s) => s,
+            Err(_) => return -1,
+        };
+        let content_bytes =
+            std::slice::from_raw_parts((*ks_content).data, (*ks_content).len as usize);
+        use std::io::Write;
+        match std::fs::OpenOptions::new().create(true).append(true).open(path_str) {
+            Ok(mut f) => match f.write_all(content_bytes) {
+                Ok(()) => 0,
+                Err(_) => -1,
+            },
+            Err(_) => -1,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Networking — blocking HTTP GET (no TLS, v1)
+// ---------------------------------------------------------------------------
+
+/// `http_get(url)` — Blocking HTTP GET. Returns the response body as a new
+/// KryosString. Returns an empty string on error. No TLS support in v1.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_http_get(url_handle: i64) -> i64 {
+    if url_handle == 0 {
+        return unsafe { kryos_string_new(std::ptr::null(), 0) as i64 };
+    }
+    let ks_url = url_handle as *const crate::string::KryosString;
+    let url_str = unsafe {
+        let bytes = std::slice::from_raw_parts((*ks_url).data, (*ks_url).len as usize);
+        match std::str::from_utf8(bytes) {
+            Ok(s) => s.to_owned(),
+            Err(_) => {
+                return kryos_string_new(std::ptr::null(), 0) as i64;
+            }
+        }
+    };
+
+    let body = http_get_impl(&url_str).unwrap_or_default();
+    let bytes = body.as_bytes();
+    unsafe { kryos_string_new(bytes.as_ptr(), bytes.len() as i64) as i64 }
+}
+
+/// Minimal HTTP/1.0 GET over TCP. No TLS, no redirects.
+fn http_get_impl(url: &str) -> Option<String> {
+    use std::io::{Read, Write};
+
+    // Strip "http://" prefix if present.
+    let rest = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+        .unwrap_or(url);
+
+    // Split host+port from path.
+    let (host_port, path) = match rest.find('/') {
+        Some(idx) => (&rest[..idx], &rest[idx..]),
+        None => (rest, "/"),
+    };
+
+    // Determine host and port.
+    let (host, port) = if let Some(idx) = host_port.rfind(':') {
+        let p: u16 = host_port[idx + 1..].parse().unwrap_or(80);
+        (&host_port[..idx], p)
+    } else {
+        (host_port, 80u16)
+    };
+
+    let addr = format!("{host}:{port}");
+    let mut stream = std::net::TcpStream::connect(&addr).ok()?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .ok();
+
+    let request = format!(
+        "GET {path} HTTP/1.0\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).ok()?;
+
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).ok()?;
+
+    // Strip HTTP headers (end of headers is "\r\n\r\n").
+    let body_start = response
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|i| i + 4)
+        .unwrap_or(0);
+
+    String::from_utf8(response[body_start..].to_vec()).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

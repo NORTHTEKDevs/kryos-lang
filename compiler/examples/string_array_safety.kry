@@ -1,0 +1,7 @@
+fn main() {
+    let words = ["hello", "world", "kryos"]
+    let w = words[0]
+    println(w)
+    println(words[1])
+    println(w)
+}

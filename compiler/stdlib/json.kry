@@ -127,7 +127,7 @@ fn _parse_value(p: Parser) -> ParseResult {
     if ch == "\"" {
         return _parse_string(parser)
     }
-    if ch == "{" {
+    if char_code(ch) == 123 {
         return _parse_object(parser)
     }
     if ch == "[" {
@@ -317,14 +317,14 @@ fn _parse_array(p: Parser) -> ParseResult {
 }
 
 fn _parse_object(p: Parser) -> ParseResult {
-    let mut parser = _expect_char(p, "{")
+    let mut parser = _expect_char(p, char_from(123))
     parser = _skip_whitespace(parser)
 
     let mut keys = []
     let mut values = []
 
     // Empty object
-    if _peek(parser) == "}" {
+    if char_code(_peek(parser)) == 125 {
         parser = _advance(parser)
         return ParseResult { value: JsonValue.Object(keys, values), parser: parser }
     }
@@ -332,8 +332,8 @@ fn _parse_object(p: Parser) -> ParseResult {
     // First key-value pair
     let first_key = _parse_string(parser)
     let key_str = match first_key.value {
-        JsonValue.String(s) => s,
-        _ => throw "json: object key must be a string"
+        JsonValue::String(s) => s,
+        _ => _throw_json_str("json: object key must be a string")
     }
     push(keys, key_str)
     parser = _skip_whitespace(first_key.parser)
@@ -350,8 +350,8 @@ fn _parse_object(p: Parser) -> ParseResult {
 
         let key_result = _parse_string(parser)
         let k = match key_result.value {
-            JsonValue.String(s) => s,
-            _ => throw "json: object key must be a string"
+            JsonValue::String(s) => s,
+            _ => _throw_json_str("json: object key must be a string")
         }
         push(keys, k)
         parser = _skip_whitespace(key_result.parser)
@@ -362,7 +362,7 @@ fn _parse_object(p: Parser) -> ParseResult {
         parser = _skip_whitespace(val_result.parser)
     }
 
-    parser = _expect_char(parser, "}")
+    parser = _expect_char(parser, char_from(125))
     return ParseResult { value: JsonValue.Object(keys, values), parser: parser }
 }
 
@@ -371,12 +371,12 @@ fn _parse_object(p: Parser) -> ParseResult {
 /// Convert a JsonValue to a compact JSON string.
 fn stringify(val: JsonValue) -> str {
     return match val {
-        JsonValue.Null => "null",
-        JsonValue.Bool(b) => if b { "true" } else { "false" },
-        JsonValue.Number(n) => _format_number(n),
-        JsonValue.String(s) => _escape_string(s),
-        JsonValue.Array(items) => _stringify_array(items),
-        JsonValue.Object(keys, values) => _stringify_object(keys, values)
+        JsonValue::Null => "null",
+        JsonValue::Bool(b) => if b { "true" } else { "false" },
+        JsonValue::Number(n) => _format_number(n),
+        JsonValue::String(s) => _escape_string(s),
+        JsonValue::Array(items) => _stringify_array(items),
+        JsonValue::Object(keys, values) => _stringify_object(keys, values)
     }
 }
 
@@ -439,9 +439,9 @@ fn _stringify_array(items: [JsonValue]) -> str {
 fn _stringify_object(keys: [str], values: [JsonValue]) -> str {
     let count = len(keys)
     if count == 0 {
-        return "{}"
+        return char_from(123) + char_from(125)
     }
-    let mut result = "{"
+    let mut result = char_from(123)
     let mut i = 0
     while i < count {
         if i > 0 {
@@ -450,7 +450,7 @@ fn _stringify_object(keys: [str], values: [JsonValue]) -> str {
         result = result + _escape_string(keys[i]) + ":" + stringify(values[i])
         i = i + 1
     }
-    result = result + "}"
+    result = result + char_from(125)
     return result
 }
 
@@ -461,12 +461,12 @@ fn pretty_print(val: JsonValue, indent: i64) -> str {
 
 fn _pretty_print_inner(val: JsonValue, indent: i64, depth: i64) -> str {
     return match val {
-        JsonValue.Null => "null",
-        JsonValue.Bool(b) => if b { "true" } else { "false" },
-        JsonValue.Number(n) => _format_number(n),
-        JsonValue.String(s) => _escape_string(s),
-        JsonValue.Array(items) => _pretty_array(items, indent, depth),
-        JsonValue.Object(keys, values) => _pretty_object(keys, values, indent, depth)
+        JsonValue::Null => "null",
+        JsonValue::Bool(b) => if b { "true" } else { "false" },
+        JsonValue::Number(n) => _format_number(n),
+        JsonValue::String(s) => _escape_string(s),
+        JsonValue::Array(items) => _pretty_array(items, indent, depth),
+        JsonValue::Object(keys, values) => _pretty_object(keys, values, indent, depth)
     }
 }
 
@@ -505,11 +505,11 @@ fn _pretty_array(items: [JsonValue], indent: i64, depth: i64) -> str {
 fn _pretty_object(keys: [str], values: [JsonValue], indent: i64, depth: i64) -> str {
     let count = len(keys)
     if count == 0 {
-        return "{}"
+        return char_from(123) + char_from(125)
     }
     let inner_indent = _indent_str(indent, depth + 1)
     let outer_indent = _indent_str(indent, depth)
-    let mut result = "{\n"
+    let mut result = char_from(123) + "\n"
     let mut i = 0
     while i < count {
         result = result + inner_indent + _escape_string(keys[i]) + ": "
@@ -520,8 +520,62 @@ fn _pretty_object(keys: [str], values: [JsonValue], indent: i64, depth: i64) -> 
         result = result + "\n"
         i = i + 1
     }
-    result = result + outer_indent + "}"
+    result = result + outer_indent + char_from(125)
     return result
+}
+
+// --- Throw helpers (throw is a statement; these wrap it as a call expression) --
+
+fn _throw_json_val(msg: str) -> JsonValue { throw msg }
+fn _throw_json_bool(msg: str) -> bool { throw msg }
+fn _throw_json_int(msg: str) -> i64 { throw msg }
+fn _throw_json_float(msg: str) -> f64 { throw msg }
+fn _throw_json_array(msg: str) -> [JsonValue] { throw msg }
+fn _throw_json_str(msg: str) -> str { throw msg }
+fn _throw_json_tuple(msg: str) -> ([str], [JsonValue]) { throw msg }
+
+// --- Accessor helpers --------------------------------------------------------
+
+fn _object_get(keys: [str], values: [JsonValue], key: str) -> JsonValue {
+    let count = len(keys)
+    let mut i = 0
+    while i < count {
+        if keys[i] == key {
+            return values[i]
+        }
+        i = i + 1
+    }
+    return JsonValue.Null
+}
+
+fn _array_get(items: [JsonValue], index: i64) -> JsonValue {
+    if index >= 0 and index < len(items) {
+        return items[index]
+    }
+    return JsonValue.Null
+}
+
+fn _object_set(keys: [str], values: [JsonValue], key: str, new_val: JsonValue) -> JsonValue {
+    let mut new_keys = []
+    let mut new_values = []
+    let count = len(keys)
+    let mut found = false
+    let mut i = 0
+    while i < count {
+        push(new_keys, keys[i])
+        if keys[i] == key {
+            push(new_values, new_val)
+            found = true
+        } else {
+            push(new_values, values[i])
+        }
+        i = i + 1
+    }
+    if not found {
+        push(new_keys, key)
+        push(new_values, new_val)
+    }
+    return JsonValue.Object(new_keys, new_values)
 }
 
 // --- Accessors ---------------------------------------------------------------
@@ -529,17 +583,7 @@ fn _pretty_object(keys: [str], values: [JsonValue], indent: i64, depth: i64) -> 
 /// Get a value from a JSON object by key.  Returns JsonValue.Null if not found.
 fn get(val: JsonValue, key: str) -> JsonValue {
     return match val {
-        JsonValue.Object(keys, values) => {
-            let count = len(keys)
-            let mut i = 0
-            while i < count {
-                if keys[i] == key {
-                    return values[i]
-                }
-                i = i + 1
-            }
-            return JsonValue.Null
-        },
+        JsonValue::Object(keys, values) => _object_get(keys, values, key),
         _ => JsonValue.Null
     }
 }
@@ -547,12 +591,7 @@ fn get(val: JsonValue, key: str) -> JsonValue {
 /// Get a value from a JSON array by index.  Returns JsonValue.Null if out of bounds.
 fn get_index(val: JsonValue, index: i64) -> JsonValue {
     return match val {
-        JsonValue.Array(items) => {
-            if index >= 0 and index < len(items) {
-                return items[index]
-            }
-            return JsonValue.Null
-        },
+        JsonValue::Array(items) => _array_get(items, index),
         _ => JsonValue.Null
     }
 }
@@ -560,29 +599,8 @@ fn get_index(val: JsonValue, index: i64) -> JsonValue {
 /// Set a key-value pair on a JSON object.  Returns a new object.
 fn set(val: JsonValue, key: str, new_val: JsonValue) -> JsonValue {
     return match val {
-        JsonValue.Object(keys, values) => {
-            let mut new_keys = []
-            let mut new_values = []
-            let count = len(keys)
-            let mut found = false
-            let mut i = 0
-            while i < count {
-                push(new_keys, keys[i])
-                if keys[i] == key {
-                    push(new_values, new_val)
-                    found = true
-                } else {
-                    push(new_values, values[i])
-                }
-                i = i + 1
-            }
-            if not found {
-                push(new_keys, key)
-                push(new_values, new_val)
-            }
-            return JsonValue.Object(new_keys, new_values)
-        },
-        _ => throw "json.set: value is not an object"
+        JsonValue::Object(keys, values) => _object_set(keys, values, key, new_val),
+        _ => _throw_json_val("json.set: value is not an object")
     }
 }
 
@@ -591,48 +609,48 @@ fn set(val: JsonValue, key: str, new_val: JsonValue) -> JsonValue {
 /// Extract a boolean from a JsonValue.  Throws if not a Bool.
 fn to_bool(val: JsonValue) -> bool {
     return match val {
-        JsonValue.Bool(b) => b,
-        _ => throw "json.to_bool: value is not a boolean"
+        JsonValue::Bool(b) => b,
+        _ => _throw_json_bool("json.to_bool: value is not a boolean")
     }
 }
 
 /// Extract a number as i64.  Throws if not a Number.
 fn to_int(val: JsonValue) -> i64 {
     return match val {
-        JsonValue.Number(n) => int(n),
-        _ => throw "json.to_int: value is not a number"
+        JsonValue::Number(n) => int(n),
+        _ => _throw_json_int("json.to_int: value is not a number")
     }
 }
 
 /// Extract a number as f64.  Throws if not a Number.
 fn to_float(val: JsonValue) -> f64 {
     return match val {
-        JsonValue.Number(n) => n,
-        _ => throw "json.to_float: value is not a number"
+        JsonValue::Number(n) => n,
+        _ => _throw_json_float("json.to_float: value is not a number")
     }
 }
 
 /// Extract a string.  Throws if not a String.
 fn to_str(val: JsonValue) -> str {
     return match val {
-        JsonValue.String(s) => s,
-        _ => throw "json.to_str: value is not a string"
+        JsonValue::String(s) => s,
+        _ => _throw_json_str("json.to_str: value is not a string")
     }
 }
 
 /// Extract an array of JsonValues.  Throws if not an Array.
 fn to_array(val: JsonValue) -> [JsonValue] {
     return match val {
-        JsonValue.Array(items) => items,
-        _ => throw "json.to_array: value is not an array"
+        JsonValue::Array(items) => items,
+        _ => _throw_json_array("json.to_array: value is not an array")
     }
 }
 
-/// Extract object keys and values.  Returns {"keys": [str], "values": [JsonValue]}.
-fn to_object(val: JsonValue) -> any {
+/// Extract object keys and values.  Returns (keys, values) tuple.
+fn to_object(val: JsonValue) -> ([str], [JsonValue]) {
     return match val {
-        JsonValue.Object(keys, values) => {"keys": keys, "values": values},
-        _ => throw "json.to_object: value is not an object"
+        JsonValue::Object(keys, values) => (keys, values),
+        _ => _throw_json_tuple("json.to_object: value is not an object")
     }
 }
 
@@ -640,42 +658,42 @@ fn to_object(val: JsonValue) -> any {
 
 fn is_null(val: JsonValue) -> bool {
     return match val {
-        JsonValue.Null => true,
+        JsonValue::Null => true,
         _ => false
     }
 }
 
 fn is_bool(val: JsonValue) -> bool {
     return match val {
-        JsonValue.Bool(_) => true,
+        JsonValue::Bool(_) => true,
         _ => false
     }
 }
 
 fn is_number(val: JsonValue) -> bool {
     return match val {
-        JsonValue.Number(_) => true,
+        JsonValue::Number(_) => true,
         _ => false
     }
 }
 
 fn is_string(val: JsonValue) -> bool {
     return match val {
-        JsonValue.String(_) => true,
+        JsonValue::String(_) => true,
         _ => false
     }
 }
 
 fn is_array(val: JsonValue) -> bool {
     return match val {
-        JsonValue.Array(_) => true,
+        JsonValue::Array(_) => true,
         _ => false
     }
 }
 
 fn is_object(val: JsonValue) -> bool {
     return match val {
-        JsonValue.Object(_, _) => true,
+        JsonValue::Object(_, _) => true,
         _ => false
     }
 }
@@ -683,9 +701,9 @@ fn is_object(val: JsonValue) -> bool {
 /// Count elements in an array or keys in an object.
 fn length(val: JsonValue) -> i64 {
     return match val {
-        JsonValue.Array(items) => len(items),
-        JsonValue.Object(keys, _) => len(keys),
-        JsonValue.String(s) => len(s),
+        JsonValue::Array(items) => len(items),
+        JsonValue::Object(keys, _) => len(keys),
+        JsonValue::String(s) => len(s),
         _ => 0
     }
 }

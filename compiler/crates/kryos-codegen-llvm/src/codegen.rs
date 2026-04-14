@@ -275,6 +275,40 @@ impl LlvmCodegen {
         self.emit_line("; Builtin runtime");
         self.emit_line("declare i64 @kryos_builtin_len(i64)");
         self.emit_line("declare i64 @kryos_builtin_to_string(i64)");
+        self.emit_line("declare i64 @kryos_builtin_trim(i64)");
+        self.emit_line("declare i64 @kryos_builtin_trim_start(i64)");
+        self.emit_line("declare i64 @kryos_builtin_trim_end(i64)");
+        self.emit_line("declare i64 @kryos_builtin_to_upper(i64)");
+        self.emit_line("declare i64 @kryos_builtin_to_lower(i64)");
+        self.emit_line("declare i64 @kryos_builtin_index_of(i64, i64)");
+        self.emit_line("declare i64 @kryos_builtin_contains(i64, i64)");
+        self.emit_line("declare i64 @kryos_builtin_starts_with(i64, i64)");
+        self.emit_line("declare i64 @kryos_builtin_ends_with(i64, i64)");
+        self.emit_line("declare i64 @kryos_builtin_replace(i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_builtin_split(i64, i64)");
+        self.emit_line("declare i64 @kryos_builtin_join(i64, i64)");
+        self.emit_line("declare void @kryos_builtin_sort(i64)");
+        self.emit_line("declare void @kryos_builtin_reverse(i64)");
+        self.emit_line("declare i64 @kryos_builtin_file_read(i64)");
+        self.emit_line("declare void @kryos_builtin_file_write(i64, i64)");
+        self.emit_line("declare i64 @kryos_builtin_file_append(i64, i64)");
+        self.emit_line("declare i64 @kryos_builtin_file_exists(i64)");
+        self.emit_line("declare i64 @kryos_builtin_env_get(i64)");
+        self.emit_line("declare void @kryos_builtin_exit(i64)");
+        self.emit_line("declare i64 @kryos_builtin_args()");
+        self.emit_line("declare i64 @kryos_builtin_read_line()");
+        self.emit_line("declare i64 @kryos_builtin_http_get(i64)");
+        self.emit_line("declare i64 @kryos_builtin_parse_int(i64)");
+        self.emit_line("declare i64 @kryos_builtin_parse_float(i64)");
+        self.emit_line("declare i64 @kryos_builtin_type_of(i64)");
+        self.emit_line("declare i64 @kryos_builtin_char_code(i64)");
+        self.emit_line("declare i64 @kryos_builtin_char_from(i64)");
+        self.emit_line("declare i64 @kryos_builtin_substr(i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_builtin_time_now()");
+        self.emit_line("declare i64 @kryos_builtin_int(i64)");
+        self.emit_line("declare i64 @kryos_builtin_float(i64)");
+        self.emit_line("declare i64 @kryos_builtin_string_clone(i64)");
+        self.emit_line("declare i64 @kryos_builtin_array_clone(i64)");
         self.emit_line("declare i64 @kryos_ipow(i64, i64)");
         self.emit_line("declare double @kryos_fpow(double, double)");
         self.emit_line("declare double @kryos_fmod(double, double)");
@@ -1565,17 +1599,50 @@ impl LlvmCodegen {
                         }
                     }
                     _ => {
+                        // Translate Kryos user-facing builtin names to runtime symbols.
+                        let runtime_fname: &str = match fname.as_str() {
+                            "trim"         => "kryos_builtin_trim",
+                            "trim_start"   => "kryos_builtin_trim_start",
+                            "trim_end"     => "kryos_builtin_trim_end",
+                            "to_upper"     => "kryos_builtin_to_upper",
+                            "to_lower"     => "kryos_builtin_to_lower",
+                            "index_of"     => "kryos_builtin_index_of",
+                            "contains"     => "kryos_builtin_contains",
+                            "starts_with"  => "kryos_builtin_starts_with",
+                            "ends_with"    => "kryos_builtin_ends_with",
+                            "replace"      => "kryos_builtin_replace",
+                            "split"        => "kryos_builtin_split",
+                            "join"         => "kryos_builtin_join",
+                            "sort"         => "kryos_builtin_sort",
+                            "reverse"      => "kryos_builtin_reverse",
+                            "read_file"    => "kryos_builtin_file_read",
+                            "write_file"   => "kryos_builtin_file_write",
+                            "append_file"  => "kryos_builtin_file_append",
+                            "file_exists"  => "kryos_builtin_file_exists",
+                            "env_get"      => "kryos_builtin_env_get",
+                            "args"         => "kryos_builtin_args",
+                            "read_line"    => "kryos_builtin_read_line",
+                            "http_get"     => "kryos_builtin_http_get",
+                            "parse_int"    => "kryos_builtin_parse_int",
+                            "parse_float"  => "kryos_builtin_parse_float",
+                            "type_of"      => "kryos_builtin_type_of",
+                            "char_code"    => "kryos_builtin_char_code",
+                            "char_from"    => "kryos_builtin_char_from",
+                            "substr"       => "kryos_builtin_substr",
+                            "time_now"     => "kryos_builtin_time_now",
+                            other          => other,
+                        };
                         if dest_ty == "void" {
-                            self.emit_line(&format!("  call void @{fname}({arg_list})"));
+                            self.emit_line(&format!("  call void @{runtime_fname}({arg_list})"));
                         } else if is_mutable {
                             let tmp = self.next_temp();
                             self.emit_line(&format!(
-                                "  {tmp} = call {dest_ty} @{fname}({arg_list})"
+                                "  {tmp} = call {dest_ty} @{runtime_fname}({arg_list})"
                             ));
                             self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
                         } else {
                             self.emit_line(&format!(
-                                "  %_{} = call {dest_ty} @{fname}({arg_list})",
+                                "  %_{} = call {dest_ty} @{runtime_fname}({arg_list})",
                                 dest.0
                             ));
                         }
