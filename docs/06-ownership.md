@@ -159,7 +159,7 @@ This prevents two parts of your code from modifying the same data simultaneously
 
 ## Ownership in loops
 
-The borrow checker is extra careful inside loops because the body executes multiple times. Moving a value inside a loop body means the second iteration would use a moved value:
+The ownership analyzer is extra careful inside loops because the body executes multiple times. Moving a value inside a loop body means the second iteration would use a moved value:
 
 ```
 let s = "hello"
@@ -243,7 +243,7 @@ s = "second"       // s is owned again with a new value
 println(s)         // "second"
 ```
 
-This is tracked by the borrow checker -- the variable transitions from `moved` back to `owned`.
+This is tracked by the ownership analyzer -- the variable transitions from `moved` back to `owned`.
 
 ## Patterns for avoiding ownership issues
 
@@ -302,9 +302,9 @@ Kryos ownership is inspired by Rust but deliberately simpler.
 |---------|------|-------|
 | Move semantics | Yes | Yes |
 | Use-after-move detection | Yes | Yes |
-| Borrow checker | Yes | Yes |
-| `&T` reference syntax | Yes | No -- borrowing is implicit |
-| `&mut T` mutable references | Yes | No -- mutation checked differently |
+| Borrow checker | Yes | Partial -- planned for future release |
+| `&T` reference syntax | Yes | No -- move semantics replace most uses |
+| `&mut T` mutable references | Yes | No -- mutation checked via ownership |
 | Lifetime annotations (`'a`) | Yes | No -- not needed |
 | `Clone` / `Copy` traits | Explicit traits | Built-in based on type |
 | `Rc`, `Arc`, `Box` | Smart pointer types | Not needed |
@@ -319,7 +319,7 @@ If you already know Rust's ownership system, Kryos will feel familiar with these
 - No lifetime annotations. The analyzer does not require `'a` parameters.
 - No `Clone::clone()` method. (Future versions may add this.)
 - Copy types are determined by the type name, not by a trait implementation.
-- The borrow checker is conservative -- it may reject some valid programs that Rust would accept. This is by design; false positives are preferred over false negatives.
+- The ownership analyzer is conservative -- it may reject some valid programs that Rust would accept. This is by design; false positives are preferred over false negatives.
 
 The mental model is the same: values have one owner, moves transfer ownership, and simultaneous mutable access is forbidden. You just write less syntax to express it.
 

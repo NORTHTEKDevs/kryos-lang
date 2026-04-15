@@ -732,8 +732,7 @@ impl<'a> CHeaderParser<'a> {
             }
             // Skip suffixes
             self.skip_integer_suffix();
-            let hex_str = &self.source[hex_start..self.pos]
-                .trim_end_matches(['u', 'U', 'l', 'L']);
+            let hex_str = &self.source[hex_start..self.pos].trim_end_matches(['u', 'U', 'l', 'L']);
             if let Ok(v) = i64::from_str_radix(hex_str, 16) {
                 return Some(if negative { -v } else { v });
             }
