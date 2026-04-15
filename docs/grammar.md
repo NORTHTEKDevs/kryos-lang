@@ -90,8 +90,9 @@ LetStmt          = "let" "mut"? ( TuplePattern | IDENT ) ( ":" Type )? ( "=" Exp
 ReturnStmt       = "return" Expr? ;
 
 IfStmt           = "if" ExprNoStruct Block
-                   ( "else" "if" ExprNoStruct Block )*
+                   ( "elif" ExprNoStruct Block )*
                    ( "else" Block )? ;
+                   (* Note: "else if" is also accepted as an alias for "elif" *)
 
 ForStmt          = "parallel"? "for" Pattern "in" ExprNoStruct Block ;
 
@@ -158,7 +159,9 @@ StructLiteral    = IDENT "{" ( IDENT ":" Expr ) ( "," IDENT ":" Expr )* ","? "}"
 
 Lambda           = "fn" "(" ParamList? ")" ( "->" Type )? Block ;
 
-IfExpr           = "if" ExprNoStruct Block ( "else" ( IfExpr | Block ) )? ;
+IfExpr           = "if" ExprNoStruct Block
+                   ( "elif" ExprNoStruct Block )*
+                   ( "else" Block )? ;
 
 MatchExpr        = "match" ExprNoStruct "{" MatchArm* "}" ;
 MatchArm         = Pattern ( "if" Expr )? "=>" Expr ","? ;
@@ -251,7 +254,11 @@ Type             = PrimitiveType
                  | "Self"
                  | IDENT ;
 
-PrimitiveType    = "i64" | "f64" | "str" | "bool" | "void" ;
+PrimitiveType    = "i8" | "i16" | "i32" | "i64" | "i128"
+                 | "u8" | "u16" | "u32" | "u64" | "u128"
+                 | "f32" | "f64"
+                 | "int" | "float"
+                 | "bool" | "char" | "str" | "void" ;
 ```
 
 ## Lexical Elements

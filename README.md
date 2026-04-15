@@ -129,9 +129,9 @@ fn main() {
 
 ```kryos
 fn main() {
-    let ch = chan(i64)
+    let ch = chan()
     spawn {
-        let sum = 0
+        let mut sum = 0
         for i in 1..11 { sum = sum + i }
         send(ch, sum)
     }
