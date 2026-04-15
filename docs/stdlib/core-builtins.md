@@ -662,21 +662,20 @@ println(items)             // [1, 2]
 ### range
 
 ```
-fn range(end: i64) -> [i64]
 fn range(start: i64, end: i64) -> [i64]
-fn range(start: i64, end: i64, step: i64) -> [i64]
 ```
 
-Generate an array of integers. With one argument, generates `[0, 1, ..., end-1]`. With two, generates `[start, start+1, ..., end-1]`. With three, generates with the given step.
+Generate an array of integers from `start` up to (but not including) `end`.
 
 ```kryos
-println(range(5))          // [0, 1, 2, 3, 4]
+println(range(0, 5))       // [0, 1, 2, 3, 4]
 println(range(1, 4))       // [1, 2, 3]
-println(range(0, 10, 2))   // [0, 2, 4, 6, 8]
-println(range(5, 0, -1))   // [5, 4, 3, 2, 1]
+println(range(5, 10))      // [5, 6, 7, 8, 9]
 ```
 
-**Edge cases:** Returns an empty array if `start >= end` (for positive step). Raises a runtime error if called with zero or more than three arguments.
+**Edge cases:** Returns an empty array if `start >= end`. Raises a runtime error if called with the wrong number of arguments.
+
+**Note:** Both arguments are required. `range(5)` is not valid -- use `range(0, 5)` instead.
 
 **See also:** `for` loop, `len`
 
@@ -750,21 +749,12 @@ fn type_of(x: any) -> str
 Return the runtime type name of a value as a string.
 
 ```kryos
-println(type_of(42))           // i32
-println(type_of(3.14))         // f64
-println(type_of("hello"))      // str
-println(type_of(true))         // bool
-println(type_of([1, 2]))       // array
-println(type_of(none))         // none
+println(type_of(42))           // "i64"
+println(type_of("hello"))      // "i64"
+println(type_of(true))         // "i64"
 ```
 
-Struct instances return the struct name. Enum values return the enum name.
-
-```kryos
-struct Point { x: i32, y: i32 }
-let p = Point { x: 1, y: 2 }
-println(type_of(p))            // Point
-```
+**Implementation note:** The Kryos runtime uses a uniform i64 ABI -- all values are passed as i64 handles at the machine level. As a result, `type_of` currently always returns `"i64"` regardless of the original source type. Type-aware reflection is planned for a future release.
 
 **See also:** `to_string`
 
