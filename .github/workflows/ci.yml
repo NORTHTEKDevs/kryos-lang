@@ -41,9 +41,8 @@ jobs:
 
       - name: Smoke test (kryos run)
         working-directory: compiler
+        shell: bash
         run: |
-          cargo run --release -p kryos-cli -- run tests/smoke.kry > smoke_output.txt 2>&1
-          echo "30" > expected.txt
-          echo "2" >> expected.txt
-          echo "Kryos" >> expected.txt
+          ./target/release/kryos run tests/smoke.kry > smoke_output.txt
+          printf "30\n2\nKryos\n" > expected.txt
           diff expected.txt smoke_output.txt
