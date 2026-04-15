@@ -11,10 +11,18 @@ pub struct Span {
 }
 
 impl Span {
-    pub const DUMMY: Span = Span { file_id: 0, start: 0, end: 0 };
+    pub const DUMMY: Span = Span {
+        file_id: 0,
+        start: 0,
+        end: 0,
+    };
 
     pub fn new(file_id: u32, start: u32, end: u32) -> Self {
-        Self { file_id, start, end }
+        Self {
+            file_id,
+            start,
+            end,
+        }
     }
 
     pub fn merge(self, other: Span) -> Span {
@@ -118,7 +126,11 @@ impl SourceMap {
         let line_starts = std::iter::once(0)
             .chain(source.match_indices('\n').map(|(i, _)| (i + 1) as u32))
             .collect();
-        self.files.push(SourceFile { name, source, line_starts });
+        self.files.push(SourceFile {
+            name,
+            source,
+            line_starts,
+        });
         id
     }
 
@@ -214,7 +226,9 @@ fn render_diagnostic_impl(diag: &Diagnostic, source_map: &SourceMap, color: bool
             let line_idx = (line - 1) as usize;
             if line_idx < file.line_starts.len() {
                 let start = file.line_starts[line_idx] as usize;
-                let end = file.line_starts.get(line_idx + 1)
+                let end = file
+                    .line_starts
+                    .get(line_idx + 1)
                     .map(|&s| s as usize)
                     .unwrap_or(file.source.len());
                 let src_line = &file.source[start..end].trim_end();
@@ -244,7 +258,10 @@ fn render_diagnostic_impl(diag: &Diagnostic, source_map: &SourceMap, color: bool
                         reset = ansi::RESET,
                     ));
                 } else {
-                    out.push_str(&format!("{gutter}| {padding}{underline} {}\n", label.message));
+                    out.push_str(&format!(
+                        "{gutter}| {padding}{underline} {}\n",
+                        label.message
+                    ));
                 }
             }
         }
@@ -273,7 +290,9 @@ pub struct DiagnosticBag {
 
 impl DiagnosticBag {
     pub fn new() -> Self {
-        Self { diagnostics: Vec::new() }
+        Self {
+            diagnostics: Vec::new(),
+        }
     }
 
     pub fn emit(&mut self, diag: Diagnostic) {

@@ -1,13 +1,13 @@
 //! LSP server — main event loop handling JSON-RPC messages.
 
-use std::collections::HashMap;
 use serde_json::Value;
+use std::collections::HashMap;
 
-use crate::protocol::{self, Message};
-use crate::diagnostics;
 use crate::completion;
-use crate::hover;
+use crate::diagnostics;
 use crate::goto_def;
+use crate::hover;
+use crate::protocol::{self, Message};
 
 /// The Kryos Language Server.
 pub struct LspServer {
@@ -89,23 +89,26 @@ impl LspServer {
                         self.workspace_root = Some(format!("file:///{normalized}"));
                     }
                 }
-                Some(protocol::make_response(id.clone(), serde_json::json!({
-                    "capabilities": {
-                        "textDocumentSync": {
-                            "openClose": true,
-                            "change": 1, // Full sync
+                Some(protocol::make_response(
+                    id.clone(),
+                    serde_json::json!({
+                        "capabilities": {
+                            "textDocumentSync": {
+                                "openClose": true,
+                                "change": 1, // Full sync
+                            },
+                            "completionProvider": {
+                                "triggerCharacters": [".", ":"],
+                            },
+                            "hoverProvider": true,
+                            "definitionProvider": true,
                         },
-                        "completionProvider": {
-                            "triggerCharacters": [".", ":"],
-                        },
-                        "hoverProvider": true,
-                        "definitionProvider": true,
-                    },
-                    "serverInfo": {
-                        "name": "kryos-lsp",
-                        "version": "0.1.0",
-                    }
-                })))
+                        "serverInfo": {
+                            "name": "kryos-lsp",
+                            "version": "0.1.0",
+                        }
+                    }),
+                ))
             }
             "shutdown" => {
                 self.shutdown_requested = true;
@@ -118,9 +121,15 @@ impl LspServer {
 
                 if let Some(source) = self.documents.get(uri) {
                     let items = completion::get_completions(source, line, character);
-                    Some(protocol::make_response(id.clone(), serde_json::json!({ "items": items })))
+                    Some(protocol::make_response(
+                        id.clone(),
+                        serde_json::json!({ "items": items }),
+                    ))
                 } else {
-                    Some(protocol::make_response(id.clone(), serde_json::json!({ "items": [] })))
+                    Some(protocol::make_response(
+                        id.clone(),
+                        serde_json::json!({ "items": [] }),
+                    ))
                 }
             }
             "textDocument/hover" => {
@@ -170,9 +179,11 @@ impl LspServer {
                     Some(protocol::make_response(id.clone(), Value::Null))
                 }
             }
-            _ => {
-                Some(protocol::make_error_response(id.clone(), -32601, &format!("method not found: {method}")))
-            }
+            _ => Some(protocol::make_error_response(
+                id.clone(),
+                -32601,
+                &format!("method not found: {method}"),
+            )),
         }
     }
 
@@ -182,7 +193,9 @@ impl LspServer {
             "textDocument/didOpen" => {
                 if let (Some(uri), Some(text)) = (
                     params.pointer("/textDocument/uri").and_then(|v| v.as_str()),
-                    params.pointer("/textDocument/text").and_then(|v| v.as_str()),
+                    params
+                        .pointer("/textDocument/text")
+                        .and_then(|v| v.as_str()),
                 ) {
                     self.documents.insert(uri.to_string(), text.to_string());
                     self.publish_diagnostics(uri)

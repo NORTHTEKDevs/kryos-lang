@@ -8,7 +8,11 @@ use kryos_parser::parse;
 fn fmt(src: &str) -> String {
     format_source(src).unwrap_or_else(|diags| {
         for d in &diags {
-            eprintln!("{}: {}", if d.is_error() { "ERROR" } else { "WARN" }, d.message);
+            eprintln!(
+                "{}: {}",
+                if d.is_error() { "ERROR" } else { "WARN" },
+                d.message
+            );
         }
         panic!("format_source failed with {} diagnostic(s)", diags.len());
     })
@@ -28,7 +32,11 @@ fn assert_round_trip(src: &str) {
         eprintln!("{}", formatted);
         eprintln!("--- diagnostics ---");
         for d in &diags {
-            eprintln!("  {}: {}", if d.is_error() { "ERROR" } else { "WARN" }, d.message);
+            eprintln!(
+                "  {}: {}",
+                if d.is_error() { "ERROR" } else { "WARN" },
+                d.message
+            );
         }
         panic!("re-parse of formatted output failed");
     });
@@ -346,7 +354,11 @@ fn test_blank_lines_between_decls() {
 fn test_nested_block_indentation() {
     let out = fmt("fn f() { if x { if y { z } } }");
     // Inner if should be at 8 spaces (2 levels)
-    assert!(out.contains("        if y {"), "expected 8-space indent, got:\n{}", out);
+    assert!(
+        out.contains("        if y {"),
+        "expected 8-space indent, got:\n{}",
+        out
+    );
 }
 
 // ======================== Round-trip tests ========================
@@ -481,21 +493,41 @@ fn test_bool_and_none_literals() {
 #[test]
 fn test_doc_comment_on_function() {
     let out = fmt("/// Adds two numbers.\nfn add(x: i32, y: i32) -> i32 { return x + y }");
-    assert!(out.contains("/// Adds two numbers."), "doc comment missing, got:\n{}", out);
-    assert!(out.contains("fn add(x: i32, y: i32) -> i32"), "function missing, got:\n{}", out);
+    assert!(
+        out.contains("/// Adds two numbers."),
+        "doc comment missing, got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("fn add(x: i32, y: i32) -> i32"),
+        "function missing, got:\n{}",
+        out
+    );
 }
 
 #[test]
 fn test_doc_comment_multiline() {
     let out = fmt("/// First line.\n/// Second line.\nfn foo() { }");
-    assert!(out.contains("/// First line.\n/// Second line.\nfn foo()"), "multiline doc missing, got:\n{}", out);
+    assert!(
+        out.contains("/// First line.\n/// Second line.\nfn foo()"),
+        "multiline doc missing, got:\n{}",
+        out
+    );
 }
 
 #[test]
 fn test_doc_comment_on_struct() {
     let out = fmt("/// A point in 2D space.\nstruct Point { x: f64, y: f64 }");
-    assert!(out.contains("/// A point in 2D space."), "struct doc comment missing, got:\n{}", out);
-    assert!(out.contains("struct Point {"), "struct missing, got:\n{}", out);
+    assert!(
+        out.contains("/// A point in 2D space."),
+        "struct doc comment missing, got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("struct Point {"),
+        "struct missing, got:\n{}",
+        out
+    );
 }
 
 #[test]
@@ -508,5 +540,9 @@ fn test_doc_comment_idempotent() {
     let src = "/// Hello world.\nfn hello() { }";
     let first = fmt(src);
     let second = fmt(&first);
-    assert_eq!(first, second, "doc comment format not idempotent:\nfirst:\n{}\nsecond:\n{}", first, second);
+    assert_eq!(
+        first, second,
+        "doc comment format not idempotent:\nfirst:\n{}\nsecond:\n{}",
+        first, second
+    );
 }

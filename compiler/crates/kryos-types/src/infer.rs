@@ -218,16 +218,7 @@ impl InferenceEngine {
             }
 
             // Map: key and value types must match.
-            (
-                Type::Map {
-                    key: k1,
-                    value: v1,
-                },
-                Type::Map {
-                    key: k2,
-                    value: v2,
-                },
-            ) => {
+            (Type::Map { key: k1, value: v1 }, Type::Map { key: k2, value: v2 }) => {
                 self.unify(k1, k2, span)?;
                 self.unify(v1, v2, span)
             }
@@ -239,10 +230,7 @@ impl InferenceEngine {
             (Type::Option { inner: i1 }, Type::Option { inner: i2 }) => self.unify(i1, i2, span),
 
             // Result: ok and err types must match.
-            (
-                Type::Result { ok: o1, err: e1 },
-                Type::Result { ok: o2, err: e2 },
-            ) => {
+            (Type::Result { ok: o1, err: e1 }, Type::Result { ok: o2, err: e2 }) => {
                 self.unify(o1, o2, span)?;
                 self.unify(e1, e2, span)
             }
@@ -342,10 +330,9 @@ impl InferenceEngine {
             (Type::Struct { .. }, Type::DynTrait { .. })
             | (Type::DynTrait { .. }, Type::Struct { .. }) => Ok(()),
             // Two dyn Traits unify if they name the same trait.
-            (
-                Type::DynTrait { trait_name: t1 },
-                Type::DynTrait { trait_name: t2 },
-            ) if t1 == t2 => Ok(()),
+            (Type::DynTrait { trait_name: t1 }, Type::DynTrait { trait_name: t2 }) if t1 == t2 => {
+                Ok(())
+            }
 
             // Never unifies with anything (diverging expressions).
             (Type::Never, _) | (_, Type::Never) => Ok(()),
@@ -356,8 +343,9 @@ impl InferenceEngine {
 
             // Everything else is a mismatch.
             _ => {
-                let mut diag = Diagnostic::error(format!("type mismatch: expected `{a}`, found `{b}`"))
-                    .with_label(span, format!("expected `{a}`, found `{b}`"));
+                let mut diag =
+                    Diagnostic::error(format!("type mismatch: expected `{a}`, found `{b}`"))
+                        .with_label(span, format!("expected `{a}`, found `{b}`"));
 
                 // Add helpful notes for common mismatches.
                 if (a == Type::Str && b.is_numeric()) || (b == Type::Str && a.is_numeric()) {
@@ -365,7 +353,9 @@ impl InferenceEngine {
                 } else if (a == Type::Bool && (b.is_numeric() || b == Type::Str))
                     || (b == Type::Bool && (a.is_numeric() || a == Type::Str))
                 {
-                    diag = diag.with_note("Kryos does not implicitly convert between bool and other types");
+                    diag = diag.with_note(
+                        "Kryos does not implicitly convert between bool and other types",
+                    );
                 }
 
                 Err(diag)
@@ -438,7 +428,10 @@ impl InferenceEngine {
                 size: *size,
             },
             Type::Tuple { elements } => Type::Tuple {
-                elements: elements.iter().map(|e| self.instantiate(e, var_map)).collect(),
+                elements: elements
+                    .iter()
+                    .map(|e| self.instantiate(e, var_map))
+                    .collect(),
             },
             Type::Map { key, value } => Type::Map {
                 key: Box::new(self.instantiate(key, var_map)),
@@ -456,14 +449,23 @@ impl InferenceEngine {
             },
             Type::Struct { name, generics } => Type::Struct {
                 name: name.clone(),
-                generics: generics.iter().map(|g| self.instantiate(g, var_map)).collect(),
+                generics: generics
+                    .iter()
+                    .map(|g| self.instantiate(g, var_map))
+                    .collect(),
             },
             Type::Enum { name, generics } => Type::Enum {
                 name: name.clone(),
-                generics: generics.iter().map(|g| self.instantiate(g, var_map)).collect(),
+                generics: generics
+                    .iter()
+                    .map(|g| self.instantiate(g, var_map))
+                    .collect(),
             },
             Type::Function { params, ret } => Type::Function {
-                params: params.iter().map(|p| self.instantiate(p, var_map)).collect(),
+                params: params
+                    .iter()
+                    .map(|p| self.instantiate(p, var_map))
+                    .collect(),
                 ret: Box::new(self.instantiate(ret, var_map)),
             },
             Type::Reference { inner, mutable } => Type::Reference {
@@ -490,10 +492,7 @@ impl InferenceEngine {
     ///
     /// For each generic type parameter's original var ID, a new fresh var is
     /// allocated, and all occurrences in the param/ret types are replaced.
-    pub fn instantiate_sig(
-        &mut self,
-        sig: &crate::env::FunctionSig,
-    ) -> (Vec<Type>, Type) {
+    pub fn instantiate_sig(&mut self, sig: &crate::env::FunctionSig) -> (Vec<Type>, Type) {
         if sig.generic_var_ids.is_empty() {
             // Non-generic function — no instantiation needed.
             let params = sig.params.iter().map(|(_, t)| t.clone()).collect();

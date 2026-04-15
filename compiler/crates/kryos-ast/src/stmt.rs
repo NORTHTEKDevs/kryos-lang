@@ -1,6 +1,6 @@
-use kryos_errors::Span;
-use crate::types::TypeExpr;
 use crate::expr::{Expr, Pattern};
+use crate::types::TypeExpr;
+use kryos_errors::Span;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block {
@@ -41,7 +41,10 @@ pub enum Stmt {
         value: Expr,
         span: Span,
     },
-    Return { value: Option<Expr>, span: Span },
+    Return {
+        value: Option<Expr>,
+        span: Span,
+    },
     If {
         condition: Expr,
         then_block: Block,
@@ -61,30 +64,52 @@ pub enum Stmt {
         body: Block,
         span: Span,
     },
-    Break { span: Span },
-    Continue { span: Span },
-    Expr { expr: Expr, span: Span },
-    Spawn { expr: Expr, span: Span },
-    Select { branches: Vec<SelectBranch>, span: Span },
+    Break {
+        span: Span,
+    },
+    Continue {
+        span: Span,
+    },
+    Expr {
+        expr: Expr,
+        span: Span,
+    },
+    Spawn {
+        expr: Expr,
+        span: Span,
+    },
+    Select {
+        branches: Vec<SelectBranch>,
+        span: Span,
+    },
     TryCatch {
         try_block: Block,
         catch_name: String,
         catch_block: Block,
         span: Span,
     },
-    Throw { expr: Expr, span: Span },
+    Throw {
+        expr: Expr,
+        span: Span,
+    },
 }
 
 impl Stmt {
     pub fn span(&self) -> Span {
         match self {
-            Self::Let { span, .. } | Self::Assign { span, .. } |
-            Self::Return { span, .. } | Self::If { span, .. } |
-            Self::For { span, .. } | Self::While { span, .. } |
-            Self::Break { span } | Self::Continue { span } |
-            Self::Expr { span, .. } | Self::Spawn { span, .. } |
-            Self::Select { span, .. } | Self::TryCatch { span, .. } |
-            Self::Throw { span, .. } => *span,
+            Self::Let { span, .. }
+            | Self::Assign { span, .. }
+            | Self::Return { span, .. }
+            | Self::If { span, .. }
+            | Self::For { span, .. }
+            | Self::While { span, .. }
+            | Self::Break { span }
+            | Self::Continue { span }
+            | Self::Expr { span, .. }
+            | Self::Spawn { span, .. }
+            | Self::Select { span, .. }
+            | Self::TryCatch { span, .. }
+            | Self::Throw { span, .. } => *span,
         }
     }
 }

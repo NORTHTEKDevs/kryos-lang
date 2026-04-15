@@ -272,10 +272,7 @@ fn find_llvm_compiler() -> Option<PathBuf> {
 
     #[cfg(not(windows))]
     {
-        if let Ok(output) = std::process::Command::new("which")
-            .arg("clang")
-            .output()
-        {
+        if let Ok(output) = std::process::Command::new("which").arg("clang").output() {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 if let Some(first_line) = stdout.lines().next() {

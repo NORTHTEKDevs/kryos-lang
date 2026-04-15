@@ -71,7 +71,11 @@ pub unsafe extern "C" fn kryos_array_push(arr: *mut KryosArray, val: i64) {
             crate::panic::kryos_panic(msg.as_ptr(), msg.len());
         }
         // Zero new region.
-        ptr::write_bytes(new_data.add(cap * ELEM_SIZE), 0, (new_cap - cap) * ELEM_SIZE);
+        ptr::write_bytes(
+            new_data.add(cap * ELEM_SIZE),
+            0,
+            (new_cap - cap) * ELEM_SIZE,
+        );
         (*arr).data = new_data;
         (*arr).cap = new_cap as i64;
     }
@@ -90,7 +94,10 @@ pub unsafe extern "C" fn kryos_array_get(arr: *const KryosArray, idx: i64) -> i6
     }
     let len = (*arr).len;
     if idx < 0 || idx >= len {
-        let msg = format!("array index out of bounds: index {} but length is {}", idx, len);
+        let msg = format!(
+            "array index out of bounds: index {} but length is {}",
+            idx, len
+        );
         crate::panic::kryos_panic(msg.as_ptr(), msg.len());
     }
     let slot = (*arr).data.add(idx as usize * ELEM_SIZE) as *const i64;
@@ -106,7 +113,10 @@ pub unsafe extern "C" fn kryos_array_set(arr: *mut KryosArray, idx: i64, val: i6
     }
     let len = (*arr).len;
     if idx < 0 || idx >= len {
-        let msg = format!("array index out of bounds: index {} but length is {}", idx, len);
+        let msg = format!(
+            "array index out of bounds: index {} but length is {}",
+            idx, len
+        );
         crate::panic::kryos_panic(msg.as_ptr(), msg.len());
     }
     let slot = (*arr).data.add(idx as usize * ELEM_SIZE) as *mut i64;

@@ -258,7 +258,10 @@ fn spawn_with_capability_subset_is_valid() {
 
     let diags = check_capabilities(&module);
     let errs = errors_only(&diags);
-    assert!(errs.is_empty(), "spawn within capability scope is fine: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "spawn within capability scope is fine: {errs:?}"
+    );
 }
 
 #[test]
@@ -275,7 +278,11 @@ fn spawn_stdlib_call_exceeding_parent_capabilities_is_error() {
 
     let diags = check_capabilities(&module);
     let errs = errors_only(&diags);
-    assert_eq!(errs.len(), 1, "spawn exceeding parent should error: {errs:?}");
+    assert_eq!(
+        errs.len(),
+        1,
+        "spawn exceeding parent should error: {errs:?}"
+    );
     assert!(errs[0].message.contains("requires `io` capability"));
 }
 
@@ -303,7 +310,9 @@ fn self_heal_escalation_method_call_detected() {
     )]);
 
     let diags = check_capabilities(&module);
-    assert!(diags.iter().any(|d| d.code.as_deref() == Some("E-CAP-ESCALATION")));
+    assert!(diags
+        .iter()
+        .any(|d| d.code.as_deref() == Some("E-CAP-ESCALATION")));
 }
 
 #[test]
@@ -328,7 +337,9 @@ fn self_heal_escalation_fn_call_detected() {
 
     let diags = check_capabilities(&module);
     assert!(
-        diags.iter().any(|d| d.code.as_deref() == Some("E-CAP-ESCALATION")),
+        diags
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E-CAP-ESCALATION")),
         "expected escalation error, got: {diags:?}"
     );
 }
@@ -451,7 +462,11 @@ fn stdlib_path_mapping() {
     ];
 
     for (module, expected_cap) in mappings {
-        let path = vec!["std".to_string(), module.to_string(), "something".to_string()];
+        let path = vec![
+            "std".to_string(),
+            module.to_string(),
+            "something".to_string(),
+        ];
         assert_eq!(
             required_capability_for_path(&path),
             Some(expected_cap),
@@ -576,8 +591,12 @@ fn escalation_combined_with_capability_violation() {
     let diags = check_capabilities(&module);
     let errs = errors_only(&diags);
     assert!(errs.len() >= 2, "should have both violations: {errs:?}");
-    assert!(errs.iter().any(|d| d.code.as_deref() == Some("E-CAP-MISSING")));
-    assert!(errs.iter().any(|d| d.code.as_deref() == Some("E-CAP-ESCALATION")));
+    assert!(errs
+        .iter()
+        .any(|d| d.code.as_deref() == Some("E-CAP-MISSING")));
+    assert!(errs
+        .iter()
+        .any(|d| d.code.as_deref() == Some("E-CAP-ESCALATION")));
 }
 
 // ── Builtin function capability enforcement ─────────────────────────────────
@@ -607,7 +626,10 @@ fn builtin_file_write_with_io_capability_passes() {
         "save",
         vec![ann("capabilities", vec!["io"])],
         vec![Stmt::Expr {
-            expr: bare_call("file_write", vec![string_arg("out.txt"), string_arg("data")]),
+            expr: bare_call(
+                "file_write",
+                vec![string_arg("out.txt"), string_arg("data")],
+            ),
             span: span(),
         }],
     )]);
@@ -624,14 +646,21 @@ fn builtin_file_write_with_wrong_capability_fails() {
         "save",
         vec![ann("capabilities", vec!["net"])],
         vec![Stmt::Expr {
-            expr: bare_call("file_write", vec![string_arg("out.txt"), string_arg("data")]),
+            expr: bare_call(
+                "file_write",
+                vec![string_arg("out.txt"), string_arg("data")],
+            ),
             span: span(),
         }],
     )]);
 
     let diags = check_capabilities(&module);
     let errs = errors_only(&diags);
-    assert_eq!(errs.len(), 1, "net cap should not allow file_write: {errs:?}");
+    assert_eq!(
+        errs.len(),
+        1,
+        "net cap should not allow file_write: {errs:?}"
+    );
     assert!(errs[0].message.contains("file_write"));
     assert!(errs[0].message.contains("io"));
     assert_eq!(errs[0].code.as_deref(), Some("E-CAP-BUILTIN"));
@@ -644,7 +673,10 @@ fn builtin_file_write_without_annotation_passes() {
         "save",
         vec![],
         vec![Stmt::Expr {
-            expr: bare_call("file_write", vec![string_arg("out.txt"), string_arg("data")]),
+            expr: bare_call(
+                "file_write",
+                vec![string_arg("out.txt"), string_arg("data")],
+            ),
             span: span(),
         }],
     )]);
@@ -734,7 +766,10 @@ fn builtin_term_clear_with_term_capability_passes() {
 
     let diags = check_capabilities(&module);
     let errs = errors_only(&diags);
-    assert!(errs.is_empty(), "term cap should allow term_clear: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "term cap should allow term_clear: {errs:?}"
+    );
 }
 
 #[test]
@@ -777,7 +812,10 @@ fn builtin_println_requires_no_capability() {
 
     let diags = check_capabilities(&module);
     let errs = errors_only(&diags);
-    assert!(errs.is_empty(), "println/print/eprintln should never need caps: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "println/print/eprintln should never need caps: {errs:?}"
+    );
 }
 
 #[test]
@@ -811,7 +849,10 @@ fn builtin_all_capability_allows_all_builtins() {
 
     let diags = check_capabilities(&module);
     let errs = errors_only(&diags);
-    assert!(errs.is_empty(), "all cap should grant all builtins: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "all cap should grant all builtins: {errs:?}"
+    );
 }
 
 #[test]
@@ -839,7 +880,9 @@ fn multiple_builtin_violations_reported() {
     let diags = check_capabilities(&module);
     let errs = errors_only(&diags);
     assert_eq!(errs.len(), 3, "should have 3 builtin violations: {errs:?}");
-    assert!(errs.iter().all(|e| e.code.as_deref() == Some("E-CAP-BUILTIN")));
+    assert!(errs
+        .iter()
+        .all(|e| e.code.as_deref() == Some("E-CAP-BUILTIN")));
 }
 
 // ── Cross-function propagation ──────────────────────────────────────────────
@@ -879,11 +922,7 @@ fn cross_function_call_with_insufficient_caps_fails() {
     // @capabilities(io, net) fn b() { ... }
     // a has only io, b needs io+net — should FAIL
     let module = module_with(vec![
-        fn_decl(
-            "b",
-            vec![ann("capabilities", vec!["io", "net"])],
-            vec![],
-        ),
+        fn_decl("b", vec![ann("capabilities", vec!["io", "net"])], vec![]),
         fn_decl(
             "a",
             vec![ann("capabilities", vec!["io"])],
@@ -906,11 +945,7 @@ fn cross_function_unannotated_caller_skips_check() {
     // fn a() { b() }  — a has no @capabilities, so no propagation check
     // @capabilities(io, net) fn b() { ... }
     let module = module_with(vec![
-        fn_decl(
-            "b",
-            vec![ann("capabilities", vec!["io", "net"])],
-            vec![],
-        ),
+        fn_decl("b", vec![ann("capabilities", vec!["io", "net"])], vec![]),
         fn_decl(
             "a",
             vec![],
@@ -923,7 +958,10 @@ fn cross_function_unannotated_caller_skips_check() {
 
     let diags = check_capabilities(&module);
     let errs = errors_only(&diags);
-    assert!(errs.is_empty(), "unannotated caller is unconstrained: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "unannotated caller is unconstrained: {errs:?}"
+    );
 }
 
 #[test]
@@ -944,7 +982,10 @@ fn cross_function_calling_unannotated_function_passes() {
 
     let diags = check_capabilities(&module);
     let errs = errors_only(&diags);
-    assert!(errs.is_empty(), "calling unannotated function is fine: {errs:?}");
+    assert!(
+        errs.is_empty(),
+        "calling unannotated function is fine: {errs:?}"
+    );
 }
 
 #[test]
@@ -994,7 +1035,15 @@ fn builtin_and_stdlib_violations_combined() {
 
     let diags = check_capabilities(&module);
     let errs = errors_only(&diags);
-    assert_eq!(errs.len(), 2, "should have builtin + stdlib errors: {errs:?}");
-    assert!(errs.iter().any(|e| e.code.as_deref() == Some("E-CAP-BUILTIN")));
-    assert!(errs.iter().any(|e| e.code.as_deref() == Some("E-CAP-MISSING")));
+    assert_eq!(
+        errs.len(),
+        2,
+        "should have builtin + stdlib errors: {errs:?}"
+    );
+    assert!(errs
+        .iter()
+        .any(|e| e.code.as_deref() == Some("E-CAP-BUILTIN")));
+    assert!(errs
+        .iter()
+        .any(|e| e.code.as_deref() == Some("E-CAP-MISSING")));
 }

@@ -78,7 +78,10 @@ pub enum MirType {
     Str,
     Void,
     Ptr(Box<MirType>),
-    Ref { inner: Box<MirType>, mutable: bool },
+    Ref {
+        inner: Box<MirType>,
+        mutable: bool,
+    },
     Shared(Box<MirType>),
     Array(Box<MirType>, Option<u64>),
     Tuple(Vec<MirType>),
@@ -112,8 +115,14 @@ impl fmt::Display for MirType {
             MirType::Str => write!(f, "str"),
             MirType::Void => write!(f, "void"),
             MirType::Ptr(inner) => write!(f, "*{inner}"),
-            MirType::Ref { inner, mutable: true } => write!(f, "&mut {inner}"),
-            MirType::Ref { inner, mutable: false } => write!(f, "&{inner}"),
+            MirType::Ref {
+                inner,
+                mutable: true,
+            } => write!(f, "&mut {inner}"),
+            MirType::Ref {
+                inner,
+                mutable: false,
+            } => write!(f, "&{inner}"),
             MirType::Shared(inner) => write!(f, "shared {inner}"),
             MirType::Array(elem, Some(n)) => write!(f, "[{elem}; {n}]"),
             MirType::Array(elem, None) => write!(f, "[{elem}]"),
@@ -292,7 +301,6 @@ pub enum Instruction {
         field_offset: u32,
         value: Operand,
     },
-
 }
 
 /// Right-hand side of an assignment.
@@ -352,7 +360,9 @@ pub enum RValue {
     },
 
     /// Allocate an ARC-wrapped value.
-    ArcAlloc { inner: Operand },
+    ArcAlloc {
+        inner: Operand,
+    },
 
     /// Type cast.
     Cast {
@@ -361,7 +371,6 @@ pub enum RValue {
     },
 
     // ---- Enums ----
-
     /// Construct an enum value with a tag and payload fields.
     EnumVariant {
         enum_name: String,
@@ -383,7 +392,6 @@ pub enum RValue {
     },
 
     // ---- Closures ----
-
     /// A closure: function pointer + captured environment variables.
     Closure {
         func_name: String,

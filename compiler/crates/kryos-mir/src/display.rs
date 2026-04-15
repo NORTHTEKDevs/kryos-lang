@@ -36,11 +36,7 @@ impl fmt::Display for MirFunction {
                 .as_deref()
                 .map(|n| format!(" // {n}"))
                 .unwrap_or_default();
-            writeln!(
-                f,
-                "    let {mutability}{}: {};{name}",
-                local.id, local.ty
-            )?;
+            writeln!(f, "    let {mutability}{}: {};{name}", local.id, local.ty)?;
         }
         if !self.locals.is_empty() {
             writeln!(f)?;
@@ -69,30 +65,58 @@ impl fmt::Display for Instruction {
             Instruction::Spawn { func, args } => {
                 write!(f, "spawn {func}(")?;
                 for (i, a) in args.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{a}")?;
                 }
                 write!(f, ")")
             }
             Instruction::Send { channel, value } => write!(f, "send({channel}, {value})"),
             Instruction::Receive { dest, channel } => write!(f, "{dest} = receive({channel})"),
-            Instruction::ActorSpawn { dest, dispatch_fn, state } => {
+            Instruction::ActorSpawn {
+                dest,
+                dispatch_fn,
+                state,
+            } => {
                 write!(f, "{dest} = actor_spawn({dispatch_fn}, {state})")
             }
-            Instruction::ActorSend { actor, handler_tag, args } => {
+            Instruction::ActorSend {
+                actor,
+                handler_tag,
+                args,
+            } => {
                 write!(f, "actor_send({actor}, tag={handler_tag}")?;
                 for a in args {
                     write!(f, ", {a}")?;
                 }
                 write!(f, ")")
             }
-            Instruction::ActorStateLoad { dest, state_ptr, field_offset } => {
-                write!(f, "{dest} = actor_state_load({state_ptr}, offset={field_offset})")
+            Instruction::ActorStateLoad {
+                dest,
+                state_ptr,
+                field_offset,
+            } => {
+                write!(
+                    f,
+                    "{dest} = actor_state_load({state_ptr}, offset={field_offset})"
+                )
             }
-            Instruction::ActorStateStore { state_ptr, field_offset, value } => {
-                write!(f, "actor_state_store({state_ptr}, offset={field_offset}, {value})")
+            Instruction::ActorStateStore {
+                state_ptr,
+                field_offset,
+                value,
+            } => {
+                write!(
+                    f,
+                    "actor_state_store({state_ptr}, offset={field_offset}, {value})"
+                )
             }
-            Instruction::StoreField { object, field, value } => {
+            Instruction::StoreField {
+                object,
+                field,
+                value,
+            } => {
                 write!(f, "store_field({object}.{field} = {value})")
             }
             Instruction::StoreDeref { ptr, value } => {
@@ -168,22 +192,41 @@ impl fmt::Display for RValue {
             RValue::Index { object, index } => write!(f, "{object}[{index}]"),
             RValue::ArcAlloc { inner } => write!(f, "arc_alloc({inner})"),
             RValue::Cast { operand, ty } => write!(f, "{operand} as {ty}"),
-            RValue::EnumVariant { enum_name, variant_idx, fields } => {
+            RValue::EnumVariant {
+                enum_name,
+                variant_idx,
+                fields,
+            } => {
                 write!(f, "{enum_name}::variant#{variant_idx}(")?;
                 for (i, field) in fields.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{field}")?;
                 }
                 write!(f, ")")
             }
             RValue::EnumTag { operand } => write!(f, "enum_tag({operand})"),
-            RValue::EnumPayload { operand, enum_name, variant_idx, field_idx } => {
-                write!(f, "enum_payload({operand}, {enum_name}::v{variant_idx}, field={field_idx})")
+            RValue::EnumPayload {
+                operand,
+                enum_name,
+                variant_idx,
+                field_idx,
+            } => {
+                write!(
+                    f,
+                    "enum_payload({operand}, {enum_name}::v{variant_idx}, field={field_idx})"
+                )
             }
-            RValue::Closure { func_name, captures } => {
+            RValue::Closure {
+                func_name,
+                captures,
+            } => {
                 write!(f, "closure({func_name}, [")?;
                 for (i, cap) in captures.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{cap}")?;
                 }
                 write!(f, "])")
@@ -191,7 +234,9 @@ impl fmt::Display for RValue {
             RValue::Map(entries) => {
                 write!(f, "{{")?;
                 for (i, (k, v)) in entries.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{k}: {v}")?;
                 }
                 write!(f, "}}")
@@ -199,12 +244,18 @@ impl fmt::Display for RValue {
             RValue::StringConcat(parts) => {
                 write!(f, "str_concat(")?;
                 for (i, p) in parts.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{p}")?;
                 }
                 write!(f, ")")
             }
-            RValue::Range { start, end, inclusive } => {
+            RValue::Range {
+                start,
+                end,
+                inclusive,
+            } => {
                 let op = if *inclusive { "..=" } else { ".." };
                 match (start, end) {
                     (Some(s), Some(e)) => write!(f, "{s}{op}{e}"),
@@ -222,10 +273,22 @@ impl fmt::Display for RValue {
             }
             RValue::Deref { operand } => write!(f, "*{operand}"),
             RValue::Comptime(inner) => write!(f, "comptime({inner})"),
-            RValue::MakeTraitObject { value, concrete_type, trait_name } => {
-                write!(f, "make_trait_object({value}, {concrete_type} as dyn {trait_name})")
+            RValue::MakeTraitObject {
+                value,
+                concrete_type,
+                trait_name,
+            } => {
+                write!(
+                    f,
+                    "make_trait_object({value}, {concrete_type} as dyn {trait_name})"
+                )
             }
-            RValue::VtableCall { object, method_index, args, .. } => {
+            RValue::VtableCall {
+                object,
+                method_index,
+                args,
+                ..
+            } => {
                 write!(f, "vtable_call({object}, method#{method_index}")?;
                 for a in args {
                     write!(f, ", {a}")?;

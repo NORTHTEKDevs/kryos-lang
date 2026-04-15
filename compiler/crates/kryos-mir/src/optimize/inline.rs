@@ -18,10 +18,7 @@
 
 use std::collections::HashMap;
 
-use crate::ir::{
-    Instruction, LocalId, MirLocal, MirModule,
-    Operand, RValue, Terminator,
-};
+use crate::ir::{Instruction, LocalId, MirLocal, MirModule, Operand, RValue, Terminator};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -112,12 +109,17 @@ fn find_candidates(module: &MirModule, threshold: usize) -> HashMap<String, Inli
 
 /// Returns `true` if any instruction contains a function call.
 fn contains_call(instructions: &[Instruction]) -> bool {
-    instructions.iter().any(|inst| matches!(inst,
-        Instruction::Assign {
-            value: RValue::Call { .. } | RValue::CallIndirect { .. } | RValue::VtableCall { .. },
-            ..
-        } | Instruction::Spawn { .. }
-    ))
+    instructions.iter().any(|inst| {
+        matches!(
+            inst,
+            Instruction::Assign {
+                value: RValue::Call { .. }
+                    | RValue::CallIndirect { .. }
+                    | RValue::VtableCall { .. },
+                ..
+            } | Instruction::Spawn { .. }
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -169,9 +171,7 @@ fn inline_calls_in_function(
                     }
 
                     // Assign arguments to parameter locals.
-                    for (param_local, arg) in
-                        candidate.param_locals.iter().zip(args.iter())
-                    {
+                    for (param_local, arg) in candidate.param_locals.iter().zip(args.iter()) {
                         new_instructions.push(Instruction::Assign {
                             dest: LocalId(param_local.0 + local_offset),
                             value: RValue::Use(arg.clone()),
@@ -180,8 +180,7 @@ fn inline_calls_in_function(
 
                     // Copy callee instructions with remapped locals.
                     for callee_inst in &candidate.instructions {
-                        new_instructions
-                            .push(remap_instruction(callee_inst, local_offset));
+                        new_instructions.push(remap_instruction(callee_inst, local_offset));
                     }
 
                     // Assign the callee's return value to the call's destination.
@@ -271,7 +270,11 @@ fn remap_instruction(inst: &Instruction, offset: u32) -> Instruction {
             field_offset: *field_offset,
             value: remap_operand(value, offset),
         },
-        Instruction::StoreField { object, field, value } => Instruction::StoreField {
+        Instruction::StoreField {
+            object,
+            field,
+            value,
+        } => Instruction::StoreField {
             object: remap_operand(object, offset),
             field: field.clone(),
             value: remap_operand(value, offset),
@@ -524,10 +527,7 @@ mod tests {
                 }
             )
         });
-        assert!(
-            !has_call,
-            "call to add_one should have been inlined away"
-        );
+        assert!(!has_call, "call to add_one should have been inlined away");
     }
 
     #[test]

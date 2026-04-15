@@ -3,8 +3,8 @@
 //! Provides environment variable access, process exit, subprocess execution,
 //! command-line argument access, and directory listing.
 
+use kryos_rt::string::{kryos_string_new, KryosString};
 use std::process::Command;
-use kryos_rt::string::{KryosString, kryos_string_new};
 
 /// Reads the environment variable named by `key[0..key_len]` into `val_buf`.
 ///
@@ -103,12 +103,10 @@ pub extern "C" fn kryos_process_exec(
             let stdout_str = String::from_utf8_lossy(&output.stdout);
             let stderr_str = String::from_utf8_lossy(&output.stderr);
 
-            let stdout_handle = unsafe {
-                kryos_string_new(stdout_str.as_ptr(), stdout_str.len() as i64)
-            } as i64;
-            let stderr_handle = unsafe {
-                kryos_string_new(stderr_str.as_ptr(), stderr_str.len() as i64)
-            } as i64;
+            let stdout_handle =
+                unsafe { kryos_string_new(stdout_str.as_ptr(), stdout_str.len() as i64) } as i64;
+            let stderr_handle =
+                unsafe { kryos_string_new(stderr_str.as_ptr(), stderr_str.len() as i64) } as i64;
 
             // Allocate a 3-slot result: [exit_code, stdout, stderr]
             let result = Box::into_raw(Box::new([exit_code, stdout_handle, stderr_handle]));
@@ -121,10 +119,7 @@ pub extern "C" fn kryos_process_exec(
 /// Simple exec that runs a command string and returns the exit code.
 /// stdout/stderr are inherited (printed to the terminal).
 #[no_mangle]
-pub extern "C" fn kryos_process_exec_simple(
-    cmd_ptr: *const u8,
-    cmd_len: i64,
-) -> i64 {
+pub extern "C" fn kryos_process_exec_simple(cmd_ptr: *const u8, cmd_len: i64) -> i64 {
     if cmd_ptr.is_null() || cmd_len < 0 {
         return -1;
     }
@@ -213,9 +208,8 @@ pub extern "C" fn kryos_dir_list(
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
         if count < max && !out_array.is_null() {
-            let handle = unsafe {
-                kryos_string_new(name_str.as_ptr(), name_str.len() as i64)
-            } as i64;
+            let handle =
+                unsafe { kryos_string_new(name_str.as_ptr(), name_str.len() as i64) } as i64;
             unsafe {
                 *out_array.add(count) = handle;
             }
@@ -247,12 +241,7 @@ pub extern "C" fn kryos_dir_walk(
     let max = max_entries as usize;
     let mut count: usize = 0;
 
-    fn walk_recursive(
-        dir: &std::path::Path,
-        out_array: *mut i64,
-        max: usize,
-        count: &mut usize,
-    ) {
+    fn walk_recursive(dir: &std::path::Path, out_array: *mut i64, max: usize, count: &mut usize) {
         let entries = match std::fs::read_dir(dir) {
             Ok(rd) => rd,
             Err(_) => return,
@@ -261,9 +250,8 @@ pub extern "C" fn kryos_dir_walk(
             let path = entry.path();
             let path_str = path.to_string_lossy();
             if *count < max && !out_array.is_null() {
-                let handle = unsafe {
-                    kryos_string_new(path_str.as_ptr(), path_str.len() as i64)
-                } as i64;
+                let handle =
+                    unsafe { kryos_string_new(path_str.as_ptr(), path_str.len() as i64) } as i64;
                 unsafe {
                     *out_array.add(*count) = handle;
                 }

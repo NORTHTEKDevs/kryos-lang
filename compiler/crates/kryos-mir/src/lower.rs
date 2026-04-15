@@ -324,14 +324,32 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
 
     // Register built-in prelude enums (Option, Result) so they're available
     // to all programs without explicit import.
-    ctx.enum_defs.insert("Option".to_string(), vec![
-        EnumVariantDef { name: "Some".to_string(), fields: vec![MirType::I64] },
-        EnumVariantDef { name: "None".to_string(), fields: vec![] },
-    ]);
-    ctx.enum_defs.insert("Result".to_string(), vec![
-        EnumVariantDef { name: "Ok".to_string(), fields: vec![MirType::I64] },
-        EnumVariantDef { name: "Err".to_string(), fields: vec![MirType::I64] },
-    ]);
+    ctx.enum_defs.insert(
+        "Option".to_string(),
+        vec![
+            EnumVariantDef {
+                name: "Some".to_string(),
+                fields: vec![MirType::I64],
+            },
+            EnumVariantDef {
+                name: "None".to_string(),
+                fields: vec![],
+            },
+        ],
+    );
+    ctx.enum_defs.insert(
+        "Result".to_string(),
+        vec![
+            EnumVariantDef {
+                name: "Ok".to_string(),
+                fields: vec![MirType::I64],
+            },
+            EnumVariantDef {
+                name: "Err".to_string(),
+                fields: vec![MirType::I64],
+            },
+        ],
+    );
 
     // Register built-in function return types so infer_expr_type can resolve
     // temps correctly (e.g. `to_string()` returns Str, not I64).
@@ -373,7 +391,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("println", MirType::Void),
         ("print", MirType::Void),
         ("eprintln", MirType::Void),
-        ("push", MirType::I64),        // returns array handle
+        ("push", MirType::I64), // returns array handle
         ("pop", MirType::I64),
         ("send", MirType::Void),
         ("sleep", MirType::Void),
@@ -385,12 +403,12 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("char_from", MirType::Str),
         ("int", MirType::I64),
         ("float", MirType::F64),
-        ("keys", MirType::I64),       // returns array handle
+        ("keys", MirType::I64), // returns array handle
         ("map_has", MirType::Bool),
         ("map_has_str", MirType::Bool),
         ("map_delete", MirType::I64),
         ("map_delete_str", MirType::I64),
-        ("map_keys", MirType::I64),   // returns array handle
+        ("map_keys", MirType::I64), // returns array handle
         ("map_keys_str", MirType::I64),
         ("sleep_ms", MirType::Void),
         ("buf_new", MirType::I64),
@@ -427,7 +445,12 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
     // lowerer can infer correct types for field accesses and call results.
     for decl in &module.declarations {
         match decl {
-            ast::Decl::Struct { name, fields, annotations, .. } => {
+            ast::Decl::Struct {
+                name,
+                fields,
+                annotations,
+                ..
+            } => {
                 let field_list: Vec<(String, MirType)> = fields
                     .iter()
                     .map(|f| (f.name.clone(), ctx.resolve_type(&f.ty)))
@@ -447,7 +470,14 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                     .collect();
                 ctx.enum_defs.insert(name.clone(), variant_defs);
             }
-            ast::Decl::Function { name, generics, params, ret_ty, body, .. } => {
+            ast::Decl::Function {
+                name,
+                generics,
+                params,
+                ret_ty,
+                body,
+                ..
+            } => {
                 let mir_ret = match ret_ty {
                     Some(ty) => ctx.resolve_type(ty),
                     None => MirType::Void,
@@ -457,7 +487,11 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                 // Store parameter types for dyn Trait coercion.
                 let param_types: Vec<MirType> = params
                     .iter()
-                    .map(|p| p.ty.as_ref().map(|t| ctx.resolve_type(t)).unwrap_or(MirType::I64))
+                    .map(|p| {
+                        p.ty.as_ref()
+                            .map(|t| ctx.resolve_type(t))
+                            .unwrap_or(MirType::I64)
+                    })
                     .collect();
                 ctx.func_param_types.insert(name.clone(), param_types);
 
@@ -465,12 +499,15 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                 // for monomorphization instead of lowering it immediately.
                 if !generics.is_empty() {
                     if let Some(body) = body {
-                        ctx.generic_templates.insert(name.clone(), GenericTemplate {
-                            generic_params: generics.iter().map(|g| g.name.clone()).collect(),
-                            params: params.clone(),
-                            ret_ty: ret_ty.clone(),
-                            body: body.clone(),
-                        });
+                        ctx.generic_templates.insert(
+                            name.clone(),
+                            GenericTemplate {
+                                generic_params: generics.iter().map(|g| g.name.clone()).collect(),
+                                params: params.clone(),
+                                ret_ty: ret_ty.clone(),
+                                body: body.clone(),
+                            },
+                        );
                     }
                 }
             }
@@ -478,7 +515,13 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                 let method_sigs: Vec<TraitMethodSig> = methods
                     .iter()
                     .filter_map(|m| {
-                        if let ast::Decl::Function { name, params, ret_ty, .. } = m {
+                        if let ast::Decl::Function {
+                            name,
+                            params,
+                            ret_ty,
+                            ..
+                        } = m
+                        {
                             let param_types: Vec<MirType> = params
                                 .iter()
                                 .filter(|p| p.name != "self")
@@ -514,7 +557,12 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                     ctx.trait_default_methods.insert(name.clone(), defaults);
                 }
             }
-            ast::Decl::Impl { target, trait_name, methods, .. } => {
+            ast::Decl::Impl {
+                target,
+                trait_name,
+                methods,
+                ..
+            } => {
                 let prev_self = ctx.current_self_type.take();
                 ctx.current_self_type = Some(target.clone());
 
@@ -532,10 +580,8 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                 // Track which methods belong to which type for method call resolution.
                 for method in methods {
                     if let ast::Decl::Function { name, .. } = method {
-                        ctx.method_owners.insert(
-                            (target.clone(), name.clone()),
-                            format!("{target}__{name}"),
-                        );
+                        ctx.method_owners
+                            .insert((target.clone(), name.clone()), format!("{target}__{name}"));
                     }
                 }
                 // Collect explicit method names for checking default overrides.
@@ -562,10 +608,8 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                                         None => MirType::Void,
                                     };
                                     ctx.func_ret_types.insert(mangled.clone(), mir_ret);
-                                    ctx.method_owners.insert(
-                                        (target.clone(), name.clone()),
-                                        mangled,
-                                    );
+                                    ctx.method_owners
+                                        .insert((target.clone(), name.clone()), mangled);
                                 }
                             }
                         }
@@ -590,10 +634,8 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                             }
                         }
                     }
-                    ctx.impl_map.insert(
-                        (target.clone(), trait_name.clone()),
-                        mangled_names,
-                    );
+                    ctx.impl_map
+                        .insert((target.clone(), trait_name.clone()), mangled_names);
                 }
 
                 ctx.current_self_type = prev_self;
@@ -614,7 +656,12 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                     }
                 }
             }
-            ast::Decl::Actor { name, state_fields, handlers, .. } => {
+            ast::Decl::Actor {
+                name,
+                state_fields,
+                handlers,
+                ..
+            } => {
                 // Register actor state as a struct def.
                 let fields: Vec<(String, MirType)> = state_fields
                     .iter()
@@ -630,10 +677,8 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                         None => MirType::Void,
                     };
                     ctx.func_ret_types.insert(mangled.clone(), mir_ret.clone());
-                    ctx.method_owners.insert(
-                        (name.clone(), handler.name.clone()),
-                        mangled,
-                    );
+                    ctx.method_owners
+                        .insert((name.clone(), handler.name.clone()), mangled);
                     handler_info.push((handler.name.clone(), handler.params.len()));
                 }
                 ctx.actor_defs.insert(name.clone(), handler_info);
@@ -643,15 +688,19 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                     .enumerate()
                     .map(|(i, f)| (f.name.clone(), i as u32))
                     .collect();
-                ctx.actor_state_fields.insert(name.clone(), state_field_layout);
+                ctx.actor_state_fields
+                    .insert(name.clone(), state_field_layout);
             }
-            ast::Decl::Const { name, ty, value, .. } => {
+            ast::Decl::Const {
+                name, ty, value, ..
+            } => {
                 let mir_ty = ty
                     .as_ref()
                     .map(|t| ctx.resolve_type(t))
                     .unwrap_or_else(|| infer_expr_type(&ctx, value));
                 ctx.func_ret_types.insert(name.clone(), mir_ty.clone());
-                ctx.const_defs.insert(name.clone(), (mir_ty, *value.clone()));
+                ctx.const_defs
+                    .insert(name.clone(), (mir_ty, *value.clone()));
             }
             _ => {}
         }
@@ -678,7 +727,12 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                 func.attributes = annotations_to_mir_attributes(annotations);
                 functions.push(func);
             }
-            ast::Decl::Impl { target, trait_name, methods, .. } => {
+            ast::Decl::Impl {
+                target,
+                trait_name,
+                methods,
+                ..
+            } => {
                 let prev_self = ctx.current_self_type.take();
                 ctx.current_self_type = Some(target.clone());
 
@@ -720,7 +774,8 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                             // Static method — no self param.
                             all_params.extend_from_slice(params);
                         }
-                        let mut func = lower_function(&mut ctx, &mangled, &all_params, ret_ty, body);
+                        let mut func =
+                            lower_function(&mut ctx, &mangled, &all_params, ret_ty, body);
                         func.attributes = annotations_to_mir_attributes(annotations);
                         functions.push(func);
                     }
@@ -784,7 +839,11 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                                         all_params.extend_from_slice(params);
                                     }
                                     let mut func = lower_function(
-                                        &mut ctx, &mangled, &all_params, ret_ty, body,
+                                        &mut ctx,
+                                        &mangled,
+                                        &all_params,
+                                        ret_ty,
+                                        body,
                                     );
                                     func.attributes = annotations_to_mir_attributes(annotations);
                                     functions.push(func);
@@ -792,10 +851,8 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                             }
                         }
                     }
-                    ctx.impl_map.insert(
-                        (target.clone(), trait_name.clone()),
-                        impl_method_names,
-                    );
+                    ctx.impl_map
+                        .insert((target.clone(), trait_name.clone()), impl_method_names);
                 }
 
                 ctx.current_self_type = prev_self;
@@ -873,11 +930,10 @@ pub fn lower_function(
     let mir_params: Vec<MirParam> = params
         .iter()
         .map(|p| {
-            let ty = p
-                .ty
-                .as_ref()
-                .map(|t| ctx.resolve_type(t))
-                .unwrap_or(MirType::I64);
+            let ty =
+                p.ty.as_ref()
+                    .map(|t| ctx.resolve_type(t))
+                    .unwrap_or(MirType::I64);
             let local = ctx.alloc_local(Some(p.name.clone()), ty.clone(), false);
             // Mark as parameter — callee must NOT drop/free these; the caller owns them.
             ctx.param_locals.insert(local.0);
@@ -889,7 +945,10 @@ pub fn lower_function(
     // and the last statement is a bare expression, treat it as a tail expression
     // (implicit return) so that e.g. a trailing `match` becomes the return value.
     let has_tail_expr = mir_ret_ty != MirType::Void
-        && body.stmts.last().is_some_and(|s| matches!(s, ast::Stmt::Expr { .. }));
+        && body
+            .stmts
+            .last()
+            .is_some_and(|s| matches!(s, ast::Stmt::Expr { .. }));
 
     if has_tail_expr && !body.stmts.is_empty() {
         let (init, last) = body.stmts.split_at(body.stmts.len() - 1);
@@ -974,9 +1033,7 @@ fn lower_block_stmts(ctx: &mut LoweringContext, stmts: &[ast::Stmt]) {
         if ctx.locals[i].name.is_some() {
             let local_id = ctx.locals[i].id;
             // Skip function parameters — the caller owns them, not the callee.
-            if ctx.param_locals.contains(&local_id.0)
-                || ctx.borrowed_locals.contains(&local_id.0)
-            {
+            if ctx.param_locals.contains(&local_id.0) || ctx.borrowed_locals.contains(&local_id.0) {
                 continue;
             }
             if !ctx.dropped_locals.contains(&local_id.0) {
@@ -1115,7 +1172,9 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                         // locals, mark those sources as non-owning.
                         for (_fname, fexpr) in fields {
                             if let ast::Expr::FieldAccess { object, .. } = fexpr {
-                                if let ast::Expr::Identifier { name: src_name, .. } = object.as_ref() {
+                                if let ast::Expr::Identifier { name: src_name, .. } =
+                                    object.as_ref()
+                                {
                                     if let Some(src_local) = find_local_by_name(ctx, src_name) {
                                         ctx.borrowed_locals.insert(src_local.0);
                                     }
@@ -1128,12 +1187,17 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
 
                 let is_shared = matches!(expr, ast::Expr::SharedExpr { .. });
                 let rvalue = lower_expr_to_rvalue(ctx, expr);
-                let mark_non_owning = matches!(expr,
+                let mark_non_owning = matches!(
+                    expr,
                     ast::Expr::IndexAccess { .. } | ast::Expr::FieldAccess { .. }
                 );
 
                 // Track closures with captures for direct-call optimization.
-                let closure_info = if let RValue::Closure { ref func_name, ref captures } = rvalue {
+                let closure_info = if let RValue::Closure {
+                    ref func_name,
+                    ref captures,
+                } = rvalue
+                {
                     if !captures.is_empty() {
                         Some((func_name.clone(), captures.clone()))
                     } else {
@@ -1156,10 +1220,8 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     ctx.borrowed_locals.insert(local.0);
                 }
                 if let Some((func_name, captures)) = closure_info {
-                    ctx.closure_locals.insert(
-                        name.clone(),
-                        (func_name, captures),
-                    );
+                    ctx.closure_locals
+                        .insert(name.clone(), (func_name, captures));
                 }
 
                 ctx.emit(Instruction::Assign {
@@ -1173,10 +1235,7 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
         }
 
         ast::Stmt::Assign {
-            target,
-            op,
-            value,
-            ..
+            target, op, value, ..
         } => {
             // Check if the target is an actor state field (self.field).
             let actor_field_target = if let ast::Expr::FieldAccess { object, field, .. } = target {
@@ -1184,16 +1243,21 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     if name == "self" {
                         let self_local = find_local_by_name(ctx, "self")
                             .expect("internal: 'self' local not found in actor handler");
-                        let actor_name = ctx.locals.iter()
-                            .find(|l| l.id == self_local)
-                            .and_then(|l| match &l.ty {
-                                MirType::Struct(n) => Some(n.clone()),
-                                _ => None,
-                            });
+                        let actor_name =
+                            ctx.locals
+                                .iter()
+                                .find(|l| l.id == self_local)
+                                .and_then(|l| match &l.ty {
+                                    MirType::Struct(n) => Some(n.clone()),
+                                    _ => None,
+                                });
                         if let Some(ref aname) = actor_name {
-                            ctx.actor_state_fields.get(aname).cloned()
+                            ctx.actor_state_fields
+                                .get(aname)
+                                .cloned()
                                 .and_then(|fields| {
-                                    fields.iter()
+                                    fields
+                                        .iter()
                                         .find(|(n, _)| n == field)
                                         .map(|(_, idx)| (self_local, *idx))
                                 })
@@ -1271,7 +1335,8 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             let map_op = lower_expr_to_operand(ctx, object);
                             let key_op = lower_expr_to_operand(ctx, index);
                             let val_op = lower_expr_to_operand(ctx, value);
-                            if matches!(obj_ty, MirType::Ptr(ref inner) if **inner == MirType::Str) {
+                            if matches!(obj_ty, MirType::Ptr(ref inner) if **inner == MirType::Str)
+                            {
                                 let idx_ty = infer_expr_type(ctx, index);
                                 let insert_fn = if idx_ty == MirType::Str {
                                     "kryos_map_insert_str"
@@ -1341,13 +1406,16 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
 
                             // Array += : desugar to kryos_array_concat call.
                             if *op == ast::AssignOp::AddAssign {
-                                let dest_ty = ctx.locals.iter()
+                                let dest_ty = ctx
+                                    .locals
+                                    .iter()
                                     .find(|l| l.id == dest)
                                     .map(|l| l.ty.clone());
                                 let rhs_ty = infer_expr_type(ctx, value);
-                                if matches!((&dest_ty, &rhs_ty),
-                                    (Some(MirType::Array(_, _)), MirType::Array(_, _)))
-                                {
+                                if matches!(
+                                    (&dest_ty, &rhs_ty),
+                                    (Some(MirType::Array(_, _)), MirType::Array(_, _))
+                                ) {
                                     ctx.emit(Instruction::Assign {
                                         dest,
                                         value: RValue::Call {
@@ -1589,11 +1657,8 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     },
                 });
 
-                let pattern_local = ctx.alloc_local(
-                    Some(branch.pattern.clone()),
-                    MirType::I64,
-                    false,
-                );
+                let pattern_local =
+                    ctx.alloc_local(Some(branch.pattern.clone()), MirType::I64, false);
                 ctx.emit(Instruction::Assign {
                     dest: pattern_local,
                     value: RValue::Use(Operand::Local(recv_value)),
@@ -1670,9 +1735,7 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 dest: sleep_result,
                 value: RValue::Call {
                     func: "kryos_sleep".into(),
-                    args: vec![Operand::Constant(Constant::Int(
-                        SELECT_POLL_INTERVAL_BITS,
-                    ))],
+                    args: vec![Operand::Constant(Constant::Int(SELECT_POLL_INTERVAL_BITS))],
                 },
             });
             ctx.finish_block(Terminator::Goto(bb_poll), merge_bb);
@@ -1804,8 +1867,14 @@ fn lower_for(
     // Check if the iterable is a range expression (start..end or start..=end).
     if let ast::Expr::RangeExpr { start, end, .. } = iterable {
         // Use 0 as default start and i64::MAX as default end for open ranges.
-        let default_start = ast::Expr::IntLiteral { value: 0, span: iterable.span() };
-        let default_end = ast::Expr::IntLiteral { value: i64::MAX, span: iterable.span() };
+        let default_start = ast::Expr::IntLiteral {
+            value: 0,
+            span: iterable.span(),
+        };
+        let default_end = ast::Expr::IntLiteral {
+            value: i64::MAX,
+            span: iterable.span(),
+        };
         let s = start.as_deref().unwrap_or(&default_start);
         let e = end.as_deref().unwrap_or(&default_end);
         lower_for_range(ctx, pattern, s, e, body);
@@ -2175,8 +2244,14 @@ fn lower_parallel_for(
                         span,
                     }),
                     args: vec![
-                        ast::Expr::Identifier { name: "__ce_raw".into(), span },
-                        ast::Expr::Identifier { name: "__pf_end".into(), span },
+                        ast::Expr::Identifier {
+                            name: "__ce_raw".into(),
+                            span,
+                        },
+                        ast::Expr::Identifier {
+                            name: "__pf_end".into(),
+                            span,
+                        },
                     ],
                     span,
                 }),
@@ -2193,8 +2268,14 @@ fn lower_parallel_for(
                         span,
                     }),
                     args: vec![
-                        ast::Expr::Identifier { name: "__cs".into(), span },
-                        ast::Expr::Identifier { name: "__ce".into(), span },
+                        ast::Expr::Identifier {
+                            name: "__cs".into(),
+                            span,
+                        },
+                        ast::Expr::Identifier {
+                            name: "__ce".into(),
+                            span,
+                        },
                     ],
                     span,
                 },
@@ -2226,15 +2307,22 @@ fn lower_spawn(ctx: &mut LoweringContext, expr: &ast::Expr) {
                 ast::Expr::Identifier { name, .. } => name.clone(),
                 _ => {
                     // Complex callee — evaluate and fall through to block path.
-                    lower_spawn_block(ctx, &[ast::Stmt::Expr {
-                        expr: expr.clone(),
-                        span: kryos_errors::Span::DUMMY,
-                    }]);
+                    lower_spawn_block(
+                        ctx,
+                        &[ast::Stmt::Expr {
+                            expr: expr.clone(),
+                            span: kryos_errors::Span::DUMMY,
+                        }],
+                    );
                     return;
                 }
             };
-            let mir_args: Vec<Operand> = args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
-            ctx.emit(Instruction::Spawn { func: func_name, args: mir_args });
+            let mir_args: Vec<Operand> =
+                args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
+            ctx.emit(Instruction::Spawn {
+                func: func_name,
+                args: mir_args,
+            });
         }
 
         // Case 2: spawn a block expression.
@@ -2244,10 +2332,13 @@ fn lower_spawn(ctx: &mut LoweringContext, expr: &ast::Expr) {
 
         // Fallback: wrap arbitrary expression in a block.
         other => {
-            lower_spawn_block(ctx, &[ast::Stmt::Expr {
-                expr: other.clone(),
-                span: kryos_errors::Span::DUMMY,
-            }]);
+            lower_spawn_block(
+                ctx,
+                &[ast::Stmt::Expr {
+                    expr: other.clone(),
+                    span: kryos_errors::Span::DUMMY,
+                }],
+            );
         }
     }
 }
@@ -2269,8 +2360,8 @@ fn lower_spawn_block(ctx: &mut LoweringContext, stmts: &[ast::Stmt]) {
     let capture_ops: Vec<Operand> = captures
         .iter()
         .map(|name| {
-            let local = find_local_by_name(ctx, name)
-                .expect("internal: spawn capture local not found");
+            let local =
+                find_local_by_name(ctx, name).expect("internal: spawn capture local not found");
             Operand::Local(local)
         })
         .collect();
@@ -2302,7 +2393,10 @@ fn lower_spawn_block(ctx: &mut LoweringContext, stmts: &[ast::Stmt]) {
     ctx.func_ret_types.insert(spawn_name.clone(), MirType::Void);
 
     // Emit the spawn instruction.
-    ctx.emit(Instruction::Spawn { func: spawn_name, args: capture_ops });
+    ctx.emit(Instruction::Spawn {
+        func: spawn_name,
+        args: capture_ops,
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -2327,11 +2421,7 @@ fn lower_spawn_block(ctx: &mut LoweringContext, stmts: &[ast::Stmt]) {
 ///   continue_bb:
 ///     ... (subsequent instructions) ...
 /// ```
-fn emit_exception_check(
-    ctx: &mut LoweringContext,
-    result_local: LocalId,
-    check_bb: BlockId,
-) {
+fn emit_exception_check(ctx: &mut LoweringContext, result_local: LocalId, check_bb: BlockId) {
     let exc_flag = ctx.alloc_temp(MirType::I64);
     ctx.emit(Instruction::Assign {
         dest: exc_flag,
@@ -2462,7 +2552,9 @@ fn lower_try_catch(
     let tag_local = ctx.alloc_temp(MirType::I64);
     ctx.emit(Instruction::Assign {
         dest: tag_local,
-        value: RValue::EnumTag { operand: Operand::Local(result_local) },
+        value: RValue::EnumTag {
+            operand: Operand::Local(result_local),
+        },
     });
 
     let ok_bb = ctx.alloc_block();
@@ -2491,7 +2583,9 @@ fn lower_try_catch(
         },
     });
     // Drop the result enum shell (payload was moved out by EnumPayload).
-    ctx.emit(Instruction::Drop { local: result_local });
+    ctx.emit(Instruction::Drop {
+        local: result_local,
+    });
     ctx.finish_block(Terminator::Goto(merge_bb), err_bb);
 
     // Err path: bind error value to catch_name, execute handler.
@@ -2506,7 +2600,9 @@ fn lower_try_catch(
         },
     });
     // Drop the result enum shell (payload was moved out by EnumPayload).
-    ctx.emit(Instruction::Drop { local: result_local });
+    ctx.emit(Instruction::Drop {
+        local: result_local,
+    });
     lower_block_stmts(ctx, &catch_block.stmts);
     ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
 }
@@ -2532,12 +2628,24 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
     let result_ty = arms
         .first()
         .map(|arm| {
-            if let ast::Pattern::Enum { name: enum_name, variant, fields, .. } = &arm.pattern {
-                if let ast::Expr::Identifier { name: body_name, .. } = &*arm.body {
+            if let ast::Pattern::Enum {
+                name: enum_name,
+                variant,
+                fields,
+                ..
+            } = &arm.pattern
+            {
+                if let ast::Expr::Identifier {
+                    name: body_name, ..
+                } = &*arm.body
+                {
                     if let Some(variants) = ctx.enum_defs.get(enum_name.as_str()) {
                         if let Some(idx) = variants.iter().position(|v| v.name == *variant) {
                             for (field_idx, pat) in fields.iter().enumerate() {
-                                if let ast::Pattern::Ident { name: field_name, .. } = pat {
+                                if let ast::Pattern::Ident {
+                                    name: field_name, ..
+                                } = pat
+                                {
                                     if field_name == body_name {
                                         if let Some(ft) = variants[idx].fields.get(field_idx) {
                                             return ft.clone();
@@ -2562,16 +2670,22 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
         MirType::Enum(name) => Some(name.clone()),
         _ => None,
     };
-    let is_enum_match = arms.iter().any(|a| matches!(&a.pattern, ast::Pattern::Enum { .. }))
+    let is_enum_match = arms
+        .iter()
+        .any(|a| matches!(&a.pattern, ast::Pattern::Enum { .. }))
         || (subj_enum_name.is_some()
-            && arms.iter().any(|a| matches!(&a.pattern, ast::Pattern::Ident { .. })));
+            && arms
+                .iter()
+                .any(|a| matches!(&a.pattern, ast::Pattern::Ident { .. })));
 
     // For enum matches, extract the tag first and switch on that.
     let switch_op = if is_enum_match {
         let tag_local = ctx.alloc_temp(MirType::I64);
         ctx.emit(Instruction::Assign {
             dest: tag_local,
-            value: RValue::EnumTag { operand: subj_op.clone() },
+            value: RValue::EnumTag {
+                operand: subj_op.clone(),
+            },
         });
         Operand::Local(tag_local)
     } else {
@@ -2587,15 +2701,24 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
     for arm in arms {
         let arm_bb = ctx.alloc_block();
         match &arm.pattern {
-            ast::Pattern::Enum { name, variant, fields, .. } => {
+            ast::Pattern::Enum {
+                name,
+                variant,
+                fields,
+                ..
+            } => {
                 if let Some(variants) = ctx.enum_defs.get(name.as_str()) {
                     if let Some(idx) = variants.iter().position(|v| v.name == *variant) {
                         targets.push((idx as i64, arm_bb));
-                        arm_blocks.push((arm_bb, &arm.body, Some(EnumBinding {
-                            enum_name: name.clone(),
-                            variant_idx: idx as u32,
-                            field_patterns: fields.clone(),
-                        })));
+                        arm_blocks.push((
+                            arm_bb,
+                            &arm.body,
+                            Some(EnumBinding {
+                                enum_name: name.clone(),
+                                variant_idx: idx as u32,
+                                field_patterns: fields.clone(),
+                            }),
+                        ));
                     } else {
                         default_arm = Some((arm_bb, &arm.body));
                     }
@@ -2639,9 +2762,7 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
         }
     }
 
-    let default_bb = default_arm
-        .map(|(bb, _)| bb)
-        .unwrap_or(merge_bb);
+    let default_bb = default_arm.map(|(bb, _)| bb).unwrap_or(merge_bb);
 
     // Emit terminator: string patterns use an equality-comparison chain
     // (strings can't go through integer Switch), integer patterns use Switch.
@@ -2670,7 +2791,10 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                 );
             } else {
                 // Last string pattern — fall through to default on mismatch.
-                let first_arm = arm_blocks.first().map(|(bb, _, _)| *bb).unwrap_or(default_bb);
+                let first_arm = arm_blocks
+                    .first()
+                    .map(|(bb, _, _)| *bb)
+                    .unwrap_or(default_bb);
                 ctx.finish_block(
                     Terminator::Branch {
                         cond: Operand::Local(cmp_local),
@@ -2708,7 +2832,9 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                 if let ast::Pattern::Ident { name, .. } = pat {
                     // Look up the actual field type from enum_defs so
                     // the local has the correct type (e.g. f64 not i64).
-                    let field_type = ctx.enum_defs.get(binding.enum_name.as_str())
+                    let field_type = ctx
+                        .enum_defs
+                        .get(binding.enum_name.as_str())
                         .and_then(|variants| variants.get(binding.variant_idx as usize))
                         .and_then(|variant| variant.fields.get(field_idx))
                         .cloned()
@@ -2785,7 +2911,8 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
                 return mir_ty.clone();
             }
             // Look up the local's MIR type.
-            if let Some(local_ty) = ctx.locals
+            if let Some(local_ty) = ctx
+                .locals
                 .iter()
                 .rev()
                 .find(|l| l.name.as_deref() == Some(name))
@@ -2795,7 +2922,8 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
             }
             // Check if it's a function name used as a value.
             if let Some(ret_ty) = ctx.func_ret_types.get(name.as_str()) {
-                let params = ctx.func_param_types
+                let params = ctx
+                    .func_param_types
                     .get(name.as_str())
                     .cloned()
                     .unwrap_or_default();
@@ -2809,7 +2937,10 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
 
         ast::Expr::Borrow { inner, mutable, .. } => {
             let inner_ty = infer_expr_type(ctx, inner);
-            MirType::Ref { inner: Box::new(inner_ty), mutable: *mutable }
+            MirType::Ref {
+                inner: Box::new(inner_ty),
+                mutable: *mutable,
+            }
         }
 
         ast::Expr::Deref { inner, .. } => {
@@ -2838,9 +2969,11 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
             }
             // Enum variant access: Color.Red → Enum("Color")
             if let MirType::Enum(name) = &resolved_ty {
-                if ctx.enum_defs.get(name.as_str()).is_some_and(|vs| {
-                    vs.iter().any(|v| v.name == field.as_str())
-                }) {
+                if ctx
+                    .enum_defs
+                    .get(name.as_str())
+                    .is_some_and(|vs| vs.iter().any(|v| v.name == field.as_str()))
+                {
                     return MirType::Enum(name.clone());
                 }
             }
@@ -2853,12 +2986,19 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
             MirType::I64
         }
 
-        ast::Expr::BinaryOp { left, right, op, .. } => {
+        ast::Expr::BinaryOp {
+            left, right, op, ..
+        } => {
             // Comparison operators always produce bool.
             match op {
-                ast::BinOp::Eq | ast::BinOp::Neq | ast::BinOp::Lt
-                | ast::BinOp::Gt | ast::BinOp::LtEq | ast::BinOp::GtEq
-                | ast::BinOp::And | ast::BinOp::Or => return MirType::Bool,
+                ast::BinOp::Eq
+                | ast::BinOp::Neq
+                | ast::BinOp::Lt
+                | ast::BinOp::Gt
+                | ast::BinOp::LtEq
+                | ast::BinOp::GtEq
+                | ast::BinOp::And
+                | ast::BinOp::Or => return MirType::Bool,
                 _ => {}
             }
             // For arithmetic, propagate the type of the left operand; if
@@ -2971,7 +3111,9 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
             MirType::Void
         }
 
-        ast::Expr::StaticMethodCall { type_name, method, .. } => {
+        ast::Expr::StaticMethodCall {
+            type_name, method, ..
+        } => {
             let mangled = format!("{type_name}__{method}");
             if let Some(ret_ty) = ctx.func_ret_types.get(&mangled) {
                 return ret_ty.clone();
@@ -3013,9 +3155,7 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
             let obj_ty = infer_expr_type(ctx, object);
             match obj_ty {
                 MirType::Array(elem, _) => *elem,
-                MirType::Tuple(elems) => {
-                    elems.into_iter().next().unwrap_or(MirType::I64)
-                }
+                MirType::Tuple(elems) => elems.into_iter().next().unwrap_or(MirType::I64),
                 MirType::Str => MirType::Str, // string indexing returns a char/str
                 _ => MirType::I64,
             }
@@ -3078,9 +3218,7 @@ fn lower_expr_to_operand(ctx: &mut LoweringContext, expr: &ast::Expr) -> Operand
         ast::Expr::IntLiteral { value, .. } => Operand::Constant(Constant::Int(*value)),
         ast::Expr::FloatLiteral { value, .. } => Operand::Constant(Constant::Float(*value)),
         ast::Expr::BoolLiteral { value, .. } => Operand::Constant(Constant::Bool(*value)),
-        ast::Expr::StringLiteral { value, .. } => {
-            Operand::Constant(Constant::Str(value.clone()))
-        }
+        ast::Expr::StringLiteral { value, .. } => Operand::Constant(Constant::Str(value.clone())),
         ast::Expr::NoneLiteral { .. } => Operand::Constant(Constant::None),
         ast::Expr::Identifier { name, .. } => {
             // Check if this is a top-level constant — inline its value expression.
@@ -3145,10 +3283,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 };
             }
             // Check if this is a top-level constant — inline its value expression.
-            let is_local = ctx
-                .locals
-                .iter()
-                .any(|l| l.name.as_deref() == Some(name));
+            let is_local = ctx.locals.iter().any(|l| l.name.as_deref() == Some(name));
             if !is_local {
                 if let Some((_, const_expr)) = ctx.const_defs.get(name.as_str()).cloned() {
                     return lower_expr_to_rvalue(ctx, &const_expr);
@@ -3267,7 +3402,8 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // Check if this is an actor construction (e.g., `Counter()`).
             if ctx.actor_defs.contains_key(&func_name) {
                 let dispatch_fn = format!("{func_name}__dispatch");
-                let num_fields = ctx.actor_state_fields
+                let num_fields = ctx
+                    .actor_state_fields
                     .get(&func_name)
                     .map(|f| f.len())
                     .unwrap_or(0);
@@ -3285,7 +3421,11 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     });
                     // Initialize each state field to its default value (0).
                     // Clone the field layout to avoid borrow conflict with ctx.
-                    let fields = ctx.actor_state_fields.get(&func_name).cloned().unwrap_or_default();
+                    let fields = ctx
+                        .actor_state_fields
+                        .get(&func_name)
+                        .cloned()
+                        .unwrap_or_default();
                     for (_field_name, field_idx) in &fields {
                         ctx.emit(Instruction::ActorStateStore {
                             state_ptr,
@@ -3310,10 +3450,8 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
 
             // Check if this is an enum variant constructor (e.g., `Some(42)`).
             if let Some((enum_name, variant_idx)) = find_enum_variant(ctx, &func_name) {
-                let mir_args: Vec<Operand> = args
-                    .iter()
-                    .map(|a| lower_expr_to_operand(ctx, a))
-                    .collect();
+                let mir_args: Vec<Operand> =
+                    args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
                 return RValue::EnumVariant {
                     enum_name,
                     variant_idx,
@@ -3323,15 +3461,11 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
 
             // Check if this is a call to a generic function — monomorphize.
             if ctx.generic_templates.contains_key(&func_name) {
-                let arg_types: Vec<MirType> = args
-                    .iter()
-                    .map(|a| infer_expr_type(ctx, a))
-                    .collect();
+                let arg_types: Vec<MirType> =
+                    args.iter().map(|a| infer_expr_type(ctx, a)).collect();
                 let mangled = monomorphize(ctx, &func_name, &arg_types);
-                let mir_args: Vec<Operand> = args
-                    .iter()
-                    .map(|a| lower_expr_to_operand(ctx, a))
-                    .collect();
+                let mir_args: Vec<Operand> =
+                    args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
                 return RValue::Call {
                     func: mangled,
                     args: mir_args,
@@ -3350,7 +3484,9 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 if is_fn_local {
                     // If this local is a tracked closure with captures,
                     // emit a direct call with captures prepended.
-                    if let Some((real_func, capture_ops)) = ctx.closure_locals.get(&func_name).cloned() {
+                    if let Some((real_func, capture_ops)) =
+                        ctx.closure_locals.get(&func_name).cloned()
+                    {
                         let mut mir_args: Vec<Operand> = capture_ops;
                         for a in args {
                             mir_args.push(lower_expr_to_operand(ctx, a));
@@ -3363,10 +3499,8 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
 
                     let callee_local = find_local_by_name(ctx, &func_name)
                         .expect("internal: indirect call callee local not found");
-                    let mir_args: Vec<Operand> = args
-                        .iter()
-                        .map(|a| lower_expr_to_operand(ctx, a))
-                        .collect();
+                    let mir_args: Vec<Operand> =
+                        args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
                     return RValue::CallIndirect {
                         callee: Operand::Local(callee_local),
                         args: mir_args,
@@ -3419,10 +3553,11 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // Check if this is an enum variant constructor with data (e.g. Shape.Circle(3)).
             if let ast::Expr::Identifier { name, .. } = object.as_ref() {
                 if let Some(variants) = ctx.enum_defs.get(name.as_str()) {
-                    if let Some((idx, _)) = variants.iter().enumerate().find(|(_, v)| v.name == *method) {
-                        let fields: Vec<Operand> = args.iter()
-                            .map(|a| lower_expr_to_operand(ctx, a))
-                            .collect();
+                    if let Some((idx, _)) =
+                        variants.iter().enumerate().find(|(_, v)| v.name == *method)
+                    {
+                        let fields: Vec<Operand> =
+                            args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
                         return RValue::EnumVariant {
                             enum_name: name.clone(),
                             variant_idx: idx as u32,
@@ -3436,7 +3571,9 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             let type_name = infer_type_name(ctx, object);
             if let Some(ref tn) = type_name {
                 if let Some(handlers) = ctx.actor_defs.get(tn.as_str()).cloned() {
-                    if let Some((idx, _)) = handlers.iter().enumerate().find(|(_, (h, _))| h == method) {
+                    if let Some((idx, _)) =
+                        handlers.iter().enumerate().find(|(_, (h, _))| h == method)
+                    {
                         let obj = lower_expr_to_operand(ctx, object);
                         // Ensure actor is in a local for ActorSend.
                         let actor_local = match obj {
@@ -3450,9 +3587,8 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                                 tmp
                             }
                         };
-                        let send_args: Vec<Operand> = args.iter()
-                            .map(|a| lower_expr_to_operand(ctx, a))
-                            .collect();
+                        let send_args: Vec<Operand> =
+                            args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
                         ctx.emit(Instruction::ActorSend {
                             actor: actor_local,
                             handler_tag: (idx as u32) + 1,
@@ -3508,10 +3644,8 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                             field: method.clone(),
                         },
                     });
-                    let mir_args: Vec<Operand> = args
-                        .iter()
-                        .map(|a| lower_expr_to_operand(ctx, a))
-                        .collect();
+                    let mir_args: Vec<Operand> =
+                        args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
                     return RValue::CallIndirect {
                         callee: Operand::Local(fn_ptr_temp),
                         args: mir_args,
@@ -3548,10 +3682,8 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             args,
             ..
         } => {
-            let mir_args: Vec<Operand> = args
-                .iter()
-                .map(|a| lower_expr_to_operand(ctx, a))
-                .collect();
+            let mir_args: Vec<Operand> =
+                args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
             let func_name = ctx
                 .method_owners
                 .get(&(type_name.clone(), method.clone()))
@@ -3610,7 +3742,9 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     // Determine the actor type from the self param's struct type.
                     let self_local = find_local_by_name(ctx, "self")
                         .expect("internal: 'self' local not found in field access");
-                    let actor_name = ctx.locals.iter()
+                    let actor_name = ctx
+                        .locals
+                        .iter()
                         .find(|l| l.id == self_local)
                         .and_then(|l| match &l.ty {
                             MirType::Struct(n) => Some(n.clone()),
@@ -3618,7 +3752,9 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         });
                     if let Some(ref aname) = actor_name {
                         if let Some(fields) = ctx.actor_state_fields.get(aname).cloned() {
-                            if let Some((_fname, field_idx)) = fields.iter().find(|(n, _)| n == field) {
+                            if let Some((_fname, field_idx)) =
+                                fields.iter().find(|(n, _)| n == field)
+                            {
                                 let dest = ctx.alloc_temp(MirType::I64);
                                 ctx.emit(Instruction::ActorStateLoad {
                                     dest,
@@ -3692,17 +3828,26 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
         ast::Expr::Borrow { inner, mutable, .. } => {
             // &x → take address of local
             if let ast::Expr::Identifier { name, .. } = inner.as_ref() {
-                let local = find_local_by_name(ctx, name)
-                    .expect("internal: borrow target local not found");
-                RValue::AddrOf { local, mutable: *mutable }
+                let local =
+                    find_local_by_name(ctx, name).expect("internal: borrow target local not found");
+                RValue::AddrOf {
+                    local,
+                    mutable: *mutable,
+                }
             } else {
                 // For non-identifier expressions, lower to a temp first,
                 // then take its address.
                 let inner_ty = infer_expr_type(ctx, inner);
                 let rvalue = lower_expr_to_rvalue(ctx, inner);
                 let temp = ctx.alloc_local(None, inner_ty, true);
-                ctx.emit(Instruction::Assign { dest: temp, value: rvalue });
-                RValue::AddrOf { local: temp, mutable: *mutable }
+                ctx.emit(Instruction::Assign {
+                    dest: temp,
+                    value: rvalue,
+                });
+                RValue::AddrOf {
+                    local: temp,
+                    mutable: *mutable,
+                }
             }
         }
 
@@ -3726,9 +3871,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             }
         }
 
-        ast::Expr::MatchExpr {
-            subject, arms, ..
-        } => {
+        ast::Expr::MatchExpr { subject, arms, .. } => {
             let result = lower_match(ctx, subject, arms);
             RValue::Use(result)
         }
@@ -3840,13 +3983,8 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 }
             };
 
-            let mir_func = lower_function(
-                ctx,
-                &lambda_name,
-                &all_params,
-                effective_ret,
-                &body_block,
-            );
+            let mir_func =
+                lower_function(ctx, &lambda_name, &all_params, effective_ret, &body_block);
             ctx.restore_function_state(saved);
             ctx.monomorphized_functions.push(mir_func);
 
@@ -3878,7 +4016,11 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // Desugar: `a |> f(b, c)` → `f(a, b, c)`
             let lhs_op = lower_expr_to_operand(ctx, left);
             match right.as_ref() {
-                ast::Expr::FnCall { callee, args, span: _ } => {
+                ast::Expr::FnCall {
+                    callee,
+                    args,
+                    span: _,
+                } => {
                     // `a |> f(b, c)` → `f(a, b, c)`
                     let func_name = match callee.as_ref() {
                         ast::Expr::Identifier { name, .. } => name.clone(),
@@ -3934,9 +4076,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
         ast::Expr::MapLiteral { entries, .. } => {
             let mir_entries: Vec<(Operand, Operand)> = entries
                 .iter()
-                .map(|(k, v)| {
-                    (lower_expr_to_operand(ctx, k), lower_expr_to_operand(ctx, v))
-                })
+                .map(|(k, v)| (lower_expr_to_operand(ctx, k), lower_expr_to_operand(ctx, v)))
                 .collect();
             RValue::Map(mir_entries)
         }
@@ -3954,7 +4094,12 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             RValue::ArcAlloc { inner: inner_op }
         }
 
-        ast::Expr::RangeExpr { start, end, inclusive, .. } => {
+        ast::Expr::RangeExpr {
+            start,
+            end,
+            inclusive,
+            ..
+        } => {
             let s = start.as_ref().map(|e| lower_expr_to_operand(ctx, e));
             let e = end.as_ref().map(|e| lower_expr_to_operand(ctx, e));
             RValue::Range {
@@ -3992,10 +4137,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
         }
 
         // Await — for MVP, lower as a direct call (no coroutine transform).
-        ast::Expr::Await { value, .. } => {
-            lower_expr_to_rvalue(ctx, value)
-        }
-
+        ast::Expr::Await { value, .. } => lower_expr_to_rvalue(ctx, value),
     }
 }
 
@@ -4076,21 +4218,18 @@ pub fn lower_type_expr(ty: &ast::TypeExpr) -> MirType {
             params: params.iter().map(lower_type_expr).collect(),
             ret: Box::new(lower_type_expr(ret)),
         },
-        ast::TypeExpr::Shared { inner, .. } => {
-            MirType::Shared(Box::new(lower_type_expr(inner)))
-        }
-        ast::TypeExpr::Pointer { inner, .. } => {
-            MirType::Ptr(Box::new(lower_type_expr(inner)))
-        }
+        ast::TypeExpr::Shared { inner, .. } => MirType::Shared(Box::new(lower_type_expr(inner))),
+        ast::TypeExpr::Pointer { inner, .. } => MirType::Ptr(Box::new(lower_type_expr(inner))),
         ast::TypeExpr::Generic { name, .. } => MirType::Struct(name.clone()),
         ast::TypeExpr::Optional { inner, .. } => {
             // Lower Optional<T> as Struct("Option") — codegen decides representation.
             let _ = lower_type_expr(inner);
             MirType::Struct("Option".to_string())
         }
-        ast::TypeExpr::Reference { inner, mutable, .. } => {
-            MirType::Ref { inner: Box::new(lower_type_expr(inner)), mutable: *mutable }
-        }
+        ast::TypeExpr::Reference { inner, mutable, .. } => MirType::Ref {
+            inner: Box::new(lower_type_expr(inner)),
+            mutable: *mutable,
+        },
         ast::TypeExpr::Weak { inner, .. } => {
             // Lower Weak as Ptr — codegen adds weak-ref bookkeeping.
             MirType::Ptr(Box::new(lower_type_expr(inner)))
@@ -4133,9 +4272,10 @@ pub fn lower_resolved_type(ty: &Type) -> MirType {
             ret: Box::new(lower_resolved_type(ret)),
         },
         Type::Shared { inner } => MirType::Shared(Box::new(lower_resolved_type(inner))),
-        Type::Reference { inner, mutable } => {
-            MirType::Ref { inner: Box::new(lower_resolved_type(inner)), mutable: *mutable }
-        }
+        Type::Reference { inner, mutable } => MirType::Ref {
+            inner: Box::new(lower_resolved_type(inner)),
+            mutable: *mutable,
+        },
         Type::Pointer { inner, .. } | Type::Weak { inner } => {
             MirType::Ptr(Box::new(lower_resolved_type(inner)))
         }
@@ -4165,22 +4305,39 @@ fn mir_type_to_type_expr(ty: &MirType) -> Option<ast::TypeExpr> {
     let span = kryos_errors::Span::DUMMY;
     match ty {
         MirType::I64 => None, // default, no annotation needed
-        MirType::F64 => Some(ast::TypeExpr::Simple { name: "f64".to_string(), span }),
-        MirType::Bool => Some(ast::TypeExpr::Simple { name: "bool".to_string(), span }),
-        MirType::Str => Some(ast::TypeExpr::Simple { name: "str".to_string(), span }),
-        MirType::Void => Some(ast::TypeExpr::Simple { name: "void".to_string(), span }),
-        MirType::Struct(name) | MirType::Enum(name) => {
-            Some(ast::TypeExpr::Simple { name: name.clone(), span })
-        }
+        MirType::F64 => Some(ast::TypeExpr::Simple {
+            name: "f64".to_string(),
+            span,
+        }),
+        MirType::Bool => Some(ast::TypeExpr::Simple {
+            name: "bool".to_string(),
+            span,
+        }),
+        MirType::Str => Some(ast::TypeExpr::Simple {
+            name: "str".to_string(),
+            span,
+        }),
+        MirType::Void => Some(ast::TypeExpr::Simple {
+            name: "void".to_string(),
+            span,
+        }),
+        MirType::Struct(name) | MirType::Enum(name) => Some(ast::TypeExpr::Simple {
+            name: name.clone(),
+            span,
+        }),
         MirType::Function { params, ret } => {
             let param_tys: Vec<ast::TypeExpr> = params
                 .iter()
-                .map(|p| mir_type_to_type_expr(p).unwrap_or_else(|| {
-                    ast::TypeExpr::Simple { name: "i64".to_string(), span }
-                }))
+                .map(|p| {
+                    mir_type_to_type_expr(p).unwrap_or_else(|| ast::TypeExpr::Simple {
+                        name: "i64".to_string(),
+                        span,
+                    })
+                })
                 .collect();
-            let ret_ty = mir_type_to_type_expr(ret).unwrap_or_else(|| {
-                ast::TypeExpr::Simple { name: "i64".to_string(), span }
+            let ret_ty = mir_type_to_type_expr(ret).unwrap_or_else(|| ast::TypeExpr::Simple {
+                name: "i64".to_string(),
+                span,
             });
             Some(ast::TypeExpr::Function {
                 params: param_tys,
@@ -4189,21 +4346,29 @@ fn mir_type_to_type_expr(ty: &MirType) -> Option<ast::TypeExpr> {
             })
         }
         MirType::Array(elem, size) => {
-            let elem_ty = mir_type_to_type_expr(elem).unwrap_or_else(|| {
-                ast::TypeExpr::Simple { name: "i64".to_string(), span }
+            let elem_ty = mir_type_to_type_expr(elem).unwrap_or_else(|| ast::TypeExpr::Simple {
+                name: "i64".to_string(),
+                span,
             });
-            Some(ast::TypeExpr::Array { element: Box::new(elem_ty), size: *size, span })
+            Some(ast::TypeExpr::Array {
+                element: Box::new(elem_ty),
+                size: *size,
+                span,
+            })
         }
-        MirType::DynTrait(name) => {
-            Some(ast::TypeExpr::DynTrait { trait_name: name.clone(), span })
-        }
+        MirType::DynTrait(name) => Some(ast::TypeExpr::DynTrait {
+            trait_name: name.clone(),
+            span,
+        }),
         _ => None, // fall back to default i64
     }
 }
 
 /// Look up a local by name. Returns `Some(id)` if found, `None` otherwise.
 fn find_local_by_name(ctx: &LoweringContext, name: &str) -> Option<LocalId> {
-    ctx.locals.iter().rev()
+    ctx.locals
+        .iter()
+        .rev()
         .find(|l| l.name.as_deref() == Some(name) && !ctx.hidden_locals.contains(&l.id.0))
         .map(|l| l.id)
 }
@@ -4263,7 +4428,10 @@ fn collect_identifiers(
         ast::Expr::Identifier { name, .. } => {
             if !bound.contains(name)
                 && !seen.contains(name)
-                && ctx.locals.iter().any(|l| l.name.as_deref() == Some(name.as_str()))
+                && ctx
+                    .locals
+                    .iter()
+                    .any(|l| l.name.as_deref() == Some(name.as_str()))
             {
                 seen.insert(name.clone());
                 free_vars.push(name.clone());
@@ -4300,7 +4468,12 @@ fn collect_identifiers(
             collect_identifiers(object, bound, free_vars, seen, ctx);
             collect_identifiers(index, bound, free_vars, seen, ctx);
         }
-        ast::Expr::IfExpr { condition, then_branch, else_branch, .. } => {
+        ast::Expr::IfExpr {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             collect_identifiers(condition, bound, free_vars, seen, ctx);
             collect_identifiers_block(&then_branch.stmts, bound, free_vars, seen, ctx);
             if let Some(eb) = else_branch {
@@ -4328,8 +4501,7 @@ fn collect_identifiers(
                 collect_identifiers(val, bound, free_vars, seen, ctx);
             }
         }
-        ast::Expr::ArrayLiteral { elements, .. }
-        | ast::Expr::TupleLiteral { elements, .. } => {
+        ast::Expr::ArrayLiteral { elements, .. } | ast::Expr::TupleLiteral { elements, .. } => {
             for e in elements {
                 collect_identifiers(e, bound, free_vars, seen, ctx);
             }
@@ -4378,8 +4550,7 @@ fn collect_identifiers(
                 }
             }
         }
-        ast::Expr::ComptimeBlock { body, .. }
-        | ast::Expr::QuantumBlock { body, .. } => {
+        ast::Expr::ComptimeBlock { body, .. } | ast::Expr::QuantumBlock { body, .. } => {
             collect_identifiers_block(&body.stmts, bound, free_vars, seen, ctx);
         }
         // Leaf literals — no sub-expressions to recurse into.
@@ -4411,14 +4582,22 @@ fn collect_identifiers_block(
             }
             ast::Stmt::Expr { expr, .. }
             | ast::Stmt::Spawn { expr, .. }
-            | ast::Stmt::Return { value: Some(expr), .. } => {
+            | ast::Stmt::Return {
+                value: Some(expr), ..
+            } => {
                 collect_identifiers(expr, &local_bound, free_vars, seen, ctx);
             }
             ast::Stmt::Assign { target, value, .. } => {
                 collect_identifiers(target, &local_bound, free_vars, seen, ctx);
                 collect_identifiers(value, &local_bound, free_vars, seen, ctx);
             }
-            ast::Stmt::If { condition, then_block, elif_clauses, else_block, .. } => {
+            ast::Stmt::If {
+                condition,
+                then_block,
+                elif_clauses,
+                else_block,
+                ..
+            } => {
                 collect_identifiers(condition, &local_bound, free_vars, seen, ctx);
                 collect_identifiers_block(&then_block.stmts, &local_bound, free_vars, seen, ctx);
                 for (cond, block) in elif_clauses {
@@ -4429,18 +4608,30 @@ fn collect_identifiers_block(
                     collect_identifiers_block(&eb.stmts, &local_bound, free_vars, seen, ctx);
                 }
             }
-            ast::Stmt::While { condition, body, .. } => {
+            ast::Stmt::While {
+                condition, body, ..
+            } => {
                 collect_identifiers(condition, &local_bound, free_vars, seen, ctx);
                 collect_identifiers_block(&body.stmts, &local_bound, free_vars, seen, ctx);
             }
-            ast::Stmt::For { iterable, body, pattern, .. } => {
+            ast::Stmt::For {
+                iterable,
+                body,
+                pattern,
+                ..
+            } => {
                 collect_identifiers(iterable, &local_bound, free_vars, seen, ctx);
                 let mut for_bound = local_bound.clone();
                 // Extract bound names from the pattern.
                 collect_pattern_names(pattern, &mut for_bound);
                 collect_identifiers_block(&body.stmts, &for_bound, free_vars, seen, ctx);
             }
-            ast::Stmt::TryCatch { try_block, catch_name, catch_block, .. } => {
+            ast::Stmt::TryCatch {
+                try_block,
+                catch_name,
+                catch_block,
+                ..
+            } => {
                 collect_identifiers_block(&try_block.stmts, &local_bound, free_vars, seen, ctx);
                 let mut catch_bound = local_bound.clone();
                 catch_bound.insert(catch_name.clone());
@@ -4454,7 +4645,13 @@ fn collect_identifiers_block(
                     collect_identifiers(&branch.channel, &local_bound, free_vars, seen, ctx);
                     let mut branch_bound = local_bound.clone();
                     branch_bound.insert(branch.pattern.clone());
-                    collect_identifiers_block(&branch.body.stmts, &branch_bound, free_vars, seen, ctx);
+                    collect_identifiers_block(
+                        &branch.body.stmts,
+                        &branch_bound,
+                        free_vars,
+                        seen,
+                        ctx,
+                    );
                 }
             }
             // Leaf statements with no sub-expressions.
@@ -4480,10 +4677,7 @@ fn collect_identifiers_block(
 ///                 _ = Call("ActorName__handler", [state, arg0, ...])
 ///                 Goto(bb0)
 ///   bb_exit:      Return(None)
-fn generate_actor_dispatch(
-    actor_name: &str,
-    handlers: &[(String, usize)],
-) -> MirFunction {
+fn generate_actor_dispatch(actor_name: &str, handlers: &[(String, usize)]) -> MirFunction {
     let dispatch_name = format!("{actor_name}__dispatch");
 
     let mut locals = Vec::new();
@@ -4516,9 +4710,9 @@ fn generate_actor_dispatch(
     let cmp_local = alloc_local(Some("__cmp"), MirType::Bool, false);
 
     // Pre-allocate block IDs.
-    let bb_poll = alloc_block();   // bb0
+    let bb_poll = alloc_block(); // bb0
     let bb_switch = alloc_block(); // bb1
-    let bb_exit = alloc_block();   // bb2
+    let bb_exit = alloc_block(); // bb2
 
     // Allocate handler blocks (one per handler).
     let handler_blocks: Vec<BlockId> = handlers.iter().map(|_| alloc_block()).collect();
@@ -4635,28 +4829,35 @@ fn generate_actor_dispatch(
 /// Extract all bound names from a pattern into a set.
 fn collect_pattern_names(pattern: &ast::Pattern, names: &mut std::collections::HashSet<String>) {
     match pattern {
-        ast::Pattern::Ident { name, .. } => { names.insert(name.clone()); }
+        ast::Pattern::Ident { name, .. } => {
+            names.insert(name.clone());
+        }
         ast::Pattern::Tuple { elements, .. } => {
-            for p in elements { collect_pattern_names(p, names); }
+            for p in elements {
+                collect_pattern_names(p, names);
+            }
         }
         ast::Pattern::Struct { fields, .. } => {
-            for (_, p) in fields { collect_pattern_names(p, names); }
+            for (_, p) in fields {
+                collect_pattern_names(p, names);
+            }
         }
         ast::Pattern::Enum { fields, .. } => {
-            for p in fields { collect_pattern_names(p, names); }
+            for p in fields {
+                collect_pattern_names(p, names);
+            }
         }
         ast::Pattern::Or { patterns, .. } => {
-            for p in patterns { collect_pattern_names(p, names); }
+            for p in patterns {
+                collect_pattern_names(p, names);
+            }
         }
         ast::Pattern::Wildcard { .. } | ast::Pattern::Literal { .. } => {}
     }
 }
 
 /// Find free variables in a block's statements that refer to enclosing scope locals.
-fn find_free_variables_block(
-    ctx: &LoweringContext,
-    stmts: &[ast::Stmt],
-) -> Vec<String> {
+fn find_free_variables_block(ctx: &LoweringContext, stmts: &[ast::Stmt]) -> Vec<String> {
     let bound = std::collections::HashSet::new();
     let mut free_vars = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -4680,13 +4881,12 @@ fn mono_mangled_name(base: &str, concrete_types: &[MirType]) -> String {
 /// Infers type parameter bindings from argument types, substitutes them
 /// in the parameter/return type annotations, lowers the specialized copy,
 /// and returns the mangled name.
-fn monomorphize(
-    ctx: &mut LoweringContext,
-    func_name: &str,
-    arg_types: &[MirType],
-) -> String {
+fn monomorphize(ctx: &mut LoweringContext, func_name: &str, arg_types: &[MirType]) -> String {
     // Build type param → concrete type mapping by matching args to params.
-    let template = ctx.generic_templates.get(func_name).expect("template exists");
+    let template = ctx
+        .generic_templates
+        .get(func_name)
+        .expect("template exists");
     let generic_params = template.generic_params.clone();
     let template_params = template.params.clone();
     let template_ret_ty = template.ret_ty.clone();
@@ -4736,7 +4936,9 @@ fn monomorphize(
     let specialized_params: Vec<ast::Param> = template_params
         .iter()
         .map(|p| {
-            let new_ty = p.ty.as_ref().map(|ty_expr| substitute_type_expr(ty_expr, &type_map));
+            let new_ty =
+                p.ty.as_ref()
+                    .map(|ty_expr| substitute_type_expr(ty_expr, &type_map));
             ast::Param {
                 name: p.name.clone(),
                 ty: new_ty,
@@ -4754,7 +4956,13 @@ fn monomorphize(
     let saved = ctx.save_function_state();
 
     // Lower the specialized function.
-    let mir_func = lower_function(ctx, &mangled, &specialized_params, &specialized_ret_ty, &template_body);
+    let mir_func = lower_function(
+        ctx,
+        &mangled,
+        &specialized_params,
+        &specialized_ret_ty,
+        &template_body,
+    );
 
     // Restore the caller's function state.
     ctx.restore_function_state(saved);
@@ -4766,10 +4974,7 @@ fn monomorphize(
 }
 
 /// Substitute generic type parameters in a TypeExpr based on a type map.
-fn substitute_type_expr(
-    ty: &ast::TypeExpr,
-    type_map: &HashMap<String, MirType>,
-) -> ast::TypeExpr {
+fn substitute_type_expr(ty: &ast::TypeExpr, type_map: &HashMap<String, MirType>) -> ast::TypeExpr {
     match ty {
         ast::TypeExpr::Simple { name, span } => {
             if let Some(concrete) = type_map.get(name) {
@@ -4784,17 +4989,27 @@ fn substitute_type_expr(
             }
         }
         // For compound types, recurse.
-        ast::TypeExpr::Array { element, size, span } => ast::TypeExpr::Array {
+        ast::TypeExpr::Array {
+            element,
+            size,
+            span,
+        } => ast::TypeExpr::Array {
             element: Box::new(substitute_type_expr(element, type_map)),
             size: *size,
             span: *span,
         },
         ast::TypeExpr::Tuple { elements, span } => ast::TypeExpr::Tuple {
-            elements: elements.iter().map(|e| substitute_type_expr(e, type_map)).collect(),
+            elements: elements
+                .iter()
+                .map(|e| substitute_type_expr(e, type_map))
+                .collect(),
             span: *span,
         },
         ast::TypeExpr::Function { params, ret, span } => ast::TypeExpr::Function {
-            params: params.iter().map(|p| substitute_type_expr(p, type_map)).collect(),
+            params: params
+                .iter()
+                .map(|p| substitute_type_expr(p, type_map))
+                .collect(),
             ret: Box::new(substitute_type_expr(ret, type_map)),
             span: *span,
         },
@@ -4808,7 +5023,10 @@ fn substitute_type_expr(
             } else {
                 ast::TypeExpr::Generic {
                     name: name.clone(),
-                    args: args.iter().map(|a| substitute_type_expr(a, type_map)).collect(),
+                    args: args
+                        .iter()
+                        .map(|a| substitute_type_expr(a, type_map))
+                        .collect(),
                     span: *span,
                 }
             }
@@ -4817,7 +5035,11 @@ fn substitute_type_expr(
             inner: Box::new(substitute_type_expr(inner, type_map)),
             span: *span,
         },
-        ast::TypeExpr::Pointer { inner, mutable, span } => ast::TypeExpr::Pointer {
+        ast::TypeExpr::Pointer {
+            inner,
+            mutable,
+            span,
+        } => ast::TypeExpr::Pointer {
             inner: Box::new(substitute_type_expr(inner, type_map)),
             mutable: *mutable,
             span: *span,
@@ -4826,7 +5048,11 @@ fn substitute_type_expr(
             inner: Box::new(substitute_type_expr(inner, type_map)),
             span: *span,
         },
-        ast::TypeExpr::Reference { inner, mutable, span } => ast::TypeExpr::Reference {
+        ast::TypeExpr::Reference {
+            inner,
+            mutable,
+            span,
+        } => ast::TypeExpr::Reference {
             inner: Box::new(substitute_type_expr(inner, type_map)),
             mutable: *mutable,
             span: *span,

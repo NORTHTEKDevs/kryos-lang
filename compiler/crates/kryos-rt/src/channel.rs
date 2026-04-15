@@ -184,7 +184,11 @@ pub extern "C" fn kryos_chan_is_closed(handle: *mut u8) -> i32 {
         return -1;
     }
     let inner = unsafe { &*(handle as *const ChannelInner) };
-    if inner.closed.load(Ordering::Acquire) { 1 } else { 0 }
+    if inner.closed.load(Ordering::Acquire) {
+        1
+    } else {
+        0
+    }
 }
 
 /// Clone a channel handle (increment reference count).

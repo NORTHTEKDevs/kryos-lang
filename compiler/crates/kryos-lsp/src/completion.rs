@@ -20,10 +20,10 @@ pub fn get_completions(source: &str, line: u32, character: u32) -> Vec<Value> {
 
     // Always offer keywords
     let keywords = [
-        "let", "mut", "fn", "return", "if", "else", "elif", "for", "while", "in",
-        "break", "continue", "struct", "enum", "impl", "trait", "pub", "use",
-        "extern", "as", "mod", "type", "actor", "spawn", "select", "match",
-        "try", "catch", "throw", "shared", "weak", "move", "true", "false", "none",
+        "let", "mut", "fn", "return", "if", "else", "elif", "for", "while", "in", "break",
+        "continue", "struct", "enum", "impl", "trait", "pub", "use", "extern", "as", "mod", "type",
+        "actor", "spawn", "select", "match", "try", "catch", "throw", "shared", "weak", "move",
+        "true", "false", "none",
     ];
 
     for kw in &keywords {
@@ -38,10 +38,8 @@ pub fn get_completions(source: &str, line: u32, character: u32) -> Vec<Value> {
 
     // Offer built-in types
     let types = [
-        "i8", "i16", "i32", "i64", "i128",
-        "u8", "u16", "u32", "u64", "u128",
-        "f32", "f64", "bool", "str", "char", "usize", "isize",
-        "Vec", "Map", "Set", "Option", "Result",
+        "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128", "f32", "f64", "bool",
+        "str", "char", "usize", "isize", "Vec", "Map", "Set", "Option", "Result",
     ];
 
     for ty in &types {
@@ -58,9 +56,28 @@ pub fn get_completions(source: &str, line: u32, character: u32) -> Vec<Value> {
     let line_text = get_line_text(source, line);
     if line_text.contains("use std::") || line_text.contains("std::") {
         let std_modules = [
-            "io", "net", "math", "json", "collections", "string", "regex",
-            "datetime", "crypto", "process", "term", "fs", "sync", "chan",
-            "iter", "fmt", "map", "set", "config", "test", "server", "db",
+            "io",
+            "net",
+            "math",
+            "json",
+            "collections",
+            "string",
+            "regex",
+            "datetime",
+            "crypto",
+            "process",
+            "term",
+            "fs",
+            "sync",
+            "chan",
+            "iter",
+            "fmt",
+            "map",
+            "set",
+            "config",
+            "test",
+            "server",
+            "db",
         ];
         for m in &std_modules {
             if prefix.is_empty() || m.starts_with(&prefix) {
@@ -86,31 +103,107 @@ pub fn get_completions(source: &str, line: u32, character: u32) -> Vec<Value> {
         // Collections
         ("len", "fn(x) -> i64", "Length of string, array, or map"),
         ("push", "fn(arr, val)", "Append value to array"),
-        ("pop", "fn(arr) -> val", "Remove and return last element of array"),
+        (
+            "pop",
+            "fn(arr) -> val",
+            "Remove and return last element of array",
+        ),
         // String
-        ("substr", "fn(s: str, start: i64, end: i64) -> str", "Extract substring"),
-        ("contains", "fn(s: str, needle: str) -> bool", "Check if string contains substring"),
-        ("starts_with", "fn(s: str, prefix: str) -> bool", "Check if string starts with prefix"),
-        ("ends_with", "fn(s: str, suffix: str) -> bool", "Check if string ends with suffix"),
-        ("trim", "fn(s: str) -> str", "Trim leading and trailing whitespace"),
-        ("to_upper", "fn(s: str) -> str", "Convert string to uppercase"),
-        ("to_lower", "fn(s: str) -> str", "Convert string to lowercase"),
-        ("replace", "fn(s: str, from: str, to: str) -> str", "Replace occurrences in string"),
-        ("split", "fn(s: str, delimiter: str) -> [str]", "Split string by delimiter"),
-        ("join", "fn(arr: [str], separator: str) -> str", "Join array of strings with separator"),
+        (
+            "substr",
+            "fn(s: str, start: i64, end: i64) -> str",
+            "Extract substring",
+        ),
+        (
+            "contains",
+            "fn(s: str, needle: str) -> bool",
+            "Check if string contains substring",
+        ),
+        (
+            "starts_with",
+            "fn(s: str, prefix: str) -> bool",
+            "Check if string starts with prefix",
+        ),
+        (
+            "ends_with",
+            "fn(s: str, suffix: str) -> bool",
+            "Check if string ends with suffix",
+        ),
+        (
+            "trim",
+            "fn(s: str) -> str",
+            "Trim leading and trailing whitespace",
+        ),
+        (
+            "to_upper",
+            "fn(s: str) -> str",
+            "Convert string to uppercase",
+        ),
+        (
+            "to_lower",
+            "fn(s: str) -> str",
+            "Convert string to lowercase",
+        ),
+        (
+            "replace",
+            "fn(s: str, from: str, to: str) -> str",
+            "Replace occurrences in string",
+        ),
+        (
+            "split",
+            "fn(s: str, delimiter: str) -> [str]",
+            "Split string by delimiter",
+        ),
+        (
+            "join",
+            "fn(arr: [str], separator: str) -> str",
+            "Join array of strings with separator",
+        ),
         // Math
         ("abs", "fn(x) -> i64/f64", "Absolute value"),
-        ("min", "fn(a: i64, b: i64) -> i64", "Return the smaller value"),
-        ("max", "fn(a: i64, b: i64) -> i64", "Return the larger value"),
+        (
+            "min",
+            "fn(a: i64, b: i64) -> i64",
+            "Return the smaller value",
+        ),
+        (
+            "max",
+            "fn(a: i64, b: i64) -> i64",
+            "Return the larger value",
+        ),
         ("sqrt", "fn(x: f64) -> f64", "Square root"),
-        ("floor", "fn(x: f64) -> f64", "Round down to nearest integer"),
+        (
+            "floor",
+            "fn(x: f64) -> f64",
+            "Round down to nearest integer",
+        ),
         ("ceil", "fn(x: f64) -> f64", "Round up to nearest integer"),
         // Other
-        ("assert", "fn(cond: bool, msg: str)", "Assert condition or panic with message"),
-        ("time_now", "fn() -> i64", "Current unix timestamp in seconds"),
-        ("file_read", "fn(path: str) -> str", "Read file contents as string"),
-        ("file_write", "fn(path: str, content: str)", "Write string to file"),
-        ("env_get", "fn(key: str) -> str", "Get environment variable value"),
+        (
+            "assert",
+            "fn(cond: bool, msg: str)",
+            "Assert condition or panic with message",
+        ),
+        (
+            "time_now",
+            "fn() -> i64",
+            "Current unix timestamp in seconds",
+        ),
+        (
+            "file_read",
+            "fn(path: str) -> str",
+            "Read file contents as string",
+        ),
+        (
+            "file_write",
+            "fn(path: str, content: str)",
+            "Write string to file",
+        ),
+        (
+            "env_get",
+            "fn(key: str) -> str",
+            "Get environment variable value",
+        ),
     ];
 
     for (name, detail, doc) in builtins {

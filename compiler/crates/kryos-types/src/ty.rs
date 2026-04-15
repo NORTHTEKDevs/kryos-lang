@@ -152,9 +152,7 @@ impl Type {
             Type::Struct { generics, .. } | Type::Enum { generics, .. } => {
                 generics.iter().any(|g| g.has_vars())
             }
-            Type::Function { params, ret } => {
-                params.iter().any(|p| p.has_vars()) || ret.has_vars()
-            }
+            Type::Function { params, ret } => params.iter().any(|p| p.has_vars()) || ret.has_vars(),
             Type::Reference { inner, .. }
             | Type::Shared { inner }
             | Type::Weak { inner }

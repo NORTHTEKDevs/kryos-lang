@@ -8,13 +8,13 @@
 
 use std::path::Path;
 
-use kryos_test_runner::{
-    TestOutcome, discover_tests, format_report_plain, run_all,
-};
+use kryos_test_runner::{discover_tests, format_report_plain, run_all, TestOutcome};
 
 #[test]
 fn e2e_test_suite() {
-    let test_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("e2e");
+    let test_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("e2e");
 
     let tests = discover_tests(&test_dir);
     assert!(

@@ -35,58 +35,59 @@ pub extern "C" fn kryos_spawn(fn_ptr: i64, args_ptr: *const i64, arg_count: i64)
         Vec::new()
     };
 
-    let handle = std::thread::spawn(move || {
-        unsafe {
-            match args.len() {
-                0 => {
-                    let f: extern "C" fn() -> i64 =
-                        std::mem::transmute(fn_ptr as usize);
-                    f();
-                }
-                1 => {
-                    let f: extern "C" fn(i64) -> i64 =
-                        std::mem::transmute(fn_ptr as usize);
-                    f(args[0]);
-                }
-                2 => {
-                    let f: extern "C" fn(i64, i64) -> i64 =
-                        std::mem::transmute(fn_ptr as usize);
-                    f(args[0], args[1]);
-                }
-                3 => {
-                    let f: extern "C" fn(i64, i64, i64) -> i64 =
-                        std::mem::transmute(fn_ptr as usize);
-                    f(args[0], args[1], args[2]);
-                }
-                4 => {
-                    let f: extern "C" fn(i64, i64, i64, i64) -> i64 =
-                        std::mem::transmute(fn_ptr as usize);
-                    f(args[0], args[1], args[2], args[3]);
-                }
-                5 => {
-                    let f: extern "C" fn(i64, i64, i64, i64, i64) -> i64 =
-                        std::mem::transmute(fn_ptr as usize);
-                    f(args[0], args[1], args[2], args[3], args[4]);
-                }
-                6 => {
-                    let f: extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64 =
-                        std::mem::transmute(fn_ptr as usize);
-                    f(args[0], args[1], args[2], args[3], args[4], args[5]);
-                }
-                7 => {
-                    let f: extern "C" fn(i64, i64, i64, i64, i64, i64, i64) -> i64 =
-                        std::mem::transmute(fn_ptr as usize);
-                    f(args[0], args[1], args[2], args[3], args[4], args[5], args[6]);
-                }
-                8 => {
-                    let f: extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64) -> i64 =
-                        std::mem::transmute(fn_ptr as usize);
-                    f(args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7]);
-                }
-                _ => {
-                    eprintln!("[spawn warning] function has {} arguments; \
-                               spawned functions support at most 8 arguments directly", args.len());
-                }
+    let handle = std::thread::spawn(move || unsafe {
+        match args.len() {
+            0 => {
+                let f: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr as usize);
+                f();
+            }
+            1 => {
+                let f: extern "C" fn(i64) -> i64 = std::mem::transmute(fn_ptr as usize);
+                f(args[0]);
+            }
+            2 => {
+                let f: extern "C" fn(i64, i64) -> i64 = std::mem::transmute(fn_ptr as usize);
+                f(args[0], args[1]);
+            }
+            3 => {
+                let f: extern "C" fn(i64, i64, i64) -> i64 = std::mem::transmute(fn_ptr as usize);
+                f(args[0], args[1], args[2]);
+            }
+            4 => {
+                let f: extern "C" fn(i64, i64, i64, i64) -> i64 =
+                    std::mem::transmute(fn_ptr as usize);
+                f(args[0], args[1], args[2], args[3]);
+            }
+            5 => {
+                let f: extern "C" fn(i64, i64, i64, i64, i64) -> i64 =
+                    std::mem::transmute(fn_ptr as usize);
+                f(args[0], args[1], args[2], args[3], args[4]);
+            }
+            6 => {
+                let f: extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64 =
+                    std::mem::transmute(fn_ptr as usize);
+                f(args[0], args[1], args[2], args[3], args[4], args[5]);
+            }
+            7 => {
+                let f: extern "C" fn(i64, i64, i64, i64, i64, i64, i64) -> i64 =
+                    std::mem::transmute(fn_ptr as usize);
+                f(
+                    args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+                );
+            }
+            8 => {
+                let f: extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64) -> i64 =
+                    std::mem::transmute(fn_ptr as usize);
+                f(
+                    args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7],
+                );
+            }
+            _ => {
+                eprintln!(
+                    "[spawn warning] function has {} arguments; \
+                               spawned functions support at most 8 arguments directly",
+                    args.len()
+                );
             }
         }
     });

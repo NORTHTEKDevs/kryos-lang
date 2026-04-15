@@ -12,13 +12,13 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 #![allow(clippy::missing_safety_doc)]
 
-pub mod io;
-pub mod net;
 #[cfg(feature = "crypto")]
 pub mod crypto;
-pub mod process;
-pub mod term;
 pub mod datetime;
 pub mod fs;
-pub mod sync_prims;
+pub mod io;
+pub mod net;
+pub mod process;
 pub mod re;
+pub mod sync_prims;
+pub mod term;

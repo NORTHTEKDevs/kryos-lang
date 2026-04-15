@@ -64,7 +64,9 @@ impl LockFile {
     pub fn to_toml(&self) -> Result<String, String> {
         let body = toml::to_string_pretty(self)
             .map_err(|e| format!("failed to serialize kryos.lock: {e}"))?;
-        Ok(format!("# kryos.lock — auto-generated, do not edit\n\n{body}"))
+        Ok(format!(
+            "# kryos.lock — auto-generated, do not edit\n\n{body}"
+        ))
     }
 
     /// Write the lock file to disk.

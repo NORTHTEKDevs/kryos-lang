@@ -92,7 +92,9 @@ pub unsafe extern "C" fn kryos_tensor_rand(shape_ptr: *const i64, ndim: i64) -> 
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(12345);
     for i in 0..n {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         *(*t).data.add(i) = (seed >> 33) as f64 / (1u64 << 31) as f64;
     }
     t as i64
@@ -110,9 +112,13 @@ pub unsafe extern "C" fn kryos_tensor_randn(shape_ptr: *const i64, ndim: i64) ->
         .unwrap_or(54321);
     let mut i = 0;
     while i < n {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let u1 = ((seed >> 33) as f64 / (1u64 << 31) as f64).max(1e-10);
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let u2 = (seed >> 33) as f64 / (1u64 << 31) as f64;
         let mag = (-2.0 * u1.ln()).sqrt();
         let angle = 2.0 * std::f64::consts::PI * u2;
@@ -158,7 +164,11 @@ pub unsafe extern "C" fn kryos_tensor_eye(n: i64) -> i64 {
 /// Create a 1-D tensor: [start, start+step, start+2*step, ... ) up to end.
 /// Arguments are f64 bits as i64 (Kryos slot model).
 #[no_mangle]
-pub unsafe extern "C" fn kryos_tensor_arange(start_bits: i64, end_bits: i64, step_bits: i64) -> i64 {
+pub unsafe extern "C" fn kryos_tensor_arange(
+    start_bits: i64,
+    end_bits: i64,
+    step_bits: i64,
+) -> i64 {
     let start = f64::from_bits(start_bits as u64);
     let end = f64::from_bits(end_bits as u64);
     let step_raw = f64::from_bits(step_bits as u64);
@@ -215,11 +225,7 @@ pub unsafe extern "C" fn kryos_tensor_set(handle: i64, idx: i64, val: i64) {
 
 // ── Element-wise binary ops ─────────────────────────────────────────
 
-unsafe fn elementwise_binop(
-    a: i64,
-    b: i64,
-    op: fn(f64, f64) -> f64,
-) -> i64 {
+unsafe fn elementwise_binop(a: i64, b: i64, op: fn(f64, f64) -> f64) -> i64 {
     let ta = as_tensor(a);
     let tb = as_tensor(b);
     let na = (*ta).numel as usize;
@@ -368,7 +374,9 @@ pub unsafe extern "C" fn kryos_tensor_sum(h: i64) -> i64 {
 pub unsafe extern "C" fn kryos_tensor_mean(h: i64) -> i64 {
     let t = as_tensor(h);
     let n = (*t).numel as usize;
-    if n == 0 { return f64::NAN.to_bits() as i64; }
+    if n == 0 {
+        return f64::NAN.to_bits() as i64;
+    }
     let sum = f64::from_bits(kryos_tensor_sum(h) as u64);
     (sum / n as f64).to_bits() as i64
 }
@@ -378,11 +386,15 @@ pub unsafe extern "C" fn kryos_tensor_mean(h: i64) -> i64 {
 pub unsafe extern "C" fn kryos_tensor_max(h: i64) -> i64 {
     let t = as_tensor(h);
     let n = (*t).numel as usize;
-    if n == 0 { return f64::NEG_INFINITY.to_bits() as i64; }
+    if n == 0 {
+        return f64::NEG_INFINITY.to_bits() as i64;
+    }
     let mut m = *(*t).data;
     for i in 1..n {
         let v = *(*t).data.add(i);
-        if v > m { m = v; }
+        if v > m {
+            m = v;
+        }
     }
     m.to_bits() as i64
 }
@@ -392,11 +404,15 @@ pub unsafe extern "C" fn kryos_tensor_max(h: i64) -> i64 {
 pub unsafe extern "C" fn kryos_tensor_min(h: i64) -> i64 {
     let t = as_tensor(h);
     let n = (*t).numel as usize;
-    if n == 0 { return f64::INFINITY.to_bits() as i64; }
+    if n == 0 {
+        return f64::INFINITY.to_bits() as i64;
+    }
     let mut m = *(*t).data;
     for i in 1..n {
         let v = *(*t).data.add(i);
-        if v < m { m = v; }
+        if v < m {
+            m = v;
+        }
     }
     m.to_bits() as i64
 }
@@ -405,12 +421,17 @@ pub unsafe extern "C" fn kryos_tensor_min(h: i64) -> i64 {
 pub unsafe extern "C" fn kryos_tensor_argmax(h: i64) -> i64 {
     let t = as_tensor(h);
     let n = (*t).numel as usize;
-    if n == 0 { return -1; }
+    if n == 0 {
+        return -1;
+    }
     let mut best = 0;
     let mut best_val = *(*t).data;
     for i in 1..n {
         let v = *(*t).data.add(i);
-        if v > best_val { best = i; best_val = v; }
+        if v > best_val {
+            best = i;
+            best_val = v;
+        }
     }
     best as i64
 }
@@ -419,12 +440,17 @@ pub unsafe extern "C" fn kryos_tensor_argmax(h: i64) -> i64 {
 pub unsafe extern "C" fn kryos_tensor_argmin(h: i64) -> i64 {
     let t = as_tensor(h);
     let n = (*t).numel as usize;
-    if n == 0 { return -1; }
+    if n == 0 {
+        return -1;
+    }
     let mut best = 0;
     let mut best_val = *(*t).data;
     for i in 1..n {
         let v = *(*t).data.add(i);
-        if v < best_val { best = i; best_val = v; }
+        if v < best_val {
+            best = i;
+            best_val = v;
+        }
     }
     best as i64
 }
@@ -445,7 +471,9 @@ pub unsafe extern "C" fn kryos_tensor_matmul(a: i64, b: i64) -> i64 {
         let k = *(*ta).shape.add(1) as usize;
         let k2 = *(*tb).shape as usize;
         let n = *(*tb).shape.add(1) as usize;
-        if k != k2 { return 0; }
+        if k != k2 {
+            return 0;
+        }
         let shape = [m as i64, n as i64];
         let out = alloc_tensor(&shape);
         for i in 0..m {
@@ -496,7 +524,9 @@ pub unsafe extern "C" fn kryos_tensor_matmul(a: i64, b: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn kryos_tensor_transpose(h: i64) -> i64 {
     let t = as_tensor(h);
-    if (*t).ndim != 2 { return h; } // only 2D
+    if (*t).ndim != 2 {
+        return h;
+    } // only 2D
     let rows = *(*t).shape as usize;
     let cols = *(*t).shape.add(1) as usize;
     let shape = [cols as i64, rows as i64];
@@ -573,7 +603,9 @@ pub unsafe extern "C" fn kryos_tensor_softmax(h: i64, _dim: i64) -> i64 {
         let mut max_val = f64::NEG_INFINITY;
         for i in 0..n {
             let v = *(*t).data.add(i);
-            if v > max_val { max_val = v; }
+            if v > max_val {
+                max_val = v;
+            }
         }
         let mut sum_exp = 0.0;
         for i in 0..n {
@@ -593,7 +625,9 @@ pub unsafe extern "C" fn kryos_tensor_softmax(h: i64, _dim: i64) -> i64 {
             let mut max_val = f64::NEG_INFINITY;
             for c in 0..cols {
                 let v = *(*t).data.add(off + c);
-                if v > max_val { max_val = v; }
+                if v > max_val {
+                    max_val = v;
+                }
             }
             let mut sum_exp = 0.0;
             for c in 0..cols {
@@ -635,7 +669,9 @@ pub unsafe extern "C" fn kryos_tensor_mse_loss(a: i64, b: i64) -> i64 {
     let ta = as_tensor(a);
     let tb = as_tensor(b);
     let n = ((*ta).numel as usize).min((*tb).numel as usize);
-    if n == 0 { return 0.0f64.to_bits() as i64; }
+    if n == 0 {
+        return 0.0f64.to_bits() as i64;
+    }
     let mut sum = 0.0f64;
     for i in 0..n {
         let diff = *(*ta).data.add(i) - *(*tb).data.add(i);
@@ -662,7 +698,9 @@ pub unsafe extern "C" fn kryos_tensor_to_string(h: i64) -> i64 {
     if ndim == 1 {
         s.push('[');
         for i in 0..n {
-            if i > 0 { s.push_str(", "); }
+            if i > 0 {
+                s.push_str(", ");
+            }
             s.push_str(&format!("{:.4}", *(*t).data.add(i)));
         }
         s.push(']');
@@ -671,10 +709,14 @@ pub unsafe extern "C" fn kryos_tensor_to_string(h: i64) -> i64 {
         let cols = shape[1] as usize;
         s.push('[');
         for r in 0..rows {
-            if r > 0 { s.push_str(", "); }
+            if r > 0 {
+                s.push_str(", ");
+            }
             s.push('[');
             for c in 0..cols {
-                if c > 0 { s.push_str(", "); }
+                if c > 0 {
+                    s.push_str(", ");
+                }
                 s.push_str(&format!("{:.4}", *(*t).data.add(r * cols + c)));
             }
             s.push(']');
@@ -684,15 +726,21 @@ pub unsafe extern "C" fn kryos_tensor_to_string(h: i64) -> i64 {
         // Generic: just print flat data.
         s.push('[');
         for i in 0..n.min(20) {
-            if i > 0 { s.push_str(", "); }
+            if i > 0 {
+                s.push_str(", ");
+            }
             s.push_str(&format!("{:.4}", *(*t).data.add(i)));
         }
-        if n > 20 { s.push_str(", ..."); }
+        if n > 20 {
+            s.push_str(", ...");
+        }
         s.push(']');
     }
     s.push_str(", shape=[");
     for (i, &d) in shape.iter().enumerate() {
-        if i > 0 { s.push_str(", "); }
+        if i > 0 {
+            s.push_str(", ");
+        }
         s.push_str(&d.to_string());
     }
     s.push_str("])");
@@ -704,7 +752,9 @@ pub unsafe extern "C" fn kryos_tensor_to_string(h: i64) -> i64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn kryos_tensor_free(h: i64) {
-    if h == 0 { return; }
+    if h == 0 {
+        return;
+    }
     let t = as_tensor(h);
     let n = (*t).numel as usize;
     if !(*t).data.is_null() && n > 0 {

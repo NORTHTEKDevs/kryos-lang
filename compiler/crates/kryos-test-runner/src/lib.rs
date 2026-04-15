@@ -16,7 +16,10 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use kryos_codegen_cranelift::CraneliftBackend;
-use kryos_driver::{BuildConfig, BuildMode, OutputType, compile_source, compile_file, compile_file_with_backend, render_diagnostics};
+use kryos_driver::{
+    compile_file, compile_file_with_backend, compile_source, render_diagnostics, BuildConfig,
+    BuildMode, OutputType,
+};
 
 // ---------------------------------------------------------------------------
 // Core types
@@ -216,10 +219,7 @@ pub fn run_test(test: &TestCase) -> TestResult {
         Expectation::Output(expected_lines) => {
             if has_errors {
                 TestOutcome::Failed {
-                    reason: format!(
-                        "expected success but got errors:\n{}",
-                        diagnostics_text
-                    ),
+                    reason: format!("expected success but got errors:\n{}", diagnostics_text),
                 }
             } else if expected_lines.is_empty() {
                 // No specific output expected, just that it compiles
@@ -310,7 +310,10 @@ pub fn run_test(test: &TestCase) -> TestResult {
             // the environment variables so `find_runtime_lib()` can locate them.
             if std::env::var("KRYOS_RT_LIB").is_err() {
                 let workspace_target = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("..").join("..").join("target").join("debug");
+                    .join("..")
+                    .join("..")
+                    .join("target")
+                    .join("debug");
                 let rt_lib_name = if cfg!(all(windows, target_env = "msvc")) {
                     "kryos_rt.lib"
                 } else {
@@ -323,7 +326,10 @@ pub fn run_test(test: &TestCase) -> TestResult {
             }
             if std::env::var("KRYOS_STDLIB_NATIVE_LIB").is_err() {
                 let workspace_target = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("..").join("..").join("target").join("debug");
+                    .join("..")
+                    .join("..")
+                    .join("target")
+                    .join("debug");
                 let stdlib_lib_name = if cfg!(all(windows, target_env = "msvc")) {
                     "kryos_stdlib_native.lib"
                 } else {
@@ -348,11 +354,8 @@ pub fn run_test(test: &TestCase) -> TestResult {
             };
 
             let backend = CraneliftBackend::new();
-            let compile_result = compile_file_with_backend(
-                &temp_src,
-                &build_config,
-                Some(&backend),
-            );
+            let compile_result =
+                compile_file_with_backend(&temp_src, &build_config, Some(&backend));
 
             if !compile_result.success {
                 let compile_diags = render_diagnostics(&compile_result);
@@ -369,10 +372,7 @@ pub fn run_test(test: &TestCase) -> TestResult {
                         TestOutcome::Skipped
                     } else {
                         TestOutcome::Failed {
-                            reason: format!(
-                                "compilation to binary failed:\n{}",
-                                compile_diags
-                            ),
+                            reason: format!("compilation to binary failed:\n{}", compile_diags),
                         }
                     },
                     duration: start.elapsed(),
@@ -391,14 +391,12 @@ pub fn run_test(test: &TestCase) -> TestResult {
             let _ = fs::remove_file(&temp_out);
 
             match exec_result {
-                Err(e) => {
-                    TestOutcome::Failed {
-                        reason: format!(
-                            "failed to execute compiled binary '{}': {e}",
-                            temp_out.display()
-                        ),
-                    }
-                }
+                Err(e) => TestOutcome::Failed {
+                    reason: format!(
+                        "failed to execute compiled binary '{}': {e}",
+                        temp_out.display()
+                    ),
+                },
                 Ok(output) => {
                     if !output.status.success() {
                         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -513,15 +511,16 @@ pub fn format_report(report: &TestReport) -> String {
 
     // Summary line
     out.push('\n');
-    let status_color = if report.failed > 0 { "\x1b[31m" } else { "\x1b[32m" };
+    let status_color = if report.failed > 0 {
+        "\x1b[31m"
+    } else {
+        "\x1b[32m"
+    };
     out.push_str(&format!(
         "{}Tests: {} passed, {} failed, {} skipped, {} total\x1b[0m\n",
         status_color, report.passed, report.failed, report.skipped, report.total
     ));
-    out.push_str(&format!(
-        "Time:  {:.3}s\n",
-        report.duration.as_secs_f64()
-    ));
+    out.push_str(&format!("Time:  {:.3}s\n", report.duration.as_secs_f64()));
 
     out
 }
@@ -560,10 +559,7 @@ pub fn format_report_plain(report: &TestReport) -> String {
         "Tests: {} passed, {} failed, {} skipped, {} total\n",
         report.passed, report.failed, report.skipped, report.total
     ));
-    out.push_str(&format!(
-        "Time:  {:.3}s\n",
-        report.duration.as_secs_f64()
-    ));
+    out.push_str(&format!("Time:  {:.3}s\n", report.duration.as_secs_f64()));
 
     out
 }
@@ -625,10 +621,7 @@ fn discover_annotated_recursive(dir: &Path, results: &mut Vec<(PathBuf, Vec<Stri
 /// Each file is compiled via the driver, then JIT-compiled using the
 /// Cranelift backend. Each `@test` function is called as `fn()` — a panic
 /// from `assert()` or `panic()` counts as a failure.
-pub fn run_annotated_tests(
-    dir: &Path,
-    filter: Option<&str>,
-) -> TestReport {
+pub fn run_annotated_tests(dir: &Path, filter: Option<&str>) -> TestReport {
     let start = Instant::now();
     let mut results = Vec::new();
     let mut passed = 0usize;
@@ -734,7 +727,9 @@ pub fn run_annotated_tests(
                     failed += 1;
                     results.push(TestResult {
                         name: fn_name.clone(),
-                        outcome: TestOutcome::Failed { reason: msg.clone() },
+                        outcome: TestOutcome::Failed {
+                            reason: msg.clone(),
+                        },
                         duration,
                         actual_output: msg,
                     });
@@ -907,10 +902,7 @@ mod tests {
         let tc = test_case_from_source("my_test", "// expect: ok\nfn main() {}\n");
         assert_eq!(tc.name, "my_test");
         assert!(!tc.skip);
-        assert_eq!(
-            tc.expectation,
-            Expectation::Output(vec!["ok".to_string()])
-        );
+        assert_eq!(tc.expectation, Expectation::Output(vec!["ok".to_string()]));
     }
 
     #[test]

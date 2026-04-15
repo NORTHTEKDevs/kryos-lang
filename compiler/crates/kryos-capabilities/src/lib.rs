@@ -33,8 +33,8 @@
 //! }
 //! ```
 
-pub mod model;
 pub mod checker;
+pub mod model;
 
-pub use model::{Capability, CapabilitySet, Budget, Sandbox, required_capability_for_builtin};
 pub use checker::check_capabilities;
+pub use model::{required_capability_for_builtin, Budget, Capability, CapabilitySet, Sandbox};

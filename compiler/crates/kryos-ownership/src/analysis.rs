@@ -49,12 +49,24 @@ impl OwnershipScope {
 fn is_primitive_copy_type(name: &str) -> bool {
     matches!(
         name,
-        "i8" | "i16" | "i32" | "i64" | "i128"
-            | "u8" | "u16" | "u32" | "u64" | "u128"
-            | "f32" | "f64"
-            | "bool" | "char"
-            | "usize" | "isize"
-            | "str" | "string" | "String"
+        "i8" | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "f32"
+            | "f64"
+            | "bool"
+            | "char"
+            | "usize"
+            | "isize"
+            | "str"
+            | "string"
+            | "String"
     )
 }
 
@@ -194,13 +206,35 @@ impl OwnershipAnalyzer {
                     // produce fresh allocations the caller fully owns.
                     if matches!(
                         name.as_str(),
-                        "len" | "parse_int" | "parse_float" | "time_now" | "abs"
-                            | "min" | "max" | "floor" | "ceil" | "round"
-                            | "sqrt" | "pow" | "log" | "sin" | "cos" | "tan"
-                            | "char_code" | "int" | "float"
-                            | "to_string" | "char_from" | "substr"
-                            | "type_of" | "env_get" | "file_read"
-                            | "buf_new" | "buf_len" | "buf_get_byte" | "buf_write_to_file"
+                        "len"
+                            | "parse_int"
+                            | "parse_float"
+                            | "time_now"
+                            | "abs"
+                            | "min"
+                            | "max"
+                            | "floor"
+                            | "ceil"
+                            | "round"
+                            | "sqrt"
+                            | "pow"
+                            | "log"
+                            | "sin"
+                            | "cos"
+                            | "tan"
+                            | "char_code"
+                            | "int"
+                            | "float"
+                            | "to_string"
+                            | "char_from"
+                            | "substr"
+                            | "type_of"
+                            | "env_get"
+                            | "file_read"
+                            | "buf_new"
+                            | "buf_len"
+                            | "buf_get_byte"
+                            | "buf_write_to_file"
                     ) {
                         return true;
                     }
@@ -220,11 +254,28 @@ impl OwnershipAnalyzer {
                 // Well-known methods that always return copy types.
                 if matches!(
                     method.as_str(),
-                    "len" | "count" | "size" | "capacity"
-                        | "is_empty" | "contains" | "starts_with" | "ends_with"
-                        | "parse_int" | "parse_float"
-                        | "abs" | "min" | "max" | "floor" | "ceil" | "round"
-                        | "sqrt" | "pow" | "log" | "sin" | "cos" | "tan"
+                    "len"
+                        | "count"
+                        | "size"
+                        | "capacity"
+                        | "is_empty"
+                        | "contains"
+                        | "starts_with"
+                        | "ends_with"
+                        | "parse_int"
+                        | "parse_float"
+                        | "abs"
+                        | "min"
+                        | "max"
+                        | "floor"
+                        | "ceil"
+                        | "round"
+                        | "sqrt"
+                        | "pow"
+                        | "log"
+                        | "sin"
+                        | "cos"
+                        | "tan"
                         | "clone"
                 ) {
                     return true;
@@ -236,7 +287,9 @@ impl OwnershipAnalyzer {
                 false
             }
 
-            Expr::StaticMethodCall { type_name, method, .. } => {
+            Expr::StaticMethodCall {
+                type_name, method, ..
+            } => {
                 let mangled = format!("{type_name}__{method}");
                 if let Some(&is_copy) = self.fn_copy_returns.get(mangled.as_str()) {
                     return is_copy;
@@ -308,7 +361,9 @@ impl OwnershipAnalyzer {
         if let Some(last) = block.stmts.last() {
             match last {
                 Stmt::Expr { expr, .. } => self.expr_is_copy(expr),
-                Stmt::Return { value: Some(expr), .. } => self.expr_is_copy(expr),
+                Stmt::Return {
+                    value: Some(expr), ..
+                } => self.expr_is_copy(expr),
                 _ => false,
             }
         } else {
@@ -371,9 +426,7 @@ impl OwnershipAnalyzer {
                         self.copy_structs.insert(name.clone());
                     }
                 }
-                Decl::Function {
-                    name, ret_ty, ..
-                } => {
+                Decl::Function { name, ret_ty, .. } => {
                     let is_copy_ret = ret_ty
                         .as_ref()
                         .map(|t| self.is_type_expr_copy(t))
@@ -501,7 +554,11 @@ impl OwnershipAnalyzer {
             } => {
                 if let Some(init_expr) = value {
                     // Check if the initializer is a `shared` expression.
-                    if let Expr::SharedExpr { inner, span: sh_span } = init_expr {
+                    if let Expr::SharedExpr {
+                        inner,
+                        span: sh_span,
+                    } = init_expr
+                    {
                         // Move the inner value into ARC.
                         self.analyze_expr_move(inner);
                         self.arc_insertions.push(ArcInsertion {
@@ -582,7 +639,12 @@ impl OwnershipAnalyzer {
                 }
             }
 
-            Stmt::Assign { target, value, span, .. } => {
+            Stmt::Assign {
+                target,
+                value,
+                span,
+                ..
+            } => {
                 // Analyze the RHS value (move/copy).
                 let rhs_copy = self.expr_is_copy(value);
                 if rhs_copy {
@@ -697,9 +759,7 @@ impl OwnershipAnalyzer {
                 }
             }
 
-            Stmt::For {
-                iterable, body, ..
-            } => {
+            Stmt::For { iterable, body, .. } => {
                 self.analyze_expr_use(iterable);
                 self.push_scope();
                 self.analyze_block(body);
@@ -769,7 +829,11 @@ impl OwnershipAnalyzer {
             Expr::Identifier { name, span } => {
                 self.check_usable(name, *span);
             }
-            Expr::FieldAccess { object, field, span } => {
+            Expr::FieldAccess {
+                object,
+                field,
+                span,
+            } => {
                 // Check for partial move on the field.
                 if let Expr::Identifier { name, .. } = object.as_ref() {
                     if let Some(info) = self.lookup_var(name) {
@@ -783,7 +847,11 @@ impl OwnershipAnalyzer {
                 }
                 self.analyze_expr_use(object);
             }
-            Expr::FnCall { callee, args, span: _ } => {
+            Expr::FnCall {
+                callee,
+                args,
+                span: _,
+            } => {
                 self.analyze_expr_use(callee);
                 // Check for `send(channel, value)` pattern — moves the value.
                 if let Expr::Identifier { name, .. } = callee.as_ref() {
@@ -977,7 +1045,11 @@ impl OwnershipAnalyzer {
                     info.moved_span = Some(*span);
                 }
             }
-            Expr::FieldAccess { object, field, span } => {
+            Expr::FieldAccess {
+                object,
+                field,
+                span,
+            } => {
                 // Partial move of a struct field.
                 if let Expr::Identifier { name, .. } = object.as_ref() {
                     self.check_usable(name, *span);
@@ -1076,12 +1148,7 @@ impl OwnershipAnalyzer {
     }
 
     /// Recursively collect identifiers from an expression that are not in `locals`.
-    fn collect_captures<'a>(
-        &self,
-        expr: &'a Expr,
-        locals: &HashSet<&str>,
-        out: &mut Vec<&'a str>,
-    ) {
+    fn collect_captures<'a>(&self, expr: &'a Expr, locals: &HashSet<&str>, out: &mut Vec<&'a str>) {
         match expr {
             Expr::Identifier { name, .. } => {
                 if !locals.contains(name.as_str()) && self.lookup_var(name).is_some() {
@@ -1135,7 +1202,12 @@ impl OwnershipAnalyzer {
                     self.collect_captures(v, locals, out);
                 }
             }
-            Expr::IfExpr { condition, then_branch, else_branch, .. } => {
+            Expr::IfExpr {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 self.collect_captures(condition, locals, out);
                 for stmt in &then_branch.stmts {
                     self.collect_captures_stmt(stmt, locals, out);
@@ -1219,7 +1291,13 @@ impl OwnershipAnalyzer {
                     self.collect_captures(v, locals, out);
                 }
             }
-            Stmt::If { condition, then_block, elif_clauses, else_block, .. } => {
+            Stmt::If {
+                condition,
+                then_block,
+                elif_clauses,
+                else_block,
+                ..
+            } => {
                 self.collect_captures(condition, locals, out);
                 for s in &then_block.stmts {
                     self.collect_captures_stmt(s, locals, out);
@@ -1242,7 +1320,9 @@ impl OwnershipAnalyzer {
                     self.collect_captures_stmt(s, locals, out);
                 }
             }
-            Stmt::While { condition, body, .. } => {
+            Stmt::While {
+                condition, body, ..
+            } => {
                 self.collect_captures(condition, locals, out);
                 for s in &body.stmts {
                     self.collect_captures_stmt(s, locals, out);
@@ -1256,7 +1336,11 @@ impl OwnershipAnalyzer {
                     }
                 }
             }
-            Stmt::TryCatch { try_block, catch_block, .. } => {
+            Stmt::TryCatch {
+                try_block,
+                catch_block,
+                ..
+            } => {
                 for s in &try_block.stmts {
                     self.collect_captures_stmt(s, locals, out);
                 }

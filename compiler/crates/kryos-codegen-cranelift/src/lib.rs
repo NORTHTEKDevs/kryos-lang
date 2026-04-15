@@ -64,7 +64,10 @@ impl CraneliftBackend {
     }
 
     /// AOT compile a MIR module to object file bytes.
-    pub fn compile_module(&self, module: &kryos_mir::ir::MirModule) -> Result<Vec<u8>, CodegenError> {
+    pub fn compile_module(
+        &self,
+        module: &kryos_mir::ir::MirModule,
+    ) -> Result<Vec<u8>, CodegenError> {
         codegen::compile_module(module)
     }
 
@@ -106,12 +109,18 @@ impl Default for CraneliftBackend {
 // ---------------------------------------------------------------------------
 
 impl kryos_driver::Backend for CraneliftBackend {
-    fn compile(&self, module: &kryos_mir::ir::MirModule) -> Result<Vec<u8>, kryos_driver::BackendError> {
+    fn compile(
+        &self,
+        module: &kryos_mir::ir::MirModule,
+    ) -> Result<Vec<u8>, kryos_driver::BackendError> {
         self.compile_module(module)
             .map_err(|e| kryos_driver::BackendError::new(e.to_string()))
     }
 
-    fn emit_ir(&self, _module: &kryos_mir::ir::MirModule) -> Result<String, kryos_driver::BackendError> {
+    fn emit_ir(
+        &self,
+        _module: &kryos_mir::ir::MirModule,
+    ) -> Result<String, kryos_driver::BackendError> {
         Err(kryos_driver::BackendError::unsupported(
             "LLVM IR emission not supported by Cranelift backend",
         ))

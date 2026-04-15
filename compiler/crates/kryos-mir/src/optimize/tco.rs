@@ -17,8 +17,7 @@
 //! 3. Replace the `Return` terminator with `Goto(bb0)`.
 
 use crate::ir::{
-    BasicBlock, BlockId, Instruction, LocalId, MirFunction, MirModule, Operand, RValue,
-    Terminator,
+    BasicBlock, BlockId, Instruction, LocalId, MirFunction, MirModule, Operand, RValue, Terminator,
 };
 
 // ---------------------------------------------------------------------------
@@ -160,9 +159,7 @@ mod tests {
                     BasicBlock {
                         id: BlockId(1),
                         instructions: vec![],
-                        terminator: Terminator::Return(Some(Operand::Constant(
-                            Constant::Int(0),
-                        ))),
+                        terminator: Terminator::Return(Some(Operand::Constant(Constant::Int(0)))),
                     },
                     // bb2: recursive case — tail call
                     BasicBlock {
@@ -221,12 +218,15 @@ mod tests {
 
         // Should have a parameter assignment: _0 = _1
         let has_param_assign = tail_block.instructions.iter().any(|i| {
-            matches!(i, Instruction::Assign { dest: LocalId(0), value: RValue::Use(Operand::Local(LocalId(1))) })
+            matches!(
+                i,
+                Instruction::Assign {
+                    dest: LocalId(0),
+                    value: RValue::Use(Operand::Local(LocalId(1)))
+                }
+            )
         });
-        assert!(
-            has_param_assign,
-            "should assign new arg to param local"
-        );
+        assert!(has_param_assign, "should assign new arg to param local");
     }
 
     #[test]
@@ -276,18 +276,15 @@ mod tests {
         optimize_tail_calls(&mut module);
 
         // The call should still be there — it's not a tail call.
-        let has_call = module.functions[0].blocks[0]
-            .instructions
-            .iter()
-            .any(|i| {
-                matches!(
-                    i,
-                    Instruction::Assign {
-                        value: RValue::Call { .. },
-                        ..
-                    }
-                )
-            });
+        let has_call = module.functions[0].blocks[0].instructions.iter().any(|i| {
+            matches!(
+                i,
+                Instruction::Assign {
+                    value: RValue::Call { .. },
+                    ..
+                }
+            )
+        });
         assert!(has_call, "non-tail call should not be optimized");
     }
 
@@ -321,18 +318,15 @@ mod tests {
 
         optimize_tail_calls(&mut module);
 
-        let has_call = module.functions[0].blocks[0]
-            .instructions
-            .iter()
-            .any(|i| {
-                matches!(
-                    i,
-                    Instruction::Assign {
-                        value: RValue::Call { .. },
-                        ..
-                    }
-                )
-            });
+        let has_call = module.functions[0].blocks[0].instructions.iter().any(|i| {
+            matches!(
+                i,
+                Instruction::Assign {
+                    value: RValue::Call { .. },
+                    ..
+                }
+            )
+        });
         assert!(has_call, "call to different function should not be TCO'd");
     }
 

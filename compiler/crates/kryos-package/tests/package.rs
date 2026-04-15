@@ -1,11 +1,10 @@
 //! Integration tests for kryos-package.
 
-use std::collections::HashMap;
 use kryos_package::{
-    Manifest, DepSpec, Version, VersionReq, Op,
-    resolve, PackageRegistry, AvailablePackage, ResolveError,
-    LockFile, LockEntry,
+    resolve, AvailablePackage, DepSpec, LockEntry, LockFile, Manifest, Op, PackageRegistry,
+    ResolveError, Version, VersionReq,
 };
+use std::collections::HashMap;
 
 // ─── Manifest parsing ───────────────────────────────────────────────
 
@@ -64,10 +63,16 @@ target = "wasm32"
 optimization = "release"
 "#;
     let m = Manifest::from_str(toml_str).unwrap();
-    assert_eq!(m.package.description.as_deref(), Some("A fully-specified project"));
+    assert_eq!(
+        m.package.description.as_deref(),
+        Some("A fully-specified project")
+    );
     assert_eq!(m.package.authors, vec!["Alice", "Bob"]);
     assert_eq!(m.package.license.as_deref(), Some("MIT"));
-    assert_eq!(m.package.repository.as_deref(), Some("https://github.com/kryos-lang/full-project"));
+    assert_eq!(
+        m.package.repository.as_deref(),
+        Some("https://github.com/kryos-lang/full-project")
+    );
     assert_eq!(m.build.target, "wasm32");
 }
 
@@ -174,7 +179,10 @@ serde = "github:kryos-lang/serde@^1.0.0"
 "#;
     let m = Manifest::from_str(toml_str).unwrap();
     match &m.dependencies["serde"] {
-        DepSpec::Remote { source, version_req } => {
+        DepSpec::Remote {
+            source,
+            version_req,
+        } => {
             assert_eq!(source, "github:kryos-lang/serde");
             assert_eq!(version_req.op, Op::Caret);
             assert_eq!(version_req.version, Version::new(1, 0, 0));
@@ -312,9 +320,10 @@ fn make_test_registry() -> PackageRegistry {
         name: "http".into(),
         version: "0.3.5".parse().unwrap(),
         source: "github:kryos-lang/http".into(),
-        dependencies: HashMap::from([
-            ("serde".into(), VersionReq::new(Op::Caret, "1.0.0".parse().unwrap())),
-        ]),
+        dependencies: HashMap::from([(
+            "serde".into(),
+            VersionReq::new(Op::Caret, "1.0.0".parse().unwrap()),
+        )]),
     });
     reg
 }
@@ -326,17 +335,19 @@ fn circular_dependency_detection() {
         name: "cycle-a".into(),
         version: "1.0.0".parse().unwrap(),
         source: "github:test/cycle-a".into(),
-        dependencies: HashMap::from([
-            ("cycle-b".into(), VersionReq::new(Op::Caret, "1.0.0".parse().unwrap())),
-        ]),
+        dependencies: HashMap::from([(
+            "cycle-b".into(),
+            VersionReq::new(Op::Caret, "1.0.0".parse().unwrap()),
+        )]),
     });
     reg.add(AvailablePackage {
         name: "cycle-b".into(),
         version: "1.0.0".parse().unwrap(),
         source: "github:test/cycle-b".into(),
-        dependencies: HashMap::from([
-            ("cycle-a".into(), VersionReq::new(Op::Caret, "1.0.0".parse().unwrap())),
-        ]),
+        dependencies: HashMap::from([(
+            "cycle-a".into(),
+            VersionReq::new(Op::Caret, "1.0.0".parse().unwrap()),
+        )]),
     });
 
     let mut deps = HashMap::new();
@@ -368,18 +379,20 @@ fn version_conflict_detection() {
         name: "lib-x".into(),
         version: "1.0.0".parse().unwrap(),
         source: "github:test/lib-x".into(),
-        dependencies: HashMap::from([
-            ("serde".into(), VersionReq::new(Op::Caret, "1.0.0".parse().unwrap())),
-        ]),
+        dependencies: HashMap::from([(
+            "serde".into(),
+            VersionReq::new(Op::Caret, "1.0.0".parse().unwrap()),
+        )]),
     });
     // lib-y requires serde ^2.0.0
     reg.add(AvailablePackage {
         name: "lib-y".into(),
         version: "1.0.0".parse().unwrap(),
         source: "github:test/lib-y".into(),
-        dependencies: HashMap::from([
-            ("serde".into(), VersionReq::new(Op::Caret, "2.0.0".parse().unwrap())),
-        ]),
+        dependencies: HashMap::from([(
+            "serde".into(),
+            VersionReq::new(Op::Caret, "2.0.0".parse().unwrap()),
+        )]),
     });
 
     let mut deps = HashMap::new();

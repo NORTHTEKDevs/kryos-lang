@@ -41,7 +41,9 @@ pub fn check_exhaustive(
 
 /// Returns true if any pattern is a wildcard `_` or an identifier binding.
 fn has_wildcard_or_ident(patterns: &[&Pattern]) -> bool {
-    patterns.iter().any(|p| matches!(p, Pattern::Wildcard { .. } | Pattern::Ident { .. }))
+    patterns
+        .iter()
+        .any(|p| matches!(p, Pattern::Wildcard { .. } | Pattern::Ident { .. }))
 }
 
 /// Bool: must cover both `true` and `false`.
@@ -68,7 +70,8 @@ fn check_bool(patterns: &[&Pattern], span: Span) -> Vec<Diagnostic> {
                     if let Pattern::Literal { expr, .. } = alt {
                         if let kryos_ast::Expr::BoolLiteral { value: true, .. } = expr.as_ref() {
                             seen_true = true;
-                        } else if let kryos_ast::Expr::BoolLiteral { value: false, .. } = expr.as_ref()
+                        } else if let kryos_ast::Expr::BoolLiteral { value: false, .. } =
+                            expr.as_ref()
                         {
                             seen_false = true;
                         }
@@ -89,9 +92,10 @@ fn check_bool(patterns: &[&Pattern], span: Span) -> Vec<Diagnostic> {
         _ => "`true` and `false`",
     };
 
-    vec![Diagnostic::error(
-        format!("non-exhaustive match: missing {missing}"),
-    ).with_label(span, "add the missing case(s) or a wildcard `_`")]
+    vec![
+        Diagnostic::error(format!("non-exhaustive match: missing {missing}"))
+            .with_label(span, "add the missing case(s) or a wildcard `_`"),
+    ]
 }
 
 /// Enum: must cover all variants.
@@ -108,10 +112,7 @@ fn check_enum(patterns: &[&Pattern], enum_def: &EnumDef, span: Span) -> Vec<Diag
         collect_enum_variants(pat, &mut covered);
     }
 
-    let missing: Vec<&str> = all_variants
-        .difference(&covered)
-        .copied()
-        .collect();
+    let missing: Vec<&str> = all_variants.difference(&covered).copied().collect();
 
     if missing.is_empty() {
         return vec![];
@@ -125,9 +126,10 @@ fn check_enum(patterns: &[&Pattern], enum_def: &EnumDef, span: Span) -> Vec<Diag
         .collect::<Vec<_>>()
         .join(", ");
 
-    vec![Diagnostic::error(
-        format!("non-exhaustive match: missing variant(s) {names}"),
-    ).with_label(span, "add the missing variant(s) or a wildcard `_`")]
+    vec![
+        Diagnostic::error(format!("non-exhaustive match: missing variant(s) {names}"))
+            .with_label(span, "add the missing variant(s) or a wildcard `_`"),
+    ]
 }
 
 /// Collect covered enum variant names from a pattern (handles Or-patterns).
@@ -148,9 +150,8 @@ fn collect_enum_variants<'a>(pattern: &'a Pattern, covered: &mut HashSet<&'a str
 /// For integer, string, and other infinite types, require a wildcard or
 /// identifier catch-all.
 fn check_requires_wildcard(type_name: &str, span: Span) -> Vec<Diagnostic> {
-    vec![Diagnostic::warning(
-        format!(
-            "non-exhaustive match on `{type_name}`: add a wildcard `_` or catch-all pattern"
-        ),
-    ).with_label(span, "this match is not exhaustive")]
+    vec![Diagnostic::warning(format!(
+        "non-exhaustive match on `{type_name}`: add a wildcard `_` or catch-all pattern"
+    ))
+    .with_label(span, "this match is not exhaustive")]
 }

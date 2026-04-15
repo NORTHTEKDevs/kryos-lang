@@ -15,13 +15,11 @@
 //!
 //! Run with: `cargo bench -p kryos-driver`
 
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
-};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
 use kryos_capabilities::check_capabilities;
-use kryos_codegen_cranelift::CraneliftBackend;
 use kryos_codegen_cranelift::jit::jit_compile_module;
+use kryos_codegen_cranelift::CraneliftBackend;
 use kryos_driver::{check_source, compile_source, BuildConfig, BuildMode, OutputType};
 use kryos_errors::SourceMap;
 use kryos_lexer::Lexer;
@@ -718,8 +716,8 @@ fn bench_jit_fibonacci(c: &mut Criterion) {
     // Benchmark 1: JIT compilation time (compile fibonacci to native code)
     group.bench_function("compile_fibonacci", |b| {
         b.iter(|| {
-            let ptrs = jit_compile_module(black_box(&fib_mir))
-                .expect("JIT compilation must succeed");
+            let ptrs =
+                jit_compile_module(black_box(&fib_mir)).expect("JIT compilation must succeed");
             black_box(ptrs);
         });
     });

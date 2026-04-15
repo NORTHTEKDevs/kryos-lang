@@ -60,9 +60,7 @@ fn kryos_binary() -> PathBuf {
             return path;
         }
     }
-    panic!(
-        "kryos binary not found. Run `cargo build --release -p kryos-cli -j 4` first."
-    );
+    panic!("kryos binary not found. Run `cargo build --release -p kryos-cli -j 4` first.");
 }
 
 fn run_native_test(test: &NativeTest) -> Result<(), String> {

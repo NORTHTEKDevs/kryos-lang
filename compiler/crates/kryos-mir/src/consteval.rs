@@ -7,8 +7,7 @@
 //! expression is kept as-is.
 
 use crate::ir::{
-    BasicBlock, Constant, Instruction, MirBinOp, MirFunction, MirModule,
-    MirUnOp, Operand, RValue,
+    BasicBlock, Constant, Instruction, MirBinOp, MirFunction, MirModule, MirUnOp, Operand, RValue,
 };
 
 // ---------------------------------------------------------------------------
@@ -147,26 +146,38 @@ fn eval_binop(op: MirBinOp, left: &Constant, right: &Constant) -> RValue {
         // ----- Integer arithmetic (checked — overflow is unfoldable) -----
         (MirBinOp::Add, Constant::Int(a), Constant::Int(b)) => match a.checked_add(*b) {
             Some(v) => RValue::ConstInt(v),
-            None => RValue::BinOp { op, left: const_to_operand(left), right: const_to_operand(right) },
+            None => RValue::BinOp {
+                op,
+                left: const_to_operand(left),
+                right: const_to_operand(right),
+            },
         },
         (MirBinOp::Sub, Constant::Int(a), Constant::Int(b)) => match a.checked_sub(*b) {
             Some(v) => RValue::ConstInt(v),
-            None => RValue::BinOp { op, left: const_to_operand(left), right: const_to_operand(right) },
+            None => RValue::BinOp {
+                op,
+                left: const_to_operand(left),
+                right: const_to_operand(right),
+            },
         },
         (MirBinOp::Mul, Constant::Int(a), Constant::Int(b)) => match a.checked_mul(*b) {
             Some(v) => RValue::ConstInt(v),
-            None => RValue::BinOp { op, left: const_to_operand(left), right: const_to_operand(right) },
+            None => RValue::BinOp {
+                op,
+                left: const_to_operand(left),
+                right: const_to_operand(right),
+            },
         },
-        (MirBinOp::Div, Constant::Int(a), Constant::Int(b)) if *b != 0 => {
-            RValue::ConstInt(a / b)
-        }
-        (MirBinOp::Mod, Constant::Int(a), Constant::Int(b)) if *b != 0 => {
-            RValue::ConstInt(a % b)
-        }
+        (MirBinOp::Div, Constant::Int(a), Constant::Int(b)) if *b != 0 => RValue::ConstInt(a / b),
+        (MirBinOp::Mod, Constant::Int(a), Constant::Int(b)) if *b != 0 => RValue::ConstInt(a % b),
         (MirBinOp::Pow, Constant::Int(a), Constant::Int(b)) if *b >= 0 => {
             match a.checked_pow(*b as u32) {
                 Some(v) => RValue::ConstInt(v),
-                None => RValue::BinOp { op, left: const_to_operand(left), right: const_to_operand(right) },
+                None => RValue::BinOp {
+                    op,
+                    left: const_to_operand(left),
+                    right: const_to_operand(right),
+                },
             }
         }
 
@@ -204,11 +215,19 @@ fn eval_binop(op: MirBinOp, left: &Constant, right: &Constant) -> RValue {
         (MirBinOp::BitXor, Constant::Int(a), Constant::Int(b)) => RValue::ConstInt(a ^ b),
         (MirBinOp::Shl, Constant::Int(a), Constant::Int(b)) => match a.checked_shl(*b as u32) {
             Some(v) => RValue::ConstInt(v),
-            None => RValue::BinOp { op, left: const_to_operand(left), right: const_to_operand(right) },
+            None => RValue::BinOp {
+                op,
+                left: const_to_operand(left),
+                right: const_to_operand(right),
+            },
         },
         (MirBinOp::Shr, Constant::Int(a), Constant::Int(b)) => match a.checked_shr(*b as u32) {
             Some(v) => RValue::ConstInt(v),
-            None => RValue::BinOp { op, left: const_to_operand(left), right: const_to_operand(right) },
+            None => RValue::BinOp {
+                op,
+                left: const_to_operand(left),
+                right: const_to_operand(right),
+            },
         },
 
         // ----- String concatenation -----
@@ -233,7 +252,10 @@ fn eval_unop(op: MirUnOp, operand: &Constant) -> RValue {
     match (op, operand) {
         (MirUnOp::Neg, Constant::Int(v)) => match v.checked_neg() {
             Some(n) => RValue::ConstInt(n),
-            None => RValue::UnOp { op, operand: const_to_operand(operand) },
+            None => RValue::UnOp {
+                op,
+                operand: const_to_operand(operand),
+            },
         },
         (MirUnOp::Neg, Constant::Float(v)) => RValue::ConstFloat(-v),
         (MirUnOp::Not, Constant::Bool(v)) => RValue::ConstBool(!v),

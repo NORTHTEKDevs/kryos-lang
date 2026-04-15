@@ -37,7 +37,17 @@ pub extern "C" fn kryos_builtin_to_string(value: i64) -> i64 {
 pub extern "C" fn kryos_ipow(base: i64, exp: i64) -> i64 {
     if exp < 0 {
         // Integer division: base^(-n) rounds to 0 for |base| > 1.
-        return if base == 1 { 1 } else if base == -1 { if exp % 2 == 0 { 1 } else { -1 } } else { 0 };
+        return if base == 1 {
+            1
+        } else if base == -1 {
+            if exp % 2 == 0 {
+                1
+            } else {
+                -1
+            }
+        } else {
+            0
+        };
     }
     let mut result: i64 = 1;
     let mut b = base;
@@ -183,11 +193,8 @@ pub extern "C" fn kryos_chan_new_i64() -> i64 {
 /// Returns 0 on success, -1 on error.
 #[no_mangle]
 pub extern "C" fn kryos_chan_send_i64(handle: i64, value: i64) -> i64 {
-    let result = crate::channel::kryos_chan_send(
-        handle as *mut u8,
-        &value as *const i64 as *const u8,
-        8,
-    );
+    let result =
+        crate::channel::kryos_chan_send(handle as *mut u8, &value as *const i64 as *const u8, 8);
     result as i64
 }
 
@@ -196,11 +203,7 @@ pub extern "C" fn kryos_chan_send_i64(handle: i64, value: i64) -> i64 {
 #[no_mangle]
 pub extern "C" fn kryos_chan_recv_i64(handle: i64) -> i64 {
     let mut buf: i64 = 0;
-    crate::channel::kryos_chan_recv(
-        handle as *mut u8,
-        &mut buf as *mut i64 as *mut u8,
-        8,
-    );
+    crate::channel::kryos_chan_recv(handle as *mut u8, &mut buf as *mut i64 as *mut u8, 8);
     buf
 }
 
@@ -223,11 +226,8 @@ pub extern "C" fn kryos_chan_drop_i64(handle: i64) {
 #[no_mangle]
 pub extern "C" fn kryos_chan_try_recv_status_i64(handle: i64) -> i64 {
     let mut buf: i64 = 0;
-    let result = crate::channel::kryos_chan_try_recv(
-        handle as *mut u8,
-        &mut buf as *mut i64 as *mut u8,
-        8,
-    );
+    let result =
+        crate::channel::kryos_chan_try_recv(handle as *mut u8, &mut buf as *mut i64 as *mut u8, 8);
     if result > 0 {
         LAST_RECV_I64.with(|cell| cell.set(buf));
         1
@@ -265,9 +265,7 @@ std::thread_local! {
 /// Returns actor ID (always > 0).
 #[no_mangle]
 pub extern "C" fn kryos_actor_spawn_i64(dispatch_fn_ptr: i64, state_ptr: i64) -> i64 {
-    let fn_ptr: extern "C" fn(*mut u8) = unsafe {
-        std::mem::transmute(dispatch_fn_ptr as usize)
-    };
+    let fn_ptr: extern "C" fn(*mut u8) = unsafe { std::mem::transmute(dispatch_fn_ptr as usize) };
     crate::actor::kryos_actor_spawn(fn_ptr, state_ptr as *mut u8) as i64
 }
 
@@ -275,11 +273,7 @@ pub extern "C" fn kryos_actor_spawn_i64(dispatch_fn_ptr: i64, state_ptr: i64) ->
 /// Returns 0 on success, -1 on error.
 #[no_mangle]
 pub extern "C" fn kryos_actor_send_i64(actor_id: i64, message: i64) -> i64 {
-    crate::actor::kryos_actor_send(
-        actor_id as u64,
-        &message as *const i64 as *const u8,
-        8,
-    ) as i64
+    crate::actor::kryos_actor_send(actor_id as u64, &message as *const i64 as *const u8, 8) as i64
 }
 
 /// Receive a single i64 message from the current actor's mailbox. Blocks.
@@ -287,11 +281,12 @@ pub extern "C" fn kryos_actor_send_i64(actor_id: i64, message: i64) -> i64 {
 #[no_mangle]
 pub extern "C" fn kryos_actor_recv_i64() -> i64 {
     let mut buf: i64 = 0;
-    let result = crate::actor::kryos_actor_recv(
-        &mut buf as *mut i64 as *mut u8,
-        8,
-    );
-    if result > 0 { buf } else { 0 }
+    let result = crate::actor::kryos_actor_recv(&mut buf as *mut i64 as *mut u8, 8);
+    if result > 0 {
+        buf
+    } else {
+        0
+    }
 }
 
 /// Acquire the send lock for an actor (prevents message interleaving).
@@ -841,8 +836,7 @@ pub extern "C" fn kryos_arc_set_drop_i64(ptr: i64, drop_fn: i64) {
     if ptr == 0 || drop_fn == 0 {
         return;
     }
-    let fn_ptr: extern "C" fn(*mut u8) =
-        unsafe { core::mem::transmute(drop_fn as usize) };
+    let fn_ptr: extern "C" fn(*mut u8) = unsafe { core::mem::transmute(drop_fn as usize) };
     crate::arc::kryos_arc_set_drop(ptr as *mut u8, fn_ptr);
 }
 
@@ -938,14 +932,20 @@ pub unsafe extern "C" fn kryos_buf_len(handle: i64) -> i64 {
 pub unsafe extern "C" fn kryos_buf_get_byte(handle: i64, offset: i64) -> i64 {
     let buf = &*(handle as *const KryosBuf);
     let idx = offset as usize;
-    if idx < buf.data.len() { buf.data[idx] as i64 } else { -1 }
+    if idx < buf.data.len() {
+        buf.data[idx] as i64
+    } else {
+        -1
+    }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn kryos_buf_set_byte(handle: i64, offset: i64, byte: i64) {
     let buf = &mut *(handle as *mut KryosBuf);
     let idx = offset as usize;
-    if idx < buf.data.len() { buf.data[idx] = byte as u8; }
+    if idx < buf.data.len() {
+        buf.data[idx] = byte as u8;
+    }
 }
 
 #[no_mangle]
@@ -1057,7 +1057,11 @@ pub extern "C" fn kryos_builtin_file_exists(path_handle: i64) -> i64 {
             Err(_) => return 0,
         }
     };
-    if std::path::Path::new(path_str).exists() { 1 } else { 0 }
+    if std::path::Path::new(path_str).exists() {
+        1
+    } else {
+        0
+    }
 }
 
 /// Return the size in bytes of a file.
@@ -1211,7 +1215,11 @@ pub extern "C" fn kryos_builtin_file_append(path_handle: i64, content_handle: i6
         let content_bytes =
             std::slice::from_raw_parts((*ks_content).data, (*ks_content).len as usize);
         use std::io::Write;
-        match std::fs::OpenOptions::new().create(true).append(true).open(path_str) {
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path_str)
+        {
             Ok(mut f) => match f.write_all(content_bytes) {
                 Ok(()) => 0,
                 Err(_) => -1,
@@ -1278,9 +1286,7 @@ fn http_get_impl(url: &str) -> Option<String> {
         .set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .ok();
 
-    let request = format!(
-        "GET {path} HTTP/1.0\r\nHost: {host}\r\nConnection: close\r\n\r\n"
-    );
+    let request = format!("GET {path} HTTP/1.0\r\nHost: {host}\r\nConnection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).ok()?;
 
     let mut response = Vec::new();
@@ -1299,7 +1305,7 @@ fn http_get_impl(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::string::{kryos_string_len, kryos_string_free};
+    use crate::string::{kryos_string_free, kryos_string_len};
 
     #[test]
     fn ipow_basic() {

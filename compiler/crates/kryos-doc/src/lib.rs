@@ -1,7 +1,7 @@
 //! Kryos documentation generator — extracts doc comments and signatures
 //! from Kryos source files and renders them to markdown.
 
-use kryos_ast::{Decl, Module, TypeExpr, GenericParam};
+use kryos_ast::{Decl, GenericParam, Module, TypeExpr};
 use kryos_lexer::Lexer;
 use kryos_parser::parse;
 
@@ -229,7 +229,14 @@ fn doc_item_from_decl(decl: &Decl, source: &str) -> Option<DocItem> {
                 .as_ref()
                 .map(|t| format!(" -> {}", render_type_expr(t)))
                 .unwrap_or_default();
-            item.signature = format!("{}fn {}{}({}){}", vis, name, gen, params_str.join(", "), ret);
+            item.signature = format!(
+                "{}fn {}{}({}){}",
+                vis,
+                name,
+                gen,
+                params_str.join(", "),
+                ret
+            );
 
             Some(item)
         }
@@ -277,8 +284,7 @@ fn doc_item_from_decl(decl: &Decl, source: &str) -> Option<DocItem> {
                     if v.fields.is_empty() {
                         v.name.clone()
                     } else {
-                        let fields: Vec<String> =
-                            v.fields.iter().map(render_type_expr).collect();
+                        let fields: Vec<String> = v.fields.iter().map(render_type_expr).collect();
                         format!("{}({})", v.name, fields.join(", "))
                     }
                 })
@@ -448,13 +454,22 @@ pub fn render_markdown(items: &[DocItem], module_name: &str) -> String {
     out.push_str(&format!("# Module `{}`\n\n", module_name));
 
     // Separate items by kind
-    let functions: Vec<&DocItem> = items.iter().filter(|i| i.kind == DocKind::Function).collect();
+    let functions: Vec<&DocItem> = items
+        .iter()
+        .filter(|i| i.kind == DocKind::Function)
+        .collect();
     let structs: Vec<&DocItem> = items.iter().filter(|i| i.kind == DocKind::Struct).collect();
     let enums: Vec<&DocItem> = items.iter().filter(|i| i.kind == DocKind::Enum).collect();
     let traits: Vec<&DocItem> = items.iter().filter(|i| i.kind == DocKind::Trait).collect();
-    let type_aliases: Vec<&DocItem> = items.iter().filter(|i| i.kind == DocKind::TypeAlias).collect();
+    let type_aliases: Vec<&DocItem> = items
+        .iter()
+        .filter(|i| i.kind == DocKind::TypeAlias)
+        .collect();
     let actors: Vec<&DocItem> = items.iter().filter(|i| i.kind == DocKind::Actor).collect();
-    let constants: Vec<&DocItem> = items.iter().filter(|i| i.kind == DocKind::Constant).collect();
+    let constants: Vec<&DocItem> = items
+        .iter()
+        .filter(|i| i.kind == DocKind::Constant)
+        .collect();
 
     // Summary section
     out.push_str("## Overview\n\n");
@@ -604,7 +619,14 @@ pub fn render_module_index(modules: &[(String, Vec<DocItem>)]) -> String {
     let mut all_types: Vec<(&str, &str)> = Vec::new();
     for (mod_name, items) in modules {
         for item in items {
-            if matches!(item.kind, DocKind::Struct | DocKind::Enum | DocKind::Trait | DocKind::TypeAlias | DocKind::Constant) {
+            if matches!(
+                item.kind,
+                DocKind::Struct
+                    | DocKind::Enum
+                    | DocKind::Trait
+                    | DocKind::TypeAlias
+                    | DocKind::Constant
+            ) {
                 all_types.push((&item.name, mod_name));
             }
         }

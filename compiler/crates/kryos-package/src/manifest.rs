@@ -52,15 +52,16 @@ pub enum DepSpec {
         version_req: VersionReq,
     },
     /// Path dependency: `{ path = "../local-lib" }`
-    Path {
-        path: String,
-    },
+    Path { path: String },
 }
 
 impl fmt::Display for DepSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DepSpec::Remote { source, version_req } => write!(f, "{source}@{version_req}"),
+            DepSpec::Remote {
+                source,
+                version_req,
+            } => write!(f, "{source}@{version_req}"),
             DepSpec::Path { path } => write!(f, "path:{path}"),
         }
     }
@@ -69,7 +70,10 @@ impl fmt::Display for DepSpec {
 impl Serialize for DepSpec {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            DepSpec::Remote { source, version_req } => {
+            DepSpec::Remote {
+                source,
+                version_req,
+            } => {
                 let s = format!("{source}@{version_req}");
                 serializer.serialize_str(&s)
             }
@@ -93,7 +97,9 @@ impl<'de> Deserialize<'de> for DepSpec {
             type Value = DepSpec;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a dependency string like \"github:org/repo@^1.0.0\" or a table with 'path'")
+                formatter.write_str(
+                    "a dependency string like \"github:org/repo@^1.0.0\" or a table with 'path'",
+                )
             }
 
             fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
@@ -113,7 +119,10 @@ impl<'de> Deserialize<'de> for DepSpec {
                         other => {
                             // Skip unknown keys
                             let _ = map.next_value::<toml::Value>()?;
-                            return Err(de::Error::unknown_field(other, &["path", "git", "version"]));
+                            return Err(de::Error::unknown_field(
+                                other,
+                                &["path", "git", "version"],
+                            ));
                         }
                     }
                 }
@@ -121,8 +130,7 @@ impl<'de> Deserialize<'de> for DepSpec {
                 if let Some(p) = path {
                     Ok(DepSpec::Path { path: p })
                 } else if let Some(g) = git {
-                    let vr = version
-                        .ok_or_else(|| de::Error::missing_field("version"))?;
+                    let vr = version.ok_or_else(|| de::Error::missing_field("version"))?;
                     let version_req: VersionReq = vr.parse().map_err(de::Error::custom)?;
                     Ok(DepSpec::Remote {
                         source: g,

@@ -6,14 +6,14 @@
 //! - `infer::InferenceEngine` — unification-based type inference
 //! - `check::TypeChecker` — AST type-checking pass
 
-pub mod ty;
-pub mod env;
-pub mod infer;
 pub mod check;
+pub mod env;
 pub mod exhaustive;
+pub mod infer;
 pub mod suggest;
+pub mod ty;
 
-pub use ty::Type;
+pub use check::{type_check, TypeChecker};
 pub use env::TypeEnv;
 pub use infer::InferenceEngine;
-pub use check::{type_check, TypeChecker};
+pub use ty::Type;

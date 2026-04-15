@@ -80,7 +80,9 @@ pub fn execute() -> Result<(), String> {
                 // Wrap in a function with accumulated state so prior definitions are visible.
                 let preamble = decl_history.join("\n");
                 let lets = let_history.join("\n");
-                let wrapper = format!("{preamble}\nfn __repl_type_check__() {{ {lets}\nlet __result__ = {expr}; }}");
+                let wrapper = format!(
+                    "{preamble}\nfn __repl_type_check__() {{ {lets}\nlet __result__ = {expr}; }}"
+                );
                 let (diags, sm) = kryos_driver::check_source(&wrapper, "<repl>");
                 if diags.iter().any(|d| d.is_error()) {
                     for d in &diags {
@@ -197,7 +199,9 @@ fn is_assignment_stmt(input: &str) -> bool {
             // The left-hand side should look like an identifier or field access.
             let lhs = input[..i].trim();
             if !lhs.is_empty()
-                && lhs.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '[' || c == ']')
+                && lhs
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '[' || c == ']')
             {
                 return true;
             }
@@ -229,11 +233,9 @@ fn ctrlc_install<F: Fn() + Send + 'static>(handler: F) -> Result<(), String> {
         // Store the handler in a static.
         // Safety: we only call this once.
         static mut HANDLER: Option<Box<dyn Fn() + Send>> = None;
-        INIT.call_once(|| {
-            unsafe {
-                HANDLER = Some(Box::new(handler));
-                SetConsoleCtrlHandler(Some(ctrl_handler), 1);
-            }
+        INIT.call_once(|| unsafe {
+            HANDLER = Some(Box::new(handler));
+            SetConsoleCtrlHandler(Some(ctrl_handler), 1);
         });
         return Ok(());
 

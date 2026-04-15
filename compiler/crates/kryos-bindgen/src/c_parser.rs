@@ -492,7 +492,10 @@ impl<'a> CHeaderParser<'a> {
                             for _ in 0..ptr_count {
                                 ty = CType::Pointer(Box::new(ty));
                             }
-                            self.items.push(CItem::Typedef { name: alias, target: ty });
+                            self.items.push(CItem::Typedef {
+                                name: alias,
+                                target: ty,
+                            });
                         } else if alias != struct_name {
                             self.items.push(CItem::Typedef {
                                 name: alias,
@@ -612,7 +615,8 @@ impl<'a> CHeaderParser<'a> {
                 break;
             }
             if self.is_eof() {
-                self.errors.push("unexpected EOF in struct body".to_string());
+                self.errors
+                    .push("unexpected EOF in struct body".to_string());
                 break;
             }
 
@@ -629,10 +633,7 @@ impl<'a> CHeaderParser<'a> {
                     } else {
                         ty
                     };
-                    fields.push(CField {
-                        name,
-                        ty: final_ty,
-                    });
+                    fields.push(CField { name, ty: final_ty });
                 }
                 self.expect_char(';');
             } else {
@@ -731,9 +732,8 @@ impl<'a> CHeaderParser<'a> {
             }
             // Skip suffixes
             self.skip_integer_suffix();
-            let hex_str = &self.source[hex_start..self.pos].trim_end_matches(|c: char| {
-                c == 'u' || c == 'U' || c == 'l' || c == 'L'
-            });
+            let hex_str = &self.source[hex_start..self.pos]
+                .trim_end_matches(|c: char| c == 'u' || c == 'U' || c == 'l' || c == 'L');
             if let Ok(v) = i64::from_str_radix(hex_str, 16) {
                 return Some(if negative { -v } else { v });
             }
@@ -752,7 +752,9 @@ impl<'a> CHeaderParser<'a> {
         // Strip suffixes for parsing
         let cleaned: String = num_str
             .chars()
-            .filter(|c| c.is_ascii_digit() || *c == '-' || *c == 'x' || *c == 'X' || c.is_ascii_hexdigit())
+            .filter(|c| {
+                c.is_ascii_digit() || *c == '-' || *c == 'x' || *c == 'X' || c.is_ascii_hexdigit()
+            })
             .collect();
         cleaned.parse::<i64>().ok()
     }
@@ -934,8 +936,7 @@ impl<'a> CHeaderParser<'a> {
 fn is_type_keyword(s: &str) -> bool {
     matches!(
         s,
-        "void" | "char" | "short" | "int" | "long" | "float" | "double"
-            | "signed" | "unsigned"
+        "void" | "char" | "short" | "int" | "long" | "float" | "double" | "signed" | "unsigned"
     )
 }
 
@@ -977,9 +978,7 @@ fn resolve_type_tokens(tokens: &[String]) -> CType {
         ["unsigned", "short"] | ["unsigned", "short", "int"] => CType::UShort,
         ["int"] | ["signed"] | ["signed", "int"] => CType::Int,
         ["unsigned"] | ["unsigned", "int"] => CType::UInt,
-        ["long"] | ["signed", "long"] | ["long", "int"] | ["signed", "long", "int"] => {
-            CType::Long
-        }
+        ["long"] | ["signed", "long"] | ["long", "int"] | ["signed", "long", "int"] => CType::Long,
         ["unsigned", "long"] | ["unsigned", "long", "int"] => CType::ULong,
         ["long", "long"]
         | ["signed", "long", "long"]
@@ -1039,8 +1038,16 @@ fn is_simple_constant(s: &str) -> bool {
         return false;
     }
     // Remaining: digits, hex, dots, suffixes
-    s.chars()
-        .all(|c| c.is_ascii_hexdigit() || c == '.' || c == 'u' || c == 'U' || c == 'l' || c == 'L' || c == 'f' || c == 'F')
+    s.chars().all(|c| {
+        c.is_ascii_hexdigit()
+            || c == '.'
+            || c == 'u'
+            || c == 'U'
+            || c == 'l'
+            || c == 'L'
+            || c == 'f'
+            || c == 'F'
+    })
 }
 
 /// Strip C numeric suffixes (u, U, l, L, f, F, ul, UL, ull, ULL, etc.)
@@ -1087,8 +1094,7 @@ mod tests {
 
     #[test]
     fn test_parse_struct() {
-        let items =
-            parse_c_header("struct timeval { long tv_sec; long tv_usec; };").unwrap();
+        let items = parse_c_header("struct timeval { long tv_sec; long tv_usec; };").unwrap();
         assert_eq!(items.len(), 1);
         match &items[0] {
             CItem::Struct { name, fields } => {
@@ -1105,8 +1111,7 @@ mod tests {
 
     #[test]
     fn test_parse_enum() {
-        let items =
-            parse_c_header("enum color { RED = 0, GREEN = 1, BLUE = 2 };").unwrap();
+        let items = parse_c_header("enum color { RED = 0, GREEN = 1, BLUE = 2 };").unwrap();
         assert_eq!(items.len(), 1);
         match &items[0] {
             CItem::Enum { name, variants } => {

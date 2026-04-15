@@ -27,7 +27,10 @@ pub fn execute(file: &str, args: &[String]) -> Result<(), String> {
     }
 
     // Use a temp directory for the output binary so we don't pollute the cwd
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("kryos_run");
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("kryos_run");
     let exe_name = if cfg!(windows) {
         format!("{stem}.exe")
     } else {

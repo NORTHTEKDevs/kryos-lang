@@ -64,7 +64,10 @@ pub fn pack(project_dir: &Path) -> Result<PublishPackage, String> {
 
     let manifest = Manifest::from_file(&manifest_path)?;
     let name = manifest.package.name.clone();
-    let version = manifest.package.version.parse::<Version>()
+    let version = manifest
+        .package
+        .version
+        .parse::<Version>()
         .map_err(|e| format!("invalid version in kryos.toml: {e}"))?;
 
     let src_dir = project_dir.join("src");
@@ -105,8 +108,7 @@ pub fn pack(project_dir: &Path) -> Result<PublishPackage, String> {
         if let Some(parent) = dest.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        std::fs::copy(abs_path, &dest)
-            .map_err(|e| format!("failed to copy {}: {e}", rel_path))?;
+        std::fs::copy(abs_path, &dest).map_err(|e| format!("failed to copy {}: {e}", rel_path))?;
     }
 
     std::fs::write(&tarball_path, &listing)
@@ -141,7 +143,13 @@ pub fn generate_index_entry(pkg: &PublishPackage) -> String {
     pkg.version.hash(&mut hasher);
     deps_json.hash(&mut hasher);
     let hash = hasher.finish();
-    let checksum = format!("{:016x}{:016x}{:016x}{:016x}", hash, hash.wrapping_mul(31), hash.wrapping_mul(37), hash.wrapping_mul(41));
+    let checksum = format!(
+        "{:016x}{:016x}{:016x}{:016x}",
+        hash,
+        hash.wrapping_mul(31),
+        hash.wrapping_mul(37),
+        hash.wrapping_mul(41)
+    );
 
     format!(
         r#"{{
@@ -176,8 +184,7 @@ impl RegistryClient {
     /// Sync (clone or pull) the registry index to the local cache.
     pub fn sync(&self) -> Result<(), String> {
         let cache = &self.config.cache_dir;
-        std::fs::create_dir_all(cache)
-            .map_err(|e| format!("failed to create cache dir: {e}"))?;
+        std::fs::create_dir_all(cache).map_err(|e| format!("failed to create cache dir: {e}"))?;
 
         let index_dir = cache.join("index");
         if index_dir.exists() {
@@ -214,11 +221,7 @@ impl RegistryClient {
             return Err("registry not synced — run `kryos pkg sync` first".to_string());
         }
 
-        let prefix = if name.len() >= 2 {
-            &name[..2]
-        } else {
-            name
-        };
+        let prefix = if name.len() >= 2 { &name[..2] } else { name };
 
         let json_path = index_dir.join(prefix).join(format!("{name}.json"));
         if !json_path.exists() {
@@ -294,10 +297,15 @@ fn parse_index_entry(json: &str, name: &str) -> Option<RegistryEntry> {
     let checksum = extract_json_string(json, "checksum").unwrap_or_default();
 
     // Extract download_url if present.
-    let download_url = extract_json_string(json, "download_url")
-        .unwrap_or_else(|| format!("{}/releases/download/v{}/{}-{}.tar.gz",
+    let download_url = extract_json_string(json, "download_url").unwrap_or_else(|| {
+        format!(
+            "{}/releases/download/v{}/{}-{}.tar.gz",
             DEFAULT_REGISTRY.trim_end_matches(".git"),
-            version, name, version));
+            version,
+            name,
+            version
+        )
+    });
 
     Some(RegistryEntry {
         name: name.to_string(),

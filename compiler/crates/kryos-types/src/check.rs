@@ -4,9 +4,7 @@
 //! checks function bodies, binary ops, calls, field access, etc.
 //! Reports mismatches as `Diagnostic` errors.
 
-use kryos_ast::{
-    BinOp, Block, Decl, Expr, Module, Pattern, Stmt, TypeExpr, UnOp,
-};
+use kryos_ast::{BinOp, Block, Decl, Expr, Module, Pattern, Stmt, TypeExpr, UnOp};
 use kryos_errors::{Diagnostic, Span};
 
 use crate::env::{EnumDef, FunctionSig, StructDef, TypeEnv};
@@ -58,8 +56,11 @@ impl TypeChecker {
 
     /// Report an error diagnostic with an error code.
     fn error_with_code(&mut self, msg: impl Into<String>, span: Span, code: &str) {
-        self.diagnostics
-            .push(Diagnostic::error(msg).with_label(span, "here").with_code(code));
+        self.diagnostics.push(
+            Diagnostic::error(msg)
+                .with_label(span, "here")
+                .with_code(code),
+        );
     }
 
     /// Report a warning diagnostic.
@@ -79,7 +80,11 @@ impl TypeChecker {
                     return if let Some(ref self_ty) = self.current_self_type {
                         self_ty.clone()
                     } else {
-                        self.error_with_code("`Self` used outside of impl or trait block", *span, kryos_errors::codes::E0109);
+                        self.error_with_code(
+                            "`Self` used outside of impl or trait block",
+                            *span,
+                            kryos_errors::codes::E0109,
+                        );
                         Type::Error
                     };
                 }
@@ -101,9 +106,15 @@ impl TypeChecker {
                         // Type alias or generic parameter registered as a variable.
                         ty.clone()
                     } else {
-                        self.error_with_code(format!("unknown type `{name}`"), *span, kryos_errors::codes::E0101);
+                        self.error_with_code(
+                            format!("unknown type `{name}`"),
+                            *span,
+                            kryos_errors::codes::E0101,
+                        );
                         let known = self.env.all_type_names();
-                        if let Some(suggestion) = crate::suggest::closest_match(name, known.iter().map(|s| s.as_str())) {
+                        if let Some(suggestion) =
+                            crate::suggest::closest_match(name, known.iter().map(|s| s.as_str()))
+                        {
                             if let Some(diag) = self.diagnostics.last_mut() {
                                 diag.notes.push(format!("did you mean `{suggestion}`?"));
                             }
@@ -192,10 +203,7 @@ impl TypeChecker {
                 element: Box::new(self.resolve_type_expr(element)),
                 size: *size,
             },
-            TypeExpr::Tuple {
-                elements,
-                span: _,
-            } => Type::Tuple {
+            TypeExpr::Tuple { elements, span: _ } => Type::Tuple {
                 elements: elements.iter().map(|e| self.resolve_type_expr(e)).collect(),
             },
             TypeExpr::Function {
@@ -234,10 +242,16 @@ impl TypeChecker {
             TypeExpr::DynTrait { trait_name, span } => {
                 // Verify the trait exists.
                 if self.env.lookup_trait(trait_name).is_none() {
-                    self.error_with_code(format!("unknown trait `{trait_name}`"), *span, kryos_errors::codes::E0105);
+                    self.error_with_code(
+                        format!("unknown trait `{trait_name}`"),
+                        *span,
+                        kryos_errors::codes::E0105,
+                    );
                     return Type::Error;
                 }
-                Type::DynTrait { trait_name: trait_name.clone() }
+                Type::DynTrait {
+                    trait_name: trait_name.clone(),
+                }
             }
             TypeExpr::Inferred { span: _ } => {
                 // Create a fresh type variable to be inferred.
@@ -259,11 +273,18 @@ impl TypeChecker {
         for decl in &module.declarations {
             self.register_decl(decl);
             // Track annotated functions.
-            if let Decl::Function { name, annotations, .. } = decl {
+            if let Decl::Function {
+                name, annotations, ..
+            } = decl
+            {
                 for ann in annotations {
                     match ann.name.as_str() {
-                        "deprecated" => { self.deprecated_functions.insert(name.clone()); }
-                        "pure" => { self.pure_functions.insert(name.clone()); }
+                        "deprecated" => {
+                            self.deprecated_functions.insert(name.clone());
+                        }
+                        "pure" => {
+                            self.pure_functions.insert(name.clone());
+                        }
                         _ => {}
                     }
                 }
@@ -325,11 +346,10 @@ impl TypeChecker {
                 let param_types: Vec<(String, Type)> = params
                     .iter()
                     .map(|p| {
-                        let ty = p
-                            .ty
-                            .as_ref()
-                            .map(|t| self.resolve_type_expr(t))
-                            .unwrap_or_else(|| self.engine.fresh_var());
+                        let ty =
+                            p.ty.as_ref()
+                                .map(|t| self.resolve_type_expr(t))
+                                .unwrap_or_else(|| self.engine.fresh_var());
                         (p.name.clone(), ty)
                     })
                     .collect();
@@ -455,8 +475,7 @@ impl TypeChecker {
                                             .clone()
                                             .unwrap_or_else(|| self.engine.fresh_var())
                                     } else {
-                                        p.ty
-                                            .as_ref()
+                                        p.ty.as_ref()
                                             .map(|t| self.resolve_type_expr(t))
                                             .unwrap_or_else(|| self.engine.fresh_var())
                                     };
@@ -503,9 +522,9 @@ impl TypeChecker {
                                         if pname == "self" {
                                             (
                                                 pname.clone(),
-                                                impl_target_ty.clone().unwrap_or_else(
-                                                    || pty.clone(),
-                                                ),
+                                                impl_target_ty
+                                                    .clone()
+                                                    .unwrap_or_else(|| pty.clone()),
                                             )
                                         } else {
                                             (pname.clone(), pty.clone())
@@ -558,11 +577,10 @@ impl TypeChecker {
                             let param_types: Vec<(String, Type)> = params
                                 .iter()
                                 .map(|p| {
-                                    let ty = p
-                                        .ty
-                                        .as_ref()
-                                        .map(|t| self.resolve_type_expr(t))
-                                        .unwrap_or_else(|| self.engine.fresh_var());
+                                    let ty =
+                                        p.ty.as_ref()
+                                            .map(|t| self.resolve_type_expr(t))
+                                            .unwrap_or_else(|| self.engine.fresh_var());
                                     (p.name.clone(), ty)
                                 })
                                 .collect();
@@ -595,7 +613,9 @@ impl TypeChecker {
                 // Register as a variable in the type namespace for lookup.
                 self.env.define_var(name.clone(), resolved);
             }
-            Decl::Const { name, ty, value, .. } => {
+            Decl::Const {
+                name, ty, value, ..
+            } => {
                 let resolved_ty = if let Some(t) = ty {
                     self.resolve_type_expr(t)
                 } else {
@@ -659,9 +679,7 @@ impl TypeChecker {
                             .unwrap_or_else(|| self.engine.fresh_var());
                         self.env.define_var(param.name.clone(), ty);
                     }
-                    self.current_return_type = ret_ty
-                        .as_ref()
-                        .map(|t| self.resolve_type_expr(t));
+                    self.current_return_type = ret_ty.as_ref().map(|t| self.resolve_type_expr(t));
                 }
 
                 self.check_block(body);
@@ -684,7 +702,9 @@ impl TypeChecker {
 
                 let _ = span; // suppress unused warning
             }
-            Decl::Impl { target, methods, .. } => {
+            Decl::Impl {
+                target, methods, ..
+            } => {
                 // Set Self type for the duration of this impl block.
                 let prev_self = self.current_self_type.take();
 
@@ -706,8 +726,14 @@ impl TypeChecker {
                 self.current_self_type = target_ty.clone();
 
                 for method in methods {
-                    if let (Some(ref ty), Decl::Function { name: mname, body: Some(_), .. }) =
-                        (&target_ty, method)
+                    if let (
+                        Some(ref ty),
+                        Decl::Function {
+                            name: mname,
+                            body: Some(_),
+                            ..
+                        },
+                    ) = (&target_ty, method)
                     {
                         // Push scope, bind `self` to the concrete target type,
                         // then check the method body normally.
@@ -935,18 +961,23 @@ impl TypeChecker {
                     self.bind_pattern(pat, &tv);
                 }
             }
-            Pattern::Enum { name, variant, fields, .. } => {
+            Pattern::Enum {
+                name,
+                variant,
+                fields,
+                ..
+            } => {
                 // Look up the enum variant's field types by variant name.
-                let field_types: Vec<Type> =
-                    if let Some(edef) = self.env.lookup_enum(name).cloned() {
-                        edef.variants
-                            .iter()
-                            .find(|(v, _)| v == variant)
-                            .map(|(_, tys)| tys.clone())
-                            .unwrap_or_default()
-                    } else {
-                        vec![]
-                    };
+                let field_types: Vec<Type> = if let Some(edef) = self.env.lookup_enum(name).cloned()
+                {
+                    edef.variants
+                        .iter()
+                        .find(|(v, _)| v == variant)
+                        .map(|(_, tys)| tys.clone())
+                        .unwrap_or_default()
+                } else {
+                    vec![]
+                };
 
                 for (i, pat) in fields.iter().enumerate() {
                     let field_ty = field_types
@@ -1001,9 +1032,15 @@ impl TypeChecker {
                         generics: vec![],
                     }
                 } else {
-                    self.error_with_code(format!("undefined variable `{name}`"), *span, kryos_errors::codes::E0102);
+                    self.error_with_code(
+                        format!("undefined variable `{name}`"),
+                        *span,
+                        kryos_errors::codes::E0102,
+                    );
                     let known = self.env.all_var_names();
-                    if let Some(suggestion) = crate::suggest::closest_match(name, known.iter().map(|s| s.as_str())) {
+                    if let Some(suggestion) =
+                        crate::suggest::closest_match(name, known.iter().map(|s| s.as_str()))
+                    {
                         if let Some(diag) = self.diagnostics.last_mut() {
                             diag.notes.push(format!("did you mean `{suggestion}`?"));
                         }
@@ -1049,10 +1086,7 @@ impl TypeChecker {
                                 Type::Error
                             }
                         } else {
-                            self.error(
-                                format!("no field `{field}` on tuple type"),
-                                *span,
-                            );
+                            self.error(format!("no field `{field}` on tuple type"), *span);
                             Type::Error
                         }
                     }
@@ -1062,10 +1096,7 @@ impl TypeChecker {
                             if let Some(fty) = self.env.lookup_field(name, field) {
                                 fty.clone()
                             } else {
-                                self.error(
-                                    format!("no field `{field}` on type `{name}`"),
-                                    *span,
-                                );
+                                self.error(format!("no field `{field}` on type `{name}`"), *span);
                                 Type::Error
                             }
                         } else {
@@ -1085,10 +1116,7 @@ impl TypeChecker {
                                     generics: generics.clone(),
                                 }
                             } else {
-                                self.error(
-                                    format!("no variant `{field}` on enum `{name}`"),
-                                    *span,
-                                );
+                                self.error(format!("no variant `{field}` on enum `{name}`"), *span);
                                 Type::Error
                             }
                         } else {
@@ -1136,15 +1164,10 @@ impl TypeChecker {
                         *value.clone()
                     }
                     // String indexing: str[i] -> str (single character)
-                    Type::Str => {
-                        Type::Str
-                    }
+                    Type::Str => Type::Str,
                     Type::Error => Type::Error,
                     _ => {
-                        self.error(
-                            format!("type `{obj_ty}` is not indexable"),
-                            *span,
-                        );
+                        self.error(format!("type `{obj_ty}` is not indexable"), *span);
                         Type::Error
                     }
                 }
@@ -1159,11 +1182,7 @@ impl TypeChecker {
             } => self.check_binary_op(*op, left, right, *span),
 
             // Unary operations.
-            Expr::UnaryOp {
-                op,
-                operand,
-                span,
-            } => {
+            Expr::UnaryOp { op, operand, span } => {
                 let operand_ty = self.infer_expr(operand);
                 match op {
                     UnOp::Neg => {
@@ -1171,10 +1190,7 @@ impl TypeChecker {
                         if resolved.is_numeric() || resolved.is_error() {
                             operand_ty
                         } else {
-                            self.error(
-                                format!("cannot negate type `{resolved}`"),
-                                *span,
-                            );
+                            self.error(format!("cannot negate type `{resolved}`"), *span);
                             Type::Error
                         }
                     }
@@ -1189,10 +1205,7 @@ impl TypeChecker {
                         if resolved.is_integer() || resolved.is_error() {
                             operand_ty
                         } else {
-                            self.error(
-                                format!("cannot bitwise-not type `{resolved}`"),
-                                *span,
-                            );
+                            self.error(format!("cannot bitwise-not type `{resolved}`"), *span);
                             Type::Error
                         }
                     }
@@ -1210,10 +1223,7 @@ impl TypeChecker {
                 // @deprecated: warn when calling a deprecated function.
                 if let Some(ref name) = callee_name_str {
                     if self.deprecated_functions.contains(name) {
-                        self.warning(
-                            format!("use of deprecated function `{name}`"),
-                            *span,
-                        );
+                        self.warning(format!("use of deprecated function `{name}`"), *span);
                     }
                 }
 
@@ -1230,19 +1240,48 @@ impl TypeChecker {
                             // Only warn for user-defined functions that are not marked @pure.
                             // Skip builtins like len, range, etc. which are side-effect free.
                             let side_effect_free_builtins = [
-                                "len", "range", "to_string", "typeof", "sizeof",
-                                "min", "max", "abs", "sqrt", "pow", "floor", "ceil",
-                                "round", "log", "log2", "log10", "sin", "cos", "tan",
-                                "push", "pop", "contains", "keys", "values",
-                                "split", "trim", "starts_with", "ends_with",
-                                "to_upper", "to_lower", "char_at", "substring",
-                                "parse_int", "parse_float",
+                                "len",
+                                "range",
+                                "to_string",
+                                "typeof",
+                                "sizeof",
+                                "min",
+                                "max",
+                                "abs",
+                                "sqrt",
+                                "pow",
+                                "floor",
+                                "ceil",
+                                "round",
+                                "log",
+                                "log2",
+                                "log10",
+                                "sin",
+                                "cos",
+                                "tan",
+                                "push",
+                                "pop",
+                                "contains",
+                                "keys",
+                                "values",
+                                "split",
+                                "trim",
+                                "starts_with",
+                                "ends_with",
+                                "to_upper",
+                                "to_lower",
+                                "char_at",
+                                "substring",
+                                "parse_int",
+                                "parse_float",
                             ];
                             if self.env.lookup_function(name).is_some()
                                 && !side_effect_free_builtins.contains(&name.as_str())
                             {
                                 self.error(
-                                    format!("`@pure` function cannot call non-pure function `{name}`"),
+                                    format!(
+                                        "`@pure` function cannot call non-pure function `{name}`"
+                                    ),
                                     *span,
                                 );
                             }
@@ -1289,10 +1328,7 @@ impl TypeChecker {
                     }
                     Type::Error => Type::Error,
                     _ => {
-                        self.error(
-                            format!("type `{callee_ty}` is not callable"),
-                            *span,
-                        );
+                        self.error(format!("type `{callee_ty}` is not callable"), *span);
                         Type::Error
                     }
                 }
@@ -1313,13 +1349,12 @@ impl TypeChecker {
                     if let Some(trait_def) = self.env.lookup_trait(trait_name).cloned() {
                         if let Some(sig) = trait_def.methods.iter().find(|m| m.name == *method) {
                             // Skip 'self' parameter (first param) if present.
-                            let expected_params: Vec<_> = if sig.params.first().map(|(n, _)| n.as_str())
-                                == Some("self")
-                            {
-                                sig.params[1..].to_vec()
-                            } else {
-                                sig.params.clone()
-                            };
+                            let expected_params: Vec<_> =
+                                if sig.params.first().map(|(n, _)| n.as_str()) == Some("self") {
+                                    sig.params[1..].to_vec()
+                                } else {
+                                    sig.params.clone()
+                                };
                             if args.len() != expected_params.len() {
                                 self.error(
                                     format!(
@@ -1330,7 +1365,8 @@ impl TypeChecker {
                                     *span,
                                 );
                             } else {
-                                for (arg, (_, param_ty)) in args.iter().zip(expected_params.iter()) {
+                                for (arg, (_, param_ty)) in args.iter().zip(expected_params.iter())
+                                {
                                     let arg_ty = self.infer_expr(arg);
                                     if let Err(diag) =
                                         self.engine.unify(param_ty, &arg_ty, arg.span())
@@ -1364,19 +1400,21 @@ impl TypeChecker {
                             for arg in args.iter() {
                                 self.infer_expr(arg);
                             }
-                            return Type::Enum { name: tname.clone(), generics: vec![] };
+                            return Type::Enum {
+                                name: tname.clone(),
+                                generics: vec![],
+                            };
                         }
                     }
 
                     if let Some(sig) = self.env.lookup_method(tname, method).cloned() {
                         // Skip 'self' parameter (first param) if present.
-                        let expected_params: Vec<_> = if sig.params.first().map(|(n, _)| n.as_str())
-                            == Some("self")
-                        {
-                            sig.params[1..].to_vec()
-                        } else {
-                            sig.params.clone()
-                        };
+                        let expected_params: Vec<_> =
+                            if sig.params.first().map(|(n, _)| n.as_str()) == Some("self") {
+                                sig.params[1..].to_vec()
+                            } else {
+                                sig.params.clone()
+                            };
 
                         if args.len() != expected_params.len() {
                             self.error(
@@ -1390,8 +1428,7 @@ impl TypeChecker {
                         } else {
                             for (arg, (_, param_ty)) in args.iter().zip(expected_params.iter()) {
                                 let arg_ty = self.infer_expr(arg);
-                                if let Err(diag) =
-                                    self.engine.unify(param_ty, &arg_ty, arg.span())
+                                if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span())
                                 {
                                     self.diagnostics.push(diag);
                                 }
@@ -1402,8 +1439,10 @@ impl TypeChecker {
 
                     // Check if this is a Function-typed struct field being called
                     // (e.g. `t.transform(5)` where `transform: fn(i64) -> i64`).
-                    if let Some(Type::Function { params: fn_params, ret: fn_ret }) =
-                        self.env.lookup_field(tname, method).cloned()
+                    if let Some(Type::Function {
+                        params: fn_params,
+                        ret: fn_ret,
+                    }) = self.env.lookup_field(tname, method).cloned()
                     {
                         if args.len() != fn_params.len() {
                             self.error(
@@ -1417,8 +1456,7 @@ impl TypeChecker {
                         } else {
                             for (arg, param_ty) in args.iter().zip(fn_params.iter()) {
                                 let arg_ty = self.infer_expr(arg);
-                                if let Err(diag) =
-                                    self.engine.unify(param_ty, &arg_ty, arg.span())
+                                if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span())
                                 {
                                     self.diagnostics.push(diag);
                                 }
@@ -1445,13 +1483,12 @@ impl TypeChecker {
                 // Look up the method on the type (mangled as TypeName__method).
                 if let Some(sig) = self.env.lookup_method(type_name, method).cloned() {
                     // Static call — skip 'self' parameter.
-                    let expected_params: Vec<_> = if sig.params.first().map(|(n, _)| n.as_str())
-                        == Some("self")
-                    {
-                        sig.params[1..].to_vec()
-                    } else {
-                        sig.params.clone()
-                    };
+                    let expected_params: Vec<_> =
+                        if sig.params.first().map(|(n, _)| n.as_str()) == Some("self") {
+                            sig.params[1..].to_vec()
+                        } else {
+                            sig.params.clone()
+                        };
                     if args.len() != expected_params.len() {
                         self.error(
                             format!(
@@ -1464,9 +1501,7 @@ impl TypeChecker {
                     } else {
                         for (arg, (_, param_ty)) in args.iter().zip(expected_params.iter()) {
                             let arg_ty = self.infer_expr(arg);
-                            if let Err(diag) =
-                                self.engine.unify(param_ty, &arg_ty, arg.span())
-                            {
+                            if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span()) {
                                 self.diagnostics.push(diag);
                             }
                         }
@@ -1535,8 +1570,7 @@ impl TypeChecker {
                 if let Some(def) = self.env.lookup_struct(name).cloned() {
                     for (fname, fexpr) in fields {
                         let expr_ty = self.infer_expr(fexpr);
-                        if let Some((_, expected_ty)) =
-                            def.fields.iter().find(|(n, _)| n == fname)
+                        if let Some((_, expected_ty)) = def.fields.iter().find(|(n, _)| n == fname)
                         {
                             if let Err(diag) =
                                 self.engine.unify(expected_ty, &expr_ty, fexpr.span())
@@ -1544,10 +1578,7 @@ impl TypeChecker {
                                 self.diagnostics.push(diag);
                             }
                         } else {
-                            self.error(
-                                format!("no field `{fname}` on struct `{name}`"),
-                                *span,
-                            );
+                            self.error(format!("no field `{fname}` on struct `{name}`"), *span);
                         }
                     }
                     Type::Struct {
@@ -1559,9 +1590,15 @@ impl TypeChecker {
                             .collect(),
                     }
                 } else {
-                    self.error_with_code(format!("unknown struct `{name}`"), *span, kryos_errors::codes::E0103);
+                    self.error_with_code(
+                        format!("unknown struct `{name}`"),
+                        *span,
+                        kryos_errors::codes::E0103,
+                    );
                     let known = self.env.all_struct_names();
-                    if let Some(suggestion) = crate::suggest::closest_match(name, known.iter().map(|s| s.as_str())) {
+                    if let Some(suggestion) =
+                        crate::suggest::closest_match(name, known.iter().map(|s| s.as_str()))
+                    {
                         if let Some(diag) = self.diagnostics.last_mut() {
                             diag.notes.push(format!("did you mean `{suggestion}`?"));
                         }
@@ -1644,7 +1681,11 @@ impl TypeChecker {
             }
 
             // Match expression.
-            Expr::MatchExpr { subject, arms, span } => {
+            Expr::MatchExpr {
+                subject,
+                arms,
+                span,
+            } => {
                 let subject_ty = self.infer_expr(subject);
                 if arms.is_empty() {
                     return Type::Void;
@@ -1686,8 +1727,7 @@ impl TypeChecker {
                 };
                 if !type_name.is_empty() {
                     let enum_def = self.env.lookup_enum(&type_name).cloned();
-                    let pats: Vec<&kryos_ast::Pattern> =
-                        arms.iter().map(|a| &a.pattern).collect();
+                    let pats: Vec<&kryos_ast::Pattern> = arms.iter().map(|a| &a.pattern).collect();
                     let warnings = crate::exhaustive::check_exhaustive(
                         &type_name,
                         &pats,
@@ -1702,10 +1742,7 @@ impl TypeChecker {
 
             // Range expression.
             Expr::RangeExpr {
-                start,
-                end,
-                span,
-                ..
+                start, end, span, ..
             } => {
                 let start_ty = start
                     .as_ref()
@@ -1839,9 +1876,7 @@ impl TypeChecker {
 
             // Await expression — for now, just pass through the inner type.
             // A full implementation would unwrap Future<T> → T.
-            Expr::Await { value, .. } => {
-                self.infer_expr(value)
-            }
+            Expr::Await { value, .. } => self.infer_expr(value),
         }
     }
 
@@ -1858,10 +1893,8 @@ impl TypeChecker {
                 if op == BinOp::Add {
                     let resolved_left = self.engine.resolve(&left_ty);
                     let resolved_right = self.engine.resolve(&right_ty);
-                    if let (
-                        Type::Array { element: e1, .. },
-                        Type::Array { element: e2, .. },
-                    ) = (&resolved_left, &resolved_right)
+                    if let (Type::Array { element: e1, .. }, Type::Array { element: e2, .. }) =
+                        (&resolved_left, &resolved_right)
                     {
                         // Unify element types.
                         if let Err(diag) = self.engine.unify(e1, e2, span) {
@@ -1888,12 +1921,18 @@ impl TypeChecker {
                         return Type::Str;
                     }
                     let op_sym = match op {
-                        BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
-                        BinOp::Div => "/", BinOp::Mod => "%", BinOp::Pow => "**",
+                        BinOp::Add => "+",
+                        BinOp::Sub => "-",
+                        BinOp::Mul => "*",
+                        BinOp::Div => "/",
+                        BinOp::Mod => "%",
+                        BinOp::Pow => "**",
                         _ => "?",
                     };
                     self.error(
-                        format!("cannot apply `{op_sym}` to type `{resolved}`: expected a numeric type"),
+                        format!(
+                            "cannot apply `{op_sym}` to type `{resolved}`: expected a numeric type"
+                        ),
                         span,
                     );
                     return Type::Error;
@@ -1929,8 +1968,11 @@ impl TypeChecker {
                 let resolved = self.engine.resolve(&left_ty);
                 if !resolved.is_integer() && !resolved.is_error() {
                     let op_sym = match op {
-                        BinOp::BitAnd => "&", BinOp::BitOr => "|", BinOp::BitXor => "^",
-                        BinOp::Shl => "<<", BinOp::Shr => ">>",
+                        BinOp::BitAnd => "&",
+                        BinOp::BitOr => "|",
+                        BinOp::BitXor => "^",
+                        BinOp::Shl => "<<",
+                        BinOp::Shr => ">>",
                         _ => "?",
                     };
                     self.error(
@@ -2131,7 +2173,10 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         name: "map_has".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
-        params: vec![("m".to_string(), Type::Error), ("key".to_string(), Type::Str)],
+        params: vec![
+            ("m".to_string(), Type::Error),
+            ("key".to_string(), Type::Str),
+        ],
         ret: Type::Bool,
     });
 
@@ -2140,7 +2185,10 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         name: "map_delete".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
-        params: vec![("m".to_string(), Type::Error), ("key".to_string(), Type::Str)],
+        params: vec![
+            ("m".to_string(), Type::Error),
+            ("key".to_string(), Type::Str),
+        ],
         ret: Type::Error,
     });
 
@@ -2319,7 +2367,11 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     // abs(x: T) -> T — absolute value (polymorphic: i64 or f64)
     {
         let abs_tv = checker.engine.fresh_var();
-        let abs_var_id = if let Type::Var(id) = &abs_tv { vec![*id] } else { vec![] };
+        let abs_var_id = if let Type::Var(id) = &abs_tv {
+            vec![*id]
+        } else {
+            vec![]
+        };
         checker.env.define_function(FunctionSig {
             name: "abs".to_string(),
             generic_params: vec!["T".to_string()],
@@ -2332,12 +2384,19 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     // min(a: T, b: T) -> T — minimum of two values (polymorphic: i64 or f64)
     {
         let min_tv = checker.engine.fresh_var();
-        let min_var_id = if let Type::Var(id) = &min_tv { vec![*id] } else { vec![] };
+        let min_var_id = if let Type::Var(id) = &min_tv {
+            vec![*id]
+        } else {
+            vec![]
+        };
         checker.env.define_function(FunctionSig {
             name: "min".to_string(),
             generic_params: vec!["T".to_string()],
             generic_var_ids: min_var_id,
-            params: vec![("a".to_string(), min_tv.clone()), ("b".to_string(), min_tv.clone())],
+            params: vec![
+                ("a".to_string(), min_tv.clone()),
+                ("b".to_string(), min_tv.clone()),
+            ],
             ret: min_tv,
         });
     }
@@ -2345,12 +2404,19 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     // max(a: T, b: T) -> T — maximum of two values (polymorphic: i64 or f64)
     {
         let max_tv = checker.engine.fresh_var();
-        let max_var_id = if let Type::Var(id) = &max_tv { vec![*id] } else { vec![] };
+        let max_var_id = if let Type::Var(id) = &max_tv {
+            vec![*id]
+        } else {
+            vec![]
+        };
         checker.env.define_function(FunctionSig {
             name: "max".to_string(),
             generic_params: vec!["T".to_string()],
             generic_var_ids: max_var_id,
-            params: vec![("a".to_string(), max_tv.clone()), ("b".to_string(), max_tv.clone())],
+            params: vec![
+                ("a".to_string(), max_tv.clone()),
+                ("b".to_string(), max_tv.clone()),
+            ],
             ret: max_tv,
         });
     }
@@ -2718,10 +2784,13 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         generic_params: vec![],
         generic_var_ids: vec![],
         params: vec![
-            ("arr".to_string(), Type::Array {
-                element: Box::new(Type::Str),
-                size: None,
-            }),
+            (
+                "arr".to_string(),
+                Type::Array {
+                    element: Box::new(Type::Str),
+                    size: None,
+                },
+            ),
             ("separator".to_string(), Type::Str),
         ],
         ret: Type::Str,
@@ -2771,4 +2840,3 @@ fn stmt_returns(stmt: &Stmt) -> bool {
         _ => false,
     }
 }
-

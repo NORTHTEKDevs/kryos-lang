@@ -23,7 +23,11 @@ pub fn execute(filter: Option<&str>) -> Result<(), String> {
     let mut total_failed = 0usize;
 
     if !tests.is_empty() {
-        eprintln!("running {} file test{}", tests.len(), if tests.len() == 1 { "" } else { "s" });
+        eprintln!(
+            "running {} file test{}",
+            tests.len(),
+            if tests.len() == 1 { "" } else { "s" }
+        );
         eprintln!();
 
         let report = run_all(&tests);
@@ -58,7 +62,10 @@ pub fn execute(filter: Option<&str>) -> Result<(), String> {
     }
 
     if total_failed > 0 {
-        Err(format!("{total_failed} test{} failed", if total_failed == 1 { "" } else { "s" }))
+        Err(format!(
+            "{total_failed} test{} failed",
+            if total_failed == 1 { "" } else { "s" }
+        ))
     } else {
         Ok(())
     }

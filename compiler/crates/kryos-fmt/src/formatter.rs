@@ -107,16 +107,16 @@ impl Formatter {
     fn fmt_decl(&mut self, decl: &Decl) {
         // Emit doc comments before the declaration
         match decl {
-            Decl::Function { doc_comments, .. } |
-            Decl::Struct { doc_comments, .. } |
-            Decl::Enum { doc_comments, .. } |
-            Decl::Trait { doc_comments, .. } |
-            Decl::Impl { doc_comments, .. } |
-            Decl::Const { doc_comments, .. } |
-            Decl::Actor { doc_comments, .. } |
-            Decl::TypeAlias { doc_comments, .. } |
-            Decl::Import { doc_comments, .. } |
-            Decl::Extern { doc_comments, .. } => self.fmt_doc_comments(doc_comments),
+            Decl::Function { doc_comments, .. }
+            | Decl::Struct { doc_comments, .. }
+            | Decl::Enum { doc_comments, .. }
+            | Decl::Trait { doc_comments, .. }
+            | Decl::Impl { doc_comments, .. }
+            | Decl::Const { doc_comments, .. }
+            | Decl::Actor { doc_comments, .. }
+            | Decl::TypeAlias { doc_comments, .. }
+            | Decl::Import { doc_comments, .. }
+            | Decl::Extern { doc_comments, .. } => self.fmt_doc_comments(doc_comments),
         }
 
         match decl {
@@ -130,7 +130,16 @@ impl Formatter {
                 is_async,
                 annotations,
                 ..
-            } => self.fmt_function(name, generics, params, ret_ty, body, *public, *is_async, annotations),
+            } => self.fmt_function(
+                name,
+                generics,
+                params,
+                ret_ty,
+                body,
+                *public,
+                *is_async,
+                annotations,
+            ),
 
             Decl::Struct {
                 name,
@@ -265,7 +274,9 @@ impl Formatter {
         let sig_oneline = self.build_fn_signature_oneline(name, generics, params, ret_ty, public);
         let current_indent_width = self.indent * INDENT_WIDTH;
 
-        if current_indent_width + sig_oneline.len() + if body.is_some() { 3 } else { 0 } <= MAX_LINE_WIDTH {
+        if current_indent_width + sig_oneline.len() + if body.is_some() { 3 } else { 0 }
+            <= MAX_LINE_WIDTH
+        {
             // Single-line params
             self.write(&sig_oneline);
         } else {
@@ -462,13 +473,7 @@ impl Formatter {
 
     // -- trait --------------------------------------------------------------
 
-    fn fmt_trait(
-        &mut self,
-        name: &str,
-        generics: &[GenericParam],
-        methods: &[Decl],
-        public: bool,
-    ) {
+    fn fmt_trait(&mut self, name: &str, generics: &[GenericParam], methods: &[Decl], public: bool) {
         self.write_indent();
         if public {
             self.write("pub ");
@@ -705,7 +710,9 @@ impl Formatter {
                 self.newline();
             }
 
-            Stmt::Assign { target, op, value, .. } => {
+            Stmt::Assign {
+                target, op, value, ..
+            } => {
                 self.write_indent();
                 self.write(&self.fmt_expr_to_string(target));
                 self.write(" ");
@@ -786,7 +793,9 @@ impl Formatter {
                 self.writeln("}");
             }
 
-            Stmt::While { condition, body, .. } => {
+            Stmt::While {
+                condition, body, ..
+            } => {
                 self.write_indent();
                 self.write("while ");
                 self.write(&self.fmt_expr_to_string(condition));
@@ -891,7 +900,11 @@ impl Formatter {
             }
             Expr::CharLiteral { value, .. } => format!("'{}'", escape_char(*value)),
             Expr::BoolLiteral { value, .. } => {
-                if *value { "true".to_string() } else { "false".to_string() }
+                if *value {
+                    "true".to_string()
+                } else {
+                    "false".to_string()
+                }
             }
             Expr::NoneLiteral { .. } => "none".to_string(),
 
@@ -909,7 +922,9 @@ impl Formatter {
                 )
             }
 
-            Expr::BinaryOp { op, left, right, .. } => {
+            Expr::BinaryOp {
+                op, left, right, ..
+            } => {
                 let left_str = self.maybe_paren_left(left, *op);
                 let right_str = self.maybe_paren_right(right, *op);
                 format!("{} {} {}", left_str, binop_str(*op), right_str)
@@ -932,7 +947,8 @@ impl Formatter {
 
             Expr::FnCall { callee, args, .. } => {
                 let callee_str = self.fmt_expr_to_string(callee);
-                let args_str: Vec<String> = args.iter().map(|a| self.fmt_expr_to_string(a)).collect();
+                let args_str: Vec<String> =
+                    args.iter().map(|a| self.fmt_expr_to_string(a)).collect();
                 format!("{}({})", callee_str, args_str.join(", "))
             }
 
@@ -943,7 +959,8 @@ impl Formatter {
                 ..
             } => {
                 let obj_str = self.fmt_expr_to_string(object);
-                let args_str: Vec<String> = args.iter().map(|a| self.fmt_expr_to_string(a)).collect();
+                let args_str: Vec<String> =
+                    args.iter().map(|a| self.fmt_expr_to_string(a)).collect();
                 format!("{}.{}({})", obj_str, method, args_str.join(", "))
             }
 
@@ -953,17 +970,24 @@ impl Formatter {
                 args,
                 ..
             } => {
-                let args_str: Vec<String> = args.iter().map(|a| self.fmt_expr_to_string(a)).collect();
+                let args_str: Vec<String> =
+                    args.iter().map(|a| self.fmt_expr_to_string(a)).collect();
                 format!("{}::{}({})", type_name, method, args_str.join(", "))
             }
 
             Expr::ArrayLiteral { elements, .. } => {
-                let elems: Vec<String> = elements.iter().map(|e| self.fmt_expr_to_string(e)).collect();
+                let elems: Vec<String> = elements
+                    .iter()
+                    .map(|e| self.fmt_expr_to_string(e))
+                    .collect();
                 format!("[{}]", elems.join(", "))
             }
 
             Expr::TupleLiteral { elements, .. } => {
-                let elems: Vec<String> = elements.iter().map(|e| self.fmt_expr_to_string(e)).collect();
+                let elems: Vec<String> = elements
+                    .iter()
+                    .map(|e| self.fmt_expr_to_string(e))
+                    .collect();
                 if elems.len() == 1 {
                     format!("({},)", elems[0])
                 } else {
@@ -988,9 +1012,7 @@ impl Formatter {
             Expr::StructLiteral { name, fields, .. } => {
                 let field_strs: Vec<String> = fields
                     .iter()
-                    .map(|(fname, fval)| {
-                        format!("{}: {}", fname, self.fmt_expr_to_string(fval))
-                    })
+                    .map(|(fname, fval)| format!("{}: {}", fname, self.fmt_expr_to_string(fval)))
                     .collect();
                 format!("{} {{ {} }}", name, field_strs.join(", "))
             }
@@ -1085,10 +1107,18 @@ impl Formatter {
                 )
             }
 
-            Expr::Borrow { inner, mutable: true, .. } => {
+            Expr::Borrow {
+                inner,
+                mutable: true,
+                ..
+            } => {
                 format!("&mut {}", self.fmt_expr_to_string(inner))
             }
-            Expr::Borrow { inner, mutable: false, .. } => {
+            Expr::Borrow {
+                inner,
+                mutable: false,
+                ..
+            } => {
                 format!("&{}", self.fmt_expr_to_string(inner))
             }
             Expr::Deref { inner, .. } => {
@@ -1279,11 +1309,7 @@ impl Formatter {
                 format!("{}<{}>", name, args_str.join(", "))
             }
 
-            TypeExpr::Array {
-                element,
-                size,
-                ..
-            } => {
+            TypeExpr::Array { element, size, .. } => {
                 let elem = self.fmt_type_to_string(element);
                 if let Some(sz) = size {
                     format!("[{}; {}]", elem, sz)
@@ -1293,15 +1319,21 @@ impl Formatter {
             }
 
             TypeExpr::Tuple { elements, .. } => {
-                let elems: Vec<String> =
-                    elements.iter().map(|e| self.fmt_type_to_string(e)).collect();
+                let elems: Vec<String> = elements
+                    .iter()
+                    .map(|e| self.fmt_type_to_string(e))
+                    .collect();
                 format!("({})", elems.join(", "))
             }
 
             TypeExpr::Function { params, ret, .. } => {
                 let params_str: Vec<String> =
                     params.iter().map(|p| self.fmt_type_to_string(p)).collect();
-                format!("fn({}) -> {}", params_str.join(", "), self.fmt_type_to_string(ret))
+                format!(
+                    "fn({}) -> {}",
+                    params_str.join(", "),
+                    self.fmt_type_to_string(ret)
+                )
             }
 
             TypeExpr::Optional { inner, .. } => {

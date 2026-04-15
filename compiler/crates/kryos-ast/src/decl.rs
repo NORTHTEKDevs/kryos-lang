@@ -1,7 +1,7 @@
-use kryos_errors::Span;
-use crate::types::TypeExpr;
 use crate::expr::Param;
 use crate::stmt::Block;
+use crate::types::TypeExpr;
+use kryos_errors::Span;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Annotation {
@@ -114,7 +114,11 @@ pub enum Decl {
         doc_comments: Vec<String>,
         span: Span,
     },
-    Import { path: ImportPath, doc_comments: Vec<String>, span: Span },
+    Import {
+        path: ImportPath,
+        doc_comments: Vec<String>,
+        span: Span,
+    },
     Extern {
         abi: String,
         items: Vec<Decl>,
@@ -135,11 +139,16 @@ pub enum Decl {
 impl Decl {
     pub fn span(&self) -> Span {
         match self {
-            Self::Function { span, .. } | Self::Struct { span, .. } |
-            Self::Enum { span, .. } | Self::Trait { span, .. } |
-            Self::Impl { span, .. } | Self::Actor { span, .. } |
-            Self::TypeAlias { span, .. } | Self::Import { span, .. } |
-            Self::Extern { span, .. } | Self::Const { span, .. } => *span,
+            Self::Function { span, .. }
+            | Self::Struct { span, .. }
+            | Self::Enum { span, .. }
+            | Self::Trait { span, .. }
+            | Self::Impl { span, .. }
+            | Self::Actor { span, .. }
+            | Self::TypeAlias { span, .. }
+            | Self::Import { span, .. }
+            | Self::Extern { span, .. }
+            | Self::Const { span, .. } => *span,
         }
     }
 }

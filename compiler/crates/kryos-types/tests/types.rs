@@ -96,7 +96,7 @@ fn unify_two_vars_chain() {
     let mut engine = InferenceEngine::new();
     let v0 = engine.fresh_var(); // Var(0)
     let v1 = engine.fresh_var(); // Var(1)
-    // Unify Var(0) with Var(1).
+                                 // Unify Var(0) with Var(1).
     engine.unify(&v0, &v1, S).unwrap();
     // Unify Var(1) with i32.
     engine.unify(&v1, &Type::I32, S).unwrap();
@@ -310,10 +310,7 @@ fn check_binary_op_int_plus_float_error() {
         doc_comments: vec![],
         span: S,
     }]);
-    assert!(
-        !diags.is_empty(),
-        "expected type error for int + float"
-    );
+    assert!(!diags.is_empty(), "expected type error for int + float");
 }
 
 #[test]
@@ -342,7 +339,7 @@ fn check_binary_op_int_plus_int() {
                 span: S,
             }),
             public: false,
-        is_async: false,
+            is_async: false,
             annotations: vec![],
             doc_comments: vec![],
             span: S,
@@ -384,7 +381,7 @@ fn check_comparison_returns_bool() {
                 span: S,
             }),
             public: false,
-        is_async: false,
+            is_async: false,
             annotations: vec![],
             doc_comments: vec![],
             span: S,
@@ -697,10 +694,7 @@ fn env_function_lookup() {
         name: "add".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
-        params: vec![
-            ("a".to_string(), Type::I32),
-            ("b".to_string(), Type::I32),
-        ],
+        params: vec![("a".to_string(), Type::I32), ("b".to_string(), Type::I32)],
         ret: Type::I32,
     });
 
@@ -741,14 +735,24 @@ fn deprecated_function_emits_warning() {
                 name: "old_fn".into(),
                 generics: vec![],
                 params: vec![],
-                ret_ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }),
-                body: Some(Block {
-                    stmts: vec![Stmt::Return { value: Some(Expr::IntLiteral { value: 1, span: S }), span: S }],
+                ret_ty: Some(TypeExpr::Simple {
+                    name: "i64".into(),
                     span: S,
                 }),
-                annotations: vec![kryos_ast::Annotation { name: "deprecated".into(), args: vec![], span: S }],
+                body: Some(Block {
+                    stmts: vec![Stmt::Return {
+                        value: Some(Expr::IntLiteral { value: 1, span: S }),
+                        span: S,
+                    }],
+                    span: S,
+                }),
+                annotations: vec![kryos_ast::Annotation {
+                    name: "deprecated".into(),
+                    args: vec![],
+                    span: S,
+                }],
                 public: false,
-        is_async: false,
+                is_async: false,
                 doc_comments: vec![],
                 span: S,
             },
@@ -757,11 +761,17 @@ fn deprecated_function_emits_warning() {
                 name: "main".into(),
                 generics: vec![],
                 params: vec![],
-                ret_ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }),
+                ret_ty: Some(TypeExpr::Simple {
+                    name: "i64".into(),
+                    span: S,
+                }),
                 body: Some(Block {
                     stmts: vec![Stmt::Return {
                         value: Some(Expr::FnCall {
-                            callee: Box::new(Expr::Identifier { name: "old_fn".into(), span: S }),
+                            callee: Box::new(Expr::Identifier {
+                                name: "old_fn".into(),
+                                span: S,
+                            }),
                             args: vec![],
                             span: S,
                         }),
@@ -771,7 +781,7 @@ fn deprecated_function_emits_warning() {
                 }),
                 annotations: vec![],
                 public: false,
-        is_async: false,
+                is_async: false,
                 doc_comments: vec![],
                 span: S,
             },
@@ -800,28 +810,52 @@ fn pure_function_rejects_io_call() {
             Decl::Function {
                 name: "bad".into(),
                 generics: vec![],
-                params: vec![Param { name: "x".into(), ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }), default: None, span: S }],
-                ret_ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }),
+                params: vec![Param {
+                    name: "x".into(),
+                    ty: Some(TypeExpr::Simple {
+                        name: "i64".into(),
+                        span: S,
+                    }),
+                    default: None,
+                    span: S,
+                }],
+                ret_ty: Some(TypeExpr::Simple {
+                    name: "i64".into(),
+                    span: S,
+                }),
                 body: Some(Block {
                     stmts: vec![
                         Stmt::Expr {
                             expr: Expr::FnCall {
-                                callee: Box::new(Expr::Identifier { name: "println".into(), span: S }),
-                                args: vec![Expr::Identifier { name: "x".into(), span: S }],
+                                callee: Box::new(Expr::Identifier {
+                                    name: "println".into(),
+                                    span: S,
+                                }),
+                                args: vec![Expr::Identifier {
+                                    name: "x".into(),
+                                    span: S,
+                                }],
                                 span: S,
                             },
                             span: S,
                         },
                         Stmt::Return {
-                            value: Some(Expr::Identifier { name: "x".into(), span: S }),
+                            value: Some(Expr::Identifier {
+                                name: "x".into(),
+                                span: S,
+                            }),
                             span: S,
                         },
                     ],
                     span: S,
                 }),
-                annotations: vec![kryos_ast::Annotation { name: "pure".into(), args: vec![], span: S }],
+                annotations: vec![kryos_ast::Annotation {
+                    name: "pure".into(),
+                    args: vec![],
+                    span: S,
+                }],
                 public: false,
-        is_async: false,
+                is_async: false,
                 doc_comments: vec![],
                 span: S,
             },
@@ -832,7 +866,9 @@ fn pure_function_rejects_io_call() {
     let diags = type_check(&module);
     let errors: Vec<_> = diags.iter().filter(|d| d.level == Level::Error).collect();
     assert!(
-        errors.iter().any(|d| d.message.contains("@pure") && d.message.contains("println")),
+        errors
+            .iter()
+            .any(|d| d.message.contains("@pure") && d.message.contains("println")),
         "expected error about @pure calling println, got: {:?}",
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
@@ -850,25 +886,54 @@ fn pure_function_allows_pure_calls() {
                 name: "add".into(),
                 generics: vec![],
                 params: vec![
-                    Param { name: "a".into(), ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }), default: None, span: S },
-                    Param { name: "b".into(), ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }), default: None, span: S },
+                    Param {
+                        name: "a".into(),
+                        ty: Some(TypeExpr::Simple {
+                            name: "i64".into(),
+                            span: S,
+                        }),
+                        default: None,
+                        span: S,
+                    },
+                    Param {
+                        name: "b".into(),
+                        ty: Some(TypeExpr::Simple {
+                            name: "i64".into(),
+                            span: S,
+                        }),
+                        default: None,
+                        span: S,
+                    },
                 ],
-                ret_ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }),
+                ret_ty: Some(TypeExpr::Simple {
+                    name: "i64".into(),
+                    span: S,
+                }),
                 body: Some(Block {
                     stmts: vec![Stmt::Return {
                         value: Some(Expr::BinaryOp {
                             op: BinOp::Add,
-                            left: Box::new(Expr::Identifier { name: "a".into(), span: S }),
-                            right: Box::new(Expr::Identifier { name: "b".into(), span: S }),
+                            left: Box::new(Expr::Identifier {
+                                name: "a".into(),
+                                span: S,
+                            }),
+                            right: Box::new(Expr::Identifier {
+                                name: "b".into(),
+                                span: S,
+                            }),
                             span: S,
                         }),
                         span: S,
                     }],
                     span: S,
                 }),
-                annotations: vec![kryos_ast::Annotation { name: "pure".into(), args: vec![], span: S }],
+                annotations: vec![kryos_ast::Annotation {
+                    name: "pure".into(),
+                    args: vec![],
+                    span: S,
+                }],
                 public: false,
-        is_async: false,
+                is_async: false,
                 doc_comments: vec![],
                 span: S,
             },
@@ -876,17 +941,35 @@ fn pure_function_allows_pure_calls() {
             Decl::Function {
                 name: "double".into(),
                 generics: vec![],
-                params: vec![
-                    Param { name: "x".into(), ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }), default: None, span: S },
-                ],
-                ret_ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }),
+                params: vec![Param {
+                    name: "x".into(),
+                    ty: Some(TypeExpr::Simple {
+                        name: "i64".into(),
+                        span: S,
+                    }),
+                    default: None,
+                    span: S,
+                }],
+                ret_ty: Some(TypeExpr::Simple {
+                    name: "i64".into(),
+                    span: S,
+                }),
                 body: Some(Block {
                     stmts: vec![Stmt::Return {
                         value: Some(Expr::FnCall {
-                            callee: Box::new(Expr::Identifier { name: "add".into(), span: S }),
+                            callee: Box::new(Expr::Identifier {
+                                name: "add".into(),
+                                span: S,
+                            }),
                             args: vec![
-                                Expr::Identifier { name: "x".into(), span: S },
-                                Expr::Identifier { name: "x".into(), span: S },
+                                Expr::Identifier {
+                                    name: "x".into(),
+                                    span: S,
+                                },
+                                Expr::Identifier {
+                                    name: "x".into(),
+                                    span: S,
+                                },
                             ],
                             span: S,
                         }),
@@ -894,9 +977,13 @@ fn pure_function_allows_pure_calls() {
                     }],
                     span: S,
                 }),
-                annotations: vec![kryos_ast::Annotation { name: "pure".into(), args: vec![], span: S }],
+                annotations: vec![kryos_ast::Annotation {
+                    name: "pure".into(),
+                    args: vec![],
+                    span: S,
+                }],
                 public: false,
-        is_async: false,
+                is_async: false,
                 doc_comments: vec![],
                 span: S,
             },
@@ -940,10 +1027,13 @@ fn multiple_trait_impls_self_resolves_correctly() {
                     default: None,
                     span: S,
                 }],
-                ret_ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }),
+                ret_ty: Some(TypeExpr::Simple {
+                    name: "i64".into(),
+                    span: S,
+                }),
                 body: None,
                 public: false,
-        is_async: false,
+                is_async: false,
                 annotations: vec![],
                 doc_comments: vec![],
                 span: S,
@@ -958,7 +1048,10 @@ fn multiple_trait_impls_self_resolves_correctly() {
             generics: vec![],
             fields: vec![StructField {
                 name: "radius".into(),
-                ty: TypeExpr::Simple { name: "i64".into(), span: S },
+                ty: TypeExpr::Simple {
+                    name: "i64".into(),
+                    span: S,
+                },
                 public: false,
                 default: None,
                 span: S,
@@ -978,11 +1071,17 @@ fn multiple_trait_impls_self_resolves_correctly() {
                 generics: vec![],
                 params: vec![Param {
                     name: "self".into(),
-                    ty: Some(TypeExpr::Simple { name: "Circle".into(), span: S }),
+                    ty: Some(TypeExpr::Simple {
+                        name: "Circle".into(),
+                        span: S,
+                    }),
                     default: None,
                     span: S,
                 }],
-                ret_ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }),
+                ret_ty: Some(TypeExpr::Simple {
+                    name: "i64".into(),
+                    span: S,
+                }),
                 body: Some(Block {
                     stmts: vec![Stmt::Return {
                         value: Some(Expr::BinaryOp {
@@ -990,12 +1089,18 @@ fn multiple_trait_impls_self_resolves_correctly() {
                             left: Box::new(Expr::BinaryOp {
                                 op: BinOp::Mul,
                                 left: Box::new(Expr::FieldAccess {
-                                    object: Box::new(Expr::Identifier { name: "self".into(), span: S }),
+                                    object: Box::new(Expr::Identifier {
+                                        name: "self".into(),
+                                        span: S,
+                                    }),
                                     field: "radius".into(),
                                     span: S,
                                 }),
                                 right: Box::new(Expr::FieldAccess {
-                                    object: Box::new(Expr::Identifier { name: "self".into(), span: S }),
+                                    object: Box::new(Expr::Identifier {
+                                        name: "self".into(),
+                                        span: S,
+                                    }),
                                     field: "radius".into(),
                                     span: S,
                                 }),
@@ -1009,7 +1114,7 @@ fn multiple_trait_impls_self_resolves_correctly() {
                     span: S,
                 }),
                 public: false,
-        is_async: false,
+                is_async: false,
                 annotations: vec![],
                 doc_comments: vec![],
                 span: S,
@@ -1024,14 +1129,20 @@ fn multiple_trait_impls_self_resolves_correctly() {
             fields: vec![
                 StructField {
                     name: "w".into(),
-                    ty: TypeExpr::Simple { name: "i64".into(), span: S },
+                    ty: TypeExpr::Simple {
+                        name: "i64".into(),
+                        span: S,
+                    },
                     public: false,
                     default: None,
                     span: S,
                 },
                 StructField {
                     name: "h".into(),
-                    ty: TypeExpr::Simple { name: "i64".into(), span: S },
+                    ty: TypeExpr::Simple {
+                        name: "i64".into(),
+                        span: S,
+                    },
                     public: false,
                     default: None,
                     span: S,
@@ -1052,22 +1163,34 @@ fn multiple_trait_impls_self_resolves_correctly() {
                 generics: vec![],
                 params: vec![Param {
                     name: "self".into(),
-                    ty: Some(TypeExpr::Simple { name: "Rect".into(), span: S }),
+                    ty: Some(TypeExpr::Simple {
+                        name: "Rect".into(),
+                        span: S,
+                    }),
                     default: None,
                     span: S,
                 }],
-                ret_ty: Some(TypeExpr::Simple { name: "i64".into(), span: S }),
+                ret_ty: Some(TypeExpr::Simple {
+                    name: "i64".into(),
+                    span: S,
+                }),
                 body: Some(Block {
                     stmts: vec![Stmt::Return {
                         value: Some(Expr::BinaryOp {
                             op: BinOp::Mul,
                             left: Box::new(Expr::FieldAccess {
-                                object: Box::new(Expr::Identifier { name: "self".into(), span: S }),
+                                object: Box::new(Expr::Identifier {
+                                    name: "self".into(),
+                                    span: S,
+                                }),
                                 field: "w".into(),
                                 span: S,
                             }),
                             right: Box::new(Expr::FieldAccess {
-                                object: Box::new(Expr::Identifier { name: "self".into(), span: S }),
+                                object: Box::new(Expr::Identifier {
+                                    name: "self".into(),
+                                    span: S,
+                                }),
                                 field: "h".into(),
                                 span: S,
                             }),
@@ -1078,7 +1201,7 @@ fn multiple_trait_impls_self_resolves_correctly() {
                     span: S,
                 }),
                 public: false,
-        is_async: false,
+                is_async: false,
                 annotations: vec![],
                 doc_comments: vec![],
                 span: S,
@@ -1108,7 +1231,10 @@ fn multiple_trait_impls_self_resolves_correctly() {
                     },
                     Stmt::Expr {
                         expr: Expr::MethodCall {
-                            object: Box::new(Expr::Identifier { name: "c".into(), span: S }),
+                            object: Box::new(Expr::Identifier {
+                                name: "c".into(),
+                                span: S,
+                            }),
                             method: "area".into(),
                             args: vec![],
                             span: S,
@@ -1119,7 +1245,7 @@ fn multiple_trait_impls_self_resolves_correctly() {
                 span: S,
             }),
             public: false,
-        is_async: false,
+            is_async: false,
             annotations: vec![],
             doc_comments: vec![],
             span: S,
@@ -1135,10 +1261,7 @@ fn multiple_trait_impls_self_resolves_correctly() {
 // ── Pattern exhaustiveness ──────────────────────────────────────────
 
 /// Helper: build a match expression inside a function and type-check.
-fn check_match_exhaustive(
-    subject: Expr,
-    arms: Vec<MatchArm>,
-) -> Vec<kryos_errors::Diagnostic> {
+fn check_match_exhaustive(subject: Expr, arms: Vec<MatchArm>) -> Vec<kryos_errors::Diagnostic> {
     let match_expr = Expr::MatchExpr {
         subject: Box::new(subject),
         arms,
@@ -1170,11 +1293,17 @@ fn exhaustive_bool_complete() {
     use kryos_errors::Level;
 
     let diags = check_match_exhaustive(
-        Expr::BoolLiteral { value: true, span: S },
+        Expr::BoolLiteral {
+            value: true,
+            span: S,
+        },
         vec![
             MatchArm {
                 pattern: Pattern::Literal {
-                    expr: Box::new(Expr::BoolLiteral { value: true, span: S }),
+                    expr: Box::new(Expr::BoolLiteral {
+                        value: true,
+                        span: S,
+                    }),
                     span: S,
                 },
                 guard: None,
@@ -1183,7 +1312,10 @@ fn exhaustive_bool_complete() {
             },
             MatchArm {
                 pattern: Pattern::Literal {
-                    expr: Box::new(Expr::BoolLiteral { value: false, span: S }),
+                    expr: Box::new(Expr::BoolLiteral {
+                        value: false,
+                        span: S,
+                    }),
                     span: S,
                 },
                 guard: None,
@@ -1194,7 +1326,9 @@ fn exhaustive_bool_complete() {
     );
     let warnings: Vec<_> = diags.iter().filter(|d| d.level == Level::Warning).collect();
     assert!(
-        warnings.iter().all(|w| !w.message.contains("non-exhaustive")),
+        warnings
+            .iter()
+            .all(|w| !w.message.contains("non-exhaustive")),
         "complete bool match should not warn, got: {:?}",
         warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
@@ -1205,10 +1339,16 @@ fn exhaustive_bool_missing_false() {
     use kryos_errors::Level;
 
     let diags = check_match_exhaustive(
-        Expr::BoolLiteral { value: true, span: S },
+        Expr::BoolLiteral {
+            value: true,
+            span: S,
+        },
         vec![MatchArm {
             pattern: Pattern::Literal {
-                expr: Box::new(Expr::BoolLiteral { value: true, span: S }),
+                expr: Box::new(Expr::BoolLiteral {
+                    value: true,
+                    span: S,
+                }),
                 span: S,
             },
             guard: None,
@@ -1220,10 +1360,7 @@ fn exhaustive_bool_missing_false() {
         .iter()
         .filter(|d| d.level == Level::Error && d.message.contains("non-exhaustive"))
         .collect();
-    assert!(
-        !errors.is_empty(),
-        "bool match missing false should error"
-    );
+    assert!(!errors.is_empty(), "bool match missing false should error");
     assert!(
         errors[0].message.contains("false"),
         "error should mention `false`, got: {}",
@@ -1242,9 +1379,21 @@ fn exhaustive_enum_complete() {
             name: "Color".to_string(),
             generics: vec![],
             variants: vec![
-                EnumVariant { name: "Red".to_string(), fields: vec![], span: S },
-                EnumVariant { name: "Green".to_string(), fields: vec![], span: S },
-                EnumVariant { name: "Blue".to_string(), fields: vec![], span: S },
+                EnumVariant {
+                    name: "Red".to_string(),
+                    fields: vec![],
+                    span: S,
+                },
+                EnumVariant {
+                    name: "Green".to_string(),
+                    fields: vec![],
+                    span: S,
+                },
+                EnumVariant {
+                    name: "Blue".to_string(),
+                    fields: vec![],
+                    span: S,
+                },
             ],
             public: false,
             annotations: vec![],
@@ -1256,7 +1405,10 @@ fn exhaustive_enum_complete() {
             generics: vec![],
             params: vec![Param {
                 name: "c".to_string(),
-                ty: Some(TypeExpr::Simple { name: "Color".to_string(), span: S }),
+                ty: Some(TypeExpr::Simple {
+                    name: "Color".to_string(),
+                    span: S,
+                }),
                 default: None,
                 span: S,
             }],
@@ -1264,7 +1416,10 @@ fn exhaustive_enum_complete() {
             body: Some(Block {
                 stmts: vec![Stmt::Expr {
                     expr: Expr::MatchExpr {
-                        subject: Box::new(Expr::Identifier { name: "c".to_string(), span: S }),
+                        subject: Box::new(Expr::Identifier {
+                            name: "c".to_string(),
+                            span: S,
+                        }),
                         arms: vec![
                             MatchArm {
                                 pattern: Pattern::Enum {
@@ -1316,7 +1471,9 @@ fn exhaustive_enum_complete() {
     let diags = check_module(decls);
     let warnings: Vec<_> = diags.iter().filter(|d| d.level == Level::Warning).collect();
     assert!(
-        warnings.iter().all(|w| !w.message.contains("non-exhaustive")),
+        warnings
+            .iter()
+            .all(|w| !w.message.contains("non-exhaustive")),
         "complete enum match should not warn, got: {:?}",
         warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
@@ -1331,9 +1488,21 @@ fn exhaustive_enum_missing_variant() {
             name: "Color".to_string(),
             generics: vec![],
             variants: vec![
-                EnumVariant { name: "Red".to_string(), fields: vec![], span: S },
-                EnumVariant { name: "Green".to_string(), fields: vec![], span: S },
-                EnumVariant { name: "Blue".to_string(), fields: vec![], span: S },
+                EnumVariant {
+                    name: "Red".to_string(),
+                    fields: vec![],
+                    span: S,
+                },
+                EnumVariant {
+                    name: "Green".to_string(),
+                    fields: vec![],
+                    span: S,
+                },
+                EnumVariant {
+                    name: "Blue".to_string(),
+                    fields: vec![],
+                    span: S,
+                },
             ],
             public: false,
             annotations: vec![],
@@ -1345,7 +1514,10 @@ fn exhaustive_enum_missing_variant() {
             generics: vec![],
             params: vec![Param {
                 name: "c".to_string(),
-                ty: Some(TypeExpr::Simple { name: "Color".to_string(), span: S }),
+                ty: Some(TypeExpr::Simple {
+                    name: "Color".to_string(),
+                    span: S,
+                }),
                 default: None,
                 span: S,
             }],
@@ -1353,7 +1525,10 @@ fn exhaustive_enum_missing_variant() {
             body: Some(Block {
                 stmts: vec![Stmt::Expr {
                     expr: Expr::MatchExpr {
-                        subject: Box::new(Expr::Identifier { name: "c".to_string(), span: S }),
+                        subject: Box::new(Expr::Identifier {
+                            name: "c".to_string(),
+                            span: S,
+                        }),
                         arms: vec![MatchArm {
                             pattern: Pattern::Enum {
                                 name: "Color".to_string(),
@@ -1372,7 +1547,7 @@ fn exhaustive_enum_missing_variant() {
                 span: S,
             }),
             public: false,
-        is_async: false,
+            is_async: false,
             annotations: vec![],
             doc_comments: vec![],
             span: S,

@@ -4,8 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use kryos_driver::{
-    BuildConfig, BuildMode, OutputType,
-    compile_file, compile_source, check_source,
+    check_source, compile_file, compile_source, BuildConfig, BuildMode, OutputType,
 };
 
 /// Write `contents` to a temporary `.kry` file and return its path.
@@ -182,10 +181,7 @@ fn check_type_error_returns_diagnostics() {
     let (diags, _source_map) = check_source(TYPE_ERROR_SOURCE, "test_type.kry");
 
     let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
-    assert!(
-        !errors.is_empty(),
-        "expected errors for type error source"
-    );
+    assert!(!errors.is_empty(), "expected errors for type error source");
 }
 
 // ---------------------------------------------------------------------------
@@ -609,7 +605,8 @@ fn resolve_module_not_found() {
     let main_path = dir.join("main.kry");
     fs::write(&main_path, "use nonexistent").unwrap();
 
-    let result = kryos_driver::resolve::resolve_module_path(&["nonexistent".to_string()], &main_path);
+    let result =
+        kryos_driver::resolve::resolve_module_path(&["nonexistent".to_string()], &main_path);
     assert!(result.is_err(), "expected error for missing module");
 }
 
@@ -651,14 +648,22 @@ fn main() {
     };
 
     let result = compile_file(&main_path, &config);
-    assert!(result.success, "expected success but got errors: {:?}", result.diagnostics);
+    assert!(
+        result.success,
+        "expected success but got errors: {:?}",
+        result.diagnostics
+    );
     assert_eq!(result.error_count(), 0);
     let mir = result.mir.unwrap();
     let func_names: Vec<&str> = mir.functions.iter().map(|f| f.name.as_str()).collect();
-    assert!(func_names.contains(&"multiply"),
-        "expected 'multiply' in merged MIR, got: {func_names:?}");
-    assert!(func_names.contains(&"main"),
-        "expected 'main' in merged MIR, got: {func_names:?}");
+    assert!(
+        func_names.contains(&"multiply"),
+        "expected 'multiply' in merged MIR, got: {func_names:?}"
+    );
+    assert!(
+        func_names.contains(&"main"),
+        "expected 'main' in merged MIR, got: {func_names:?}"
+    );
 }
 
 #[test]
@@ -705,13 +710,19 @@ fn main() {
     assert!(result.success, "errors: {:?}", result.diagnostics);
     let mir = result.mir.unwrap();
     let func_names: Vec<&str> = mir.functions.iter().map(|f| f.name.as_str()).collect();
-    assert!(func_names.contains(&"add"),
-        "expected 'add' in merged MIR, got: {func_names:?}");
-    assert!(func_names.contains(&"multiply"),
-        "expected 'multiply' in merged MIR, got: {func_names:?}");
+    assert!(
+        func_names.contains(&"add"),
+        "expected 'add' in merged MIR, got: {func_names:?}"
+    );
+    assert!(
+        func_names.contains(&"multiply"),
+        "expected 'multiply' in merged MIR, got: {func_names:?}"
+    );
     // subtract should NOT be imported with selective import.
-    assert!(!func_names.contains(&"subtract"),
-        "subtract should not be imported, got: {func_names:?}");
+    assert!(
+        !func_names.contains(&"subtract"),
+        "subtract should not be imported, got: {func_names:?}"
+    );
 }
 
 #[test]
@@ -756,7 +767,11 @@ fn resolve_module_multi_segment() {
     let dir = std::env::temp_dir().join("kryos_resolve_tests_multi");
     fs::create_dir_all(dir.join("net")).unwrap();
 
-    fs::write(dir.join("net").join("http.kry"), "fn get() -> i32 { return 0 }").unwrap();
+    fs::write(
+        dir.join("net").join("http.kry"),
+        "fn get() -> i32 { return 0 }",
+    )
+    .unwrap();
     let main_path = dir.join("main.kry");
     fs::write(&main_path, "use net::http").unwrap();
 
@@ -786,12 +801,22 @@ fn resolve_std_module_to_stdlib_dir() {
         &["std".to_string(), "math".to_string()],
         &main_path,
     );
-    assert!(result.is_ok(), "expected std::math to resolve to stdlib/math.kry, got: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "expected std::math to resolve to stdlib/math.kry, got: {:?}",
+        result.err()
+    );
     let resolved = result.unwrap();
-    assert!(resolved.to_string_lossy().contains("stdlib"),
-        "expected resolved path to be under stdlib/, got: {}", resolved.display());
-    assert!(resolved.to_string_lossy().ends_with("math.kry"),
-        "expected resolved path to end with math.kry, got: {}", resolved.display());
+    assert!(
+        resolved.to_string_lossy().contains("stdlib"),
+        "expected resolved path to be under stdlib/, got: {}",
+        resolved.display()
+    );
+    assert!(
+        resolved.to_string_lossy().ends_with("math.kry"),
+        "expected resolved path to end with math.kry, got: {}",
+        resolved.display()
+    );
 }
 
 #[test]
@@ -807,12 +832,22 @@ fn resolve_std_string_to_stdlib_dir() {
         &["std".to_string(), "string".to_string()],
         &main_path,
     );
-    assert!(result.is_ok(), "expected std::string to resolve, got: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "expected std::string to resolve, got: {:?}",
+        result.err()
+    );
     let resolved = result.unwrap();
-    assert!(resolved.to_string_lossy().contains("stdlib"),
-        "expected path under stdlib/, got: {}", resolved.display());
-    assert!(resolved.to_string_lossy().ends_with("string.kry"),
-        "expected path to end with string.kry, got: {}", resolved.display());
+    assert!(
+        resolved.to_string_lossy().contains("stdlib"),
+        "expected path under stdlib/, got: {}",
+        resolved.display()
+    );
+    assert!(
+        resolved.to_string_lossy().ends_with("string.kry"),
+        "expected path to end with string.kry, got: {}",
+        resolved.display()
+    );
 }
 
 #[test]
@@ -847,7 +882,10 @@ fn compile_file_with_std_import() {
             stdlib_dir = candidate;
             break;
         }
-        assert!(stdlib_dir.pop(), "could not find stdlib/ from CARGO_MANIFEST_DIR");
+        assert!(
+            stdlib_dir.pop(),
+            "could not find stdlib/ from CARGO_MANIFEST_DIR"
+        );
     }
 
     // Use a unique name to avoid conflicts with other tests.
@@ -859,7 +897,8 @@ fn compile_file_with_std_import() {
     let dir = std::env::temp_dir().join("kryos_std_import_e2e");
     fs::create_dir_all(&dir).unwrap();
 
-    let main_src = format!("use std::{test_mod_name}\n\nfn main() {{\n    let result = helper(41)\n}}\n");
+    let main_src =
+        format!("use std::{test_mod_name}\n\nfn main() {{\n    let result = helper(41)\n}}\n");
     let main_path = dir.join("main.kry");
     fs::write(&main_path, &main_src).unwrap();
 
@@ -895,10 +934,14 @@ fn compile_file_with_std_import() {
     // The MIR should contain functions from the stdlib module and main.
     let mir = result.mir.unwrap();
     let func_names: Vec<&str> = mir.functions.iter().map(|f| f.name.as_str()).collect();
-    assert!(func_names.contains(&"helper"),
-        "expected 'helper' from std:: import in merged MIR, got: {func_names:?}");
-    assert!(func_names.contains(&"main"),
-        "expected 'main' in merged MIR, got: {func_names:?}");
+    assert!(
+        func_names.contains(&"helper"),
+        "expected 'helper' from std:: import in merged MIR, got: {func_names:?}"
+    );
+    assert!(
+        func_names.contains(&"main"),
+        "expected 'main' in merged MIR, got: {func_names:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

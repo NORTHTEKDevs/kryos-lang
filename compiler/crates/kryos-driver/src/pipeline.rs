@@ -146,10 +146,7 @@ pub fn compile_file_with_backend(
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
-            return CompileResult::from_error(format!(
-                "failed to read {}: {e}",
-                path.display()
-            ));
+            return CompileResult::from_error(format!("failed to read {}: {e}", path.display()));
         }
     };
 
@@ -177,10 +174,7 @@ fn compile_file_impl(
     let tokens = Lexer::new(source, file_id).tokenize();
 
     if config.verbose {
-        eprintln!(
-            "[kryos] lexer: {} tokens from '{file_name}'",
-            tokens.len()
-        );
+        eprintln!("[kryos] lexer: {} tokens from '{file_name}'", tokens.len());
     }
 
     // 4. Parse
@@ -310,19 +304,16 @@ fn compile_module_impl(
     }
 
     if config.verbose {
-        eprintln!(
-            "[kryos] MIR: {} functions lowered",
-            mir.functions.len()
-        );
+        eprintln!("[kryos] MIR: {} functions lowered", mir.functions.len());
     }
 
     // 9d. Check for main() — binary targets require an entry point.
     if config.output_type == OutputType::Binary {
         let has_main = mir.functions.iter().any(|f| f.name == "main");
         if !has_main {
-            diagnostics.push(
-                Diagnostic::error("no `main` function found — binary programs require a main() entry point")
-            );
+            diagnostics.push(Diagnostic::error(
+                "no `main` function found — binary programs require a main() entry point",
+            ));
             return CompileResult {
                 diagnostics,
                 source_map,
@@ -377,10 +368,7 @@ fn compile_source_impl(
     let tokens = Lexer::new(source, file_id).tokenize();
 
     if config.verbose {
-        eprintln!(
-            "[kryos] lexer: {} tokens from '{file_name}'",
-            tokens.len()
-        );
+        eprintln!("[kryos] lexer: {} tokens from '{file_name}'", tokens.len());
     }
 
     // 4. Parse
@@ -546,7 +534,9 @@ fn codegen_and_link(
                                     None => eprintln!("[kryos] runtime lib: not found (runtime symbols will be unresolved)"),
                                 }
                                 match &stdlib_native_lib {
-                                    Some(p) => eprintln!("[kryos] stdlib-native lib: {}", p.display()),
+                                    Some(p) => {
+                                        eprintln!("[kryos] stdlib-native lib: {}", p.display())
+                                    }
                                     None => eprintln!("[kryos] stdlib-native lib: not found"),
                                 }
                             }
@@ -571,9 +561,7 @@ fn codegen_and_link(
 
                             if let Err(e) = kryos_linker::link(&linker_config) {
                                 let _ = fs::remove_file(&obj_path);
-                                diagnostics.push(Diagnostic::error(format!(
-                                    "linking failed: {e}"
-                                )));
+                                diagnostics.push(Diagnostic::error(format!("linking failed: {e}")));
                                 return CompileResult {
                                     diagnostics,
                                     source_map,
@@ -656,9 +644,7 @@ pub fn compile_project_with_backend(
     let manifest = match kryos_package::Manifest::from_file(&manifest_path) {
         Ok(m) => m,
         Err(e) => {
-            return CompileResult::from_error(format!(
-                "failed to load project manifest: {e}"
-            ));
+            return CompileResult::from_error(format!("failed to load project manifest: {e}"));
         }
     };
 
@@ -687,10 +673,7 @@ pub fn compile_project_with_backend(
     }
 
     if config.verbose {
-        eprintln!(
-            "[kryos] found {} source file(s)",
-            source_files.len()
-        );
+        eprintln!("[kryos] found {} source file(s)", source_files.len());
     }
 
     // Compile each file, aggregating results
@@ -753,10 +736,7 @@ pub fn check_file(path: &Path) -> (Vec<Diagnostic>, SourceMap) {
 
     // Source map
     let mut source_map = SourceMap::default();
-    let file_id = source_map.add_file(
-        path.to_string_lossy().to_string(),
-        source.to_string(),
-    );
+    let file_id = source_map.add_file(path.to_string_lossy().to_string(), source.to_string());
 
     // Lex
     let tokens = Lexer::new(&source, file_id).tokenize();
@@ -773,13 +753,9 @@ pub fn check_file(path: &Path) -> (Vec<Diagnostic>, SourceMap) {
     visited.insert(canonical);
 
     let mut imported_decls = Vec::new();
-    if let Err(import_diags) = resolve::resolve_imports(
-        &module,
-        path,
-        &mut visited,
-        &mut imported_decls,
-        false,
-    ) {
+    if let Err(import_diags) =
+        resolve::resolve_imports(&module, path, &mut visited, &mut imported_decls, false)
+    {
         diagnostics.extend(import_diags);
         return (diagnostics, source_map);
     }
@@ -823,10 +799,7 @@ pub fn check_file_with_options(path: &Path, skip_ownership: bool) -> (Vec<Diagno
 
     // Source map
     let mut source_map = SourceMap::default();
-    let file_id = source_map.add_file(
-        path.to_string_lossy().to_string(),
-        source.to_string(),
-    );
+    let file_id = source_map.add_file(path.to_string_lossy().to_string(), source.to_string());
 
     // Lex
     let tokens = Lexer::new(&source, file_id).tokenize();
@@ -843,13 +816,9 @@ pub fn check_file_with_options(path: &Path, skip_ownership: bool) -> (Vec<Diagno
     visited.insert(canonical);
 
     let mut imported_decls = Vec::new();
-    if let Err(import_diags) = resolve::resolve_imports(
-        &module,
-        path,
-        &mut visited,
-        &mut imported_decls,
-        false,
-    ) {
+    if let Err(import_diags) =
+        resolve::resolve_imports(&module, path, &mut visited, &mut imported_decls, false)
+    {
         diagnostics.extend(import_diags);
         return (diagnostics, source_map);
     }

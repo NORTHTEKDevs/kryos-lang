@@ -31,8 +31,7 @@ fn parse_function_puts() {
 
 #[test]
 fn parse_struct_timeval() {
-    let items =
-        parse_c_header("struct timeval { long tv_sec; long tv_usec; };").unwrap();
+    let items = parse_c_header("struct timeval { long tv_sec; long tv_usec; };").unwrap();
     assert_eq!(items.len(), 1);
     match &items[0] {
         CItem::Struct { name, fields } => {
@@ -49,8 +48,7 @@ fn parse_struct_timeval() {
 
 #[test]
 fn parse_enum_color() {
-    let items =
-        parse_c_header("enum color { RED = 0, GREEN = 1 };").unwrap();
+    let items = parse_c_header("enum color { RED = 0, GREEN = 1 };").unwrap();
     assert_eq!(items.len(), 1);
     match &items[0] {
         CItem::Enum { name, variants } => {

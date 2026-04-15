@@ -51,7 +51,11 @@ pub extern "C" fn kryos_fs_exists(path_ptr: *const u8, path_len: usize) -> i64 {
         return 0;
     }
     let path = unsafe { bytes_to_str(path_ptr, path_len) };
-    if std::path::Path::new(path).exists() { 1 } else { 0 }
+    if std::path::Path::new(path).exists() {
+        1
+    } else {
+        0
+    }
 }
 
 /// Delete a file. Returns 0 on success, -1 on error.

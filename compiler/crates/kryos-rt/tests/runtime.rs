@@ -141,21 +141,13 @@ fn channel_multiple_messages() {
     let chan = kryos_rt::channel::kryos_chan_new(8);
 
     for i in 0u64..10 {
-        let result = kryos_rt::channel::kryos_chan_send(
-            chan,
-            &i as *const u64 as *const u8,
-            8,
-        );
+        let result = kryos_rt::channel::kryos_chan_send(chan, &i as *const u64 as *const u8, 8);
         assert_eq!(result, 0);
     }
 
     for expected in 0u64..10 {
         let mut buf: u64 = 0;
-        let result = kryos_rt::channel::kryos_chan_recv(
-            chan,
-            &mut buf as *mut u64 as *mut u8,
-            8,
-        );
+        let result = kryos_rt::channel::kryos_chan_recv(chan, &mut buf as *mut u64 as *mut u8, 8);
         assert_eq!(result, 8);
         assert_eq!(buf, expected);
     }
@@ -170,11 +162,7 @@ fn channel_close_returns_error_on_send() {
     kryos_rt::channel::kryos_chan_close(chan);
 
     let value: u32 = 42;
-    let result = kryos_rt::channel::kryos_chan_send(
-        chan,
-        &value as *const u32 as *const u8,
-        4,
-    );
+    let result = kryos_rt::channel::kryos_chan_send(chan, &value as *const u32 as *const u8, 4);
     assert_eq!(result, -1);
 
     kryos_rt::channel::kryos_chan_drop(chan);
@@ -187,11 +175,7 @@ fn channel_close_recv_returns_zero() {
     kryos_rt::channel::kryos_chan_close(chan);
 
     let mut buf: u32 = 0;
-    let result = kryos_rt::channel::kryos_chan_recv(
-        chan,
-        &mut buf as *mut u32 as *mut u8,
-        4,
-    );
+    let result = kryos_rt::channel::kryos_chan_recv(chan, &mut buf as *mut u32 as *mut u8, 4);
     assert_eq!(result, 0);
 
     kryos_rt::channel::kryos_chan_drop(chan);
@@ -203,11 +187,7 @@ fn channel_multiple_send_recv() {
 
     // Send multiple values sequentially
     for i in 0u64..10 {
-        let result = kryos_rt::channel::kryos_chan_send(
-            chan,
-            &i as *const u64 as *const u8,
-            8,
-        );
+        let result = kryos_rt::channel::kryos_chan_send(chan, &i as *const u64 as *const u8, 8);
         assert_eq!(result, 0);
     }
 
@@ -215,11 +195,7 @@ fn channel_multiple_send_recv() {
     let mut received = Vec::new();
     for _ in 0..10 {
         let mut buf: u64 = 0;
-        let result = kryos_rt::channel::kryos_chan_recv(
-            chan,
-            &mut buf as *mut u64 as *mut u8,
-            8,
-        );
+        let result = kryos_rt::channel::kryos_chan_recv(chan, &mut buf as *mut u64 as *mut u8, 8);
         assert_eq!(result, 8);
         received.push(buf);
     }
@@ -258,12 +234,8 @@ fn panic_format_message() {
 
 #[test]
 fn panic_format_with_location() {
-    let msg = kryos_rt::panic::format_panic_with_location(
-        "index out of bounds",
-        "main.kry",
-        42,
-        10,
-    );
+    let msg =
+        kryos_rt::panic::format_panic_with_location("index out of bounds", "main.kry", 42, 10);
     assert_eq!(msg, "kryos panic at main.kry:42:10: index out of bounds");
 }
 
@@ -357,10 +329,7 @@ extern "C" fn echo_actor(state_ptr: *mut u8) {
     let _ = state_ptr;
     let mut buf = [0u8; 256];
     loop {
-        let n = kryos_rt::actor::kryos_actor_recv(
-            buf.as_mut_ptr(),
-            buf.len(),
-        );
+        let n = kryos_rt::actor::kryos_actor_recv(buf.as_mut_ptr(), buf.len());
         if n <= 0 {
             break;
         }

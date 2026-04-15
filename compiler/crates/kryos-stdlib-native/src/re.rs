@@ -31,11 +31,7 @@ pub extern "C" fn kryos_regex_new(pattern_ptr: *const u8, pattern_len: usize) ->
 ///
 /// Returns 1 if it matches, 0 if it does not, -1 on error (null pointers or invalid UTF-8).
 #[no_mangle]
-pub extern "C" fn kryos_regex_is_match(
-    re: *mut u8,
-    text_ptr: *const u8,
-    text_len: usize,
-) -> i32 {
+pub extern "C" fn kryos_regex_is_match(re: *mut u8, text_ptr: *const u8, text_len: usize) -> i32 {
     if re.is_null() || text_ptr.is_null() {
         return -1;
     }

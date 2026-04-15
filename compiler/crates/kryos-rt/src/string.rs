@@ -127,10 +127,7 @@ pub unsafe extern "C" fn kryos_string_hash(s: *const KryosString) -> i64 {
 
 /// Compare two strings for equality.
 #[no_mangle]
-pub unsafe extern "C" fn kryos_string_eq(
-    a: *const KryosString,
-    b: *const KryosString,
-) -> bool {
+pub unsafe extern "C" fn kryos_string_eq(a: *const KryosString, b: *const KryosString) -> bool {
     if a.is_null() && b.is_null() {
         return true;
     }
@@ -244,7 +241,11 @@ pub unsafe extern "C" fn kryos_string_starts_with(
     }
     let s_slice = std::slice::from_raw_parts((*s).data, (*s).len as usize);
     let p_slice = std::slice::from_raw_parts((*prefix).data, (*prefix).len as usize);
-    if s_slice.starts_with(p_slice) { 1 } else { 0 }
+    if s_slice.starts_with(p_slice) {
+        1
+    } else {
+        0
+    }
 }
 
 /// Check if a string ends with a suffix.
@@ -258,7 +259,11 @@ pub unsafe extern "C" fn kryos_string_ends_with(
     }
     let s_slice = std::slice::from_raw_parts((*s).data, (*s).len as usize);
     let p_slice = std::slice::from_raw_parts((*suffix).data, (*suffix).len as usize);
-    if s_slice.ends_with(p_slice) { 1 } else { 0 }
+    if s_slice.ends_with(p_slice) {
+        1
+    } else {
+        0
+    }
 }
 
 /// Check if a string contains a needle.
@@ -272,7 +277,11 @@ pub unsafe extern "C" fn kryos_string_contains(
     }
     let s_str = bytes_to_str((*s).data, (*s).len as usize);
     let n_str = bytes_to_str((*needle).data, (*needle).len as usize);
-    if s_str.contains(n_str) { 1 } else { 0 }
+    if s_str.contains(n_str) {
+        1
+    } else {
+        0
+    }
 }
 
 /// Trim whitespace from both ends.
@@ -421,7 +430,10 @@ mod tests {
         unsafe {
             assert_eq!(kryos_string_len(std::ptr::null()), 0);
             assert!(kryos_string_eq(std::ptr::null(), std::ptr::null()));
-            assert!(!kryos_string_eq(std::ptr::null(), kryos_string_new(b"x".as_ptr(), 1)));
+            assert!(!kryos_string_eq(
+                std::ptr::null(),
+                kryos_string_new(b"x".as_ptr(), 1)
+            ));
             kryos_string_free(std::ptr::null_mut()); // should not crash
         }
     }

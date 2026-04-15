@@ -115,7 +115,7 @@ pub fn find_stdlib_native_lib() -> Option<PathBuf> {
 /// Rust's standard library (embedded in the staticlib) depends on OS-specific
 /// system libraries. These must be passed to the linker as `-l` flags.
 pub fn system_libs(target: &kryos_linker::Target) -> Vec<String> {
-    use kryos_linker::{Os, Env};
+    use kryos_linker::{Env, Os};
 
     match (target.os, target.env) {
         (Os::Windows, Env::Msvc) => vec![
@@ -139,15 +139,8 @@ pub fn system_libs(target: &kryos_linker::Target) -> Vec<String> {
             "gcc".into(),
             "pthread".into(),
         ],
-        (Os::Linux, _) => vec![
-            "pthread".into(),
-            "dl".into(),
-            "m".into(),
-        ],
-        (Os::MacOS, _) => vec![
-            "System".into(),
-            "pthread".into(),
-        ],
+        (Os::Linux, _) => vec!["pthread".into(), "dl".into(), "m".into()],
+        (Os::MacOS, _) => vec!["System".into(), "pthread".into()],
         _ => vec![],
     }
 }

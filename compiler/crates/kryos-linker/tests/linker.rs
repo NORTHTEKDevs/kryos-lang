@@ -1,11 +1,10 @@
 //! Integration tests for kryos-linker.
 
-use std::path::PathBuf;
 use kryos_linker::{
-    Target, Arch, Os, Env,
-    LinkerConfig, LinkType, LinkError,
-    find_system_linker, build_command, command_to_args,
+    build_command, command_to_args, find_system_linker, Arch, Env, LinkError, LinkType,
+    LinkerConfig, Os, Target,
 };
+use std::path::PathBuf;
 
 // ─── Target::host() ────────────────────────────────────────────────
 
@@ -20,7 +19,10 @@ fn host_target_is_valid() {
     );
     // Host must have a recognized OS
     assert!(
-        matches!(host.os, Os::Linux | Os::Windows | Os::MacOS | Os::Wasi | Os::Unknown),
+        matches!(
+            host.os,
+            Os::Linux | Os::Windows | Os::MacOS | Os::Wasi | Os::Unknown
+        ),
         "host OS should be recognized: {:?}",
         host.os,
     );
@@ -169,7 +171,11 @@ fn make_test_config(target: Target, link_type: LinkType) -> LinkerConfig {
 
 #[test]
 fn unix_dynamic_command_line() {
-    let target = Target { arch: Arch::X86_64, os: Os::Linux, env: Env::Gnu };
+    let target = Target {
+        arch: Arch::X86_64,
+        os: Os::Linux,
+        env: Env::Gnu,
+    };
     let config = make_test_config(target.clone(), LinkType::Dynamic);
     let linker_path = PathBuf::from("/usr/bin/cc");
     let cmd = build_command(&linker_path, &config);
@@ -191,7 +197,11 @@ fn unix_dynamic_command_line() {
 
 #[test]
 fn unix_static_command_line() {
-    let target = Target { arch: Arch::X86_64, os: Os::Linux, env: Env::Gnu };
+    let target = Target {
+        arch: Arch::X86_64,
+        os: Os::Linux,
+        env: Env::Gnu,
+    };
     let config = make_test_config(target, LinkType::Static);
     let linker_path = PathBuf::from("/usr/bin/cc");
     let cmd = build_command(&linker_path, &config);
@@ -202,7 +212,11 @@ fn unix_static_command_line() {
 
 #[test]
 fn unix_shared_lib_command_line() {
-    let target = Target { arch: Arch::X86_64, os: Os::Linux, env: Env::Gnu };
+    let target = Target {
+        arch: Arch::X86_64,
+        os: Os::Linux,
+        env: Env::Gnu,
+    };
     let config = make_test_config(target, LinkType::SharedLib);
     let linker_path = PathBuf::from("/usr/bin/cc");
     let cmd = build_command(&linker_path, &config);
@@ -213,7 +227,11 @@ fn unix_shared_lib_command_line() {
 
 #[test]
 fn msvc_command_line() {
-    let target = Target { arch: Arch::X86_64, os: Os::Windows, env: Env::Msvc };
+    let target = Target {
+        arch: Arch::X86_64,
+        os: Os::Windows,
+        env: Env::Msvc,
+    };
     let config = make_test_config(target, LinkType::Dynamic);
     let linker_path = PathBuf::from("link.exe");
     let cmd = build_command(&linker_path, &config);
@@ -230,7 +248,11 @@ fn msvc_command_line() {
 
 #[test]
 fn msvc_shared_lib_command_line() {
-    let target = Target { arch: Arch::X86_64, os: Os::Windows, env: Env::Msvc };
+    let target = Target {
+        arch: Arch::X86_64,
+        os: Os::Windows,
+        env: Env::Msvc,
+    };
     let config = make_test_config(target, LinkType::SharedLib);
     let linker_path = PathBuf::from("link.exe");
     let cmd = build_command(&linker_path, &config);
@@ -241,7 +263,11 @@ fn msvc_shared_lib_command_line() {
 
 #[test]
 fn wasm_command_line() {
-    let target = Target { arch: Arch::Wasm32, os: Os::Unknown, env: Env::None };
+    let target = Target {
+        arch: Arch::Wasm32,
+        os: Os::Unknown,
+        env: Env::None,
+    };
     let config = make_test_config(target, LinkType::Dynamic);
     let linker_path = PathBuf::from("wasm-ld");
     let cmd = build_command(&linker_path, &config);
@@ -256,7 +282,11 @@ fn wasm_command_line() {
 
 #[test]
 fn command_without_optional_libs() {
-    let target = Target { arch: Arch::X86_64, os: Os::Linux, env: Env::Gnu };
+    let target = Target {
+        arch: Arch::X86_64,
+        os: Os::Linux,
+        env: Env::Gnu,
+    };
     let config = LinkerConfig {
         target,
         object_files: vec![PathBuf::from("main.o")],

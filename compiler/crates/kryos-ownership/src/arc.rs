@@ -8,7 +8,10 @@ use kryos_errors::Span;
 use crate::{ArcInsertion, ArcReason};
 
 /// Filter ARC insertions by reason.
-pub fn filter_by_reason<'a>(insertions: &'a [ArcInsertion], reason: &ArcReason) -> Vec<&'a ArcInsertion> {
+pub fn filter_by_reason<'a>(
+    insertions: &'a [ArcInsertion],
+    reason: &ArcReason,
+) -> Vec<&'a ArcInsertion> {
     insertions.iter().filter(|i| &i.reason == reason).collect()
 }
 

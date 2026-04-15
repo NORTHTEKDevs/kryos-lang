@@ -83,19 +83,18 @@ pub enum ResolveError {
         from_b: String,
     },
     /// Circular dependency detected.
-    CircularDependency {
-        cycle: Vec<String>,
-    },
+    CircularDependency { cycle: Vec<String> },
     /// Package not found in registry.
-    PackageNotFound {
-        package: String,
-    },
+    PackageNotFound { package: String },
 }
 
 impl std::fmt::Display for ResolveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ResolveError::NoMatchingVersion { package, requirement } => {
+            ResolveError::NoMatchingVersion {
+                package,
+                requirement,
+            } => {
                 write!(f, "no version of '{package}' satisfies {requirement}")
             }
             ResolveError::VersionConflict {
@@ -191,7 +190,10 @@ pub fn resolve(
                                 );
                             }
                         }
-                        DepSpec::Remote { source, version_req } => {
+                        DepSpec::Remote {
+                            source,
+                            version_req,
+                        } => {
                             resolve_recursive(
                                 dep_name,
                                 version_req,
@@ -207,7 +209,10 @@ pub fn resolve(
                     }
                 }
             }
-            DepSpec::Remote { source, version_req } => {
+            DepSpec::Remote {
+                source,
+                version_req,
+            } => {
                 resolve_recursive(
                     name,
                     version_req,
@@ -232,10 +237,7 @@ pub fn resolve(
 ///
 /// Returns `(version, dependencies)`. Falls back to `0.0.0` with no deps
 /// if the manifest cannot be read (the directory may not contain one yet).
-fn read_path_dep_info(
-    name: &str,
-    path: &str,
-) -> (Version, HashMap<String, DepSpec>) {
+fn read_path_dep_info(name: &str, path: &str) -> (Version, HashMap<String, DepSpec>) {
     let manifest_path = std::path::Path::new(path).join("kryos.toml");
     if !manifest_path.exists() {
         return (Version::new(0, 0, 0), HashMap::new());
@@ -304,12 +306,13 @@ fn resolve_recursive(
     }
 
     // Find best matching version.
-    let pkg = registry
-        .find_best_match(name, req)
-        .ok_or_else(|| ResolveError::NoMatchingVersion {
-            package: name.to_string(),
-            requirement: req.to_string(),
-        })?;
+    let pkg =
+        registry
+            .find_best_match(name, req)
+            .ok_or_else(|| ResolveError::NoMatchingVersion {
+                package: name.to_string(),
+                requirement: req.to_string(),
+            })?;
 
     let pkg_version = pkg.version.clone();
     let pkg_source = pkg.source.clone();
@@ -377,9 +380,10 @@ mod tests {
             name: "http".into(),
             version: "0.3.5".parse().unwrap(),
             source: "github:kryos-lang/http".into(),
-            dependencies: HashMap::from([
-                ("serde".into(), VersionReq::new(Op::Caret, "1.0.0".parse().unwrap())),
-            ]),
+            dependencies: HashMap::from([(
+                "serde".into(),
+                VersionReq::new(Op::Caret, "1.0.0".parse().unwrap()),
+            )]),
         });
         reg
     }
@@ -443,17 +447,19 @@ mod tests {
             name: "a".into(),
             version: "1.0.0".parse().unwrap(),
             source: "github:test/a".into(),
-            dependencies: HashMap::from([
-                ("b".into(), VersionReq::new(Op::Caret, "1.0.0".parse().unwrap())),
-            ]),
+            dependencies: HashMap::from([(
+                "b".into(),
+                VersionReq::new(Op::Caret, "1.0.0".parse().unwrap()),
+            )]),
         });
         reg.add(AvailablePackage {
             name: "b".into(),
             version: "1.0.0".parse().unwrap(),
             source: "github:test/b".into(),
-            dependencies: HashMap::from([
-                ("a".into(), VersionReq::new(Op::Caret, "1.0.0".parse().unwrap())),
-            ]),
+            dependencies: HashMap::from([(
+                "a".into(),
+                VersionReq::new(Op::Caret, "1.0.0".parse().unwrap()),
+            )]),
         });
 
         let mut deps = HashMap::new();
@@ -496,18 +502,20 @@ mod tests {
             name: "lib-a".into(),
             version: "1.0.0".parse().unwrap(),
             source: "github:test/lib-a".into(),
-            dependencies: HashMap::from([
-                ("serde".into(), VersionReq::new(Op::Caret, "1.0.0".parse().unwrap())),
-            ]),
+            dependencies: HashMap::from([(
+                "serde".into(),
+                VersionReq::new(Op::Caret, "1.0.0".parse().unwrap()),
+            )]),
         });
         // lib-b requires serde ^2.0.0
         reg.add(AvailablePackage {
             name: "lib-b".into(),
             version: "1.0.0".parse().unwrap(),
             source: "github:test/lib-b".into(),
-            dependencies: HashMap::from([
-                ("serde".into(), VersionReq::new(Op::Caret, "2.0.0".parse().unwrap())),
-            ]),
+            dependencies: HashMap::from([(
+                "serde".into(),
+                VersionReq::new(Op::Caret, "2.0.0".parse().unwrap()),
+            )]),
         });
 
         let mut deps = HashMap::new();

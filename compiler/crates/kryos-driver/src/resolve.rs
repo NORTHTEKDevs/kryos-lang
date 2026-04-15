@@ -73,28 +73,46 @@ fn find_stdlib_dir(importing_file: &Path) -> Option<PathBuf> {
 #[derive(Debug)]
 pub enum ResolveError {
     /// The module file could not be found.
-    NotFound { module_name: String, search_paths: Vec<PathBuf> },
+    NotFound {
+        module_name: String,
+        search_paths: Vec<PathBuf>,
+    },
     /// A circular import was detected.
-    CircularImport { module_name: String, chain: Vec<String> },
+    CircularImport {
+        module_name: String,
+        chain: Vec<String>,
+    },
     /// Failed to read a module file.
     ReadError { path: PathBuf, error: String },
     /// Failed to parse a module file.
-    ParseError { path: PathBuf, diagnostics: Vec<Diagnostic> },
+    ParseError {
+        path: PathBuf,
+        diagnostics: Vec<Diagnostic>,
+    },
 }
 
 impl std::fmt::Display for ResolveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ResolveError::NotFound { module_name, search_paths } => {
+            ResolveError::NotFound {
+                module_name,
+                search_paths,
+            } => {
                 write!(f, "module `{module_name}` not found; searched: ")?;
                 for (i, p) in search_paths.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{}", p.display())?;
                 }
                 Ok(())
             }
             ResolveError::CircularImport { module_name, chain } => {
-                write!(f, "circular import detected for `{module_name}`: {}", chain.join(" -> "))
+                write!(
+                    f,
+                    "circular import detected for `{module_name}`: {}",
+                    chain.join(" -> ")
+                )
             }
             ResolveError::ReadError { path, error } => {
                 write!(f, "failed to read module '{}': {error}", path.display())
@@ -110,11 +128,12 @@ impl std::fmt::Display for ResolveError {
 ///
 /// `segments` contains the path components, e.g. `["ml", "math"]` for `use ml::math`.
 /// `importing_file` is the path to the file that contains the `use` statement.
-pub fn resolve_module_path(segments: &[String], importing_file: &Path) -> Result<PathBuf, ResolveError> {
+pub fn resolve_module_path(
+    segments: &[String],
+    importing_file: &Path,
+) -> Result<PathBuf, ResolveError> {
     let module_name = segments.join("::");
-    let parent = importing_file
-        .parent()
-        .unwrap_or_else(|| Path::new("."));
+    let parent = importing_file.parent().unwrap_or_else(|| Path::new("."));
 
     let mut search_paths = Vec::new();
 

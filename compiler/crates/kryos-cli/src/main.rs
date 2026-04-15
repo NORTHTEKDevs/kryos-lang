@@ -195,13 +195,22 @@ fn main() {
             verbose,
             skip_ownership,
         } => commands::build::execute(
-            &path, release, target.as_deref(), output.as_deref(), emit_mir, emit_llvm, verbose,
+            &path,
+            release,
+            target.as_deref(),
+            output.as_deref(),
+            emit_mir,
+            emit_llvm,
+            verbose,
             skip_ownership,
         ),
 
         Commands::Run { file, args } => commands::run::execute(&file, &args),
 
-        Commands::Check { path, skip_ownership } => commands::check::execute(&path, skip_ownership),
+        Commands::Check {
+            path,
+            skip_ownership,
+        } => commands::check::execute(&path, skip_ownership),
 
         Commands::Repl => commands::repl::execute(),
 
@@ -209,9 +218,7 @@ fn main() {
 
         Commands::Fmt { files, check } => commands::fmt::execute(&files, check),
 
-        Commands::Doc { files, output } => {
-            commands::doc::execute(&files, output.as_deref())
-        }
+        Commands::Doc { files, output } => commands::doc::execute(&files, output.as_deref()),
 
         Commands::Bindgen { header, output } => {
             commands::bindgen::execute(&header, output.as_deref())
@@ -246,8 +253,8 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
     use super::Cli;
+    use clap::Parser;
 
     /// Verify that clap parsing works for the build command with defaults.
     #[test]
@@ -266,9 +273,16 @@ mod tests {
     #[test]
     fn parse_build_all_flags() {
         let cli = Cli::try_parse_from([
-            "kryos", "build", "src/main.kry",
-            "--release", "--target", "x86_64-unknown-linux-gnu",
-            "-o", "out/main", "--emit-mir", "--verbose",
+            "kryos",
+            "build",
+            "src/main.kry",
+            "--release",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "-o",
+            "out/main",
+            "--emit-mir",
+            "--verbose",
         ])
         .unwrap();
         match cli.command {
@@ -380,8 +394,7 @@ mod tests {
     #[test]
     fn parse_pkg_add() {
         let cli =
-            Cli::try_parse_from(["kryos", "pkg", "add", "github:kryos-lang/serde@^1.0.0"])
-                .unwrap();
+            Cli::try_parse_from(["kryos", "pkg", "add", "github:kryos-lang/serde@^1.0.0"]).unwrap();
         match cli.command {
             super::Commands::Pkg {
                 action: super::PkgAction::Add { dependency },

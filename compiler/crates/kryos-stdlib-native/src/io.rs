@@ -72,11 +72,7 @@ pub extern "C" fn kryos_file_open(path_ptr: *const u8, path_len: usize, mode: u8
             .create(true)
             .truncate(true)
             .open(path),
-        2 => OpenOptions::new()
-            
-            .create(true)
-            .append(true)
-            .open(path),
+        2 => OpenOptions::new().create(true).append(true).open(path),
         _ => return -1,
     };
 
@@ -127,13 +123,7 @@ pub extern "C" fn kryos_file_write(fd: i64, data: *const u8, data_len: usize) ->
 /// Returns 0 on success, -1 if the fd was not found.
 #[no_mangle]
 pub extern "C" fn kryos_file_close(fd: i64) -> i32 {
-    with_fd_table(|table| {
-        if table.remove(fd).is_some() {
-            0
-        } else {
-            -1
-        }
-    })
+    with_fd_table(|table| if table.remove(fd).is_some() { 0 } else { -1 })
 }
 
 /// Writes `len` bytes from `data` to stdout.

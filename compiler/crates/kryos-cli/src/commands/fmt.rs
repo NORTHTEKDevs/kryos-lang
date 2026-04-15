@@ -18,8 +18,8 @@ pub fn execute(files: &[String], check: bool) -> Result<(), String> {
     let mut unformatted = 0usize;
 
     for path in &targets {
-        let source = std::fs::read_to_string(path)
-            .map_err(|e| format!("cannot read `{path}`: {e}"))?;
+        let source =
+            std::fs::read_to_string(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
 
         let formatted = kryos_fmt::format_source(&source).map_err(|diags| {
             let msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
@@ -34,8 +34,7 @@ pub fn execute(files: &[String], check: bool) -> Result<(), String> {
             eprintln!("  would reformat {path}");
             unformatted += 1;
         } else {
-            std::fs::write(path, &formatted)
-                .map_err(|e| format!("cannot write `{path}`: {e}"))?;
+            std::fs::write(path, &formatted).map_err(|e| format!("cannot write `{path}`: {e}"))?;
             eprintln!("  formatted {path}");
         }
     }
@@ -59,8 +58,8 @@ fn discover_kry_files(dir: &Path) -> Result<Vec<String>, String> {
 }
 
 fn walk_dir(dir: &Path, out: &mut Vec<String>) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| format!("cannot read `{}`: {e}", dir.display()))?;
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("cannot read `{}`: {e}", dir.display()))?;
 
     for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;

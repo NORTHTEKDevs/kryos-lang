@@ -5,11 +5,10 @@
 //! - Invoking the appropriate system linker (cc, link.exe, wasm-ld)
 //! - Constructing correct command lines for Unix, Windows/MSVC, and WASM targets
 
-pub mod target;
 pub mod linker;
+pub mod target;
 
-pub use target::{Target, Arch, Os, Env};
 pub use linker::{
-    LinkerConfig, LinkType, LinkError,
-    link, find_system_linker, build_command, command_to_args,
+    build_command, command_to_args, find_system_linker, link, LinkError, LinkType, LinkerConfig,
 };
+pub use target::{Arch, Env, Os, Target};

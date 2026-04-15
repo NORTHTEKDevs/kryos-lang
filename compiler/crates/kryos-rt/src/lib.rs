@@ -15,8 +15,8 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 #![allow(clippy::missing_safety_doc)]
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// When true, runtime functions (assert) store failure info in a thread-local
 /// instead of aborting — used by the `@test` annotation runner.
@@ -50,19 +50,19 @@ pub fn take_test_failure() -> Option<String> {
     TEST_FAILURE.with(|f| f.borrow_mut().take())
 }
 
+pub mod actor;
 pub mod alloc;
 pub mod arc;
 pub mod array;
-pub mod actor;
 pub mod builtins;
 pub mod channel;
 pub mod exception;
+pub mod fs;
+pub mod future;
 pub mod map;
 pub mod panic;
 pub mod spawn;
+pub mod stack_guard;
 pub mod string;
 pub mod tensor;
-pub mod fs;
-pub mod future;
-pub mod stack_guard;
 pub mod trace;

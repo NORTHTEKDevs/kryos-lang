@@ -4,8 +4,7 @@
 //! terminal size, and screen clearing.
 
 use crossterm::{
-    cursor,
-    execute,
+    cursor, execute,
     terminal::{self, ClearType},
 };
 use std::io::stdout;

@@ -95,25 +95,22 @@ mod tests {
     #[test]
     fn trace_stack_captures_frames() {
         // Push two frames.
-        kryos_trace_enter(
-            "main".as_ptr(),
-            4,
-            "test.kry".as_ptr(),
-            8,
-            1,
-        );
-        kryos_trace_enter(
-            "helper".as_ptr(),
-            6,
-            "test.kry".as_ptr(),
-            8,
-            5,
-        );
+        kryos_trace_enter("main".as_ptr(), 4, "test.kry".as_ptr(), 8, 1);
+        kryos_trace_enter("helper".as_ptr(), 6, "test.kry".as_ptr(), 8, 5);
 
         let trace = format_stack_trace();
-        assert!(trace.contains("helper()"), "trace should contain helper(): {trace}");
-        assert!(trace.contains("main()"), "trace should contain main(): {trace}");
-        assert!(trace.contains("test.kry"), "trace should contain file name: {trace}");
+        assert!(
+            trace.contains("helper()"),
+            "trace should contain helper(): {trace}"
+        );
+        assert!(
+            trace.contains("main()"),
+            "trace should contain main(): {trace}"
+        );
+        assert!(
+            trace.contains("test.kry"),
+            "trace should contain file name: {trace}"
+        );
         assert!(
             trace.contains("most recent call last"),
             "trace should have header: {trace}",
@@ -125,7 +122,10 @@ mod tests {
 
         // After popping, trace should be empty.
         let trace_after = format_stack_trace();
-        assert!(trace_after.is_empty(), "trace should be empty after exit: {trace_after}");
+        assert!(
+            trace_after.is_empty(),
+            "trace should be empty after exit: {trace_after}"
+        );
     }
 
     #[test]
@@ -142,7 +142,10 @@ mod tests {
     fn trace_null_pointers() {
         kryos_trace_enter(std::ptr::null(), 0, std::ptr::null(), 0, 0);
         let trace = format_stack_trace();
-        assert!(trace.contains("<unknown>()"), "null name should show <unknown>: {trace}");
+        assert!(
+            trace.contains("<unknown>()"),
+            "null name should show <unknown>: {trace}"
+        );
         kryos_trace_exit();
     }
 }

@@ -3,8 +3,7 @@
 use std::path::PathBuf;
 
 /// Which compilation backend / optimization level to use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BuildMode {
     /// Cranelift backend, no optimizations — fast compile times.
     #[default]
@@ -13,10 +12,8 @@ pub enum BuildMode {
     Release,
 }
 
-
 /// What the compiler should produce.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OutputType {
     /// Linked executable binary.
     #[default]
@@ -30,7 +27,6 @@ pub enum OutputType {
     /// Dump MIR for debugging.
     Mir,
 }
-
 
 /// Configuration for a single compilation session.
 ///

@@ -124,9 +124,8 @@ pub fn read_message(reader: &mut impl std::io::BufRead) -> std::io::Result<Optio
     let mut body = vec![0u8; length];
     reader.read_exact(&mut body)?;
 
-    let value: Value = serde_json::from_slice(&body).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-    })?;
+    let value: Value = serde_json::from_slice(&body)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
     Ok(Some(value))
 }

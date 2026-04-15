@@ -22,7 +22,7 @@ fn module_with_fn(stmts: Vec<Stmt>) -> Module {
                 span: dummy_span(),
             }),
             public: false,
-        is_async: false,
+            is_async: false,
             annotations: vec![],
             doc_comments: vec![],
             span: dummy_span(),
@@ -156,7 +156,10 @@ fn move_on_assignment_error() {
     ]);
     let result = analyze_ownership(&module);
     assert!(
-        result.errors.iter().any(|e| e.message.contains("use of moved value")),
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("use of moved value")),
         "expected 'use of moved value' error, got: {:?}",
         result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
@@ -230,8 +233,10 @@ fn shared_wrapping_arc_insertion() {
     }]);
     let result = analyze_ownership(&module);
     assert!(
-        result.arc_insertions.iter().any(|i| i.variable == "s"
-            && i.reason == ArcReason::ExplicitShared),
+        result
+            .arc_insertions
+            .iter()
+            .any(|i| i.variable == "s" && i.reason == ArcReason::ExplicitShared),
         "expected ARC insertion for shared variable 's'"
     );
     assert!(result.errors.is_empty(), "no errors expected");
@@ -262,8 +267,10 @@ fn closure_capture_mut_arc_insertion() {
     ]);
     let result = analyze_ownership(&module);
     assert!(
-        result.arc_insertions.iter().any(|i| i.variable == "counter"
-            && i.reason == ArcReason::ClosureCaptureMut),
+        result
+            .arc_insertions
+            .iter()
+            .any(|i| i.variable == "counter" && i.reason == ArcReason::ClosureCaptureMut),
         "expected ARC insertion for mutable capture 'counter', got: {:?}",
         result.arc_insertions
     );
@@ -285,7 +292,10 @@ fn channel_send_moves_value() {
     ]);
     let result = analyze_ownership(&module);
     assert!(
-        result.errors.iter().any(|e| e.message.contains("use of moved value")),
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("use of moved value")),
         "send should move the value, got errors: {:?}",
         result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
@@ -337,7 +347,10 @@ fn uninitialized_use_error() {
     ]);
     let result = analyze_ownership(&module);
     assert!(
-        result.errors.iter().any(|e| e.message.contains("uninitialized")),
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("uninitialized")),
         "expected 'uninitialized' error, got: {:?}",
         result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
@@ -352,7 +365,14 @@ fn conditional_move_warning() {
     //
     // Since we need a condition variable, define `cond` first.
     let module = module_with_fn(vec![
-        let_typed("cond", "bool", Expr::BoolLiteral { value: true, span: dummy_span() }),
+        let_typed(
+            "cond",
+            "bool",
+            Expr::BoolLiteral {
+                value: true,
+                span: dummy_span(),
+            },
+        ),
         let_move("x", non_copy_val("obj")),
         Stmt::If {
             condition: ident("cond"),
@@ -370,7 +390,10 @@ fn conditional_move_warning() {
     ]);
     let result = analyze_ownership(&module);
     assert!(
-        result.errors.iter().any(|e| e.message.contains("moved in one branch")),
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("moved in one branch")),
         "expected conditional move warning, got: {:?}",
         result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
@@ -388,10 +411,7 @@ fn struct_partial_move() {
             "p",
             Expr::StructLiteral {
                 name: "Point".into(),
-                fields: vec![
-                    ("x".into(), string_lit("a")),
-                    ("y".into(), string_lit("b")),
-                ],
+                fields: vec![("x".into(), string_lit("a")), ("y".into(), string_lit("b"))],
                 span: dummy_span(),
             },
         ),
@@ -411,7 +431,10 @@ fn struct_partial_move() {
     ]);
     let result = analyze_ownership(&module);
     assert!(
-        result.errors.iter().any(|e| e.message.contains("partially moved")),
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("partially moved")),
         "expected partial move error, got: {:?}",
         result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
@@ -506,7 +529,10 @@ fn return_moves_ownership() {
     ]);
     let result = analyze_ownership(&module);
     assert!(
-        result.errors.iter().any(|e| e.message.contains("use of moved value")),
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("use of moved value")),
         "return should move the value, got: {:?}",
         result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
@@ -636,7 +662,7 @@ fn copy_struct_annotation() {
                     span: dummy_span(),
                 }),
                 public: false,
-        is_async: false,
+                is_async: false,
                 annotations: vec![],
                 doc_comments: vec![],
                 span: dummy_span(),
@@ -706,7 +732,10 @@ fn double_move_error() {
     ]);
     let result = analyze_ownership(&module);
     assert!(
-        result.errors.iter().any(|e| e.message.contains("use of moved value")),
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("use of moved value")),
         "double move should error"
     );
 }
@@ -785,7 +814,10 @@ fn spawn_moves_value() {
     ]);
     let result = analyze_ownership(&module);
     assert!(
-        result.errors.iter().any(|e| e.message.contains("use of moved value")),
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("use of moved value")),
         "spawn should move the value"
     );
 }
@@ -888,7 +920,7 @@ fn fn_call_with_copy_return_type() {
                     span: dummy_span(),
                 }),
                 public: false,
-        is_async: false,
+                is_async: false,
                 annotations: vec![],
                 doc_comments: vec![],
                 span: dummy_span(),
@@ -907,7 +939,7 @@ fn fn_call_with_copy_return_type() {
                     span: dummy_span(),
                 }),
                 public: false,
-        is_async: false,
+                is_async: false,
                 annotations: vec![],
                 doc_comments: vec![],
                 span: dummy_span(),
@@ -957,7 +989,7 @@ fn fn_call_with_non_copy_return_moves() {
                     span: dummy_span(),
                 }),
                 public: false,
-        is_async: false,
+                is_async: false,
                 annotations: vec![],
                 doc_comments: vec![],
                 span: dummy_span(),
@@ -976,7 +1008,7 @@ fn fn_call_with_non_copy_return_moves() {
                     span: dummy_span(),
                 }),
                 public: false,
-        is_async: false,
+                is_async: false,
                 annotations: vec![],
                 doc_comments: vec![],
                 span: dummy_span(),
@@ -986,7 +1018,10 @@ fn fn_call_with_non_copy_return_moves() {
     };
     let result = analyze_ownership(&module);
     assert!(
-        result.errors.iter().any(|e| e.message.contains("use of moved value")),
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("use of moved value")),
         "fn call returning non-copy type should move, got: {:?}",
         result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );

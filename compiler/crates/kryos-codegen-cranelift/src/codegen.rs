@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
     types, AbiParam, Function, InstBuilder, MemFlags, Signature, StackSlotData, StackSlotKind,
     Type, UserFuncName,
@@ -12,7 +13,6 @@ use cranelift_codegen::Context;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{DataDescription, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 
 use kryos_mir::ir::{
     BasicBlock, Constant, EnumVariantDef, Instruction, LocalId, MirBinOp, MirFunction, MirModule,
@@ -52,7 +52,7 @@ pub fn mir_type_to_cl(ty: &MirType) -> Result<Option<Type>, CodegenError> {
         MirType::F64 => Ok(Some(types::F64)),
         MirType::Bool => Ok(Some(types::I8)),
         MirType::Char => Ok(Some(types::I32)), // Unicode scalar value
-        MirType::Str => Ok(Some(types::I64)),   // pointer to string data
+        MirType::Str => Ok(Some(types::I64)),  // pointer to string data
         MirType::Void => Ok(None),
         MirType::Ptr(_) | MirType::Ref { .. } | MirType::Shared(_) => Ok(Some(types::I64)), // pointer
         MirType::Array(_, _) | MirType::Tuple(_) | MirType::Struct(_) | MirType::Enum(_) => {
@@ -75,7 +75,10 @@ fn type_of_operand_hint(operand: &Operand, locals: &[kryos_mir::ir::MirLocal]) -
     match operand {
         Operand::Local(id) => {
             if let Some(local) = locals.iter().find(|l| l.id == *id) {
-                mir_type_to_cl(&local.ty).ok().flatten().unwrap_or(types::I64)
+                mir_type_to_cl(&local.ty)
+                    .ok()
+                    .flatten()
+                    .unwrap_or(types::I64)
             } else {
                 types::I64
             }
@@ -122,10 +125,12 @@ fn is_bool_operand(operand: &Operand, locals: &[kryos_mir::ir::MirLocal]) -> boo
 /// Returns true if the MIR operand has a float type.
 fn is_float_operand(operand: &Operand, locals: &[kryos_mir::ir::MirLocal]) -> bool {
     match operand {
-        Operand::Local(id) => locals
-            .iter()
-            .find(|l| l.id == *id)
-            .is_some_and(|l| matches!(l.ty, kryos_mir::ir::MirType::F32 | kryos_mir::ir::MirType::F64)),
+        Operand::Local(id) => locals.iter().find(|l| l.id == *id).is_some_and(|l| {
+            matches!(
+                l.ty,
+                kryos_mir::ir::MirType::F32 | kryos_mir::ir::MirType::F64
+            )
+        }),
         Operand::Constant(Constant::Float(_)) => true,
         _ => false,
     }
@@ -228,7 +233,10 @@ pub fn compile_module(module: &MirModule) -> Result<Vec<u8>, CodegenError> {
 }
 
 /// Compile a MIR module with explicit codegen options.
-pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions) -> Result<Vec<u8>, CodegenError> {
+pub fn compile_module_with_options(
+    module: &MirModule,
+    options: &CodegenOptions,
+) -> Result<Vec<u8>, CodegenError> {
     // Build ISA for the host.
     let mut flag_builder = settings::builder();
     flag_builder
@@ -238,8 +246,8 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
         .set("is_pic", "true")
         .map_err(|e| CodegenError::Target(e.to_string()))?;
 
-    let isa_builder = cranelift_native::builder()
-        .map_err(|e| CodegenError::Target(e.to_string()))?;
+    let isa_builder =
+        cranelift_native::builder().map_err(|e| CodegenError::Target(e.to_string()))?;
     let isa = isa_builder
         .finish(settings::Flags::new(flag_builder))
         .map_err(|e| CodegenError::Target(e.to_string()))?;
@@ -269,19 +277,11 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
 
         if mir_func.name == "main" && mir_func.ret_ty == MirType::Void {
             // Declare the user's main under an internal name.
-            let func_id = object_module.declare_function(
-                "_kryos_main",
-                Linkage::Local,
-                &sig,
-            )?;
+            let func_id = object_module.declare_function("_kryos_main", Linkage::Local, &sig)?;
             func_ids.insert(mir_func.name.clone(), func_id);
             needs_main_wrapper = true;
         } else {
-            let func_id = object_module.declare_function(
-                &mir_func.name,
-                Linkage::Export,
-                &sig,
-            )?;
+            let func_id = object_module.declare_function(&mir_func.name, Linkage::Export, &sig)?;
             func_ids.insert(mir_func.name.clone(), func_id);
         }
     }
@@ -296,7 +296,9 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
     // This gives ALL function values a uniform env-based calling convention:
     //   env layout: [thunk_fn_ptr, cap0, cap1, ...]
     //   CallIndirect: load fn from env[0], call fn(env, user_args...)
-    let mir_func_map: HashMap<&str, &MirFunction> = module.functions.iter()
+    let mir_func_map: HashMap<&str, &MirFunction> = module
+        .functions
+        .iter()
         .map(|f| (f.name.as_str(), f))
         .collect();
 
@@ -308,23 +310,34 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
     for mir_func in &module.functions {
         for bb in &mir_func.blocks {
             for inst in &bb.instructions {
-                if let Instruction::Assign { value: RValue::Closure { func_name, captures }, .. } = inst {
+                if let Instruction::Assign {
+                    value:
+                        RValue::Closure {
+                            func_name,
+                            captures,
+                        },
+                    ..
+                } = inst
+                {
                     if !closure_info.contains_key(func_name.as_str()) {
                         let user_params = if let Some(f) = mir_func_map.get(func_name.as_str()) {
                             f.params.len().saturating_sub(captures.len())
                         } else {
                             0
                         };
-                        let cap_types: Vec<Option<MirType>> = captures.iter().map(|cap| {
-                            match cap {
-                                Operand::Local(id) => mir_func.locals
+                        let cap_types: Vec<Option<MirType>> = captures
+                            .iter()
+                            .map(|cap| match cap {
+                                Operand::Local(id) => mir_func
+                                    .locals
                                     .iter()
                                     .find(|l| l.id == *id)
                                     .map(|l| l.ty.clone()),
                                 _ => None,
-                            }
-                        }).collect();
-                        closure_info.insert(func_name.clone(), (captures.len(), user_params, cap_types));
+                            })
+                            .collect();
+                        closure_info
+                            .insert(func_name.clone(), (captures.len(), user_params, cap_types));
                     }
                 }
             }
@@ -343,9 +356,7 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
                 sig.params.push(AbiParam::new(types::I64));
             }
             sig.returns.push(AbiParam::new(types::I64));
-            let id = object_module.declare_function(
-                &env_thunk_name, Linkage::Export, &sig,
-            )?;
+            let id = object_module.declare_function(&env_thunk_name, Linkage::Export, &sig)?;
             thunk_ids.insert(func_name.clone(), id);
             func_ids.insert(env_thunk_name, id);
         }
@@ -357,18 +368,22 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
     {
         let call_conv = object_module.isa().default_call_conv();
         for (func_name, (_, _, cap_types)) in &closure_info {
-            let has_heap_caps = cap_types.iter().any(|ct| matches!(ct,
-                Some(MirType::Str) | Some(MirType::Array(_, _))
-                | Some(MirType::Function { .. }) | Some(MirType::Shared(_))
-                | Some(MirType::Struct(_)) | Some(MirType::Enum(_))
-            ));
+            let has_heap_caps = cap_types.iter().any(|ct| {
+                matches!(
+                    ct,
+                    Some(MirType::Str)
+                        | Some(MirType::Array(_, _))
+                        | Some(MirType::Function { .. })
+                        | Some(MirType::Shared(_))
+                        | Some(MirType::Struct(_))
+                        | Some(MirType::Enum(_))
+                )
+            });
             if has_heap_caps {
                 let dropper_name = format!("{func_name}_drop");
                 let mut sig = Signature::new(call_conv);
                 sig.params.push(AbiParam::new(types::I64)); // env ptr
-                let id = object_module.declare_function(
-                    &dropper_name, Linkage::Local, &sig,
-                )?;
+                let id = object_module.declare_function(&dropper_name, Linkage::Local, &sig)?;
                 dropper_ids.insert(func_name.clone(), id);
                 func_ids.insert(dropper_name, id);
             }
@@ -382,10 +397,17 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
     {
         let call_conv = object_module.isa().default_call_conv();
         let has_heap_fields = |fields: &[(String, MirType)]| -> bool {
-            fields.iter().any(|(_, ty)| matches!(ty,
-                MirType::Str | MirType::Array(_, _) | MirType::Struct(_)
-                | MirType::Function { .. } | MirType::Enum(_) | MirType::Shared(_)
-            ))
+            fields.iter().any(|(_, ty)| {
+                matches!(
+                    ty,
+                    MirType::Str
+                        | MirType::Array(_, _)
+                        | MirType::Struct(_)
+                        | MirType::Function { .. }
+                        | MirType::Enum(_)
+                        | MirType::Shared(_)
+                )
+            })
         };
         for (name, fields) in &module.struct_defs {
             if name != "Map" && has_heap_fields(fields) {
@@ -399,10 +421,17 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
         }
         for (name, variants) in &module.enum_defs {
             let has_droppable = variants.iter().any(|v| {
-                v.fields.iter().any(|f| matches!(f,
-                    MirType::Str | MirType::Array(_, _) | MirType::Struct(_)
-                    | MirType::Function { .. } | MirType::Enum(_) | MirType::Shared(_)
-                ))
+                v.fields.iter().any(|f| {
+                    matches!(
+                        f,
+                        MirType::Str
+                            | MirType::Array(_, _)
+                            | MirType::Struct(_)
+                            | MirType::Function { .. }
+                            | MirType::Enum(_)
+                            | MirType::Shared(_)
+                    )
+                })
             });
             if has_droppable {
                 let drop_name = format!("__kryos_drop_{name}");
@@ -439,21 +468,15 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
     };
 
     // Import ARC runtime functions from libkryos_rt (i64 wrappers).
-    let arc_retain_id = object_module.declare_function(
-        "kryos_arc_retain_i64",
-        Linkage::Import,
-        &arc_retain_sig,
-    )?;
+    let arc_retain_id =
+        object_module.declare_function("kryos_arc_retain_i64", Linkage::Import, &arc_retain_sig)?;
     let arc_release_id = object_module.declare_function(
         "kryos_arc_release_i64",
         Linkage::Import,
         &arc_release_sig,
     )?;
-    let arc_alloc_id = object_module.declare_function(
-        "kryos_arc_alloc_i64",
-        Linkage::Import,
-        &arc_alloc_sig,
-    )?;
+    let arc_alloc_id =
+        object_module.declare_function("kryos_arc_alloc_i64", Linkage::Import, &arc_alloc_sig)?;
     let arc_set_drop_id = object_module.declare_function(
         "kryos_arc_set_drop_i64",
         Linkage::Import,
@@ -513,11 +536,8 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
         sig.params.push(AbiParam::new(types::I64)); // const char* message
         sig
     };
-    let eprintln_id = object_module.declare_function(
-        "kryos_eprintln",
-        Linkage::Local,
-        &eprintln_sig,
-    )?;
+    let eprintln_id =
+        object_module.declare_function("kryos_eprintln", Linkage::Local, &eprintln_sig)?;
     func_ids.insert("eprintln".to_string(), eprintln_id);
     {
         let mut ep_fn = Function::with_name_signature(
@@ -542,23 +562,16 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
                     sig.returns.push(AbiParam::new(types::I64));
                     sig
                 };
-                let iob_id = object_module.declare_function(
-                    "__acrt_iob_func",
-                    Linkage::Import,
-                    &iob_sig,
-                )?;
+                let iob_id =
+                    object_module.declare_function("__acrt_iob_func", Linkage::Import, &iob_sig)?;
                 let iob_ref = object_module.declare_func_in_func(iob_id, builder.func);
                 let two = builder.ins().iconst(types::I32, 2);
                 let call = builder.ins().call(iob_ref, &[two]);
                 builder.inst_results(call)[0]
             } else {
                 // Unix: load from extern FILE *stderr global.
-                let stderr_data_id = object_module.declare_data(
-                    "stderr",
-                    Linkage::Import,
-                    false,
-                    false,
-                )?;
+                let stderr_data_id =
+                    object_module.declare_data("stderr", Linkage::Import, false, false)?;
                 let stderr_gv = object_module.declare_data_in_func(stderr_data_id, builder.func);
                 let addr = builder.ins().global_value(types::I64, stderr_gv);
                 builder.ins().load(types::I64, MemFlags::trusted(), addr, 0)
@@ -598,11 +611,7 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
         sig.returns.push(AbiParam::new(types::I64)); // length
         sig
     };
-    let len_id = object_module.declare_function(
-        "kryos_builtin_len",
-        Linkage::Import,
-        &len_sig,
-    )?;
+    let len_id = object_module.declare_function("kryos_builtin_len", Linkage::Import, &len_sig)?;
     func_ids.insert("len".to_string(), len_id);
 
     // Import to_string() builtin — converts i64 to KryosString.
@@ -649,11 +658,7 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
         sig.returns.push(AbiParam::new(types::I64)); // result
         sig
     };
-    let ipow_id = object_module.declare_function(
-        "kryos_ipow",
-        Linkage::Import,
-        &ipow_sig,
-    )?;
+    let ipow_id = object_module.declare_function("kryos_ipow", Linkage::Import, &ipow_sig)?;
     func_ids.insert("kryos_ipow".to_string(), ipow_id);
 
     // NOTE: ARC runtime functions (kryos_arc_alloc, kryos_arc_retain,
@@ -683,7 +688,8 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
         };
         let malloc_id = object_module.declare_function("malloc", Linkage::Import, &malloc_sig)?;
         let free_id = object_module.declare_function("free", Linkage::Import, &free_sig)?;
-        let realloc_id = object_module.declare_function("realloc", Linkage::Import, &realloc_sig)?;
+        let realloc_id =
+            object_module.declare_function("realloc", Linkage::Import, &realloc_sig)?;
         func_ids.insert("malloc".to_string(), malloc_id);
         func_ids.insert("free".to_string(), free_id);
         func_ids.insert("realloc".to_string(), realloc_id);
@@ -716,7 +722,7 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
             let mut sig = Signature::new(call_conv);
             sig.params.push(AbiParam::new(types::I64)); // a
             sig.params.push(AbiParam::new(types::I64)); // b
-            sig.returns.push(AbiParam::new(types::I8));  // bool
+            sig.returns.push(AbiParam::new(types::I8)); // bool
             sig
         };
         let string_slice_sig = {
@@ -740,13 +746,32 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
             sig
         };
 
-        let sn_id = object_module.declare_function("kryos_string_new", Linkage::Import, &string_new_sig)?;
-        let sc_id = object_module.declare_function("kryos_string_concat", Linkage::Import, &string_concat_sig)?;
-        let sl_id = object_module.declare_function("kryos_string_len", Linkage::Import, &string_len_sig)?;
-        let se_id = object_module.declare_function("kryos_string_eq", Linkage::Import, &string_eq_sig)?;
-        let ss_id = object_module.declare_function("kryos_string_slice", Linkage::Import, &string_slice_sig)?;
-        let sf_id = object_module.declare_function("kryos_string_find", Linkage::Import, &string_find_sig)?;
-        let sfr_id = object_module.declare_function("kryos_string_free", Linkage::Import, &string_free_sig)?;
+        let sn_id =
+            object_module.declare_function("kryos_string_new", Linkage::Import, &string_new_sig)?;
+        let sc_id = object_module.declare_function(
+            "kryos_string_concat",
+            Linkage::Import,
+            &string_concat_sig,
+        )?;
+        let sl_id =
+            object_module.declare_function("kryos_string_len", Linkage::Import, &string_len_sig)?;
+        let se_id =
+            object_module.declare_function("kryos_string_eq", Linkage::Import, &string_eq_sig)?;
+        let ss_id = object_module.declare_function(
+            "kryos_string_slice",
+            Linkage::Import,
+            &string_slice_sig,
+        )?;
+        let sf_id = object_module.declare_function(
+            "kryos_string_find",
+            Linkage::Import,
+            &string_find_sig,
+        )?;
+        let sfr_id = object_module.declare_function(
+            "kryos_string_free",
+            Linkage::Import,
+            &string_free_sig,
+        )?;
 
         func_ids.insert("kryos_string_new".to_string(), sn_id);
         func_ids.insert("kryos_string_concat".to_string(), sc_id);
@@ -764,7 +789,11 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
             sig.returns.push(AbiParam::new(types::I64)); // char handle
             sig
         };
-        let sca_id = object_module.declare_function("kryos_string_char_at", Linkage::Import, &string_char_at_sig)?;
+        let sca_id = object_module.declare_function(
+            "kryos_string_char_at",
+            Linkage::Import,
+            &string_char_at_sig,
+        )?;
         func_ids.insert("kryos_string_char_at".to_string(), sca_id);
 
         // Array functions.
@@ -807,13 +836,23 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
             sig
         };
 
-        let an_id = object_module.declare_function("kryos_array_new", Linkage::Import, &array_new_sig)?;
-        let ap_id = object_module.declare_function("kryos_array_push", Linkage::Import, &array_push_sig)?;
-        let ag_id = object_module.declare_function("kryos_array_get", Linkage::Import, &array_get_sig)?;
-        let as_id = object_module.declare_function("kryos_array_set", Linkage::Import, &array_set_sig)?;
-        let al_id = object_module.declare_function("kryos_array_len", Linkage::Import, &array_len_sig)?;
-        let af_id = object_module.declare_function("kryos_array_free", Linkage::Import, &array_free_sig)?;
-        let ac_id = object_module.declare_function("kryos_array_concat", Linkage::Import, &array_concat_sig)?;
+        let an_id =
+            object_module.declare_function("kryos_array_new", Linkage::Import, &array_new_sig)?;
+        let ap_id =
+            object_module.declare_function("kryos_array_push", Linkage::Import, &array_push_sig)?;
+        let ag_id =
+            object_module.declare_function("kryos_array_get", Linkage::Import, &array_get_sig)?;
+        let as_id =
+            object_module.declare_function("kryos_array_set", Linkage::Import, &array_set_sig)?;
+        let al_id =
+            object_module.declare_function("kryos_array_len", Linkage::Import, &array_len_sig)?;
+        let af_id =
+            object_module.declare_function("kryos_array_free", Linkage::Import, &array_free_sig)?;
+        let ac_id = object_module.declare_function(
+            "kryos_array_concat",
+            Linkage::Import,
+            &array_concat_sig,
+        )?;
 
         func_ids.insert("kryos_array_new".to_string(), an_id);
         func_ids.insert("kryos_array_push".to_string(), ap_id);
@@ -846,13 +885,23 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
         let map_len_sig = string_len_sig.clone();
         let map_free_sig = string_free_sig.clone();
 
-        let mn_id = object_module.declare_function("kryos_map_new", Linkage::Import, &map_new_sig)?;
-        let mi_id = object_module.declare_function("kryos_map_insert", Linkage::Import, &map_insert_sig)?;
-        let mis_id = object_module.declare_function("kryos_map_insert_str", Linkage::Import, &map_insert_sig)?;
-        let mg_id = object_module.declare_function("kryos_map_get", Linkage::Import, &map_get_sig)?;
-        let mgs_id = object_module.declare_function("kryos_map_get_str", Linkage::Import, &map_get_sig)?;
-        let ml_id = object_module.declare_function("kryos_map_len", Linkage::Import, &map_len_sig)?;
-        let mf_id = object_module.declare_function("kryos_map_free", Linkage::Import, &map_free_sig)?;
+        let mn_id =
+            object_module.declare_function("kryos_map_new", Linkage::Import, &map_new_sig)?;
+        let mi_id =
+            object_module.declare_function("kryos_map_insert", Linkage::Import, &map_insert_sig)?;
+        let mis_id = object_module.declare_function(
+            "kryos_map_insert_str",
+            Linkage::Import,
+            &map_insert_sig,
+        )?;
+        let mg_id =
+            object_module.declare_function("kryos_map_get", Linkage::Import, &map_get_sig)?;
+        let mgs_id =
+            object_module.declare_function("kryos_map_get_str", Linkage::Import, &map_get_sig)?;
+        let ml_id =
+            object_module.declare_function("kryos_map_len", Linkage::Import, &map_len_sig)?;
+        let mf_id =
+            object_module.declare_function("kryos_map_free", Linkage::Import, &map_free_sig)?;
 
         func_ids.insert("kryos_map_new".to_string(), mn_id);
         func_ids.insert("kryos_map_insert".to_string(), mi_id);
@@ -881,11 +930,8 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
             Linkage::Import,
             &trace_enter_sig,
         )?;
-        let tx_id = object_module.declare_function(
-            "kryos_trace_exit",
-            Linkage::Import,
-            &trace_exit_sig,
-        )?;
+        let tx_id =
+            object_module.declare_function("kryos_trace_exit", Linkage::Import, &trace_exit_sig)?;
         func_ids.insert("kryos_trace_enter".to_string(), te_id);
         func_ids.insert("kryos_trace_exit".to_string(), tx_id);
     }
@@ -898,10 +944,8 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
         let func_id = func_ids[&mir_func.name];
         let sig = build_signature(mir_func, object_module.isa().default_call_conv());
 
-        let mut cl_func = Function::with_name_signature(
-            UserFuncName::user(0, func_id.as_u32()),
-            sig,
-        );
+        let mut cl_func =
+            Function::with_name_signature(UserFuncName::user(0, func_id.as_u32()), sig);
 
         {
             let mut builder = FunctionBuilder::new(&mut cl_func, &mut fb_ctx);
@@ -943,10 +987,8 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
         }
         sig.returns.push(AbiParam::new(types::I64));
 
-        let mut cl_func = Function::with_name_signature(
-            UserFuncName::user(0, env_thunk_id.as_u32()),
-            sig,
-        );
+        let mut cl_func =
+            Function::with_name_signature(UserFuncName::user(0, env_thunk_id.as_u32()), sig);
 
         {
             let mut builder = FunctionBuilder::new(&mut cl_func, &mut fb_ctx);
@@ -961,7 +1003,9 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
             let mut call_args: Vec<cranelift_codegen::ir::Value> = Vec::new();
             for i in 0..*num_captures {
                 let offset = ((i + 1) * 8) as i32;
-                let cap = builder.ins().load(types::I64, MemFlags::new(), env_val, offset);
+                let cap = builder
+                    .ins()
+                    .load(types::I64, MemFlags::new(), env_val, offset);
                 call_args.push(cap);
             }
 
@@ -1063,7 +1107,11 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
             ("free", true),
         ] {
             if !func_ids.contains_key(rt_name) {
-                let sig = if is_void { one_arg_void_sig(call_conv) } else { one_arg_sig(call_conv) };
+                let sig = if is_void {
+                    one_arg_void_sig(call_conv)
+                } else {
+                    one_arg_sig(call_conv)
+                };
                 let id = object_module.declare_function(rt_name, Linkage::Import, &sig)?;
                 func_ids.insert(rt_name.to_string(), id);
             }
@@ -1075,10 +1123,8 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
             let mut sig = Signature::new(call_conv);
             sig.params.push(AbiParam::new(types::I64)); // env ptr
 
-            let mut cl_func = Function::with_name_signature(
-                UserFuncName::user(0, dropper_id.as_u32()),
-                sig,
-            );
+            let mut cl_func =
+                Function::with_name_signature(UserFuncName::user(0, dropper_id.as_u32()), sig);
 
             {
                 let mut builder = FunctionBuilder::new(&mut cl_func, &mut fb_ctx);
@@ -1095,12 +1141,16 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
                         Some(MirType::Str) => Some("kryos_string_free"),
                         Some(MirType::Array(_, _)) => Some("kryos_array_free"),
                         Some(MirType::Struct(n)) if n == "Map" => Some("kryos_map_free"),
-                        Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => Some("kryos_arc_release"),
+                        Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
+                            Some("kryos_arc_release")
+                        }
                         Some(MirType::Struct(_)) | Some(MirType::Enum(_)) => Some("free"),
                         _ => None,
                     };
                     if let Some(fn_name) = rt_fn_name {
-                        let val = builder.ins().load(types::I64, MemFlags::new(), env_ptr, offset);
+                        let val = builder
+                            .ins()
+                            .load(types::I64, MemFlags::new(), env_ptr, offset);
                         let func_id = func_ids[fn_name];
                         let func_ref = object_module.declare_func_in_func(func_id, builder.func);
                         builder.ins().call(func_ref, &[val]);
@@ -1126,10 +1176,8 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
         let mut sig = Signature::new(call_conv);
         sig.params.push(AbiParam::new(types::I64)); // type ptr
 
-        let mut cl_func = Function::with_name_signature(
-            UserFuncName::user(0, drop_id.as_u32()),
-            sig,
-        );
+        let mut cl_func =
+            Function::with_name_signature(UserFuncName::user(0, drop_id.as_u32()), sig);
 
         {
             let mut builder = FunctionBuilder::new(&mut cl_func, &mut fb_ctx);
@@ -1142,7 +1190,9 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
                 // Struct drop: free each heap-owning field, then free the struct.
                 if let Ok(layout) = compute_struct_layout(struct_def) {
                     for (field_name, field_ty) in struct_def.iter() {
-                        let field_offset = layout.field_offsets.iter()
+                        let field_offset = layout
+                            .field_offsets
+                            .iter()
                             .find(|(n, _, _)| n == field_name)
                             .map(|(_, off, _)| *off as i32);
                         if let Some(offset) = field_offset {
@@ -1150,7 +1200,9 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
                                 MirType::Str => Some("kryos_string_free"),
                                 MirType::Array(_, _) => Some("kryos_array_free"),
                                 MirType::Struct(n) if n == "Map" => Some("kryos_map_free"),
-                                MirType::Function { .. } | MirType::Shared(_) => Some("kryos_arc_release"),
+                                MirType::Function { .. } | MirType::Shared(_) => {
+                                    Some("kryos_arc_release")
+                                }
                                 MirType::Struct(n) => {
                                     let dn = format!("__kryos_drop_{n}");
                                     if func_ids.contains_key(&dn) {
@@ -1170,19 +1222,24 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
                                 }
                                 _ => continue,
                             };
-                            let field_val = builder.ins().load(types::I64, MemFlags::new(), ptr, offset);
+                            let field_val =
+                                builder.ins().load(types::I64, MemFlags::new(), ptr, offset);
                             if let Some(fn_name) = free_fn {
                                 let func_id = func_ids[fn_name];
-                                let func_ref = object_module.declare_func_in_func(func_id, builder.func);
+                                let func_ref =
+                                    object_module.declare_func_in_func(func_id, builder.func);
                                 builder.ins().call(func_ref, &[field_val]);
                             } else {
                                 // Named type drop helper for nested struct/enum.
                                 let nested_name = match field_ty {
-                                    MirType::Struct(n) | MirType::Enum(n) => format!("__kryos_drop_{n}"),
+                                    MirType::Struct(n) | MirType::Enum(n) => {
+                                        format!("__kryos_drop_{n}")
+                                    }
                                     _ => unreachable!(),
                                 };
                                 let nested_id = func_ids[&nested_name];
-                                let nested_ref = object_module.declare_func_in_func(nested_id, builder.func);
+                                let nested_ref =
+                                    object_module.declare_func_in_func(nested_id, builder.func);
                                 builder.ins().call(nested_ref, &[field_val]);
                             }
                         }
@@ -1194,12 +1251,21 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
                 let merge_block = builder.create_block();
 
                 for (idx, variant) in variants.iter().enumerate() {
-                    let droppable_fields: Vec<(usize, &MirType)> = variant.fields.iter()
+                    let droppable_fields: Vec<(usize, &MirType)> = variant
+                        .fields
+                        .iter()
                         .enumerate()
-                        .filter(|(_, f)| matches!(f,
-                            MirType::Str | MirType::Array(_, _) | MirType::Struct(_)
-                            | MirType::Function { .. } | MirType::Enum(_) | MirType::Shared(_)
-                        ))
+                        .filter(|(_, f)| {
+                            matches!(
+                                f,
+                                MirType::Str
+                                    | MirType::Array(_, _)
+                                    | MirType::Struct(_)
+                                    | MirType::Function { .. }
+                                    | MirType::Enum(_)
+                                    | MirType::Shared(_)
+                            )
+                        })
                         .collect();
                     if droppable_fields.is_empty() {
                         continue;
@@ -1210,7 +1276,9 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
 
                     let tag_val = builder.ins().iconst(types::I64, idx as i64);
                     let cmp = builder.ins().icmp(
-                        cranelift_codegen::ir::condcodes::IntCC::Equal, tag, tag_val,
+                        cranelift_codegen::ir::condcodes::IntCC::Equal,
+                        tag,
+                        tag_val,
                     );
                     builder.ins().brif(cmp, variant_block, &[], skip_block, &[]);
                     builder.seal_block(variant_block);
@@ -1218,7 +1286,8 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
                     builder.switch_to_block(variant_block);
                     for (field_idx, field_ty) in &droppable_fields {
                         let offset = ((*field_idx + 1) * 8) as i32;
-                        let field_val = builder.ins().load(types::I64, MemFlags::new(), ptr, offset);
+                        let field_val =
+                            builder.ins().load(types::I64, MemFlags::new(), ptr, offset);
                         let fn_name = match *field_ty {
                             MirType::Str => "kryos_string_free",
                             MirType::Array(_, _) => "kryos_array_free",
@@ -1228,7 +1297,8 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
                                 let dn = format!("__kryos_drop_{n}");
                                 if func_ids.contains_key(&dn) {
                                     let fid = func_ids[&dn];
-                                    let fref = object_module.declare_func_in_func(fid, builder.func);
+                                    let fref =
+                                        object_module.declare_func_in_func(fid, builder.func);
                                     builder.ins().call(fref, &[field_val]);
                                     continue;
                                 }
@@ -1274,11 +1344,7 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
         // Declare the exported `main` symbol with C signature: () -> i32.
         let mut main_sig = Signature::new(call_conv);
         main_sig.returns.push(AbiParam::new(types::I32));
-        let main_id = object_module.declare_function(
-            "main",
-            Linkage::Export,
-            &main_sig,
-        )?;
+        let main_id = object_module.declare_function("main", Linkage::Export, &main_sig)?;
 
         // Build the wrapper function body.
         let kryos_main_id = func_ids["main"]; // points to _kryos_main
@@ -1295,19 +1361,22 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
 
             // Initialize runtime (stack guard, panic hook, etc.).
             let init_sig = Signature::new(call_conv);
-            let init_id = object_module.declare_function(
-                "kryos_rt_init",
-                Linkage::Import,
-                &init_sig,
-            )?;
+            let init_id =
+                object_module.declare_function("kryos_rt_init", Linkage::Import, &init_sig)?;
             let init_ref = object_module.declare_func_in_func(init_id, builder.func);
             builder.ins().call(init_ref, &[]);
 
             // Call _kryos_main().
-            let main_func = module.functions.iter().find(|f| f.name == "main")
-                .ok_or_else(|| CodegenError::Internal(
-                    "no `fn main()` found — every Kryos program must define a main function".to_string(),
-                ))?;
+            let main_func = module
+                .functions
+                .iter()
+                .find(|f| f.name == "main")
+                .ok_or_else(|| {
+                    CodegenError::Internal(
+                        "no `fn main()` found — every Kryos program must define a main function"
+                            .to_string(),
+                    )
+                })?;
             let callee_sig = build_signature(main_func, call_conv);
             let callee_sig_ref = builder.import_signature(callee_sig);
             let callee_ref = object_module.declare_func_in_func(kryos_main_id, builder.func);
@@ -1346,9 +1415,9 @@ pub fn compile_module_with_options(module: &MirModule, options: &CodegenOptions)
     }
 
     let product = object_module.finish();
-    let bytes = product.emit().map_err(|e| {
-        CodegenError::Internal(format!("{e}"))
-    })?;
+    let bytes = product
+        .emit()
+        .map_err(|e| CodegenError::Internal(format!("{e}")))?;
     Ok(bytes)
 }
 
@@ -1498,12 +1567,7 @@ pub fn translate_function<M: Module>(
     emit_trace_enter(&mir_func.name, builder, &mut translator, module)?;
 
     // Translate the entry block's instructions (we already switched to it).
-    translate_block_body(
-        &mir_func.blocks[0],
-        builder,
-        &mut translator,
-        module,
-    )?;
+    translate_block_body(&mir_func.blocks[0], builder, &mut translator, module)?;
 
     // Translate remaining blocks.
     for bb in mir_func.blocks.iter().skip(1) {
@@ -1543,13 +1607,9 @@ fn translate_instruction<M: Module>(
         Instruction::Assign { dest, value } => {
             let val = translate_rvalue(value, builder, translator, module, Some(*dest))?;
             if let Some(val) = val {
-                let var = translator
-                    .variables
-                    .get(&dest.0)
-                    .copied()
-                    .ok_or_else(|| {
-                        CodegenError::Internal(format!("undefined local _{}", dest.0))
-                    })?;
+                let var = translator.variables.get(&dest.0).copied().ok_or_else(|| {
+                    CodegenError::Internal(format!("undefined local _{}", dest.0))
+                })?;
 
                 // Coerce the value to the declared variable type if they differ
                 // (e.g. a call returning I32 assigned to a Void/I64 temp).
@@ -1591,7 +1651,10 @@ fn translate_instruction<M: Module>(
             if matches!(value, RValue::Call { .. } | RValue::CallIndirect { .. }) {
                 for (&local_id, &slot) in &translator.borrow_slots {
                     if let Some(&var) = translator.variables.get(&local_id) {
-                        let cl_ty = translator.mir_func.locals.iter()
+                        let cl_ty = translator
+                            .mir_func
+                            .locals
+                            .iter()
                             .find(|l| l.id.0 == local_id)
                             .and_then(|l| mir_type_to_cl(&l.ty).ok().flatten())
                             .unwrap_or(types::I64);
@@ -1612,10 +1675,21 @@ fn translate_instruction<M: Module>(
                         !func.starts_with("kryos_")
                             && !matches!(
                                 func.as_str(),
-                                "println" | "print" | "eprintln"
-                                    | "sleep" | "sqrt" | "floor" | "ceil" | "round" | "abs"
-                                    | "min" | "max"
-                                    | "assert" | "len" | "range" | "to_string"
+                                "println"
+                                    | "print"
+                                    | "eprintln"
+                                    | "sleep"
+                                    | "sqrt"
+                                    | "floor"
+                                    | "ceil"
+                                    | "round"
+                                    | "abs"
+                                    | "min"
+                                    | "max"
+                                    | "assert"
+                                    | "len"
+                                    | "range"
+                                    | "to_string"
                                     | "exit"
                             )
                     }
@@ -1634,10 +1708,7 @@ fn translate_instruction<M: Module>(
                     let has_exc = builder.inst_results(check_call)[0];
 
                     let zero = builder.ins().iconst(types::I64, 0);
-                    let is_pending =
-                        builder
-                            .ins()
-                            .icmp(IntCC::NotEqual, has_exc, zero);
+                    let is_pending = builder.ins().icmp(IntCC::NotEqual, has_exc, zero);
 
                     let exc_return_block = builder.create_block();
                     let continue_block = builder.create_block();
@@ -1672,27 +1743,13 @@ fn translate_instruction<M: Module>(
             }
         }
         Instruction::ArcRetain { ptr } => {
-            let func_ref = ensure_func_ref(
-                "kryos_arc_retain",
-                builder,
-                translator,
-                module,
-            )?;
-            let val = builder.use_var(
-                translator.variables[&ptr.0],
-            );
+            let func_ref = ensure_func_ref("kryos_arc_retain", builder, translator, module)?;
+            let val = builder.use_var(translator.variables[&ptr.0]);
             builder.ins().call(func_ref, &[val]);
         }
         Instruction::ArcRelease { ptr } => {
-            let func_ref = ensure_func_ref(
-                "kryos_arc_release",
-                builder,
-                translator,
-                module,
-            )?;
-            let val = builder.use_var(
-                translator.variables[&ptr.0],
-            );
+            let func_ref = ensure_func_ref("kryos_arc_release", builder, translator, module)?;
+            let val = builder.use_var(translator.variables[&ptr.0]);
             builder.ins().call(func_ref, &[val]);
         }
         Instruction::Drop { local } => {
@@ -1709,7 +1766,11 @@ fn translate_instruction<M: Module>(
                     match ty {
                         kryos_mir::ir::MirType::Str => {
                             let free_ref = ensure_func_ref_with_args(
-                                "kryos_string_free", builder, translator, module, 1,
+                                "kryos_string_free",
+                                builder,
+                                translator,
+                                module,
+                                1,
                             )?;
                             builder.ins().call(free_ref, &[val]);
                         }
@@ -1717,7 +1778,11 @@ fn translate_instruction<M: Module>(
                         | kryos_mir::ir::MirType::Shared(_) => {
                             // ARC-managed; release our reference.
                             let release_ref = ensure_func_ref_with_args(
-                                "kryos_arc_release", builder, translator, module, 1,
+                                "kryos_arc_release",
+                                builder,
+                                translator,
+                                module,
+                                1,
                             )?;
                             builder.ins().call(release_ref, &[val]);
                         }
@@ -1740,34 +1805,34 @@ fn translate_instruction<M: Module>(
                 }
             }
         }
-        Instruction::StoreField { object, field, value } => {
+        Instruction::StoreField {
+            object,
+            field,
+            value,
+        } => {
             // Store a value into a struct field at its computed offset.
             let ptr = translate_operand(object, builder, translator, module)?;
             let val = translate_operand(value, builder, translator, module)?;
 
             // Determine the struct type from the object operand.
             let struct_name = match object {
-                Operand::Local(id) => {
-                    translator
-                        .mir_func
-                        .locals
-                        .iter()
-                        .find(|l| l.id == *id)
-                        .and_then(|l| match &l.ty {
-                            MirType::Struct(name) => Some(name.clone()),
-                            _ => None,
-                        })
-                }
+                Operand::Local(id) => translator
+                    .mir_func
+                    .locals
+                    .iter()
+                    .find(|l| l.id == *id)
+                    .and_then(|l| match &l.ty {
+                        MirType::Struct(name) => Some(name.clone()),
+                        _ => None,
+                    }),
                 _ => None,
             };
 
             if let Some(name) = struct_name {
                 if let Some(struct_def) = translator.struct_defs.get(&name) {
                     let layout = compute_struct_layout(struct_def)?;
-                    if let Some((_, offset, cl_ty)) = layout
-                        .field_offsets
-                        .iter()
-                        .find(|(n, _, _)| n == field)
+                    if let Some((_, offset, cl_ty)) =
+                        layout.field_offsets.iter().find(|(n, _, _)| n == field)
                     {
                         // Coerce value to the field's Cranelift type if needed.
                         let val_ty = builder.func.dfg.value_type(val);
@@ -1786,21 +1851,24 @@ fn translate_instruction<M: Module>(
                         } else {
                             val
                         };
-                        builder.ins().store(
-                            MemFlags::new(),
-                            coerced,
-                            ptr,
-                            *offset as i32,
-                        );
+                        builder
+                            .ins()
+                            .store(MemFlags::new(), coerced, ptr, *offset as i32);
                     } else {
-                        eprintln!("warning: StoreField '{}' not found in struct '{}'", field, name);
+                        eprintln!(
+                            "warning: StoreField '{}' not found in struct '{}'",
+                            field, name
+                        );
                     }
                 } else {
                     eprintln!("warning: StoreField struct '{}' not in struct_defs", name);
                 }
             } else {
                 // Fallback: store at offset 0 (useful for dynamic/untyped stores).
-                eprintln!("warning: StoreField '{}' on unknown struct type — storing at offset 0", field);
+                eprintln!(
+                    "warning: StoreField '{}' on unknown struct type — storing at offset 0",
+                    field
+                );
                 builder.ins().store(MemFlags::new(), val, ptr, 0);
             }
         }
@@ -1813,18 +1881,16 @@ fn translate_instruction<M: Module>(
         Instruction::Nop => {}
         Instruction::Spawn { func, args } => {
             // Get the function reference and its address as i64.
-            let func_ref = ensure_func_ref_with_args(
-                func, builder, translator, module, args.len(),
-            )?;
+            let func_ref =
+                ensure_func_ref_with_args(func, builder, translator, module, args.len())?;
             let fn_ptr = builder.ins().func_addr(types::I64, func_ref);
 
             if args.is_empty() {
                 // Zero args: kryos_spawn(fn_ptr, null, 0)
                 let null_ptr = builder.ins().iconst(types::I64, 0);
                 let zero = builder.ins().iconst(types::I64, 0);
-                let spawn_ref = ensure_func_ref_with_args(
-                    "kryos_spawn", builder, translator, module, 3,
-                )?;
+                let spawn_ref =
+                    ensure_func_ref_with_args("kryos_spawn", builder, translator, module, 3)?;
                 builder.ins().call(spawn_ref, &[fn_ptr, null_ptr, zero]);
             } else {
                 // Pack args into a stack slot: [arg0, arg1, ...]
@@ -1840,53 +1906,69 @@ fn translate_instruction<M: Module>(
                     let val = translate_operand(arg_op, builder, translator, module)?;
                     // Clone heap-typed args so the spawned thread owns its copies.
                     let arg_ty = match arg_op {
-                        Operand::Local(id) => translator.mir_func.locals
-                            .iter().find(|l| l.id == *id).map(|l| l.ty.clone()),
+                        Operand::Local(id) => translator
+                            .mir_func
+                            .locals
+                            .iter()
+                            .find(|l| l.id == *id)
+                            .map(|l| l.ty.clone()),
                         _ => None,
                     };
                     let store_val = match arg_ty.as_ref() {
                         Some(MirType::Str) => {
                             let f = ensure_func_ref_with_args(
-                                "kryos_string_clone", builder, translator, module, 1,
+                                "kryos_string_clone",
+                                builder,
+                                translator,
+                                module,
+                                1,
                             )?;
                             let c = builder.ins().call(f, &[val]);
                             builder.inst_results(c)[0]
                         }
                         Some(MirType::Array(_, _)) => {
                             let f = ensure_func_ref_with_args(
-                                "kryos_array_clone", builder, translator, module, 1,
+                                "kryos_array_clone",
+                                builder,
+                                translator,
+                                module,
+                                1,
                             )?;
                             let c = builder.ins().call(f, &[val]);
                             builder.inst_results(c)[0]
                         }
                         Some(MirType::Struct(n)) if n == "Map" => {
                             let f = ensure_func_ref_with_args(
-                                "kryos_map_clone", builder, translator, module, 1,
+                                "kryos_map_clone",
+                                builder,
+                                translator,
+                                module,
+                                1,
                             )?;
                             let c = builder.ins().call(f, &[val]);
                             builder.inst_results(c)[0]
                         }
                         Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                             let f = ensure_func_ref_with_args(
-                                "kryos_arc_retain", builder, translator, module, 1,
+                                "kryos_arc_retain",
+                                builder,
+                                translator,
+                                module,
+                                1,
                             )?;
                             builder.ins().call(f, &[val]);
                             val
                         }
                         _ => val,
                     };
-                    builder.ins().store(
-                        MemFlags::trusted(),
-                        store_val,
-                        args_ptr,
-                        (i * 8) as i32,
-                    );
+                    builder
+                        .ins()
+                        .store(MemFlags::trusted(), store_val, args_ptr, (i * 8) as i32);
                 }
 
                 let count = builder.ins().iconst(types::I64, args.len() as i64);
-                let spawn_ref = ensure_func_ref_with_args(
-                    "kryos_spawn", builder, translator, module, 3,
-                )?;
+                let spawn_ref =
+                    ensure_func_ref_with_args("kryos_spawn", builder, translator, module, 3)?;
                 builder.ins().call(spawn_ref, &[fn_ptr, args_ptr, count]);
             }
         }
@@ -1897,35 +1979,54 @@ fn translate_instruction<M: Module>(
             // Clone heap-typed values before sending to prevent double-free.
             // The runtime copies the raw i64; without cloning, both sender
             // and receiver hold the same pointer and both will free it.
-            let val_ty = translator.mir_func.locals.iter()
+            let val_ty = translator
+                .mir_func
+                .locals
+                .iter()
                 .find(|l| l.id == *value)
                 .map(|l| l.ty.clone());
 
             let send_val = match val_ty.as_ref() {
                 Some(MirType::Str) => {
                     let f = ensure_func_ref_with_args(
-                        "kryos_string_clone", builder, translator, module, 1,
+                        "kryos_string_clone",
+                        builder,
+                        translator,
+                        module,
+                        1,
                     )?;
                     let c = builder.ins().call(f, &[v_val]);
                     builder.inst_results(c)[0]
                 }
                 Some(MirType::Array(_, _)) => {
                     let f = ensure_func_ref_with_args(
-                        "kryos_array_clone", builder, translator, module, 1,
+                        "kryos_array_clone",
+                        builder,
+                        translator,
+                        module,
+                        1,
                     )?;
                     let c = builder.ins().call(f, &[v_val]);
                     builder.inst_results(c)[0]
                 }
                 Some(MirType::Struct(n)) if n == "Map" => {
                     let f = ensure_func_ref_with_args(
-                        "kryos_map_clone", builder, translator, module, 1,
+                        "kryos_map_clone",
+                        builder,
+                        translator,
+                        module,
+                        1,
                     )?;
                     let c = builder.ins().call(f, &[v_val]);
                     builder.inst_results(c)[0]
                 }
                 Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                     let f = ensure_func_ref_with_args(
-                        "kryos_arc_retain", builder, translator, module, 1,
+                        "kryos_arc_retain",
+                        builder,
+                        translator,
+                        module,
+                        1,
                     )?;
                     builder.ins().call(f, &[v_val]);
                     v_val
@@ -1933,83 +2034,104 @@ fn translate_instruction<M: Module>(
                 _ => v_val,
             };
 
-            let send_ref = ensure_func_ref_with_args(
-                "kryos_chan_send_i64", builder, translator, module, 2,
-            )?;
+            let send_ref =
+                ensure_func_ref_with_args("kryos_chan_send_i64", builder, translator, module, 2)?;
             builder.ins().call(send_ref, &[ch_val, send_val]);
         }
         Instruction::Receive { dest, channel } => {
             let ch_val = builder.use_var(translator.variables[&channel.0]);
-            let recv_ref = ensure_func_ref_with_args(
-                "kryos_chan_recv_i64", builder, translator, module, 1,
-            )?;
+            let recv_ref =
+                ensure_func_ref_with_args("kryos_chan_recv_i64", builder, translator, module, 1)?;
             let call = builder.ins().call(recv_ref, &[ch_val]);
             let result = builder.inst_results(call)[0];
             let var = translator.variables[&dest.0];
             builder.def_var(var, result);
         }
-        Instruction::ActorSpawn { dest, dispatch_fn, state } => {
+        Instruction::ActorSpawn {
+            dest,
+            dispatch_fn,
+            state,
+        } => {
             // Get dispatch function pointer as i64.
-            let func_ref = ensure_func_ref_with_args(
-                dispatch_fn, builder, translator, module, 1,
-            )?;
+            let func_ref = ensure_func_ref_with_args(dispatch_fn, builder, translator, module, 1)?;
             let fn_ptr = builder.ins().func_addr(types::I64, func_ref);
             let state_val = translate_operand(state, builder, translator, module)?;
             // Call kryos_actor_spawn_i64(fn_ptr, state).
-            let spawn_ref = ensure_func_ref_with_args(
-                "kryos_actor_spawn_i64", builder, translator, module, 2,
-            )?;
+            let spawn_ref =
+                ensure_func_ref_with_args("kryos_actor_spawn_i64", builder, translator, module, 2)?;
             let call = builder.ins().call(spawn_ref, &[fn_ptr, state_val]);
             let result = builder.inst_results(call)[0];
             let var = translator.variables[&dest.0];
             builder.def_var(var, result);
         }
-        Instruction::ActorSend { actor, handler_tag, args } => {
+        Instruction::ActorSend {
+            actor,
+            handler_tag,
+            args,
+        } => {
             let actor_val = builder.use_var(translator.variables[&actor.0]);
             // Lock to prevent message interleaving.
-            let lock_ref = ensure_func_ref_with_args(
-                "kryos_actor_lock_i64", builder, translator, module, 1,
-            )?;
+            let lock_ref =
+                ensure_func_ref_with_args("kryos_actor_lock_i64", builder, translator, module, 1)?;
             builder.ins().call(lock_ref, &[actor_val]);
             // Send handler tag.
             let tag_val = builder.ins().iconst(types::I64, *handler_tag as i64);
-            let send_ref = ensure_func_ref_with_args(
-                "kryos_actor_send_i64", builder, translator, module, 2,
-            )?;
+            let send_ref =
+                ensure_func_ref_with_args("kryos_actor_send_i64", builder, translator, module, 2)?;
             builder.ins().call(send_ref, &[actor_val, tag_val]);
             // Send each argument (clone heap-typed values to prevent double-free).
             for arg in args {
                 let val = translate_operand(arg, builder, translator, module)?;
                 let arg_ty = match arg {
-                    Operand::Local(id) => translator.mir_func.locals
-                        .iter().find(|l| l.id == *id).map(|l| l.ty.clone()),
+                    Operand::Local(id) => translator
+                        .mir_func
+                        .locals
+                        .iter()
+                        .find(|l| l.id == *id)
+                        .map(|l| l.ty.clone()),
                     _ => None,
                 };
                 let send_val = match arg_ty.as_ref() {
                     Some(MirType::Str) => {
                         let f = ensure_func_ref_with_args(
-                            "kryos_string_clone", builder, translator, module, 1,
+                            "kryos_string_clone",
+                            builder,
+                            translator,
+                            module,
+                            1,
                         )?;
                         let c = builder.ins().call(f, &[val]);
                         builder.inst_results(c)[0]
                     }
                     Some(MirType::Array(_, _)) => {
                         let f = ensure_func_ref_with_args(
-                            "kryos_array_clone", builder, translator, module, 1,
+                            "kryos_array_clone",
+                            builder,
+                            translator,
+                            module,
+                            1,
                         )?;
                         let c = builder.ins().call(f, &[val]);
                         builder.inst_results(c)[0]
                     }
                     Some(MirType::Struct(n)) if n == "Map" => {
                         let f = ensure_func_ref_with_args(
-                            "kryos_map_clone", builder, translator, module, 1,
+                            "kryos_map_clone",
+                            builder,
+                            translator,
+                            module,
+                            1,
                         )?;
                         let c = builder.ins().call(f, &[val]);
                         builder.inst_results(c)[0]
                     }
                     Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                         let f = ensure_func_ref_with_args(
-                            "kryos_arc_retain", builder, translator, module, 1,
+                            "kryos_arc_retain",
+                            builder,
+                            translator,
+                            module,
+                            1,
                         )?;
                         builder.ins().call(f, &[val]);
                         val
@@ -2020,34 +2142,40 @@ fn translate_instruction<M: Module>(
             }
             // Unlock.
             let unlock_ref = ensure_func_ref_with_args(
-                "kryos_actor_unlock_i64", builder, translator, module, 1,
+                "kryos_actor_unlock_i64",
+                builder,
+                translator,
+                module,
+                1,
             )?;
             builder.ins().call(unlock_ref, &[actor_val]);
         }
-        Instruction::ActorStateLoad { dest, state_ptr, field_offset } => {
+        Instruction::ActorStateLoad {
+            dest,
+            state_ptr,
+            field_offset,
+        } => {
             // Load from state_ptr + field_offset * 8.
             let ptr_val = builder.use_var(translator.variables[&state_ptr.0]);
             let offset_bytes = (*field_offset as i32) * 8;
-            let loaded = builder.ins().load(
-                types::I64,
-                MemFlags::new(),
-                ptr_val,
-                offset_bytes,
-            );
+            let loaded = builder
+                .ins()
+                .load(types::I64, MemFlags::new(), ptr_val, offset_bytes);
             let var = translator.variables[&dest.0];
             builder.def_var(var, loaded);
         }
-        Instruction::ActorStateStore { state_ptr, field_offset, value } => {
+        Instruction::ActorStateStore {
+            state_ptr,
+            field_offset,
+            value,
+        } => {
             // Store value to state_ptr + field_offset * 8.
             let ptr_val = builder.use_var(translator.variables[&state_ptr.0]);
             let val = translate_operand(value, builder, translator, module)?;
             let offset_bytes = (*field_offset as i32) * 8;
-            builder.ins().store(
-                MemFlags::new(),
-                val,
-                ptr_val,
-                offset_bytes,
-            );
+            builder
+                .ins()
+                .store(MemFlags::new(), val, ptr_val, offset_bytes);
         }
     }
     Ok(())
@@ -2117,9 +2245,8 @@ fn translate_rvalue<M: Module>(
                     if translator.copy_structs.contains(sname) {
                         if let Some(struct_def) = translator.struct_defs.get(sname).cloned() {
                             let layout = compute_struct_layout(&struct_def)?;
-                            let size_val = builder
-                                .ins()
-                                .iconst(types::I64, layout.total_size as i64);
+                            let size_val =
+                                builder.ins().iconst(types::I64, layout.total_size as i64);
                             let malloc_ref = ensure_func_ref_with_args(
                                 "malloc", builder, translator, module, 1,
                             )?;
@@ -2136,20 +2263,29 @@ fn translate_rvalue<M: Module>(
                                     *offset as i32,
                                 );
                                 // Look up the MIR type for this field.
-                                let field_mir_ty = struct_def.iter()
+                                let field_mir_ty = struct_def
+                                    .iter()
                                     .find(|(n, _)| n == field_name)
                                     .map(|(_, t)| t);
                                 let stored_val = match field_mir_ty {
                                     Some(MirType::Array(_, _)) => {
                                         let clone_ref = ensure_func_ref_with_args(
-                                            "kryos_array_clone", builder, translator, module, 1,
+                                            "kryos_array_clone",
+                                            builder,
+                                            translator,
+                                            module,
+                                            1,
                                         )?;
                                         let call = builder.ins().call(clone_ref, &[field_val]);
                                         builder.inst_results(call)[0]
                                     }
                                     Some(MirType::Str) => {
                                         let clone_ref = ensure_func_ref_with_args(
-                                            "kryos_string_clone", builder, translator, module, 1,
+                                            "kryos_string_clone",
+                                            builder,
+                                            translator,
+                                            module,
+                                            1,
                                         )?;
                                         let call = builder.ins().call(clone_ref, &[field_val]);
                                         builder.inst_results(call)[0]
@@ -2158,15 +2294,22 @@ fn translate_rvalue<M: Module>(
                                         if inner_name == "Map" {
                                             // Deep-clone maps via kryos_map_clone.
                                             let clone_ref = ensure_func_ref_with_args(
-                                                "kryos_map_clone", builder, translator, module, 1,
+                                                "kryos_map_clone",
+                                                builder,
+                                                translator,
+                                                module,
+                                                1,
                                             )?;
                                             let call = builder.ins().call(clone_ref, &[field_val]);
                                             builder.inst_results(call)[0]
                                         } else if translator.copy_structs.contains(inner_name) {
                                             // Recursively deep-copy nested @copy structs.
-                                            if let Some(inner_def) = translator.struct_defs.get(inner_name).cloned() {
+                                            if let Some(inner_def) =
+                                                translator.struct_defs.get(inner_name).cloned()
+                                            {
                                                 emit_deep_copy_struct(
-                                                    field_val, &inner_def, builder, translator, module,
+                                                    field_val, &inner_def, builder, translator,
+                                                    module,
                                                 )?
                                             } else {
                                                 field_val
@@ -2177,7 +2320,11 @@ fn translate_rvalue<M: Module>(
                                     }
                                     Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                                         let retain_ref = ensure_func_ref_with_args(
-                                            "kryos_arc_retain", builder, translator, module, 1,
+                                            "kryos_arc_retain",
+                                            builder,
+                                            translator,
+                                            module,
+                                            1,
                                         )?;
                                         builder.ins().call(retain_ref, &[field_val]);
                                         field_val
@@ -2267,9 +2414,8 @@ fn translate_rvalue<M: Module>(
             let len_val = builder.ins().iconst(types::I64, str_len as i64);
 
             // Call kryos_string_new(data_ptr, len) to create a KryosString handle.
-            let string_new_ref = ensure_func_ref_with_args(
-                "kryos_string_new", builder, translator, module, 2,
-            )?;
+            let string_new_ref =
+                ensure_func_ref_with_args("kryos_string_new", builder, translator, module, 2)?;
             let call = builder.ins().call(string_new_ref, &[data_ptr, len_val]);
             let handle = builder.inst_results(call)[0];
             Ok(Some(handle))
@@ -2306,16 +2452,19 @@ fn translate_rvalue<M: Module>(
 
             if is_string && *op == MirBinOp::Add {
                 let concat_ref = ensure_func_ref_with_args(
-                    "kryos_string_concat", builder, translator, module, 2,
+                    "kryos_string_concat",
+                    builder,
+                    translator,
+                    module,
+                    2,
                 )?;
                 let call = builder.ins().call(concat_ref, &[lhs, rhs]);
                 return Ok(Some(builder.inst_results(call)[0]));
             }
 
             if is_string && (*op == MirBinOp::Eq || *op == MirBinOp::Neq) {
-                let eq_ref = ensure_func_ref_with_args(
-                    "kryos_string_eq", builder, translator, module, 2,
-                )?;
+                let eq_ref =
+                    ensure_func_ref_with_args("kryos_string_eq", builder, translator, module, 2)?;
                 let call = builder.ins().call(eq_ref, &[lhs, rhs]);
                 let eq_val = builder.inst_results(call)[0];
                 if *op == MirBinOp::Neq {
@@ -2335,15 +2484,12 @@ fn translate_rvalue<M: Module>(
                     ("kryos_ipow", false)
                 };
                 if needs_f64_sig {
-                    let func_ref = ensure_func_ref_f64(
-                        fn_name, builder, translator, module, 2,
-                    )?;
+                    let func_ref = ensure_func_ref_f64(fn_name, builder, translator, module, 2)?;
                     let call = builder.ins().call(func_ref, &[lhs, rhs]);
                     return Ok(Some(builder.inst_results(call)[0]));
                 } else {
-                    let func_ref = ensure_func_ref_with_args(
-                        fn_name, builder, translator, module, 2,
-                    )?;
+                    let func_ref =
+                        ensure_func_ref_with_args(fn_name, builder, translator, module, 2)?;
                     let call = builder.ins().call(func_ref, &[lhs, rhs]);
                     return Ok(Some(builder.inst_results(call)[0]));
                 }
@@ -2351,9 +2497,7 @@ fn translate_rvalue<M: Module>(
 
             // Float modulo: call runtime kryos_fmod.
             if *op == MirBinOp::Mod && is_float {
-                let func_ref = ensure_func_ref_f64(
-                    "kryos_fmod", builder, translator, module, 2,
-                )?;
+                let func_ref = ensure_func_ref_f64("kryos_fmod", builder, translator, module, 2)?;
                 let call = builder.ins().call(func_ref, &[lhs, rhs]);
                 return Ok(Some(builder.inst_results(call)[0]));
             }
@@ -2363,7 +2507,11 @@ fn translate_rvalue<M: Module>(
             // causes a hardware exception instead of a friendly error message.
             if !is_float && (*op == MirBinOp::Div || *op == MirBinOp::Mod) {
                 let check_ref = ensure_func_ref_with_args(
-                    "kryos_check_div_zero_i64", builder, translator, module, 1,
+                    "kryos_check_div_zero_i64",
+                    builder,
+                    translator,
+                    module,
+                    1,
                 )?;
                 // Widen rhs to i64 for the runtime check (which uses all-i64 ABI).
                 let rhs_ty = builder.func.dfg.value_type(rhs);
@@ -2375,7 +2523,14 @@ fn translate_rvalue<M: Module>(
                 builder.ins().call(check_ref, &[rhs_wide]);
             }
 
-            let val = translate_binop(*op, lhs, rhs, is_float, builder, translator.checked_arithmetic)?;
+            let val = translate_binop(
+                *op,
+                lhs,
+                rhs,
+                is_float,
+                builder,
+                translator.checked_arithmetic,
+            )?;
             Ok(Some(val))
         }
 
@@ -2398,9 +2553,8 @@ fn translate_rvalue<M: Module>(
                     "print" => "kryos_print_str",
                     _ => "kryos_eprintln_str",
                 };
-                let print_ref = ensure_func_ref_with_args(
-                    print_fn, builder, translator, module, 1,
-                )?;
+                let print_ref =
+                    ensure_func_ref_with_args(print_fn, builder, translator, module, 1)?;
 
                 if args.is_empty() {
                     // println() with no args: pass null handle → prints newline.
@@ -2431,9 +2585,8 @@ fn translate_rvalue<M: Module>(
                         "kryos_builtin_to_string"
                     };
 
-                    let to_str_ref = ensure_func_ref_with_args(
-                        to_str_fn, builder, translator, module, 1,
-                    )?;
+                    let to_str_ref =
+                        ensure_func_ref_with_args(to_str_fn, builder, translator, module, 1)?;
                     let call = builder.ins().call(to_str_ref, &[val]);
                     let handle = builder.inst_results(call)[0];
                     builder.ins().call(print_ref, &[handle]);
@@ -2450,9 +2603,8 @@ fn translate_rvalue<M: Module>(
                     val = builder.ins().bitcast(types::I64, MemFlags::new(), val);
                 }
                 // If it's already an integer (e.g. from a variable), assume it holds f64 bits.
-                let sleep_ref = ensure_func_ref_with_args(
-                    "kryos_sleep", builder, translator, module, 1,
-                )?;
+                let sleep_ref =
+                    ensure_func_ref_with_args("kryos_sleep", builder, translator, module, 1)?;
                 builder.ins().call(sleep_ref, &[val]);
                 return Ok(None);
             }
@@ -2460,18 +2612,20 @@ fn translate_rvalue<M: Module>(
             // Handle math builtins that map to native Cranelift f64 instructions.
             // sqrt, floor, ceil use Cranelift's native instructions directly;
             // abs dispatches to fabs for floats or integer negation for ints.
-            if matches!(func.as_str(), "sqrt" | "floor" | "ceil" | "round" | "abs") && args.len() == 1 {
+            if matches!(func.as_str(), "sqrt" | "floor" | "ceil" | "round" | "abs")
+                && args.len() == 1
+            {
                 let val = translate_operand(&args[0], builder, translator, module)?;
                 let val_ty = builder.func.dfg.value_type(val);
 
                 if is_float_type(val_ty) {
                     let result = match func.as_str() {
-                        "sqrt"  => builder.ins().sqrt(val),
+                        "sqrt" => builder.ins().sqrt(val),
                         "floor" => builder.ins().floor(val),
-                        "ceil"  => builder.ins().ceil(val),
+                        "ceil" => builder.ins().ceil(val),
                         "round" => builder.ins().nearest(val),
-                        "abs"   => builder.ins().fabs(val),
-                        _       => unreachable!(),
+                        "abs" => builder.ins().fabs(val),
+                        _ => unreachable!(),
                     };
                     return Ok(Some(result));
                 } else if func == "abs" {
@@ -2515,7 +2669,11 @@ fn translate_rvalue<M: Module>(
 
             // Handle f64→f64 math builtins (sin, cos, tan, log, log2, log10)
             // via runtime calls with proper f64 signatures.
-            if matches!(func.as_str(), "sin" | "cos" | "tan" | "log" | "log2" | "log10") && args.len() == 1 {
+            if matches!(
+                func.as_str(),
+                "sin" | "cos" | "tan" | "log" | "log2" | "log10"
+            ) && args.len() == 1
+            {
                 let val = translate_operand(&args[0], builder, translator, module)?;
                 let rt_name = format!("kryos_builtin_{func}");
                 let func_ref = ensure_func_ref_f64_f64(&rt_name, builder, translator, module)?;
@@ -2542,7 +2700,11 @@ fn translate_rvalue<M: Module>(
                     // site will bitcast to F64.
                     let val = translate_operand(&args[0], builder, translator, module)?;
                     let parse_float_ref = ensure_func_ref_with_args(
-                        "kryos_builtin_parse_float", builder, translator, module, 1,
+                        "kryos_builtin_parse_float",
+                        builder,
+                        translator,
+                        module,
+                        1,
                     )?;
                     let call = builder.ins().call(parse_float_ref, &[val]);
                     return Ok(Some(builder.inst_results(call)[0]));
@@ -2573,7 +2735,11 @@ fn translate_rvalue<M: Module>(
                 let val = translate_operand(&args[0], builder, translator, module)?;
                 if is_float_operand(&args[0], &translator.mir_func.locals) {
                     let f64_ref = ensure_func_ref_with_args(
-                        "kryos_f64_to_string", builder, translator, module, 1,
+                        "kryos_f64_to_string",
+                        builder,
+                        translator,
+                        module,
+                        1,
                     )?;
                     let call = builder.ins().call(f64_ref, &[val]);
                     return Ok(Some(builder.inst_results(call)[0]));
@@ -2584,7 +2750,11 @@ fn translate_rvalue<M: Module>(
                         v = builder.ins().sextend(types::I64, v);
                     }
                     let bool_ref = ensure_func_ref_with_args(
-                        "kryos_bool_to_string", builder, translator, module, 1,
+                        "kryos_bool_to_string",
+                        builder,
+                        translator,
+                        module,
+                        1,
                     )?;
                     let call = builder.ins().call(bool_ref, &[v]);
                     return Ok(Some(builder.inst_results(call)[0]));
@@ -2623,9 +2793,8 @@ fn translate_rvalue<M: Module>(
                 let data_ptr = builder.ins().global_value(types::I64, gv);
                 let len_val = builder.ins().iconst(types::I64, str_len as i64);
 
-                let string_new_ref = ensure_func_ref_with_args(
-                    "kryos_string_new", builder, translator, module, 2,
-                )?;
+                let string_new_ref =
+                    ensure_func_ref_with_args("kryos_string_new", builder, translator, module, 2)?;
                 let call = builder.ins().call(string_new_ref, &[data_ptr, len_val]);
                 return Ok(Some(builder.inst_results(call)[0]));
             }
@@ -2677,14 +2846,22 @@ fn translate_rvalue<M: Module>(
                     let len_val = builder.ins().iconst(types::I64, str_len as i64);
 
                     let string_new_ref = ensure_func_ref_with_args(
-                        "kryos_string_new", builder, translator, module, 2,
+                        "kryos_string_new",
+                        builder,
+                        translator,
+                        module,
+                        2,
                     )?;
                     let call = builder.ins().call(string_new_ref, &[data_ptr, len_val]);
                     builder.inst_results(call)[0]
                 };
 
                 let assert_ref = ensure_func_ref_with_args(
-                    "kryos_builtin_assert", builder, translator, module, 2,
+                    "kryos_builtin_assert",
+                    builder,
+                    translator,
+                    module,
+                    2,
                 )?;
                 builder.ins().call(assert_ref, &[condition, message]);
                 return Ok(None);
@@ -2692,69 +2869,75 @@ fn translate_rvalue<M: Module>(
 
             // Map Kryos builtin names to their runtime function names.
             let (runtime_name, runtime_arg_count) = match func.as_str() {
-                "chan"  => ("kryos_chan_new_i64", 0usize),
-                "send"  => ("kryos_chan_send_i64", 2),
-                "recv"  => ("kryos_chan_recv_i64", 1),
-                "file_read"    => ("kryos_builtin_file_read", 1),
-                "file_write"   => ("kryos_builtin_file_write", 2),
-                "env_get"      => ("kryos_builtin_env_get", 1),
-                "time_now"     => ("kryos_builtin_time_now", 0),
-                "parse_int"    => ("kryos_builtin_parse_int", 1),
-                "parse_float"  => ("kryos_builtin_parse_float", 1),
-                "type_of"      => ("kryos_builtin_type_of", 1),
-                "char_code"    => ("kryos_builtin_char_code", 1),
-                "char_from"    => ("kryos_builtin_char_from", 1),
-                "substr"       => ("kryos_builtin_substr", 3),
-                "contains"     => ("kryos_builtin_contains", 2),
-                "starts_with"  => ("kryos_builtin_starts_with", 2),
-                "ends_with"    => ("kryos_builtin_ends_with", 2),
-                "trim"         => ("kryos_builtin_trim", 1),
-                "to_upper"     => ("kryos_builtin_to_upper", 1),
-                "to_lower"     => ("kryos_builtin_to_lower", 1),
-                "replace"      => ("kryos_builtin_replace", 3),
-                "split"        => ("kryos_builtin_split", 2),
-                "join"         => ("kryos_builtin_join", 2),
-                "push"         => ("kryos_builtin_push", 2),
-                "pop"          => ("kryos_builtin_pop", 1),
-                "int"          => ("kryos_builtin_int", 1),
-                "float"        => ("kryos_builtin_float", 1),
-                "buf_new"          => ("kryos_buf_new", 1),
-                "buf_write_byte"   => ("kryos_buf_write_byte", 2),
+                "chan" => ("kryos_chan_new_i64", 0usize),
+                "send" => ("kryos_chan_send_i64", 2),
+                "recv" => ("kryos_chan_recv_i64", 1),
+                "file_read" => ("kryos_builtin_file_read", 1),
+                "file_write" => ("kryos_builtin_file_write", 2),
+                "env_get" => ("kryos_builtin_env_get", 1),
+                "time_now" => ("kryos_builtin_time_now", 0),
+                "parse_int" => ("kryos_builtin_parse_int", 1),
+                "parse_float" => ("kryos_builtin_parse_float", 1),
+                "type_of" => ("kryos_builtin_type_of", 1),
+                "char_code" => ("kryos_builtin_char_code", 1),
+                "char_from" => ("kryos_builtin_char_from", 1),
+                "substr" => ("kryos_builtin_substr", 3),
+                "contains" => ("kryos_builtin_contains", 2),
+                "starts_with" => ("kryos_builtin_starts_with", 2),
+                "ends_with" => ("kryos_builtin_ends_with", 2),
+                "trim" => ("kryos_builtin_trim", 1),
+                "to_upper" => ("kryos_builtin_to_upper", 1),
+                "to_lower" => ("kryos_builtin_to_lower", 1),
+                "replace" => ("kryos_builtin_replace", 3),
+                "split" => ("kryos_builtin_split", 2),
+                "join" => ("kryos_builtin_join", 2),
+                "push" => ("kryos_builtin_push", 2),
+                "pop" => ("kryos_builtin_pop", 1),
+                "int" => ("kryos_builtin_int", 1),
+                "float" => ("kryos_builtin_float", 1),
+                "buf_new" => ("kryos_buf_new", 1),
+                "buf_write_byte" => ("kryos_buf_write_byte", 2),
                 "buf_write_i16_le" => ("kryos_buf_write_i16_le", 2),
                 "buf_write_i32_le" => ("kryos_buf_write_i32_le", 2),
                 "buf_write_i64_le" => ("kryos_buf_write_i64_le", 2),
-                "buf_write_bytes"  => ("kryos_buf_write_bytes", 3),
-                "buf_write_str"    => ("kryos_buf_write_str", 2),
-                "buf_write_zeros"  => ("kryos_buf_write_zeros", 2),
-                "buf_len"          => ("kryos_buf_len", 1),
-                "buf_get_byte"     => ("kryos_buf_get_byte", 2),
-                "buf_set_byte"     => ("kryos_buf_set_byte", 3),
+                "buf_write_bytes" => ("kryos_buf_write_bytes", 3),
+                "buf_write_str" => ("kryos_buf_write_str", 2),
+                "buf_write_zeros" => ("kryos_buf_write_zeros", 2),
+                "buf_len" => ("kryos_buf_len", 1),
+                "buf_get_byte" => ("kryos_buf_get_byte", 2),
+                "buf_set_byte" => ("kryos_buf_set_byte", 3),
                 "buf_patch_i32_le" => ("kryos_buf_patch_i32_le", 3),
                 "buf_patch_i64_le" => ("kryos_buf_patch_i64_le", 3),
                 "buf_write_to_file" => ("kryos_buf_write_to_file", 2),
-                "buf_free"         => ("kryos_buf_free", 1),
-                "exit"             => ("kryos_builtin_exit", 1),
-                "args"             => ("kryos_builtin_args", 0),
-                "map_has"          => ("kryos_map_has", 2),
-                "map_has_str"      => ("kryos_map_has_str", 2),
-                "map_delete"       => ("kryos_map_delete", 2),
-                "map_delete_str"   => ("kryos_map_delete_str", 2),
-                "map_keys"         => ("kryos_map_keys", 1),
-                "map_keys_str"     => ("kryos_map_keys_str", 1),
-                "read_line"        => ("kryos_builtin_read_line", 0),
-                "file_exists"      => ("kryos_builtin_file_exists", 1),
-                "file_size"        => ("kryos_builtin_file_size", 1),
-                "create_dir"       => ("kryos_builtin_create_dir", 1),
-                "trim_start"       => ("kryos_builtin_trim_start", 1),
-                "trim_end"         => ("kryos_builtin_trim_end", 1),
-                "index_of"         => ("kryos_builtin_index_of", 2),
-                "sort"             => ("kryos_builtin_sort", 1),
-                "reverse"          => ("kryos_builtin_reverse", 1),
-                "append_file"      => ("kryos_builtin_file_append", 2),
-                "http_get"         => ("kryos_builtin_http_get", 1),
+                "buf_free" => ("kryos_buf_free", 1),
+                "exit" => ("kryos_builtin_exit", 1),
+                "args" => ("kryos_builtin_args", 0),
+                "map_has" => ("kryos_map_has", 2),
+                "map_has_str" => ("kryos_map_has_str", 2),
+                "map_delete" => ("kryos_map_delete", 2),
+                "map_delete_str" => ("kryos_map_delete_str", 2),
+                "map_keys" => ("kryos_map_keys", 1),
+                "map_keys_str" => ("kryos_map_keys_str", 1),
+                "read_line" => ("kryos_builtin_read_line", 0),
+                "file_exists" => ("kryos_builtin_file_exists", 1),
+                "file_size" => ("kryos_builtin_file_size", 1),
+                "create_dir" => ("kryos_builtin_create_dir", 1),
+                "trim_start" => ("kryos_builtin_trim_start", 1),
+                "trim_end" => ("kryos_builtin_trim_end", 1),
+                "index_of" => ("kryos_builtin_index_of", 2),
+                "sort" => ("kryos_builtin_sort", 1),
+                "reverse" => ("kryos_builtin_reverse", 1),
+                "append_file" => ("kryos_builtin_file_append", 2),
+                "http_get" => ("kryos_builtin_http_get", 1),
                 _ => (func.as_str(), args.len()),
             };
-            let func_ref = ensure_func_ref_with_args(runtime_name, builder, translator, module, runtime_arg_count)?;
+            let func_ref = ensure_func_ref_with_args(
+                runtime_name,
+                builder,
+                translator,
+                module,
+                runtime_arg_count,
+            )?;
             let mut arg_vals: Vec<cranelift_codegen::ir::Value> = args
                 .iter()
                 .map(|a| translate_operand(a, builder, translator, module))
@@ -2844,16 +3027,14 @@ fn translate_rvalue<M: Module>(
             // runtime functions (args, push, len, kryos_array_get).
             let elem_size_val = builder.ins().iconst(types::I64, 8);
             let cap_val = builder.ins().iconst(types::I64, elems.len().max(1) as i64);
-            let new_ref = ensure_func_ref_with_args(
-                "kryos_array_new", builder, translator, module, 2,
-            )?;
+            let new_ref =
+                ensure_func_ref_with_args("kryos_array_new", builder, translator, module, 2)?;
             let call = builder.ins().call(new_ref, &[elem_size_val, cap_val]);
             let arr_ptr = builder.inst_results(call)[0];
 
             // Push each element.
-            let push_ref = ensure_func_ref_with_args(
-                "kryos_array_push", builder, translator, module, 2,
-            )?;
+            let push_ref =
+                ensure_func_ref_with_args("kryos_array_push", builder, translator, module, 2)?;
             for elem in elems.iter() {
                 let val = translate_operand(elem, builder, translator, module)?;
                 // Widen or bitcast value to i64 for the push function.
@@ -2875,15 +3056,13 @@ fn translate_rvalue<M: Module>(
             // Use KryosArray for tuples (same runtime representation as arrays).
             let elem_size_val = builder.ins().iconst(types::I64, 8);
             let cap_val = builder.ins().iconst(types::I64, elems.len().max(1) as i64);
-            let new_ref = ensure_func_ref_with_args(
-                "kryos_array_new", builder, translator, module, 2,
-            )?;
+            let new_ref =
+                ensure_func_ref_with_args("kryos_array_new", builder, translator, module, 2)?;
             let call = builder.ins().call(new_ref, &[elem_size_val, cap_val]);
             let arr_ptr = builder.inst_results(call)[0];
 
-            let push_ref = ensure_func_ref_with_args(
-                "kryos_array_push", builder, translator, module, 2,
-            )?;
+            let push_ref =
+                ensure_func_ref_with_args("kryos_array_push", builder, translator, module, 2)?;
             for elem in elems.iter() {
                 let val = translate_operand(elem, builder, translator, module)?;
                 let val_ty = builder.func.dfg.value_type(val);
@@ -2910,9 +3089,8 @@ fn translate_rvalue<M: Module>(
                 // across function returns (stack slots are invalidated when the
                 // callee's frame is popped, causing dangling-pointer crashes).
                 let size_val = builder.ins().iconst(types::I64, layout.total_size as i64);
-                let malloc_ref = ensure_func_ref_with_args(
-                    "malloc", builder, translator, module, 1,
-                )?;
+                let malloc_ref =
+                    ensure_func_ref_with_args("malloc", builder, translator, module, 1)?;
                 let call = builder.ins().call(malloc_ref, &[size_val]);
                 let ptr = builder.inst_results(call)[0];
 
@@ -2928,27 +3106,38 @@ fn translate_rvalue<M: Module>(
                     {
                         let val = translate_operand(operand, builder, translator, module)?;
                         let stored_val = if is_copy {
-                            let field_mir_ty = struct_def.iter()
+                            let field_mir_ty = struct_def
+                                .iter()
                                 .find(|(n, _)| n == field_name)
                                 .map(|(_, t)| t);
                             match field_mir_ty {
                                 Some(MirType::Array(_, _)) => {
                                     let clone_ref = ensure_func_ref_with_args(
-                                        "kryos_array_clone", builder, translator, module, 1,
+                                        "kryos_array_clone",
+                                        builder,
+                                        translator,
+                                        module,
+                                        1,
                                     )?;
                                     let c = builder.ins().call(clone_ref, &[val]);
                                     builder.inst_results(c)[0]
                                 }
                                 Some(MirType::Str) => {
                                     let clone_ref = ensure_func_ref_with_args(
-                                        "kryos_string_clone", builder, translator, module, 1,
+                                        "kryos_string_clone",
+                                        builder,
+                                        translator,
+                                        module,
+                                        1,
                                     )?;
                                     let c = builder.ins().call(clone_ref, &[val]);
                                     builder.inst_results(c)[0]
                                 }
                                 Some(MirType::Struct(inner_name)) => {
                                     if translator.copy_structs.contains(inner_name) {
-                                        if let Some(inner_def) = translator.struct_defs.get(inner_name).cloned() {
+                                        if let Some(inner_def) =
+                                            translator.struct_defs.get(inner_name).cloned()
+                                        {
                                             emit_deep_copy_struct(
                                                 val, &inner_def, builder, translator, module,
                                             )?
@@ -2961,7 +3150,11 @@ fn translate_rvalue<M: Module>(
                                 }
                                 Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                                     let retain_ref = ensure_func_ref_with_args(
-                                        "kryos_arc_retain", builder, translator, module, 1,
+                                        "kryos_arc_retain",
+                                        builder,
+                                        translator,
+                                        module,
+                                        1,
                                     )?;
                                     builder.ins().call(retain_ref, &[val]);
                                     val
@@ -2990,45 +3183,41 @@ fn translate_rvalue<M: Module>(
 
             // Determine the struct type name from the object operand's local type.
             let struct_name = match object {
-                Operand::Local(id) => {
-                    translator
-                        .mir_func
-                        .locals
-                        .iter()
-                        .find(|l| l.id == *id)
-                        .and_then(|l| match &l.ty {
-                            MirType::Struct(name) => Some(name.clone()),
-                            _ => None,
-                        })
-                }
+                Operand::Local(id) => translator
+                    .mir_func
+                    .locals
+                    .iter()
+                    .find(|l| l.id == *id)
+                    .and_then(|l| match &l.ty {
+                        MirType::Struct(name) => Some(name.clone()),
+                        _ => None,
+                    }),
                 _ => None,
             };
 
             if let Some(name) = struct_name {
                 if let Some(struct_def) = translator.struct_defs.get(&name).cloned() {
                     let layout = compute_struct_layout(&struct_def)?;
-                    if let Some((_, offset, cl_ty)) = layout
-                        .field_offsets
-                        .iter()
-                        .find(|(n, _, _)| n == field)
+                    if let Some((_, offset, cl_ty)) =
+                        layout.field_offsets.iter().find(|(n, _, _)| n == field)
                     {
-                        let val = builder.ins().load(
-                            *cl_ty,
-                            MemFlags::new(),
-                            ptr,
-                            *offset as i32,
-                        );
+                        let val = builder
+                            .ins()
+                            .load(*cl_ty, MemFlags::new(), ptr, *offset as i32);
                         // If the field is a @copy struct, deep-copy it so
                         // the extracted value is independent from the parent.
                         // Without this, dropping the parent would free the
                         // shared heap data (arrays, strings) still aliased
                         // by the extracted field value.
-                        let field_mir_ty = struct_def.iter()
+                        let field_mir_ty = struct_def
+                            .iter()
                             .find(|(n, _)| n == field)
                             .map(|(_, t)| t.clone());
                         if let Some(MirType::Struct(ref inner_name)) = field_mir_ty {
                             if translator.copy_structs.contains(inner_name) {
-                                if let Some(inner_def) = translator.struct_defs.get(inner_name).cloned() {
+                                if let Some(inner_def) =
+                                    translator.struct_defs.get(inner_name).cloned()
+                                {
                                     let copied = emit_deep_copy_struct(
                                         val, &inner_def, builder, translator, module,
                                     )?;
@@ -3082,9 +3271,8 @@ fn translate_rvalue<M: Module>(
             } else {
                 idx_raw
             };
-            let get_ref = ensure_func_ref_with_args(
-                "kryos_array_get", builder, translator, module, 2,
-            )?;
+            let get_ref =
+                ensure_func_ref_with_args("kryos_array_get", builder, translator, module, 2)?;
             let call = builder.ins().call(get_ref, &[ptr, idx]);
             let raw_result = builder.inst_results(call)[0];
 
@@ -3095,7 +3283,11 @@ fn translate_rvalue<M: Module>(
                     if let MirType::Array(elem_ty, _) = &local.ty {
                         if matches!(elem_ty.as_ref(), MirType::Str) {
                             let clone_ref = ensure_func_ref_with_args(
-                                "kryos_string_clone", builder, translator, module, 1,
+                                "kryos_string_clone",
+                                builder,
+                                translator,
+                                module,
+                                1,
                             )?;
                             let clone_call = builder.ins().call(clone_ref, &[raw_result]);
                             builder.inst_results(clone_call)[0]
@@ -3120,8 +3312,7 @@ fn translate_rvalue<M: Module>(
             // 1. Evaluate the inner expression.
             let val = translate_operand(inner, builder, translator, module)?;
             // 2. Allocate 8 bytes (one i64 slot) via kryos_arc_alloc_i64(8).
-            let func_ref =
-                ensure_func_ref("kryos_arc_alloc", builder, translator, module)?;
+            let func_ref = ensure_func_ref("kryos_arc_alloc", builder, translator, module)?;
             let size = builder.ins().iconst(types::I64, 8);
             let call_inst = builder.ins().call(func_ref, &[size]);
             let ptr = builder.inst_results(call_inst)[0];
@@ -3130,23 +3321,26 @@ fn translate_rvalue<M: Module>(
             Ok(Some(ptr))
         }
 
-        RValue::EnumVariant { enum_name, variant_idx, fields } => {
+        RValue::EnumVariant {
+            enum_name,
+            variant_idx,
+            fields,
+        } => {
             // Enum layout: [tag: i64, field0: i64, field1: i64, ...]
             // All fields are stored as i64 (8 bytes each) for uniform layout.
             //
             // Heap-allocate via malloc so the pointer survives across function
             // returns (stack slots are invalidated when the frame is popped,
             // causing dangling-pointer crashes for returned enums).
-            let max_fields = translator.enum_defs
+            let max_fields = translator
+                .enum_defs
                 .get(enum_name.as_str())
                 .map(|vs| vs.iter().map(|v| v.fields.len()).max().unwrap_or(0))
                 .unwrap_or(0);
             let total_size = (1 + max_fields) as u32 * 8;
 
             let size_val = builder.ins().iconst(types::I64, total_size as i64);
-            let malloc_ref = ensure_func_ref_with_args(
-                "malloc", builder, translator, module, 1,
-            )?;
+            let malloc_ref = ensure_func_ref_with_args("malloc", builder, translator, module, 1)?;
             let call = builder.ins().call(malloc_ref, &[size_val]);
             let ptr = builder.inst_results(call)[0];
 
@@ -3171,14 +3365,21 @@ fn translate_rvalue<M: Module>(
             Ok(Some(tag))
         }
 
-        RValue::EnumPayload { operand, enum_name, variant_idx, field_idx } => {
+        RValue::EnumPayload {
+            operand,
+            enum_name,
+            variant_idx,
+            field_idx,
+        } => {
             // Load the field value from offset (1 + field_idx) * 8.
             let ptr = translate_operand(operand, builder, translator, module)?;
             let offset = ((field_idx + 1) * 8) as i32;
 
             // Look up the actual field type from enum_defs so we load with
             // the correct Cranelift type (e.g. f64 instead of i64).
-            let cl_ty = translator.enum_defs.get(enum_name.as_str())
+            let cl_ty = translator
+                .enum_defs
+                .get(enum_name.as_str())
                 .and_then(|variants| variants.get(*variant_idx as usize))
                 .and_then(|variant| variant.fields.get(*field_idx as usize))
                 .map(|mir_ty| match mir_ty {
@@ -3195,19 +3396,23 @@ fn translate_rvalue<M: Module>(
             // shape_name(sh), area(sh), perimeter(sh)) and each call must read
             // the original payload. Zeroing value-type slots causes all subsequent
             // reads to return 0.
-            let payload_is_ptr = translator.enum_defs.get(enum_name.as_str())
+            let payload_is_ptr = translator
+                .enum_defs
+                .get(enum_name.as_str())
                 .and_then(|variants| variants.get(*variant_idx as usize))
                 .and_then(|variant| variant.fields.get(*field_idx as usize))
-                .map(|mir_ty| matches!(
-                    mir_ty,
-                    MirType::Str
-                    | MirType::Array(..)
-                    | MirType::Enum(..)
-                    | MirType::Struct(..)
-                    | MirType::Ptr(..)
-                    | MirType::Ref { .. }
-                    | MirType::Shared(..)
-                ))
+                .map(|mir_ty| {
+                    matches!(
+                        mir_ty,
+                        MirType::Str
+                            | MirType::Array(..)
+                            | MirType::Enum(..)
+                            | MirType::Struct(..)
+                            | MirType::Ptr(..)
+                            | MirType::Ref { .. }
+                            | MirType::Shared(..)
+                    )
+                })
                 .unwrap_or(false);
             if payload_is_ptr {
                 let zero = builder.ins().iconst(types::I64, 0);
@@ -3230,7 +3435,10 @@ fn translate_rvalue<M: Module>(
             Ok(Some(result))
         }
 
-        RValue::Closure { func_name, captures } => {
+        RValue::Closure {
+            func_name,
+            captures,
+        } => {
             // Uniform env-based calling convention for ALL function values.
             // Layout: [thunk_fn_ptr, cap0, cap1, ...]
             // CallIndirect loads fn from env[0] and calls thunk(env, user_args...).
@@ -3244,15 +3452,17 @@ fn translate_rvalue<M: Module>(
                 let env_slots = 1 + captures.len();
                 let env_size = (env_slots * 8) as i64;
                 let size_val = builder.ins().iconst(types::I64, env_size);
-                let arc_alloc_ref = ensure_func_ref(
-                    "kryos_arc_alloc", builder, translator, module,
-                )?;
+                let arc_alloc_ref =
+                    ensure_func_ref("kryos_arc_alloc", builder, translator, module)?;
                 let call = builder.ins().call(arc_alloc_ref, &[size_val]);
                 let ptr = builder.inst_results(call)[0];
 
                 // Store thunk function pointer at offset 0.
                 let thunk_ref = ensure_func_ref_with_args(
-                    &env_thunk_name, builder, translator, module,
+                    &env_thunk_name,
+                    builder,
+                    translator,
+                    module,
                     1 + captures.len(),
                 )?;
                 let thunk_addr = builder.ins().func_addr(types::I64, thunk_ref);
@@ -3266,7 +3476,9 @@ fn translate_rvalue<M: Module>(
                     let offset = ((i + 1) * 8) as i32;
 
                     let cap_ty = match cap {
-                        Operand::Local(id) => translator.mir_func.locals
+                        Operand::Local(id) => translator
+                            .mir_func
+                            .locals
                             .iter()
                             .find(|l| l.id == *id)
                             .map(|l| l.ty.clone()),
@@ -3276,28 +3488,44 @@ fn translate_rvalue<M: Module>(
                     let store_val = match cap_ty.as_ref() {
                         Some(MirType::Str) => {
                             let f = ensure_func_ref_with_args(
-                                "kryos_string_clone", builder, translator, module, 1,
+                                "kryos_string_clone",
+                                builder,
+                                translator,
+                                module,
+                                1,
                             )?;
                             let c = builder.ins().call(f, &[val]);
                             builder.inst_results(c)[0]
                         }
                         Some(MirType::Array(_, _)) => {
                             let f = ensure_func_ref_with_args(
-                                "kryos_array_clone", builder, translator, module, 1,
+                                "kryos_array_clone",
+                                builder,
+                                translator,
+                                module,
+                                1,
                             )?;
                             let c = builder.ins().call(f, &[val]);
                             builder.inst_results(c)[0]
                         }
                         Some(MirType::Struct(n)) if n == "Map" => {
                             let f = ensure_func_ref_with_args(
-                                "kryos_map_clone", builder, translator, module, 1,
+                                "kryos_map_clone",
+                                builder,
+                                translator,
+                                module,
+                                1,
                             )?;
                             let c = builder.ins().call(f, &[val]);
                             builder.inst_results(c)[0]
                         }
                         Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                             let f = ensure_func_ref_with_args(
-                                "kryos_arc_retain", builder, translator, module, 1,
+                                "kryos_arc_retain",
+                                builder,
+                                translator,
+                                module,
+                                1,
                             )?;
                             builder.ins().call(f, &[val]);
                             val
@@ -3313,11 +3541,14 @@ fn translate_rvalue<M: Module>(
                 let dropper_name = format!("{func_name}_drop");
                 if translator.func_ids.contains_key(&dropper_name) {
                     let set_drop_ref = ensure_func_ref_with_args(
-                        "kryos_arc_set_drop", builder, translator, module, 2,
+                        "kryos_arc_set_drop",
+                        builder,
+                        translator,
+                        module,
+                        2,
                     )?;
-                    let dropper_ref = ensure_func_ref_with_args(
-                        &dropper_name, builder, translator, module, 1,
-                    )?;
+                    let dropper_ref =
+                        ensure_func_ref_with_args(&dropper_name, builder, translator, module, 1)?;
                     let dropper_addr = builder.ins().func_addr(types::I64, dropper_ref);
                     builder.ins().call(set_drop_ref, &[ptr, dropper_addr]);
                 }
@@ -3326,7 +3557,11 @@ fn translate_rvalue<M: Module>(
             } else {
                 // No thunk generated — raw function pointer (built-in).
                 let func_ref = ensure_func_ref_with_args(
-                    func_name, builder, translator, module, captures.len(),
+                    func_name,
+                    builder,
+                    translator,
+                    module,
+                    captures.len(),
                 )?;
                 Ok(Some(builder.ins().func_addr(types::I64, func_ref)))
             }
@@ -3334,7 +3569,8 @@ fn translate_rvalue<M: Module>(
 
         RValue::Map(entries) => {
             // Create map via kryos_map_new, then insert each entry.
-            let new_ref = ensure_func_ref_with_args("kryos_map_new", builder, translator, module, 0)?;
+            let new_ref =
+                ensure_func_ref_with_args("kryos_map_new", builder, translator, module, 0)?;
             let call = builder.ins().call(new_ref, &[]);
             let map_handle = builder.inst_results(call)[0];
 
@@ -3344,12 +3580,19 @@ fn translate_rvalue<M: Module>(
                     .first()
                     .map(|(k, _)| is_string_operand(k, &translator.mir_func.locals))
                     .unwrap_or(false);
-                let insert_fn = if has_str_keys { "kryos_map_insert_str" } else { "kryos_map_insert" };
-                let insert_ref = ensure_func_ref_with_args(insert_fn, builder, translator, module, 3)?;
+                let insert_fn = if has_str_keys {
+                    "kryos_map_insert_str"
+                } else {
+                    "kryos_map_insert"
+                };
+                let insert_ref =
+                    ensure_func_ref_with_args(insert_fn, builder, translator, module, 3)?;
                 for (k, v) in entries {
                     let key_val = translate_operand(k, builder, translator, module)?;
                     let val_val = translate_operand(v, builder, translator, module)?;
-                    builder.ins().call(insert_ref, &[map_handle, key_val, val_val]);
+                    builder
+                        .ins()
+                        .call(insert_ref, &[map_handle, key_val, val_val]);
                 }
             }
 
@@ -3365,8 +3608,7 @@ fn translate_rvalue<M: Module>(
                 Ok(Some(val))
             } else {
                 // Fold: acc = concat(parts[0], parts[1]), then concat(acc, parts[2]), ...
-                let func_ref =
-                    ensure_func_ref("kryos_string_concat", builder, translator, module)?;
+                let func_ref = ensure_func_ref("kryos_string_concat", builder, translator, module)?;
                 let first = coerce_to_string(&parts[0], builder, translator, module)?;
                 let second = coerce_to_string(&parts[1], builder, translator, module)?;
                 let call = builder.ins().call(func_ref, &[first, second]);
@@ -3385,13 +3627,15 @@ fn translate_rvalue<M: Module>(
             }
         }
 
-        RValue::Range { start, end, inclusive } => {
+        RValue::Range {
+            start,
+            end,
+            inclusive,
+        } => {
             // Range layout: [start: i64, end: i64, inclusive: i64] — 24 bytes.
             // Heap-allocate so the pointer survives across function returns.
             let size_val = builder.ins().iconst(types::I64, 24);
-            let malloc_ref = ensure_func_ref_with_args(
-                "malloc", builder, translator, module, 1,
-            )?;
+            let malloc_ref = ensure_func_ref_with_args("malloc", builder, translator, module, 1)?;
             let call = builder.ins().call(malloc_ref, &[size_val]);
             let ptr = builder.inst_results(call)[0];
 
@@ -3417,7 +3661,10 @@ fn translate_rvalue<M: Module>(
             // Take the address of a local variable.
             // Use a persistent borrow slot so mutations through the pointer
             // are visible when we reload the variable.
-            let cl_ty = translator.mir_func.locals.iter()
+            let cl_ty = translator
+                .mir_func
+                .locals
+                .iter()
                 .find(|l| l.id == *local)
                 .and_then(|l| mir_type_to_cl(&l.ty).ok().flatten())
                 .unwrap_or(types::I64);
@@ -3447,7 +3694,10 @@ fn translate_rvalue<M: Module>(
             // Determine the target type from the dest local.
             let cl_ty = dest
                 .and_then(|d| {
-                    translator.mir_func.locals.iter()
+                    translator
+                        .mir_func
+                        .locals
+                        .iter()
                         .find(|l| l.id == d)
                         .and_then(|l| mir_type_to_cl(&l.ty).ok().flatten())
                 })
@@ -3461,23 +3711,28 @@ fn translate_rvalue<M: Module>(
             translate_rvalue(inner, builder, translator, module, dest)
         }
 
-        RValue::MakeTraitObject { value, concrete_type, trait_name } => {
+        RValue::MakeTraitObject {
+            value,
+            concrete_type,
+            trait_name,
+        } => {
             // Dynamic dispatch: heap-allocate a fat pointer [data, vtable_entry...].
             // Heap allocation ensures the fat pointer survives the current scope.
             let data_val = translate_operand(value, builder, translator, module)?;
 
             // Look up the trait method(s) for this concrete type.
             let vtable_key = (concrete_type.clone(), trait_name.clone());
-            let method_names = translator.mir_module_trait_methods
-                .get(&vtable_key).cloned().unwrap_or_default();
+            let method_names = translator
+                .mir_module_trait_methods
+                .get(&vtable_key)
+                .cloned()
+                .unwrap_or_default();
 
             // Heap-allocate fat pointer: [data (i64), fn_ptr_0, fn_ptr_1, ...]
             let num_methods = method_names.len().max(1) as u32;
             let alloc_size = (8 + 8 * num_methods) as i64;
 
-            let malloc_ref = ensure_func_ref_with_args(
-                "malloc", builder, translator, module, 1,
-            )?;
+            let malloc_ref = ensure_func_ref_with_args("malloc", builder, translator, module, 1)?;
             let size_val = builder.ins().iconst(types::I64, alloc_size);
             let call_inst = builder.ins().call(malloc_ref, &[size_val]);
             let fat_ptr = builder.inst_results(call_inst)[0];
@@ -3487,17 +3742,23 @@ fn translate_rvalue<M: Module>(
 
             // Store each method function pointer.
             for (i, method_name) in method_names.iter().enumerate() {
-                let func_ref = ensure_func_ref_with_args(
-                    method_name, builder, translator, module, 1,
-                )?;
+                let func_ref =
+                    ensure_func_ref_with_args(method_name, builder, translator, module, 1)?;
                 let fn_addr = builder.ins().func_addr(types::I64, func_ref);
-                builder.ins().store(MemFlags::new(), fn_addr, fat_ptr, 8 + 8 * i as i32);
+                builder
+                    .ins()
+                    .store(MemFlags::new(), fn_addr, fat_ptr, 8 + 8 * i as i32);
             }
 
             Ok(Some(fat_ptr))
         }
 
-        RValue::VtableCall { object, method_index, args, return_ty } => {
+        RValue::VtableCall {
+            object,
+            method_index,
+            args,
+            return_ty,
+        } => {
             // Dynamic dispatch: load data and method fn_ptr from the fat pointer.
             let fat_ptr = translate_operand(object, builder, translator, module)?;
 
@@ -3505,7 +3766,9 @@ fn translate_rvalue<M: Module>(
             let data_ptr = builder.ins().load(types::I64, MemFlags::new(), fat_ptr, 0);
             // Load the method fn_ptr (offset 8 + 8 * method_index).
             let fn_offset = 8 + 8 * (*method_index as i32);
-            let fn_ptr = builder.ins().load(types::I64, MemFlags::new(), fat_ptr, fn_offset);
+            let fn_ptr = builder
+                .ins()
+                .load(types::I64, MemFlags::new(), fat_ptr, fn_offset);
 
             // Build argument list: data_ptr (self) + any extra args.
             let mut sig = module.make_signature();
@@ -3590,9 +3853,8 @@ fn translate_operand<M: Module>(
                 let data_ptr = builder.ins().global_value(types::I64, gv);
                 let len_val = builder.ins().iconst(types::I64, str_len as i64);
 
-                let string_new_ref = ensure_func_ref_with_args(
-                    "kryos_string_new", builder, translator, module, 2,
-                )?;
+                let string_new_ref =
+                    ensure_func_ref_with_args("kryos_string_new", builder, translator, module, 2)?;
                 let call = builder.ins().call(string_new_ref, &[data_ptr, len_val]);
                 Ok(builder.inst_results(call)[0])
             }
@@ -3635,7 +3897,9 @@ fn translate_binop_int(
             builder.ins().brif(overflow, trap_block, &[], ok_block, &[]);
             builder.switch_to_block(trap_block);
             builder.seal_block(trap_block);
-            builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(2));
+            builder
+                .ins()
+                .trap(cranelift_codegen::ir::TrapCode::unwrap_user(2));
             builder.switch_to_block(ok_block);
             builder.seal_block(ok_block);
             result
@@ -3647,7 +3911,9 @@ fn translate_binop_int(
             builder.ins().brif(overflow, trap_block, &[], ok_block, &[]);
             builder.switch_to_block(trap_block);
             builder.seal_block(trap_block);
-            builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(2));
+            builder
+                .ins()
+                .trap(cranelift_codegen::ir::TrapCode::unwrap_user(2));
             builder.switch_to_block(ok_block);
             builder.seal_block(ok_block);
             result
@@ -3659,7 +3925,9 @@ fn translate_binop_int(
             builder.ins().brif(overflow, trap_block, &[], ok_block, &[]);
             builder.switch_to_block(trap_block);
             builder.seal_block(trap_block);
-            builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(2));
+            builder
+                .ins()
+                .trap(cranelift_codegen::ir::TrapCode::unwrap_user(2));
             builder.switch_to_block(ok_block);
             builder.seal_block(ok_block);
             result
@@ -3680,25 +3948,13 @@ fn translate_binop_int(
             let cmp = builder.ins().icmp(IntCC::Equal, lhs, rhs);
             cmp
         }
-        MirBinOp::Neq => {
-            builder.ins().icmp(IntCC::NotEqual, lhs, rhs)
-        }
-        MirBinOp::Lt => {
-            builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs)
-        }
-        MirBinOp::Gt => {
-            builder.ins().icmp(IntCC::SignedGreaterThan, lhs, rhs)
-        }
-        MirBinOp::LtEq => {
-            builder
-                .ins()
-                .icmp(IntCC::SignedLessThanOrEqual, lhs, rhs)
-        }
-        MirBinOp::GtEq => {
-            builder
-                .ins()
-                .icmp(IntCC::SignedGreaterThanOrEqual, lhs, rhs)
-        }
+        MirBinOp::Neq => builder.ins().icmp(IntCC::NotEqual, lhs, rhs),
+        MirBinOp::Lt => builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs),
+        MirBinOp::Gt => builder.ins().icmp(IntCC::SignedGreaterThan, lhs, rhs),
+        MirBinOp::LtEq => builder.ins().icmp(IntCC::SignedLessThanOrEqual, lhs, rhs),
+        MirBinOp::GtEq => builder
+            .ins()
+            .icmp(IntCC::SignedGreaterThanOrEqual, lhs, rhs),
         MirBinOp::And => builder.ins().band(lhs, rhs),
         MirBinOp::Or => builder.ins().bor(lhs, rhs),
         MirBinOp::BitAnd => builder.ins().band(lhs, rhs),
@@ -3721,26 +3977,12 @@ fn translate_binop_float(
         MirBinOp::Sub => builder.ins().fsub(lhs, rhs),
         MirBinOp::Mul => builder.ins().fmul(lhs, rhs),
         MirBinOp::Div => builder.ins().fdiv(lhs, rhs),
-        MirBinOp::Eq => {
-            builder.ins().fcmp(FloatCC::Equal, lhs, rhs)
-        }
-        MirBinOp::Neq => {
-            builder.ins().fcmp(FloatCC::NotEqual, lhs, rhs)
-        }
-        MirBinOp::Lt => {
-            builder.ins().fcmp(FloatCC::LessThan, lhs, rhs)
-        }
-        MirBinOp::Gt => {
-            builder.ins().fcmp(FloatCC::GreaterThan, lhs, rhs)
-        }
-        MirBinOp::LtEq => {
-            builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs, rhs)
-        }
-        MirBinOp::GtEq => {
-            builder
-                .ins()
-                .fcmp(FloatCC::GreaterThanOrEqual, lhs, rhs)
-        }
+        MirBinOp::Eq => builder.ins().fcmp(FloatCC::Equal, lhs, rhs),
+        MirBinOp::Neq => builder.ins().fcmp(FloatCC::NotEqual, lhs, rhs),
+        MirBinOp::Lt => builder.ins().fcmp(FloatCC::LessThan, lhs, rhs),
+        MirBinOp::Gt => builder.ins().fcmp(FloatCC::GreaterThan, lhs, rhs),
+        MirBinOp::LtEq => builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs, rhs),
+        MirBinOp::GtEq => builder.ins().fcmp(FloatCC::GreaterThanOrEqual, lhs, rhs),
         _ => {
             return Err(CodegenError::UnsupportedOperation(format!(
                 "float binary op {:?}",
@@ -3844,7 +4086,9 @@ fn translate_terminator<M: Module>(
                 // block after an explicit return).  Emit a trap instead of
                 // a bare return so the verifier doesn't reject the
                 // signature mismatch.
-                builder.ins().trap(cranelift_codegen::ir::TrapCode::user(1).unwrap());
+                builder
+                    .ins()
+                    .trap(cranelift_codegen::ir::TrapCode::user(1).unwrap());
             }
         }
         Terminator::Return(Some(operand)) => {
@@ -3906,16 +4150,12 @@ fn translate_terminator<M: Module>(
 
                     if i + 1 == targets.len() {
                         // Last case: branch to target or default.
-                        builder
-                            .ins()
-                            .brif(cmp, target_cl, &[], default_cl, &[]);
+                        builder.ins().brif(cmp, target_cl, &[], default_cl, &[]);
                     } else {
                         // More cases follow: branch to target or fall through
                         // to next comparison.
                         let next_block = builder.create_block();
-                        builder
-                            .ins()
-                            .brif(cmp, target_cl, &[], next_block, &[]);
+                        builder.ins().brif(cmp, target_cl, &[], next_block, &[]);
                         builder.seal_block(next_block);
                         builder.switch_to_block(next_block);
                     }
@@ -3923,7 +4163,9 @@ fn translate_terminator<M: Module>(
             }
         }
         Terminator::Unreachable => {
-            builder.ins().trap(cranelift_codegen::ir::TrapCode::user(1).unwrap());
+            builder
+                .ins()
+                .trap(cranelift_codegen::ir::TrapCode::user(1).unwrap());
         }
     }
     Ok(())
@@ -4093,9 +4335,10 @@ fn emit_trace_enter<M: Module>(
     // Call kryos_trace_enter(name_ptr, name_len, file_ptr, file_len, line).
     let trace_enter_ref =
         ensure_func_ref_void("kryos_trace_enter", builder, translator, module, 5)?;
-    builder
-        .ins()
-        .call(trace_enter_ref, &[name_ptr, name_len_val, file_ptr, file_len_val, line_val]);
+    builder.ins().call(
+        trace_enter_ref,
+        &[name_ptr, name_len_val, file_ptr, file_len_val, line_val],
+    );
 
     Ok(())
 }
@@ -4106,8 +4349,7 @@ fn emit_trace_exit<M: Module>(
     translator: &mut FuncTranslator,
     module: &mut M,
 ) -> Result<(), CodegenError> {
-    let trace_exit_ref =
-        ensure_func_ref_void("kryos_trace_exit", builder, translator, module, 0)?;
+    let trace_exit_ref = ensure_func_ref_void("kryos_trace_exit", builder, translator, module, 0)?;
     builder.ins().call(trace_exit_ref, &[]);
     Ok(())
 }
@@ -4161,21 +4403,27 @@ fn emit_deep_copy_struct<M: Module>(
     let new_ptr = builder.inst_results(alloc_call)[0];
 
     for (field_name, offset, cl_ty) in &layout.field_offsets {
-        let field_val = builder.ins().load(*cl_ty, MemFlags::new(), src_ptr, *offset as i32);
-        let field_mir_ty = struct_def.iter()
+        let field_val = builder
+            .ins()
+            .load(*cl_ty, MemFlags::new(), src_ptr, *offset as i32);
+        let field_mir_ty = struct_def
+            .iter()
             .find(|(n, _)| n == field_name)
             .map(|(_, t)| t);
         let stored_val = match field_mir_ty {
             Some(MirType::Array(_, _)) => {
-                let clone_ref = ensure_func_ref_with_args(
-                    "kryos_array_clone", builder, translator, module, 1,
-                )?;
+                let clone_ref =
+                    ensure_func_ref_with_args("kryos_array_clone", builder, translator, module, 1)?;
                 let call = builder.ins().call(clone_ref, &[field_val]);
                 builder.inst_results(call)[0]
             }
             Some(MirType::Str) => {
                 let clone_ref = ensure_func_ref_with_args(
-                    "kryos_string_clone", builder, translator, module, 1,
+                    "kryos_string_clone",
+                    builder,
+                    translator,
+                    module,
+                    1,
                 )?;
                 let call = builder.ins().call(clone_ref, &[field_val]);
                 builder.inst_results(call)[0]
@@ -4184,7 +4432,11 @@ fn emit_deep_copy_struct<M: Module>(
                 if inner_name == "Map" {
                     // Deep-clone maps via kryos_map_clone.
                     let clone_ref = ensure_func_ref_with_args(
-                        "kryos_map_clone", builder, translator, module, 1,
+                        "kryos_map_clone",
+                        builder,
+                        translator,
+                        module,
+                        1,
                     )?;
                     let call = builder.ins().call(clone_ref, &[field_val]);
                     builder.inst_results(call)[0]
@@ -4200,15 +4452,16 @@ fn emit_deep_copy_struct<M: Module>(
             }
             Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                 // ARC-managed: retain to share ownership with the copy.
-                let retain_ref = ensure_func_ref_with_args(
-                    "kryos_arc_retain", builder, translator, module, 1,
-                )?;
+                let retain_ref =
+                    ensure_func_ref_with_args("kryos_arc_retain", builder, translator, module, 1)?;
                 builder.ins().call(retain_ref, &[field_val]);
                 field_val
             }
             _ => field_val,
         };
-        builder.ins().store(MemFlags::new(), stored_val, new_ptr, *offset as i32);
+        builder
+            .ins()
+            .store(MemFlags::new(), stored_val, new_ptr, *offset as i32);
     }
 
     Ok(new_ptr)
@@ -4229,22 +4482,19 @@ fn emit_drop_for_value<M: Module>(
 ) -> Result<(), CodegenError> {
     match ty {
         MirType::Str => {
-            let free_ref = ensure_func_ref_with_args(
-                "kryos_string_free", builder, translator, module, 1,
-            )?;
+            let free_ref =
+                ensure_func_ref_with_args("kryos_string_free", builder, translator, module, 1)?;
             builder.ins().call(free_ref, &[val]);
         }
         MirType::Function { .. } | MirType::Shared(_) => {
-            let release_ref = ensure_func_ref_with_args(
-                "kryos_arc_release", builder, translator, module, 1,
-            )?;
+            let release_ref =
+                ensure_func_ref_with_args("kryos_arc_release", builder, translator, module, 1)?;
             builder.ins().call(release_ref, &[val]);
         }
         MirType::Struct(ref name) if name == "Map" => {
             // Maps use their own allocator — call kryos_map_free directly.
-            let free_ref = ensure_func_ref_with_args(
-                "kryos_map_free", builder, translator, module, 1,
-            )?;
+            let free_ref =
+                ensure_func_ref_with_args("kryos_map_free", builder, translator, module, 1)?;
             builder.ins().call(free_ref, &[val]);
         }
         MirType::Struct(ref name) => {
@@ -4252,16 +4502,24 @@ fn emit_drop_for_value<M: Module>(
             if let Some(struct_def) = translator.struct_defs.get(name).cloned() {
                 if let Ok(layout) = compute_struct_layout(&struct_def) {
                     for (field_name, field_ty) in struct_def.iter() {
-                        let field_offset = layout.field_offsets.iter()
+                        let field_offset = layout
+                            .field_offsets
+                            .iter()
                             .find(|(n, _, _)| n == field_name)
                             .map(|(_, off, _)| *off as i32);
                         if let Some(offset) = field_offset {
                             match field_ty {
-                                MirType::Str | MirType::Array(_, _)
-                                | MirType::Struct(_) | MirType::Function { .. }
-                                | MirType::Enum(_) | MirType::Shared(_) => {
+                                MirType::Str
+                                | MirType::Array(_, _)
+                                | MirType::Struct(_)
+                                | MirType::Function { .. }
+                                | MirType::Enum(_)
+                                | MirType::Shared(_) => {
                                     let field_val = builder.ins().load(
-                                        types::I64, MemFlags::new(), val, offset,
+                                        types::I64,
+                                        MemFlags::new(),
+                                        val,
+                                        offset,
                                     );
                                     emit_drop_for_value(
                                         field_val, field_ty, builder, translator, module,
@@ -4273,9 +4531,7 @@ fn emit_drop_for_value<M: Module>(
                     }
                 }
             }
-            let free_ref = ensure_func_ref_with_args(
-                "free", builder, translator, module, 1,
-            )?;
+            let free_ref = ensure_func_ref_with_args("free", builder, translator, module, 1)?;
             builder.ins().call(free_ref, &[val]);
         }
         MirType::Array(ref elem_ty, _) => {
@@ -4286,7 +4542,9 @@ fn emit_drop_for_value<M: Module>(
             let elem_free_fn: Option<String> = match elem_ty.as_ref() {
                 MirType::Str => Some("kryos_string_free".to_string()),
                 MirType::Array(_, _) => Some("kryos_array_free".to_string()),
-                MirType::Function { .. } | MirType::Shared(_) => Some("kryos_arc_release".to_string()),
+                MirType::Function { .. } | MirType::Shared(_) => {
+                    Some("kryos_arc_release".to_string())
+                }
                 MirType::Struct(n) if n == "Map" => Some("kryos_map_free".to_string()),
                 MirType::Struct(n) => {
                     let drop_name = format!("__kryos_drop_{n}");
@@ -4312,14 +4570,14 @@ fn emit_drop_for_value<M: Module>(
                 let zero_ptr = builder.ins().iconst(types::I64, 0);
                 let is_nonnull = builder.ins().icmp(
                     cranelift_codegen::ir::condcodes::IntCC::NotEqual,
-                    val, zero_ptr,
+                    val,
+                    zero_ptr,
                 );
                 let elem_drop_block = builder.create_block();
                 let after_elem_block = builder.create_block();
-                builder.ins().brif(
-                    is_nonnull, elem_drop_block, &[],
-                    after_elem_block, &[],
-                );
+                builder
+                    .ins()
+                    .brif(is_nonnull, elem_drop_block, &[], after_elem_block, &[]);
                 builder.seal_block(elem_drop_block);
                 builder.switch_to_block(elem_drop_block);
 
@@ -4340,7 +4598,8 @@ fn emit_drop_for_value<M: Module>(
                 let i = builder.block_params(loop_header)[0];
                 let done = builder.ins().icmp(
                     cranelift_codegen::ir::condcodes::IntCC::SignedGreaterThanOrEqual,
-                    i, len,
+                    i,
+                    len,
                 );
                 builder.ins().brif(done, exit_block, &[], loop_body, &[]);
                 builder.seal_block(loop_body);
@@ -4348,12 +4607,11 @@ fn emit_drop_for_value<M: Module>(
                 builder.switch_to_block(loop_body);
                 let byte_off = builder.ins().imul_imm(i, 8);
                 let elem_addr = builder.ins().iadd(data, byte_off);
-                let elem = builder.ins().load(
-                    types::I64, MemFlags::new(), elem_addr, 0,
-                );
-                let elem_free_ref = ensure_func_ref_with_args(
-                    free_fn, builder, translator, module, 1,
-                )?;
+                let elem = builder
+                    .ins()
+                    .load(types::I64, MemFlags::new(), elem_addr, 0);
+                let elem_free_ref =
+                    ensure_func_ref_with_args(free_fn, builder, translator, module, 1)?;
                 builder.ins().call(elem_free_ref, &[elem]);
                 let i_next = builder.ins().iadd_imm(i, 1);
                 builder.ins().jump(loop_header, &[i_next]);
@@ -4367,9 +4625,8 @@ fn emit_drop_for_value<M: Module>(
                 builder.switch_to_block(after_elem_block);
             }
 
-            let free_ref = ensure_func_ref_with_args(
-                "kryos_array_free", builder, translator, module, 1,
-            )?;
+            let free_ref =
+                ensure_func_ref_with_args("kryos_array_free", builder, translator, module, 1)?;
             builder.ins().call(free_ref, &[val]);
         }
         MirType::Enum(ref enum_name) => {
@@ -4378,11 +4635,17 @@ fn emit_drop_for_value<M: Module>(
             if let Some(variants) = translator.enum_defs.get(enum_name).cloned() {
                 // Check if any variant holds droppable fields.
                 let has_droppable = variants.iter().any(|v| {
-                    v.fields.iter().any(|f| matches!(f,
-                        MirType::Str | MirType::Array(_, _)
-                        | MirType::Struct(_) | MirType::Function { .. }
-                        | MirType::Enum(_) | MirType::Shared(_)
-                    ))
+                    v.fields.iter().any(|f| {
+                        matches!(
+                            f,
+                            MirType::Str
+                                | MirType::Array(_, _)
+                                | MirType::Struct(_)
+                                | MirType::Function { .. }
+                                | MirType::Enum(_)
+                                | MirType::Shared(_)
+                        )
+                    })
                 });
 
                 if has_droppable {
@@ -4393,13 +4656,21 @@ fn emit_drop_for_value<M: Module>(
                     let merge_block = builder.create_block();
 
                     for (idx, variant) in variants.iter().enumerate() {
-                        let droppable_fields: Vec<(usize, &MirType)> = variant.fields.iter()
+                        let droppable_fields: Vec<(usize, &MirType)> = variant
+                            .fields
+                            .iter()
                             .enumerate()
-                            .filter(|(_, f)| matches!(f,
-                                MirType::Str | MirType::Array(_, _)
-                                | MirType::Struct(_) | MirType::Function { .. }
-                                | MirType::Enum(_) | MirType::Shared(_)
-                            ))
+                            .filter(|(_, f)| {
+                                matches!(
+                                    f,
+                                    MirType::Str
+                                        | MirType::Array(_, _)
+                                        | MirType::Struct(_)
+                                        | MirType::Function { .. }
+                                        | MirType::Enum(_)
+                                        | MirType::Shared(_)
+                                )
+                            })
                             .collect();
 
                         if droppable_fields.is_empty() {
@@ -4412,9 +4683,12 @@ fn emit_drop_for_value<M: Module>(
                         let tag_const = builder.ins().iconst(types::I64, idx as i64);
                         let is_match = builder.ins().icmp(
                             cranelift_codegen::ir::condcodes::IntCC::Equal,
-                            tag, tag_const,
+                            tag,
+                            tag_const,
                         );
-                        builder.ins().brif(is_match, variant_block, &[], skip_block, &[]);
+                        builder
+                            .ins()
+                            .brif(is_match, variant_block, &[], skip_block, &[]);
 
                         builder.seal_block(variant_block);
                         builder.switch_to_block(variant_block);
@@ -4422,12 +4696,9 @@ fn emit_drop_for_value<M: Module>(
                         // Drop each heap-owning field in this variant.
                         for (field_idx, field_ty) in &droppable_fields {
                             let offset = ((*field_idx + 1) * 8) as i32;
-                            let field_val = builder.ins().load(
-                                types::I64, MemFlags::new(), val, offset,
-                            );
-                            emit_drop_for_value(
-                                field_val, field_ty, builder, translator, module,
-                            )?;
+                            let field_val =
+                                builder.ins().load(types::I64, MemFlags::new(), val, offset);
+                            emit_drop_for_value(field_val, field_ty, builder, translator, module)?;
                         }
                         builder.ins().jump(merge_block, &[]);
 
@@ -4442,9 +4713,7 @@ fn emit_drop_for_value<M: Module>(
                 }
             }
             // Enum is heap-allocated via malloc — free the enum pointer.
-            let free_ref = ensure_func_ref_with_args(
-                "free", builder, translator, module, 1,
-            )?;
+            let free_ref = ensure_func_ref_with_args("free", builder, translator, module, 1)?;
             builder.ins().call(free_ref, &[val]);
         }
         _ => {}
@@ -4465,8 +4734,12 @@ fn emit_exception_cleanup_drops<M: Module>(
     translator: &mut FuncTranslator,
     module: &mut M,
 ) -> Result<(), CodegenError> {
-    let param_ids: std::collections::HashSet<u32> =
-        translator.mir_func.params.iter().map(|p| p.local.0).collect();
+    let param_ids: std::collections::HashSet<u32> = translator
+        .mir_func
+        .params
+        .iter()
+        .map(|p| p.local.0)
+        .collect();
 
     // Collect the locals we need to drop: non-parameter, droppable types.
     let locals_to_drop: Vec<(u32, MirType)> = translator
@@ -4474,15 +4747,17 @@ fn emit_exception_cleanup_drops<M: Module>(
         .locals
         .iter()
         .filter(|l| !param_ids.contains(&l.id.0))
-        .filter(|l| matches!(
-            l.ty,
-            MirType::Str
-                | MirType::Function { .. }
-                | MirType::Struct(_)
-                | MirType::Array(_, _)
-                | MirType::Enum(_)
-                | MirType::Shared(_)
-        ))
+        .filter(|l| {
+            matches!(
+                l.ty,
+                MirType::Str
+                    | MirType::Function { .. }
+                    | MirType::Struct(_)
+                    | MirType::Array(_, _)
+                    | MirType::Enum(_)
+                    | MirType::Shared(_)
+            )
+        })
         .map(|l| (l.id.0, l.ty.clone()))
         .collect();
 
@@ -4491,19 +4766,14 @@ fn emit_exception_cleanup_drops<M: Module>(
         if let Some(&var) = translator.variables.get(local_id) {
             let val = builder.use_var(var);
             let zero = builder.ins().iconst(types::I64, 0);
-            let is_nonnull =
-                builder.ins().icmp(IntCC::NotEqual, val, zero);
+            let is_nonnull = builder.ins().icmp(IntCC::NotEqual, val, zero);
 
             let do_drop_block = builder.create_block();
             let after_drop_block = builder.create_block();
 
-            builder.ins().brif(
-                is_nonnull,
-                do_drop_block,
-                &[],
-                after_drop_block,
-                &[],
-            );
+            builder
+                .ins()
+                .brif(is_nonnull, do_drop_block, &[], after_drop_block, &[]);
 
             builder.switch_to_block(do_drop_block);
             builder.seal_block(do_drop_block);

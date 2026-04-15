@@ -14,7 +14,12 @@ pub struct Version {
 
 impl Version {
     pub fn new(major: u64, minor: u64, patch: u64) -> Self {
-        Self { major, minor, patch, pre: None }
+        Self {
+            major,
+            minor,
+            patch,
+            pre: None,
+        }
     }
 
     pub fn with_pre(mut self, pre: impl Into<String>) -> Self {
@@ -41,7 +46,8 @@ impl PartialOrd for Version {
 
 impl Ord for Version {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.major.cmp(&other.major)
+        self.major
+            .cmp(&other.major)
             .then(self.minor.cmp(&other.minor))
             .then(self.patch.cmp(&other.patch))
             .then_with(|| match (&self.pre, &other.pre) {
@@ -66,14 +72,19 @@ impl FromStr for Version {
 
         let parts: Vec<&str> = version_part.split('.').collect();
         if parts.len() != 3 {
-            return Err(format!("invalid version: expected MAJOR.MINOR.PATCH, got '{s}'"));
+            return Err(format!(
+                "invalid version: expected MAJOR.MINOR.PATCH, got '{s}'"
+            ));
         }
 
-        let major = parts[0].parse::<u64>()
+        let major = parts[0]
+            .parse::<u64>()
             .map_err(|_| format!("invalid major version: '{}'", parts[0]))?;
-        let minor = parts[1].parse::<u64>()
+        let minor = parts[1]
+            .parse::<u64>()
             .map_err(|_| format!("invalid minor version: '{}'", parts[1]))?;
-        let patch = parts[2].parse::<u64>()
+        let patch = parts[2]
+            .parse::<u64>()
             .map_err(|_| format!("invalid patch version: '{}'", parts[2]))?;
 
         if let Some(ref pre_str) = pre {
@@ -82,7 +93,12 @@ impl FromStr for Version {
             }
         }
 
-        Ok(Version { major, minor, patch, pre })
+        Ok(Version {
+            major,
+            minor,
+            patch,
+            pre,
+        })
     }
 }
 

@@ -187,9 +187,7 @@ impl TypeEnv {
 
     /// Define an enum in the current scope.
     pub fn define_enum(&mut self, def: EnumDef) {
-        self.current_scope_mut()
-            .enums
-            .insert(def.name.clone(), def);
+        self.current_scope_mut().enums.insert(def.name.clone(), def);
     }
 
     /// Look up an enum definition by name.
@@ -264,7 +262,9 @@ impl TypeEnv {
     // ── Helpers ───────────────────────────────────────────────────────
 
     fn current_scope_mut(&mut self) -> &mut Scope {
-        self.scopes.last_mut().expect("at least one scope must exist")
+        self.scopes
+            .last_mut()
+            .expect("at least one scope must exist")
     }
 
     // ── Name collection (for "did you mean?" suggestions) ────────────

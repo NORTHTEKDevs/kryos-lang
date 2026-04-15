@@ -7,7 +7,8 @@ use serde_json::Value;
 pub fn to_lsp_diagnostic(diag: &Diagnostic, source_map: &SourceMap) -> Option<Value> {
     let label = diag.labels.first()?;
     let _file = source_map.get_file(label.span.file_id)?;
-    let (start_line, start_col) = source_map.offset_to_line_col(label.span.file_id, label.span.start);
+    let (start_line, start_col) =
+        source_map.offset_to_line_col(label.span.file_id, label.span.start);
     let (end_line, end_col) = source_map.offset_to_line_col(label.span.file_id, label.span.end);
 
     let severity = match diag.level {
@@ -33,21 +34,24 @@ pub fn to_lsp_diagnostic(diag: &Diagnostic, source_map: &SourceMap) -> Option<Va
 
     // Add related information from additional labels
     if diag.labels.len() > 1 {
-        let related: Vec<Value> = diag.labels[1..].iter().filter_map(|label| {
-            let f = source_map.get_file(label.span.file_id)?;
-            let (sl, sc) = source_map.offset_to_line_col(label.span.file_id, label.span.start);
-            let (el, ec) = source_map.offset_to_line_col(label.span.file_id, label.span.end);
-            Some(serde_json::json!({
-                "location": {
-                    "uri": format!("file:///{}", f.name.replace('\\', "/")),
-                    "range": {
-                        "start": { "line": sl - 1, "character": sc - 1 },
-                        "end": { "line": el - 1, "character": ec - 1 },
-                    }
-                },
-                "message": label.message,
-            }))
-        }).collect();
+        let related: Vec<Value> = diag.labels[1..]
+            .iter()
+            .filter_map(|label| {
+                let f = source_map.get_file(label.span.file_id)?;
+                let (sl, sc) = source_map.offset_to_line_col(label.span.file_id, label.span.start);
+                let (el, ec) = source_map.offset_to_line_col(label.span.file_id, label.span.end);
+                Some(serde_json::json!({
+                    "location": {
+                        "uri": format!("file:///{}", f.name.replace('\\', "/")),
+                        "range": {
+                            "start": { "line": sl - 1, "character": sc - 1 },
+                            "end": { "line": el - 1, "character": ec - 1 },
+                        }
+                    },
+                    "message": label.message,
+                }))
+            })
+            .collect();
 
         if !related.is_empty() {
             result["relatedInformation"] = Value::Array(related);
@@ -59,10 +63,13 @@ pub fn to_lsp_diagnostic(diag: &Diagnostic, source_map: &SourceMap) -> Option<Va
 
 /// Build a publishDiagnostics notification for a file.
 pub fn publish_diagnostics(uri: &str, diagnostics: Vec<Value>) -> Value {
-    crate::protocol::make_notification("textDocument/publishDiagnostics", serde_json::json!({
-        "uri": uri,
-        "diagnostics": diagnostics,
-    }))
+    crate::protocol::make_notification(
+        "textDocument/publishDiagnostics",
+        serde_json::json!({
+            "uri": uri,
+            "diagnostics": diagnostics,
+        }),
+    )
 }
 
 /// Run the compiler pipeline on source text and return LSP diagnostics.
@@ -75,7 +82,8 @@ pub fn check_source(source: &str, file_uri: &str) -> (Vec<Value>, kryos_errors::
     let module = match kryos_parser::parse(tokens) {
         Ok(module) => module,
         Err(errors) => {
-            let lsp_diags: Vec<Value> = errors.iter()
+            let lsp_diags: Vec<Value> = errors
+                .iter()
                 .filter_map(|d| to_lsp_diagnostic(d, &source_map))
                 .collect();
             return (lsp_diags, source_map);
@@ -85,7 +93,8 @@ pub fn check_source(source: &str, file_uri: &str) -> (Vec<Value>, kryos_errors::
     // Run type checker
     let type_diags = kryos_types::type_check(&module);
 
-    let lsp_diags: Vec<Value> = type_diags.iter()
+    let lsp_diags: Vec<Value> = type_diags
+        .iter()
         .filter_map(|d| to_lsp_diagnostic(d, &source_map))
         .collect();
 

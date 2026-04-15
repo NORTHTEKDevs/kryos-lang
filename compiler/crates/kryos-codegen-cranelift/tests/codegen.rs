@@ -1,10 +1,10 @@
 //! Integration tests for the Cranelift codegen backend.
 #![allow(clippy::approx_constant)]
 
-use std::collections::{HashMap, HashSet};
-use kryos_mir::ir::*;
-use kryos_codegen_cranelift::jit;
 use kryos_codegen_cranelift::codegen;
+use kryos_codegen_cranelift::jit;
+use kryos_mir::ir::*;
+use std::collections::{HashMap, HashSet};
 
 // ---------------------------------------------------------------------------
 // Helper: build a MirFunction from parts
@@ -40,14 +40,35 @@ fn jit_add_two_i32() {
     let func = make_function(
         "add",
         vec![
-            MirParam { local: LocalId(0), ty: MirType::I32 },
-            MirParam { local: LocalId(1), ty: MirType::I32 },
+            MirParam {
+                local: LocalId(0),
+                ty: MirType::I32,
+            },
+            MirParam {
+                local: LocalId(1),
+                ty: MirType::I32,
+            },
         ],
         MirType::I32,
         vec![
-            MirLocal { id: LocalId(0), name: Some("a".into()), ty: MirType::I32, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("b".into()), ty: MirType::I32, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("result".into()), ty: MirType::I32, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("a".into()),
+                ty: MirType::I32,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("b".into()),
+                ty: MirType::I32,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("result".into()),
+                ty: MirType::I32,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -84,14 +105,35 @@ fn jit_branch_if_else() {
     let func = make_function(
         "max",
         vec![
-            MirParam { local: LocalId(0), ty: MirType::I32 },
-            MirParam { local: LocalId(1), ty: MirType::I32 },
+            MirParam {
+                local: LocalId(0),
+                ty: MirType::I32,
+            },
+            MirParam {
+                local: LocalId(1),
+                ty: MirType::I32,
+            },
         ],
         MirType::I32,
         vec![
-            MirLocal { id: LocalId(0), name: Some("a".into()), ty: MirType::I32, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("b".into()), ty: MirType::I32, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("cond".into()), ty: MirType::Bool, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("a".into()),
+                ty: MirType::I32,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("b".into()),
+                ty: MirType::I32,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("cond".into()),
+                ty: MirType::Bool,
+                mutable: false,
+            },
         ],
         vec![
             // bb0: compute cond = a > b, branch
@@ -155,13 +197,36 @@ fn jit_loop_count() {
     // sum(0..n) = n*(n-1)/2
     let func = make_function(
         "count_to_n",
-        vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("n".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("i".into()), ty: MirType::I64, mutable: true },
-            MirLocal { id: LocalId(2), name: Some("sum".into()), ty: MirType::I64, mutable: true },
-            MirLocal { id: LocalId(3), name: Some("cond".into()), ty: MirType::Bool, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("n".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("i".into()),
+                ty: MirType::I64,
+                mutable: true,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("sum".into()),
+                ty: MirType::I64,
+                mutable: true,
+            },
+            MirLocal {
+                id: LocalId(3),
+                name: Some("cond".into()),
+                ty: MirType::Bool,
+                mutable: false,
+            },
         ],
         vec![
             // bb0: init i=0, sum=0, goto loop
@@ -230,11 +295,11 @@ fn jit_loop_count() {
 
     let ptr = jit::jit_compile_function(&func).expect("JIT compilation failed");
     let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(ptr) };
-    assert_eq!(f(0), 0);       // sum of empty range
-    assert_eq!(f(1), 0);       // sum(0..1) = 0
-    assert_eq!(f(5), 10);      // 0+1+2+3+4 = 10
-    assert_eq!(f(10), 45);     // 0+1+2+...+9 = 45
-    assert_eq!(f(100), 4950);  // n*(n-1)/2 = 4950
+    assert_eq!(f(0), 0); // sum of empty range
+    assert_eq!(f(1), 0); // sum(0..1) = 0
+    assert_eq!(f(5), 10); // 0+1+2+3+4 = 10
+    assert_eq!(f(10), 45); // 0+1+2+...+9 = 45
+    assert_eq!(f(100), 4950); // n*(n-1)/2 = 4950
 }
 
 // ---------------------------------------------------------------------------
@@ -252,16 +317,17 @@ fn aot_arc_calls_emitted() {
     // The object file should contain references to kryos_arc_retain/release.
     let func = make_function(
         "arc_test",
-        vec![MirParam { local: LocalId(0), ty: MirType::Shared(Box::new(MirType::I64)) }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::Shared(Box::new(MirType::I64)),
+        }],
         MirType::Void,
-        vec![
-            MirLocal {
-                id: LocalId(0),
-                name: Some("ptr".into()),
-                ty: MirType::Shared(Box::new(MirType::I64)),
-                mutable: false,
-            },
-        ],
+        vec![MirLocal {
+            id: LocalId(0),
+            name: Some("ptr".into()),
+            ty: MirType::Shared(Box::new(MirType::I64)),
+            mutable: false,
+        }],
         vec![BasicBlock {
             id: BlockId(0),
             instructions: vec![
@@ -312,16 +378,47 @@ fn jit_float_arithmetic() {
     let func = make_function(
         "float_ops",
         vec![
-            MirParam { local: LocalId(0), ty: MirType::F64 },
-            MirParam { local: LocalId(1), ty: MirType::F64 },
+            MirParam {
+                local: LocalId(0),
+                ty: MirType::F64,
+            },
+            MirParam {
+                local: LocalId(1),
+                ty: MirType::F64,
+            },
         ],
         MirType::F64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("a".into()), ty: MirType::F64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("b".into()), ty: MirType::F64, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("sum".into()), ty: MirType::F64, mutable: false },
-            MirLocal { id: LocalId(3), name: Some("product".into()), ty: MirType::F64, mutable: false },
-            MirLocal { id: LocalId(4), name: Some("result".into()), ty: MirType::F64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("a".into()),
+                ty: MirType::F64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("b".into()),
+                ty: MirType::F64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("sum".into()),
+                ty: MirType::F64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(3),
+                name: Some("product".into()),
+                ty: MirType::F64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(4),
+                name: Some("result".into()),
+                ty: MirType::F64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -367,10 +464,7 @@ fn jit_float_arithmetic() {
 
     // (0.0 + 0.0) - (0.0 * 0.0) = 0.0
     let result = f(0.0, 0.0);
-    assert!(
-        result.abs() < f64::EPSILON,
-        "expected 0.0, got {result}"
-    );
+    assert!(result.abs() < f64::EPSILON, "expected 0.0, got {result}");
 
     // (1.5 + 2.5) - (1.5 * 2.5) = 4.0 - 3.75 = 0.25
     let result = f(1.5, 2.5);
@@ -392,14 +486,35 @@ fn jit_float_division() {
     let func = make_function(
         "divide",
         vec![
-            MirParam { local: LocalId(0), ty: MirType::F64 },
-            MirParam { local: LocalId(1), ty: MirType::F64 },
+            MirParam {
+                local: LocalId(0),
+                ty: MirType::F64,
+            },
+            MirParam {
+                local: LocalId(1),
+                ty: MirType::F64,
+            },
         ],
         MirType::F64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("a".into()), ty: MirType::F64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("b".into()), ty: MirType::F64, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("result".into()), ty: MirType::F64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("a".into()),
+                ty: MirType::F64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("b".into()),
+                ty: MirType::F64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("result".into()),
+                ty: MirType::F64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -440,11 +555,17 @@ fn jit_float_division() {
 fn aot_compile_simple_module() {
     let func = make_function(
         "identity",
-        vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
         MirType::I64,
-        vec![
-            MirLocal { id: LocalId(0), name: Some("x".into()), ty: MirType::I64, mutable: false },
-        ],
+        vec![MirLocal {
+            id: LocalId(0),
+            name: Some("x".into()),
+            ty: MirType::I64,
+            mutable: false,
+        }],
         vec![BasicBlock {
             id: BlockId(0),
             instructions: vec![],
@@ -461,7 +582,11 @@ fn aot_compile_simple_module() {
     };
 
     let obj_bytes = codegen::compile_module(&module).expect("AOT compilation failed");
-    assert!(obj_bytes.len() > 10, "object file too small: {} bytes", obj_bytes.len());
+    assert!(
+        obj_bytes.len() > 10,
+        "object file too small: {} bytes",
+        obj_bytes.len()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -478,15 +603,41 @@ fn jit_int_sub_mul() {
     let func = make_function(
         "compute",
         vec![
-            MirParam { local: LocalId(0), ty: MirType::I64 },
-            MirParam { local: LocalId(1), ty: MirType::I64 },
+            MirParam {
+                local: LocalId(0),
+                ty: MirType::I64,
+            },
+            MirParam {
+                local: LocalId(1),
+                ty: MirType::I64,
+            },
         ],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("a".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("b".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("diff".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(3), name: Some("product".into()), ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("a".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("b".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("diff".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(3),
+                name: Some("product".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -600,7 +751,8 @@ fn aot_struct_field_access() {
         copy_structs: HashSet::new(),
     };
 
-    let obj_bytes = codegen::compile_module(&module).expect("AOT compilation of struct access failed");
+    let obj_bytes =
+        codegen::compile_module(&module).expect("AOT compilation of struct access failed");
     assert!(
         obj_bytes.len() > 10,
         "object file too small: {} bytes",
@@ -704,14 +856,35 @@ fn jit_float_add() {
     let func = make_function(
         "float_add",
         vec![
-            MirParam { local: LocalId(0), ty: MirType::F64 },
-            MirParam { local: LocalId(1), ty: MirType::F64 },
+            MirParam {
+                local: LocalId(0),
+                ty: MirType::F64,
+            },
+            MirParam {
+                local: LocalId(1),
+                ty: MirType::F64,
+            },
         ],
         MirType::F64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("a".into()), ty: MirType::F64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("b".into()), ty: MirType::F64, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("r".into()), ty: MirType::F64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("a".into()),
+                ty: MirType::F64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("b".into()),
+                ty: MirType::F64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("r".into()),
+                ty: MirType::F64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -744,45 +917,73 @@ fn jit_float_comparison() {
     let func = make_function(
         "float_lt",
         vec![
-            MirParam { local: LocalId(0), ty: MirType::F64 },
-            MirParam { local: LocalId(1), ty: MirType::F64 },
+            MirParam {
+                local: LocalId(0),
+                ty: MirType::F64,
+            },
+            MirParam {
+                local: LocalId(1),
+                ty: MirType::F64,
+            },
         ],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("a".into()), ty: MirType::F64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("b".into()), ty: MirType::F64, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("cond".into()), ty: MirType::Bool, mutable: false },
-            MirLocal { id: LocalId(3), name: Some("r".into()), ty: MirType::I64, mutable: false },
-        ],
-        vec![BasicBlock {
-            id: BlockId(0),
-            instructions: vec![
-                Instruction::Assign {
-                    dest: LocalId(2),
-                    value: RValue::BinOp {
-                        op: MirBinOp::Lt,
-                        left: Operand::Local(LocalId(0)),
-                        right: Operand::Local(LocalId(1)),
-                    },
-                },
-                // Branch on cond to return 1 or 0
-            ],
-            terminator: Terminator::Branch {
-                cond: Operand::Local(LocalId(2)),
-                then_block: BlockId(1),
-                else_block: BlockId(2),
+            MirLocal {
+                id: LocalId(0),
+                name: Some("a".into()),
+                ty: MirType::F64,
+                mutable: false,
             },
-        },
-        BasicBlock {
-            id: BlockId(1),
-            instructions: vec![],
-            terminator: Terminator::Return(Some(Operand::Constant(Constant::Int(1)))),
-        },
-        BasicBlock {
-            id: BlockId(2),
-            instructions: vec![],
-            terminator: Terminator::Return(Some(Operand::Constant(Constant::Int(0)))),
-        }],
+            MirLocal {
+                id: LocalId(1),
+                name: Some("b".into()),
+                ty: MirType::F64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("cond".into()),
+                ty: MirType::Bool,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(3),
+                name: Some("r".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+        ],
+        vec![
+            BasicBlock {
+                id: BlockId(0),
+                instructions: vec![
+                    Instruction::Assign {
+                        dest: LocalId(2),
+                        value: RValue::BinOp {
+                            op: MirBinOp::Lt,
+                            left: Operand::Local(LocalId(0)),
+                            right: Operand::Local(LocalId(1)),
+                        },
+                    },
+                    // Branch on cond to return 1 or 0
+                ],
+                terminator: Terminator::Branch {
+                    cond: Operand::Local(LocalId(2)),
+                    then_block: BlockId(1),
+                    else_block: BlockId(2),
+                },
+            },
+            BasicBlock {
+                id: BlockId(1),
+                instructions: vec![],
+                terminator: Terminator::Return(Some(Operand::Constant(Constant::Int(1)))),
+            },
+            BasicBlock {
+                id: BlockId(2),
+                instructions: vec![],
+                terminator: Terminator::Return(Some(Operand::Constant(Constant::Int(0)))),
+            },
+        ],
     );
     let ptr = jit::jit_compile_function(&func).expect("JIT failed");
     let f: extern "C" fn(f64, f64) -> i64 = unsafe { std::mem::transmute(ptr) };
@@ -807,16 +1008,47 @@ fn jit_bool_and_or() {
     let func = make_function(
         "bool_and",
         vec![
-            MirParam { local: LocalId(0), ty: MirType::I64 },
-            MirParam { local: LocalId(1), ty: MirType::I64 },
+            MirParam {
+                local: LocalId(0),
+                ty: MirType::I64,
+            },
+            MirParam {
+                local: LocalId(1),
+                ty: MirType::I64,
+            },
         ],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("a".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("b".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("ca".into()), ty: MirType::Bool, mutable: false },
-            MirLocal { id: LocalId(3), name: Some("cb".into()), ty: MirType::Bool, mutable: false },
-            MirLocal { id: LocalId(4), name: Some("r".into()), ty: MirType::Bool, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("a".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("b".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("ca".into()),
+                ty: MirType::Bool,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(3),
+                name: Some("cb".into()),
+                ty: MirType::Bool,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(4),
+                name: Some("r".into()),
+                ty: MirType::Bool,
+                mutable: false,
+            },
         ],
         vec![
             BasicBlock {
@@ -879,14 +1111,35 @@ fn jit_i32_subtract() {
     let func = make_function(
         "sub32",
         vec![
-            MirParam { local: LocalId(0), ty: MirType::I32 },
-            MirParam { local: LocalId(1), ty: MirType::I32 },
+            MirParam {
+                local: LocalId(0),
+                ty: MirType::I32,
+            },
+            MirParam {
+                local: LocalId(1),
+                ty: MirType::I32,
+            },
         ],
         MirType::I32,
         vec![
-            MirLocal { id: LocalId(0), name: Some("a".into()), ty: MirType::I32, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("b".into()), ty: MirType::I32, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("r".into()), ty: MirType::I32, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("a".into()),
+                ty: MirType::I32,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("b".into()),
+                ty: MirType::I32,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("r".into()),
+                ty: MirType::I32,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -914,14 +1167,35 @@ fn jit_i64_modulo() {
     let func = make_function(
         "modulo",
         vec![
-            MirParam { local: LocalId(0), ty: MirType::I64 },
-            MirParam { local: LocalId(1), ty: MirType::I64 },
+            MirParam {
+                local: LocalId(0),
+                ty: MirType::I64,
+            },
+            MirParam {
+                local: LocalId(1),
+                ty: MirType::I64,
+            },
         ],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("a".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("b".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("r".into()), ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("a".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("b".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("r".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -956,11 +1230,24 @@ fn jit_if_then_else() {
     // }
     let func = make_function(
         "pick",
-        vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("cond".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("c".into()), ty: MirType::Bool, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("cond".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("c".into()),
+                ty: MirType::Bool,
+                mutable: false,
+            },
         ],
         vec![
             BasicBlock {
@@ -1007,20 +1294,49 @@ fn jit_while_loop_sum() {
     // }
     let func = make_function(
         "sum_to",
-        vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("n".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("i".into()), ty: MirType::I64, mutable: true },
-            MirLocal { id: LocalId(2), name: Some("sum".into()), ty: MirType::I64, mutable: true },
-            MirLocal { id: LocalId(3), name: Some("cond".into()), ty: MirType::Bool, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("n".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("i".into()),
+                ty: MirType::I64,
+                mutable: true,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("sum".into()),
+                ty: MirType::I64,
+                mutable: true,
+            },
+            MirLocal {
+                id: LocalId(3),
+                name: Some("cond".into()),
+                ty: MirType::Bool,
+                mutable: false,
+            },
         ],
         vec![
             BasicBlock {
                 id: BlockId(0),
                 instructions: vec![
-                    Instruction::Assign { dest: LocalId(1), value: RValue::ConstInt(1) },
-                    Instruction::Assign { dest: LocalId(2), value: RValue::ConstInt(0) },
+                    Instruction::Assign {
+                        dest: LocalId(1),
+                        value: RValue::ConstInt(1),
+                    },
+                    Instruction::Assign {
+                        dest: LocalId(2),
+                        value: RValue::ConstInt(0),
+                    },
                 ],
                 terminator: Terminator::Goto(BlockId(1)),
             },
@@ -1071,10 +1387,10 @@ fn jit_while_loop_sum() {
     );
     let ptr = jit::jit_compile_function(&func).expect("JIT failed");
     let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(ptr) };
-    assert_eq!(f(0), 0);      // sum of empty range
-    assert_eq!(f(1), 1);      // 1
-    assert_eq!(f(5), 15);     // 1+2+3+4+5
-    assert_eq!(f(10), 55);    // 1+2+...+10
+    assert_eq!(f(0), 0); // sum of empty range
+    assert_eq!(f(1), 1); // 1
+    assert_eq!(f(5), 15); // 1+2+3+4+5
+    assert_eq!(f(10), 55); // 1+2+...+10
     assert_eq!(f(100), 5050); // n*(n+1)/2
 }
 
@@ -1088,12 +1404,30 @@ fn jit_nested_if() {
     // }
     let func = make_function(
         "classify",
-        vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("x".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("c1".into()), ty: MirType::Bool, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("c2".into()), ty: MirType::Bool, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("x".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("c1".into()),
+                ty: MirType::Bool,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("c2".into()),
+                ty: MirType::Bool,
+                mutable: false,
+            },
         ],
         vec![
             // bb0: if x > 0 goto bb1 else bb2
@@ -1167,12 +1501,30 @@ fn jit_early_return() {
     // }
     let func = make_function(
         "early",
-        vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("x".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("cond".into()), ty: MirType::Bool, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("r".into()), ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("x".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("cond".into()),
+                ty: MirType::Bool,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("r".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         vec![
             BasicBlock {
@@ -1230,12 +1582,30 @@ fn jit_multi_block_phi() {
     // Uses mutable result assigned in different branches, then merged via goto.
     let func = make_function(
         "abs_val",
-        vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("x".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("cond".into()), ty: MirType::Bool, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("result".into()), ty: MirType::I64, mutable: true },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("x".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("cond".into()),
+                ty: MirType::Bool,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("result".into()),
+                ty: MirType::I64,
+                mutable: true,
+            },
         ],
         vec![
             BasicBlock {
@@ -1302,11 +1672,24 @@ fn aot_call_other_function() {
     // fn main(x: i64) -> i64 { return double(x); }
     let func_double = make_function(
         "double",
-        vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("x".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("r".into()), ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("x".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("r".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -1324,11 +1707,24 @@ fn aot_call_other_function() {
 
     let func_main = make_function(
         "main_fn",
-        vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("x".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("r".into()), ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("x".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("r".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -1355,8 +1751,14 @@ fn aot_call_other_function() {
     assert!(obj_bytes.len() > 10, "object file too small");
     // Verify both function names appear in the object
     let obj_str = String::from_utf8_lossy(&obj_bytes);
-    assert!(obj_str.contains("double"), "should contain function 'double'");
-    assert!(obj_str.contains("main_fn"), "should contain function 'main_fn'");
+    assert!(
+        obj_str.contains("double"),
+        "should contain function 'double'"
+    );
+    assert!(
+        obj_str.contains("main_fn"),
+        "should contain function 'main_fn'"
+    );
 }
 
 // 12. Recursive factorial (AOT compilation)
@@ -1370,14 +1772,42 @@ fn aot_recursive_factorial() {
     // }
     let func = make_function(
         "factorial",
-        vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("n".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("cond".into()), ty: MirType::Bool, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("sub".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(3), name: Some("rec".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(4), name: Some("result".into()), ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("n".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("cond".into()),
+                ty: MirType::Bool,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("sub".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(3),
+                name: Some("rec".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(4),
+                name: Some("result".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         vec![
             // bb0: if n <= 1 goto base else goto recurse
@@ -1446,7 +1876,10 @@ fn aot_recursive_factorial() {
     let obj_bytes = codegen::compile_module(&module).expect("AOT recursive factorial failed");
     assert!(obj_bytes.len() > 10, "object file too small");
     let obj_str = String::from_utf8_lossy(&obj_bytes);
-    assert!(obj_str.contains("factorial"), "should contain function 'factorial'");
+    assert!(
+        obj_str.contains("factorial"),
+        "should contain function 'factorial'"
+    );
 }
 
 // 13. Void function (no return value)
@@ -1476,26 +1909,99 @@ fn jit_many_params() {
     let func = make_function(
         "sum6",
         vec![
-            MirParam { local: LocalId(0), ty: MirType::I64 },
-            MirParam { local: LocalId(1), ty: MirType::I64 },
-            MirParam { local: LocalId(2), ty: MirType::I64 },
-            MirParam { local: LocalId(3), ty: MirType::I64 },
-            MirParam { local: LocalId(4), ty: MirType::I64 },
-            MirParam { local: LocalId(5), ty: MirType::I64 },
+            MirParam {
+                local: LocalId(0),
+                ty: MirType::I64,
+            },
+            MirParam {
+                local: LocalId(1),
+                ty: MirType::I64,
+            },
+            MirParam {
+                local: LocalId(2),
+                ty: MirType::I64,
+            },
+            MirParam {
+                local: LocalId(3),
+                ty: MirType::I64,
+            },
+            MirParam {
+                local: LocalId(4),
+                ty: MirType::I64,
+            },
+            MirParam {
+                local: LocalId(5),
+                ty: MirType::I64,
+            },
         ],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("a".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("b".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("c".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(3), name: Some("d".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(4), name: Some("e".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(5), name: Some("f".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(6), name: Some("t1".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(7), name: Some("t2".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(8), name: Some("t3".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(9), name: Some("t4".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(10), name: Some("t5".into()), ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("a".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("b".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("c".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(3),
+                name: Some("d".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(4),
+                name: Some("e".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(5),
+                name: Some("f".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(6),
+                name: Some("t1".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(7),
+                name: Some("t2".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(8),
+                name: Some("t3".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(9),
+                name: Some("t4".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(10),
+                name: Some("t5".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -1545,8 +2051,7 @@ fn jit_many_params() {
         }],
     );
     let ptr = jit::jit_compile_function(&func).expect("JIT failed");
-    let f: extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64 =
-        unsafe { std::mem::transmute(ptr) };
+    let f: extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
     assert_eq!(f(1, 2, 3, 4, 5, 6), 21);
     assert_eq!(f(10, 20, 30, 40, 50, 60), 210);
 }
@@ -1559,11 +2064,24 @@ fn aot_call_chain() {
     // fn add4(x: i64) -> i64 { return add2(add2(x)); }
     let func_add1 = make_function(
         "add1",
-        vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("x".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("r".into()), ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("x".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("r".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -1581,12 +2099,30 @@ fn aot_call_chain() {
 
     let func_add2 = make_function(
         "add2",
-        vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("x".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("t1".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("t2".into()), ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("x".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("t1".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("t2".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -1612,12 +2148,30 @@ fn aot_call_chain() {
 
     let func_add4 = make_function(
         "add4",
-        vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("x".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("t1".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("t2".into()), ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("x".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("t1".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("t2".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -1768,7 +2322,10 @@ fn aot_struct_mixed_types() {
                         name: "Mixed".into(),
                         fields: vec![
                             ("count".to_string(), Operand::Constant(Constant::Int(42))),
-                            ("value".to_string(), Operand::Constant(Constant::Float(3.14))),
+                            (
+                                "value".to_string(),
+                                Operand::Constant(Constant::Float(3.14)),
+                            ),
                             ("flag".to_string(), Operand::Constant(Constant::Bool(true))),
                         ],
                     },
@@ -1826,7 +2383,12 @@ fn aot_multiple_struct_defs() {
                 ty: MirType::Struct("PointA".into()),
                 mutable: false,
             },
-            MirLocal { id: LocalId(1), name: Some("r".into()), ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("r".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -1864,7 +2426,12 @@ fn aot_multiple_struct_defs() {
                 ty: MirType::Struct("PointB".into()),
                 mutable: false,
             },
-            MirLocal { id: LocalId(1), name: Some("r".into()), ty: MirType::F64, mutable: false },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("r".into()),
+                ty: MirType::F64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -1925,7 +2492,12 @@ fn aot_struct_first_field() {
                 ty: MirType::Struct("Pair".into()),
                 mutable: false,
             },
-            MirLocal { id: LocalId(1), name: Some("r".into()), ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("r".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -1999,9 +2571,12 @@ fn aot_drop_string() {
         "drop_str_fn",
         vec![],
         MirType::Void,
-        vec![
-            MirLocal { id: LocalId(0), name: Some("s".into()), ty: MirType::Str, mutable: false },
-        ],
+        vec![MirLocal {
+            id: LocalId(0),
+            name: Some("s".into()),
+            ty: MirType::Str,
+            mutable: false,
+        }],
         vec![BasicBlock {
             id: BlockId(0),
             instructions: vec![
@@ -2037,14 +2612,12 @@ fn aot_drop_array() {
         "drop_arr_fn",
         vec![],
         MirType::Void,
-        vec![
-            MirLocal {
-                id: LocalId(0),
-                name: Some("arr".into()),
-                ty: MirType::Array(Box::new(MirType::I64), None),
-                mutable: false,
-            },
-        ],
+        vec![MirLocal {
+            id: LocalId(0),
+            name: Some("arr".into()),
+            ty: MirType::Array(Box::new(MirType::I64), None),
+            mutable: false,
+        }],
         vec![BasicBlock {
             id: BlockId(0),
             instructions: vec![
@@ -2086,14 +2659,12 @@ fn aot_drop_struct() {
         "drop_struct_fn",
         vec![],
         MirType::Void,
-        vec![
-            MirLocal {
-                id: LocalId(0),
-                name: Some("d".into()),
-                ty: MirType::Struct("Droppable".into()),
-                mutable: false,
-            },
-        ],
+        vec![MirLocal {
+            id: LocalId(0),
+            name: Some("d".into()),
+            ty: MirType::Struct("Droppable".into()),
+            mutable: false,
+        }],
         vec![BasicBlock {
             id: BlockId(0),
             instructions: vec![
@@ -2101,9 +2672,7 @@ fn aot_drop_struct() {
                     dest: LocalId(0),
                     value: RValue::Struct {
                         name: "Droppable".into(),
-                        fields: vec![
-                            ("val".to_string(), Operand::Constant(Constant::Int(42))),
-                        ],
+                        fields: vec![("val".to_string(), Operand::Constant(Constant::Int(42)))],
                     },
                 },
                 Instruction::Drop { local: LocalId(0) },
@@ -2130,9 +2699,12 @@ fn aot_drop_primitive_noop() {
         "drop_int_fn",
         vec![],
         MirType::Void,
-        vec![
-            MirLocal { id: LocalId(0), name: Some("n".into()), ty: MirType::I64, mutable: false },
-        ],
+        vec![MirLocal {
+            id: LocalId(0),
+            name: Some("n".into()),
+            ty: MirType::I64,
+            mutable: false,
+        }],
         vec![BasicBlock {
             id: BlockId(0),
             instructions: vec![
@@ -2165,8 +2737,18 @@ fn aot_multiple_drops() {
         vec![],
         MirType::Void,
         vec![
-            MirLocal { id: LocalId(0), name: Some("s1".into()), ty: MirType::Str, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("s2".into()), ty: MirType::Str, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("s1".into()),
+                ty: MirType::Str,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("s2".into()),
+                ty: MirType::Str,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -2213,16 +2795,47 @@ fn jit_bitwise_ops() {
     let func = make_function(
         "bitwise",
         vec![
-            MirParam { local: LocalId(0), ty: MirType::I64 },
-            MirParam { local: LocalId(1), ty: MirType::I64 },
+            MirParam {
+                local: LocalId(0),
+                ty: MirType::I64,
+            },
+            MirParam {
+                local: LocalId(1),
+                ty: MirType::I64,
+            },
         ],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("a".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("b".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("t1".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(3), name: Some("t2".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(4), name: Some("t3".into()), ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("a".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("b".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("t1".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(3),
+                name: Some("t2".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(4),
+                name: Some("t3".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -2271,14 +2884,35 @@ fn jit_bitwise_and() {
     let func = make_function(
         "bit_and",
         vec![
-            MirParam { local: LocalId(0), ty: MirType::I64 },
-            MirParam { local: LocalId(1), ty: MirType::I64 },
+            MirParam {
+                local: LocalId(0),
+                ty: MirType::I64,
+            },
+            MirParam {
+                local: LocalId(1),
+                ty: MirType::I64,
+            },
         ],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("a".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("b".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("r".into()), ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("a".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("b".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("r".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -2307,14 +2941,35 @@ fn jit_shift_ops() {
     let func = make_function(
         "shl_fn",
         vec![
-            MirParam { local: LocalId(0), ty: MirType::I64 },
-            MirParam { local: LocalId(1), ty: MirType::I64 },
+            MirParam {
+                local: LocalId(0),
+                ty: MirType::I64,
+            },
+            MirParam {
+                local: LocalId(1),
+                ty: MirType::I64,
+            },
         ],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("a".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("b".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("r".into()), ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("a".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("b".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("r".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -2331,9 +2986,9 @@ fn jit_shift_ops() {
     );
     let ptr = jit::jit_compile_function(&func).expect("JIT failed");
     let f: extern "C" fn(i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
-    assert_eq!(f(1, 4), 16);     // 1 << 4 = 16
-    assert_eq!(f(3, 2), 12);     // 3 << 2 = 12
-    assert_eq!(f(1, 0), 1);      // 1 << 0 = 1
+    assert_eq!(f(1, 4), 16); // 1 << 4 = 16
+    assert_eq!(f(3, 2), 12); // 3 << 2 = 12
+    assert_eq!(f(1, 0), 1); // 1 << 0 = 1
 }
 
 // 29. Not-equal comparison
@@ -2345,14 +3000,35 @@ fn jit_comparison_neq() {
     let func = make_function(
         "neq_fn",
         vec![
-            MirParam { local: LocalId(0), ty: MirType::I64 },
-            MirParam { local: LocalId(1), ty: MirType::I64 },
+            MirParam {
+                local: LocalId(0),
+                ty: MirType::I64,
+            },
+            MirParam {
+                local: LocalId(1),
+                ty: MirType::I64,
+            },
         ],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("a".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("b".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("c".into()), ty: MirType::Bool, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("a".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("b".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("c".into()),
+                ty: MirType::Bool,
+                mutable: false,
+            },
         ],
         vec![
             BasicBlock {
@@ -2385,9 +3061,9 @@ fn jit_comparison_neq() {
     );
     let ptr = jit::jit_compile_function(&func).expect("JIT failed");
     let f: extern "C" fn(i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
-    assert_eq!(f(1, 2), 1);  // not equal
-    assert_eq!(f(5, 5), 0);  // equal
-    assert_eq!(f(0, 1), 1);  // not equal
+    assert_eq!(f(1, 2), 1); // not equal
+    assert_eq!(f(5, 5), 0); // equal
+    assert_eq!(f(0, 1), 1); // not equal
 }
 
 // 30. Unary negate (integer)
@@ -2395,11 +3071,24 @@ fn jit_comparison_neq() {
 fn jit_unary_negate() {
     let func = make_function(
         "negate",
-        vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("x".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("r".into()), ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("x".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("r".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -2430,12 +3119,30 @@ fn jit_unary_not() {
     // }
     let func = make_function(
         "not_fn",
-        vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("x".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("b".into()), ty: MirType::Bool, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("nb".into()), ty: MirType::Bool, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("x".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("b".into()),
+                ty: MirType::Bool,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("nb".into()),
+                ty: MirType::Bool,
+                mutable: false,
+            },
         ],
         vec![
             BasicBlock {
@@ -2490,11 +3197,24 @@ fn jit_cast_i32_to_i64() {
     // fn widen(x: i32) -> i64 { return x as i64; }
     let func = make_function(
         "widen",
-        vec![MirParam { local: LocalId(0), ty: MirType::I32 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I32,
+        }],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("x".into()), ty: MirType::I32, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("r".into()), ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("x".into()),
+                ty: MirType::I32,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("r".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -2520,11 +3240,24 @@ fn jit_cast_i32_to_i64() {
 fn jit_cast_i64_to_i32() {
     let func = make_function(
         "narrow",
-        vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
         MirType::I32,
         vec![
-            MirLocal { id: LocalId(0), name: Some("x".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("r".into()), ty: MirType::I32, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("x".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("r".into()),
+                ty: MirType::I32,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -2550,11 +3283,24 @@ fn jit_cast_i64_to_i32() {
 fn jit_cast_int_to_float() {
     let func = make_function(
         "to_float",
-        vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
         MirType::F64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("x".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("r".into()), ty: MirType::F64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("x".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("r".into()),
+                ty: MirType::F64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -2580,11 +3326,24 @@ fn jit_cast_int_to_float() {
 fn jit_cast_float_to_int() {
     let func = make_function(
         "to_int",
-        vec![MirParam { local: LocalId(0), ty: MirType::F64 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::F64,
+        }],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("x".into()), ty: MirType::F64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("r".into()), ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("x".into()),
+                ty: MirType::F64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("r".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -2629,11 +3388,24 @@ fn jit_return_constant() {
 fn jit_use_copy() {
     let func = make_function(
         "identity64",
-        vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("x".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("r".into()), ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("x".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("r".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -2664,22 +3436,24 @@ fn jit_switch_terminator() {
     // }
     let func = make_function(
         "classify_digit",
-        vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
         MirType::I64,
-        vec![
-            MirLocal { id: LocalId(0), name: Some("x".into()), ty: MirType::I64, mutable: false },
-        ],
+        vec![MirLocal {
+            id: LocalId(0),
+            name: Some("x".into()),
+            ty: MirType::I64,
+            mutable: false,
+        }],
         vec![
             BasicBlock {
                 id: BlockId(0),
                 instructions: vec![],
                 terminator: Terminator::Switch {
                     value: Operand::Local(LocalId(0)),
-                    targets: vec![
-                        (0, BlockId(1)),
-                        (1, BlockId(2)),
-                        (2, BlockId(3)),
-                    ],
+                    targets: vec![(0, BlockId(1)), (1, BlockId(2)), (2, BlockId(3))],
                     default: BlockId(4),
                 },
             },
@@ -2725,9 +3499,12 @@ fn jit_const_bool() {
         "always_true",
         vec![],
         MirType::I64,
-        vec![
-            MirLocal { id: LocalId(0), name: Some("b".into()), ty: MirType::Bool, mutable: false },
-        ],
+        vec![MirLocal {
+            id: LocalId(0),
+            name: Some("b".into()),
+            ty: MirType::Bool,
+            mutable: false,
+        }],
         vec![
             BasicBlock {
                 id: BlockId(0),
@@ -2765,9 +3542,12 @@ fn jit_const_float() {
         "get_pi",
         vec![],
         MirType::F64,
-        vec![
-            MirLocal { id: LocalId(0), name: Some("pi".into()), ty: MirType::F64, mutable: false },
-        ],
+        vec![MirLocal {
+            id: LocalId(0),
+            name: Some("pi".into()),
+            ty: MirType::F64,
+            mutable: false,
+        }],
         vec![BasicBlock {
             id: BlockId(0),
             instructions: vec![Instruction::Assign {
@@ -2787,11 +3567,24 @@ fn jit_const_float() {
 fn jit_float_negate() {
     let func = make_function(
         "fneg",
-        vec![MirParam { local: LocalId(0), ty: MirType::F64 }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::F64,
+        }],
         MirType::F64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("x".into()), ty: MirType::F64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("r".into()), ty: MirType::F64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("x".into()),
+                ty: MirType::F64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("r".into()),
+                ty: MirType::F64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -2818,16 +3611,47 @@ fn jit_bool_or() {
     let func = make_function(
         "bool_or",
         vec![
-            MirParam { local: LocalId(0), ty: MirType::I64 },
-            MirParam { local: LocalId(1), ty: MirType::I64 },
+            MirParam {
+                local: LocalId(0),
+                ty: MirType::I64,
+            },
+            MirParam {
+                local: LocalId(1),
+                ty: MirType::I64,
+            },
         ],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("a".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("b".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("ca".into()), ty: MirType::Bool, mutable: false },
-            MirLocal { id: LocalId(3), name: Some("cb".into()), ty: MirType::Bool, mutable: false },
-            MirLocal { id: LocalId(4), name: Some("r".into()), ty: MirType::Bool, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("a".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("b".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("ca".into()),
+                ty: MirType::Bool,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(3),
+                name: Some("cb".into()),
+                ty: MirType::Bool,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(4),
+                name: Some("r".into()),
+                ty: MirType::Bool,
+                mutable: false,
+            },
         ],
         vec![
             BasicBlock {
@@ -2890,14 +3714,35 @@ fn jit_shift_right() {
     let func = make_function(
         "shr_fn",
         vec![
-            MirParam { local: LocalId(0), ty: MirType::I64 },
-            MirParam { local: LocalId(1), ty: MirType::I64 },
+            MirParam {
+                local: LocalId(0),
+                ty: MirType::I64,
+            },
+            MirParam {
+                local: LocalId(1),
+                ty: MirType::I64,
+            },
         ],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("a".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("b".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("r".into()), ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("a".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("b".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("r".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         vec![BasicBlock {
             id: BlockId(0),
@@ -2914,9 +3759,9 @@ fn jit_shift_right() {
     );
     let ptr = jit::jit_compile_function(&func).expect("JIT failed");
     let f: extern "C" fn(i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
-    assert_eq!(f(16, 4), 1);     // 16 >> 4 = 1
-    assert_eq!(f(255, 4), 15);   // 255 >> 4 = 15
-    assert_eq!(f(1, 0), 1);      // 1 >> 0 = 1
+    assert_eq!(f(16, 4), 1); // 16 >> 4 = 1
+    assert_eq!(f(255, 4), 15); // 255 >> 4 = 15
+    assert_eq!(f(1, 0), 1); // 1 >> 0 = 1
 }
 
 // 44. AOT: ARC retain + release emitted in a module
@@ -2926,16 +3771,17 @@ fn aot_arc_retain_release() {
     // This re-verifies the ARC symbols from test 4 with a simpler function.
     let func = make_function(
         "arc_rr_test",
-        vec![MirParam { local: LocalId(0), ty: MirType::Shared(Box::new(MirType::I64)) }],
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::Shared(Box::new(MirType::I64)),
+        }],
         MirType::Void,
-        vec![
-            MirLocal {
-                id: LocalId(0),
-                name: Some("ptr".into()),
-                ty: MirType::Shared(Box::new(MirType::I64)),
-                mutable: false,
-            },
-        ],
+        vec![MirLocal {
+            id: LocalId(0),
+            name: Some("ptr".into()),
+            ty: MirType::Shared(Box::new(MirType::I64)),
+            mutable: false,
+        }],
         vec![BasicBlock {
             id: BlockId(0),
             instructions: vec![
@@ -2955,8 +3801,14 @@ fn aot_arc_retain_release() {
     let obj_bytes = codegen::compile_module(&module).expect("AOT failed");
     assert!(!obj_bytes.is_empty());
     let obj_str = String::from_utf8_lossy(&obj_bytes);
-    assert!(obj_str.contains("kryos_arc_retain"), "should reference kryos_arc_retain");
-    assert!(obj_str.contains("kryos_arc_release"), "should reference kryos_arc_release");
+    assert!(
+        obj_str.contains("kryos_arc_retain"),
+        "should reference kryos_arc_retain"
+    );
+    assert!(
+        obj_str.contains("kryos_arc_release"),
+        "should reference kryos_arc_release"
+    );
 }
 
 // 45. Equality comparison
@@ -2965,14 +3817,35 @@ fn jit_comparison_eq() {
     let func = make_function(
         "eq_fn",
         vec![
-            MirParam { local: LocalId(0), ty: MirType::I64 },
-            MirParam { local: LocalId(1), ty: MirType::I64 },
+            MirParam {
+                local: LocalId(0),
+                ty: MirType::I64,
+            },
+            MirParam {
+                local: LocalId(1),
+                ty: MirType::I64,
+            },
         ],
         MirType::I64,
         vec![
-            MirLocal { id: LocalId(0), name: Some("a".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: Some("b".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(2), name: Some("c".into()), ty: MirType::Bool, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("a".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: Some("b".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(2),
+                name: Some("c".into()),
+                ty: MirType::Bool,
+                mutable: false,
+            },
         ],
         vec![
             BasicBlock {

@@ -42,25 +42,50 @@ pub fn get_hover(source: &str, line: u32, character: u32) -> Option<Value> {
     if let Ok(module) = kryos_parser::parse(tokens) {
         for decl in &module.declarations {
             match decl {
-                kryos_ast::Decl::Function { name, params, ret_ty, .. } if *name == word => {
-                    let params_str: Vec<String> = params.iter().map(|p| {
-                        if let Some(ref ty) = p.ty {
-                            format!("{}: {}", p.name, format_type(ty))
-                        } else {
-                            p.name.clone()
-                        }
-                    }).collect();
-                    let ret = ret_ty.as_ref().map(|t| format!(" -> {}", format_type(t))).unwrap_or_default();
-                    let sig = format!("```kryos\nfn {}({}){}\n```", name, params_str.join(", "), ret);
+                kryos_ast::Decl::Function {
+                    name,
+                    params,
+                    ret_ty,
+                    ..
+                } if *name == word => {
+                    let params_str: Vec<String> = params
+                        .iter()
+                        .map(|p| {
+                            if let Some(ref ty) = p.ty {
+                                format!("{}: {}", p.name, format_type(ty))
+                            } else {
+                                p.name.clone()
+                            }
+                        })
+                        .collect();
+                    let ret = ret_ty
+                        .as_ref()
+                        .map(|t| format!(" -> {}", format_type(t)))
+                        .unwrap_or_default();
+                    let sig = format!(
+                        "```kryos\nfn {}({}){}\n```",
+                        name,
+                        params_str.join(", "),
+                        ret
+                    );
                     return Some(serde_json::json!({
                         "contents": { "kind": "markdown", "value": sig }
                     }));
                 }
-                kryos_ast::Decl::Struct { name: sname, fields, .. } if *sname == word => {
-                    let fields_str: Vec<String> = fields.iter().map(|f| {
-                        format!("    {}: {}", f.name, format_type(&f.ty))
-                    }).collect();
-                    let info = format!("```kryos\nstruct {} {{\n{}\n}}\n```", sname, fields_str.join(",\n"));
+                kryos_ast::Decl::Struct {
+                    name: sname,
+                    fields,
+                    ..
+                } if *sname == word => {
+                    let fields_str: Vec<String> = fields
+                        .iter()
+                        .map(|f| format!("    {}: {}", f.name, format_type(&f.ty)))
+                        .collect();
+                    let info = format!(
+                        "```kryos\nstruct {} {{\n{}\n}}\n```",
+                        sname,
+                        fields_str.join(",\n")
+                    );
                     return Some(serde_json::json!({
                         "contents": { "kind": "markdown", "value": info }
                     }));
@@ -89,7 +114,11 @@ fn format_type(ty: &kryos_ast::TypeExpr) -> String {
         }
         kryos_ast::TypeExpr::Optional { inner, .. } => format!("?{}", format_type(inner)),
         kryos_ast::TypeExpr::Reference { inner, mutable, .. } => {
-            if *mutable { format!("&mut {}", format_type(inner)) } else { format!("&{}", format_type(inner)) }
+            if *mutable {
+                format!("&mut {}", format_type(inner))
+            } else {
+                format!("&{}", format_type(inner))
+            }
         }
         kryos_ast::TypeExpr::Shared { inner, .. } => format!("shared {}", format_type(inner)),
         _ => "?".to_string(),

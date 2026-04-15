@@ -74,7 +74,11 @@ fn keywords_are_recognized() {
             src,
             tokens
         );
-        assert_eq!(tokens[0].0, expected_kind, "Wrong kind for keyword '{}'", src);
+        assert_eq!(
+            tokens[0].0, expected_kind,
+            "Wrong kind for keyword '{}'",
+            src
+        );
         assert_eq!(tokens[0].1, src, "Wrong text for keyword '{}'", src);
     }
 }
@@ -121,7 +125,11 @@ fn operators_single_and_compound() {
             src,
             tokens
         );
-        assert_eq!(tokens[0].0, expected_kind, "Wrong kind for operator '{}'", src);
+        assert_eq!(
+            tokens[0].0, expected_kind,
+            "Wrong kind for operator '{}'",
+            src
+        );
         assert_eq!(tokens[0].1, src, "Wrong text for operator '{}'", src);
     }
 }
@@ -184,7 +192,12 @@ fn identifiers_and_type_idents() {
     for src in builtins {
         let tokens = lex_kinds(src);
         assert_eq!(tokens.len(), 1, "Expected 1 token for type ident '{}'", src);
-        assert_eq!(tokens[0].0, TokenKind::TypeIdent, "'{}' should be TypeIdent", src);
+        assert_eq!(
+            tokens[0].0,
+            TokenKind::TypeIdent,
+            "'{}' should be TypeIdent",
+            src
+        );
         assert_eq!(tokens[0].1, src);
     }
 }
@@ -206,16 +219,17 @@ fn empty_input_produces_only_eof() {
 
 #[test]
 fn integer_literals() {
-    let cases = vec![
-        ("42", "42"),
-        ("0", "0"),
-        ("1234567890", "1234567890"),
-    ];
+    let cases = vec![("42", "42"), ("0", "0"), ("1234567890", "1234567890")];
 
     for (src, expected_text) in cases {
         let tokens = lex_kinds(src);
         assert_eq!(tokens.len(), 1, "Expected 1 token for '{}'", src);
-        assert_eq!(tokens[0].0, TokenKind::Integer, "'{}' should be Integer", src);
+        assert_eq!(
+            tokens[0].0,
+            TokenKind::Integer,
+            "'{}' should be Integer",
+            src
+        );
         assert_eq!(tokens[0].1, expected_text);
     }
 }
@@ -366,7 +380,11 @@ fn char_literal_escape() {
 #[test]
 fn line_comments_are_skipped() {
     let tokens = lex_kinds("// this is a comment");
-    assert_eq!(tokens.len(), 0, "Line-comment-only input should produce no tokens");
+    assert_eq!(
+        tokens.len(),
+        0,
+        "Line-comment-only input should produce no tokens"
+    );
 }
 
 #[test]
@@ -405,7 +423,11 @@ fn unterminated_string_does_not_panic() {
     // It produces whatever partial tokens it can.
     let tokens = lex(r#""unterminated"#);
     // Should still produce at least one token (the partial string) plus Eof.
-    assert!(tokens.len() >= 2, "Expected at least string + Eof, got {:?}", tokens);
+    assert!(
+        tokens.len() >= 2,
+        "Expected at least string + Eof, got {:?}",
+        tokens
+    );
     let last = tokens.last().unwrap();
     assert_eq!(last.kind, TokenKind::Eof);
 }
@@ -431,7 +453,11 @@ fn multiple_tokens_on_one_line() {
 #[test]
 fn whitespace_is_not_tokenized() {
     let tokens = lex_kinds("   \t\n\r\n   ");
-    assert_eq!(tokens.len(), 0, "Whitespace-only input should produce no tokens");
+    assert_eq!(
+        tokens.len(),
+        0,
+        "Whitespace-only input should produce no tokens"
+    );
 }
 
 #[test]
@@ -514,25 +540,25 @@ fn lex_complete_function() {
     assert_eq!(
         kinds,
         vec![
-            TokenKind::Fn,          // fn
-            TokenKind::Ident,       // add
-            TokenKind::LParen,      // (
-            TokenKind::Ident,       // a
-            TokenKind::Colon,       // :
-            TokenKind::TypeIdent,   // i32
-            TokenKind::Comma,       // ,
-            TokenKind::Ident,       // b
-            TokenKind::Colon,       // :
-            TokenKind::TypeIdent,   // i32
-            TokenKind::RParen,      // )
-            TokenKind::Arrow,       // ->
-            TokenKind::TypeIdent,   // i32
-            TokenKind::LBrace,      // {
-            TokenKind::Return,      // return
-            TokenKind::Ident,       // a
-            TokenKind::Plus,        // +
-            TokenKind::Ident,       // b
-            TokenKind::RBrace,      // }
+            TokenKind::Fn,        // fn
+            TokenKind::Ident,     // add
+            TokenKind::LParen,    // (
+            TokenKind::Ident,     // a
+            TokenKind::Colon,     // :
+            TokenKind::TypeIdent, // i32
+            TokenKind::Comma,     // ,
+            TokenKind::Ident,     // b
+            TokenKind::Colon,     // :
+            TokenKind::TypeIdent, // i32
+            TokenKind::RParen,    // )
+            TokenKind::Arrow,     // ->
+            TokenKind::TypeIdent, // i32
+            TokenKind::LBrace,    // {
+            TokenKind::Return,    // return
+            TokenKind::Ident,     // a
+            TokenKind::Plus,      // +
+            TokenKind::Ident,     // b
+            TokenKind::RBrace,    // }
         ]
     );
 }
@@ -553,19 +579,19 @@ fn lex_struct_definition() {
     assert_eq!(
         kinds,
         vec![
-            TokenKind::Pub,        // pub
-            TokenKind::Struct,     // struct
-            TokenKind::Ident,      // Point
-            TokenKind::LBrace,     // {
-            TokenKind::Ident,      // x
-            TokenKind::Colon,      // :
-            TokenKind::TypeIdent,  // f64
-            TokenKind::Comma,      // ,
-            TokenKind::Ident,      // y
-            TokenKind::Colon,      // :
-            TokenKind::TypeIdent,  // f64
-            TokenKind::Comma,      // ,
-            TokenKind::RBrace,     // }
+            TokenKind::Pub,       // pub
+            TokenKind::Struct,    // struct
+            TokenKind::Ident,     // Point
+            TokenKind::LBrace,    // {
+            TokenKind::Ident,     // x
+            TokenKind::Colon,     // :
+            TokenKind::TypeIdent, // f64
+            TokenKind::Comma,     // ,
+            TokenKind::Ident,     // y
+            TokenKind::Colon,     // :
+            TokenKind::TypeIdent, // f64
+            TokenKind::Comma,     // ,
+            TokenKind::RBrace,    // }
         ]
     );
 }
@@ -586,18 +612,18 @@ fn lex_match_expression() {
     assert_eq!(
         kinds,
         vec![
-            TokenKind::Match,      // match
-            TokenKind::Ident,      // x
-            TokenKind::LBrace,     // {
-            TokenKind::Integer,    // 0
-            TokenKind::FatArrow,   // =>
-            TokenKind::String,     // "zero"
-            TokenKind::Comma,      // ,
-            TokenKind::Ident,      // _
-            TokenKind::FatArrow,   // =>
-            TokenKind::String,     // "other"
-            TokenKind::Comma,      // ,
-            TokenKind::RBrace,     // }
+            TokenKind::Match,    // match
+            TokenKind::Ident,    // x
+            TokenKind::LBrace,   // {
+            TokenKind::Integer,  // 0
+            TokenKind::FatArrow, // =>
+            TokenKind::String,   // "zero"
+            TokenKind::Comma,    // ,
+            TokenKind::Ident,    // _
+            TokenKind::FatArrow, // =>
+            TokenKind::String,   // "other"
+            TokenKind::Comma,    // ,
+            TokenKind::RBrace,   // }
         ]
     );
 }

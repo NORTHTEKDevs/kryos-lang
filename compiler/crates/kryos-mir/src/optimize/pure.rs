@@ -12,9 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ir::{
-    Instruction, LocalId, MirModule, Operand, RValue,
-};
+use crate::ir::{Instruction, LocalId, MirModule, Operand, RValue};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -211,38 +209,59 @@ fn collect_inst_reads(inst: &Instruction, used: &mut HashSet<u32>) {
 
 fn collect_rvalue_reads(rv: &RValue, used: &mut HashSet<u32>) {
     match rv {
-        RValue::Use(op) | RValue::Cast { operand: op, .. } | RValue::Deref { operand: op }
-        | RValue::EnumTag { operand: op } | RValue::Field { object: op, .. }
+        RValue::Use(op)
+        | RValue::Cast { operand: op, .. }
+        | RValue::Deref { operand: op }
+        | RValue::EnumTag { operand: op }
+        | RValue::Field { object: op, .. }
         | RValue::ArcAlloc { inner: op } => {
             collect_operand_reads(op, used);
         }
-        RValue::BinOp { left, right, .. } | RValue::Index { object: left, index: right } => {
+        RValue::BinOp { left, right, .. }
+        | RValue::Index {
+            object: left,
+            index: right,
+        } => {
             collect_operand_reads(left, used);
             collect_operand_reads(right, used);
         }
         RValue::UnOp { operand, .. } => collect_operand_reads(operand, used),
         RValue::Call { args, .. } => {
-            for a in args { collect_operand_reads(a, used); }
+            for a in args {
+                collect_operand_reads(a, used);
+            }
         }
         RValue::CallIndirect { callee, args } => {
             collect_operand_reads(callee, used);
-            for a in args { collect_operand_reads(a, used); }
+            for a in args {
+                collect_operand_reads(a, used);
+            }
         }
         RValue::VtableCall { object, args, .. } => {
             collect_operand_reads(object, used);
-            for a in args { collect_operand_reads(a, used); }
+            for a in args {
+                collect_operand_reads(a, used);
+            }
         }
         RValue::Array(elems) | RValue::Tuple(elems) | RValue::StringConcat(elems) => {
-            for e in elems { collect_operand_reads(e, used); }
+            for e in elems {
+                collect_operand_reads(e, used);
+            }
         }
         RValue::Struct { fields, .. } => {
-            for (_, op) in fields { collect_operand_reads(op, used); }
+            for (_, op) in fields {
+                collect_operand_reads(op, used);
+            }
         }
         RValue::Closure { captures, .. } => {
-            for c in captures { collect_operand_reads(c, used); }
+            for c in captures {
+                collect_operand_reads(c, used);
+            }
         }
         RValue::EnumVariant { fields, .. } => {
-            for f in fields { collect_operand_reads(f, used); }
+            for f in fields {
+                collect_operand_reads(f, used);
+            }
         }
         RValue::EnumPayload { operand, .. } => collect_operand_reads(operand, used),
         RValue::Map(pairs) => {
@@ -252,14 +271,23 @@ fn collect_rvalue_reads(rv: &RValue, used: &mut HashSet<u32>) {
             }
         }
         RValue::Range { start, end, .. } => {
-            if let Some(s) = start { collect_operand_reads(s, used); }
-            if let Some(e) = end { collect_operand_reads(e, used); }
+            if let Some(s) = start {
+                collect_operand_reads(s, used);
+            }
+            if let Some(e) = end {
+                collect_operand_reads(e, used);
+            }
         }
-        RValue::AddrOf { local, .. } => { used.insert(local.0); }
+        RValue::AddrOf { local, .. } => {
+            used.insert(local.0);
+        }
         RValue::Comptime(inner) => collect_rvalue_reads(inner, used),
         RValue::MakeTraitObject { value, .. } => collect_operand_reads(value, used),
-        RValue::ConstInt(_) | RValue::ConstFloat(_) | RValue::ConstBool(_)
-        | RValue::ConstString(_) | RValue::ConstNone => {}
+        RValue::ConstInt(_)
+        | RValue::ConstFloat(_)
+        | RValue::ConstBool(_)
+        | RValue::ConstString(_)
+        | RValue::ConstNone => {}
     }
 }
 
@@ -472,9 +500,7 @@ mod tests {
                     blocks: vec![BasicBlock {
                         id: BlockId(0),
                         instructions: vec![],
-                        terminator: Terminator::Return(Some(Operand::Constant(
-                            Constant::Int(42),
-                        ))),
+                        terminator: Terminator::Return(Some(Operand::Constant(Constant::Int(42)))),
                     }],
                     locals: vec![],
                     attributes: pure_attrs(),
@@ -525,9 +551,7 @@ mod tests {
                     blocks: vec![BasicBlock {
                         id: BlockId(0),
                         instructions: vec![],
-                        terminator: Terminator::Return(Some(Operand::Constant(
-                            Constant::Int(42),
-                        ))),
+                        terminator: Terminator::Return(Some(Operand::Constant(Constant::Int(42)))),
                     }],
                     locals: vec![],
                     attributes: MirAttributes::default(), // NOT pure

@@ -47,10 +47,7 @@ thread_local! {
 ///
 /// Returns the actor's unique ID (always > 0).
 #[no_mangle]
-pub extern "C" fn kryos_actor_spawn(
-    entry_fn: extern "C" fn(*mut u8),
-    state_ptr: *mut u8,
-) -> u64 {
+pub extern "C" fn kryos_actor_spawn(entry_fn: extern "C" fn(*mut u8), state_ptr: *mut u8) -> u64 {
     let actor_id = NEXT_ACTOR_ID.fetch_add(1, Ordering::Relaxed);
 
     let entry = std::sync::Arc::new(ActorEntry {

@@ -17,10 +17,16 @@ fn initialized_server() -> LspServer {
     let resp = server
         .handle_request("initialize", &json!(1), &json!({}))
         .expect("initialize must return a response");
-    assert!(resp.get("result").is_some(), "initialize response must have a result");
+    assert!(
+        resp.get("result").is_some(),
+        "initialize response must have a result"
+    );
     // Send the "initialized" notification (no response expected).
     let notifs = server.handle_notification("initialized", &json!({}));
-    assert!(notifs.is_empty(), "initialized notification should produce no messages");
+    assert!(
+        notifs.is_empty(),
+        "initialized notification should produce no messages"
+    );
     server
 }
 
@@ -145,7 +151,10 @@ fn test_unknown_method_returns_error() {
     let error = &resp["error"];
     assert_eq!(error["code"], json!(-32601));
     assert!(
-        error["message"].as_str().unwrap().contains("method not found"),
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("method not found"),
         "error message should mention 'method not found'"
     );
 }
@@ -165,7 +174,9 @@ fn test_completion_provides_keywords() {
     let resp = request_completion(&mut server, uri, 0, 14);
     let labels = completion_labels(&resp);
 
-    let expected_keywords = ["let", "fn", "if", "for", "while", "match", "return", "struct", "enum"];
+    let expected_keywords = [
+        "let", "fn", "if", "for", "while", "match", "return", "struct", "enum",
+    ];
     for kw in &expected_keywords {
         assert!(
             labels.contains(&kw.to_string()),
@@ -183,7 +194,9 @@ fn test_completion_provides_builtin_types() {
     let resp = request_completion(&mut server, uri, 0, 14);
     let labels = completion_labels(&resp);
 
-    let expected_types = ["i32", "i64", "f64", "bool", "str", "Vec", "Map", "Option", "Result"];
+    let expected_types = [
+        "i32", "i64", "f64", "bool", "str", "Vec", "Map", "Option", "Result",
+    ];
     for ty in &expected_types {
         assert!(
             labels.contains(&ty.to_string()),
@@ -203,9 +216,15 @@ fn test_completion_filters_by_prefix() {
     let labels = completion_labels(&resp);
 
     // "let" should match the "le" prefix
-    assert!(labels.contains(&"let".to_string()), "should complete 'let' from prefix 'le'");
+    assert!(
+        labels.contains(&"let".to_string()),
+        "should complete 'let' from prefix 'le'"
+    );
     // "fn" should NOT match
-    assert!(!labels.contains(&"fn".to_string()), "'fn' should not match prefix 'le'");
+    assert!(
+        !labels.contains(&"fn".to_string()),
+        "'fn' should not match prefix 'le'"
+    );
 }
 
 #[test]
@@ -257,7 +276,10 @@ fn test_completion_for_unknown_document_returns_empty_items() {
         .pointer("/result/items")
         .and_then(|v| v.as_array())
         .expect("items must be an array");
-    assert!(items.is_empty(), "unknown document should yield empty completion list");
+    assert!(
+        items.is_empty(),
+        "unknown document should yield empty completion list"
+    );
 }
 
 // ===========================================================================
@@ -314,7 +336,10 @@ fn test_hover_on_function_shows_signature() {
         .and_then(|v| v.as_str())
         .expect("hover should return signature for function 'add'");
     assert!(contents.contains("fn add"), "should contain function name");
-    assert!(contents.contains("x: i32"), "should contain parameter types");
+    assert!(
+        contents.contains("x: i32"),
+        "should contain parameter types"
+    );
     assert!(contents.contains("-> i32"), "should contain return type");
 }
 
@@ -331,7 +356,10 @@ fn test_hover_on_struct_shows_fields() {
         .pointer("/result/contents/value")
         .and_then(|v| v.as_str())
         .expect("hover should return struct info for 'Point'");
-    assert!(contents.contains("struct Point"), "should contain struct name");
+    assert!(
+        contents.contains("struct Point"),
+        "should contain struct name"
+    );
     assert!(contents.contains("x: i32"), "should contain field x");
     assert!(contents.contains("y: i32"), "should contain field y");
 }
@@ -365,14 +393,19 @@ fn test_goto_definition_finds_function() {
     let resp = request_goto_definition(&mut server, uri, 1, 12);
     let result = &resp["result"];
 
-    assert_eq!(result["uri"], json!(uri), "location URI should match the document");
+    assert_eq!(
+        result["uri"],
+        json!(uri),
+        "location URI should match the document"
+    );
 
     let range = &result["range"];
     assert!(range.is_object(), "result should contain a range");
 
     // "fn greet() { }" starts at line 0
     assert_eq!(
-        range["start"]["line"], json!(0),
+        range["start"]["line"],
+        json!(0),
         "greet definition should be on line 0"
     );
 }
@@ -389,7 +422,11 @@ fn test_goto_definition_finds_struct() {
     let result = &resp["result"];
 
     assert_eq!(result["uri"], json!(uri));
-    assert_eq!(result["range"]["start"]["line"], json!(0), "Point definition should be on line 0");
+    assert_eq!(
+        result["range"]["start"]["line"],
+        json!(0),
+        "Point definition should be on line 0"
+    );
 }
 
 #[test]
@@ -424,7 +461,11 @@ fn test_diagnostics_published_on_open_valid_code() {
     let notifs = open_document(&mut server, uri, "fn main() { }");
 
     // Should publish a diagnostics notification even for valid code (empty diagnostics list).
-    assert_eq!(notifs.len(), 1, "should emit exactly one publishDiagnostics notification");
+    assert_eq!(
+        notifs.len(),
+        1,
+        "should emit exactly one publishDiagnostics notification"
+    );
 
     let notif = &notifs[0];
     assert_eq!(notif["method"], json!("textDocument/publishDiagnostics"));
@@ -433,7 +474,10 @@ fn test_diagnostics_published_on_open_valid_code() {
     let diags = notif["params"]["diagnostics"]
         .as_array()
         .expect("diagnostics must be an array");
-    assert!(diags.is_empty(), "valid code should produce zero diagnostics");
+    assert!(
+        diags.is_empty(),
+        "valid code should produce zero diagnostics"
+    );
 }
 
 #[test]
@@ -443,7 +487,10 @@ fn test_diagnostics_published_on_open_invalid_code() {
     // This is intentionally broken syntax -- missing closing brace.
     let notifs = open_document(&mut server, uri, "fn main() {");
 
-    assert!(!notifs.is_empty(), "should emit a publishDiagnostics notification");
+    assert!(
+        !notifs.is_empty(),
+        "should emit a publishDiagnostics notification"
+    );
 
     let notif = &notifs[0];
     assert_eq!(notif["method"], json!("textDocument/publishDiagnostics"));
@@ -460,10 +507,17 @@ fn test_diagnostics_published_on_open_invalid_code() {
 
     // Each diagnostic should have severity, range, and message.
     for d in diags {
-        assert!(d.get("severity").is_some(), "diagnostic should have severity");
+        assert!(
+            d.get("severity").is_some(),
+            "diagnostic should have severity"
+        );
         assert!(d.get("range").is_some(), "diagnostic should have range");
         assert!(d.get("message").is_some(), "diagnostic should have message");
-        assert_eq!(d["source"], json!("kryos"), "diagnostic source should be 'kryos'");
+        assert_eq!(
+            d["source"],
+            json!("kryos"),
+            "diagnostic source should be 'kryos'"
+        );
     }
 }
 
@@ -506,13 +560,20 @@ fn test_diagnostics_cleared_on_close() {
         &json!({ "textDocument": { "uri": uri } }),
     );
 
-    assert_eq!(notifs.len(), 1, "didClose should emit one notification to clear diagnostics");
+    assert_eq!(
+        notifs.len(),
+        1,
+        "didClose should emit one notification to clear diagnostics"
+    );
     let notif = &notifs[0];
     assert_eq!(notif["method"], json!("textDocument/publishDiagnostics"));
     let diags = notif["params"]["diagnostics"]
         .as_array()
         .expect("diagnostics must be an array");
-    assert!(diags.is_empty(), "closing a document should clear diagnostics");
+    assert!(
+        diags.is_empty(),
+        "closing a document should clear diagnostics"
+    );
 }
 
 // ===========================================================================
@@ -585,16 +646,26 @@ fn test_protocol_make_error_response() {
 #[test]
 fn test_check_source_valid_returns_empty() {
     let (diags, _sm) = kryos_lsp::diagnostics::check_source("fn main() { }", "file:///t.kry");
-    assert!(diags.is_empty(), "valid source should yield no diagnostics, got: {diags:?}");
+    assert!(
+        diags.is_empty(),
+        "valid source should yield no diagnostics, got: {diags:?}"
+    );
 }
 
 #[test]
 fn test_check_source_parse_error_returns_diagnostics() {
     let (diags, _sm) = kryos_lsp::diagnostics::check_source("fn main() {", "file:///t.kry");
-    assert!(!diags.is_empty(), "missing closing brace should yield diagnostics");
+    assert!(
+        !diags.is_empty(),
+        "missing closing brace should yield diagnostics"
+    );
     // Every diagnostic should be an error (severity 1)
     for d in &diags {
-        assert_eq!(d["severity"], json!(1), "parse errors should be severity 1 (Error)");
+        assert_eq!(
+            d["severity"],
+            json!(1),
+            "parse errors should be severity 1 (Error)"
+        );
     }
 }
 
@@ -629,19 +700,36 @@ fn test_publish_diagnostics_structure() {
 fn test_get_completions_std_modules() {
     let source = "use std::io";
     let items = kryos_lsp::completion::get_completions(source, 0, 10);
-    let labels: Vec<String> = items.iter().filter_map(|i| i["label"].as_str().map(String::from)).collect();
-    assert!(labels.contains(&"io".to_string()), "should suggest 'io' in std:: context");
-    assert!(labels.contains(&"iter".to_string()), "should suggest 'iter' in std:: context");
+    let labels: Vec<String> = items
+        .iter()
+        .filter_map(|i| i["label"].as_str().map(String::from))
+        .collect();
+    assert!(
+        labels.contains(&"io".to_string()),
+        "should suggest 'io' in std:: context"
+    );
+    assert!(
+        labels.contains(&"iter".to_string()),
+        "should suggest 'iter' in std:: context"
+    );
 }
 
 #[test]
 fn test_get_completions_includes_all_keyword_kinds() {
     // Empty source, offset 0 = no prefix, should return everything
     let items = kryos_lsp::completion::get_completions("", 0, 0);
-    let labels: Vec<String> = items.iter().filter_map(|i| i["label"].as_str().map(String::from)).collect();
+    let labels: Vec<String> = items
+        .iter()
+        .filter_map(|i| i["label"].as_str().map(String::from))
+        .collect();
     // Spot-check keywords from different categories
-    for kw in &["let", "fn", "struct", "enum", "trait", "impl", "actor", "spawn", "select", "match", "try"] {
-        assert!(labels.contains(&kw.to_string()), "should include keyword '{kw}'");
+    for kw in &[
+        "let", "fn", "struct", "enum", "trait", "impl", "actor", "spawn", "select", "match", "try",
+    ] {
+        assert!(
+            labels.contains(&kw.to_string()),
+            "should include keyword '{kw}'"
+        );
     }
 }
 
@@ -650,15 +738,24 @@ fn test_get_completions_item_kinds() {
     let source = "struct Foo { }\nfn bar() { }\nenum Baz { A }";
     let items = kryos_lsp::completion::get_completions(source, 0, 0);
 
-    let foo = items.iter().find(|i| i["label"] == "Foo").expect("should find 'Foo'");
+    let foo = items
+        .iter()
+        .find(|i| i["label"] == "Foo")
+        .expect("should find 'Foo'");
     assert_eq!(foo["kind"], 22, "struct kind should be 22");
     assert_eq!(foo["detail"], "struct");
 
-    let bar = items.iter().find(|i| i["label"] == "bar").expect("should find 'bar'");
+    let bar = items
+        .iter()
+        .find(|i| i["label"] == "bar")
+        .expect("should find 'bar'");
     assert_eq!(bar["kind"], 3, "function kind should be 3");
     assert_eq!(bar["detail"], "function");
 
-    let baz = items.iter().find(|i| i["label"] == "Baz").expect("should find 'Baz'");
+    let baz = items
+        .iter()
+        .find(|i| i["label"] == "Baz")
+        .expect("should find 'Baz'");
     assert_eq!(baz["kind"], 13, "enum kind should be 13");
     assert_eq!(baz["detail"], "enum");
 }
@@ -669,18 +766,28 @@ fn test_get_completions_item_kinds() {
 fn test_get_hover_returns_markdown() {
     let result = kryos_lsp::hover::get_hover("fn main() { }", 0, 0);
     let hover = result.expect("hover on 'fn' should return Some");
-    assert_eq!(hover["contents"]["kind"], "markdown", "hover contents kind should be markdown");
+    assert_eq!(
+        hover["contents"]["kind"], "markdown",
+        "hover contents kind should be markdown"
+    );
 }
 
 #[test]
 fn test_get_hover_all_numeric_types() {
-    for ty in &["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"] {
+    for ty in &[
+        "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64",
+    ] {
         let source = format!("fn main() {{ let x: {} = 0 }}", ty);
         let result = kryos_lsp::hover::get_hover(&source, 0, 19);
         assert!(result.is_some(), "hover on '{}' should return info", ty);
         let contents = result.unwrap();
         let value = contents["contents"]["value"].as_str().unwrap();
-        assert!(value.contains(ty), "hover for '{}' should mention the type, got: {}", ty, value);
+        assert!(
+            value.contains(ty),
+            "hover for '{}' should mention the type, got: {}",
+            ty,
+            value
+        );
     }
 }
 
@@ -695,7 +802,10 @@ fn test_get_hover_actor_keyword() {
     let result = kryos_lsp::hover::get_hover("actor MyActor { }", 0, 0);
     let hover = result.expect("hover on 'actor' should return info");
     let value = hover["contents"]["value"].as_str().unwrap();
-    assert!(value.contains("actor"), "hover should mention 'actor': {value}");
+    assert!(
+        value.contains("actor"),
+        "hover should mention 'actor': {value}"
+    );
 }
 
 // -- goto_def::goto_definition --
@@ -705,7 +815,10 @@ fn test_goto_definition_finds_enum() {
     let source = "enum Color { Red, Green, Blue }\nfn main() { Color }";
     let result = kryos_lsp::goto_def::goto_definition(source, 1, 13);
     let loc = result.expect("should find enum 'Color' definition");
-    assert_eq!(loc["range"]["start"]["line"], 0, "Color is defined on line 0");
+    assert_eq!(
+        loc["range"]["start"]["line"], 0,
+        "Color is defined on line 0"
+    );
 }
 
 #[test]
@@ -731,7 +844,10 @@ fn test_goto_definition_range_has_both_start_and_end() {
     // start and end should both be present and end should be >= start
     let start_char = range["start"]["character"].as_u64().unwrap();
     let end_char = range["end"]["character"].as_u64().unwrap();
-    assert!(end_char >= start_char, "end character should be >= start character");
+    assert!(
+        end_char >= start_char,
+        "end character should be >= start character"
+    );
 }
 
 // ===========================================================================
@@ -810,7 +926,11 @@ fn test_full_jsonrpc_conversation() {
     }
 
     // Should have exactly 2 responses: initialize result + shutdown result
-    assert_eq!(responses.len(), 2, "should get 2 responses (initialize + shutdown)");
+    assert_eq!(
+        responses.len(),
+        2,
+        "should get 2 responses (initialize + shutdown)"
+    );
 
     // First response: initialize
     assert_eq!(responses[0]["id"], json!(1));

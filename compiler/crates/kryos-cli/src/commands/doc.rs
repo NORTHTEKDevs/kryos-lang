@@ -31,8 +31,8 @@ pub fn execute(files: &[String], output_dir: Option<&str>) -> Result<(), String>
     let mut all_modules: Vec<(String, Vec<kryos_doc::DocItem>)> = Vec::new();
 
     for path in &targets {
-        let source = std::fs::read_to_string(path)
-            .map_err(|e| format!("cannot read `{path}`: {e}"))?;
+        let source =
+            std::fs::read_to_string(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
 
         let items = extract_docs(&source);
 
@@ -88,8 +88,8 @@ fn discover_kry_files(dir: &Path) -> Result<Vec<String>, String> {
 }
 
 fn walk_dir(dir: &Path, out: &mut Vec<String>) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| format!("cannot read `{}`: {e}", dir.display()))?;
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("cannot read `{}`: {e}", dir.display()))?;
 
     for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;

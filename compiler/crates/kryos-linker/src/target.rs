@@ -85,7 +85,9 @@ impl Target {
     pub fn from_triple(triple: &str) -> Result<Self, String> {
         let parts: Vec<&str> = triple.split('-').collect();
         if parts.len() < 2 {
-            return Err(format!("invalid target triple: '{triple}' (too few components)"));
+            return Err(format!(
+                "invalid target triple: '{triple}' (too few components)"
+            ));
         }
 
         let arch = parse_arch(parts[0])?;
@@ -112,7 +114,9 @@ impl Target {
                 (os, env)
             }
             _ => {
-                return Err(format!("invalid target triple: '{triple}' (too many components)"));
+                return Err(format!(
+                    "invalid target triple: '{triple}' (too many components)"
+                ));
             }
         };
 

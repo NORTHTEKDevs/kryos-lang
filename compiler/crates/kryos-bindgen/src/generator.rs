@@ -41,10 +41,7 @@ pub fn generate(items: &[CItem]) -> String {
             {
                 out.push_str(&format!("    fn {name}("));
                 // Emit non-variadic params (variadic `...` is dropped)
-                let param_strs: Vec<String> = params
-                    .iter()
-                    .map(format_param)
-                    .collect();
+                let param_strs: Vec<String> = params.iter().map(format_param).collect();
                 out.push_str(&param_strs.join(", "));
                 out.push(')');
                 // Return type
@@ -200,18 +197,12 @@ mod tests {
 
     #[test]
     fn test_map_char_pointer() {
-        assert_eq!(
-            map_type(&CType::Pointer(Box::new(CType::Char))),
-            "*u8"
-        );
+        assert_eq!(map_type(&CType::Pointer(Box::new(CType::Char))), "*u8");
     }
 
     #[test]
     fn test_map_void_pointer() {
-        assert_eq!(
-            map_type(&CType::Pointer(Box::new(CType::Void))),
-            "*u8"
-        );
+        assert_eq!(map_type(&CType::Pointer(Box::new(CType::Void))), "*u8");
     }
 
     #[test]

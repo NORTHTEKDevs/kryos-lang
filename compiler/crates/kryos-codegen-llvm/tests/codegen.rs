@@ -1,8 +1,8 @@
 //! Integration tests for the LLVM IR text emitter.
 
-use std::collections::{HashMap, HashSet};
 use kryos_codegen_llvm::{emit_module, EmitOptions, OptLevel};
 use kryos_mir::ir::*;
+use std::collections::{HashMap, HashSet};
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -319,7 +319,9 @@ fn test_target_triple_in_output() {
     let opts = EmitOptions {
         opt_level: OptLevel::O2,
         target_triple: Some("x86_64-pc-linux-gnu".into()),
-        target_datalayout: Some("e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128".into()),
+        target_datalayout: Some(
+            "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128".into(),
+        ),
     };
 
     let ir = emit_module(&module, &opts).unwrap();
@@ -401,7 +403,10 @@ fn test_type_mapping_ptr_shared() {
     use kryos_codegen_llvm::codegen::mir_type_to_llvm;
 
     // Opaque pointers since LLVM 15+.
-    assert_eq!(mir_type_to_llvm(&MirType::Ptr(Box::new(MirType::I32))), "ptr");
+    assert_eq!(
+        mir_type_to_llvm(&MirType::Ptr(Box::new(MirType::I32))),
+        "ptr"
+    );
     assert_eq!(
         mir_type_to_llvm(&MirType::Shared(Box::new(MirType::I64))),
         "ptr"
@@ -579,14 +584,12 @@ fn test_switch_terminator() {
             ty: MirType::I32,
         }],
         ret_ty: MirType::I32,
-        locals: vec![
-            MirLocal {
-                id: LocalId(0),
-                name: Some("x".into()),
-                ty: MirType::I32,
-                mutable: false,
-            },
-        ],
+        locals: vec![MirLocal {
+            id: LocalId(0),
+            name: Some("x".into()),
+            ty: MirType::I32,
+            mutable: false,
+        }],
         blocks: vec![
             // bb0: switch on x.
             BasicBlock {
@@ -683,14 +686,12 @@ fn test_function_call() {
         name: "caller".into(),
         params: vec![],
         ret_ty: MirType::I32,
-        locals: vec![
-            MirLocal {
-                id: LocalId(0),
-                name: None,
-                ty: MirType::I32,
-                mutable: false,
-            },
-        ],
+        locals: vec![MirLocal {
+            id: LocalId(0),
+            name: None,
+            ty: MirType::I32,
+            mutable: false,
+        }],
         blocks: vec![BasicBlock {
             id: BlockId(0),
             instructions: vec![Instruction::Assign {
@@ -878,9 +879,7 @@ fn test_drop_is_noop() {
         }],
         blocks: vec![BasicBlock {
             id: BlockId(0),
-            instructions: vec![Instruction::Drop {
-                local: LocalId(0),
-            }],
+            instructions: vec![Instruction::Drop { local: LocalId(0) }],
             terminator: Terminator::Return(None),
         }],
         attributes: MirAttributes::default(),
@@ -970,31 +969,50 @@ fn test_mutable_variable_in_loop() {
             params: vec![],
             ret_ty: MirType::I64,
             locals: vec![
-                MirLocal { id: LocalId(0), name: Some("sum".into()), ty: MirType::I64, mutable: true },
-                MirLocal { id: LocalId(1), name: Some("i".into()), ty: MirType::I64, mutable: true },
-                MirLocal { id: LocalId(2), name: None, ty: MirType::Bool, mutable: false },
+                MirLocal {
+                    id: LocalId(0),
+                    name: Some("sum".into()),
+                    ty: MirType::I64,
+                    mutable: true,
+                },
+                MirLocal {
+                    id: LocalId(1),
+                    name: Some("i".into()),
+                    ty: MirType::I64,
+                    mutable: true,
+                },
+                MirLocal {
+                    id: LocalId(2),
+                    name: None,
+                    ty: MirType::Bool,
+                    mutable: false,
+                },
             ],
             blocks: vec![
                 BasicBlock {
                     id: BlockId(0),
                     instructions: vec![
-                        Instruction::Assign { dest: LocalId(0), value: RValue::ConstInt(0) },
-                        Instruction::Assign { dest: LocalId(1), value: RValue::ConstInt(0) },
+                        Instruction::Assign {
+                            dest: LocalId(0),
+                            value: RValue::ConstInt(0),
+                        },
+                        Instruction::Assign {
+                            dest: LocalId(1),
+                            value: RValue::ConstInt(0),
+                        },
                     ],
                     terminator: Terminator::Goto(BlockId(1)),
                 },
                 BasicBlock {
                     id: BlockId(1),
-                    instructions: vec![
-                        Instruction::Assign {
-                            dest: LocalId(2),
-                            value: RValue::BinOp {
-                                op: MirBinOp::Lt,
-                                left: Operand::Local(LocalId(1)),
-                                right: Operand::Constant(Constant::Int(10)),
-                            },
+                    instructions: vec![Instruction::Assign {
+                        dest: LocalId(2),
+                        value: RValue::BinOp {
+                            op: MirBinOp::Lt,
+                            left: Operand::Local(LocalId(1)),
+                            right: Operand::Constant(Constant::Int(10)),
                         },
-                    ],
+                    }],
                     terminator: Terminator::Branch {
                         cond: Operand::Local(LocalId(2)),
                         then_block: BlockId(2),
@@ -1040,8 +1058,14 @@ fn test_mutable_variable_in_loop() {
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
     // Mutable locals must use alloca/store/load.
     assert!(ir.contains("alloca"), "mutable vars must use alloca:\n{ir}");
-    assert!(ir.contains("store"), "mutable var assignment must use store:\n{ir}");
-    assert!(ir.contains("load"), "mutable var reads must use load:\n{ir}");
+    assert!(
+        ir.contains("store"),
+        "mutable var assignment must use store:\n{ir}"
+    );
+    assert!(
+        ir.contains("load"),
+        "mutable var reads must use load:\n{ir}"
+    );
 }
 
 #[test]
@@ -1052,7 +1076,10 @@ fn test_immutable_variable_no_alloca() {
         params: vec![],
         ret_ty: MirType::I64,
         locals: vec![MirLocal {
-            id: LocalId(0), name: Some("x".into()), ty: MirType::I64, mutable: false,
+            id: LocalId(0),
+            name: Some("x".into()),
+            ty: MirType::I64,
+            mutable: false,
         }],
         blocks: vec![BasicBlock {
             id: BlockId(0),
@@ -1068,8 +1095,14 @@ fn test_immutable_variable_no_alloca() {
     let module = module_with(func);
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
     // Direct SSA for immutable: %_0 = add i64 42, 0
-    assert!(ir.contains("%_0 = add i64 42, 0"), "immutable should use direct SSA:\n{ir}");
-    assert!(!ir.contains("alloca"), "immutable should NOT use alloca:\n{ir}");
+    assert!(
+        ir.contains("%_0 = add i64 42, 0"),
+        "immutable should use direct SSA:\n{ir}"
+    );
+    assert!(
+        !ir.contains("alloca"),
+        "immutable should NOT use alloca:\n{ir}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1079,26 +1112,45 @@ fn test_immutable_variable_no_alloca() {
 #[test]
 fn test_struct_field_access_correct_index() {
     let mut struct_defs = HashMap::new();
-    struct_defs.insert("Point".to_string(), vec![
-        ("x".to_string(), MirType::I64),
-        ("y".to_string(), MirType::I64),
-        ("z".to_string(), MirType::I64),
-    ]);
+    struct_defs.insert(
+        "Point".to_string(),
+        vec![
+            ("x".to_string(), MirType::I64),
+            ("y".to_string(), MirType::I64),
+            ("z".to_string(), MirType::I64),
+        ],
+    );
 
     let module = MirModule {
         functions: vec![MirFunction {
             name: "get_y".into(),
-            params: vec![MirParam { local: LocalId(0), ty: MirType::Struct("Point".into()) }],
+            params: vec![MirParam {
+                local: LocalId(0),
+                ty: MirType::Struct("Point".into()),
+            }],
             ret_ty: MirType::I64,
             locals: vec![
-                MirLocal { id: LocalId(0), name: Some("p".into()), ty: MirType::Struct("Point".into()), mutable: false },
-                MirLocal { id: LocalId(1), name: None, ty: MirType::I64, mutable: false },
+                MirLocal {
+                    id: LocalId(0),
+                    name: Some("p".into()),
+                    ty: MirType::Struct("Point".into()),
+                    mutable: false,
+                },
+                MirLocal {
+                    id: LocalId(1),
+                    name: None,
+                    ty: MirType::I64,
+                    mutable: false,
+                },
             ],
             blocks: vec![BasicBlock {
                 id: BlockId(0),
                 instructions: vec![Instruction::Assign {
                     dest: LocalId(1),
-                    value: RValue::Field { object: Operand::Local(LocalId(0)), field: "y".into() },
+                    value: RValue::Field {
+                        object: Operand::Local(LocalId(0)),
+                        field: "y".into(),
+                    },
                 }],
                 terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
             }],
@@ -1112,31 +1164,53 @@ fn test_struct_field_access_correct_index() {
 
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
     // Field "y" is at index 1.
-    assert!(ir.contains(", 1"), "field 'y' must use index 1, not 0:\n{ir}");
+    assert!(
+        ir.contains(", 1"),
+        "field 'y' must use index 1, not 0:\n{ir}"
+    );
 }
 
 #[test]
 fn test_struct_field_access_first_field() {
     let mut struct_defs = HashMap::new();
-    struct_defs.insert("Point".to_string(), vec![
-        ("x".to_string(), MirType::I64),
-        ("y".to_string(), MirType::I64),
-    ]);
+    struct_defs.insert(
+        "Point".to_string(),
+        vec![
+            ("x".to_string(), MirType::I64),
+            ("y".to_string(), MirType::I64),
+        ],
+    );
 
     let module = MirModule {
         functions: vec![MirFunction {
             name: "get_x".into(),
-            params: vec![MirParam { local: LocalId(0), ty: MirType::Struct("Point".into()) }],
+            params: vec![MirParam {
+                local: LocalId(0),
+                ty: MirType::Struct("Point".into()),
+            }],
             ret_ty: MirType::I64,
             locals: vec![
-                MirLocal { id: LocalId(0), name: Some("p".into()), ty: MirType::Struct("Point".into()), mutable: false },
-                MirLocal { id: LocalId(1), name: None, ty: MirType::I64, mutable: false },
+                MirLocal {
+                    id: LocalId(0),
+                    name: Some("p".into()),
+                    ty: MirType::Struct("Point".into()),
+                    mutable: false,
+                },
+                MirLocal {
+                    id: LocalId(1),
+                    name: None,
+                    ty: MirType::I64,
+                    mutable: false,
+                },
             ],
             blocks: vec![BasicBlock {
                 id: BlockId(0),
                 instructions: vec![Instruction::Assign {
                     dest: LocalId(1),
-                    value: RValue::Field { object: Operand::Local(LocalId(0)), field: "x".into() },
+                    value: RValue::Field {
+                        object: Operand::Local(LocalId(0)),
+                        field: "x".into(),
+                    },
                 }],
                 terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
             }],
@@ -1159,9 +1233,12 @@ fn test_eprintln_uses_stderr() {
         name: "warn".into(),
         params: vec![],
         ret_ty: MirType::Void,
-        locals: vec![
-            MirLocal { id: LocalId(0), name: None, ty: MirType::Str, mutable: false },
-        ],
+        locals: vec![MirLocal {
+            id: LocalId(0),
+            name: None,
+            ty: MirType::Str,
+            mutable: false,
+        }],
         blocks: vec![BasicBlock {
             id: BlockId(0),
             instructions: vec![
@@ -1185,12 +1262,20 @@ fn test_eprintln_uses_stderr() {
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
     // Must use fputs + fputc to stderr, NOT puts
     assert!(ir.contains("@fputs"), "eprintln should call fputs:\n{ir}");
-    assert!(ir.contains("@fputc"), "eprintln should call fputc for newline:\n{ir}");
-    assert!(!ir.contains("call i32 @puts") || ir.contains("@fputs"),
-        "eprintln must not fall through to puts:\n{ir}");
+    assert!(
+        ir.contains("@fputc"),
+        "eprintln should call fputc for newline:\n{ir}"
+    );
+    assert!(
+        !ir.contains("call i32 @puts") || ir.contains("@fputs"),
+        "eprintln must not fall through to puts:\n{ir}"
+    );
     // Must declare stderr accessor
     if cfg!(target_os = "windows") {
-        assert!(ir.contains("@__acrt_iob_func"), "must declare __acrt_iob_func on Windows:\n{ir}");
+        assert!(
+            ir.contains("@__acrt_iob_func"),
+            "must declare __acrt_iob_func on Windows:\n{ir}"
+        );
     } else {
         assert!(ir.contains("@stderr"), "must declare stderr on Unix:\n{ir}");
     }
@@ -1200,11 +1285,24 @@ fn test_eprintln_uses_stderr() {
 fn test_len_builtin_returns_zero() {
     let module = module_with(MirFunction {
         name: "get_len".into(),
-        params: vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        params: vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
         ret_ty: MirType::I64,
         locals: vec![
-            MirLocal { id: LocalId(0), name: Some("arr".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: None, ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("arr".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: None,
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         blocks: vec![BasicBlock {
             id: BlockId(0),
@@ -1222,20 +1320,39 @@ fn test_len_builtin_returns_zero() {
 
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
     // len calls the runtime kryos_builtin_len
-    assert!(ir.contains("@kryos_builtin_len"), "len() should call kryos_builtin_len:\n{ir}");
+    assert!(
+        ir.contains("@kryos_builtin_len"),
+        "len() should call kryos_builtin_len:\n{ir}"
+    );
     // Must NOT emit a call to @len (which would be an undefined symbol)
-    assert!(!ir.contains("call i64 @len("), "len must not emit external call to @len:\n{ir}");
+    assert!(
+        !ir.contains("call i64 @len("),
+        "len must not emit external call to @len:\n{ir}"
+    );
 }
 
 #[test]
 fn test_to_string_builtin_returns_input() {
     let module = module_with(MirFunction {
         name: "stringify".into(),
-        params: vec![MirParam { local: LocalId(0), ty: MirType::I64 }],
+        params: vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
         ret_ty: MirType::I64,
         locals: vec![
-            MirLocal { id: LocalId(0), name: Some("val".into()), ty: MirType::I64, mutable: false },
-            MirLocal { id: LocalId(1), name: None, ty: MirType::I64, mutable: false },
+            MirLocal {
+                id: LocalId(0),
+                name: Some("val".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: None,
+                ty: MirType::I64,
+                mutable: false,
+            },
         ],
         blocks: vec![BasicBlock {
             id: BlockId(0),
@@ -1253,9 +1370,15 @@ fn test_to_string_builtin_returns_input() {
 
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
     // to_string calls the runtime kryos_builtin_to_string
-    assert!(ir.contains("@kryos_builtin_to_string"), "to_string() should call kryos_builtin_to_string:\n{ir}");
+    assert!(
+        ir.contains("@kryos_builtin_to_string"),
+        "to_string() should call kryos_builtin_to_string:\n{ir}"
+    );
     // Must NOT emit a call to @to_string (which would be an undefined symbol)
-    assert!(!ir.contains("call i64 @to_string("), "to_string must not emit external call to @to_string:\n{ir}");
+    assert!(
+        !ir.contains("call i64 @to_string("),
+        "to_string must not emit external call to @to_string:\n{ir}"
+    );
 }
 
 // ===========================================================================
@@ -1267,20 +1390,35 @@ fn test_enum_unit_variant() {
     use kryos_mir::ir::EnumVariantDef;
 
     let mut enum_defs = HashMap::new();
-    enum_defs.insert("Color".to_string(), vec![
-        EnumVariantDef { name: "Red".into(), fields: vec![] },
-        EnumVariantDef { name: "Green".into(), fields: vec![] },
-        EnumVariantDef { name: "Blue".into(), fields: vec![] },
-    ]);
+    enum_defs.insert(
+        "Color".to_string(),
+        vec![
+            EnumVariantDef {
+                name: "Red".into(),
+                fields: vec![],
+            },
+            EnumVariantDef {
+                name: "Green".into(),
+                fields: vec![],
+            },
+            EnumVariantDef {
+                name: "Blue".into(),
+                fields: vec![],
+            },
+        ],
+    );
 
     let module = MirModule {
         functions: vec![MirFunction {
             name: "get_green".into(),
             params: vec![],
             ret_ty: MirType::Enum("Color".into()),
-            locals: vec![
-                MirLocal { id: LocalId(0), name: None, ty: MirType::Enum("Color".into()), mutable: false },
-            ],
+            locals: vec![MirLocal {
+                id: LocalId(0),
+                name: None,
+                ty: MirType::Enum("Color".into()),
+                mutable: false,
+            }],
             blocks: vec![BasicBlock {
                 id: BlockId(0),
                 instructions: vec![Instruction::Assign {
@@ -1303,8 +1441,14 @@ fn test_enum_unit_variant() {
 
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
     // Unit variant: insertvalue { i64 } undef, i64 1, 0
-    assert!(ir.contains("insertvalue"), "enum variant must use insertvalue:\n{ir}");
-    assert!(ir.contains("i64 1"), "Green variant should have tag 1:\n{ir}");
+    assert!(
+        ir.contains("insertvalue"),
+        "enum variant must use insertvalue:\n{ir}"
+    );
+    assert!(
+        ir.contains("i64 1"),
+        "Green variant should have tag 1:\n{ir}"
+    );
 }
 
 #[test]
@@ -1312,19 +1456,31 @@ fn test_enum_variant_with_fields() {
     use kryos_mir::ir::EnumVariantDef;
 
     let mut enum_defs = HashMap::new();
-    enum_defs.insert("Shape".to_string(), vec![
-        EnumVariantDef { name: "Circle".into(), fields: vec![MirType::F64] },
-        EnumVariantDef { name: "Rect".into(), fields: vec![MirType::F64, MirType::F64] },
-    ]);
+    enum_defs.insert(
+        "Shape".to_string(),
+        vec![
+            EnumVariantDef {
+                name: "Circle".into(),
+                fields: vec![MirType::F64],
+            },
+            EnumVariantDef {
+                name: "Rect".into(),
+                fields: vec![MirType::F64, MirType::F64],
+            },
+        ],
+    );
 
     let module = MirModule {
         functions: vec![MirFunction {
             name: "make_rect".into(),
             params: vec![],
             ret_ty: MirType::Enum("Shape".into()),
-            locals: vec![
-                MirLocal { id: LocalId(0), name: None, ty: MirType::Enum("Shape".into()), mutable: false },
-            ],
+            locals: vec![MirLocal {
+                id: LocalId(0),
+                name: None,
+                ty: MirType::Enum("Shape".into()),
+                mutable: false,
+            }],
             blocks: vec![BasicBlock {
                 id: BlockId(0),
                 instructions: vec![Instruction::Assign {
@@ -1351,7 +1507,10 @@ fn test_enum_variant_with_fields() {
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
     // Rect variant: tag=1, 2 fields → 3 insertvalue ops (tag + 2 fields)
     let insert_count = ir.matches("insertvalue").count();
-    assert!(insert_count >= 3, "Rect(f64,f64) needs 3 insertvalue ops, got {insert_count}:\n{ir}");
+    assert!(
+        insert_count >= 3,
+        "Rect(f64,f64) needs 3 insertvalue ops, got {insert_count}:\n{ir}"
+    );
 }
 
 #[test]
@@ -1359,25 +1518,49 @@ fn test_enum_tag_extraction() {
     use kryos_mir::ir::EnumVariantDef;
 
     let mut enum_defs = HashMap::new();
-    enum_defs.insert("Color".to_string(), vec![
-        EnumVariantDef { name: "Red".into(), fields: vec![] },
-        EnumVariantDef { name: "Green".into(), fields: vec![] },
-    ]);
+    enum_defs.insert(
+        "Color".to_string(),
+        vec![
+            EnumVariantDef {
+                name: "Red".into(),
+                fields: vec![],
+            },
+            EnumVariantDef {
+                name: "Green".into(),
+                fields: vec![],
+            },
+        ],
+    );
 
     let module = MirModule {
         functions: vec![MirFunction {
             name: "get_tag".into(),
-            params: vec![MirParam { local: LocalId(0), ty: MirType::Enum("Color".into()) }],
+            params: vec![MirParam {
+                local: LocalId(0),
+                ty: MirType::Enum("Color".into()),
+            }],
             ret_ty: MirType::I64,
             locals: vec![
-                MirLocal { id: LocalId(0), name: Some("c".into()), ty: MirType::Enum("Color".into()), mutable: false },
-                MirLocal { id: LocalId(1), name: None, ty: MirType::I64, mutable: false },
+                MirLocal {
+                    id: LocalId(0),
+                    name: Some("c".into()),
+                    ty: MirType::Enum("Color".into()),
+                    mutable: false,
+                },
+                MirLocal {
+                    id: LocalId(1),
+                    name: None,
+                    ty: MirType::I64,
+                    mutable: false,
+                },
             ],
             blocks: vec![BasicBlock {
                 id: BlockId(0),
                 instructions: vec![Instruction::Assign {
                     dest: LocalId(1),
-                    value: RValue::EnumTag { operand: Operand::Local(LocalId(0)) },
+                    value: RValue::EnumTag {
+                        operand: Operand::Local(LocalId(0)),
+                    },
                 }],
                 terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
             }],
@@ -1391,7 +1574,10 @@ fn test_enum_tag_extraction() {
 
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
     // Tag extraction: extractvalue { i64 } %_0, 0
-    assert!(ir.contains("extractvalue"), "enum tag must use extractvalue:\n{ir}");
+    assert!(
+        ir.contains("extractvalue"),
+        "enum tag must use extractvalue:\n{ir}"
+    );
     assert!(ir.contains(", 0"), "tag is at index 0:\n{ir}");
 }
 
@@ -1400,19 +1586,41 @@ fn test_enum_payload_extraction() {
     use kryos_mir::ir::EnumVariantDef;
 
     let mut enum_defs = HashMap::new();
-    enum_defs.insert("Shape".to_string(), vec![
-        EnumVariantDef { name: "Circle".into(), fields: vec![MirType::F64] },
-        EnumVariantDef { name: "Rect".into(), fields: vec![MirType::F64, MirType::F64] },
-    ]);
+    enum_defs.insert(
+        "Shape".to_string(),
+        vec![
+            EnumVariantDef {
+                name: "Circle".into(),
+                fields: vec![MirType::F64],
+            },
+            EnumVariantDef {
+                name: "Rect".into(),
+                fields: vec![MirType::F64, MirType::F64],
+            },
+        ],
+    );
 
     let module = MirModule {
         functions: vec![MirFunction {
             name: "get_height".into(),
-            params: vec![MirParam { local: LocalId(0), ty: MirType::Enum("Shape".into()) }],
+            params: vec![MirParam {
+                local: LocalId(0),
+                ty: MirType::Enum("Shape".into()),
+            }],
             ret_ty: MirType::I64,
             locals: vec![
-                MirLocal { id: LocalId(0), name: Some("s".into()), ty: MirType::Enum("Shape".into()), mutable: false },
-                MirLocal { id: LocalId(1), name: None, ty: MirType::I64, mutable: false },
+                MirLocal {
+                    id: LocalId(0),
+                    name: Some("s".into()),
+                    ty: MirType::Enum("Shape".into()),
+                    mutable: false,
+                },
+                MirLocal {
+                    id: LocalId(1),
+                    name: None,
+                    ty: MirType::I64,
+                    mutable: false,
+                },
             ],
             blocks: vec![BasicBlock {
                 id: BlockId(0),
@@ -1437,6 +1645,12 @@ fn test_enum_payload_extraction() {
 
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
     // Payload at index 1+1=2: extractvalue ... , 2
-    assert!(ir.contains("extractvalue"), "payload must use extractvalue:\n{ir}");
-    assert!(ir.contains(", 2"), "second payload field is at index 2:\n{ir}");
+    assert!(
+        ir.contains("extractvalue"),
+        "payload must use extractvalue:\n{ir}"
+    );
+    assert!(
+        ir.contains(", 2"),
+        "second payload field is at index 2:\n{ir}"
+    );
 }

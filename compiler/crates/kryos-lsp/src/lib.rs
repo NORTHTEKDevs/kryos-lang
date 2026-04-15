@@ -3,11 +3,11 @@
 //! Provides IDE features: diagnostics, completion, hover, go-to-definition.
 //! Communicates via JSON-RPC over stdin/stdout.
 
+pub mod completion;
+pub mod diagnostics;
+pub mod goto_def;
+pub mod hover;
 pub mod protocol;
 pub mod server;
-pub mod diagnostics;
-pub mod completion;
-pub mod hover;
-pub mod goto_def;
 
 pub use server::LspServer;

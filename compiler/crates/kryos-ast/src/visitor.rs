@@ -1,7 +1,7 @@
-use crate::types::TypeExpr;
+use crate::decl::{Decl, Module};
 use crate::expr::Expr;
 use crate::stmt::Stmt;
-use crate::decl::{Decl, Module};
+use crate::types::TypeExpr;
 
 pub trait AstVisitor {
     fn visit_module(&mut self, module: &Module) {

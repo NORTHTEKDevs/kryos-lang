@@ -3,15 +3,18 @@
 
 #![allow(clippy::should_implement_trait, clippy::too_many_arguments)]
 
-pub mod semver;
-pub mod manifest;
-pub mod resolve;
-pub mod lock;
-pub mod registry;
 pub mod fetch;
+pub mod lock;
+pub mod manifest;
+pub mod registry;
+pub mod resolve;
+pub mod semver;
 
-pub use manifest::{Manifest, PackageInfo, DepSpec, CapabilitiesConfig, BuildConfig};
-pub use semver::{Version, VersionReq, Op};
-pub use resolve::{resolve, ResolvedGraph, ResolvedPackage, PackageSource, PackageRegistry, AvailablePackage, ResolveError};
-pub use lock::{LockFile, LockEntry};
+pub use lock::{LockEntry, LockFile};
+pub use manifest::{BuildConfig, CapabilitiesConfig, DepSpec, Manifest, PackageInfo};
 pub use registry::{RegistryClient, RegistryConfig, RegistryEntry};
+pub use resolve::{
+    resolve, AvailablePackage, PackageRegistry, PackageSource, ResolveError, ResolvedGraph,
+    ResolvedPackage,
+};
+pub use semver::{Op, Version, VersionReq};

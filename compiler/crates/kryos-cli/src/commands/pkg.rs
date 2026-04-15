@@ -18,10 +18,7 @@ pub fn init(name: Option<&str>) -> Result<(), String> {
                 // If the directory already exists, only bail when a manifest
                 // is already present (allows `init` into an empty folder).
                 if dir.join("kryos.toml").exists() {
-                    return Err(format!(
-                        "kryos.toml already exists in `{}`",
-                        dir.display()
-                    ));
+                    return Err(format!("kryos.toml already exists in `{}`", dir.display()));
                 }
             } else {
                 std::fs::create_dir_all(&dir)
@@ -74,8 +71,7 @@ optimization = "dev"
     // Create a src/ directory with a main.kry stub if it doesn't exist.
     let src_dir = base_dir.join("src");
     if !src_dir.exists() {
-        std::fs::create_dir_all(&src_dir)
-            .map_err(|e| format!("failed to create src/: {e}"))?;
+        std::fs::create_dir_all(&src_dir).map_err(|e| format!("failed to create src/: {e}"))?;
     }
 
     let main_path = src_dir.join("main.kry");
@@ -130,7 +126,9 @@ pub fn add(dependency: &str) -> Result<(), String> {
     let dep_name = derive_dep_name(dependency);
 
     if manifest.dependencies.contains_key(&dep_name) {
-        return Err(format!("dependency `{dep_name}` already exists in kryos.toml"));
+        return Err(format!(
+            "dependency `{dep_name}` already exists in kryos.toml"
+        ));
     }
 
     manifest.dependencies.insert(dep_name.clone(), dep_spec);
@@ -178,7 +176,10 @@ pub fn update() -> Result<(), String> {
             let dep_manifest_path = Path::new(path).join("kryos.toml");
             if dep_manifest_path.exists() {
                 let dep_manifest = Manifest::from_file(&dep_manifest_path)?;
-                let version: kryos_package::Version = dep_manifest.package.version.parse()
+                let version: kryos_package::Version = dep_manifest
+                    .package
+                    .version
+                    .parse()
                     .map_err(|e| format!("bad version in {}: {e}", name))?;
                 registry.add(kryos_package::resolve::AvailablePackage {
                     name: name.clone(),
@@ -195,7 +196,11 @@ pub fn update() -> Result<(), String> {
             let lock = kryos_package::LockFile::from_resolved(&graph);
             lock.write_to_file(Path::new("kryos.lock"))?;
 
-            eprintln!("resolved {} package{}", graph.packages.len(), if graph.packages.len() == 1 { "" } else { "s" });
+            eprintln!(
+                "resolved {} package{}",
+                graph.packages.len(),
+                if graph.packages.len() == 1 { "" } else { "s" }
+            );
             for pkg in &graph.packages {
                 eprintln!("  {} v{}", pkg.name, pkg.version);
             }
@@ -233,7 +238,10 @@ pub fn install() -> Result<(), String> {
             let dep_manifest_path = Path::new(path).join("kryos.toml");
             if dep_manifest_path.exists() {
                 let dep_manifest = Manifest::from_file(&dep_manifest_path)?;
-                let version: kryos_package::Version = dep_manifest.package.version.parse()
+                let version: kryos_package::Version = dep_manifest
+                    .package
+                    .version
+                    .parse()
                     .map_err(|e| format!("bad version in {}: {e}", name))?;
                 registry.add(kryos_package::resolve::AvailablePackage {
                     name: name.clone(),
@@ -271,10 +279,8 @@ pub fn install() -> Result<(), String> {
         // For path deps, create a small marker file pointing to the real location.
         // For remote deps, the cache path is canonical; just store a redirect.
         let redirect_content = format!("# kryos dep redirect\npath = \"{}\"\n", src_path.display());
-        std::fs::write(
-            deps_dir.join(format!("{name}.redirect")),
-            redirect_content,
-        ).map_err(|e| format!("failed to write dep redirect for {name}: {e}"))?;
+        std::fs::write(deps_dir.join(format!("{name}.redirect")), redirect_content)
+            .map_err(|e| format!("failed to write dep redirect for {name}: {e}"))?;
     }
 
     // Write lock file.
@@ -282,11 +288,18 @@ pub fn install() -> Result<(), String> {
     lock.write_to_file(Path::new("kryos.lock"))?;
 
     // Summary.
-    let path_count = fetched.iter().filter(|(_, p)| !p.starts_with(kryos_package::fetch::cache_dir())).count();
+    let path_count = fetched
+        .iter()
+        .filter(|(_, p)| !p.starts_with(kryos_package::fetch::cache_dir()))
+        .count();
     let remote_count = fetched.len() - path_count;
 
     eprintln!();
-    eprintln!("installed {} package{}", fetched.len(), if fetched.len() == 1 { "" } else { "s" });
+    eprintln!(
+        "installed {} package{}",
+        fetched.len(),
+        if fetched.len() == 1 { "" } else { "s" }
+    );
     for (name, path) in &fetched {
         let is_path = !path.starts_with(kryos_package::fetch::cache_dir());
         if is_path {
@@ -310,8 +323,8 @@ pub fn lock() -> Result<(), String> {
 
 /// `kryos pkg publish` — package and publish to the registry.
 pub fn publish() -> Result<(), String> {
-    let project_dir = std::env::current_dir()
-        .map_err(|e| format!("cannot determine current directory: {e}"))?;
+    let project_dir =
+        std::env::current_dir().map_err(|e| format!("cannot determine current directory: {e}"))?;
 
     eprintln!("packaging...");
     let pkg = kryos_package::registry::pack(&project_dir)?;
@@ -354,7 +367,11 @@ pub fn search(query: &str) -> Result<(), String> {
                 eprintln!("  {name}");
             }
         }
-        eprintln!("{} package{} found", results.len(), if results.len() == 1 { "" } else { "s" });
+        eprintln!(
+            "{} package{} found",
+            results.len(),
+            if results.len() == 1 { "" } else { "s" }
+        );
     }
 
     Ok(())
@@ -414,8 +431,5 @@ fn derive_dep_name(spec: &str) -> String {
     // Strip everything after @
     let base = spec.split('@').next().unwrap_or(spec);
     // Take the last path segment
-    base.rsplit('/')
-        .next()
-        .unwrap_or(base)
-        .to_string()
+    base.rsplit('/').next().unwrap_or(base).to_string()
 }

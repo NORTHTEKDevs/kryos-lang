@@ -1,11 +1,11 @@
 //! Linker invocation — constructs and runs system linker commands to produce
 //! final executables, shared libraries, or WASM binaries.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::fmt;
 
-use crate::target::{Target, Arch, Os, Env};
+use crate::target::{Arch, Env, Os, Target};
 
 /// How to link the output binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,9 +45,16 @@ pub enum LinkError {
     /// The system linker could not be found.
     LinkerNotFound(String),
     /// The linker process failed to start.
-    SpawnFailed { linker: String, error: std::io::Error },
+    SpawnFailed {
+        linker: String,
+        error: std::io::Error,
+    },
     /// The linker exited with a non-zero status.
-    LinkFailed { linker: String, exit_code: Option<i32>, stderr: String },
+    LinkFailed {
+        linker: String,
+        exit_code: Option<i32>,
+        stderr: String,
+    },
     /// No object files were provided.
     NoObjectFiles,
 }
@@ -59,7 +66,11 @@ impl fmt::Display for LinkError {
             LinkError::SpawnFailed { linker, error } => {
                 write!(f, "failed to spawn linker '{linker}': {error}")
             }
-            LinkError::LinkFailed { linker, exit_code, stderr } => {
+            LinkError::LinkFailed {
+                linker,
+                exit_code,
+                stderr,
+            } => {
                 write!(
                     f,
                     "linker '{linker}' failed (exit code: {})\n{stderr}",
@@ -79,8 +90,7 @@ pub fn link(config: &LinkerConfig) -> Result<(), LinkError> {
         return Err(LinkError::NoObjectFiles);
     }
 
-    let linker_path = find_system_linker(&config.target)
-        .map_err(LinkError::LinkerNotFound)?;
+    let linker_path = find_system_linker(&config.target).map_err(LinkError::LinkerNotFound)?;
 
     let mut cmd = build_command(&linker_path, config);
 
@@ -95,7 +105,11 @@ pub fn link(config: &LinkerConfig) -> Result<(), LinkError> {
         // MSVC link.exe writes errors to stdout, not stderr
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let combined = if stderr.is_empty() { stdout } else { format!("{stderr}\n{stdout}") };
+        let combined = if stderr.is_empty() {
+            stdout
+        } else {
+            format!("{stderr}\n{stdout}")
+        };
         Err(LinkError::LinkFailed {
             linker: linker_path.display().to_string(),
             exit_code: output.status.code(),
@@ -125,8 +139,12 @@ fn build_unix_command(cmd: &mut Command, config: &LinkerConfig) {
 
     // Link type flags
     match config.link_type {
-        LinkType::Static => { cmd.arg("-static"); }
-        LinkType::SharedLib => { cmd.arg("-shared"); }
+        LinkType::Static => {
+            cmd.arg("-static");
+        }
+        LinkType::SharedLib => {
+            cmd.arg("-shared");
+        }
         LinkType::Dynamic => {} // default behavior
     }
 
@@ -160,8 +178,12 @@ fn build_msvc_command(cmd: &mut Command, config: &LinkerConfig) {
     cmd.arg("/NOLOGO");
 
     match config.link_type {
-        LinkType::SharedLib => { cmd.arg("/DLL"); }
-        LinkType::Static => { cmd.arg("/LTCG"); }
+        LinkType::SharedLib => {
+            cmd.arg("/DLL");
+        }
+        LinkType::Static => {
+            cmd.arg("/LTCG");
+        }
         LinkType::Dynamic => {
             cmd.arg("/SUBSYSTEM:CONSOLE");
             cmd.arg("/ENTRY:mainCRTStartup");
@@ -340,7 +362,10 @@ pub fn find_system_linker(target: &Target) -> Result<PathBuf, String> {
             // and not Git's /usr/bin/link (Unix hardlink command)
             if name == &"link.exe" {
                 let path_str = path.to_string_lossy().to_lowercase();
-                if path_str.contains("git") || path_str.contains("usr/bin") || path_str.contains("usr\\bin") {
+                if path_str.contains("git")
+                    || path_str.contains("usr/bin")
+                    || path_str.contains("usr\\bin")
+                {
                     continue;
                 }
             }
@@ -357,7 +382,11 @@ pub fn find_system_linker(target: &Target) -> Result<PathBuf, String> {
 
 /// Search for MSVC's link.exe in Visual Studio Build Tools installation.
 fn find_msvc_link_exe(arch: Arch) -> Option<PathBuf> {
-    let host = if cfg!(target_arch = "x86_64") { "Hostx64" } else { "Hostx86" };
+    let host = if cfg!(target_arch = "x86_64") {
+        "Hostx64"
+    } else {
+        "Hostx86"
+    };
     let target_dir = match arch {
         Arch::X86_64 => "x64",
         Arch::Aarch64 => "arm64",
@@ -419,7 +448,12 @@ fn find_msvc_link_exe(arch: Arch) -> Option<PathBuf> {
 fn which(name: &str) -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
     let extensions = if cfg!(windows) {
-        vec!["".to_string(), ".exe".to_string(), ".cmd".to_string(), ".bat".to_string()]
+        vec![
+            "".to_string(),
+            ".exe".to_string(),
+            ".cmd".to_string(),
+            ".bat".to_string(),
+        ]
     } else {
         vec!["".to_string()]
     };

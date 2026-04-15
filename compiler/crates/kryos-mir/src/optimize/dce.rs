@@ -12,8 +12,7 @@
 use std::collections::{HashSet, VecDeque};
 
 use crate::ir::{
-    BasicBlock, BlockId, Instruction, MirFunction, MirModule, Operand, RValue,
-    Terminator,
+    BasicBlock, BlockId, Instruction, MirFunction, MirModule, Operand, RValue, Terminator,
 };
 
 // ---------------------------------------------------------------------------
@@ -88,16 +87,11 @@ fn remove_unreachable_blocks(func: &mut MirFunction) {
 }
 
 /// Remap BlockIds in a terminator according to the old-to-new mapping.
-fn remap_terminator(
-    term: &Terminator,
-    map: &std::collections::HashMap<u32, u32>,
-) -> Terminator {
+fn remap_terminator(term: &Terminator, map: &std::collections::HashMap<u32, u32>) -> Terminator {
     match term {
         Terminator::Return(op) => Terminator::Return(op.clone()),
         Terminator::Unreachable => Terminator::Unreachable,
-        Terminator::Goto(b) => {
-            Terminator::Goto(BlockId(*map.get(&b.0).unwrap_or(&b.0)))
-        }
+        Terminator::Goto(b) => Terminator::Goto(BlockId(*map.get(&b.0).unwrap_or(&b.0))),
         Terminator::Branch {
             cond,
             then_block,

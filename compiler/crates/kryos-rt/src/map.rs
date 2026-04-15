@@ -35,10 +35,7 @@ fn hash_key(key: i64, capacity: usize) -> usize {
 }
 
 unsafe fn alloc_entries(capacity: usize) -> *mut MapEntry {
-    let layout = Layout::from_size_align_unchecked(
-        capacity * std::mem::size_of::<MapEntry>(),
-        8,
-    );
+    let layout = Layout::from_size_align_unchecked(capacity * std::mem::size_of::<MapEntry>(), 8);
     let ptr = alloc_zeroed(layout);
     ptr as *mut MapEntry
 }
@@ -47,10 +44,7 @@ unsafe fn free_entries(entries: *mut MapEntry, capacity: usize) {
     if entries.is_null() {
         return;
     }
-    let layout = Layout::from_size_align_unchecked(
-        capacity * std::mem::size_of::<MapEntry>(),
-        8,
-    );
+    let layout = Layout::from_size_align_unchecked(capacity * std::mem::size_of::<MapEntry>(), 8);
     dealloc(entries as *mut u8, layout);
 }
 
@@ -92,10 +86,7 @@ unsafe fn resize(header: *mut MapHeader) {
 #[no_mangle]
 pub extern "C" fn kryos_map_new() -> i64 {
     unsafe {
-        let layout = Layout::from_size_align_unchecked(
-            std::mem::size_of::<MapHeader>(),
-            8,
-        );
+        let layout = Layout::from_size_align_unchecked(std::mem::size_of::<MapHeader>(), 8);
         let ptr = alloc_zeroed(layout);
         if ptr.is_null() {
             return 0;
@@ -260,9 +251,8 @@ unsafe fn resize_str(header: *mut MapHeader) {
     for i in 0..old_cap {
         let entry = &*old_entries.add(i);
         if entry.occupied {
-            let str_hash = crate::string::kryos_string_hash(
-                entry.key as *const crate::string::KryosString,
-            );
+            let str_hash =
+                crate::string::kryos_string_hash(entry.key as *const crate::string::KryosString);
             let mut idx = hash_key(str_hash, new_cap);
             loop {
                 let slot = &mut *new_entries.add(idx);
@@ -499,10 +489,7 @@ pub extern "C" fn kryos_map_clone(map: i64) -> i64 {
         let capacity = (*src).capacity as usize;
 
         // Allocate new header.
-        let layout = Layout::from_size_align_unchecked(
-            std::mem::size_of::<MapHeader>(),
-            8,
-        );
+        let layout = Layout::from_size_align_unchecked(std::mem::size_of::<MapHeader>(), 8);
         let ptr = alloc_zeroed(layout);
         if ptr.is_null() {
             return 0;
@@ -540,10 +527,7 @@ pub extern "C" fn kryos_map_free(map: i64) {
         let header = map as *mut MapHeader;
         let capacity = (*header).capacity as usize;
         free_entries((*header).entries, capacity);
-        let layout = Layout::from_size_align_unchecked(
-            std::mem::size_of::<MapHeader>(),
-            8,
-        );
+        let layout = Layout::from_size_align_unchecked(std::mem::size_of::<MapHeader>(), 8);
         dealloc(map as *mut u8, layout);
     }
 }

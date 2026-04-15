@@ -13,9 +13,7 @@
 //! - `0 * x`    ->  `0`
 //! - `1 * x`    ->  `x`
 
-use crate::ir::{
-    Constant, Instruction, MirBinOp, MirModule, Operand, RValue,
-};
+use crate::ir::{Constant, Instruction, MirBinOp, MirModule, Operand, RValue};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -245,7 +243,10 @@ mod tests {
             right: Operand::Constant(Constant::Int(1)),
         });
         reduce_strength(&mut m);
-        assert!(matches!(get_value(&m), RValue::Use(Operand::Local(LocalId(0)))));
+        assert!(matches!(
+            get_value(&m),
+            RValue::Use(Operand::Local(LocalId(0)))
+        ));
     }
 
     #[test]
@@ -310,7 +311,10 @@ mod tests {
             right: Operand::Constant(Constant::Int(0)),
         });
         reduce_strength(&mut m);
-        assert!(matches!(get_value(&m), RValue::Use(Operand::Local(LocalId(0)))));
+        assert!(matches!(
+            get_value(&m),
+            RValue::Use(Operand::Local(LocalId(0)))
+        ));
     }
 
     #[test]
@@ -321,7 +325,10 @@ mod tests {
             right: Operand::Constant(Constant::Int(0)),
         });
         reduce_strength(&mut m);
-        assert!(matches!(get_value(&m), RValue::Use(Operand::Local(LocalId(0)))));
+        assert!(matches!(
+            get_value(&m),
+            RValue::Use(Operand::Local(LocalId(0)))
+        ));
     }
 
     #[test]
@@ -333,7 +340,13 @@ mod tests {
         });
         reduce_strength(&mut m);
         // 7 is not a power of two — should remain a Mul.
-        assert!(matches!(get_value(&m), RValue::BinOp { op: MirBinOp::Mul, .. }));
+        assert!(matches!(
+            get_value(&m),
+            RValue::BinOp {
+                op: MirBinOp::Mul,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -344,7 +357,10 @@ mod tests {
             right: Operand::Constant(Constant::Int(1)),
         });
         reduce_strength(&mut m);
-        assert!(matches!(get_value(&m), RValue::Use(Operand::Local(LocalId(0)))));
+        assert!(matches!(
+            get_value(&m),
+            RValue::Use(Operand::Local(LocalId(0)))
+        ));
     }
 
     #[test]

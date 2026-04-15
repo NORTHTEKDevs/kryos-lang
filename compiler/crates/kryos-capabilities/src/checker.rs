@@ -192,7 +192,9 @@ impl CapabilityChecker {
                         excess_names.join(", ")
                     ))
                     .with_label(span, "declared here")
-                    .with_note("child scope cannot add capabilities not granted by parent".to_string())
+                    .with_note(
+                        "child scope cannot add capabilities not granted by parent".to_string(),
+                    )
                     .with_code("E-CAP-ATTENUATION"),
                 );
             }
@@ -232,10 +234,7 @@ impl CapabilityChecker {
                         excess_names.join(", ")
                     ))
                     .with_label(
-                        annotations
-                            .first()
-                            .map(|a| a.span)
-                            .unwrap_or(Span::DUMMY),
+                        annotations.first().map(|a| a.span).unwrap_or(Span::DUMMY),
                         "declared here",
                     )
                     .with_note("spawned actor capabilities must be a subset of the spawner's")
@@ -261,11 +260,9 @@ impl CapabilityChecker {
         if let Some(caps) = self.current_caps() {
             if !caps.has(Capability::Ffi) {
                 self.diagnostics.push(
-                    Diagnostic::error(
-                        "extern block requires `ffi` capability",
-                    )
-                    .with_label(span, "extern block here")
-                    .with_code("E-CAP-FFI"),
+                    Diagnostic::error("extern block requires `ffi` capability")
+                        .with_label(span, "extern block here")
+                        .with_code("E-CAP-FFI"),
                 );
             }
         } else {
@@ -417,8 +414,7 @@ impl CapabilityChecker {
             Expr::UnaryOp { operand, .. } => {
                 self.check_expr(operand);
             }
-            Expr::ArrayLiteral { elements, .. }
-            | Expr::TupleLiteral { elements, .. } => {
+            Expr::ArrayLiteral { elements, .. } | Expr::TupleLiteral { elements, .. } => {
                 for elem in elements {
                     self.check_expr(elem);
                 }
@@ -661,8 +657,11 @@ impl CapabilityChecker {
                                 "unknown capability `{arg}` in @capabilities annotation"
                             ))
                             .with_label(ann.span, format!("`{arg}` is not recognized"))
-                            .with_note("known capabilities: net, io, ffi, compute, crypto, \
-                                 process, env, term, db, time, all".to_string())
+                            .with_note(
+                                "known capabilities: net, io, ffi, compute, crypto, \
+                                 process, env, term, db, time, all"
+                                    .to_string(),
+                            )
                             .with_code("W-CAP-UNKNOWN"),
                         );
                     }
@@ -716,11 +715,7 @@ mod tests {
         }
     }
 
-    fn fn_decl(
-        name: &str,
-        caps: Vec<&str>,
-        body_stmts: Vec<Stmt>,
-    ) -> Decl {
+    fn fn_decl(name: &str, caps: Vec<&str>, body_stmts: Vec<Stmt>) -> Decl {
         Decl::Function {
             name: name.to_string(),
             generics: vec![],
@@ -912,7 +907,10 @@ mod tests {
             span: span(),
         };
         let diags = check_capabilities(&module);
-        assert!(diags.is_empty(), "expected no errors with `all`, got: {diags:?}");
+        assert!(
+            diags.is_empty(),
+            "expected no errors with `all`, got: {diags:?}"
+        );
     }
 
     #[test]

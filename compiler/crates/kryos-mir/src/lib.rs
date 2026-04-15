@@ -15,12 +15,12 @@
 //! **Passes:**
 //! - [`lower::lower_module`] — AST -> MIR lowering
 
+pub mod consteval;
+pub mod display;
 pub mod ir;
 pub mod lower;
-pub mod display;
-pub mod consteval;
 pub mod optimize;
 
 // Re-export key types for convenience.
 pub use ir::*;
-pub use lower::{lower_module, lower_function, lower_type_expr, lower_resolved_type};
+pub use lower::{lower_function, lower_module, lower_resolved_type, lower_type_expr};

@@ -1,16 +1,20 @@
 //! Integration tests for the Kryos parser.
 #![allow(clippy::approx_constant)]
 
+use kryos_ast::*;
 use kryos_lexer::Lexer;
 use kryos_parser::parse;
-use kryos_ast::*;
 
 /// Helper: lex and parse source code, panicking on error.
 fn parse_ok(src: &str) -> Module {
     let tokens = Lexer::new(src, 0).tokenize();
     parse(tokens).unwrap_or_else(|diags| {
         for d in &diags {
-            eprintln!("{}: {}", if d.is_error() { "ERROR" } else { "WARN" }, d.message);
+            eprintln!(
+                "{}: {}",
+                if d.is_error() { "ERROR" } else { "WARN" },
+                d.message
+            );
         }
         panic!("parse failed with {} error(s)", diags.len());
     })
@@ -29,7 +33,14 @@ fn test_simple_function() {
     let m = parse_ok("fn main() { }");
     assert_eq!(m.declarations.len(), 1);
     match &m.declarations[0] {
-        Decl::Function { name, params, ret_ty, body, public, .. } => {
+        Decl::Function {
+            name,
+            params,
+            ret_ty,
+            body,
+            public,
+            ..
+        } => {
             assert_eq!(name, "main");
             assert!(params.is_empty());
             assert!(ret_ty.is_none());
@@ -44,7 +55,12 @@ fn test_simple_function() {
 fn test_function_with_params_and_return() {
     let m = parse_ok("fn add(x: i32, y: i32) -> i32 { x }");
     match &m.declarations[0] {
-        Decl::Function { name, params, ret_ty, .. } => {
+        Decl::Function {
+            name,
+            params,
+            ret_ty,
+            ..
+        } => {
             assert_eq!(name, "add");
             assert_eq!(params.len(), 2);
             assert_eq!(params[0].name, "x");
@@ -80,7 +96,9 @@ fn test_function_with_generics() {
 fn test_function_with_annotation() {
     let m = parse_ok("@test\nfn my_test() { }");
     match &m.declarations[0] {
-        Decl::Function { annotations, name, .. } => {
+        Decl::Function {
+            annotations, name, ..
+        } => {
             assert_eq!(name, "my_test");
             assert_eq!(annotations.len(), 1);
             assert_eq!(annotations[0].name, "test");
@@ -121,7 +139,12 @@ fn test_struct_decl() {
 fn test_struct_with_generics() {
     let m = parse_ok("struct Pair<A, B> { first: A, second: B }");
     match &m.declarations[0] {
-        Decl::Struct { name, generics, fields, .. } => {
+        Decl::Struct {
+            name,
+            generics,
+            fields,
+            ..
+        } => {
             assert_eq!(name, "Pair");
             assert_eq!(generics.len(), 2);
             assert_eq!(fields.len(), 2);
@@ -188,7 +211,12 @@ fn test_trait_decl() {
 fn test_impl_block() {
     let m = parse_ok("impl Point { fn new(x: f64) -> Point { x } }");
     match &m.declarations[0] {
-        Decl::Impl { target, trait_name, methods, .. } => {
+        Decl::Impl {
+            target,
+            trait_name,
+            methods,
+            ..
+        } => {
             assert_eq!(target, "Point");
             assert!(trait_name.is_none());
             assert_eq!(methods.len(), 1);
@@ -201,7 +229,9 @@ fn test_impl_block() {
 fn test_impl_trait_for_type() {
     let m = parse_ok("impl Display for Point { fn fmt(self) -> str { self } }");
     match &m.declarations[0] {
-        Decl::Impl { target, trait_name, .. } => {
+        Decl::Impl {
+            target, trait_name, ..
+        } => {
             assert_eq!(target, "Point");
             assert_eq!(trait_name.as_deref(), Some("Display"));
         }
@@ -215,7 +245,12 @@ fn test_impl_trait_for_type() {
 fn test_actor_decl() {
     let m = parse_ok("actor Counter { count: i32 fn increment(self) { self } }");
     match &m.declarations[0] {
-        Decl::Actor { name, state_fields, handlers, .. } => {
+        Decl::Actor {
+            name,
+            state_fields,
+            handlers,
+            ..
+        } => {
             assert_eq!(name, "Counter");
             assert_eq!(state_fields.len(), 1);
             assert_eq!(state_fields[0].name, "count");
@@ -293,10 +328,18 @@ fn test_extern_block() {
 fn test_let_binding() {
     let m = parse_ok("fn f() { let x: i32 = 42 }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
+        Decl::Function {
+            body: Some(block), ..
+        } => {
             assert_eq!(block.stmts.len(), 1);
             match &block.stmts[0] {
-                Stmt::Let { name, mutable, ty, value, .. } => {
+                Stmt::Let {
+                    name,
+                    mutable,
+                    ty,
+                    value,
+                    ..
+                } => {
                     assert_eq!(name, "x");
                     assert!(!mutable);
                     assert!(ty.is_some());
@@ -313,15 +356,15 @@ fn test_let_binding() {
 fn test_let_mut() {
     let m = parse_ok("fn f() { let mut count = 0 }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::Let { name, mutable, .. } => {
-                    assert_eq!(name, "count");
-                    assert!(*mutable);
-                }
-                other => panic!("expected Let, got {:?}", other),
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::Let { name, mutable, .. } => {
+                assert_eq!(name, "count");
+                assert!(*mutable);
             }
-        }
+            other => panic!("expected Let, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -332,14 +375,14 @@ fn test_let_mut() {
 fn test_assignment() {
     let m = parse_ok("fn f() { x = 10 }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::Assign { op, .. } => {
-                    assert_eq!(*op, AssignOp::Assign);
-                }
-                other => panic!("expected Assign, got {:?}", other),
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::Assign { op, .. } => {
+                assert_eq!(*op, AssignOp::Assign);
             }
-        }
+            other => panic!("expected Assign, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -348,14 +391,14 @@ fn test_assignment() {
 fn test_compound_assignment() {
     let m = parse_ok("fn f() { x += 1 }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::Assign { op, .. } => {
-                    assert_eq!(*op, AssignOp::AddAssign);
-                }
-                other => panic!("expected Assign, got {:?}", other),
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::Assign { op, .. } => {
+                assert_eq!(*op, AssignOp::AddAssign);
             }
-        }
+            other => panic!("expected Assign, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -366,15 +409,19 @@ fn test_compound_assignment() {
 fn test_if_elif_else() {
     let m = parse_ok("fn f() { if x { y } elif z { w } else { v } }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::If { elif_clauses, else_block, .. } => {
-                    assert_eq!(elif_clauses.len(), 1);
-                    assert!(else_block.is_some());
-                }
-                other => panic!("expected If, got {:?}", other),
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::If {
+                elif_clauses,
+                else_block,
+                ..
+            } => {
+                assert_eq!(elif_clauses.len(), 1);
+                assert!(else_block.is_some());
             }
-        }
+            other => panic!("expected If, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -385,17 +432,15 @@ fn test_if_elif_else() {
 fn test_for_loop() {
     let m = parse_ok("fn f() { for i in items { i } }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::For { pattern, .. } => {
-                    match pattern {
-                        Pattern::Ident { name, .. } => assert_eq!(name, "i"),
-                        other => panic!("expected Ident pattern, got {:?}", other),
-                    }
-                }
-                other => panic!("expected For, got {:?}", other),
-            }
-        }
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::For { pattern, .. } => match pattern {
+                Pattern::Ident { name, .. } => assert_eq!(name, "i"),
+                other => panic!("expected Ident pattern, got {:?}", other),
+            },
+            other => panic!("expected For, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -406,18 +451,20 @@ fn test_for_loop() {
 fn test_parallel_for_loop() {
     let m = parse_ok("fn f() { parallel for i in range(0, 100) { i } }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::For { parallel, pattern, .. } => {
-                    assert!(*parallel, "expected parallel: true");
-                    match pattern {
-                        Pattern::Ident { name, .. } => assert_eq!(name, "i"),
-                        other => panic!("expected Ident pattern, got {:?}", other),
-                    }
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::For {
+                parallel, pattern, ..
+            } => {
+                assert!(*parallel, "expected parallel: true");
+                match pattern {
+                    Pattern::Ident { name, .. } => assert_eq!(name, "i"),
+                    other => panic!("expected Ident pattern, got {:?}", other),
                 }
-                other => panic!("expected For, got {:?}", other),
             }
-        }
+            other => panic!("expected For, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -426,14 +473,14 @@ fn test_parallel_for_loop() {
 fn test_regular_for_is_not_parallel() {
     let m = parse_ok("fn f() { for x in items { x } }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::For { parallel, .. } => {
-                    assert!(!*parallel, "regular for should have parallel: false");
-                }
-                other => panic!("expected For, got {:?}", other),
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::For { parallel, .. } => {
+                assert!(!*parallel, "regular for should have parallel: false");
             }
-        }
+            other => panic!("expected For, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -444,12 +491,12 @@ fn test_regular_for_is_not_parallel() {
 fn test_while_loop() {
     let m = parse_ok("fn f() { while running { x } }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::While { .. } => {}
-                other => panic!("expected While, got {:?}", other),
-            }
-        }
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::While { .. } => {}
+            other => panic!("expected While, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -460,19 +507,17 @@ fn test_while_loop() {
 fn test_match_expr() {
     let m = parse_ok("fn f() { match color { Color::Red => 1, Color::Blue => 2 } }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::Expr { expr, .. } => {
-                    match expr {
-                        Expr::MatchExpr { arms, .. } => {
-                            assert_eq!(arms.len(), 2);
-                        }
-                        other => panic!("expected MatchExpr, got {:?}", other),
-                    }
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::Expr { expr, .. } => match expr {
+                Expr::MatchExpr { arms, .. } => {
+                    assert_eq!(arms.len(), 2);
                 }
-                other => panic!("expected Expr stmt, got {:?}", other),
-            }
-        }
+                other => panic!("expected MatchExpr, got {:?}", other),
+            },
+            other => panic!("expected Expr stmt, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -484,22 +529,22 @@ fn test_binary_precedence_add_mul() {
     // `1 + 2 * 3` should parse as `1 + (2 * 3)`
     let m = parse_ok("fn f() { 1 + 2 * 3 }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::Expr { expr, .. } => {
-                    match expr {
-                        Expr::BinaryOp { op: BinOp::Add, right, .. } => {
-                            match right.as_ref() {
-                                Expr::BinaryOp { op: BinOp::Mul, .. } => {}
-                                other => panic!("expected Mul on right, got {:?}", other),
-                            }
-                        }
-                        other => panic!("expected Add, got {:?}", other),
-                    }
-                }
-                other => panic!("expected Expr, got {:?}", other),
-            }
-        }
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::Expr { expr, .. } => match expr {
+                Expr::BinaryOp {
+                    op: BinOp::Add,
+                    right,
+                    ..
+                } => match right.as_ref() {
+                    Expr::BinaryOp { op: BinOp::Mul, .. } => {}
+                    other => panic!("expected Mul on right, got {:?}", other),
+                },
+                other => panic!("expected Add, got {:?}", other),
+            },
+            other => panic!("expected Expr, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -508,17 +553,15 @@ fn test_binary_precedence_add_mul() {
 fn test_unary_negation() {
     let m = parse_ok("fn f() { -x }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::Expr { expr, .. } => {
-                    match expr {
-                        Expr::UnaryOp { op: UnOp::Neg, .. } => {}
-                        other => panic!("expected UnaryOp Neg, got {:?}", other),
-                    }
-                }
-                other => panic!("expected Expr, got {:?}", other),
-            }
-        }
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::Expr { expr, .. } => match expr {
+                Expr::UnaryOp { op: UnOp::Neg, .. } => {}
+                other => panic!("expected UnaryOp Neg, got {:?}", other),
+            },
+            other => panic!("expected Expr, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -527,19 +570,17 @@ fn test_unary_negation() {
 fn test_function_call() {
     let m = parse_ok("fn f() { add(1, 2) }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::Expr { expr, .. } => {
-                    match expr {
-                        Expr::FnCall { args, .. } => {
-                            assert_eq!(args.len(), 2);
-                        }
-                        other => panic!("expected FnCall, got {:?}", other),
-                    }
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::Expr { expr, .. } => match expr {
+                Expr::FnCall { args, .. } => {
+                    assert_eq!(args.len(), 2);
                 }
-                other => panic!("expected Expr, got {:?}", other),
-            }
-        }
+                other => panic!("expected FnCall, got {:?}", other),
+            },
+            other => panic!("expected Expr, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -548,19 +589,17 @@ fn test_function_call() {
 fn test_field_access() {
     let m = parse_ok("fn f() { point.x }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::Expr { expr, .. } => {
-                    match expr {
-                        Expr::FieldAccess { field, .. } => {
-                            assert_eq!(field, "x");
-                        }
-                        other => panic!("expected FieldAccess, got {:?}", other),
-                    }
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::Expr { expr, .. } => match expr {
+                Expr::FieldAccess { field, .. } => {
+                    assert_eq!(field, "x");
                 }
-                other => panic!("expected Expr, got {:?}", other),
-            }
-        }
+                other => panic!("expected FieldAccess, got {:?}", other),
+            },
+            other => panic!("expected Expr, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -569,20 +608,18 @@ fn test_field_access() {
 fn test_method_call() {
     let m = parse_ok("fn f() { list.push(42) }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::Expr { expr, .. } => {
-                    match expr {
-                        Expr::MethodCall { method, args, .. } => {
-                            assert_eq!(method, "push");
-                            assert_eq!(args.len(), 1);
-                        }
-                        other => panic!("expected MethodCall, got {:?}", other),
-                    }
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::Expr { expr, .. } => match expr {
+                Expr::MethodCall { method, args, .. } => {
+                    assert_eq!(method, "push");
+                    assert_eq!(args.len(), 1);
                 }
-                other => panic!("expected Expr, got {:?}", other),
-            }
-        }
+                other => panic!("expected MethodCall, got {:?}", other),
+            },
+            other => panic!("expected Expr, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -591,17 +628,15 @@ fn test_method_call() {
 fn test_index_access() {
     let m = parse_ok("fn f() { arr[0] }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::Expr { expr, .. } => {
-                    match expr {
-                        Expr::IndexAccess { .. } => {}
-                        other => panic!("expected IndexAccess, got {:?}", other),
-                    }
-                }
-                other => panic!("expected Expr, got {:?}", other),
-            }
-        }
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::Expr { expr, .. } => match expr {
+                Expr::IndexAccess { .. } => {}
+                other => panic!("expected IndexAccess, got {:?}", other),
+            },
+            other => panic!("expected Expr, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -612,15 +647,13 @@ fn test_index_access() {
 fn test_generic_type() {
     let m = parse_ok("fn f(v: Vec<i32>) { v }");
     match &m.declarations[0] {
-        Decl::Function { params, .. } => {
-            match &params[0].ty {
-                Some(TypeExpr::Generic { name, args, .. }) => {
-                    assert_eq!(name, "Vec");
-                    assert_eq!(args.len(), 1);
-                }
-                other => panic!("expected Generic type, got {:?}", other),
+        Decl::Function { params, .. } => match &params[0].ty {
+            Some(TypeExpr::Generic { name, args, .. }) => {
+                assert_eq!(name, "Vec");
+                assert_eq!(args.len(), 1);
             }
-        }
+            other => panic!("expected Generic type, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -629,14 +662,12 @@ fn test_generic_type() {
 fn test_reference_type() {
     let m = parse_ok("fn f(x: &mut i32) { x }");
     match &m.declarations[0] {
-        Decl::Function { params, .. } => {
-            match &params[0].ty {
-                Some(TypeExpr::Reference { mutable, .. }) => {
-                    assert!(*mutable);
-                }
-                other => panic!("expected Reference type, got {:?}", other),
+        Decl::Function { params, .. } => match &params[0].ty {
+            Some(TypeExpr::Reference { mutable, .. }) => {
+                assert!(*mutable);
             }
-        }
+            other => panic!("expected Reference type, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -645,14 +676,12 @@ fn test_reference_type() {
 fn test_array_type() {
     let m = parse_ok("fn f(a: [i32; 10]) { a }");
     match &m.declarations[0] {
-        Decl::Function { params, .. } => {
-            match &params[0].ty {
-                Some(TypeExpr::Array { size, .. }) => {
-                    assert_eq!(*size, Some(10));
-                }
-                other => panic!("expected Array type, got {:?}", other),
+        Decl::Function { params, .. } => match &params[0].ty {
+            Some(TypeExpr::Array { size, .. }) => {
+                assert_eq!(*size, Some(10));
             }
-        }
+            other => panic!("expected Array type, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -661,14 +690,14 @@ fn test_array_type() {
 fn test_function_type() {
     let m = parse_ok("fn f(cb: fn(i32) -> i32) { cb }");
     match &m.declarations[0] {
-        Decl::Function { params, .. } => {
-            match &params[0].ty {
-                Some(TypeExpr::Function { params: fn_params, .. }) => {
-                    assert_eq!(fn_params.len(), 1);
-                }
-                other => panic!("expected Function type, got {:?}", other),
+        Decl::Function { params, .. } => match &params[0].ty {
+            Some(TypeExpr::Function {
+                params: fn_params, ..
+            }) => {
+                assert_eq!(fn_params.len(), 1);
             }
-        }
+            other => panic!("expected Function type, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -679,19 +708,17 @@ fn test_function_type() {
 fn test_array_literal() {
     let m = parse_ok("fn f() { [1, 2, 3] }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::Expr { expr, .. } => {
-                    match expr {
-                        Expr::ArrayLiteral { elements, .. } => {
-                            assert_eq!(elements.len(), 3);
-                        }
-                        other => panic!("expected ArrayLiteral, got {:?}", other),
-                    }
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::Expr { expr, .. } => match expr {
+                Expr::ArrayLiteral { elements, .. } => {
+                    assert_eq!(elements.len(), 3);
                 }
-                other => panic!("expected Expr, got {:?}", other),
-            }
-        }
+                other => panic!("expected ArrayLiteral, got {:?}", other),
+            },
+            other => panic!("expected Expr, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -700,15 +727,23 @@ fn test_array_literal() {
 fn test_hex_and_binary_literals() {
     let m = parse_ok("fn f() { let a = 0xFF\n let b = 0b1010 }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
+        Decl::Function {
+            body: Some(block), ..
+        } => {
             match &block.stmts[0] {
-                Stmt::Let { value: Some(Expr::IntLiteral { value, .. }), .. } => {
+                Stmt::Let {
+                    value: Some(Expr::IntLiteral { value, .. }),
+                    ..
+                } => {
                     assert_eq!(*value, 255);
                 }
                 other => panic!("expected Let with int, got {:?}", other),
             }
             match &block.stmts[1] {
-                Stmt::Let { value: Some(Expr::IntLiteral { value, .. }), .. } => {
+                Stmt::Let {
+                    value: Some(Expr::IntLiteral { value, .. }),
+                    ..
+                } => {
                     assert_eq!(*value, 10);
                 }
                 other => panic!("expected Let with int, got {:?}", other),
@@ -724,15 +759,18 @@ fn test_hex_and_binary_literals() {
 fn test_lambda() {
     let m = parse_ok("fn f() { let add = fn(x: i32, y: i32) -> i32 { x + y } }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::Let { value: Some(Expr::Lambda { params, ret_ty, .. }), .. } => {
-                    assert_eq!(params.len(), 2);
-                    assert!(ret_ty.is_some());
-                }
-                other => panic!("expected Let with Lambda, got {:?}", other),
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::Let {
+                value: Some(Expr::Lambda { params, ret_ty, .. }),
+                ..
+            } => {
+                assert_eq!(params.len(), 2);
+                assert!(ret_ty.is_some());
             }
-        }
+            other => panic!("expected Let with Lambda, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -743,14 +781,14 @@ fn test_lambda() {
 fn test_try_catch() {
     let m = parse_ok("fn f() { try { x } catch err { y } }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::TryCatch { catch_name, .. } => {
-                    assert_eq!(catch_name, "err");
-                }
-                other => panic!("expected TryCatch, got {:?}", other),
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::TryCatch { catch_name, .. } => {
+                assert_eq!(catch_name, "err");
             }
-        }
+            other => panic!("expected TryCatch, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -762,22 +800,22 @@ fn test_and_or_precedence() {
     // `a or b and c` should parse as `a or (b and c)` because `and` binds tighter
     let m = parse_ok("fn f() { a or b and c }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::Expr { expr, .. } => {
-                    match expr {
-                        Expr::BinaryOp { op: BinOp::Or, right, .. } => {
-                            match right.as_ref() {
-                                Expr::BinaryOp { op: BinOp::And, .. } => {}
-                                other => panic!("expected And on right, got {:?}", other),
-                            }
-                        }
-                        other => panic!("expected Or, got {:?}", other),
-                    }
-                }
-                other => panic!("expected Expr, got {:?}", other),
-            }
-        }
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::Expr { expr, .. } => match expr {
+                Expr::BinaryOp {
+                    op: BinOp::Or,
+                    right,
+                    ..
+                } => match right.as_ref() {
+                    Expr::BinaryOp { op: BinOp::And, .. } => {}
+                    other => panic!("expected And on right, got {:?}", other),
+                },
+                other => panic!("expected Or, got {:?}", other),
+            },
+            other => panic!("expected Expr, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -789,22 +827,22 @@ fn test_power_right_assoc() {
     // `2 ** 3 ** 4` should parse as `2 ** (3 ** 4)` (right-assoc)
     let m = parse_ok("fn f() { 2 ** 3 ** 4 }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::Expr { expr, .. } => {
-                    match expr {
-                        Expr::BinaryOp { op: BinOp::Pow, right, .. } => {
-                            match right.as_ref() {
-                                Expr::BinaryOp { op: BinOp::Pow, .. } => {}
-                                other => panic!("expected Pow on right, got {:?}", other),
-                            }
-                        }
-                        other => panic!("expected Pow, got {:?}", other),
-                    }
-                }
-                other => panic!("expected Expr, got {:?}", other),
-            }
-        }
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::Expr { expr, .. } => match expr {
+                Expr::BinaryOp {
+                    op: BinOp::Pow,
+                    right,
+                    ..
+                } => match right.as_ref() {
+                    Expr::BinaryOp { op: BinOp::Pow, .. } => {}
+                    other => panic!("expected Pow on right, got {:?}", other),
+                },
+                other => panic!("expected Pow, got {:?}", other),
+            },
+            other => panic!("expected Expr, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -815,22 +853,18 @@ fn test_power_right_assoc() {
 fn test_cast() {
     let m = parse_ok("fn f() { x as i64 }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::Expr { expr, .. } => {
-                    match expr {
-                        Expr::Cast { ty, .. } => {
-                            match ty {
-                                TypeExpr::Simple { name, .. } => assert_eq!(name, "i64"),
-                                other => panic!("expected Simple type, got {:?}", other),
-                            }
-                        }
-                        other => panic!("expected Cast, got {:?}", other),
-                    }
-                }
-                other => panic!("expected Expr, got {:?}", other),
-            }
-        }
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::Expr { expr, .. } => match expr {
+                Expr::Cast { ty, .. } => match ty {
+                    TypeExpr::Simple { name, .. } => assert_eq!(name, "i64"),
+                    other => panic!("expected Simple type, got {:?}", other),
+                },
+                other => panic!("expected Cast, got {:?}", other),
+            },
+            other => panic!("expected Expr, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -841,12 +875,15 @@ fn test_cast() {
 fn test_return_value() {
     let m = parse_ok("fn f() -> i32 { return 42 }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::Return { value: Some(Expr::IntLiteral { value: 42, .. }), .. } => {}
-                other => panic!("expected Return 42, got {:?}", other),
-            }
-        }
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::Return {
+                value: Some(Expr::IntLiteral { value: 42, .. }),
+                ..
+            } => {}
+            other => panic!("expected Return 42, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -864,34 +901,53 @@ fn test_error_recovery() {
 
 #[test]
 fn test_literals() {
-    let m = parse_ok(r#"fn f() { let a = true
+    let m = parse_ok(
+        r#"fn f() { let a = true
 let b = false
 let c = none
 let d = "hello"
-let e = 3.14 }"#);
+let e = 3.14 }"#,
+    );
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
+        Decl::Function {
+            body: Some(block), ..
+        } => {
             assert_eq!(block.stmts.len(), 5);
             match &block.stmts[0] {
-                Stmt::Let { value: Some(Expr::BoolLiteral { value: true, .. }), .. } => {}
+                Stmt::Let {
+                    value: Some(Expr::BoolLiteral { value: true, .. }),
+                    ..
+                } => {}
                 other => panic!("expected true, got {:?}", other),
             }
             match &block.stmts[1] {
-                Stmt::Let { value: Some(Expr::BoolLiteral { value: false, .. }), .. } => {}
+                Stmt::Let {
+                    value: Some(Expr::BoolLiteral { value: false, .. }),
+                    ..
+                } => {}
                 other => panic!("expected false, got {:?}", other),
             }
             match &block.stmts[2] {
-                Stmt::Let { value: Some(Expr::NoneLiteral { .. }), .. } => {}
+                Stmt::Let {
+                    value: Some(Expr::NoneLiteral { .. }),
+                    ..
+                } => {}
                 other => panic!("expected none, got {:?}", other),
             }
             match &block.stmts[3] {
-                Stmt::Let { value: Some(Expr::StringLiteral { value, .. }), .. } => {
+                Stmt::Let {
+                    value: Some(Expr::StringLiteral { value, .. }),
+                    ..
+                } => {
                     assert_eq!(value, "hello");
                 }
                 other => panic!("expected string, got {:?}", other),
             }
             match &block.stmts[4] {
-                Stmt::Let { value: Some(Expr::FloatLiteral { value, .. }), .. } => {
+                Stmt::Let {
+                    value: Some(Expr::FloatLiteral { value, .. }),
+                    ..
+                } => {
                     assert!((value - 3.14).abs() < 0.001);
                 }
                 other => panic!("expected float, got {:?}", other),
@@ -917,17 +973,15 @@ fn test_multiple_declarations() {
 fn test_shared_expr() {
     let m = parse_ok("fn f() { shared x }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::Expr { expr, .. } => {
-                    match expr {
-                        Expr::SharedExpr { .. } => {}
-                        other => panic!("expected SharedExpr, got {:?}", other),
-                    }
-                }
-                other => panic!("expected Expr, got {:?}", other),
-            }
-        }
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::Expr { expr, .. } => match expr {
+                Expr::SharedExpr { .. } => {}
+                other => panic!("expected SharedExpr, got {:?}", other),
+            },
+            other => panic!("expected Expr, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -938,20 +992,18 @@ fn test_shared_expr() {
 fn test_struct_literal() {
     let m = parse_ok("fn f() { Point { x: 1, y: 2 } }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::Expr { expr, .. } => {
-                    match expr {
-                        Expr::StructLiteral { name, fields, .. } => {
-                            assert_eq!(name, "Point");
-                            assert_eq!(fields.len(), 2);
-                        }
-                        other => panic!("expected StructLiteral, got {:?}", other),
-                    }
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::Expr { expr, .. } => match expr {
+                Expr::StructLiteral { name, fields, .. } => {
+                    assert_eq!(name, "Point");
+                    assert_eq!(fields.len(), 2);
                 }
-                other => panic!("expected Expr, got {:?}", other),
-            }
-        }
+                other => panic!("expected StructLiteral, got {:?}", other),
+            },
+            other => panic!("expected Expr, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -962,16 +1014,16 @@ fn test_struct_literal() {
 fn test_break_continue() {
     let m = parse_ok("fn f() { while true { break\n continue } }");
     match &m.declarations[0] {
-        Decl::Function { body: Some(block), .. } => {
-            match &block.stmts[0] {
-                Stmt::While { body, .. } => {
-                    assert_eq!(body.stmts.len(), 2);
-                    assert!(matches!(&body.stmts[0], Stmt::Break { .. }));
-                    assert!(matches!(&body.stmts[1], Stmt::Continue { .. }));
-                }
-                other => panic!("expected While, got {:?}", other),
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::While { body, .. } => {
+                assert_eq!(body.stmts.len(), 2);
+                assert!(matches!(&body.stmts[0], Stmt::Break { .. }));
+                assert!(matches!(&body.stmts[1], Stmt::Continue { .. }));
             }
-        }
+            other => panic!("expected While, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }
@@ -982,14 +1034,12 @@ fn test_break_continue() {
 fn test_pointer_type() {
     let m = parse_ok("fn f(p: *u8) { p }");
     match &m.declarations[0] {
-        Decl::Function { params, .. } => {
-            match &params[0].ty {
-                Some(TypeExpr::Pointer { mutable, .. }) => {
-                    assert!(!mutable);
-                }
-                other => panic!("expected Pointer type, got {:?}", other),
+        Decl::Function { params, .. } => match &params[0].ty {
+            Some(TypeExpr::Pointer { mutable, .. }) => {
+                assert!(!mutable);
             }
-        }
+            other => panic!("expected Pointer type, got {:?}", other),
+        },
         other => panic!("expected Function, got {:?}", other),
     }
 }

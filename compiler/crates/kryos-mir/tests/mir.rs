@@ -1,18 +1,15 @@
 //! Integration tests for kryos-mir: lowering, CFG construction, ARC ops, drops.
 #![allow(clippy::approx_constant, clippy::match_like_matches_macro)]
 
-use kryos_errors::Span;
 use kryos_ast::{
     self as ast,
-    expr::{BinOp, UnOp, Param, MatchArm, Pattern},
-    stmt::{Block, Stmt},
     decl::{Decl, MessageHandler, Module, StructField},
+    expr::{BinOp, MatchArm, Param, Pattern, UnOp},
+    stmt::{Block, Stmt},
     types::TypeExpr,
 };
-use kryos_mir::{
-    ir::*,
-    lower::lower_module,
-};
+use kryos_errors::Span;
+use kryos_mir::{ir::*, lower::lower_module};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -58,7 +55,10 @@ fn block(stmts: Vec<Stmt>) -> Block {
 }
 
 fn expr_stmt(expr: ast::Expr) -> Stmt {
-    Stmt::Expr { expr: expr.clone(), span: expr.span() }
+    Stmt::Expr {
+        expr: expr.clone(),
+        span: expr.span(),
+    }
 }
 
 fn make_module(decls: Vec<Decl>) -> Module {
@@ -132,7 +132,10 @@ fn simple_function_one_block_return() {
         "empty",
         vec![],
         None,
-        block(vec![Stmt::Return { value: None, span: S }]),
+        block(vec![Stmt::Return {
+            value: None,
+            span: S,
+        }]),
     )]);
 
     let mir = lower_module(&module);
@@ -177,7 +180,11 @@ fn if_else_produces_branch_merge() {
     let f = &mir.functions[0];
 
     // Should have at least 4 blocks: entry, then, else, merge.
-    assert!(f.block_count() >= 4, "expected >= 4 blocks, got {}", f.block_count());
+    assert!(
+        f.block_count() >= 4,
+        "expected >= 4 blocks, got {}",
+        f.block_count()
+    );
 
     // Entry block should end with Branch.
     let entry = f.entry_block();
@@ -209,7 +216,11 @@ fn while_loop_back_edge() {
     let f = &mir.functions[0];
 
     // Should have: entry -> goto header, header (branch), body (goto header), exit.
-    assert!(f.block_count() >= 4, "expected >= 4 blocks for while, got {}", f.block_count());
+    assert!(
+        f.block_count() >= 4,
+        "expected >= 4 blocks for while, got {}",
+        f.block_count()
+    );
 
     // Entry block should Goto the header.
     assert!(
@@ -224,7 +235,8 @@ fn while_loop_back_edge() {
     };
 
     let has_back_edge = f.blocks.iter().any(|bb| {
-        bb.id != f.entry_block().id && matches!(bb.terminator, Terminator::Goto(target) if target == header_id)
+        bb.id != f.entry_block().id
+            && matches!(bb.terminator, Terminator::Goto(target) if target == header_id)
     });
     assert!(has_back_edge, "should have a back-edge to header");
 }
@@ -256,7 +268,11 @@ fn for_loop_desugars() {
     let f = &mir.functions[0];
 
     // Should have blocks for: entry, header, body, exit + merge.
-    assert!(f.block_count() >= 4, "expected >= 4 blocks for for-loop, got {}", f.block_count());
+    assert!(
+        f.block_count() >= 4,
+        "expected >= 4 blocks for for-loop, got {}",
+        f.block_count()
+    );
 
     // Should have a local named "_idx".
     let has_idx = f.locals.iter().any(|l| l.name.as_deref() == Some("_idx"));
@@ -269,7 +285,10 @@ fn for_loop_desugars() {
     // Should have a Call to "len".
     let has_len_call = f.blocks.iter().any(|bb| {
         bb.instructions.iter().any(|inst| match inst {
-            Instruction::Assign { value: RValue::Call { func, .. }, .. } => func == "len",
+            Instruction::Assign {
+                value: RValue::Call { func, .. },
+                ..
+            } => func == "len",
             _ => false,
         })
     });
@@ -453,11 +472,37 @@ fn constants_lowered() {
         .flat_map(|bb| bb.instructions.iter())
         .collect();
 
-    let has_int = insts.iter().any(|i| matches!(i, Instruction::Assign { value: RValue::ConstInt(99), .. }));
+    let has_int = insts.iter().any(|i| {
+        matches!(
+            i,
+            Instruction::Assign {
+                value: RValue::ConstInt(99),
+                ..
+            }
+        )
+    });
     let has_float = insts.iter().any(|i| matches!(i, Instruction::Assign { value: RValue::ConstFloat(v), .. } if (*v - 3.14).abs() < 0.001));
-    let has_bool = insts.iter().any(|i| matches!(i, Instruction::Assign { value: RValue::ConstBool(true), .. }));
-    let has_string = insts.iter().any(|i| matches!(i, Instruction::Assign { value: RValue::ConstString(s), .. } if s == "hello"));
-    let has_none = insts.iter().any(|i| matches!(i, Instruction::Assign { value: RValue::ConstNone, .. }));
+    let has_bool = insts.iter().any(|i| {
+        matches!(
+            i,
+            Instruction::Assign {
+                value: RValue::ConstBool(true),
+                ..
+            }
+        )
+    });
+    let has_string = insts.iter().any(
+        |i| matches!(i, Instruction::Assign { value: RValue::ConstString(s), .. } if s == "hello"),
+    );
+    let has_none = insts.iter().any(|i| {
+        matches!(
+            i,
+            Instruction::Assign {
+                value: RValue::ConstNone,
+                ..
+            }
+        )
+    });
 
     assert!(has_int, "should have ConstInt(99)");
     assert!(has_float, "should have ConstFloat(3.14)");
@@ -507,7 +552,11 @@ fn drop_at_scope_exit() {
         .filter(|i| matches!(i, Instruction::Drop { .. }))
         .collect();
 
-    assert!(drops.len() >= 2, "should have at least 2 Drop instructions, got {}", drops.len());
+    assert!(
+        drops.len() >= 2,
+        "should have at least 2 Drop instructions, got {}",
+        drops.len()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -654,10 +703,13 @@ fn match_produces_switch() {
     let f = &mir.functions[0];
 
     // Should have a Switch terminator somewhere.
-    let has_switch = f.blocks.iter().any(|bb| {
-        matches!(&bb.terminator, Terminator::Switch { targets, .. } if targets.len() == 2)
-    });
-    assert!(has_switch, "match should produce Switch terminator with 2 targets");
+    let has_switch = f.blocks.iter().any(
+        |bb| matches!(&bb.terminator, Terminator::Switch { targets, .. } if targets.len() == 2),
+    );
+    assert!(
+        has_switch,
+        "match should produce Switch terminator with 2 targets"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -679,9 +731,15 @@ fn display_formatting() {
     let mir = lower_module(&module);
     let output = format!("{}", mir);
 
-    assert!(output.contains("fn display_test"), "display should contain function name");
+    assert!(
+        output.contains("fn display_test"),
+        "display should contain function name"
+    );
     assert!(output.contains("return"), "display should contain return");
-    assert!(output.contains("bb0:"), "display should contain block labels");
+    assert!(
+        output.contains("bb0:"),
+        "display should contain block labels"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -876,12 +934,21 @@ fn generic_identity_monomorphized() {
         .iter()
         .flat_map(|bb| bb.instructions.iter())
         .filter_map(|inst| match inst {
-            Instruction::Assign { value: RValue::Call { func, .. }, .. } => Some(func.clone()),
+            Instruction::Assign {
+                value: RValue::Call { func, .. },
+                ..
+            } => Some(func.clone()),
             _ => None,
         })
         .collect();
-    assert!(calls.contains(&"id___i64".to_string()), "main should call id___i64");
-    assert!(calls.contains(&"id___f64".to_string()), "main should call id___f64");
+    assert!(
+        calls.contains(&"id___i64".to_string()),
+        "main should call id___i64"
+    );
+    assert!(
+        calls.contains(&"id___f64".to_string()),
+        "main should call id___f64"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -897,11 +964,24 @@ fn generic_two_type_params() {
             "pair",
             vec![make_generic_param("A"), make_generic_param("B")],
             vec![
-                Param { name: "a".into(), ty: Some(simple_ty("A")), default: None, span: S },
-                Param { name: "b".into(), ty: Some(simple_ty("B")), default: None, span: S },
+                Param {
+                    name: "a".into(),
+                    ty: Some(simple_ty("A")),
+                    default: None,
+                    span: S,
+                },
+                Param {
+                    name: "b".into(),
+                    ty: Some(simple_ty("B")),
+                    default: None,
+                    span: S,
+                },
             ],
             Some(simple_ty("A")),
-            block(vec![Stmt::Return { value: Some(ident("a")), span: S }]),
+            block(vec![Stmt::Return {
+                value: Some(ident("a")),
+                span: S,
+            }]),
         ),
         make_fn(
             "main",
@@ -988,7 +1068,12 @@ fn impl_for_trait_methods() {
             methods: vec![Decl::Function {
                 name: "greet".into(),
                 generics: vec![],
-                params: vec![Param { name: "self".into(), ty: None, default: None, span: S }],
+                params: vec![Param {
+                    name: "self".into(),
+                    ty: None,
+                    default: None,
+                    span: S,
+                }],
                 ret_ty: Some(simple_ty("i64")),
                 body: None,
                 public: false,
@@ -1023,9 +1108,17 @@ fn impl_for_trait_methods() {
             methods: vec![Decl::Function {
                 name: "greet".into(),
                 generics: vec![],
-                params: vec![Param { name: "self".into(), ty: None, default: None, span: S }],
+                params: vec![Param {
+                    name: "self".into(),
+                    ty: None,
+                    default: None,
+                    span: S,
+                }],
                 ret_ty: Some(simple_ty("i64")),
-                body: Some(block(vec![Stmt::Return { value: Some(int_lit(42)), span: S }])),
+                body: Some(block(vec![Stmt::Return {
+                    value: Some(int_lit(42)),
+                    span: S,
+                }])),
                 public: false,
                 is_async: false,
                 annotations: vec![],
@@ -1042,7 +1135,10 @@ fn impl_for_trait_methods() {
 
     // Should have Dog__greet as a function.
     let has_greet = mir.functions.iter().any(|f| f.name == "Dog__greet");
-    assert!(has_greet, "should have Dog__greet from impl Greetable for Dog");
+    assert!(
+        has_greet,
+        "should have Dog__greet from impl Greetable for Dog"
+    );
 
     // Should have main.
     let has_main = mir.functions.iter().any(|f| f.name == "main");
@@ -1062,9 +1158,17 @@ fn monomorphization_deduplication() {
         make_generic_fn(
             "id",
             vec![make_generic_param("T")],
-            vec![Param { name: "x".into(), ty: Some(simple_ty("T")), default: None, span: S }],
+            vec![Param {
+                name: "x".into(),
+                ty: Some(simple_ty("T")),
+                default: None,
+                span: S,
+            }],
             Some(simple_ty("T")),
-            block(vec![Stmt::Return { value: Some(ident("x")), span: S }]),
+            block(vec![Stmt::Return {
+                value: Some(ident("x")),
+                span: S,
+            }]),
         ),
         make_fn(
             "main",
@@ -1072,22 +1176,28 @@ fn monomorphization_deduplication() {
             None,
             block(vec![
                 Stmt::Let {
-                    name: "a".into(), mutable: false, ty: None,
+                    name: "a".into(),
+                    mutable: false,
+                    ty: None,
                     value: Some(ast::Expr::FnCall {
                         callee: Box::new(ident("id")),
                         args: vec![int_lit(1)],
                         span: S,
                     }),
-                    pattern: None, span: S,
+                    pattern: None,
+                    span: S,
                 },
                 Stmt::Let {
-                    name: "b".into(), mutable: false, ty: None,
+                    name: "b".into(),
+                    mutable: false,
+                    ty: None,
                     value: Some(ast::Expr::FnCall {
                         callee: Box::new(ident("id")),
                         args: vec![int_lit(2)],
                         span: S,
                     }),
-                    pattern: None, span: S,
+                    pattern: None,
+                    span: S,
                 },
             ]),
         ),
@@ -1095,8 +1205,15 @@ fn monomorphization_deduplication() {
 
     let mir = lower_module(&module);
 
-    let id_i64_count = mir.functions.iter().filter(|f| f.name == "id___i64").count();
-    assert_eq!(id_i64_count, 1, "should only have one id___i64, not duplicates");
+    let id_i64_count = mir
+        .functions
+        .iter()
+        .filter(|f| f.name == "id___i64")
+        .count();
+    assert_eq!(
+        id_i64_count, 1,
+        "should only have one id___i64, not duplicates"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1141,7 +1258,12 @@ fn option_some_none_prelude() {
     let has_some = f.blocks.iter().any(|bb| {
         bb.instructions.iter().any(|inst| match inst {
             Instruction::Assign {
-                value: RValue::EnumVariant { enum_name, variant_idx, fields },
+                value:
+                    RValue::EnumVariant {
+                        enum_name,
+                        variant_idx,
+                        fields,
+                    },
                 ..
             } => enum_name == "Option" && *variant_idx == 0 && fields.len() == 1,
             _ => false,
@@ -1153,7 +1275,12 @@ fn option_some_none_prelude() {
     let has_none = f.blocks.iter().any(|bb| {
         bb.instructions.iter().any(|inst| match inst {
             Instruction::Assign {
-                value: RValue::EnumVariant { enum_name, variant_idx, fields },
+                value:
+                    RValue::EnumVariant {
+                        enum_name,
+                        variant_idx,
+                        fields,
+                    },
                 ..
             } => enum_name == "Option" && *variant_idx == 1 && fields.is_empty(),
             _ => false,
@@ -1207,7 +1334,12 @@ fn result_ok_err_prelude() {
     let has_ok = f.blocks.iter().any(|bb| {
         bb.instructions.iter().any(|inst| match inst {
             Instruction::Assign {
-                value: RValue::EnumVariant { enum_name, variant_idx, .. },
+                value:
+                    RValue::EnumVariant {
+                        enum_name,
+                        variant_idx,
+                        ..
+                    },
                 ..
             } => enum_name == "Result" && *variant_idx == 0,
             _ => false,
@@ -1218,7 +1350,12 @@ fn result_ok_err_prelude() {
     let has_err = f.blocks.iter().any(|bb| {
         bb.instructions.iter().any(|inst| match inst {
             Instruction::Assign {
-                value: RValue::EnumVariant { enum_name, variant_idx, .. },
+                value:
+                    RValue::EnumVariant {
+                        enum_name,
+                        variant_idx,
+                        ..
+                    },
                 ..
             } => enum_name == "Result" && *variant_idx == 1,
             _ => false,
@@ -1250,9 +1387,10 @@ fn try_catch_lowering() {
     let f = &mir.functions[0];
 
     // Should have a Switch terminator (branching on Result tag).
-    let has_switch = f.blocks.iter().any(|bb| {
-        matches!(&bb.terminator, Terminator::Switch { .. })
-    });
+    let has_switch = f
+        .blocks
+        .iter()
+        .any(|bb| matches!(&bb.terminator, Terminator::Switch { .. }));
     assert!(has_switch, "try/catch should produce Switch on Result tag");
 
     // Should have a local named "e" (the catch binding).
@@ -1263,7 +1401,12 @@ fn try_catch_lowering() {
     let has_ok = f.blocks.iter().any(|bb| {
         bb.instructions.iter().any(|inst| match inst {
             Instruction::Assign {
-                value: RValue::EnumVariant { enum_name, variant_idx, .. },
+                value:
+                    RValue::EnumVariant {
+                        enum_name,
+                        variant_idx,
+                        ..
+                    },
                 ..
             } => enum_name == "Result" && *variant_idx == 0,
             _ => false,
@@ -1327,7 +1470,10 @@ fn throw_produces_result_err() {
         });
         has_call && matches!(bb.terminator, Terminator::Return(_))
     });
-    assert!(has_return, "throw should return after kryos_exception_throw");
+    assert!(
+        has_return,
+        "throw should return after kryos_exception_throw"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1364,8 +1510,14 @@ fn lambda_creates_closure() {
     let mir = lower_module(&module);
 
     // Should have the anonymous lambda function __lambda_0.
-    let has_lambda = mir.functions.iter().any(|f| f.name.starts_with("__lambda_"));
-    assert!(has_lambda, "lambda should produce an anonymous __lambda_N function");
+    let has_lambda = mir
+        .functions
+        .iter()
+        .any(|f| f.name.starts_with("__lambda_"));
+    assert!(
+        has_lambda,
+        "lambda should produce an anonymous __lambda_N function"
+    );
 
     // main should have a Closure rvalue.
     let main_fn = mir.functions.iter().find(|f| f.name == "main").unwrap();
@@ -1378,7 +1530,10 @@ fn lambda_creates_closure() {
             _ => false,
         })
     });
-    assert!(has_closure, "main should assign a Closure rvalue for the lambda");
+    assert!(
+        has_closure,
+        "main should assign a Closure rvalue for the lambda"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1440,7 +1595,11 @@ fn lambda_captures_free_variables() {
             _ => None,
         })
         .collect();
-    assert_eq!(closure_captures, vec![0], "lambda not referencing outer vars should have 0 captures");
+    assert_eq!(
+        closure_captures,
+        vec![0],
+        "lambda not referencing outer vars should have 0 captures"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1501,8 +1660,13 @@ fn pipe_expression_desugars() {
             _ => None,
         })
         .collect();
-    let has_double_call = calls.iter().any(|(name, nargs)| name == "double" && *nargs == 1);
-    assert!(has_double_call, "pipe should desugar to call double(5) with 1 arg");
+    let has_double_call = calls
+        .iter()
+        .any(|(name, nargs)| name == "double" && *nargs == 1);
+    assert!(
+        has_double_call,
+        "pipe should desugar to call double(5) with 1 arg"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1517,11 +1681,24 @@ fn pipe_expression_with_args() {
         make_fn(
             "add",
             vec![
-                Param { name: "a".into(), ty: Some(simple_ty("i64")), default: None, span: S },
-                Param { name: "b".into(), ty: Some(simple_ty("i64")), default: None, span: S },
+                Param {
+                    name: "a".into(),
+                    ty: Some(simple_ty("i64")),
+                    default: None,
+                    span: S,
+                },
+                Param {
+                    name: "b".into(),
+                    ty: Some(simple_ty("i64")),
+                    default: None,
+                    span: S,
+                },
             ],
             Some(simple_ty("i64")),
-            block(vec![Stmt::Return { value: Some(ident("a")), span: S }]),
+            block(vec![Stmt::Return {
+                value: Some(ident("a")),
+                span: S,
+            }]),
         ),
         make_fn(
             "main",
@@ -1562,8 +1739,13 @@ fn pipe_expression_with_args() {
             _ => None,
         })
         .collect();
-    let has_add_2args = calls.iter().any(|(name, nargs)| name == "add" && *nargs == 2);
-    assert!(has_add_2args, "pipe with args should desugar to call add(1, 2) with 2 args");
+    let has_add_2args = calls
+        .iter()
+        .any(|(name, nargs)| name == "add" && *nargs == 2);
+    assert!(
+        has_add_2args,
+        "pipe with args should desugar to call add(1, 2) with 2 args"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1651,11 +1833,17 @@ fn extern_block_registers_signatures() {
             _ => None,
         })
         .collect();
-    assert!(calls.contains(&"puts".to_string()), "main should call extern function puts");
+    assert!(
+        calls.contains(&"puts".to_string()),
+        "main should call extern function puts"
+    );
 
     // `puts` should NOT appear as a lowered MIR function (it has no body).
     let has_puts_fn = mir.functions.iter().any(|f| f.name == "puts");
-    assert!(!has_puts_fn, "extern function should not be emitted as MIR function");
+    assert!(
+        !has_puts_fn,
+        "extern function should not be emitted as MIR function"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1700,7 +1888,10 @@ fn interpolated_string_lowering() {
             _ => false,
         })
     });
-    assert!(has_concat, "interpolated string should produce StringConcat with 3 parts");
+    assert!(
+        has_concat,
+        "interpolated string should produce StringConcat with 3 parts"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1719,10 +1910,7 @@ fn map_literal_lowering() {
             mutable: false,
             ty: None,
             value: Some(ast::Expr::MapLiteral {
-                entries: vec![
-                    (int_lit(1), str_lit("a")),
-                    (int_lit(2), str_lit("b")),
-                ],
+                entries: vec![(int_lit(1), str_lit("a")), (int_lit(2), str_lit("b"))],
                 span: S,
             }),
             pattern: None,
@@ -1743,7 +1931,10 @@ fn map_literal_lowering() {
             _ => false,
         })
     });
-    assert!(has_map, "map literal should produce Map rvalue with 2 entries");
+    assert!(
+        has_map,
+        "map literal should produce Map rvalue with 2 entries"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1761,7 +1952,10 @@ fn char_literal_lowering() {
             name: "c".into(),
             mutable: false,
             ty: None,
-            value: Some(ast::Expr::CharLiteral { value: 'A', span: S }),
+            value: Some(ast::Expr::CharLiteral {
+                value: 'A',
+                span: S,
+            }),
             pattern: None,
             span: S,
         }]),
@@ -1796,7 +1990,10 @@ fn spawn_statement_emits_instruction() {
             "work",
             vec![],
             Some(simple_ty("i64")),
-            block(vec![Stmt::Return { value: Some(int_lit(42)), span: S }]),
+            block(vec![Stmt::Return {
+                value: Some(int_lit(42)),
+                span: S,
+            }]),
         ),
         make_fn(
             "main",
@@ -1817,9 +2014,14 @@ fn spawn_statement_emits_instruction() {
     let main_fn = mir.functions.iter().find(|f| f.name == "main").unwrap();
 
     let has_spawn = main_fn.blocks.iter().any(|bb| {
-        bb.instructions.iter().any(|inst| matches!(inst, Instruction::Spawn { .. }))
+        bb.instructions
+            .iter()
+            .any(|inst| matches!(inst, Instruction::Spawn { .. }))
     });
-    assert!(has_spawn, "spawn statement should produce Spawn instruction");
+    assert!(
+        has_spawn,
+        "spawn statement should produce Spawn instruction"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1830,7 +2032,7 @@ fn spawn_statement_emits_instruction() {
 fn actor_handlers_lowered() {
     // actor Counter { count: i64; handle increment(n: i64) -> void { } }
     // fn main() {}
-    use ast::decl::{StructField, MessageHandler};
+    use ast::decl::{MessageHandler, StructField};
     let module = make_module(vec![
         Decl::Actor {
             name: "Counter".into(),
@@ -1864,7 +2066,10 @@ fn actor_handlers_lowered() {
 
     // Actor handler should be lowered as Counter__increment.
     let has_handler = mir.functions.iter().any(|f| f.name == "Counter__increment");
-    assert!(has_handler, "actor handler should produce Counter__increment function");
+    assert!(
+        has_handler,
+        "actor handler should produce Counter__increment function"
+    );
 
     // Actor state should be registered as a struct def.
     assert!(
@@ -1913,40 +2118,59 @@ fn select_statement_produces_try_recv_polling() {
     let main_fn = mir.functions.iter().find(|f| f.name == "main").unwrap();
 
     // Should have Branch terminators (try_recv status check + closed check).
-    let branch_count = main_fn.blocks.iter().filter(|bb| {
-        matches!(&bb.terminator, Terminator::Branch { .. })
-    }).count();
+    let branch_count = main_fn
+        .blocks
+        .iter()
+        .filter(|bb| matches!(&bb.terminator, Terminator::Branch { .. }))
+        .count();
     assert!(branch_count >= 2, "select should have Branch terminators for status check and closed check, got {branch_count}");
 
     // Should call kryos_chan_try_recv_status_i64 (not the old sentinel-based version).
     let has_try_recv_status = main_fn.blocks.iter().any(|bb| {
-        bb.instructions.iter().any(|inst| matches!(inst, Instruction::Assign {
+        bb.instructions.iter().any(|inst| {
+            matches!(inst, Instruction::Assign {
             value: RValue::Call { func, .. }, ..
-        } if func == "kryos_chan_try_recv_status_i64"))
+        } if func == "kryos_chan_try_recv_status_i64")
+        })
     });
-    assert!(has_try_recv_status, "select should call kryos_chan_try_recv_status_i64");
+    assert!(
+        has_try_recv_status,
+        "select should call kryos_chan_try_recv_status_i64"
+    );
 
     // Should call kryos_chan_last_recv_i64 to retrieve the value.
     let has_last_recv = main_fn.blocks.iter().any(|bb| {
-        bb.instructions.iter().any(|inst| matches!(inst, Instruction::Assign {
+        bb.instructions.iter().any(|inst| {
+            matches!(inst, Instruction::Assign {
             value: RValue::Call { func, .. }, ..
-        } if func == "kryos_chan_last_recv_i64"))
+        } if func == "kryos_chan_last_recv_i64")
+        })
     });
     assert!(has_last_recv, "select should call kryos_chan_last_recv_i64");
 
     // Should call kryos_chan_is_closed_i64 for closed-channel detection.
     let has_is_closed = main_fn.blocks.iter().any(|bb| {
-        bb.instructions.iter().any(|inst| matches!(inst, Instruction::Assign {
+        bb.instructions.iter().any(|inst| {
+            matches!(inst, Instruction::Assign {
             value: RValue::Call { func, .. }, ..
-        } if func == "kryos_chan_is_closed_i64"))
+        } if func == "kryos_chan_is_closed_i64")
+        })
     });
-    assert!(has_is_closed, "select should call kryos_chan_is_closed_i64 for closed detection");
+    assert!(
+        has_is_closed,
+        "select should call kryos_chan_is_closed_i64 for closed detection"
+    );
 
     // Should have Goto terminators for the poll loop back-edge.
-    let goto_count = main_fn.blocks.iter().filter(|bb| {
-        matches!(&bb.terminator, Terminator::Goto(_))
-    }).count();
-    assert!(goto_count >= 2, "select should have Goto terminators for poll loop");
+    let goto_count = main_fn
+        .blocks
+        .iter()
+        .filter(|bb| matches!(&bb.terminator, Terminator::Goto(_)))
+        .count();
+    assert!(
+        goto_count >= 2,
+        "select should have Goto terminators for poll loop"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1986,7 +2210,10 @@ fn comptime_block_lowering() {
             _ => false,
         })
     });
-    assert!(has_comptime, "comptime block should produce Comptime(ConstInt(42))");
+    assert!(
+        has_comptime,
+        "comptime block should produce Comptime(ConstInt(42))"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2021,7 +2248,12 @@ fn range_expression_lowering() {
     let has_range = f.blocks.iter().any(|bb| {
         bb.instructions.iter().any(|inst| match inst {
             Instruction::Assign {
-                value: RValue::Range { start: Some(_), end: Some(_), inclusive: false },
+                value:
+                    RValue::Range {
+                        start: Some(_),
+                        end: Some(_),
+                        inclusive: false,
+                    },
                 ..
             } => true,
             _ => false,
@@ -2062,7 +2294,9 @@ fn inclusive_range_expression() {
     let has_range = f.blocks.iter().any(|bb| {
         bb.instructions.iter().any(|inst| match inst {
             Instruction::Assign {
-                value: RValue::Range { inclusive: true, .. },
+                value: RValue::Range {
+                    inclusive: true, ..
+                },
                 ..
             } => true,
             _ => false,
@@ -2376,8 +2610,11 @@ fn actor_generates_dispatch_and_handlers() {
             doc_comments: vec![],
             span: S,
         },
-        make_fn("main", vec![], None, block(vec![
-            Stmt::Let {
+        make_fn(
+            "main",
+            vec![],
+            None,
+            block(vec![Stmt::Let {
                 name: "c".into(),
                 ty: None,
                 value: Some(ast::Expr::FnCall {
@@ -2388,44 +2625,67 @@ fn actor_generates_dispatch_and_handlers() {
                 mutable: false,
                 pattern: None,
                 span: S,
-            },
-        ])),
+            }]),
+        ),
     ]);
 
     let mir = lower_module(&module);
 
     // Should have: Counter__increment, Counter__reset, Counter__dispatch, main
     let names: Vec<&str> = mir.functions.iter().map(|f| f.name.as_str()).collect();
-    assert!(names.contains(&"Counter__increment"), "missing Counter__increment: {names:?}");
-    assert!(names.contains(&"Counter__reset"), "missing Counter__reset: {names:?}");
-    assert!(names.contains(&"Counter__dispatch"), "missing Counter__dispatch: {names:?}");
+    assert!(
+        names.contains(&"Counter__increment"),
+        "missing Counter__increment: {names:?}"
+    );
+    assert!(
+        names.contains(&"Counter__reset"),
+        "missing Counter__reset: {names:?}"
+    );
+    assert!(
+        names.contains(&"Counter__dispatch"),
+        "missing Counter__dispatch: {names:?}"
+    );
     assert!(names.contains(&"main"), "missing main: {names:?}");
 
     // Dispatch function should have a recv loop with Switch terminator.
-    let dispatch = mir.functions.iter().find(|f| f.name == "Counter__dispatch").unwrap();
+    let dispatch = mir
+        .functions
+        .iter()
+        .find(|f| f.name == "Counter__dispatch")
+        .unwrap();
     assert!(dispatch.params.len() == 1, "dispatch takes 1 param (state)");
     assert!(dispatch.ret_ty == MirType::Void, "dispatch returns void");
     // Should have: bb_poll, bb_switch, bb_exit, bb_h1 (increment), bb_h2 (reset)
-    assert!(dispatch.blocks.len() == 5,
-        "expected 5 blocks in dispatch, got {}", dispatch.blocks.len());
+    assert!(
+        dispatch.blocks.len() == 5,
+        "expected 5 blocks in dispatch, got {}",
+        dispatch.blocks.len()
+    );
 
     // Check for Switch terminator.
-    let has_switch = dispatch.blocks.iter().any(|b| matches!(b.terminator, Terminator::Switch { .. }));
+    let has_switch = dispatch
+        .blocks
+        .iter()
+        .any(|b| matches!(b.terminator, Terminator::Switch { .. }));
     assert!(has_switch, "dispatch must have a Switch terminator");
 
     // Check for kryos_actor_recv_i64 call.
     let has_recv = dispatch.blocks.iter().any(|b| {
-        b.instructions.iter().any(|i| matches!(i,
-            Instruction::Assign { value: RValue::Call { func, .. }, .. }
-            if func == "kryos_actor_recv_i64"
-        ))
+        b.instructions.iter().any(|i| {
+            matches!(i,
+                Instruction::Assign { value: RValue::Call { func, .. }, .. }
+                if func == "kryos_actor_recv_i64"
+            )
+        })
     });
     assert!(has_recv, "dispatch must call kryos_actor_recv_i64");
 
     // Main should have an ActorSpawn instruction.
     let main_fn = mir.functions.iter().find(|f| f.name == "main").unwrap();
     let has_spawn = main_fn.blocks.iter().any(|b| {
-        b.instructions.iter().any(|i| matches!(i, Instruction::ActorSpawn { .. }))
+        b.instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::ActorSpawn { .. }))
     });
     assert!(has_spawn, "main must have an ActorSpawn instruction");
 }
@@ -2454,26 +2714,31 @@ fn actor_method_call_generates_actor_send() {
             doc_comments: vec![],
             span: S,
         },
-        make_fn("main", vec![], None, block(vec![
-            Stmt::Let {
-                name: "g".into(),
-                ty: None,
-                value: Some(ast::Expr::FnCall {
-                    callee: Box::new(ident("Greeter")),
-                    args: vec![],
+        make_fn(
+            "main",
+            vec![],
+            None,
+            block(vec![
+                Stmt::Let {
+                    name: "g".into(),
+                    ty: None,
+                    value: Some(ast::Expr::FnCall {
+                        callee: Box::new(ident("Greeter")),
+                        args: vec![],
+                        span: S,
+                    }),
+                    mutable: false,
+                    pattern: None,
+                    span: S,
+                },
+                expr_stmt(ast::Expr::MethodCall {
+                    object: Box::new(ident("g")),
+                    method: "greet".into(),
+                    args: vec![int_lit(42)],
                     span: S,
                 }),
-                mutable: false,
-                pattern: None,
-                span: S,
-            },
-            expr_stmt(ast::Expr::MethodCall {
-                object: Box::new(ident("g")),
-                method: "greet".into(),
-                args: vec![int_lit(42)],
-                span: S,
-            }),
-        ])),
+            ]),
+        ),
     ]);
 
     let mir = lower_module(&module);
@@ -2483,9 +2748,9 @@ fn actor_method_call_generates_actor_send() {
     // Should have an ActorSend instruction with handler_tag=1 and one arg.
     let has_send = main_fn.blocks.iter().any(|b| {
         b.instructions.iter().any(|i| match i {
-            Instruction::ActorSend { handler_tag, args, .. } => {
-                *handler_tag == 1 && args.len() == 1
-            }
+            Instruction::ActorSend {
+                handler_tag, args, ..
+            } => *handler_tag == 1 && args.len() == 1,
             _ => false,
         })
     });
@@ -2524,16 +2789,29 @@ fn parallel_for_generates_spawns() {
 
     // The main function should contain Spawn instructions (4 chunks).
     let main_fn = &mir.functions[0];
-    let spawn_count = main_fn.blocks.iter().flat_map(|b| &b.instructions).filter(|i| {
-        matches!(i, Instruction::Spawn { .. })
-    }).count();
-    assert_eq!(spawn_count, 4, "parallel for should emit 4 Spawn instructions, got {spawn_count}");
+    let spawn_count = main_fn
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .filter(|i| matches!(i, Instruction::Spawn { .. }))
+        .count();
+    assert_eq!(
+        spawn_count, 4,
+        "parallel for should emit 4 Spawn instructions, got {spawn_count}"
+    );
 
     // There should be generated __spawn_N wrapper functions.
-    let spawn_fns: Vec<_> = mir.functions.iter()
+    let spawn_fns: Vec<_> = mir
+        .functions
+        .iter()
         .filter(|f| f.name.starts_with("__spawn_"))
         .collect();
-    assert_eq!(spawn_fns.len(), 4, "should generate 4 spawn wrapper functions, got {}", spawn_fns.len());
+    assert_eq!(
+        spawn_fns.len(),
+        4,
+        "should generate 4 spawn wrapper functions, got {}",
+        spawn_fns.len()
+    );
 }
 
 #[test]
@@ -2561,17 +2839,29 @@ fn parallel_for_non_range_falls_back() {
     let main_fn = &mir.functions[0];
 
     // No Spawn instructions — should be a regular for-loop.
-    let spawn_count = main_fn.blocks.iter().flat_map(|b| &b.instructions).filter(|i| {
-        matches!(i, Instruction::Spawn { .. })
-    }).count();
-    assert_eq!(spawn_count, 0, "non-range parallel for should NOT emit spawns, got {spawn_count}");
+    let spawn_count = main_fn
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .filter(|i| matches!(i, Instruction::Spawn { .. }))
+        .count();
+    assert_eq!(
+        spawn_count, 0,
+        "non-range parallel for should NOT emit spawns, got {spawn_count}"
+    );
 
     // Should have a Call to "len" (normal for-loop desugaring).
     let has_len_call = main_fn.blocks.iter().any(|bb| {
         bb.instructions.iter().any(|inst| match inst {
-            Instruction::Assign { value: RValue::Call { func, .. }, .. } => func == "len",
+            Instruction::Assign {
+                value: RValue::Call { func, .. },
+                ..
+            } => func == "len",
             _ => false,
         })
     });
-    assert!(has_len_call, "fallback should emit len() call like regular for");
+    assert!(
+        has_len_call,
+        "fallback should emit len() call like regular for"
+    );
 }

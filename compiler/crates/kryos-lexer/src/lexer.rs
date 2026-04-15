@@ -1,5 +1,5 @@
-use kryos_errors::Span;
 use crate::token::*;
+use kryos_errors::Span;
 
 /// Kryos lexer — tokenizes UTF-8 source into a token stream.
 pub struct Lexer<'src> {
@@ -38,12 +38,20 @@ impl<'src> Lexer<'src> {
     }
 
     fn peek(&self) -> u8 {
-        if self.at_end() { 0 } else { self.bytes[self.pos] }
+        if self.at_end() {
+            0
+        } else {
+            self.bytes[self.pos]
+        }
     }
 
     fn peek_at(&self, offset: usize) -> u8 {
         let idx = self.pos + offset;
-        if idx >= self.bytes.len() { 0 } else { self.bytes[idx] }
+        if idx >= self.bytes.len() {
+            0
+        } else {
+            self.bytes[idx]
+        }
     }
 
     fn advance(&mut self) -> u8 {
@@ -80,8 +88,10 @@ impl<'src> Lexer<'src> {
                 if self.peek_at(2) == b'/' && self.peek_at(3) != b'/' {
                     // Doc comment: /// ...
                     let start = self.pos;
-                    self.advance(); self.advance(); self.advance(); // skip ///
-                    // Skip leading space after ///
+                    self.advance();
+                    self.advance();
+                    self.advance(); // skip ///
+                                    // Skip leading space after ///
                     if !self.at_end() && self.peek() == b' ' {
                         self.advance();
                     }
@@ -332,7 +342,8 @@ impl<'src> Lexer<'src> {
             match self.peek() {
                 b'x' | b'X' => {
                     self.advance();
-                    while !self.at_end() && (self.peek().is_ascii_hexdigit() || self.peek() == b'_') {
+                    while !self.at_end() && (self.peek().is_ascii_hexdigit() || self.peek() == b'_')
+                    {
                         self.advance();
                     }
                     let text = self.src[start..self.pos].to_string();
@@ -367,14 +378,17 @@ impl<'src> Lexer<'src> {
 
         let mut is_float = false;
 
-        if !self.at_end() && self.peek() == b'.' && self.peek_at(1) != b'.'
-            && self.peek_at(1).is_ascii_digit() {
-                is_float = true;
+        if !self.at_end()
+            && self.peek() == b'.'
+            && self.peek_at(1) != b'.'
+            && self.peek_at(1).is_ascii_digit()
+        {
+            is_float = true;
+            self.advance();
+            while !self.at_end() && (self.peek().is_ascii_digit() || self.peek() == b'_') {
                 self.advance();
-                while !self.at_end() && (self.peek().is_ascii_digit() || self.peek() == b'_') {
-                    self.advance();
-                }
             }
+        }
 
         if !self.at_end() && matches!(self.peek(), b'e' | b'E') {
             is_float = true;
@@ -388,7 +402,11 @@ impl<'src> Lexer<'src> {
         }
 
         let text = self.src[start..self.pos].to_string();
-        let kind = if is_float { TokenKind::Float } else { TokenKind::Integer };
+        let kind = if is_float {
+            TokenKind::Float
+        } else {
+            TokenKind::Integer
+        };
         self.emit(kind, start, self.pos, text);
     }
 

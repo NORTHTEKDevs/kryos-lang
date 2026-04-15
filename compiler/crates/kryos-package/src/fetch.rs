@@ -14,9 +14,7 @@ pub fn cache_dir() -> PathBuf {
 }
 
 fn dirs_or_fallback() -> PathBuf {
-    if let Some(home) = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-    {
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
         PathBuf::from(home).join(".kryos")
     } else {
         PathBuf::from(".kryos")
@@ -27,8 +25,7 @@ fn dirs_or_fallback() -> PathBuf {
 /// Returns the list of (name, local_path) pairs for fetched packages.
 pub fn fetch_resolved(graph: &ResolvedGraph) -> Result<Vec<(String, PathBuf)>, String> {
     let cache = cache_dir();
-    std::fs::create_dir_all(&cache)
-        .map_err(|e| format!("failed to create cache dir: {e}"))?;
+    std::fs::create_dir_all(&cache).map_err(|e| format!("failed to create cache dir: {e}"))?;
 
     let mut fetched = Vec::new();
 
@@ -91,5 +88,11 @@ fn fetch_github(source: &str, dest: &Path) -> Result<(), String> {
 pub fn package_src_path(name: &str, version: &crate::semver::Version) -> Option<PathBuf> {
     let dir = cache_dir().join(format!("{name}-{version}"));
     let src = dir.join("src");
-    if src.is_dir() { Some(src) } else if dir.is_dir() { Some(dir) } else { None }
+    if src.is_dir() {
+        Some(src)
+    } else if dir.is_dir() {
+        Some(dir)
+    } else {
+        None
+    }
 }
