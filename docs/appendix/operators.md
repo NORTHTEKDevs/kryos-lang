@@ -4,21 +4,29 @@ Operators listed from **lowest** to **highest** precedence. Operators at the sam
 
 ## Precedence Table
 
-| Precedence | Operator | Description | Associativity | Example |
+Ordered from **lowest** (1) to **highest** (15) binding power. Matches the Pratt parser in `compiler/crates/kryos-parser/src/parser.rs`.
+
+| Level | Operator(s) | Description | Associativity | Example |
 |:---:|----------|-------------|:---:|---------|
-| 1 | `=` `+=` `-=` `*=` `/=` | Assignment | Right | `x = 5` |
-| 2 | `\|>` | Pipe | Left | `data \|> transform \|> output` |
+| 1 | `..` `..=` | Range (exclusive / inclusive) | None | `1..10`, `1..=10` |
+| 2 | `\|>` | Pipe | Left | `x \|> f \|> g` |
 | 3 | `or` | Logical OR (short-circuit) | Left | `a or b` |
 | 4 | `and` | Logical AND (short-circuit) | Left | `a and b` |
-| 5 | `==` `!=` | Equality | Left | `x == y` |
-| 6 | `<` `>` `<=` `>=` | Comparison | Left | `x < y` |
-| 7 | `..` `..=` | Range | None | `1..10` |
-| 8 | `+` `-` | Addition / Subtraction | Left | `a + b` |
-| 9 | `*` `/` `%` | Multiplication / Division / Modulo | Left | `a * b` |
-| 10 | `@` | Matrix multiply | Left | `A @ B` |
-| 11 | `**` | Exponentiation | **Right** | `2 ** 3 ** 2` = `2 ** 9` |
-| 12 | `-` `not` `~` | Unary negation / NOT / bitwise NOT | Right (prefix) | `-x`, `not done`, `~mask` |
-| 13 | `()` `[]` `.` | Call / Index / Field access | Left (postfix) | `f(x)`, `arr[0]`, `obj.field` |
+| 5 | `==` `!=` `<` `>` `<=` `>=` | Comparison / equality | Left | `x == y`, `x < y` |
+| 6 | `\|` | Bitwise OR | Left | `flags \| bit` |
+| 7 | `^` | Bitwise XOR | Left | `a ^ b` |
+| 8 | `&` | Bitwise AND | Left | `flags & mask` |
+| 9 | `<<` `>>` | Bitwise shifts | Left | `1 << 8` |
+| 10 | `+` `-` | Additive | Left | `a + b` |
+| 11 | `*` `/` `%` | Multiplicative | Left | `a * b` |
+| 12 | `-` `!` `not` `~` `&` `*` | Unary prefix | None (prefix) | `-x`, `not done`, `~mask` |
+| 13 | `**` | Exponentiation | **Right** | `2 ** 3 ** 2` = `2 ** 9` |
+| 14 | `as` | Type cast | Left | `x as f64` |
+| 15 | `.` `[` `(` | Field access / index / call | Left (postfix) | `obj.field`, `arr[0]`, `f(x)` |
+
+**Prefix keyword operators** `shared`, `move`, `weak`, `await` bind at level 2 (just above range), matching `|>` in strength.
+
+**Assignment operators** (`=` `+=` `-=` `*=` `/=`) are statement-level and are not part of the Pratt expression table. They can only appear as the top-level form of an expression statement.
 
 ## Arithmetic Operators
 
@@ -32,8 +40,6 @@ Operators listed from **lowest** to **highest** precedence. Operators at the sam
 | `/` | Division | `number / number` | `i64` if both int, else `f64` | `10 / 3` -> `3` |
 | `%` | Modulo | `number % number` | Same as operands | `10 % 3` -> `1` |
 | `**` | Exponentiation | `number ** number` | Same as operands | `2 ** 10` -> `1024` |
-| `@` | Matrix multiply | `Tensor @ Tensor` | `Tensor` | `A @ B` |
-
 **Division behavior:** Integer division (`i64 / i64`) truncates toward zero, returning an integer. Mixed or float division returns `f64`.
 
 **Division by zero:** Both `/` and `%` raise a runtime error on division by zero. With self-healing enabled, the runtime substitutes `0` and logs a warning.
@@ -86,7 +92,7 @@ Bitwise operators work on integer types only.
 | `*=` | `x = x * value` | `x *= 2` |
 | `/=` | `x = x / value` | `x /= 2` |
 
-Assignment targets must be declared with `mut`. Assignment to an immutable binding raises a runtime error.
+Assignment targets must be declared with `mut`. Assignment to an immutable binding is a compile-time error.
 
 ```kryos
 let mut count = 0

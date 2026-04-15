@@ -13,7 +13,7 @@ All reserved keywords in the Kryos language. These identifiers cannot be used as
 | `if` | Conditional branch | `if x > 0 { println("positive") }` |
 | `else` | Alternate branch of an `if` | `if x > 0 { ... } else { ... }` |
 | `elif` | Chained conditional branch | `if x > 0 { ... } elif x == 0 { ... }` |
-| `for` | Iterate over a range or collection | `for i in range(10) { println(i) }` |
+| `for` | Iterate over a range or collection | `for i in range(0, 10) { println(i) }` |
 | `while` | Loop while a condition is true | `while x > 0 { x -= 1 }` |
 | `in` | Used in `for ... in` loops | `for item in items { ... }` |
 | `break` | Exit the innermost loop | `if done { break }` |
@@ -27,7 +27,7 @@ All reserved keywords in the Kryos language. These identifiers cannot be used as
 | `use` | Import a module or symbol | `use math_utils` |
 | `extern` | Declare an external (FFI) binding | `extern fn c_sqrt(x: f64) -> f64` |
 | `as` | Type cast or import alias | `use utils::helpers as h` |
-| `mod` | Declare a sub-module | `mod networking` |
+| `mod` | Reserved for future sub-module declarations | Reserved |
 | `type` | Declare a type alias | `type Coordinate = Point` |
 | `actor` | Declare an actor (concurrent entity) | `actor Counter { ... }` |
 | `spawn` | Spawn an actor or parallel task | `spawn my_actor()` |
