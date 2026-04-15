@@ -51,6 +51,7 @@ fn json_object(keys: [str], values: [JsonValue]) -> JsonValue {
 
 // --- Parser state ------------------------------------------------------------
 
+@copy
 struct Parser {
     input: str,
     pos: i64,
@@ -192,23 +193,40 @@ fn _parse_string(p: Parser) -> ParseResult {
         if ch == "\\" {
             parser = _advance(parser)
             let escape = _current_char(parser)
+            let mut found_escape = false
             if escape == "\"" {
                 result = result + "\""
-            } else if escape == "\\" {
+                found_escape = true
+            }
+            if escape == "\\" {
                 result = result + "\\"
-            } else if escape == "/" {
+                found_escape = true
+            }
+            if escape == "/" {
                 result = result + "/"
-            } else if escape == "b" {
+                found_escape = true
+            }
+            if escape == "b" {
                 result = result + "\b"
-            } else if escape == "f" {
+                found_escape = true
+            }
+            if escape == "f" {
                 result = result + "\f"
-            } else if escape == "n" {
+                found_escape = true
+            }
+            if escape == "n" {
                 result = result + "\n"
-            } else if escape == "r" {
+                found_escape = true
+            }
+            if escape == "r" {
                 result = result + "\r"
-            } else if escape == "t" {
+                found_escape = true
+            }
+            if escape == "t" {
                 result = result + "\t"
-            } else if escape == "u" {
+                found_escape = true
+            }
+            if escape == "u" {
                 // Parse 4-digit hex unicode escape
                 parser = _advance(parser)
                 let hex = substr(parser.input, parser.pos, parser.pos + 4)
@@ -218,11 +236,14 @@ fn _parse_string(p: Parser) -> ParseResult {
                 parser = _advance(parser)
                 parser = _advance(parser)
                 parser = _advance(parser)
-            } else {
+                found_escape = true
+            }
+            if not found_escape {
                 throw "json: invalid escape sequence '\\" + escape + "' at position " + to_string(parser.pos)
             }
             parser = _advance(parser)
-        } else {
+        }
+        if ch != "\\" {
             result = result + ch
             parser = _advance(parser)
         }
@@ -242,13 +263,18 @@ fn _parse_number(p: Parser) -> ParseResult {
     }
 
     // Integer part
+    let mut parsed_int = false
     if _peek(parser) == "0" {
         parser = _advance(parser)
-    } else if _is_digit(_peek(parser)) {
+        parsed_int = true
+    }
+    if not parsed_int and _is_digit(_peek(parser)) {
         while parser.pos < parser.input_len and _is_digit(_peek(parser)) {
             parser = _advance(parser)
         }
-    } else {
+        parsed_int = true
+    }
+    if not parsed_int {
         throw "json: invalid number at position " + to_string(parser.pos)
     }
 
@@ -368,11 +394,16 @@ fn _parse_object(p: Parser) -> ParseResult {
 
 // --- Serializer --------------------------------------------------------------
 
+fn _bool_to_str(b: bool) -> str {
+    if b { return "true" }
+    return "false"
+}
+
 /// Convert a JsonValue to a compact JSON string.
 fn stringify(val: JsonValue) -> str {
     return match val {
         JsonValue::Null => "null",
-        JsonValue::Bool(b) => if b { "true" } else { "false" },
+        JsonValue::Bool(b) => _bool_to_str(b),
         JsonValue::Number(n) => _format_number(n),
         JsonValue::String(s) => _escape_string(s),
         JsonValue::Array(items) => _stringify_array(items),
@@ -395,21 +426,36 @@ fn _escape_string(s: str) -> str {
     let mut i = 0
     while i < slen {
         let ch = s[i]
+        let mut found_special = false
         if ch == "\"" {
             result = result + "\\\""
-        } else if ch == "\\" {
+            found_special = true
+        }
+        if ch == "\\" {
             result = result + "\\\\"
-        } else if ch == "\n" {
+            found_special = true
+        }
+        if ch == "\n" {
             result = result + "\\n"
-        } else if ch == "\r" {
+            found_special = true
+        }
+        if ch == "\r" {
             result = result + "\\r"
-        } else if ch == "\t" {
+            found_special = true
+        }
+        if ch == "\t" {
             result = result + "\\t"
-        } else if ch == "\b" {
+            found_special = true
+        }
+        if ch == "\b" {
             result = result + "\\b"
-        } else if ch == "\f" {
+            found_special = true
+        }
+        if ch == "\f" {
             result = result + "\\f"
-        } else {
+            found_special = true
+        }
+        if not found_special {
             result = result + ch
         }
         i = i + 1
@@ -462,7 +508,7 @@ fn pretty_print(val: JsonValue, indent: i64) -> str {
 fn _pretty_print_inner(val: JsonValue, indent: i64, depth: i64) -> str {
     return match val {
         JsonValue::Null => "null",
-        JsonValue::Bool(b) => if b { "true" } else { "false" },
+        JsonValue::Bool(b) => _bool_to_str(b),
         JsonValue::Number(n) => _format_number(n),
         JsonValue::String(s) => _escape_string(s),
         JsonValue::Array(items) => _pretty_array(items, indent, depth),
@@ -566,7 +612,8 @@ fn _object_set(keys: [str], values: [JsonValue], key: str, new_val: JsonValue) -
         if keys[i] == key {
             push(new_values, new_val)
             found = true
-        } else {
+        }
+        if keys[i] != key {
             push(new_values, values[i])
         }
         i = i + 1
@@ -624,10 +671,12 @@ fn to_int(val: JsonValue) -> i64 {
 
 /// Extract a number as f64.  Throws if not a Number.
 fn to_float(val: JsonValue) -> f64 {
-    return match val {
-        JsonValue::Number(n) => n,
-        _ => _throw_json_float("json.to_float: value is not a number")
+    let mut result: f64 = 0.0
+    match val {
+        JsonValue::Number(n) => { result = n }
+        _ => { throw "json.to_float: value is not a number" }
     }
+    return result
 }
 
 /// Extract a string.  Throws if not a String.
@@ -718,13 +767,20 @@ fn _hex_to_int(hex: str) -> i64 {
         let ch = hex[i]
         let code = char_code(ch)
         let mut digit = 0
+        let mut found_digit = false
         if code >= 48 and code <= 57 {
             digit = code - 48
-        } else if code >= 65 and code <= 70 {
+            found_digit = true
+        }
+        if code >= 65 and code <= 70 {
             digit = code - 55
-        } else if code >= 97 and code <= 102 {
+            found_digit = true
+        }
+        if code >= 97 and code <= 102 {
             digit = code - 87
-        } else {
+            found_digit = true
+        }
+        if not found_digit {
             throw "json: invalid hex digit '" + ch + "'"
         }
         result = result * 16 + digit

@@ -1,0 +1,170 @@
+// mcp_server.kry -- Model Context Protocol server over stdio
+//
+// Exposes two tools to any MCP-compatible client (Claude, Cursor, etc.):
+//   * calculate -- evaluates simple arithmetic expressions
+//   * fibonacci  -- computes the nth Fibonacci number
+//
+// Protocol: newline-delimited JSON-RPC 2.0 over stdin/stdout.
+//
+// Usage:
+//   kryos run mcp_server.kry
+// Then connect from an MCP client, or test manually:
+//   echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | kryos run mcp_server.kry
+
+use std::json
+
+// ---- helpers ---------------------------------------------------------------
+
+// ob/cb: open-brace and close-brace via char_from to avoid string-interpolation parsing.
+// char_from(123) == '{', char_from(125) == '}'
+
+fn json_response(id: str, result_json: str) -> str {
+    let ob = char_from(123)
+    let cb = char_from(125)
+    return ob + "\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":" + result_json + cb
+}
+
+fn json_error(id: str, code: i64, message: str) -> str {
+    let ob = char_from(123)
+    let cb = char_from(125)
+    return ob + "\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":" +
+           ob + "\"code\":" + to_string(code) + ",\"message\":\"" + message + "\"" + cb +
+           cb
+}
+
+fn tool_result(content: str) -> str {
+    let ob = char_from(123)
+    let cb = char_from(125)
+    return ob + "\"content\":[" + ob + "\"type\":\"text\",\"text\":\"" + content + "\"" + cb + "]" + cb
+}
+
+// ---- tools -----------------------------------------------------------------
+
+fn tool_fibonacci(n: i64) -> i64 {
+    if n <= 1 { return n }
+    let mut a = 0
+    let mut b = 1
+    let mut i = 2
+    while i <= n {
+        let tmp = a + b
+        a = b
+        b = tmp
+        i = i + 1
+    }
+    return b
+}
+
+fn tool_calculate(expr: str) -> str {
+    // Supports: <num> <op> <num>  where op is +, -, *, /
+    let parts = split(expr, " ")
+    if len(parts) != 3 {
+        return "error: expected '<number> <op> <number>'"
+    }
+    let a = parse_float(parts[0])
+    let op = parts[1]
+    let b = parse_float(parts[2])
+    if op == "+" { return to_string(a + b) }
+    if op == "-" { return to_string(a - b) }
+    if op == "*" { return to_string(a * b) }
+    if op == "/" {
+        if b == 0.0 { return "error: division by zero" }
+        return to_string(a / b)
+    }
+    return "error: unknown operator " + op
+}
+
+// ---- protocol handlers -----------------------------------------------------
+
+fn handle_initialize(id: str) -> str {
+    let ob = char_from(123)
+    let cb = char_from(125)
+    let caps    = ob + "\"tools\":" + ob + cb + cb
+    let info    = ob + "\"name\":\"kryos-mcp\",\"version\":\"1.0.0\"" + cb
+    let result  = ob + "\"protocolVersion\":\"2024-11-05\",\"capabilities\":" + caps +
+                  ",\"serverInfo\":" + info + cb
+    return json_response(id, result)
+}
+
+fn handle_tools_list(id: str) -> str {
+    let ob = char_from(123)
+    let cb = char_from(125)
+
+    let calc_props = ob + "\"expression\":" + ob + "\"type\":\"string\",\"description\":\"e.g. 42 * 7\"" + cb + cb
+    let calc_schema = ob + "\"type\":\"object\",\"properties\":" + calc_props + ",\"required\":[\"expression\"]" + cb
+    let calc = ob + "\"name\":\"calculate\"," +
+               "\"description\":\"Evaluate a simple arithmetic expression: <num> <op> <num>\"," +
+               "\"inputSchema\":" + calc_schema + cb
+
+    let fib_props = ob + "\"n\":" + ob + "\"type\":\"integer\",\"description\":\"Index (0 = 0, 1 = 1, 10 = 55)\"" + cb + cb
+    let fib_schema = ob + "\"type\":\"object\",\"properties\":" + fib_props + ",\"required\":[\"n\"]" + cb
+    let fib = ob + "\"name\":\"fibonacci\"," +
+              "\"description\":\"Return the nth Fibonacci number (0-indexed).\"," +
+              "\"inputSchema\":" + fib_schema + cb
+
+    return json_response(id, ob + "\"tools\":[" + calc + "," + fib + "]" + cb)
+}
+
+// ---- main loop -------------------------------------------------------------
+
+// params is a function parameter -- all get() calls on it use borrow semantics.
+// Nested get(get(params, "arguments"), field) avoids any local JsonValue that
+// could be conditionally moved across branches.
+fn dispatch_tools_call(id: str, params: JsonValue) -> str {
+    let name = to_str(get(params, "name"))
+    if name == "calculate" {
+        let expr = to_str(get(get(params, "arguments"), "expression"))
+        let result = tool_calculate(expr)
+        return json_response(id, tool_result(result))
+    }
+    if name == "fibonacci" {
+        let n = to_int(get(get(params, "arguments"), "n"))
+        if n < 0 {
+            return json_error(id, -32602, "n must be >= 0")
+        }
+        let result = tool_fibonacci(n)
+        return json_response(id, tool_result(to_string(result)))
+    }
+    return json_error(id, -32601, "unknown tool: " + name)
+}
+
+// Route a parsed request. Takes req by value so all get() calls are
+// on a function parameter (borrow semantics -- no conditional move).
+fn route_request(req: JsonValue) -> str {
+    let id     = stringify(get(req, "id"))
+    let method = to_str(get(req, "method"))
+    if method == "initialize" {
+        return handle_initialize(id)
+    }
+    if method == "tools/list" {
+        return handle_tools_list(id)
+    }
+    if method == "tools/call" {
+        return dispatch_tools_call(id, get(req, "params"))
+    }
+    if method != "notifications/initialized" {
+        return json_error(id, -32601, "method not found: " + method)
+    }
+    return ""
+}
+
+fn main() {
+    let ob = char_from(123)
+    let cb = char_from(125)
+    let parse_err = ob + "\"jsonrpc\":\"2.0\",\"id\":null,\"error\":" +
+                   ob + "\"code\":-32700,\"message\":\"parse error\"" + cb + cb
+
+    while true {
+        let line = read_line()
+        if len(line) == 0 { return }
+
+        try {
+            let req      = parse(line)
+            let response = route_request(req)
+            if len(response) > 0 {
+                println(response)
+            }
+        } catch e {
+            println(parse_err)
+        }
+    }
+}

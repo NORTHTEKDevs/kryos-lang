@@ -4,6 +4,21 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.4] - 2026-04-14
+
+### Added
+- `float(str)` builtin -- parse a string as f64 via `kryos_builtin_parse_float` (Cranelift backend)
+- Example: `ai_agent.kry` -- research agent using the Kryos agent framework with Anthropic API integration
+- Example: `http_api.kry` -- in-memory task-list REST API with routing and JSON responses
+- Example: `mcp_server.kry` -- Model Context Protocol server over stdio (JSON-RPC 2.0)
+
+### Fixed
+- MIR match arm type inference: enum variant field types now correctly propagate to the result local (fixes f64 fields inferred as i64 in `JsonValue::Number(n) => n` patterns)
+- JSON stdlib: `if/else if/else` chains in `_parse_string`, `_parse_number`, and `_escape_string` converted to sequential `if` + flag pattern (avoids compiler branch target bug in deep else-if chains)
+- JSON parser: `@copy` on `Parser` struct prevents ownership errors across recursive descent calls
+
+---
+
 ## [0.3.3] - 2026-04-14
 
 ### Added

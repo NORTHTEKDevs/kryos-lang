@@ -2536,6 +2536,17 @@ fn translate_rvalue<M: Module>(
                 return Ok(Some(val));
             }
             if func == "float" && args.len() == 1 {
+                if is_string_operand(&args[0], &translator.mir_func.locals) {
+                    // float(str) — parse string as f64 via kryos_builtin_parse_float.
+                    // That function returns the f64 bits packed as i64; the assignment
+                    // site will bitcast to F64.
+                    let val = translate_operand(&args[0], builder, translator, module)?;
+                    let parse_float_ref = ensure_func_ref_with_args(
+                        "kryos_builtin_parse_float", builder, translator, module, 1,
+                    )?;
+                    let call = builder.ins().call(parse_float_ref, &[val]);
+                    return Ok(Some(builder.inst_results(call)[0]));
+                }
                 let val = translate_operand(&args[0], builder, translator, module)?;
                 let val_ty = builder.func.dfg.value_type(val);
                 if is_float_type(val_ty) {

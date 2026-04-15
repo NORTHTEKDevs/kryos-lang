@@ -1,0 +1,199 @@
+// ai_agent.kry -- Research agent using the Kryos agent framework
+//
+// Demonstrates:
+//   * agent_new, add_tool, use_tool
+//   * Tool composition: calculator, web-stub, and Claude-powered reasoning
+//   * Agent memory (working + semantic)
+//   * Spawning a child agent for a sub-task
+//   * Calling the Anthropic Messages API over HTTP with custom headers
+//
+// Usage:
+//   ANTHROPIC_API_KEY=sk-... kryos run ai_agent.kry
+//
+// The Claude tool requires a valid ANTHROPIC_API_KEY environment variable.
+// All other tools work offline.
+
+use std::agent
+use std::http
+
+// ---- JSON helpers (no json.kry import -- avoids get() name collision) --------
+
+// Extract a string field value from a flat JSON object.
+fn extract_str(json: str, field: str) -> str {
+    let needle = "\"" + field + "\":\""
+    let nlen = len(needle)
+    let blen = len(json)
+    let mut pos = 0
+    while pos <= blen - nlen {
+        let mut matched = true
+        let mut k = 0
+        while k < nlen {
+            if json[pos + k] != needle[k] {
+                matched = false
+                k = nlen
+            }
+            k = k + 1
+        }
+        if matched {
+            let start = pos + nlen
+            let mut end = start
+            while end < blen and json[end] != "\"" { end = end + 1 }
+            return substr(json, start, end)
+        }
+        pos = pos + 1
+    }
+    return ""
+}
+
+// Find content[0].text in a Claude API response body.
+// Claude returns: {"content":[{"type":"text","text":"..."}],...}
+fn extract_claude_text(body: str) -> str {
+    let text = extract_str(body, "text")
+    if len(text) > 0 { return text }
+    return "(no response)"
+}
+
+// Escape double-quotes and backslashes for embedding in a JSON string.
+fn json_escape(s: str) -> str {
+    let blen = len(s)
+    let mut out = ""
+    let mut i = 0
+    while i < blen {
+        let ch = s[i]
+        if ch == "\\" { out = out + "\\\\" }
+        else if ch == "\"" { out = out + "\\\"" }
+        else if ch == "\n" { out = out + "\\n" }
+        else if ch == "\r" { out = out + "\\r" }
+        else if ch == "\t" { out = out + "\\t" }
+        else { out = out + ch }
+        i = i + 1
+    }
+    return out
+}
+
+// ---- Tools ------------------------------------------------------------------
+
+// Calculator: accepts "<num> <op> <num>", returns result as string.
+fn tool_calculate(input: str) -> str {
+    let parts = split(input, " ")
+    if len(parts) != 3 {
+        return "error: expected '<number> <op> <number>'"
+    }
+    let a = parse_float(parts[0])
+    let op = parts[1]
+    let b = parse_float(parts[2])
+    if op == "+" { return to_string(a + b) }
+    if op == "-" { return to_string(a - b) }
+    if op == "*" { return to_string(a * b) }
+    if op == "/" {
+        if b == 0.0 { return "error: division by zero" }
+        return to_string(a / b)
+    }
+    return "error: unknown operator: " + op
+}
+
+// Web search stub: in production, wire this to a real search API.
+fn tool_search(query: str) -> str {
+    return "Search results for \"" + query + "\":\n" +
+           "  1. Kryos is an AI-native compiled systems language.\n" +
+           "  2. Kryos compiles via Cranelift (~500ms) or LLVM (Rust-parity).\n" +
+           "  3. Kryos features capability-based security and tensor primitives.\n" +
+           "(stub: replace with real search API integration)"
+}
+
+// Claude reasoning: calls the Anthropic Messages API with a question.
+// Requires ANTHROPIC_API_KEY in the environment.
+fn tool_ask_claude(question: str) -> str {
+    let api_key = env("ANTHROPIC_API_KEY")
+    if len(api_key) == 0 {
+        return "error: ANTHROPIC_API_KEY not set"
+    }
+
+    let escaped = json_escape(question)
+    // char_from(123) == '{', char_from(125) == '}' -- avoids string-interpolation parsing
+    let ob = char_from(123)
+    let cb = char_from(125)
+    let body = ob +
+        "\"model\":\"claude-haiku-4-5-20251001\"," +
+        "\"max_tokens\":512," +
+        "\"messages\":[" + ob + "\"role\":\"user\",\"content\":\"" + escaped + "\"" + cb + "]" +
+    cb
+
+    let mut req = new_request("POST", "https://api.anthropic.com/v1/messages")
+    req = Request {
+        method: req.method,
+        url: req.url,
+        headers: set_header(
+                     set_header(req.headers, "x-api-key", api_key),
+                     "anthropic-version", "2024-11-05"
+                 ),
+        body: req.body
+    }
+    req = with_json_body(req, body)
+
+    let resp = send(req)
+    if resp.status != 200 {
+        return "error: API returned HTTP " + to_string(resp.status)
+    }
+    return extract_claude_text(resp.body)
+}
+
+// ---- Main -------------------------------------------------------------------
+
+fn main() {
+    // Build the primary research agent.
+    let mut agent = agent_new("researcher", "Answer questions using available tools")
+    agent = agent.add_tool("calculate", tool_calculate, "Evaluate arithmetic: <num> <op> <num>")
+    agent = agent.add_tool("search",    tool_search,    "Search the web for information on a topic")
+    agent = agent.add_tool("ask_claude", tool_ask_claude, "Ask Claude a question via the Anthropic API")
+    agent = agent.resume()
+
+    println("=== Kryos Agent Demo ===")
+    println(agent.status())
+    println("")
+
+    // Tool 1: arithmetic calculation.
+    println("[calculate] 144 * 7 + 12 / 4")
+    let calc_result = agent.use_tool("calculate", "144 * 7")
+    println("  result: " + calc_result)
+    println("")
+
+    // Tool 2: web search (stub).
+    println("[search] kryos programming language")
+    let search_result = agent.use_tool("search", "kryos programming language")
+    println(search_result)
+    println("")
+
+    // Tool 3: Claude API reasoning (requires ANTHROPIC_API_KEY).
+    println("[ask_claude] What makes Kryos different from Rust?")
+    let claude_result = agent.use_tool("ask_claude",
+        "In 2-3 sentences, what would make a systems language AI-native?")
+    println("  Claude: " + claude_result)
+    println("")
+
+    // Agent memory: store and retrieve facts across tool calls.
+    let mut mem = agent_memory_new()
+    mem = mem.remember("calc_result", calc_result, "working")
+    mem = mem.remember("language", "Kryos", "semantic")
+
+    let remembered = mem.recall("language")
+    println("[memory] recalled 'language' -> " + remembered)
+    println("")
+
+    // Spawn a child agent that inherits the parent's tools.
+    let mut child = agent.spawn_child("summarizer", "Summarize findings into a report")
+    child = child.resume()
+
+    println("[child agent] " + child.name + " spawned from " + agent.name)
+    let summary = child.use_tool("ask_claude",
+        "Summarize in one sentence why AI-native languages matter for software development.")
+    println("  summary: " + summary)
+    println("")
+
+    // Terminate both agents cleanly.
+    agent = agent.terminate()
+    child  = child.terminate()
+
+    println("=== Final Status ===")
+    println(agent.status())
+}

@@ -19,6 +19,9 @@ cargo run --release -- run examples/<name>.kry
 | `channels.kry` | Spawn 3 concurrent workers that send results on a channel, main collects and sums |
 | `proof.kry` | Comprehensive proof program exercising 17 language features end-to-end |
 | `markdown.kry` | Markdown-to-text converter demonstrating string manipulation, helpers, loops |
+| `http_api.kry` | In-memory task-list REST API -- GET/POST routing, JSON responses, HTTP status codes |
+| `mcp_server.kry` | Model Context Protocol server over stdio -- JSON-RPC 2.0, tool dispatch, MCP handshake |
+| `ai_agent.kry` | Research agent using `std::agent` + `std::http` -- tool composition, Anthropic Messages API |
 
 ## Language Features Covered
 
@@ -31,3 +34,7 @@ cargo run --release -- run examples/<name>.kry
 - String operations: concatenation (`+`), `len()`, `substr()`, `to_string()`
 - Math: `sqrt()`, arithmetic operators
 - Concurrency: `spawn`, `chan()`, `send()`, `recv()`
+- HTTP: `std::http` server with routing, request parsing, JSON responses
+- Agent framework: `std::agent` with tool registration, composition, and LLM integration
+- MCP: JSON-RPC 2.0 protocol server over stdio for MCP client compatibility
+- JSON: `std::json` parse/stringify with full RFC 8259 escape handling

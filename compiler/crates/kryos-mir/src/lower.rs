@@ -1484,6 +1484,8 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 // Use the right return form based on the function's return type.
                 let ret_operand = if ctx.current_ret_ty == MirType::Void {
                     None
+                } else if ctx.current_ret_ty == MirType::F64 || ctx.current_ret_ty == MirType::F32 {
+                    Some(Operand::Constant(Constant::Float(0.0)))
                 } else {
                     Some(Operand::Constant(Constant::Int(0)))
                 };
@@ -2523,9 +2525,32 @@ struct EnumBinding {
 fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::MatchArm]) -> Operand {
     let subj_op = lower_expr_to_operand(ctx, subject);
     // Infer the result type from the first arm's body expression.
+    // For enum arms where the body is a simple identifier that will be bound
+    // from a field extraction, look up the field type directly -- the local
+    // does not exist yet when infer_expr_type runs, so it would fall back to
+    // I64 even for f64 fields (e.g. `JsonValue::Number(n) => n`).
     let result_ty = arms
         .first()
-        .map(|arm| infer_expr_type(ctx, &arm.body))
+        .map(|arm| {
+            if let ast::Pattern::Enum { name: enum_name, variant, fields, .. } = &arm.pattern {
+                if let ast::Expr::Identifier { name: body_name, .. } = &*arm.body {
+                    if let Some(variants) = ctx.enum_defs.get(enum_name.as_str()) {
+                        if let Some(idx) = variants.iter().position(|v| v.name == *variant) {
+                            for (field_idx, pat) in fields.iter().enumerate() {
+                                if let ast::Pattern::Ident { name: field_name, .. } = pat {
+                                    if field_name == body_name {
+                                        if let Some(ft) = variants[idx].fields.get(field_idx) {
+                                            return ft.clone();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            infer_expr_type(ctx, &arm.body)
+        })
         .unwrap_or(MirType::I64);
     let result_local = ctx.alloc_temp(result_ty);
     let merge_bb = ctx.alloc_block();

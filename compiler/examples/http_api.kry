@@ -1,0 +1,130 @@
+// http_api.kry -- In-memory task-list REST API
+//
+// A production-pattern HTTP server demonstrating routing, JSON responses,
+// request body parsing, and proper HTTP status codes.
+//
+// Endpoints:
+//   GET  /health        -- liveness probe
+//   GET  /tasks         -- list all tasks
+//   POST /tasks         -- create a task   body: {"title":"<text>"}
+//   GET  /tasks/count   -- number of tasks
+//
+// Usage:
+//   kryos run http_api.kry
+// Then:
+//   curl http://localhost:8080/health
+//   curl -X POST http://localhost:8080/tasks -d '{"title":"buy milk"}'
+//   curl http://localhost:8080/tasks
+
+use std::http
+
+// ---- task store (in-process, shared via closure capture) ---------------------
+
+struct Task {
+    id: i64,
+    title: str,
+    done: bool
+}
+
+// ob/cb: open-brace and close-brace via char_from to avoid string-interpolation parsing.
+// char_from(123) == '{', char_from(125) == '}'
+
+fn task_to_json(t: Task) -> str {
+    let ob = char_from(123)
+    let cb = char_from(125)
+    let done_str = if t.done { "true" } else { "false" }
+    return ob + "\"id\":" + to_string(t.id) + ",\"title\":\"" + t.title + "\",\"done\":" + done_str + cb
+}
+
+fn tasks_to_json(tasks: [Task]) -> str {
+    let mut body = "["
+    let count = len(tasks)
+    let mut i = 0
+    while i < count {
+        if i > 0 { body = body + "," }
+        body = body + task_to_json(tasks[i])
+        i = i + 1
+    }
+    return body + "]"
+}
+
+// Extract the value of a JSON string field from a flat object.
+// Handles: {"field":"value"} -- sufficient for single-field POST bodies.
+fn extract_str_field(body: str, field: str) -> str {
+    let needle = "\"" + field + "\":\""
+    let nlen   = len(needle)
+    let blen   = len(body)
+    let mut pos = 0
+    while pos <= blen - nlen {
+        let mut matched = true
+        let mut k = 0
+        while k < nlen {
+            if body[pos + k] != needle[k] {
+                matched = false
+                k = nlen
+            }
+            k = k + 1
+        }
+        if matched {
+            let start = pos + nlen
+            let mut end = start
+            while end < blen and body[end] != "\"" { end = end + 1 }
+            return substr(body, start, end)
+        }
+        pos = pos + 1
+    }
+    return ""
+}
+
+// ---- route handlers ---------------------------------------------------------
+
+fn handle_health(req: Request) -> Response {
+    let ob = char_from(123)
+    let cb = char_from(125)
+    return json_response(200, ob + "\"status\":\"ok\",\"version\":\"1.0.0\"" + cb)
+}
+
+fn make_handle_get_tasks(tasks: [Task]) -> fn(Request) -> Response {
+    return fn(req: Request) -> Response {
+        return json_response(200, tasks_to_json(tasks))
+    }
+}
+
+fn make_handle_post_tasks(tasks: [Task], next_id: i64) -> fn(Request) -> Response {
+    return fn(req: Request) -> Response {
+        let ob = char_from(123)
+        let cb = char_from(125)
+        let title = extract_str_field(req.body, "title")
+        if len(title) == 0 {
+            return json_response(400, ob + "\"error\":\"missing field: title\"" + cb)
+        }
+        let task = Task { id: next_id, title: title, done: false }
+        push(tasks, task)
+        next_id = next_id + 1
+        return json_response(201, task_to_json(task))
+    }
+}
+
+fn make_handle_count(tasks: [Task]) -> fn(Request) -> Response {
+    return fn(req: Request) -> Response {
+        let ob = char_from(123)
+        let cb = char_from(125)
+        return json_response(200, ob + "\"count\":" + to_string(len(tasks)) + cb)
+    }
+}
+
+// ---- main -------------------------------------------------------------------
+
+fn main() {
+    let mut tasks: [Task] = []
+    let mut next_id = 1
+
+    let mut router = new_router()
+    router = route_get(router, "/health",       handle_health)
+    router = route_get(router, "/tasks",        make_handle_get_tasks(tasks))
+    router = route_post(router, "/tasks",       make_handle_post_tasks(tasks, next_id))
+    router = route_get(router, "/tasks/count",  make_handle_count(tasks))
+
+    println("Task API listening on http://localhost:8080")
+    listen(8080, router)
+}
