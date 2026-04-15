@@ -1,15 +1,83 @@
 # Attributes Reference
 
 > **Implementation Status:** The `@name(args)` annotation syntax is fully parsed and attached to functions, structs, enums, and actors. `@capabilities` is the only attribute with compile-time enforcement (via the `kryos-capabilities` crate). All other attributes listed below (`@compute`, `@export`, `@differentiable`, `@zero_copy`, `@real_time`, `@target`, `@layout`, `@no_std`) are **parsed but not enforced** -- they are reserved for future compiler passes.
+>
+> **Argument syntax note:** The current parser accepts `@attr(ident, ident, ...)` with plain identifiers as arguments. The `key=value` forms shown for future attributes like `@compute(device="cuda")` represent the planned final syntax and will require a grammar extension when those attributes are implemented.
 
 Attributes in Kryos use the `@name` or `@name(args)` syntax and are placed directly before a declaration (function, struct, etc.). They provide metadata that affects compilation, runtime behavior, or capability gating.
+
+## @pure
+
+Mark a function as pure -- it produces no side effects and its return value depends only on its arguments. The compiler applies CSE (common subexpression elimination) and dead call elimination to calls of `@pure` functions.
+
+```kryos
+@pure
+fn hash(data: str) -> i64 {
+    // compile error if this calls io/net/process
+    compute_hash(data)
+}
+
+@pure
+fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
+    if x < lo { return lo }
+    if x > hi { return hi }
+    return x
+}
+```
+
+Calling any capability-gated function (IO, network, GPU, process) inside a `@pure` function is a compile-time error.
+
+---
+
+## @test
+
+Mark a function as a test case. `kryos test <file.kry>` discovers all `@test` functions and JIT-executes them, reporting pass/fail.
+
+```kryos
+@test
+fn test_addition() {
+    let result = add(2, 3)
+    assert(result == 5, "expected 5")
+}
+
+@test
+fn test_empty_string() {
+    let s = ""
+    assert(len(s) == 0, "empty string should have length 0")
+}
+```
+
+Test functions take no arguments and return nothing. A test passes if it completes without throwing. A test fails if it throws any error.
+
+---
+
+## @copy
+
+Mark a struct as a Copy type. Values of this type are copied on assignment and function calls instead of moved.
+
+```kryos
+@copy
+struct Color {
+    r: u8,
+    g: u8,
+    b: u8,
+}
+
+let red = Color { r: 255, g: 0, b: 0 }
+let also_red = red   // copied, not moved
+println(red.r)       // still valid
+```
+
+Only use `@copy` on structs whose fields are all Copy types. The compiler does not verify this -- misuse results in ARC over-counting.
+
+---
 
 ## @capabilities
 
 Declare required runtime capabilities for a function. The capability system gates access to sensitive operations (network, filesystem, GPU, etc.) based on the project's permission tier.
 
 ```kryos
-@capabilities("network", "filesystem")
+@capabilities(network, filesystem)
 fn download_file(url: str, path: str) -> bool {
     let data = http_get(url)
     file_write(path, data)
@@ -17,16 +85,16 @@ fn download_file(url: str, path: str) -> bool {
 }
 ```
 
-Sub-capabilities use colon notation:
+Sub-capabilities use a namespaced identifier:
 
 ```kryos
-@capabilities("network:raw_socket")
+@capabilities(network)
 fn ping(host: str) -> i64 {
-    // raw socket access
+    // network access
 }
 ```
 
-Available capabilities include: `network`, `filesystem`, `gpu`, `process`, `ffi:native`, `network:raw_socket`, and others depending on the tier.
+Available capabilities: `network`, `filesystem`, `gpu`, `process`, `io`, `ffi`.
 
 ---
 

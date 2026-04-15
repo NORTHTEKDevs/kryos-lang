@@ -74,7 +74,7 @@ Quick reference for developers transitioning to Kryos from Rust, JavaScript, or 
 | `int add(int a, int b) {` | `fn add(a: i32, b: i32) -> i32 {` | Return type after `->` |
 | `printf("%d\n", x);` | `println(x)` | No format strings needed |
 | `scanf("%d", &x);` | `let x = int(stdin_read())` | Read + parse |
-| `for (int i = 0; i < 10; i++)` | `for i in range(10) {` | Range-based iteration |
+| `for (int i = 0; i < 10; i++)` | `for i in range(0, 10) {` | Range-based iteration |
 | `while (x > 0) {` | `while x > 0 {` | No parentheses required |
 | `if (x > 0) {` | `if x > 0 {` | No parentheses required |
 | `switch (x) { case 1: ... }` | `match x { 1 => ... }` | `match` with `=>` arms |
