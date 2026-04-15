@@ -1,23 +1,25 @@
 # std::string
 
-Extended string manipulation functions. These complement the core string builtins (`len`, `split`, `join`, `trim`, `starts_with`, `ends_with`, `contains`, `replace`, `substr`, `to_upper`, `to_lower`) with operations for text formatting, padding, parsing, and searching.
+Extended string manipulation functions. These complement the core string builtins (`len`, `split`, `join`, `trim`, `starts_with`, `ends_with`, `contains`, `replace`, `substr`, `upper`, `lower`) with operations for text formatting, padding, parsing, and searching.
+
+> **Implementation Status:** These functions are planned for `std::string`. The import is parsed and the function signatures are reserved. Full runtime implementation is in progress.
 
 ```kryos
-import std::string
+use std::string
 ```
 
 ---
 
 ### string_repeat
 
-`string_repeat(s: String, n: Int) -> String`
+`string_repeat(s: str, n: i64) -> str`
 
 Repeat a string `n` times.
 
 **Example:**
 ```kryos
-print(string_repeat("ha", 3))   // hahaha
-print(string_repeat("-", 40))   // ----------------------------------------
+println(string_repeat("ha", 3))   // hahaha
+println(string_repeat("-", 40))   // ----------------------------------------
 ```
 
 **Edge cases:**
@@ -28,16 +30,16 @@ print(string_repeat("-", 40))   // ----------------------------------------
 
 ### string_pad_left
 
-`string_pad_left(s: String, width: Int) -> String`
-`string_pad_left(s: String, width: Int, char: String) -> String`
+`string_pad_left(s: str, width: i64) -> str`
+`string_pad_left(s: str, width: i64, char: str) -> str`
 
 Pad a string on the left to reach the target width. Default pad character is a space.
 
 **Example:**
 ```kryos
-print(string_pad_left("42", 5))        // "   42"
-print(string_pad_left("42", 5, "0"))   // "00042"
-print(string_pad_left("hello", 3))     // "hello" (no truncation)
+println(string_pad_left("42", 5))        // "   42"
+println(string_pad_left("42", 5, "0"))   // "00042"
+println(string_pad_left("hello", 3))     // "hello" (no truncation)
 ```
 
 **Edge cases:**
@@ -50,15 +52,15 @@ print(string_pad_left("hello", 3))     // "hello" (no truncation)
 
 ### string_pad_right
 
-`string_pad_right(s: String, width: Int) -> String`
-`string_pad_right(s: String, width: Int, char: String) -> String`
+`string_pad_right(s: str, width: i64) -> str`
+`string_pad_right(s: str, width: i64, char: str) -> str`
 
 Pad a string on the right to reach the target width. Default pad character is a space.
 
 **Example:**
 ```kryos
-print(string_pad_right("Name", 20, "."))  // "Name................"
-print(string_pad_right("hi", 10))         // "hi        "
+println(string_pad_right("Name", 20, "."))  // "Name................"
+println(string_pad_right("hi", 10))         // "hi        "
 ```
 
 **Edge cases:**
@@ -70,7 +72,7 @@ print(string_pad_right("hi", 10))         // "hi        "
 
 ### string_lines
 
-`string_lines(s: String) -> Array`
+`string_lines(s: str) -> [str]`
 
 Split a string into an array of lines (split on `\n`).
 
@@ -78,8 +80,8 @@ Split a string into an array of lines (split on `\n`).
 ```kryos
 let text = "line one\nline two\nline three"
 let lines = string_lines(text)
-print(len(lines))   // 3
-print(lines[0])     // line one
+println(len(lines))   // 3
+println(lines[0])     // line one
 ```
 
 **Edge cases:**
@@ -89,14 +91,14 @@ print(lines[0])     // line one
 
 ### string_index
 
-`string_index(s: String, sub: String) -> Int`
+`string_index(s: str, sub: str) -> i64`
 
 Find the first occurrence of a substring. Returns the zero-based index, or `-1` if not found.
 
 **Example:**
 ```kryos
-print(string_index("hello world", "world"))  // 6
-print(string_index("hello world", "xyz"))    // -1
+println(string_index("hello world", "world"))  // 6
+println(string_index("hello world", "xyz"))    // -1
 ```
 
 **See also:** string_count, contains
@@ -105,14 +107,14 @@ print(string_index("hello world", "xyz"))    // -1
 
 ### string_count
 
-`string_count(s: String, sub: String) -> Int`
+`string_count(s: str, sub: str) -> i64`
 
 Count non-overlapping occurrences of a substring.
 
 **Example:**
 ```kryos
-print(string_count("banana", "an"))  // 2
-print(string_count("hello", "z"))    // 0
+println(string_count("banana", "an"))  // 2
+println(string_count("hello", "z"))    // 0
 ```
 
 **See also:** string_index
@@ -121,36 +123,36 @@ print(string_count("hello", "z"))    // 0
 
 ### to_int
 
-`to_int(s: String) -> Int`
+`to_int(s: str) -> i64`
 
-Parse a string as an integer.
+Parse a string as an integer. Alias for the core builtin `parse_int`.
 
 **Example:**
 ```kryos
 let port = to_int("8080")
-print(port + 1)  // 8081
+println(port + 1)  // 8081
 ```
 
 **Edge cases:**
 - Raises a runtime error if the string cannot be parsed as an integer.
 
-**See also:** to_float
+**See also:** to_float, parse_int
 
 ---
 
 ### to_float
 
-`to_float(s: String) -> Float`
+`to_float(s: str) -> f64`
 
-Parse a string as a floating-point number.
+Parse a string as a floating-point number. Alias for the core builtin `parse_float`.
 
 **Example:**
 ```kryos
 let ratio = to_float("3.14")
-print(ratio * 2)  // 6.28
+println(ratio * 2)  // 6.28
 ```
 
 **Edge cases:**
 - Raises a runtime error if the string cannot be parsed as a float.
 
-**See also:** to_int
+**See also:** to_int, parse_float

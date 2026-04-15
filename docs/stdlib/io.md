@@ -1,641 +1,476 @@
 # std::io
 
-File system, directory, path, environment, and temporary file operations.
+File I/O, buffered readers/writers, and console I/O.
 
 All functions in this module are available after `use std::io`. File operations use UTF-8 encoding by default. Paths use forward slashes on all platforms.
 
+```kryos
+use std::io
+```
+
 ---
 
-## File Operations
+## File Struct
 
-### file_read
-
-```
-file_read(path: str) -> str
-```
-
-Read the entire contents of a file as a UTF-8 string.
-
-**Example:**
+The `File` struct is the central type for all file I/O in `std::io`. Open a file with `open`, `create`, or `open_append`, then call methods on the returned handle.
 
 ```kryos
-let content = file_read("config.toml")
+struct File {
+    fd:     i64,
+    path:   str,
+    mode:   i32,
+    closed: bool
+}
+```
+
+### open
+
+`open(path: str) -> File`
+
+Open a file for reading. Throws a runtime error if the file does not exist or cannot be opened.
+
+**Example:**
+```kryos
+use std::io
+
+let f = open("config.toml")
+let content = f.read_all()
+f.close()
 println(content)
 ```
 
-**Edge cases:**
+---
 
-- Throws a runtime error if the file does not exist or is not readable.
-- Binary files will be read but may produce garbled output since decoding is UTF-8.
+### create
 
-**See also:** `file_lines`, `file_exists`
+`create(path: str) -> File`
+
+Open a file for writing. Creates the file if it does not exist; truncates it if it does. Throws a runtime error if the path is not writable.
+
+**Example:**
+```kryos
+use std::io
+
+let f = create("output.txt")
+f.write("Hello, world!\n")
+f.close()
+```
 
 ---
 
-### file_write
+### open_append
 
-```
-file_write(path: str, content: str) -> bool
-```
+`open_append(path: str) -> File`
 
-Write content to a file, replacing any existing content. Creates parent directories automatically if they do not exist. Returns `true` on success.
+Open a file for appending. Creates the file if it does not exist. Throws a runtime error if the path is not writable.
 
 **Example:**
-
 ```kryos
-file_write("output/report.txt", "Total: 42")
+use std::io
+
+let f = open_append("log.txt")
+f.write("Event occurred\n")
+f.close()
 ```
-
-**Edge cases:**
-
-- Creates the file if it does not exist.
-- Overwrites the file completely if it already exists.
-- Throws a runtime error if the path is not writable (permissions, invalid path).
-
-**See also:** `file_append`, `dir_create`
 
 ---
 
-### file_append
+### open_with_mode
 
-```
-file_append(path: str, content: str) -> bool
-```
+`open_with_mode(path: str, mode: i32) -> File`
 
-Append content to the end of a file. The file must already exist. Returns `true` on success.
+Open a file with an explicit mode integer. Use the module constants `MODE_READ` (0), `MODE_WRITE` (1), or `MODE_APPEND` (2).
 
 **Example:**
-
 ```kryos
-file_append("log.txt", "Event occurred at 12:00\n")
+use std::io
+
+let f = open_with_mode("data.bin", MODE_WRITE)
+f.write_all(binary_data)
+f.close()
 ```
-
-**Edge cases:**
-
-- Throws a runtime error if the file does not exist or is not writable.
-- Does not add a newline automatically. Include `\n` in your content if needed.
-
-**See also:** `file_write`
 
 ---
 
-### file_exists
+## File Methods
 
-```
-file_exists(path: str) -> bool
-```
+### File.read
 
-Check whether a file or directory exists at the given path.
+`read(self: File, n: i64) -> str`
+
+Read up to `n` bytes from the file. Returns the bytes read as a string. Returns an empty string at EOF.
+
+**Edge cases:**
+- Throws a runtime error if the file is already closed.
+- May return fewer bytes than requested at EOF.
+
+---
+
+### File.read_all
+
+`read_all(self: File) -> str`
+
+Read the entire remaining contents of the file as a string.
 
 **Example:**
+```kryos
+let f = open("notes.txt")
+let text = f.read_all()
+f.close()
+println(text)
+```
+
+**Edge cases:**
+- Throws a runtime error if the file is already closed.
+- Reads in 8192-byte chunks internally.
+
+---
+
+### File.write
+
+`write(self: File, data: str) -> i64`
+
+Write data to the file. Returns the number of bytes written.
+
+**Edge cases:**
+- Throws a runtime error if the file is already closed or if the write fails.
+- May write fewer bytes than the length of `data` in rare cases. Use `write_all` for guaranteed full writes.
+
+**See also:** `File.write_all`
+
+---
+
+### File.write_all
+
+`write_all(self: File, data: str) -> i64`
+
+Write all of `data` to the file, retrying until every byte is written. Returns the total number of bytes written.
+
+**Example:**
+```kryos
+let f = create("report.txt")
+f.write_all("Line 1\nLine 2\nLine 3\n")
+f.close()
+```
+
+**Edge cases:**
+- Throws a runtime error if the file is already closed or if any write attempt fails.
+
+---
+
+### File.close
+
+`close(self: File) -> File`
+
+Close the file handle. Returns a new `File` value with `closed: true`. Safe to call on an already-closed file (no-op).
+
+**Example:**
+```kryos
+let f = open("data.txt")
+let text = f.read_all()
+let f = f.close()
+```
+
+**Edge cases:**
+- Always close files when done. Unclosed files leak OS file descriptors.
+
+---
+
+### File.is_open
+
+`is_open(self: File) -> bool`
+
+Return `true` if the file handle is still open.
+
+**Example:**
+```kryos
+let f = open("data.txt")
+println(f.is_open())   // true
+let f = f.close()
+println(f.is_open())   // false
+```
+
+---
+
+## FileError
+
+The `FileError` enum represents error conditions for file operations. Thrown as strings in the current implementation -- structured error handling is planned.
 
 ```kryos
-if file_exists("config.toml") {
-    let cfg = file_read("config.toml")
-    println(cfg)
-} else {
-    println("No config found")
+enum FileError {
+    NotFound(str),
+    PermissionDenied(str),
+    AlreadyClosed(str),
+    WriteFailed(str),
+    ReadFailed(str),
+    Unknown(str)
 }
 ```
 
-**Edge cases:**
-
-- Returns `true` for both files and directories.
-- Does not throw on invalid paths -- returns `false`.
-
-**See also:** `file_is_file`, `file_is_dir`
-
 ---
 
-### file_delete
+## Buffered I/O
 
-```
-file_delete(path: str) -> bool
-```
+For large files or line-by-line reading, use `BufReader` and `BufWriter`. These wrap a `File` and buffer reads/writes internally to reduce syscall overhead.
 
-Delete a file. Returns `true` on success.
+### buf_reader
 
-**Example:**
+`buf_reader(file: File) -> BufReader`
 
-```kryos
-file_delete("temp_output.txt")
-```
-
-**Edge cases:**
-
-- Throws a runtime error if the file does not exist or cannot be deleted.
-- Does not work on directories. Use `dir_remove` for directories.
-
-**See also:** `dir_remove`, `file_exists`
-
----
-
-### file_lines
-
-```
-file_lines(path: str) -> [str]
-```
-
-Read a file and return its non-empty lines as an array of strings. Trailing newlines and carriage returns are stripped from each line. Empty lines (whitespace-only) are excluded.
+Create a `BufReader` with the default buffer size (8192 bytes).
 
 **Example:**
-
 ```kryos
-let lines = file_lines("data.csv")
-for line in lines {
+use std::io
+
+let f = open("large.log")
+let mut reader = buf_reader(f)
+
+while not reader.is_eof() {
+    let line = reader.read_line()
     println(line)
 }
+reader.close()
 ```
-
-**Edge cases:**
-
-- Throws a runtime error if the file does not exist.
-- Lines that contain only whitespace are skipped entirely.
-
-**See also:** `file_read`, `split`
 
 ---
 
-### file_copy
+### buf_reader_sized
 
-```
-file_copy(src: str, dst: str) -> bool
-```
+`buf_reader_sized(file: File, size: i64) -> BufReader`
 
-Copy a file from `src` to `dst`, preserving metadata (timestamps, permissions). Returns `true` on success.
+Create a `BufReader` with a custom buffer size in bytes.
 
 **Example:**
-
 ```kryos
-file_copy("template.txt", "output.txt")
+let f = open("data.bin")
+let reader = buf_reader_sized(f, 65536)
 ```
-
-**Edge cases:**
-
-- Overwrites `dst` if it already exists.
-- Throws a runtime error if `src` does not exist or `dst` is not writable.
-
-**See also:** `file_move`
 
 ---
 
-### file_move
+### BufReader Methods
 
-```
-file_move(src: str, dst: str) -> bool
-```
+#### BufReader.read_line
 
-Move (rename) a file from `src` to `dst`. Returns `true` on success.
+`read_line(self: BufReader) -> str`
 
-**Example:**
-
-```kryos
-file_move("draft.txt", "final.txt")
-```
-
-**Edge cases:**
-
-- The source file no longer exists after a successful move.
-- Can move across directories.
-- Throws a runtime error if `src` does not exist.
-
-**See also:** `file_copy`, `file_delete`
-
----
-
-### file_size
-
-```
-file_size(path: str) -> i32
-```
-
-Return the size of a file in bytes.
+Read the next line from the file. Strips the trailing newline (and carriage return on Windows). Returns an empty string after EOF.
 
 **Example:**
-
 ```kryos
-let size = file_size("data.bin")
-println("File is " + to_string(size) + " bytes")
-```
-
-**Edge cases:**
-
-- Throws a runtime error if the file does not exist.
-
-**See also:** `file_exists`, `file_modified`
-
----
-
-### file_modified
-
-```
-file_modified(path: str) -> i32
-```
-
-Return the last modification time of a file as a Unix timestamp (seconds since epoch).
-
-**Example:**
-
-```kryos
-let ts = file_modified("config.toml")
-println("Last modified: " + to_string(ts))
-```
-
-**Edge cases:**
-
-- Throws a runtime error if the file does not exist.
-
-**See also:** `file_size`
-
----
-
-### file_is_dir
-
-```
-file_is_dir(path: str) -> bool
-```
-
-Check whether the path points to a directory.
-
-**Example:**
-
-```kryos
-if file_is_dir("src") {
-    let entries = dir_list("src")
-    println("Source has " + to_string(len(entries)) + " entries")
+let f = open("names.txt")
+let mut r = buf_reader(f)
+while not r.is_eof() {
+    let name = r.read_line()
+    println("Name: " + name)
 }
+r.close()
 ```
-
-**See also:** `file_is_file`, `file_exists`
 
 ---
 
-### file_is_file
+#### BufReader.is_eof
 
-```
-file_is_file(path: str) -> bool
-```
+`is_eof(self: BufReader) -> bool`
 
-Check whether the path points to a regular file (not a directory).
-
-**Example:**
-
-```kryos
-if file_is_file("main.kry") {
-    println("Found main source file")
-}
-```
-
-**See also:** `file_is_dir`, `file_exists`
+Return `true` if the reader has reached end of file and the internal buffer is exhausted.
 
 ---
 
-## Directory Operations
+#### BufReader.fill
 
-### dir_list
+`fill(self: BufReader) -> BufReader`
 
-```
-dir_list(path: str) -> [str]
-```
+Manually fill the internal buffer from the underlying file. Called automatically by `read_line` as needed.
 
-List the names of all entries (files and subdirectories) in a directory. Returns a sorted array of names (not full paths).
+---
+
+#### BufReader.close
+
+`close(self: BufReader) -> BufReader`
+
+Close the underlying file handle.
+
+---
+
+### buf_writer
+
+`buf_writer(file: File) -> BufWriter`
+
+Create a `BufWriter` with the default buffer size (8192 bytes). Writes are accumulated in memory and flushed to the file automatically when the buffer is full, or manually via `flush`.
 
 **Example:**
-
 ```kryos
-let entries = dir_list(".")
-for entry in entries {
-    println(entry)
-}
+use std::io
+
+let f = create("output.csv")
+let mut w = buf_writer(f)
+w = w.write("name,score\n")
+w = w.write("alice,98\n")
+w = w.write("bob,87\n")
+w.close()
 ```
+
+---
+
+### buf_writer_sized
+
+`buf_writer_sized(file: File, size: i64) -> BufWriter`
+
+Create a `BufWriter` with a custom buffer size in bytes.
+
+---
+
+### BufWriter Methods
+
+#### BufWriter.write
+
+`write(self: BufWriter, data: str) -> BufWriter`
+
+Write data to the internal buffer. Flushes automatically to the underlying file when the buffer reaches capacity. Returns an updated `BufWriter`.
+
+---
+
+#### BufWriter.flush
+
+`flush(self: BufWriter) -> BufWriter`
+
+Flush any buffered data to the underlying file immediately. Returns an updated `BufWriter` with an empty buffer.
 
 **Edge cases:**
-
-- Throws a runtime error if the path does not exist or is not a directory.
-- Does not include `.` or `..`.
-- Returns names only, not full paths. Use `path_join` to build full paths.
-
-**See also:** `glob`, `path_join`
+- Always call `flush` or `close` before the program exits, or buffered data may be lost.
 
 ---
 
-### dir_create
+#### BufWriter.close
 
-```
-dir_create(path: str) -> bool
-```
+`close(self: BufWriter) -> BufWriter`
 
-Create a directory, including any missing parent directories. Returns `true` on success.
-
-**Example:**
-
-```kryos
-dir_create("output/reports/2026")
-```
-
-**Edge cases:**
-
-- Does not throw if the directory already exists.
-- Creates all intermediate directories.
-
-**See also:** `dir_remove`, `file_is_dir`
+Flush remaining data and close the underlying file handle.
 
 ---
 
-### dir_remove
+## Console Output
 
-```
-dir_remove(path: str) -> bool
-```
+These functions write to stdout or stderr. Prefer the core builtins `print` and `println` for ordinary output. Use `eprint`/`eprintln` to write diagnostic or error output to stderr without mixing with stdout.
 
-Remove a directory and all of its contents recursively. Returns `true` on success.
+### print
 
-**Example:**
+`print(msg: str) -> i64`
 
-```kryos
-dir_remove("build")
-```
-
-**Edge cases:**
-
-- Deletes everything inside the directory. Use with caution.
-- Throws a runtime error if the path does not exist.
-
-**See also:** `dir_create`, `file_delete`
+Write `msg` to stdout without a trailing newline. Returns the number of bytes written.
 
 ---
 
-## Glob
+### println
 
-### glob
+`println(msg: str) -> i64`
 
-```
-glob(pattern: str) -> [str]
-```
-
-Find all file paths matching a glob pattern. Supports `*`, `**` (recursive), and `?` wildcards. Returns a sorted array of matching paths.
-
-**Example:**
-
-```kryos
-let sources = glob("src/**/*.kry")
-for f in sources {
-    println(f)
-}
-```
-
-```kryos
-let configs = glob("*.toml")
-println("Found " + to_string(len(configs)) + " config files")
-```
-
-**Edge cases:**
-
-- Returns an empty array if no files match.
-- `**` matches across directory boundaries (recursive).
-- Throws a runtime error only if the pattern itself is invalid.
-
-**See also:** `dir_list`
+Write `msg` to stdout followed by a newline. Returns the number of bytes written.
 
 ---
 
-## Path Utilities
+### eprint
 
-### path_join
+`eprint(msg: str) -> i64`
 
-```
-path_join(parts: ...str) -> str
-```
-
-Join path segments with the platform path separator. Always returns forward slashes.
+Write `msg` to stderr without a trailing newline.
 
 **Example:**
-
 ```kryos
-let full = path_join("src", "lib", "main.kry")
-println(full)  // "src/lib/main.kry"
-```
+use std::io
 
-**See also:** `path_dirname`, `path_basename`
+eprint("warning: retrying connection\n")
+```
 
 ---
 
-### path_dirname
+### eprintln
 
-```
-path_dirname(path: str) -> str
-```
+`eprintln(msg: str) -> i64`
 
-Return the directory portion of a path.
+Write `msg` to stderr followed by a newline.
 
 **Example:**
-
 ```kryos
-let dir = path_dirname("src/lib/main.kry")
-println(dir)  // "src/lib"
-```
+use std::io
 
-**See also:** `path_basename`, `path_join`
+eprintln("error: config file not found")
+```
 
 ---
 
-### path_basename
+## Console Input
 
-```
-path_basename(path: str) -> str
-```
+### read_line
 
-Return the final component of a path (the file name).
+`read_line() -> str`
 
-**Example:**
-
-```kryos
-let name = path_basename("src/lib/main.kry")
-println(name)  // "main.kry"
-```
-
-**See also:** `path_dirname`, `path_extension`
-
----
-
-### path_extension
-
-```
-path_extension(path: str) -> str
-```
-
-Return the file extension without the leading dot.
+Read a single line from stdin. Blocks until the user presses Enter. Strips the trailing newline (and `\r\n` on Windows).
 
 **Example:**
-
 ```kryos
-let ext = path_extension("report.pdf")
-println(ext)  // "pdf"
-```
+use std::io
 
-**Edge cases:**
-
-- Returns an empty string if the file has no extension.
-- If the file has multiple dots (e.g., `archive.tar.gz`), returns only the last extension (`gz`).
-
-**See also:** `path_basename`
-
----
-
-### path_resolve
-
-```
-path_resolve(path: str) -> str
-```
-
-Return the absolute path, resolving relative segments. Always returns forward slashes.
-
-**Example:**
-
-```kryos
-let abs = path_resolve("../config.toml")
-println(abs)  // "/home/user/config.toml"
-```
-
-**See also:** `cwd`
-
----
-
-## Environment and Temp
-
-### stdin_read
-
-```
-stdin_read() -> str
-```
-
-Read one line of input from stdin. Blocks until the user presses Enter.
-
-**Example:**
-
-```kryos
-println("What is your name?")
-let name = stdin_read()
+print("Enter your name: ")
+let name = read_line()
 println("Hello, " + name)
 ```
 
 **Edge cases:**
+- Returns an empty string on EOF (e.g., when stdin is piped and exhausted).
+- Buffer size is 4096 bytes. Lines longer than 4096 bytes are truncated.
 
-- Returns an empty string on EOF.
-
----
-
-### env_get
-
-```
-env_get(name: str) -> str
-```
-
-Get the value of an environment variable. Returns an empty string if the variable is not set.
-
-**Example:**
-
-```kryos
-let home = env_get("HOME")
-println("Home directory: " + home)
-```
-
-**Edge cases:**
-
-- Returns `""` (empty string) if the variable does not exist. Does not throw.
-
-**See also:** `env_set`
+**See also:** `stdin_read` (core builtin)
 
 ---
 
-### env_set
+### read_stdin
 
-```
-env_set(name: str, value: str) -> none
-```
+`read_stdin(n: i64) -> str`
 
-Set an environment variable for the current process.
+Read up to `n` bytes from stdin. Does not strip newlines.
 
 **Example:**
-
 ```kryos
-env_set("APP_MODE", "production")
-let mode = env_get("APP_MODE")
-println(mode)  // "production"
-```
+use std::io
 
-**Edge cases:**
-
-- Only affects the current process. Child processes inherit the variable, but the parent shell does not see it.
-
-**See also:** `env_get`
-
----
-
-### cwd
-
-```
-cwd() -> str
-```
-
-Return the current working directory as an absolute path with forward slashes.
-
-**Example:**
-
-```kryos
-let dir = cwd()
-println("Working in: " + dir)
+let raw = read_stdin(1024)
+println("Read " + to_string(len(raw)) + " bytes")
 ```
 
 ---
 
-### temp_file
+## Planned Functions
 
-```
-temp_file(prefix: str?) -> str
-```
+> **Implementation Status:** The following functions are planned for `std::io`. They are not yet available in the runtime. Use the `File` struct API above as the current alternative.
 
-Create a temporary file and return its path. The file is created empty on disk. The optional `prefix` argument sets a name prefix (defaults to `"kryos_"`).
-
-**Example:**
-
-```kryos
-let tmp = temp_file()
-file_write(tmp, "scratch data")
-println("Temp file at: " + tmp)
-```
-
-```kryos
-let tmp = temp_file("report_")
-file_write(tmp, "data")
-```
-
-**Edge cases:**
-
-- The file is created immediately. You are responsible for deleting it when done.
-- Path always uses forward slashes.
-
-**See also:** `temp_dir`, `file_delete`
-
----
-
-### temp_dir
-
-```
-temp_dir(prefix: str?) -> str
-```
-
-Create a temporary directory and return its path. The optional `prefix` argument sets a name prefix (defaults to `"kryos_"`).
-
-**Example:**
-
-```kryos
-let dir = temp_dir("build_")
-file_write(path_join(dir, "output.txt"), "result")
-```
-
-**Edge cases:**
-
-- The directory is created immediately. You are responsible for removing it when done.
-
-**See also:** `temp_file`, `dir_remove`
+| Function | Planned signature | Alternative today |
+|----------|-------------------|-------------------|
+| `file_read` | `file_read(path: str) -> str` | `open(path).read_all()` |
+| `file_write` | `file_write(path: str, content: str)` | `create(path).write_all(content)` |
+| `file_append` | `file_append(path: str, content: str)` | `open_append(path).write_all(content)` |
+| `file_exists` | `file_exists(path: str) -> bool` | planned |
+| `file_delete` | `file_delete(path: str)` | planned |
+| `file_lines` | `file_lines(path: str) -> [str]` | `open(path).read_all()` + `split(text, "\n")` |
+| `file_copy` | `file_copy(src: str, dst: str)` | planned |
+| `file_move` | `file_move(src: str, dst: str)` | planned |
+| `file_size` | `file_size(path: str) -> i64` | planned |
+| `file_modified` | `file_modified(path: str) -> i64` | planned |
+| `file_is_dir` | `file_is_dir(path: str) -> bool` | planned |
+| `file_is_file` | `file_is_file(path: str) -> bool` | planned |
+| `dir_list` | `dir_list(path: str) -> [str]` | planned |
+| `dir_create` | `dir_create(path: str)` | planned |
+| `dir_remove` | `dir_remove(path: str)` | planned |
+| `glob` | `glob(pattern: str) -> [str]` | planned |
+| `path_join` | `path_join(parts: ...str) -> str` | planned |
+| `path_dirname` | `path_dirname(path: str) -> str` | planned |
+| `path_basename` | `path_basename(path: str) -> str` | planned |
+| `path_extension` | `path_extension(path: str) -> str` | planned |
+| `path_resolve` | `path_resolve(path: str) -> str` | planned |
+| `env_get` | `env_get(name: str) -> str` | planned |
+| `env_set` | `env_set(name: str, value: str)` | planned |
+| `cwd` | `cwd() -> str` | planned |
+| `temp_file` | `temp_file(prefix: str?) -> str` | planned |
+| `temp_dir` | `temp_dir(prefix: str?) -> str` | planned |
