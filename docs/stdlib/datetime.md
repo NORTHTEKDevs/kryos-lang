@@ -1,267 +1,322 @@
 # std::datetime
 
-Date, time, and timestamp functions. All timestamps are Unix seconds (float) unless otherwise noted. Internal times are UTC.
+Date, time, duration, and instant measurement. Built around three types: `Duration` (a span of time), `Instant` (a point in time), and `DateTime` (a calendar-aware timestamp).
 
 ```kryos
-import std::datetime
+use std::datetime
 ```
 
 ---
 
-### now
+## Duration
 
-`now() -> Float`
+A span of time. Use `Duration` to express delays, timeouts, and measured intervals.
 
-Current Unix timestamp in seconds (with fractional milliseconds).
+### Duration.from_millis
 
-**Example:**
-```kryos
-let start = now()
-sleep(1)
-let elapsed = now() - start
-print("Took " + to_string(elapsed) + " seconds")
-```
+`Duration.from_millis(ms: i64) -> Duration`
 
-**See also:** now_ms, now_iso
-
----
-
-### now_ms
-
-`now_ms() -> Int`
-
-Current Unix timestamp in milliseconds.
+Create a `Duration` from a number of milliseconds.
 
 **Example:**
 ```kryos
-let id = "evt_" + to_string(now_ms())
-print(id)  // evt_1714000000000
-```
+use std::datetime
 
-**See also:** now
-
----
-
-### now_iso
-
-`now_iso() -> String`
-
-Current time as an ISO 8601 string in UTC.
-
-**Example:**
-```kryos
-print(now_iso())  // 2026-04-01T12:00:00.000000+00:00
-```
-
-**See also:** now_local
-
----
-
-### now_local
-
-`now_local() -> String`
-
-Current local time as an ISO 8601 string (uses the system timezone).
-
-**Example:**
-```kryos
-print(now_local())  // 2026-04-01T04:00:00.000000
-```
-
-**See also:** now_iso
-
----
-
-### timestamp_to_iso
-
-`timestamp_to_iso(timestamp: Float) -> String`
-
-Convert a Unix timestamp to an ISO 8601 string (UTC).
-
-**Example:**
-```kryos
-let iso = timestamp_to_iso(1714000000)
-print(iso)  // 2024-04-25T02:26:40+00:00
-```
-
-**See also:** iso_to_timestamp
-
----
-
-### iso_to_timestamp
-
-`iso_to_timestamp(iso_string: String) -> Float`
-
-Convert an ISO 8601 string to a Unix timestamp.
-
-**Example:**
-```kryos
-let ts = iso_to_timestamp("2024-04-25T02:26:40+00:00")
-print(ts)  // 1714000000.0
-```
-
-**Edge cases:**
-- Handles the `Z` suffix by converting it to `+00:00`.
-- Raises on unparseable date strings.
-
-**See also:** timestamp_to_iso
-
----
-
-### format_date
-
-`format_date(timestamp: Float, format: String) -> String`
-
-Format a Unix timestamp using strftime format codes. Output is in UTC.
-
-**Common format codes:**
-| Code | Meaning | Example |
-|------|---------|---------|
-| `%Y` | 4-digit year | 2026 |
-| `%m` | Month (01-12) | 04 |
-| `%d` | Day (01-31) | 01 |
-| `%H` | Hour (00-23) | 14 |
-| `%M` | Minute (00-59) | 30 |
-| `%S` | Second (00-59) | 00 |
-| `%A` | Weekday name | Tuesday |
-| `%B` | Month name | April |
-
-**Example:**
-```kryos
-let ts = now()
-print(format_date(ts, "%Y-%m-%d"))           // 2026-04-01
-print(format_date(ts, "%B %d, %Y"))          // April 01, 2026
-print(format_date(ts, "%Y-%m-%d %H:%M:%S"))  // 2026-04-01 14:30:00
-```
-
-**See also:** parse_date
-
----
-
-### parse_date
-
-`parse_date(date_string: String, format: String) -> Float`
-
-Parse a date string using strftime format codes. Returns a Unix timestamp. The parsed datetime is treated as local time (no timezone).
-
-**Example:**
-```kryos
-let ts = parse_date("2026-04-01", "%Y-%m-%d")
-print(format_date(ts, "%A"))  // day of week
-```
-
-```kryos
-let ts = parse_date("April 01, 2026 14:30", "%B %d, %Y %H:%M")
-```
-
-**Edge cases:**
-- Raises on format mismatches.
-- The result is a local-time timestamp (not UTC-adjusted).
-
-**See also:** format_date
-
----
-
-### date_add
-
-`date_add(timestamp: Float, seconds: Float) -> Float`
-
-Add seconds to a timestamp. Use negative values for subtraction.
-
-**Example:**
-```kryos
-let tomorrow = date_add(now(), duration(1, "d"))
-let yesterday = date_add(now(), -duration(1, "d"))
-print(format_date(tomorrow, "%Y-%m-%d"))
-```
-
-**See also:** date_diff, duration
-
----
-
-### date_diff
-
-`date_diff(timestamp1: Float, timestamp2: Float) -> Float`
-
-Difference between two timestamps in seconds. Result is `timestamp1 - timestamp2`.
-
-**Example:**
-```kryos
-let start = now()
-// ... do work ...
-let elapsed = date_diff(now(), start)
-print("Took " + to_string(elapsed) + " seconds")
-```
-
-```kryos
-let a = parse_date("2026-04-01", "%Y-%m-%d")
-let b = parse_date("2026-03-01", "%Y-%m-%d")
-let days = date_diff(a, b) / duration(1, "d")
-print(to_string(days) + " days apart")  // 31.0 days apart
-```
-
-**See also:** date_add
-
----
-
-### date_parts
-
-`date_parts(timestamp: Float) -> Map`
-
-Break a timestamp into its component parts (UTC).
-
-**Returned map fields:**
-| Field | Type | Description |
-|-------|------|-------------|
-| `year` | Int | 4-digit year |
-| `month` | Int | 1-12 |
-| `day` | Int | 1-31 |
-| `hour` | Int | 0-23 |
-| `minute` | Int | 0-59 |
-| `second` | Int | 0-59 |
-| `weekday` | Int | 0 (Monday) - 6 (Sunday) |
-| `day_of_year` | Int | 1-366 |
-
-**Example:**
-```kryos
-let parts = date_parts(now())
-print("Year: " + to_string(parts.year))
-print("Month: " + to_string(parts.month))
-
-if parts.weekday >= 5 {
-    print("It's the weekend!")
-}
+let timeout = Duration.from_millis(500)
 ```
 
 ---
 
-### duration
+### Duration.from_secs
 
-`duration(value: Float, unit: String) -> Float`
+`Duration.from_secs(secs: i64) -> Duration`
 
-Convert a duration to seconds. Useful with `date_add` and `sleep`.
-
-**Supported units:**
-| Unit | Meaning |
-|------|---------|
-| `"s"` | Seconds |
-| `"m"` | Minutes |
-| `"h"` | Hours |
-| `"d"` | Days |
-| `"w"` | Weeks |
+Create a `Duration` from a number of seconds.
 
 **Example:**
 ```kryos
-print(duration(1, "h"))   // 3600.0
-print(duration(7, "d"))   // 604800.0
-print(duration(2, "w"))   // 1209600.0
+use std::datetime
 
-sleep(duration(500, "s") / 1000)  // sleep 0.5 seconds (use math)
-
-let expires = date_add(now(), duration(30, "d"))
+let one_second = Duration.from_secs(1)
+let five_minutes = Duration.from_secs(300)
 ```
 
-**Edge cases:**
-- Raises on unknown unit strings.
+---
 
-**See also:** date_add, sleep
+### Duration.from_mins
+
+`Duration.from_mins(mins: i64) -> Duration`
+
+Create a `Duration` from a number of minutes.
+
+**Example:**
+```kryos
+use std::datetime
+
+let half_hour = Duration.from_mins(30)
+```
+
+---
+
+### Duration.from_hours
+
+`Duration.from_hours(hours: i64) -> Duration`
+
+Create a `Duration` from a number of hours.
+
+**Example:**
+```kryos
+use std::datetime
+
+let one_day = Duration.from_hours(24)
+```
+
+---
+
+### Duration.zero
+
+`Duration.zero() -> Duration`
+
+Create a zero-length `Duration`.
+
+**Example:**
+```kryos
+use std::datetime
+
+let d = Duration.zero()
+```
+
+---
+
+## Instant
+
+A point in time. Use `Instant` for timestamps, sleeping, and benchmarking code.
+
+### Instant.now
+
+`Instant.now() -> Instant`
+
+Capture the current moment as an `Instant`.
+
+**Example:**
+```kryos
+use std::datetime
+
+let start = Instant.now()
+```
+
+---
+
+### Instant.timestamp
+
+`Instant.timestamp() -> i64`
+
+Return the Unix timestamp (seconds since 1970-01-01 00:00:00 UTC) for this instant.
+
+**Example:**
+```kryos
+use std::datetime
+
+let now = Instant.now()
+println(now.timestamp())   // e.g. 1713110400
+```
+
+---
+
+### Instant.timestamp_millis
+
+`Instant.timestamp_millis() -> i64`
+
+Return the Unix timestamp in milliseconds for this instant.
+
+**Example:**
+```kryos
+use std::datetime
+
+let now = Instant.now()
+println(now.timestamp_millis())   // e.g. 1713110400000
+```
+
+---
+
+### Instant.measure
+
+`Instant.measure(f: fn) -> Duration`
+
+Call `f` with no arguments and return the `Duration` it took to execute.
+
+**Example:**
+```kryos
+use std::datetime
+
+let elapsed = Instant.measure(fn() {
+    let sum = 0
+    let i = 0
+    while i < 1000000 {
+        sum = sum + i
+        i = i + 1
+    }
+})
+println(elapsed.from_millis(0))   // Duration of the loop
+```
+
+**Note:** `f` must take no arguments and may return any value; the return value is discarded.
+
+---
+
+### Instant.sleep
+
+`Instant.sleep(d: Duration)`
+
+Pause execution for the duration `d`.
+
+**Example:**
+```kryos
+use std::datetime
+
+Instant.sleep(Duration.from_millis(500))   // sleep 500ms
+Instant.sleep(Duration.from_secs(2))       // sleep 2 seconds
+```
+
+---
+
+### Instant.sleep_millis
+
+`Instant.sleep_millis(ms: i64)`
+
+Pause execution for `ms` milliseconds. Convenience wrapper over `Instant.sleep`.
+
+**Example:**
+```kryos
+use std::datetime
+
+Instant.sleep_millis(100)
+```
+
+---
+
+### Instant.sleep_secs
+
+`Instant.sleep_secs(secs: i64)`
+
+Pause execution for `secs` seconds. Convenience wrapper over `Instant.sleep`.
+
+**Example:**
+```kryos
+use std::datetime
+
+Instant.sleep_secs(5)
+```
+
+---
+
+## DateTime
+
+A UTC-anchored calendar date and time. Use `DateTime` when you need human-readable timestamps, ISO 8601 formatting, or working from Unix epoch values.
+
+### DateTime.now_utc
+
+`DateTime.now_utc() -> DateTime`
+
+Return a `DateTime` representing the current moment in UTC.
+
+**Example:**
+```kryos
+use std::datetime
+
+let now = DateTime.now_utc()
+```
+
+---
+
+### DateTime.from_timestamp
+
+`DateTime.from_timestamp(ts: i64) -> DateTime`
+
+Construct a `DateTime` from a Unix timestamp (seconds since epoch).
+
+**Example:**
+```kryos
+use std::datetime
+
+let dt = DateTime.from_timestamp(1713110400)
+```
+
+---
+
+### DateTime.now_iso
+
+`DateTime.now_iso() -> str`
+
+Return the current UTC time as an ISO 8601 string.
+
+**Example:**
+```kryos
+use std::datetime
+
+let iso = DateTime.now_iso()
+println(iso)   // e.g. "2024-04-14T16:00:00Z"
+```
+
+---
+
+### DateTime.format_timestamp
+
+`DateTime.format_timestamp(ts: i64, fmt: str) -> str`
+
+Format a Unix timestamp using a format string. Format tokens follow `strftime` conventions.
+
+**Common tokens:**
+
+| Token | Meaning                    | Example   |
+|-------|----------------------------|-----------|
+| `%Y`  | 4-digit year               | `2024`    |
+| `%m`  | 2-digit month (01-12)      | `04`      |
+| `%d`  | 2-digit day (01-31)        | `14`      |
+| `%H`  | Hour, 24-hour (00-23)      | `16`      |
+| `%M`  | Minute (00-59)             | `30`      |
+| `%S`  | Second (00-59)             | `05`      |
+| `%A`  | Full weekday name          | `Sunday`  |
+| `%B`  | Full month name            | `April`   |
+
+**Example:**
+```kryos
+use std::datetime
+
+let ts = Instant.now().timestamp()
+let date_str = DateTime.format_timestamp(ts, "%Y-%m-%d")
+println(date_str)   // e.g. "2024-04-14"
+
+let full = DateTime.format_timestamp(ts, "%A, %B %d %Y at %H:%M")
+println(full)   // e.g. "Sunday, April 14 2024 at 16:30"
+```
+
+---
+
+## Complete Example
+
+```kryos
+use std::datetime
+
+// Benchmark a block of code
+let elapsed = Instant.measure(fn() {
+    Instant.sleep_millis(50)
+})
+
+// Get current timestamps
+let now = Instant.now()
+println(now.timestamp())          // Unix seconds
+println(now.timestamp_millis())   // Unix milliseconds
+
+// Format a date
+let formatted = DateTime.format_timestamp(now.timestamp(), "%Y-%m-%d %H:%M:%S")
+println(formatted)   // e.g. "2024-04-14 16:30:00"
+
+// ISO string
+println(DateTime.now_iso())   // "2024-04-14T16:30:00Z"
+
+// Sleep
+println("starting...")
+Instant.sleep(Duration.from_secs(1))
+println("done after 1 second")
+```

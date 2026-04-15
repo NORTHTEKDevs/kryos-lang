@@ -1,145 +1,243 @@
 # std::process
 
-Process execution, timing, and control. Provides shell command execution for tool integration, CLI argument access, and spawn synchronization.
+Environment variables, command-line arguments, process exit, and subprocess execution.
 
 ```kryos
-import std::process
+use std::process
 ```
 
 ---
 
-### exec
+## Types
 
-`exec(command: String) -> Map`
+### Args
 
-Execute a shell command. Returns a map with `stdout`, `stderr`, and `exit_code` fields. Default timeout is 30 seconds.
+The return type of `args()` and `parse_args()`. Provides structured access to parsed command-line arguments.
+
+### Command
+
+The return type of `command()`. Represents a subprocess to be configured and run.
+
+---
+
+## Environment Variables
+
+### env_get
+
+`env_get(name: str) -> str`
+
+Return the value of the environment variable `name`. Throws if the variable is not set.
 
 **Example:**
 ```kryos
-let result = exec("echo hello")
-print(result.stdout)     // hello\n
-print(result.exit_code)  // 0
+use std::process
+
+let home = env_get("HOME")
+println(home)   // e.g. /home/alice
 ```
 
+**See also:** `env_get_or`, `env_has`
+
+---
+
+### env_get_or
+
+`env_get_or(name: str, default: str) -> str`
+
+Return the value of environment variable `name`, or `default` if it is not set.
+
+**Example:**
 ```kryos
-let result = exec("ls nonexistent")
-if result.exit_code != 0 {
-    print("Error: " + result.stderr)
+use std::process
+
+let port = env_get_or("PORT", "3000")
+println(port)   // uses PORT if set, otherwise "3000"
+
+let level = env_get_or("LOG_LEVEL", "info")
+```
+
+---
+
+### env_has
+
+`env_has(name: str) -> bool`
+
+Return `true` if the environment variable `name` is set.
+
+**Example:**
+```kryos
+use std::process
+
+if env_has("DEBUG") {
+    println("debug mode enabled")
 }
 ```
 
-**Edge cases:**
-- If the command times out (30s), returns `exit_code: -1` and `stderr: "Command timed out"`.
-- The command runs in a shell (`sh -c` on Unix, `cmd /c` on Windows).
-
-**See also:** exec_capture, exec_timeout
-
 ---
 
-### exec_capture
-
-`exec_capture(command: String) -> String`
-
-Execute a shell command and return its stdout as a string. Raises on non-zero exit or timeout.
-
-**Example:**
-```kryos
-let version = exec_capture("kryos --version")
-print(version)  // kryos 0.1.0
-```
-
-**Edge cases:**
-- Raises a runtime error if the command exits with a non-zero code (includes stderr in the message).
-- Raises on timeout (30s default).
-- Use `exec` instead if you need to handle errors without exceptions.
-
-**See also:** exec
-
----
-
-### exec_timeout
-
-`exec_timeout(command: String, seconds: Float) -> Map`
-
-Execute a shell command with a custom timeout. Returns the same map structure as `exec`.
-
-**Example:**
-```kryos
-let result = exec_timeout("ping -c 3 localhost", 10)
-print(result.stdout)
-```
-
-```kryos
-// Kill long-running processes after 2 seconds
-let result = exec_timeout("sleep 60", 2)
-print(result.exit_code)  // -1 (timed out)
-```
-
-**See also:** exec
-
----
-
-### sleep
-
-`sleep(seconds: Float) -> Nil`
-
-Pause execution for the given number of seconds.
-
-**Example:**
-```kryos
-print("Starting...")
-sleep(1.5)
-print("Done.")
-```
-
----
-
-### args
-
-`args() -> Array`
-
-Return command-line arguments passed after the script filename.
-
-**Example:**
-```kryos
-// Run: kryos script.kry hello world
-let argv = args()
-print(argv)  // ["hello", "world"]
-```
-
-**Edge cases:**
-- Returns an empty array if no arguments were passed.
-
----
+## Process Exit
 
 ### exit
 
-`exit() -> Nil`
-`exit(code: Int) -> Nil`
+`exit(code: i32) -> !`
 
-Exit the program with an optional exit code. Default is 0.
+Terminate the process with the given exit code. Never returns.
 
 **Example:**
 ```kryos
-if !valid {
-    print("Invalid input")
+use std::process
+
+if !env_has("API_KEY") {
+    println("error: API_KEY is required")
     exit(1)
 }
 ```
 
 ---
 
-### wait_all
+### exit_ok
 
-`wait_all() -> Nil`
-`wait_all(handle1: Thread, handle2: Thread, ...) -> Nil`
+`exit_ok() -> !`
 
-Wait for spawned threads to complete. With no arguments, waits for all threads tracked by the interpreter. With arguments, waits only for the specified handles.
+Terminate the process with exit code `0` (success). Equivalent to `exit(0)`.
 
 **Example:**
 ```kryos
-spawn { sleep(1); print("task 1 done") }
-spawn { sleep(2); print("task 2 done") }
-wait_all()
-print("all tasks complete")
+use std::process
+
+println("done")
+exit_ok()
+```
+
+---
+
+### exit_error
+
+`exit_error(message: str) -> !`
+
+Print `message` to stderr and terminate with exit code `1`.
+
+**Example:**
+```kryos
+use std::process
+
+exit_error("fatal: configuration file not found")
+// prints to stderr and exits with code 1
+```
+
+---
+
+## Command-Line Arguments
+
+### argc
+
+`argc() -> i64`
+
+Return the number of command-line arguments, including the program name at index 0.
+
+**Example:**
+```kryos
+use std::process
+
+println(argc())   // e.g. 3 for: kryos run main.kry --verbose
+```
+
+---
+
+### argv
+
+`argv(i: i64) -> str`
+
+Return the command-line argument at index `i`. Index `0` is the program name. Throws if `i` is out of bounds.
+
+**Example:**
+```kryos
+use std::process
+
+let program = argv(0)
+let first_arg = argv(1)
+println(program)    // e.g. "main"
+println(first_arg)  // e.g. "--verbose"
+```
+
+---
+
+### args
+
+`args() -> Args`
+
+Return all command-line arguments as an `Args` value for structured access.
+
+**Example:**
+```kryos
+use std::process
+
+let a = args()
+```
+
+---
+
+### parse_args
+
+`parse_args(definition: str) -> Args`
+
+Parse command-line arguments according to a definition string and return structured `Args`.
+
+**Example:**
+```kryos
+use std::process
+
+let a = parse_args("--verbose --output=<file>")
+```
+
+---
+
+## Subprocess Execution
+
+### command
+
+`command(cmd: str) -> Command`
+
+Create a `Command` to run a shell command. Returns a `Command` value that can be configured and executed.
+
+**Example:**
+```kryos
+use std::process
+
+let cmd = command("ls -la /tmp")
+```
+
+**Note:** The `Command` type is returned for further configuration and execution. See the `Command` struct documentation for available methods such as `.run()`, `.output()`, and `.env()`.
+
+---
+
+## Complete Example
+
+```kryos
+use std::process
+
+// Read required config from environment
+if !env_has("DATABASE_URL") {
+    exit_error("DATABASE_URL is not set")
+}
+let db_url = env_get("DATABASE_URL")
+let log_level = env_get_or("LOG_LEVEL", "info")
+
+println(log_level)
+println(db_url)
+
+// Check arguments
+if argc() < 2 {
+    println("usage: myapp <command>")
+    exit(1)
+}
+
+let subcommand = argv(1)
+
+if subcommand == "version" {
+    println("v1.0.0")
+    exit_ok()
+}
+
+println(subcommand)
 ```

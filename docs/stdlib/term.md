@@ -1,439 +1,359 @@
 # std::term
 
-Terminal control: screen management, cursor positioning, ANSI colors, text styling, and raw key input.
-
-All functions in this module are available after `use std::term`. Functions emit ANSI escape sequences, so they work in any terminal emulator that supports them. On Windows, raw key reading uses `msvcrt`; on Unix it uses `termios`.
-
----
-
-## Output Control
-
-### term_clear
-
-```
-term_clear() -> none
-```
-
-Clear the entire terminal screen and move the cursor to the top-left corner (row 1, column 1).
-
-**Example:**
+Terminal control: dimensions, cursor positioning, ANSI colors, raw mode, and screen management. All functions emit ANSI escape sequences and work in any terminal emulator that supports them. On Windows, raw mode uses `msvcrt`; on Unix it uses `termios`.
 
 ```kryos
-term_clear()
-println("Fresh screen")
+use std::term
 ```
 
 ---
 
-### term_write
+## Terminal Dimensions
 
-```
-term_write(text: str) -> none
-```
+### width
 
-Write text directly to stdout without a trailing newline. The output is flushed immediately.
+`width() -> i32`
+
+Return the current terminal width in columns.
 
 **Example:**
-
 ```kryos
-term_write("Loading")
-term_write(".")
-term_write(".")
-term_write(".")
-println("")  // now add the newline
+use std::term
+
+let cols = width()
+println(cols)   // e.g. 220
 ```
-
-**Edge cases:**
-
-- Unlike `print` and `println`, this writes raw text with no formatting.
-
-**See also:** `term_flush`
 
 ---
 
-### term_flush
+### height
 
-```
-term_flush() -> none
-```
+`height() -> i32`
 
-Flush stdout. Useful after writing partial output that you want to appear immediately.
+Return the current terminal height in rows.
 
 **Example:**
-
 ```kryos
-term_write("Processing... ")
-// do work
-term_flush()
+use std::term
+
+let rows = height()
+println(rows)   // e.g. 50
 ```
-
-**Edge cases:**
-
-- `term_write` already flushes after every call, so you only need this after using lower-level output.
 
 ---
 
-### term_move
+### size
 
-```
-term_move(row: i32, col: i32) -> none
-```
+`size() -> [i32]`
 
-Move the cursor to a specific row and column. Coordinates are 1-based (top-left is row 1, column 1).
+Return `[width, height]` as a two-element array.
 
 **Example:**
-
 ```kryos
-term_clear()
-term_move(5, 10)
-term_write("Hello at row 5, col 10")
+use std::term
+
+let dims = size()
+println(dims[0])   // width
+println(dims[1])   // height
 ```
-
-**Edge cases:**
-
-- Values outside the terminal dimensions are accepted but may have no visible effect.
-
-**See also:** `term_size`
 
 ---
 
-### term_hide_cursor
+## Screen Control
 
-```
-term_hide_cursor() -> none
-```
+### clear
 
-Hide the terminal cursor. Useful for full-screen TUI applications.
+`clear() -> bool`
+
+Clear the terminal screen and return the cursor to the home position. Returns `true` on success.
 
 **Example:**
-
 ```kryos
-term_hide_cursor()
-// draw UI without cursor blinking
-term_show_cursor()  // always restore before exiting
-```
+use std::term
 
-**See also:** `term_show_cursor`
+clear()
+```
 
 ---
 
-### term_show_cursor
+### clear_line
 
-```
-term_show_cursor() -> none
-```
+`clear_line() -> bool`
 
-Show the terminal cursor. Call this to restore the cursor after `term_hide_cursor`.
+Clear the current line from the cursor to the end of the line. Returns `true` on success.
 
 **Example:**
-
 ```kryos
-term_show_cursor()
-```
+use std::term
 
-**See also:** `term_hide_cursor`
+clear_line()
+```
 
 ---
 
-## Screen Management
+### clear_below
 
-### term_alt_screen
+`clear_below() -> bool`
 
-```
-term_alt_screen() -> none
-```
-
-Switch to the alternate screen buffer. The current screen content is preserved and restored when you switch back. Used by full-screen TUI applications.
+Clear from the current cursor position to the end of the screen. Returns `true` on success.
 
 **Example:**
-
 ```kryos
-term_alt_screen()
-term_clear()
-// draw full-screen UI
-// when done:
-term_main_screen()
+use std::term
+
+clear_below()
 ```
-
-**Edge cases:**
-
-- Always pair with `term_main_screen` to restore the original screen.
-
-**See also:** `term_main_screen`
 
 ---
 
-### term_main_screen
+## Cursor Control
 
-```
-term_main_screen() -> none
-```
+### cursor_move
 
-Switch back to the main screen buffer, restoring whatever was on screen before `term_alt_screen` was called.
+`cursor_move(row: i32, col: i32) -> bool`
+
+Move the cursor to the given `row` and `col` (1-indexed). Returns `true` on success.
 
 **Example:**
-
 ```kryos
-term_main_screen()
-```
+use std::term
 
-**See also:** `term_alt_screen`
+cursor_move(1, 1)   // top-left corner
+cursor_move(10, 40)
+```
 
 ---
 
-### term_size
+### cursor_home
 
-```
-term_size() -> [i32]
-```
+`cursor_home() -> bool`
 
-Return the terminal dimensions as a two-element array: `[columns, lines]`.
+Move the cursor to position (1, 1) -- the top-left corner. Returns `true` on success.
 
 **Example:**
-
 ```kryos
-let size = term_size()
-let cols = size[0]
-let rows = size[1]
-println("Terminal is " + to_string(cols) + "x" + to_string(rows))
+use std::term
+
+cursor_home()
 ```
-
-**Edge cases:**
-
-- Returns `[80, 24]` as a fallback if the terminal size cannot be detected (e.g., when stdout is redirected to a file).
-
-**See also:** `term_move`
 
 ---
 
-## Styling
+### cursor_hide
 
-### term_color
+`cursor_hide() -> bool`
 
-```
-term_color(fg: str, bg: str?) -> none
-```
-
-Set the foreground (and optionally background) text color for subsequent output. Colors are applied via ANSI codes and persist until `term_reset` is called.
-
-Available colors: `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`.
+Hide the cursor. Returns `true` on success. Restore with `cursor_show`.
 
 **Example:**
-
 ```kryos
-term_color("red")
-println("This is red text")
-term_color("white", "blue")
-println("White text on blue background")
-term_reset()
-println("Back to normal")
+use std::term
+
+cursor_hide()
+// ... render UI ...
+cursor_show()
 ```
-
-**Edge cases:**
-
-- Color names are case-insensitive.
-- An unrecognized color name defaults to white (foreground) or white (background).
-- Colors persist across print calls until `term_reset`.
-
-**See also:** `term_reset`, `term_rgb`
 
 ---
 
-### term_reset
+### cursor_show
 
-```
-term_reset() -> none
-```
+`cursor_show() -> bool`
 
-Reset all terminal styling (colors, bold, dim, underline) back to the default.
-
-**Example:**
-
-```kryos
-term_color("green")
-term_write("green ")
-term_reset()
-term_write("normal")
-println("")
-```
-
-**See also:** `term_color`, `term_bold`
+Show the cursor. Returns `true` on success.
 
 ---
 
-### term_bold
+### cursor_save
 
-```
-term_bold(text: str) -> str
-```
+`cursor_save() -> bool`
 
-Wrap text in ANSI bold escape codes. Returns the styled string -- does not print it.
+Save the current cursor position. Restore with `cursor_restore`. Returns `true` on success.
 
 **Example:**
-
 ```kryos
-println(term_bold("Important message"))
-```
+use std::term
 
-```kryos
-let header = term_bold("STATUS REPORT")
-println(header)
+cursor_save()
+cursor_move(5, 10)
+// ... write something at (5, 10) ...
+cursor_restore()   // return to saved position
 ```
-
-**See also:** `term_dim`, `term_underline`
 
 ---
 
-### term_dim
+### cursor_restore
 
-```
-term_dim(text: str) -> str
-```
+`cursor_restore() -> bool`
 
-Wrap text in ANSI dim (faint) escape codes. Returns the styled string.
-
-**Example:**
-
-```kryos
-println(term_dim("Secondary information"))
-```
-
-**See also:** `term_bold`, `term_underline`
+Restore the cursor to the position saved by the most recent `cursor_save`. Returns `true` on success.
 
 ---
 
-### term_underline
+## Colors
 
-```
-term_underline(text: str) -> str
-```
+Color functions return a styled string -- the original text wrapped in ANSI escape codes. Print the result to see the color. The terminal state is not modified persistently.
 
-Wrap text in ANSI underline escape codes. Returns the styled string.
+### color
+
+`color(text: str, name: str) -> str`
+
+Wrap `text` in ANSI color codes for the named color. Returns the styled string.
+
+**Supported names:** `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, `bright_black`, `bright_red`, `bright_green`, `bright_yellow`, `bright_blue`, `bright_magenta`, `bright_cyan`, `bright_white`.
 
 **Example:**
-
 ```kryos
-println(term_underline("Click here"))
-```
+use std::term
 
-**See also:** `term_bold`, `term_dim`
+println(color("error: file not found", "red"))
+println(color("success", "green"))
+println(color("warning", "yellow"))
+```
 
 ---
 
-### term_rgb
+### color_256
 
-```
-term_rgb(r: i32, g: i32, b: i32, text: str) -> str
-```
+`color_256(text: str, code: i32) -> str`
 
-Apply a 24-bit RGB foreground color to text. Returns the styled string. Requires a terminal that supports true color (most modern terminals do).
+Wrap `text` in a 256-color ANSI foreground code. `code` must be in the range `0-255`.
 
 **Example:**
-
 ```kryos
-let orange = term_rgb(255, 165, 0, "Warning!")
-println(orange)
+use std::term
+
+println(color_256("hello", 208))   // orange
+println(color_256("world", 93))    // purple
 ```
 
-```kryos
-// Kryos brand blue
-println(term_rgb(10, 132, 255, "Kryos"))
-```
-
-**Edge cases:**
-
-- RGB values should be 0-255. Values outside this range may produce unexpected results.
-- Falls back to the nearest ANSI color on terminals without true color support.
-
-**See also:** `term_color`
+**Reference:** Standard 256-color palette -- 0-7 are standard colors, 8-15 bright colors, 16-231 a 6x6x6 RGB cube, 232-255 a grayscale ramp.
 
 ---
 
-## Input
+### color_rgb
 
-### term_raw_mode
+`color_rgb(text: str, r: i32, g: i32, b: i32) -> str`
 
-```
-term_raw_mode(enabled: bool) -> none
-```
-
-Enable or disable raw terminal mode. In raw mode, input is not line-buffered and special keys (Ctrl+C, etc.) are not intercepted by the shell.
+Wrap `text` in a 24-bit RGB ANSI foreground code. `r`, `g`, `b` must each be in `0-255`.
 
 **Example:**
-
 ```kryos
-term_raw_mode(true)
-// read individual keystrokes
-term_raw_mode(false)
+use std::term
+
+println(color_rgb("vivid orange", 255, 140, 0))
+println(color_rgb("deep blue", 0, 80, 200))
 ```
-
-**Edge cases:**
-
-- On Windows, this is a no-op. Raw mode is handled per-read by `term_read_key`.
-- On Unix, uses `termios` to toggle raw mode.
-- Always restore raw mode to `false` before your program exits, or the terminal will be left in a broken state.
-
-**See also:** `term_read_key`
 
 ---
 
-### term_read_key
+### bg_color
 
-```
-term_read_key() -> str
-```
+`bg_color(text: str, name: str) -> str`
 
-Read a single keypress from the terminal. Blocks until a key is pressed. Returns a string identifying the key.
-
-Regular characters return themselves (e.g., `"a"`, `"Z"`, `"1"`). Special keys return named strings:
-
-| Key | Return value |
-|-----|-------------|
-| Enter | `"Enter"` |
-| Tab | `"Tab"` |
-| Escape | `"Escape"` |
-| Backspace | `"Backspace"` |
-| Arrow Up | `"ArrowUp"` |
-| Arrow Down | `"ArrowDown"` |
-| Arrow Left | `"ArrowLeft"` |
-| Arrow Right | `"ArrowRight"` |
-| Home | `"Home"` |
-| End | `"End"` |
-| Page Up | `"PageUp"` |
-| Page Down | `"PageDown"` |
-| Delete | `"Delete"` |
-| Insert | `"Insert"` |
-| F1-F12 | `"F1"` through `"F12"` |
-| Ctrl+letter | `"Ctrl+a"` through `"Ctrl+z"` |
+Wrap `text` in an ANSI background color code. Accepts the same color names as `color`.
 
 **Example:**
-
 ```kryos
-println("Press a key:")
-let key = term_read_key()
-println("You pressed: " + key)
+use std::term
+
+println(bg_color(" ALERT ", "red"))
+println(bg_color(" OK ", "green"))
 ```
 
+---
+
+### bg_color_rgb
+
+`bg_color_rgb(text: str, r: i32, g: i32, b: i32) -> str`
+
+Wrap `text` in a 24-bit RGB ANSI background color code.
+
+**Example:**
 ```kryos
-// Simple key handler loop
-let mut running = true
-while running {
-    let key = term_read_key()
-    if key == "q" {
-        running = false
-    } elif key == "ArrowUp" {
-        println("Up!")
-    } elif key == "ArrowDown" {
-        println("Down!")
-    }
-}
+use std::term
+
+println(bg_color_rgb("highlighted", 50, 50, 120))
 ```
 
-**Edge cases:**
+---
 
-- On Unix, temporarily enters raw mode for the duration of the read, then restores the terminal.
-- On Windows, uses `msvcrt.getwch()` for key reading.
-- Unknown extended key sequences return `"Unknown(code)"`.
-- Blocks indefinitely until a key is pressed.
+## Raw Mode
 
-**See also:** `term_raw_mode`
+Raw mode disables line buffering and echo, allowing character-by-character key reading without the user pressing Enter.
+
+### raw_enable
+
+`raw_enable() -> bool`
+
+Enable raw mode for stdin. Returns `true` on success.
+
+**Example:**
+```kryos
+use std::term
+
+raw_enable()
+// read characters one at a time
+raw_disable()
+```
+
+---
+
+### raw_disable
+
+`raw_disable() -> bool`
+
+Disable raw mode and restore normal terminal settings. Returns `true` on success.
+
+---
+
+### with_raw_mode
+
+`with_raw_mode(f: fn) -> str`
+
+Enable raw mode, call `f` with no arguments, disable raw mode, and return whatever `f` returns as a string. Raw mode is always restored even if `f` throws.
+
+**Example:**
+```kryos
+use std::term
+
+let key = with_raw_mode(fn() -> str {
+    // read a single character
+    // return it
+    return "q"
+})
+println(key)
+```
+
+**Note:** Use `with_raw_mode` over `raw_enable`/`raw_disable` when possible -- it guarantees the terminal is restored on error.
+
+---
+
+## Complete Example
+
+```kryos
+use std::term
+
+// Clear screen and render a simple status dashboard
+clear()
+cursor_hide()
+
+cursor_move(1, 1)
+println(color("=== Status Dashboard ===", "cyan"))
+
+cursor_move(3, 1)
+println(color("Server:  ", "white") + color("running", "green"))
+
+cursor_move(4, 1)
+println(color("Workers: ", "white") + color_256("4 / 4", 82))
+
+cursor_move(5, 1)
+println(color("Errors:  ", "white") + color("0", "green"))
+
+let w = width()
+cursor_move(7, 1)
+println(color(repeat("-", w), "bright_black"))
+
+cursor_move(9, 1)
+cursor_show()
+```
