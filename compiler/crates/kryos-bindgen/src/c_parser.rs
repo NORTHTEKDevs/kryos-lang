@@ -733,7 +733,7 @@ impl<'a> CHeaderParser<'a> {
             // Skip suffixes
             self.skip_integer_suffix();
             let hex_str = &self.source[hex_start..self.pos]
-                .trim_end_matches(|c: char| c == 'u' || c == 'U' || c == 'l' || c == 'L');
+                .trim_end_matches(['u', 'U', 'l', 'L']);
             if let Ok(v) = i64::from_str_radix(hex_str, 16) {
                 return Some(if negative { -v } else { v });
             }
@@ -1056,9 +1056,7 @@ fn strip_numeric_suffix(s: &str) -> String {
     if s.starts_with('"') || s.starts_with('\'') {
         return s.to_string();
     }
-    let s_trimmed = s.trim_end_matches(|c: char| {
-        c == 'u' || c == 'U' || c == 'l' || c == 'L' || c == 'f' || c == 'F'
-    });
+    let s_trimmed = s.trim_end_matches(['u', 'U', 'l', 'L', 'f', 'F']);
     if s_trimmed.is_empty() {
         s.to_string()
     } else {
