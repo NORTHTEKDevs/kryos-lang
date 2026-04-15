@@ -23,6 +23,10 @@ jobs:
         with:
           workspaces: "compiler"
 
+      - name: Set up MSVC environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Build (release)
         working-directory: compiler
         run: cargo build --release -j 4
