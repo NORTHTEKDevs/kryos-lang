@@ -17,17 +17,22 @@ None of these languages treat AI as a first-class concern. Tensor operations, ag
 
 ### Ownership Without the PhD
 
-Kryos uses move semantics and borrowing like Rust, but without named lifetimes or the full complexity of the borrow checker. References are scoped to their enclosing block -- simple, predictable, safe.
+Kryos uses ARC-backed move semantics enforced at compile time. Values move when passed to functions. The compiler tracks ownership and catches use-after-move and double-free errors. No lifetime annotations. No borrow checker complexity.
 
 ```kryos
-fn process(data: &mut Vec<i64>) {
-    // Mutable borrow -- exclusive access guaranteed at compile time
-    data.push(42)
+fn process(data: [i64]) -> [i64] {
+    push(data, 42)
+    data
 }
-// Borrow released here -- no lifetime annotations needed
+
+fn main() {
+    let nums = [1, 2, 3]
+    let nums = process(nums)   // move in, move back out -- no copies
+    println(to_string(len(nums)))
+}
 ```
 
-The ownership model catches use-after-move, double-free, and data races at compile time. It does not require annotating every function signature with lifetime parameters. If you have used Rust, you know the relief.
+Memory is reclaimed deterministically when values go out of scope. No GC pauses. No `'a` annotations. No wrestling with the compiler.
 
 ### Faster Than Rust to Compile
 
@@ -168,5 +173,5 @@ Kryos is not garbage collected. It uses deterministic destruction through owners
 git clone https://github.com/FrostbyteDevTeam/kryos-lang
 cd kryos-lang/compiler
 cargo build --release -j 4
-cargo run --release -- run ../examples/fibonacci_showcase.kry
+cargo run --release -- run examples/fibonacci.kry
 ```
