@@ -18,6 +18,8 @@ pub struct TypeChecker {
     pub diagnostics: Vec<Diagnostic>,
     /// The expected return type of the function currently being checked.
     current_return_type: Option<Type>,
+    /// The name of the function currently being checked (for better error messages).
+    current_function_name: Option<String>,
     /// Functions marked with @deprecated — emit warnings on call.
     deprecated_functions: std::collections::HashSet<String>,
     /// Functions marked with @pure — cannot call non-pure or do I/O.
@@ -41,6 +43,7 @@ impl TypeChecker {
             engine: InferenceEngine::new(),
             diagnostics: Vec::new(),
             current_return_type: None,
+            current_function_name: None,
             deprecated_functions: std::collections::HashSet::new(),
             pure_functions: std::collections::HashSet::new(),
             in_pure_function: false,
@@ -688,7 +691,9 @@ impl TypeChecker {
                     self.current_return_type = ret_ty.as_ref().map(|t| self.resolve_type_expr(t));
                 }
 
+                self.current_function_name = Some(name.clone());
                 self.check_block(body);
+                self.current_function_name = None;
 
                 // Check for missing return in non-void functions.
                 if let Some(ref ret) = self.current_return_type {
@@ -906,7 +911,17 @@ impl TypeChecker {
                     .unwrap_or(Type::Void);
 
                 if let Some(ref expected) = self.current_return_type {
-                    if let Err(diag) = self.engine.unify(expected, &ret_ty, *span) {
+                    if let Err(mut diag) = self.engine.unify(expected, &ret_ty, *span) {
+                        // Enhance error message with function context.
+                        if let Some(ref fn_name) = self.current_function_name {
+                            let msg = format!(
+                                "function `{fn_name}` declared to return `{expected}`, but body evaluates to `{ret_ty}`"
+                            );
+                            diag = Diagnostic::error(msg).with_label(
+                                *span,
+                                format!("expected `{expected}`, found `{ret_ty}`"),
+                            );
+                        }
                         self.diagnostics.push(diag);
                     }
                 }
@@ -1120,6 +1135,11 @@ impl TypeChecker {
                     {
                         if let Some(diag) = self.diagnostics.last_mut() {
                             diag.notes.push(format!("did you mean `{suggestion}`?"));
+                        }
+                    } else {
+                        // No close match, show that variable is not in scope
+                        if let Some(diag) = self.diagnostics.last_mut() {
+                            diag.notes.push("this variable is not in scope".to_string());
                         }
                     }
                     Type::Error
@@ -1381,17 +1401,17 @@ impl TypeChecker {
                             && params.len() == 2;
 
                         if !is_assert_1arg && args.len() != params.len() {
-                            let display_name = match callee_name_str {
-                                Some(ref n) => format!(" to `{n}`"),
-                                None => String::new(),
+                            let fn_name = match callee_name_str {
+                                Some(ref n) => format!("`{n}`"),
+                                None => "this function".to_string(),
                             };
                             self.error(
                                 format!(
-                                    "this function{display_name} takes {} argument{} but {} {} supplied",
+                                    "function {} expects {} argument{}, found {}",
+                                    fn_name,
                                     params.len(),
                                     if params.len() == 1 { "" } else { "s" },
                                     args.len(),
-                                    if args.len() == 1 { "was" } else { "were" },
                                 ),
                                 *span,
                             );

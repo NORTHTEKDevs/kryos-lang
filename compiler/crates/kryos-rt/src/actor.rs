@@ -226,3 +226,72 @@ pub extern "C" fn kryos_actor_unlock(actor_id: u64) -> i32 {
     entry.send_locked.store(false, Ordering::Release);
     0
 }
+
+/// Receive a message from the calling actor's mailbox with timeout.
+///
+/// Must be called from within an actor thread (spawned by `kryos_actor_spawn`).
+/// Waits up to `timeout_ms` milliseconds for a message to arrive.
+///
+/// Returns bytes written into `buf_ptr` on success, 0 if timeout occurs,
+/// -1 on error (e.g., called from a non-actor thread).
+#[no_mangle]
+pub extern "C" fn kryos_actor_recv_timeout_i64(timeout_ms: i64) -> i64 {
+    if timeout_ms < 0 {
+        return -1;
+    }
+
+    let actor_id = CURRENT_ACTOR_ID.get();
+    if actor_id == 0 {
+        return -1;
+    }
+
+    // Look up own entry (brief registry lock).
+    let entry = {
+        let reg = match get_registry().lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        match reg.get(&actor_id) {
+            Some(e) => e.clone(),
+            None => return -1,
+        }
+    };
+
+    let timeout = std::time::Duration::from_millis(timeout_ms as u64);
+    let mut mb = match entry.mailbox.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+
+    loop {
+        if let Some(data) = mb.queue.pop_front() {
+            // We got a message; decode as i64.
+            if data.len() >= 8 {
+                let mut buf = [0u8; 8];
+                buf.copy_from_slice(&data[..8]);
+                return i64::from_le_bytes(buf);
+            }
+            return -1;
+        }
+        if mb.closed {
+            return 0;
+        }
+
+        // Wait with timeout
+        match entry.condvar.wait_timeout(mb, timeout) {
+            Ok((g, timeout_result)) => {
+                mb = g;
+                if timeout_result.timed_out() {
+                    return 0; // timeout
+                }
+            }
+            Err(p) => {
+                let (g, _) = p.into_inner();
+                mb = g;
+                if mb.queue.is_empty() && mb.closed {
+                    return 0;
+                }
+            }
+        }
+    }
+}

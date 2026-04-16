@@ -50,6 +50,10 @@ pub struct LoweringContext {
     /// Generic function templates: func_name -> (generic_params, AST function decl).
     /// These are not lowered immediately; they are instantiated on demand at call sites.
     generic_templates: HashMap<String, GenericTemplate>,
+    /// Generic struct templates: struct_name -> (generic_params, AST struct decl fields).
+    generic_struct_templates: HashMap<String, GenericStructTemplate>,
+    /// Generic enum templates: enum_name -> (generic_params, AST enum variants).
+    generic_enum_templates: HashMap<String, GenericEnumTemplate>,
     /// Already-monomorphized specializations, to avoid duplicate lowering.
     monomorphized: HashMap<String, bool>,
     /// Functions produced by monomorphization (collected after lowering).
@@ -112,6 +116,20 @@ struct GenericTemplate {
     body: ast::Block,
 }
 
+/// Stores a generic struct's AST for deferred monomorphization.
+#[derive(Clone)]
+struct GenericStructTemplate {
+    generic_params: Vec<String>,
+    fields: Vec<ast::decl::StructField>,
+}
+
+/// Stores a generic enum's AST for deferred monomorphization.
+#[derive(Clone)]
+struct GenericEnumTemplate {
+    generic_params: Vec<String>,
+    variants: Vec<ast::decl::EnumVariant>,
+}
+
 impl LoweringContext {
     fn new() -> Self {
         Self {
@@ -131,6 +149,8 @@ impl LoweringContext {
             trait_default_methods: HashMap::new(),
             impl_map: HashMap::new(),
             generic_templates: HashMap::new(),
+            generic_struct_templates: HashMap::new(),
+            generic_enum_templates: HashMap::new(),
             monomorphized: HashMap::new(),
             monomorphized_functions: Vec::new(),
             lambda_counter: 0,
@@ -160,7 +180,22 @@ impl LoweringContext {
     /// This method post-processes the result: if the name matches a known
     /// enum definition, it produces `Enum(name)` instead; if it matches a
     /// type alias, it resolves to the aliased type.
-    fn resolve_type(&self, ty: &ast::TypeExpr) -> MirType {
+    fn resolve_type(&mut self, ty: &ast::TypeExpr) -> MirType {
+        // Handle generic struct/enum instantiation before calling lower_type_expr.
+        if let ast::TypeExpr::Generic { name, args, .. } = ty {
+            let type_args: Vec<MirType> = args.iter().map(|a| self.resolve_type(a)).collect();
+
+            // Check if this is a generic struct.
+            if self.generic_struct_templates.contains_key(name) {
+                return MirType::Struct(monomorphize_struct(self, name, &type_args));
+            }
+
+            // Check if this is a generic enum.
+            if self.generic_enum_templates.contains_key(name) {
+                return MirType::Enum(monomorphize_enum(self, name, &type_args));
+            }
+        }
+
         let mir_ty = lower_type_expr(ty);
         if let MirType::Struct(ref name) = mir_ty {
             // Resolve `Self` to the current impl/trait target type.
@@ -454,28 +489,59 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         match decl {
             ast::Decl::Struct {
                 name,
+                generics,
                 fields,
                 annotations,
                 ..
             } => {
-                let field_list: Vec<(String, MirType)> = fields
-                    .iter()
-                    .map(|f| (f.name.clone(), ctx.resolve_type(&f.ty)))
-                    .collect();
-                ctx.struct_defs.insert(name.clone(), field_list);
+                if !generics.is_empty() {
+                    // Store template for deferred monomorphization.
+                    let generic_param_names: Vec<String> =
+                        generics.iter().map(|g| g.name.clone()).collect();
+                    ctx.generic_struct_templates.insert(
+                        name.clone(),
+                        GenericStructTemplate {
+                            generic_params: generic_param_names,
+                            fields: fields.clone(),
+                        },
+                    );
+                } else {
+                    let field_list: Vec<(String, MirType)> = fields
+                        .iter()
+                        .map(|f| (f.name.clone(), ctx.resolve_type(&f.ty)))
+                        .collect();
+                    ctx.struct_defs.insert(name.clone(), field_list);
+                }
                 if annotations.iter().any(|a| a.name == "copy") {
                     ctx.copy_structs.insert(name.clone());
                 }
             }
-            ast::Decl::Enum { name, variants, .. } => {
-                let variant_defs: Vec<EnumVariantDef> = variants
-                    .iter()
-                    .map(|v| EnumVariantDef {
-                        name: v.name.clone(),
-                        fields: v.fields.iter().map(lower_type_expr).collect(),
-                    })
-                    .collect();
-                ctx.enum_defs.insert(name.clone(), variant_defs);
+            ast::Decl::Enum {
+                name,
+                generics,
+                variants,
+                ..
+            } => {
+                if !generics.is_empty() {
+                    let generic_param_names: Vec<String> =
+                        generics.iter().map(|g| g.name.clone()).collect();
+                    ctx.generic_enum_templates.insert(
+                        name.clone(),
+                        GenericEnumTemplate {
+                            generic_params: generic_param_names,
+                            variants: variants.clone(),
+                        },
+                    );
+                } else {
+                    let variant_defs: Vec<EnumVariantDef> = variants
+                        .iter()
+                        .map(|v| EnumVariantDef {
+                            name: v.name.clone(),
+                            fields: v.fields.iter().map(lower_type_expr).collect(),
+                        })
+                        .collect();
+                    ctx.enum_defs.insert(name.clone(), variant_defs);
+                }
             }
             ast::Decl::Function {
                 name,
@@ -701,10 +767,11 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
             ast::Decl::Const {
                 name, ty, value, ..
             } => {
-                let mir_ty = ty
-                    .as_ref()
-                    .map(|t| ctx.resolve_type(t))
-                    .unwrap_or_else(|| infer_expr_type(&ctx, value));
+                let mir_ty = if let Some(t) = ty {
+                    lower_type_expr(t)
+                } else {
+                    infer_expr_type(&mut ctx, value)
+                };
                 ctx.func_ret_types.insert(name.clone(), mir_ty.clone());
                 ctx.const_defs
                     .insert(name.clone(), (mir_ty, *value.clone()));
@@ -1602,11 +1669,12 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             lower_spawn(ctx, expr);
         }
 
-        ast::Stmt::Select { branches, .. } => {
+        ast::Stmt::Select { branches, timeout, .. } => {
             // Lower select: sequential try_recv polling loop with closed-channel
             // detection. Each channel is probed non-blocking; first ready wins.
             // If none ready and not all closed, sleep 1ms and retry.
             // If all channels are closed, exit the select.
+            // If timeout is present, exit to the timeout body after the deadline.
             let merge_bb = ctx.alloc_block();
 
             if branches.is_empty() {
@@ -1639,6 +1707,29 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 });
                 ch_locals.push(ch_local);
             }
+
+            // If there's a timeout, record start time and deadline before the loop.
+            let timeout_deadline_local = timeout.as_ref().map(|t| {
+                let start_local = ctx.alloc_temp(MirType::I64);
+                ctx.emit(Instruction::Assign {
+                    dest: start_local,
+                    value: RValue::Call {
+                        func: "kryos_time_now_millis".into(),
+                        args: vec![],
+                    },
+                });
+                let duration_op = lower_expr_to_operand(ctx, &t.duration_ms);
+                let deadline_local = ctx.alloc_temp(MirType::I64);
+                ctx.emit(Instruction::Assign {
+                    dest: deadline_local,
+                    value: RValue::BinOp {
+                        op: MirBinOp::Add,
+                        left: Operand::Local(start_local),
+                        right: duration_op,
+                    },
+                });
+                deadline_local
+            });
 
             // Jump into the poll block.
             ctx.finish_block(Terminator::Goto(bb_poll), bb_poll);
@@ -1764,7 +1855,7 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 bb_sleep,
             );
 
-            // === bb_sleep: yield 1ms then retry ===
+            // === bb_sleep: yield 1ms, then check timeout, then retry ===
             const SELECT_POLL_INTERVAL_BITS: i64 = 0.001_f64.to_bits() as i64;
             let sleep_result = ctx.alloc_temp(MirType::I64);
             ctx.emit(Instruction::Assign {
@@ -1774,7 +1865,42 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     args: vec![Operand::Constant(Constant::Int(SELECT_POLL_INTERVAL_BITS))],
                 },
             });
-            ctx.finish_block(Terminator::Goto(bb_poll), merge_bb);
+
+            if let (Some(deadline_local), Some(t)) = (timeout_deadline_local, timeout.as_ref()) {
+                // Check if now >= deadline.
+                let now_local = ctx.alloc_temp(MirType::I64);
+                ctx.emit(Instruction::Assign {
+                    dest: now_local,
+                    value: RValue::Call {
+                        func: "kryos_time_now_millis".into(),
+                        args: vec![],
+                    },
+                });
+                let timed_out = ctx.alloc_temp(MirType::I64);
+                ctx.emit(Instruction::Assign {
+                    dest: timed_out,
+                    value: RValue::BinOp {
+                        op: MirBinOp::GtEq,
+                        left: Operand::Local(now_local),
+                        right: Operand::Local(deadline_local),
+                    },
+                });
+                let bb_timeout_body = ctx.alloc_block();
+                ctx.finish_block(
+                    Terminator::Branch {
+                        cond: Operand::Local(timed_out),
+                        then_block: bb_timeout_body,
+                        else_block: bb_poll,
+                    },
+                    bb_timeout_body,
+                );
+
+                // === bb_timeout_body: run the timeout branch body, then merge ===
+                lower_block_stmts(ctx, &t.body.stmts);
+                ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
+            } else {
+                ctx.finish_block(Terminator::Goto(bb_poll), merge_bb);
+            }
         }
     }
 }
@@ -2928,7 +3054,7 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
 /// pre-pass to resolve field accesses and call results.  Falls back to Void
 /// for unknown function calls and the terminal catch-all; falls back to I64
 /// for literals, identifiers, and structural sub-expression types.
-fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
+fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
     match expr {
         ast::Expr::IntLiteral { .. } => MirType::I64,
         ast::Expr::FloatLiteral { .. } => MirType::F64,
@@ -3091,7 +3217,7 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
                     }
                     return MirType::Void;
                 }
-                if let Some(ret_ty) = ctx.func_ret_types.get(name.as_str()) {
+                if let Some(ret_ty) = ctx.func_ret_types.get(name.as_str()).cloned() {
                     // Polymorphic builtins: return type matches argument type
                     if matches!(name.as_str(), "min" | "max" | "abs") {
                         if let Some(first_arg) = args.first() {
@@ -3101,7 +3227,7 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
                             }
                         }
                     }
-                    return ret_ty.clone();
+                    return ret_ty;
                 }
                 // Check if callee is a function-typed local (indirect call).
                 if let Some(local) = ctx
@@ -4453,7 +4579,7 @@ fn find_local_by_name(ctx: &LoweringContext, name: &str) -> Option<LocalId> {
 
 /// Infer the type name of an expression (for method call resolution).
 /// Returns the struct/enum name if resolvable, None otherwise.
-fn infer_type_name(ctx: &LoweringContext, expr: &ast::Expr) -> Option<String> {
+fn infer_type_name(ctx: &mut LoweringContext, expr: &ast::Expr) -> Option<String> {
     match infer_expr_type(ctx, expr) {
         MirType::Struct(name) | MirType::Enum(name) => Some(name),
         _ => None,
@@ -4952,6 +5078,117 @@ fn find_free_variables_block(ctx: &LoweringContext, stmts: &[ast::Stmt]) -> Vec<
 fn mono_mangled_name(base: &str, concrete_types: &[MirType]) -> String {
     let suffix: Vec<String> = concrete_types.iter().map(|t| format!("{t}")).collect();
     format!("{base}___{}", suffix.join("_"))
+}
+
+/// Monomorphize a generic struct template with concrete type arguments.
+///
+/// Infers type parameter bindings from the generic type arguments,
+/// substitutes them in the field types, and inserts the monomorphized struct def.
+/// Returns the mangled struct name.
+fn monomorphize_struct(
+    ctx: &mut LoweringContext,
+    struct_name: &str,
+    type_args: &[MirType],
+) -> String {
+    // Retrieve the generic struct template.
+    let template = ctx
+        .generic_struct_templates
+        .get(struct_name)
+        .expect("struct template exists")
+        .clone();
+
+    let generic_params = template.generic_params.clone();
+    let fields = template.fields.clone();
+
+    // Build type param → concrete type mapping by position.
+    let mut type_map: HashMap<String, MirType> = HashMap::new();
+    for (i, param_name) in generic_params.iter().enumerate() {
+        if let Some(concrete) = type_args.get(i) {
+            type_map.insert(param_name.clone(), concrete.clone());
+        }
+    }
+
+    // Build the list of concrete types in generic_params order for the mangled name.
+    let concrete_ordered: Vec<MirType> = generic_params
+        .iter()
+        .map(|gp| type_map.get(gp).cloned().unwrap_or(MirType::I64))
+        .collect();
+    let mangled = mono_mangled_name(struct_name, &concrete_ordered);
+
+    // If already monomorphized, just return the name.
+    if ctx.struct_defs.contains_key(&mangled) {
+        return mangled;
+    }
+
+    // Substitute type parameters in the field types.
+    let field_list: Vec<(String, MirType)> = fields
+        .iter()
+        .map(|f| {
+            let substituted = substitute_type_expr(&f.ty, &type_map);
+            (f.name.clone(), ctx.resolve_type(&substituted))
+        })
+        .collect();
+
+    // Insert the monomorphized struct definition.
+    ctx.struct_defs.insert(mangled.clone(), field_list);
+
+    mangled
+}
+
+/// Monomorphize a generic enum template with concrete type arguments.
+///
+/// Similar to monomorphize_struct, but for enum variants.
+fn monomorphize_enum(ctx: &mut LoweringContext, enum_name: &str, type_args: &[MirType]) -> String {
+    // Retrieve the generic enum template.
+    let template = ctx
+        .generic_enum_templates
+        .get(enum_name)
+        .expect("enum template exists")
+        .clone();
+
+    let generic_params = template.generic_params.clone();
+    let variants = template.variants.clone();
+
+    // Build type param → concrete type mapping by position.
+    let mut type_map: HashMap<String, MirType> = HashMap::new();
+    for (i, param_name) in generic_params.iter().enumerate() {
+        if let Some(concrete) = type_args.get(i) {
+            type_map.insert(param_name.clone(), concrete.clone());
+        }
+    }
+
+    // Build the list of concrete types in generic_params order for the mangled name.
+    let concrete_ordered: Vec<MirType> = generic_params
+        .iter()
+        .map(|gp| type_map.get(gp).cloned().unwrap_or(MirType::I64))
+        .collect();
+    let mangled = mono_mangled_name(enum_name, &concrete_ordered);
+
+    // If already monomorphized, just return the name.
+    if ctx.enum_defs.contains_key(&mangled) {
+        return mangled;
+    }
+
+    // Substitute type parameters in the variant field types.
+    let variant_defs: Vec<EnumVariantDef> = variants
+        .iter()
+        .map(|v| EnumVariantDef {
+            name: v.name.clone(),
+            fields: v
+                .fields
+                .iter()
+                .map(|f| {
+                    let substituted = substitute_type_expr(f, &type_map);
+                    ctx.resolve_type(&substituted)
+                })
+                .collect(),
+        })
+        .collect();
+
+    // Insert the monomorphized enum definition.
+    ctx.enum_defs.insert(mangled.clone(), variant_defs);
+
+    mangled
 }
 
 /// Monomorphize a generic function template with concrete argument types.

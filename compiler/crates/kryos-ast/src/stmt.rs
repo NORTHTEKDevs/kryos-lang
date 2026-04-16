@@ -16,6 +16,13 @@ pub struct SelectBranch {
     pub span: Span,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectTimeout {
+    pub duration_ms: Expr,
+    pub body: Block,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssignOp {
     Assign,
@@ -80,6 +87,7 @@ pub enum Stmt {
     },
     Select {
         branches: Vec<SelectBranch>,
+        timeout: Option<Box<SelectTimeout>>,
         span: Span,
     },
     TryCatch {

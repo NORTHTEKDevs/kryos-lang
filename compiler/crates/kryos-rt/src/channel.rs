@@ -201,3 +201,34 @@ pub extern "C" fn kryos_chan_clone(handle: *mut u8) -> *mut u8 {
     inner.ref_count.fetch_add(1, Ordering::Relaxed);
     handle
 }
+
+/// Receive an i64 from a channel with timeout (in milliseconds).
+/// Returns the value on success, -1 on timeout or error.
+#[no_mangle]
+pub extern "C" fn kryos_chan_recv_timeout_i64(fd: i64, timeout_ms: i64) -> i64 {
+    if fd <= 0 || timeout_ms < 0 {
+        return -1;
+    }
+    let handle = fd as *mut u8;
+    let timeout = std::time::Duration::from_millis(timeout_ms as u64);
+    let start = std::time::Instant::now();
+
+    loop {
+        let mut buf = [0u8; 8];
+        let ret = kryos_chan_try_recv(handle, buf.as_mut_ptr(), 8);
+        if ret > 0 {
+            return i64::from_le_bytes(buf);
+        }
+        if ret < 0 {
+            return -1;
+        }
+
+        // Check if timeout elapsed
+        if start.elapsed() >= timeout {
+            return -1;
+        }
+
+        // Small sleep to avoid busy-waiting
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}

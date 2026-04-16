@@ -345,11 +345,11 @@ impl InferenceEngine {
             _ => {
                 let mut diag =
                     Diagnostic::error(format!("type mismatch: expected `{a}`, found `{b}`"))
-                        .with_label(span, format!("expected `{a}`, found `{b}`"));
+                        .with_label(span, format!("expected type `{a}`, found `{b}`"));
 
                 // Add helpful notes for common mismatches.
                 if (a == Type::Str && b.is_numeric()) || (b == Type::Str && a.is_numeric()) {
-                    diag = diag.with_note("use `to_string()` to convert a number to a string");
+                    diag = diag.with_note("try using `to_string()` to convert a number to a string, or use `parse()` to convert a string to a number");
                 } else if (a == Type::Bool && (b.is_numeric() || b == Type::Str))
                     || (b == Type::Bool && (a.is_numeric() || a == Type::Str))
                 {

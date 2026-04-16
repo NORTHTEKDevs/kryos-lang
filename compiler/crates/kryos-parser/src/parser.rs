@@ -140,9 +140,15 @@ impl Parser {
         if self.check(kind) {
             self.advance().clone()
         } else {
-            let span = self.peek().span;
+            let tok = self.peek().clone();
+            let span = tok.span;
+            let token_text = if tok.text.is_empty() {
+                format!("{}", tok.kind)
+            } else {
+                format!("'{}'", tok.text)
+            };
             self.error(
-                format!("expected {}, found {}", kind, self.peek_kind()),
+                format!("unexpected token {}, expected {}", token_text, kind),
                 span,
             );
             // Return a dummy token so callers can keep going.
@@ -164,8 +170,13 @@ impl Parser {
             }
             _ => {
                 let span = tok.span;
+                let token_text = if tok.text.is_empty() {
+                    format!("{}", tok.kind)
+                } else {
+                    format!("'{}'", tok.text)
+                };
                 self.error_with_code(
-                    format!("expected identifier, found {}", tok.kind),
+                    format!("unexpected token {}, expected identifier", token_text),
                     span,
                     kryos_errors::codes::E0002,
                 );
@@ -183,7 +194,15 @@ impl Parser {
             }
             _ => {
                 let span = tok.span;
-                self.error(format!("expected name, found {}", tok.kind), span);
+                let token_text = if tok.text.is_empty() {
+                    format!("{}", tok.kind)
+                } else {
+                    format!("'{}'", tok.text)
+                };
+                self.error(
+                    format!("unexpected token {}, expected name", token_text),
+                    span,
+                );
                 ("<error>".to_string(), span)
             }
         }
@@ -834,11 +853,14 @@ impl Parser {
                 Some(stmt) => stmts.push(stmt),
                 None => {
                     if !self.check(TokenKind::RBrace) && !self.at_end() {
-                        let span = self.peek().span;
-                        self.error(
-                            format!("unexpected token {} in block", self.peek_kind()),
-                            span,
-                        );
+                        let tok = self.peek().clone();
+                        let span = tok.span;
+                        let token_text = if tok.text.is_empty() {
+                            format!("{}", tok.kind)
+                        } else {
+                            format!("'{}'", tok.text)
+                        };
+                        self.error(format!("unexpected token {} in block", token_text), span);
                         self.advance();
                     }
                 }
@@ -1079,24 +1101,41 @@ impl Parser {
         self.expect(TokenKind::LBrace);
 
         let mut branches = Vec::new();
+        let mut timeout = None;
+
         while !self.check(TokenKind::RBrace) && !self.at_end() {
             let tok = self.peek().clone();
             let pattern = tok.text.clone();
-            self.advance(); // e.g. "recv"
-            let channel = self.parse_expr();
-            self.expect(TokenKind::FatArrow);
-            let body = self.parse_block();
-            let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
-            branches.push(SelectBranch {
-                pattern,
-                channel,
-                body,
-                span: tok.span.merge(end),
-            });
+            self.advance();
+
+            // Check if this is a timeout branch.
+            if pattern == "timeout" {
+                let duration_ms = self.parse_expr();
+                self.expect(TokenKind::FatArrow);
+                let body = self.parse_block();
+                let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
+                timeout = Some(Box::new(SelectTimeout {
+                    duration_ms,
+                    body,
+                    span: tok.span.merge(end),
+                }));
+            } else {
+                let channel = self.parse_expr();
+                self.expect(TokenKind::FatArrow);
+                let body = self.parse_block();
+                let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
+                branches.push(SelectBranch {
+                    pattern,
+                    channel,
+                    body,
+                    span: tok.span.merge(end),
+                });
+            }
         }
         let rbrace = self.expect(TokenKind::RBrace);
         Stmt::Select {
             branches,
+            timeout,
             span: start.merge(rbrace.span),
         }
     }
@@ -1665,8 +1704,13 @@ impl Parser {
 
             _ => {
                 let span = tok.span;
+                let token_text = if tok.text.is_empty() {
+                    format!("{}", tok.kind)
+                } else {
+                    format!("'{}'", tok.text)
+                };
                 self.error_with_code(
-                    format!("expected expression, found {}", tok.kind),
+                    format!("unexpected token {}, expected expression", token_text),
                     span,
                     kryos_errors::codes::E0003,
                 );
@@ -1697,8 +1741,14 @@ impl Parser {
                             .with_note("did you forget a comma between fields?"),
                     );
                 } else {
+                    let tok = self.peek().clone();
+                    let token_text = if tok.text.is_empty() {
+                        format!("{}", tok.kind)
+                    } else {
+                        format!("'{}'", tok.text)
+                    };
                     self.error(
-                        format!("expected `,` or `}}`, found {}", self.peek_kind()),
+                        format!("unexpected token {}, expected `,` or `}}`", token_text),
                         span,
                     );
                 }
@@ -2158,7 +2208,15 @@ impl Parser {
             }
             _ => {
                 let span = tok.span;
-                self.error(format!("expected pattern, found {}", tok.kind), span);
+                let token_text = if tok.text.is_empty() {
+                    format!("{}", tok.kind)
+                } else {
+                    format!("'{}'", tok.text)
+                };
+                self.error(
+                    format!("unexpected token {}, expected pattern", token_text),
+                    span,
+                );
                 self.advance();
                 Pattern::Wildcard { span }
             }
@@ -2350,8 +2408,13 @@ impl Parser {
             }
             _ => {
                 let span = tok.span;
+                let token_text = if tok.text.is_empty() {
+                    format!("{}", tok.kind)
+                } else {
+                    format!("'{}'", tok.text)
+                };
                 self.error_with_code(
-                    format!("expected type, found {}", tok.kind),
+                    format!("unexpected token {}, expected type", token_text),
                     span,
                     kryos_errors::codes::E0004,
                 );
