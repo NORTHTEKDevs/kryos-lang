@@ -1228,10 +1228,10 @@ impl OwnershipAnalyzer {
     /// Recursively collect identifiers from an expression that are not in `locals`.
     fn collect_captures<'a>(&self, expr: &'a Expr, locals: &HashSet<&str>, out: &mut Vec<&'a str>) {
         match expr {
-            Expr::Identifier { name, .. } => {
-                if !locals.contains(name.as_str()) && self.lookup_var(name).is_some() {
-                    out.push(name);
-                }
+            Expr::Identifier { name, .. }
+                if !locals.contains(name.as_str()) && self.lookup_var(name).is_some() =>
+            {
+                out.push(name);
             }
             Expr::BinaryOp { left, right, .. } | Expr::PipeExpr { left, right, .. } => {
                 self.collect_captures(left, locals, out);
