@@ -2109,6 +2109,7 @@ fn select_statement_produces_try_recv_polling() {
                     body: block(vec![]),
                     span: S,
                 }],
+                timeout: None,
                 span: S,
             },
         ]),

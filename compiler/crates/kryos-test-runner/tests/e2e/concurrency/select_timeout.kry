@@ -1,0 +1,12 @@
+// run-expect: timeout fired
+fn main() {
+    let ch = chan()
+
+    select {
+        ch => {
+            println("received")
+        }
+    } timeout 100 {
+        println("timeout fired")
+    }
+}

@@ -23,6 +23,7 @@ members = [
     "crates/kryos-test-runner",
     "crates/kryos-fmt",
 ]
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.3.5"

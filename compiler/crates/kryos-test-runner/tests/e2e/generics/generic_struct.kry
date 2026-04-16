@@ -1,0 +1,13 @@
+// run-expect: 42
+// run-expect: hello
+struct Box[T] {
+    value: T
+}
+
+fn main() {
+    let int_box = Box { value: 42 }
+    println(to_string(int_box.value))
+
+    let str_box = Box { value: "hello" }
+    println(str_box.value)
+}

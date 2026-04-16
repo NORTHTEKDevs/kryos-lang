@@ -1,0 +1,15 @@
+// run-expect: got value
+fn main() {
+    let ch = chan()
+
+    spawn {
+        send(ch, 42)
+    }
+
+    select {
+        ch => {
+            let val = recv(ch)
+            println("got value")
+        }
+    }
+}
