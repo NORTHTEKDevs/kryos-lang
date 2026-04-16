@@ -213,7 +213,7 @@ fn compute_struct_layout(fields: &[(String, MirType)]) -> Result<StructLayout, C
     let mut field_offsets = Vec::new();
     for (name, ty) in fields {
         let cl_ty = mir_type_to_cl(ty)?.unwrap_or(types::I64);
-        let size = cl_ty.bytes() as u32;
+        let size = cl_ty.bytes();
         // Natural alignment: align to the field's own size.
         let align = size;
         if align > 0 {
