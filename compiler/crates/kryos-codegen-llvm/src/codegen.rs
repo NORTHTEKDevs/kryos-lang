@@ -442,6 +442,7 @@ impl LlvmCodegen {
                         | Some(MirType::Shared(_))
                         | Some(MirType::Struct(_))
                         | Some(MirType::Enum(_))
+                        | Some(MirType::Map { .. })
                 )
             });
             if !has_heap_caps {
@@ -465,6 +466,7 @@ impl LlvmCodegen {
                         | Some(MirType::Shared(_))
                         | Some(MirType::Struct(_))
                         | Some(MirType::Enum(_))
+                        | Some(MirType::Map { .. })
                 );
                 if !needs_free {
                     continue;
@@ -485,7 +487,7 @@ impl LlvmCodegen {
                         self.emit_line(&format!("  {cap_val} = load ptr, ptr {cap_ptr}"));
                         self.emit_line(&format!("  call void @kryos_array_free(ptr {cap_val})"));
                     }
-                    Some(MirType::Struct(n)) if n == "Map" => {
+                    Some(MirType::Map { .. }) => {
                         self.emit_line(&format!("  {cap_val} = load i64, ptr {cap_ptr}"));
                         self.emit_line(&format!("  call void @kryos_map_free(i64 {cap_val})"));
                     }
@@ -535,6 +537,7 @@ impl LlvmCodegen {
                         | MirType::Function { .. }
                         | MirType::Enum(_)
                         | MirType::Shared(_)
+                        | MirType::Map { .. }
                 )
             })
         };
@@ -558,6 +561,7 @@ impl LlvmCodegen {
                         | MirType::Function { .. }
                         | MirType::Enum(_)
                         | MirType::Shared(_)
+                        | MirType::Map { .. }
                 );
                 if !needs_drop {
                     continue;
@@ -578,7 +582,7 @@ impl LlvmCodegen {
                         self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                         self.emit_line(&format!("  call void @kryos_array_free(ptr {fv})"));
                     }
-                    MirType::Struct(n) if n == "Map" => {
+                    MirType::Map { .. } => {
                         self.emit_line(&format!("  {fv} = load i64, ptr {gep}"));
                         self.emit_line(&format!("  call void @kryos_map_free(i64 {fv})"));
                     }
@@ -614,6 +618,7 @@ impl LlvmCodegen {
                                                 | MirType::Function { .. }
                                                 | MirType::Enum(_)
                                                 | MirType::Shared(_)
+                                                | MirType::Map { .. }
                                         )
                                     })
                                 })
@@ -646,6 +651,7 @@ impl LlvmCodegen {
                             | MirType::Function { .. }
                             | MirType::Enum(_)
                             | MirType::Shared(_)
+                            | MirType::Map { .. }
                     )
                 })
             });
@@ -680,6 +686,7 @@ impl LlvmCodegen {
                                 | MirType::Function { .. }
                                 | MirType::Enum(_)
                                 | MirType::Shared(_)
+                                | MirType::Map { .. }
                         )
                     })
                     .collect();
@@ -719,7 +726,7 @@ impl LlvmCodegen {
                             self.emit_line(&format!("  {fval} = load ptr, ptr {fgep}"));
                             self.emit_line(&format!("  call void @kryos_array_free(ptr {fval})"));
                         }
-                        MirType::Struct(ref n) if n == "Map" => {
+                        MirType::Map { .. } => {
                             self.emit_line(&format!("  {fval} = load i64, ptr {fgep}"));
                             self.emit_line(&format!("  call void @kryos_map_free(i64 {fval})"));
                         }
@@ -1086,7 +1093,7 @@ impl LlvmCodegen {
                     Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                         self.emit_line(&format!("  call void @kryos_arc_release(ptr {val})"));
                     }
-                    Some(MirType::Struct(name)) if name == "Map" => {
+                    Some(MirType::Map { .. }) => {
                         // Map uses i64 handle, coerce ptr to i64 for the call.
                         let i64_val = self.next_temp();
                         self.emit_line(&format!("  {i64_val} = ptrtoint ptr {val} to i64"));
@@ -1166,7 +1173,7 @@ impl LlvmCodegen {
                                 ));
                                 cl
                             }
-                            Some(MirType::Struct(n)) if n == "Map" => {
+                            Some(MirType::Map { .. }) => {
                                 let cl = self.next_temp();
                                 self.emit_line(&format!(
                                     "  {cl} = call i64 @kryos_map_clone(i64 {val})"
@@ -1217,7 +1224,7 @@ impl LlvmCodegen {
                         ));
                         cloned
                     }
-                    Some(MirType::Struct(n)) if n == "Map" => {
+                    Some(MirType::Map { .. }) => {
                         let cloned = self.next_temp();
                         self.emit_line(&format!(
                             "  {cloned} = call i64 @kryos_map_clone(i64 {val})"
@@ -1316,7 +1323,7 @@ impl LlvmCodegen {
                             ));
                             cloned
                         }
-                        Some(MirType::Struct(n)) if n == "Map" => {
+                        Some(MirType::Map { .. }) => {
                             let cloned = self.next_temp();
                             self.emit_line(&format!(
                                 "  {cloned} = call i64 @kryos_map_clone(i64 {val})"
@@ -2165,7 +2172,7 @@ impl LlvmCodegen {
                                 ));
                                 self.emit_line(&format!("  store ptr {cloned}, ptr {cap_ptr}"));
                             }
-                            Some(MirType::Struct(n)) if n == "Map" => {
+                            Some(MirType::Map { .. }) => {
                                 let cloned = self.next_temp();
                                 self.emit_line(&format!(
                                     "  {cloned} = call i64 @kryos_map_clone(i64 {cap_val})"
@@ -2200,6 +2207,7 @@ impl LlvmCodegen {
                                         | Some(MirType::Shared(_))
                                         | Some(MirType::Struct(_))
                                         | Some(MirType::Enum(_))
+                                        | Some(MirType::Map { .. })
                                 )
                             })
                         })
@@ -2520,6 +2528,11 @@ impl LlvmCodegen {
     /// resolved — this indicates a gap in the type checker or MIR lowering that
     /// should be investigated.
     fn resolve_field_index(&self, object: &Operand, field: &str, func: &MirFunction) -> usize {
+        // Numeric field names are tuple element indices (from tuple destructuring).
+        if let Ok(idx) = field.parse::<usize>() {
+            return idx;
+        }
+
         // Determine the struct type name from the operand.
         let struct_name = match object {
             Operand::Local(id) => {
@@ -3195,7 +3208,7 @@ impl LlvmCodegen {
                     self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                     self.emit_line(&format!("  call void @kryos_arc_release(ptr {fv})"));
                 }
-                MirType::Struct(inner_name) if inner_name == "Map" => {
+                MirType::Map { .. } => {
                     let gep = self.next_temp();
                     let fv = self.next_temp();
                     self.emit_line(&format!(
@@ -3250,6 +3263,7 @@ impl LlvmCodegen {
                 | MirType::Function { .. }
                 | MirType::Enum(_)
                 | MirType::Shared(_)
+                | MirType::Map { .. }
         );
 
         if is_droppable {
@@ -3321,7 +3335,7 @@ impl LlvmCodegen {
                     "ptr".to_string(),
                     "call void @kryos_arc_release(ptr {fv})".to_string(),
                 ),
-                MirType::Struct(n) if n == "Map" => (
+                MirType::Map { .. } => (
                     "i64".to_string(),
                     "call void @kryos_map_free(i64 {fv})".to_string(),
                 ),
@@ -3384,6 +3398,7 @@ impl LlvmCodegen {
                         | MirType::Function { .. }
                         | MirType::Enum(_)
                         | MirType::Shared(_)
+                        | MirType::Map { .. }
                 )
             })
         });
@@ -3410,6 +3425,7 @@ impl LlvmCodegen {
                                 | MirType::Function { .. }
                                 | MirType::Enum(_)
                                 | MirType::Shared(_)
+                                | MirType::Map { .. }
                         )
                     })
                     .collect();
@@ -3451,7 +3467,7 @@ impl LlvmCodegen {
                             self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                             self.emit_line(&format!("  call void @kryos_arc_release(ptr {fv})"));
                         }
-                        MirType::Struct(name) if name == "Map" => {
+                        MirType::Map { .. } => {
                             self.emit_line(&format!("  {fv} = load i64, ptr {gep}"));
                             self.emit_line(&format!("  call void @kryos_map_free(i64 {fv})"));
                         }
@@ -3540,6 +3556,10 @@ pub fn mir_type_to_llvm(ty: &MirType) -> String {
         }
         MirType::DynTrait(_) => {
             // Fat pointer: (data_ptr, vtable_ptr) — represented as i64.
+            "i64".into()
+        }
+        MirType::Map { .. } => {
+            // Heap-allocated map: runtime handle stored as i64.
             "i64".into()
         }
     }

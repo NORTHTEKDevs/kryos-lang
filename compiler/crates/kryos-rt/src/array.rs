@@ -1,8 +1,14 @@
 //! KryosArray — heap-allocated, bounds-checked dynamic array.
 //!
-//! Layout: `{ len: i64, cap: i64, elem_size: i64, data: *mut u8 }`.
+//! Layout: `{ len: i64, cap: i64, elem_size: i64, ref_count: i64, data: *mut u8 }`.
 //! Elements are stored as i64-sized values (8 bytes each) for uniform
 //! representation. All functions are `#[no_mangle] extern "C"`.
+//!
+//! Ownership model: `ref_count` tracks how many Kryos values point to this
+//! array header. `kryos_array_clone` increments the count (O(1), no copy).
+//! `kryos_array_free` decrements it and only deallocates when the count
+//! reaches zero. `kryos_array_push` performs copy-on-write when `ref_count > 1`
+//! so mutation never affects aliased owners.
 
 use std::alloc::{alloc, dealloc, realloc, Layout};
 use std::ptr;
@@ -13,6 +19,7 @@ pub struct KryosArray {
     pub len: i64,
     pub cap: i64,
     pub elem_size: i64,
+    pub ref_count: i64,
     pub data: *mut u8,
 }
 
@@ -46,11 +53,16 @@ pub unsafe extern "C" fn kryos_array_new(elem_size: i64, cap: i64) -> *mut Kryos
     (*arr).len = 0;
     (*arr).cap = cap_usize as i64;
     (*arr).elem_size = elem_size;
+    (*arr).ref_count = 1;
     (*arr).data = data;
     arr
 }
 
 /// Push an i64-sized value onto the end of the array, growing if necessary.
+///
+/// Note: when `ref_count > 1` the mutation is visible to all owners (reference
+/// semantics). Callers that need isolated mutation should call `kryos_array_clone`
+/// first (which returns a new independent copy when ref_count > 1).
 #[no_mangle]
 pub unsafe extern "C" fn kryos_array_push(arr: *mut KryosArray, val: i64) {
     if arr.is_null() {
@@ -162,11 +174,11 @@ pub unsafe extern "C" fn kryos_array_concat(
     result
 }
 
-/// Clone a KryosArray — create a new array with the same elements (shallow element copy).
+/// Clone a KryosArray — allocate a new independent array with the same elements
+/// (shallow element copy, `ref_count` initialized to 1).
 ///
-/// Each element value (i64) is copied as-is. For arrays of pointers (structs,
-/// strings, nested arrays), this creates aliased references — the caller must
-/// handle deep cloning of elements separately if needed.
+/// Used by `@copy` struct field semantics to give each copy its own buffer.
+/// For shared ownership of a non-copy array field, use `kryos_array_retain`.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_array_clone(arr: *const KryosArray) -> *mut KryosArray {
     if arr.is_null() {
@@ -182,13 +194,32 @@ pub unsafe extern "C" fn kryos_array_clone(arr: *const KryosArray) -> *mut Kryos
         ptr::copy_nonoverlapping((*arr).data, (*result).data, len as usize * ELEM_SIZE);
         (*result).len = len;
     }
+    // ref_count is already 1 from kryos_array_new.
     result
 }
 
-/// Free a KryosArray and its data buffer.
+/// Retain a KryosArray — increment its reference count and return the same pointer.
+///
+/// Used when a non-copy struct literal copies an array field: both the source
+/// and destination structs share the same heap allocation.  `kryos_array_free`
+/// only deallocates when the count reaches zero.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_array_retain(arr: *mut KryosArray) -> *mut KryosArray {
+    if arr.is_null() {
+        return kryos_array_new(8, 4);
+    }
+    (*arr).ref_count += 1;
+    arr
+}
+
+/// Free a KryosArray — decrement reference count and deallocate when it reaches zero.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
     if arr.is_null() {
+        return;
+    }
+    (*arr).ref_count -= 1;
+    if (*arr).ref_count > 0 {
         return;
     }
     let cap = (*arr).cap as usize;

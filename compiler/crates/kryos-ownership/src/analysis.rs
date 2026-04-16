@@ -79,6 +79,10 @@ pub struct OwnershipAnalyzer {
     copy_structs: HashSet<String>,
     /// Function name → whether return type is a primitive copy type.
     fn_copy_returns: HashMap<String, bool>,
+    /// Struct name → field name → field TypeExpr, for field-access copy analysis.
+    struct_fields: HashMap<String, HashMap<String, kryos_ast::TypeExpr>>,
+    /// Variable name → struct type name, populated from let bindings.
+    var_struct_names: HashMap<String, String>,
 }
 
 impl Default for OwnershipAnalyzer {
@@ -95,6 +99,8 @@ impl OwnershipAnalyzer {
             arc_insertions: Vec::new(),
             copy_structs: HashSet::new(),
             fn_copy_returns: HashMap::new(),
+            struct_fields: HashMap::new(),
+            var_struct_names: HashMap::new(),
         }
     }
 
@@ -139,6 +145,7 @@ impl OwnershipAnalyzer {
     }
 
     /// Snapshot variable states for the current scope stack (for branching).
+    /// Only captures OwnershipState; use snapshot_full when moved_fields must survive.
     fn snapshot_states(&self) -> HashMap<String, OwnershipState> {
         let mut states = HashMap::new();
         for scope in &self.scopes {
@@ -149,10 +156,31 @@ impl OwnershipAnalyzer {
         states
     }
 
+    /// Full snapshot: captures both OwnershipState and moved_fields.
+    fn snapshot_full(&self) -> HashMap<String, (OwnershipState, HashSet<String>)> {
+        let mut snap = HashMap::new();
+        for scope in &self.scopes {
+            for (name, info) in &scope.vars {
+                snap.insert(name.clone(), (info.state, info.moved_fields.clone()));
+            }
+        }
+        snap
+    }
+
     /// Restore a variable's state (used after branch analysis).
+    /// Also clears moved_fields since any explicit state assignment resets partial-move tracking.
     fn restore_state(&mut self, name: &str, state: OwnershipState) {
         if let Some(info) = self.lookup_var_mut(name) {
             info.state = state;
+            info.moved_fields.clear();
+        }
+    }
+
+    /// Restore both state and moved_fields from a full snapshot entry.
+    fn restore_full(&mut self, name: &str, state: OwnershipState, moved_fields: &HashSet<String>) {
+        if let Some(info) = self.lookup_var_mut(name) {
+            info.state = state;
+            info.moved_fields = moved_fields.clone();
         }
     }
 
@@ -328,9 +356,27 @@ impl OwnershipAnalyzer {
             // Block expression: copy if the last expression in the block is copy.
             Expr::Block { block, .. } => self.block_last_expr_is_copy(block),
 
-            // Field access: copy if the object is a copy type (all fields of
-            // a copy struct are themselves copy).
-            Expr::FieldAccess { object, .. } => self.expr_is_copy(object),
+            // Field access: if we know the object's struct type, look up the
+            // specific field type and check that.  This correctly handles
+            // primitive fields on non-@copy structs (e.g. `point.x: i64`).
+            // Fall back to the object's copy status for unknown struct types.
+            Expr::FieldAccess { object, field, .. } => {
+                let struct_name_opt: Option<String> = match object.as_ref() {
+                    Expr::Identifier { name, .. } => {
+                        self.var_struct_names.get(name.as_str()).cloned()
+                    }
+                    Expr::StructLiteral { name, .. } => Some(name.clone()),
+                    _ => None,
+                };
+                if let Some(ref sn) = struct_name_opt {
+                    if let Some(field_ty) =
+                        self.struct_fields.get(sn).and_then(|fs| fs.get(field))
+                    {
+                        return self.is_type_expr_copy(field_ty);
+                    }
+                }
+                self.expr_is_copy(object)
+            }
 
             // Pipe expression: the result type is determined by the right-hand
             // side (the function receiving the piped value).
@@ -420,11 +466,19 @@ impl OwnershipAnalyzer {
         for decl in &module.declarations {
             match decl {
                 Decl::Struct {
-                    name, annotations, ..
+                    name,
+                    annotations,
+                    fields,
+                    ..
                 } => {
                     if annotations.iter().any(|a| a.name == "copy") {
                         self.copy_structs.insert(name.clone());
                     }
+                    let field_map: HashMap<String, kryos_ast::TypeExpr> = fields
+                        .iter()
+                        .map(|f| (f.name.clone(), f.ty.clone()))
+                        .collect();
+                    self.struct_fields.insert(name.clone(), field_map);
                 }
                 Decl::Function { name, ret_ty, .. } => {
                     let is_copy_ret = ret_ty
@@ -618,6 +672,26 @@ impl OwnershipAnalyzer {
                                 moved_fields: HashSet::new(),
                             },
                         );
+                        // Record the struct type name so field-access copy
+                        // analysis can look up individual field types.
+                        let struct_name_from_init = match init_expr {
+                            Expr::StructLiteral { name: sn, .. } => Some(sn.clone()),
+                            _ => None,
+                        };
+                        let struct_name_from_ty =
+                            ty.as_ref().and_then(|t| match t {
+                                kryos_ast::TypeExpr::Simple { name: sn, .. } => {
+                                    Some(sn.clone())
+                                }
+                                _ => None,
+                            });
+                        if let Some(sn) =
+                            struct_name_from_init.or(struct_name_from_ty)
+                        {
+                            if self.struct_fields.contains_key(&sn) {
+                                self.var_struct_names.insert(name.clone(), sn);
+                            }
+                        }
                     }
                 } else {
                     // Declared without initializer → Uninitialized.
@@ -689,8 +763,8 @@ impl OwnershipAnalyzer {
             } => {
                 self.analyze_expr_use(condition);
 
-                // Snapshot state before branching.
-                let before = self.snapshot_states();
+                // Snapshot state before branching (full: includes moved_fields).
+                let before = self.snapshot_full();
 
                 // Analyze then branch.
                 self.push_scope();
@@ -701,9 +775,9 @@ impl OwnershipAnalyzer {
                 // Restore and analyze elif branches.
                 let mut branch_states: Vec<HashMap<String, OwnershipState>> = vec![after_then];
                 for (elif_cond, elif_block) in elif_clauses {
-                    // Restore to pre-branch state.
-                    for (name, state) in &before {
-                        self.restore_state(name, *state);
+                    // Restore to pre-branch state (including moved_fields).
+                    for (name, (state, mf)) in &before {
+                        self.restore_full(name, *state, mf);
                     }
                     self.analyze_expr_use(elif_cond);
                     self.push_scope();
@@ -714,8 +788,8 @@ impl OwnershipAnalyzer {
 
                 // Restore and analyze else branch.
                 if let Some(else_blk) = else_block {
-                    for (name, state) in &before {
-                        self.restore_state(name, *state);
+                    for (name, (state, mf)) in &before {
+                        self.restore_full(name, *state, mf);
                     }
                     self.push_scope();
                     self.analyze_block(else_blk);
@@ -727,7 +801,7 @@ impl OwnershipAnalyzer {
                 // branches but not all, that's a warning.
                 if else_block.is_some() {
                     // Only check when all paths are covered.
-                    for (name, pre_state) in &before {
+                    for (name, (pre_state, _)) in &before {
                         if *pre_state != OwnershipState::Owned {
                             continue;
                         }
@@ -738,7 +812,10 @@ impl OwnershipAnalyzer {
                             .iter()
                             .any(|s| s.get(name) == Some(&OwnershipState::Owned));
                         if moved_in_some && owned_in_some {
-                            self.warning_conditional_move(name, *span);
+                            let is_copy = self.lookup_var(name).map(|i| i.is_copy).unwrap_or(false);
+                            if !is_copy {
+                                self.warning_conditional_move(name, *span);
+                            }
                         }
                         // If moved in ALL branches, mark as moved.
                         let moved_in_all = branch_states
@@ -752,9 +829,10 @@ impl OwnershipAnalyzer {
                         }
                     }
                 } else {
-                    // No else: if then branch moves something, restore to pre-branch.
-                    for (name, state) in &before {
-                        self.restore_state(name, *state);
+                    // No else: if then branch moves something, restore to pre-branch state
+                    // and moved_fields so partial-move tracking does not bleed through.
+                    for (name, (state, mf)) in &before {
+                        self.restore_full(name, *state, mf);
                     }
                 }
             }

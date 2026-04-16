@@ -6,13 +6,15 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 static SOCKET_TABLE: Mutex<Option<SocketTable>> = Mutex::new(None);
 
 enum SocketEntry {
     Stream(TcpStream),
-    Listener(TcpListener),
+    // Wrapped in Arc so we can clone a handle, release the mutex, then call
+    // the blocking accept() without holding the global lock the whole time.
+    Listener(Arc<TcpListener>),
 }
 
 struct SocketTable {
@@ -82,7 +84,9 @@ pub extern "C" fn kryos_tcp_bind(host_ptr: *const u8, host_len: usize, port: u16
 
     let addr = format!("{host}:{port}");
     match TcpListener::bind(&addr) {
-        Ok(listener) => with_socket_table(|table| table.insert(SocketEntry::Listener(listener))),
+        Ok(listener) => {
+            with_socket_table(|table| table.insert(SocketEntry::Listener(Arc::new(listener))))
+        }
         Err(_) => -1,
     }
 }
@@ -90,23 +94,38 @@ pub extern "C" fn kryos_tcp_bind(host_ptr: *const u8, host_len: usize, port: u16
 /// Accepts a connection on a TCP listener.
 ///
 /// Returns a new stream descriptor on success, or -1 on error.
+///
+/// The global socket mutex is released before calling the blocking `accept()`
+/// so that other socket operations (recv/send/close) on spawned threads can
+/// proceed while the main thread waits for a new connection.
 #[no_mangle]
 pub extern "C" fn kryos_tcp_accept(listener_fd: i64) -> i64 {
-    with_socket_table(|table| {
-        let listener = match table.map.get(&listener_fd) {
-            Some(SocketEntry::Listener(l)) => l,
-            _ => return -1,
-        };
-        match listener.accept() {
-            Ok((stream, _addr)) => {
+    // Phase 1: hold the lock only long enough to clone the Arc.
+    let listener_arc = with_socket_table(|table| {
+        match table.map.get(&listener_fd) {
+            Some(SocketEntry::Listener(l)) => Some(Arc::clone(l)),
+            _ => None,
+        }
+    });
+
+    let listener_arc = match listener_arc {
+        Some(a) => a,
+        None => return -1,
+    };
+
+    // Phase 2: block on accept() WITHOUT holding the mutex.
+    match listener_arc.accept() {
+        Ok((stream, _addr)) => {
+            // Phase 3: re-acquire briefly to insert the new stream.
+            with_socket_table(|table| {
                 let fd = table.next_fd;
                 table.next_fd += 1;
                 table.map.insert(fd, SocketEntry::Stream(stream));
                 fd
-            }
-            Err(_) => -1,
+            })
         }
-    })
+        Err(_) => -1,
+    }
 }
 
 /// Sends data over a TCP stream.
@@ -157,4 +176,77 @@ pub extern "C" fn kryos_socket_close(fd: i64) -> i32 {
             -1
         }
     })
+}
+
+// ── Kryos-string-handle wrappers ─────────────────────────────────────────────
+// Kryos represents strings as i64 handles pointing to KryosString structs.
+// These wrappers accept i64 handles and delegate to the raw-pointer functions above.
+
+#[repr(C)]
+struct KryosString {
+    len: i64,
+    cap: i64,
+    data: *mut u8,
+}
+
+unsafe fn handle_to_bytes(handle: i64) -> (*const u8, usize) {
+    if handle == 0 {
+        return (std::ptr::null(), 0);
+    }
+    let s = handle as *const KryosString;
+    ((*s).data as *const u8, (*s).len as usize)
+}
+
+/// `tcp_connect(host: str, port: i64) -> i64`
+#[no_mangle]
+pub extern "C" fn kryos_tcp_connect_ks(host_handle: i64, port: i64) -> i64 {
+    let (ptr, len) = unsafe { handle_to_bytes(host_handle) };
+    if ptr.is_null() {
+        return -1;
+    }
+    kryos_tcp_connect(ptr, len, port as u16)
+}
+
+/// `tcp_listen(host: str, port: i64) -> i64`
+#[no_mangle]
+pub extern "C" fn kryos_tcp_bind_ks(host_handle: i64, port: i64) -> i64 {
+    let (ptr, len) = unsafe { handle_to_bytes(host_handle) };
+    if ptr.is_null() {
+        return -1;
+    }
+    kryos_tcp_bind(ptr, len, port as u16)
+}
+
+/// `tcp_send(fd: i64, data: str) -> i64`
+#[no_mangle]
+pub extern "C" fn kryos_tcp_send_ks(fd: i64, data_handle: i64) -> i64 {
+    let (ptr, len) = unsafe { handle_to_bytes(data_handle) };
+    if ptr.is_null() {
+        return 0;
+    }
+    kryos_tcp_send(fd, ptr, len)
+}
+
+/// `tcp_recv(fd: i64, max_bytes: i64) -> str`
+/// Returns a new KryosString handle containing the received bytes.
+#[no_mangle]
+pub extern "C" fn kryos_tcp_recv_ks(fd: i64, max_bytes: i64) -> i64 {
+    let buf_len = if max_bytes <= 0 { 4096 } else { max_bytes as usize };
+    let mut buf = vec![0u8; buf_len];
+    let n = kryos_tcp_recv(fd, buf.as_mut_ptr(), buf_len);
+    let n = n.max(0) as usize;
+    // Build a heap KryosString from the received bytes.
+    let data = buf[..n].to_vec();
+    let boxed = Box::new(KryosString {
+        len: n as i64,
+        cap: n as i64,
+        data: Box::into_raw(data.into_boxed_slice()) as *mut u8,
+    });
+    Box::into_raw(boxed) as i64
+}
+
+/// `tcp_close(fd: i64) -> void`
+#[no_mangle]
+pub extern "C" fn kryos_socket_close_ks(fd: i64) -> i64 {
+    kryos_socket_close(fd) as i64
 }

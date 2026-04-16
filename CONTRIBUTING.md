@@ -10,6 +10,21 @@ Thank you for your interest in contributing. This document covers how to set up 
 - LLVM 15+ (optional -- required only for `--llvm` release builds)
 - Git
 
+**Linux only:** the stdlib-native crate enables SQLite and TLS by default. Install the system packages before building:
+
+```bash
+# Debian / Ubuntu
+sudo apt-get install libsqlite3-dev libssl-dev pkg-config
+
+# Fedora / RHEL
+sudo dnf install sqlite-devel openssl-devel pkg-config
+
+# Arch
+sudo pacman -S sqlite openssl pkg-config
+```
+
+macOS and Windows ship these libraries with the Rust toolchain; no extra steps needed.
+
 > **Memory warning:** Debug builds consume ~48 GB of RAM due to monomorphization. Always build with `--release -j 4`.
 
 ---
@@ -40,7 +55,7 @@ kryos-lang/
     crates/          21 Rust crates (the compiler)
     stdlib/          28 Kryos stdlib modules (.kry)
     self-host/       Self-hosting compiler in Kryos (19k lines)
-    examples/        14 runnable example programs
+    examples/        20 runnable example programs
     tests/           Integration test suite
   docs/              Language manual (15 chapters)
   editors/           VS Code extension

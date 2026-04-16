@@ -1,0 +1,5 @@
+fn main() {
+    append_file("test_output.txt", "Hello\n")
+    append_file("test_output.txt", "World\n")
+    println("File written successfully")
+}

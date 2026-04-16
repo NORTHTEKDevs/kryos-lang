@@ -48,6 +48,16 @@ pub fn execute() -> Result<(), String> {
             break;
         }
 
+        // Multi-line input: keep reading while brackets are unclosed.
+        while bracket_depth(line.trim_end()) > 0 {
+            print!(".... ");
+            stdout.flush().map_err(|e| e.to_string())?;
+            let n2 = reader.read_line(&mut line).map_err(|e| e.to_string())?;
+            if n2 == 0 {
+                break;
+            }
+        }
+
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -83,17 +93,29 @@ pub fn execute() -> Result<(), String> {
                 let wrapper = format!(
                     "{preamble}\nfn __repl_type_check__() {{ {lets}\nlet __result__ = {expr}; }}"
                 );
-                let (diags, sm) = kryos_driver::check_source(&wrapper, "<repl>");
-                if diags.iter().any(|d| d.is_error()) {
-                    for d in &diags {
-                        eprint!("{}", kryos_errors::render_diagnostic(d, &sm));
+                let mut config = kryos_driver::BuildConfig::for_file("<repl>");
+                config.output_type = kryos_driver::OutputType::Mir;
+                let result = kryos_driver::compile_source(&wrapper, "<repl>", &config);
+                if !result.success {
+                    for d in &result.diagnostics {
+                        eprint!("{}", kryos_errors::render_diagnostic(d, &result.source_map));
                     }
+                } else if let Some(ref mir) = result.mir {
+                    // Look up __result__ in the MIR locals of __repl_type_check__.
+                    let ty_str = mir
+                        .functions
+                        .iter()
+                        .find(|f| f.name == "__repl_type_check__")
+                        .and_then(|f| {
+                            f.locals
+                                .iter()
+                                .find(|l| l.name.as_deref() == Some("__result__"))
+                        })
+                        .map(|l| l.ty.to_string())
+                        .unwrap_or_else(|| "?".to_string());
+                    println!("{expr} : {ty_str}");
                 } else {
-                    // Type check passed — report success.
-                    // Full type inference display would require accessing the
-                    // type table, which isn't exposed yet. For now, report that
-                    // the expression is valid.
-                    println!("expression `{expr}` type-checks successfully");
+                    println!("{expr} : ?");
                 }
             }
             input => {
@@ -122,6 +144,9 @@ pub fn execute() -> Result<(), String> {
                 let preamble = decl_history.join("\n");
                 let lets = let_history.join("\n");
 
+                let mut config = kryos_driver::BuildConfig::for_file("<repl>");
+                config.output_type = kryos_driver::OutputType::Mir;
+
                 let wrapper = if is_decl {
                     // Top-level declaration — place it alongside history,
                     // with an empty eval body just to validate.
@@ -129,11 +154,19 @@ pub fn execute() -> Result<(), String> {
                 } else if is_let || is_assignment || input.ends_with(';') {
                     format!("{preamble}\nfn __repl_eval__() {{ {lets}\n{input} }}")
                 } else {
-                    // Bare expression or statement — wrap directly as a statement.
-                    format!("{preamble}\nfn __repl_eval__() {{ {lets}\n{input} }}")
+                    // Bare expression — try to auto-print via println(to_string(...)).
+                    let print_wrapper = format!(
+                        "{preamble}\nfn __repl_eval__() {{ {lets}\nprintln(to_string({input})) }}"
+                    );
+                    let probe = kryos_driver::compile_source(&print_wrapper, "<repl>", &config);
+                    if probe.success {
+                        print_wrapper
+                    } else {
+                        // Fall back to running silently (e.g. void call or side-effecting stmt).
+                        format!("{preamble}\nfn __repl_eval__() {{ {lets}\n{input} }}")
+                    }
                 };
 
-                let config = kryos_driver::BuildConfig::for_file("<repl>");
                 let result = kryos_driver::compile_source(&wrapper, "<repl>", &config);
 
                 if !result.success {
@@ -177,6 +210,37 @@ pub fn execute() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Count net open bracket depth in a string, ignoring brackets inside string literals.
+/// Returns 0 if brackets are balanced or over-closed.
+fn bracket_depth(s: &str) -> i32 {
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+    for ch in s.chars() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escape = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match ch {
+            '{' | '(' | '[' => depth += 1,
+            '}' | ')' | ']' => depth -= 1,
+            _ => {}
+        }
+    }
+    depth.max(0)
 }
 
 /// Detect simple assignment statements like `x = 10`, `point.x = 5`, etc.

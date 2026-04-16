@@ -162,6 +162,10 @@ impl JitCompiler {
             "kryos_array_clone",
             kryos_rt::array::kryos_array_clone as *const u8,
         );
+        jit_builder.symbol(
+            "kryos_array_retain",
+            kryos_rt::array::kryos_array_retain as *const u8,
+        );
 
         // Map operations
         jit_builder.symbol("kryos_map_new", kryos_rt::map::kryos_map_new as *const u8);
@@ -628,6 +632,26 @@ impl JitCompiler {
             "kryos_socket_close",
             kryos_stdlib_native::net::kryos_socket_close as *const u8,
         );
+        jit_builder.symbol(
+            "kryos_tcp_connect_ks",
+            kryos_stdlib_native::net::kryos_tcp_connect_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_tcp_bind_ks",
+            kryos_stdlib_native::net::kryos_tcp_bind_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_tcp_send_ks",
+            kryos_stdlib_native::net::kryos_tcp_send_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_tcp_recv_ks",
+            kryos_stdlib_native::net::kryos_tcp_recv_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_socket_close_ks",
+            kryos_stdlib_native::net::kryos_socket_close_ks as *const u8,
+        );
 
         // Stdlib-native: datetime
         jit_builder.symbol(
@@ -1092,6 +1116,7 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_array_free", "kryos_array_free", sig(1));
     decl!("kryos_array_concat", "kryos_array_concat", sig(2));
     decl!("kryos_array_clone", "kryos_array_clone", sig(1));
+    decl!("kryos_array_retain", "kryos_array_retain", sig(1));
 
     // --- Map runtime ---
     decl!("kryos_map_new", "kryos_map_new", sig(0));
@@ -1140,6 +1165,14 @@ fn declare_runtime_builtins<M: Module>(
 
     // --- Exception check ---
     decl!("kryos_exception_check", "kryos_exception_check", sig(0));
+
+    // --- Networking (Kryos-string-handle wrappers) ---
+    decl!("kryos_tcp_connect_ks", "kryos_tcp_connect_ks", sig(2));
+    decl!("kryos_tcp_bind_ks", "kryos_tcp_bind_ks", sig(2));
+    decl!("kryos_tcp_accept", "kryos_tcp_accept", sig(1));
+    decl!("kryos_tcp_send_ks", "kryos_tcp_send_ks", sig(2));
+    decl!("kryos_tcp_recv_ks", "kryos_tcp_recv_ks", sig(2));
+    decl!("kryos_socket_close_ks", "kryos_socket_close_ks", sig(1));
 
     Ok(())
 }

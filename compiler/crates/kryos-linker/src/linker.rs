@@ -208,8 +208,17 @@ fn build_msvc_command(cmd: &mut Command, config: &LinkerConfig) {
         cmd.arg(format!("/LIBPATH:{}", lib_path.display()));
     }
 
-    // Link the C runtime and kernel libraries
-    cmd.arg("libcmt.lib");
+    // Link the C runtime and kernel libraries.
+    // Use the DLL CRT (/MD) to match how the Rust-based kryos_stdlib_native.lib
+    // and kryos_rt.lib are compiled. Mixing libcmt.lib (static /MT) with libs
+    // that embed /DEFAULTLIB:MSVCRT causes LNK4098 and unresolved __imp_* symbols.
+    cmd.arg("/NODEFAULTLIB:libcmt.lib");
+    cmd.arg("msvcrt.lib");
+    cmd.arg("vcruntime.lib");
+    cmd.arg("ucrt.lib");
+    // Provides non-__imp_ definitions of printf/puts/etc. so codegen object
+    // files (which call printf directly) link against the DLL CRT.
+    cmd.arg("legacy_stdio_definitions.lib");
     cmd.arg("kernel32.lib");
 
     // Extra library search directories

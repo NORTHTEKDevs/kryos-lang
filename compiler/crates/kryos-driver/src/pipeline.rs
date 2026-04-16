@@ -663,48 +663,38 @@ pub fn compile_project_with_backend(
         ));
     }
 
-    // Collect all .kry files
-    let source_files = collect_kry_files(&src_dir);
-    if source_files.is_empty() {
+    // Compile only the entry point (src/main.kry by convention).
+    // compile_file_with_backend already resolves and inlines all `use` imports,
+    // so compiling every file independently would produce spurious "no main" errors
+    // for every non-entry module.
+    let entry_path = src_dir.join("main.kry");
+
+    if config.verbose {
+        eprintln!("[kryos] compiling entry: {}", entry_path.display());
+    }
+
+    if !entry_path.is_file() {
         return CompileResult::from_error(format!(
-            "no .kry source files found in {}",
-            src_dir.display()
+            "entry file not found: {}",
+            entry_path.display()
         ));
     }
 
-    if config.verbose {
-        eprintln!("[kryos] found {} source file(s)", source_files.len());
-    }
-
-    // Compile each file, aggregating results
-    let combined_source_map = SourceMap::default();
-    let mut all_diagnostics: Vec<Diagnostic> = Vec::new();
-    let mut last_mir: Option<MirModule> = None;
-    let mut all_success = true;
-
-    for file_path in &source_files {
-        let result = compile_file_with_backend(file_path, config, backend);
-        all_diagnostics.extend(result.diagnostics);
-        // Note: each file gets its own source_map during compilation.
-        // For the combined result we keep a fresh one (diagnostics already
-        // carry their file_id from the per-file source map).
-        if !result.success {
-            all_success = false;
-        }
-        if result.mir.is_some() {
-            last_mir = result.mir;
+    // Apply output name from manifest if not already overridden by the caller.
+    if config.output.is_none() {
+        if let Some(ref name) = manifest.build.output {
+            let mut config2 = config.clone();
+            let out_name = if cfg!(windows) && !name.ends_with(".exe") {
+                format!("{name}.exe")
+            } else {
+                name.clone()
+            };
+            config2.output = Some(out_name);
+            return compile_file_with_backend(&entry_path, &config2, backend);
         }
     }
 
-    CompileResult {
-        diagnostics: all_diagnostics,
-        source_map: combined_source_map,
-        success: all_success,
-        output_path: None,
-        mir: last_mir,
-        object_bytes: None,
-        llvm_ir: None,
-    }
+    compile_file_with_backend(&entry_path, config, backend)
 }
 
 // ---------------------------------------------------------------------------

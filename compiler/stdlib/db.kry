@@ -1,0 +1,197 @@
+// ============================================================
+// std.db -- SQLite database driver
+//
+// Wraps the kryos-stdlib-native SQLite FFI layer and provides
+// a high-level connection/query API.
+//
+// Usage:
+//   use std::db
+//
+//   let conn = db::open("myapp.db")
+//   db::exec(conn, "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT)")
+//   db::exec(conn, "INSERT INTO users (name) VALUES ('Alice')")
+//
+//   let cursor = db::query(conn, "SELECT id, name FROM users")
+//   while db::step(cursor) {
+//       let id   = db::col_int(cursor, 0)
+//       let name = db::col_text(cursor, 1)
+//       println(to_string(id) + " " + name)
+//   }
+//   db::finalize(cursor)
+//   db::close(conn)
+// ============================================================
+
+// --- Native FFI declarations ------------------------------------------------
+
+extern {
+    fn kryos_db_open(path_ptr: ptr, path_len: i64) -> i64
+    fn kryos_db_open_memory() -> i64
+    fn kryos_db_close(conn: i64) -> i32
+    fn kryos_db_exec(conn: i64, sql_ptr: ptr, sql_len: i64) -> i64
+    fn kryos_db_prepare(conn: i64, sql_ptr: ptr, sql_len: i64) -> i64
+    fn kryos_db_step(cursor: i64) -> i32
+    fn kryos_db_col_count(cursor: i64) -> i32
+    fn kryos_db_col_int(cursor: i64, col: i32) -> i64
+    fn kryos_db_col_text_len(cursor: i64, col: i32) -> i64
+    fn kryos_db_col_text_copy(cursor: i64, col: i32, buf: ptr, buf_len: i64) -> i64
+    fn kryos_db_finalize(cursor: i64) -> i32
+}
+
+// --- Connection struct -------------------------------------------------------
+
+struct Connection {
+    handle: i64
+}
+
+// --- Cursor (result set) struct ----------------------------------------------
+
+struct Cursor {
+    handle: i64,
+    done: bool
+}
+
+// --- Connection API ----------------------------------------------------------
+
+// Open a SQLite database file at `path`.  The file is created if it does not exist.
+// Throws on failure.
+@capabilities(fs, db)
+fn open(path: str) -> Connection {
+    let h = kryos_db_open(str_to_ptr(path), len(path))
+    if h < 0 {
+        throw "db error: could not open database: " + path
+    }
+    return Connection { handle: h }
+}
+
+// Open a temporary in-memory database.  Useful for tests.
+@capabilities(db)
+fn open_memory() -> Connection {
+    let h = kryos_db_open_memory()
+    if h < 0 {
+        throw "db error: could not open in-memory database"
+    }
+    return Connection { handle: h }
+}
+
+// Close a database connection.
+@capabilities(db)
+fn close(conn: Connection) {
+    kryos_db_close(conn.handle)
+}
+
+// --- Execute (DDL / DML) ----------------------------------------------------
+
+// Execute a DDL or DML statement (CREATE, INSERT, UPDATE, DELETE, etc.).
+// Returns the number of rows changed.  Throws on SQL error.
+@capabilities(db)
+fn exec(conn: Connection, sql: str) -> i64 {
+    let n = kryos_db_exec(conn.handle, str_to_ptr(sql), len(sql))
+    if n < 0 {
+        throw "db error: exec failed: " + sql
+    }
+    return n
+}
+
+// --- Query (SELECT) ---------------------------------------------------------
+
+// Execute a SELECT and return a Cursor over the result rows.
+// Advance with step(), read columns with col_int()/col_text().
+// Call finalize() when done to release the cursor.
+@capabilities(db)
+fn query(conn: Connection, sql: str) -> Cursor {
+    let h = kryos_db_prepare(conn.handle, str_to_ptr(sql), len(sql))
+    if h < 0 {
+        throw "db error: query failed: " + sql
+    }
+    return Cursor { handle: h, done: false }
+}
+
+// Advance the cursor to the next row.
+// Returns true if a row is available, false when exhausted.
+@capabilities(db)
+fn step(cursor: Cursor) -> bool {
+    if cursor.done {
+        return false
+    }
+    let r = kryos_db_step(cursor.handle)
+    return r == 1
+}
+
+// Return the number of columns in the cursor result set.
+fn col_count(cursor: Cursor) -> i32 {
+    return kryos_db_col_count(cursor.handle)
+}
+
+// Read an integer (or real) column from the current row.
+fn col_int(cursor: Cursor, col: i32) -> i64 {
+    return kryos_db_col_int(cursor.handle, col)
+}
+
+// Read a text column from the current row.
+fn col_text(cursor: Cursor, col: i32) -> str {
+    let n = kryos_db_col_text_len(cursor.handle, col)
+    if n <= 0 {
+        return ""
+    }
+    let buf = alloc(n)
+    let written = kryos_db_col_text_copy(cursor.handle, col, buf, n)
+    if written < 0 {
+        return ""
+    }
+    return buf_to_str(buf, written)
+}
+
+// Free a cursor and release its memory.
+fn finalize(cursor: Cursor) {
+    kryos_db_finalize(cursor.handle)
+}
+
+// --- Convenience helpers ----------------------------------------------------
+
+// Execute multiple semicolon-separated statements (e.g. a migration script).
+// Uses exec() for each statement.  Returns total rows affected.
+@capabilities(db)
+fn exec_multi(conn: Connection, sql: str) -> i64 {
+    let mut total = 0
+    let mut start = 0
+    let sql_len = len(sql)
+    let mut i = 0
+    while i < sql_len {
+        if sql[i] == ";" {
+            let stmt = trim(substr(sql, start, i))
+            if len(stmt) > 0 {
+                total = total + exec(conn, stmt)
+            }
+            start = i + 1
+        }
+        i = i + 1
+    }
+    // Trailing statement without semicolon.
+    let last = trim(substr(sql, start, sql_len))
+    if len(last) > 0 {
+        total = total + exec(conn, last)
+    }
+    return total
+}
+
+// Execute a SELECT and return all rows as a flat array of strings.
+// Columns within a row are joined by `sep`.
+// Useful for quick inspection: db::query_flat(conn, "SELECT name FROM users", "|")
+@capabilities(db)
+fn query_flat(conn: Connection, sql: str, sep: str) -> [str] {
+    let cursor = query(conn, sql)
+    let ncols = col_count(cursor)
+    let mut rows: [str] = []
+    while step(cursor) {
+        let mut row = ""
+        let mut c = 0
+        while c < ncols {
+            if c > 0 { row = row + sep }
+            row = row + col_text(cursor, c)
+            c = c + 1
+        }
+        rows = rows + [row]
+    }
+    finalize(cursor)
+    return rows
+}

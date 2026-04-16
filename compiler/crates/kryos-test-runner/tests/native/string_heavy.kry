@@ -1,0 +1,19 @@
+// Regression test for Bug 4: heap corruption on programs with many string
+// allocations. Builds 20 strings via concatenation, stores them in an array,
+// then verifies the first and last entries survived intact.
+// expect-stdout: item_0
+// expect-stdout: item_19
+// expect-stdout: ok
+
+fn main() {
+    let mut strs: [str] = []
+    let mut i = 0
+    while i < 20 {
+        push(strs, "item_" + to_string(i))
+        i = i + 1
+    }
+    println(strs[0])
+    println(strs[19])
+    assert(len(strs) == 20, "wrong count")
+    println("ok")
+}

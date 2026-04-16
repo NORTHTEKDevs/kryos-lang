@@ -2,14 +2,14 @@
 // std.http -- HTTP client and server
 //
 // Provides a high-level HTTP client (get, post, put, delete,
-// patch, head) and a simple HTTP server (listen, route, handle).
+// patch, head) and a simple HTTP server (http_serve, route, handle).
 // Uses std.net TCP functions internally.
 //
 // All network-facing functions carry @capabilities(net).
 //
 // Usage:
 //   let resp = std.http.get("http://example.com/api")
-//   std.http.listen(8080, router)
+//   std.http.http_serve(8080, router)
 // ============================================================
 
 // --- URL parsing -------------------------------------------------------------
@@ -62,12 +62,13 @@ fn parse_url(raw: str) -> Url {
 
     // Extract host and port
     let mut host = rest
-    let mut port = if scheme == "https" { 443 } else { 80 }
+    let mut port = 80
+    if scheme == "https" { port = 443 }
     let colon_idx = _find(rest, ":")
     if colon_idx >= 0 {
         host = _substring(rest, 0, colon_idx)
         let port_str = _substring(rest, colon_idx + 1, len(rest))
-        port = int(port_str)
+        port = parse_int(port_str)
     }
 
     return Url {
@@ -305,7 +306,7 @@ fn parse_response(raw: str) -> Response {
 /// Send an HTTP request and return the response.
 /// Uses std.net TCP functions for the connection.
 @capabilities(net)
-fn send(req: Request) -> Response {
+fn http_send(req: Request) -> Response {
     let u = req.url
     let raw_request = serialize_request(req)
 
@@ -333,7 +334,7 @@ fn send(req: Request) -> Response {
 @capabilities(net)
 fn get(url: str) -> Response {
     let req = new_request("GET", url)
-    return send(req)
+    return http_send(req)
 }
 
 /// HTTP POST request with a body.
@@ -341,7 +342,7 @@ fn get(url: str) -> Response {
 fn post(url: str, body: str) -> Response {
     let mut req = new_request("POST", url)
     req = with_body(req, body)
-    return send(req)
+    return http_send(req)
 }
 
 /// HTTP POST request with a JSON body.
@@ -349,7 +350,7 @@ fn post(url: str, body: str) -> Response {
 fn post_json(url: str, json_body: str) -> Response {
     let mut req = new_request("POST", url)
     req = with_json_body(req, json_body)
-    return send(req)
+    return http_send(req)
 }
 
 /// HTTP PUT request with a body.
@@ -357,14 +358,14 @@ fn post_json(url: str, json_body: str) -> Response {
 fn put(url: str, body: str) -> Response {
     let mut req = new_request("PUT", url)
     req = with_body(req, body)
-    return send(req)
+    return http_send(req)
 }
 
 /// HTTP DELETE request.
 @capabilities(net)
 fn delete(url: str) -> Response {
     let req = new_request("DELETE", url)
-    return send(req)
+    return http_send(req)
 }
 
 /// HTTP PATCH request with a body.
@@ -372,14 +373,14 @@ fn delete(url: str) -> Response {
 fn patch(url: str, body: str) -> Response {
     let mut req = new_request("PATCH", url)
     req = with_body(req, body)
-    return send(req)
+    return http_send(req)
 }
 
 /// HTTP HEAD request (response will have empty body).
 @capabilities(net)
 fn head(url: str) -> Response {
     let req = new_request("HEAD", url)
-    return send(req)
+    return http_send(req)
 }
 
 // --- Simple HTTP server ------------------------------------------------------
@@ -387,7 +388,7 @@ fn head(url: str) -> Response {
 struct Route {
     method: str,
     path: str,
-    handler: fn
+    handler: fn(Request) -> Response
 }
 
 struct Router {
@@ -400,7 +401,7 @@ fn new_router() -> Router {
 }
 
 /// Add a route to the router.
-fn add_route(router: Router, method: str, path: str, handler: fn) -> Router {
+fn add_route(router: Router, method: str, path: str, handler: fn(Request) -> Response) -> Router {
     let route = Route { method: method, path: path, handler: handler }
     let mut routes = router.routes
     push(routes, route)
@@ -408,22 +409,22 @@ fn add_route(router: Router, method: str, path: str, handler: fn) -> Router {
 }
 
 /// Convenience: add a GET route.
-fn route_get(router: Router, path: str, handler: fn) -> Router {
+fn route_get(router: Router, path: str, handler: fn(Request) -> Response) -> Router {
     return add_route(router, "GET", path, handler)
 }
 
 /// Convenience: add a POST route.
-fn route_post(router: Router, path: str, handler: fn) -> Router {
+fn route_post(router: Router, path: str, handler: fn(Request) -> Response) -> Router {
     return add_route(router, "POST", path, handler)
 }
 
 /// Convenience: add a PUT route.
-fn route_put(router: Router, path: str, handler: fn) -> Router {
+fn route_put(router: Router, path: str, handler: fn(Request) -> Response) -> Router {
     return add_route(router, "PUT", path, handler)
 }
 
 /// Convenience: add a DELETE route.
-fn route_delete(router: Router, path: str, handler: fn) -> Router {
+fn route_delete(router: Router, path: str, handler: fn(Request) -> Response) -> Router {
     return add_route(router, "DELETE", path, handler)
 }
 
@@ -462,7 +463,8 @@ fn parse_request(raw: str) -> Request {
 
     let parts = _split(request_line, " ")
     let method = parts[0]
-    let raw_path = if len(parts) > 1 { parts[1] } else { "/" }
+    let mut raw_path = "/"
+    if len(parts) > 1 { raw_path = parts[1] }
 
     let headers = parse_headers(remaining_headers)
     let host = get_header(headers, "Host")
@@ -520,10 +522,16 @@ fn json_response(status: i64, body: str) -> Response {
 /// Start an HTTP server on the given port.
 /// The handler function receives a Request and must return a Response.
 @capabilities(net)
-fn listen(port: i64, router: Router) -> void {
+fn http_serve(port: i64, router: Router) -> void {
     let server = tcp_listen("0.0.0.0", port)
+    if server == -1 {
+        return
+    }
     while true {
         let conn = tcp_accept(server)
+        if conn == -1 {
+            continue
+        }
         spawn {
             try {
                 let raw = tcp_recv(conn, 65536)
@@ -532,12 +540,12 @@ fn listen(port: i64, router: Router) -> void {
                 try {
                     let route = match_route(router, req.method, req.url.path)
                     resp = route.handler(req)
-                } catch (e) {
+                } catch e {
                     resp = text_response(404, "Not Found")
                 }
                 let raw_resp = serialize_response(resp)
                 tcp_send(conn, raw_resp)
-            } catch (e) {
+            } catch e {
                 let err_resp = serialize_response(text_response(500, "Internal Server Error"))
                 tcp_send(conn, err_resp)
             }

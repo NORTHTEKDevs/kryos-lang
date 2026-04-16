@@ -1,0 +1,11 @@
+// expect-stdout: Producer spawned\nConsumer received: Hello from spawn\nConsumer spawned
+
+fn main() {
+    println("Producer spawned")
+
+    spawn(fn() {
+        println("Consumer received: Hello from spawn")
+    })
+
+    println("Consumer spawned")
+}

@@ -18,6 +18,27 @@ use std::http
 
 // ---- JSON helpers (no json.kry import -- avoids get() name collision) --------
 
+// Returns true if haystack matches needle starting at pos.
+fn str_match_at(haystack: str, needle: str, pos: i64) -> bool {
+    let nlen = len(needle)
+    let mut k = 0
+    while k < nlen {
+        if haystack[pos + k] != needle[k] { return false }
+        k = k + 1
+    }
+    return true
+}
+
+// Advance end past characters that are not a double-quote.
+fn find_quote(s: str, slen: i64, start: i64) -> i64 {
+    let mut end = start
+    while end < slen {
+        if s[end] == "\"" { return end }
+        end = end + 1
+    }
+    return end
+}
+
 // Extract a string field value from a flat JSON object.
 fn extract_str(json: str, field: str) -> str {
     let needle = "\"" + field + "\":\""
@@ -25,19 +46,9 @@ fn extract_str(json: str, field: str) -> str {
     let blen = len(json)
     let mut pos = 0
     while pos <= blen - nlen {
-        let mut matched = true
-        let mut k = 0
-        while k < nlen {
-            if json[pos + k] != needle[k] {
-                matched = false
-                k = nlen
-            }
-            k = k + 1
-        }
-        if matched {
+        if str_match_at(json, needle, pos) {
             let start = pos + nlen
-            let mut end = start
-            while end < blen and json[end] != "\"" { end = end + 1 }
+            let end = find_quote(json, blen, start)
             return substr(json, start, end)
         }
         pos = pos + 1
@@ -104,7 +115,7 @@ fn tool_search(query: str) -> str {
 // Claude reasoning: calls the Anthropic Messages API with a question.
 // Requires ANTHROPIC_API_KEY in the environment.
 fn tool_ask_claude(question: str) -> str {
-    let api_key = env("ANTHROPIC_API_KEY")
+    let api_key = env_get("ANTHROPIC_API_KEY")
     if len(api_key) == 0 {
         return "error: ANTHROPIC_API_KEY not set"
     }
@@ -131,7 +142,7 @@ fn tool_ask_claude(question: str) -> str {
     }
     req = with_json_body(req, body)
 
-    let resp = send(req)
+    let resp = http_send(req)
     if resp.status != 200 {
         return "error: API returned HTTP " + to_string(resp.status)
     }
@@ -172,11 +183,11 @@ fn main() {
     println("")
 
     // Agent memory: store and retrieve facts across tool calls.
-    let mut mem = agent_memory_new()
-    mem = mem.remember("calc_result", calc_result, "working")
-    mem = mem.remember("language", "Kryos", "semantic")
+    let mem0 = agent_memory_new()
+    let mem1 = mem0.remember("calc_result", calc_result, "working")
+    let mem2 = mem1.remember("language", "Kryos", "semantic")
 
-    let remembered = mem.recall("language")
+    let remembered = mem2.recall("language")
     println("[memory] recalled 'language' -> " + remembered)
     println("")
 

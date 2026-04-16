@@ -1,0 +1,15 @@
+fn main() {
+    // i64 functions
+    println(abs(-5))
+    println(max(3, 7))
+    println(min(3, 7))
+
+    // f64 functions
+    println(abs_f(-4.0))
+    println(pow(2.0, 10.0))
+    println(sqrt(16.0))
+    println(floor(3.7))
+    println(ceil(3.2))
+    println(min_f(2.5, 3.5))
+    println(max_f(2.5, 3.5))
+}

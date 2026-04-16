@@ -4,6 +4,22 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.5] - 2026-04-16
+
+### Fixed
+- `MirType::Map` sentinel migration: replaced `Ptr(Str)` map-handle hack with typed `Map { key, value }` variant throughout MIR, lowering, and both backends
+- REPL `:type` map inference: map literals now report the actual key/value element types instead of always `Map<i64, i64>`
+- REPL `:type` index inference: indexing into a `Map<K, V>` now returns `V` instead of `i64`
+- Package registry: `parse_index_entry` now parses the `deps` JSON object into the dependency map; transitive dependency resolution from registry responses now works
+- `NodeTable::get_mut` and `::remove` dead_code warnings suppressed in `kryos-stdlib-native/src/json.rs` -- intentional forward-facing API surface
+
+### Changed
+- `README.md`: corrected version badge from v0.3.4 to v0.3.5
+- `CONTINUE.md` (internal dev artifact) replaced with `ARCHITECTURE.md` for public distribution
+- `examples/README.md`: documented all 20 examples (was 12); added blocking notes for `http_api.kry` and `mcp_server.kry`
+
+---
+
 ## [0.3.4] - 2026-04-14
 
 ### Added

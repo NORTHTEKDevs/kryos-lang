@@ -1,0 +1,29 @@
+// Regression test for Bug 1: enum payloads in arrays were zeroed out.
+// Verifies that payload values are preserved when enums are stored in and
+// retrieved from arrays.
+// expect-stdout: 5
+// expect-stdout: 3
+// expect-stdout: 4
+// expect-stdout: 7
+// expect-stdout: 2
+
+enum Num {
+    Small(i64),
+    Big(i64, i64),
+}
+
+fn first(n: Num) -> i64 {
+    match n {
+        Num::Small(x) => x,
+        Num::Big(a, b) => a,
+    }
+}
+
+fn main() {
+    let nums = [Num.Small(5), Num.Small(3), Num.Big(4, 99), Num.Small(7), Num.Big(2, 88)]
+    let mut i = 0
+    while i < 5 {
+        println(first(nums[i]))
+        i = i + 1
+    }
+}

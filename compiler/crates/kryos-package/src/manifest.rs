@@ -179,6 +179,8 @@ pub struct BuildConfig {
     pub target: String,
     #[serde(default = "default_optimization")]
     pub optimization: String,
+    #[serde(default)]
+    pub output: Option<String>,
 }
 
 impl Default for BuildConfig {
@@ -186,6 +188,7 @@ impl Default for BuildConfig {
         Self {
             target: default_target(),
             optimization: default_optimization(),
+            output: None,
         }
     }
 }

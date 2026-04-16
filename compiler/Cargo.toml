@@ -25,7 +25,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.4"
+version = "0.3.5"
 edition = "2021"
 license = "LicenseRef-Proprietary"
 repository = "https://github.com/FrostbyteDevTeam/kryos-lang"
@@ -68,6 +68,10 @@ ring = "0.17"
 regex = "1"
 crossterm = "0.28"
 toml = "0.8"
+rusqlite = { version = "0.31", features = ["bundled"] }
+rustls = { version = "0.23", features = ["ring"] }
+rustls-pki-types = "1"
+webpki-roots = "0.26"
 criterion = { version = "0.5", features = ["html_reports"] }
 
 # Dev profile: reduce debug build RAM from ~48GB by optimizing heavy deps

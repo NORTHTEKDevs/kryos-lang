@@ -202,9 +202,9 @@ Parse a raw HTTP response string into a `Response` struct.
 
 All HTTP client functions require `@capabilities(net)` on the calling function or module.
 
-### send
+### http_send
 
-`send(req: Request) -> Response`
+`http_send(req: Request) -> Response`
 
 Execute `req` and return the response.
 

@@ -43,13 +43,19 @@ impl AgentMemory {
         memory_type: str
     ) -> AgentMemory {
         let entry = MemoryEntry { key: key, value: value, memory_type: memory_type, timestamp: time_now() }
+        // Extract fields to locals so each is moved exactly once per branch.
+        let w = self.working
+        let s = self.semantic
+        let e = self.episodic
         if memory_type == "working" {
-            return AgentMemory { working: push(self.working, entry), semantic: self.semantic, episodic: self.episodic }
+            return AgentMemory { working: push(w, entry), semantic: s, episodic: e }
+        } else {
+            if memory_type == "semantic" {
+                return AgentMemory { working: w, semantic: push(s, entry), episodic: e }
+            } else {
+                return AgentMemory { working: w, semantic: s, episodic: push(e, entry) }
+            }
         }
-        if memory_type == "semantic" {
-            return AgentMemory { working: self.working, semantic: push(self.semantic, entry), episodic: self.episodic }
-        }
-        return AgentMemory { working: self.working, semantic: self.semantic, episodic: push(self.episodic, entry) }
     }
 
     fn recall(self: AgentMemory, key: str) -> str {

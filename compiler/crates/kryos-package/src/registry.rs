@@ -311,7 +311,7 @@ fn parse_index_entry(json: &str, name: &str) -> Option<RegistryEntry> {
         name: name.to_string(),
         version,
         checksum,
-        dependencies: HashMap::new(), // TODO: parse deps object
+        dependencies: extract_deps_object(json, "deps"),
         download_url,
     })
 }
@@ -328,6 +328,58 @@ fn extract_json_string(json: &str, key: &str) -> Option<String> {
     let after_value_start = &after_key[value_start..];
     let value_end = after_value_start.find('"')?;
     Some(after_value_start[..value_end].to_string())
+}
+
+/// Extract a JSON object of string key-value pairs by key.
+/// Parses `"key": { "a": "1", "b": "2" }` from a flat JSON line.
+fn extract_deps_object(json: &str, key: &str) -> HashMap<String, String> {
+    let pattern = format!("\"{}\"", key);
+    let start = match json.find(&pattern) {
+        Some(i) => i,
+        None => return HashMap::new(),
+    };
+    let after_key = &json[start + pattern.len()..];
+    // Find the opening `{`.
+    let brace_start = match after_key.find('{') {
+        Some(i) => i,
+        None => return HashMap::new(),
+    };
+    let inner_start = brace_start + 1;
+    // Find the matching closing `}`.
+    let brace_end = match after_key[inner_start..].find('}') {
+        Some(i) => inner_start + i,
+        None => return HashMap::new(),
+    };
+    let inner = &after_key[inner_start..brace_end];
+
+    // Parse `"key": "value"` pairs from the inner slice.
+    let mut result = HashMap::new();
+    let mut s = inner;
+    while let Some(kq) = s.find('"') {
+        s = &s[kq + 1..];
+        let kend = match s.find('"') {
+            Some(i) => i,
+            None => break,
+        };
+        let dep_name = s[..kend].to_string();
+        s = &s[kend + 1..];
+        // Skip to next `"` (the value opening quote).
+        let vq = match s.find('"') {
+            Some(i) => i,
+            None => break,
+        };
+        s = &s[vq + 1..];
+        let vend = match s.find('"') {
+            Some(i) => i,
+            None => break,
+        };
+        let dep_ver = s[..vend].to_string();
+        s = &s[vend + 1..];
+        if !dep_name.is_empty() {
+            result.insert(dep_name, dep_ver);
+        }
+    }
+    result
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────

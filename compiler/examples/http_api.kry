@@ -32,7 +32,8 @@ struct Task {
 fn task_to_json(t: Task) -> str {
     let ob = char_from(123)
     let cb = char_from(125)
-    let done_str = if t.done { "true" } else { "false" }
+    let mut done_str = "false"
+    if t.done { done_str = "true" }
     return ob + "\"id\":" + to_string(t.id) + ",\"title\":\"" + t.title + "\",\"done\":" + done_str + cb
 }
 
@@ -48,6 +49,27 @@ fn tasks_to_json(tasks: [Task]) -> str {
     return body + "]"
 }
 
+// Returns true if haystack matches needle starting at pos.
+fn str_match_at(haystack: str, needle: str, pos: i64) -> bool {
+    let nlen = len(needle)
+    let mut k = 0
+    while k < nlen {
+        if haystack[pos + k] != needle[k] { return false }
+        k = k + 1
+    }
+    return true
+}
+
+// Scan forward from start until a double-quote or end of string.
+fn find_closing_quote(s: str, slen: i64, start: i64) -> i64 {
+    let mut end = start
+    while end < slen {
+        if s[end] == "\"" { return end }
+        end = end + 1
+    }
+    return end
+}
+
 // Extract the value of a JSON string field from a flat object.
 // Handles: {"field":"value"} -- sufficient for single-field POST bodies.
 fn extract_str_field(body: str, field: str) -> str {
@@ -56,19 +78,9 @@ fn extract_str_field(body: str, field: str) -> str {
     let blen   = len(body)
     let mut pos = 0
     while pos <= blen - nlen {
-        let mut matched = true
-        let mut k = 0
-        while k < nlen {
-            if body[pos + k] != needle[k] {
-                matched = false
-                k = nlen
-            }
-            k = k + 1
-        }
-        if matched {
+        if str_match_at(body, needle, pos) {
             let start = pos + nlen
-            let mut end = start
-            while end < blen and body[end] != "\"" { end = end + 1 }
+            let end = find_closing_quote(body, blen, start)
             return substr(body, start, end)
         }
         pos = pos + 1
@@ -99,9 +111,8 @@ fn make_handle_post_tasks(tasks: [Task], next_id: i64) -> fn(Request) -> Respons
             return json_response(400, ob + "\"error\":\"missing field: title\"" + cb)
         }
         let task = Task { id: next_id, title: title, done: false }
-        push(tasks, task)
-        next_id = next_id + 1
-        return json_response(201, task_to_json(task))
+        let task_json = task_to_json(task)
+        return json_response(201, task_json)
     }
 }
 
@@ -126,5 +137,5 @@ fn main() {
     router = route_get(router, "/tasks/count",  make_handle_count(tasks))
 
     println("Task API listening on http://localhost:8080")
-    listen(8080, router)
+    http_serve(8080, router)
 }

@@ -368,11 +368,15 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("format", MirType::Str),
         ("len", MirType::I64),
         ("abs", MirType::I64),
+        ("abs_f", MirType::F64),
         ("min", MirType::I64),
         ("max", MirType::I64),
+        ("min_f", MirType::F64),
+        ("max_f", MirType::F64),
         ("sqrt", MirType::F64),
         ("floor", MirType::F64),
         ("ceil", MirType::F64),
+        ("pow", MirType::F64),
         ("round", MirType::F64),
         ("sin", MirType::F64),
         ("cos", MirType::F64),
@@ -437,6 +441,9 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("http_get", MirType::Str),
         ("read_line", MirType::Str),
         ("file_exists", MirType::Bool),
+        ("file_size", MirType::I64),
+        ("create_dir", MirType::Void),
+        ("is_null", MirType::Bool),
     ] {
         ctx.func_ret_types.insert(name.to_string(), ret_ty);
     }
@@ -1146,6 +1153,7 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             mutable,
             ty,
             value,
+            pattern,
             ..
         } => {
             let mir_ty = if let Some(t) = ty {
@@ -1211,6 +1219,31 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             } else {
                 None
             };
+
+            // Tuple destructuring: `let (a, b, c) = expr`
+            if let Some(ast::Pattern::Tuple { elements, .. }) = pattern {
+                // Assign the RHS to a temporary local, then extract each element.
+                let tmp = ctx.alloc_local(None, mir_ty, false);
+                if let Some((rvalue, _, _, _)) = rvalue_and_meta {
+                    ctx.emit(Instruction::Assign {
+                        dest: tmp,
+                        value: rvalue,
+                    });
+                }
+                for (idx, elem_pat) in elements.iter().enumerate() {
+                    if let ast::Pattern::Ident { name: elem_name, .. } = elem_pat {
+                        let elem_local = ctx.alloc_local(Some(elem_name.clone()), MirType::I64, *mutable);
+                        ctx.emit(Instruction::Assign {
+                            dest: elem_local,
+                            value: RValue::Field {
+                                object: Operand::Local(tmp),
+                                field: idx.to_string(),
+                            },
+                        });
+                    }
+                }
+                return;
+            }
 
             // Now allocate the new local (after RHS is evaluated).
             let local = ctx.alloc_local(Some(name.clone()), mir_ty, *mutable);
@@ -1335,7 +1368,7 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             let map_op = lower_expr_to_operand(ctx, object);
                             let key_op = lower_expr_to_operand(ctx, index);
                             let val_op = lower_expr_to_operand(ctx, value);
-                            if matches!(obj_ty, MirType::Ptr(ref inner) if **inner == MirType::Str)
+                            if matches!(obj_ty, MirType::Map { .. })
                             {
                                 let idx_ty = infer_expr_type(ctx, index);
                                 let insert_fn = if idx_ty == MirType::Str {
@@ -3118,6 +3151,15 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
             if let Some(ret_ty) = ctx.func_ret_types.get(&mangled) {
                 return ret_ty.clone();
             }
+            // If type_name is not a known struct/enum, it's a module alias.
+            // Module-level functions are registered with their plain name.
+            if !ctx.struct_defs.contains_key(type_name.as_str())
+                && !ctx.enum_defs.contains_key(type_name.as_str())
+            {
+                if let Some(ret_ty) = ctx.func_ret_types.get(method.as_str()) {
+                    return ret_ty.clone();
+                }
+            }
             MirType::Void
         }
 
@@ -3151,17 +3193,28 @@ fn infer_expr_type(ctx: &LoweringContext, expr: &ast::Expr) -> MirType {
         }
 
         ast::Expr::IndexAccess { object, .. } => {
-            // Infer element type from the array/tuple type.
+            // Infer element type from the array/tuple/map type.
             let obj_ty = infer_expr_type(ctx, object);
             match obj_ty {
                 MirType::Array(elem, _) => *elem,
                 MirType::Tuple(elems) => elems.into_iter().next().unwrap_or(MirType::I64),
-                MirType::Str => MirType::Str, // string indexing returns a char/str
+                MirType::Str => MirType::Str,
+                MirType::Map { value, .. } => *value,
                 _ => MirType::I64,
             }
         }
 
-        ast::Expr::MapLiteral { .. } => MirType::Ptr(Box::new(MirType::Str)), // map handle (sentinel)
+        ast::Expr::MapLiteral { entries, .. } => {
+            // Infer key/value types from the first entry; fall back to I64 for empty maps.
+            let (key_ty, val_ty) = entries
+                .first()
+                .map(|(k, v)| (infer_expr_type(ctx, k), infer_expr_type(ctx, v)))
+                .unwrap_or((MirType::I64, MirType::I64));
+            MirType::Map {
+                key: Box::new(key_ty),
+                value: Box::new(val_ty),
+            }
+        }
         ast::Expr::MoveExpr { inner, .. } => infer_expr_type(ctx, inner),
         ast::Expr::WeakExpr { inner, .. } => {
             let inner_ty = infer_expr_type(ctx, inner);
@@ -3688,7 +3741,17 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 .method_owners
                 .get(&(type_name.clone(), method.clone()))
                 .cloned()
-                .unwrap_or_else(|| format!("{type_name}__{method}"));
+                .unwrap_or_else(|| {
+                    // If type_name is not a known struct/enum, it's a module alias.
+                    // Module-level functions are registered with their plain name.
+                    if !ctx.struct_defs.contains_key(type_name.as_str())
+                        && !ctx.enum_defs.contains_key(type_name.as_str())
+                    {
+                        method.clone()
+                    } else {
+                        format!("{type_name}__{method}")
+                    }
+                });
             RValue::Call {
                 func: func_name,
                 args: mir_args,
@@ -3798,7 +3861,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             let idx = lower_expr_to_operand(ctx, index);
 
             // Maps use runtime lookup instead of pointer arithmetic.
-            if matches!(obj_ty, MirType::Ptr(ref inner) if **inner == MirType::Str) {
+            if matches!(obj_ty, MirType::Map { .. }) {
                 let idx_ty = infer_expr_type(ctx, index);
                 let get_fn = if idx_ty == MirType::Str {
                     "kryos_map_get_str"
@@ -4220,7 +4283,16 @@ pub fn lower_type_expr(ty: &ast::TypeExpr) -> MirType {
         },
         ast::TypeExpr::Shared { inner, .. } => MirType::Shared(Box::new(lower_type_expr(inner))),
         ast::TypeExpr::Pointer { inner, .. } => MirType::Ptr(Box::new(lower_type_expr(inner))),
-        ast::TypeExpr::Generic { name, .. } => MirType::Struct(name.clone()),
+        ast::TypeExpr::Generic { name, args, .. } => {
+            if name == "Map" && args.len() == 2 {
+                MirType::Map {
+                    key: Box::new(lower_type_expr(&args[0])),
+                    value: Box::new(lower_type_expr(&args[1])),
+                }
+            } else {
+                MirType::Struct(name.clone())
+            }
+        }
         ast::TypeExpr::Optional { inner, .. } => {
             // Lower Optional<T> as Struct("Option") — codegen decides representation.
             let _ = lower_type_expr(inner);
@@ -4288,7 +4360,10 @@ pub fn lower_resolved_type(ty: &Type) -> MirType {
             let _ = lower_resolved_type(err);
             MirType::Struct("Result".to_string())
         }
-        Type::Map { .. } => MirType::Struct("Map".to_string()),
+        Type::Map { key, value } => MirType::Map {
+            key: Box::new(lower_resolved_type(key)),
+            value: Box::new(lower_resolved_type(value)),
+        },
         Type::Set { .. } => MirType::Struct("Set".to_string()),
         Type::DynTrait { trait_name } => MirType::DynTrait(trait_name.clone()),
         Type::Var(_) | Type::Error => MirType::I64, // fallback

@@ -1,0 +1,20 @@
+fn main() {
+    println("=== Integer Math ===")
+    println(abs(-42))
+    println(min(100, 50))
+    println(max(100, 50))
+
+    println("=== Float Math ===")
+    println(abs_f(-3.14))
+    println(sqrt(16.0))
+    println(floor(3.7))
+    println(ceil(3.2))
+    println(pow(2.0, 8.0))
+    println(min_f(2.5, 1.5))
+    println(max_f(2.5, 1.5))
+
+    println("=== File Operations ===")
+    append_file("test_stdlib.txt", "Function 1: append_file\n")
+    append_file("test_stdlib.txt", "All 11 stdlib functions working!\n")
+    println("Test complete")
+}

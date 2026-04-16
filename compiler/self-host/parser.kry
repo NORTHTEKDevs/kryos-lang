@@ -130,7 +130,7 @@ fn p_advance(p: Parser) -> Parser {
     if p_at_end(p) {
         return p
     }
-    return Parser { tokens: p.tokens, pos: p.pos + 1, errors: p.errors }
+    return Parser { tokens: p.tokens, pos: p.pos + 1, errors: p.errors, no_struct_lit: p.no_struct_lit }
 }
 
 fn p_check(p: Parser, kind: i32) -> bool {

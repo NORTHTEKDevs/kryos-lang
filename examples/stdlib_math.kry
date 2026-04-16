@@ -1,0 +1,15 @@
+fn main() {
+    // Test abs
+    println(to_string(abs(-5)))  // Expected: 5
+
+    // Test abs_f
+    let af = abs_f(-4.0)
+    println(to_string(af))        // Expected: 4.0
+
+    // Test max
+    println(to_string(max(3, 7))) // Expected: 7
+
+    // Test pow
+    let p = pow(2.0, 10.0)
+    println(to_string(p))         // Expected: 1024.0
+}

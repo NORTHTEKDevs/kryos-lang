@@ -93,6 +93,11 @@ pub enum MirType {
     },
     /// Dynamic trait object: fat pointer (data_ptr, vtable_ptr).
     DynTrait(String),
+    /// Heap-allocated map: runtime handle stored as i64.
+    Map {
+        key: Box<MirType>,
+        value: Box<MirType>,
+    },
 }
 
 impl fmt::Display for MirType {
@@ -149,6 +154,7 @@ impl fmt::Display for MirType {
                 write!(f, ") -> {ret}")
             }
             MirType::DynTrait(name) => write!(f, "dyn {name}"),
+            MirType::Map { key, value } => write!(f, "Map<{key}, {value}>"),
         }
     }
 }

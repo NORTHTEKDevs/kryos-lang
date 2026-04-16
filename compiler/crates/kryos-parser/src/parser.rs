@@ -1854,14 +1854,12 @@ impl Parser {
                 None
             };
             self.expect(TokenKind::FatArrow);
+            // Allow `return expr` in match arms: the `return` is absorbed and
+            // the expression value becomes the arm body.  When the match is the
+            // tail expression of a function the result flows as the return value
+            // automatically.  For early returns inside a block arm, use `{ return expr }`.
             if self.check(TokenKind::Return) {
-                let ret_span = self.peek().span;
-                self.diagnostics.push(
-                    Diagnostic::error("unexpected `return` in match arm".to_string())
-                        .with_label(ret_span, "here")
-                        .with_note("match arms are expressions; remove `return` and use the expression directly"),
-                );
-                self.advance(); // skip `return` and parse the expression
+                self.advance(); // consume `return`
             }
             let body = Box::new(self.parse_expr());
             let arm_end = body.span();
@@ -2314,6 +2312,15 @@ impl Parser {
                 TypeExpr::DynTrait {
                     trait_name: name_tok.text.clone(),
                     span: tok.span.merge(end),
+                }
+            }
+            // Map type: `{}`
+            TokenKind::LBrace => {
+                self.advance();
+                let rbrace = self.expect(TokenKind::RBrace);
+                TypeExpr::Simple {
+                    name: "Map".to_string(),
+                    span: tok.span.merge(rbrace.span),
                 }
             }
             // Simple or generic type: `i32`, `Vec<i32>`, `Map<String, i32>`

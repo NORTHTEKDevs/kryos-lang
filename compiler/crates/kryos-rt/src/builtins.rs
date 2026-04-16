@@ -1302,6 +1302,70 @@ fn http_get_impl(url: &str) -> Option<String> {
     String::from_utf8(response[body_start..].to_vec()).ok()
 }
 
+// ---------------------------------------------------------------------------
+// Math functions — abs, sqrt, floor, ceil, pow, min, max
+// ---------------------------------------------------------------------------
+
+/// `abs(x)` — Absolute value for i64.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_abs(x: i64) -> i64 {
+    x.abs()
+}
+
+/// `abs_f(x)` — Absolute value for f64.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_abs_f(x: f64) -> f64 {
+    x.abs()
+}
+
+/// `sqrt(x)` — Square root.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_sqrt(x: f64) -> f64 {
+    x.sqrt()
+}
+
+/// `floor(x)` — Floor function.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_floor(x: f64) -> f64 {
+    x.floor()
+}
+
+/// `ceil(x)` — Ceiling function.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_ceil(x: f64) -> f64 {
+    x.ceil()
+}
+
+/// `pow(base, exp)` — Power function.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_pow(base: f64, exp: f64) -> f64 {
+    base.powf(exp)
+}
+
+/// `min(a, b)` — Minimum of two i64 values.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_min(a: i64, b: i64) -> i64 {
+    std::cmp::min(a, b)
+}
+
+/// `max(a, b)` — Maximum of two i64 values.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_max(a: i64, b: i64) -> i64 {
+    std::cmp::max(a, b)
+}
+
+/// `min_f(a, b)` — Minimum of two f64 values.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_min_f(a: f64, b: f64) -> f64 {
+    a.min(b)
+}
+
+/// `max_f(a, b)` — Maximum of two f64 values.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_max_f(a: f64, b: f64) -> f64 {
+    a.max(b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

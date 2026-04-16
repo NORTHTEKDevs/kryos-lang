@@ -17,8 +17,13 @@ pub mod crypto;
 pub mod datetime;
 pub mod fs;
 pub mod io;
+pub mod json;
 pub mod net;
 pub mod process;
 pub mod re;
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
 pub mod sync_prims;
 pub mod term;
+#[cfg(feature = "tls")]
+pub mod tls;

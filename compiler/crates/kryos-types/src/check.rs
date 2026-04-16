@@ -88,7 +88,13 @@ impl TypeChecker {
                         Type::Error
                     };
                 }
-                if let Some(ty) = Type::from_name(name) {
+                if name == "Map" {
+                    // Bare `Map` or `{}` syntax: create a map with fresh type variables
+                    Type::Map {
+                        key: Box::new(self.engine.fresh_var()),
+                        value: Box::new(self.engine.fresh_var()),
+                    }
+                } else if let Some(ty) = Type::from_name(name) {
                     ty
                 } else {
                     // Check if it's a known struct or enum name.
@@ -772,6 +778,64 @@ impl TypeChecker {
         }
     }
 
+    /// Like `check_block`, but returns the type of the tail expression if the
+    /// last statement is an `Expr` statement (i.e. the block is used as a value).
+    /// Returns `Type::Void` if the block is empty or ends with a non-expr statement.
+    fn infer_block_as_expr(&mut self, block: &Block) -> Type {
+        let n = block.stmts.len();
+        for (i, stmt) in block.stmts.iter().enumerate() {
+            if i == n - 1 {
+if let Stmt::Expr { expr, .. } = stmt {
+                    return self.infer_expr(expr);
+                }
+                // An if-else as the last statement can produce a value just like
+                // an if expression.  We infer the branch types without emitting
+                // diagnostics for the stmt itself here (check_stmt does that).
+                if let Stmt::If {
+                    condition,
+                    then_block,
+                    elif_clauses,
+                    else_block: Some(else_blk),
+                    span,
+                } = stmt
+                {
+                    let cond_ty = self.infer_expr(condition);
+                    if let Err(diag) = self.engine.unify(&Type::Bool, &cond_ty, *span) {
+                        self.diagnostics.push(diag);
+                    }
+                    self.env.push_scope();
+                    let mut branch_ty = self.infer_block_as_expr(then_block);
+                    self.env.pop_scope();
+                    // Walk elif clauses; their branch type must match.
+                    for (elif_cond, elif_block) in elif_clauses {
+                        let ec_ty = self.infer_expr(elif_cond);
+                        if let Err(diag) = self.engine.unify(&Type::Bool, &ec_ty, *span) {
+                            self.diagnostics.push(diag);
+                        }
+                        self.env.push_scope();
+                        let elif_ty = self.infer_block_as_expr(elif_block);
+                        self.env.pop_scope();
+                        if let Err(diag) = self.engine.unify(&branch_ty, &elif_ty, *span) {
+                            self.diagnostics.push(diag);
+                        }
+                    }
+                    self.env.push_scope();
+                    let else_ty = self.infer_block_as_expr(else_blk);
+                    self.env.pop_scope();
+                    if let Err(diag) = self.engine.unify(&branch_ty, &else_ty, *span) {
+                        self.diagnostics.push(diag);
+                        // If unification fails return the else type so the outer
+                        // expression still gets a concrete (non-void) type.
+                        branch_ty = else_ty;
+                    }
+                    return branch_ty;
+                }
+            }
+            self.check_stmt(stmt);
+        }
+        Type::Void
+    }
+
     fn check_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let {
@@ -780,7 +844,7 @@ impl TypeChecker {
                 ty,
                 value,
                 span,
-                ..
+                pattern,
             } => {
                 let declared_ty = ty.as_ref().map(|t| self.resolve_type_expr(t));
                 let inferred_ty = value.as_ref().map(|v| self.infer_expr(v));
@@ -801,7 +865,10 @@ impl TypeChecker {
                     }
                 };
 
-                if *mutable {
+                if let Some(pat) = pattern {
+                    // Tuple / struct destructuring: bind each variable in the pattern.
+                    self.bind_pattern(pat, &final_ty);
+                } else if *mutable {
                     self.env.define_var_mut(name.clone(), final_ty);
                 } else {
                     self.env.define_var(name.clone(), final_ty);
@@ -950,9 +1017,17 @@ impl TypeChecker {
                 self.env.define_var(name.clone(), subject_ty.clone());
             }
             Pattern::Tuple { elements, .. } => {
-                for elem in elements {
-                    let tv = self.engine.fresh_var();
-                    self.bind_pattern(elem, &tv);
+                // Resolve the subject type so we can extract element types.
+                let resolved = self.engine.resolve(subject_ty);
+                let elem_tys: Vec<Type> = if let Type::Tuple { elements: ts } = &resolved {
+                    ts.clone()
+                } else {
+                    vec![]
+                };
+                for (i, elem) in elements.iter().enumerate() {
+                    let elem_ty = elem_tys.get(i).cloned()
+                        .unwrap_or_else(|| self.engine.fresh_var());
+                    self.bind_pattern(elem, &elem_ty);
                 }
             }
             Pattern::Struct { fields, .. } => {
@@ -1247,7 +1322,10 @@ impl TypeChecker {
                                 "sizeof",
                                 "min",
                                 "max",
+                                "min_f",
+                                "max_f",
                                 "abs",
+                                "abs_f",
                                 "sqrt",
                                 "pow",
                                 "floor",
@@ -1669,15 +1747,20 @@ impl TypeChecker {
                     self.diagnostics.push(diag);
                 }
                 self.env.push_scope();
-                self.check_block(then_branch);
+                let then_ty = self.infer_block_as_expr(then_branch);
                 self.env.pop_scope();
                 if let Some(else_blk) = else_branch {
                     self.env.push_scope();
-                    self.check_block(else_blk);
+                    let else_ty = self.infer_block_as_expr(else_blk);
                     self.env.pop_scope();
+                    if let Err(diag) = self.engine.unify(&then_ty, &else_ty, *span) {
+                        self.diagnostics.push(diag);
+                    }
+                    then_ty
+                } else {
+                    // No else branch: if-expr without else is void.
+                    Type::Void
                 }
-                // If used as expression, type is unit for now.
-                Type::Void
             }
 
             // Match expression.
@@ -2141,6 +2224,18 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         ret: Type::I64,
     });
 
+    // append_file(path: str, content: str) -> i64 — append string to file (0=ok, -1=err)
+    checker.env.define_function(FunctionSig {
+        name: "append_file".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("path".to_string(), Type::Str),
+            ("content".to_string(), Type::Str),
+        ],
+        ret: Type::I64,
+    });
+
     // file_size(path: str) -> i64 — byte size of file, -1 on error
     checker.env.define_function(FunctionSig {
         name: "file_size".to_string(),
@@ -2475,6 +2570,51 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         ret: Type::F64,
     });
 
+    // pow(x: f64, y: f64) -> f64 — x to the power of y
+    checker.env.define_function(FunctionSig {
+        name: "pow".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("x".to_string(), Type::F64),
+            ("y".to_string(), Type::F64),
+        ],
+        ret: Type::F64,
+    });
+
+    // abs_f(x: f64) -> f64 — absolute value for floats
+    checker.env.define_function(FunctionSig {
+        name: "abs_f".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("x".to_string(), Type::F64)],
+        ret: Type::F64,
+    });
+
+    // min_f(a: f64, b: f64) -> f64 — minimum of two floats
+    checker.env.define_function(FunctionSig {
+        name: "min_f".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("a".to_string(), Type::F64),
+            ("b".to_string(), Type::F64),
+        ],
+        ret: Type::F64,
+    });
+
+    // max_f(a: f64, b: f64) -> f64 — maximum of two floats
+    checker.env.define_function(FunctionSig {
+        name: "max_f".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("a".to_string(), Type::F64),
+            ("b".to_string(), Type::F64),
+        ],
+        ret: Type::F64,
+    });
+
     // keys(m: any) -> [str] — get map keys
     checker.env.define_function(FunctionSig {
         name: "keys".to_string(),
@@ -2794,6 +2934,72 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
             ("separator".to_string(), Type::Str),
         ],
         ret: Type::Str,
+    });
+
+    // tcp_connect(host: str, port: i64) -> i64
+    checker.env.define_function(FunctionSig {
+        name: "tcp_connect".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("host".to_string(), Type::Str),
+            ("port".to_string(), Type::I64),
+        ],
+        ret: Type::I64,
+    });
+
+    // tcp_listen(host: str, port: i64) -> i64
+    checker.env.define_function(FunctionSig {
+        name: "tcp_listen".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("host".to_string(), Type::Str),
+            ("port".to_string(), Type::I64),
+        ],
+        ret: Type::I64,
+    });
+
+    // tcp_accept(fd: i64) -> i64
+    checker.env.define_function(FunctionSig {
+        name: "tcp_accept".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("fd".to_string(), Type::I64)],
+        ret: Type::I64,
+    });
+
+    // tcp_send(fd: i64, data: str) -> i64
+    checker.env.define_function(FunctionSig {
+        name: "tcp_send".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("fd".to_string(), Type::I64),
+            ("data".to_string(), Type::Str),
+        ],
+        ret: Type::I64,
+    });
+
+    // tcp_recv(fd: i64, max_bytes: i64) -> str
+    checker.env.define_function(FunctionSig {
+        name: "tcp_recv".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("fd".to_string(), Type::I64),
+            ("max_bytes".to_string(), Type::I64),
+        ],
+        ret: Type::Str,
+    });
+
+    // tcp_close(fd: i64) -> void
+    checker.env.define_function(FunctionSig {
+        name: "tcp_close".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("fd".to_string(), Type::I64)],
+        ret: Type::Void,
     });
 
     checker.check_module(module);
