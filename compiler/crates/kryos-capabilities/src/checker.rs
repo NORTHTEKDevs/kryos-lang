@@ -82,11 +82,9 @@ impl CapabilityChecker {
             match decl {
                 Decl::Function {
                     name, annotations, ..
-                } => {
-                    if Self::has_capabilities_annotation(annotations) {
-                        let caps = CapabilitySet::from_annotations(annotations);
-                        self.fn_capabilities.insert(name.clone(), caps);
-                    }
+                } if Self::has_capabilities_annotation(annotations) => {
+                    let caps = CapabilitySet::from_annotations(annotations);
+                    self.fn_capabilities.insert(name.clone(), caps);
                 }
                 Decl::Impl { methods, .. } | Decl::Trait { methods, .. } => {
                     self.build_fn_capability_map(methods);
