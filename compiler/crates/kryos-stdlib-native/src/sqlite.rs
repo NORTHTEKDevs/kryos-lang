@@ -16,8 +16,6 @@
 //!   kryos_db_col_text_copy(cursor, col, buf, buf_len) -> i64 -- copy text into caller buffer
 //!   kryos_db_finalize(cursor) -> i32   -- free cursor
 
-#![cfg(feature = "sqlite")]
-
 use rusqlite::{Connection, types::Value};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};

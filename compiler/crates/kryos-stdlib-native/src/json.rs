@@ -353,18 +353,15 @@ impl Parser {
             return Ok(alloc_node(JsonNode::Object(pairs)));
         }
         loop {
-            let key = match self.parse_string()? {
-                handle => {
-                    match with_node(handle, |n| {
-                        match n {
-                            JsonNode::Str(s) => Some(s.clone()),
-                            _ => None,
-                        }
-                    }) {
-                        Some(Some(s)) => s,
-                        _ => return Err(()),
-                    }
+            let handle = self.parse_string()?;
+            let key = match with_node(handle, |n| {
+                match n {
+                    JsonNode::Str(s) => Some(s.clone()),
+                    _ => None,
                 }
+            }) {
+                Some(Some(s)) => s,
+                _ => return Err(()),
             };
             self.skip_whitespace();
             if self.advance() != Some(b':') {
@@ -478,10 +475,7 @@ pub extern "C" fn kryos_json_parse(str_handle: i64) -> i64 {
     match ks_to_string(str_handle) {
         Some(s) => {
             let mut parser = Parser::new(&s);
-            match parser.parse_value() {
-                Ok(handle) => handle,
-                Err(()) => -1,
-            }
+            parser.parse_value().unwrap_or(-1)
         }
         None => -1,
     }

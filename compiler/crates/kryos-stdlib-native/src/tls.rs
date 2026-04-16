@@ -3,8 +3,6 @@
 //! Uses rustls with webpki-roots CA certificates.  TLS streams are stored in a
 //! global table keyed by i64 handles, identical to the pattern in net.rs.
 
-#![cfg(feature = "tls")]
-
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, StreamOwned};
 use std::collections::HashMap;

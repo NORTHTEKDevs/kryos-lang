@@ -222,32 +222,32 @@ pub fn get_completions(source: &str, line: u32, character: u32) -> Vec<Value> {
     if let Ok(module) = kryos_parser::parse(tokens) {
         for decl in &module.declarations {
             match decl {
-                kryos_ast::Decl::Function { name, .. } => {
-                    if prefix.is_empty() || name.starts_with(&prefix) {
-                        items.push(serde_json::json!({
-                            "label": name,
-                            "kind": KIND_FUNCTION,
-                            "detail": "function",
-                        }));
-                    }
+                kryos_ast::Decl::Function { name, .. }
+                    if prefix.is_empty() || name.starts_with(&prefix) =>
+                {
+                    items.push(serde_json::json!({
+                        "label": name,
+                        "kind": KIND_FUNCTION,
+                        "detail": "function",
+                    }));
                 }
-                kryos_ast::Decl::Struct { name, .. } => {
-                    if prefix.is_empty() || name.starts_with(&prefix) {
-                        items.push(serde_json::json!({
-                            "label": name,
-                            "kind": KIND_STRUCT,
-                            "detail": "struct",
-                        }));
-                    }
+                kryos_ast::Decl::Struct { name, .. }
+                    if prefix.is_empty() || name.starts_with(&prefix) =>
+                {
+                    items.push(serde_json::json!({
+                        "label": name,
+                        "kind": KIND_STRUCT,
+                        "detail": "struct",
+                    }));
                 }
-                kryos_ast::Decl::Enum { name, .. } => {
-                    if prefix.is_empty() || name.starts_with(&prefix) {
-                        items.push(serde_json::json!({
-                            "label": name,
-                            "kind": KIND_ENUM,
-                            "detail": "enum",
-                        }));
-                    }
+                kryos_ast::Decl::Enum { name, .. }
+                    if prefix.is_empty() || name.starts_with(&prefix) =>
+                {
+                    items.push(serde_json::json!({
+                        "label": name,
+                        "kind": KIND_ENUM,
+                        "detail": "enum",
+                    }));
                 }
                 _ => {}
             }
