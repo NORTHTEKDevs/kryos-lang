@@ -2947,11 +2947,11 @@ fn translate_rvalue<M: Module>(
                 "max_f" => ("kryos_builtin_max_f", 2),
                 "http_get" => ("kryos_builtin_http_get", 1),
                 "tcp_connect" => ("kryos_tcp_connect_ks", 2),
-                "tcp_listen"  => ("kryos_tcp_bind_ks", 2),
-                "tcp_accept"  => ("kryos_tcp_accept", 1),
-                "tcp_send"    => ("kryos_tcp_send_ks", 2),
-                "tcp_recv"    => ("kryos_tcp_recv_ks", 2),
-                "tcp_close"   => ("kryos_socket_close_ks", 1),
+                "tcp_listen" => ("kryos_tcp_bind_ks", 2),
+                "tcp_accept" => ("kryos_tcp_accept", 1),
+                "tcp_send" => ("kryos_tcp_send_ks", 2),
+                "tcp_recv" => ("kryos_tcp_recv_ks", 2),
+                "tcp_close" => ("kryos_socket_close_ks", 1),
                 _ => (func.as_str(), args.len()),
             };
 
@@ -2972,15 +2972,13 @@ fn translate_rvalue<M: Module>(
                     ensure_func_ref_f64_f64_f64(runtime_name, builder, translator, module)?
                 }
                 // All other functions: standard i64-based
-                _ => {
-                    ensure_func_ref_with_args(
-                        runtime_name,
-                        builder,
-                        translator,
-                        module,
-                        runtime_arg_count,
-                    )?
-                }
+                _ => ensure_func_ref_with_args(
+                    runtime_name,
+                    builder,
+                    translator,
+                    module,
+                    runtime_arg_count,
+                )?,
             };
 
             // Widen arguments to match the callee's expected parameter types.
@@ -3331,10 +3329,11 @@ fn translate_rvalue<M: Module>(
                 for bb in &translator.mir_func.blocks {
                     for instr in &bb.instructions {
                         if let Instruction::Assign {
-                            value: RValue::Field {
-                                object: Operand::Local(id),
-                                field: f,
-                            },
+                            value:
+                                RValue::Field {
+                                    object: Operand::Local(id),
+                                    field: f,
+                                },
                             ..
                         } = instr
                         {
@@ -4590,8 +4589,13 @@ fn emit_deep_copy_struct<M: Module>(
             .map(|(_, t)| t);
         let stored_val = match field_mir_ty {
             Some(MirType::Array(_, _)) => {
-                let retain_ref =
-                    ensure_func_ref_with_args("kryos_array_retain", builder, translator, module, 1)?;
+                let retain_ref = ensure_func_ref_with_args(
+                    "kryos_array_retain",
+                    builder,
+                    translator,
+                    module,
+                    1,
+                )?;
                 let call = builder.ins().call(retain_ref, &[field_val]);
                 builder.inst_results(call)[0]
             }
@@ -4608,13 +4612,8 @@ fn emit_deep_copy_struct<M: Module>(
             }
             Some(MirType::Map { .. }) => {
                 // Deep-clone maps via kryos_map_clone.
-                let clone_ref = ensure_func_ref_with_args(
-                    "kryos_map_clone",
-                    builder,
-                    translator,
-                    module,
-                    1,
-                )?;
+                let clone_ref =
+                    ensure_func_ref_with_args("kryos_map_clone", builder, translator, module, 1)?;
                 let call = builder.ins().call(clone_ref, &[field_val]);
                 builder.inst_results(call)[0]
             }

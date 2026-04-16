@@ -785,7 +785,7 @@ impl TypeChecker {
         let n = block.stmts.len();
         for (i, stmt) in block.stmts.iter().enumerate() {
             if i == n - 1 {
-if let Stmt::Expr { expr, .. } = stmt {
+                if let Stmt::Expr { expr, .. } = stmt {
                     return self.infer_expr(expr);
                 }
                 // An if-else as the last statement can produce a value just like
@@ -1025,7 +1025,9 @@ if let Stmt::Expr { expr, .. } = stmt {
                     vec![]
                 };
                 for (i, elem) in elements.iter().enumerate() {
-                    let elem_ty = elem_tys.get(i).cloned()
+                    let elem_ty = elem_tys
+                        .get(i)
+                        .cloned()
                         .unwrap_or_else(|| self.engine.fresh_var());
                     self.bind_pattern(elem, &elem_ty);
                 }
@@ -2575,10 +2577,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         name: "pow".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
-        params: vec![
-            ("x".to_string(), Type::F64),
-            ("y".to_string(), Type::F64),
-        ],
+        params: vec![("x".to_string(), Type::F64), ("y".to_string(), Type::F64)],
         ret: Type::F64,
     });
 
@@ -2596,10 +2595,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         name: "min_f".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
-        params: vec![
-            ("a".to_string(), Type::F64),
-            ("b".to_string(), Type::F64),
-        ],
+        params: vec![("a".to_string(), Type::F64), ("b".to_string(), Type::F64)],
         ret: Type::F64,
     });
 
@@ -2608,10 +2604,7 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         name: "max_f".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
-        params: vec![
-            ("a".to_string(), Type::F64),
-            ("b".to_string(), Type::F64),
-        ],
+        params: vec![("a".to_string(), Type::F64), ("b".to_string(), Type::F64)],
         ret: Type::F64,
     });
 

@@ -6,9 +6,9 @@
 //! KryosString layout: `{ len: i64, cap: i64, data: *mut u8 }`
 //! KryosArray layout: `{ len: i64, cap: i64, elem_size: i64, ref_count: i64, data: *mut u8 }`
 
+use std::alloc::Layout;
 use std::alloc::{alloc, dealloc};
 use std::collections::HashMap;
-use std::alloc::Layout;
 use std::ptr;
 use std::sync::{atomic::AtomicI64, Mutex};
 
@@ -33,8 +33,8 @@ enum JsonNode {
     Bool(bool),
     Number(f64),
     Str(String),
-    Array(Vec<i64>),  // handles to child nodes
-    Object(Vec<(String, i64)>),  // key-value pairs; values are handles
+    Array(Vec<i64>),            // handles to child nodes
+    Object(Vec<(String, i64)>), // key-value pairs; values are handles
 }
 
 static NODE_TABLE: Mutex<Option<NodeTable>> = Mutex::new(None);
@@ -133,9 +133,7 @@ fn with_node<F, R>(handle: i64, f: F) -> Option<R>
 where
     F: FnOnce(&JsonNode) -> R,
 {
-    with_node_table(|table| {
-        table.get(handle).map(f)
-    })
+    with_node_table(|table| table.get(handle).map(f))
 }
 
 // ============================================================================
@@ -309,8 +307,7 @@ impl Parser {
                 self.advance();
             }
         }
-        let num_str = std::str::from_utf8(&self.chars[start..self.pos])
-            .map_err(|_| ())?;
+        let num_str = std::str::from_utf8(&self.chars[start..self.pos]).map_err(|_| ())?;
         let val = num_str.parse::<f64>().map_err(|_| ())?;
         Ok(alloc_node(JsonNode::Number(val)))
     }
@@ -354,11 +351,9 @@ impl Parser {
         }
         loop {
             let handle = self.parse_string()?;
-            let key = match with_node(handle, |n| {
-                match n {
-                    JsonNode::Str(s) => Some(s.clone()),
-                    _ => None,
-                }
+            let key = match with_node(handle, |n| match n {
+                JsonNode::Str(s) => Some(s.clone()),
+                _ => None,
             }) {
                 Some(Some(s)) => s,
                 _ => return Err(()),
@@ -590,19 +585,18 @@ pub extern "C" fn kryos_json_null() -> i64 {
 #[no_mangle]
 pub extern "C" fn kryos_json_get(obj_handle: i64, key_handle: i64) -> i64 {
     match ks_to_string(key_handle) {
-        Some(key) => with_node(obj_handle, |node| {
-            match node {
-                JsonNode::Object(pairs) => {
-                    for (k, v) in pairs {
-                        if k == &key {
-                            return *v;
-                        }
+        Some(key) => with_node(obj_handle, |node| match node {
+            JsonNode::Object(pairs) => {
+                for (k, v) in pairs {
+                    if k == &key {
+                        return *v;
                     }
-                    0
                 }
-                _ => 0,
+                0
             }
-        }).unwrap_or(0),
+            _ => 0,
+        })
+        .unwrap_or(0),
         None => 0,
     }
 }
@@ -613,56 +607,52 @@ pub extern "C" fn kryos_json_get_index(arr_handle: i64, index: i64) -> i64 {
     if index < 0 {
         return 0;
     }
-    with_node(arr_handle, |node| {
-        match node {
-            JsonNode::Array(items) => {
-                let idx = index as usize;
-                if idx < items.len() {
-                    items[idx]
-                } else {
-                    0
-                }
+    with_node(arr_handle, |node| match node {
+        JsonNode::Array(items) => {
+            let idx = index as usize;
+            if idx < items.len() {
+                items[idx]
+            } else {
+                0
             }
-            _ => 0,
         }
-    }).unwrap_or(0)
+        _ => 0,
+    })
+    .unwrap_or(0)
 }
 
 /// Convert a JsonNode to a Kryos string handle (for strings, stringify for others).
 #[no_mangle]
 pub extern "C" fn kryos_json_to_str(node_handle: i64) -> i64 {
-    with_node(node_handle, |node| {
-        match node {
-            JsonNode::Str(s) => string_to_ks(s),
-            _ => {
-                let mut result = String::new();
-                stringify_node(node, &mut result);
-                string_to_ks(&result)
-            }
+    with_node(node_handle, |node| match node {
+        JsonNode::Str(s) => string_to_ks(s),
+        _ => {
+            let mut result = String::new();
+            stringify_node(node, &mut result);
+            string_to_ks(&result)
         }
-    }).unwrap_or(0)
+    })
+    .unwrap_or(0)
 }
 
 /// Convert a JsonNode number to i64 (truncates).
 #[no_mangle]
 pub extern "C" fn kryos_json_to_int(node_handle: i64) -> i64 {
-    with_node(node_handle, |node| {
-        match node {
-            JsonNode::Number(n) => *n as i64,
-            _ => 0,
-        }
-    }).unwrap_or(0)
+    with_node(node_handle, |node| match node {
+        JsonNode::Number(n) => *n as i64,
+        _ => 0,
+    })
+    .unwrap_or(0)
 }
 
 /// Convert a JsonNode number to f64.
 #[no_mangle]
 pub extern "C" fn kryos_json_to_float(node_handle: i64) -> f64 {
-    with_node(node_handle, |node| {
-        match node {
-            JsonNode::Number(n) => *n,
-            _ => 0.0,
-        }
-    }).unwrap_or(0.0)
+    with_node(node_handle, |node| match node {
+        JsonNode::Number(n) => *n,
+        _ => 0.0,
+    })
+    .unwrap_or(0.0)
 }
 
 /// Returns 1 if node is null or handle is 0, 0 otherwise.
@@ -671,24 +661,22 @@ pub extern "C" fn kryos_json_is_null(node_handle: i64) -> i64 {
     if node_handle == 0 {
         return 1;
     }
-    with_node(node_handle, |node| {
-        match node {
-            JsonNode::Null => 1,
-            _ => 0,
-        }
-    }).unwrap_or(1)
+    with_node(node_handle, |node| match node {
+        JsonNode::Null => 1,
+        _ => 0,
+    })
+    .unwrap_or(1)
 }
 
 /// Returns array/object length, or 0 for other types.
 #[no_mangle]
 pub extern "C" fn kryos_json_length(node_handle: i64) -> i64 {
-    with_node(node_handle, |node| {
-        match node {
-            JsonNode::Array(items) => items.len() as i64,
-            JsonNode::Object(pairs) => pairs.len() as i64,
-            _ => 0,
-        }
-    }).unwrap_or(0)
+    with_node(node_handle, |node| match node {
+        JsonNode::Array(items) => items.len() as i64,
+        JsonNode::Object(pairs) => pairs.len() as i64,
+        _ => 0,
+    })
+    .unwrap_or(0)
 }
 
 /// Returns a Kryos string handle with the type name.
@@ -697,16 +685,15 @@ pub extern "C" fn kryos_json_type(node_handle: i64) -> i64 {
     let type_name = if node_handle == 0 {
         "null"
     } else {
-        with_node(node_handle, |node| {
-            match node {
-                JsonNode::Null => "null",
-                JsonNode::Bool(_) => "bool",
-                JsonNode::Number(_) => "number",
-                JsonNode::Str(_) => "string",
-                JsonNode::Array(_) => "array",
-                JsonNode::Object(_) => "object",
-            }
-        }).unwrap_or("null")
+        with_node(node_handle, |node| match node {
+            JsonNode::Null => "null",
+            JsonNode::Bool(_) => "bool",
+            JsonNode::Number(_) => "number",
+            JsonNode::Str(_) => "string",
+            JsonNode::Array(_) => "array",
+            JsonNode::Object(_) => "object",
+        })
+        .unwrap_or("null")
     };
     string_to_ks(type_name)
 }

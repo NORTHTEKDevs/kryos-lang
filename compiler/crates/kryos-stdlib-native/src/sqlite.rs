@@ -16,10 +16,10 @@
 //!   kryos_db_col_text_copy(cursor, col, buf, buf_len) -> i64 -- copy text into caller buffer
 //!   kryos_db_finalize(cursor) -> i32   -- free cursor
 
-use rusqlite::{Connection, types::Value};
+use rusqlite::{types::Value, Connection};
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 // ---------------------------------------------------------------------------
 // Global registries
@@ -103,11 +103,7 @@ pub unsafe extern "C" fn kryos_db_close(conn: i64) -> i32 {
 /// Execute a DDL or DML statement (CREATE, INSERT, UPDATE, DELETE, …).
 /// Returns the number of rows changed on success, or -1 on error.
 #[no_mangle]
-pub unsafe extern "C" fn kryos_db_exec(
-    conn: i64,
-    sql_ptr: *const u8,
-    sql_len: usize,
-) -> i64 {
+pub unsafe extern "C" fn kryos_db_exec(conn: i64, sql_ptr: *const u8, sql_len: usize) -> i64 {
     let sql = match ptr_to_str(sql_ptr, sql_len) {
         Some(s) => s,
         None => return -1,
@@ -126,11 +122,7 @@ pub unsafe extern "C" fn kryos_db_exec(
 /// Execute a SELECT and collect all rows into a cursor.
 /// Returns a positive cursor handle on success, -1 on error.
 #[no_mangle]
-pub unsafe extern "C" fn kryos_db_prepare(
-    conn: i64,
-    sql_ptr: *const u8,
-    sql_len: usize,
-) -> i64 {
+pub unsafe extern "C" fn kryos_db_prepare(conn: i64, sql_ptr: *const u8, sql_len: usize) -> i64 {
     let sql = match ptr_to_str(sql_ptr, sql_len) {
         Some(s) => s,
         None => return -1,
@@ -166,7 +158,11 @@ pub unsafe extern "C" fn kryos_db_prepare(
             }
         }
     }
-    let cursor = Cursor { rows, col_count, position: 0 };
+    let cursor = Cursor {
+        rows,
+        col_count,
+        position: 0,
+    };
     let id = CURSOR_COUNTER.fetch_add(1, Ordering::Relaxed);
     cursor_map().lock().unwrap().insert(id, cursor);
     id

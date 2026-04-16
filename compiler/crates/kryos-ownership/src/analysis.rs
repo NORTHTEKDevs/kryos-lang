@@ -369,8 +369,7 @@ impl OwnershipAnalyzer {
                     _ => None,
                 };
                 if let Some(ref sn) = struct_name_opt {
-                    if let Some(field_ty) =
-                        self.struct_fields.get(sn).and_then(|fs| fs.get(field))
+                    if let Some(field_ty) = self.struct_fields.get(sn).and_then(|fs| fs.get(field))
                     {
                         return self.is_type_expr_copy(field_ty);
                     }
@@ -678,16 +677,11 @@ impl OwnershipAnalyzer {
                             Expr::StructLiteral { name: sn, .. } => Some(sn.clone()),
                             _ => None,
                         };
-                        let struct_name_from_ty =
-                            ty.as_ref().and_then(|t| match t {
-                                kryos_ast::TypeExpr::Simple { name: sn, .. } => {
-                                    Some(sn.clone())
-                                }
-                                _ => None,
-                            });
-                        if let Some(sn) =
-                            struct_name_from_init.or(struct_name_from_ty)
-                        {
+                        let struct_name_from_ty = ty.as_ref().and_then(|t| match t {
+                            kryos_ast::TypeExpr::Simple { name: sn, .. } => Some(sn.clone()),
+                            _ => None,
+                        });
+                        if let Some(sn) = struct_name_from_init.or(struct_name_from_ty) {
                             if self.struct_fields.contains_key(&sn) {
                                 self.var_struct_names.insert(name.clone(), sn);
                             }

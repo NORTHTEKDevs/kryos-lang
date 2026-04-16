@@ -101,11 +101,9 @@ pub extern "C" fn kryos_tcp_bind(host_ptr: *const u8, host_len: usize, port: u16
 #[no_mangle]
 pub extern "C" fn kryos_tcp_accept(listener_fd: i64) -> i64 {
     // Phase 1: hold the lock only long enough to clone the Arc.
-    let listener_arc = with_socket_table(|table| {
-        match table.map.get(&listener_fd) {
-            Some(SocketEntry::Listener(l)) => Some(Arc::clone(l)),
-            _ => None,
-        }
+    let listener_arc = with_socket_table(|table| match table.map.get(&listener_fd) {
+        Some(SocketEntry::Listener(l)) => Some(Arc::clone(l)),
+        _ => None,
     });
 
     let listener_arc = match listener_arc {
@@ -231,7 +229,11 @@ pub extern "C" fn kryos_tcp_send_ks(fd: i64, data_handle: i64) -> i64 {
 /// Returns a new KryosString handle containing the received bytes.
 #[no_mangle]
 pub extern "C" fn kryos_tcp_recv_ks(fd: i64, max_bytes: i64) -> i64 {
-    let buf_len = if max_bytes <= 0 { 4096 } else { max_bytes as usize };
+    let buf_len = if max_bytes <= 0 {
+        4096
+    } else {
+        max_bytes as usize
+    };
     let mut buf = vec![0u8; buf_len];
     let n = kryos_tcp_recv(fd, buf.as_mut_ptr(), buf_len);
     let n = n.max(0) as usize;

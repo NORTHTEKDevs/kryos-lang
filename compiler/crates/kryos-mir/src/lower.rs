@@ -1231,8 +1231,12 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     });
                 }
                 for (idx, elem_pat) in elements.iter().enumerate() {
-                    if let ast::Pattern::Ident { name: elem_name, .. } = elem_pat {
-                        let elem_local = ctx.alloc_local(Some(elem_name.clone()), MirType::I64, *mutable);
+                    if let ast::Pattern::Ident {
+                        name: elem_name, ..
+                    } = elem_pat
+                    {
+                        let elem_local =
+                            ctx.alloc_local(Some(elem_name.clone()), MirType::I64, *mutable);
                         ctx.emit(Instruction::Assign {
                             dest: elem_local,
                             value: RValue::Field {
@@ -1368,8 +1372,7 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             let map_op = lower_expr_to_operand(ctx, object);
                             let key_op = lower_expr_to_operand(ctx, index);
                             let val_op = lower_expr_to_operand(ctx, value);
-                            if matches!(obj_ty, MirType::Map { .. })
-                            {
+                            if matches!(obj_ty, MirType::Map { .. }) {
                                 let idx_ty = infer_expr_type(ctx, index);
                                 let insert_fn = if idx_ty == MirType::Str {
                                     "kryos_map_insert_str"

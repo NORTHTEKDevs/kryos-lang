@@ -8,8 +8,8 @@ use rustls::{ClientConfig, ClientConnection, StreamOwned};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 static TLS_COUNTER: AtomicI64 = AtomicI64::new(5000);
 
@@ -41,11 +41,7 @@ unsafe fn ptr_to_str<'a>(ptr: *const u8, len: usize) -> Option<&'a str> {
 /// Establish a TLS connection to `host:port`.
 /// Returns a positive handle on success, -1 on failure.
 #[no_mangle]
-pub unsafe extern "C" fn kryos_tls_connect(
-    host_ptr: *const u8,
-    host_len: usize,
-    port: u16,
-) -> i64 {
+pub unsafe extern "C" fn kryos_tls_connect(host_ptr: *const u8, host_len: usize, port: u16) -> i64 {
     let host = match ptr_to_str(host_ptr, host_len) {
         Some(s) => s,
         None => return -1,
