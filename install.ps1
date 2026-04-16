@@ -3,7 +3,7 @@
 
 $ErrorActionPreference = "Stop"
 
-$KRYOS_VERSION = "v0.3.3"
+$KRYOS_VERSION = "v0.3.5"
 $INSTALL_DIR = "$env:USERPROFILE\.kryos\bin"
 $REPO = "FrostbyteDevTeam/kryos-lang"
 $BINARY = "kryos.exe"
