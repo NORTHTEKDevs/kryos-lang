@@ -474,7 +474,7 @@ fn codegen_and_link(
                                 source_map,
                                 success: true,
                                 output_path: Some(out_path.to_string_lossy().to_string()),
-                                mir: Some(mir),
+                                mir: None,
                                 object_bytes: Some(bytes),
                                 llvm_ir: None,
                             }
@@ -576,13 +576,15 @@ fn codegen_and_link(
 
                             let _ = fs::remove_file(&obj_path);
 
+                            // mir and bytes no longer needed: object written to disk and linked.
+                            // Dropping them here avoids holding MIR + binary simultaneously.
                             CompileResult {
                                 diagnostics,
                                 source_map,
                                 success: true,
                                 output_path: Some(out_path.to_string_lossy().to_string()),
-                                mir: Some(mir),
-                                object_bytes: Some(bytes),
+                                mir: None,
+                                object_bytes: None,
                                 llvm_ir: None,
                             }
                         }
