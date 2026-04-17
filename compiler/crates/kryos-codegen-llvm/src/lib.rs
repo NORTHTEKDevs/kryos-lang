@@ -131,27 +131,30 @@ impl kryos_driver::Backend for LlvmBackend {
         &self,
         module: &kryos_mir::ir::MirModule,
     ) -> Result<Vec<u8>, kryos_driver::BackendError> {
-        // 1. Emit LLVM IR text.
-        let ir = self.emit_ir(module)?;
-
-        // 2. Find clang on the system.
+        // 1. Find clang on the system.
         let clang = find_llvm_compiler().ok_or_else(|| {
             kryos_driver::BackendError::new(
                 "could not find clang; install LLVM or set LLVM_PATH environment variable",
             )
         })?;
 
-        // 3. Write IR to a temp .ll file.
+        // 2. Emit LLVM IR text and write directly to temp .ll file.
+        //    The IR String is scoped so it is freed immediately after the write,
+        //    avoiding holding 1-2 GB in memory while clang runs.
         let tmp_dir = std::env::temp_dir();
         let ll_path = tmp_dir.join("kryos_llvm_tmp.ll");
         let obj_path = tmp_dir.join("kryos_llvm_tmp.o");
 
-        std::fs::write(&ll_path, &ir).map_err(|e| {
-            kryos_driver::BackendError::new(format!(
-                "failed to write temp .ll file '{}': {e}",
-                ll_path.display()
-            ))
-        })?;
+        {
+            let ir = self.emit_ir(module)?;
+            std::fs::write(&ll_path, ir.as_bytes()).map_err(|e| {
+                kryos_driver::BackendError::new(format!(
+                    "failed to write temp .ll file '{}': {e}",
+                    ll_path.display()
+                ))
+            })?;
+            // ir drops here -- 1-2 GB freed before clang runs
+        }
 
         // 4. Run clang to compile .ll -> .o
         let opt_flag = format!("-{}", self.options.opt_level);
