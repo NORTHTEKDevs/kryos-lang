@@ -37,6 +37,41 @@ pub trait Backend {
 
     /// Human-readable name for this backend (e.g. "cranelift", "llvm").
     fn name(&self) -> &str;
+
+    /// Whether this backend supports incremental per-function emission.
+    /// When true, the pipeline will use `begin_module` / `emit_function_inc` /
+    /// `finish_module` instead of `compile`, draining the MirFunction Vec one
+    /// entry at a time to reduce peak memory.
+    fn supports_incremental(&self) -> bool {
+        false
+    }
+
+    /// Begin an incremental compilation session. The backend should prescan
+    /// all functions for cross-function metadata (signatures, string constants,
+    /// ARC usage) and write the module preamble to its output sink.
+    ///
+    /// `functions` is a shared slice used only for prescan — the caller will
+    /// drain the Vec and pass each function to `emit_function_inc` afterwards.
+    /// Backends use interior mutability (`RefCell`) to store session state.
+    fn begin_module(
+        &self,
+        _header: &kryos_mir::ir::MirModuleHeader,
+        _functions: &[kryos_mir::ir::MirFunction],
+    ) -> Result<(), BackendError> {
+        Err(BackendError::unsupported("incremental"))
+    }
+
+    /// Emit a single function. Takes ownership so the MIR for that function
+    /// is freed immediately after emission. Backends use interior mutability.
+    fn emit_function_inc(&self, _func: kryos_mir::ir::MirFunction) -> Result<(), BackendError> {
+        Err(BackendError::unsupported("incremental"))
+    }
+
+    /// Finish the incremental session and return compiled object code bytes.
+    /// Backends use interior mutability to finalize and clear session state.
+    fn finish_module(&self) -> Result<Vec<u8>, BackendError> {
+        Err(BackendError::unsupported("incremental"))
+    }
 }
 
 /// Errors that a codegen backend can produce.
@@ -448,7 +483,23 @@ fn codegen_and_link(
         }
         OutputType::Binary | OutputType::Library | OutputType::Object => {
             if let Some(be) = backend {
-                match be.compile(&mir) {
+                // Use per-function incremental path when the backend supports it.
+                // Each MirFunction is freed immediately after its IR is written,
+                // avoiding the peak memory spike of holding all functions + full IR simultaneously.
+                let compile_result: Result<Vec<u8>, BackendError> = if be.supports_incremental() {
+                    (|| -> Result<Vec<u8>, BackendError> {
+                        let (header, functions) = mir.into_header_and_functions();
+                        be.begin_module(&header, &functions)?;
+                        drop(header);
+                        for func in functions {
+                            be.emit_function_inc(func)?;
+                        }
+                        be.finish_module()
+                    })()
+                } else {
+                    be.compile(&mir)
+                };
+                match compile_result {
                     Ok(bytes) => {
                         let out_path = config.derive_output_path();
 
@@ -463,7 +514,7 @@ fn codegen_and_link(
                                     source_map,
                                     success: false,
                                     output_path: None,
-                                    mir: Some(mir),
+                                    mir: None,
                                     object_bytes: Some(bytes),
                                     llvm_ir: None,
                                 };
@@ -498,7 +549,7 @@ fn codegen_and_link(
                                     source_map,
                                     success: false,
                                     output_path: None,
-                                    mir: Some(mir),
+                                    mir: None,
                                     object_bytes: Some(bytes),
                                     llvm_ir: None,
                                 };
@@ -517,7 +568,7 @@ fn codegen_and_link(
                                             source_map,
                                             success: false,
                                             output_path: None,
-                                            mir: Some(mir),
+                                            mir: None,
                                             object_bytes: Some(bytes),
                                             llvm_ir: None,
                                         };
@@ -568,8 +619,8 @@ fn codegen_and_link(
                                     source_map,
                                     success: false,
                                     output_path: None,
-                                    mir: Some(mir),
-                                    object_bytes: Some(bytes),
+                                    mir: None,
+                                    object_bytes: None,
                                     llvm_ir: None,
                                 };
                             }
@@ -600,7 +651,7 @@ fn codegen_and_link(
                             source_map,
                             success: false,
                             output_path: None,
-                            mir: Some(mir),
+                            mir: None,
                             object_bytes: None,
                             llvm_ir: None,
                         }

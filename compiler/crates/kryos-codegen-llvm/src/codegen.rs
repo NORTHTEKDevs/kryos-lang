@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use kryos_mir::ir::{
     BasicBlock, Constant, EnumVariantDef, Instruction, LocalId, MirBinOp, MirFunction, MirModule,
-    MirType, MirUnOp, Operand, RValue, Terminator,
+    MirModuleHeader, MirType, MirUnOp, Operand, RValue, Terminator,
 };
 
 use crate::{CodegenError, EmitOptions};
@@ -175,6 +175,101 @@ impl LlvmCodegen {
 
         Ok(self.output.clone())
     }
+
+    // -----------------------------------------------------------------------
+    // Incremental (per-function) emission helpers
+    // -----------------------------------------------------------------------
+
+    /// Take the current output buffer, leaving an empty String in its place.
+    /// Used by the incremental path to drain the buffer after each section.
+    pub fn take_output(&mut self) -> String {
+        std::mem::take(&mut self.output)
+    }
+
+    /// Prescan all functions and initialize state from the module header.
+    /// Must be called before `emit_header_section` or `emit_one_function_inc`.
+    pub fn prescan_all(&mut self, header: &MirModuleHeader, functions: &[MirFunction]) {
+        self.output.clear();
+        self.string_constants.clear();
+        self.temp_counter = 0;
+        self.string_counter = 0;
+        self.needs_arc_runtime = false;
+        self.func_param_types.clear();
+        self.struct_defs = header.struct_defs.clone();
+        self.enum_defs = header.enum_defs.clone();
+        self.copy_structs = header.copy_structs.clone();
+        self.closure_cap_types.clear();
+
+        for func in functions {
+            self.prescan_function(func);
+            let param_types: Vec<String> =
+                func.params.iter().map(|p| mir_type_to_llvm(&p.ty)).collect();
+            self.func_param_types.insert(func.name.clone(), param_types);
+
+            for bb in &func.blocks {
+                for inst in &bb.instructions {
+                    if let Instruction::Assign {
+                        value: RValue::Closure { func_name, captures },
+                        ..
+                    } = inst
+                    {
+                        if !self.closure_cap_types.contains_key(func_name.as_str()) {
+                            let cap_types: Vec<Option<MirType>> = captures
+                                .iter()
+                                .map(|cap| match cap {
+                                    Operand::Local(id) => func
+                                        .locals
+                                        .iter()
+                                        .find(|l| l.id == *id)
+                                        .map(|l| l.ty.clone()),
+                                    _ => None,
+                                })
+                                .collect();
+                            self.closure_cap_types.insert(func_name.clone(), cap_types);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Emit the module-level preamble: target triple, data layout, string
+    /// globals, ARC declarations, and extern C declarations. Call this once
+    /// after `prescan_all`, before `emit_one_function_inc`.
+    pub fn emit_header_section(&mut self) {
+        self.emit_header();
+        self.emit_string_globals();
+        if self.needs_arc_runtime {
+            self.emit_arc_declarations();
+        }
+        self.emit_extern_declarations();
+    }
+
+    /// Emit a single function in the incremental path. If `has_void_main` and
+    /// the function is named `main`, it is emitted as `_kryos_main` instead.
+    pub fn emit_one_function_inc(
+        &mut self,
+        func: &MirFunction,
+        has_void_main: bool,
+    ) -> Result<(), CodegenError> {
+        if has_void_main && func.name == "main" {
+            self.emit_function_as(func, "_kryos_main")
+        } else {
+            self.emit_function(func)
+        }
+    }
+
+    /// Emit the module footer: closure droppers, type drop helpers, and the
+    /// C-compatible `main` wrapper if `has_void_main`. Call once after all
+    /// functions have been emitted via `emit_one_function_inc`.
+    pub fn emit_footer_section(&mut self, has_void_main: bool) {
+        self.emit_closure_droppers();
+        self.emit_type_drop_helpers();
+        if has_void_main {
+            self.emit_main_wrapper();
+        }
+    }
+
 
     // -----------------------------------------------------------------------
     // Module header
@@ -1100,9 +1195,12 @@ impl LlvmCodegen {
                         self.emit_line(&format!("  call void @kryos_map_free(i64 {i64_val})"));
                     }
                     Some(MirType::Struct(name)) => {
-                        // Recursively free heap-allocated fields, then free the struct.
-                        self.emit_struct_drop(&val, name, func);
-                        self.emit_line(&format!("  call void @free(ptr {val})"));
+                        // @copy structs are passed by value and share field pointers;
+                        // do not free them here -- the original owner will free.
+                        if !self.copy_structs.contains(name) {
+                            self.emit_struct_drop(&val, name, func);
+                            self.emit_line(&format!("  call void @free(ptr {val})"));
+                        }
                     }
                     Some(MirType::Enum(name)) => {
                         self.emit_enum_drop(&val, name, func);
@@ -3218,15 +3316,20 @@ impl LlvmCodegen {
                     self.emit_line(&format!("  call void @kryos_map_free(i64 {fv})"));
                 }
                 MirType::Struct(inner_name) => {
-                    let gep = self.next_temp();
-                    let fv = self.next_temp();
-                    self.emit_line(&format!(
-                        "  {gep} = getelementptr i64, ptr {val}, i32 {field_idx}"
-                    ));
-                    self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
-                    let inner = inner_name.clone();
-                    self.emit_struct_drop(&fv, &inner, _func);
-                    self.emit_line(&format!("  call void @free(ptr {fv})"));
+                    // @copy structs embedded in a containing struct share field
+                    // pointers with their source; skip recursive drop to avoid
+                    // double-free. The original owner handles cleanup.
+                    if !self.copy_structs.contains(inner_name) {
+                        let gep = self.next_temp();
+                        let fv = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {gep} = getelementptr i64, ptr {val}, i32 {field_idx}"
+                        ));
+                        self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                        let inner = inner_name.clone();
+                        self.emit_struct_drop(&fv, &inner, _func);
+                        self.emit_line(&format!("  call void @free(ptr {fv})"));
+                    }
                 }
                 MirType::Enum(inner_name) => {
                     let gep = self.next_temp();

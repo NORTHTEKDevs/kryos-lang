@@ -17,6 +17,7 @@
 
 pub mod codegen;
 
+use std::cell::RefCell;
 use std::fmt;
 use std::path::PathBuf;
 
@@ -78,6 +79,8 @@ pub enum CodegenError {
     UnsupportedOperation(String),
     /// The MIR is structurally invalid (e.g. missing block, dangling local).
     InvalidMir(String),
+    /// I/O error during file-based emission.
+    Io(String),
 }
 
 impl fmt::Display for CodegenError {
@@ -86,6 +89,7 @@ impl fmt::Display for CodegenError {
             CodegenError::UnsupportedType(msg) => write!(f, "unsupported type: {msg}"),
             CodegenError::UnsupportedOperation(msg) => write!(f, "unsupported operation: {msg}"),
             CodegenError::InvalidMir(msg) => write!(f, "invalid MIR: {msg}"),
+            CodegenError::Io(msg) => write!(f, "I/O error: {msg}"),
         }
     }
 }
@@ -109,14 +113,24 @@ pub fn emit_module(
 // LlvmBackend — driver-compatible backend wrapper
 // ---------------------------------------------------------------------------
 
+/// Live state held between `begin_module` / `emit_function_inc` / `finish_module` calls.
+struct IncrementalState {
+    cg: codegen::LlvmCodegen,
+    writer: std::io::BufWriter<std::fs::File>,
+    ll_path: PathBuf,
+    has_void_main: bool,
+}
+
 /// The LLVM IR codegen backend — implements the driver's Backend trait.
 pub struct LlvmBackend {
     options: EmitOptions,
+    /// Interior-mutable session state for incremental per-function emission.
+    inc: RefCell<Option<IncrementalState>>,
 }
 
 impl LlvmBackend {
     pub fn new(options: EmitOptions) -> Self {
-        Self { options }
+        Self { options, inc: RefCell::new(None) }
     }
 }
 
@@ -212,6 +226,149 @@ impl kryos_driver::Backend for LlvmBackend {
 
     fn name(&self) -> &str {
         "llvm"
+    }
+
+    fn supports_incremental(&self) -> bool {
+        true
+    }
+
+    fn begin_module(
+        &self,
+        header: &kryos_mir::ir::MirModuleHeader,
+        functions: &[kryos_mir::ir::MirFunction],
+    ) -> Result<(), kryos_driver::BackendError> {
+        use std::io::Write;
+
+        let clang = find_llvm_compiler().ok_or_else(|| {
+            kryos_driver::BackendError::new(
+                "could not find clang; install LLVM or set LLVM_PATH environment variable",
+            )
+        })?;
+
+        let ll_path = std::env::temp_dir().join("kryos_llvm_inc.ll");
+        let file = std::fs::File::create(&ll_path).map_err(|e| {
+            kryos_driver::BackendError::new(format!(
+                "failed to create temp .ll file '{}': {e}",
+                ll_path.display()
+            ))
+        })?;
+        let mut writer = std::io::BufWriter::new(file);
+
+        let mut cg = codegen::LlvmCodegen::new(self.options.clone());
+
+        // Prescan all functions for cross-function metadata (signatures, closures, ARC).
+        cg.prescan_all(header, functions);
+
+        // Detect whether the user's main returns void (no return type) so we can
+        // emit the C-ABI wrapper later.
+        let has_void_main = functions.iter().any(|f| {
+            f.name == "main" && f.ret_ty == kryos_mir::ir::MirType::Void
+        });
+
+        // Emit module header (target triple, datalayout, struct type defs, string globals).
+        cg.emit_header_section();
+        let header_text = cg.take_output();
+        writer.write_all(header_text.as_bytes()).map_err(|e| {
+            kryos_driver::BackendError::new(format!("failed to write .ll header: {e}"))
+        })?;
+
+        // Store the clang path in a thread-local / drop it on finish. For now store ll_path.
+        // We keep clang path discovery deferred to finish_module (rediscovery is cheap).
+        *self.inc.borrow_mut() = Some(IncrementalState {
+            cg,
+            writer,
+            ll_path,
+            has_void_main,
+        });
+
+        Ok(())
+    }
+
+    fn emit_function_inc(
+        &self,
+        func: kryos_mir::ir::MirFunction,
+    ) -> Result<(), kryos_driver::BackendError> {
+        use std::io::Write;
+
+        let mut borrow = self.inc.borrow_mut();
+        let state = borrow.as_mut().ok_or_else(|| {
+            kryos_driver::BackendError::new("emit_function_inc called before begin_module")
+        })?;
+
+        state
+            .cg
+            .emit_one_function_inc(&func, state.has_void_main)
+            .map_err(|e| kryos_driver::BackendError::new(e.to_string()))?;
+
+        let text = state.cg.take_output();
+        state.writer.write_all(text.as_bytes()).map_err(|e| {
+            kryos_driver::BackendError::new(format!(
+                "failed to write function '{}' IR: {e}",
+                func.name
+            ))
+        })?;
+
+        Ok(())
+    }
+
+    fn finish_module(&self) -> Result<Vec<u8>, kryos_driver::BackendError> {
+        use std::io::Write;
+
+        let state = self.inc.borrow_mut().take().ok_or_else(|| {
+            kryos_driver::BackendError::new("finish_module called before begin_module")
+        })?;
+
+        let IncrementalState { mut cg, mut writer, ll_path, has_void_main } = state;
+
+        // Emit footer (closure droppers, type drop helpers, main wrapper if needed).
+        cg.emit_footer_section(has_void_main);
+        let footer_text = cg.take_output();
+        writer.write_all(footer_text.as_bytes()).map_err(|e| {
+            kryos_driver::BackendError::new(format!("failed to write .ll footer: {e}"))
+        })?;
+        writer.flush().map_err(|e| {
+            kryos_driver::BackendError::new(format!("failed to flush .ll file: {e}"))
+        })?;
+        drop(writer); // close the file before clang reads it
+
+        // Run clang to compile .ll -> .o
+        let clang = find_llvm_compiler().ok_or_else(|| {
+            kryos_driver::BackendError::new("could not find clang")
+        })?;
+        let obj_path = std::env::temp_dir().join("kryos_llvm_inc.o");
+        let opt_flag = format!("-{}", self.options.opt_level);
+        let mut cmd = std::process::Command::new(&clang);
+        cmd.arg(&opt_flag).arg("-c").arg(&ll_path).arg("-o").arg(&obj_path);
+        if let Some(ref triple) = self.options.target_triple {
+            cmd.arg(format!("--target={triple}"));
+        }
+
+        let output = cmd.output().map_err(|e| {
+            kryos_driver::BackendError::new(format!(
+                "failed to execute clang at '{}': {e}",
+                clang.display()
+            ))
+        })?;
+
+        let _ = std::fs::remove_file(&ll_path);
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let _ = std::fs::remove_file(&obj_path);
+            return Err(kryos_driver::BackendError::new(format!(
+                "clang compilation failed:\n{stderr}"
+            )));
+        }
+
+        let bytes = std::fs::read(&obj_path).map_err(|e| {
+            kryos_driver::BackendError::new(format!(
+                "failed to read object file '{}': {e}",
+                obj_path.display()
+            ))
+        })?;
+        let _ = std::fs::remove_file(&obj_path);
+
+        Ok(bytes)
     }
 }
 

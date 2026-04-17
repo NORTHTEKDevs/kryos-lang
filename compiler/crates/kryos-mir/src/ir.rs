@@ -163,6 +163,16 @@ impl fmt::Display for MirType {
 // Module / Function / Local
 // ---------------------------------------------------------------------------
 
+/// Module-level metadata needed by codegen before per-function emission.
+/// Split from `MirModule` to support incremental per-function codegen.
+#[derive(Debug, Clone)]
+pub struct MirModuleHeader {
+    pub struct_defs: HashMap<String, Vec<(String, MirType)>>,
+    pub enum_defs: HashMap<String, Vec<EnumVariantDef>>,
+    pub trait_vtables: HashMap<(String, String), Vec<String>>,
+    pub copy_structs: HashSet<String>,
+}
+
 /// Top-level MIR module — a collection of functions.
 #[derive(Debug, Clone)]
 pub struct MirModule {
@@ -178,6 +188,21 @@ pub struct MirModule {
     /// Structs annotated with `@copy` — assignment copies the value instead of
     /// moving the pointer.  Used by codegen to emit deep copies.
     pub copy_structs: HashSet<String>,
+}
+
+impl MirModule {
+    /// Split the module into header metadata and the function list.
+    /// Allows codegen to prescan all functions for cross-function metadata, then
+    /// drain and emit functions one at a time to reduce peak memory.
+    pub fn into_header_and_functions(self) -> (MirModuleHeader, Vec<MirFunction>) {
+        let header = MirModuleHeader {
+            struct_defs: self.struct_defs,
+            enum_defs: self.enum_defs,
+            trait_vtables: self.trait_vtables,
+            copy_structs: self.copy_structs,
+        };
+        (header, self.functions)
+    }
 }
 
 /// Metadata attributes preserved from source annotations.
