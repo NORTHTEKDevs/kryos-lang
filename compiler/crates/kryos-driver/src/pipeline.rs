@@ -293,6 +293,7 @@ fn compile_module_impl(
 
     // 9. MIR lowering
     let mut mir = kryos_mir::lower_module(&module);
+    drop(module); // AST no longer needed — free 0.5-1GB before codegen
 
     // 9b. Comptime evaluation: fold constant expressions in comptime blocks.
     kryos_mir::consteval::run_comptime_pass(&mut mir);
