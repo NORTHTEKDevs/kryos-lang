@@ -3420,23 +3420,56 @@ fn translate_rvalue<M: Module>(
             let call = builder.ins().call(get_ref, &[ptr, idx]);
             let raw_result = builder.inst_results(call)[0];
 
-            // If the array element type is Str, clone the result so the caller
-            // owns an independent copy and avoids use-after-free when the array is dropped.
+            // If the array element type is heap-owning, retain (or clone for
+            // strings) so the reader becomes an additional owner. Without this,
+            // reading a struct/enum/nested-array out of an array would share a
+            // raw pointer with the array; when either side drops, the other
+            // sees freed memory.
             let result = if let Operand::Local(id) = object {
                 if let Some(local) = translator.mir_func.locals.iter().find(|l| l.id == *id) {
                     if let MirType::Array(elem_ty, _) = &local.ty {
-                        if matches!(elem_ty.as_ref(), MirType::Str) {
-                            let clone_ref = ensure_func_ref_with_args(
-                                "kryos_string_clone",
-                                builder,
-                                translator,
-                                module,
-                                1,
-                            )?;
-                            let clone_call = builder.ins().call(clone_ref, &[raw_result]);
-                            builder.inst_results(clone_call)[0]
-                        } else {
-                            raw_result
+                        match elem_ty.as_ref() {
+                            MirType::Str => {
+                                let clone_ref = ensure_func_ref_with_args(
+                                    "kryos_string_clone",
+                                    builder,
+                                    translator,
+                                    module,
+                                    1,
+                                )?;
+                                let clone_call =
+                                    builder.ins().call(clone_ref, &[raw_result]);
+                                builder.inst_results(clone_call)[0]
+                            }
+                            MirType::Array(_, _) => {
+                                let retain_ref = ensure_func_ref_with_args(
+                                    "kryos_array_retain",
+                                    builder,
+                                    translator,
+                                    module,
+                                    1,
+                                )?;
+                                builder.ins().call(retain_ref, &[raw_result]);
+                                raw_result
+                            }
+                            MirType::Function { .. } | MirType::Shared(_) => {
+                                let retain_ref = ensure_func_ref_with_args(
+                                    "kryos_arc_retain",
+                                    builder,
+                                    translator,
+                                    module,
+                                    1,
+                                )?;
+                                builder.ins().call(retain_ref, &[raw_result]);
+                                raw_result
+                            }
+                            // Struct/Enum elements are malloc'd and freed via
+                            // free(), not ARC. Reading a pointer out of the
+                            // array shares it with the array; the array's own
+                            // drop only frees its elements when refcount==1,
+                            // so views remain valid while the array lives.
+                            // For independent copies, mark the struct @copy.
+                            _ => raw_result,
                         }
                     } else {
                         raw_result
@@ -3579,10 +3612,7 @@ fn translate_rvalue<M: Module>(
                     };
                     return Ok(Some(widened));
                 }
-                Some(MirType::Function { .. })
-                | Some(MirType::Shared(_))
-                | Some(MirType::Enum(_))
-                | Some(MirType::Struct(_)) => {
+                Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                     let retain_ref = ensure_func_ref_with_args(
                         "kryos_arc_retain",
                         builder,
@@ -3592,6 +3622,12 @@ fn translate_rvalue<M: Module>(
                     )?;
                     builder.ins().call(retain_ref, &[val]);
                 }
+                // Struct/Enum payloads are malloc'd and freed with free(), not
+                // ARC. We leave the pointer shared and rely on the destructure
+                // not explicitly dropping -- the enum's own Drop will free.
+                // Reading the same enum twice from the same variant works since
+                // we no longer zero the slot; nested mutation through both
+                // aliases would clash, but Kryos doesn't expose that.
                 _ => {}
             }
             // Widen bools back to i64 for consistency with the rest of codegen.
