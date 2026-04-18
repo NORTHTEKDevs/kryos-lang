@@ -239,7 +239,7 @@ impl kryos_driver::Backend for LlvmBackend {
     ) -> Result<(), kryos_driver::BackendError> {
         use std::io::Write;
 
-        let clang = find_llvm_compiler().ok_or_else(|| {
+        let _clang = find_llvm_compiler().ok_or_else(|| {
             kryos_driver::BackendError::new(
                 "could not find clang; install LLVM or set LLVM_PATH environment variable",
             )
