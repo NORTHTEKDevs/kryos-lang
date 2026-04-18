@@ -1,0 +1,31 @@
+// Repro for get() on nested JSON objects.
+
+use std::json
+
+fn main() {
+    // Path A: construct in-memory, no parse/stringify
+    let inner = json_object(["path"], [json_string("hello")])
+    let outer = json_object(
+        ["name", "arguments"],
+        [json_string("foo"), inner]
+    )
+
+    println("--- direct construction ---")
+    println("get(outer, name)     null=" + to_string(is_null(get(outer, "name"))))
+    println("get(outer, arguments) null=" + to_string(is_null(get(outer, "arguments"))))
+
+    // Path B: roundtrip through stringify + parse
+    let raw = stringify(outer)
+    println("raw=" + raw)
+
+    let reparsed = parse(raw)
+    println("--- parsed from JSON ---")
+    println("get(reparsed, name)     null=" + to_string(is_null(get(reparsed, "name"))))
+    println("get(reparsed, arguments) null=" + to_string(is_null(get(reparsed, "arguments"))))
+
+    // Path C: parse a flat object (baseline)
+    let flat = parse(stringify(json_object(["a", "b"], [json_string("x"), json_string("y")])))
+    println("--- parsed flat ---")
+    println("get(flat, a) null=" + to_string(is_null(get(flat, "a"))))
+    println("get(flat, b) null=" + to_string(is_null(get(flat, "b"))))
+}

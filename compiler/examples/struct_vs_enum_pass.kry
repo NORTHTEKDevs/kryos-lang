@@ -1,0 +1,28 @@
+// Compare struct vs enum pass-by-value with two heap fields
+
+struct SPair {
+    keys:   [str]
+    values: [i64]
+}
+
+enum EPair {
+    Kv([str], [i64])
+}
+
+fn struct_len_keys(p: SPair) -> i64 { return len(p.keys) }
+fn struct_len_vals(p: SPair) -> i64 { return len(p.values) }
+
+fn enum_len_keys(p: EPair) -> i64 {
+    return match p { EPair::Kv(k, v) => len(k) }
+}
+fn enum_len_vals(p: EPair) -> i64 {
+    return match p { EPair::Kv(k, v) => len(v) }
+}
+
+fn main() {
+    let s = SPair { keys: ["a", "b"], values: [10, 20] }
+    println("struct: keys=" + to_string(struct_len_keys(s)) + " vals=" + to_string(struct_len_vals(s)))
+
+    let e = EPair.Kv(["a", "b"], [10, 20])
+    println("enum:   keys=" + to_string(enum_len_keys(e)) + " vals=" + to_string(enum_len_vals(e)))
+}

@@ -1,0 +1,26 @@
+// Narrower repro: enum-in-function-arg with multi-heap fields
+
+enum Pair {
+    Kv([str], [i64])
+}
+
+fn len_of_values(p: Pair) -> i64 {
+    return match p {
+        Pair::Kv(keys, values) => len(values)
+    }
+}
+
+fn get_value(p: Pair, index: i64) -> i64 {
+    return match p {
+        Pair::Kv(keys, values) => values[index]
+    }
+}
+
+fn main() {
+    let p = Pair.Kv(["a", "b"], [10, 20])
+
+    println("len_of_values = " + to_string(len_of_values(p)))
+    // ^ if this triggers a move that nulls the values field, next call fails
+    println("get_value(0)  = " + to_string(get_value(p, 0)))
+    println("get_value(1)  = " + to_string(get_value(p, 1)))
+}

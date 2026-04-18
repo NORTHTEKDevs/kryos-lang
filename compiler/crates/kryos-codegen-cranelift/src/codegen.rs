@@ -3534,33 +3534,65 @@ fn translate_rvalue<M: Module>(
                 })
                 .unwrap_or(types::I64);
             let val = builder.ins().load(cl_ty, MemFlags::new(), ptr, offset);
-            // Only null out pointer-typed payloads (str, arrays, enums, structs).
-            // Value types (f64, i64, bool) are copied by value and must NOT be
-            // zeroed -- the same enum may be passed to multiple functions (e.g.
-            // shape_name(sh), area(sh), perimeter(sh)) and each call must read
-            // the original payload. Zeroing value-type slots causes all subsequent
-            // reads to return 0.
-            let payload_is_ptr = translator
+            // For heap-owning payload types, retain so the match binding becomes
+            // an additional owner alongside the enum. Previously we zeroed the
+            // slot (pseudo-move), which broke `match p { ... } ; match p { ... }`
+            // patterns where the enum is matched more than once. Retain-on-read
+            // mirrors how struct field access works: the enum keeps its own
+            // reference to the payload, the binding gets its own, and both are
+            // released independently when their respective owners drop.
+            let payload_mir_ty = translator
                 .enum_defs
                 .get(enum_name.as_str())
                 .and_then(|variants| variants.get(*variant_idx as usize))
                 .and_then(|variant| variant.fields.get(*field_idx as usize))
-                .map(|mir_ty| {
-                    matches!(
-                        mir_ty,
-                        MirType::Str
-                            | MirType::Array(..)
-                            | MirType::Enum(..)
-                            | MirType::Struct(..)
-                            | MirType::Ptr(..)
-                            | MirType::Ref { .. }
-                            | MirType::Shared(..)
-                    )
-                })
-                .unwrap_or(false);
-            if payload_is_ptr {
-                let zero = builder.ins().iconst(types::I64, 0);
-                builder.ins().store(MemFlags::new(), zero, ptr, offset);
+                .cloned();
+            match payload_mir_ty {
+                Some(MirType::Array(_, _)) => {
+                    let retain_ref = ensure_func_ref_with_args(
+                        "kryos_array_retain",
+                        builder,
+                        translator,
+                        module,
+                        1,
+                    )?;
+                    builder.ins().call(retain_ref, &[val]);
+                }
+                Some(MirType::Str) => {
+                    let clone_ref = ensure_func_ref_with_args(
+                        "kryos_string_clone",
+                        builder,
+                        translator,
+                        module,
+                        1,
+                    )?;
+                    let c = builder.ins().call(clone_ref, &[val]);
+                    let cloned = builder.inst_results(c)[0];
+                    // String clone returns a fresh handle; use it in place of val.
+                    let _ = cloned; // falls through -- handle via override below
+                    // Overwrite val with cloned handle for downstream use.
+                    // (Cranelift SSA: cannot reassign val, so restructure.)
+                    let widened = if cl_ty == types::I8 {
+                        builder.ins().uextend(types::I64, cloned)
+                    } else {
+                        cloned
+                    };
+                    return Ok(Some(widened));
+                }
+                Some(MirType::Function { .. })
+                | Some(MirType::Shared(_))
+                | Some(MirType::Enum(_))
+                | Some(MirType::Struct(_)) => {
+                    let retain_ref = ensure_func_ref_with_args(
+                        "kryos_arc_retain",
+                        builder,
+                        translator,
+                        module,
+                        1,
+                    )?;
+                    builder.ins().call(retain_ref, &[val]);
+                }
+                _ => {}
             }
             // Widen bools back to i64 for consistency with the rest of codegen.
             let val = if cl_ty == types::I8 {
