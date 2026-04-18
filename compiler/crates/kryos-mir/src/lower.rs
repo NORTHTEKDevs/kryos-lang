@@ -100,6 +100,10 @@ pub struct LoweringContext {
     /// inner block ends (e.g., `let x = 1; if true { let x = 2 }; println(x)`
     /// must print 1, not 2).
     hidden_locals: HashSet<u32>,
+    /// Locals from which at least one non-copy field has been moved out.
+    /// These must NOT be dropped by scope cleanup — the moved fields already
+    /// own (and will free) their heap data; a full struct drop would double-free.
+    partial_moved_locals: HashSet<u32>,
 }
 
 /// Context passed to `throw` statements inside a `try` block.
@@ -169,6 +173,7 @@ impl LoweringContext {
             current_self_type: None,
             copy_structs: HashSet::new(),
             hidden_locals: HashSet::new(),
+            partial_moved_locals: HashSet::new(),
         }
     }
 
@@ -283,6 +288,7 @@ impl LoweringContext {
         self.dropped_locals.clear();
         self.param_locals.clear();
         self.hidden_locals.clear();
+        self.partial_moved_locals.clear();
     }
 
     /// Save the per-function state so we can restore it after monomorphization.
@@ -505,6 +511,15 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                             fields: fields.clone(),
                         },
                     );
+                    // Also register a type-erased stub under the bare name so
+                    // `Box { value: ... }` / `b.value` resolve in struct-literal
+                    // and field-access paths. Struct runtime layout is a heap
+                    // record of i64 slots; payload types erase to i64 for ABI.
+                    let stub_fields: Vec<(String, MirType)> = fields
+                        .iter()
+                        .map(|f| (f.name.clone(), MirType::I64))
+                        .collect();
+                    ctx.struct_defs.insert(name.clone(), stub_fields);
                 } else {
                     let field_list: Vec<(String, MirType)> = fields
                         .iter()
@@ -532,6 +547,18 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                             variants: variants.clone(),
                         },
                     );
+                    // Also register a type-erased stub under the bare name so
+                    // `Maybe.Some(x)` / `Maybe.None` resolve in variant-construction
+                    // paths. Enum runtime layout is [tag:i64, slot0:i64, ...] —
+                    // payload types erased to i64 are ABI-compatible.
+                    let stub_defs: Vec<EnumVariantDef> = variants
+                        .iter()
+                        .map(|v| EnumVariantDef {
+                            name: v.name.clone(),
+                            fields: v.fields.iter().map(|_| MirType::I64).collect(),
+                        })
+                        .collect();
+                    ctx.enum_defs.insert(name.clone(), stub_defs);
                 } else {
                     let variant_defs: Vec<EnumVariantDef> = variants
                         .iter()
@@ -1040,6 +1067,24 @@ pub fn lower_function(
                 Operand::Local(id) => Some(id.0),
                 _ => None,
             };
+            // Partial-move fix: if the tail expression is a field access on a
+            // named local (e.g. `return result.value`), the struct local was
+            // NOT selected as tail_local_id (the unnamed field-temp was), so
+            // it would be dropped even though its field was moved out. Detect
+            // this and exclude the source struct local from drops as well.
+            let source_struct_local_id = if let ast::Expr::FieldAccess { object, .. } = expr {
+                if let ast::Expr::Identifier { name, .. } = object.as_ref() {
+                    ctx.locals
+                        .iter()
+                        .rev()
+                        .find(|l| l.name.as_deref() == Some(name.as_str()))
+                        .map(|l| l.id.0)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             // Emit drops for scope locals before returning.
             let scope_end = ctx.locals.len();
             for i in (scope_start..scope_end).rev() {
@@ -1053,6 +1098,8 @@ pub fn lower_function(
                     }
                     if !ctx.dropped_locals.contains(&local_id.0)
                         && tail_local_id != Some(local_id.0)
+                        && source_struct_local_id != Some(local_id.0)
+                        && !ctx.partial_moved_locals.contains(&local_id.0)
                     {
                         ctx.emit(Instruction::Drop { local: local_id });
                         ctx.dropped_locals.insert(local_id.0);
@@ -1110,7 +1157,9 @@ fn lower_block_stmts(ctx: &mut LoweringContext, stmts: &[ast::Stmt]) {
             if ctx.param_locals.contains(&local_id.0) || ctx.borrowed_locals.contains(&local_id.0) {
                 continue;
             }
-            if !ctx.dropped_locals.contains(&local_id.0) {
+            if !ctx.dropped_locals.contains(&local_id.0)
+                && !ctx.partial_moved_locals.contains(&local_id.0)
+            {
                 ctx.emit(Instruction::Drop { local: local_id });
                 ctx.dropped_locals.insert(local_id.0);
             }
@@ -1290,7 +1339,7 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             // Tuple destructuring: `let (a, b, c) = expr`
             if let Some(ast::Pattern::Tuple { elements, .. }) = pattern {
                 // Assign the RHS to a temporary local, then extract each element.
-                let tmp = ctx.alloc_local(None, mir_ty, false);
+                let tmp = ctx.alloc_local(None, mir_ty.clone(), false);
                 if let Some((rvalue, _, _, _)) = rvalue_and_meta {
                     ctx.emit(Instruction::Assign {
                         dest: tmp,
@@ -1302,8 +1351,13 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                         name: elem_name, ..
                     } = elem_pat
                     {
+                        let elem_ty = if let MirType::Tuple(ref elems) = mir_ty {
+                            elems.get(idx).cloned().unwrap_or(MirType::I64)
+                        } else {
+                            MirType::I64
+                        };
                         let elem_local =
-                            ctx.alloc_local(Some(elem_name.clone()), MirType::I64, *mutable);
+                            ctx.alloc_local(Some(elem_name.clone()), elem_ty, *mutable);
                         ctx.emit(Instruction::Assign {
                             dest: elem_local,
                             value: RValue::Field {
@@ -1328,6 +1382,20 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                         .insert(name.clone(), (func_name, captures));
                 }
 
+                // If initializer moves a non-copy local, mark it consumed.
+                if let RValue::Use(Operand::Local(src)) = &rvalue {
+                    let src_ty = ctx.locals.iter()
+                        .find(|l| l.id == *src)
+                        .map(|l| l.ty.clone())
+                        .unwrap_or(MirType::I64);
+                    if !is_copy_type(ctx, &src_ty) {
+                        ctx.dropped_locals.insert(src.0);
+                    }
+                }
+                // If initializer is a call, mark non-copy args consumed.
+                if let RValue::Call { ref args, .. } = rvalue {
+                    consume_call_args(ctx, local, args);
+                }
                 ctx.emit(Instruction::Assign {
                     dest: local,
                     value: rvalue,
@@ -1429,6 +1497,15 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             let dest = find_local_by_name(ctx, name)
                                 .expect("internal: assign target local not found");
                             let rvalue = lower_expr_to_rvalue(ctx, value);
+                            if let RValue::Use(Operand::Local(src)) = &rvalue {
+                                let src_ty = ctx.locals.iter()
+                                    .find(|l| l.id == *src)
+                                    .map(|l| l.ty.clone())
+                                    .unwrap_or(MirType::I64);
+                                if !is_copy_type(ctx, &src_ty) {
+                                    ctx.dropped_locals.insert(src.0);
+                                }
+                            }
                             ctx.emit(Instruction::Assign {
                                 dest,
                                 value: rvalue,
@@ -1602,6 +1679,9 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             // their return value is discarded, so assign to a temp.
             if matches!(&rvalue, RValue::Call { .. }) {
                 let temp = ctx.alloc_temp(MirType::Void);
+                if let RValue::Call { ref args, .. } = rvalue {
+                    consume_call_args(ctx, temp, args);
+                }
                 ctx.emit(Instruction::Assign {
                     dest: temp,
                     value: rvalue,
@@ -3001,7 +3081,12 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                         .and_then(|variant| variant.fields.get(field_idx))
                         .cloned()
                         .unwrap_or(MirType::I64);
-                    let local = ctx.alloc_local(Some(name.clone()), field_type, false);
+                    let local = ctx.alloc_local(Some(name.clone()), field_type.clone(), false);
+                    // Pre-mark non-copy payload bindings as consumed: they will be
+                    // moved into the arm result, not dropped by scope cleanup.
+                    if !is_copy_type(ctx, &field_type) {
+                        ctx.dropped_locals.insert(local.0);
+                    }
                     ctx.emit(Instruction::Assign {
                         dest: local,
                         value: RValue::EnumPayload {
@@ -3017,6 +3102,17 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
         }
 
         let arm_rvalue = lower_expr_to_rvalue(ctx, body);
+        // If the arm body moves a non-copy local into the result, mark the
+        // source as consumed so the scope cleanup won't double-drop it.
+        if let RValue::Use(Operand::Local(src)) = &arm_rvalue {
+            let src_ty = ctx.locals.iter()
+                .find(|l| l.id == *src)
+                .map(|l| l.ty.clone())
+                .unwrap_or(MirType::I64);
+            if !is_copy_type(ctx, &src_ty) {
+                ctx.dropped_locals.insert(src.0);
+            }
+        }
         ctx.emit(Instruction::Assign {
             dest: result_local,
             value: arm_rvalue,
@@ -3034,6 +3130,15 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
     // Default arm.
     if let Some((_, body)) = default_arm {
         let arm_rvalue = lower_expr_to_rvalue(ctx, body);
+        if let RValue::Use(Operand::Local(src)) = &arm_rvalue {
+            let src_ty = ctx.locals.iter()
+                .find(|l| l.id == *src)
+                .map(|l| l.ty.clone())
+                .unwrap_or(MirType::I64);
+            if !is_copy_type(ctx, &src_ty) {
+                ctx.dropped_locals.insert(src.0);
+            }
+        }
         ctx.emit(Instruction::Assign {
             dest: result_local,
             value: arm_rvalue,
@@ -3047,6 +3152,40 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
 // ---------------------------------------------------------------------------
 // Expression type inference
 // ---------------------------------------------------------------------------
+
+/// Mark non-copy (str / enum) call arguments as consumed so scope cleanup
+/// won't emit a double-free after the callee takes ownership.
+/// Skips args where arg.id == dest.id (self-consuming: `x = f(x)`).
+fn consume_call_args(ctx: &mut LoweringContext, _dest: LocalId, args: &[Operand]) {
+    for arg in args {
+        if let Operand::Local(local_id) = arg {
+            let local_ty = ctx.locals.iter()
+                .find(|l| l.id == *local_id)
+                .map(|l| l.ty.clone())
+                .unwrap_or(MirType::I64);
+            if !is_copy_type(ctx, &local_ty) {
+                ctx.dropped_locals.insert(local_id.0);
+            }
+        }
+    }
+}
+
+/// Returns true when `ty` is a copy type (no heap ownership).
+/// Primitives and @copy structs are copy; everything else (str, enum,
+/// non-@copy struct, array, shared, ptr) is non-copy and owns heap memory.
+fn is_copy_type(ctx: &LoweringContext, ty: &MirType) -> bool {
+    match ty {
+        MirType::I64
+        | MirType::I32
+        | MirType::U8
+        | MirType::F64
+        | MirType::F32
+        | MirType::Bool
+        | MirType::Void => true,
+        MirType::Struct(name) => ctx.copy_structs.contains(name.as_str()),
+        _ => false,
+    }
+}
 
 /// Best-effort inference of a MIR type for an AST expression.
 ///
@@ -3292,7 +3431,9 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             MirType::Void
         }
 
-        ast::Expr::StructLiteral { name, .. } => MirType::Struct(name.clone()),
+        ast::Expr::StructLiteral { name, fields, .. } => {
+            MirType::Struct(resolve_struct_literal_name(ctx, name, fields))
+        }
         ast::Expr::ArrayLiteral { elements, .. } => {
             // Infer element type from the first element.
             let elem_ty = elements
@@ -3904,12 +4045,13 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
         }
 
         ast::Expr::StructLiteral { name, fields, .. } => {
+            let effective_name = resolve_struct_literal_name(ctx, name, fields);
             let mir_fields: Vec<(String, Operand)> = fields
                 .iter()
                 .map(|(n, e)| (n.clone(), lower_expr_to_operand(ctx, e)))
                 .collect();
             RValue::Struct {
-                name: name.clone(),
+                name: effective_name,
                 fields: mir_fields,
             }
         }
@@ -3962,6 +4104,25 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
 
             let obj_ty = infer_expr_type(ctx, object);
             let obj = lower_expr_to_operand(ctx, object);
+
+            // Partial-move tracking: if a non-copy field is moved out of a
+            // non-@copy struct local, mark the source local so scope cleanup
+            // does NOT emit a full drop for it later (that would double-free
+            // the heap memory the moved field already owns).
+            if let MirType::Struct(struct_name) = &obj_ty {
+                if !ctx.copy_structs.contains(struct_name.as_str()) {
+                    if let Operand::Local(source_id) = &obj {
+                        if let Some(fields) = ctx.struct_defs.get(struct_name.as_str()) {
+                            if let Some((_, field_ty)) = fields.iter().find(|(n, _)| n == field.as_str()) {
+                                let field_ty = field_ty.clone();
+                                if !is_copy_type(ctx, &field_ty) {
+                                    ctx.partial_moved_locals.insert(source_id.0);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             // Auto-deref: if the object is a reference, dereference it first.
             let obj = if matches!(obj_ty, MirType::Ref { .. }) {
@@ -5078,6 +5239,66 @@ fn find_free_variables_block(ctx: &LoweringContext, stmts: &[ast::Stmt]) -> Vec<
 fn mono_mangled_name(base: &str, concrete_types: &[MirType]) -> String {
     let suffix: Vec<String> = concrete_types.iter().map(|t| format!("{t}")).collect();
     format!("{base}___{}", suffix.join("_"))
+}
+
+/// Resolve a struct-literal's effective name: for generic templates, infer
+/// type args from the field expression types and monomorphize into a mangled
+/// name; for concrete structs, return the name unchanged.
+fn resolve_struct_literal_name(
+    ctx: &mut LoweringContext,
+    name: &str,
+    field_exprs: &[(String, ast::Expr)],
+) -> String {
+    if !ctx.generic_struct_templates.contains_key(name) {
+        return name.to_string();
+    }
+    let template = ctx
+        .generic_struct_templates
+        .get(name)
+        .expect("template exists")
+        .clone();
+    let type_args: Vec<MirType> = template
+        .generic_params
+        .iter()
+        .map(|gp| {
+            template
+                .fields
+                .iter()
+                .find(|f| type_expr_mentions_param(&f.ty, gp))
+                .and_then(|f| {
+                    field_exprs
+                        .iter()
+                        .find(|(fn_, _)| fn_ == &f.name)
+                        .map(|(_, fexpr)| infer_expr_type(ctx, fexpr))
+                })
+                .unwrap_or(MirType::I64)
+        })
+        .collect();
+    monomorphize_struct(ctx, name, &type_args)
+}
+
+/// Check whether a TypeExpr mentions a particular type parameter name.
+fn type_expr_mentions_param(ty: &ast::TypeExpr, param: &str) -> bool {
+    match ty {
+        ast::TypeExpr::Simple { name, .. } => name == param,
+        ast::TypeExpr::Generic { args, .. } => {
+            args.iter().any(|a| type_expr_mentions_param(a, param))
+        }
+        ast::TypeExpr::Array { element, .. } => type_expr_mentions_param(element, param),
+        ast::TypeExpr::Reference { inner, .. }
+        | ast::TypeExpr::Shared { inner, .. }
+        | ast::TypeExpr::Weak { inner, .. }
+        | ast::TypeExpr::Pointer { inner, .. }
+        | ast::TypeExpr::Optional { inner, .. } => type_expr_mentions_param(inner, param),
+        ast::TypeExpr::Tuple { elements, .. } => {
+            elements.iter().any(|e| type_expr_mentions_param(e, param))
+        }
+        ast::TypeExpr::Function { params, ret, .. } => {
+            params.iter().any(|p| type_expr_mentions_param(p, param))
+                || type_expr_mentions_param(ret, param)
+        }
+        _ => false,
+    }
 }
 
 /// Monomorphize a generic struct template with concrete type arguments.

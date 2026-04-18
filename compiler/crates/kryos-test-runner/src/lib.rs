@@ -550,6 +550,11 @@ pub fn format_report_plain(report: &TestReport) -> String {
             }
             TestOutcome::Skipped => {
                 out.push_str(&format!("  SKIP {}\n", result.name));
+                if !result.actual_output.is_empty() {
+                    for line in result.actual_output.lines().take(20) {
+                        out.push_str(&format!("       {}\n", line));
+                    }
+                }
             }
         }
     }

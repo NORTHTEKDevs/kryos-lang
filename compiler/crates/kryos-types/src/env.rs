@@ -12,6 +12,10 @@ use crate::ty::Type;
 pub struct StructDef {
     pub name: String,
     pub generic_params: Vec<String>,
+    /// Type variable IDs for generic params, 1:1 with `generic_params`.
+    /// Field types reference these IDs; per-use monomorphization substitutes
+    /// them with fresh vars via `InferenceEngine::instantiate`.
+    pub generic_var_ids: Vec<u32>,
     pub fields: Vec<(String, Type)>,
 }
 
@@ -20,6 +24,8 @@ pub struct StructDef {
 pub struct EnumDef {
     pub name: String,
     pub generic_params: Vec<String>,
+    /// Type variable IDs for generic params (see `StructDef::generic_var_ids`).
+    pub generic_var_ids: Vec<u32>,
     pub variants: Vec<(String, Vec<Type>)>,
 }
 

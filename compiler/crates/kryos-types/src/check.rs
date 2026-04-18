@@ -313,6 +313,7 @@ impl TypeChecker {
                 self.env.define_struct(StructDef {
                     name: name.clone(),
                     generic_params: generics.iter().map(|g| g.name.clone()).collect(),
+                    generic_var_ids: vec![],
                     fields: vec![],
                 });
             }
@@ -320,6 +321,7 @@ impl TypeChecker {
                 self.env.define_enum(EnumDef {
                     name: name.clone(),
                     generic_params: generics.iter().map(|g| g.name.clone()).collect(),
+                    generic_var_ids: vec![],
                     variants: vec![],
                 });
             }
@@ -388,10 +390,14 @@ impl TypeChecker {
                 ..
             } => {
                 // Bind generic params so they resolve in field types.
+                let mut generic_var_ids = Vec::new();
                 if !generics.is_empty() {
                     self.env.push_scope();
                     for gp in generics {
                         let tv = self.engine.fresh_var();
+                        if let Type::Var(id) = &tv {
+                            generic_var_ids.push(*id);
+                        }
                         self.env.define_var(gp.name.clone(), tv);
                     }
                 }
@@ -405,6 +411,7 @@ impl TypeChecker {
                 self.env.define_struct(StructDef {
                     name: name.clone(),
                     generic_params: generics.iter().map(|g| g.name.clone()).collect(),
+                    generic_var_ids,
                     fields: field_types,
                 });
             }
@@ -415,10 +422,14 @@ impl TypeChecker {
                 ..
             } => {
                 // Bind generic params so they resolve in variant field types.
+                let mut generic_var_ids = Vec::new();
                 if !generics.is_empty() {
                     self.env.push_scope();
                     for gp in generics {
                         let tv = self.engine.fresh_var();
+                        if let Type::Var(id) = &tv {
+                            generic_var_ids.push(*id);
+                        }
                         self.env.define_var(gp.name.clone(), tv);
                     }
                 }
@@ -435,6 +446,7 @@ impl TypeChecker {
                 self.env.define_enum(EnumDef {
                     name: name.clone(),
                     generic_params: generics.iter().map(|g| g.name.clone()).collect(),
+                    generic_var_ids,
                     variants: variant_types,
                 });
             }
@@ -1495,14 +1507,36 @@ impl TypeChecker {
                 if let Some(ref tname) = type_name {
                     // Check if this is an enum variant constructor (e.g. Shape.Circle(3)).
                     if let Some(edef) = self.env.lookup_enum(tname).cloned() {
-                        if edef.variants.iter().any(|(vname, _)| vname == method) {
-                            // Infer args but accept the call as a variant constructor.
-                            for arg in args.iter() {
-                                self.infer_expr(arg);
+                        if let Some((_, field_types)) =
+                            edef.variants.iter().find(|(vname, _)| vname == method)
+                        {
+                            // Per-use monomorphization: fresh vars for each generic param.
+                            let mut var_map = std::collections::HashMap::new();
+                            let mut fresh_generics =
+                                Vec::with_capacity(edef.generic_var_ids.len());
+                            for &old_id in &edef.generic_var_ids {
+                                let fresh = self.engine.fresh_var();
+                                if let Type::Var(new_id) = &fresh {
+                                    var_map.insert(old_id, *new_id);
+                                }
+                                fresh_generics.push(fresh);
+                            }
+                            for (arg, expected_ty) in args.iter().zip(field_types.iter()) {
+                                let arg_ty = self.infer_expr(arg);
+                                let expected_instantiated = if var_map.is_empty() {
+                                    expected_ty.clone()
+                                } else {
+                                    self.engine.instantiate(expected_ty, &var_map)
+                                };
+                                if let Err(diag) =
+                                    self.engine.unify(&expected_instantiated, &arg_ty, arg.span())
+                                {
+                                    self.diagnostics.push(diag);
+                                }
                             }
                             return Type::Enum {
                                 name: tname.clone(),
-                                generics: vec![],
+                                generics: fresh_generics,
                             };
                         }
                     }
@@ -1580,6 +1614,40 @@ impl TypeChecker {
                 args,
                 span,
             } => {
+                // Enum variant constructor via `::` syntax (e.g. `Maybe::Some(10)`).
+                if let Some(edef) = self.env.lookup_enum(type_name).cloned() {
+                    if let Some((_, field_types)) =
+                        edef.variants.iter().find(|(vname, _)| vname == method)
+                    {
+                        let mut var_map = std::collections::HashMap::new();
+                        let mut fresh_generics =
+                            Vec::with_capacity(edef.generic_var_ids.len());
+                        for &old_id in &edef.generic_var_ids {
+                            let fresh = self.engine.fresh_var();
+                            if let Type::Var(new_id) = &fresh {
+                                var_map.insert(old_id, *new_id);
+                            }
+                            fresh_generics.push(fresh);
+                        }
+                        for (arg, expected_ty) in args.iter().zip(field_types.iter()) {
+                            let arg_ty = self.infer_expr(arg);
+                            let expected_instantiated = if var_map.is_empty() {
+                                expected_ty.clone()
+                            } else {
+                                self.engine.instantiate(expected_ty, &var_map)
+                            };
+                            if let Err(diag) =
+                                self.engine.unify(&expected_instantiated, &arg_ty, arg.span())
+                            {
+                                self.diagnostics.push(diag);
+                            }
+                        }
+                        return Type::Enum {
+                            name: type_name.clone(),
+                            generics: fresh_generics,
+                        };
+                    }
+                }
                 // Look up the method on the type (mangled as TypeName__method).
                 if let Some(sig) = self.env.lookup_method(type_name, method).cloned() {
                     // Static call — skip 'self' parameter.
@@ -1668,12 +1736,29 @@ impl TypeChecker {
             }
             Expr::StructLiteral { name, fields, span } => {
                 if let Some(def) = self.env.lookup_struct(name).cloned() {
+                    // Per-use monomorphization: build a var_map from the def's
+                    // generic var IDs to fresh vars, then instantiate each
+                    // field's expected type before unifying.
+                    let mut var_map = std::collections::HashMap::new();
+                    let mut fresh_generics = Vec::with_capacity(def.generic_var_ids.len());
+                    for &old_id in &def.generic_var_ids {
+                        let fresh = self.engine.fresh_var();
+                        if let Type::Var(new_id) = &fresh {
+                            var_map.insert(old_id, *new_id);
+                        }
+                        fresh_generics.push(fresh);
+                    }
                     for (fname, fexpr) in fields {
                         let expr_ty = self.infer_expr(fexpr);
                         if let Some((_, expected_ty)) = def.fields.iter().find(|(n, _)| n == fname)
                         {
+                            let expected_instantiated = if var_map.is_empty() {
+                                expected_ty.clone()
+                            } else {
+                                self.engine.instantiate(expected_ty, &var_map)
+                            };
                             if let Err(diag) =
-                                self.engine.unify(expected_ty, &expr_ty, fexpr.span())
+                                self.engine.unify(&expected_instantiated, &expr_ty, fexpr.span())
                             {
                                 self.diagnostics.push(diag);
                             }
@@ -1683,11 +1768,7 @@ impl TypeChecker {
                     }
                     Type::Struct {
                         name: name.clone(),
-                        generics: def
-                            .generic_params
-                            .iter()
-                            .map(|_| self.engine.fresh_var())
-                            .collect(),
+                        generics: fresh_generics,
                     }
                 } else {
                     self.error_with_code(

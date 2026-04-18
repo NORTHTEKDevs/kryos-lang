@@ -3,10 +3,11 @@ fn main() {
     let ch = chan()
 
     select {
-        ch => {
+        recv ch => {
             println("received")
         }
-    } timeout 100 {
-        println("timeout fired")
+        timeout 100 => {
+            println("timeout fired")
+        }
     }
 }

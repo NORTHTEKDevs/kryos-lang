@@ -37,17 +37,31 @@ fn remove_unreachable_blocks(func: &mut MirFunction) {
         return;
     }
 
+    // Build a lookup from block ID -> Vec index. Blocks are stored in
+    // insertion order, NOT indexed by ID, so IDs can have gaps (e.g. block
+    // ID 1 is allocated but never pushed when lower_function discards the
+    // `_entry` allocation from reset).  Without this map the BFS would
+    // confuse block ID N with Vec index N and mark reachable blocks dead.
+    let id_to_index: std::collections::HashMap<u32, usize> = func
+        .blocks
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (b.id.0, i))
+        .collect();
+
     // BFS from block 0.
     let mut reachable: HashSet<u32> = HashSet::new();
     let mut queue: VecDeque<u32> = VecDeque::new();
     queue.push_back(0);
     reachable.insert(0);
 
-    while let Some(idx) = queue.pop_front() {
-        if let Some(block) = func.blocks.get(idx as usize) {
-            for succ in block.successors() {
-                if reachable.insert(succ.0) {
-                    queue.push_back(succ.0);
+    while let Some(block_id) = queue.pop_front() {
+        if let Some(&vec_idx) = id_to_index.get(&block_id) {
+            if let Some(block) = func.blocks.get(vec_idx) {
+                for succ in block.successors() {
+                    if reachable.insert(succ.0) {
+                        queue.push_back(succ.0);
+                    }
                 }
             }
         }

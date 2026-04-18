@@ -1,12 +1,12 @@
 // run-expect: some 10
 // run-expect: none
-enum Maybe[T] {
+enum Maybe<T> {
     Some(T),
     None,
 }
 
 fn main() {
-    let val1 = Maybe::Some(10)
+    let val1 = Maybe.Some(10)
     match val1 {
         Maybe::Some(v) => {
             println("some " + to_string(v))
@@ -16,7 +16,7 @@ fn main() {
         }
     }
 
-    let val2 = Maybe::None
+    let val2 = Maybe.None
     match val2 {
         Maybe::Some(v) => {
             println("should not happen")

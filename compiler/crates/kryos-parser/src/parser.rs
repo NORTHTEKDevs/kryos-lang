@@ -151,6 +151,12 @@ impl Parser {
                 format!("unexpected token {}, expected {}", token_text, kind),
                 span,
             );
+            // Advance past the offending token so list-loop callers make
+            // progress. Without this, a caller in a `while !check(X)` loop
+            // spins forever, pushing duplicate diagnostics until OOM.
+            if !self.at_end() {
+                self.advance();
+            }
             // Return a dummy token so callers can keep going.
             Token::new(kind, span, "")
         }
@@ -180,6 +186,9 @@ impl Parser {
                     span,
                     kryos_errors::codes::E0002,
                 );
+                if !self.at_end() {
+                    self.advance();
+                }
                 ("<error>".to_string(), span)
             }
         }
@@ -203,6 +212,9 @@ impl Parser {
                     format!("unexpected token {}, expected name", token_text),
                     span,
                 );
+                if !self.at_end() {
+                    self.advance();
+                }
                 ("<error>".to_string(), span)
             }
         }

@@ -1791,10 +1791,12 @@ fn translate_instruction<M: Module>(
                             )?;
                             builder.ins().call(release_ref, &[val]);
                         }
-                        kryos_mir::ir::MirType::Struct(_) => {
-                            // Delegate to shared helper which recursively
-                            // frees nested owned fields before the struct.
-                            emit_drop_for_value(val, ty, builder, translator, module)?;
+                        kryos_mir::ir::MirType::Struct(ref sname) => {
+                            // @copy structs share field pointers with their source;
+                            // do not free them -- the original owner will free.
+                            if !translator.copy_structs.contains(sname) {
+                                emit_drop_for_value(val, ty, builder, translator, module)?;
+                            }
                         }
                         kryos_mir::ir::MirType::Enum(_) => {
                             // Runtime variant-aware Drop: dispatch on tag to
@@ -4689,7 +4691,6 @@ fn emit_drop_for_value<M: Module>(
                             match field_ty {
                                 MirType::Str
                                 | MirType::Array(_, _)
-                                | MirType::Struct(_)
                                 | MirType::Function { .. }
                                 | MirType::Enum(_)
                                 | MirType::Shared(_) => {
@@ -4702,6 +4703,22 @@ fn emit_drop_for_value<M: Module>(
                                     emit_drop_for_value(
                                         field_val, field_ty, builder, translator, module,
                                     )?;
+                                }
+                                MirType::Struct(ref inner_name) => {
+                                    // @copy structs embedded in a containing struct share
+                                    // field pointers with their original source; skip
+                                    // recursive drop to avoid double-free.
+                                    if !translator.copy_structs.contains(inner_name) {
+                                        let field_val = builder.ins().load(
+                                            types::I64,
+                                            MemFlags::new(),
+                                            val,
+                                            offset,
+                                        );
+                                        emit_drop_for_value(
+                                            field_val, field_ty, builder, translator, module,
+                                        )?;
+                                    }
                                 }
                                 _ => {}
                             }
@@ -4938,6 +4955,8 @@ fn emit_exception_cleanup_drops<M: Module>(
         .collect();
 
     // Collect the locals we need to drop: non-parameter, droppable types.
+    // @copy structs are excluded: they share field pointers with their source
+    // and must not free those fields -- the original owner handles cleanup.
     let locals_to_drop: Vec<(u32, MirType)> = translator
         .mir_func
         .locals
@@ -4953,6 +4972,10 @@ fn emit_exception_cleanup_drops<M: Module>(
                     | MirType::Enum(_)
                     | MirType::Shared(_)
             )
+        })
+        .filter(|l| match &l.ty {
+            MirType::Struct(name) => !translator.copy_structs.contains(name),
+            _ => true,
         })
         .map(|l| (l.id.0, l.ty.clone()))
         .collect();

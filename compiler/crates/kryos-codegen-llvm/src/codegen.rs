@@ -406,6 +406,7 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_builtin_parse_int(i64)");
         self.emit_line("declare i64 @kryos_builtin_parse_float(i64)");
         self.emit_line("declare i64 @kryos_builtin_type_of(i64)");
+        self.emit_line("declare i64 @kryos_builtin_assert(i64, i64)");
         self.emit_line("declare i64 @kryos_builtin_char_code(i64)");
         self.emit_line("declare i64 @kryos_builtin_char_from(i64)");
         self.emit_line("declare i64 @kryos_builtin_substr(i64, i64, i64)");
@@ -1853,6 +1854,69 @@ impl LlvmCodegen {
                                 ));
                             }
                         }
+                        "push" => {
+                            // push(arr: [T], val: T) -> void
+                            // Runtime: kryos_array_push(arr: ptr, val: i64) -> void
+                            // arg0 stays ptr, arg1 (value, possibly ptr) -> i64 via ptrtoint.
+                            let arr_val = if !args.is_empty() {
+                                let v = self.operand_to_llvm(&args[0], func);
+                                let ty = self.operand_type(&args[0], func);
+                                self.coerce_value(&v, &ty, "ptr")
+                            } else {
+                                "null".to_string()
+                            };
+                            let elem_val = if args.len() >= 2 {
+                                let v = self.operand_to_llvm(&args[1], func);
+                                let ty = self.operand_type(&args[1], func);
+                                if ty == "ptr" {
+                                    let tmp = self.next_temp();
+                                    self.emit_line(&format!("  {tmp} = ptrtoint ptr {v} to i64"));
+                                    tmp
+                                } else {
+                                    self.coerce_value(&v, &ty, "i64")
+                                }
+                            } else {
+                                "0".to_string()
+                            };
+                            self.emit_line(&format!(
+                                "  call void @kryos_array_push(ptr {arr_val}, i64 {elem_val})"
+                            ));
+                        }
+                        "assert" => {
+                            // assert(condition: bool, message: str) -> void
+                            // Runtime: kryos_builtin_assert(i64, i64) -> i64
+                            // Coerce condition (i1) -> i64 via zext, message (ptr) -> i64 via ptrtoint.
+                            let cond_val = if !args.is_empty() {
+                                let v = self.operand_to_llvm(&args[0], func);
+                                let ty = self.operand_type(&args[0], func);
+                                if ty == "i1" {
+                                    let tmp = self.next_temp();
+                                    self.emit_line(&format!("  {tmp} = zext i1 {v} to i64"));
+                                    tmp
+                                } else {
+                                    self.coerce_value(&v, &ty, "i64")
+                                }
+                            } else {
+                                "1".to_string()
+                            };
+                            let msg_val = if args.len() >= 2 {
+                                let v = self.operand_to_llvm(&args[1], func);
+                                let ty = self.operand_type(&args[1], func);
+                                if ty == "ptr" {
+                                    let tmp = self.next_temp();
+                                    self.emit_line(&format!("  {tmp} = ptrtoint ptr {v} to i64"));
+                                    tmp
+                                } else {
+                                    self.coerce_value(&v, &ty, "i64")
+                                }
+                            } else {
+                                "0".to_string()
+                            };
+                            // Discard the return value — assert is void in Kryos.
+                            self.emit_line(&format!(
+                                "  call i64 @kryos_builtin_assert(i64 {cond_val}, i64 {msg_val})"
+                            ));
+                        }
                         _ => {
                             // Translate Kryos user-facing builtin names to runtime symbols.
                             let runtime_fname: &str = match fname.as_str() {
@@ -2055,25 +2119,70 @@ impl LlvmCodegen {
                 }
             }
             RValue::Index { object, index } => {
-                // Array/tuple pointer + index: GEP to compute address, then load.
                 let obj_val = self.operand_to_llvm(object, func);
+                let obj_ty = self.operand_type(object, func);
                 let idx_val = self.operand_to_llvm(index, func);
                 let idx_ty = self.operand_type(index, func);
-                let elem_ptr = self.next_temp();
-                self.emit_line(&format!(
-                    "  {elem_ptr} = getelementptr i64, ptr {obj_val}, {idx_ty} {idx_val}"
-                ));
-                let target_name = if is_mutable {
-                    self.next_temp()
-                } else {
-                    format!("%_{}", dest.0)
-                };
-                self.emit_line(&format!("  {target_name} = load {dest_ty}, ptr {elem_ptr}"));
-                if is_mutable {
+
+                if obj_ty == "ptr" {
+                    // Dynamic KryosArray — use kryos_array_get(ptr, i64) -> i64.
+                    // The element is stored as i64; convert back to ptr if dest is ptr.
+                    let idx_i64 = if idx_ty != "i64" {
+                        let t = self.next_temp();
+                        self.emit_line(&format!("  {t} = sext {idx_ty} {idx_val} to i64"));
+                        t
+                    } else {
+                        idx_val
+                    };
+                    let raw = self.next_temp();
                     self.emit_line(&format!(
-                        "  store {dest_ty} {target_name}, ptr %_{}.addr",
-                        dest.0
+                        "  {raw} = call i64 @kryos_array_get(ptr {obj_val}, i64 {idx_i64})"
                     ));
+                    // Convert i64 -> dest_ty, naming the result %_N for non-mutable.
+                    if is_mutable {
+                        let coerced = if dest_ty == "ptr" {
+                            let t = self.next_temp();
+                            self.emit_line(&format!("  {t} = inttoptr i64 {raw} to ptr"));
+                            t
+                        } else {
+                            raw
+                        };
+                        self.emit_line(&format!(
+                            "  store {dest_ty} {coerced}, ptr %_{}.addr",
+                            dest.0
+                        ));
+                    } else if dest_ty == "ptr" {
+                        self.emit_line(&format!(
+                            "  %_{} = inttoptr i64 {raw} to ptr",
+                            dest.0
+                        ));
+                    } else {
+                        // Identity: use add 0 for integer types.
+                        self.emit_line(&format!(
+                            "  %_{} = add {dest_ty} {raw}, 0",
+                            dest.0
+                        ));
+                    }
+                } else {
+                    // Fixed-size array or tuple aggregate — direct GEP + load.
+                    let elem_ptr = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {elem_ptr} = getelementptr i64, ptr {obj_val}, {idx_ty} {idx_val}"
+                    ));
+                    let target_name = if is_mutable {
+                        self.next_temp()
+                    } else {
+                        format!("%_{}", dest.0)
+                    };
+                    self.emit_line(&format!(
+                        "  {target_name} = load {dest_ty}, ptr {elem_ptr}"
+                    ));
+                    if is_mutable {
+                        self.emit_line(&format!(
+                            "  store {dest_ty} {target_name}, ptr %_{}.addr",
+                            dest.0
+                        ));
+                    }
                 }
             }
 
@@ -2814,12 +2923,24 @@ impl LlvmCodegen {
         }
 
         if elems.is_empty() {
-            if is_mutable {
+            if dest_ty == "ptr" {
+                // Dynamic (unsized) array — allocate an empty array via kryos_array_new.
+                // elem_size=8 (all Kryos values are i64/ptr sized), initial cap=0 (runtime min=4).
+                let arr_tmp = self.next_temp();
+                self.emit_line(&format!(
+                    "  {arr_tmp} = call ptr @kryos_array_new(i64 8, i64 0)"
+                ));
+                if is_mutable {
+                    self.emit_line(&format!("  store ptr {arr_tmp}, ptr %_{}.addr", dest.0));
+                } else {
+                    self.emit_line(&format!("  %_{} = getelementptr i8, ptr {arr_tmp}, i64 0", dest.0));
+                }
+            } else if is_mutable {
                 let tmp = self.next_temp();
                 self.emit_line(&format!("  {tmp} = insertvalue {dest_ty} undef, i8 0, 0"));
                 self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
             } else {
-                // Empty array — just produce undef.
+                // Empty fixed-size array — just produce undef.
                 self.emit_line(&format!(
                     "  %_{} = insertvalue {dest_ty} undef, i8 0, 0",
                     dest.0

@@ -1,6 +1,6 @@
 // run-expect: 42
 // run-expect: hello
-struct Box[T] {
+struct Box<T> {
     value: T
 }
 

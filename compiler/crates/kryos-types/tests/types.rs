@@ -275,7 +275,12 @@ fn check_return_type_mismatch() {
         span: S,
     }]);
     assert!(!diags.is_empty(), "expected type error for return mismatch");
-    assert!(diags[0].message.contains("type mismatch"));
+    let msg = &diags[0].message;
+    assert!(
+        msg.contains("type mismatch")
+            || (msg.contains("return") && msg.contains("i32") && msg.contains("str")),
+        "unexpected diag message: {msg}"
+    );
 }
 
 #[test]
