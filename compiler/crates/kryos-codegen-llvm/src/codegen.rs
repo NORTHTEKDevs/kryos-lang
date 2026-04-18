@@ -96,7 +96,7 @@ impl LlvmCodegen {
             let param_types: Vec<String> = func
                 .params
                 .iter()
-                .map(|p| mir_type_to_llvm(&p.ty))
+                .map(|p| self.sig_ty_to_llvm(&p.ty))
                 .collect();
             self.func_param_types.insert(func.name.clone(), param_types);
 
@@ -133,6 +133,9 @@ impl LlvmCodegen {
 
         // Module header.
         self.emit_header();
+
+        // Named struct type declarations (must appear before any use).
+        self.emit_struct_type_decls();
 
         // String constant globals.
         self.emit_string_globals();
@@ -203,7 +206,7 @@ impl LlvmCodegen {
         for func in functions {
             self.prescan_function(func);
             let param_types: Vec<String> =
-                func.params.iter().map(|p| mir_type_to_llvm(&p.ty)).collect();
+                func.params.iter().map(|p| self.sig_ty_to_llvm(&p.ty)).collect();
             self.func_param_types.insert(func.name.clone(), param_types);
 
             for bb in &func.blocks {
@@ -274,6 +277,32 @@ impl LlvmCodegen {
     // -----------------------------------------------------------------------
     // Module header
     // -----------------------------------------------------------------------
+
+    fn emit_struct_type_decls(&mut self) {
+        if self.struct_defs.is_empty() {
+            return;
+        }
+        let mut decls: Vec<(String, String)> = self
+            .struct_defs
+            .iter()
+            .filter(|(n, _)| n.as_str() != "Map")
+            .map(|(n, fields)| {
+                let parts: Vec<String> =
+                    fields.iter().map(|(_, ty)| mir_type_to_llvm(ty)).collect();
+                let body = if parts.is_empty() {
+                    "{ i8 }".to_string()
+                } else {
+                    format!("{{ {} }}", parts.join(", "))
+                };
+                (n.clone(), body)
+            })
+            .collect();
+        decls.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, body) in decls {
+            self.emit_line(&format!("%{name} = type {body}"));
+        }
+        self.emit_blank();
+    }
 
     fn emit_header(&mut self) {
         self.emit_line("; ModuleID = 'kryos_module'");
@@ -1070,11 +1099,11 @@ impl LlvmCodegen {
             }
         }
 
-        let ret = mir_type_to_llvm(&func.ret_ty);
+        let ret = self.sig_ty_to_llvm(&func.ret_ty);
         let params = func
             .params
             .iter()
-            .map(|p| format!("{} %_{}", mir_type_to_llvm(&p.ty), p.local.0))
+            .map(|p| format!("{} %_{}", self.sig_ty_to_llvm(&p.ty), p.local.0))
             .collect::<Vec<_>>()
             .join(", ");
 
@@ -2239,8 +2268,17 @@ impl LlvmCodegen {
                     let mut current = tag_tmp;
 
                     for (i, field_op) in fields.iter().enumerate() {
-                        let val = self.operand_to_llvm(field_op, func);
+                        let mut val = self.operand_to_llvm(field_op, func);
                         let val_ty = self.operand_type(field_op, func);
+                        // Payload slot is i64; cast non-i64 values (e.g. ptr) first.
+                        if val_ty != "i64" {
+                            let casted = self.next_temp();
+                            let op = if val_ty == "ptr" { "ptrtoint" } else { "bitcast" };
+                            self.emit_line(&format!(
+                                "  {casted} = {op} {val_ty} {val} to i64"
+                            ));
+                            val = casted;
+                        }
                         let is_last = i + 1 == fields.len();
                         let target = if is_last && !is_mutable {
                             format!("%_{}", dest.0)
@@ -2248,7 +2286,7 @@ impl LlvmCodegen {
                             self.next_temp()
                         };
                         self.emit_line(&format!(
-                            "  {target} = insertvalue {llvm_ty} {current}, {val_ty} {val}, {idx}",
+                            "  {target} = insertvalue {llvm_ty} {current}, i64 {val}, {idx}",
                             idx = i + 1
                         ));
                         current = target;
@@ -2280,18 +2318,39 @@ impl LlvmCodegen {
             } => {
                 let val = self.operand_to_llvm(operand, func);
                 let obj_ty = self.operand_type(operand, func);
-                let target_name = if is_mutable {
+                // Payload slot is always i64 in the enum aggregate; cast to
+                // the dest's actual LLVM type if needed (e.g. ptr for arrays).
+                let needs_cast = dest_ty != "i64" && dest_ty != "void";
+                let slot_tmp = if needs_cast {
+                    self.next_temp()
+                } else if is_mutable {
                     self.next_temp()
                 } else {
                     format!("%_{}", dest.0)
                 };
                 self.emit_line(&format!(
-                    "  {target_name} = extractvalue {obj_ty} {val}, {idx}",
+                    "  {slot_tmp} = extractvalue {obj_ty} {val}, {idx}",
                     idx = field_idx + 1
                 ));
+                let final_name = if needs_cast {
+                    let t = if is_mutable {
+                        self.next_temp()
+                    } else {
+                        format!("%_{}", dest.0)
+                    };
+                    let op = if dest_ty == "ptr" { "inttoptr" } else { "bitcast" };
+                    if op == "inttoptr" {
+                        self.emit_line(&format!("  {t} = inttoptr i64 {slot_tmp} to {dest_ty}"));
+                    } else {
+                        self.emit_line(&format!("  {t} = bitcast i64 {slot_tmp} to {dest_ty}"));
+                    }
+                    t
+                } else {
+                    slot_tmp.clone()
+                };
                 if is_mutable {
                     self.emit_line(&format!(
-                        "  store {dest_ty} {target_name}, ptr %_{}.addr",
+                        "  store {dest_ty} {final_name}, ptr %_{}.addr",
                         dest.0
                     ));
                 }
@@ -3140,7 +3199,7 @@ impl LlvmCodegen {
     ) -> Result<(), CodegenError> {
         match term {
             Terminator::Return(None) => {
-                let ret_ty = mir_type_to_llvm(&func.ret_ty);
+                let ret_ty = self.sig_ty_to_llvm(&func.ret_ty);
                 if ret_ty == "void" {
                     self.emit_line("  ret void");
                 } else {
@@ -3244,6 +3303,18 @@ impl LlvmCodegen {
 
     /// Build the LLVM struct type for an enum: `{ i64, <payload fields> }`.
     /// All payload slots use i64 for uniform layout.
+    /// Resolve an MIR type to its LLVM representation for function signatures
+    /// and locals — uses the proper enum aggregate instead of the i64 fallback.
+    fn sig_ty_to_llvm(&self, ty: &MirType) -> String {
+        match ty {
+            MirType::Enum(name) => {
+                let max = self.enum_max_fields(name);
+                self.enum_llvm_type(name, max)
+            }
+            _ => mir_type_to_llvm(ty),
+        }
+    }
+
     fn enum_llvm_type(&self, _enum_name: &str, max_fields: usize) -> String {
         if max_fields == 0 {
             "{ i64 }".to_string()
