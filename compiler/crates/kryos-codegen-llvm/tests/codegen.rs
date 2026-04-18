@@ -417,11 +417,11 @@ fn test_type_mapping_ptr_shared() {
 fn test_type_mapping_array() {
     use kryos_codegen_llvm::codegen::mir_type_to_llvm;
 
+    // All arrays now lower to ptr (heap-allocated runtime arrays).
     assert_eq!(
         mir_type_to_llvm(&MirType::Array(Box::new(MirType::I32), Some(10))),
-        "[10 x i32]"
+        "ptr"
     );
-    // Unsized array — pointer.
     assert_eq!(
         mir_type_to_llvm(&MirType::Array(Box::new(MirType::I32), None)),
         "ptr"
@@ -626,9 +626,11 @@ fn test_switch_terminator() {
     let module = module_with(func);
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
 
-    assert!(ir.contains("switch i32 %_0, label %bb3"));
+    // Default is now routed through an unreachable shim block for SSA dominance safety.
+    assert!(ir.contains("switch i32 %_0, label %switch_default_"));
     assert!(ir.contains("i32 1, label %bb1"));
     assert!(ir.contains("i32 2, label %bb2"));
+    assert!(ir.contains("unreachable"));
 }
 
 #[test]

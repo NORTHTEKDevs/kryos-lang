@@ -34,6 +34,10 @@ pub struct LlvmCodegen {
     local_types: HashMap<u32, String>,
     /// Function signatures: name -> list of LLVM parameter type strings.
     func_param_types: HashMap<String, Vec<String>>,
+    /// Aggregate-passing info: name -> (ret_agg_ty, per-param agg_ty).
+    /// When ret_agg is Some, the function uses sret (returns void, takes ptr sret first).
+    /// When a param entry is Some, that param is passed via ptr byval.
+    func_sig_aggs: HashMap<String, (Option<String>, Vec<Option<String>>)>,
     /// Struct definitions from the MIR module (for field access resolution).
     struct_defs: HashMap<String, Vec<(String, MirType)>>,
     /// Enum definitions from the MIR module (for enum codegen).
@@ -68,6 +72,21 @@ impl LlvmCodegen {
             value_types: HashMap::new(),
             copy_structs: HashSet::new(),
             closure_cap_types: HashMap::new(),
+            func_sig_aggs: HashMap::new(),
+        }
+    }
+
+    /// If the MIR type is an aggregate (Struct or Tuple), return its LLVM type
+    /// string. These types must be passed via byval/sret instead of by value
+    /// to satisfy LLVM ABI rules (especially for named struct types).
+    fn aggregate_llvm_ty(&self, ty: &MirType) -> Option<String> {
+        match ty {
+            MirType::Struct(name) => Some(format!("%{name}")),
+            MirType::Tuple(elems) => {
+                let parts: Vec<String> = elems.iter().map(mir_type_to_llvm).collect();
+                Some(format!("{{ {} }}", parts.join(", ")))
+            }
+            _ => None,
         }
     }
 
@@ -84,6 +103,7 @@ impl LlvmCodegen {
         self.string_counter = 0;
         self.needs_arc_runtime = false;
         self.func_param_types.clear();
+        self.func_sig_aggs.clear();
         self.struct_defs = module.struct_defs.clone();
         self.enum_defs = module.enum_defs.clone();
         self.copy_structs = module.copy_structs.clone();
@@ -99,6 +119,11 @@ impl LlvmCodegen {
                 .map(|p| self.sig_ty_to_llvm(&p.ty))
                 .collect();
             self.func_param_types.insert(func.name.clone(), param_types);
+            let ret_agg = self.aggregate_llvm_ty(&func.ret_ty);
+            let param_aggs: Vec<Option<String>> =
+                func.params.iter().map(|p| self.aggregate_llvm_ty(&p.ty)).collect();
+            self.func_sig_aggs
+                .insert(func.name.clone(), (ret_agg, param_aggs));
 
             // Collect closure capture types for dropper generation.
             for bb in &func.blocks {
@@ -208,6 +233,11 @@ impl LlvmCodegen {
             let param_types: Vec<String> =
                 func.params.iter().map(|p| self.sig_ty_to_llvm(&p.ty)).collect();
             self.func_param_types.insert(func.name.clone(), param_types);
+            let ret_agg = self.aggregate_llvm_ty(&func.ret_ty);
+            let param_aggs: Vec<Option<String>> =
+                func.params.iter().map(|p| self.aggregate_llvm_ty(&p.ty)).collect();
+            self.func_sig_aggs
+                .insert(func.name.clone(), (ret_agg, param_aggs));
 
             for bb in &func.blocks {
                 for inst in &bb.instructions {
@@ -241,6 +271,7 @@ impl LlvmCodegen {
     /// after `prescan_all`, before `emit_one_function_inc`.
     pub fn emit_header_section(&mut self) {
         self.emit_header();
+        self.emit_struct_type_decls();
         self.emit_string_globals();
         if self.needs_arc_runtime {
             self.emit_arc_declarations();
@@ -1099,13 +1130,24 @@ impl LlvmCodegen {
             }
         }
 
-        let ret = self.sig_ty_to_llvm(&func.ret_ty);
-        let params = func
-            .params
-            .iter()
-            .map(|p| format!("{} %_{}", self.sig_ty_to_llvm(&p.ty), p.local.0))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let ret_agg = self.aggregate_llvm_ty(&func.ret_ty);
+        let ret = if ret_agg.is_some() {
+            "void".to_string()
+        } else {
+            self.sig_ty_to_llvm(&func.ret_ty)
+        };
+        let mut param_strs: Vec<String> = Vec::new();
+        if let Some(ref agg) = ret_agg {
+            param_strs.push(format!("ptr sret({agg}) %_sret"));
+        }
+        for p in &func.params {
+            if let Some(agg) = self.aggregate_llvm_ty(&p.ty) {
+                param_strs.push(format!("ptr byval({agg}) %_{}_arg", p.local.0));
+            } else {
+                param_strs.push(format!("{} %_{}", self.sig_ty_to_llvm(&p.ty), p.local.0));
+            }
+        }
+        let params = param_strs.join(", ");
 
         self.emit_line(&format!("define {ret} @{name}({params}) {{"));
 
@@ -1123,8 +1165,33 @@ impl LlvmCodegen {
                 }
             }
         }
-        // Store parameter values into their allocas.
+        // For aggregate (byval) params: load the aggregate from the byval ptr
+        // into the SSA value `%_N`, or into the alloca if mutable.
+        for p in &func.params {
+            if let Some(agg) = self.aggregate_llvm_ty(&p.ty) {
+                if self.mutable_locals.contains(&p.local.0) {
+                    let tmp = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {tmp} = load {agg}, ptr %_{}_arg",
+                        p.local.0
+                    ));
+                    self.emit_line(&format!(
+                        "  store {agg} {tmp}, ptr %_{}.addr",
+                        p.local.0
+                    ));
+                } else {
+                    self.emit_line(&format!(
+                        "  %_{} = load {agg}, ptr %_{}_arg",
+                        p.local.0, p.local.0
+                    ));
+                }
+            }
+        }
+        // Store parameter values into their allocas (non-aggregate params only).
         for param in &func.params {
+            if self.aggregate_llvm_ty(&param.ty).is_some() {
+                continue;
+            }
             if self.mutable_locals.contains(&param.local.0) {
                 let ty = mir_type_to_llvm(&param.ty);
                 if ty != "void" {
@@ -1228,12 +1295,35 @@ impl LlvmCodegen {
                         // @copy structs are passed by value and share field pointers;
                         // do not free them here -- the original owner will free.
                         if !self.copy_structs.contains(name) {
-                            self.emit_struct_drop(&val, name, func);
-                            self.emit_line(&format!("  call void @free(ptr {val})"));
+                            let local_llvm = self.local_type(*local);
+                            if local_llvm.starts_with('%') {
+                                // SSA aggregate struct value — spill to alloca to
+                                // give emit_struct_drop a ptr; do not free the alloca.
+                                let agg = local_llvm;
+                                let buf = self.next_temp();
+                                self.emit_line(&format!("  {buf} = alloca {agg}"));
+                                self.emit_line(&format!("  store {agg} {val}, ptr {buf}"));
+                                self.emit_struct_drop(&buf, name, func);
+                            } else {
+                                self.emit_struct_drop(&val, name, func);
+                                self.emit_line(&format!("  call void @free(ptr {val})"));
+                            }
                         }
                     }
                     Some(MirType::Enum(name)) => {
-                        self.emit_enum_drop(&val, name, func);
+                        // emit_enum_drop expects a ptr to enum data. If the local
+                        // is held as an SSA aggregate, spill it to a temp alloca first.
+                        let local_llvm = self.local_type(*local);
+                        if local_llvm.starts_with('{') {
+                            let max = self.enum_max_fields(name);
+                            let agg = self.enum_llvm_type(name, max);
+                            let buf = self.next_temp();
+                            self.emit_line(&format!("  {buf} = alloca {agg}"));
+                            self.emit_line(&format!("  store {agg} {val}, ptr {buf}"));
+                            self.emit_enum_drop(&buf, name, func);
+                        } else {
+                            self.emit_enum_drop(&val, name, func);
+                        }
                     }
                     _ => {
                         self.emit_line("  ; drop (no-op)");
@@ -1543,6 +1633,87 @@ impl LlvmCodegen {
         Ok(())
     }
 
+    /// Emit a call to a user-defined function that uses byval/sret aggregate ABI.
+    /// `ret_agg`: Some(llvm_ty) if return is aggregate (callee uses sret).
+    /// `param_aggs[i]`: Some(llvm_ty) if arg i should be passed byval.
+    fn emit_aggregate_call(
+        &mut self,
+        fname: &str,
+        args: &[Operand],
+        dest: LocalId,
+        dest_ty: &str,
+        is_mutable: bool,
+        ret_agg: Option<String>,
+        param_aggs: Vec<Option<String>>,
+        func: &MirFunction,
+    ) {
+        let mut arg_parts: Vec<String> = Vec::new();
+
+        // Allocate sret buffer if returning aggregate.
+        let sret_buf = if let Some(ref agg) = ret_agg {
+            let buf = self.next_temp();
+            self.emit_line(&format!("  {buf} = alloca {agg}"));
+            arg_parts.push(format!("ptr sret({agg}) {buf}"));
+            Some((buf, agg.clone()))
+        } else {
+            None
+        };
+
+        // Emit each arg, allocating + storing byval aggregates.
+        let callee_param_types = self.func_param_types.get(fname).cloned();
+        for (i, a) in args.iter().enumerate() {
+            let actual_ty = self.operand_type(a, func);
+            let val = self.operand_to_llvm(a, func);
+            let agg = param_aggs.get(i).cloned().flatten();
+            if let Some(agg_ty) = agg {
+                let buf = self.next_temp();
+                self.emit_line(&format!("  {buf} = alloca {agg_ty}"));
+                self.emit_line(&format!("  store {agg_ty} {val}, ptr {buf}"));
+                arg_parts.push(format!("ptr byval({agg_ty}) {buf}"));
+            } else {
+                let expected_ty = callee_param_types
+                    .as_ref()
+                    .and_then(|pts| pts.get(i))
+                    .cloned()
+                    .unwrap_or_else(|| actual_ty.clone());
+                let coerced = self.coerce_value(&val, &actual_ty, &expected_ty);
+                arg_parts.push(format!("{expected_ty} {coerced}"));
+            }
+        }
+        let arg_list = arg_parts.join(", ");
+
+        if let Some((buf, agg)) = sret_buf {
+            self.emit_line(&format!("  call void @{fname}({arg_list})"));
+            // Load result into %_dest (or store into alloca for mutable dest).
+            if is_mutable {
+                let tmp = self.next_temp();
+                self.emit_line(&format!("  {tmp} = load {agg}, ptr {buf}"));
+                self.emit_line(&format!(
+                    "  store {agg} {tmp}, ptr %_{}.addr",
+                    dest.0
+                ));
+            } else {
+                self.emit_line(&format!("  %_{} = load {agg}, ptr {buf}", dest.0));
+            }
+        } else if dest_ty == "void" {
+            self.emit_line(&format!("  call void @{fname}({arg_list})"));
+        } else if is_mutable {
+            let tmp = self.next_temp();
+            self.emit_line(&format!(
+                "  {tmp} = call {dest_ty} @{fname}({arg_list})"
+            ));
+            self.emit_line(&format!(
+                "  store {dest_ty} {tmp}, ptr %_{}.addr",
+                dest.0
+            ));
+        } else {
+            self.emit_line(&format!(
+                "  %_{} = call {dest_ty} @{fname}({arg_list})",
+                dest.0
+            ));
+        }
+    }
+
     fn emit_assign(
         &mut self,
         dest: LocalId,
@@ -1700,6 +1871,18 @@ impl LlvmCodegen {
                         self.emit_line(&format!("  call void @{print_fn}(ptr {handle_ptr})"));
                     }
                 } else {
+                    // If the callee uses aggregate (byval/sret) ABI, emit specialized call.
+                    if let Some((ret_agg, param_aggs)) =
+                        self.func_sig_aggs.get(fname.as_str()).cloned()
+                    {
+                        if ret_agg.is_some() || param_aggs.iter().any(|p| p.is_some()) {
+                            self.emit_aggregate_call(
+                                fname, args, dest, &dest_ty, is_mutable, ret_agg, param_aggs, func,
+                            );
+                            return Ok(());
+                        }
+                    }
+
                     // Look up the callee's parameter types for type-correct emission.
                     let callee_param_types = self.func_param_types.get(fname.as_str()).cloned();
 
@@ -2954,8 +3137,47 @@ impl LlvmCodegen {
         func: &MirFunction,
         is_mutable: bool,
     ) -> Result<(), CodegenError> {
-        // Build up with insertvalue.
-        // When the destination is mutable, the final value is stored to its alloca.
+        // Heap arrays (dest_ty == "ptr"): allocate via kryos_array_new + push each elem.
+        if dest_ty == "ptr" && !elems.is_empty() {
+            let arr_tmp = self.next_temp();
+            self.emit_line(&format!(
+                "  {arr_tmp} = call ptr @kryos_array_new(i64 8, i64 {})",
+                elems.len()
+            ));
+            for elem in elems {
+                let elem_val = self.operand_to_llvm(elem, func);
+                let elem_ty = self.operand_type(elem, func);
+                let as_i64 = if elem_ty == "i64" {
+                    elem_val
+                } else if elem_ty == "ptr" {
+                    let t = self.next_temp();
+                    self.emit_line(&format!("  {t} = ptrtoint ptr {elem_val} to i64"));
+                    t
+                } else if elem_ty == "double" {
+                    let t = self.next_temp();
+                    self.emit_line(&format!("  {t} = bitcast double {elem_val} to i64"));
+                    t
+                } else {
+                    let t = self.next_temp();
+                    self.emit_line(&format!("  {t} = sext {elem_ty} {elem_val} to i64"));
+                    t
+                };
+                self.emit_line(&format!(
+                    "  call void @kryos_array_push(ptr {arr_tmp}, i64 {as_i64})"
+                ));
+            }
+            if is_mutable {
+                self.emit_line(&format!("  store ptr {arr_tmp}, ptr %_{}.addr", dest.0));
+            } else {
+                self.emit_line(&format!(
+                    "  %_{} = getelementptr i8, ptr {arr_tmp}, i64 0",
+                    dest.0
+                ));
+            }
+            return Ok(());
+        }
+
+        // Build up with insertvalue (fixed-size local aggregate).
         for (i, elem) in elems.iter().enumerate() {
             let elem_val = self.operand_to_llvm(elem, func);
             let elem_ty = self.operand_type(elem, func);
@@ -3199,20 +3421,29 @@ impl LlvmCodegen {
     ) -> Result<(), CodegenError> {
         match term {
             Terminator::Return(None) => {
-                let ret_ty = self.sig_ty_to_llvm(&func.ret_ty);
-                if ret_ty == "void" {
+                if self.aggregate_llvm_ty(&func.ret_ty).is_some() {
+                    // sret return — nothing to store, just exit.
                     self.emit_line("  ret void");
                 } else {
-                    // Non-void function with bare return (e.g. cleanup block).
-                    // Emit a zero-value return to keep LLVM IR valid.
-                    let zero = default_value_for_type(&ret_ty);
-                    self.emit_line(&format!("  ret {ret_ty} {zero}"));
+                    let ret_ty = self.sig_ty_to_llvm(&func.ret_ty);
+                    if ret_ty == "void" {
+                        self.emit_line("  ret void");
+                    } else {
+                        let zero = default_value_for_type(&ret_ty);
+                        self.emit_line(&format!("  ret {ret_ty} {zero}"));
+                    }
                 }
             }
             Terminator::Return(Some(op)) => {
-                let ty = self.operand_type(op, func);
-                let val = self.operand_to_llvm(op, func);
-                self.emit_line(&format!("  ret {ty} {val}"));
+                if let Some(agg) = self.aggregate_llvm_ty(&func.ret_ty) {
+                    let val = self.operand_to_llvm(op, func);
+                    self.emit_line(&format!("  store {agg} {val}, ptr %_sret"));
+                    self.emit_line("  ret void");
+                } else {
+                    let ty = self.operand_type(op, func);
+                    let val = self.operand_to_llvm(op, func);
+                    self.emit_line(&format!("  ret {ty} {val}"));
+                }
             }
             Terminator::Goto(target) => {
                 self.emit_line(&format!("  br label %bb{}", target.0));
@@ -3240,10 +3471,19 @@ impl LlvmCodegen {
                     .map(|(v, b)| format!("    {ty} {v}, label %bb{}", b.0))
                     .collect::<Vec<_>>()
                     .join("\n");
+                // Kryos matches are exhaustive: the MIR-supplied default is the
+                // merge/exit block, not an actual fall-through. Route the LLVM
+                // switch default through an `unreachable` shim so SSA values
+                // defined in arm blocks still dominate their uses in the merge.
+                let unreach_id = self.temp_counter;
+                self.temp_counter += 1;
+                let unreach_label = format!("switch_default_{unreach_id}");
                 self.emit_line(&format!(
-                    "  switch {ty} {val}, label %bb{} [\n{cases}\n  ]",
-                    default.0
+                    "  switch {ty} {val}, label %{unreach_label} [\n{cases}\n  ]"
                 ));
+                self.emit_line(&format!("{unreach_label}:"));
+                self.emit_line("  unreachable");
+                let _ = default;
             }
             Terminator::Unreachable => {
                 self.emit_line("  unreachable");
@@ -3826,12 +4066,10 @@ pub fn mir_type_to_llvm(ty: &MirType) -> String {
         // Opaque pointers since LLVM 15+.
         MirType::Ptr(_) | MirType::Ref { .. } => "ptr".into(),
         MirType::Shared(_) => "ptr".into(),
-        MirType::Array(elem, Some(n)) => {
-            let inner = mir_type_to_llvm(elem);
-            format!("[{n} x {inner}]")
-        }
-        MirType::Array(_elem, None) => {
-            // Unsized array — represent as a pointer.
+        MirType::Array(_, _) => {
+            // All arrays are heap-allocated runtime objects (KryosArray*).
+            // Sized arrays `[T; N]` lower to the same ptr as `[T]`; the size
+            // hint is preserved only at the MIR/type-check level.
             "ptr".into()
         }
         MirType::Tuple(elems) => {
