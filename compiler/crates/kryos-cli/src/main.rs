@@ -129,6 +129,20 @@ enum Commands {
     /// Start the language server (LSP)
     Lsp,
 
+    /// Show a long-form explanation for an error code (like `rustc --explain`).
+    ///
+    /// Pass an error code (e.g. `E0100`) to read its article, or `--list`
+    /// to see every code that has an explanation.
+    Explain {
+        /// Error code (e.g. E0100). Omit to list every code with an explanation.
+        #[arg(default_value = "list")]
+        code: String,
+
+        /// List all error codes that have a long-form explanation.
+        #[arg(long, short)]
+        list: bool,
+    },
+
     /// Print detailed version and build information
     Version,
 }
@@ -238,6 +252,14 @@ fn main() {
         },
 
         Commands::Lsp => commands::lsp::execute(),
+
+        Commands::Explain { code, list } => {
+            if list {
+                commands::explain::execute("list")
+            } else {
+                commands::explain::execute(&code)
+            }
+        }
 
         Commands::Version => {
             commands::version::execute();

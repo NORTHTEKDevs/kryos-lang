@@ -1,6 +1,7 @@
 //! Kryos diagnostic engine — errors, warnings, source spans.
 
 pub mod codes;
+pub mod explain;
 
 /// Source location span: file_id, start byte offset, end byte offset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

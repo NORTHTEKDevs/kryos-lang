@@ -4,6 +4,7 @@ pub mod bindgen;
 pub mod build;
 pub mod check;
 pub mod doc;
+pub mod explain;
 pub mod fmt;
 pub mod lsp;
 pub mod pkg;
