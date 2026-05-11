@@ -1569,7 +1569,7 @@ pub fn translate_function<M: Module>(
     }
 
     // Emit trace_enter at the start of the function for stack trace support.
-    emit_trace_enter(&mir_func.name, builder, &mut translator, module)?;
+    emit_trace_enter(mir_func, builder, &mut translator, module)?;
 
     // Translate the entry block's instructions (we already switched to it).
     translate_block_body(&mir_func.blocks[0], builder, &mut translator, module)?;
@@ -4532,11 +4532,12 @@ fn ensure_func_ref_void<M: Module>(
 /// emits the call instruction. The `string_counter` is used to generate
 /// unique data section names.
 fn emit_trace_enter<M: Module>(
-    func_name: &str,
+    mir_func: &MirFunction,
     builder: &mut FunctionBuilder,
     translator: &mut FuncTranslator,
     module: &mut M,
 ) -> Result<(), CodegenError> {
+    let func_name = &mir_func.name;
     // Create a data section for the function name.
     let name_data_name = format!(".trace_name.{}", translator.string_counter);
     *translator.string_counter += 1;
@@ -4559,8 +4560,9 @@ fn emit_trace_enter<M: Module>(
     let name_ptr = builder.ins().global_value(types::I64, name_gv);
     let name_len_val = builder.ins().iconst(types::I64, name_len as i64);
 
-    // For file name, use a placeholder since MirFunction doesn't carry source file info.
-    let file_str = "<unknown>";
+    // Use source_file from MIR if present — the driver populates this from
+    // the AST span before codegen runs.
+    let file_str: &str = mir_func.source_file.as_deref().unwrap_or("<unknown>");
     let file_data_name = format!(".trace_file.{}", translator.string_counter);
     *translator.string_counter += 1;
 
@@ -4582,8 +4584,10 @@ fn emit_trace_enter<M: Module>(
     let file_ptr = builder.ins().global_value(types::I64, file_gv);
     let file_len_val = builder.ins().iconst(types::I64, file_len as i64);
 
-    // Line number: 0 for now (MirFunction doesn't have line info).
-    let line_val = builder.ins().iconst(types::I64, 0);
+    // Line number comes from the MIR function (driver populates from AST span).
+    let line_val = builder
+        .ins()
+        .iconst(types::I64, mir_func.source_line as i64);
 
     // Call kryos_trace_enter(name_ptr, name_len, file_ptr, file_len, line).
     let trace_enter_ref =

@@ -357,6 +357,8 @@ mod tests {
                     }],
                     locals: vec![make_local(0), make_local(1)],
                     attributes: pure_attrs(),
+                    source_file: None,
+                    source_line: 0,
                 },
                 // fn main() -> i64 {
                 //   _0 = double(5)
@@ -398,6 +400,8 @@ mod tests {
                     }],
                     locals: vec![make_local(0), make_local(1), make_local(2)],
                     attributes: MirAttributes::default(),
+                    source_file: None,
+                    source_line: 0,
                 },
             ],
             struct_defs: Default::default(),
@@ -504,6 +508,8 @@ mod tests {
                     }],
                     locals: vec![],
                     attributes: pure_attrs(),
+                    source_file: None,
+                    source_line: 0,
                 },
                 // fn main() { _0 = pure_fn(); return; }
                 // _0 is never used — should be removed.
@@ -524,6 +530,8 @@ mod tests {
                     }],
                     locals: vec![make_local(0)],
                     attributes: MirAttributes::default(),
+                    source_file: None,
+                    source_line: 0,
                 },
             ],
             struct_defs: Default::default(),
@@ -554,7 +562,9 @@ mod tests {
                         terminator: Terminator::Return(Some(Operand::Constant(Constant::Int(42)))),
                     }],
                     locals: vec![],
-                    attributes: MirAttributes::default(), // NOT pure
+                    attributes: MirAttributes::default(), // NOT pure,
+                    source_file: None,
+                    source_line: 0,
                 },
                 MirFunction {
                     name: "main".into(),
@@ -573,6 +583,8 @@ mod tests {
                     }],
                     locals: vec![make_local(0)],
                     attributes: MirAttributes::default(),
+                    source_file: None,
+                    source_line: 0,
                 },
             ],
             struct_defs: Default::default(),

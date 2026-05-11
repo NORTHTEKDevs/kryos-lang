@@ -1167,6 +1167,8 @@ pub fn lower_function(
         blocks: ctx.blocks.clone(),
         locals: ctx.locals.clone(),
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     }
 }
 
@@ -5273,6 +5275,8 @@ fn generate_actor_dispatch(actor_name: &str, handlers: &[(String, usize)]) -> Mi
         blocks,
         locals,
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     }
 }
 

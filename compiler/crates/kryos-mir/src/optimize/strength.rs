@@ -198,6 +198,8 @@ mod tests {
                     mutable: false,
                 }],
                 attributes: MirAttributes::default(),
+                source_file: None,
+                source_line: 0,
             }],
             struct_defs: Default::default(),
             enum_defs: Default::default(),

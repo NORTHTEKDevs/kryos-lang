@@ -328,6 +328,73 @@ fn compile_module_impl(
 
     // 9. MIR lowering
     let mut mir = kryos_mir::lower_module(&module);
+
+    // 9a. Populate source_file / source_line on each MIR function from AST spans.
+    //     This is what drives accurate panic traces ("file.kry:42" instead of
+    //     "<unknown>:0") at runtime.
+    {
+        // Look up the file from the source map. We assume file_id 0 (the
+        // primary file) for single-file compilation.
+        let (file_name_str, primary_file_id): (String, u32) = source_map
+            .get_file(0)
+            .map(|f| (f.name.clone(), 0u32))
+            .unwrap_or_else(|| (String::new(), 0));
+        // Build name -> start-offset map from top-level AST decls.
+        let mut span_map: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
+        fn collect_decl_spans(
+            decls: &[kryos_ast::decl::Decl],
+            out: &mut std::collections::HashMap<String, u32>,
+        ) {
+            for decl in decls {
+                match decl {
+                    kryos_ast::decl::Decl::Function { name, span, .. } => {
+                        out.entry(name.clone()).or_insert(span.start);
+                    }
+                    kryos_ast::decl::Decl::Impl {
+                        target, methods, ..
+                    } => {
+                        for m in methods {
+                            if let kryos_ast::decl::Decl::Function { name, span, .. } = m {
+                                // Mirror name mangling used by lowering: `Target::method`.
+                                let mangled = format!("{}::{}", target, name);
+                                out.entry(mangled).or_insert(span.start);
+                                out.entry(name.clone()).or_insert(span.start);
+                            }
+                        }
+                    }
+                    kryos_ast::decl::Decl::Trait { methods, .. } => {
+                        collect_decl_spans(methods, out);
+                    }
+                    kryos_ast::decl::Decl::Extern { items, .. } => {
+                        collect_decl_spans(items, out);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        collect_decl_spans(&module.declarations, &mut span_map);
+
+        for f in &mut mir.functions {
+            f.source_file = Some(file_name_str.clone());
+            // Try exact name first, then strip generic mangling suffix (`<T>` etc).
+            let line = span_map
+                .get(&f.name)
+                .or_else(|| {
+                    f.name
+                        .find('<')
+                        .and_then(|p| span_map.get(&f.name[..p]))
+                })
+                .or_else(|| {
+                    // Try stripping `_kryos_<n>` mono suffix (generic instantiation).
+                    f.name.rfind("__").and_then(|p| span_map.get(&f.name[..p]))
+                })
+                .map(|&offset| source_map.offset_to_line_col(primary_file_id, offset).0)
+                .unwrap_or(0);
+            f.source_line = line;
+        }
+    }
+
     drop(module); // AST no longer needed — free 0.5-1GB before codegen
 
     // 9b. Comptime evaluation: fold constant expressions in comptime blocks.

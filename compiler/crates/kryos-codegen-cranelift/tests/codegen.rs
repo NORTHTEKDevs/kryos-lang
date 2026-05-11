@@ -24,6 +24,8 @@ fn make_function(
         blocks,
         locals,
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     }
 }
 

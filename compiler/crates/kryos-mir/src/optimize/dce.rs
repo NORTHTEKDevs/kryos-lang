@@ -374,6 +374,8 @@ mod tests {
             ],
             locals: vec![],
             attributes: MirAttributes::default(),
+            source_file: None,
+            source_line: 0,
         };
 
         remove_unreachable_blocks(&mut func);
@@ -403,6 +405,8 @@ mod tests {
             ],
             locals: vec![],
             attributes: MirAttributes::default(),
+            source_file: None,
+            source_line: 0,
         };
 
         remove_unreachable_blocks(&mut func);
@@ -427,6 +431,8 @@ mod tests {
             }],
             locals: vec![make_local(0)],
             attributes: MirAttributes::default(),
+            source_file: None,
+            source_line: 0,
         };
 
         remove_dead_assignments(&mut func);
@@ -451,6 +457,8 @@ mod tests {
             }],
             locals: vec![make_local(0)],
             attributes: MirAttributes::default(),
+            source_file: None,
+            source_line: 0,
         };
 
         remove_dead_assignments(&mut func);
@@ -478,6 +486,8 @@ mod tests {
             }],
             locals: vec![make_local(0)],
             attributes: MirAttributes::default(),
+            source_file: None,
+            source_line: 0,
         };
 
         remove_dead_assignments(&mut func);
@@ -500,6 +510,8 @@ mod tests {
                 }],
                 locals: vec![],
                 attributes: MirAttributes::default(),
+                source_file: None,
+                source_line: 0,
             }],
             struct_defs: Default::default(),
             enum_defs: Default::default(),
@@ -547,6 +559,8 @@ mod tests {
             ],
             locals: vec![],
             attributes: MirAttributes::default(),
+            source_file: None,
+            source_line: 0,
         };
 
         remove_unreachable_blocks(&mut func);

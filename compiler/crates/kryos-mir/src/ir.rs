@@ -228,6 +228,11 @@ pub struct MirFunction {
     pub locals: Vec<MirLocal>,
     /// Source-level attributes preserved for optimization and tooling passes.
     pub attributes: MirAttributes,
+    /// Source file path (populated by the driver after lowering). Used for
+    /// runtime trace frames and panic messages.
+    pub source_file: Option<String>,
+    /// 1-based line number where this function was declared (0 if unknown).
+    pub source_line: u32,
 }
 
 /// A formal parameter — refers to a local slot.

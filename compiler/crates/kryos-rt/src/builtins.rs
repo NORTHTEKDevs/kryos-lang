@@ -850,8 +850,8 @@ pub extern "C" fn kryos_arc_set_drop_i64(ptr: i64, drop_fn: i64) {
 #[no_mangle]
 pub extern "C" fn kryos_check_div_zero_i64(divisor: i64) {
     if divisor == 0 {
-        eprintln!("kryos panic: integer division by zero");
-        std::process::abort();
+        let msg = b"integer division by zero";
+        crate::panic::kryos_panic(msg.as_ptr(), msg.len());
     }
 }
 

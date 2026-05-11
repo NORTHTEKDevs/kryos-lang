@@ -67,6 +67,8 @@ fn make_add_function() -> MirFunction {
             terminator: Terminator::Return(Some(Operand::Local(LocalId(2)))),
         }],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     }
 }
 
@@ -155,6 +157,8 @@ fn test_emit_branch() {
             },
         ],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     };
 
     let module = module_with(func);
@@ -182,6 +186,8 @@ fn test_emit_return_void() {
             terminator: Terminator::Return(None),
         }],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     };
 
     let module = module_with(func);
@@ -212,6 +218,8 @@ fn test_emit_return_value() {
             terminator: Terminator::Return(Some(Operand::Local(LocalId(0)))),
         }],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     };
 
     let module = module_with(func);
@@ -248,6 +256,8 @@ fn test_arc_declarations_present_when_used() {
             terminator: Terminator::Return(None),
         }],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     };
 
     let module = module_with(func);
@@ -297,6 +307,8 @@ fn test_string_constants_emitted_as_globals() {
             terminator: Terminator::Return(Some(Operand::Local(LocalId(0)))),
         }],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     };
 
     let module = module_with(func);
@@ -511,6 +523,8 @@ fn test_float_operations() {
             terminator: Terminator::Return(Some(Operand::Local(LocalId(2)))),
         }],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     };
 
     let module = module_with(func);
@@ -567,6 +581,8 @@ fn test_comparison_operations() {
             terminator: Terminator::Return(Some(Operand::Local(LocalId(2)))),
         }],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     };
 
     let module = module_with(func);
@@ -621,6 +637,8 @@ fn test_switch_terminator() {
             },
         ],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     };
 
     let module = module_with(func);
@@ -653,6 +671,8 @@ fn test_goto_terminator() {
             },
         ],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     };
 
     let module = module_with(func);
@@ -674,6 +694,8 @@ fn test_unreachable_terminator() {
             terminator: Terminator::Unreachable,
         }],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     };
 
     let module = module_with(func);
@@ -709,6 +731,8 @@ fn test_function_call() {
             terminator: Terminator::Return(Some(Operand::Local(LocalId(0)))),
         }],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     };
 
     let module = module_with(func);
@@ -775,6 +799,8 @@ fn test_multiple_functions() {
             terminator: Terminator::Return(Some(Operand::Local(LocalId(2)))),
         }],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     };
 
     let module = MirModule {
@@ -826,6 +852,8 @@ fn test_unary_neg() {
             terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
         }],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     };
 
     let module = module_with(func);
@@ -855,6 +883,8 @@ fn test_const_bool() {
             terminator: Terminator::Return(Some(Operand::Local(LocalId(0)))),
         }],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     };
 
     let module = module_with(func);
@@ -885,6 +915,8 @@ fn test_drop_is_noop() {
             terminator: Terminator::Return(None),
         }],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     };
 
     let module = module_with(func);
@@ -907,6 +939,8 @@ fn test_nop_instruction() {
             terminator: Terminator::Return(None),
         }],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     };
 
     let module = module_with(func);
@@ -951,6 +985,8 @@ fn test_cast_int_to_float() {
             terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
         }],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     };
 
     let module = module_with(func);
@@ -1050,6 +1086,8 @@ fn test_mutable_variable_in_loop() {
                 },
             ],
             attributes: MirAttributes::default(),
+            source_file: None,
+            source_line: 0,
         }],
         struct_defs: HashMap::new(),
         enum_defs: HashMap::new(),
@@ -1092,6 +1130,8 @@ fn test_immutable_variable_no_alloca() {
             terminator: Terminator::Return(Some(Operand::Local(LocalId(0)))),
         }],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     };
 
     let module = module_with(func);
@@ -1157,6 +1197,8 @@ fn test_struct_field_access_correct_index() {
                 terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
             }],
             attributes: MirAttributes::default(),
+            source_file: None,
+            source_line: 0,
         }],
         struct_defs,
         enum_defs: HashMap::new(),
@@ -1217,6 +1259,8 @@ fn test_struct_field_access_first_field() {
                 terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
             }],
             attributes: MirAttributes::default(),
+            source_file: None,
+            source_line: 0,
         }],
         struct_defs,
         enum_defs: HashMap::new(),
@@ -1259,6 +1303,8 @@ fn test_eprintln_uses_stderr() {
             terminator: Terminator::Return(None),
         }],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     });
 
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
@@ -1318,6 +1364,8 @@ fn test_len_builtin_returns_zero() {
             terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
         }],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     });
 
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
@@ -1368,6 +1416,8 @@ fn test_to_string_builtin_returns_input() {
             terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
         }],
         attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
     });
 
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
@@ -1434,6 +1484,8 @@ fn test_enum_unit_variant() {
                 terminator: Terminator::Return(Some(Operand::Local(LocalId(0)))),
             }],
             attributes: MirAttributes::default(),
+            source_file: None,
+            source_line: 0,
         }],
         struct_defs: HashMap::new(),
         enum_defs,
@@ -1499,6 +1551,8 @@ fn test_enum_variant_with_fields() {
                 terminator: Terminator::Return(Some(Operand::Local(LocalId(0)))),
             }],
             attributes: MirAttributes::default(),
+            source_file: None,
+            source_line: 0,
         }],
         struct_defs: HashMap::new(),
         enum_defs,
@@ -1567,6 +1621,8 @@ fn test_enum_tag_extraction() {
                 terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
             }],
             attributes: MirAttributes::default(),
+            source_file: None,
+            source_line: 0,
         }],
         struct_defs: HashMap::new(),
         enum_defs,
@@ -1638,6 +1694,8 @@ fn test_enum_payload_extraction() {
                 terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
             }],
             attributes: MirAttributes::default(),
+            source_file: None,
+            source_line: 0,
         }],
         struct_defs: HashMap::new(),
         enum_defs,

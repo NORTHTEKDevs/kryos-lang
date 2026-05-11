@@ -474,6 +474,8 @@ mod tests {
                         make_local(1, "_tmp", MirType::I64),
                     ],
                     attributes: MirAttributes::default(),
+                    source_file: None,
+                    source_line: 0,
                 },
                 // fn main() -> i64 { return add_one(41) }
                 MirFunction {
@@ -493,6 +495,8 @@ mod tests {
                     }],
                     locals: vec![make_local(0, "result", MirType::I64)],
                     attributes: MirAttributes::default(),
+                    source_file: None,
+                    source_line: 0,
                 },
             ],
             struct_defs: Default::default(),
@@ -551,6 +555,8 @@ mod tests {
                 }],
                 locals: vec![make_local(0, "r", MirType::I64)],
                 attributes: MirAttributes::default(),
+                source_file: None,
+                source_line: 0,
             }],
             struct_defs: Default::default(),
             enum_defs: Default::default(),
