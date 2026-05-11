@@ -1,0 +1,202 @@
+// ============================================================
+// Kryos Showcase: HTTP Web Server
+//
+// A minimal HTTP/1.0 server demonstrating that Kryos can serve
+// real network traffic. Uses the TCP builtins (tcp_listen,
+// tcp_accept, tcp_recv, tcp_send, tcp_close) and a simple
+// request/response cycle.
+//
+// Routes:
+//   GET /            -> a friendly HTML index page
+//   GET /hello       -> plain text greeting
+//   GET /json        -> a tiny JSON document
+//   GET /count       -> hit counter (incremented per request)
+//   *                -> 404 Not Found
+//
+// By default it binds 127.0.0.1:8080 and serves a fixed number
+// of requests before exiting cleanly (so it terminates in CI).
+// Pass `forever` as a CLI arg to run indefinitely:
+//     kryos run web_server.kry forever
+//
+// run-expect: serving 3 requests on 127.0.0.1:8080
+// ============================================================
+
+let MAX_REQUESTS_DEFAULT: i64 = 3
+let RECV_BUF: i64 = 8192
+
+// ---- Tiny string helpers ------------------------------------
+
+// Extract the request target (URI path) from a raw HTTP/1.x
+// request. Returns "/" if anything fails to parse.
+fn parse_path(request: str) -> str {
+    let n = len(request)
+    let mut i = 0
+    // Skip method (e.g. "GET ").
+    while i < n {
+        let ch = substr(request, i, i + 1)
+        if ch == " " {
+            i = i + 1
+            // Now read until next space.
+            let start = i
+            while i < n {
+                let c2 = substr(request, i, i + 1)
+                if c2 == " " or c2 == "\r" or c2 == "\n" {
+                    return substr(request, start, i)
+                }
+                i = i + 1
+            }
+            return substr(request, start, i)
+        }
+        i = i + 1
+    }
+    return "/"
+}
+
+// Compose a minimal HTTP/1.0 response. `body` may be any string.
+fn build_response(status_line: str, content_type: str, body: str) -> str {
+    let len_str = to_string(len(body))
+    return status_line + "\r\n"
+        + "Content-Type: " + content_type + "\r\n"
+        + "Content-Length: " + len_str + "\r\n"
+        + "Connection: close\r\n"
+        + "Server: kryos-showcase/0.4\r\n"
+        + "\r\n"
+        + body
+}
+
+// ---- Route handlers -----------------------------------------
+
+fn page_index(_request: str) -> str {
+    let body = "<!doctype html>\n"
+        + "<html><head><title>Kryos web server</title></head>\n"
+        + "<body><h1>Hello from Kryos!</h1>\n"
+        + "<p>This page is served by a Kryos program — see\n"
+        + "<code>examples/showcase/web_server.kry</code>.</p>\n"
+        + "<ul>\n"
+        + "  <li><a href=\"/hello\">/hello</a> — plain text</li>\n"
+        + "  <li><a href=\"/json\">/json</a> — JSON document</li>\n"
+        + "  <li><a href=\"/count\">/count</a> — hit counter</li>\n"
+        + "</ul></body></html>\n"
+    return build_response("HTTP/1.0 200 OK", "text/html; charset=utf-8", body)
+}
+
+fn page_hello(_request: str) -> str {
+    return build_response(
+        "HTTP/1.0 200 OK",
+        "text/plain; charset=utf-8",
+        "hello from kryos\n",
+    )
+}
+
+fn page_json(_request: str) -> str {
+    // JSON literal assembled via char_from() — `{` would otherwise be
+    // interpreted as the start of a string-interpolation expression in
+    // Kryos's string literals.
+    let lbrace = char_from(123)
+    let rbrace = char_from(125)
+    let body = lbrace
+        + "\"server\":\"kryos-showcase\","
+        + "\"version\":\"0.4\","
+        + "\"ok\":true"
+        + rbrace + "\n"
+    return build_response("HTTP/1.0 200 OK", "application/json", body)
+}
+
+fn page_count(count: i64) -> str {
+    let body = "request #" + to_string(count) + "\n"
+    return build_response(
+        "HTTP/1.0 200 OK",
+        "text/plain; charset=utf-8",
+        body,
+    )
+}
+
+fn page_not_found(path: str) -> str {
+    let body = "404 Not Found: " + path + "\n"
+    return build_response(
+        "HTTP/1.0 404 Not Found",
+        "text/plain; charset=utf-8",
+        body,
+    )
+}
+
+// Dispatch a request line to a handler. `count` is the running
+// hit counter (used by /count).
+fn route(request: str, count: i64) -> str {
+    let path = parse_path(request)
+    if path == "/"             { return page_index(request) }
+    if path == "/hello"        { return page_hello(request) }
+    if path == "/json"         { return page_json(request) }
+    if path == "/count"        { return page_count(count) }
+    return page_not_found(path)
+}
+
+// ---- Connection handler -------------------------------------
+
+// Service exactly one client connection: read up to RECV_BUF
+// bytes, build a response, write it, close.
+fn handle_one(client_fd: i64, count: i64) {
+    let raw = tcp_recv(client_fd, RECV_BUF)
+    if len(raw) == 0 {
+        tcp_close(client_fd)
+        return
+    }
+    let response = route(raw, count)
+    let _ = tcp_send(client_fd, response)
+    tcp_close(client_fd)
+}
+
+// ---- Main ---------------------------------------------------
+
+fn main() {
+    let argv = args()
+    let mut max_requests = MAX_REQUESTS_DEFAULT
+    let mut forever = false
+    let argc = len(argv)
+    let mut i = 1
+    while i < argc {
+        let a = argv[i]
+        if a == "forever" {
+            forever = true
+        } elif a == "--max" {
+            // Next arg is the count.
+            i = i + 1
+            if i < argc {
+                max_requests = parse_int(argv[i])
+            }
+        }
+        i = i + 1
+    }
+
+    let listen_fd = tcp_listen("127.0.0.1", 8080)
+    if listen_fd < 0 {
+        eprintln("tcp_listen failed (is port 8080 already in use?)")
+        exit(1)
+    }
+
+    if forever {
+        println("serving forever on 127.0.0.1:8080 (Ctrl-C to stop)")
+    } else {
+        println("serving " + to_string(max_requests) + " requests on 127.0.0.1:8080")
+    }
+
+    let mut served = 0
+    let mut running = true
+    while running {
+        let client_fd = tcp_accept(listen_fd)
+        if client_fd < 0 {
+            eprintln("tcp_accept failed; stopping")
+            running = false
+        } else {
+            served = served + 1
+            handle_one(client_fd, served)
+            println("[req " + to_string(served) + "] handled")
+            if not forever and served >= max_requests {
+                running = false
+            }
+        }
+    }
+
+    tcp_close(listen_fd)
+    println("server stopped after " + to_string(served) + " request(s)")
+}

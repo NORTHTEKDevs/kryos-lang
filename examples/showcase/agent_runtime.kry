@@ -1,0 +1,198 @@
+// ============================================================
+// Kryos Showcase: LLM-Style Agent Runtime
+//
+// A deterministic, self-contained agent loop that mirrors the
+// shape of a real LLM tool-use harness — without external API
+// calls, so the showcase runs in CI.
+//
+// What it demonstrates:
+//   * A tool registry (name → handler dispatch)
+//   * A message log (user / assistant / tool) maintained as
+//     parallel string arrays — flat and easy to reason about
+//   * The classic plan → tool-call → observe → respond cycle
+//   * Bounded budgets and a graceful stop condition
+//
+// The "LLM" is a tiny rule-based planner that inspects the user
+// query and emits either a tool call or a final answer. Replacing
+// it with a real model is a one-function swap: rewrite
+// `plan_next(...)`.
+//
+// run-expect: assistant: 36
+// ============================================================
+
+// ---- Tool implementations ------------------------------------
+
+fn tool_echo(s: str, _n: i64) -> str {
+    return "echo: " + s
+}
+
+fn tool_calc(s: str, n: i64) -> str {
+    if s == "square" {
+        return to_string(n * n)
+    }
+    if s == "double" {
+        return to_string(n + n)
+    }
+    if s == "triangular" {
+        return to_string(n * (n + 1) / 2)
+    }
+    return "calc: unknown op"
+}
+
+fn tool_sysinfo(_s: str, _n: i64) -> str {
+    return "kryos-agent v0.4 / sandboxed / clock=" + to_string(time_now())
+}
+
+fn dispatch_tool(name: str, s: str, n: i64) -> str {
+    if name == "echo"    { return tool_echo(s, n) }
+    if name == "calc"    { return tool_calc(s, n) }
+    if name == "sysinfo" { return tool_sysinfo(s, n) }
+    return "error: unknown tool"
+}
+
+// ---- Planner (rule-based stand-in for an LLM) ---------------
+//
+// Returns the next action encoded as a tuple of out-parameters
+// — passed as single-element arrays so this function can mutate
+// them. Returns the action kind directly: 1 = call tool, 2 = final.
+//
+// Using arrays-as-out-params avoids returning a struct-with-strings,
+// which the v0.4 ownership model does not yet handle losslessly
+// across function boundaries (tracked separately).
+fn plan_next(
+    user_query: str,
+    has_observation: bool,
+    observation: str,
+    out_tool_name: [str],
+    out_tool_s: [str],
+    out_tool_i: [i64],
+    out_final: [str],
+) -> i64 {
+    if has_observation {
+        out_final[0] = observation
+        return 2
+    }
+    if contains(user_query, "square of 6") {
+        out_tool_name[0] = "calc"
+        out_tool_s[0] = "square"
+        out_tool_i[0] = 6
+        return 1
+    }
+    if contains(user_query, "21 doubled") {
+        out_tool_name[0] = "calc"
+        out_tool_s[0] = "double"
+        out_tool_i[0] = 21
+        return 1
+    }
+    if contains(user_query, "triangular") {
+        out_tool_name[0] = "calc"
+        out_tool_s[0] = "triangular"
+        out_tool_i[0] = 7
+        return 1
+    }
+    if contains(user_query, "system info") {
+        out_tool_name[0] = "sysinfo"
+        out_tool_s[0] = ""
+        out_tool_i[0] = 0
+        return 1
+    }
+    if contains(user_query, "echo ") {
+        out_tool_name[0] = "echo"
+        out_tool_s[0] = replace(user_query, "echo ", "")
+        out_tool_i[0] = 0
+        return 1
+    }
+    out_final[0] = "I don't know how to handle that query."
+    return 2
+}
+
+// ---- The agent loop -----------------------------------------
+//
+// Runs at most `max_steps` planner iterations. Returns the final
+// assistant message, or a budget-exceeded notice. The history is
+// flattened into two parallel arrays of (role, content) so we
+// never carry strings across struct boundaries.
+fn run_agent(initial_query: str, max_steps: i64) -> str {
+    let mut roles: [str] = []
+    let mut contents: [str] = []
+    push(roles, "user")
+    push(contents, initial_query)
+
+    let mut step = 0
+    while step < max_steps {
+        // Find latest user query and the latest tool observation, if any.
+        let n = len(roles)
+        let mut last_user = ""
+        let mut last_obs = ""
+        let mut has_obs = false
+        let mut k = 0
+        while k < n {
+            if roles[k] == "user" {
+                last_user = contents[k]
+            }
+            if roles[k] == "tool" {
+                has_obs = true
+                last_obs = contents[k]
+            }
+            k = k + 1
+        }
+
+        // Out-parameter boxes.
+        let mut tool_name: [str] = [""]
+        let mut tool_s: [str] = [""]
+        let mut tool_i: [i64] = [0]
+        let mut final_ans: [str] = [""]
+
+        let kind = plan_next(
+            last_user,
+            has_obs,
+            last_obs,
+            tool_name,
+            tool_s,
+            tool_i,
+            final_ans,
+        )
+
+        if kind == 2 {
+            let answer = final_ans[0]
+            push(roles, "assistant")
+            push(contents, answer)
+            return answer
+        }
+
+        // kind == 1 → tool call
+        let name = tool_name[0]
+        let s    = tool_s[0]
+        let i    = tool_i[0]
+        println("  [tool] " + name + "(" + s + ", " + to_string(i) + ")")
+        let observation = dispatch_tool(name, s, i)
+        push(roles, "tool")
+        push(contents, observation)
+        step = step + 1
+    }
+    return "(agent exceeded its step budget)"
+}
+
+// ---- Demo driver --------------------------------------------
+
+fn demo(query: str) {
+    println("user:      " + query)
+    let answer = run_agent(query, 8)
+    println("assistant: " + answer)
+    println("")
+}
+
+fn main() {
+    println("=== Kryos Showcase: Agent Runtime ===")
+    println("(deterministic rule-based 'LLM' — swap plan_next() for a real model)")
+    println("")
+
+    demo("what is the square of 6")          // 36
+    demo("what is 21 doubled")                 // 42
+    demo("give me the 7th triangular number")  // 28
+    demo("system info please")
+    demo("echo hello kryos")
+    demo("tell me a story")
+
+    println("=== Done ===")
+}

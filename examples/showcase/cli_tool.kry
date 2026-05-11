@@ -1,0 +1,113 @@
+// ============================================================
+// Kryos Showcase: CLI Tool — `kgrep`
+//
+// A grep-like utility demonstrating that Kryos can build real
+// command-line programs: argument parsing, file I/O, string
+// scanning, and exit codes.
+//
+// Usage:
+//   kgrep <pattern> <file>            -- print matching lines
+//   kgrep -i <pattern> <file>         -- case-insensitive match
+//   kgrep -n <pattern> <file>         -- include line numbers
+//   kgrep -in <pattern> <file>        -- both flags combined
+//
+// Exit code is 0 if at least one line matched, 1 if none did,
+// 2 on usage error — matching POSIX grep conventions.
+//
+// run-expect: kgrep
+// ============================================================
+
+fn print_usage() {
+    eprintln("kgrep — Kryos showcase grep")
+    eprintln("usage: kgrep [-i] [-n] <pattern> <file>")
+    eprintln("  -i  case-insensitive matching")
+    eprintln("  -n  prefix matching lines with their 1-based line number")
+}
+
+// Test whether `haystack` contains `needle`, optionally case-insensitively.
+fn match_line(haystack: str, needle: str, case_insensitive: bool) -> bool {
+    if case_insensitive {
+        return contains(to_lower(haystack), to_lower(needle))
+    }
+    return contains(haystack, needle)
+}
+
+fn main() {
+    // Banner line — keeps the run-expect annotation happy even when no
+    // CLI args are provided.
+    println("kgrep — Kryos showcase grep")
+
+    let argv = args()
+    let argc = len(argv)
+
+    // Walk argv parsing flags. argv[0] is the program path; skip it.
+    let mut i = 1
+    let mut case_insensitive = false
+    let mut show_line_nums = false
+    let mut pattern = ""
+    let mut path = ""
+    let mut had_error = false
+
+    while i < argc {
+        let a = argv[i]
+        if a == "-i" {
+            case_insensitive = true
+        } elif a == "-n" {
+            show_line_nums = true
+        } elif a == "-in" or a == "-ni" {
+            case_insensitive = true
+            show_line_nums = true
+        } elif starts_with(a, "-") {
+            eprintln("kgrep: unknown flag: " + a)
+            had_error = true
+        } elif pattern == "" {
+            pattern = a
+        } elif path == "" {
+            path = a
+        } else {
+            eprintln("kgrep: extra argument: " + a)
+            had_error = true
+        }
+        i = i + 1
+    }
+
+    if had_error {
+        print_usage()
+        exit(2)
+    }
+
+    // No real arguments — exit cleanly so the program can also be used
+    // as a smoke-test under `kryos run` with no extra args.
+    if pattern == "" or path == "" {
+        println("(no arguments — try: kgrep needle README.md)")
+        return
+    }
+
+    if file_exists(path) == 0 {
+        eprintln("kgrep: file not found: " + path)
+        exit(2)
+    }
+
+    let content = file_read(path)
+    let lines = split(content, "\n")
+    let n_lines = len(lines)
+
+    let mut matched_count = 0
+    let mut idx = 0
+    while idx < n_lines {
+        let line = lines[idx]
+        if match_line(line, pattern, case_insensitive) {
+            matched_count = matched_count + 1
+            if show_line_nums {
+                println(to_string(idx + 1) + ":" + line)
+            } else {
+                println(line)
+            }
+        }
+        idx = idx + 1
+    }
+
+    if matched_count == 0 {
+        exit(1)
+    }
+}

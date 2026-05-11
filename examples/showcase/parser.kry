@@ -1,0 +1,224 @@
+// ============================================================
+// Kryos Showcase: Calculator Parser
+//
+// A recursive-descent parser + evaluator for a small arithmetic
+// language. Demonstrates that Kryos can build real language
+// frontends — lexing, recursive descent, operator precedence,
+// error reporting with positions.
+//
+// Grammar (precedence low → high):
+//     expr   = term   (('+'|'-') term  )*
+//     term   = factor (('*'|'/') factor)*
+//     factor = unary
+//     unary  = ('-')? primary
+//     primary= NUMBER | '(' expr ')'
+//
+// State is kept inside a Parser struct so tokens and the cursor
+// travel together — no globals are required.
+//
+// run-expect: expr = 10
+// ============================================================
+
+// Token kinds (small integer enum-by-convention).
+//   0=EOF, 1=NUM, 2=PLUS, 3=MINUS, 4=STAR, 5=SLASH, 6=LPAREN, 7=RPAREN
+struct Parser {
+    kinds: [i64]
+    nums:  [i64]
+    poss:  [i64]
+    pos:   i64
+}
+
+fn new_parser() -> Parser {
+    return Parser { kinds: [], nums: [], poss: [], pos: 0 }
+}
+
+fn is_digit(ch: str) -> bool {
+    return ch == "0" or ch == "1" or ch == "2" or ch == "3" or ch == "4"
+        or ch == "5" or ch == "6" or ch == "7" or ch == "8" or ch == "9"
+}
+
+fn is_space(ch: str) -> bool {
+    return ch == " " or ch == "\t" or ch == "\n" or ch == "\r"
+}
+
+fn digit_value(d: str) -> i64 {
+    if d == "1" { return 1 }
+    if d == "2" { return 2 }
+    if d == "3" { return 3 }
+    if d == "4" { return 4 }
+    if d == "5" { return 5 }
+    if d == "6" { return 6 }
+    if d == "7" { return 7 }
+    if d == "8" { return 8 }
+    if d == "9" { return 9 }
+    return 0
+}
+
+fn push_token(p: Parser, kind: i64, num: i64, pos: i64) {
+    push(p.kinds, kind)
+    push(p.nums, num)
+    push(p.poss, pos)
+}
+
+// Tokenize `src` into the parser's token arrays.  Strings are walked
+// byte-by-byte with `substr` — the parser only deals with ASCII operators
+// and decimal digits.
+fn tokenize(p: Parser, src: str) {
+    let n = len(src)
+    let mut i = 0
+    while i < n {
+        let ch = substr(src, i, i + 1)
+        if is_space(ch) {
+            i = i + 1
+        } elif ch == "+" {
+            push_token(p, 2, 0, i)
+            i = i + 1
+        } elif ch == "-" {
+            push_token(p, 3, 0, i)
+            i = i + 1
+        } elif ch == "*" {
+            push_token(p, 4, 0, i)
+            i = i + 1
+        } elif ch == "/" {
+            push_token(p, 5, 0, i)
+            i = i + 1
+        } elif ch == "(" {
+            push_token(p, 6, 0, i)
+            i = i + 1
+        } elif ch == ")" {
+            push_token(p, 7, 0, i)
+            i = i + 1
+        } elif is_digit(ch) {
+            let start = i
+            let mut value = 0
+            while i < n and is_digit(substr(src, i, i + 1)) {
+                value = value * 10 + digit_value(substr(src, i, i + 1))
+                i = i + 1
+            }
+            push_token(p, 1, value, start)
+        } else {
+            throw "lex error at column " + to_string(i) + ": unexpected character '" + ch + "'"
+        }
+    }
+    push_token(p, 0, 0, n)  // EOF sentinel
+}
+
+fn peek_kind(p: Parser) -> i64 {
+    return p.kinds[p.pos]
+}
+
+fn current_pos(p: Parser) -> i64 {
+    return p.poss[p.pos]
+}
+
+fn advance(p: Parser) {
+    p.pos = p.pos + 1
+}
+
+// --- Recursive-descent parser + evaluator ---------------------
+
+fn parse_expr(p: Parser) -> i64 {
+    return parse_expr_inner(p)
+}
+
+fn parse_primary(p: Parser) -> i64 {
+    let k = peek_kind(p)
+    if k == 1 {
+        let v = p.nums[p.pos]
+        advance(p)
+        return v
+    }
+    if k == 6 {
+        advance(p)
+        let v = parse_expr_inner(p)
+        if peek_kind(p) != 7 {
+            throw "parse error at column " + to_string(current_pos(p)) + ": expected ')'"
+        }
+        advance(p)
+        return v
+    }
+    throw "parse error at column " + to_string(current_pos(p)) + ": expected number or '('"
+}
+
+fn parse_unary(p: Parser) -> i64 {
+    if peek_kind(p) == 3 {
+        advance(p)
+        return 0 - parse_primary(p)
+    }
+    return parse_primary(p)
+}
+
+fn parse_term(p: Parser) -> i64 {
+    let mut left = parse_unary(p)
+    let mut running = true
+    while running {
+        let k = peek_kind(p)
+        if k == 4 {
+            advance(p)
+            left = left * parse_unary(p)
+        } elif k == 5 {
+            advance(p)
+            let rhs = parse_unary(p)
+            if rhs == 0 {
+                throw "evaluation error: division by zero"
+            }
+            left = left / rhs
+        } else {
+            running = false
+        }
+    }
+    return left
+}
+
+fn parse_expr_inner(p: Parser) -> i64 {
+    let mut left = parse_term(p)
+    let mut running = true
+    while running {
+        let k = peek_kind(p)
+        if k == 2 {
+            advance(p)
+            left = left + parse_term(p)
+        } elif k == 3 {
+            advance(p)
+            left = left - parse_term(p)
+        } else {
+            running = false
+        }
+    }
+    return left
+}
+
+fn evaluate(src: str) -> i64 {
+    let p = new_parser()
+    tokenize(p, src)
+    let v = parse_expr(p)
+    if peek_kind(p) != 0 {
+        throw "parse error at column " + to_string(current_pos(p)) + ": trailing tokens"
+    }
+    return v
+}
+
+fn try_eval(label: str, src: str) {
+    try {
+        let v = evaluate(src)
+        println(label + " = " + to_string(v))
+    } catch e {
+        println(label + " -> ERROR: " + e)
+    }
+}
+
+fn main() {
+    println("=== Kryos Showcase: Recursive-Descent Calculator ===")
+    println("")
+    try_eval("expr",  "1 + 2 * (3 + 4) - 5")          // = 10
+    try_eval("calc",  "((1 + 2) * (3 + 4)) / 7")      // =  3
+    try_eval("neg",   "-3 * (4 - 6)")                  // =  6
+    try_eval("nest",  "((((42))))")                    // = 42
+    println("")
+    println("=== Error reporting (graceful failure) ===")
+    try_eval("badop", "1 + + 2")                       // parse error
+    try_eval("divz",  "10 / 0")                        // div by zero
+    try_eval("paren", "(1 + 2")                        // missing ')'
+    println("")
+    println("=== Done ===")
+}
