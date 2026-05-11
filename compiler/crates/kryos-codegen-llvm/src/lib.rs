@@ -130,7 +130,10 @@ pub struct LlvmBackend {
 
 impl LlvmBackend {
     pub fn new(options: EmitOptions) -> Self {
-        Self { options, inc: RefCell::new(None) }
+        Self {
+            options,
+            inc: RefCell::new(None),
+        }
     }
 }
 
@@ -261,9 +264,9 @@ impl kryos_driver::Backend for LlvmBackend {
 
         // Detect whether the user's main returns void (no return type) so we can
         // emit the C-ABI wrapper later.
-        let has_void_main = functions.iter().any(|f| {
-            f.name == "main" && f.ret_ty == kryos_mir::ir::MirType::Void
-        });
+        let has_void_main = functions
+            .iter()
+            .any(|f| f.name == "main" && f.ret_ty == kryos_mir::ir::MirType::Void);
 
         // Emit module header (target triple, datalayout, struct type defs, string globals).
         cg.emit_header_section();
@@ -318,7 +321,12 @@ impl kryos_driver::Backend for LlvmBackend {
             kryos_driver::BackendError::new("finish_module called before begin_module")
         })?;
 
-        let IncrementalState { mut cg, mut writer, ll_path, has_void_main } = state;
+        let IncrementalState {
+            mut cg,
+            mut writer,
+            ll_path,
+            has_void_main,
+        } = state;
 
         // Emit footer (closure droppers, type drop helpers, main wrapper if needed).
         cg.emit_footer_section(has_void_main);
@@ -332,13 +340,16 @@ impl kryos_driver::Backend for LlvmBackend {
         drop(writer); // close the file before clang reads it
 
         // Run clang to compile .ll -> .o
-        let clang = find_llvm_compiler().ok_or_else(|| {
-            kryos_driver::BackendError::new("could not find clang")
-        })?;
+        let clang = find_llvm_compiler()
+            .ok_or_else(|| kryos_driver::BackendError::new("could not find clang"))?;
         let obj_path = std::env::temp_dir().join("kryos_llvm_inc.o");
         let opt_flag = format!("-{}", self.options.opt_level);
         let mut cmd = std::process::Command::new(&clang);
-        cmd.arg(&opt_flag).arg("-c").arg(&ll_path).arg("-o").arg(&obj_path);
+        cmd.arg(&opt_flag)
+            .arg("-c")
+            .arg(&ll_path)
+            .arg("-o")
+            .arg(&obj_path);
         if let Some(ref triple) = self.options.target_triple {
             cmd.arg(format!("--target={triple}"));
         }

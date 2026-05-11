@@ -63,7 +63,11 @@ pub extern "C" fn kryos_str_contains(haystack: *const u8, needle: *const u8) -> 
             Ok(s) => s,
             Err(_) => return 0,
         };
-        if hay.contains(need) { 1 } else { 0 }
+        if hay.contains(need) {
+            1
+        } else {
+            0
+        }
     }
 }
 
@@ -83,7 +87,11 @@ pub extern "C" fn kryos_str_starts_with(s: *const u8, prefix: *const u8) -> i32 
             Ok(s) => s,
             Err(_) => return 0,
         };
-        if str_s.starts_with(str_prefix) { 1 } else { 0 }
+        if str_s.starts_with(str_prefix) {
+            1
+        } else {
+            0
+        }
     }
 }
 
@@ -103,7 +111,11 @@ pub extern "C" fn kryos_str_ends_with(s: *const u8, suffix: *const u8) -> i32 {
             Ok(s) => s,
             Err(_) => return 0,
         };
-        if str_s.ends_with(str_suffix) { 1 } else { 0 }
+        if str_s.ends_with(str_suffix) {
+            1
+        } else {
+            0
+        }
     }
 }
 

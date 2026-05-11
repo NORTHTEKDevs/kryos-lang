@@ -54,3 +54,17 @@ jobs:
           ./target/release/kryos run tests/smoke.kry > smoke_output.txt
           printf "30\n2\nKryos\n" > expected.txt
           diff expected.txt smoke_output.txt
+
+      - name: Example smoke tests (kryos run examples/*)
+        working-directory: compiler
+        shell: bash
+        # Run a curated set of examples end-to-end. Each example declares its
+        # expected output via `// expect-stdout:` lines; we just require a
+        # successful exit here. This is the cheapest regression gate against
+        # codegen / linker / runtime breakage.
+        run: |
+          set -e
+          for ex in hello fibonacci calculator word_count shapes; do
+            echo "== examples/$ex.kry =="
+            ./target/release/kryos run ../examples/$ex.kry > /dev/null
+          done

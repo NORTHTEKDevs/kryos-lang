@@ -120,8 +120,11 @@ impl LlvmCodegen {
                 .collect();
             self.func_param_types.insert(func.name.clone(), param_types);
             let ret_agg = self.aggregate_llvm_ty(&func.ret_ty);
-            let param_aggs: Vec<Option<String>> =
-                func.params.iter().map(|p| self.aggregate_llvm_ty(&p.ty)).collect();
+            let param_aggs: Vec<Option<String>> = func
+                .params
+                .iter()
+                .map(|p| self.aggregate_llvm_ty(&p.ty))
+                .collect();
             self.func_sig_aggs
                 .insert(func.name.clone(), (ret_agg, param_aggs));
 
@@ -230,19 +233,29 @@ impl LlvmCodegen {
 
         for func in functions {
             self.prescan_function(func);
-            let param_types: Vec<String> =
-                func.params.iter().map(|p| self.sig_ty_to_llvm(&p.ty)).collect();
+            let param_types: Vec<String> = func
+                .params
+                .iter()
+                .map(|p| self.sig_ty_to_llvm(&p.ty))
+                .collect();
             self.func_param_types.insert(func.name.clone(), param_types);
             let ret_agg = self.aggregate_llvm_ty(&func.ret_ty);
-            let param_aggs: Vec<Option<String>> =
-                func.params.iter().map(|p| self.aggregate_llvm_ty(&p.ty)).collect();
+            let param_aggs: Vec<Option<String>> = func
+                .params
+                .iter()
+                .map(|p| self.aggregate_llvm_ty(&p.ty))
+                .collect();
             self.func_sig_aggs
                 .insert(func.name.clone(), (ret_agg, param_aggs));
 
             for bb in &func.blocks {
                 for inst in &bb.instructions {
                     if let Instruction::Assign {
-                        value: RValue::Closure { func_name, captures },
+                        value:
+                            RValue::Closure {
+                                func_name,
+                                captures,
+                            },
                         ..
                     } = inst
                     {
@@ -303,7 +316,6 @@ impl LlvmCodegen {
             self.emit_main_wrapper();
         }
     }
-
 
     // -----------------------------------------------------------------------
     // Module header
@@ -1171,14 +1183,8 @@ impl LlvmCodegen {
             if let Some(agg) = self.aggregate_llvm_ty(&p.ty) {
                 if self.mutable_locals.contains(&p.local.0) {
                     let tmp = self.next_temp();
-                    self.emit_line(&format!(
-                        "  {tmp} = load {agg}, ptr %_{}_arg",
-                        p.local.0
-                    ));
-                    self.emit_line(&format!(
-                        "  store {agg} {tmp}, ptr %_{}.addr",
-                        p.local.0
-                    ));
+                    self.emit_line(&format!("  {tmp} = load {agg}, ptr %_{}_arg", p.local.0));
+                    self.emit_line(&format!("  store {agg} {tmp}, ptr %_{}.addr", p.local.0));
                 } else {
                     self.emit_line(&format!(
                         "  %_{} = load {agg}, ptr %_{}_arg",
@@ -1636,6 +1642,7 @@ impl LlvmCodegen {
     /// Emit a call to a user-defined function that uses byval/sret aggregate ABI.
     /// `ret_agg`: Some(llvm_ty) if return is aggregate (callee uses sret).
     /// `param_aggs[i]`: Some(llvm_ty) if arg i should be passed byval.
+    #[allow(clippy::too_many_arguments)]
     fn emit_aggregate_call(
         &mut self,
         fname: &str,
@@ -1688,10 +1695,7 @@ impl LlvmCodegen {
             if is_mutable {
                 let tmp = self.next_temp();
                 self.emit_line(&format!("  {tmp} = load {agg}, ptr {buf}"));
-                self.emit_line(&format!(
-                    "  store {agg} {tmp}, ptr %_{}.addr",
-                    dest.0
-                ));
+                self.emit_line(&format!("  store {agg} {tmp}, ptr %_{}.addr", dest.0));
             } else {
                 self.emit_line(&format!("  %_{} = load {agg}, ptr {buf}", dest.0));
             }
@@ -1699,13 +1703,8 @@ impl LlvmCodegen {
             self.emit_line(&format!("  call void @{fname}({arg_list})"));
         } else if is_mutable {
             let tmp = self.next_temp();
-            self.emit_line(&format!(
-                "  {tmp} = call {dest_ty} @{fname}({arg_list})"
-            ));
-            self.emit_line(&format!(
-                "  store {dest_ty} {tmp}, ptr %_{}.addr",
-                dest.0
-            ));
+            self.emit_line(&format!("  {tmp} = call {dest_ty} @{fname}({arg_list})"));
+            self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
         } else {
             self.emit_line(&format!(
                 "  %_{} = call {dest_ty} @{fname}({arg_list})",
@@ -1714,6 +1713,7 @@ impl LlvmCodegen {
         }
     }
 
+    #[allow(clippy::if_same_then_else)]
     fn emit_assign(
         &mut self,
         dest: LocalId,
@@ -2364,16 +2364,10 @@ impl LlvmCodegen {
                             dest.0
                         ));
                     } else if dest_ty == "ptr" {
-                        self.emit_line(&format!(
-                            "  %_{} = inttoptr i64 {raw} to ptr",
-                            dest.0
-                        ));
+                        self.emit_line(&format!("  %_{} = inttoptr i64 {raw} to ptr", dest.0));
                     } else {
                         // Identity: use add 0 for integer types.
-                        self.emit_line(&format!(
-                            "  %_{} = add {dest_ty} {raw}, 0",
-                            dest.0
-                        ));
+                        self.emit_line(&format!("  %_{} = add {dest_ty} {raw}, 0", dest.0));
                     }
                 } else {
                     // Fixed-size array or tuple aggregate — direct GEP + load.
@@ -2386,9 +2380,7 @@ impl LlvmCodegen {
                     } else {
                         format!("%_{}", dest.0)
                     };
-                    self.emit_line(&format!(
-                        "  {target_name} = load {dest_ty}, ptr {elem_ptr}"
-                    ));
+                    self.emit_line(&format!("  {target_name} = load {dest_ty}, ptr {elem_ptr}"));
                     if is_mutable {
                         self.emit_line(&format!(
                             "  store {dest_ty} {target_name}, ptr %_{}.addr",
@@ -2456,10 +2448,12 @@ impl LlvmCodegen {
                         // Payload slot is i64; cast non-i64 values (e.g. ptr) first.
                         if val_ty != "i64" {
                             let casted = self.next_temp();
-                            let op = if val_ty == "ptr" { "ptrtoint" } else { "bitcast" };
-                            self.emit_line(&format!(
-                                "  {casted} = {op} {val_ty} {val} to i64"
-                            ));
+                            let op = if val_ty == "ptr" {
+                                "ptrtoint"
+                            } else {
+                                "bitcast"
+                            };
+                            self.emit_line(&format!("  {casted} = {op} {val_ty} {val} to i64"));
                             val = casted;
                         }
                         let is_last = i + 1 == fields.len();
@@ -2521,7 +2515,11 @@ impl LlvmCodegen {
                     } else {
                         format!("%_{}", dest.0)
                     };
-                    let op = if dest_ty == "ptr" { "inttoptr" } else { "bitcast" };
+                    let op = if dest_ty == "ptr" {
+                        "inttoptr"
+                    } else {
+                        "bitcast"
+                    };
                     if op == "inttoptr" {
                         self.emit_line(&format!("  {t} = inttoptr i64 {slot_tmp} to {dest_ty}"));
                     } else {
@@ -3214,7 +3212,10 @@ impl LlvmCodegen {
                 if is_mutable {
                     self.emit_line(&format!("  store ptr {arr_tmp}, ptr %_{}.addr", dest.0));
                 } else {
-                    self.emit_line(&format!("  %_{} = getelementptr i8, ptr {arr_tmp}, i64 0", dest.0));
+                    self.emit_line(&format!(
+                        "  %_{} = getelementptr i8, ptr {arr_tmp}, i64 0",
+                        dest.0
+                    ));
                 }
             } else if is_mutable {
                 let tmp = self.next_temp();
@@ -3702,6 +3703,7 @@ impl LlvmCodegen {
     /// Emit drop logic for a struct value: recursively free heap-allocated
     /// fields (strings, arrays, maps, enums, nested structs), then free the
     /// struct pointer itself.
+    #[allow(clippy::collapsible_match)]
     fn emit_struct_drop(&mut self, val: &str, struct_name: &str, _func: &MirFunction) {
         let struct_def = match self.struct_defs.get(struct_name).cloned() {
             Some(def) => def,

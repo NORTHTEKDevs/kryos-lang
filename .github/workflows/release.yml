@@ -48,22 +48,38 @@ jobs:
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
-          mkdir -p dist
+          mkdir -p dist/bin dist/lib dist/stdlib
+          cp compiler/target/${{ matrix.target }}/release/kryos dist/bin/
+          # Ship the runtime staticlibs so the installed compiler can link
+          # final binaries without re-building the workspace. The compiler
+          # looks for these at <bin>/../lib/ at runtime (see kryos-driver::runtime).
+          cp compiler/target/${{ matrix.target }}/release/libkryos_rt.a dist/lib/
+          cp compiler/target/${{ matrix.target }}/release/libkryos_stdlib_native.a dist/lib/
+          # Also drop them and the binary at the archive root for the
+          # install scripts that look for a flat layout.
           cp compiler/target/${{ matrix.target }}/release/kryos dist/
+          cp compiler/target/${{ matrix.target }}/release/libkryos_rt.a dist/
+          cp compiler/target/${{ matrix.target }}/release/libkryos_stdlib_native.a dist/
           cp README.md LICENSE CHANGELOG.md dist/
           cp -r examples dist/
-          cp -r compiler/stdlib dist/
+          cp -r compiler/stdlib/. dist/stdlib/
           tar czf ${{ matrix.artifact }}.tar.gz -C dist .
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          mkdir -p dist
+          mkdir -p dist/bin dist/lib dist/stdlib
+          cp compiler/target/${{ matrix.target }}/release/kryos.exe dist/bin/
+          cp compiler/target/${{ matrix.target }}/release/kryos_rt.lib dist/lib/
+          cp compiler/target/${{ matrix.target }}/release/kryos_stdlib_native.lib dist/lib/
+          # Flat copies for install scripts that scan the archive root.
           cp compiler/target/${{ matrix.target }}/release/kryos.exe dist/
+          cp compiler/target/${{ matrix.target }}/release/kryos_rt.lib dist/
+          cp compiler/target/${{ matrix.target }}/release/kryos_stdlib_native.lib dist/
           cp README.md LICENSE CHANGELOG.md dist/
           cp -r examples dist/
-          cp -r compiler/stdlib dist/
+          cp -r compiler/stdlib/. dist/stdlib/
           7z a ${{ matrix.artifact }}.zip ./dist/*
 
       - name: Upload artifact

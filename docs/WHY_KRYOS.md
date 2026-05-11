@@ -142,7 +142,7 @@ These optimizations improve debug build performance significantly. Release build
 
 ## Status
 
-Kryos v0.3.5 is a complete, production-capable compiler with:
+Kryos v0.3.6 is a complete, production-capable compiler with:
 
 - 21-crate Rust implementation (~50,000 lines)
 - Dual backends: Cranelift (fast dev, ~500ms) and LLVM (optimized release, Rust parity)
@@ -170,7 +170,7 @@ Kryos is not garbage collected. It uses deterministic destruction through owners
 ## Try It
 
 ```bash
-git clone https://github.com/FrostbyteDevTeam/kryos-lang
+git clone https://github.com/NORTHTEKDevs/kryos-lang
 cd kryos-lang/compiler
 cargo build --release -j 4
 cargo run --release -- run examples/fibonacci.kry

@@ -1512,8 +1512,7 @@ impl TypeChecker {
                         {
                             // Per-use monomorphization: fresh vars for each generic param.
                             let mut var_map = std::collections::HashMap::new();
-                            let mut fresh_generics =
-                                Vec::with_capacity(edef.generic_var_ids.len());
+                            let mut fresh_generics = Vec::with_capacity(edef.generic_var_ids.len());
                             for &old_id in &edef.generic_var_ids {
                                 let fresh = self.engine.fresh_var();
                                 if let Type::Var(new_id) = &fresh {
@@ -1529,7 +1528,8 @@ impl TypeChecker {
                                     self.engine.instantiate(expected_ty, &var_map)
                                 };
                                 if let Err(diag) =
-                                    self.engine.unify(&expected_instantiated, &arg_ty, arg.span())
+                                    self.engine
+                                        .unify(&expected_instantiated, &arg_ty, arg.span())
                                 {
                                     self.diagnostics.push(diag);
                                 }
@@ -1620,8 +1620,7 @@ impl TypeChecker {
                         edef.variants.iter().find(|(vname, _)| vname == method)
                     {
                         let mut var_map = std::collections::HashMap::new();
-                        let mut fresh_generics =
-                            Vec::with_capacity(edef.generic_var_ids.len());
+                        let mut fresh_generics = Vec::with_capacity(edef.generic_var_ids.len());
                         for &old_id in &edef.generic_var_ids {
                             let fresh = self.engine.fresh_var();
                             if let Type::Var(new_id) = &fresh {
@@ -1637,7 +1636,8 @@ impl TypeChecker {
                                 self.engine.instantiate(expected_ty, &var_map)
                             };
                             if let Err(diag) =
-                                self.engine.unify(&expected_instantiated, &arg_ty, arg.span())
+                                self.engine
+                                    .unify(&expected_instantiated, &arg_ty, arg.span())
                             {
                                 self.diagnostics.push(diag);
                             }
@@ -1758,7 +1758,8 @@ impl TypeChecker {
                                 self.engine.instantiate(expected_ty, &var_map)
                             };
                             if let Err(diag) =
-                                self.engine.unify(&expected_instantiated, &expr_ty, fexpr.span())
+                                self.engine
+                                    .unify(&expected_instantiated, &expr_ty, fexpr.span())
                             {
                                 self.diagnostics.push(diag);
                             }

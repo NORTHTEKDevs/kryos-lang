@@ -6,7 +6,7 @@
   "publisher": "frostbyte-digital",
   "repository": {
     "type": "git",
-    "url": "https://github.com/FrostbyteDevTeam/kryos-lang"
+    "url": "https://github.com/NORTHTEKDevs/kryos-lang"
   },
   "engines": {
     "vscode": "^1.75.0"

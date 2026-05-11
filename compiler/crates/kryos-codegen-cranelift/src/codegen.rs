@@ -1602,6 +1602,7 @@ fn translate_block_body<M: Module>(
 // Instruction translation
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::collapsible_match)]
 fn translate_instruction<M: Module>(
     instr: &Instruction,
     builder: &mut FunctionBuilder,
@@ -3437,8 +3438,7 @@ fn translate_rvalue<M: Module>(
                                     module,
                                     1,
                                 )?;
-                                let clone_call =
-                                    builder.ins().call(clone_ref, &[raw_result]);
+                                let clone_call = builder.ins().call(clone_ref, &[raw_result]);
                                 builder.inst_results(clone_call)[0]
                             }
                             MirType::Array(_, _) => {
@@ -3603,8 +3603,8 @@ fn translate_rvalue<M: Module>(
                     let cloned = builder.inst_results(c)[0];
                     // String clone returns a fresh handle; use it in place of val.
                     let _ = cloned; // falls through -- handle via override below
-                    // Overwrite val with cloned handle for downstream use.
-                    // (Cranelift SSA: cannot reassign val, so restructure.)
+                                    // Overwrite val with cloned handle for downstream use.
+                                    // (Cranelift SSA: cannot reassign val, so restructure.)
                     let widened = if cl_ty == types::I8 {
                         builder.ins().uextend(types::I64, cloned)
                     } else {
@@ -4721,6 +4721,7 @@ fn emit_deep_copy_struct<M: Module>(
 
 /// Emit a drop (free) for a single Cranelift value of the given MIR type.
 /// The caller is responsible for null-checking the value before calling this.
+#[allow(clippy::collapsible_match)]
 fn emit_drop_for_value<M: Module>(
     val: cranelift_codegen::ir::Value,
     ty: &MirType,

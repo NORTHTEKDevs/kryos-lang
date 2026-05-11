@@ -28,7 +28,9 @@ fn next_u64() -> u64 {
         let old = RNG_STATE.load(Ordering::SeqCst);
         // LCG: x' = (a*x + c) mod 2^64
         // Using parameters from glibc/POSIX
-        let new = old.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let new = old
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         match RNG_STATE.compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst) {
             Ok(_) => return new,
             Err(_) => continue,
@@ -58,7 +60,11 @@ pub extern "C" fn kryos_rand_i64(lo: i64, hi: i64) -> i64 {
 /// Returns a random boolean (0 or 1).
 #[no_mangle]
 pub extern "C" fn kryos_rand_bool() -> i32 {
-    if (next_u64() & 1) == 0 { 0 } else { 1 }
+    if (next_u64() & 1) == 0 {
+        0
+    } else {
+        1
+    }
 }
 
 /// Seeds the global RNG.

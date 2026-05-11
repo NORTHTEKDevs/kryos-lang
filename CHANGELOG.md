@@ -4,6 +4,18 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.6] - 2026-05-11
+
+### Fixed
+- CI green again: resolved clippy errors introduced in the LLVM aggregate-ABI and Cranelift drop-path commits (`collapsible_match`, `too_many_arguments`, `if_same_then_else`) via targeted `#[allow]` attributes; no behavior change.
+- `rustfmt` drift across `kryos-codegen-cranelift`, `kryos-codegen-llvm`, `kryos-mir`, `kryos-stdlib-native`, `kryos-types` -- all formatted with `rustfmt 1.95`.
+
+### Changed
+- Repository home: all `FrostbyteDevTeam/kryos-lang` URLs in README, docs, install scripts, `Cargo.toml`, VS Code extension, and contributing guide updated to `NORTHTEKDevs/kryos-lang`.
+- `README.md`: replaced the misleading "~48 GB RAM" debug-build warning with a calibrated build-footprint note (~6 GB disk, ~3 GB peak RAM with `-j 2`, ~2 min cold). Documented that LLVM is **not** a build dependency -- the LLVM backend emits IR as text.
+- `README.md` quick-start example path now points at `../examples/hello.kry` (the previously referenced `examples/proof.kry` did not exist).
+- Bumped to `v0.3.6` across `Cargo.toml`, `install.ps1`, `docs/01-getting-started.md`, `docs/WHY_KRYOS.md`.
+
 ## [0.3.5] - 2026-04-16
 
 ### Fixed

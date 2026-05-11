@@ -118,7 +118,13 @@ pub extern "C" fn kryos_path_is_file(p: *const u8) -> i32 {
             Err(_) => return 0,
         };
         match std::fs::metadata(path_str) {
-            Ok(meta) => if meta.is_file() { 1 } else { 0 },
+            Ok(meta) => {
+                if meta.is_file() {
+                    1
+                } else {
+                    0
+                }
+            }
             Err(_) => 0,
         }
     }
@@ -137,7 +143,13 @@ pub extern "C" fn kryos_path_is_dir(p: *const u8) -> i32 {
             Err(_) => return 0,
         };
         match std::fs::metadata(path_str) {
-            Ok(meta) => if meta.is_dir() { 1 } else { 0 },
+            Ok(meta) => {
+                if meta.is_dir() {
+                    1
+                } else {
+                    0
+                }
+            }
             Err(_) => 0,
         }
     }
@@ -156,12 +168,10 @@ pub extern "C" fn kryos_path_absolute(p: *const u8) -> *mut u8 {
             Err(_) => return std::ptr::null_mut(),
         };
         match std::fs::canonicalize(path_str) {
-            Ok(abs_path) => {
-                match CString::new(abs_path.to_string_lossy().into_owned()) {
-                    Ok(cstr) => cstr.into_raw() as *mut u8,
-                    Err(_) => std::ptr::null_mut(),
-                }
-            }
+            Ok(abs_path) => match CString::new(abs_path.to_string_lossy().into_owned()) {
+                Ok(cstr) => cstr.into_raw() as *mut u8,
+                Err(_) => std::ptr::null_mut(),
+            },
             Err(_) => std::ptr::null_mut(),
         }
     }

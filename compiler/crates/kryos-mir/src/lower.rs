@@ -1384,7 +1384,9 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
 
                 // If initializer moves a non-copy local, mark it consumed.
                 if let RValue::Use(Operand::Local(src)) = &rvalue {
-                    let src_ty = ctx.locals.iter()
+                    let src_ty = ctx
+                        .locals
+                        .iter()
                         .find(|l| l.id == *src)
                         .map(|l| l.ty.clone())
                         .unwrap_or(MirType::I64);
@@ -1498,7 +1500,9 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 .expect("internal: assign target local not found");
                             let rvalue = lower_expr_to_rvalue(ctx, value);
                             if let RValue::Use(Operand::Local(src)) = &rvalue {
-                                let src_ty = ctx.locals.iter()
+                                let src_ty = ctx
+                                    .locals
+                                    .iter()
                                     .find(|l| l.id == *src)
                                     .map(|l| l.ty.clone())
                                     .unwrap_or(MirType::I64);
@@ -1749,7 +1753,9 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             lower_spawn(ctx, expr);
         }
 
-        ast::Stmt::Select { branches, timeout, .. } => {
+        ast::Stmt::Select {
+            branches, timeout, ..
+        } => {
             // Lower select: sequential try_recv polling loop with closed-channel
             // detection. Each channel is probed non-blocking; first ready wins.
             // If none ready and not all closed, sleep 1ms and retry.
@@ -3105,7 +3111,9 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
         // If the arm body moves a non-copy local into the result, mark the
         // source as consumed so the scope cleanup won't double-drop it.
         if let RValue::Use(Operand::Local(src)) = &arm_rvalue {
-            let src_ty = ctx.locals.iter()
+            let src_ty = ctx
+                .locals
+                .iter()
                 .find(|l| l.id == *src)
                 .map(|l| l.ty.clone())
                 .unwrap_or(MirType::I64);
@@ -3131,7 +3139,9 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
     if let Some((_, body)) = default_arm {
         let arm_rvalue = lower_expr_to_rvalue(ctx, body);
         if let RValue::Use(Operand::Local(src)) = &arm_rvalue {
-            let src_ty = ctx.locals.iter()
+            let src_ty = ctx
+                .locals
+                .iter()
                 .find(|l| l.id == *src)
                 .map(|l| l.ty.clone())
                 .unwrap_or(MirType::I64);
@@ -3159,7 +3169,9 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
 fn consume_call_args(ctx: &mut LoweringContext, _dest: LocalId, args: &[Operand]) {
     for arg in args {
         if let Operand::Local(local_id) = arg {
-            let local_ty = ctx.locals.iter()
+            let local_ty = ctx
+                .locals
+                .iter()
                 .find(|l| l.id == *local_id)
                 .map(|l| l.ty.clone())
                 .unwrap_or(MirType::I64);
@@ -4113,7 +4125,9 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 if !ctx.copy_structs.contains(struct_name.as_str()) {
                     if let Operand::Local(source_id) = &obj {
                         if let Some(fields) = ctx.struct_defs.get(struct_name.as_str()) {
-                            if let Some((_, field_ty)) = fields.iter().find(|(n, _)| n == field.as_str()) {
+                            if let Some((_, field_ty)) =
+                                fields.iter().find(|(n, _)| n == field.as_str())
+                            {
                                 let field_ty = field_ty.clone();
                                 if !is_copy_type(ctx, &field_ty) {
                                     ctx.partial_moved_locals.insert(source_id.0);

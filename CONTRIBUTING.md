@@ -25,25 +25,32 @@ sudo pacman -S sqlite openssl pkg-config
 
 macOS and Windows ship these libraries with the Rust toolchain; no extra steps needed.
 
-> **Memory warning:** Debug builds consume ~48 GB of RAM due to monomorphization. Always build with `--release -j 4`.
+> **Build footprint:** Release builds (`cargo build --release`) need ~6 GB disk and ~1-2 GB RAM per parallel rustc job -- the `cranelift-codegen` dep is the heaviest. Use `-j 2` on machines with <8 GB RAM, scale up otherwise. Debug builds (`cargo build` without `--release`) compile heavy deps with full debuginfo and can spike above 30 GB; the `[profile.dev]` overrides in `compiler/Cargo.toml` opt them up to `opt-level = 2` to keep this bounded, but release is still recommended.
 
 ---
 
 ## Setup
 
 ```bash
-git clone https://github.com/FrostbyteDevTeam/kryos-lang.git
+git clone https://github.com/NORTHTEKDevs/kryos-lang.git
 cd kryos-lang/compiler
-cargo build --release -j 4
+cargo build --release -j 2
 ```
 
 Verify:
 
 ```bash
-./target/release/kryos run examples/proof.kry
+./target/release/kryos run ../examples/hello.kry
+./target/release/kryos run tests/smoke.kry
 ```
 
-Expected output: `=== All 17 tests passed ===`
+Expected output of `tests/smoke.kry`:
+
+```
+30
+2
+Kryos
+```
 
 ---
 

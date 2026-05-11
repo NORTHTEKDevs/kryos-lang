@@ -11,7 +11,7 @@ Kryos is a native Rust compiler (21 crates). You need Rust 1.75+ and Cargo to bu
 Clone the repo and build the compiler:
 
 ```bash
-git clone https://github.com/FrostbyteDevTeam/kryos-lang.git
+git clone https://github.com/NORTHTEKDevs/kryos-lang.git
 cd kryos-lang/compiler
 cargo build --release
 ```
@@ -35,7 +35,7 @@ kryos version
 You should see output like:
 
 ```
-Kryos v0.3.5
+Kryos v0.3.6
 ```
 
 ### Optional: LLVM toolchain
@@ -183,7 +183,7 @@ kryos repl
 ```
 
 ```
-Kryos v0.3.5 REPL
+Kryos v0.3.6 REPL
 Type 'exit' or Ctrl+D to quit.
 
 kryos> let x = 42

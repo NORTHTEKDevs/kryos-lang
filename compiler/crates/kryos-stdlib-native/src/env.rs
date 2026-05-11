@@ -48,12 +48,10 @@ pub extern "C" fn kryos_env_unset(key: *const u8) -> i32 {
 #[no_mangle]
 pub extern "C" fn kryos_env_cwd() -> *mut u8 {
     match std::env::current_dir() {
-        Ok(path) => {
-            match CString::new(path.to_string_lossy().into_owned()) {
-                Ok(cstr) => cstr.into_raw() as *mut u8,
-                Err(_) => std::ptr::null_mut(),
-            }
-        }
+        Ok(path) => match CString::new(path.to_string_lossy().into_owned()) {
+            Ok(cstr) => cstr.into_raw() as *mut u8,
+            Err(_) => std::ptr::null_mut(),
+        },
         Err(_) => std::ptr::null_mut(),
     }
 }

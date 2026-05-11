@@ -2,7 +2,7 @@
 
 A compiled systems language with ownership-based memory safety, capability enforcement, and dual-backend native compilation.
 
-**v0.3.5** -- 925+ tests passing, self-hosting compiler, zero known issues.
+**v0.3.6** -- 821+ tests passing, self-hosting compiler, zero known issues.
 
 ---
 
@@ -33,30 +33,35 @@ Kryos gives you the control of C, the safety of Rust, and the clarity of Go -- w
 
 ## Install
 
+If you just want a working compiler in 5 minutes, follow [QUICKSTART.md](QUICKSTART.md).
+
+
 ### Linux / macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/FrostbyteDevTeam/kryos-lang/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/NORTHTEKDevs/kryos-lang/master/install.sh | bash
 ```
 
 ### Windows (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/FrostbyteDevTeam/kryos-lang/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/NORTHTEKDevs/kryos-lang/master/install.ps1 | iex
 ```
 
 ### Build from Source
 
-Requirements: Rust 1.75+, LLVM 15+ (optional, for release builds)
+Requirements: Rust 1.75+, a C compiler (`cc`/`clang`/MSVC) for linking final binaries. **LLVM is not required** -- the LLVM backend emits IR as text, so only the optional `kryos build --backend llvm` path needs `llc` or `clang` on PATH.
 
 ```bash
-git clone https://github.com/FrostbyteDevTeam/kryos-lang.git
+git clone https://github.com/NORTHTEKDevs/kryos-lang.git
 cd kryos-lang/compiler
-cargo build --release -j 4
-./target/release/kryos run examples/proof.kry
+cargo build --release -j 2
+./target/release/kryos run ../examples/hello.kry
 ```
 
-> Note: debug builds use ~48 GB RAM. Always build with `--release -j 4`.
+Build footprint on a typical machine: ~6 GB disk, ~3 GB peak RAM with `-j 2`, ~2 minutes cold from a clean checkout. Bump `-j` up to your core count if you have more RAM to spare -- `cranelift-codegen` is the heaviest dep and each parallel rustc job needs ~1-2 GB.
+
+> Debug builds (`cargo build` without `--release`) compile `cranelift-codegen` with full debuginfo and can spike to >30 GB. The `[profile.dev]` settings in `compiler/Cargo.toml` already opt heavy deps up to `opt-level = 2` to keep this bounded, but release is still recommended.
 
 ---
 
@@ -271,7 +276,7 @@ kryos bindgen <header.h>     Generate Kryos bindings from C header
 
 ## Status
 
-Kryos is **v0.3.5**. The core language is complete and production-capable for systems programming.
+Kryos is **v0.3.6**. The core language is complete and production-capable for systems programming.
 
 | Feature | Status |
 |---------|--------|
