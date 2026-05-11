@@ -85,9 +85,32 @@ enum Commands {
 
     /// Run tests in the current project
     Test {
-        /// Filter test names by substring
-        #[arg(long)]
+        /// Filter test names by substring (positional). If `--exact` is set,
+        /// only tests whose name exactly equals this value are run.
+        #[arg(value_name = "FILTER")]
+        filter_pos: Option<String>,
+
+        /// Filter test names by substring (kept for backwards compatibility;
+        /// equivalent to the positional FILTER argument).
+        #[arg(long, value_name = "PATTERN")]
         filter: Option<String>,
+
+        /// Match the filter exactly (not as a substring).
+        #[arg(long)]
+        exact: bool,
+
+        /// Show output captured from passing tests (cargo-test parity).
+        #[arg(long = "nocapture")]
+        nocapture: bool,
+
+        /// Report format. `pretty` (default) prints a human-readable colored
+        /// summary; `json` prints one JSON event per line for CI consumption.
+        #[arg(long, value_name = "FORMAT", default_value = "pretty")]
+        format: String,
+
+        /// List discovered test names and exit, one per line.
+        #[arg(long)]
+        list: bool,
     },
 
     /// Format source files
@@ -228,7 +251,37 @@ fn main() {
 
         Commands::Repl => commands::repl::execute(),
 
-        Commands::Test { filter } => commands::test_cmd::execute(filter.as_deref()),
+        Commands::Test {
+            filter_pos,
+            filter,
+            exact,
+            nocapture,
+            format,
+            list,
+        } => {
+            // Positional FILTER takes precedence over --filter; otherwise fall back.
+            let chosen_filter = filter_pos.or(filter);
+            match format.as_str() {
+                "pretty" | "json" => {
+                    let fmt = if format == "json" {
+                        commands::test_cmd::OutputFormat::Json
+                    } else {
+                        commands::test_cmd::OutputFormat::Pretty
+                    };
+                    commands::test_cmd::execute(commands::test_cmd::TestOptions {
+                        filter: chosen_filter,
+                        exact,
+                        nocapture,
+                        format: fmt,
+                        list,
+                    })
+                }
+                other => Err(format!(
+                    "unknown --format value '{}': expected 'pretty' or 'json'",
+                    other
+                )),
+            }
+        }
 
         Commands::Fmt { files, check } => commands::fmt::execute(&files, check),
 
@@ -361,7 +414,70 @@ mod tests {
     fn parse_test_with_filter() {
         let cli = Cli::try_parse_from(["kryos", "test", "--filter", "math"]).unwrap();
         match cli.command {
-            super::Commands::Test { filter } => assert_eq!(filter.as_deref(), Some("math")),
+            super::Commands::Test {
+                filter_pos,
+                filter,
+                exact,
+                nocapture,
+                format,
+                list,
+            } => {
+                assert_eq!(filter.as_deref(), Some("math"));
+                assert!(filter_pos.is_none());
+                assert!(!exact);
+                assert!(!nocapture);
+                assert_eq!(format, "pretty");
+                assert!(!list);
+            }
+            _ => panic!("expected Test command"),
+        }
+    }
+
+    #[test]
+    fn parse_test_positional_filter() {
+        let cli = Cli::try_parse_from(["kryos", "test", "math"]).unwrap();
+        match cli.command {
+            super::Commands::Test { filter_pos, .. } => {
+                assert_eq!(filter_pos.as_deref(), Some("math"))
+            }
+            _ => panic!("expected Test command"),
+        }
+    }
+
+    #[test]
+    fn parse_test_nocapture_exact_json() {
+        let cli = Cli::try_parse_from([
+            "kryos",
+            "test",
+            "my_test",
+            "--exact",
+            "--nocapture",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        match cli.command {
+            super::Commands::Test {
+                filter_pos,
+                exact,
+                nocapture,
+                format,
+                ..
+            } => {
+                assert_eq!(filter_pos.as_deref(), Some("my_test"));
+                assert!(exact);
+                assert!(nocapture);
+                assert_eq!(format, "json");
+            }
+            _ => panic!("expected Test command"),
+        }
+    }
+
+    #[test]
+    fn parse_test_list() {
+        let cli = Cli::try_parse_from(["kryos", "test", "--list"]).unwrap();
+        match cli.command {
+            super::Commands::Test { list, .. } => assert!(list),
             _ => panic!("expected Test command"),
         }
     }

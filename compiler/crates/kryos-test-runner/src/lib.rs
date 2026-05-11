@@ -188,8 +188,24 @@ pub fn test_case_from_source(name: &str, source: &str) -> TestCase {
 // Test execution
 // ---------------------------------------------------------------------------
 
+/// Options that influence test execution beyond pass/fail logic.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RunOptions {
+    /// If `true`, child-process stdout/stderr (for `// run-expect:` tests) is
+    /// inherited from the parent instead of being captured. Captured output
+    /// is no longer available for the pass/fail check in that case, so the
+    /// `RunOutput` expectation is treated as "compiled binary exited zero"
+    /// when `nocapture` is set.
+    pub nocapture: bool,
+}
+
 /// Run a single test case through the compiler and check the result.
 pub fn run_test(test: &TestCase) -> TestResult {
+    run_test_with(test, RunOptions::default())
+}
+
+/// Run a single test case with explicit options.
+pub fn run_test_with(test: &TestCase, opts: RunOptions) -> TestResult {
     if test.skip {
         return TestResult {
             name: test.name.clone(),
@@ -380,11 +396,20 @@ pub fn run_test(test: &TestCase) -> TestResult {
                 };
             }
 
-            // Execute the compiled binary and capture stdout
-            let exec_result = Command::new(&temp_out)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output();
+            // Execute the compiled binary. With `--nocapture`, inherit stdio so
+            // the program's output is visible; otherwise pipe and capture it
+            // so we can check the expected-output contains.
+            let exec_result = if opts.nocapture {
+                Command::new(&temp_out)
+                    .stdout(std::process::Stdio::inherit())
+                    .stderr(std::process::Stdio::inherit())
+                    .output()
+            } else {
+                Command::new(&temp_out)
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .output()
+            };
 
             // Clean up temp files regardless of outcome
             let _ = fs::remove_file(&temp_src);
@@ -407,6 +432,11 @@ pub fn run_test(test: &TestCase) -> TestResult {
                                 stderr.trim()
                             ),
                         }
+                    } else if opts.nocapture {
+                        // With nocapture, stdout was streamed to the terminal
+                        // already; we can't check the expectation, so treat
+                        // exit-zero as a pass.
+                        TestOutcome::Passed
                     } else {
                         let stdout = String::from_utf8_lossy(&output.stdout);
                         let stdout_str = stdout.to_string();
@@ -443,6 +473,11 @@ pub fn run_test(test: &TestCase) -> TestResult {
 
 /// Run all test cases and produce an aggregate report.
 pub fn run_all(tests: &[TestCase]) -> TestReport {
+    run_all_with(tests, RunOptions::default())
+}
+
+/// Run all test cases with explicit options.
+pub fn run_all_with(tests: &[TestCase], opts: RunOptions) -> TestReport {
     let start = Instant::now();
     let mut results = Vec::with_capacity(tests.len());
     let mut passed = 0usize;
@@ -450,7 +485,7 @@ pub fn run_all(tests: &[TestCase]) -> TestReport {
     let mut skipped = 0usize;
 
     for test in tests {
-        let result = run_test(test);
+        let result = run_test_with(test, opts);
         match result.outcome {
             TestOutcome::Passed => passed += 1,
             TestOutcome::Failed { .. } => failed += 1,
@@ -522,6 +557,89 @@ pub fn format_report(report: &TestReport) -> String {
     ));
     out.push_str(&format!("Time:  {:.3}s\n", report.duration.as_secs_f64()));
 
+    out
+}
+
+/// Format a test report as one JSON object per line (newline-delimited JSON).
+///
+/// The format mirrors `cargo test --format=json -Z unstable-options`:
+/// each event is a self-contained JSON object on its own line. Event types:
+///
+/// - `{"type":"suite","event":"started","test_count":N}`
+/// - `{"type":"test","event":"started","name":"..."}`
+/// - `{"type":"test","event":"ok","name":"...","exec_time":0.0123}`
+/// - `{"type":"test","event":"failed","name":"...","exec_time":0.0123,"stdout":"..."}`
+/// - `{"type":"test","event":"ignored","name":"..."}`
+/// - `{"type":"suite","event":"ok"|"failed","passed":P,"failed":F,"ignored":S,"exec_time":T}`
+///
+/// No external JSON library is used; strings are escaped manually so this
+/// crate's dependency footprint stays small.
+pub fn format_report_json(report: &TestReport) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{{\"type\":\"suite\",\"event\":\"started\",\"test_count\":{}}}\n",
+        report.total
+    ));
+    for r in &report.results {
+        out.push_str(&format!(
+            "{{\"type\":\"test\",\"event\":\"started\",\"name\":\"{}\"}}\n",
+            json_escape(&r.name)
+        ));
+        let secs = r.duration.as_secs_f64();
+        match &r.outcome {
+            TestOutcome::Passed => {
+                out.push_str(&format!(
+                    "{{\"type\":\"test\",\"event\":\"ok\",\"name\":\"{}\",\"exec_time\":{:.6}}}\n",
+                    json_escape(&r.name),
+                    secs
+                ));
+            }
+            TestOutcome::Failed { reason } => {
+                out.push_str(&format!(
+                    "{{\"type\":\"test\",\"event\":\"failed\",\"name\":\"{}\",\"exec_time\":{:.6},\"stdout\":\"{}\"}}\n",
+                    json_escape(&r.name),
+                    secs,
+                    json_escape(reason)
+                ));
+            }
+            TestOutcome::Skipped => {
+                out.push_str(&format!(
+                    "{{\"type\":\"test\",\"event\":\"ignored\",\"name\":\"{}\"}}\n",
+                    json_escape(&r.name)
+                ));
+            }
+        }
+    }
+    let suite_event = if report.failed > 0 { "failed" } else { "ok" };
+    out.push_str(&format!(
+        "{{\"type\":\"suite\",\"event\":\"{}\",\"passed\":{},\"failed\":{},\"ignored\":{},\"exec_time\":{:.6}}}\n",
+        suite_event,
+        report.passed,
+        report.failed,
+        report.skipped,
+        report.duration.as_secs_f64()
+    ));
+    out
+}
+
+/// Escape a string for embedding inside a JSON string literal.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\x08' => out.push_str("\\b"),
+            '\x0c' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
     out
 }
 
@@ -627,6 +745,15 @@ fn discover_annotated_recursive(dir: &Path, results: &mut Vec<(PathBuf, Vec<Stri
 /// Cranelift backend. Each `@test` function is called as `fn()` — a panic
 /// from `assert()` or `panic()` counts as a failure.
 pub fn run_annotated_tests(dir: &Path, filter: Option<&str>) -> TestReport {
+    run_annotated_tests_with(dir, filter, false)
+}
+
+/// Like `run_annotated_tests`, but supports exact-match filtering.
+///
+/// When `exact` is `true`, only tests whose name *equals* the filter string
+/// run; otherwise the filter is matched as a substring (the historical
+/// behaviour).
+pub fn run_annotated_tests_with(dir: &Path, filter: Option<&str>, exact: bool) -> TestReport {
     let start = Instant::now();
     let mut results = Vec::new();
     let mut passed = 0usize;
@@ -651,7 +778,8 @@ pub fn run_annotated_tests(dir: &Path, filter: Option<&str>) -> TestReport {
             let diags = render_diagnostics(&result);
             for fn_name in test_fns {
                 if let Some(f) = filter {
-                    if !fn_name.contains(f) {
+                    let matches = if exact { fn_name == f } else { fn_name.contains(f) };
+                    if !matches {
                         skipped += 1;
                         results.push(TestResult {
                             name: fn_name.clone(),
@@ -703,7 +831,8 @@ pub fn run_annotated_tests(dir: &Path, filter: Option<&str>) -> TestReport {
         // Execute each @test function.
         for fn_name in test_fns {
             if let Some(f) = filter {
-                if !fn_name.contains(f) {
+                let matches = if exact { fn_name == f } else { fn_name.contains(f) };
+                if !matches {
                     skipped += 1;
                     results.push(TestResult {
                         name: fn_name.clone(),
