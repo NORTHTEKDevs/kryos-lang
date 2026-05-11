@@ -1,0 +1,40 @@
+// Benchmark: integer matrix multiplication 256x256.
+// Tests: nested loops, indexed array access, multiply-add throughput.
+
+fn main() {
+    let n: i64 = 256
+    let mut a: [i64] = []
+    let mut b: [i64] = []
+    let mut c: [i64] = []
+    let mut i: i64 = 0
+    while i < n * n {
+        push(a, (i * 3) % 7)
+        push(b, (i * 5) % 11)
+        push(c, 0)
+        i = i + 1
+    }
+
+    let mut row: i64 = 0
+    while row < n {
+        let mut col: i64 = 0
+        while col < n {
+            let mut sum: i64 = 0
+            let mut k: i64 = 0
+            while k < n {
+                sum = sum + a[row * n + k] * b[k * n + col]
+                k = k + 1
+            }
+            c[row * n + col] = sum
+            col = col + 1
+        }
+        row = row + 1
+    }
+
+    let mut checksum: i64 = 0
+    let mut j: i64 = 0
+    while j < n * n {
+        checksum = checksum + c[j]
+        j = j + 1
+    }
+    println("matmul(256) checksum = " + to_string(checksum))
+}

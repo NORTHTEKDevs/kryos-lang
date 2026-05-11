@@ -1,0 +1,62 @@
+// Benchmark: Fannkuch-redux (simplified) — count flips for a fixed
+// number of permutations using a deterministic generator. Tests array
+// mutation and tight nested loops.
+
+fn count_flips(perm: [i64], n: i64) -> i64 {
+    let mut flips: i64 = 0
+    let mut p0 = perm[0]
+    while p0 != 0 {
+        let mut a: i64 = 0
+        let mut b: i64 = p0
+        while a < b {
+            let t = perm[a]
+            perm[a] = perm[b]
+            perm[b] = t
+            a = a + 1
+            b = b - 1
+        }
+        flips = flips + 1
+        p0 = perm[0]
+    }
+    return flips
+}
+
+fn rotate_left(perm: [i64], n: i64) {
+    let first = perm[0]
+    let mut i: i64 = 0
+    while i < n - 1 {
+        perm[i] = perm[i + 1]
+        i = i + 1
+    }
+    perm[n - 1] = first
+}
+
+fn main() {
+    let n: i64 = 9
+    let mut perm: [i64] = []
+    let mut i: i64 = 0
+    while i < n {
+        push(perm, i)
+        i = i + 1
+    }
+
+    let mut max_flips: i64 = 0
+    let mut iter: i64 = 0
+    let total: i64 = 362880  // 9!
+    while iter < total {
+        // Working copy
+        let mut work: [i64] = []
+        let mut k: i64 = 0
+        while k < n {
+            push(work, perm[k])
+            k = k + 1
+        }
+        let f = count_flips(work, n)
+        if f > max_flips {
+            max_flips = f
+        }
+        rotate_left(perm, n)
+        iter = iter + 1
+    }
+    println("fannkuch(9) = " + to_string(max_flips))
+}

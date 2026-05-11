@@ -1,0 +1,63 @@
+// Benchmark: N-body simulation (5 bodies, 50000 steps).
+// Tests: arrays, indexed mutation, float arithmetic in tight loops.
+
+fn main() {
+    let n: i64 = 5
+    let steps: i64 = 50000
+    let dt: f64 = 0.01
+
+    // x, y, z, vx, vy, vz, mass
+    let mut x = [0.0, 1.0, 2.0, 3.0, 4.0]
+    let mut y = [0.0, 0.5, 1.0, 1.5, 2.0]
+    let mut z = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut vx = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut vy = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut vz = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let mass = [1.0, 0.5, 0.5, 0.3, 0.2]
+
+    let mut step: i64 = 0
+    while step < steps {
+        let mut i: i64 = 0
+        while i < n {
+            let mut fx: f64 = 0.0
+            let mut fy: f64 = 0.0
+            let mut fz: f64 = 0.0
+            let mut j: i64 = 0
+            while j < n {
+                if i != j {
+                    let dx = x[j] - x[i]
+                    let dy = y[j] - y[i]
+                    let dz = z[j] - z[i]
+                    let r2 = dx * dx + dy * dy + dz * dz + 0.001
+                    let r = sqrt(r2)
+                    let inv_r3 = mass[j] / (r2 * r)
+                    fx = fx + dx * inv_r3
+                    fy = fy + dy * inv_r3
+                    fz = fz + dz * inv_r3
+                }
+                j = j + 1
+            }
+            vx[i] = vx[i] + fx * dt
+            vy[i] = vy[i] + fy * dt
+            vz[i] = vz[i] + fz * dt
+            i = i + 1
+        }
+        let mut k: i64 = 0
+        while k < n {
+            x[k] = x[k] + vx[k] * dt
+            y[k] = y[k] + vy[k] * dt
+            z[k] = z[k] + vz[k] * dt
+            k = k + 1
+        }
+        step = step + 1
+    }
+
+    // Print final positions checksum
+    let mut checksum: f64 = 0.0
+    let mut k: i64 = 0
+    while k < n {
+        checksum = checksum + x[k] + y[k] + z[k]
+        k = k + 1
+    }
+    println("nbody checksum (rounded) = " + to_string(checksum as i64))
+}
