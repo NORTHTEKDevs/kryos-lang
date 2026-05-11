@@ -2,6 +2,14 @@
 //!
 //! Provides environment variable access, process exit, subprocess execution,
 //! command-line argument access, and directory listing.
+//!
+//! # Unsafe invariants (file-wide)
+//!
+//! See `docs/17-unsafe-audit.md` patterns 1 (FFI handle reconstruction) and 7
+//! (libc syscall FFI). `KryosString` handles are validated `!= 0` before deref;
+//! every CString conversion goes through `CString::new(...).unwrap_or_else`
+//! to reject embedded NULs. Subprocess paths use `std::process::Command`
+//! which handles fork/exec safety internally.
 
 use kryos_rt::string::{kryos_string_new, KryosString};
 use std::process::Command;

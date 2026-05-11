@@ -3,6 +3,14 @@
 //! Provides a simple multi-producer, multi-consumer channel built on a
 //! Mutex-protected VecDeque. Each channel handle is reference-counted so
 //! it can be shared across threads.
+//!
+//! # Unsafe invariants (file-wide)
+//!
+//! See `docs/17-unsafe-audit.md` patterns 1, 4 (atomic refcounting), and 6
+//! (threading). The channel header carries its own atomic refcount; clone
+//! uses Relaxed, drop uses Release + Acquire fence. The Mutex / Condvar pair
+//! is held only for short critical sections (queue push/pop, closed flag).
+//! No `unsafe` is held across blocking waits.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

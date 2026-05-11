@@ -4,6 +4,21 @@
 //! Every tensor is heap-allocated. Functions are `#[no_mangle] extern "C"`
 //! for linking from compiled Kryos code. Handles are `*mut KryosTensor`
 //! cast to `i64`.
+//!
+//! # Unsafe invariants (file-wide)
+//!
+//! See `docs/17-unsafe-audit.md` patterns 1 (FFI handle reconstruction), 2
+//! (slice::from_raw_parts), and 3 (alloc/dealloc).
+//!
+//! * Every entry point that takes an `i64` tensor handle checks `handle != 0`
+//!   before deref, and trusts that the type checker upstream rejected calls
+//!   passing a non-tensor handle.
+//! * `data`, `shape`, and `strides` pointers inside `KryosTensor` are valid
+//!   for `len * sizeof(f64)`, `rank * sizeof(i64)`, and `rank * sizeof(i64)`
+//!   bytes respectively, allocated via `Layout` reconstructed from the same
+//!   header fields at drop time.
+//! * `kryos_tensor_release` is the single deallocation path; all builders
+//!   produce one logical refcount.
 
 use std::alloc::{alloc, alloc_zeroed, dealloc, Layout};
 use std::ptr;

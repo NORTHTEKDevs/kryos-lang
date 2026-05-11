@@ -6,6 +6,14 @@
 //! the handle.
 //!
 //! Exposed as `extern "C"` functions for linking from compiled code.
+//!
+//! # Unsafe invariants (file-wide)
+//!
+//! See `docs/17-unsafe-audit.md` patterns 1 (FFI handle reconstruction) and 3
+//! (alloc/dealloc). Map handles are `*mut MapHeader` cast to `i64`. Entry
+//! storage is a separate `Layout` based on the live `capacity` field;
+//! resize swaps the buffer atomically (handle stays stable so generated code
+//! can cache it across operations).
 
 use std::alloc::{alloc_zeroed, dealloc, Layout};
 

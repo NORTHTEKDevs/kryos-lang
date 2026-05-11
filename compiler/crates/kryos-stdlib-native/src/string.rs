@@ -3,6 +3,14 @@
 //! Provides string manipulation functions that operate on null-terminated C strings.
 //! Functions that allocate and return strings place ownership on the caller, who must
 //! free them via `kryos_str_free`.
+//!
+//! # Unsafe invariants (file-wide)
+//!
+//! See `docs/17-unsafe-audit.md` pattern 7 (libc/FFI). Every `*const c_char`
+//! input is reconstructed via `CStr::from_ptr` only after a null check; every
+//! returned `*mut c_char` is the raw pointer from `CString::into_raw` and
+//! must be freed by the caller via `kryos_str_free` (which calls
+//! `CString::from_raw`).
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;

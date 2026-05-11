@@ -17,6 +17,15 @@
 //!   kryos_db_finalize(cursor) -> i32   -- free cursor
 
 use rusqlite::{types::Value, Connection};
+//
+// # Unsafe invariants (file-wide)
+//
+// See `docs/17-unsafe-audit.md` pattern 7 (FFI). The SQLite C API is wrapped
+// via the `rusqlite` crate (safe Rust); the only unsafe in this module is
+// reconstruction of `KryosString` handles from `i64`, which follows pattern 1.
+// Connections and prepared cursors live in a Mutex-protected HashMap so
+// concurrent Kryos threads can share an opened DB handle.
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Mutex, OnceLock};

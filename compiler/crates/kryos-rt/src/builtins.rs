@@ -2,6 +2,35 @@
 //!
 //! These are the implementations behind Kryos built-in functions like
 //! `to_string()`, `len()`, and the `**` power operator.
+//!
+//! # Unsafe invariants (file-wide)
+//!
+//! Every `extern "C"` entry point in this file follows the Kryos opaque-handle
+//! ABI documented in `docs/17-unsafe-audit.md` (pattern 1, "FFI Handle
+//! Reconstruction").
+//!
+//! * Inputs typed `i64` are either a raw integer value (when the Kryos type is
+//!   `i64`, `bool`, etc.) or an opaque handle to a heap object
+//!   (`*const KryosString`, `*const KryosArray`, `*const MapHeader`, ...).
+//!   The generated code from `kryos-codegen-*` is responsible for emitting the
+//!   correct handle type per the Kryos type checker.
+//! * `0` is the universal sentinel for "null handle"; every entry point that
+//!   dereferences a handle must check `handle != 0` first.
+//! * Returned `i64` handles convey one logical strong refcount to the caller,
+//!   to be released via the appropriate `kryos_*_release` function.
+//!
+//! Inner `unsafe { ... }` blocks in this file rely on one of:
+//!   - **Pattern 1**: cast `i64` -> `*const KryosXxx` + deref (validated by
+//!     `!= 0` check above and by the Kryos type system upstream).
+//!   - **Pattern 2**: `slice::from_raw_parts(data, len)` on a `(data, len)`
+//!     pair freshly loaded from a validated `KryosString` / `KryosArray`,
+//!     followed by `str::from_utf8(...).unwrap_or("")`.
+//!   - Call into another `unsafe extern "C"` runtime function whose own
+//!     contract is documented in its home module (`string.rs`, `array.rs`,
+//!     `map.rs`, `tensor.rs`).
+//!
+//! Reviewers: when adding a new `unsafe` block here, either fit one of the
+//! patterns above or extend `docs/17-unsafe-audit.md`.
 
 use crate::string::kryos_string_new;
 

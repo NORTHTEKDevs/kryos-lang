@@ -3,6 +3,19 @@
 //! Layout: `{ len: i64, cap: i64, data: *mut u8 }`.
 //! Data is always null-terminated for C interop. All functions are
 //! `#[no_mangle] extern "C"` for linking from compiled Kryos code.
+//!
+//! # Unsafe invariants (file-wide)
+//!
+//! See `docs/17-unsafe-audit.md` patterns 1 (FFI handle reconstruction),
+//! 2 (slice::from_raw_parts on `(data, len)`) and 3 (alloc/dealloc).
+//!
+//! * Handles are `*mut KryosString` cast to `i64`; `0` is null.
+//! * `data` is non-null when `len > 0`, allocated for `cap + 1` bytes
+//!   (extra byte holds the C nul terminator).
+//! * Realloc paths (concat / push) compute the old `Layout` from the
+//!   pre-realloc `cap` field before freeing.
+//! * Byte content is not assumed UTF-8 internally; conversion to `&str`
+//!   always goes through `str::from_utf8(...).unwrap_or("")`.
 
 use std::alloc::{alloc, dealloc, Layout};
 use std::ptr;
