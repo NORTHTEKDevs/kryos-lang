@@ -2955,6 +2955,16 @@ fn translate_rvalue<M: Module>(
                 "tcp_send" => ("kryos_tcp_send_ks", 2),
                 "tcp_recv" => ("kryos_tcp_recv_ks", 2),
                 "tcp_close" => ("kryos_socket_close_ks", 1),
+                // Overflow-aware integer arithmetic.
+                "wrapping_add" => ("kryos_wrapping_add_i64", 2),
+                "wrapping_sub" => ("kryos_wrapping_sub_i64", 2),
+                "wrapping_mul" => ("kryos_wrapping_mul_i64", 2),
+                "checked_add" => ("kryos_checked_add_i64", 2),
+                "checked_sub" => ("kryos_checked_sub_i64", 2),
+                "checked_mul" => ("kryos_checked_mul_i64", 2),
+                "saturating_add" => ("kryos_saturating_add_i64", 2),
+                "saturating_sub" => ("kryos_saturating_sub_i64", 2),
+                "saturating_mul" => ("kryos_saturating_mul_i64", 2),
                 _ => (func.as_str(), args.len()),
             };
 

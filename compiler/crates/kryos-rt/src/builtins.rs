@@ -862,6 +862,95 @@ pub extern "C" fn kryos_check_div_zero_f64(_divisor: f64) {
     // No-op: float division by zero produces inf/nan per IEEE 754.
 }
 
+// ── Overflow-aware integer arithmetic ─────────────────────────────
+//
+// Kryos default behaviour: 2's-complement wrap on overflow for all
+// integer operations (`a + b`, `a * b`, etc). Matches C, Rust release,
+// Go, and Java semantics.
+//
+// These builtins give the programmer explicit control:
+//   wrapping_*    : same as default — explicit wrap on overflow
+//   checked_*     : panic with a clear message on overflow
+//   saturating_*  : clamp to INT64_MIN / INT64_MAX on overflow
+//
+// All currently operate on i64. Smaller integer types can use these
+// via widening + range-check at the call site if needed; richer
+// support will land alongside generics over integer width.
+
+#[inline]
+fn panic_overflow(op: &str) -> ! {
+    let mut buf = [0u8; 64];
+    let prefix = b"integer overflow in ";
+    let mut n = 0;
+    for &b in prefix {
+        if n < buf.len() {
+            buf[n] = b;
+            n += 1;
+        }
+    }
+    for &b in op.as_bytes() {
+        if n < buf.len() {
+            buf[n] = b;
+            n += 1;
+        }
+    }
+    crate::panic::kryos_panic(buf.as_ptr(), n);
+}
+
+// --- wrapping_* (explicit wrap; identical to default operators) ---
+
+#[no_mangle]
+pub extern "C" fn kryos_wrapping_add_i64(a: i64, b: i64) -> i64 {
+    a.wrapping_add(b)
+}
+
+#[no_mangle]
+pub extern "C" fn kryos_wrapping_sub_i64(a: i64, b: i64) -> i64 {
+    a.wrapping_sub(b)
+}
+
+#[no_mangle]
+pub extern "C" fn kryos_wrapping_mul_i64(a: i64, b: i64) -> i64 {
+    a.wrapping_mul(b)
+}
+
+// --- checked_* (panic on overflow) ---
+
+#[no_mangle]
+pub extern "C" fn kryos_checked_add_i64(a: i64, b: i64) -> i64 {
+    a.checked_add(b)
+        .unwrap_or_else(|| panic_overflow("checked_add"))
+}
+
+#[no_mangle]
+pub extern "C" fn kryos_checked_sub_i64(a: i64, b: i64) -> i64 {
+    a.checked_sub(b)
+        .unwrap_or_else(|| panic_overflow("checked_sub"))
+}
+
+#[no_mangle]
+pub extern "C" fn kryos_checked_mul_i64(a: i64, b: i64) -> i64 {
+    a.checked_mul(b)
+        .unwrap_or_else(|| panic_overflow("checked_mul"))
+}
+
+// --- saturating_* (clamp on overflow) ---
+
+#[no_mangle]
+pub extern "C" fn kryos_saturating_add_i64(a: i64, b: i64) -> i64 {
+    a.saturating_add(b)
+}
+
+#[no_mangle]
+pub extern "C" fn kryos_saturating_sub_i64(a: i64, b: i64) -> i64 {
+    a.saturating_sub(b)
+}
+
+#[no_mangle]
+pub extern "C" fn kryos_saturating_mul_i64(a: i64, b: i64) -> i64 {
+    a.saturating_mul(b)
+}
+
 // ── Byte buffer for native code emission ──────────────────────────
 
 struct KryosBuf {

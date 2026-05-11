@@ -2448,6 +2448,33 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         ret: Type::F64,
     });
 
+    // Overflow-aware integer arithmetic. All currently operate on i64.
+    // wrapping_*  : explicit 2's-complement wrap (same as default behavior)
+    // checked_*   : panic on overflow with a clear message
+    // saturating_*: clamp to INT64_MIN / INT64_MAX on overflow
+    for op in [
+        "wrapping_add",
+        "wrapping_sub",
+        "wrapping_mul",
+        "checked_add",
+        "checked_sub",
+        "checked_mul",
+        "saturating_add",
+        "saturating_sub",
+        "saturating_mul",
+    ] {
+        checker.env.define_function(FunctionSig {
+            name: op.to_string(),
+            generic_params: vec![],
+            generic_var_ids: vec![],
+            params: vec![
+                ("a".to_string(), Type::I64),
+                ("b".to_string(), Type::I64),
+            ],
+            ret: Type::I64,
+        });
+    }
+
     // type_of(value: any) -> str — returns type name (always "i64" at runtime)
     checker.env.define_function(FunctionSig {
         name: "type_of".to_string(),
