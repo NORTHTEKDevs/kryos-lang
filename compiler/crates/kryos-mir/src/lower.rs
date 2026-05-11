@@ -3021,6 +3021,12 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                 } else if let ast::Expr::StringLiteral { value, .. } = expr.as_ref() {
                     string_targets.push((value.clone(), arm_bb));
                     arm_blocks.push((arm_bb, &arm.body, None));
+                } else if let ast::Expr::BoolLiteral { value, .. } = expr.as_ref() {
+                    // Bool patterns: compile as integer switch where true=1, false=0.
+                    // The subject is already i8 (Cranelift's bool repr); the codegen's
+                    // Switch terminator sizes the case constants to the subject's type.
+                    targets.push((if *value { 1 } else { 0 }, arm_bb));
+                    arm_blocks.push((arm_bb, &arm.body, None));
                 } else {
                     default_arm = Some((arm_bb, &arm.body));
                 }

@@ -2883,6 +2883,88 @@ fn parallel_for_non_range_falls_back() {
 // result local.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Regression: bool match arms must produce a real two-way switch, not collapse
+// to the default arm.
+//
+// Before the fix, `match b { true => "yes", false => "no" }` had both arms
+// hit the catch-all `default_arm` branch in `lower_match` (only IntLiteral
+// and StringLiteral literal patterns were recognized; BoolLiteral fell
+// through to `default_arm`). The last arm's body became the only reachable
+// arm and both inputs printed the same string.
+//
+// The fix lowers BoolLiteral patterns as integer switch targets (true=1,
+// false=0), relying on the Cranelift Switch terminator's per-type case
+// constant sizing to compare correctly against an i8 bool subject.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bool_match_emits_two_switch_targets() {
+    // fn describe(b: bool) -> str { match b { true => "yes", false => "no" } }
+    let module = make_module(vec![make_fn(
+        "describe",
+        vec![Param {
+            name: "b".to_string(),
+            ty: Some(simple_ty("bool")),
+            default: None,
+            span: S,
+        }],
+        Some(simple_ty("str")),
+        block(vec![Stmt::Expr {
+            expr: ast::Expr::MatchExpr {
+                subject: Box::new(ident("b")),
+                arms: vec![
+                    MatchArm {
+                        pattern: Pattern::Literal {
+                            expr: Box::new(bool_lit(true)),
+                            span: S,
+                        },
+                        guard: None,
+                        body: Box::new(str_lit("yes")),
+                        span: S,
+                    },
+                    MatchArm {
+                        pattern: Pattern::Literal {
+                            expr: Box::new(bool_lit(false)),
+                            span: S,
+                        },
+                        guard: None,
+                        body: Box::new(str_lit("no")),
+                        span: S,
+                    },
+                ],
+                span: S,
+            },
+            span: S,
+        }]),
+    )]);
+
+    let mir = lower_module(&module);
+    let f = mir
+        .functions
+        .iter()
+        .find(|f| f.name == "describe")
+        .expect("describe function should exist");
+
+    // Look for a Switch terminator with exactly two targets covering 0 and 1.
+    let mut found_two_target_switch = false;
+    for bb in &f.blocks {
+        if let Terminator::Switch { targets, .. } = &bb.terminator {
+            let keys: std::collections::BTreeSet<i64> =
+                targets.iter().map(|(v, _)| *v).collect();
+            if keys == [0, 1].into_iter().collect() {
+                found_two_target_switch = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        found_two_target_switch,
+        "bool match must lower to a Switch with targets {{0, 1}}; got terminators: {:?}",
+        f.blocks.iter().map(|b| &b.terminator).collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn tail_if_in_non_void_fn_emits_value_return() {
     let module = make_module(vec![make_fn(
