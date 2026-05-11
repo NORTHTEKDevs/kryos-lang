@@ -4353,6 +4353,10 @@ fn translate_terminator<M: Module>(
         } => {
             let val = translate_operand(value, builder, translator, module)?;
             let default_cl = translator.blocks[&default.0];
+            // Size the case constants to match the subject value's type, otherwise
+            // we get verifier errors like `arg 1 has type i64, expected i32` when
+            // matching on i32/i16/i8/bool subjects.
+            let case_ty = builder.func.dfg.value_type(val);
 
             // Emit a chain of brif instructions for each target.
             // For a small number of targets this is fine; a br_table would
@@ -4362,7 +4366,13 @@ fn translate_terminator<M: Module>(
             } else {
                 for (i, (case_val, block_id)) in targets.iter().enumerate() {
                     let target_cl = translator.blocks[&block_id.0];
-                    let case_const = builder.ins().iconst(types::I64, *case_val);
+                    let case_const = if case_ty.is_int() {
+                        builder.ins().iconst(case_ty, *case_val)
+                    } else {
+                        // Fallback: non-integer subject -- preserve old behavior to
+                        // surface a clear verifier error rather than panic here.
+                        builder.ins().iconst(types::I64, *case_val)
+                    };
                     let cmp = builder.ins().icmp(IntCC::Equal, val, case_const);
 
                     if i + 1 == targets.len() {

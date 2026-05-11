@@ -3488,6 +3488,61 @@ fn jit_switch_terminator() {
     assert_eq!(f(99), -1);
 }
 
+// 38b. Switch on an i32 subject -- regression for verifier error
+// "arg 1 has type i64, expected i32". Case constants must be sized to the
+// subject value's type, not unconditionally i64.
+#[test]
+fn jit_switch_on_i32_subject() {
+    // fn classify_i32(x: i32) -> i64 {
+    //     match x { 0 => 100, 1 => 200, _ => -1 }
+    // }
+    let func = make_function(
+        "classify_i32",
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I32,
+        }],
+        MirType::I64,
+        vec![MirLocal {
+            id: LocalId(0),
+            name: Some("x".into()),
+            ty: MirType::I32,
+            mutable: false,
+        }],
+        vec![
+            BasicBlock {
+                id: BlockId(0),
+                instructions: vec![],
+                terminator: Terminator::Switch {
+                    value: Operand::Local(LocalId(0)),
+                    targets: vec![(0, BlockId(1)), (1, BlockId(2))],
+                    default: BlockId(3),
+                },
+            },
+            BasicBlock {
+                id: BlockId(1),
+                instructions: vec![],
+                terminator: Terminator::Return(Some(Operand::Constant(Constant::Int(100)))),
+            },
+            BasicBlock {
+                id: BlockId(2),
+                instructions: vec![],
+                terminator: Terminator::Return(Some(Operand::Constant(Constant::Int(200)))),
+            },
+            BasicBlock {
+                id: BlockId(3),
+                instructions: vec![],
+                terminator: Terminator::Return(Some(Operand::Constant(Constant::Int(-1)))),
+            },
+        ],
+    );
+    let ptr = jit::jit_compile_function(&func).expect("JIT compile must succeed without verifier error");
+    let f: extern "C" fn(i32) -> i64 = unsafe { std::mem::transmute(ptr) };
+    assert_eq!(f(0), 100);
+    assert_eq!(f(1), 200);
+    assert_eq!(f(42), -1);
+}
+
 // 39. ConstBool usage
 #[test]
 fn jit_const_bool() {
