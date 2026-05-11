@@ -679,3 +679,39 @@ fn file_id_is_set_on_tokens() {
         assert_eq!(token.span.file_id, 7, "file_id should be 7 for all tokens");
     }
 }
+
+// ==========================================================================
+// UTF-8 in string and char literals is preserved as codepoints (regression
+// test for prior bug where each UTF-8 byte was cast to a Latin-1 char and
+// then re-encoded as UTF-8, producing double-encoded output for any
+// non-ASCII character).
+// ==========================================================================
+
+#[test]
+fn string_literal_preserves_utf8_em_dash() {
+    let toks = lex("\"a — b\"");
+    let s = &toks.iter().find(|t| t.kind == TokenKind::String).unwrap().text;
+    assert_eq!(s, "a — b");
+    assert_eq!(s.chars().count(), 5);
+}
+
+#[test]
+fn string_literal_preserves_utf8_cjk_and_emoji() {
+    let toks = lex("\"日本語 🚀\"");
+    let s = &toks.iter().find(|t| t.kind == TokenKind::String).unwrap().text;
+    assert_eq!(s, "日本語 🚀");
+}
+
+#[test]
+fn char_literal_preserves_utf8() {
+    let toks = lex("'é'");
+    let t = &toks.iter().find(|t| t.kind == TokenKind::Char).unwrap();
+    assert_eq!(t.text, "é");
+}
+
+#[test]
+fn string_literal_with_ascii_still_works() {
+    let toks = lex("\"hello world\"");
+    let s = &toks.iter().find(|t| t.kind == TokenKind::String).unwrap().text;
+    assert_eq!(s, "hello world");
+}

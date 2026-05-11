@@ -60,6 +60,43 @@ impl<'src> Lexer<'src> {
         ch
     }
 
+    /// Consume one full UTF-8 scalar value at `self.pos`, advancing past all
+    /// of its bytes, and return it as a `char`. On a malformed sequence one
+    /// byte is consumed and U+FFFD is returned so we never silently re-encode
+    /// raw UTF-8 bytes as Latin-1 codepoints (which would double-encode).
+    fn advance_utf8(&mut self) -> char {
+        let b0 = self.bytes[self.pos];
+        if b0 < 0x80 {
+            self.pos += 1;
+            return b0 as char;
+        }
+        let width = match b0 {
+            0xC2..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            0xF0..=0xF4 => 4,
+            _ => {
+                self.pos += 1;
+                return '\u{FFFD}';
+            }
+        };
+        if self.pos + width > self.bytes.len() {
+            self.pos += 1;
+            return '\u{FFFD}';
+        }
+        let slice = &self.bytes[self.pos..self.pos + width];
+        match std::str::from_utf8(slice) {
+            Ok(s) => {
+                let ch = s.chars().next().unwrap();
+                self.pos += width;
+                ch
+            }
+            Err(_) => {
+                self.pos += 1;
+                '\u{FFFD}'
+            }
+        }
+    }
+
     fn match_char(&mut self, expected: u8) -> bool {
         if self.at_end() || self.bytes[self.pos] != expected {
             return false;
@@ -300,7 +337,7 @@ impl<'src> Lexer<'src> {
                 continue;
             }
 
-            text.push(self.advance() as char);
+            text.push(self.advance_utf8());
         }
 
         if !self.at_end() {
@@ -327,7 +364,7 @@ impl<'src> Lexer<'src> {
                 c => c as char,
             }
         } else {
-            self.advance() as char
+            self.advance_utf8()
         };
 
         if !self.at_end() && self.peek() == b'\'' {
