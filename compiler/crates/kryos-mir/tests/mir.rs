@@ -2866,3 +2866,68 @@ fn parallel_for_non_range_falls_back() {
         "fallback should emit len() call like regular for"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Regression: `if` at the tail position of a non-void function must produce a
+// real value and a Return(Some(_)) terminator. Previously the parser parsed
+// a tail `if c { a } else { b }` as `Stmt::If` (not `Stmt::Expr { IfExpr }`),
+// the tail-expression detection in `lower_module` only matched `Stmt::Expr`,
+// so we fell through to the non-tail path which sealed every function with
+// `Return(None)` even when the declared return type was non-void. Generated
+// code then read whatever happened to be in the return register, producing
+// silent stack corruption that crashed the caller after main printed
+// everything successfully.
+//
+// This test pins the fix: a function `fn f() -> i64 { if true { 1 } else { 2 } }`
+// must lower to a Return(Some(...)) and write the branch values into a real
+// result local.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tail_if_in_non_void_fn_emits_value_return() {
+    let module = make_module(vec![make_fn(
+        "tail_if",
+        vec![],
+        Some(simple_ty("i64")),
+        block(vec![Stmt::If {
+            condition: bool_lit(true),
+            then_block: block(vec![Stmt::Expr {
+                expr: int_lit(1),
+                span: S,
+            }]),
+            elif_clauses: vec![],
+            else_block: Some(block(vec![Stmt::Expr {
+                expr: int_lit(2),
+                span: S,
+            }])),
+            span: S,
+        }]),
+    )]);
+
+    let mir = lower_module(&module);
+    let f = mir
+        .functions
+        .iter()
+        .find(|f| f.name == "tail_if")
+        .expect("tail_if function should exist");
+
+    // The function must seal with Return(Some(_)), not Return(None).
+    let sealed_with_value_return = f.blocks.iter().any(|bb| {
+        matches!(&bb.terminator, Terminator::Return(Some(_)))
+    });
+    assert!(
+        sealed_with_value_return,
+        "tail-if function must seal with Return(Some(_)) so the caller \
+         doesn't read garbage from the return register. Terminators were: {:?}",
+        f.blocks.iter().map(|b| &b.terminator).collect::<Vec<_>>()
+    );
+
+    // No block may seal with Return(None) for this signature.
+    let any_void_return = f.blocks.iter().any(|bb| {
+        matches!(&bb.terminator, Terminator::Return(None))
+    });
+    assert!(
+        !any_void_return,
+        "non-void function must not emit Return(None) terminators"
+    );
+}

@@ -1043,15 +1043,55 @@ pub fn lower_function(
         .collect();
 
     // Lower the body statements.  If the function has a non-void return type
-    // and the last statement is a bare expression, treat it as a tail expression
-    // (implicit return) so that e.g. a trailing `match` becomes the return value.
+    // and the last statement is a bare expression OR a value-producing
+    // control-flow construct (if / match), treat it as a tail expression
+    // (implicit return) so that e.g. a trailing `if c { 0 } else { 1 }` or
+    // `match x { ... }` becomes the function's return value rather than
+    // silently lowering to `return ()` from a non-void signature.
+    let last_stmt = body.stmts.last();
     let has_tail_expr = mir_ret_ty != MirType::Void
-        && body
-            .stmts
-            .last()
-            .is_some_and(|s| matches!(s, ast::Stmt::Expr { .. }));
+        && last_stmt.is_some_and(|s| matches!(s, ast::Stmt::Expr { .. }));
+    // `match` at statement position is parsed as Stmt::Expr { MatchExpr }, so
+    // it is already covered by has_tail_expr. Only `if` needs special handling
+    // here because the parser commits to Stmt::If at statement position.
+    let has_tail_ctrl = mir_ret_ty != MirType::Void
+        && last_stmt.is_some_and(|s| matches!(s, ast::Stmt::If { .. }));
 
-    if has_tail_expr && !body.stmts.is_empty() {
+    if has_tail_ctrl && !body.stmts.is_empty() {
+        let (init, last) = body.stmts.split_at(body.stmts.len() - 1);
+        let scope_start = ctx.locals.len();
+        for stmt in init {
+            lower_stmt(ctx, stmt);
+        }
+        // Use the existing block-as-value lowering path: allocate a result
+        // local sized for the declared return type and let the if/match
+        // arms write their tail values into it via `lower_block_as_value`.
+        let result_local = ctx.alloc_temp(mir_ret_ty.clone());
+        lower_block_as_value(ctx, std::slice::from_ref(&last[0]), result_local);
+        // Emit drops for in-scope locals before returning, matching the
+        // tail-expression path's behavior.
+        let scope_end = ctx.locals.len();
+        for i in (scope_start..scope_end).rev() {
+            if ctx.locals[i].name.is_some() {
+                let local_id = ctx.locals[i].id;
+                if ctx.param_locals.contains(&local_id.0)
+                    || ctx.borrowed_locals.contains(&local_id.0)
+                {
+                    continue;
+                }
+                if !ctx.dropped_locals.contains(&local_id.0)
+                    && local_id != result_local
+                    && !ctx.partial_moved_locals.contains(&local_id.0)
+                {
+                    ctx.emit(Instruction::Drop { local: local_id });
+                    ctx.dropped_locals.insert(local_id.0);
+                }
+            }
+        }
+        if ctx.blocks.len() < ctx.next_block as usize {
+            ctx.seal_block(Terminator::Return(Some(Operand::Local(result_local))));
+        }
+    } else if has_tail_expr && !body.stmts.is_empty() {
         let (init, last) = body.stmts.split_at(body.stmts.len() - 1);
         // Lower all statements except the last.
         let scope_start = ctx.locals.len();
@@ -3205,6 +3245,18 @@ fn is_copy_type(ctx: &LoweringContext, ty: &MirType) -> bool {
 /// pre-pass to resolve field accesses and call results.  Falls back to Void
 /// for unknown function calls and the terminal catch-all; falls back to I64
 /// for literals, identifiers, and structural sub-expression types.
+/// Infer the MIR type of the value produced by a block when used as a value
+/// (the type of its tail expression). Returns `None` when the block does not
+/// produce a value (empty, or last stmt is not an expression).
+fn infer_branch_value_type(ctx: &mut LoweringContext, block: &ast::Block) -> Option<MirType> {
+    let last = block.stmts.last()?;
+    match last {
+        ast::Stmt::Expr { expr, .. } => Some(infer_expr_type(ctx, expr)),
+        ast::Stmt::Return { value: Some(expr), .. } => Some(infer_expr_type(ctx, expr)),
+        _ => None,
+    }
+}
+
 fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
     match expr {
         ast::Expr::IntLiteral { .. } => MirType::I64,
@@ -4250,7 +4302,20 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             ..
         } => {
             // Lower if-expression: both branches assign to a result local.
-            let result_local = ctx.alloc_temp(MirType::I64);
+            //
+            // The result local must be sized for the type the branches actually
+            // produce, not unconditionally I64 — otherwise a function whose tail
+            // expression is `if c { 0i32 } else { 1i32 }` allocates a 32-bit
+            // return slot in the caller while we write 64 bits into it, which
+            // silently corrupts the caller's frame and crashes after return.
+            //
+            // Inference mirrors the rule used by `infer_expr_type` for IfExpr:
+            // look at the tail expression of the then-branch, fall back to the
+            // else-branch's tail, then to I64 as a last resort.
+            let result_ty = infer_branch_value_type(ctx, then_branch)
+                .or_else(|| else_branch.as_ref().and_then(|b| infer_branch_value_type(ctx, b)))
+                .unwrap_or(MirType::I64);
+            let result_local = ctx.alloc_temp(result_ty);
             let cond_op = lower_expr_to_operand(ctx, condition);
             let then_bb = ctx.alloc_block();
             let else_bb = ctx.alloc_block();
