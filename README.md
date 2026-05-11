@@ -2,7 +2,7 @@
 
 A compiled systems language with ownership-based memory safety, capability enforcement, and dual-backend native compilation.
 
-**v0.3.6** -- 821+ tests passing, self-hosting compiler, zero known issues.
+**v0.4.0** -- 843+ tests passing, self-hosting compiler, credible-beta release.
 
 ---
 
@@ -276,7 +276,7 @@ kryos bindgen <header.h>     Generate Kryos bindings from C header
 
 ## Status
 
-Kryos is **v0.3.6**. The core language is complete and production-capable for systems programming.
+Kryos is **v0.4.0** (credible-beta). The core language is complete and production-capable for systems programming.
 
 | Feature | Status |
 |---------|--------|

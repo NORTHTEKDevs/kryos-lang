@@ -4,6 +4,96 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0] - 2026-05-11 — "credible beta"
+
+This is the release that takes Kryos from a hand-rolled toy compiler to a
+language that can credibly be tried by someone other than its author.
+Every item below ships with documentation, tests, or a runnable demo;
+nothing in this release is marked experimental.
+
+### Added
+
+#### Reliability
+- **Runtime panics carry source spans.** Every runtime panic (overflow,
+  division by zero, array-OOB, stack overflow, etc.) now points at the
+  `file:line:col` where it originated rather than at the runtime crate
+  internals.
+- **Stack-overflow detection** via a `SIGSEGV` alt-stack handler that
+  distinguishes recursion blow-outs from generic segfaults and reports
+  them with a friendlier message + the offending span.
+- **Integer-overflow policy** is now defined and documented in
+  `docs/16-integer-overflow.md`: `wrapping_*` / `checked_*` /
+  `saturating_*` builtins are available, signed overflow with the plain
+  `+ - *` operators is well-defined as wrap-on-release, panic-on-debug.
+- **Unsafe-block audit** in `docs/17-unsafe-audit.md`: every `unsafe`
+  region in the runtime and native stdlib (8 patterns across 8 files)
+  has a documented invariant.
+
+#### Tooling
+- **`kryos explain ERRXXXX`** with 20 long-form error articles (modelled
+  on `rustc --explain`). Each includes a broken example, a fixed example,
+  and the rationale behind the diagnostic. Run `kryos explain --list` for
+  the catalog.
+- **`kryos test` cargo-parity**: positional `FILTER` argument,
+  `--exact`, `--nocapture`, `--list`, and `--format=json` for
+  newline-delimited JSON output that mirrors
+  `cargo test --format=json` events.
+- **`kryos build --target=<triple>`** is now wired through to LLVM
+  rather than silently using the host triple. Eleven known-good targets
+  ship with descriptions; `--target=help` prints the table. See
+  `docs/18-cross-compilation.md` for required toolchains and known
+  failure modes.
+- **Benchmark suite** under `benchmarks/` covering mandelbrot, n-body,
+  binary-trees, fannkuch, matmul, and fib against Rust and C baselines.
+  `benchmarks/run.sh` produces a reproducible `RESULTS.md`; on the
+  reference hardware Kryos hits parity with C on mandelbrot (1.03×) and
+  stays within 3.5×4.5× on the numeric benchmarks.
+
+#### Documentation
+- **`docs/19-language-reference.md`** — the authoritative v0.4 language
+  spec: lexical structure, type system, expression grammar (with the
+  full precedence table), control flow, declarations, pattern matching,
+  ownership / drop order, integer overflow, concurrency, unsafe code,
+  modules, panics, and a conformance checklist.
+- **`docs/BUGS.md`** records the one known-leaky pattern in the v0.4
+  ownership checker (string-field move across struct-returning function
+  boundaries) along with its workaround.
+
+#### Showcase suite
+Five end-to-end programs under `examples/showcase/` proving the
+language can be used to build the kinds of things it claims to support:
+
+- `cli_tool.kry`       — grep-style CLI with POSIX exit codes.
+- `parser.kry`         — recursive-descent calculator with error
+  reporting (source columns, three failure modes).
+- `bytecode_vm.kry`    — stack VM with a 13-opcode ISA, disassembler,
+  and three demo programs (sum 1..10, factorial(7), fib(10)).
+- `agent_runtime.kry`  — LLM-style tool-use loop: history, planner,
+  tool registry, bounded step budget.
+- `web_server.kry`     — minimal HTTP/1.0 server using `tcp_listen` /
+  `tcp_accept` / `tcp_send`, serving HTML / JSON / 404 routes.
+
+See `examples/showcase/README.md` for run instructions.
+
+### Changed
+- Workspace version bumped to `0.4.0` across all crates.
+- The test runner library now exposes `RunOptions`, `run_test_with`,
+  `run_all_with`, `run_annotated_tests_with`, and `format_report_json`
+  in addition to the existing entry points. Existing callers keep
+  working unchanged.
+- 843 workspace tests now pass (up from 831 at the start of the v0.4
+  cycle); +12 from new unit tests across the `kryos test`, `explain`,
+  and `build --target` work.
+
+### Status
+
+Kryos v0.4.0 is the **credible-beta** release: the toolchain is
+complete enough that someone other than the author can clone it, build
+it, follow the docs, and write real programs. Real users and a stable
+1.0 API still ahead.
+
+---
+
 ## [0.3.6] - 2026-05-11
 
 ### Fixed
