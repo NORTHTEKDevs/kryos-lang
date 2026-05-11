@@ -45,34 +45,34 @@ pub fn execute(
         eprintln!("kryos: build config = {:?}", config);
     }
 
+    // Resolve target triple. If the user passed --target, validate and use
+    // it; otherwise default to the host.
+    let resolved_target = resolve_target(target)?;
+
+    // Warn if cross-compile was requested in debug mode — Cranelift only
+    // targets the host. Tell the user to add --release for LLVM cross.
+    if target.is_some() && matches!(mode, BuildMode::Debug) && resolved_target != host_target_triple() {
+        eprintln!(
+            "warning: --target={resolved_target} requires --release (LLVM backend). \
+             Cranelift only produces code for the host. Add --release to cross-compile."
+        );
+    }
+
     // Instantiate the appropriate codegen backend based on build mode.
     let backend: Box<dyn Backend> = match mode {
         BuildMode::Debug => Box::new(kryos_codegen_cranelift::CraneliftBackend::new()),
-        BuildMode::Release => {
-            let triple = if cfg!(target_os = "windows") {
-                if cfg!(target_arch = "x86_64") {
-                    "x86_64-pc-windows-msvc"
-                } else {
-                    "aarch64-pc-windows-msvc"
-                }
-            } else if cfg!(target_os = "macos") {
-                if cfg!(target_arch = "aarch64") {
-                    "aarch64-apple-darwin"
-                } else {
-                    "x86_64-apple-darwin"
-                }
-            } else {
-                "x86_64-unknown-linux-gnu"
-            };
-            Box::new(kryos_codegen_llvm::LlvmBackend::new(
-                kryos_codegen_llvm::EmitOptions {
-                    opt_level: kryos_codegen_llvm::OptLevel::O2,
-                    target_triple: Some(triple.to_string()),
-                    target_datalayout: None,
-                },
-            ))
-        }
+        BuildMode::Release => Box::new(kryos_codegen_llvm::LlvmBackend::new(
+            kryos_codegen_llvm::EmitOptions {
+                opt_level: kryos_codegen_llvm::OptLevel::O2,
+                target_triple: Some(resolved_target.clone()),
+                target_datalayout: None,
+            },
+        )),
     };
+
+    if verbose {
+        eprintln!("kryos: target = {resolved_target}");
+    }
 
     let p = Path::new(path);
 
@@ -136,6 +136,78 @@ pub fn execute(
     }
 
     Ok(())
+}
+
+/// Known target triples. Supplying `--target=help` prints this list.
+/// We accept arbitrary triples too (LLVM will reject invalid ones at
+/// codegen time); this list is just for tab-completion and validation hints.
+const KNOWN_TARGETS: &[(&str, &str)] = &[
+    ("x86_64-unknown-linux-gnu", "Linux on x86_64 (glibc)"),
+    ("x86_64-unknown-linux-musl", "Linux on x86_64 (musl, fully static)"),
+    ("aarch64-unknown-linux-gnu", "Linux on ARM64 (glibc)"),
+    ("aarch64-unknown-linux-musl", "Linux on ARM64 (musl, fully static)"),
+    ("x86_64-pc-windows-gnu", "Windows on x86_64 (MinGW)"),
+    ("x86_64-pc-windows-msvc", "Windows on x86_64 (MSVC)"),
+    ("aarch64-pc-windows-msvc", "Windows on ARM64 (MSVC)"),
+    ("x86_64-apple-darwin", "macOS on x86_64"),
+    ("aarch64-apple-darwin", "macOS on ARM64 (Apple Silicon)"),
+    ("wasm32-unknown-unknown", "WebAssembly (browser)"),
+    ("wasm32-wasi", "WebAssembly (WASI)"),
+];
+
+/// Resolve a target triple. `None` means use the host. `Some("help")` prints
+/// the list and returns a special sentinel.
+fn resolve_target(target: Option<&str>) -> Result<String, String> {
+    match target {
+        None => Ok(host_target_triple().to_string()),
+        Some("help") | Some("list") => {
+            println!("Known target triples:");
+            println!();
+            for (triple, desc) in KNOWN_TARGETS {
+                println!("  {:35}  {}", triple, desc);
+            }
+            println!();
+            println!("You may also pass an arbitrary LLVM triple; it will be forwarded as-is.");
+            std::process::exit(0);
+        }
+        Some(t) => {
+            // Warn (not error) if the triple isn't recognized; LLVM might still accept it.
+            if !KNOWN_TARGETS.iter().any(|(known, _)| *known == t) {
+                eprintln!(
+                    "warning: target `{t}` is not in the known-good list. Run \
+                     `kryos build --target=help` to see supported triples. Forwarding to LLVM."
+                );
+            }
+            Ok(t.to_string())
+        }
+    }
+}
+
+/// The compile-time host triple.
+fn host_target_triple() -> &'static str {
+    if cfg!(target_os = "windows") {
+        if cfg!(target_arch = "x86_64") {
+            "x86_64-pc-windows-msvc"
+        } else {
+            "aarch64-pc-windows-msvc"
+        }
+    } else if cfg!(target_os = "macos") {
+        if cfg!(target_arch = "aarch64") {
+            "aarch64-apple-darwin"
+        } else {
+            "x86_64-apple-darwin"
+        }
+    } else if cfg!(target_env = "musl") {
+        if cfg!(target_arch = "aarch64") {
+            "aarch64-unknown-linux-musl"
+        } else {
+            "x86_64-unknown-linux-musl"
+        }
+    } else if cfg!(target_arch = "aarch64") {
+        "aarch64-unknown-linux-gnu"
+    } else {
+        "x86_64-unknown-linux-gnu"
+    }
 }
 
 /// Check whether stderr is a terminal (for colored output).
