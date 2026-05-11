@@ -522,6 +522,42 @@ fn test_match_expr() {
     }
 }
 
+#[test]
+fn test_match_negative_int_pattern() {
+    // Regression: `-1` as a match arm pattern was a parse error before the fix.
+    // It must lower to a single IntLiteral pattern with value -1.
+    let m = parse_ok(
+        "fn f() { match n { -1 => 0, 0 => 1, _ => 2 } }",
+    );
+    match &m.declarations[0] {
+        Decl::Function {
+            body: Some(block), ..
+        } => match &block.stmts[0] {
+            Stmt::Expr { expr, .. } => match expr {
+                Expr::MatchExpr { arms, .. } => {
+                    assert_eq!(arms.len(), 3, "expected 3 arms");
+                    match &arms[0].pattern {
+                        Pattern::Literal { expr, .. } => match expr.as_ref() {
+                            Expr::IntLiteral { value: -1, .. } => {}
+                            other => panic!(
+                                "expected first arm pattern IntLiteral(-1), got {:?}",
+                                other
+                            ),
+                        },
+                        other => panic!(
+                            "expected first arm Pattern::Literal, got {:?}",
+                            other
+                        ),
+                    }
+                }
+                other => panic!("expected MatchExpr, got {:?}", other),
+            },
+            other => panic!("expected Expr stmt, got {:?}", other),
+        },
+        other => panic!("expected Function, got {:?}", other),
+    }
+}
+
 // ======================== Expression precedence ========================
 
 #[test]

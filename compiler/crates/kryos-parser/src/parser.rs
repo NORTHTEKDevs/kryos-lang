@@ -2122,6 +2122,26 @@ impl Parser {
                     span: tok.span,
                 }
             }
+            // Negative integer literal pattern: `-1`, `-128`, etc.
+            // Folded into a single IntLiteral so downstream code (Pattern::Literal
+            // matcher in lower_match) doesn't need to grow a unary case.
+            TokenKind::Minus
+                if self
+                    .tokens
+                    .get(self.pos + 1)
+                    .map(|t| t.kind == TokenKind::Integer)
+                    .unwrap_or(false) =>
+            {
+                self.advance(); // consume '-'
+                let int_tok = self.peek().clone();
+                self.advance(); // consume integer
+                let value = -parse_int_literal(&int_tok.text);
+                let span = tok.span.merge(int_tok.span);
+                Pattern::Literal {
+                    expr: Box::new(Expr::IntLiteral { value, span }),
+                    span,
+                }
+            }
             TokenKind::String => {
                 self.advance();
                 Pattern::Literal {
