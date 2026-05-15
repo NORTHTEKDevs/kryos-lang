@@ -1,0 +1,211 @@
+// sdl_imgui.kry - Immediate-mode GUI demo for Kryos via SDL2 FFI.
+//
+// Renders a window with three "widgets":
+//   - a title bar (filled rectangle)
+//   - a button (rectangle + colored hover state)
+//   - a checkbox (rectangle + tick)
+//   - a slider (track + thumb)
+//
+// All widgets are drawn each frame from scratch (immediate mode) with
+// SDL2 primitive draw calls; no widget retains state across frames --
+// state is passed in and out by the caller.
+//
+// To keep this self-contained without SDL_ttf, "text" is rendered as
+// colored rectangles inside widget bounds (visual placeholder). Real
+// applications would either link SDL_ttf or rasterize a small bitmap
+// font in Kryos directly.
+//
+// Run headless:
+//   SDL_VIDEODRIVER=dummy kryos run examples/sdl_imgui.kry
+
+extern "C" {
+    fn kryos_ffi_dlopen(name: str) -> i64
+    fn kryos_ffi_dlsym(handle: i64, name: str) -> i64
+    fn kryos_ffi_dlclose(handle: i64) -> i64
+
+    fn kryos_ffi_dlcall0(fp: i64) -> i64
+    fn kryos_ffi_dlcall1(fp: i64, a1: i64) -> i64
+    fn kryos_ffi_dlcall2(fp: i64, a1: i64, a2: i64) -> i64
+    fn kryos_ffi_dlcall3(fp: i64, a1: i64, a2: i64, a3: i64) -> i64
+    fn kryos_ffi_dlcall5(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64) -> i64
+    fn kryos_ffi_dlcall6(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64) -> i64
+
+    fn kryos_ffi_dlcallv1(fp: i64, a1: i64)
+    fn kryos_ffi_dlcallv2(fp: i64, a1: i64, a2: i64)
+
+    fn kryos_ffi_malloc(n: i64) -> i64
+    fn kryos_ffi_free(p: i64, n: i64)
+    fn kryos_ffi_write_i32(p: i64, v: i64)
+    fn kryos_ffi_cstr(s: str) -> i64
+    fn kryos_ffi_string_from_ptr(p: i64, len: i64) -> str
+}
+
+// Globals (would be a struct in a typed GUI; keep flat for the demo).
+let mut g_ren: i64 = 0
+let mut g_rect: i64 = 0
+let mut g_set_color: i64 = 0
+let mut g_fill_rect: i64 = 0
+
+fn ui_set_color(r: i64, g: i64, b: i64, a: i64) {
+    kryos_ffi_dlcall5(g_set_color, g_ren, r, g, b, a)
+}
+
+fn ui_fill(x: i64, y: i64, w: i64, h: i64) {
+    kryos_ffi_write_i32(g_rect, x)
+    kryos_ffi_write_i32(g_rect + 4, y)
+    kryos_ffi_write_i32(g_rect + 8, w)
+    kryos_ffi_write_i32(g_rect + 12, h)
+    kryos_ffi_dlcall2(g_fill_rect, g_ren, g_rect)
+}
+
+// Title bar at the top of the window.
+fn ui_title_bar(x: i64, y: i64, w: i64) {
+    ui_set_color(45, 55, 78, 255)
+    ui_fill(x, y, w, 32)
+    // Faux text: two thin bars next to the left edge.
+    ui_set_color(220, 220, 230, 255)
+    ui_fill(x + 12, y + 10, 80, 4)
+    ui_fill(x + 12, y + 20, 50, 3)
+}
+
+// Button. Returns true if the mouse is "over" it (always false in this
+// scripted demo, but we keep the signature realistic).
+fn ui_button(x: i64, y: i64, w: i64, h: i64, hover: bool) -> bool {
+    if hover {
+        ui_set_color(100, 160, 255, 255)
+    } else {
+        ui_set_color(70, 110, 200, 255)
+    }
+    ui_fill(x, y, w, h)
+    // Inset highlight
+    ui_set_color(120, 180, 255, 255)
+    ui_fill(x + 2, y + 2, w - 4, 3)
+    // Faux text in the middle
+    ui_set_color(255, 255, 255, 255)
+    ui_fill(x + 16, y + (h / 2) - 2, w - 32, 4)
+    return hover
+}
+
+// Checkbox.
+fn ui_checkbox(x: i64, y: i64, size: i64, checked: bool) {
+    // Background
+    ui_set_color(30, 35, 50, 255)
+    ui_fill(x, y, size, size)
+    // Border
+    ui_set_color(160, 170, 200, 255)
+    ui_fill(x, y, size, 2)
+    ui_fill(x, y + size - 2, size, 2)
+    ui_fill(x, y, 2, size)
+    ui_fill(x + size - 2, y, 2, size)
+    if checked {
+        // Tick (diagonal pair of small rects approximating a check)
+        ui_set_color(120, 220, 130, 255)
+        ui_fill(x + 4, y + size / 2, size / 3, 3)
+        ui_fill(x + size / 3, y + 4, 3, size / 2)
+    }
+}
+
+// Slider: filled portion is 0..value (0..100).
+fn ui_slider(x: i64, y: i64, w: i64, value: i64) {
+    // Track
+    ui_set_color(30, 35, 50, 255)
+    ui_fill(x, y + 8, w, 6)
+    // Fill
+    let mut v = value
+    if v < 0 { v = 0 }
+    if v > 100 { v = 100 }
+    let fill_w = w * v / 100
+    ui_set_color(100, 200, 140, 255)
+    ui_fill(x, y + 8, fill_w, 6)
+    // Thumb
+    ui_set_color(220, 220, 230, 255)
+    ui_fill(x + fill_w - 4, y, 8, 22)
+}
+
+fn main() {
+    println("--- Kryos SDL2 immediate-mode GUI demo ---")
+
+    let SDL_INIT_VIDEO = 32
+    let SDL_WINDOWPOS_CENTERED = 805240832
+
+    let sdl = kryos_ffi_dlopen("libSDL2-2.0.so.0")
+    if sdl == 0 {
+        println("SDL2 not available")
+        return
+    }
+
+    let sdl_init           = kryos_ffi_dlsym(sdl, "SDL_Init")
+    let sdl_quit           = kryos_ffi_dlsym(sdl, "SDL_Quit")
+    let sdl_get_error      = kryos_ffi_dlsym(sdl, "SDL_GetError")
+    let sdl_create_window  = kryos_ffi_dlsym(sdl, "SDL_CreateWindow")
+    let sdl_destroy_window = kryos_ffi_dlsym(sdl, "SDL_DestroyWindow")
+    let sdl_create_renderer  = kryos_ffi_dlsym(sdl, "SDL_CreateRenderer")
+    let sdl_destroy_renderer = kryos_ffi_dlsym(sdl, "SDL_DestroyRenderer")
+    let sdl_set_draw_color = kryos_ffi_dlsym(sdl, "SDL_SetRenderDrawColor")
+    let sdl_render_clear   = kryos_ffi_dlsym(sdl, "SDL_RenderClear")
+    let sdl_fill_rect      = kryos_ffi_dlsym(sdl, "SDL_RenderFillRect")
+    let sdl_present        = kryos_ffi_dlsym(sdl, "SDL_RenderPresent")
+    let sdl_delay          = kryos_ffi_dlsym(sdl, "SDL_Delay")
+
+    if kryos_ffi_dlcall1(sdl_init, SDL_INIT_VIDEO) != 0 {
+        let err = kryos_ffi_dlcall0(sdl_get_error)
+        println("SDL_Init failed: " + kryos_ffi_string_from_ptr(err, -1))
+        return
+    }
+    println("SDL_Init OK")
+
+    let win = kryos_ffi_dlcall6(
+        sdl_create_window,
+        kryos_ffi_cstr("kryos imgui"),
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        640, 360, 0,
+    )
+    if win == 0 {
+        kryos_ffi_dlcall0(sdl_quit)
+        return
+    }
+    println("window created")
+
+    let ren = kryos_ffi_dlcall3(sdl_create_renderer, win, -1, 0)
+    if ren == 0 {
+        kryos_ffi_dlcallv1(sdl_destroy_window, win)
+        kryos_ffi_dlcall0(sdl_quit)
+        return
+    }
+    println("renderer created")
+
+    g_ren = ren
+    g_rect = kryos_ffi_malloc(16)
+    g_set_color = sdl_set_draw_color
+    g_fill_rect = sdl_fill_rect
+
+    // ---- Draw one frame of GUI ------------------------------------
+    // Clear background to dark slate.
+    ui_set_color(22, 26, 38, 255)
+    kryos_ffi_dlcall1(sdl_render_clear, g_ren)
+
+    // Title bar.
+    ui_title_bar(0, 0, 640)
+
+    // Two buttons (hover state simulated).
+    ui_button(40, 80, 200, 48, false)
+    ui_button(40, 150, 200, 48, true)   // "hovered"
+
+    // Two checkboxes.
+    ui_checkbox(280, 90, 28, true)
+    ui_checkbox(280, 160, 28, false)
+
+    // Slider at the bottom.
+    ui_slider(40, 260, 560, 65)
+
+    kryos_ffi_dlcall1(sdl_present, g_ren)
+    println("GUI frame drawn (title bar + 2 buttons + 2 checkboxes + slider)")
+    kryos_ffi_dlcallv1(sdl_delay, 250)
+
+    kryos_ffi_free(g_rect, 16)
+    kryos_ffi_dlcallv1(sdl_destroy_renderer, g_ren)
+    kryos_ffi_dlcallv1(sdl_destroy_window, win)
+    kryos_ffi_dlcall0(sdl_quit)
+    kryos_ffi_dlclose(sdl)
+    println("clean shutdown")
+}
