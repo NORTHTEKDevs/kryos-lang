@@ -675,6 +675,28 @@ impl JitCompiler {
         );
         // kryos_sleep_ms is provided by kryos-rt (see above).
 
+        // TLS server (Gap A)
+        jit_builder.symbol(
+            "kryos_tls_server_config_ks",
+            kryos_stdlib_native::tls::kryos_tls_server_config_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_tls_accept",
+            kryos_stdlib_native::tls::kryos_tls_accept as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_tls_send_ks",
+            kryos_stdlib_native::tls::kryos_tls_send_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_tls_recv_ks",
+            kryos_stdlib_native::tls::kryos_tls_recv_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_tls_close_ks",
+            kryos_stdlib_native::tls::kryos_tls_close_ks as *const u8,
+        );
+
         // Stdlib-native: JSON (all handles are i64)
         jit_builder.symbol(
             "kryos_json_parse",
@@ -1373,6 +1395,12 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_tcp_set_nonblocking", "kryos_tcp_set_nonblocking", sig(2));
     decl!("kryos_tcp_try_accept", "kryos_tcp_try_accept", sig(1));
     decl!("kryos_tcp_try_recv_ks", "kryos_tcp_try_recv_ks", sig(2));
+    // TLS server (Gap A)
+    decl!("kryos_tls_server_config_ks", "kryos_tls_server_config_ks", sig(2));
+    decl!("kryos_tls_accept", "kryos_tls_accept", sig(2));
+    decl!("kryos_tls_send_ks", "kryos_tls_send_ks", sig(2));
+    decl!("kryos_tls_recv_ks", "kryos_tls_recv_ks", sig(2));
+    decl!("kryos_tls_close_ks", "kryos_tls_close_ks", sig(1));
     // kryos_sleep_ms is declared above in the spawn block.
 
     // --- JSON ---

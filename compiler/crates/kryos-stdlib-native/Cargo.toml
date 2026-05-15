@@ -10,13 +10,14 @@ crate-type = ["staticlib", "rlib"]
 default = ["crypto", "sqlite", "tls"]
 crypto = ["ring"]
 sqlite = ["rusqlite"]
-tls = ["rustls", "rustls-pki-types", "webpki-roots"]
+tls = ["rustls", "rustls-pemfile", "rustls-pki-types", "webpki-roots"]
 
 [dependencies]
 kryos-rt.workspace = true
 ring = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
+rustls-pemfile = { workspace = true, optional = true }
 rustls-pki-types = { workspace = true, optional = true }
 webpki-roots = { workspace = true, optional = true }
 regex.workspace = true

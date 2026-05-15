@@ -3001,6 +3001,12 @@ fn translate_rvalue<M: Module>(
                 "tcp_set_nonblocking" => ("kryos_tcp_set_nonblocking", 2),
                 "tcp_try_accept" => ("kryos_tcp_try_accept", 1),
                 "tcp_try_recv" => ("kryos_tcp_try_recv_ks", 2),
+                // TLS server (Gap A)
+                "tls_server_config" => ("kryos_tls_server_config_ks", 2),
+                "tls_accept" => ("kryos_tls_accept", 2),
+                "tls_send" => ("kryos_tls_send_ks", 2),
+                "tls_recv" => ("kryos_tls_recv_ks", 2),
+                "tls_close" => ("kryos_tls_close_ks", 1),
                 "sleep_ms" => ("kryos_sleep_ms", 1),
                 // JSON (handles are i64; all string args are i64 KryosString handles).
                 "json_parse" => ("kryos_json_parse", 1),

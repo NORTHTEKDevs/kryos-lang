@@ -298,6 +298,21 @@ pub extern "C" fn kryos_socket_close_ks(fd: i64) -> i64 {
 //
 // On top of this, `std.poll` provides a slightly higher-level interface.
 
+/// Remove and return the underlying TcpStream for the given fd.
+/// Used by the TLS module to promote a raw TCP fd to a TLS server stream.
+/// Returns None if the fd is not found or is not a stream.
+pub(crate) fn take_tcp_stream(fd: i64) -> Option<TcpStream> {
+    with_socket_table(|table| match table.map.remove(&fd) {
+        Some(SocketEntry::Stream(s)) => Some(s),
+        Some(other) => {
+            // Not a stream — put it back to avoid breaking the caller
+            table.map.insert(fd, other);
+            None
+        }
+        None => None,
+    })
+}
+
 /// Set the non-blocking flag on a Kryos socket fd.
 /// Returns 0 on success, -1 on failure.
 #[no_mangle]

@@ -3161,6 +3161,66 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     });
 
     // -----------------------------------------------------------------------
+    // TLS server builtins (Gap A)
+    // -----------------------------------------------------------------------
+    // tls_server_config(cert_path: str, key_path: str) -> i64
+    checker.env.define_function(FunctionSig {
+        name: "tls_server_config".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("cert_path".to_string(), Type::Str),
+            ("key_path".to_string(), Type::Str),
+        ],
+        ret: Type::I64,
+    });
+
+    // tls_accept(client_tcp_fd: i64, config_handle: i64) -> i64
+    checker.env.define_function(FunctionSig {
+        name: "tls_accept".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("client_tcp_fd".to_string(), Type::I64),
+            ("config_handle".to_string(), Type::I64),
+        ],
+        ret: Type::I64,
+    });
+
+    // tls_send(fd: i64, data: str) -> i64
+    checker.env.define_function(FunctionSig {
+        name: "tls_send".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("fd".to_string(), Type::I64),
+            ("data".to_string(), Type::Str),
+        ],
+        ret: Type::I64,
+    });
+
+    // tls_recv(fd: i64, max_bytes: i64) -> str
+    checker.env.define_function(FunctionSig {
+        name: "tls_recv".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("fd".to_string(), Type::I64),
+            ("max_bytes".to_string(), Type::I64),
+        ],
+        ret: Type::Str,
+    });
+
+    // tls_close(fd: i64) -> void
+    checker.env.define_function(FunctionSig {
+        name: "tls_close".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("fd".to_string(), Type::I64)],
+        ret: Type::Void,
+    });
+
+    // -----------------------------------------------------------------------
     // JSON builtins
     // -----------------------------------------------------------------------
     checker.env.define_function(FunctionSig {

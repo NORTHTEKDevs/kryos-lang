@@ -73,6 +73,7 @@ crossterm = "0.28"
 toml = "0.8"
 rusqlite = { version = "0.31", features = ["bundled"] }
 rustls = { version = "0.23", features = ["ring"] }
+rustls-pemfile = "2"
 rustls-pki-types = "1"
 webpki-roots = "0.26"
 criterion = { version = "0.5", features = ["html_reports"] }

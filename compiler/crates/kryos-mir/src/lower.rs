@@ -568,6 +568,12 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("tcp_try_accept", MirType::I64),
         ("tcp_try_recv", MirType::Str),
         ("sleep_ms", MirType::Void),
+        // TLS server (Gap A)
+        ("tls_server_config", MirType::I64),
+        ("tls_accept", MirType::I64),
+        ("tls_send", MirType::I64),
+        ("tls_recv", MirType::Str),
+        ("tls_close", MirType::I64),
     ] {
         ctx.func_ret_types.insert(name.to_string(), ret_ty);
     }
