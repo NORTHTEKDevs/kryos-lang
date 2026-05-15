@@ -3414,6 +3414,10 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             if let Some((enum_name, _)) = find_enum_variant(ctx, name) {
                 return MirType::Enum(enum_name);
             }
+            // Check if it's a mutable module-level global.
+            if let Some((mir_ty, _)) = ctx.mutable_globals.get(name.as_str()) {
+                return mir_ty.clone();
+            }
             // Check if it's a top-level constant.
             if let Some((mir_ty, _)) = ctx.const_defs.get(name.as_str()) {
                 return mir_ty.clone();

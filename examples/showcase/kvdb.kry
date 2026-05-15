@@ -1,0 +1,314 @@
+// kvdb.kry — A persistent line-oriented key-value DB in pure Kryos.
+//
+// Storage format: append-only log on disk. Each record is one line:
+//   <op>\t<key>\t<value>
+// where <op> is "SET" or "DEL", \t is a real tab. Newlines or tabs inside
+// values are URL-percent-escaped (%0A, %09, %25). Compaction rewrites the
+// log keeping only the latest SET per still-live key.
+//
+// Operations: set, get, del, list, compact, stats.
+//
+// Usage:
+//   kryos run examples/showcase/kvdb.kry              # runs a built-in demo
+//   (the demo uses /tmp/kryos_kvdb.log as its store)
+
+// ----- escaping ----------------------------------------------------------
+
+fn hex_digit(n: i64) -> str {
+  if n < 10 {
+    return substr("0123456789", n, n + 1)
+  }
+  return substr("ABCDEF", n - 10, n - 9)
+}
+
+fn pct_encode(s: str) -> str {
+  let n: i64 = len(s)
+  let mut out: str = ""
+  let mut i: i64 = 0
+  while i < n {
+    let c: str = substr(s, i, i + 1)
+    let code: i64 = char_code(c)
+    if c == "%" or c == "\n" or c == "\t" or c == "\r" {
+      out = out + "%" + hex_digit(code / 16) + hex_digit(code - (code / 16) * 16)
+    } else {
+      out = out + c
+    }
+    i = i + 1
+  }
+  return out
+}
+
+fn hex_val(c: str) -> i64 {
+  if c >= "0" and c <= "9" {
+    return char_code(c) - char_code("0")
+  }
+  if c >= "A" and c <= "F" {
+    return char_code(c) - char_code("A") + 10
+  }
+  if c >= "a" and c <= "f" {
+    return char_code(c) - char_code("a") + 10
+  }
+  return 0
+}
+
+fn pct_decode(s: str) -> str {
+  let n: i64 = len(s)
+  let mut out: str = ""
+  let mut i: i64 = 0
+  while i < n {
+    let c: str = substr(s, i, i + 1)
+    if c == "%" and i + 2 < n {
+      let h: str = substr(s, i + 1, i + 2)
+      let l: str = substr(s, i + 2, i + 3)
+      let code: i64 = hex_val(h) * 16 + hex_val(l)
+      // emit raw byte by char_from_code
+      out = out + char_from(code)
+      i = i + 3
+    } else {
+      out = out + c
+      i = i + 1
+    }
+  }
+  return out
+}
+
+// ----- file helpers ------------------------------------------------------
+
+fn split_lines(s: str) -> [str] {
+  let lines: [str] = []
+  let n: i64 = len(s)
+  let mut i: i64 = 0
+  let mut start: i64 = 0
+  while i < n {
+    if substr(s, i, i + 1) == "\n" {
+      push(lines, substr(s, start, i))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  if start < n {
+    push(lines, substr(s, start, n))
+  }
+  return lines
+}
+
+fn split_tabs(s: str) -> [str] {
+  let parts: [str] = []
+  let n: i64 = len(s)
+  let mut i: i64 = 0
+  let mut start: i64 = 0
+  while i < n {
+    if substr(s, i, i + 1) == "\t" {
+      push(parts, substr(s, start, i))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  push(parts, substr(s, start, n))
+  return parts
+}
+
+fn append_line(path: str, line: str) {
+  let mut prev: str = ""
+  if file_exists(path) == 1 {
+    prev = file_read(path)
+  }
+  file_write(path, prev + line + "\n")
+}
+
+// ----- core ops (in-memory view replayed from log) -----------------------
+
+let mut DB_PATH: str = "/tmp/kryos_kvdb.log"
+let mut KEYS: [str] = []
+let mut VALS: [str] = []
+
+fn find_idx(key: str) -> i64 {
+  let n: i64 = len(KEYS)
+  let mut i: i64 = 0
+  while i < n {
+    if KEYS[i] == key {
+      return i
+    }
+    i = i + 1
+  }
+  return -1
+}
+
+fn replay() {
+  // Reset in-memory view, then read the log start to end.
+  KEYS = []
+  VALS = []
+  if file_exists(DB_PATH) == 0 {
+    return
+  }
+  let raw: str = file_read(DB_PATH)
+  let lines: [str] = split_lines(raw)
+  let n: i64 = len(lines)
+  let mut i: i64 = 0
+  while i < n {
+    let line: str = lines[i]
+    if len(line) > 0 {
+      let parts: [str] = split_tabs(line)
+      if len(parts) >= 2 {
+        let op: str = parts[0]
+        let k: str = pct_decode(parts[1])
+        if op == "SET" and len(parts) >= 3 {
+          let v: str = pct_decode(parts[2])
+          let idx: i64 = find_idx(k)
+          if idx >= 0 {
+            VALS[idx] = v
+          } else {
+            push(KEYS, k)
+            push(VALS, v)
+          }
+        } elif op == "DEL" {
+          let idx: i64 = find_idx(k)
+          if idx >= 0 {
+            // shift remove
+            let mut j: i64 = idx
+            let last: i64 = len(KEYS) - 1
+            while j < last {
+              KEYS[j] = KEYS[j + 1]
+              VALS[j] = VALS[j + 1]
+              j = j + 1
+            }
+            // tombstone empty placeholders (we don't have pop); flag with a
+            // sentinel and skip during list().
+            KEYS[last] = "\x00DEL\x00"
+            VALS[last] = ""
+          }
+        }
+      }
+    }
+    i = i + 1
+  }
+}
+
+fn live_len() -> i64 {
+  let n: i64 = len(KEYS)
+  let mut m: i64 = 0
+  let mut i: i64 = 0
+  while i < n {
+    if KEYS[i] != "\x00DEL\x00" {
+      m = m + 1
+    }
+    i = i + 1
+  }
+  return m
+}
+
+fn db_set(key: str, val: str) {
+  let line: str = "SET\t" + pct_encode(key) + "\t" + pct_encode(val)
+  append_line(DB_PATH, line)
+  let idx: i64 = find_idx(key)
+  if idx >= 0 {
+    VALS[idx] = val
+  } else {
+    push(KEYS, key)
+    push(VALS, val)
+  }
+}
+
+fn db_get(key: str) -> str {
+  let idx: i64 = find_idx(key)
+  if idx < 0 {
+    return ""
+  }
+  return VALS[idx]
+}
+
+fn db_has(key: str) -> bool {
+  return find_idx(key) >= 0
+}
+
+fn db_del(key: str) -> bool {
+  let idx: i64 = find_idx(key)
+  if idx < 0 {
+    return false
+  }
+  let line: str = "DEL\t" + pct_encode(key)
+  append_line(DB_PATH, line)
+  let mut j: i64 = idx
+  let last: i64 = len(KEYS) - 1
+  while j < last {
+    KEYS[j] = KEYS[j + 1]
+    VALS[j] = VALS[j + 1]
+    j = j + 1
+  }
+  KEYS[last] = "\x00DEL\x00"
+  VALS[last] = ""
+  return true
+}
+
+// Rewrite log keeping only one SET per live key.
+fn db_compact() {
+  let mut buf: str = ""
+  let n: i64 = len(KEYS)
+  let mut i: i64 = 0
+  while i < n {
+    if KEYS[i] != "\x00DEL\x00" {
+      buf = buf + "SET\t" + pct_encode(KEYS[i]) + "\t" + pct_encode(VALS[i]) + "\n"
+    }
+    i = i + 1
+  }
+  file_write(DB_PATH, buf)
+  replay()
+}
+
+fn db_list() {
+  let n: i64 = len(KEYS)
+  let mut i: i64 = 0
+  while i < n {
+    if KEYS[i] != "\x00DEL\x00" {
+      println(KEYS[i] + " = " + VALS[i])
+    }
+    i = i + 1
+  }
+}
+
+// ----- demo --------------------------------------------------------------
+
+fn main() {
+  // Fresh store every run for reproducibility.
+  if file_exists(DB_PATH) == 1 {
+    file_write(DB_PATH, "")
+  }
+  replay()
+
+  println("--- initial set ---")
+  db_set("user:1:name", "Alice")
+  db_set("user:1:email", "alice@example.com")
+  db_set("user:2:name", "Bob")
+  db_set("note", "values can have\ttabs and\nnewlines")
+  db_list()
+
+  println("")
+  println("--- update ---")
+  db_set("user:1:name", "Alicia")
+  println("user:1:name = " + db_get("user:1:name"))
+
+  println("")
+  println("--- delete ---")
+  db_del("user:2:name")
+  println("has user:2:name: " + (db_has("user:2:name") as string))
+  println("live count: " + to_string(live_len()))
+
+  println("")
+  println("--- raw log on disk ---")
+  let raw: str = file_read(DB_PATH)
+  println(raw)
+
+  println("--- after compact ---")
+  db_compact()
+  let compacted: str = file_read(DB_PATH)
+  println(compacted)
+
+  println("--- replay from disk (fresh in-memory view) ---")
+  KEYS = []
+  VALS = []
+  replay()
+  db_list()
+
+  println("")
+  println("note recovered intact: " + db_get("note"))
+}
