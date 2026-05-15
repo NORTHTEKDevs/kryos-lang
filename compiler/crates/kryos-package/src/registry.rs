@@ -4,7 +4,7 @@
 //! Each package has an entry at `<first-two-chars>/<name>.json` containing
 //! version metadata, checksums, and download URLs.
 //!
-//! Default registry: `https://github.com/FrostbyteDevTeam/kryos-registry`
+//! Default registry: `https://github.com/NORTHTEKDevs/kryos-registry`
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -14,7 +14,7 @@ use crate::manifest::Manifest;
 use crate::semver::Version;
 
 /// Default registry URL.
-pub const DEFAULT_REGISTRY: &str = "https://github.com/FrostbyteDevTeam/kryos-registry";
+pub const DEFAULT_REGISTRY: &str = "https://github.com/NORTHTEKDevs/kryos-registry";
 
 /// Registry configuration.
 #[derive(Debug, Clone)]

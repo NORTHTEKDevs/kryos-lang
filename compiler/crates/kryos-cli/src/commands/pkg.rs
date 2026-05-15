@@ -99,7 +99,7 @@ optimization = "dev"
         std::fs::write(
             &readme_path,
             format!(
-                "# {project_name}\n\nA [Kryos](https://github.com/FrostbyteDevTeam/kryos-lang) project.\n\n## Build\n\n```bash\nkryos build src/main.kry -o {project_name}\n```\n\n## Run\n\n```bash\nkryos run src/main.kry\n```\n"
+                "# {project_name}\n\nA [Kryos](https://github.com/NORTHTEKDevs/kryos-lang) project.\n\n## Build\n\n```bash\nkryos build src/main.kry -o {project_name}\n```\n\n## Run\n\n```bash\nkryos run src/main.kry\n```\n"
             ),
         )
         .map_err(|e| format!("failed to write README.md: {e}"))?;

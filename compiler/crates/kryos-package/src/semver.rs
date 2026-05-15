@@ -119,6 +119,8 @@ pub enum Op {
     LessEq,
     /// `<`
     Less,
+    /// `*` — wildcard, any version
+    Wildcard,
 }
 
 /// A version requirement that can check if a `Version` satisfies it.
@@ -145,6 +147,7 @@ impl VersionReq {
             Op::Greater => v > &self.version,
             Op::LessEq => v <= &self.version,
             Op::Less => v < &self.version,
+            Op::Wildcard => true,
         }
     }
 
@@ -180,6 +183,9 @@ impl VersionReq {
 
 impl fmt::Display for VersionReq {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if matches!(self.op, Op::Wildcard) {
+            return write!(f, "*");
+        }
         let op_str = match self.op {
             Op::Caret => "^",
             Op::Tilde => "~",
@@ -188,6 +194,7 @@ impl fmt::Display for VersionReq {
             Op::Greater => ">",
             Op::LessEq => "<=",
             Op::Less => "<",
+            Op::Wildcard => unreachable!(),
         };
         write!(f, "{op_str}{}", self.version)
     }
@@ -200,6 +207,14 @@ impl FromStr for VersionReq {
         let s = s.trim();
         if s.is_empty() {
             return Err("empty version requirement".to_string());
+        }
+
+        // Wildcard: `*` accepts any version.
+        if s == "*" {
+            return Ok(VersionReq {
+                op: Op::Wildcard,
+                version: Version { major: 0, minor: 0, patch: 0, pre: None },
+            });
         }
 
         let (op, rest) = if let Some(r) = s.strip_prefix(">=") {

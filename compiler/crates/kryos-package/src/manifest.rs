@@ -171,9 +171,20 @@ pub fn parse_dep_string(s: &str) -> Result<DepSpec, String> {
             source: source.to_string(),
             version_req,
         })
+    } else if !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        // Bare registry name (no `@version`) — default to the wildcard
+        // requirement "*" so the resolver picks the latest version.
+        let version_req: VersionReq = "*".parse()?;
+        Ok(DepSpec::Remote {
+            source: s.to_string(),
+            version_req,
+        })
     } else {
         Err(format!(
-            "invalid dependency spec: expected 'source@version', 'path:<dir>', or './<dir>', got '{s}'"
+            "invalid dependency spec: expected 'name', 'name@version', 'path:<dir>', or './<dir>', got '{s}'"
         ))
     }
 }
