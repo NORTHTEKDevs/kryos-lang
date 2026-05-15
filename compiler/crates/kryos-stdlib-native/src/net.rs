@@ -129,37 +129,62 @@ pub extern "C" fn kryos_tcp_accept(listener_fd: i64) -> i64 {
 /// Sends data over a TCP stream.
 ///
 /// Returns the number of bytes written, or -1 on error.
+///
+/// The global socket mutex is released before calling the blocking `write()`
+/// so that other socket operations (accept/recv/close on other fds) can
+/// proceed concurrently.
 #[no_mangle]
 pub extern "C" fn kryos_tcp_send(fd: i64, data: *const u8, len: usize) -> i64 {
     if data.is_null() || len == 0 {
         return -1;
     }
     let slice = unsafe { std::slice::from_raw_parts(data, len) };
-    with_socket_table(|table| match table.map.get_mut(&fd) {
-        Some(SocketEntry::Stream(stream)) => match stream.write(slice) {
-            Ok(n) => n as i64,
-            Err(_) => -1,
-        },
-        _ => -1,
-    })
+
+    // Phase 1: hold the lock only long enough to clone the stream handle.
+    let mut stream = match with_socket_table(|table| match table.map.get(&fd) {
+        Some(SocketEntry::Stream(s)) => s.try_clone().ok(),
+        _ => None,
+    }) {
+        Some(s) => s,
+        None => return -1,
+    };
+
+    // Phase 2: blocking I/O WITHOUT holding the mutex.
+    match stream.write(slice) {
+        Ok(n) => n as i64,
+        Err(_) => -1,
+    }
 }
 
 /// Receives data from a TCP stream.
 ///
 /// Returns the number of bytes read, 0 on EOF, or -1 on error.
+///
+/// The global socket mutex is released before calling the blocking `read()`
+/// so that other socket operations (accept/send/close on other fds) can
+/// proceed concurrently. This is critical for servers that handle multiple
+/// connections from spawned threads.
 #[no_mangle]
 pub extern "C" fn kryos_tcp_recv(fd: i64, buf: *mut u8, buf_len: usize) -> i64 {
     if buf.is_null() || buf_len == 0 {
         return -1;
     }
     let slice = unsafe { std::slice::from_raw_parts_mut(buf, buf_len) };
-    with_socket_table(|table| match table.map.get_mut(&fd) {
-        Some(SocketEntry::Stream(stream)) => match stream.read(slice) {
-            Ok(n) => n as i64,
-            Err(_) => -1,
-        },
-        _ => -1,
-    })
+
+    // Phase 1: hold the lock only long enough to clone the stream handle.
+    let mut stream = match with_socket_table(|table| match table.map.get(&fd) {
+        Some(SocketEntry::Stream(s)) => s.try_clone().ok(),
+        _ => None,
+    }) {
+        Some(s) => s,
+        None => return -1,
+    };
+
+    // Phase 2: blocking I/O WITHOUT holding the mutex.
+    match stream.read(slice) {
+        Ok(n) => n as i64,
+        Err(_) => -1,
+    }
 }
 
 /// Closes a socket (stream or listener).
