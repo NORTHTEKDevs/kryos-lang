@@ -4,6 +4,36 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.1] - 2026-05-15 — "universal-language stress test"
+
+Wrote 8 different classes of program in pure Kryos to validate the
+universal-language claim. Found and fixed one real bug along the way.
+
+### Added (showcases)
+- `examples/showcase/extra/calc.kry` — arithmetic parser with recursive
+  descent + precedence + mutual function recursion.
+- `examples/showcase/extra/csv.kry` — CSV reader with group-by salary
+  aggregation.
+- `examples/showcase/extra/brainfuck.kry` — full Brainfuck interpreter
+  (prints "Hello World!").
+- `examples/showcase/extra/life.kry` — Conway's Game of Life on a 20×20
+  grid (glider, blinker).
+- `examples/showcase/extra/api_client.kry` — outbound HTTPS plus JSON
+  tree walk against httpbin.org.
+- `examples/showcase/extra/regression.kry` — linear regression by
+  gradient descent. Learns y = 3x + 7 from noisy samples.
+- `examples/showcase/extra/template.kry` — Mustache-style `{{var}}`
+  templating engine.
+- `examples/showcase/extra/regex.kry` — tiny regex engine: literals,
+  `.`, `*`, `^`, `$`.
+
+### Fixed
+- **`sleep_ms` no longer fails to link.** The builtin was registered in
+  the MIR builtins table but had no runtime symbol or codegen wiring.
+  Now properly implemented as `kryos_rt::spawn::kryos_sleep_ms`, with
+  Cranelift codegen dispatch and JIT symbol registration. Verified end
+  to end: `sleep_ms(500)` waits exactly 500 ms.
+
 ## [1.0.0] - 2026-05-14 — "production"
 
 First stable release. Same code as 0.5.0 with a 1.0 version stamp,
