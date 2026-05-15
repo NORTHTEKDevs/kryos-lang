@@ -148,8 +148,21 @@ impl<'de> Deserialize<'de> for DepSpec {
     }
 }
 
-/// Parse a dependency string like `"github:kryos-lang/serde@^1.0.0"`.
+/// Parse a dependency string like `"github:kryos-lang/serde@^1.0.0"`,
+/// `"path:../mylib"`, or a bare relative/absolute path (`./foo`, `../foo`, `/abs`).
 pub fn parse_dep_string(s: &str) -> Result<DepSpec, String> {
+    // Explicit path: prefix
+    if let Some(rest) = s.strip_prefix("path:") {
+        return Ok(DepSpec::Path {
+            path: rest.to_string(),
+        });
+    }
+    // Bare path forms
+    if s.starts_with("./") || s.starts_with("../") || s.starts_with('/') {
+        return Ok(DepSpec::Path {
+            path: s.to_string(),
+        });
+    }
     if let Some(at_idx) = s.rfind('@') {
         let source = &s[..at_idx];
         let version_str = &s[at_idx + 1..];
@@ -160,7 +173,7 @@ pub fn parse_dep_string(s: &str) -> Result<DepSpec, String> {
         })
     } else {
         Err(format!(
-            "invalid dependency spec: expected 'source@version', got '{s}'"
+            "invalid dependency spec: expected 'source@version', 'path:<dir>', or './<dir>', got '{s}'"
         ))
     }
 }

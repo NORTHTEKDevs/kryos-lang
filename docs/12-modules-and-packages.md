@@ -344,3 +344,53 @@ Run it:
 ```bash
 kryos run src/main.kry
 ```
+
+## Local Path Dependencies (verified)
+
+Local path deps are the simplest way to share code between two Kryos
+projects on your machine. Given two projects side-by-side:
+
+```
+/projects
+├── myapp/
+│   ├── kryos.toml
+│   └── src/main.kry
+└── mylib/
+    ├── kryos.toml
+    └── src/lib.kry
+```
+
+Add the dep from `myapp/`:
+
+```bash
+kryos pkg add ../mylib
+kryos pkg install
+```
+
+This writes `[dependencies.mylib] path = "../mylib"` to `myapp/kryos.toml`,
+generates `kryos.lock`, and drops a small redirect under
+`myapp/.kryos/deps/mylib.redirect`. The compiler walks up from the file
+being compiled looking for `.kryos/deps/<pkg>.redirect` and resolves
+`use mylib::...` to `<dep_root>/src/lib.kry` (or `<dep_root>/src/<sub>.kry`).
+
+A library typically exposes its API in `src/lib.kry` with `pub` items:
+
+```kryos
+// mylib/src/lib.kry
+pub fn greet(name: str) -> str {
+  return "Hello, " + name + "!"
+}
+```
+
+The consumer can then import it directly:
+
+```kryos
+// myapp/src/main.kry
+use mylib::{greet}
+
+fn main() {
+  println(greet("world"))
+}
+```
+
+Run with `kryos run src/main.kry` — no other configuration required.

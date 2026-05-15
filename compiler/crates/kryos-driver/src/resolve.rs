@@ -177,7 +177,65 @@ pub fn resolve_module_path(
         }
     }
 
-    // 4. Stdlib fallback: if the first segment is "std" and there are 2+ segments,
+    // 4. Package dep redirect: walk up to find a parent containing
+    //    `.kryos/deps/<first_segment>.redirect`. The redirect file contains
+    //    `path = "<dir>"` pointing at the dep's project root. We then look
+    //    inside `<dir>/src/` for the remaining segments (or `<dir>/src/<name>.kry`
+    //    when only the package name was used).
+    if !segments.is_empty() {
+        let pkg = &segments[0];
+        let mut ancestor = parent.to_path_buf();
+        loop {
+            let redirect = ancestor.join(".kryos").join("deps").join(format!("{pkg}.redirect"));
+            if redirect.is_file() {
+                if let Ok(content) = fs::read_to_string(&redirect) {
+                    // Parse simple `path = "..."` line.
+                    for line in content.lines() {
+                        let line = line.trim();
+                        if let Some(rest) = line.strip_prefix("path") {
+                            let rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == '=');
+                            let rest = rest.trim();
+                            let dep_path = rest.trim_matches('"');
+                            // Resolve relative paths against the redirect's directory
+                            // (which is `<project>/.kryos/deps/`). Path entries are
+                            // typically relative to the project root, so canonicalize
+                            // through that.
+                            let project_root = ancestor.clone();
+                            let dep_root = if Path::new(dep_path).is_absolute() {
+                                PathBuf::from(dep_path)
+                            } else {
+                                project_root.join(dep_path)
+                            };
+                            let dep_src = dep_root.join("src");
+                            // `use pkg` → src/lib.kry or src/<pkg>.kry
+                            if segments.len() == 1 {
+                                let lib = dep_src.join("lib.kry");
+                                search_paths.push(lib.clone());
+                                if lib.is_file() { return Ok(lib); }
+                                let named = dep_src.join(format!("{pkg}.kry"));
+                                search_paths.push(named.clone());
+                                if named.is_file() { return Ok(named); }
+                            } else {
+                                // `use pkg::a::b` → src/a/b.kry or src/a/b/mod.kry
+                                let sub: PathBuf = segments[1..].iter().collect();
+                                let f = dep_src.join(&sub).with_extension("kry");
+                                search_paths.push(f.clone());
+                                if f.is_file() { return Ok(f); }
+                                let d = dep_src.join(&sub).join("mod.kry");
+                                search_paths.push(d.clone());
+                                if d.is_file() { return Ok(d); }
+                            }
+                            break;
+                        }
+                    }
+                }
+                break;
+            }
+            if !ancestor.pop() { break; }
+        }
+    }
+
+    // 5. Stdlib fallback: if the first segment is "std" and there are 2+ segments,
     //    strip the "std" prefix and look in the stdlib directory.
     if segments.len() >= 2 && segments[0] == "std" {
         if let Some(stdlib_dir) = find_stdlib_dir(importing_file) {
