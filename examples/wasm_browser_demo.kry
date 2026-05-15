@@ -1,0 +1,46 @@
+// Kryos -> WASM -> Browser demo.
+//
+// Compile:   kryos build --backend wasm examples/wasm_browser_demo.kry
+// Then open: examples/wasm_browser_demo.html in your browser.
+//
+// Shows: Fibonacci (recursion), factorial (loops), and a quadratic
+// formula — all running as WASM compiled from Kryos, in the browser.
+
+fn fib(n: i64) -> i64 {
+    if n < 2 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+fn factorial(n: i64) -> i64 {
+    let mut result = 1
+    let mut i = 1
+    while i <= n {
+        result = result * i
+        i = i + 1
+    }
+    result
+}
+
+fn sum_to(n: i64) -> i64 {
+    let mut total = 0
+    let mut i = 1
+    while i <= n {
+        total = total + i
+        i = i + 1
+    }
+    total
+}
+
+fn main() {
+    println("kryos says hi from your browser")
+    println("---")
+    println("fib(10):")
+    println(fib(10))
+    println("factorial(10):")
+    println(factorial(10))
+    println("sum of 1..100:")
+    println(sum_to(100))
+}

@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Kryos in the browser</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0d12;
+    --panel: #11141b;
+    --ink: #e6edf3;
+    --dim: #8b949e;
+    --accent: #7aa2f7;
+    --good: #9ece6a;
+  }
+  html, body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.5 ui-sans-serif, -apple-system, system-ui, sans-serif;
+  }
+  main {
+    max-width: 760px;
+    margin: 4rem auto 2rem;
+    padding: 0 1.25rem;
+  }
+  h1 {
+    font-size: 1.7rem;
+    margin: 0 0 .25rem;
+  }
+  .subtitle {
+    color: var(--dim);
+    margin: 0 0 2rem;
+  }
+  .badge {
+    display: inline-block;
+    background: #1f2430;
+    color: var(--accent);
+    border: 1px solid #2a3142;
+    border-radius: 6px;
+    padding: 2px 8px;
+    font-size: 12px;
+    margin-right: .5rem;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid #1f2430;
+    border-radius: 10px;
+    padding: 1rem 1.25rem;
+    margin: 1rem 0;
+  }
+  pre.console {
+    background: #07090d;
+    border: 1px solid #1a1e27;
+    border-radius: 8px;
+    padding: 1rem;
+    color: var(--good);
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: pre-wrap;
+    min-height: 9rem;
+    margin: 0;
+  }
+  button {
+    background: var(--accent);
+    color: #0b0d12;
+    border: 0;
+    border-radius: 6px;
+    padding: .55rem 1rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:hover { filter: brightness(1.1); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  code.kry {
+    background: #07090d;
+    padding: 1px 6px;
+    border-radius: 4px;
+    color: #ffcc66;
+  }
+  a { color: var(--accent); }
+  footer {
+    color: var(--dim);
+    font-size: 13px;
+    margin-top: 2rem;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Kryos in the browser</h1>
+  <p class="subtitle">
+    <span class="badge">WASM</span>
+    <span class="badge">v0.1</span>
+    This page runs a program written in the Kryos programming language,
+    compiled with <code class="kry">kryos build --backend wasm</code>,
+    executing right inside your browser.
+  </p>
+
+  <div class="panel">
+    <button id="run">Run the Kryos program</button>
+    &nbsp;<span id="status" style="color:var(--dim)">ready</span>
+    <pre class="console" id="out">// click "Run" to execute wasm_browser_demo.wasm</pre>
+  </div>
+
+  <div class="panel">
+    <strong>What you're running</strong>
+    <pre class="console" style="color:var(--ink)">fn fib(n: i64) -&gt; i64 {
+    if n &lt; 2 { n } else { fib(n - 1) + fib(n - 2) }
+}
+
+fn main() {
+    println(fib(10))        // 55
+    println(factorial(10))  // 3628800
+    println(sum_to(100))    // 5050
+}</pre>
+  </div>
+
+  <footer>
+    Kryos &mdash; MIT licensed &mdash;
+    <a href="https://github.com/NORTHTEKDevs/kryos-lang">github.com/NORTHTEKDevs/kryos-lang</a>
+  </footer>
+</main>
+
+<script>
+const out = document.getElementById('out');
+const statusEl = document.getElementById('status');
+const runBtn = document.getElementById('run');
+
+function append(line) {
+  out.textContent += line + '\n';
+}
+
+async function run() {
+  out.textContent = '';
+  statusEl.textContent = 'loading wasm...';
+  runBtn.disabled = true;
+
+  let memory = null;
+  const decoder = new TextDecoder('utf-8');
+
+  const imports = {
+    env: {
+      kryos_print_i64(v) {
+        // BigInt in browsers that support i64 imports.
+        append(v.toString());
+      },
+      kryos_print_f64(v) {
+        append(String(v));
+      },
+      kryos_print_str(offset, len) {
+        if (!memory) {
+          append('[error] kryos_print_str before memory ready');
+          return;
+        }
+        const view = new Uint8Array(memory.buffer, Number(offset), Number(len));
+        append(decoder.decode(view));
+      },
+    },
+  };
+
+  try {
+    const resp = await fetch('wasm_browser_demo.wasm');
+    if (!resp.ok) throw new Error('fetch failed: ' + resp.status);
+    const bytes = await resp.arrayBuffer();
+    const { instance } = await WebAssembly.instantiate(bytes, imports);
+    memory = instance.exports.memory;
+    if (typeof instance.exports.main !== 'function') {
+      throw new Error('module has no exported main()');
+    }
+    statusEl.textContent = 'running...';
+    instance.exports.main();
+    statusEl.textContent = 'done';
+  } catch (err) {
+    append('[error] ' + (err && err.message ? err.message : err));
+    statusEl.textContent = 'error';
+  } finally {
+    runBtn.disabled = false;
+  }
+}
+
+runBtn.addEventListener('click', run);
+// auto-run on first load
+window.addEventListener('load', run);
+</script>
+</body>
+</html>
