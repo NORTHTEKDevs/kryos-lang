@@ -1,0 +1,84 @@
+// worker_pool.kry — parallel worker pool with channels.
+//
+// A classic concurrency pattern in pure Kryos:
+//   * A jobs channel feeds N worker tasks.
+//   * Each worker pulls a job, does work, sends the result on a results channel.
+//   * The main task collects all results.
+//
+// Demonstrates: spawn, channels (chan/send/recv), structured fan-out/fan-in.
+
+fn is_prime(n: i64) -> i64 {
+  if n < 2 { return 0 }
+  if n < 4 { return 1 }
+  if n % 2 == 0 { return 0 }
+  let mut i: i64 = 3
+  while i * i <= n {
+    if n % i == 0 { return 0 }
+    i = i + 2
+  }
+  return 1
+}
+
+fn count_primes_up_to(limit: i64) -> i64 {
+  let mut n: i64 = 2
+  let mut total: i64 = 0
+  while n <= limit {
+    total = total + is_prime(n)
+    n = n + 1
+  }
+  return total
+}
+
+fn main() {
+  println("worker_pool: counting primes in 4 ranges in parallel")
+  println("")
+
+  let jobs = chan()
+  let results = chan()
+
+  // Spawn 4 workers. Each pulls until it receives a sentinel (-1).
+  let mut w: i64 = 0
+  while w < 4 {
+    spawn {
+      while true {
+        let limit = recv(jobs)
+        if limit < 0 {
+          // sentinel — worker exits
+          return
+        }
+        let c = count_primes_up_to(limit)
+        send(results, c)
+      }
+    }
+    w = w + 1
+  }
+
+  // Enqueue work: count primes up to 1000, 2000, 3000, 4000.
+  let limits: [i64] = [1000, 2000, 3000, 4000]
+  let mut i: i64 = 0
+  while i < 4 {
+    send(jobs, limits[i])
+    i = i + 1
+  }
+
+  // Collect results.
+  let mut total: i64 = 0
+  let mut got: i64 = 0
+  while got < 4 {
+    let r = recv(results)
+    println("  worker reported: " + to_string(r) + " primes")
+    total = total + r
+    got = got + 1
+  }
+
+  // Signal workers to shut down (one sentinel per worker).
+  let mut s: i64 = 0
+  while s < 4 {
+    send(jobs, -1)
+    s = s + 1
+  }
+
+  println("")
+  println("total primes counted across all 4 ranges: " + to_string(total))
+  println("worker_pool: done")
+}
