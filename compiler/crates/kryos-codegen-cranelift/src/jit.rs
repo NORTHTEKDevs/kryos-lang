@@ -697,6 +697,24 @@ impl JitCompiler {
             kryos_stdlib_native::tls::kryos_tls_close_ks as *const u8,
         );
 
+        // PostgreSQL (Gap B)
+        jit_builder.symbol(
+            "kryos_pg_connect_ks",
+            kryos_stdlib_native::postgres::kryos_pg_connect_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_pg_exec_ks",
+            kryos_stdlib_native::postgres::kryos_pg_exec_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_pg_query_ks",
+            kryos_stdlib_native::postgres::kryos_pg_query_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_pg_close_ks",
+            kryos_stdlib_native::postgres::kryos_pg_close_ks as *const u8,
+        );
+
         // Stdlib-native: JSON (all handles are i64)
         jit_builder.symbol(
             "kryos_json_parse",
@@ -1402,6 +1420,11 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_tls_recv_ks", "kryos_tls_recv_ks", sig(2));
     decl!("kryos_tls_close_ks", "kryos_tls_close_ks", sig(1));
     // kryos_sleep_ms is declared above in the spawn block.
+    // PostgreSQL (Gap B)
+    decl!("kryos_pg_connect_ks", "kryos_pg_connect_ks", sig(1));
+    decl!("kryos_pg_exec_ks", "kryos_pg_exec_ks", sig(2));
+    decl!("kryos_pg_query_ks", "kryos_pg_query_ks", sig(2));
+    decl!("kryos_pg_close_ks", "kryos_pg_close_ks", sig(1));
 
     // --- JSON ---
     decl!("kryos_json_parse", "kryos_json_parse", sig(1));

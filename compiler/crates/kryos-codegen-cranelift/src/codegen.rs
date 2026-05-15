@@ -3007,6 +3007,11 @@ fn translate_rvalue<M: Module>(
                 "tls_send" => ("kryos_tls_send_ks", 2),
                 "tls_recv" => ("kryos_tls_recv_ks", 2),
                 "tls_close" => ("kryos_tls_close_ks", 1),
+                // PostgreSQL (Gap B)
+                "pg_connect" => ("kryos_pg_connect_ks", 1),
+                "pg_exec" => ("kryos_pg_exec_ks", 2),
+                "pg_query" => ("kryos_pg_query_ks", 2),
+                "pg_close" => ("kryos_pg_close_ks", 1),
                 "sleep_ms" => ("kryos_sleep_ms", 1),
                 // JSON (handles are i64; all string args are i64 KryosString handles).
                 "json_parse" => ("kryos_json_parse", 1),

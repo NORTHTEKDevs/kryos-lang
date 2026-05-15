@@ -7,10 +7,11 @@ edition.workspace = true
 crate-type = ["staticlib", "rlib"]
 
 [features]
-default = ["crypto", "sqlite", "tls"]
+default = ["crypto", "sqlite", "tls", "postgres"]
 crypto = ["ring"]
 sqlite = ["rusqlite"]
 tls = ["rustls", "rustls-pemfile", "rustls-pki-types", "webpki-roots"]
+postgres = ["dep:postgres", "dep:postgres-native-tls", "dep:native-tls"]
 
 [dependencies]
 kryos-rt.workspace = true
@@ -20,5 +21,8 @@ rustls = { workspace = true, optional = true }
 rustls-pemfile = { workspace = true, optional = true }
 rustls-pki-types = { workspace = true, optional = true }
 webpki-roots = { workspace = true, optional = true }
+postgres = { workspace = true, optional = true }
+postgres-native-tls = { workspace = true, optional = true }
+native-tls = { workspace = true, optional = true }
 regex.workspace = true
 crossterm.workspace = true

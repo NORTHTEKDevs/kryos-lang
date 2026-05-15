@@ -574,6 +574,11 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("tls_send", MirType::I64),
         ("tls_recv", MirType::Str),
         ("tls_close", MirType::I64),
+        // PostgreSQL (Gap B)
+        ("pg_connect", MirType::I64),
+        ("pg_exec", MirType::I64),
+        ("pg_query", MirType::Str),
+        ("pg_close", MirType::I64),
     ] {
         ctx.func_ret_types.insert(name.to_string(), ret_ty);
     }

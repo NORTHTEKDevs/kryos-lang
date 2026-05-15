@@ -34,3 +34,5 @@ pub mod sync_prims;
 pub mod term;
 #[cfg(feature = "tls")]
 pub mod tls;
+#[cfg(feature = "postgres")]
+pub mod postgres;

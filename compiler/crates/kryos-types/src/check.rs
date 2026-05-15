@@ -3221,6 +3221,51 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     });
 
     // -----------------------------------------------------------------------
+    // PostgreSQL builtins (Gap B)
+    // -----------------------------------------------------------------------
+    // pg_connect(conn_str: str) -> i64
+    checker.env.define_function(FunctionSig {
+        name: "pg_connect".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("conn_str".to_string(), Type::Str)],
+        ret: Type::I64,
+    });
+
+    // pg_exec(handle: i64, sql: str) -> i64
+    checker.env.define_function(FunctionSig {
+        name: "pg_exec".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("handle".to_string(), Type::I64),
+            ("sql".to_string(), Type::Str),
+        ],
+        ret: Type::I64,
+    });
+
+    // pg_query(handle: i64, sql: str) -> str
+    checker.env.define_function(FunctionSig {
+        name: "pg_query".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("handle".to_string(), Type::I64),
+            ("sql".to_string(), Type::Str),
+        ],
+        ret: Type::Str,
+    });
+
+    // pg_close(handle: i64) -> i64
+    checker.env.define_function(FunctionSig {
+        name: "pg_close".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("handle".to_string(), Type::I64)],
+        ret: Type::I64,
+    });
+
+    // -----------------------------------------------------------------------
     // JSON builtins
     // -----------------------------------------------------------------------
     checker.env.define_function(FunctionSig {

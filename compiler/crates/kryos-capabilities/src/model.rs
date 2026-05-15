@@ -244,7 +244,7 @@ pub fn required_capability_for_builtin(name: &str) -> Option<Capability> {
         // Network
         "http_get" | "http_post" | "tcp_connect" | "tcp_listen" | "tcp_accept" | "tcp_send"
         | "tcp_recv" | "tls_server_config" | "tls_accept" | "tls_send" | "tls_recv"
-        | "tls_close" => Some(Capability::Net),
+        | "tls_close" | "pg_connect" | "pg_exec" | "pg_query" | "pg_close" => Some(Capability::Net),
 
         // Terminal
         "term_clear" | "term_raw_mode" | "term_size" => Some(Capability::Term),

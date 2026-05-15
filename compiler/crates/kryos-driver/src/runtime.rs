@@ -139,8 +139,8 @@ pub fn system_libs(target: &kryos_linker::Target) -> Vec<String> {
             "gcc".into(),
             "pthread".into(),
         ],
-        (Os::Linux, _) => vec!["pthread".into(), "dl".into(), "m".into()],
-        (Os::MacOS, _) => vec!["System".into(), "pthread".into()],
+        (Os::Linux, _) => vec!["pthread".into(), "dl".into(), "m".into(), "ssl".into(), "crypto".into()],
+        (Os::MacOS, _) => vec!["System".into(), "pthread".into(), "ssl".into(), "crypto".into()],
         _ => vec![],
     }
 }
