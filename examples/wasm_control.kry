@@ -1,0 +1,30 @@
+// Kryos -> WASM: if/else + while loop.
+fn fizzbuzz(n: i64) -> i64 {
+    if n % 15 == 0 {
+        99999
+    } elif n % 3 == 0 {
+        3
+    } elif n % 5 == 0 {
+        5
+    } else {
+        n
+    }
+}
+
+fn sum_to(n: i64) -> i64 {
+    let mut total = 0
+    let mut i = 1
+    while i <= n {
+        total = total + i
+        i = i + 1
+    }
+    total
+}
+
+fn main() {
+    println(fizzbuzz(15))
+    println(fizzbuzz(9))
+    println(fizzbuzz(25))
+    println(fizzbuzz(7))
+    println(sum_to(100))
+}

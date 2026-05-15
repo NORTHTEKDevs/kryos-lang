@@ -1,0 +1,4 @@
+// Smallest possible Kryos -> WASM program.
+fn main() {
+    println("hello from wasm")
+}

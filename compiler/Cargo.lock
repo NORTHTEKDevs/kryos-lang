@@ -742,6 +742,7 @@ dependencies = [
  "kryos-bindgen",
  "kryos-codegen-cranelift",
  "kryos-codegen-llvm",
+ "kryos-codegen-wasm",
  "kryos-doc",
  "kryos-driver",
  "kryos-errors",
@@ -775,6 +776,15 @@ dependencies = [
  "kryos-driver",
  "kryos-errors",
  "kryos-mir",
+]
+
+[[package]]
+name = "kryos-codegen-wasm"
+version = "1.0.1"
+dependencies = [
+ "kryos-driver",
+ "kryos-mir",
+ "wasm-encoder",
 ]
 
 [[package]]
@@ -921,6 +931,12 @@ dependencies = [
  "kryos-ast",
  "kryos-errors",
 ]
+
+[[package]]
+name = "leb128"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cc46bac87ef8093eed6f272babb833b6443374399985ac8ed28471ee0918545"
 
 [[package]]
 name = "libc"
@@ -1297,6 +1313,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "semver"
+version = "1.0.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
+
+[[package]]
 name = "serde"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1575,6 +1597,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39129a682a6d2d841b6c429d0c51e5cb0ed1a03829d8b3d1e69a011e62cb3d3b"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "wasm-encoder"
+version = "0.221.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc8444fe4920de80a4fe5ab564fff2ae58b6b73166b89751f8c6c93509da32e5"
+dependencies = [
+ "leb128",
+ "wasmparser",
+]
+
+[[package]]
+name = "wasmparser"
+version = "0.221.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d06bfa36ab3ac2be0dee563380147a5b81ba10dd8885d7fbbc9eb574be67d185"
+dependencies = [
+ "bitflags 2.11.0",
+ "indexmap",
+ "semver",
 ]
 
 [[package]]

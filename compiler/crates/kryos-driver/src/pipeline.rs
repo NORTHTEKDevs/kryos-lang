@@ -570,6 +570,43 @@ fn codegen_and_link(
                     Ok(bytes) => {
                         let out_path = config.derive_output_path();
 
+                        // WASM backends emit a self-contained `.wasm` module —
+                        // no native linker, no runtime archive, no object file.
+                        if be.name() == "wasm" {
+                            let stem = out_path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("out");
+                            let wasm_path = out_path
+                                .parent()
+                                .unwrap_or_else(|| Path::new("."))
+                                .join(format!("{stem}.wasm"));
+                            if let Err(e) = fs::write(&wasm_path, &bytes) {
+                                diagnostics.push(Diagnostic::error(format!(
+                                    "failed to write wasm file '{}': {e}",
+                                    wasm_path.display()
+                                )));
+                                return CompileResult {
+                                    diagnostics,
+                                    source_map,
+                                    success: false,
+                                    output_path: None,
+                                    mir: None,
+                                    object_bytes: Some(bytes),
+                                    llvm_ir: None,
+                                };
+                            }
+                            return CompileResult {
+                                diagnostics,
+                                source_map,
+                                success: true,
+                                output_path: Some(wasm_path.to_string_lossy().to_string()),
+                                mir: None,
+                                object_bytes: Some(bytes),
+                                llvm_ir: None,
+                            };
+                        }
+
                         if config.output_type == OutputType::Object {
                             if let Err(e) = fs::write(&out_path, &bytes) {
                                 diagnostics.push(Diagnostic::error(format!(

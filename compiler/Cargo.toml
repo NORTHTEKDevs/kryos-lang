@@ -11,6 +11,7 @@ members = [
     "crates/kryos-mir",
     "crates/kryos-codegen-cranelift",
     "crates/kryos-codegen-llvm",
+    "crates/kryos-codegen-wasm",
     "crates/kryos-linker",
     "crates/kryos-bindgen",
     "crates/kryos-stdlib-native",
@@ -43,6 +44,7 @@ kryos-capabilities = { path = "crates/kryos-capabilities" }
 kryos-mir = { path = "crates/kryos-mir" }
 kryos-codegen-cranelift = { path = "crates/kryos-codegen-cranelift" }
 kryos-codegen-llvm = { path = "crates/kryos-codegen-llvm" }
+kryos-codegen-wasm = { path = "crates/kryos-codegen-wasm" }
 kryos-linker = { path = "crates/kryos-linker" }
 kryos-bindgen = { path = "crates/kryos-bindgen" }
 kryos-stdlib-native = { path = "crates/kryos-stdlib-native" }

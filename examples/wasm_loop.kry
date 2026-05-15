@@ -1,0 +1,13 @@
+fn sum_to(n: i64) -> i64 {
+    let mut total = 0
+    let mut i = 1
+    while i <= n {
+        total = total + i
+        i = i + 1
+    }
+    total
+}
+
+fn main() {
+    println(sum_to(10))
+}

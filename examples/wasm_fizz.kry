@@ -1,0 +1,18 @@
+fn fizzbuzz(n: i64) -> i64 {
+    if n % 15 == 0 {
+        99999
+    } elif n % 3 == 0 {
+        3
+    } elif n % 5 == 0 {
+        5
+    } else {
+        n
+    }
+}
+
+fn main() {
+    println(fizzbuzz(15))
+    println(fizzbuzz(9))
+    println(fizzbuzz(25))
+    println(fizzbuzz(7))
+}

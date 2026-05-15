@@ -34,6 +34,11 @@ enum Commands {
         #[arg(long)]
         release: bool,
 
+        /// Override the codegen backend. Values: cranelift, llvm, wasm.
+        /// If unset, uses cranelift for debug and llvm for release.
+        #[arg(long, value_name = "NAME")]
+        backend: Option<String>,
+
         /// Target triple (e.g. x86_64-unknown-linux-gnu)
         #[arg(long)]
         target: Option<String>,
@@ -225,6 +230,7 @@ fn main() {
         Commands::Build {
             path,
             release,
+            backend,
             target,
             output,
             emit_mir,
@@ -234,6 +240,7 @@ fn main() {
         } => commands::build::execute(
             &path,
             release,
+            backend.as_deref(),
             target.as_deref(),
             output.as_deref(),
             emit_mir,

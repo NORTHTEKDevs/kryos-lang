@@ -10,6 +10,7 @@ compiler/target/
 *.so
 *.dll
 *.dylib
+*.wasm
 
 # Debug/test output
 *_output.txt

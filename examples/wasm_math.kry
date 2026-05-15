@@ -1,0 +1,15 @@
+// Kryos -> WASM: arithmetic and println(i64).
+fn add(a: i64, b: i64) -> i64 {
+    a + b
+}
+
+fn square(n: i64) -> i64 {
+    n * n
+}
+
+fn main() {
+    let x = add(7, 35)
+    let y = square(x)
+    println(x)
+    println(y)
+}

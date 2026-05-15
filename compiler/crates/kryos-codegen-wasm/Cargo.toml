@@ -1,0 +1,12 @@
+[package]
+name = "kryos-codegen-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WebAssembly codegen backend for the Kryos compiler"
+
+[dependencies]
+kryos-mir = { workspace = true }
+kryos-driver = { workspace = true }
+wasm-encoder = "0.221"

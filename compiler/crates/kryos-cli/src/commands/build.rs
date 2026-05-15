@@ -9,6 +9,7 @@ use kryos_errors::render_diagnostic;
 pub fn execute(
     path: &str,
     release: bool,
+    backend_override: Option<&str>,
     target: Option<&str>,
     output: Option<&str>,
     emit_mir: bool,
@@ -58,16 +59,36 @@ pub fn execute(
         );
     }
 
-    // Instantiate the appropriate codegen backend based on build mode.
-    let backend: Box<dyn Backend> = match mode {
-        BuildMode::Debug => Box::new(kryos_codegen_cranelift::CraneliftBackend::new()),
-        BuildMode::Release => Box::new(kryos_codegen_llvm::LlvmBackend::new(
+    // Instantiate the appropriate codegen backend.
+    //
+    // Resolution order: explicit --backend > --release > default (cranelift).
+    let backend: Box<dyn Backend> = match backend_override {
+        Some("wasm") | Some("wasm32") => Box::new(kryos_codegen_wasm::WasmBackend::new(
+            kryos_codegen_wasm::WasmOptions::default(),
+        )),
+        Some("llvm") => Box::new(kryos_codegen_llvm::LlvmBackend::new(
             kryos_codegen_llvm::EmitOptions {
                 opt_level: kryos_codegen_llvm::OptLevel::O2,
                 target_triple: Some(resolved_target.clone()),
                 target_datalayout: None,
             },
         )),
+        Some("cranelift") => Box::new(kryos_codegen_cranelift::CraneliftBackend::new()),
+        Some(other) => {
+            return Err(format!(
+                "unknown --backend `{other}`. Valid values: cranelift, llvm, wasm"
+            ));
+        }
+        None => match mode {
+            BuildMode::Debug => Box::new(kryos_codegen_cranelift::CraneliftBackend::new()),
+            BuildMode::Release => Box::new(kryos_codegen_llvm::LlvmBackend::new(
+                kryos_codegen_llvm::EmitOptions {
+                    opt_level: kryos_codegen_llvm::OptLevel::O2,
+                    target_triple: Some(resolved_target.clone()),
+                    target_datalayout: None,
+                },
+            )),
+        },
     };
 
     if verbose {
