@@ -507,3 +507,145 @@ pub extern "C" fn kryos_fetch_text_ks(url: i64) -> i64 {
     // On native, fetch_text is just https_get.
     kryos_https_get_ks(url)
 }
+
+// ---------------------------------------------------------------------------
+// SHA-1 (legacy) + Base64 — needed for WebSocket handshakes and binary I/O.
+// ---------------------------------------------------------------------------
+
+/// `sha1_hex(s: str) -> str` — hex-encoded SHA-1 digest of the input string.
+#[cfg(feature = "crypto")]
+#[no_mangle]
+pub extern "C" fn kryos_sha1_hex_ks(input_handle: i64) -> i64 {
+    let s = unsafe { handle_to_str(input_handle) };
+    let mut out = [0u8; 20];
+    let rc = crate::crypto::kryos_sha1(s.as_ptr(), s.len(), out.as_mut_ptr());
+    if rc != 0 {
+        return str_to_handle("");
+    }
+    str_to_handle(&hex_encode(&out))
+}
+
+/// `sha1_base64(s: str) -> str` — base64-encoded SHA-1 digest (WebSocket handshake).
+#[cfg(feature = "crypto")]
+#[no_mangle]
+pub extern "C" fn kryos_sha1_base64_ks(input_handle: i64) -> i64 {
+    let s = unsafe { handle_to_str(input_handle) };
+    let mut out = [0u8; 20];
+    let rc = crate::crypto::kryos_sha1(s.as_ptr(), s.len(), out.as_mut_ptr());
+    if rc != 0 {
+        return str_to_handle("");
+    }
+    str_to_handle(&base64_encode(&out))
+}
+
+const BASE64_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn base64_encode(input: &[u8]) -> String {
+    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    let chunks = input.chunks(3);
+    for chunk in chunks {
+        let b0 = chunk[0];
+        let b1 = if chunk.len() > 1 { chunk[1] } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] } else { 0 };
+        let triple = ((b0 as u32) << 16) | ((b1 as u32) << 8) | (b2 as u32);
+        out.push(BASE64_ALPHABET[((triple >> 18) & 0x3f) as usize] as char);
+        out.push(BASE64_ALPHABET[((triple >> 12) & 0x3f) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(BASE64_ALPHABET[((triple >> 6) & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(BASE64_ALPHABET[(triple & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+fn base64_decode(input: &str) -> Vec<u8> {
+    let mut lut = [255u8; 256];
+    for (i, &b) in BASE64_ALPHABET.iter().enumerate() {
+        lut[b as usize] = i as u8;
+    }
+    let bytes: Vec<u8> = input.bytes().filter(|&b| b != b'\n' && b != b'\r').collect();
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    let mut i = 0;
+    while i + 4 <= bytes.len() {
+        let q = [bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]];
+        let vals = [lut[q[0] as usize], lut[q[1] as usize], lut[q[2] as usize], lut[q[3] as usize]];
+        if vals[0] == 255 || vals[1] == 255 {
+            break;
+        }
+        let triple = ((vals[0] as u32) << 18)
+            | ((vals[1] as u32) << 12)
+            | (if vals[2] == 255 { 0 } else { (vals[2] as u32) << 6 })
+            | (if vals[3] == 255 { 0 } else { vals[3] as u32 });
+        out.push(((triple >> 16) & 0xff) as u8);
+        if q[2] != b'=' {
+            out.push(((triple >> 8) & 0xff) as u8);
+        }
+        if q[3] != b'=' {
+            out.push((triple & 0xff) as u8);
+        }
+        i += 4;
+    }
+    out
+}
+
+/// `base64_encode(s: str) -> str` — encode the raw bytes of `s` as base64.
+#[no_mangle]
+pub extern "C" fn kryos_base64_encode_ks(input_handle: i64) -> i64 {
+    let s = unsafe { handle_to_str(input_handle) };
+    str_to_handle(&base64_encode(s.as_bytes()))
+}
+
+/// `base64_decode(s: str) -> str` — decode base64 back to a (possibly binary) string.
+/// Note: non-UTF8 byte sequences are passed through via UTF-8 lossy conversion.
+#[no_mangle]
+pub extern "C" fn kryos_base64_decode_ks(input_handle: i64) -> i64 {
+    let s = unsafe { handle_to_str(input_handle) };
+    let bytes = base64_decode(s);
+    // Use latin-1 (1-byte-per-codepoint) so byte values survive round-trip
+    // when fed back through byte_at(); this matches how WebSocket payloads
+    // are typically threaded through Kryos strings.
+    let out: String = bytes.iter().map(|&b| b as char).collect();
+    str_to_handle(&out)
+}
+
+// ---------------------------------------------------------------------------
+// Byte primitives: `chr` and `byte_at` (for binary protocols implemented in Kryos)
+// ---------------------------------------------------------------------------
+
+/// `chr(n: i64) -> str` — returns a 1-codepoint string containing the byte
+/// value `n & 0xff`. We use U+0000..U+00FF (latin-1) so a round trip through
+/// `byte_at` recovers the original byte.
+#[no_mangle]
+pub extern "C" fn kryos_chr_ks(n: i64) -> i64 {
+    let b = (n & 0xff) as u8;
+    let c = b as char;
+    let s: String = c.to_string();
+    str_to_handle(&s)
+}
+
+/// `byte_at(s: str, idx: i64) -> i64` — returns the byte at the i-th position
+/// (latin-1 codepoint scalar value). For ASCII strings this is the same as
+/// the standard byte; for strings produced by `chr(n)` this round-trips. Out
+/// of range returns -1.
+#[no_mangle]
+pub extern "C" fn kryos_byte_at_ks(input_handle: i64, idx: i64) -> i64 {
+    let s = unsafe { handle_to_str(input_handle) };
+    if idx < 0 {
+        return -1;
+    }
+    let i = idx as usize;
+    // Walk codepoints, returning the scalar value of the i-th one.
+    for (k, ch) in s.chars().enumerate() {
+        if k == i {
+            return (ch as u32) as i64 & 0xff;
+        }
+    }
+    -1
+}
