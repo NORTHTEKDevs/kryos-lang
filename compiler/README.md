@@ -172,4 +172,4 @@ See [`examples/`](examples/) for 9 example programs covering:
 
 ## License
 
-Proprietary. Copyright FrostByte Digital.
+MIT. Copyright (c) 2026 NORTHTEKDevs. See top-level LICENSE.

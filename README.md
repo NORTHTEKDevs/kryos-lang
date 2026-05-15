@@ -1,14 +1,20 @@
 # Kryos
 
-A compiled systems language with ownership-based memory safety, capability enforcement, and dual-backend native compilation.
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-843%20passing-brightgreen.svg)](#status)
+[![Release](https://img.shields.io/badge/release-v1.0.1-orange.svg)](CHANGELOG.md)
 
-**v0.4.0** -- 843+ tests passing, self-hosting compiler, credible-beta release.
+A compiled, general-purpose systems language with ownership-based memory safety, capability enforcement, and dual-backend native compilation. Solo-built with AI assistance.
+
+**v1.0.1** -- 843 tests passing, self-hosting compiler, package manager, LSP, REPL, formatter, doc generator. Universal-language showcases (parser, interpreter, regex engine, ML, REST API, MCP server, agent runtime) all building and running.
 
 ---
 
 ## Why Kryos?
 
 Kryos gives you the control of C, the safety of Rust, and the clarity of Go -- without lifetime annotations. The ownership model is ARC-based with move semantics enforced at compile time. No borrow checker. No `'a` annotations. You get memory safety by construction, not by wrestling with the compiler.
+
+It's also designed to be a language you can *actually finish things in*. The standard library covers strings, math, collections, JSON, HTTP, regex, datetime, crypto, file I/O, processes, channels, tensors, and an AI runtime out of the box. Twenty-eight modules, 847 functions, no third-party packages required.
 
 ---
 
@@ -276,7 +282,7 @@ kryos bindgen <header.h>     Generate Kryos bindings from C header
 
 ## Status
 
-Kryos is **v0.4.0** (credible-beta). The core language is complete and production-capable for systems programming.
+Kryos is **v1.0.1**. The language, toolchain, and standard library are feature-complete. See [CHANGELOG.md](CHANGELOG.md) for the release history.
 
 | Feature | Status |
 |---------|--------|
@@ -309,4 +315,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Proprietary. Copyright (c) 2026 FrostByte Digital. All rights reserved.
+MIT. See [LICENSE](LICENSE).
+
+Kryos was built solo by [NORTHTEKDevs](https://github.com/NORTHTEKDevs) with heavy AI-assisted development. If you build something with it, I'd love to see it -- open an issue or discussion.

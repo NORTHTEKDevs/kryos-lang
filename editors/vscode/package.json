@@ -3,7 +3,7 @@
   "displayName": "Kryos",
   "description": "Kryos language support — syntax highlighting, snippets, and LSP integration",
   "version": "0.3.0",
-  "publisher": "frostbyte-digital",
+  "publisher": "northtekdevs",
   "repository": {
     "type": "git",
     "url": "https://github.com/NORTHTEKDevs/kryos-lang"

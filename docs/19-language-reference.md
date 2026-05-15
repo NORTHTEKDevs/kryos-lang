@@ -549,7 +549,7 @@ for the stack-overflow handler details.
 
 ## 13. Conformance checklist
 
-What "implemented" means in v0.4.0:
+What "implemented" means in v1.0.1:
 
 | Feature                     | Status              |
 | --------------------------- | ------------------- |
