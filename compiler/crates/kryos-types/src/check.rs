@@ -3133,6 +3133,34 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     });
 
     // -----------------------------------------------------------------------
+    // Async / non-blocking primitives (Gap 3 minimum viable async)
+    // -----------------------------------------------------------------------
+    checker.env.define_function(FunctionSig {
+        name: "tcp_set_nonblocking".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("fd".to_string(), Type::I64), ("nonblocking".to_string(), Type::Bool)],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "tcp_try_accept".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("listener_fd".to_string(), Type::I64)],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "tcp_try_recv".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("fd".to_string(), Type::I64), ("max_bytes".to_string(), Type::I64)],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "sleep_ms".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("ms".to_string(), Type::I64)],
+        ret: Type::Void,
+    });
+
+    // -----------------------------------------------------------------------
     // JSON builtins
     // -----------------------------------------------------------------------
     checker.env.define_function(FunctionSig {
@@ -3255,6 +3283,42 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         generic_params: vec![], generic_var_ids: vec![],
         params: vec![("n".to_string(), Type::I64)],
         ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "sha1_hex".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("s".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "sha1_base64".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("s".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "base64_encode".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("s".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "base64_decode".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("s".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "chr".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("n".to_string(), Type::I64)],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "byte_at".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("s".to_string(), Type::Str), ("idx".to_string(), Type::I64)],
+        ret: Type::I64,
     });
 
     // -----------------------------------------------------------------------

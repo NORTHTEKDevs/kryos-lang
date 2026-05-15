@@ -660,6 +660,20 @@ impl JitCompiler {
             "kryos_socket_close_ks",
             kryos_stdlib_native::net::kryos_socket_close_ks as *const u8,
         );
+        // Async / non-blocking primitives
+        jit_builder.symbol(
+            "kryos_tcp_set_nonblocking",
+            kryos_stdlib_native::net::kryos_tcp_set_nonblocking as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_tcp_try_accept",
+            kryos_stdlib_native::net::kryos_tcp_try_accept as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_tcp_try_recv_ks",
+            kryos_stdlib_native::net::kryos_tcp_try_recv_ks as *const u8,
+        );
+        // kryos_sleep_ms is provided by kryos-rt (see above).
 
         // Stdlib-native: JSON (all handles are i64)
         jit_builder.symbol(
@@ -739,6 +753,30 @@ impl JitCompiler {
         jit_builder.symbol(
             "kryos_random_bytes_ks",
             kryos_stdlib_native::bindings::kryos_random_bytes_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_sha1_hex_ks",
+            kryos_stdlib_native::bindings::kryos_sha1_hex_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_sha1_base64_ks",
+            kryos_stdlib_native::bindings::kryos_sha1_base64_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_base64_encode_ks",
+            kryos_stdlib_native::bindings::kryos_base64_encode_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_base64_decode_ks",
+            kryos_stdlib_native::bindings::kryos_base64_decode_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_chr_ks",
+            kryos_stdlib_native::bindings::kryos_chr_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_byte_at_ks",
+            kryos_stdlib_native::bindings::kryos_byte_at_ks as *const u8,
         );
         jit_builder.symbol(
             "kryos_regex_new_ks",
@@ -1332,6 +1370,10 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_tcp_send_ks", "kryos_tcp_send_ks", sig(2));
     decl!("kryos_tcp_recv_ks", "kryos_tcp_recv_ks", sig(2));
     decl!("kryos_socket_close_ks", "kryos_socket_close_ks", sig(1));
+    decl!("kryos_tcp_set_nonblocking", "kryos_tcp_set_nonblocking", sig(2));
+    decl!("kryos_tcp_try_accept", "kryos_tcp_try_accept", sig(1));
+    decl!("kryos_tcp_try_recv_ks", "kryos_tcp_try_recv_ks", sig(2));
+    // kryos_sleep_ms is declared above in the spawn block.
 
     // --- JSON ---
     decl!("kryos_json_parse", "kryos_json_parse", sig(1));
@@ -1353,6 +1395,12 @@ fn declare_runtime_builtins<M: Module>(
 
     // --- Crypto / Regex / HTTP (handle-based wrappers in `bindings`) ---
     decl!("kryos_sha256_ks", "kryos_sha256_ks", sig(1));
+    decl!("kryos_sha1_hex_ks", "kryos_sha1_hex_ks", sig(1));
+    decl!("kryos_sha1_base64_ks", "kryos_sha1_base64_ks", sig(1));
+    decl!("kryos_base64_encode_ks", "kryos_base64_encode_ks", sig(1));
+    decl!("kryos_base64_decode_ks", "kryos_base64_decode_ks", sig(1));
+    decl!("kryos_chr_ks", "kryos_chr_ks", sig(1));
+    decl!("kryos_byte_at_ks", "kryos_byte_at_ks", sig(2));
     decl!("kryos_sha512_ks", "kryos_sha512_ks", sig(1));
     decl!("kryos_random_bytes_ks", "kryos_random_bytes_ks", sig(1));
     decl!("kryos_regex_new_ks", "kryos_regex_new_ks", sig(1));

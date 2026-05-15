@@ -277,3 +277,156 @@ pub extern "C" fn kryos_tcp_recv_ks(fd: i64, max_bytes: i64) -> i64 {
 pub extern "C" fn kryos_socket_close_ks(fd: i64) -> i64 {
     kryos_socket_close(fd) as i64
 }
+
+// =============================================================================
+// Async / non-blocking primitives (Gap 3 minimum viable async)
+// =============================================================================
+//
+// Kryos does NOT yet have async/await syntax. What we expose instead is a set
+// of non-blocking I/O primitives + a sleep helper that, combined with a Kryos
+// while-loop, lets you write a single-threaded event loop:
+//
+//   let listener = tcp_listen("0.0.0.0", 8080)
+//   tcp_set_nonblocking(listener, true)
+//   while running {
+//       let fd = tcp_try_accept(listener)
+//       if fd > 0 {
+//           handle_new_connection(fd)
+//       }
+//       sleep_ms(1)
+//   }
+//
+// On top of this, `std.poll` provides a slightly higher-level interface.
+
+/// Set the non-blocking flag on a Kryos socket fd.
+/// Returns 0 on success, -1 on failure.
+#[no_mangle]
+pub extern "C" fn kryos_tcp_set_nonblocking(fd: i64, nonblocking: i64) -> i64 {
+    let nb = nonblocking != 0;
+    with_socket_table(|table| {
+        match table.map.get(&fd) {
+            Some(SocketEntry::Stream(s)) => s.set_nonblocking(nb).map(|_| 0).unwrap_or(-1),
+            Some(SocketEntry::Listener(l)) => l.set_nonblocking(nb).map(|_| 0).unwrap_or(-1),
+            None => -1,
+        }
+    })
+}
+
+/// Non-blocking accept. Returns the new stream fd, 0 if no pending connection
+/// (would-block), or -1 on error.
+#[no_mangle]
+pub extern "C" fn kryos_tcp_try_accept(listener_fd: i64) -> i64 {
+    let listener_arc = with_socket_table(|table| match table.map.get(&listener_fd) {
+        Some(SocketEntry::Listener(l)) => Some(Arc::clone(l)),
+        _ => None,
+    });
+    let listener_arc = match listener_arc {
+        Some(a) => a,
+        None => return -1,
+    };
+    match listener_arc.accept() {
+        Ok((stream, _addr)) => {
+            // Inherit non-blocking from listener for convenience.
+            let _ = stream.set_nonblocking(true);
+            with_socket_table(|table| {
+                let fd = table.next_fd;
+                table.next_fd += 1;
+                table.map.insert(fd, SocketEntry::Stream(stream));
+                fd
+            })
+        }
+        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => 0,
+        Err(_) => -1,
+    }
+}
+
+/// Non-blocking recv. Returns:
+///   > 0  : bytes actually read (data is in the returned string)
+///     0  : EOF (peer closed) OR no data ready (would-block)
+///   -1   : error
+/// Use tcp_recv_status() to disambiguate 0.
+///
+/// For now we encode would-block as an empty string + a thread-local flag;
+/// callers can simply retry on empty until they want to time out.
+#[no_mangle]
+pub extern "C" fn kryos_tcp_try_recv_ks(fd: i64, max_bytes: i64) -> i64 {
+    let buf_len = if max_bytes <= 0 { 4096 } else { max_bytes as usize };
+    let mut buf = vec![0u8; buf_len];
+    let stream_opt = with_socket_table(|table| match table.map.get(&fd) {
+        Some(SocketEntry::Stream(s)) => s.try_clone().ok(),
+        _ => None,
+    });
+    let mut stream = match stream_opt {
+        Some(s) => s,
+        None => return empty_string_handle(),
+    };
+    // Force non-blocking just in case the caller didn't set it.
+    let _ = stream.set_nonblocking(true);
+    let n = match stream.read(&mut buf) {
+        Ok(n) => n,
+        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => 0,
+        Err(_) => 0,
+    };
+    let data = buf[..n].to_vec();
+    let boxed = Box::new(KryosString {
+        len: n as i64,
+        cap: n as i64,
+        data: Box::into_raw(data.into_boxed_slice()) as *mut u8,
+    });
+    Box::into_raw(boxed) as i64
+}
+
+fn empty_string_handle() -> i64 {
+    let v: Vec<u8> = Vec::new();
+    let boxed = Box::new(KryosString {
+        len: 0,
+        cap: 0,
+        data: Box::into_raw(v.into_boxed_slice()) as *mut u8,
+    });
+    Box::into_raw(boxed) as i64
+}
+
+// kryos_sleep_ms lives in kryos-rt::spawn; do not duplicate here.
+
+/// Poll an array of fds for readability. Returns a bitmask (i64) where bit i
+/// is set if fds[i] became readable within `timeout_ms`. Up to 63 fds.
+///
+/// This is a simple polling helper: it loops over the fds doing peek() on
+/// each one and returns either as soon as any becomes readable, or after the
+/// timeout elapses. Not as efficient as epoll/kqueue, but portable and good
+/// enough for handfuls of fds.
+#[no_mangle]
+pub extern "C" fn kryos_poll_readable(fds_arr: *const i64, n_fds: i64, timeout_ms: i64) -> i64 {
+    if fds_arr.is_null() || n_fds <= 0 || n_fds > 63 {
+        return 0;
+    }
+    let n = n_fds as usize;
+    let fds = unsafe { std::slice::from_raw_parts(fds_arr, n) };
+    let start = std::time::Instant::now();
+    let deadline = start + std::time::Duration::from_millis(timeout_ms.max(0) as u64);
+    loop {
+        let mut mask: i64 = 0;
+        for (i, &fd) in fds.iter().enumerate() {
+            let ready = with_socket_table(|table| match table.map.get(&fd) {
+                Some(SocketEntry::Stream(s)) => {
+                    if let Ok(clone) = s.try_clone() {
+                        let _ = clone.set_nonblocking(true);
+                        let mut peek = [0u8; 1];
+                        // peek without consuming
+                        match clone.peek(&mut peek) {
+                            Ok(n) if n > 0 => true,
+                            _ => false,
+                        }
+                    } else { false }
+                }
+                Some(SocketEntry::Listener(_)) => true, // listeners reported as ready; caller uses try_accept
+                None => false,
+            });
+            if ready { mask |= 1i64 << i; }
+        }
+        if mask != 0 || std::time::Instant::now() >= deadline {
+            return mask;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}

@@ -2998,6 +2998,10 @@ fn translate_rvalue<M: Module>(
                 "tcp_send" => ("kryos_tcp_send_ks", 2),
                 "tcp_recv" => ("kryos_tcp_recv_ks", 2),
                 "tcp_close" => ("kryos_socket_close_ks", 1),
+                "tcp_set_nonblocking" => ("kryos_tcp_set_nonblocking", 2),
+                "tcp_try_accept" => ("kryos_tcp_try_accept", 1),
+                "tcp_try_recv" => ("kryos_tcp_try_recv_ks", 2),
+                "sleep_ms" => ("kryos_sleep_ms", 1),
                 // JSON (handles are i64; all string args are i64 KryosString handles).
                 "json_parse" => ("kryos_json_parse", 1),
                 "json_stringify" => ("kryos_json_stringify", 1),
@@ -3019,6 +3023,12 @@ fn translate_rvalue<M: Module>(
                 "sha256" => ("kryos_sha256_ks", 1),
                 "sha512" => ("kryos_sha512_ks", 1),
                 "random_bytes" => ("kryos_random_bytes_ks", 1),
+                "sha1_hex" => ("kryos_sha1_hex_ks", 1),
+                "sha1_base64" => ("kryos_sha1_base64_ks", 1),
+                "base64_encode" => ("kryos_base64_encode_ks", 1),
+                "base64_decode" => ("kryos_base64_decode_ks", 1),
+                "chr" => ("kryos_chr_ks", 1),
+                "byte_at" => ("kryos_byte_at_ks", 2),
                 // Time
                 "time_now_secs" => ("kryos_time_now_secs", 0),
                 "time_now_millis" => ("kryos_time_now_millis", 0),

@@ -527,6 +527,12 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("sha256", MirType::Str),
         ("sha512", MirType::Str),
         ("random_bytes", MirType::Str),
+        ("sha1_hex", MirType::Str),
+        ("sha1_base64", MirType::Str),
+        ("base64_encode", MirType::Str),
+        ("base64_decode", MirType::Str),
+        ("chr", MirType::Str),
+        ("byte_at", MirType::I64),
         // Regex
         ("regex_new", MirType::I64),
         ("regex_match", MirType::Bool),
@@ -557,6 +563,11 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("tcp_send", MirType::I64),
         ("tcp_recv", MirType::Str),
         ("tcp_close", MirType::I64),
+        // Async / non-blocking
+        ("tcp_set_nonblocking", MirType::I64),
+        ("tcp_try_accept", MirType::I64),
+        ("tcp_try_recv", MirType::Str),
+        ("sleep_ms", MirType::Void),
     ] {
         ctx.func_ret_types.insert(name.to_string(), ret_ty);
     }
