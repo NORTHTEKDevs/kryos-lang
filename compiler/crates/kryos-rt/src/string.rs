@@ -159,6 +159,33 @@ pub unsafe extern "C" fn kryos_string_eq(a: *const KryosString, b: *const KryosS
     a_slice == b_slice
 }
 
+/// Compare two strings lexicographically by byte content.
+/// Returns -1 if a < b, 0 if equal, +1 if a > b.
+/// Null pointers sort as the empty string.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_string_compare(
+    a: *const KryosString,
+    b: *const KryosString,
+) -> i64 {
+    let a_slice: &[u8] = if a.is_null() {
+        &[]
+    } else {
+        let len = (*a).len as usize;
+        if len == 0 { &[] } else { std::slice::from_raw_parts((*a).data, len) }
+    };
+    let b_slice: &[u8] = if b.is_null() {
+        &[]
+    } else {
+        let len = (*b).len as usize;
+        if len == 0 { &[] } else { std::slice::from_raw_parts((*b).data, len) }
+    };
+    match a_slice.cmp(b_slice) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
+}
+
 /// Extract a substring [start..end). Returns a new heap-allocated string.
 ///
 /// Panics on out-of-bounds indices.

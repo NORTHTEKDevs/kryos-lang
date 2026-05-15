@@ -113,6 +113,10 @@ impl JitCompiler {
             kryos_rt::string::kryos_string_eq as *const u8,
         );
         jit_builder.symbol(
+            "kryos_string_compare",
+            kryos_rt::string::kryos_string_compare as *const u8,
+        );
+        jit_builder.symbol(
             "kryos_string_slice",
             kryos_rt::string::kryos_string_slice as *const u8,
         );
@@ -1238,6 +1242,7 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_string_concat", "kryos_string_concat", sig(2));
     decl!("kryos_string_len", "kryos_string_len", sig(1));
     decl!("kryos_string_eq", "kryos_string_eq", sig(2));
+    decl!("kryos_string_compare", "kryos_string_compare", sig(2));
     decl!("kryos_string_slice", "kryos_string_slice", sig(3));
     decl!("kryos_string_find", "kryos_string_find", sig(2));
     decl!("kryos_string_free", "kryos_string_free", sig(1));

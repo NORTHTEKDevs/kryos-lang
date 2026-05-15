@@ -762,6 +762,12 @@ pub fn compile_module_with_options(
             object_module.declare_function("kryos_string_len", Linkage::Import, &string_len_sig)?;
         let se_id =
             object_module.declare_function("kryos_string_eq", Linkage::Import, &string_eq_sig)?;
+        // kryos_string_compare(a, b) -> i64  (-1/0/+1). Reuse the (i64,i64)->i64 shape of string_concat_sig.
+        let scmp_id = object_module.declare_function(
+            "kryos_string_compare",
+            Linkage::Import,
+            &string_concat_sig,
+        )?;
         let ss_id = object_module.declare_function(
             "kryos_string_slice",
             Linkage::Import,
@@ -782,6 +788,7 @@ pub fn compile_module_with_options(
         func_ids.insert("kryos_string_concat".to_string(), sc_id);
         func_ids.insert("kryos_string_len".to_string(), sl_id);
         func_ids.insert("kryos_string_eq".to_string(), se_id);
+        func_ids.insert("kryos_string_compare".to_string(), scmp_id);
         func_ids.insert("kryos_string_slice".to_string(), ss_id);
         func_ids.insert("kryos_string_find".to_string(), sf_id);
         func_ids.insert("kryos_string_free".to_string(), sfr_id);
@@ -2486,6 +2493,32 @@ fn translate_rvalue<M: Module>(
                 return Ok(Some(eq_val));
             }
 
+            if is_string
+                && matches!(
+                    *op,
+                    MirBinOp::Lt | MirBinOp::Gt | MirBinOp::LtEq | MirBinOp::GtEq
+                )
+            {
+                let cmp_ref = ensure_func_ref_with_args(
+                    "kryos_string_compare",
+                    builder,
+                    translator,
+                    module,
+                    2,
+                )?;
+                let call = builder.ins().call(cmp_ref, &[lhs, rhs]);
+                let cmp_val = builder.inst_results(call)[0];
+                let zero = builder.ins().iconst(types::I64, 0);
+                let icc = match *op {
+                    MirBinOp::Lt => IntCC::SignedLessThan,
+                    MirBinOp::Gt => IntCC::SignedGreaterThan,
+                    MirBinOp::LtEq => IntCC::SignedLessThanOrEqual,
+                    MirBinOp::GtEq => IntCC::SignedGreaterThanOrEqual,
+                    _ => unreachable!(),
+                };
+                return Ok(Some(builder.ins().icmp(icc, cmp_val, zero)));
+            }
+
             // Power: dispatch to runtime (kryos_ipow for int, kryos_fpow for float).
             if *op == MirBinOp::Pow {
                 let (fn_name, needs_f64_sig) = if is_float {
@@ -3021,6 +3054,18 @@ fn translate_rvalue<M: Module>(
                 // f64, f64 → f64 two-arg functions
                 "pow" | "min_f" | "max_f" => {
                     ensure_func_ref_f64_f64_f64(runtime_name, builder, translator, module)?
+                }
+                // f64 → i64 single-arg functions (JSON node constructor for
+                // numbers). The f64 arg must be passed in the float register
+                // class, so we declare a real (F64) -> I64 signature instead
+                // of the default all-i64 one.
+                "json_number" => {
+                    ensure_func_ref_f64_i64(runtime_name, builder, translator, module)?
+                }
+                // i64 → f64 single-arg functions (JSON node accessor that
+                // returns an actual float value).
+                "json_to_float" => {
+                    ensure_func_ref_i64_f64(runtime_name, builder, translator, module)?
                 }
                 // All other functions: standard i64-based
                 _ => ensure_func_ref_with_args(
@@ -4514,6 +4559,60 @@ fn ensure_func_ref_f64_f64<M: Module>(
         module.declare_function(name, Linkage::Import, &sig)?
     };
 
+    let func_ref = module.declare_func_in_func(func_id, builder.func);
+    translator.func_refs.insert(name.to_string(), func_ref);
+    Ok(func_ref)
+}
+
+/// Ensure a FuncRef for an f64→i64 function (e.g. kryos_json_number).
+///
+/// The default `ensure_func_ref_with_args` declares all-i64 signatures, which
+/// would cause Cranelift to pass arguments in integer registers / on the
+/// integer side of the calling convention. For C FFI functions whose first
+/// argument is `f64` on the Rust side (and which would be passed in xmm0 on
+/// SysV), we MUST declare the signature accurately so the Kryos value gets
+/// bitcast into the right register class. Without this, an f64 operand ends
+/// up in rdi instead of xmm0 and the callee reads garbage.
+fn ensure_func_ref_f64_i64<M: Module>(
+    name: &str,
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+) -> Result<cranelift_codegen::ir::FuncRef, CodegenError> {
+    if let Some(func_ref) = translator.func_refs.get(name) {
+        return Ok(*func_ref);
+    }
+    let func_id = if let Some(id) = translator.func_ids.get(name) {
+        *id
+    } else {
+        let mut sig = Signature::new(module.isa().default_call_conv());
+        sig.params.push(AbiParam::new(types::F64));
+        sig.returns.push(AbiParam::new(types::I64));
+        module.declare_function(name, Linkage::Import, &sig)?
+    };
+    let func_ref = module.declare_func_in_func(func_id, builder.func);
+    translator.func_refs.insert(name.to_string(), func_ref);
+    Ok(func_ref)
+}
+
+/// Ensure a FuncRef for an i64→f64 function (e.g. kryos_json_to_float).
+fn ensure_func_ref_i64_f64<M: Module>(
+    name: &str,
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+) -> Result<cranelift_codegen::ir::FuncRef, CodegenError> {
+    if let Some(func_ref) = translator.func_refs.get(name) {
+        return Ok(*func_ref);
+    }
+    let func_id = if let Some(id) = translator.func_ids.get(name) {
+        *id
+    } else {
+        let mut sig = Signature::new(module.isa().default_call_conv());
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::F64));
+        module.declare_function(name, Linkage::Import, &sig)?
+    };
     let func_ref = module.declare_func_in_func(func_id, builder.func);
     translator.func_refs.insert(name.to_string(), func_ref);
     Ok(func_ref)

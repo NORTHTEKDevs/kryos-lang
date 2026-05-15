@@ -17,16 +17,14 @@
 //   curl -X DELETE http://127.0.0.1:7878/todos/1
 
 // --- In-memory store (parallel arrays — simple, no struct churn). ---
-let TITLES: [str] = []
-let IDS: [i64] = []
-let DONE: [i64] = []   // 0/1
-// Single-element array used as a mutable counter (works around the lack
-// of mutable top-level globals in current Kryos).
-let NEXT_ID: [i64] = [1]
+let mut TITLES: [str] = []
+let mut IDS: [i64] = []
+let mut DONE: [i64] = []   // 0/1
+let mut NEXT_ID: i64 = 1
 
 fn store_add(title: str) -> i64 {
-  let id: i64 = NEXT_ID[0]
-  NEXT_ID[0] = NEXT_ID[0] + 1
+  let id: i64 = NEXT_ID
+  NEXT_ID = NEXT_ID + 1
   push(IDS, id)
   push(TITLES, title)
   push(DONE, 0)
@@ -266,7 +264,7 @@ fn main() {
   print("kryos rest api listening on http://127.0.0.1:")
   print(port)
   print("\n")
-  print("endpoints: GET / | GET /todos | GET /todos/{id} | POST /todos | DELETE /todos/{id}\n")
+  print("endpoints: GET / | GET /todos | GET /todos/\{id\} | POST /todos | DELETE /todos/\{id\}\n")
 
   let max_requests: i64 = 16
   let mut handled: i64 = 0
