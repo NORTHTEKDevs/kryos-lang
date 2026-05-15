@@ -1,0 +1,31 @@
+// Dynamic library loading via dlopen / dlsym / dlcall.
+//
+// This loads libc at runtime (no recompile, no link flags) and calls
+// getpid / getuid through function pointers resolved at runtime. The
+// kryos_ffi_dl* helpers come from the stdlib-native runtime.
+
+extern "C" {
+    fn kryos_ffi_dlopen(name: str) -> i64
+    fn kryos_ffi_dlsym(handle: i64, name: str) -> i64
+    fn kryos_ffi_dlclose(handle: i64) -> i64
+    fn kryos_ffi_dlcall0(fp: i64) -> i64
+    fn kryos_ffi_dlcall1(fp: i64, a1: i64) -> i64
+}
+
+fn main() {
+    // On Linux, "libc.so.6" is always available.
+    let lib = kryos_ffi_dlopen("libc.so.6")
+    println("libc handle:")
+    println(lib)
+
+    let getpid_fn = kryos_ffi_dlsym(lib, "getpid")
+    let getuid_fn = kryos_ffi_dlsym(lib, "getuid")
+    println("getpid() via dlcall:")
+    println(kryos_ffi_dlcall0(getpid_fn))
+    println("getuid() via dlcall:")
+    println(kryos_ffi_dlcall0(getuid_fn))
+
+    let n = kryos_ffi_dlclose(lib)
+    println("dlclose returned:")
+    println(n)
+}

@@ -1,0 +1,21 @@
+// FFI smoke test: call several libc functions directly from Kryos.
+//
+// `extern "C" { ... }` declarations are already supported by the Kryos
+// compiler and statically link against libc. This proves end-to-end FFI
+// works for the simplest cases (int-in, int-out functions).
+
+extern "C" {
+    fn getpid() -> i64
+    fn getuid() -> i64
+    fn time(t: i64) -> i64
+}
+
+fn main() {
+    println("--- libc FFI smoke test ---")
+    println("pid:")
+    println(getpid())
+    println("uid:")
+    println(getuid())
+    println("unix time:")
+    println(time(0))
+}

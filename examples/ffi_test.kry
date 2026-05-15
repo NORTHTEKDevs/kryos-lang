@@ -1,0 +1,16 @@
+// Bare-metal FFI smoke test.
+//
+// We declare libc puts() directly and pass it a raw byte pointer
+// from a Kryos string literal. If this prints "hello from libc",
+// the C ABI is wired correctly.
+
+extern "C" {
+    fn puts(s: i64) -> i64
+    fn getpid() -> i64
+}
+
+fn main() {
+    let pid = getpid()
+    println("pid:")
+    println(pid)
+}

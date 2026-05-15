@@ -1,0 +1,66 @@
+// SDL2 system-info demo - exercises SDL2 through Kryos FFI WITHOUT
+// requiring a display. Proves that:
+//   1. Kryos can dynamically load libSDL2-2.0.so.0
+//   2. Resolve and call SDL functions
+//   3. Pass string args (platform name)
+//   4. Read int and pointer return values
+//   5. Read out-parameter structs (SDL_GetVersion writes 3 bytes)
+
+extern "C" {
+    fn kryos_ffi_dlopen(name: str) -> i64
+    fn kryos_ffi_dlsym(handle: i64, name: str) -> i64
+    fn kryos_ffi_dlclose(handle: i64) -> i64
+
+    fn kryos_ffi_dlcall0(fp: i64) -> i64
+    fn kryos_ffi_dlcall1(fp: i64, a1: i64) -> i64
+    fn kryos_ffi_dlcallv1(fp: i64, a1: i64)
+
+    fn kryos_ffi_malloc(n: i64) -> i64
+    fn kryos_ffi_free(p: i64, n: i64)
+    fn kryos_ffi_read_i8(p: i64) -> i64
+    fn kryos_ffi_string_from_ptr(p: i64, len: i64) -> str
+}
+
+fn main() {
+    println("--- SDL2 via Kryos FFI ---")
+
+    let sdl = kryos_ffi_dlopen("libSDL2-2.0.so.0")
+    if sdl == 0 {
+        println("SDL2 not available on this system; skipping")
+        return
+    }
+
+    let get_platform   = kryos_ffi_dlsym(sdl, "SDL_GetPlatform")
+    let get_cpu_count  = kryos_ffi_dlsym(sdl, "SDL_GetCPUCount")
+    let get_system_ram = kryos_ffi_dlsym(sdl, "SDL_GetSystemRAM")
+    let get_ticks      = kryos_ffi_dlsym(sdl, "SDL_GetTicks")
+    let get_version    = kryos_ffi_dlsym(sdl, "SDL_GetVersion")
+
+    // SDL_GetPlatform returns a const char* C string -- copy to a Kryos string.
+    let platform_ptr = kryos_ffi_dlcall0(get_platform)
+    let platform = kryos_ffi_string_from_ptr(platform_ptr, -1)
+    println("platform:")
+    println(platform)
+
+    println("cpu count:")
+    println(kryos_ffi_dlcall0(get_cpu_count))
+
+    println("system RAM (MB):")
+    println(kryos_ffi_dlcall0(get_system_ram))
+
+    println("ticks since SDL load (ms):")
+    println(kryos_ffi_dlcall0(get_ticks))
+
+    // SDL_GetVersion(SDL_version*) writes 3 bytes: major, minor, patch.
+    let ver = kryos_ffi_malloc(3)
+    kryos_ffi_dlcallv1(get_version, ver)
+    println("SDL version: major minor patch:")
+    println(kryos_ffi_read_i8(ver))
+    println(kryos_ffi_read_i8(ver + 1))
+    println(kryos_ffi_read_i8(ver + 2))
+    kryos_ffi_free(ver, 3)
+
+    let r = kryos_ffi_dlclose(sdl)
+    println("dlclose:")
+    println(r)
+}

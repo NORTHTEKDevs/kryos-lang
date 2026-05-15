@@ -1,0 +1,113 @@
+// Kryos FFI module -- pure Kryos surface over the runtime dl* helpers.
+//
+// Usage:
+//   import ffi
+//
+//   let lib = ffi.open("libraylib.so")
+//   let init = ffi.sym(lib, "InitWindow")
+//   ffi.call3(init, 800, 600, ffi.cstr("hello"))
+//
+// All pointer values are i64. Null is 0. Function pointers are also i64.
+
+extern "C" {
+    fn kryos_ffi_dlopen(name: str) -> i64
+    fn kryos_ffi_dlsym(handle: i64, name: str) -> i64
+    fn kryos_ffi_dlclose(handle: i64) -> i64
+
+    fn kryos_ffi_dlcall0(fp: i64) -> i64
+    fn kryos_ffi_dlcall1(fp: i64, a1: i64) -> i64
+    fn kryos_ffi_dlcall2(fp: i64, a1: i64, a2: i64) -> i64
+    fn kryos_ffi_dlcall3(fp: i64, a1: i64, a2: i64, a3: i64) -> i64
+    fn kryos_ffi_dlcall4(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64
+    fn kryos_ffi_dlcall5(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64) -> i64
+    fn kryos_ffi_dlcall6(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64) -> i64
+
+    fn kryos_ffi_dlcallv0(fp: i64)
+    fn kryos_ffi_dlcallv1(fp: i64, a1: i64)
+    fn kryos_ffi_dlcallv2(fp: i64, a1: i64, a2: i64)
+    fn kryos_ffi_dlcallv3(fp: i64, a1: i64, a2: i64, a3: i64)
+    fn kryos_ffi_dlcallv4(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64)
+
+    fn kryos_ffi_dlcallv_4f(fp: i64, a1: f64, a2: f64, a3: f64, a4: f64)
+
+    fn kryos_ffi_cstr(s: str) -> i64
+    fn kryos_ffi_strlen(s: str) -> i64
+    fn kryos_ffi_string_from_ptr(ptr: i64, len: i64) -> str
+
+    fn kryos_ffi_malloc(n: i64) -> i64
+    fn kryos_ffi_free(ptr: i64, n: i64)
+
+    fn kryos_ffi_read_i8(p: i64) -> i64
+    fn kryos_ffi_read_i16(p: i64) -> i64
+    fn kryos_ffi_read_i32(p: i64) -> i64
+    fn kryos_ffi_read_i64(p: i64) -> i64
+    fn kryos_ffi_read_f32(p: i64) -> f64
+    fn kryos_ffi_read_f64(p: i64) -> f64
+
+    fn kryos_ffi_write_i8(p: i64, v: i64)
+    fn kryos_ffi_write_i16(p: i64, v: i64)
+    fn kryos_ffi_write_i32(p: i64, v: i64)
+    fn kryos_ffi_write_i64(p: i64, v: i64)
+    fn kryos_ffi_write_f32(p: i64, v: f64)
+    fn kryos_ffi_write_f64(p: i64, v: f64)
+}
+
+// ---- Library loading ----
+
+pub fn open(name: str) -> i64       { kryos_ffi_dlopen(name) }
+pub fn sym(handle: i64, name: str) -> i64 { kryos_ffi_dlsym(handle, name) }
+pub fn close(handle: i64) -> i64    { kryos_ffi_dlclose(handle) }
+
+// ---- Indirect calls (int-return) ----
+
+pub fn call0(fp: i64) -> i64                                                  { kryos_ffi_dlcall0(fp) }
+pub fn call1(fp: i64, a1: i64) -> i64                                         { kryos_ffi_dlcall1(fp, a1) }
+pub fn call2(fp: i64, a1: i64, a2: i64) -> i64                                { kryos_ffi_dlcall2(fp, a1, a2) }
+pub fn call3(fp: i64, a1: i64, a2: i64, a3: i64) -> i64                       { kryos_ffi_dlcall3(fp, a1, a2, a3) }
+pub fn call4(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64              { kryos_ffi_dlcall4(fp, a1, a2, a3, a4) }
+pub fn call5(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64) -> i64     { kryos_ffi_dlcall5(fp, a1, a2, a3, a4, a5) }
+pub fn call6(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64) -> i64 {
+    kryos_ffi_dlcall6(fp, a1, a2, a3, a4, a5, a6)
+}
+
+// ---- Indirect calls (void-return) ----
+
+pub fn callv0(fp: i64)                                                        { kryos_ffi_dlcallv0(fp) }
+pub fn callv1(fp: i64, a1: i64)                                               { kryos_ffi_dlcallv1(fp, a1) }
+pub fn callv2(fp: i64, a1: i64, a2: i64)                                      { kryos_ffi_dlcallv2(fp, a1, a2) }
+pub fn callv3(fp: i64, a1: i64, a2: i64, a3: i64)                             { kryos_ffi_dlcallv3(fp, a1, a2, a3) }
+pub fn callv4(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64)                    { kryos_ffi_dlcallv4(fp, a1, a2, a3, a4) }
+
+// 4-float-arg void call, for graphics APIs like DrawLine, DrawCircle.
+pub fn callv_4f(fp: i64, a: f64, b: f64, c: f64, d: f64)                      { kryos_ffi_dlcallv_4f(fp, a, b, c, d) }
+
+// ---- String / pointer interop ----
+
+// Get a NUL-terminated *const u8 pointer to the bytes of a Kryos string.
+// The pointer is valid as long as the source string is alive.
+pub fn cstr(s: str) -> i64 { kryos_ffi_cstr(s) }
+
+// Build a Kryos string by copying `len` bytes from a raw pointer.
+// Pass len = -1 to use C strlen instead.
+pub fn from_ptr(ptr: i64, len: i64) -> str { kryos_ffi_string_from_ptr(ptr, len) }
+
+// ---- Memory ----
+
+pub fn alloc(n: i64) -> i64       { kryos_ffi_malloc(n) }
+pub fn free(p: i64, n: i64)       { kryos_ffi_free(p, n) }
+
+// ---- Raw pointer reads / writes ----
+
+pub fn read_i8(p: i64) -> i64     { kryos_ffi_read_i8(p) }
+pub fn read_i16(p: i64) -> i64    { kryos_ffi_read_i16(p) }
+pub fn read_i32(p: i64) -> i64    { kryos_ffi_read_i32(p) }
+pub fn read_i64(p: i64) -> i64    { kryos_ffi_read_i64(p) }
+pub fn read_f32(p: i64) -> f64    { kryos_ffi_read_f32(p) }
+pub fn read_f64(p: i64) -> f64    { kryos_ffi_read_f64(p) }
+
+pub fn write_i8(p: i64, v: i64)   { kryos_ffi_write_i8(p, v) }
+pub fn write_i16(p: i64, v: i64)  { kryos_ffi_write_i16(p, v) }
+pub fn write_i32(p: i64, v: i64)  { kryos_ffi_write_i32(p, v) }
+pub fn write_i64(p: i64, v: i64)  { kryos_ffi_write_i64(p, v) }
+pub fn write_f32(p: i64, v: f64)  { kryos_ffi_write_f32(p, v) }
+pub fn write_f64(p: i64, v: f64)  { kryos_ffi_write_f64(p, v) }

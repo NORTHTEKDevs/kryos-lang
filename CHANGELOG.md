@@ -4,6 +4,78 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.0] - 2026-05-15 — "truly universal: C FFI + graphics"
+
+Kryos can now call any C library at runtime via dlopen/LoadLibrary,
+including driving the full SDL2 window + renderer pipeline from pure
+Kryos. No compiler changes were needed — the existing `extern "C"`
+declaration syntax plus a small runtime in `kryos-stdlib-native::ffi`
+is enough.
+
+This is the milestone where Kryos stops being a closed language and
+becomes a real systems-level tool: anything libc, SDL2, libcurl,
+libsqlite3, libssl, or any other shared library can do, Kryos can
+now do.
+
+### Added
+
+- **Dynamic library FFI runtime** (`kryos-stdlib-native::ffi`).
+  New runtime symbols:
+  - `kryos_ffi_dlopen(name) -> handle` — wraps `dlopen` on Unix and
+    `LoadLibraryA` on Windows.
+  - `kryos_ffi_dlsym(handle, name) -> fnptr` — wraps `dlsym` /
+    `GetProcAddress`.
+  - `kryos_ffi_dlclose(handle)` — `dlclose` / `FreeLibrary`.
+  - `kryos_ffi_dlcall0..6(fp, args...)` — call a resolved function
+    pointer with 0-6 i64 args, returns i64.
+  - `kryos_ffi_dlcallv0..4(fp, args...)` — void-return variants.
+  - `kryos_ffi_dlcallv_4f(fp, f64, f64, f64, f64)` — four-f64-args
+    helper for graphics APIs.
+  - `kryos_ffi_cstr(s) -> *const char` — zero-copy convert a Kryos
+    string to a NUL-terminated C string (KryosString is already
+    NUL-terminated by design).
+  - `kryos_ffi_string_from_ptr(ptr, len)` — read a C string back
+    into a Kryos string (len = -1 uses strlen).
+  - `kryos_ffi_malloc(n)` / `kryos_ffi_free(p, n)` — allocate raw
+    memory blocks for C interop.
+  - `kryos_ffi_read_i8/16/32/64`, `kryos_ffi_read_f32/64`, plus
+    write variants — pointer-typed memory I/O.
+- **C-compatible static-link FFI.** `extern "C" { fn foo(...); }`
+  declarations are auto-resolved as `Linkage::Import` by Cranelift
+  and linked against libc / system libs at build time. Works for
+  any symbol the system linker can find.
+- **SDL2 graphics demo, in pure Kryos.**
+  - `examples/sdl_info.kry` — initializes SDL, queries version,
+    platform, CPU count, RAM, performance counter.
+  - `examples/sdl_window.kry` — opens a 320×240 window, creates a
+    renderer, draws three colored rectangles (red, green, blue),
+    presents the frame.
+  - `examples/sdl_savepng.kry` — same scene but renders offscreen
+    and dumps the framebuffer to disk via libc `fwrite`. Used to
+    generate `docs/screenshots/sdl_kryos_demo.png` — the first
+    rendered graphical output produced by a Kryos program.
+- **libc FFI examples.**
+  - `examples/ffi_libc.kry` — static-link smoke test
+    (`getpid`/`getuid`/`time`).
+  - `examples/ffi_module.kry` — dlopen libc and exercise
+    `malloc`/`free`/`strlen`/`getpid` end-to-end.
+  - `examples/ffi_test.kry`, `examples/ffi_dlopen.kry` — minimal
+    starter snippets.
+- **stdlib `ffi.kry` module.** Idiomatic wrappers (`dlopen`,
+  `dlsym`, `call0..6`, `cstr`, `malloc`, etc.) for users who prefer
+  named imports over raw `extern` blocks.
+
+### Verified working
+
+- `extern "C" { fn getpid() -> i64 }` returns the real PID.
+- dlopen("libc.so.6") + dlsym("malloc") + write_i64 + read_i64 + free
+  roundtrip.
+- dlopen("libSDL2-2.0.so.0") + `SDL_Init` + `SDL_CreateWindow` +
+  `SDL_CreateRenderer` + `SDL_SetRenderDrawColor` + `SDL_RenderClear`
+  + `SDL_RenderFillRect` (3 colored rects) + `SDL_RenderPresent` +
+  `SDL_RenderReadPixels` + clean shutdown — all from Kryos, **with
+  no compiler changes**.
+
 ## [1.1.0] - 2026-05-15 — "universal target"
 
 Kryos now compiles to WebAssembly in addition to native code. The same

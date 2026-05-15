@@ -17,6 +17,7 @@ pub mod crypto;
 pub mod bindings;
 pub mod datetime;
 pub mod env;
+pub mod ffi;
 pub mod fs;
 pub mod io;
 pub mod json;
