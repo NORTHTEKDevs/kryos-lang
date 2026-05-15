@@ -2,11 +2,12 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-843%20passing-brightgreen.svg)](#status)
-[![Release](https://img.shields.io/badge/release-v1.0.1-orange.svg)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-v1.1.0-orange.svg)](CHANGELOG.md)
+[![Targets](https://img.shields.io/badge/targets-native%20%7C%20wasm-purple.svg)](#targets)
 
-A compiled, general-purpose systems language with ownership-based memory safety, capability enforcement, and dual-backend native compilation. Solo-built with AI assistance.
+A compiled, general-purpose systems language with ownership-based memory safety, capability enforcement, and three codegen targets: Cranelift (fast dev), LLVM (optimized native), and WebAssembly (browser/WASI). Solo-built with AI assistance.
 
-**v1.0.1** -- 843 tests passing, self-hosting compiler, package manager, LSP, REPL, formatter, doc generator. Universal-language showcases (parser, interpreter, regex engine, ML, REST API, MCP server, agent runtime) all building and running.
+**v1.1.0** -- 843 tests passing + new WebAssembly backend. Kryos programs now compile to native binaries *and* to `.wasm` modules that run in browsers and WASI hosts. The TCP stack no longer serializes connections through a global mutex, so spawned worker threads can handle requests concurrently.
 
 ---
 
@@ -15,6 +16,30 @@ A compiled, general-purpose systems language with ownership-based memory safety,
 Kryos gives you the control of C, the safety of Rust, and the clarity of Go -- without lifetime annotations. The ownership model is ARC-based with move semantics enforced at compile time. No borrow checker. No `'a` annotations. You get memory safety by construction, not by wrestling with the compiler.
 
 It's also designed to be a language you can *actually finish things in*. The standard library covers strings, math, collections, JSON, HTTP, regex, datetime, crypto, file I/O, processes, channels, tensors, and an AI runtime out of the box. Twenty-eight modules, 847 functions, no third-party packages required.
+
+---
+
+## Targets
+
+v1.1.0 ships three codegen backends behind a single CLI flag:
+
+| Backend | Use when | Speed |
+|---|---|---|
+| `cranelift` (default) | Dev loop, JIT, quick rebuilds | ~500ms cold |
+| `llvm` | Release binaries, max throughput | optimized |
+| `wasm` (new) | Browser, WASI, edge, sandboxed exec | portable |
+
+```
+kryos build --backend wasm program.kry
+# -> program.wasm, runs in any browser or wasmtime
+```
+
+See `examples/wasm_browser_demo.html` for a complete browser demo.
+
+WASM v0.1 scope: integers, floats, booleans, if/else/elif chains, while loops,
+functions, recursion, direct calls, and `println` via host imports. Full feature
+parity (strings, arrays, structs, channels, HTTP, regex, JSON) tracks the LLVM
+backend and is planned for v1.2+.
 
 ---
 

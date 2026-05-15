@@ -4,6 +4,60 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] - 2026-05-15 — "universal target"
+
+Kryos now compiles to WebAssembly in addition to native code. The same
+`.kry` source can be built to a native binary (Cranelift or LLVM) or to
+a `.wasm` module that runs in any browser or WASI host.
+
+Also fixes a long-standing TCP concurrency bug: spawned worker threads
+no longer serialize through a global socket mutex during blocking
+send/recv. Multi-client servers actually scale now.
+
+### Added
+
+- **WebAssembly backend (`--backend wasm`).** New crate
+  `kryos-codegen-wasm` emits standalone `.wasm` modules. Supported in
+  v0.1: i64/f64 arithmetic, comparisons, booleans, if/else/elif chains,
+  while loops, function definitions, direct calls, recursion,
+  `println(i64)`, `println(f64)`, `println(str-literal)` via host imports.
+- **Browser demo.** `examples/wasm_browser_demo.{kry,wasm,html}` — a
+  Kryos program (fib + factorial + sum) running in a real browser via
+  `fetch` + `WebAssembly.instantiate`.
+- **WASM host runner.** `examples/wasm_runner.js` — a 60-line Node.js
+  host that provides the three imports the WASM backend expects.
+- **New example programs.** `wasm_hello.kry`, `wasm_math.kry`,
+  `wasm_fizz.kry`, `wasm_loop.kry`, `wasm_control.kry` — covers each
+  category of WASM-supported control flow.
+
+### Fixed
+
+- **TCP send/recv no longer block other socket operations.** The
+  global socket-table mutex is now released before `TcpStream::read`
+  and `TcpStream::write` are called (via `try_clone`), matching the
+  pattern `tcp_accept` already used. Verified by serving three
+  concurrent curl requests against `examples/showcase/web_server.kry`.
+
+### Backend coverage matrix
+
+| Feature              | Cranelift | LLVM | WASM v0.1 |
+|----------------------|:---------:|:----:|:---------:|
+| Integer/float arith  | ✅ | ✅ | ✅ |
+| Booleans, comparisons| ✅ | ✅ | ✅ |
+| if/else/elif         | ✅ | ✅ | ✅ |
+| while loops          | ✅ | ✅ | ✅ |
+| Functions, recursion | ✅ | ✅ | ✅ |
+| println              | ✅ | ✅ | ✅ |
+| Heap strings         | ✅ | ✅ | ❌ |
+| Arrays, maps         | ✅ | ✅ | ❌ |
+| Structs, enums       | ✅ | ✅ | ❌ |
+| Channels, spawn      | ✅ | ✅ | ❌ |
+| HTTP, regex, JSON    | ✅ | ✅ | ❌ |
+
+The `❌` rows in the WASM column track to v1.2 — they need ARC + a
+linear-memory string runtime + WASI imports. v0.1 is intentionally
+scoped to "the parts that need no heap".
+
 ## [1.0.1] - 2026-05-15 — "universal-language stress test"
 
 Wrote 8 different classes of program in pure Kryos to validate the
