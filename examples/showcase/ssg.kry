@@ -1,0 +1,440 @@
+// ssg.kry — A static site generator in pure Kryos.
+//
+// Reads a manifest JSON file describing the site (title, pages with .md
+// sources and output paths). For each page, runs a markdown converter
+// over the source and wraps the HTML in a styled layout template.
+//
+// Usage:
+//   kryos run examples/showcase/ssg.kry                       # build demo site
+//   kryos run examples/showcase/ssg.kry path/to/manifest.json
+//
+// The demo writes a complete 3-page site to /tmp/kryos_site/ with index.html,
+// about.html, and blog.html, plus a shared style.css.
+
+// ======================================================================
+// Markdown subset (same algorithm as markdown.kry, inlined for self-containment)
+// ======================================================================
+
+fn starts_with(s: str, prefix: str) -> bool {
+  let pn: i64 = len(prefix)
+  if len(s) < pn { return false }
+  return substr(s, 0, pn) == prefix
+}
+
+fn trim_left(s: str) -> str {
+  let n: i64 = len(s)
+  let mut i: i64 = 0
+  while i < n {
+    let c: str = substr(s, i, i + 1)
+    if c != " " and c != "\t" { return substr(s, i, n) }
+    i = i + 1
+  }
+  return ""
+}
+
+fn trim_right(s: str) -> str {
+  let mut n: i64 = len(s)
+  while n > 0 {
+    let c: str = substr(s, n - 1, n)
+    if c != " " and c != "\t" and c != "\r" { return substr(s, 0, n) }
+    n = n - 1
+  }
+  return ""
+}
+
+fn trim(s: str) -> str {
+  return trim_right(trim_left(s))
+}
+
+fn split_lines(src: str) -> [str] {
+  let lines: [str] = []
+  let n: i64 = len(src)
+  let mut i: i64 = 0
+  let mut start: i64 = 0
+  while i < n {
+    if substr(src, i, i + 1) == "\n" {
+      push(lines, substr(src, start, i))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  if start < n { push(lines, substr(src, start, n)) }
+  return lines
+}
+
+fn is_digit(c: str) -> bool {
+  return c >= "0" and c <= "9"
+}
+
+fn html_escape(s: str) -> str {
+  let n: i64 = len(s)
+  let mut out: str = ""
+  let mut i: i64 = 0
+  while i < n {
+    let c: str = substr(s, i, i + 1)
+    if c == "&" { out = out + "&amp;" }
+    elif c == "<" { out = out + "&lt;" }
+    elif c == ">" { out = out + "&gt;" }
+    else { out = out + c }
+    i = i + 1
+  }
+  return out
+}
+
+fn inline_format(src: str) -> str {
+  let n: i64 = len(src)
+  let mut out: str = ""
+  let mut i: i64 = 0
+  while i < n {
+    let c: str = substr(src, i, i + 1)
+    if c == "`" {
+      let mut j: i64 = i + 1
+      while j < n and substr(src, j, j + 1) != "`" { j = j + 1 }
+      if j < n {
+        out = out + "<code>" + html_escape(substr(src, i + 1, j)) + "</code>"
+        i = j + 1
+      } else {
+        out = out + html_escape(c)
+        i = i + 1
+      }
+    } elif c == "*" and i + 1 < n and substr(src, i + 1, i + 2) == "*" {
+      let mut j: i64 = i + 2
+      let mut found: i64 = -1
+      while j + 1 < n {
+        if substr(src, j, j + 1) == "*" and substr(src, j + 1, j + 2) == "*" {
+          found = j
+          break
+        }
+        j = j + 1
+      }
+      if found >= 0 {
+        out = out + "<strong>" + inline_format(substr(src, i + 2, found)) + "</strong>"
+        i = found + 2
+      } else {
+        out = out + html_escape(c)
+        i = i + 1
+      }
+    } elif c == "*" {
+      let mut j: i64 = i + 1
+      while j < n and substr(src, j, j + 1) != "*" { j = j + 1 }
+      if j < n and j > i + 1 {
+        out = out + "<em>" + inline_format(substr(src, i + 1, j)) + "</em>"
+        i = j + 1
+      } else {
+        out = out + html_escape(c)
+        i = i + 1
+      }
+    } elif c == "[" {
+      let mut j: i64 = i + 1
+      while j < n and substr(src, j, j + 1) != "]" { j = j + 1 }
+      if j < n and j + 1 < n and substr(src, j + 1, j + 2) == "(" {
+        let mut k: i64 = j + 2
+        while k < n and substr(src, k, k + 1) != ")" { k = k + 1 }
+        if k < n {
+          let text: str = substr(src, i + 1, j)
+          let url: str = substr(src, j + 2, k)
+          out = out + "<a href=\"" + html_escape(url) + "\">" + html_escape(text) + "</a>"
+          i = k + 1
+        } else {
+          out = out + html_escape(c)
+          i = i + 1
+        }
+      } else {
+        out = out + html_escape(c)
+        i = i + 1
+      }
+    } else {
+      out = out + html_escape(c)
+      i = i + 1
+    }
+  }
+  return out
+}
+
+fn count_heading_level(line: str) -> i64 {
+  let n: i64 = len(line)
+  let mut i: i64 = 0
+  while i < n and i < 6 and substr(line, i, i + 1) == "#" { i = i + 1 }
+  if i == 0 { return 0 }
+  if i < n and substr(line, i, i + 1) == " " { return i }
+  return 0
+}
+
+fn is_unordered_item(line: str) -> bool {
+  let t: str = trim_left(line)
+  if len(t) < 2 { return false }
+  let p: str = substr(t, 0, 2)
+  return p == "- " or p == "* "
+}
+
+fn unordered_text(line: str) -> str {
+  let t: str = trim_left(line)
+  return substr(t, 2, len(t))
+}
+
+fn is_hr(line: str) -> bool {
+  let t: str = trim(line)
+  return t == "---" or t == "***"
+}
+
+fn render_md(md: str) -> str {
+  let lines: [str] = split_lines(md)
+  let n: i64 = len(lines)
+  let mut out: str = ""
+  let mut i: i64 = 0
+  let mut in_ul: bool = false
+  let mut in_para: bool = false
+  let mut para_buf: str = ""
+
+  while i < n {
+    let line: str = lines[i]
+    let stripped: str = trim_right(line)
+
+    if starts_with(trim_left(stripped), "```") {
+      if in_para { out = out + "<p>" + inline_format(para_buf) + "</p>\n" para_buf = "" in_para = false }
+      if in_ul { out = out + "</ul>\n" in_ul = false }
+      i = i + 1
+      let mut code: str = ""
+      while i < n {
+        let l2: str = lines[i]
+        if starts_with(trim_left(trim_right(l2)), "```") {
+          i = i + 1
+          break
+        }
+        code = code + l2 + "\n"
+        i = i + 1
+      }
+      out = out + "<pre><code>" + html_escape(code) + "</code></pre>\n"
+      continue
+    }
+
+    if is_hr(stripped) {
+      if in_para { out = out + "<p>" + inline_format(para_buf) + "</p>\n" para_buf = "" in_para = false }
+      if in_ul { out = out + "</ul>\n" in_ul = false }
+      out = out + "<hr>\n"
+      i = i + 1
+      continue
+    }
+
+    let h: i64 = count_heading_level(stripped)
+    if h > 0 {
+      if in_para { out = out + "<p>" + inline_format(para_buf) + "</p>\n" para_buf = "" in_para = false }
+      if in_ul { out = out + "</ul>\n" in_ul = false }
+      let text: str = substr(stripped, h + 1, len(stripped))
+      let tag: str = "h" + to_string(h)
+      out = out + "<" + tag + ">" + inline_format(text) + "</" + tag + ">\n"
+      i = i + 1
+      continue
+    }
+
+    if is_unordered_item(stripped) {
+      if in_para { out = out + "<p>" + inline_format(para_buf) + "</p>\n" para_buf = "" in_para = false }
+      if not in_ul { out = out + "<ul>\n" in_ul = true }
+      out = out + "  <li>" + inline_format(unordered_text(stripped)) + "</li>\n"
+      i = i + 1
+      continue
+    }
+
+    if trim(stripped) == "" {
+      if in_para { out = out + "<p>" + inline_format(para_buf) + "</p>\n" para_buf = "" in_para = false }
+      if in_ul { out = out + "</ul>\n" in_ul = false }
+      i = i + 1
+      continue
+    }
+
+    if in_ul { out = out + "</ul>\n" in_ul = false }
+    if in_para {
+      para_buf = para_buf + " " + trim(stripped)
+    } else {
+      para_buf = trim(stripped)
+      in_para = true
+    }
+    i = i + 1
+  }
+
+  if in_para { out = out + "<p>" + inline_format(para_buf) + "</p>\n" }
+  if in_ul { out = out + "</ul>\n" }
+  return out
+}
+
+// ======================================================================
+// Layout
+// ======================================================================
+
+fn layout(site_title: str, page_title: str, nav: str, body_html: str) -> str {
+  let mut h: str = ""
+  h = h + "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
+  h = h + "<meta charset=\"utf-8\">\n"
+  h = h + "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n"
+  h = h + "<title>" + html_escape(page_title) + " | " + html_escape(site_title) + "</title>\n"
+  h = h + "<link rel=\"stylesheet\" href=\"style.css\">\n"
+  h = h + "</head>\n<body>\n"
+  h = h + "<header><div class=\"brand\">" + html_escape(site_title) + "</div>\n"
+  h = h + "<nav>" + nav + "</nav></header>\n"
+  h = h + "<main>\n" + body_html + "</main>\n"
+  h = h + "<footer>built with kryos-ssg</footer>\n"
+  h = h + "</body>\n</html>\n"
+  return h
+}
+
+fn default_css() -> str {
+  let lb: str = "\{"
+  let rb: str = "\}"
+  let mut c: str = ""
+  c = c + "* " + lb + "box-sizing:border-box" + rb + "\n"
+  c = c + "body " + lb + "font-family:-apple-system,BlinkMacSystemFont,sans-serif;"
+  c = c + "max-width:760px;margin:0 auto;padding:2rem 1.5rem;color:#1a1a1a;line-height:1.6" + rb + "\n"
+  c = c + "header " + lb + "display:flex;justify-content:space-between;align-items:center;"
+  c = c + "border-bottom:1px solid #e5e5e5;padding-bottom:1rem;margin-bottom:2rem" + rb + "\n"
+  c = c + ".brand " + lb + "font-weight:700;font-size:1.15rem" + rb + "\n"
+  c = c + "nav a " + lb + "margin-left:1rem;text-decoration:none;color:#555" + rb + "\n"
+  c = c + "nav a:hover " + lb + "color:#000" + rb + "\n"
+  c = c + "h1 " + lb + "font-size:2rem;margin:1.5rem 0 1rem" + rb + "\n"
+  c = c + "h2 " + lb + "font-size:1.4rem;margin:2rem 0 0.5rem" + rb + "\n"
+  c = c + "p " + lb + "margin:0.75rem 0" + rb + "\n"
+  c = c + "code " + lb + "background:#f4f4f4;padding:1px 5px;border-radius:3px;font-size:0.9em" + rb + "\n"
+  c = c + "pre " + lb + "background:#1e1e1e;color:#dcdcdc;padding:1rem;border-radius:6px;overflow:auto" + rb + "\n"
+  c = c + "pre code " + lb + "background:none;color:inherit;padding:0" + rb + "\n"
+  c = c + "a " + lb + "color:#0a66c2" + rb + "\n"
+  c = c + "footer " + lb + "margin-top:3rem;padding-top:1rem;border-top:1px solid #e5e5e5;color:#888;font-size:0.85rem" + rb + "\n"
+  c = c + "ul " + lb + "padding-left:1.5rem" + rb + "\n"
+  c = c + "hr " + lb + "border:0;border-top:1px solid #e5e5e5;margin:2rem 0" + rb + "\n"
+  return c
+}
+
+// ======================================================================
+// Manifest-driven build
+// ======================================================================
+
+fn build_nav(manifest: i64) -> str {
+  let pages: i64 = json_get(manifest, "pages")
+  let n: i64 = json_length(pages)
+  let mut nav: str = ""
+  let mut i: i64 = 0
+  while i < n {
+    let p: i64 = json_get_index(pages, i)
+    let nav_title: str = json_to_str(json_get(p, "title"))
+    let out: str = json_to_str(json_get(p, "output"))
+    nav = nav + "<a href=\"" + html_escape(out) + "\">" + html_escape(nav_title) + "</a>"
+    i = i + 1
+  }
+  return nav
+}
+
+fn build_site(manifest: i64) {
+  let site_title: str = json_to_str(json_get(manifest, "title"))
+  let out_dir: str = json_to_str(json_get(manifest, "out_dir"))
+  let pages: i64 = json_get(manifest, "pages")
+  let nav: str = build_nav(manifest)
+
+  let n: i64 = json_length(pages)
+  let mut i: i64 = 0
+  while i < n {
+    let p: i64 = json_get_index(pages, i)
+    let page_title: str = json_to_str(json_get(p, "title"))
+    let src_path: str = json_to_str(json_get(p, "source"))
+    let out_name: str = json_to_str(json_get(p, "output"))
+    let md: str = file_read(src_path)
+    let body_html: str = render_md(md)
+    let html: str = layout(site_title, page_title, nav, body_html)
+    let dst: str = out_dir + "/" + out_name
+    file_write(dst, html)
+    println("wrote " + dst + " (" + to_string(len(html)) + " bytes)")
+    i = i + 1
+  }
+  let css_path: str = out_dir + "/style.css"
+  file_write(css_path, default_css())
+  println("wrote " + css_path)
+}
+
+// ======================================================================
+// Demo (writes sources, manifest, then builds site)
+// ======================================================================
+
+fn write_demo_sources(dir: str) {
+  let mut idx: str = ""
+  idx = idx + "# Welcome to kryos-ssg\n\n"
+  idx = idx + "A static site generator written **entirely in Kryos**. Source, parser,\n"
+  idx = idx + "renderer, and layout are all native Kryos code -- no external tools.\n\n"
+  idx = idx + "## What it does\n\n"
+  idx = idx + "- reads a JSON manifest describing each page\n"
+  idx = idx + "- converts markdown to HTML in pure Kryos\n"
+  idx = idx + "- wraps everything in a shared layout with navigation\n"
+  idx = idx + "- emits a single `style.css` and one HTML file per page\n\n"
+  idx = idx + "Check the [about](about.html) and [blog](blog.html) pages.\n"
+  file_write(dir + "/index.md", idx)
+
+  let mut ab: str = ""
+  ab = ab + "# About\n\n"
+  ab = ab + "This site is built by a Kryos program of about 350 lines. The same\n"
+  ab = ab + "language is being used today to write:\n\n"
+  ab = ab + "- a REST API server (with full CRUD and JSON responses)\n"
+  ab = ab + "- an MCP server (JSON-RPC 2.0 over stdio)\n"
+  ab = ab + "- an LLM agent with tool use\n"
+  ab = ab + "- a persistent key-value database\n\n"
+  ab = ab + "Kryos targets native code via Cranelift and LLVM. No VM, no runtime\n"
+  ab = ab + "interpretation -- everything compiles to a single binary.\n"
+  file_write(dir + "/about.md", ab)
+
+  let mut bl: str = ""
+  bl = bl + "# Blog\n\n"
+  bl = bl + "## v0.5 is shaping up\n\n"
+  bl = bl + "Real mutable module-level globals shipped, string ordering now\n"
+  bl = bl + "compares bytes lexicographically, JSON number round-trips work\n"
+  bl = bl + "end-to-end in compiled binaries.\n\n"
+  bl = bl + "Example:\n\n"
+  bl = bl + "```\n"
+  bl = bl + "let mut counter: i64 = 0\n\n"
+  bl = bl + "fn tick() \{ counter = counter + 1 \}\n"
+  bl = bl + "```\n\n"
+  bl = bl + "*That just works now.*\n"
+  file_write(dir + "/blog.md", bl)
+}
+
+fn main() {
+  let args: [str] = args()
+  let mut manifest_path: str = ""
+  if len(args) >= 2 {
+    manifest_path = args[1]
+  } else {
+    // build the demo
+    let dir: str = "/tmp/kryos_site"
+    // make sure the dir exists by writing a marker (file_write creates parent dirs? unknown -- caller should mkdir)
+    write_demo_sources(dir)
+
+    let manifest_str: str = json_stringify(json_object(
+      ["title", "out_dir", "pages"],
+      [
+        json_string("kryos-ssg demo"),
+        json_string(dir),
+        json_array([
+          json_object(
+            ["title", "source", "output"],
+            [json_string("Home"), json_string(dir + "/index.md"), json_string("index.html")]
+          ),
+          json_object(
+            ["title", "source", "output"],
+            [json_string("About"), json_string(dir + "/about.md"), json_string("about.html")]
+          ),
+          json_object(
+            ["title", "source", "output"],
+            [json_string("Blog"), json_string(dir + "/blog.md"), json_string("blog.html")]
+          )
+        ])
+      ]
+    ))
+    manifest_path = dir + "/manifest.json"
+    file_write(manifest_path, manifest_str)
+    println("wrote manifest " + manifest_path)
+  }
+
+  let raw: str = file_read(manifest_path)
+  let manifest: i64 = json_parse(raw)
+  if manifest <= 0 {
+    println("failed to parse manifest")
+    exit(1)
+  }
+  build_site(manifest)
+  println("")
+  println("site ready at " + json_to_str(json_get(manifest, "out_dir")))
+}

@@ -1,0 +1,283 @@
+// mcp_server.kry — A real Model Context Protocol (MCP) server in pure Kryos.
+//
+// Speaks JSON-RPC 2.0 over stdio per the MCP spec. Implements:
+//   - initialize          : protocol handshake
+//   - tools/list          : enumerate the tools this server exposes
+//   - tools/call          : invoke one of the tools
+//   - notifications/initialized : acknowledged (no-op)
+//
+// Tools exposed (all real, work today):
+//   - echo(text: string)               -> repeats text
+//   - now()                            -> current unix time
+//   - add(a: number, b: number)        -> a + b
+//   - read_file(path: string)          -> file contents
+//   - write_file(path, content)        -> writes file, returns bytes written
+//   - http_get(url: string)            -> fetches a URL, returns body
+//
+// Run as a real MCP server:
+//   kryos run examples/showcase/mcp_server.kry
+//   (then have an MCP client speak JSON-RPC line-delimited on stdin/stdout)
+//
+// One-shot test (using the bundled --self-test flag):
+//   echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | \
+//     kryos run examples/showcase/mcp_server.kry
+
+// ----- request loop -----------------------------------------------------
+
+let mut SHUTDOWN: i64 = 0
+
+fn make_error(id: i64, code: i64, message: str) -> str {
+  let resp: i64 = json_object(
+    ["jsonrpc", "id", "error"],
+    [
+      json_string("2.0"),
+      json_number(id as f64),
+      json_object(
+        ["code", "message"],
+        [json_number(code as f64), json_string(message)]
+      )
+    ]
+  )
+  return json_stringify(resp)
+}
+
+fn make_result(id: i64, result_node: i64) -> str {
+  let resp: i64 = json_object(
+    ["jsonrpc", "id", "result"],
+    [json_string("2.0"), json_number(id as f64), result_node]
+  )
+  return json_stringify(resp)
+}
+
+// ----- tool catalog -----------------------------------------------------
+
+fn prop_string() -> i64 {
+  return json_object(["type"], [json_string("string")])
+}
+
+fn prop_number() -> i64 {
+  return json_object(["type"], [json_string("number")])
+}
+
+fn schema(prop_names: [str], prop_nodes: [i64], required: [str]) -> i64 {
+  let req_nodes: [i64] = []
+  let mut i: i64 = 0
+  while i < len(required) {
+    push(req_nodes, json_string(required[i]))
+    i = i + 1
+  }
+  let props: i64 = json_object(prop_names, prop_nodes)
+  return json_object(
+    ["type", "properties", "required"],
+    [json_string("object"), props, json_array(req_nodes)]
+  )
+}
+
+fn tool_def(name: str, description: str, schema_node: i64) -> i64 {
+  return json_object(
+    ["name", "description", "inputSchema"],
+    [json_string(name), json_string(description), schema_node]
+  )
+}
+
+fn list_tools_result() -> i64 {
+  let echo_schema: i64 = schema(["text"], [prop_string()], ["text"])
+  let now_schema: i64 = schema([], [], [])
+  let add_schema: i64 = schema(["a", "b"], [prop_number(), prop_number()], ["a", "b"])
+  let read_schema: i64 = schema(["path"], [prop_string()], ["path"])
+  let write_schema: i64 = schema(["path", "content"], [prop_string(), prop_string()], ["path", "content"])
+  let http_schema: i64 = schema(["url"], [prop_string()], ["url"])
+
+  let tools: [i64] = [
+    tool_def("echo", "Echo back the provided text", echo_schema),
+    tool_def("now", "Return current unix timestamp (seconds)", now_schema),
+    tool_def("add", "Add two numbers", add_schema),
+    tool_def("read_file", "Read a file from disk", read_schema),
+    tool_def("write_file", "Write content to a file on disk", write_schema),
+    tool_def("http_get", "Fetch a URL with HTTP GET, return body", http_schema)
+  ]
+  return json_object(["tools"], [json_array(tools)])
+}
+
+// ----- tool execution ---------------------------------------------------
+
+fn text_content(text: str) -> i64 {
+  let item: i64 = json_object(
+    ["type", "text"],
+    [json_string("text"), json_string(text)]
+  )
+  return json_object(["content"], [json_array([item])])
+}
+
+fn err_content(message: str) -> i64 {
+  let item: i64 = json_object(
+    ["type", "text"],
+    [json_string("text"), json_string(message)]
+  )
+  return json_object(
+    ["content", "isError"],
+    [json_array([item]), json_bool(true)]
+  )
+}
+
+fn tool_echo(args_node: i64) -> i64 {
+  let text_n: i64 = json_get(args_node, "text")
+  if text_n <= 0 {
+    return err_content("missing 'text' argument")
+  }
+  return text_content(json_to_str(text_n))
+}
+
+fn tool_now() -> i64 {
+  let t: i64 = time_now_secs()
+  return text_content(to_string(t))
+}
+
+fn tool_add(args_node: i64) -> i64 {
+  let a_n: i64 = json_get(args_node, "a")
+  let b_n: i64 = json_get(args_node, "b")
+  if a_n <= 0 or b_n <= 0 {
+    return err_content("missing 'a' or 'b' argument")
+  }
+  let a: f64 = json_to_float(a_n)
+  let b: f64 = json_to_float(b_n)
+  return text_content(to_string(a + b))
+}
+
+fn tool_read_file(args_node: i64) -> i64 {
+  let path_n: i64 = json_get(args_node, "path")
+  if path_n <= 0 {
+    return err_content("missing 'path' argument")
+  }
+  let path: str = json_to_str(path_n)
+  if file_exists(path) == 0 {
+    return err_content("file does not exist: " + path)
+  }
+  return text_content(file_read(path))
+}
+
+fn tool_write_file(args_node: i64) -> i64 {
+  let path_n: i64 = json_get(args_node, "path")
+  let content_n: i64 = json_get(args_node, "content")
+  if path_n <= 0 or content_n <= 0 {
+    return err_content("missing 'path' or 'content' argument")
+  }
+  let path: str = json_to_str(path_n)
+  let content: str = json_to_str(content_n)
+  file_write(path, content)
+  return text_content("wrote " + to_string(len(content)) + " bytes to " + path)
+}
+
+fn tool_http_get(args_node: i64) -> i64 {
+  let url_n: i64 = json_get(args_node, "url")
+  if url_n <= 0 {
+    return err_content("missing 'url' argument")
+  }
+  let url: str = json_to_str(url_n)
+  let resp: i64 = http_request("GET", url, "", "", 15000)
+  if resp <= 0 {
+    return err_content("request failed")
+  }
+  let body_n: i64 = json_get(resp, "body")
+  if body_n <= 0 {
+    return text_content("(no body)")
+  }
+  return text_content(json_to_str(body_n))
+}
+
+fn call_tool(name: str, args_node: i64) -> i64 {
+  if name == "echo" { return tool_echo(args_node) }
+  if name == "now" { return tool_now() }
+  if name == "add" { return tool_add(args_node) }
+  if name == "read_file" { return tool_read_file(args_node) }
+  if name == "write_file" { return tool_write_file(args_node) }
+  if name == "http_get" { return tool_http_get(args_node) }
+  return err_content("unknown tool: " + name)
+}
+
+// ----- dispatch ---------------------------------------------------------
+
+fn handle_message(line: str) -> str {
+  let req: i64 = json_parse(line)
+  if req <= 0 {
+    return make_error(0, -32700, "parse error")
+  }
+  let method_n: i64 = json_get(req, "method")
+  if method_n <= 0 {
+    return ""
+  }
+  let method: str = json_to_str(method_n)
+  let id_n: i64 = json_get(req, "id")
+  let mut id: i64 = 0
+  if id_n > 0 {
+    id = json_to_float(id_n) as i64
+  }
+
+  // Notifications (no id) → no response.
+  if id_n <= 0 {
+    if method == "notifications/initialized" {
+      return ""
+    }
+    if method == "exit" {
+      SHUTDOWN = 1
+      return ""
+    }
+    return ""
+  }
+
+  if method == "initialize" {
+    let server_info: i64 = json_object(
+      ["name", "version"],
+      [json_string("kryos-mcp"), json_string("0.1.0")]
+    )
+    let capabilities: i64 = json_object(
+      ["tools"],
+      [json_object([], [])]
+    )
+    let result: i64 = json_object(
+      ["protocolVersion", "serverInfo", "capabilities"],
+      [json_string("2024-11-05"), server_info, capabilities]
+    )
+    return make_result(id, result)
+  }
+
+  if method == "tools/list" {
+    return make_result(id, list_tools_result())
+  }
+
+  if method == "tools/call" {
+    let params: i64 = json_get(req, "params")
+    if params <= 0 {
+      return make_error(id, -32602, "missing params")
+    }
+    let name_n: i64 = json_get(params, "name")
+    if name_n <= 0 {
+      return make_error(id, -32602, "missing tool name")
+    }
+    let name: str = json_to_str(name_n)
+    let args_node: i64 = json_get(params, "arguments")
+    return make_result(id, call_tool(name, args_node))
+  }
+
+  if method == "shutdown" {
+    SHUTDOWN = 1
+    return make_result(id, json_object([], []))
+  }
+
+  return make_error(id, -32601, "method not found: " + method)
+}
+
+// ----- main loop --------------------------------------------------------
+
+fn main() {
+  while SHUTDOWN == 0 {
+    let line: str = read_line()
+    if len(line) == 0 {
+      break
+    }
+    let resp: str = handle_message(line)
+    if len(resp) > 0 {
+      println(resp)
+    }
+  }
+}

@@ -1,0 +1,275 @@
+// agent.kry — A real LLM agent in pure Kryos, with tool use.
+//
+// Talks to an OpenAI-compatible Chat Completions API. The agent runs a loop:
+//   1. send the conversation to the model
+//   2. if the model emits a tool_call, execute the tool locally
+//   3. append the tool result back to the conversation
+//   4. repeat until the model produces a final text answer
+//
+// Tools wired (all native Kryos builtins or pure-Kryos logic):
+//   - now()                    -> current unix timestamp
+//   - add(a, b)                -> arithmetic
+//   - read_file(path)          -> read file from disk
+//   - http_get(url)            -> fetch a URL via HTTPS
+//
+// Configuration via environment variables:
+//   OPENAI_API_KEY    : required to actually call the model
+//   OPENAI_BASE_URL   : defaults to https://api.openai.com
+//   OPENAI_MODEL      : defaults to gpt-4o-mini
+//   AGENT_TASK        : user task; defaults to a demo task
+//
+// If OPENAI_API_KEY is not set, the script prints an offline demo trace
+// showing the exact wire format the agent would send.
+
+// ----- helpers ----------------------------------------------------------
+
+fn msg(role: str, content: str) -> i64 {
+  return json_object(
+    ["role", "content"],
+    [json_string(role), json_string(content)]
+  )
+}
+
+fn tool_msg(tool_call_id: str, content: str) -> i64 {
+  return json_object(
+    ["role", "tool_call_id", "content"],
+    [json_string("tool"), json_string(tool_call_id), json_string(content)]
+  )
+}
+
+fn prop(ty: str, desc: str) -> i64 {
+  return json_object(
+    ["type", "description"],
+    [json_string(ty), json_string(desc)]
+  )
+}
+
+fn tool_def(name: str, description: str, props_names: [str], props_nodes: [i64], required: [str]) -> i64 {
+  let req_nodes: [i64] = []
+  let mut i: i64 = 0
+  while i < len(required) {
+    push(req_nodes, json_string(required[i]))
+    i = i + 1
+  }
+  let props: i64 = json_object(props_names, props_nodes)
+  let parameters: i64 = json_object(
+    ["type", "properties", "required"],
+    [json_string("object"), props, json_array(req_nodes)]
+  )
+  let fn_obj: i64 = json_object(
+    ["name", "description", "parameters"],
+    [json_string(name), json_string(description), parameters]
+  )
+  return json_object(
+    ["type", "function"],
+    [json_string("function"), fn_obj]
+  )
+}
+
+fn build_tools() -> i64 {
+  let tools: [i64] = [
+    tool_def("now", "Get current unix timestamp in seconds", [], [], []),
+    tool_def("add", "Add two numbers",
+      ["a", "b"],
+      [prop("number", "first number"), prop("number", "second number")],
+      ["a", "b"]),
+    tool_def("read_file", "Read a file from disk and return its contents",
+      ["path"], [prop("string", "filesystem path")], ["path"]),
+    tool_def("http_get", "Fetch a URL via HTTP GET and return the body",
+      ["url"], [prop("string", "absolute URL to fetch")], ["url"])
+  ]
+  return json_array(tools)
+}
+
+// ----- tool dispatch ----------------------------------------------------
+
+fn exec_tool(name: str, args_node: i64) -> str {
+  if name == "now" {
+    return to_string(time_now_secs())
+  }
+  if name == "add" {
+    let a_n: i64 = json_get(args_node, "a")
+    let b_n: i64 = json_get(args_node, "b")
+    if a_n <= 0 or b_n <= 0 {
+      return "error: missing a or b"
+    }
+    return to_string(json_to_float(a_n) + json_to_float(b_n))
+  }
+  if name == "read_file" {
+    let p_n: i64 = json_get(args_node, "path")
+    if p_n <= 0 {
+      return "error: missing path"
+    }
+    let path: str = json_to_str(p_n)
+    if file_exists(path) == 0 {
+      return "error: file not found"
+    }
+    return file_read(path)
+  }
+  if name == "http_get" {
+    let u_n: i64 = json_get(args_node, "url")
+    if u_n <= 0 {
+      return "error: missing url"
+    }
+    let url: str = json_to_str(u_n)
+    let resp: i64 = http_request("GET", url, "", "", 15000)
+    if resp <= 0 {
+      return "error: request failed"
+    }
+    let body_n: i64 = json_get(resp, "body")
+    if body_n <= 0 {
+      return "(no body)"
+    }
+    return json_to_str(body_n)
+  }
+  return "error: unknown tool " + name
+}
+
+// ----- model call -------------------------------------------------------
+
+fn call_model(base_url: str, api_key: str, model: str, messages_node: i64, tools_node: i64) -> i64 {
+  let body_node: i64 = json_object(
+    ["model", "messages", "tools", "tool_choice"],
+    [json_string(model), messages_node, tools_node, json_string("auto")]
+  )
+  let body: str = json_stringify(body_node)
+  let headers: str = "Authorization: Bearer " + api_key + "\r\nContent-Type: application/json"
+  let url: str = base_url + "/v1/chat/completions"
+  return http_request("POST", url, headers, body, 60000)
+}
+
+// ----- agent loop -------------------------------------------------------
+
+fn run_agent(base_url: str, api_key: str, model: str, task: str) {
+  let history: [i64] = [
+    msg("system", "You are a helpful agent. Use tools when they help answer the user. When you have the final answer, reply in plain text."),
+    msg("user", task)
+  ]
+  let tools_node: i64 = build_tools()
+
+  let max_steps: i64 = 6
+  let mut step: i64 = 0
+  while step < max_steps {
+    step = step + 1
+    println("[step " + to_string(step) + "] calling model...")
+    let messages: i64 = json_array(history)
+    let resp: i64 = call_model(base_url, api_key, model, messages, tools_node)
+    if resp <= 0 {
+      println("model request failed")
+      return
+    }
+    let status_n: i64 = json_get(resp, "status")
+    let status: i64 = json_to_float(status_n) as i64
+    let body_n: i64 = json_get(resp, "body")
+    let body: str = json_to_str(body_n)
+    if status != 200 {
+      println("HTTP " + to_string(status) + ": " + body)
+      return
+    }
+    let parsed: i64 = json_parse(body)
+    let choices: i64 = json_get(parsed, "choices")
+    if choices <= 0 {
+      println("no choices in response")
+      return
+    }
+    let choice: i64 = json_get_index(choices, 0)
+    let message: i64 = json_get(choice, "message")
+    let tool_calls: i64 = json_get(message, "tool_calls")
+
+    if tool_calls > 0 {
+      push(history, message)
+      let n_calls: i64 = json_length(tool_calls)
+      let mut i: i64 = 0
+      while i < n_calls {
+        let call: i64 = json_get_index(tool_calls, i)
+        let id_n: i64 = json_get(call, "id")
+        let fn_n: i64 = json_get(call, "function")
+        let name_n: i64 = json_get(fn_n, "name")
+        let args_str_n: i64 = json_get(fn_n, "arguments")
+        let name: str = json_to_str(name_n)
+        let args_str: str = json_to_str(args_str_n)
+        println("  -> tool: " + name + "(" + args_str + ")")
+        let args_node: i64 = json_parse(args_str)
+        let result: str = exec_tool(name, args_node)
+        println("  <- " + result)
+        let call_id: str = json_to_str(id_n)
+        push(history, tool_msg(call_id, result))
+        i = i + 1
+      }
+    } else {
+      let content_n: i64 = json_get(message, "content")
+      if content_n > 0 {
+        println("")
+        println("=== final answer ===")
+        println(json_to_str(content_n))
+      }
+      return
+    }
+  }
+  println("hit step limit")
+}
+
+// ----- offline demo (no API key) ----------------------------------------
+
+fn offline_demo(task: str) {
+  println("OPENAI_API_KEY not set -- running offline demo.")
+  println("")
+  println("The agent would POST this request to the model:")
+  println("")
+  let messages: i64 = json_array([
+    msg("system", "You are a helpful agent."),
+    msg("user", task)
+  ])
+  let tools_node: i64 = build_tools()
+  let body_node: i64 = json_object(
+    ["model", "messages", "tools", "tool_choice"],
+    [json_string("gpt-4o-mini"), messages, tools_node, json_string("auto")]
+  )
+  println(json_stringify(body_node))
+  println("")
+  println("It would then loop, executing any tool_calls the model returns")
+  println("(now, add, read_file, http_get) and feeding results back until")
+  println("the model produces a final plain-text answer.")
+  println("")
+  println("Tool catalog exposed to the model:")
+  let tn: i64 = json_length(tools_node)
+  let mut i: i64 = 0
+  while i < tn {
+    let t: i64 = json_get_index(tools_node, i)
+    let f: i64 = json_get(t, "function")
+    let nm: str = json_to_str(json_get(f, "name"))
+    let ds: str = json_to_str(json_get(f, "description"))
+    println("  - " + nm + ": " + ds)
+    i = i + 1
+  }
+  println("")
+  println("Local execution of each tool (proof they work without the model):")
+  println("  now()             = " + exec_tool("now", json_object([], [])))
+  let add_args: i64 = json_object(["a", "b"], [json_number(17.0), json_number(25.0)])
+  println("  add(17, 25)       = " + exec_tool("add", add_args))
+}
+
+fn main() {
+  let api_key: str = env_get("OPENAI_API_KEY")
+  let mut base_url: str = env_get("OPENAI_BASE_URL")
+  if len(base_url) == 0 {
+    base_url = "https://api.openai.com"
+  }
+  let mut model: str = env_get("OPENAI_MODEL")
+  if len(model) == 0 {
+    model = "gpt-4o-mini"
+  }
+  let mut task: str = env_get("AGENT_TASK")
+  if len(task) == 0 {
+    task = "What is 17 + 25? Use the add tool, then explain."
+  }
+
+  if len(api_key) == 0 {
+    offline_demo(task)
+    return
+  }
+  println("model: " + model)
+  println("task:  " + task)
+  println("")
+  run_agent(base_url, api_key, model, task)
+}
