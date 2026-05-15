@@ -159,8 +159,13 @@ fn lower_type(ty: &MirType) -> Result<ValType, WasmCodegenError> {
         MirType::I64 | MirType::U64 | MirType::Bool | MirType::Char => ValType::I64,
         MirType::F32 => ValType::F32,
         MirType::F64 => ValType::F64,
-        // For v0.1 we represent strings as `i32` offsets into linear memory.
-        MirType::Str => ValType::I32,
+        // For v0.2 we represent strings as packed i64 pointers:
+        //   low 32 bits = byte offset into linear memory
+        //   high 32 bits = byte length
+        // This lets a string survive in a single local without a side table
+        // and is what `len(s)`, string concat, and `println(s)` all decode.
+        // Same scheme is used for arrays of i64 (offset, count_in_elements).
+        MirType::Str => ValType::I64,
         MirType::Void => {
             // Caller should special-case void; this is a placeholder.
             return Err(WasmCodegenError::new(
@@ -212,8 +217,17 @@ struct WasmCodegen {
     print_i64_idx: u32,
     /// Index of the imported `kryos_print_f64` function.
     print_f64_idx: u32,
-    /// Index of the imported `kryos_print_str` function.
+    /// Index of the imported `kryos_print_str` function (offset, len).
     print_str_idx: u32,
+    /// Index of the imported `kryos_string_concat(off1,len1,off2,len2) -> i64`.
+    /// Returns a packed (offset<<0)|(len<<32) pointer into linear memory.
+    string_concat_idx: u32,
+    /// Index of the imported `kryos_array_new(count) -> i64` (packed).
+    array_new_idx: u32,
+    /// Index of the imported `kryos_array_get(packed, index) -> i64`.
+    array_get_idx: u32,
+    /// Index of the imported `kryos_array_set(packed, index, value)`.
+    array_set_idx: u32,
 
     /// String literal interning: maps the literal -> (offset, len) in memory.
     string_table: HashMap<String, (u32, u32)>,
@@ -241,6 +255,10 @@ impl WasmCodegen {
             print_i64_idx: 0,
             print_f64_idx: 0,
             print_str_idx: 0,
+            string_concat_idx: 0,
+            array_new_idx: 0,
+            array_get_idx: 0,
+            array_set_idx: 0,
             string_table: HashMap::new(),
             // Reserve the first 16 bytes so offset 0 stays sentinel-free.
             string_cursor: 16,
@@ -318,6 +336,59 @@ impl WasmCodegen {
         self.print_str_idx = 2;
         self.func_count = 3;
         self.type_count = 3;
+
+        // sig 3: (i32, i32, i32, i32) -> i64  — string concat
+        self.types.ty().function(
+            vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+            vec![ValType::I64],
+        );
+        self.imports.import(
+            env_module,
+            "kryos_string_concat",
+            wasm_encoder::EntityType::Function(3),
+        );
+        self.string_concat_idx = 3;
+        self.func_count = 4;
+        self.type_count = 4;
+
+        // sig 4: (i32) -> i64  — array_new(count) -> packed (offset,count)
+        self.types
+            .ty()
+            .function(vec![ValType::I32], vec![ValType::I64]);
+        self.imports.import(
+            env_module,
+            "kryos_array_new",
+            wasm_encoder::EntityType::Function(4),
+        );
+        self.array_new_idx = 4;
+        self.func_count = 5;
+        self.type_count = 5;
+
+        // sig 5: (i64, i32) -> i64  — array_get(packed, index)
+        self.types
+            .ty()
+            .function(vec![ValType::I64, ValType::I32], vec![ValType::I64]);
+        self.imports.import(
+            env_module,
+            "kryos_array_get",
+            wasm_encoder::EntityType::Function(5),
+        );
+        self.array_get_idx = 5;
+        self.func_count = 6;
+        self.type_count = 6;
+
+        // sig 6: (i64, i32, i64) -> ()  — array_set(packed, index, value)
+        self.types
+            .ty()
+            .function(vec![ValType::I64, ValType::I32, ValType::I64], vec![]);
+        self.imports.import(
+            env_module,
+            "kryos_array_set",
+            wasm_encoder::EntityType::Function(6),
+        );
+        self.array_set_idx = 6;
+        self.func_count = 7;
+        self.type_count = 7;
     }
 
     /// Walk the module once to assign function indices and signature indices.
@@ -391,6 +462,16 @@ impl WasmCodegen {
         }
         if let Some((t, count)) = current_group {
             local_decls.push((count, t));
+        }
+
+        // v0.2: reserve ONE extra i64 scratch local at the very end of every
+        // function. Index = func.locals.len(). Used by `emit_unpack_string`
+        // to tee/dup a packed (offset|len) i64 without disturbing user
+        // locals. Cost: 8 bytes per call frame — negligible.
+        // Merge with the trailing group if it's already i64, else append.
+        match local_decls.last_mut() {
+            Some(entry) if entry.1 == ValType::I64 => entry.0 += 1,
+            _ => local_decls.push((1, ValType::I64)),
         }
 
         let mut wfunc = Function::new(local_decls);
@@ -873,26 +954,36 @@ impl<'a> FnEmitter<'a> {
                 self.wfunc.instruction(&W::I64Const(if *b { 1 } else { 0 }));
             }
             RValue::ConstString(s) => {
-                // Push (offset, len) as two i32 values. Caller must consume both.
-                // BUT: at the MIR level, a ConstString assigns to a single
-                // local that we type as i32 (the offset). The host's
-                // `kryos_print_str` import takes (offset, len), so the
-                // matching `Call("println", ...)` lowering needs to know it's
-                // a string and push the length too.
-                //
-                // For v0.1 we cheat: interpret a string local as the offset,
-                // and look up the length in a side table at print time. This
-                // means strings aren't yet first-class — only printing works.
-                let (offset, _len) = self.cg.intern_string(s);
-                self.wfunc.instruction(&W::I32Const(offset as i32));
+                // v0.2: push a single packed i64 value with low32 = offset,
+                // high32 = length. This makes strings first-class — they
+                // survive in locals, parameters, and returns without a side
+                // table, and `len(s)` is just a shift.
+                let (offset, len) = self.cg.intern_string(s);
+                let packed = ((len as u64) << 32) | (offset as u64);
+                self.wfunc.instruction(&W::I64Const(packed as i64));
             }
             RValue::ConstNone => {
                 self.wfunc.instruction(&W::I64Const(0));
             }
             RValue::BinOp { op, left, right } => {
-                self.emit_operand(left)?;
-                self.emit_operand(right)?;
-                self.emit_binop(*op)?;
+                // v0.2: detect string+string concatenation and route to the
+                // host's kryos_string_concat. Otherwise lower as i64 arith.
+                let lty = self.operand_ty(left).unwrap_or(MirType::I64);
+                let rty = self.operand_ty(right).unwrap_or(MirType::I64);
+                if matches!(op, MirBinOp::Add)
+                    && matches!(lty, MirType::Str)
+                    && matches!(rty, MirType::Str)
+                {
+                    self.emit_operand(left)?;
+                    self.emit_unpack_string();
+                    self.emit_operand(right)?;
+                    self.emit_unpack_string();
+                    self.wfunc.instruction(&W::Call(self.cg.string_concat_idx));
+                } else {
+                    self.emit_operand(left)?;
+                    self.emit_operand(right)?;
+                    self.emit_binop(*op)?;
+                }
             }
             RValue::UnOp { op, operand } => {
                 self.emit_operand(operand)?;
@@ -931,8 +1022,9 @@ impl<'a> FnEmitter<'a> {
                     self.wfunc.instruction(&W::I64Const(if *b { 1 } else { 0 }));
                 }
                 Constant::Str(s) => {
-                    let (offset, _len) = self.cg.intern_string(s);
-                    self.wfunc.instruction(&W::I32Const(offset as i32));
+                    let (offset, len) = self.cg.intern_string(s);
+                    let packed = ((len as u64) << 32) | (offset as u64);
+                    self.wfunc.instruction(&W::I64Const(packed as i64));
                 }
                 Constant::None => {
                     self.wfunc.instruction(&W::I64Const(0));
@@ -1023,23 +1115,96 @@ impl<'a> FnEmitter<'a> {
         Ok(())
     }
 
+    /// Get the MIR type of an operand for codegen dispatch (println/len/etc).
+    fn operand_ty(&self, op: &Operand) -> Option<MirType> {
+        match op {
+            Operand::Local(id) => self
+                .func
+                .locals
+                .iter()
+                .find(|l| l.id.0 == id.0)
+                .map(|l| l.ty.clone()),
+            Operand::Constant(c) => Some(match c {
+                Constant::Int(_) => MirType::I64,
+                Constant::Float(_) => MirType::F64,
+                Constant::Bool(_) => MirType::Bool,
+                Constant::Str(_) => MirType::Str,
+                Constant::None => MirType::Void,
+            }),
+        }
+    }
+
+    /// Emit code that unpacks a packed-string i64 (on the stack) into two
+    /// i32 values (offset, len) on the stack. Consumes the i64.
+    fn emit_unpack_string(&mut self) {
+        // Stack: [packed:i64]
+        // We want: [offset:i32, len:i32]
+        // Use a temp local in the wfunc to dup the value. But we don't have
+        // a way to allocate fresh locals here — instead, use the wasm
+        // pattern: dup via local.tee/local.get if a scratch i64 local exists,
+        // OR use bit math without dup by computing both halves with one
+        // load via i32 wrap and shr+wrap. Simplest: TEE into scratch.
+        //
+        // We use the LAST declared local as a scratch i64. To make that
+        // available unconditionally we always reserve one extra i64 local
+        // at the end of every function (see emit_function).
+        let scratch = self.cg_scratch_local();
+        // [packed]
+        self.wfunc.instruction(&W::LocalTee(scratch));
+        // [packed]
+        self.wfunc.instruction(&W::I32WrapI64);
+        // [offset:i32]
+        self.wfunc.instruction(&W::LocalGet(scratch));
+        self.wfunc.instruction(&W::I64Const(32));
+        self.wfunc.instruction(&W::I64ShrU);
+        self.wfunc.instruction(&W::I32WrapI64);
+        // [offset:i32, len:i32]
+    }
+
+    /// Return the WASM local index of the scratch i64 local appended at
+    /// the very end of every function (see emit_function).
+    fn cg_scratch_local(&self) -> u32 {
+        // We reserve 1 extra i64 local after all user locals.
+        // WASM local index = n_params + (user_locals - n_params) + 0
+        //                  = func.locals.len()
+        self.func.locals.len() as u32
+    }
+
     fn emit_call(&mut self, func: &str, args: &[Operand]) -> Result<(), WasmCodegenError> {
-        // Handle built-in `println` variants by inspecting argument shape.
+        // -------------------------------------------------------------
+        // Built-in: println / print
+        // -------------------------------------------------------------
         if func == "println" || func == "print" {
-            // For v0.1, decide which print import to call based on the
-            // argument operand kind: Constant::Str -> print_str(offset, len);
-            // anything else -> print_i64.
             if args.len() == 1 {
-                match &args[0] {
-                    Operand::Constant(Constant::Str(s)) => {
+                let ty = self.operand_ty(&args[0]).unwrap_or(MirType::I64);
+                match (&args[0], &ty) {
+                    // String constant: emit (offset,len) directly, no unpack.
+                    (Operand::Constant(Constant::Str(s)), _) => {
                         let (offset, len) = self.cg.intern_string(s);
                         self.wfunc.instruction(&W::I32Const(offset as i32));
                         self.wfunc.instruction(&W::I32Const(len as i32));
                         self.wfunc.instruction(&W::Call(self.cg.print_str_idx));
                         return Ok(());
                     }
-                    op => {
-                        // Default: print as i64.
+                    // String-typed local (or any string operand): unpack the
+                    // packed i64 into (offset, len) then call print_str.
+                    (op, MirType::Str) => {
+                        self.emit_operand(op)?;
+                        self.emit_unpack_string();
+                        self.wfunc.instruction(&W::Call(self.cg.print_str_idx));
+                        return Ok(());
+                    }
+                    // Float-typed operand: print as f64.
+                    (op, MirType::F64) | (op, MirType::F32) => {
+                        self.emit_operand(op)?;
+                        if matches!(ty, MirType::F32) {
+                            self.wfunc.instruction(&W::F64PromoteF32);
+                        }
+                        self.wfunc.instruction(&W::Call(self.cg.print_f64_idx));
+                        return Ok(());
+                    }
+                    // Default: print as i64.
+                    (op, _) => {
                         self.emit_operand(op)?;
                         self.wfunc.instruction(&W::Call(self.cg.print_i64_idx));
                         return Ok(());
@@ -1047,11 +1212,70 @@ impl<'a> FnEmitter<'a> {
                 }
             }
             return Err(WasmCodegenError::unsupported(
-                "println with multiple arguments in v0.1 (use string concat via builtin print_int / print_float)",
+                "println with multiple arguments (concat strings with `str_concat` first)",
             ));
         }
 
-        // User function call.
+        // -------------------------------------------------------------
+        // Built-in: len(s) — length of a string (high 32 bits of packed i64)
+        // -------------------------------------------------------------
+        if func == "len" && args.len() == 1 {
+            self.emit_operand(&args[0])?;
+            self.wfunc.instruction(&W::I64Const(32));
+            self.wfunc.instruction(&W::I64ShrU);
+            return Ok(());
+        }
+
+        // -------------------------------------------------------------
+        // Built-in: str_concat(a, b) — concatenate two strings
+        // -------------------------------------------------------------
+        if func == "str_concat" && args.len() == 2 {
+            // Push (off1, len1, off2, len2) by unpacking each packed i64.
+            // We have one scratch i64 local; reuse it sequentially.
+            for arg in args {
+                self.emit_operand(arg)?;
+                self.emit_unpack_string();
+            }
+            self.wfunc.instruction(&W::Call(self.cg.string_concat_idx));
+            return Ok(());
+        }
+
+        // -------------------------------------------------------------
+        // Built-in: array_new(count) — allocate i64 array of given size
+        // -------------------------------------------------------------
+        if func == "array_new" && args.len() == 1 {
+            self.emit_operand(&args[0])?;
+            self.wfunc.instruction(&W::I32WrapI64);
+            self.wfunc.instruction(&W::Call(self.cg.array_new_idx));
+            return Ok(());
+        }
+
+        // -------------------------------------------------------------
+        // Built-in: array_get(arr, idx) -> i64
+        // -------------------------------------------------------------
+        if func == "array_get" && args.len() == 2 {
+            self.emit_operand(&args[0])?;            // packed i64 array
+            self.emit_operand(&args[1])?;            // index i64
+            self.wfunc.instruction(&W::I32WrapI64);  // -> i32 index
+            self.wfunc.instruction(&W::Call(self.cg.array_get_idx));
+            return Ok(());
+        }
+
+        // -------------------------------------------------------------
+        // Built-in: array_set(arr, idx, value)
+        // -------------------------------------------------------------
+        if func == "array_set" && args.len() == 3 {
+            self.emit_operand(&args[0])?;            // packed i64 array
+            self.emit_operand(&args[1])?;            // index i64
+            self.wfunc.instruction(&W::I32WrapI64);  // -> i32 index
+            self.emit_operand(&args[2])?;            // value i64
+            self.wfunc.instruction(&W::Call(self.cg.array_set_idx));
+            return Ok(());
+        }
+
+        // -------------------------------------------------------------
+        // User function call
+        // -------------------------------------------------------------
         if let Some(&idx) = self.cg.fn_indices.get(func) {
             for a in args {
                 self.emit_operand(a)?;
@@ -1060,7 +1284,7 @@ impl<'a> FnEmitter<'a> {
             Ok(())
         } else {
             Err(WasmCodegenError::unsupported(&format!(
-                "call to `{func}` — only user-defined functions and `println(i64|f64|str)` work in v0.1"
+                "call to `{func}` — supported builtins: println, len, str_concat, array_new/get/set"
             )))
         }
     }

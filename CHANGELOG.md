@@ -4,7 +4,7 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [1.2.0] - 2026-05-15 — "truly universal: C FFI + graphics"
+## [1.2.0] - 2026-05-15 — "truly universal: C FFI + graphics + WASM v0.2"
 
 Kryos can now call any C library at runtime via dlopen/LoadLibrary,
 including driving the full SDL2 window + renderer pipeline from pure
@@ -12,10 +12,15 @@ Kryos. No compiler changes were needed — the existing `extern "C"`
 declaration syntax plus a small runtime in `kryos-stdlib-native::ffi`
 is enough.
 
+The WASM backend gained first-class strings: a `str` value now survives
+in locals, parameters, and returns as a packed (offset, length) i64, and
+string concatenation with `+` and `len(s)` both work in WASM modules.
+
 This is the milestone where Kryos stops being a closed language and
 becomes a real systems-level tool: anything libc, SDL2, libcurl,
 libsqlite3, libssl, or any other shared library can do, Kryos can
-now do.
+now do. And anything text-shaped that runs in a browser can now be
+written in Kryos.
 
 ### Added
 
@@ -65,6 +70,26 @@ now do.
   `dlsym`, `call0..6`, `cstr`, `malloc`, etc.) for users who prefer
   named imports over raw `extern` blocks.
 
+- **WASM v0.2: first-class strings.**
+  - Strings now lower to a packed i64 `(offset | length << 32)` instead
+    of just an i32 offset, so a `str` is a real value: it survives in
+    locals, parameters, and returns without a side table.
+  - String concatenation with `+` works end-to-end: the WASM backend
+    detects `BinOp::Add` between two `Str` operands and emits a call to
+    a new host import `kryos_string_concat(off1,len1,off2,len2) -> i64`.
+  - `len(s)` is now a single `i64.shr_u` — the length is already there.
+  - `println(s)` works on any string operand, not just literals.
+  - New host imports plumbed (Node + browser): `kryos_string_concat`,
+    `kryos_array_new`, `kryos_array_get`, `kryos_array_set`. Array
+    builtins are wired in the runtime; Kryos-source-level array use in
+    WASM lands in v0.3.
+  - New example: `examples/wasm_strings.kry` — a Kryos program that
+    builds greetings with `+`, prints them, and prints their lengths,
+    running in Node and in any browser.
+  - Updated `examples/wasm_runner.js` and `examples/wasm_browser_demo.html`
+    with the new imports and a bump allocator above the static-data
+    region (heap starts at 32 KB, memory grows on demand).
+
 ### Verified working
 
 - `extern "C" { fn getpid() -> i64 }` returns the real PID.
@@ -75,6 +100,10 @@ now do.
   + `SDL_RenderFillRect` (3 colored rects) + `SDL_RenderPresent` +
   `SDL_RenderReadPixels` + clean shutdown — all from Kryos, **with
   no compiler changes**.
+- `let s = "hello, " + name + "!"` compiles to WASM, runs in Node, and
+  prints the concatenated string.
+- All six v0.1 WASM examples (`wasm_hello`, `wasm_math`, `wasm_loop`,
+  `wasm_fizz`, `wasm_control`, `wasm_browser_demo`) still pass.
 
 ## [1.1.0] - 2026-05-15 — "universal target"
 

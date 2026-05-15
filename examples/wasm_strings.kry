@@ -1,0 +1,32 @@
+// WASM v0.2 demo: first-class strings.
+//
+// In v0.1 string locals carried only an offset. In v0.2 they carry a packed
+// (offset, length) i64, so:
+//   - they can be stored in locals, parameters, returns
+//   - `len(s)` works (returns the string length in bytes)
+//   - string concatenation with `+` works (host allocates in linear memory)
+//   - `println(s)` works on any string operand, not just literals.
+
+fn greet(who: str) -> str {
+    let hello: str = "hello, "
+    let bang: str = "!"
+    let result: str = hello + who + bang
+    return result
+}
+
+fn main() {
+    let world: str = "world"
+    let kryos: str = "Kryos"
+
+    let g1: str = greet(world)
+    let g2: str = greet(kryos)
+
+    println(g1)
+    println(g2)
+
+    println(len(g1))
+    println(len(g2))
+
+    // String literal still works.
+    println("done")
+}

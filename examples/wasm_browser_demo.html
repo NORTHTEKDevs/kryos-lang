@@ -140,6 +140,23 @@ async function run() {
   let memory = null;
   const decoder = new TextDecoder('utf-8');
 
+  // Bump allocator for host-allocated objects (string concat results,
+  // arrays). Starts above the static-data region.
+  let heapPtr = 32 * 1024;
+  function bumpAlloc(n) {
+    const needed = heapPtr + n;
+    if (needed > memory.buffer.byteLength) {
+      memory.grow(Math.ceil((needed - memory.buffer.byteLength) / 65536));
+    }
+    const out = heapPtr;
+    heapPtr += n;
+    heapPtr = (heapPtr + 7) & ~7;
+    return out;
+  }
+  function pack(off, len) {
+    return (BigInt(len) << 32n) | (BigInt(off) & 0xffffffffn);
+  }
+
   const imports = {
     env: {
       kryos_print_i64(v) {
@@ -156,6 +173,32 @@ async function run() {
         }
         const view = new Uint8Array(memory.buffer, Number(offset), Number(len));
         append(decoder.decode(view));
+      },
+      // v0.2: concatenate two strings stored in linear memory.
+      kryos_string_concat(o1, l1, o2, l2) {
+        const total = l1 + l2;
+        const newOff = bumpAlloc(total);
+        const dst = new Uint8Array(memory.buffer);
+        const s1 = new Uint8Array(memory.buffer, o1, l1);
+        const s2 = new Uint8Array(memory.buffer, o2, l2);
+        dst.set(s1, newOff);
+        dst.set(s2, newOff + l1);
+        return pack(newOff, total);
+      },
+      // v0.2: i64-array imports (plumbed; Kryos source-level use lands in v0.3).
+      kryos_array_new(count) {
+        const bytes = count * 8;
+        const off = bumpAlloc(bytes);
+        new Uint8Array(memory.buffer, off, bytes).fill(0);
+        return pack(off, count);
+      },
+      kryos_array_get(packed, index) {
+        const off = Number(packed & 0xffffffffn);
+        return new DataView(memory.buffer).getBigInt64(off + index * 8, true);
+      },
+      kryos_array_set(packed, index, value) {
+        const off = Number(packed & 0xffffffffn);
+        new DataView(memory.buffer).setBigInt64(off + index * 8, value, true);
       },
     },
   };
