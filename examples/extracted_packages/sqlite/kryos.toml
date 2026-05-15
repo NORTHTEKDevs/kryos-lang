@@ -1,0 +1,8 @@
+[package]
+name = "sqlite"
+version = "0.1.0"
+description = "FFI wrapper for SQLite via libsqlite3"
+authors = ["FrostbyteDevTeam <info@frostbytedigitalak.com>"]
+license = "MIT"
+
+[dependencies]

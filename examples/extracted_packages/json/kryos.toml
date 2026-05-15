@@ -1,0 +1,8 @@
+[package]
+name = "json"
+version = "0.1.0"
+description = "Friendly wrappers around Kryos built-in JSON builtins"
+authors = ["FrostbyteDevTeam <info@frostbytedigitalak.com>"]
+license = "MIT"
+
+[dependencies]

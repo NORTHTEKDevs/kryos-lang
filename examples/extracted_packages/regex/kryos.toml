@@ -1,0 +1,8 @@
+[package]
+name = "regex"
+version = "0.1.0"
+description = "Regex matching via POSIX regcomp/regexec (libc) with pure-Kryos fallback"
+authors = ["FrostbyteDevTeam <info@frostbytedigitalak.com>"]
+license = "MIT"
+
+[dependencies]

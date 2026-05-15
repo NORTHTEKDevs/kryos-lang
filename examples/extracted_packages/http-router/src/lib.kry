@@ -1,0 +1,189 @@
+// lib.kry — http-router package
+//
+// Simple HTTP request/response structs and routing helpers extracted from
+// examples/http_server.kry and examples/showcase/rest_api.kry.
+//
+// Public API:
+//   struct Request { method: str, path: str, body: str }
+//   struct Response { status: i64, body: str }
+//   fn make_response(status: i64, body: str) -> Response
+//   fn format_http_response(resp: Response) -> str
+//   fn path_matches(pattern: str, path: str) -> bool
+//   fn parse_request_line(raw: str) -> [str]
+//   fn extract_body(raw: str) -> str
+//
+// Example:
+//   import "http-router"
+//   fn main() {
+//       let req = Request { method: "GET", path: "/health", body: "" }
+//       if path_matches("/health", req.path) {
+//           let resp = make_response(200, "OK")
+//           println(format_http_response(resp))
+//       }
+//   }
+
+// --- Data structures -----------------------------------------------------
+
+struct Request {
+    method: str
+    path: str
+    body: str
+}
+
+struct Response {
+    status: i64
+    body: str
+}
+
+// --- Constructors --------------------------------------------------------
+
+// make_response creates a Response with the given status code and body.
+fn make_response(status: i64, body: str) -> Response {
+    return Response { status: status, body: body }
+}
+
+// --- Formatting ----------------------------------------------------------
+
+// status_text returns the standard HTTP reason phrase for common status codes.
+fn status_text(code: i64) -> str {
+    if code == 200 { return "OK" }
+    if code == 201 { return "Created" }
+    if code == 204 { return "No Content" }
+    if code == 301 { return "Moved Permanently" }
+    if code == 302 { return "Found" }
+    if code == 400 { return "Bad Request" }
+    if code == 401 { return "Unauthorized" }
+    if code == 403 { return "Forbidden" }
+    if code == 404 { return "Not Found" }
+    if code == 405 { return "Method Not Allowed" }
+    if code == 500 { return "Internal Server Error" }
+    if code == 503 { return "Service Unavailable" }
+    return "Unknown"
+}
+
+// format_http_response produces a full HTTP/1.1 wire-format response string
+// with Content-Length header.
+fn format_http_response(resp: Response) -> str {
+    let status_line: str = to_string(resp.status) + " " + status_text(resp.status)
+    let content_length: str = to_string(len(resp.body))
+    let mut out: str = "HTTP/1.1 "
+    out = out + status_line + "\r\n"
+    out = out + "Content-Type: text/plain\r\n"
+    out = out + "Content-Length: " + content_length + "\r\n"
+    out = out + "Connection: close\r\n"
+    out = out + "\r\n"
+    out = out + resp.body
+    return out
+}
+
+// format_http_response_json produces a full HTTP/1.1 wire-format response
+// with Content-Type: application/json and Content-Length header.
+fn format_http_response_json(resp: Response) -> str {
+    let status_line: str = to_string(resp.status) + " " + status_text(resp.status)
+    let content_length: str = to_string(len(resp.body))
+    let mut out: str = "HTTP/1.1 "
+    out = out + status_line + "\r\n"
+    out = out + "Content-Type: application/json\r\n"
+    out = out + "Content-Length: " + content_length + "\r\n"
+    out = out + "Connection: close\r\n"
+    out = out + "\r\n"
+    out = out + resp.body
+    return out
+}
+
+// --- Path matching -------------------------------------------------------
+
+// path_matches checks whether `path` matches `pattern`.
+// Pattern rules:
+//   - Exact match: pattern == path
+//   - Prefix match: pattern ends with "/*" — matches any path starting with
+//     the prefix (the part before "/*")
+//   - Trailing wildcard: pattern == "*" — matches everything
+fn path_matches(pattern: str, path: str) -> bool {
+    // Wildcard: match everything
+    if pattern == "*" {
+        return true
+    }
+    // Exact match
+    if pattern == path {
+        return true
+    }
+    // Prefix match: pattern ends with "/*"
+    let pn: i64 = len(pattern)
+    if pn >= 2 and substr(pattern, pn - 2, pn) == "/*" {
+        let prefix: str = substr(pattern, 0, pn - 2)
+        let path_len: i64 = len(path)
+        let pfx_len: i64 = len(prefix)
+        if path_len >= pfx_len and substr(path, 0, pfx_len) == prefix {
+            return true
+        }
+    }
+    return false
+}
+
+// path_starts_with returns true if path starts with prefix.
+fn path_starts_with(prefix: str, path: str) -> bool {
+    let pn: i64 = len(prefix)
+    let dn: i64 = len(path)
+    if dn < pn {
+        return false
+    }
+    return substr(path, 0, pn) == prefix
+}
+
+// --- Request parsing -----------------------------------------------------
+
+// parse_request_line parses the first line of an HTTP request.
+// Returns a two-element array: [method, path].
+// Example: "GET /todos HTTP/1.1" -> ["GET", "/todos"]
+fn parse_request_line(raw: str) -> [str] {
+    let mut method: str = ""
+    let mut path: str = ""
+    let mut i: i64 = 0
+    let n: i64 = len(raw)
+    // read method (up to first space)
+    while i < n and substr(raw, i, i + 1) != " " {
+        method = method + substr(raw, i, i + 1)
+        i = i + 1
+    }
+    i = i + 1
+    // read path (up to next space or newline)
+    while i < n {
+        let c: str = substr(raw, i, i + 1)
+        if c == " " or c == "\r" or c == "\n" {
+            break
+        }
+        path = path + c
+        i = i + 1
+    }
+    return [method, path]
+}
+
+// extract_body returns the body of an HTTP request (everything after the
+// blank line that separates headers from body).
+fn extract_body(raw: str) -> str {
+    let n: i64 = len(raw)
+    let mut i: i64 = 0
+    while i + 3 < n {
+        if substr(raw, i, i + 4) == "\r\n\r\n" {
+            return substr(raw, i + 4, n)
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// extract_path_segment extracts the last path segment after a given prefix.
+// Example: extract_path_segment("/items/", "/items/42") -> "42"
+// Returns "" if path does not start with prefix or has no trailing segment.
+fn extract_path_segment(prefix: str, path: str) -> str {
+    let pn: i64 = len(prefix)
+    let dn: i64 = len(path)
+    if dn <= pn {
+        return ""
+    }
+    if substr(path, 0, pn) != prefix {
+        return ""
+    }
+    return substr(path, pn, dn)
+}

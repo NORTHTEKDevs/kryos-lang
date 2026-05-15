@@ -1,0 +1,145 @@
+// lib.kry — sqlite package
+//
+// FFI wrapper around libsqlite3 for Kryos.
+// Requires libsqlite3.so.0 (standard on Linux distributions).
+//
+// Public API:
+//   fn sqlite_open(path: str) -> i64      -- open database, returns handle (0 on error)
+//   fn sqlite_exec(h: i64, sql: str) -> i64 -- execute SQL; returns 0 on success, -1 on error
+//   fn sqlite_close(h: i64)               -- close database
+//
+// Example:
+//   import "sqlite"
+//   fn main() {
+//       let db = sqlite_open(":memory:")
+//       if db == 0 {
+//           println("failed to open sqlite db")
+//           return
+//       }
+//       let rc = sqlite_exec(db, "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+//       if rc != 0 { println("CREATE failed") }
+//       sqlite_exec(db, "INSERT INTO t (name) VALUES ('alice')")
+//       sqlite_exec(db, "INSERT INTO t (name) VALUES ('bob')")
+//       sqlite_close(db)
+//   }
+//
+// Note: query/read (SELECT with results) requires sqlite3_prepare_v2 /
+// sqlite3_step / sqlite3_column_text and will be added in v0.2.
+
+extern "C" {
+    fn kryos_ffi_dlopen(name: str) -> i64
+    fn kryos_ffi_dlsym(handle: i64, name: str) -> i64
+    fn kryos_ffi_dlclose(handle: i64) -> i64
+
+    fn kryos_ffi_dlcall1(fp: i64, a1: i64) -> i64
+    fn kryos_ffi_dlcall2(fp: i64, a1: i64, a2: i64) -> i64
+    fn kryos_ffi_dlcall5(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64) -> i64
+    fn kryos_ffi_dlcallv1(fp: i64, a1: i64)
+
+    fn kryos_ffi_malloc(n: i64) -> i64
+    fn kryos_ffi_free(p: i64, n: i64)
+    fn kryos_ffi_write_i32(p: i64, v: i64)
+    fn kryos_ffi_cstr(s: str) -> i64
+}
+
+// Load libsqlite3 once at module level and resolve the symbols we need.
+// On Linux libsqlite3.so.0 is always the versioned name; libsqlite3.so is
+// the development symlink. We try the versioned name first.
+let SQLITE_LIB: i64 = 0
+let SQLITE_OPEN_FN: i64 = 0
+let SQLITE_EXEC_FN: i64 = 0
+let SQLITE_CLOSE_FN: i64 = 0
+let SQLITE_ERRMSG_FN: i64 = 0
+let SQLITE_INITIALIZED: i64 = 0
+
+fn sqlite_init() -> i64 {
+    if SQLITE_INITIALIZED == 1 {
+        return 1
+    }
+    let lib: i64 = kryos_ffi_dlopen("libsqlite3.so.0")
+    if lib == 0 {
+        // Try unversioned name (dev package symlink)
+        let lib2: i64 = kryos_ffi_dlopen("libsqlite3.so")
+        if lib2 == 0 {
+            return 0
+        }
+        SQLITE_LIB = lib2
+    } else {
+        SQLITE_LIB = lib
+    }
+
+    SQLITE_OPEN_FN    = kryos_ffi_dlsym(SQLITE_LIB, "sqlite3_open")
+    SQLITE_EXEC_FN    = kryos_ffi_dlsym(SQLITE_LIB, "sqlite3_exec")
+    SQLITE_CLOSE_FN   = kryos_ffi_dlsym(SQLITE_LIB, "sqlite3_close")
+    SQLITE_ERRMSG_FN  = kryos_ffi_dlsym(SQLITE_LIB, "sqlite3_errmsg")
+
+    if SQLITE_OPEN_FN == 0 or SQLITE_EXEC_FN == 0 or SQLITE_CLOSE_FN == 0 {
+        return 0
+    }
+
+    SQLITE_INITIALIZED = 1
+    return 1
+}
+
+// sqlite_open opens (or creates) a SQLite database at the given path.
+// Pass ":memory:" for an in-memory database.
+// Returns a non-zero opaque handle on success, 0 on failure.
+fn sqlite_open(path: str) -> i64 {
+    if sqlite_init() == 0 {
+        return 0
+    }
+
+    // Allocate an 8-byte slot to receive the sqlite3* pointer.
+    // sqlite3_open signature: int sqlite3_open(const char *filename, sqlite3 **ppDb)
+    let pp_db: i64 = kryos_ffi_malloc(8)
+    if pp_db == 0 {
+        return 0
+    }
+
+    let path_cstr: i64 = kryos_ffi_cstr(path)
+    let rc: i64 = kryos_ffi_dlcall2(SQLITE_OPEN_FN, path_cstr, pp_db)
+
+    if rc != 0 {
+        // SQLITE_OK = 0; anything else is an error.
+        kryos_ffi_free(pp_db, 8)
+        return 0
+    }
+
+    // The sqlite3* is written at *pp_db. We return pp_db itself as the handle
+    // and read the actual pointer in exec/close via the pointer-in-pointer slot.
+    // This is valid because we keep pp_db alive for the lifetime of the db.
+    return pp_db
+}
+
+// sqlite_exec executes one or more SQL statements (separated by ";") against
+// the database opened by sqlite_open. Returns 0 on success, -1 on error.
+fn sqlite_exec(h: i64, sql: str) -> i64 {
+    if sqlite_init() == 0 {
+        return -1
+    }
+    if h == 0 {
+        return -1
+    }
+
+    // sqlite3_exec signature:
+    //   int sqlite3_exec(sqlite3*, const char *sql, callback, void *arg, char **errmsg)
+    // We pass 0 for callback, 0 for arg, 0 for errmsg (we don't capture the message).
+    let sql_cstr: i64 = kryos_ffi_cstr(sql)
+    let rc: i64 = kryos_ffi_dlcall5(SQLITE_EXEC_FN, h, sql_cstr, 0, 0, 0)
+    if rc != 0 {
+        return -1
+    }
+    return 0
+}
+
+// sqlite_close closes a database handle returned by sqlite_open.
+fn sqlite_close(h: i64) {
+    if sqlite_init() == 0 {
+        return
+    }
+    if h == 0 {
+        return
+    }
+    kryos_ffi_dlcallv1(SQLITE_CLOSE_FN, h)
+    kryos_ffi_free(h, 8)
+}

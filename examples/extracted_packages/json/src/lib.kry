@@ -1,0 +1,218 @@
+// lib.kry — json package
+//
+// Friendly wrappers around the Kryos built-in JSON functions.
+// The runtime provides: json_parse, json_stringify, json_object, json_array,
+// json_string, json_number, json_bool, json_null, json_get, json_get_index,
+// json_to_str, json_to_int, json_to_float, json_is_null, json_length, json_type.
+//
+// This package re-exports them with ergonomic helpers and string-building
+// utilities for constructing JSON manually without the node API.
+//
+// Public API (node-based, wrapping builtins):
+//   fn json_decode(s: str) -> i64         -- parse JSON string -> node handle
+//   fn json_encode(node: i64) -> str      -- serialize node -> JSON string
+//   fn json_obj(keys: [str], vals: [i64]) -> i64
+//   fn json_arr(items: [i64]) -> i64
+//   fn json_str(s: str) -> i64
+//   fn json_num(n: f64) -> i64
+//   fn json_bool_val(b: bool) -> i64
+//   fn json_null_val() -> i64
+//   fn json_field(node: i64, key: str) -> i64
+//   fn json_index(node: i64, i: i64) -> i64
+//   fn json_as_str(node: i64) -> str
+//   fn json_as_int(node: i64) -> i64
+//   fn json_as_float(node: i64) -> f64
+//   fn json_node_type(node: i64) -> str
+//   fn json_node_len(node: i64) -> i64
+//   fn json_is_null_node(node: i64) -> bool
+//
+// String-builder helpers (no node API needed for simple cases):
+//   fn json_escape(s: str) -> str
+//   fn json_string_literal(s: str) -> str
+//   fn json_number_literal(n: i64) -> str
+//   fn json_bool_literal(b: bool) -> str
+//   fn json_null_literal() -> str
+//   fn json_array_literal(items: [str]) -> str
+//   fn json_object_literal(keys: [str], values: [str]) -> str
+//
+// Example:
+//   import "json"
+//   fn main() {
+//       let node = json_decode("{\"name\":\"Alice\",\"age\":30}")
+//       let name = json_as_str(json_field(node, "name"))
+//       let age  = json_as_int(json_field(node, "age"))
+//       println(name + " is " + to_string(age))
+//
+//       // String builder approach
+//       let obj = json_object_literal(["x", "y"], [json_number_literal(1), json_number_literal(2)])
+//       println(obj)
+//   }
+
+// === Node-based API (thin wrappers around builtins) ===
+
+// json_decode parses a JSON string and returns a node handle (0 on error).
+fn json_decode(s: str) -> i64 {
+    return json_parse(s)
+}
+
+// json_encode serializes a node handle to a JSON string.
+fn json_encode(node: i64) -> str {
+    return json_stringify(node)
+}
+
+// json_obj creates a JSON object node from parallel key/value arrays.
+fn json_obj(keys: [str], vals: [i64]) -> i64 {
+    return json_object(keys, vals)
+}
+
+// json_arr creates a JSON array node from an array of node handles.
+fn json_arr(items: [i64]) -> i64 {
+    return json_array(items)
+}
+
+// json_str creates a JSON string node.
+fn json_str(s: str) -> i64 {
+    return json_string(s)
+}
+
+// json_num creates a JSON number node.
+fn json_num(n: f64) -> i64 {
+    return json_number(n)
+}
+
+// json_bool_val creates a JSON boolean node.
+fn json_bool_val(b: bool) -> i64 {
+    return json_bool(b)
+}
+
+// json_null_val creates a JSON null node.
+fn json_null_val() -> i64 {
+    return json_null()
+}
+
+// json_field returns the child node for key in an object node.
+fn json_field(node: i64, key: str) -> i64 {
+    return json_get(node, key)
+}
+
+// json_index returns the child node at index i in an array node.
+fn json_index(node: i64, i: i64) -> i64 {
+    return json_get_index(node, i)
+}
+
+// json_as_str converts a string node to a Kryos str value.
+fn json_as_str(node: i64) -> str {
+    return json_to_str(node)
+}
+
+// json_as_int converts a number node to a Kryos i64 value.
+fn json_as_int(node: i64) -> i64 {
+    return json_to_int(node)
+}
+
+// json_as_float converts a number node to a Kryos f64 value.
+fn json_as_float(node: i64) -> f64 {
+    return json_to_float(node)
+}
+
+// json_node_type returns the type string of a node:
+// "string", "number", "bool", "null", "object", "array", or "unknown".
+fn json_node_type(node: i64) -> str {
+    return json_type(node)
+}
+
+// json_node_len returns the number of elements in an array or object node.
+fn json_node_len(node: i64) -> i64 {
+    return json_length(node)
+}
+
+// json_is_null_node returns true if the node represents JSON null.
+fn json_is_null_node(node: i64) -> bool {
+    return json_is_null(node)
+}
+
+// === String-builder helpers ===
+
+// json_escape escapes a string value for embedding in a JSON string literal.
+// Handles: ", \, \n, \r, \t, and other control characters.
+fn json_escape(s: str) -> str {
+    let n: i64 = len(s)
+    let mut out: str = ""
+    let mut i: i64 = 0
+    while i < n {
+        let c: str = substr(s, i, i + 1)
+        if c == "\"" {
+            out = out + "\\\""
+        } elif c == "\\" {
+            out = out + "\\\\"
+        } elif c == "\n" {
+            out = out + "\\n"
+        } elif c == "\r" {
+            out = out + "\\r"
+        } elif c == "\t" {
+            out = out + "\\t"
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// json_string_literal wraps an escaped string in double quotes.
+fn json_string_literal(s: str) -> str {
+    return "\"" + json_escape(s) + "\""
+}
+
+// json_number_literal formats an integer as a JSON number.
+fn json_number_literal(n: i64) -> str {
+    return to_string(n)
+}
+
+// json_bool_literal returns "true" or "false".
+fn json_bool_literal(b: bool) -> str {
+    if b {
+        return "true"
+    }
+    return "false"
+}
+
+// json_null_literal returns "null".
+fn json_null_literal() -> str {
+    return "null"
+}
+
+// json_array_literal assembles a JSON array from already-encoded value strings.
+// Example: json_array_literal([json_string_literal("a"), json_number_literal(1)])
+//          -> '["a",1]'
+fn json_array_literal(items: [str]) -> str {
+    let mut out: str = "["
+    let n: i64 = len(items)
+    let mut i: i64 = 0
+    while i < n {
+        if i > 0 {
+            out = out + ","
+        }
+        out = out + items[i]
+        i = i + 1
+    }
+    return out + "]"
+}
+
+// json_object_literal assembles a JSON object from parallel key and value strings.
+// Keys are plain strings (not pre-escaped); values must be already-encoded JSON strings.
+// Example: json_object_literal(["name","age"], [json_string_literal("Bob"), json_number_literal(25)])
+//          -> '{"name":"Bob","age":25}'
+fn json_object_literal(keys: [str], values: [str]) -> str {
+    let mut out: str = "{"
+    let n: i64 = len(keys)
+    let mut i: i64 = 0
+    while i < n {
+        if i > 0 {
+            out = out + ","
+        }
+        out = out + json_string_literal(keys[i]) + ":" + values[i]
+        i = i + 1
+    }
+    return out + "}"
+}

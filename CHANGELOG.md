@@ -4,6 +4,47 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.8.0] - 2026-05-15 — "Package registry: five starter packages"
+
+This release closes Gap E (seed registry) by populating the empty
+[kryos-registry](https://github.com/NORTHTEKDevs/kryos-registry) with five
+starter packages. `kryos pkg add <name>` now resolves real metadata.
+
+### Added
+- `examples/extracted_packages/markdown/` — CommonMark-subset Markdown to HTML
+  renderer extracted from `examples/showcase/markdown.kry`; public API:
+  `markdown_to_html(md: str) -> str`
+- `examples/extracted_packages/http-router/` — HTTP request/response structs
+  (`Request`, `Response`) and routing helpers (`path_matches`, `parse_request_line`,
+  `format_http_response`, etc.) extracted from `examples/http_server.kry`
+- `examples/extracted_packages/json/` — friendly wrappers around Kryos built-in
+  JSON builtins plus string-builder helpers (`json_object_literal`, `json_array_literal`,
+  `json_escape`, etc.)
+- `examples/extracted_packages/sqlite/` — FFI wrapper for SQLite via
+  `libsqlite3.so.0`; public API: `sqlite_open`, `sqlite_exec`, `sqlite_close`
+- `examples/extracted_packages/regex/` — regex matching via POSIX
+  `regcomp`/`regexec` (libc) with pure-Kryos wildcard fallback; public API:
+  `regex_match(pattern, text) -> bool`, `regex_find(pattern, text) -> i64`
+- Registry index entries in `NORTHTEKDevs/kryos-registry` under NDJSON format
+  (one JSON line per version) compatible with `kryos-package/src/registry.rs`
+- GitHub Releases created for all five packages (`markdown-v0.1.0`,
+  `http-router-v0.1.0`, `json-v0.1.0`, `sqlite-v0.1.0`, `regex-v0.1.0`)
+  on `NORTHTEKDevs/kryos-registry`
+
+### Verified
+- `kryos pkg search markdown` → `markdown v0.1.0`
+- `kryos pkg search regex` → `regex v0.1.0` (and all other packages)
+- `kryos pkg add markdown` → `added dependency \`markdown\`` and writes entry
+  to project `kryos.toml`
+
+### Known limitations
+- Tarball asset upload to GitHub Releases is blocked by the `uploads.github.com`
+  domain not being proxied. Release tags exist and index URLs are correct;
+  tarballs must be attached manually. `kryos pkg add` records the dependency
+  and resolves metadata; tarball download will work once assets are attached.
+
+---
+
 ## [1.7.0] - 2026-05-15 — "OpenGL 3.3 — 3D graphics"
 
 This release closes Gap D (OpenGL 3.3) by adding full OpenGL 3.3 core-profile

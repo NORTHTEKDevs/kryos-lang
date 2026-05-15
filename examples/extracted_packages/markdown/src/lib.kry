@@ -1,0 +1,395 @@
+// lib.kry — markdown package
+//
+// CommonMark-subset Markdown to HTML renderer extracted from examples/showcase/markdown.kry.
+// Extracted as a reusable library for use with `kryos pkg add markdown`.
+//
+// Public API:
+//   fn markdown_to_html(md: str) -> str
+//
+// Example:
+//   import "markdown"
+//   fn main() {
+//       let html = markdown_to_html("# Hello\n\nThis is **bold**.\n")
+//       println(html)
+//   }
+
+// --- helpers -------------------------------------------------------------
+
+fn starts_with(s: str, prefix: str) -> bool {
+  let pn: i64 = len(prefix)
+  if len(s) < pn {
+    return false
+  }
+  return substr(s, 0, pn) == prefix
+}
+
+fn trim_left(s: str) -> str {
+  let n: i64 = len(s)
+  let mut i: i64 = 0
+  while i < n {
+    let c: str = substr(s, i, i + 1)
+    if c != " " and c != "\t" {
+      return substr(s, i, n)
+    }
+    i = i + 1
+  }
+  return ""
+}
+
+fn trim_right(s: str) -> str {
+  let mut n: i64 = len(s)
+  while n > 0 {
+    let c: str = substr(s, n - 1, n)
+    if c != " " and c != "\t" and c != "\r" {
+      return substr(s, 0, n)
+    }
+    n = n - 1
+  }
+  return ""
+}
+
+fn trim(s: str) -> str {
+  return trim_right(trim_left(s))
+}
+
+fn split_lines(src: str) -> [str] {
+  let lines: [str] = []
+  let n: i64 = len(src)
+  let mut i: i64 = 0
+  let mut start: i64 = 0
+  while i < n {
+    let c: str = substr(src, i, i + 1)
+    if c == "\n" {
+      push(lines, substr(src, start, i))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  if start < n {
+    push(lines, substr(src, start, n))
+  }
+  return lines
+}
+
+fn is_digit(c: str) -> bool {
+  return c >= "0" and c <= "9"
+}
+
+// HTML-escape &, <, > in body text.
+fn html_escape(s: str) -> str {
+  let n: i64 = len(s)
+  let mut out: str = ""
+  let mut i: i64 = 0
+  while i < n {
+    let c: str = substr(s, i, i + 1)
+    if c == "&" {
+      out = out + "&amp;"
+    } elif c == "<" {
+      out = out + "&lt;"
+    } elif c == ">" {
+      out = out + "&gt;"
+    } else {
+      out = out + c
+    }
+    i = i + 1
+  }
+  return out
+}
+
+// --- inline pass ---------------------------------------------------------
+
+fn inline_format(src: str) -> str {
+  let n: i64 = len(src)
+  let mut out: str = ""
+  let mut i: i64 = 0
+  while i < n {
+    let c: str = substr(src, i, i + 1)
+
+    // inline code: `...`
+    if c == "`" {
+      let mut j: i64 = i + 1
+      while j < n and substr(src, j, j + 1) != "`" {
+        j = j + 1
+      }
+      if j < n {
+        let inner: str = substr(src, i + 1, j)
+        out = out + "<code>" + html_escape(inner) + "</code>"
+        i = j + 1
+      } else {
+        out = out + html_escape(c)
+        i = i + 1
+      }
+
+    // bold: **...**
+    } elif c == "*" and i + 1 < n and substr(src, i + 1, i + 2) == "*" {
+      let mut j: i64 = i + 2
+      let mut found: i64 = -1
+      while j + 1 < n {
+        if substr(src, j, j + 1) == "*" and substr(src, j + 1, j + 2) == "*" {
+          found = j
+          break
+        }
+        j = j + 1
+      }
+      if found >= 0 {
+        let inner: str = substr(src, i + 2, found)
+        out = out + "<strong>" + inline_format(inner) + "</strong>"
+        i = found + 2
+      } else {
+        out = out + html_escape(c)
+        i = i + 1
+      }
+
+    // italic: *...*
+    } elif c == "*" {
+      let mut j: i64 = i + 1
+      while j < n and substr(src, j, j + 1) != "*" {
+        j = j + 1
+      }
+      if j < n and j > i + 1 {
+        let inner: str = substr(src, i + 1, j)
+        out = out + "<em>" + inline_format(inner) + "</em>"
+        i = j + 1
+      } else {
+        out = out + html_escape(c)
+        i = i + 1
+      }
+
+    // link: [text](url)
+    } elif c == "[" {
+      let mut j: i64 = i + 1
+      while j < n and substr(src, j, j + 1) != "]" {
+        j = j + 1
+      }
+      if j < n and j + 1 < n and substr(src, j + 1, j + 2) == "(" {
+        let mut k: i64 = j + 2
+        while k < n and substr(src, k, k + 1) != ")" {
+          k = k + 1
+        }
+        if k < n {
+          let text: str = substr(src, i + 1, j)
+          let url: str = substr(src, j + 2, k)
+          out = out + "<a href=\"" + html_escape(url) + "\">" + html_escape(text) + "</a>"
+          i = k + 1
+        } else {
+          out = out + html_escape(c)
+          i = i + 1
+        }
+      } else {
+        out = out + html_escape(c)
+        i = i + 1
+      }
+
+    } else {
+      out = out + html_escape(c)
+      i = i + 1
+    }
+  }
+  return out
+}
+
+// --- block pass ----------------------------------------------------------
+
+fn count_heading_level(line: str) -> i64 {
+  let n: i64 = len(line)
+  let mut i: i64 = 0
+  while i < n and i < 6 and substr(line, i, i + 1) == "#" {
+    i = i + 1
+  }
+  if i == 0 {
+    return 0
+  }
+  if i < n and substr(line, i, i + 1) == " " {
+    return i
+  }
+  return 0
+}
+
+fn is_unordered_item(line: str) -> bool {
+  let t: str = trim_left(line)
+  if len(t) < 2 {
+    return false
+  }
+  let p: str = substr(t, 0, 2)
+  return p == "- " or p == "* "
+}
+
+fn unordered_text(line: str) -> str {
+  let t: str = trim_left(line)
+  return substr(t, 2, len(t))
+}
+
+fn is_ordered_item(line: str) -> bool {
+  let t: str = trim_left(line)
+  let n: i64 = len(t)
+  let mut i: i64 = 0
+  while i < n and is_digit(substr(t, i, i + 1)) {
+    i = i + 1
+  }
+  if i == 0 {
+    return false
+  }
+  if i + 1 < n and substr(t, i, i + 1) == "." and substr(t, i + 1, i + 2) == " " {
+    return true
+  }
+  return false
+}
+
+fn ordered_text(line: str) -> str {
+  let t: str = trim_left(line)
+  let n: i64 = len(t)
+  let mut i: i64 = 0
+  while i < n and is_digit(substr(t, i, i + 1)) {
+    i = i + 1
+  }
+  return substr(t, i + 2, n)
+}
+
+fn is_hr(line: str) -> bool {
+  let t: str = trim(line)
+  return t == "---" or t == "***" or t == "___"
+}
+
+// --- render --------------------------------------------------------------
+
+// markdown_to_html converts a CommonMark-subset Markdown string to HTML.
+// Supports: headers (h1-h6), paragraphs, blank-line separation, fenced
+// code blocks (```), inline code (`x`), bold (**x**), italic (*x*),
+// links [text](url), unordered lists (- item), ordered lists (1. item),
+// horizontal rules (---), and HTML-safe escaping for <, >, & in body text.
+fn markdown_to_html(md: str) -> str {
+  let lines: [str] = split_lines(md)
+  let n: i64 = len(lines)
+  let mut out: str = ""
+  let mut i: i64 = 0
+  let mut in_ul: bool = false
+  let mut in_ol: bool = false
+  let mut in_para: bool = false
+  let mut para_buf: str = ""
+
+  while i < n {
+    let line: str = lines[i]
+    let stripped: str = trim_right(line)
+
+    // fenced code block
+    if starts_with(trim_left(stripped), "```") {
+      if in_para {
+        out = out + "<p>" + inline_format(para_buf) + "</p>\n"
+        para_buf = ""
+        in_para = false
+      }
+      if in_ul { out = out + "</ul>\n" in_ul = false }
+      if in_ol { out = out + "</ol>\n" in_ol = false }
+      i = i + 1
+      let mut code: str = ""
+      while i < n {
+        let l2: str = lines[i]
+        if starts_with(trim_left(trim_right(l2)), "```") {
+          i = i + 1
+          break
+        }
+        code = code + l2 + "\n"
+        i = i + 1
+      }
+      out = out + "<pre><code>" + html_escape(code) + "</code></pre>\n"
+      continue
+    }
+
+    // horizontal rule
+    if is_hr(stripped) {
+      if in_para {
+        out = out + "<p>" + inline_format(para_buf) + "</p>\n"
+        para_buf = ""
+        in_para = false
+      }
+      if in_ul { out = out + "</ul>\n" in_ul = false }
+      if in_ol { out = out + "</ol>\n" in_ol = false }
+      out = out + "<hr>\n"
+      i = i + 1
+      continue
+    }
+
+    // heading
+    let h: i64 = count_heading_level(stripped)
+    if h > 0 {
+      if in_para {
+        out = out + "<p>" + inline_format(para_buf) + "</p>\n"
+        para_buf = ""
+        in_para = false
+      }
+      if in_ul { out = out + "</ul>\n" in_ul = false }
+      if in_ol { out = out + "</ol>\n" in_ol = false }
+      let text: str = substr(stripped, h + 1, len(stripped))
+      let tag: str = "h" + to_string(h)
+      out = out + "<" + tag + ">" + inline_format(text) + "</" + tag + ">\n"
+      i = i + 1
+      continue
+    }
+
+    // unordered list
+    if is_unordered_item(stripped) {
+      if in_para {
+        out = out + "<p>" + inline_format(para_buf) + "</p>\n"
+        para_buf = ""
+        in_para = false
+      }
+      if in_ol { out = out + "</ol>\n" in_ol = false }
+      if not in_ul {
+        out = out + "<ul>\n"
+        in_ul = true
+      }
+      out = out + "  <li>" + inline_format(unordered_text(stripped)) + "</li>\n"
+      i = i + 1
+      continue
+    }
+
+    // ordered list
+    if is_ordered_item(stripped) {
+      if in_para {
+        out = out + "<p>" + inline_format(para_buf) + "</p>\n"
+        para_buf = ""
+        in_para = false
+      }
+      if in_ul { out = out + "</ul>\n" in_ul = false }
+      if not in_ol {
+        out = out + "<ol>\n"
+        in_ol = true
+      }
+      out = out + "  <li>" + inline_format(ordered_text(stripped)) + "</li>\n"
+      i = i + 1
+      continue
+    }
+
+    // blank line: close paragraph / lists
+    if trim(stripped) == "" {
+      if in_para {
+        out = out + "<p>" + inline_format(para_buf) + "</p>\n"
+        para_buf = ""
+        in_para = false
+      }
+      if in_ul { out = out + "</ul>\n" in_ul = false }
+      if in_ol { out = out + "</ol>\n" in_ol = false }
+      i = i + 1
+      continue
+    }
+
+    // paragraph line (accumulate)
+    if in_ul { out = out + "</ul>\n" in_ul = false }
+    if in_ol { out = out + "</ol>\n" in_ol = false }
+    if in_para {
+      para_buf = para_buf + " " + trim(stripped)
+    } else {
+      para_buf = trim(stripped)
+      in_para = true
+    }
+    i = i + 1
+  }
+
+  // flush remaining
+  if in_para {
+    out = out + "<p>" + inline_format(para_buf) + "</p>\n"
+  }
+  if in_ul { out = out + "</ul>\n" }
+  if in_ol { out = out + "</ol>\n" }
+  return out
+}

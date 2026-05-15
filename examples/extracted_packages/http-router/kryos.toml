@@ -1,0 +1,8 @@
+[package]
+name = "http-router"
+version = "0.1.0"
+description = "Simple HTTP request/response structs and routing helpers"
+authors = ["FrostbyteDevTeam <info@frostbytedigitalak.com>"]
+license = "MIT"
+
+[dependencies]
