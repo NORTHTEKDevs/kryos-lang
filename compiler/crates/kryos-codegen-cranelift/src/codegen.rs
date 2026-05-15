@@ -1692,6 +1692,7 @@ fn translate_instruction<M: Module>(
                                     | "print"
                                     | "eprintln"
                                     | "sleep"
+                                    | "sleep_ms"
                                     | "sqrt"
                                     | "floor"
                                     | "ceil"
@@ -2648,6 +2649,15 @@ fn translate_rvalue<M: Module>(
                 // If it's already an integer (e.g. from a variable), assume it holds f64 bits.
                 let sleep_ref =
                     ensure_func_ref_with_args("kryos_sleep", builder, translator, module, 1)?;
+                builder.ins().call(sleep_ref, &[val]);
+                return Ok(None);
+            }
+
+            // sleep_ms(millis: i64) — pass i64 directly.
+            if func == "sleep_ms" && args.len() == 1 {
+                let val = translate_operand(&args[0], builder, translator, module)?;
+                let sleep_ref =
+                    ensure_func_ref_with_args("kryos_sleep_ms", builder, translator, module, 1)?;
                 builder.ins().call(sleep_ref, &[val]);
                 return Ok(None);
             }

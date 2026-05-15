@@ -370,6 +370,10 @@ impl JitCompiler {
             kryos_rt::spawn::kryos_spawn_wait_all as *const u8,
         );
         jit_builder.symbol("kryos_sleep", kryos_rt::spawn::kryos_sleep as *const u8);
+        jit_builder.symbol(
+            "kryos_sleep_ms",
+            kryos_rt::spawn::kryos_sleep_ms as *const u8,
+        );
 
         // Tensor runtime
         jit_builder.symbol(
@@ -1300,6 +1304,7 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_spawn", "kryos_spawn", sig(2));
     decl!("kryos_spawn_wait_all", "kryos_spawn_wait_all", sig(0));
     decl!("kryos_sleep", "kryos_sleep", sig(1));
+    decl!("kryos_sleep_ms", "kryos_sleep_ms", sig(1));
 
     // --- ARC set_drop ---
     decl!("kryos_arc_set_drop", "kryos_arc_set_drop_i64", sig(2));

@@ -1,0 +1,63 @@
+// bf.kry — Brainfuck interpreter in pure Kryos.
+// Demonstrates: 8-instruction VM, array memory, loops, character I/O.
+
+fn run_bf(prog: str) {
+  let plen: i64 = len(prog)
+  // 30k-cell tape
+  let mut tape: [i64] = []
+  let mut t: i64 = 0
+  while t < 30000 {
+    push(tape, 0)
+    t = t + 1
+  }
+
+  let mut ptr: i64 = 0
+  let mut pc: i64 = 0
+
+  while pc < plen {
+    let op: str = substr(prog, pc, pc + 1)
+    if op == ">" {
+      ptr = ptr + 1
+    } elif op == "<" {
+      ptr = ptr - 1
+    } elif op == "+" {
+      tape[ptr] = tape[ptr] + 1
+    } elif op == "-" {
+      tape[ptr] = tape[ptr] - 1
+    } elif op == "." {
+      print(char_from(tape[ptr]))
+    } elif op == "[" {
+      if tape[ptr] == 0 {
+        // skip to matching ]
+        let mut depth: i64 = 1
+        while depth > 0 {
+          pc = pc + 1
+          let c: str = substr(prog, pc, pc + 1)
+          if c == "[" { depth = depth + 1 }
+          if c == "]" { depth = depth - 1 }
+        }
+      }
+    } elif op == "]" {
+      if tape[ptr] != 0 {
+        // jump back to matching [
+        let mut depth: i64 = 1
+        while depth > 0 {
+          pc = pc - 1
+          let c: str = substr(prog, pc, pc + 1)
+          if c == "]" { depth = depth + 1 }
+          if c == "[" { depth = depth - 1 }
+        }
+      }
+    }
+    pc = pc + 1
+  }
+}
+
+fn main() {
+  // Classic "Hello World!" Brainfuck program.
+  let hello: str = "++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]>>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.>++."
+  println("brainfuck: running Hello World")
+  run_bf(hello)
+  println("")
+  println("brainfuck: done")
+}

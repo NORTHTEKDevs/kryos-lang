@@ -1,0 +1,103 @@
+// life.kry — Conway's Game of Life, 20x20, 10 generations.
+// Demonstrates: 2D arrays via 1D flattening, neighbor counting, rendering.
+
+let WIDTH: i64 = 20
+let HEIGHT: i64 = 20
+
+fn idx(x: i64, y: i64) -> i64 {
+  return y * 20 + x
+}
+
+fn get_cell(grid: [i64], x: i64, y: i64) -> i64 {
+  if x < 0 or x >= 20 or y < 0 or y >= 20 { return 0 }
+  return grid[idx(x, y)]
+}
+
+fn count_neighbors(grid: [i64], x: i64, y: i64) -> i64 {
+  let mut total: i64 = 0
+  let mut dy: i64 = 0 - 1
+  while dy <= 1 {
+    let mut dx: i64 = 0 - 1
+    while dx <= 1 {
+      if dx != 0 or dy != 0 {
+        total = total + get_cell(grid, x + dx, y + dy)
+      }
+      dx = dx + 1
+    }
+    dy = dy + 1
+  }
+  return total
+}
+
+fn step(grid: [i64]) -> [i64] {
+  let mut next: [i64] = []
+  let mut i: i64 = 0
+  while i < 400 {
+    push(next, 0)
+    i = i + 1
+  }
+  let mut y: i64 = 0
+  while y < 20 {
+    let mut x: i64 = 0
+    while x < 20 {
+      let n: i64 = count_neighbors(grid, x, y)
+      let alive: i64 = grid[idx(x, y)]
+      let mut new_state: i64 = 0
+      if alive == 1 {
+        if n == 2 or n == 3 { new_state = 1 }
+      } else {
+        if n == 3 { new_state = 1 }
+      }
+      next[idx(x, y)] = new_state
+      x = x + 1
+    }
+    y = y + 1
+  }
+  return next
+}
+
+fn render(grid: [i64]) {
+  let mut y: i64 = 0
+  while y < 20 {
+    let mut line: str = ""
+    let mut x: i64 = 0
+    while x < 20 {
+      if grid[idx(x, y)] == 1 {
+        line = line + "##"
+      } else {
+        line = line + ". "
+      }
+      x = x + 1
+    }
+    println(line)
+    y = y + 1
+  }
+}
+
+fn main() {
+  // Start with a "glider" pattern in the top-left
+  let mut grid: [i64] = []
+  let mut i: i64 = 0
+  while i < 400 {
+    push(grid, 0)
+    i = i + 1
+  }
+  // glider
+  grid[idx(1, 0)] = 1
+  grid[idx(2, 1)] = 1
+  grid[idx(0, 2)] = 1
+  grid[idx(1, 2)] = 1
+  grid[idx(2, 2)] = 1
+  // blinker
+  grid[idx(10, 10)] = 1
+  grid[idx(11, 10)] = 1
+  grid[idx(12, 10)] = 1
+
+  let mut gen: i64 = 0
+  while gen < 5 {
+    println("--- generation " + to_string(gen) + " ---")
+    render(grid)
+    grid = step(grid)
+    gen = gen + 1
+  }
+}

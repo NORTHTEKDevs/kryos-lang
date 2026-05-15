@@ -1,0 +1,127 @@
+// calc.kry — arithmetic expression calculator with proper precedence.
+// Supports + - * / parentheses, integer literals, unary minus.
+//
+// usage: kryos run calc.kry -- "1 + 2 * (3 - 4) + 5"
+
+// --- Lexer state held as globals (Kryos has real module-level globals) ---
+let mut src: str = ""
+let mut pos: i64 = 0
+
+fn is_digit(c: i64) -> i64 {
+  if c >= 48 and c <= 57 { return 1 }
+  return 0
+}
+
+fn is_space(c: i64) -> i64 {
+  if c == 32 or c == 9 or c == 10 or c == 13 { return 1 }
+  return 0
+}
+
+fn peek_char() -> i64 {
+  if pos >= len(src) { return -1 }
+  return char_code(substr(src, pos, pos + 1))
+}
+
+fn skip_ws() {
+  while pos < len(src) {
+    let c: i64 = peek_char()
+    if is_space(c) == 1 {
+      pos = pos + 1
+    } else {
+      return
+    }
+  }
+}
+
+fn parse_number() -> i64 {
+  let mut n: i64 = 0
+  while pos < len(src) {
+    let c: i64 = peek_char()
+    if is_digit(c) == 1 {
+      n = n * 10 + (c - 48)
+      pos = pos + 1
+    } else {
+      return n
+    }
+  }
+  return n
+}
+
+// Recursive descent: expr -> term (('+' | '-') term)*
+//                   term -> factor (('*' | '/') factor)*
+//                   factor -> number | '(' expr ')' | '-' factor
+
+fn parse_expr() -> i64
+fn parse_term() -> i64
+fn parse_factor() -> i64
+
+fn parse_factor() -> i64 {
+  skip_ws()
+  let c: i64 = peek_char()
+  if c == 45 {
+    // unary minus
+    pos = pos + 1
+    return 0 - parse_factor()
+  }
+  if c == 40 {
+    // '('
+    pos = pos + 1
+    let v: i64 = parse_expr()
+    skip_ws()
+    if peek_char() == 41 { pos = pos + 1 }
+    return v
+  }
+  return parse_number()
+}
+
+fn parse_term() -> i64 {
+  let mut left: i64 = parse_factor()
+  while pos < len(src) {
+    skip_ws()
+    let c: i64 = peek_char()
+    if c == 42 {
+      pos = pos + 1
+      left = left * parse_factor()
+    } elif c == 47 {
+      pos = pos + 1
+      left = left / parse_factor()
+    } else {
+      return left
+    }
+  }
+  return left
+}
+
+fn parse_expr() -> i64 {
+  let mut left: i64 = parse_term()
+  while pos < len(src) {
+    skip_ws()
+    let c: i64 = peek_char()
+    if c == 43 {
+      pos = pos + 1
+      left = left + parse_term()
+    } elif c == 45 {
+      pos = pos + 1
+      left = left - parse_term()
+    } else {
+      return left
+    }
+  }
+  return left
+}
+
+fn eval(input: str) -> i64 {
+  src = input
+  pos = 0
+  return parse_expr()
+}
+
+fn main() {
+  println("calc: testing")
+  println("  1 + 2          = " + to_string(eval("1 + 2")))
+  println("  1 + 2 * 3      = " + to_string(eval("1 + 2 * 3")))
+  println("  (1 + 2) * 3    = " + to_string(eval("(1 + 2) * 3")))
+  println("  100 / 4 - 5    = " + to_string(eval("100 / 4 - 5")))
+  println("  -5 + 10        = " + to_string(eval("-5 + 10")))
+  println("  ((1+2)*(3+4))  = " + to_string(eval("((1+2)*(3+4))")))
+}

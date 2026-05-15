@@ -1,0 +1,41 @@
+// template.kry — Mustache-style {{var}} templating engine.
+// Demonstrates: real string manipulation + variable substitution.
+
+fn replace_var(tpl: str, key: str, val: str) -> str {
+  let needle: str = "\{\{" + key + "\}\}"
+  let nlen: i64 = len(needle)
+  let mut out: str = ""
+  let mut i: i64 = 0
+  let tlen: i64 = len(tpl)
+  while i < tlen {
+    if i + nlen <= tlen and substr(tpl, i, i + nlen) == needle {
+      out = out + val
+      i = i + nlen
+    } else {
+      out = out + substr(tpl, i, i + 1)
+      i = i + 1
+    }
+  }
+  return out
+}
+
+fn render(tpl: str, keys: [str], vals: [str]) -> str {
+  let mut result: str = tpl
+  let n: i64 = len(keys)
+  let mut i: i64 = 0
+  while i < n {
+    result = replace_var(result, keys[i], vals[i])
+    i = i + 1
+  }
+  return result
+}
+
+fn main() {
+  let tpl: str = "Hello \{\{name\}\}!\nYou have \{\{count\}\} messages from \{\{sender\}\}.\nLast login: \{\{date\}\}\n"
+
+  let keys: [str] = ["name", "count", "sender", "date"]
+  let vals: [str] = ["Alex", "42", "the team", "2026-05-15"]
+
+  let out: str = render(tpl, keys, vals)
+  print(out)
+}

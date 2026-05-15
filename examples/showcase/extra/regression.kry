@@ -1,0 +1,43 @@
+// regression.kry — linear regression via gradient descent.
+// Fits y = m*x + b on synthetic data.
+// Demonstrates: f64 math, loops over arrays, real numerical computing.
+
+fn main() {
+  // Training data: y = 3*x + 7 with small noise.
+  let xs: [f64] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+  let ys: [f64] = [10.1, 12.9, 16.2, 18.8, 22.1, 25.0, 27.9, 31.2, 33.8, 37.1]
+
+  let n: i64 = len(xs)
+  let mut m: f64 = 0.0
+  let mut b: f64 = 0.0
+  let lr: f64 = 0.01
+
+  let mut epoch: i64 = 0
+  while epoch < 2000 {
+    let mut dm: f64 = 0.0
+    let mut db: f64 = 0.0
+    let mut i: i64 = 0
+    while i < n {
+      let pred: f64 = m * xs[i] + b
+      let err: f64 = pred - ys[i]
+      dm = dm + err * xs[i]
+      db = db + err
+      i = i + 1
+    }
+    m = m - lr * dm / (n as f64)
+    b = b - lr * db / (n as f64)
+    epoch = epoch + 1
+  }
+
+  // Print learned parameters (truth: m=3, b=7).
+  println("learned m = " + to_string(m))
+  println("learned b = " + to_string(b))
+  println("")
+  println("predictions:")
+  let mut i: i64 = 0
+  while i < n {
+    let pred: f64 = m * xs[i] + b
+    println("  x=" + to_string(xs[i]) + "  y_true=" + to_string(ys[i]) + "  y_pred=" + to_string(pred))
+    i = i + 1
+  }
+}

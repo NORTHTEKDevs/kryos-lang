@@ -1,0 +1,77 @@
+// regex.kry — tiny regex engine.
+// Supports: literal chars, . (any), * (zero-or-more), ^ (start), $ (end).
+
+fn match_here(re: str, ri: i64, s: str, si: i64) -> i64
+fn match_star(c: str, re: str, ri: i64, s: str, si: i64) -> i64
+
+fn match_char(p: str, c: str) -> i64 {
+  if p == "." { return 1 }
+  if p == c { return 1 }
+  return 0
+}
+
+fn match_star(c: str, re: str, ri: i64, s: str, si: i64) -> i64 {
+  // try to match the rest first (zero matches), then consume c and retry
+  let mut i: i64 = si
+  while true {
+    if match_here(re, ri, s, i) == 1 { return 1 }
+    if i >= len(s) { return 0 }
+    if match_char(c, substr(s, i, i + 1)) == 0 { return 0 }
+    i = i + 1
+  }
+  return 0
+}
+
+fn match_here(re: str, ri: i64, s: str, si: i64) -> i64 {
+  if ri >= len(re) { return 1 }
+  // end anchor
+  if substr(re, ri, ri + 1) == "$" and ri + 1 == len(re) {
+    if si == len(s) { return 1 }
+    return 0
+  }
+  // X*
+  if ri + 1 < len(re) and substr(re, ri + 1, ri + 2) == "*" {
+    return match_star(substr(re, ri, ri + 1), re, ri + 2, s, si)
+  }
+  // single char
+  if si < len(s) and match_char(substr(re, ri, ri + 1), substr(s, si, si + 1)) == 1 {
+    return match_here(re, ri + 1, s, si + 1)
+  }
+  return 0
+}
+
+fn match_pattern(re: str, s: str) -> i64 {
+  // ^anchor
+  if len(re) > 0 and substr(re, 0, 1) == "^" {
+    return match_here(re, 1, s, 0)
+  }
+  // try every starting position
+  let mut i: i64 = 0
+  while i <= len(s) {
+    if match_here(re, 0, s, i) == 1 { return 1 }
+    i = i + 1
+  }
+  return 0
+}
+
+fn try_match(re: str, s: str) {
+  let r: i64 = match_pattern(re, s)
+  let label: str = "no match"
+  if r == 1 { label = "MATCH" }
+  println("  /" + re + "/ on \"" + s + "\" -> " + label)
+}
+
+fn main() {
+  println("regex tests:")
+  try_match("hello", "say hello world")
+  try_match("^hello", "hello world")
+  try_match("^hello", "say hello")
+  try_match("world$", "hello world")
+  try_match("ab*c", "ac")
+  try_match("ab*c", "abc")
+  try_match("ab*c", "abbbbc")
+  try_match("ab*c", "abx")
+  try_match("a.c", "abc")
+  try_match("a.c", "axc")
+  try_match("a.c", "ac")
+}

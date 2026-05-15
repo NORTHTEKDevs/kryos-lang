@@ -125,6 +125,15 @@ pub extern "C" fn kryos_sleep(seconds_bits: i64) {
     }
 }
 
+/// Sleep the current thread for `millis` milliseconds.
+#[no_mangle]
+pub extern "C" fn kryos_sleep_ms(millis: i64) {
+    if millis > 0 {
+        let dur = std::time::Duration::from_millis(millis as u64);
+        std::thread::sleep(dur);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

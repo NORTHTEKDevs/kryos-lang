@@ -1,0 +1,94 @@
+// csv.kry — read a CSV file, parse rows, compute aggregates.
+// Demonstrates: file I/O, string splitting, numeric parsing, group-by.
+
+fn split_lines(s: str) -> [str] {
+  let mut out: [str] = []
+  let n: i64 = len(s)
+  let mut start: i64 = 0
+  let mut i: i64 = 0
+  while i < n {
+    if substr(s, i, i + 1) == "\n" {
+      push(out, substr(s, start, i))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  if start < n { push(out, substr(s, start, n)) }
+  return out
+}
+
+fn split_comma(s: str) -> [str] {
+  let mut out: [str] = []
+  let n: i64 = len(s)
+  let mut start: i64 = 0
+  let mut i: i64 = 0
+  while i < n {
+    if substr(s, i, i + 1) == "," {
+      push(out, substr(s, start, i))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  push(out, substr(s, start, n))
+  return out
+}
+
+fn parse_int(s: str) -> i64 {
+  let n: i64 = len(s)
+  let mut i: i64 = 0
+  let mut neg: i64 = 0
+  if n > 0 and substr(s, 0, 1) == "-" {
+    neg = 1
+    i = 1
+  }
+  let mut v: i64 = 0
+  while i < n {
+    let c: i64 = char_code(substr(s, i, i + 1))
+    if c >= 48 and c <= 57 {
+      v = v * 10 + (c - 48)
+    }
+    i = i + 1
+  }
+  if neg == 1 { return 0 - v }
+  return v
+}
+
+fn main() {
+  // Write a sample CSV.
+  let csv: str = "name,department,salary\nalice,eng,120000\nbob,sales,90000\ncarol,eng,140000\ndave,sales,85000\neve,eng,135000\n"
+  file_write("/tmp/employees.csv", csv)
+
+  let data: str = file_read("/tmp/employees.csv")
+  let lines: [str] = split_lines(data)
+  let n: i64 = len(lines)
+
+  println("csv: read " + to_string(n) + " rows (incl. header)")
+  println("")
+
+  // Group salaries by department.
+  let mut eng_total: i64 = 0
+  let mut eng_count: i64 = 0
+  let mut sales_total: i64 = 0
+  let mut sales_count: i64 = 0
+
+  let mut i: i64 = 1
+  while i < n {
+    let row: str = lines[i]
+    if len(row) > 0 {
+      let cols: [str] = split_comma(row)
+      let dept: str = cols[1]
+      let salary: i64 = parse_int(cols[2])
+      if dept == "eng" {
+        eng_total = eng_total + salary
+        eng_count = eng_count + 1
+      } elif dept == "sales" {
+        sales_total = sales_total + salary
+        sales_count = sales_count + 1
+      }
+    }
+    i = i + 1
+  }
+
+  println("Engineering: " + to_string(eng_count) + " people, avg $" + to_string(eng_total / eng_count))
+  println("Sales:       " + to_string(sales_count) + " people, avg $" + to_string(sales_total / sales_count))
+}
