@@ -166,6 +166,9 @@ fn lower_type(ty: &MirType) -> Result<ValType, WasmCodegenError> {
         // and is what `len(s)`, string concat, and `println(s)` all decode.
         // Same scheme is used for arrays of i64 (offset, count_in_elements).
         MirType::Str => ValType::I64,
+        // WASM v0.3: arrays are represented as packed i64 pointers, same
+        // encoding as strings: low 32 bits = offset, high 32 bits = length.
+        MirType::Array(_, _) => ValType::I64,
         MirType::Void => {
             // Caller should special-case void; this is a placeholder.
             return Err(WasmCodegenError::new(
@@ -174,7 +177,7 @@ fn lower_type(ty: &MirType) -> Result<ValType, WasmCodegenError> {
         }
         other => {
             return Err(WasmCodegenError::unsupported(&format!(
-                "type `{other}` (only i64/f64/bool/str scalars supported in v0.1)"
+                "type `{other}` (WASM v0.3 supports i64/f64/bool/str + [T] arrays)"
             )));
         }
     })
@@ -228,6 +231,19 @@ struct WasmCodegen {
     array_get_idx: u32,
     /// Index of the imported `kryos_array_set(packed, index, value)`.
     array_set_idx: u32,
+    // ---- WASM v0.4: browser/web host imports (DOM/canvas/fetch) ----
+    /// `kryos_dom_set_text(id_off, id_len, txt_off, txt_len)` -> void.
+    dom_set_text_idx: u32,
+    /// `kryos_dom_get_value(id_off, id_len) -> packed string i64`.
+    dom_get_value_idx: u32,
+    /// `kryos_alert(off, len)` -> void.
+    alert_idx: u32,
+    /// `kryos_canvas_fill_rect(id_off, id_len, x, y, w, h, color_off, color_len)` -> void.
+    canvas_fill_rect_idx: u32,
+    /// `kryos_canvas_clear(id_off, id_len)` -> void.
+    canvas_clear_idx: u32,
+    /// `kryos_fetch_text(url_off, url_len) -> packed string i64` (sync xhr).
+    fetch_text_idx: u32,
 
     /// String literal interning: maps the literal -> (offset, len) in memory.
     string_table: HashMap<String, (u32, u32)>,
@@ -259,6 +275,12 @@ impl WasmCodegen {
             array_new_idx: 0,
             array_get_idx: 0,
             array_set_idx: 0,
+            dom_set_text_idx: 0,
+            dom_get_value_idx: 0,
+            alert_idx: 0,
+            canvas_fill_rect_idx: 0,
+            canvas_clear_idx: 0,
+            fetch_text_idx: 0,
             string_table: HashMap::new(),
             // Reserve the first 16 bytes so offset 0 stays sentinel-free.
             string_cursor: 16,
@@ -389,6 +411,81 @@ impl WasmCodegen {
         self.array_set_idx = 6;
         self.func_count = 7;
         self.type_count = 7;
+
+        // ====================================================================
+        // WASM v0.4: browser host imports
+        // ====================================================================
+
+        // sig 7: (i32,i32,i32,i32) -> ()  — dom_set_text(id_off,id_len,txt_off,txt_len)
+        self.types.ty().function(
+            vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+            vec![],
+        );
+        self.imports.import(env_module, "kryos_dom_set_text",
+            wasm_encoder::EntityType::Function(7));
+        self.dom_set_text_idx = 7;
+        self.func_count = 8;
+        self.type_count = 8;
+
+        // sig 8: (i32,i32) -> i64  — dom_get_value(id_off,id_len) -> packed str
+        self.types.ty().function(
+            vec![ValType::I32, ValType::I32],
+            vec![ValType::I64],
+        );
+        self.imports.import(env_module, "kryos_dom_get_value",
+            wasm_encoder::EntityType::Function(8));
+        self.dom_get_value_idx = 8;
+        self.func_count = 9;
+        self.type_count = 9;
+
+        // sig 9: (i32,i32) -> ()  — alert(off,len)
+        self.types.ty().function(
+            vec![ValType::I32, ValType::I32],
+            vec![],
+        );
+        self.imports.import(env_module, "kryos_alert",
+            wasm_encoder::EntityType::Function(9));
+        self.alert_idx = 9;
+        self.func_count = 10;
+        self.type_count = 10;
+
+        // sig 10: (i32,i32,i64,i64,i64,i64,i32,i32) -> ()
+        //   canvas_fill_rect(id_off,id_len, x,y,w,h, color_off,color_len)
+        self.types.ty().function(
+            vec![
+                ValType::I32, ValType::I32,
+                ValType::I64, ValType::I64, ValType::I64, ValType::I64,
+                ValType::I32, ValType::I32,
+            ],
+            vec![],
+        );
+        self.imports.import(env_module, "kryos_canvas_fill_rect",
+            wasm_encoder::EntityType::Function(10));
+        self.canvas_fill_rect_idx = 10;
+        self.func_count = 11;
+        self.type_count = 11;
+
+        // sig 11: (i32,i32) -> ()  — canvas_clear(id_off,id_len)
+        self.types.ty().function(
+            vec![ValType::I32, ValType::I32],
+            vec![],
+        );
+        self.imports.import(env_module, "kryos_canvas_clear",
+            wasm_encoder::EntityType::Function(11));
+        self.canvas_clear_idx = 11;
+        self.func_count = 12;
+        self.type_count = 12;
+
+        // sig 12: (i32,i32) -> i64  — fetch_text(url_off,url_len) -> packed str
+        self.types.ty().function(
+            vec![ValType::I32, ValType::I32],
+            vec![ValType::I64],
+        );
+        self.imports.import(env_module, "kryos_fetch_text",
+            wasm_encoder::EntityType::Function(12));
+        self.fetch_text_idx = 12;
+        self.func_count = 13;
+        self.type_count = 13;
     }
 
     /// Walk the module once to assign function indices and signature indices.
@@ -996,9 +1093,39 @@ impl<'a> FnEmitter<'a> {
                 self.emit_operand(operand)?;
                 self.emit_cast(ty)?;
             }
+            // -------------------------------------------------------------
+            // WASM v0.3: Array literal — `[a, b, c]`
+            // Lowers to:  arr = array_new(n); array_set(arr, 0, a); ...; arr
+            // -------------------------------------------------------------
+            RValue::Array(elems) => {
+                // Push count, call array_new -> i64 packed array handle.
+                self.wfunc.instruction(&W::I32Const(elems.len() as i32));
+                self.wfunc.instruction(&W::Call(self.cg.array_new_idx));
+                // Stash the array handle in scratch so we can re-use it.
+                let scratch = self.cg_scratch_local();
+                self.wfunc.instruction(&W::LocalSet(scratch));
+                // For each element: load array, push idx, push value, set.
+                for (i, elem) in elems.iter().enumerate() {
+                    self.wfunc.instruction(&W::LocalGet(scratch));
+                    self.wfunc.instruction(&W::I32Const(i as i32));
+                    self.emit_operand(elem)?;
+                    self.wfunc.instruction(&W::Call(self.cg.array_set_idx));
+                }
+                // Leave the array handle on the stack as the rvalue result.
+                self.wfunc.instruction(&W::LocalGet(scratch));
+            }
+            // -------------------------------------------------------------
+            // WASM v0.3: Array indexing — `arr[i]`
+            // -------------------------------------------------------------
+            RValue::Index { object, index } => {
+                self.emit_operand(object)?;            // packed i64 array
+                self.emit_operand(index)?;             // index i64
+                self.wfunc.instruction(&W::I32WrapI64);// -> i32 index
+                self.wfunc.instruction(&W::Call(self.cg.array_get_idx));
+            }
             other => {
                 return Err(WasmCodegenError::unsupported(&format!(
-                    "rvalue `{}` (v0.1 supports scalar arith, constants, calls, casts)",
+                    "rvalue `{}` (v0.3 supports scalars, calls, casts, arrays, indexing)",
                     debug_short(other)
                 )));
             }
@@ -1270,6 +1397,52 @@ impl<'a> FnEmitter<'a> {
             self.wfunc.instruction(&W::I32WrapI64);  // -> i32 index
             self.emit_operand(&args[2])?;            // value i64
             self.wfunc.instruction(&W::Call(self.cg.array_set_idx));
+            return Ok(());
+        }
+
+        // -------------------------------------------------------------
+        // WASM v0.4 web builtins — DOM / canvas / fetch / alert
+        //   dom_set_text(id: str, text: str)
+        //   dom_get_value(id: str) -> str
+        //   alert(msg: str)
+        //   canvas_fill_rect(canvas_id, x, y, w, h, color)
+        //   canvas_clear(canvas_id)
+        //   fetch_text(url: str) -> str
+        // -------------------------------------------------------------
+        if func == "dom_set_text" && args.len() == 2 {
+            self.emit_operand(&args[0])?; self.emit_unpack_string();
+            self.emit_operand(&args[1])?; self.emit_unpack_string();
+            self.wfunc.instruction(&W::Call(self.cg.dom_set_text_idx));
+            return Ok(());
+        }
+        if func == "dom_get_value" && args.len() == 1 {
+            self.emit_operand(&args[0])?; self.emit_unpack_string();
+            self.wfunc.instruction(&W::Call(self.cg.dom_get_value_idx));
+            return Ok(());
+        }
+        if func == "alert" && args.len() == 1 {
+            self.emit_operand(&args[0])?; self.emit_unpack_string();
+            self.wfunc.instruction(&W::Call(self.cg.alert_idx));
+            return Ok(());
+        }
+        if func == "canvas_fill_rect" && args.len() == 6 {
+            self.emit_operand(&args[0])?; self.emit_unpack_string();  // id off,len
+            self.emit_operand(&args[1])?;                              // x i64
+            self.emit_operand(&args[2])?;                              // y i64
+            self.emit_operand(&args[3])?;                              // w i64
+            self.emit_operand(&args[4])?;                              // h i64
+            self.emit_operand(&args[5])?; self.emit_unpack_string();   // color off,len
+            self.wfunc.instruction(&W::Call(self.cg.canvas_fill_rect_idx));
+            return Ok(());
+        }
+        if func == "canvas_clear" && args.len() == 1 {
+            self.emit_operand(&args[0])?; self.emit_unpack_string();
+            self.wfunc.instruction(&W::Call(self.cg.canvas_clear_idx));
+            return Ok(());
+        }
+        if func == "fetch_text" && args.len() == 1 {
+            self.emit_operand(&args[0])?; self.emit_unpack_string();
+            self.wfunc.instruction(&W::Call(self.cg.fetch_text_idx));
             return Ok(());
         }
 

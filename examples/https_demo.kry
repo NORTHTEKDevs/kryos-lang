@@ -1,0 +1,54 @@
+// HTTPS demo — proves TLS via rustls is live end-to-end.
+// Exercises https_get + http_request against real public endpoints.
+
+fn main() {
+  println("=== Kryos HTTPS Demo (v1.3 TLS) ===")
+  println("")
+
+  // Test 1: https_get convenience (body only)
+  println("[1] https_get(\"https://httpbin.org/get\")")
+  let body: str = https_get("https://httpbin.org/get")
+  let n: i64 = len(body)
+  println("    body length: " + to_string(n) + " bytes")
+  if n <= 0 {
+    println("    FAIL")
+    return
+  }
+  println("    PASS")
+  println("")
+
+  // Test 2: http_request against GitHub API (HTTPS + headers + JSON)
+  println("[2] http_request GET https://api.github.com")
+  let resp: i64 = http_request("GET", "https://api.github.com",
+                               "User-Agent: kryos-test\r\n", "", 15000)
+  if json_is_null(resp) {
+    println("    FAIL (null response)")
+    return
+  }
+  let status: i64 = json_to_int(json_get(resp, "status"))
+  println("    status: " + to_string(status))
+  if status != 200 {
+    println("    FAIL")
+    return
+  }
+  println("    PASS")
+  println("")
+
+  // Test 3: plain HTTP still works
+  println("[3] http_request GET http://httpbin.org/get (non-TLS)")
+  let resp2: i64 = http_request("GET", "http://httpbin.org/get", "", "", 15000)
+  if json_is_null(resp2) {
+    println("    FAIL")
+    return
+  }
+  let s2: i64 = json_to_int(json_get(resp2, "status"))
+  println("    status: " + to_string(s2))
+  if s2 != 200 {
+    println("    FAIL")
+    return
+  }
+  println("    PASS")
+  println("")
+
+  println("=== ALL TESTS PASSED — TLS + HTTP both live ===")
+}

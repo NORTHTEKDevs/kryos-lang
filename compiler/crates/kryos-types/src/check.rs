@@ -3318,6 +3318,55 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     });
 
     // -----------------------------------------------------------------------
+    // WASM v0.4 web builtins (DOM / canvas / fetch / alert)
+    // These compile to host imports under --backend wasm and to runtime
+    // no-ops / native equivalents under cranelift/llvm (best-effort).
+    // -----------------------------------------------------------------------
+    checker.env.define_function(FunctionSig {
+        name: "dom_set_text".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("id".to_string(), Type::Str), ("text".to_string(), Type::Str)],
+        ret: Type::Void,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "dom_get_value".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("id".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "alert".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("msg".to_string(), Type::Str)],
+        ret: Type::Void,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "canvas_fill_rect".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![
+            ("canvas_id".to_string(), Type::Str),
+            ("x".to_string(), Type::I64),
+            ("y".to_string(), Type::I64),
+            ("w".to_string(), Type::I64),
+            ("h".to_string(), Type::I64),
+            ("color".to_string(), Type::Str),
+        ],
+        ret: Type::Void,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "canvas_clear".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("canvas_id".to_string(), Type::Str)],
+        ret: Type::Void,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "fetch_text".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("url".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+
+    // -----------------------------------------------------------------------
     // Time / Mutex
     // -----------------------------------------------------------------------
     checker.env.define_function(FunctionSig {

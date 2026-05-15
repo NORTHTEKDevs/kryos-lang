@@ -109,8 +109,49 @@ async function main() {
         const dv = new DataView(memory.buffer);
         dv.setBigInt64(offset + index * 8, value, true);
       },
+
+      // ---- WASM v0.4: web host stubs (node fallback) ----
+      kryos_dom_set_text(idOff, idLen, txtOff, txtLen) {
+        const id = readStr(memory, idOff, idLen);
+        const txt = readStr(memory, txtOff, txtLen);
+        console.error(`[dom_set_text] #${id} <- ${txt}`);
+      },
+      kryos_dom_get_value(idOff, idLen) {
+        const id = readStr(memory, idOff, idLen);
+        console.error(`[dom_get_value] #${id} -> (node stub: empty)`);
+        return writeStrToMem(memory, '');
+      },
+      kryos_alert(off, len) {
+        console.error(`[alert] ${readStr(memory, off, len)}`);
+      },
+      kryos_canvas_fill_rect(idOff, idLen, x, y, w, h, cOff, cLen) {
+        const id = readStr(memory, idOff, idLen);
+        const c = readStr(memory, cOff, cLen);
+        console.error(`[canvas_fill_rect] #${id} (${x},${y}) ${w}x${h} ${c}`);
+      },
+      kryos_canvas_clear(idOff, idLen) {
+        const id = readStr(memory, idOff, idLen);
+        console.error(`[canvas_clear] #${id}`);
+      },
+      kryos_fetch_text(urlOff, urlLen) {
+        const url = readStr(memory, urlOff, urlLen);
+        console.error(`[fetch_text] ${url} -> (node stub: empty)`);
+        return writeStrToMem(memory, '');
+      },
     },
   };
+
+  function readStr(mem, off, len) {
+    const o = typeof off === 'bigint' ? Number(off) : off;
+    const l = typeof len === 'bigint' ? Number(len) : len;
+    return new TextDecoder('utf-8').decode(new Uint8Array(mem.buffer, o, l));
+  }
+  function writeStrToMem(mem, s) {
+    const enc = new TextEncoder().encode(s);
+    const off = bumpAlloc(mem, enc.length);
+    new Uint8Array(mem.buffer, off, enc.length).set(enc);
+    return pack(off, enc.length);
+  }
 
   const { instance } = await WebAssembly.instantiate(bytes, imports);
   memory = instance.exports.memory;

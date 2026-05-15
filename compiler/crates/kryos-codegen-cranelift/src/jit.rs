@@ -768,6 +768,19 @@ impl JitCompiler {
             "kryos_https_get_ks",
             kryos_stdlib_native::bindings::kryos_https_get_ks as *const u8,
         );
+        // WASM v0.4 web builtins (native fallbacks).
+        jit_builder.symbol("kryos_dom_set_text_ks",
+            kryos_stdlib_native::bindings::kryos_dom_set_text_ks as *const u8);
+        jit_builder.symbol("kryos_dom_get_value_ks",
+            kryos_stdlib_native::bindings::kryos_dom_get_value_ks as *const u8);
+        jit_builder.symbol("kryos_alert_ks",
+            kryos_stdlib_native::bindings::kryos_alert_ks as *const u8);
+        jit_builder.symbol("kryos_canvas_fill_rect_ks",
+            kryos_stdlib_native::bindings::kryos_canvas_fill_rect_ks as *const u8);
+        jit_builder.symbol("kryos_canvas_clear_ks",
+            kryos_stdlib_native::bindings::kryos_canvas_clear_ks as *const u8);
+        jit_builder.symbol("kryos_fetch_text_ks",
+            kryos_stdlib_native::bindings::kryos_fetch_text_ks as *const u8);
 
         // Runtime: mutable module-level globals
         jit_builder.symbol(
@@ -1349,6 +1362,12 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_regex_drop_ks", "kryos_regex_drop_ks", sig(1));
     decl!("kryos_http_request_ks", "kryos_http_request_ks", sig(5));
     decl!("kryos_https_get_ks", "kryos_https_get_ks", sig(1));
+    decl!("kryos_dom_set_text_ks", "kryos_dom_set_text_ks", sig(2));
+    decl!("kryos_dom_get_value_ks", "kryos_dom_get_value_ks", sig(1));
+    decl!("kryos_alert_ks", "kryos_alert_ks", sig(1));
+    decl!("kryos_canvas_fill_rect_ks", "kryos_canvas_fill_rect_ks", sig(6));
+    decl!("kryos_canvas_clear_ks", "kryos_canvas_clear_ks", sig(1));
+    decl!("kryos_fetch_text_ks", "kryos_fetch_text_ks", sig(1));
 
     // --- Time / Mutex (no string args) ---
     decl!("kryos_time_now_secs", "kryos_time_now_secs", sig(0));

@@ -1,0 +1,29 @@
+// WASM v0.3 demo: first-class arrays in the browser/wasm target.
+//
+// In v0.2 arrays were only reachable via explicit array_new/array_get/array_set
+// builtin calls. In v0.3 the WASM backend lowers normal Kryos array syntax
+// directly:
+//   - array literals: `[1, 2, 3]`
+//   - indexing:       `arr[i]`
+//   - len():          `len(arr)`
+//
+// All backed by linear-memory storage via host-imported helpers.
+
+fn sum(arr: [i64], n: i64) -> i64 {
+    let mut total: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        total = total + arr[i]
+        i = i + 1
+    }
+    return total
+}
+
+fn main() {
+    let nums = [10, 20, 30, 40, 50]
+    let n = len(nums)
+    println(n)            // 5
+    println(nums[0])      // 10
+    println(nums[4])      // 50
+    println(sum(nums, n)) // 150
+}

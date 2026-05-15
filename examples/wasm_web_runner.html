@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Kryos v0.4 web demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; }
+    #title { color: #1e88e5; margin-bottom: 0.25rem; }
+    #status { color: #555; font-style: italic; margin-bottom: 1rem; }
+    canvas { border: 1px solid #ccc; display: block; }
+    pre { background: #f4f4f4; padding: 0.75rem; border-radius: 4px; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <h1 id="title">(waiting for wasm)</h1>
+  <p id="status">(loading)</p>
+  <canvas id="c" width="240" height="220"></canvas>
+  <h3>Console</h3>
+  <pre id="console"></pre>
+
+<script>
+// Kryos WASM v0.4 host runtime.
+//   Implements:
+//     env.kryos_print_i64 / kryos_print_f64 / kryos_print_str
+//     env.kryos_string_concat
+//     env.kryos_array_new / kryos_array_get / kryos_array_set
+//     env.kryos_dom_set_text / kryos_dom_get_value
+//     env.kryos_alert
+//     env.kryos_canvas_fill_rect / kryos_canvas_clear
+//     env.kryos_fetch_text  (synchronous XHR for simplicity)
+//
+// Linear memory layout: data segment at 0..N holds string literals.
+// A bump allocator starts immediately after `memory.buffer.byteLength`
+// of the initial page; we grow as needed.
+
+(async function () {
+  let memory;
+  let bumpPtr = 1 << 14;  // 16KB: leave room for static strings + scratch.
+
+  function bumpAlloc(bytes) {
+    const pageBytes = 65536;
+    const pages = memory.buffer.byteLength / pageBytes;
+    while (bumpPtr + bytes > pages * pageBytes) {
+      memory.grow(1);
+    }
+    const p = bumpPtr;
+    bumpPtr = (bumpPtr + bytes + 7) & ~7;  // 8-byte align
+    return p;
+  }
+
+  function pack(offset, len) {
+    return (BigInt(len) << 32n) | BigInt(offset);
+  }
+
+  function readStr(off, len) {
+    const o = typeof off === 'bigint' ? Number(off) : off;
+    const l = typeof len === 'bigint' ? Number(len) : len;
+    const view = new Uint8Array(memory.buffer, o, l);
+    return new TextDecoder('utf-8').decode(view);
+  }
+
+  function writeStr(s) {
+    const enc = new TextEncoder().encode(s);
+    const off = bumpAlloc(enc.length);
+    new Uint8Array(memory.buffer, off, enc.length).set(enc);
+    return pack(off, enc.length);
+  }
+
+  function log(line) {
+    const el = document.getElementById('console');
+    el.textContent += line + '\n';
+  }
+
+  const imports = {
+    env: {
+      kryos_print_i64(v) {
+        log(typeof v === 'bigint' ? v.toString() : String(v));
+      },
+      kryos_print_f64(v) { log(String(v)); },
+      kryos_print_str(off, len) { log(readStr(off, len)); },
+
+      kryos_string_concat(off1, len1, off2, len2) {
+        const a = readStr(off1, len1);
+        const b = readStr(off2, len2);
+        return writeStr(a + b);
+      },
+
+      kryos_array_new(count) {
+        const bytes = count * 8;
+        const off = bumpAlloc(bytes);
+        new Uint8Array(memory.buffer, off, bytes).fill(0);
+        return pack(off, count);
+      },
+      kryos_array_get(packed, index) {
+        const off = Number(packed & 0xffffffffn);
+        return new DataView(memory.buffer).getBigInt64(off + index * 8, true);
+      },
+      kryos_array_set(packed, index, value) {
+        const off = Number(packed & 0xffffffffn);
+        new DataView(memory.buffer).setBigInt64(off + index * 8, value, true);
+      },
+
+      // ---- WASM v0.4: DOM ----
+      kryos_dom_set_text(idOff, idLen, txtOff, txtLen) {
+        const id = readStr(idOff, idLen);
+        const txt = readStr(txtOff, txtLen);
+        const el = document.getElementById(id);
+        if (el) el.textContent = txt;
+      },
+      kryos_dom_get_value(idOff, idLen) {
+        const id = readStr(idOff, idLen);
+        const el = document.getElementById(id);
+        const v = el && 'value' in el ? el.value : (el ? el.textContent : '');
+        return writeStr(v);
+      },
+      kryos_alert(off, len) { alert(readStr(off, len)); },
+
+      // ---- WASM v0.4: canvas ----
+      kryos_canvas_fill_rect(idOff, idLen, x, y, w, h, cOff, cLen) {
+        const id = readStr(idOff, idLen);
+        const cv = document.getElementById(id);
+        if (!cv || !cv.getContext) return;
+        const ctx = cv.getContext('2d');
+        ctx.fillStyle = readStr(cOff, cLen);
+        ctx.fillRect(Number(x), Number(y), Number(w), Number(h));
+      },
+      kryos_canvas_clear(idOff, idLen) {
+        const id = readStr(idOff, idLen);
+        const cv = document.getElementById(id);
+        if (!cv || !cv.getContext) return;
+        const ctx = cv.getContext('2d');
+        ctx.clearRect(0, 0, cv.width, cv.height);
+      },
+
+      // ---- WASM v0.4: fetch (sync XHR -- simple, blocks the page) ----
+      kryos_fetch_text(urlOff, urlLen) {
+        const url = readStr(urlOff, urlLen);
+        try {
+          const xhr = new XMLHttpRequest();
+          xhr.open('GET', url, false);  // sync
+          xhr.send(null);
+          return writeStr(xhr.responseText || '');
+        } catch (e) {
+          return writeStr('');
+        }
+      },
+    },
+  };
+
+  const res = await fetch('wasm_web_demo.wasm');
+  const bytes = await res.arrayBuffer();
+  const { instance } = await WebAssembly.instantiate(bytes, imports);
+  memory = instance.exports.memory;
+
+  // Move the bump pointer past any baked-in data segment.
+  bumpPtr = Math.max(bumpPtr, 1 << 14);
+
+  if (typeof instance.exports.main === 'function') {
+    instance.exports.main();
+  } else {
+    log('(no main() exported)');
+  }
+})().catch((e) => {
+  document.getElementById('console').textContent =
+    'wasm error: ' + (e && e.message ? e.message : e);
+});
+</script>
+</body>
+</html>

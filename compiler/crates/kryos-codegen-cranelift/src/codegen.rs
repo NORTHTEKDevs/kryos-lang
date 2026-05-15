@@ -3036,6 +3036,13 @@ fn translate_rvalue<M: Module>(
                 // HTTP/HTTPS request
                 "http_request" => ("kryos_http_request_ks", 5),
                 "https_get" => ("kryos_https_get_ks", 1),
+                // WASM v0.4 web builtins (native fallbacks).
+                "dom_set_text" => ("kryos_dom_set_text_ks", 2),
+                "dom_get_value" => ("kryos_dom_get_value_ks", 1),
+                "alert" => ("kryos_alert_ks", 1),
+                "canvas_fill_rect" => ("kryos_canvas_fill_rect_ks", 6),
+                "canvas_clear" => ("kryos_canvas_clear_ks", 1),
+                "fetch_text" => ("kryos_fetch_text_ks", 1),
                 // Overflow-aware integer arithmetic.
                 "wrapping_add" => ("kryos_wrapping_add_i64", 2),
                 "wrapping_sub" => ("kryos_wrapping_sub_i64", 2),

@@ -536,6 +536,13 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         // HTTP / HTTPS
         ("http_request", MirType::I64),
         ("https_get", MirType::Str),
+        // Web (WASM v0.4 browser host imports)
+        ("dom_set_text", MirType::Void),
+        ("dom_get_value", MirType::Str),
+        ("alert", MirType::Void),
+        ("canvas_fill_rect", MirType::Void),
+        ("canvas_clear", MirType::Void),
+        ("fetch_text", MirType::Str),
         // Time / Mutex
         ("time_now_secs", MirType::I64),
         ("time_now_millis", MirType::I64),

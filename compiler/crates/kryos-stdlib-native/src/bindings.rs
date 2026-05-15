@@ -457,3 +457,53 @@ fn build_i64_array(items: &[i64]) -> i64 {
         arr as i64
     }
 }
+
+// ---------------------------------------------------------------------------
+// WASM v0.4 web builtins — native shims
+//
+// Under the WASM backend these are host imports satisfied by the JS runner.
+// Under cranelift/LLVM (native), they're best-effort fallbacks: dom/canvas
+// ops print a diagnostic to stderr, fetch_text shells out to https_get,
+// alert() prints to stderr.
+// ---------------------------------------------------------------------------
+
+#[no_mangle]
+pub extern "C" fn kryos_dom_set_text_ks(id: i64, text: i64) {
+    let id_s = unsafe { handle_to_str(id) };
+    let txt_s = unsafe { handle_to_str(text) };
+    eprintln!("[dom_set_text] #{id_s} <- {txt_s}");
+}
+
+#[no_mangle]
+pub extern "C" fn kryos_dom_get_value_ks(id: i64) -> i64 {
+    let id_s = unsafe { handle_to_str(id) };
+    eprintln!("[dom_get_value] #{id_s} -> (native stub: empty)");
+    str_to_handle("")
+}
+
+#[no_mangle]
+pub extern "C" fn kryos_alert_ks(msg: i64) {
+    let s = unsafe { handle_to_str(msg) };
+    eprintln!("[alert] {s}");
+}
+
+#[no_mangle]
+pub extern "C" fn kryos_canvas_fill_rect_ks(
+    id: i64, x: i64, y: i64, w: i64, h: i64, color: i64,
+) {
+    let id_s = unsafe { handle_to_str(id) };
+    let c_s = unsafe { handle_to_str(color) };
+    eprintln!("[canvas_fill_rect] #{id_s} ({x},{y}) {w}x{h} {c_s}");
+}
+
+#[no_mangle]
+pub extern "C" fn kryos_canvas_clear_ks(id: i64) {
+    let id_s = unsafe { handle_to_str(id) };
+    eprintln!("[canvas_clear] #{id_s}");
+}
+
+#[no_mangle]
+pub extern "C" fn kryos_fetch_text_ks(url: i64) -> i64 {
+    // On native, fetch_text is just https_get.
+    kryos_https_get_ks(url)
+}
