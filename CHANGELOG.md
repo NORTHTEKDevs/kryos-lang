@@ -4,6 +4,89 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0] - 2026-05-14 — "universal language"
+
+The production-ready push. Kryos can now write the things it was designed
+to write: HTTP servers, MCP servers, LLM agents, static site generators,
+persistent databases, parallel job pools, and small compiler tools — all
+in pure Kryos. The plumbing required to ship and run those programs is
+also in place: a package manager with local path dependencies, prebuilt
+binary distribution, a stable VS Code LSP client, and a written stability
+policy.
+
+### Added
+
+#### Showcase apps (all runnable end-to-end)
+- `examples/showcase/rest_api.kry` — full CRUD HTTP server using real
+  mutable module-level globals; verified against curl.
+- `examples/showcase/markdown.kry` — pure-Kryos markdown→HTML converter.
+- `examples/showcase/kvdb.kry` — append-only persistent key/value store
+  with tab/newline-safe percent encoding, in-memory replay, and compaction.
+- `examples/showcase/mcp_server.kry` — real Model Context Protocol
+  server speaking JSON-RPC 2.0 over stdio. Implements `initialize`,
+  `tools/list`, `tools/call`, `shutdown`. Built-in tools: `echo`, `now`,
+  `add`, `read_file`, `write_file`, `http_get`.
+- `examples/showcase/agent.kry` — OpenAI-compatible Chat Completions
+  agent with tool-use loop. Drives multi-turn conversations through
+  function calling; falls back to an offline demo that prints the
+  exact OpenAI wire-format request.
+- `examples/showcase/ssg.kry` — static site generator: inlined
+  markdown→HTML, layout template, manifest-driven build. Emits a real
+  multi-page HTML site plus a shared `style.css`.
+- `examples/showcase/worker_pool.kry` — fan-out/fan-in concurrency
+  showcase using `spawn` plus channels and sentinel-based shutdown.
+- `examples/showcase/kdoc.kry` — a small documentation extractor
+  written in Kryos itself. Scans `.kry` files for `pub` declarations
+  and emits a Markdown API reference. Satisfies the self-host milestone.
+
+#### Language and compiler
+- **Real mutable module-level globals.** `let mut <name>: <type> = <expr>`
+  at file scope, no workarounds, with proper MIR type inference.
+- **String comparison codegen.** `<`, `>`, `<=`, `>=` on strings now
+  lower through `kryos_string_compare(a, b) -> i64` and `icmp`.
+  Available in both the AOT and JIT backends.
+- **f64↔i64 round-trips in codegen** for `json_number` and friends.
+- **Mutable globals participate in type inference** for indexing and
+  assignment.
+
+#### Package manager
+- `parse_dep_string` accepts bare relative/absolute paths (`./foo`,
+  `../foo`, `/abs`) and an explicit `path:<dir>` form in addition to
+  the existing `<source>@<version>` form.
+- Driver import resolver: walks up from each source file looking for
+  `.kryos/deps/<pkg>.redirect` written by `kryos pkg install`, parses
+  the `path = "..."` entry, and resolves `use pkg` to `<dep>/src/lib.kry`
+  (or `<dep>/src/<pkg>.kry`) and `use pkg::a::b` to `<dep>/src/a/b.kry`.
+  Verified end-to-end with two side-by-side projects.
+
+#### Distribution
+- `install.sh` / `install.ps1` already shipped — now coupled with the
+  release workflow that builds prebuilt binaries for
+  `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`,
+  `x86_64-apple-darwin`, and `aarch64-apple-darwin` when a `v*` tag is
+  pushed.
+- New `.github/workflows/cross.yml`: cheap cross-build matrix
+  (`linux-gnu`, `linux-musl`, `windows-gnu`, `aarch64-linux-gnu`) on
+  every push.
+
+#### Editor support
+- VS Code extension v0.3.0 wires up the LSP client. Launches
+  `kryos lsp` over stdio with `vscode-languageclient`. Configurable
+  via `kryos.serverPath`, `kryos.serverArgs`, and `kryos.trace.server`.
+
+#### Documentation
+- `docs/STABILITY.md` — written stability policy: SemVer, what's stable
+  vs. internal, deprecation lifecycle, and the language-edition
+  mechanism (`edition = "2026"` is the current default).
+- `docs/12-modules-and-packages.md` — appended a verified local-path-dep
+  walkthrough.
+
+### Fixed
+- `infer_expr_type` now consults `ctx.mutable_globals` so indexing a
+  global `[str]` array returns a `str`, not a pointer-sized `i64`. This
+  unblocked the kvdb showcase and similar code that holds collections
+  in a global.
+
 ## [0.4.0] - 2026-05-11 — "credible beta"
 
 This is the release that takes Kryos from a hand-rolled toy compiler to a

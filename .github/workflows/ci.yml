@@ -68,3 +68,34 @@ jobs:
             echo "== examples/$ex.kry =="
             ./target/release/kryos run ../examples/$ex.kry > /dev/null
           done
+
+      - name: Showcase smoke tests
+        working-directory: compiler
+        shell: bash
+        # The showcase apps exercise wider stdlib surface area: JSON, HTTP
+        # construction, file I/O, channels, markdown rendering. We compile
+        # and run the ones that exit cleanly without external services.
+        run: |
+          set -e
+          for ex in markdown kvdb ssg worker_pool; do
+            echo "== showcase/$ex.kry =="
+            ./target/release/kryos run ../examples/showcase/$ex.kry > /dev/null
+          done
+
+      - name: Package manager smoke (local path deps)
+        working-directory: compiler
+        shell: bash
+        run: |
+          set -e
+          TMP=$(mktemp -d)
+          cd "$TMP"
+          "$GITHUB_WORKSPACE/compiler/target/release/kryos" pkg init mylib > /dev/null
+          "$GITHUB_WORKSPACE/compiler/target/release/kryos" pkg init myapp > /dev/null
+          printf 'pub fn add_int(a: i64, b: i64) -> i64 { return a + b }\n' > mylib/src/lib.kry
+          printf 'use mylib::{add_int}\nfn main() { println(to_string(add_int(2, 3))) }\n' > myapp/src/main.kry
+          cd myapp
+          "$GITHUB_WORKSPACE/compiler/target/release/kryos" pkg add ../mylib
+          "$GITHUB_WORKSPACE/compiler/target/release/kryos" pkg install
+          out=$("$GITHUB_WORKSPACE/compiler/target/release/kryos" run src/main.kry)
+          [ "$out" = "5" ] || { echo "expected 5 got '$out'"; exit 1; }
+          echo "pkg smoke OK"

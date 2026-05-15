@@ -1,8 +1,8 @@
 {
   "name": "kryos",
   "displayName": "Kryos",
-  "description": "Kryos language support -- syntax highlighting, snippets, and LSP integration",
-  "version": "0.2.0",
+  "description": "Kryos language support — syntax highlighting, snippets, and LSP integration",
+  "version": "0.3.0",
   "publisher": "frostbyte-digital",
   "repository": {
     "type": "git",
@@ -13,6 +13,10 @@
   },
   "categories": [
     "Programming Languages"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:kryos"
   ],
   "contributes": {
     "languages": [
@@ -40,6 +44,42 @@
         "language": "kryos",
         "path": "./snippets/kryos.json"
       }
-    ]
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Kryos",
+      "properties": {
+        "kryos.serverPath": {
+          "type": "string",
+          "default": "kryos",
+          "description": "Path to the kryos binary that hosts the language server."
+        },
+        "kryos.serverArgs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["lsp"],
+          "description": "Arguments passed to the kryos binary to launch the LSP."
+        },
+        "kryos.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Trace the communication between VS Code and the Kryos language server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p .",
+    "watch": "tsc -w -p ."
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.4.0"
   }
 }
