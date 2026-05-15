@@ -4,6 +4,27 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.0] - 2026-05-14 — "production"
+
+First stable release. Same code as 0.5.0 with a 1.0 version stamp,
+committing Kryos to the stability guarantees in `docs/STABILITY.md`.
+
+From this release forward:
+
+* The lexical grammar, the `pub` standard library, the documented
+  builtins, the `kryos.toml` schema, and the `kryos` CLI subcommand
+  set are stable. Breaking changes require a 2.0.0 bump.
+* The `2026` language edition is the default for projects that omit
+  `edition` from their manifest.
+* Patch releases (`1.0.z`) fix bugs without changing behaviour. Minor
+  releases (`1.y.0`) may add features and APIs but never change the
+  meaning of existing code.
+* Deprecations carry a warning for at least one minor cycle before
+  removal in a future major.
+
+No functional changes from 0.5.0 — see the entry below for the full
+list of what shipped in this push.
+
 ## [0.5.0] - 2026-05-14 — "universal language"
 
 The production-ready push. Kryos can now write the things it was designed
