@@ -4,6 +4,70 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.0] - 2026-05-15 — "close the last five gaps"
+
+This release closes every remaining gap toward true universality.
+Kryos can now do TLS/HTTPS, build DOM/canvas/fetch WASM modules,
+run cooperative async event loops, manage packages via a GitHub-backed
+registry, drive a real Chromium browser over CDP+WebSocket, and paint
+immediate-mode GUIs via SDL2 — all from pure Kryos.
+
+### Added — Async I/O primitives
+
+- `tcp_set_nonblocking(fd, bool) -> i64` — flip a socket between blocking
+  and non-blocking modes.
+- `tcp_try_accept(listener) -> i64` — returns 0 if no client is waiting
+  instead of blocking. Pairs with `sleep_ms` for cooperative event loops.
+- `tcp_try_recv(fd, max) -> str` — returns an empty string on WouldBlock.
+- `poll_readable(fds, n, timeout_ms) -> i64` — bitmask of fds that
+  became readable within the timeout (up to 63 fds).
+- `sleep_ms(ms)` — sub-second cooperative pacing.
+
+`examples/async_echo.kry` is a single-threaded non-blocking echo server
+that accepts real TCP clients without spawning threads.
+
+### Added — Crypto / binary primitives
+
+- `sha1_hex(s) -> str` and `sha1_base64(s) -> str` — legacy SHA-1
+  (RFC 6455 WebSocket handshakes, etc.) verified against the FIPS-180
+  test vector for "abc".
+- `base64_encode(s) -> str` / `base64_decode(s) -> str` — round-trip
+  via latin-1 codepoints so binary data survives Kryos strings.
+- `chr(n) -> str` / `byte_at(s, i) -> i64` — single-byte read/write
+  primitives for hand-rolled binary protocols.
+
+### Added — Browser bots (CDP)
+
+- `examples/websocket_client.kry` — full RFC 6455 client framing:
+  handshake (verified against the RFC test vector), masked text/ping/
+  close frames, frame decoder for masked + unmasked frames.
+- `examples/cdp_bot.kry` — Chrome DevTools Protocol driver that probes
+  `http://localhost:9222/json` for an attached browser, opens a per-tab
+  WebSocket, and dispatches `Page.navigate`, `Runtime.evaluate`, and
+  `Page.captureScreenshot` over JSON-RPC.
+
+### Added — Immediate-mode GUI
+
+- `examples/sdl_imgui.kry` — pure-Kryos immediate-mode GUI on top of
+  the existing SDL2 FFI bindings. Includes title bar, hoverable buttons,
+  checkboxes, and a value slider. Runs headless under
+  `SDL_VIDEODRIVER=dummy` for CI.
+
+### Added — Package manager + registry
+
+- Default registry rewritten to
+  `https://github.com/NORTHTEKDevs/kryos-registry` (created this release,
+  seeded with example entries).
+- `kryos pkg add <name>` accepts bare names (resolves to `<name>@*`).
+- `Op::Wildcard` added to the semver type so `*` matches any version.
+
+### Notes
+
+- TLS / HTTPS were already complete in 1.2.0 via rustls; verified
+  end-to-end against httpbin.org and api.github.com in `examples/https_demo.kry`.
+- WASM v0.3 (linear-memory arrays) and v0.4 (DOM/canvas/fetch host
+  imports) shipped in this cycle on top of WASM v0.2 strings.
+
 ## [1.2.0] - 2026-05-15 — "truly universal: C FFI + graphics + WASM v0.2"
 
 Kryos can now call any C library at runtime via dlopen/LoadLibrary,
