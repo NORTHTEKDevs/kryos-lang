@@ -233,22 +233,73 @@ pub fn install() -> Result<(), String> {
     // Build a registry for remote dependencies.
     // Path deps are resolved directly by the resolver from their manifests.
     let mut registry = kryos_package::resolve::PackageRegistry::new();
+    let registry_client = kryos_package::RegistryClient::new();
     for (name, dep) in &manifest.dependencies {
-        if let kryos_package::DepSpec::Path { path } = dep {
-            let dep_manifest_path = Path::new(path).join("kryos.toml");
-            if dep_manifest_path.exists() {
-                let dep_manifest = Manifest::from_file(&dep_manifest_path)?;
-                let version: kryos_package::Version = dep_manifest
-                    .package
-                    .version
-                    .parse()
-                    .map_err(|e| format!("bad version in {}: {e}", name))?;
-                registry.add(kryos_package::resolve::AvailablePackage {
-                    name: name.clone(),
-                    version,
-                    source: path.clone(),
-                    dependencies: std::collections::HashMap::new(),
-                });
+        match dep {
+            kryos_package::DepSpec::Path { path } => {
+                let dep_manifest_path = Path::new(path).join("kryos.toml");
+                if dep_manifest_path.exists() {
+                    let dep_manifest = Manifest::from_file(&dep_manifest_path)?;
+                    let version: kryos_package::Version = dep_manifest
+                        .package
+                        .version
+                        .parse()
+                        .map_err(|e| format!("bad version in {}: {e}", name))?;
+                    registry.add(kryos_package::resolve::AvailablePackage {
+                        name: name.clone(),
+                        version,
+                        source: path.clone(),
+                        dependencies: std::collections::HashMap::new(),
+                    });
+                }
+            }
+            kryos_package::DepSpec::Remote { .. } => {
+                // Look up the package in the registry index and synthesize
+                // a github_subdir source so the fetcher can clone it directly
+                // from the private registry repo (raw.githubusercontent.com 404s
+                // for private repos).
+                match registry_client.lookup(name) {
+                    Ok(Some(entries)) => {
+                        for entry in &entries {
+                            let source = format!(
+                                "github_subdir:NORTHTEKDevs/kryos-registry/packages/{}/{}",
+                                entry.name, entry.version
+                            );
+                            // Build transitive dep map from the registry entry.
+                            let transitive: std::collections::HashMap<
+                                String,
+                                kryos_package::semver::VersionReq,
+                            > = entry
+                                .dependencies
+                                .iter()
+                                .filter_map(|(dep_name, dep_ver)| {
+                                    dep_ver
+                                        .parse::<kryos_package::semver::VersionReq>()
+                                        .ok()
+                                        .map(|vr| (dep_name.clone(), vr))
+                                })
+                                .collect();
+                            registry.add(kryos_package::resolve::AvailablePackage {
+                                name: entry.name.clone(),
+                                version: entry.version.clone(),
+                                source,
+                                dependencies: transitive,
+                            });
+                        }
+                    }
+                    Ok(None) => {
+                        // Not in registry index — may be an explicit source dep;
+                        // the resolver will handle it (or fail with PackageNotFound).
+                        eprintln!(
+                            "  warning: `{name}` not found in registry index — \
+                             try `kryos pkg sync` to refresh"
+                        );
+                    }
+                    Err(e) => {
+                        // Registry not synced yet or lookup error — warn and continue.
+                        eprintln!("  warning: registry lookup for `{name}` failed: {e}");
+                    }
+                }
             }
         }
     }

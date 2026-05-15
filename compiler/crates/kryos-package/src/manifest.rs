@@ -182,6 +182,14 @@ pub fn parse_dep_string(s: &str) -> Result<DepSpec, String> {
             source: s.to_string(),
             version_req,
         })
+    } else if let Ok(version_req) = s.parse::<VersionReq>() {
+        // Pure version requirement like "*", "^0.1.0", ">=1.0.0".
+        // The dep name (TOML key) will serve as the registry lookup key;
+        // source is left empty so install() resolves it via the registry.
+        Ok(DepSpec::Remote {
+            source: String::new(),
+            version_req,
+        })
     } else {
         Err(format!(
             "invalid dependency spec: expected 'name', 'name@version', 'path:<dir>', or './<dir>', got '{s}'"
