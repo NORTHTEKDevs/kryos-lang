@@ -4,6 +4,31 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.7.0] - 2026-05-15 — "OpenGL 3.3 — 3D graphics"
+
+This release closes Gap D (OpenGL 3.3) by adding full OpenGL 3.3 core-profile
+bindings via SDL2's `SDL_GL_GetProcAddress`. Kryos can now build 2D/3D games
+and visualizations entirely through the existing FFI subsystem.
+
+### Added
+- `examples/gl_cube.kry` — spinning cube demo using OpenGL 3.3 core profile:
+  vertex + fragment shaders, VBO/VAO, indexed drawing, MVP matrix, and
+  offscreen rendering verified with `glReadPixels` → PPM pixel dump
+- `kryos_ffi_write_f32_bits(p, bits)` / `kryos_ffi_write_f64_bits(p, bits)` —
+  write IEEE-754 floats to heap memory from integer bit-patterns (enables
+  building float vertex/uniform buffers from Kryos source)
+- `kryos_ffi_dlcallv_4f32(fp, b1, b2, b3, b4)` — call a `void(f32,f32,f32,f32)`
+  function with per-bit-pattern arguments (used for `glClearColor`)
+- `kryos_ffi_dlcall7` / `kryos_ffi_dlcallv5..7` — higher-arity FFI call
+  helpers for 7-argument functions like `glReadPixels`
+- `kryos_ffi_read_f32_bits` / `kryos_ffi_read_f64_bits` — read float memory
+  as integer bit-patterns
+
+### Verified
+- Mesa software renderer (`LIBGL_ALWAYS_SOFTWARE=1`) renders orange cube;
+  `glReadPixels` confirms 26 759 non-background pixels (vs 0 for clear)
+- GL version 4.5 core profile obtained via `SDL_GL_CreateContext` offscreen
+
 ## [1.6.0] - 2026-05-15 — "HTTP/2, PostgreSQL, TLS server"
 
 This release closes Gap C (HTTP/2 client) to complete the networking trifecta

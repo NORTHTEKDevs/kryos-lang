@@ -128,6 +128,8 @@ type Fn3R = unsafe extern "C" fn(i64, i64, i64) -> i64;
 type Fn4R = unsafe extern "C" fn(i64, i64, i64, i64) -> i64;
 type Fn5R = unsafe extern "C" fn(i64, i64, i64, i64, i64) -> i64;
 type Fn6R = unsafe extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64;
+type Fn7R = unsafe extern "C" fn(i64, i64, i64, i64, i64, i64, i64) -> i64;
+type Fn8R = unsafe extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64) -> i64;
 
 type Fn0V = unsafe extern "C" fn();
 type Fn1V = unsafe extern "C" fn(i64);
@@ -136,6 +138,8 @@ type Fn3V = unsafe extern "C" fn(i64, i64, i64);
 type Fn4V = unsafe extern "C" fn(i64, i64, i64, i64);
 type Fn5V = unsafe extern "C" fn(i64, i64, i64, i64, i64);
 type Fn6V = unsafe extern "C" fn(i64, i64, i64, i64, i64, i64);
+type Fn7V = unsafe extern "C" fn(i64, i64, i64, i64, i64, i64, i64);
+type Fn8V = unsafe extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64);
 
 macro_rules! dlcall_arity {
     ($name:ident, $tret:ty, $tvoid:ty, $($arg:ident: $ty:ty),*) => {
@@ -155,6 +159,8 @@ dlcall_arity!(kryos_ffi_dlcall3, Fn3R, Fn3V, a1: i64, a2: i64, a3: i64);
 dlcall_arity!(kryos_ffi_dlcall4, Fn4R, Fn4V, a1: i64, a2: i64, a3: i64, a4: i64);
 dlcall_arity!(kryos_ffi_dlcall5, Fn5R, Fn5V, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64);
 dlcall_arity!(kryos_ffi_dlcall6, Fn6R, Fn6V, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64);
+dlcall_arity!(kryos_ffi_dlcall7, Fn7R, Fn7V, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64);
+dlcall_arity!(kryos_ffi_dlcall8, Fn8R, Fn8V, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64, a8: i64);
 
 // Void-return variants — for fns whose return value we don't want to bind.
 #[no_mangle]
@@ -187,6 +193,24 @@ pub unsafe extern "C" fn kryos_ffi_dlcallv4(fp: i64, a1: i64, a2: i64, a3: i64, 
     let f: Fn4V = std::mem::transmute(fp as *const ());
     f(a1, a2, a3, a4);
 }
+#[no_mangle]
+pub unsafe extern "C" fn kryos_ffi_dlcallv5(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64) {
+    if fp == 0 { return }
+    let f: Fn5V = std::mem::transmute(fp as *const ());
+    f(a1, a2, a3, a4, a5);
+}
+#[no_mangle]
+pub unsafe extern "C" fn kryos_ffi_dlcallv6(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64) {
+    if fp == 0 { return }
+    let f: Fn6V = std::mem::transmute(fp as *const ());
+    f(a1, a2, a3, a4, a5, a6);
+}
+#[no_mangle]
+pub unsafe extern "C" fn kryos_ffi_dlcallv7(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64) {
+    if fp == 0 { return }
+    let f: Fn7V = std::mem::transmute(fp as *const ());
+    f(a1, a2, a3, a4, a5, a6, a7);
+}
 
 // ===========================================================================
 // Float-arg/return helpers — for graphics APIs that take coords as f32/f64.
@@ -200,6 +224,33 @@ pub unsafe extern "C" fn kryos_ffi_dlcallv_4f(fp: i64, a1: f64, a2: f64, a3: f64
     type F = unsafe extern "C" fn(f64, f64, f64, f64);
     let f: F = std::mem::transmute(fp as *const ());
     f(a1, a2, a3, a4);
+}
+
+/// Call f(a1: f32, a2: f32, a3: f32, a4: f32) -> void.
+/// Each argument is passed as the i64 bit-pattern of the f32 value.
+/// This correctly passes float values in xmm registers for functions like glClearColor.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_ffi_dlcallv_4f32(fp: i64, b1: i64, b2: i64, b3: i64, b4: i64) {
+    if fp == 0 { return }
+    let a1 = f32::from_bits(b1 as u32);
+    let a2 = f32::from_bits(b2 as u32);
+    let a3 = f32::from_bits(b3 as u32);
+    let a4 = f32::from_bits(b4 as u32);
+    type F = unsafe extern "C" fn(f32, f32, f32, f32);
+    let f: F = std::mem::transmute(fp as *const ());
+    f(a1, a2, a3, a4);
+}
+
+/// Call f(a1: f32, a2: f32, a3: f32) -> void.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_ffi_dlcallv_3f32(fp: i64, b1: i64, b2: i64, b3: i64) {
+    if fp == 0 { return }
+    let a1 = f32::from_bits(b1 as u32);
+    let a2 = f32::from_bits(b2 as u32);
+    let a3 = f32::from_bits(b3 as u32);
+    type F = unsafe extern "C" fn(f32, f32, f32);
+    let f: F = std::mem::transmute(fp as *const ());
+    f(a1, a2, a3);
 }
 
 /// Allocate `n` bytes on the C heap (libc malloc). Returns 0 on failure.
@@ -240,6 +291,27 @@ pub unsafe extern "C" fn kryos_ffi_free(ptr: i64, n: i64) {
 #[no_mangle] pub unsafe extern "C" fn kryos_ffi_write_i64(p: i64, v: i64) { if p != 0 { *(p as *mut i64) = v } }
 #[no_mangle] pub unsafe extern "C" fn kryos_ffi_write_f32(p: i64, v: f64) { if p != 0 { *(p as *mut f32) = v as f32 } }
 #[no_mangle] pub unsafe extern "C" fn kryos_ffi_write_f64(p: i64, v: f64) { if p != 0 { *(p as *mut f64) = v } }
+
+/// Write a 32-bit float at `p` by reinterpreting the low 32 bits of `bits` as an IEEE-754 f32.
+/// This allows Kryos source to pass float bit-patterns as i64 literals.
+#[no_mangle] pub unsafe extern "C" fn kryos_ffi_write_f32_bits(p: i64, bits: i64) {
+    if p != 0 { *(p as *mut u32) = bits as u32 }
+}
+
+/// Write a 64-bit float at `p` by reinterpreting `bits` as an IEEE-754 f64.
+#[no_mangle] pub unsafe extern "C" fn kryos_ffi_write_f64_bits(p: i64, bits: i64) {
+    if p != 0 { *(p as *mut i64) = bits }
+}
+
+/// Read a 32-bit float at `p`, returning its bit pattern as an i64.
+#[no_mangle] pub unsafe extern "C" fn kryos_ffi_read_f32_bits(p: i64) -> i64 {
+    if p == 0 { 0 } else { *(p as *const u32) as i64 }
+}
+
+/// Read a 64-bit float at `p`, returning its bit pattern as an i64.
+#[no_mangle] pub unsafe extern "C" fn kryos_ffi_read_f64_bits(p: i64) -> i64 {
+    if p == 0 { 0 } else { *(p as *const i64) }
+}
 
 // ===========================================================================
 // Platform shims
