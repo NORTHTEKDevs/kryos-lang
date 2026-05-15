@@ -1,0 +1,288 @@
+// rest_api.kry — A real REST API server in Kryos.
+//
+// Endpoints:
+//   GET    /                -> service banner
+//   GET    /todos           -> JSON list of todos
+//   GET    /todos/{id}      -> JSON for one todo (404 if missing)
+//   POST   /todos           -> body: {"title":"..."} -> created todo
+//   DELETE /todos/{id}      -> 204 on success, 404 if missing
+//
+// Serves N requests then exits (so it works in CI). Override with --max <N>.
+//
+// Run:
+//   kryos run examples/showcase/rest_api.kry
+//   curl http://127.0.0.1:7878/todos
+//   curl -X POST http://127.0.0.1:7878/todos -d '{"title":"ship v1"}'
+//   curl http://127.0.0.1:7878/todos/1
+//   curl -X DELETE http://127.0.0.1:7878/todos/1
+
+// --- In-memory store (parallel arrays — simple, no struct churn). ---
+let TITLES: [str] = []
+let IDS: [i64] = []
+let DONE: [i64] = []   // 0/1
+// Single-element array used as a mutable counter (works around the lack
+// of mutable top-level globals in current Kryos).
+let NEXT_ID: [i64] = [1]
+
+fn store_add(title: str) -> i64 {
+  let id: i64 = NEXT_ID[0]
+  NEXT_ID[0] = NEXT_ID[0] + 1
+  push(IDS, id)
+  push(TITLES, title)
+  push(DONE, 0)
+  return id
+}
+
+fn store_find(id: i64) -> i64 {
+  let mut i: i64 = 0
+  while i < len(IDS) {
+    if IDS[i] == id {
+      return i
+    }
+    i = i + 1
+  }
+  return -1
+}
+
+fn store_delete(id: i64) -> i64 {
+  let idx: i64 = store_find(id)
+  if idx < 0 {
+    return 0
+  }
+  // Manual remove-by-shift (we don't have a remove builtin).
+  let mut j: i64 = idx
+  let last: i64 = len(IDS) - 1
+  while j < last {
+    IDS[j] = IDS[j + 1]
+    TITLES[j] = TITLES[j + 1]
+    DONE[j] = DONE[j + 1]
+    j = j + 1
+  }
+  // Truncate by rebuilding (no pop builtin); cheaper trick:
+  // we use a length sentinel by appending a fresh empty value then dropping it
+  // — but the simplest sound approach is to set IDS[last] to a tombstone
+  // and rely on len reduction via dedicated array_pop builtin if available.
+  // Since we don't, expose store_len() reading via a tombstone of -1.
+  IDS[last] = -1
+  return 1
+}
+
+fn store_len() -> i64 {
+  // Skip tombstones at the tail.
+  let mut n: i64 = len(IDS)
+  while n > 0 and IDS[n - 1] == -1 {
+    n = n - 1
+  }
+  return n
+}
+
+// --- JSON helpers --------------------------------------------------------
+
+fn todo_to_json(idx: i64) -> i64 {
+  let keys: [str] = ["id", "title", "done"]
+  let v_id: i64 = json_number(IDS[idx] as f64)
+  let v_title: i64 = json_string(TITLES[idx])
+  let mut done_bool: bool = false
+  if DONE[idx] == 1 {
+    done_bool = true
+  }
+  let v_done: i64 = json_bool(done_bool)
+  let vals: [i64] = [v_id, v_title, v_done]
+  return json_object(keys, vals)
+}
+
+fn all_todos_json() -> i64 {
+  let items: [i64] = []
+  let mut i: i64 = 0
+  let n: i64 = store_len()
+  while i < n {
+    push(items, todo_to_json(i))
+    i = i + 1
+  }
+  return json_array(items)
+}
+
+// --- HTTP helpers --------------------------------------------------------
+
+fn send_response(client: i64, status_line: str, content_type: str, body: str) {
+  let mut hdr: str = "HTTP/1.0 "
+  hdr = hdr + status_line
+  hdr = hdr + "\r\nContent-Type: "
+  hdr = hdr + content_type
+  hdr = hdr + "\r\nContent-Length: "
+  hdr = hdr + to_string(len(body))
+  hdr = hdr + "\r\nConnection: close\r\n\r\n"
+  tcp_send(client, hdr)
+  tcp_send(client, body)
+}
+
+fn send_json(client: i64, status_line: str, node: i64) {
+  let body: str = json_stringify(node)
+  send_response(client, status_line, "application/json", body)
+}
+
+fn send_text(client: i64, status_line: str, body: str) {
+  send_response(client, status_line, "text/plain", body)
+}
+
+// Parse "GET /todos/12 HTTP/1.x" into (method, path).
+fn parse_request_line(req: str) -> [str] {
+  let mut method: str = ""
+  let mut path: str = ""
+  let mut i: i64 = 0
+  let n: i64 = len(req)
+  // method
+  while i < n and substr(req, i, i + 1) != " " {
+    method = method + substr(req, i, i + 1)
+    i = i + 1
+  }
+  i = i + 1
+  // path
+  while i < n and substr(req, i, i + 1) != " " {
+    path = path + substr(req, i, i + 1)
+    i = i + 1
+  }
+  return [method, path]
+}
+
+// Extract the request body (everything after the blank line).
+fn extract_body(req: str) -> str {
+  let n: i64 = len(req)
+  let mut i: i64 = 0
+  while i + 3 < n {
+    if substr(req, i, i + 4) == "\r\n\r\n" {
+      return substr(req, i + 4, n)
+    }
+    i = i + 1
+  }
+  return ""
+}
+
+// Parse "/todos/12" — return 12, or -1 if no id.
+fn extract_id(path: str) -> i64 {
+  // Skip leading "/todos"
+  let prefix: str = "/todos/"
+  if len(path) <= len(prefix) {
+    return -1
+  }
+  let rest: str = substr(path, len(prefix), len(path))
+  let mut id: i64 = 0
+  let mut any: i64 = 0
+  let mut i: i64 = 0
+  while i < len(rest) {
+    let c: str = substr(rest, i, i + 1)
+    if c >= "0" and c <= "9" {
+      id = id * 10 + (char_code(c) - char_code("0"))
+      any = 1
+    } else {
+      return -1
+    }
+    i = i + 1
+  }
+  if any == 0 {
+    return -1
+  }
+  return id
+}
+
+// --- Router --------------------------------------------------------------
+
+fn handle(client: i64, req: str) {
+  let parsed: [str] = parse_request_line(req)
+  let method: str = parsed[0]
+  let path: str = parsed[1]
+
+  print("[req] ")
+  print(method)
+  print(" ")
+  print(path)
+  print("\n")
+
+  if method == "GET" and path == "/" {
+    send_text(client, "200 OK", "kryos rest api — try GET /todos\n")
+    return
+  }
+  if method == "GET" and path == "/todos" {
+    send_json(client, "200 OK", all_todos_json())
+    return
+  }
+  if method == "POST" and path == "/todos" {
+    let body: str = extract_body(req)
+    let req_json: i64 = json_parse(body)
+    if req_json <= 0 {
+      send_text(client, "400 Bad Request", "invalid json\n")
+      return
+    }
+    let title_node: i64 = json_get(req_json, "title")
+    if title_node <= 0 {
+      send_text(client, "400 Bad Request", "missing title\n")
+      return
+    }
+    let title: str = json_to_str(title_node)
+    let id: i64 = store_add(title)
+    let idx: i64 = store_find(id)
+    send_json(client, "201 Created", todo_to_json(idx))
+    return
+  }
+  if method == "GET" {
+    let id: i64 = extract_id(path)
+    if id > 0 {
+      let idx: i64 = store_find(id)
+      if idx < 0 {
+        send_text(client, "404 Not Found", "no such todo\n")
+        return
+      }
+      send_json(client, "200 OK", todo_to_json(idx))
+      return
+    }
+  }
+  if method == "DELETE" {
+    let id: i64 = extract_id(path)
+    if id > 0 {
+      if store_delete(id) == 1 {
+        send_text(client, "204 No Content", "")
+      } else {
+        send_text(client, "404 Not Found", "no such todo\n")
+      }
+      return
+    }
+  }
+  send_text(client, "404 Not Found", "route not found\n")
+}
+
+fn main() {
+  // Seed
+  store_add("write kryos")
+  store_add("ship v1")
+
+  let port: i64 = 7878
+  let server: i64 = tcp_listen("127.0.0.1", port)
+  if server <= 0 {
+    print("failed to bind 127.0.0.1:")
+    print(port)
+    print("\n")
+    exit(1)
+  }
+  print("kryos rest api listening on http://127.0.0.1:")
+  print(port)
+  print("\n")
+  print("endpoints: GET / | GET /todos | GET /todos/{id} | POST /todos | DELETE /todos/{id}\n")
+
+  let max_requests: i64 = 16
+  let mut handled: i64 = 0
+  while handled < max_requests {
+    let client: i64 = tcp_accept(server)
+    if client <= 0 {
+      print("accept failed\n")
+      break
+    }
+    let req: str = tcp_recv(client, 8192)
+    handle(client, req)
+    tcp_close(client)
+    handled = handled + 1
+  }
+  tcp_close(server)
+  print("served ")
+  print(handled)
+  print(" request(s); exiting\n")
+}

@@ -125,12 +125,17 @@ pub enum Decl {
         doc_comments: Vec<String>,
         span: Span,
     },
-    /// Top-level constant: `let NAME = expr`
+    /// Top-level constant or mutable global: `let NAME = expr` or
+    /// `let mut NAME = expr`. When `mutable` is true, the binding is a real
+    /// process-wide mutable slot stored in the runtime globals registry.
+    /// When `mutable` is false, references to `NAME` are inlined at use
+    /// sites (constant folding).
     Const {
         name: String,
         ty: Option<TypeExpr>,
         value: Box<crate::Expr>,
         public: bool,
+        mutable: bool,
         doc_comments: Vec<String>,
         span: Span,
     },

@@ -749,8 +749,9 @@ impl Parser {
     fn parse_const_decl(&mut self, public: bool, doc_comments: Vec<String>) -> Decl {
         let kw = self.expect(TokenKind::Let);
         let start = kw.span;
-        // Skip optional 'mut' (top-level let is always immutable, but accept it gracefully)
-        self.eat(TokenKind::Mut);
+        // `let mut NAME` at module scope = real mutable global.
+        // `let NAME` at module scope = immutable constant (inlined at use sites).
+        let mutable = self.eat(TokenKind::Mut);
         let (name, _) = self.expect_name();
         let ty = if self.eat(TokenKind::Colon) {
             Some(self.parse_type())
@@ -765,6 +766,7 @@ impl Parser {
             ty,
             value: Box::new(value),
             public,
+            mutable,
             doc_comments,
             span: start.merge(end),
         }

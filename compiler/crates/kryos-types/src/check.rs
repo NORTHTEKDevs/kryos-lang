@@ -635,14 +635,22 @@ impl TypeChecker {
                 self.env.define_var(name.clone(), resolved);
             }
             Decl::Const {
-                name, ty, value, ..
+                name,
+                ty,
+                value,
+                mutable,
+                ..
             } => {
                 let resolved_ty = if let Some(t) = ty {
                     self.resolve_type_expr(t)
                 } else {
                     self.infer_expr(value)
                 };
-                self.env.define_var(name.clone(), resolved_ty);
+                if *mutable {
+                    self.env.define_var_mut(name.clone(), resolved_ty);
+                } else {
+                    self.env.define_var(name.clone(), resolved_ty);
+                }
             }
             Decl::Import { .. } | Decl::Actor { .. } => {
                 // These don't introduce types we need to check yet.

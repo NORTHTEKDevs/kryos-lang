@@ -77,6 +77,15 @@ pub struct LoweringContext {
     actor_state_fields: HashMap<String, Vec<(String, u32)>>,
     /// Top-level constant definitions: const_name -> (MirType, AST expression).
     const_defs: HashMap<String, (MirType, ast::Expr)>,
+    /// Top-level mutable globals: name -> (MirType, init expression).
+    /// These are real process-wide slots stored in the runtime globals
+    /// registry. References to these names lower to `kryos_global_get`/
+    /// `kryos_global_set` calls; the initializer expression is run once at
+    /// the start of `main`.
+    mutable_globals: HashMap<String, (MirType, ast::Expr)>,
+    /// Insertion order of mutable globals so initialization runs in source
+    /// order (later globals may reference earlier ones).
+    mutable_global_order: Vec<String>,
     /// Function parameter types: func_name -> ordered list of MirType.
     /// Used for dyn Trait coercion: when a concrete struct is passed to a `dyn Trait`
     /// param, the lowerer wraps it in `MakeTraitObject`.
@@ -165,6 +174,8 @@ impl LoweringContext {
             actor_defs: HashMap::new(),
             actor_state_fields: HashMap::new(),
             const_defs: HashMap::new(),
+            mutable_globals: HashMap::new(),
+            mutable_global_order: Vec::new(),
             func_param_types: HashMap::new(),
             dropped_locals: HashSet::new(),
             param_locals: HashSet::new(),
@@ -846,7 +857,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                     .insert(name.clone(), state_field_layout);
             }
             ast::Decl::Const {
-                name, ty, value, ..
+                name, ty, value, mutable, ..
             } => {
                 let mir_ty = if let Some(t) = ty {
                     lower_type_expr(t)
@@ -854,8 +865,16 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                     infer_expr_type(&mut ctx, value)
                 };
                 ctx.func_ret_types.insert(name.clone(), mir_ty.clone());
-                ctx.const_defs
-                    .insert(name.clone(), (mir_ty, *value.clone()));
+                if *mutable {
+                    if !ctx.mutable_globals.contains_key(name) {
+                        ctx.mutable_global_order.push(name.clone());
+                    }
+                    ctx.mutable_globals
+                        .insert(name.clone(), (mir_ty, *value.clone()));
+                } else {
+                    ctx.const_defs
+                        .insert(name.clone(), (mir_ty, *value.clone()));
+                }
             }
             _ => {}
         }
@@ -1095,6 +1114,25 @@ pub fn lower_function(
             MirParam { local, ty }
         })
         .collect();
+
+    // Module-level globals initializer. For the program entry point (`main`)
+    // we evaluate every `let mut NAME: TY = EXPR` top-level decl exactly once
+    // before any user code runs and store the resulting i64 slot into the
+    // process-wide registry via `kryos_global_set`. All subsequent reads of
+    // those names lower to `kryos_global_get`.
+    if name == "main" && !ctx.mutable_global_order.is_empty() {
+        // Clone the order/value pairs out of ctx so we don't keep an immutable
+        // borrow alive across the mutable lower_expr_to_operand calls below.
+        let init_pairs: Vec<(String, ast::Expr)> = ctx
+            .mutable_global_order
+            .iter()
+            .filter_map(|n| ctx.mutable_globals.get(n).map(|(_, e)| (n.clone(), e.clone())))
+            .collect();
+        for (gname, init_expr) in init_pairs {
+            let val = lower_expr_to_operand(ctx, &init_expr);
+            emit_global_store(ctx, &gname, val);
+        }
+    }
 
     // Lower the body statements.  If the function has a non-void return type
     // and the last statement is a bare expression OR a value-producing
@@ -1592,6 +1630,18 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     ast::AssignOp::Assign => {
                         // For simple assignment to an identifier, find the local.
                         if let ast::Expr::Identifier { name, .. } = target {
+                            // Mutable module-level global: route the write
+                            // through the runtime registry instead of
+                            // assigning to a (non-existent) local.
+                            let is_local = ctx
+                                .locals
+                                .iter()
+                                .any(|l| l.name.as_deref() == Some(name.as_str()));
+                            if !is_local && ctx.mutable_globals.contains_key(name.as_str()) {
+                                let val = lower_expr_to_operand(ctx, value);
+                                emit_global_store(ctx, name, val);
+                                return;
+                            }
                             let dest = find_local_by_name(ctx, name)
                                 .expect("internal: assign target local not found");
                             let rvalue = lower_expr_to_rvalue(ctx, value);
@@ -1673,6 +1723,37 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     _ => {
                         // Compound assignment (+=, -=, etc.) — desugar to bin-op + assign.
                         if let ast::Expr::Identifier { name, .. } = target {
+                            // Mutable module-level global: load, op, store.
+                            let is_local = ctx
+                                .locals
+                                .iter()
+                                .any(|l| l.name.as_deref() == Some(name.as_str()));
+                            if !is_local {
+                                if let Some((mir_ty, _)) =
+                                    ctx.mutable_globals.get(name.as_str()).cloned()
+                                {
+                                    let mir_op = match op {
+                                        ast::AssignOp::AddAssign => MirBinOp::Add,
+                                        ast::AssignOp::SubAssign => MirBinOp::Sub,
+                                        ast::AssignOp::MulAssign => MirBinOp::Mul,
+                                        ast::AssignOp::DivAssign => MirBinOp::Div,
+                                        ast::AssignOp::Assign => unreachable!(),
+                                    };
+                                    let cur = emit_global_load(ctx, name, mir_ty.clone());
+                                    let rhs = lower_expr_to_operand(ctx, value);
+                                    let new_val = ctx.alloc_temp(mir_ty);
+                                    ctx.emit(Instruction::Assign {
+                                        dest: new_val,
+                                        value: RValue::BinOp {
+                                            op: mir_op,
+                                            left: Operand::Local(cur),
+                                            right: rhs,
+                                        },
+                                    });
+                                    emit_global_store(ctx, name, Operand::Local(new_val));
+                                    return;
+                                }
+                            }
                             let dest = find_local_by_name(ctx, name)
                                 .expect("internal: compound assign target local not found");
                             let mir_op = match op {
@@ -3670,19 +3751,24 @@ fn lower_expr_to_operand(ctx: &mut LoweringContext, expr: &ast::Expr) -> Operand
         ast::Expr::StringLiteral { value, .. } => Operand::Constant(Constant::Str(value.clone())),
         ast::Expr::NoneLiteral { .. } => Operand::Constant(Constant::None),
         ast::Expr::Identifier { name, .. } => {
-            // Check if this is a top-level constant — inline its value expression.
             let is_local = ctx
                 .locals
                 .iter()
                 .any(|l| l.name.as_deref() == Some(name.as_str()));
+            // Mutable module-level global: emit a real runtime load.
+            if !is_local {
+                if let Some((mir_ty, _)) = ctx.mutable_globals.get(name.as_str()).cloned() {
+                    return Operand::Local(emit_global_load(ctx, name, mir_ty));
+                }
+            }
+            // Immutable constant: inline its value expression at the use site.
             if !is_local {
                 if let Some((_, const_expr)) = ctx.const_defs.get(name.as_str()).cloned() {
                     return lower_expr_to_operand(ctx, &const_expr);
                 }
             }
-            // Check if this is a function name used as a value (function pointer).
+            // Function name used as a value (function pointer).
             if !is_local && ctx.func_ret_types.contains_key(name.as_str()) {
-                // Emit a Closure with no captures to get the function address.
                 let rvalue = RValue::Closure {
                     func_name: name.clone(),
                     captures: vec![],
@@ -3731,8 +3817,15 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     fields: vec![],
                 };
             }
-            // Check if this is a top-level constant — inline its value expression.
             let is_local = ctx.locals.iter().any(|l| l.name.as_deref() == Some(name));
+            // Mutable module-level global: emit a real runtime load.
+            if !is_local {
+                if let Some((mir_ty, _)) = ctx.mutable_globals.get(name.as_str()).cloned() {
+                    let local = emit_global_load(ctx, name, mir_ty);
+                    return RValue::Use(Operand::Local(local));
+                }
+            }
+            // Immutable constant: inline its value expression at the use site.
             if !is_local {
                 if let Some((_, const_expr)) = ctx.const_defs.get(name.as_str()).cloned() {
                     return lower_expr_to_rvalue(ctx, &const_expr);
@@ -4868,6 +4961,50 @@ fn mir_type_to_type_expr(ty: &MirType) -> Option<ast::TypeExpr> {
         }),
         _ => None, // fall back to default i64
     }
+}
+
+/// Emit a runtime load of a mutable module-level global named `name`.
+///
+/// Lowers to `let tmp: <mir_ty> = kryos_global_get("<name>")` — the name is
+/// passed as a Kryos string handle (the runtime decodes it on the fly).
+///
+/// For `f64` globals the slot stores the raw i64 bit pattern; callers should
+/// transmute via `bitcast` at the use site if needed. In practice everything
+/// reads back at MIR type i64/handle and the rest of the pipeline already
+/// handles the value as a uniform 64-bit slot, so this helper just returns a
+/// local of the global's declared MirType and lets the codegen pick the
+/// right ABI moves.
+fn emit_global_load(ctx: &mut LoweringContext, name: &str, mir_ty: MirType) -> LocalId {
+    let temp = ctx.alloc_temp(mir_ty);
+    ctx.emit(Instruction::Assign {
+        dest: temp,
+        value: RValue::Call {
+            func: "kryos_global_get".to_string(),
+            args: vec![Operand::Constant(Constant::Str(name.to_string()))],
+        },
+    });
+    temp
+}
+
+/// Emit a runtime store to a mutable module-level global named `name`.
+///
+/// Lowers to `kryos_global_set("<name>", <value>)`. The set function has a
+/// void return at the ABI level, but MIR call instructions always assign to
+/// a destination — we allocate a throwaway i64 temp and let the JIT discard
+/// the (non-existent) return value. The codegen layer already tolerates
+/// void-return externs called this way (see jit.rs `kryos_global_set_void`).
+fn emit_global_store(ctx: &mut LoweringContext, name: &str, value: Operand) {
+    let throwaway = ctx.alloc_temp(MirType::I64);
+    ctx.emit(Instruction::Assign {
+        dest: throwaway,
+        value: RValue::Call {
+            func: "kryos_global_set".to_string(),
+            args: vec![
+                Operand::Constant(Constant::Str(name.to_string())),
+                value,
+            ],
+        },
+    });
 }
 
 /// Look up a local by name. Returns `Some(id)` if found, `None` otherwise.

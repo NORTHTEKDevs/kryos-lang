@@ -59,6 +59,7 @@ pub mod channel;
 pub mod exception;
 pub mod fs;
 pub mod future;
+pub mod globals;
 pub mod map;
 pub mod panic;
 pub mod spawn;

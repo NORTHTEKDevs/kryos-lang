@@ -761,6 +761,20 @@ impl JitCompiler {
             kryos_stdlib_native::bindings::kryos_https_get_ks as *const u8,
         );
 
+        // Runtime: mutable module-level globals
+        jit_builder.symbol(
+            "kryos_global_get",
+            kryos_rt::globals::kryos_global_get as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_global_set",
+            kryos_rt::globals::kryos_global_set as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_global_has",
+            kryos_rt::globals::kryos_global_has as *const u8,
+        );
+
         // Stdlib-native: datetime
         jit_builder.symbol(
             "kryos_time_now_secs",
@@ -1333,6 +1347,16 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_mutex_lock", "kryos_mutex_lock", sig(1));
     decl!("kryos_mutex_unlock", "kryos_mutex_unlock", sig(1));
     decl!("kryos_mutex_drop", "kryos_mutex_drop", sig(1));
+
+    // --- Mutable globals ---
+    decl!("kryos_global_get", "kryos_global_get", sig(1));
+    // NOTE: kryos_global_set returns `()` in Rust, but we declare it with an
+    // i64 return in the JIT module so that callers can uniformly use
+    // `builder.inst_results(call)[0]` (the MIR Call instruction always has a
+    // destination). The garbage i64 in the return register is discarded by
+    // the assigned-but-unused throwaway temp.
+    decl!("kryos_global_set", "kryos_global_set", sig(2));
+    decl!("kryos_global_has", "kryos_global_has", sig(1));
 
     Ok(())
 }
