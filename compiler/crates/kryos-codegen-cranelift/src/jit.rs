@@ -846,6 +846,19 @@ impl JitCompiler {
             "kryos_https_get_ks",
             kryos_stdlib_native::bindings::kryos_https_get_ks as *const u8,
         );
+        // HTTP/2 client (Gap C)
+        jit_builder.symbol(
+            "kryos_http2_get_ks",
+            kryos_stdlib_native::bindings::kryos_http2_get_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_http2_post_ks",
+            kryos_stdlib_native::bindings::kryos_http2_post_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_http2_request_ks",
+            kryos_stdlib_native::bindings::kryos_http2_request_ks as *const u8,
+        );
         // WASM v0.4 web builtins (native fallbacks).
         jit_builder.symbol("kryos_dom_set_text_ks",
             kryos_stdlib_native::bindings::kryos_dom_set_text_ks as *const u8);
@@ -1461,6 +1474,10 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_regex_drop_ks", "kryos_regex_drop_ks", sig(1));
     decl!("kryos_http_request_ks", "kryos_http_request_ks", sig(5));
     decl!("kryos_https_get_ks", "kryos_https_get_ks", sig(1));
+    // HTTP/2 client (Gap C)
+    decl!("kryos_http2_get_ks", "kryos_http2_get_ks", sig(1));
+    decl!("kryos_http2_post_ks", "kryos_http2_post_ks", sig(2));
+    decl!("kryos_http2_request_ks", "kryos_http2_request_ks", sig(4));
     decl!("kryos_dom_set_text_ks", "kryos_dom_set_text_ks", sig(2));
     decl!("kryos_dom_get_value_ks", "kryos_dom_get_value_ks", sig(1));
     decl!("kryos_alert_ks", "kryos_alert_ks", sig(1));

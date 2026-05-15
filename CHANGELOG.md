@@ -4,6 +4,30 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.6.0] - 2026-05-15 — "HTTP/2, PostgreSQL, TLS server"
+
+This release closes Gap C (HTTP/2 client) to complete the networking trifecta
+alongside Gap A (TLS server) and Gap B (PostgreSQL driver) from v1.5.
+
+### Added — HTTP/2 client (Gap C)
+
+- `http2_get(url: str) -> str` — GET request with ALPN-negotiated HTTP/2,
+  automatic HTTP/1.1 fallback, and shared connection pool. Returns body.
+- `http2_post(url: str, body: str) -> str` — POST with body, returns response body.
+- `http2_request(method: str, url: str, headers: str, body: str) -> str` — full
+  request with method/headers/body control. headers is `"Name1: val1\nName2: val2"`
+  newline-separated. Returns `"<status>\n<headers>\n\n<body>"` for complete
+  response inspection.
+
+All three builtins share a single `reqwest` blocking client instance (via
+`OnceLock`) so the connection pool is reused across calls. `User-Agent: kryos/1.6`
+is set by default. The h2 feature flag is enabled by default.
+
+`examples/http2_demo.kry` demonstrates all three builtins against Cloudflare
+(h2 trace) and httpbin.org (POST echo + custom headers).
+
+---
+
 ## [1.5.0] - 2026-05-15 — "close the last five gaps"
 
 This release closes every remaining gap toward true universality.

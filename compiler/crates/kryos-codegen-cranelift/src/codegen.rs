@@ -3057,6 +3057,10 @@ fn translate_rvalue<M: Module>(
                 // HTTP/HTTPS request
                 "http_request" => ("kryos_http_request_ks", 5),
                 "https_get" => ("kryos_https_get_ks", 1),
+                // HTTP/2 client (Gap C)
+                "http2_get" => ("kryos_http2_get_ks", 1),
+                "http2_post" => ("kryos_http2_post_ks", 2),
+                "http2_request" => ("kryos_http2_request_ks", 4),
                 // WASM v0.4 web builtins (native fallbacks).
                 "dom_set_text" => ("kryos_dom_set_text_ks", 2),
                 "dom_get_value" => ("kryos_dom_get_value_ks", 1),

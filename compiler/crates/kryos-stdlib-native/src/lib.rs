@@ -36,3 +36,4 @@ pub mod term;
 pub mod tls;
 #[cfg(feature = "postgres")]
 pub mod postgres;
+pub mod http2;

@@ -649,3 +649,42 @@ pub extern "C" fn kryos_byte_at_ks(input_handle: i64, idx: i64) -> i64 {
     }
     -1
 }
+
+// ---------------------------------------------------------------------------
+// HTTP/2 client — reqwest-backed, ALPN h2 with HTTP/1.1 fallback (Gap C)
+// ---------------------------------------------------------------------------
+
+/// `http2_get(url: str) -> str` — GET request, returns body. Empty string on error.
+#[no_mangle]
+pub extern "C" fn kryos_http2_get_ks(url_handle: i64) -> i64 {
+    let url = unsafe { handle_to_str(url_handle) };
+    let result = crate::http2::http2_get(url);
+    str_to_handle(&result)
+}
+
+/// `http2_post(url: str, body: str) -> str` — POST with body, returns response body.
+#[no_mangle]
+pub extern "C" fn kryos_http2_post_ks(url_handle: i64, body_handle: i64) -> i64 {
+    let url = unsafe { handle_to_str(url_handle) };
+    let body = unsafe { handle_to_str(body_handle) };
+    let result = crate::http2::http2_post(url, body);
+    str_to_handle(&result)
+}
+
+/// `http2_request(method: str, url: str, headers: str, body: str) -> str`
+/// Full request. headers is `"Name1: val1\nName2: val2"` newline-separated.
+/// Returns `"<status>\n<headers>\n\n<body>"` for full access.
+#[no_mangle]
+pub extern "C" fn kryos_http2_request_ks(
+    method_handle: i64,
+    url_handle: i64,
+    headers_handle: i64,
+    body_handle: i64,
+) -> i64 {
+    let method = unsafe { handle_to_str(method_handle) };
+    let url = unsafe { handle_to_str(url_handle) };
+    let headers = unsafe { handle_to_str(headers_handle) };
+    let body = unsafe { handle_to_str(body_handle) };
+    let result = crate::http2::http2_request(method, url, headers, body);
+    str_to_handle(&result)
+}

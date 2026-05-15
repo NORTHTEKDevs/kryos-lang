@@ -542,6 +542,10 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         // HTTP / HTTPS
         ("http_request", MirType::I64),
         ("https_get", MirType::Str),
+        // HTTP/2 client (Gap C)
+        ("http2_get", MirType::Str),
+        ("http2_post", MirType::Str),
+        ("http2_request", MirType::Str),
         // Web (WASM v0.4 browser host imports)
         ("dom_set_text", MirType::Void),
         ("dom_get_value", MirType::Str),

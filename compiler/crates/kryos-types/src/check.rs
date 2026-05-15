@@ -3487,6 +3487,36 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     });
 
     // -----------------------------------------------------------------------
+    // HTTP/2 client (Gap C) — reqwest-backed, ALPN h2 with HTTP/1.1 fallback
+    // -----------------------------------------------------------------------
+    checker.env.define_function(FunctionSig {
+        name: "http2_get".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("url".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "http2_post".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![
+            ("url".to_string(), Type::Str),
+            ("body".to_string(), Type::Str),
+        ],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "http2_request".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![
+            ("method".to_string(), Type::Str),
+            ("url".to_string(), Type::Str),
+            ("headers".to_string(), Type::Str),
+            ("body".to_string(), Type::Str),
+        ],
+        ret: Type::Str,
+    });
+
+    // -----------------------------------------------------------------------
     // WASM v0.4 web builtins (DOM / canvas / fetch / alert)
     // These compile to host imports under --backend wasm and to runtime
     // no-ops / native equivalents under cranelift/llvm (best-effort).

@@ -1,0 +1,47 @@
+// HTTP/2 Demo — exercises http2_get, http2_post, http2_request builtins.
+// Uses reqwest ALPN negotiation: h2 when server supports it, HTTP/1.1 fallback.
+
+fn main() {
+    println("=== HTTP/2 Demo ===")
+
+    // Test 1: http2_get — Cloudflare CDN trace (speaks h2)
+    let body: str = http2_get("https://www.cloudflare.com/cdn-cgi/trace")
+    let n: i64 = len(body)
+    if n == 0 {
+        println("[http2] GET failed")
+    } else {
+        println("[http2] cloudflare trace (first 200 chars):")
+        let preview: str = substr(body, 0, 200)
+        println(preview)
+    }
+
+    println("")
+
+    // Test 2: http2_post — httpbin echoes the body back in JSON "data" field
+    println("[http2] POST to httpbin.org/post")
+    let resp: str = http2_post("https://httpbin.org/post", "kryos says hi")
+    let rlen: i64 = len(resp)
+    if rlen > 0 {
+        println("[http2] response len: " + to_string(rlen))
+        println("[http2] response preview:")
+        let preview2: str = substr(resp, 0, 300)
+        println(preview2)
+    } else {
+        println("[http2] POST failed or timed out (httpbin may be rate-limited)")
+    }
+
+    println("")
+
+    // Test 3: http2_request — full request with custom headers
+    println("[http2] full request with headers")
+    let full: str = http2_request("GET", "https://httpbin.org/headers", "X-Kryos-Version: 1.6\nAccept: application/json", "")
+    let flen: i64 = len(full)
+    if flen > 0 {
+        let preview3: str = substr(full, 0, 300)
+        println(preview3)
+    } else {
+        println("[http2] full request failed or timed out")
+    }
+
+    println("=== done ===")
+}
