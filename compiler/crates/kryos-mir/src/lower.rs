@@ -495,6 +495,50 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("file_size", MirType::I64),
         ("create_dir", MirType::Void),
         ("is_null", MirType::Bool),
+        // JSON builtins
+        ("json_parse", MirType::I64),
+        ("json_stringify", MirType::Str),
+        ("json_object", MirType::I64),
+        ("json_array", MirType::I64),
+        ("json_string", MirType::I64),
+        ("json_number", MirType::I64),
+        ("json_bool", MirType::I64),
+        ("json_null", MirType::I64),
+        ("json_get", MirType::I64),
+        ("json_get_index", MirType::I64),
+        ("json_to_str", MirType::Str),
+        ("json_to_int", MirType::I64),
+        ("json_to_float", MirType::F64),
+        ("json_is_null", MirType::Bool),
+        ("json_length", MirType::I64),
+        ("json_type", MirType::Str),
+        // Crypto / hashing
+        ("sha256", MirType::Str),
+        ("sha512", MirType::Str),
+        ("random_bytes", MirType::Str),
+        // Regex
+        ("regex_new", MirType::I64),
+        ("regex_match", MirType::Bool),
+        ("regex_find", MirType::Str),
+        ("regex_replace_all", MirType::Str),
+        ("regex_drop", MirType::Void),
+        // HTTP / HTTPS
+        ("http_request", MirType::I64),
+        ("https_get", MirType::Str),
+        // Time / Mutex
+        ("time_now_secs", MirType::I64),
+        ("time_now_millis", MirType::I64),
+        ("mutex_new", MirType::I64),
+        ("mutex_lock", MirType::Void),
+        ("mutex_unlock", MirType::Void),
+        ("mutex_drop", MirType::Void),
+        // TCP
+        ("tcp_connect", MirType::I64),
+        ("tcp_listen", MirType::I64),
+        ("tcp_accept", MirType::I64),
+        ("tcp_send", MirType::I64),
+        ("tcp_recv", MirType::Str),
+        ("tcp_close", MirType::I64),
     ] {
         ctx.func_ret_types.insert(name.to_string(), ret_ty);
     }

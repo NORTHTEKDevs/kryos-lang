@@ -384,7 +384,9 @@ impl Parser {
 // JSON Serializer
 // ============================================================================
 
-fn stringify_node(node: &JsonNode, out: &mut String) {
+/// Stringify a node, looking up child handles in `table` directly to avoid
+/// re-locking the global mutex on every recursion (which would deadlock).
+fn stringify_node_with_table(node: &JsonNode, out: &mut String, table: &NodeTable) {
     match node {
         JsonNode::Null => out.push_str("null"),
         JsonNode::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -423,11 +425,9 @@ fn stringify_node(node: &JsonNode, out: &mut String) {
                 if i > 0 {
                     out.push(',');
                 }
-                with_node_table(|table| {
-                    if let Some(item) = table.get(handle) {
-                        stringify_node(item, out);
-                    }
-                });
+                if let Some(item) = table.get(handle) {
+                    stringify_node_with_table(item, out, table);
+                }
             }
             out.push(']');
         }
@@ -449,11 +449,9 @@ fn stringify_node(node: &JsonNode, out: &mut String) {
                     }
                 }
                 out.push_str("\":");
-                with_node_table(|table| {
-                    if let Some(val) = table.get(*value_handle) {
-                        stringify_node(val, out);
-                    }
-                });
+                if let Some(val) = table.get(*value_handle) {
+                    stringify_node_with_table(val, out, table);
+                }
             }
             out.push('}');
         }
@@ -482,7 +480,7 @@ pub extern "C" fn kryos_json_stringify(node_handle: i64) -> i64 {
     let mut result = String::new();
     with_node_table(|table| {
         if let Some(node) = table.get(node_handle) {
-            stringify_node(node, &mut result);
+            stringify_node_with_table(node, &mut result, table);
         }
     });
     string_to_ks(&result)
@@ -624,15 +622,24 @@ pub extern "C" fn kryos_json_get_index(arr_handle: i64, index: i64) -> i64 {
 /// Convert a JsonNode to a Kryos string handle (for strings, stringify for others).
 #[no_mangle]
 pub extern "C" fn kryos_json_to_str(node_handle: i64) -> i64 {
-    with_node(node_handle, |node| match node {
-        JsonNode::Str(s) => string_to_ks(s),
-        _ => {
-            let mut result = String::new();
-            stringify_node(node, &mut result);
-            string_to_ks(&result)
+    let mut handle_out: Option<i64> = None;
+    let mut bare_string: Option<String> = None;
+    with_node_table(|table| {
+        if let Some(node) = table.get(node_handle) {
+            match node {
+                JsonNode::Str(s) => bare_string = Some(s.clone()),
+                _ => {
+                    let mut result = String::new();
+                    stringify_node_with_table(node, &mut result, table);
+                    bare_string = Some(result);
+                }
+            }
         }
-    })
-    .unwrap_or(0)
+    });
+    match bare_string {
+        Some(s) => string_to_ks(&s),
+        None => handle_out.unwrap_or(0),
+    }
 }
 
 /// Convert a JsonNode number to i64 (truncates).

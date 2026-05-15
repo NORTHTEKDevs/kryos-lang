@@ -653,6 +653,114 @@ impl JitCompiler {
             kryos_stdlib_native::net::kryos_socket_close_ks as *const u8,
         );
 
+        // Stdlib-native: JSON (all handles are i64)
+        jit_builder.symbol(
+            "kryos_json_parse",
+            kryos_stdlib_native::json::kryos_json_parse as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_json_stringify",
+            kryos_stdlib_native::json::kryos_json_stringify as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_json_object",
+            kryos_stdlib_native::json::kryos_json_object as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_json_array",
+            kryos_stdlib_native::json::kryos_json_array as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_json_string",
+            kryos_stdlib_native::json::kryos_json_string as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_json_number",
+            kryos_stdlib_native::json::kryos_json_number as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_json_bool",
+            kryos_stdlib_native::json::kryos_json_bool as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_json_null",
+            kryos_stdlib_native::json::kryos_json_null as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_json_get",
+            kryos_stdlib_native::json::kryos_json_get as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_json_get_index",
+            kryos_stdlib_native::json::kryos_json_get_index as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_json_to_str",
+            kryos_stdlib_native::json::kryos_json_to_str as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_json_to_int",
+            kryos_stdlib_native::json::kryos_json_to_int as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_json_to_float",
+            kryos_stdlib_native::json::kryos_json_to_float as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_json_is_null",
+            kryos_stdlib_native::json::kryos_json_is_null as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_json_length",
+            kryos_stdlib_native::json::kryos_json_length as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_json_type",
+            kryos_stdlib_native::json::kryos_json_type as *const u8,
+        );
+
+        // Stdlib-native: bindings (Kryos-handle wrappers)
+        jit_builder.symbol(
+            "kryos_sha256_ks",
+            kryos_stdlib_native::bindings::kryos_sha256_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_sha512_ks",
+            kryos_stdlib_native::bindings::kryos_sha512_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_random_bytes_ks",
+            kryos_stdlib_native::bindings::kryos_random_bytes_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_regex_new_ks",
+            kryos_stdlib_native::bindings::kryos_regex_new_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_regex_is_match_ks",
+            kryos_stdlib_native::bindings::kryos_regex_is_match_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_regex_find_ks",
+            kryos_stdlib_native::bindings::kryos_regex_find_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_regex_replace_all_ks",
+            kryos_stdlib_native::bindings::kryos_regex_replace_all_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_regex_drop_ks",
+            kryos_stdlib_native::bindings::kryos_regex_drop_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_http_request_ks",
+            kryos_stdlib_native::bindings::kryos_http_request_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_https_get_ks",
+            kryos_stdlib_native::bindings::kryos_https_get_ks as *const u8,
+        );
+
         // Stdlib-native: datetime
         jit_builder.symbol(
             "kryos_time_now_secs",
@@ -1054,6 +1162,20 @@ fn declare_runtime_builtins<M: Module>(
         s.returns.push(AbiParam::new(types::I64));
         s
     };
+    // f64 → i64 (e.g. kryos_json_number).
+    let sig_f64_i64 = {
+        let mut s = Signature::new(call_conv);
+        s.params.push(AbiParam::new(types::F64));
+        s.returns.push(AbiParam::new(types::I64));
+        s
+    };
+    // i64 → f64 (e.g. kryos_json_to_float).
+    let sig_i64_f64 = {
+        let mut s = Signature::new(call_conv);
+        s.params.push(AbiParam::new(types::I64));
+        s.returns.push(AbiParam::new(types::F64));
+        s
+    };
 
     // Declare a function and insert name mapping(s). The codegen_name is
     // what translate_function looks up in func_ids; the symbol_name is the
@@ -1173,6 +1295,44 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_tcp_send_ks", "kryos_tcp_send_ks", sig(2));
     decl!("kryos_tcp_recv_ks", "kryos_tcp_recv_ks", sig(2));
     decl!("kryos_socket_close_ks", "kryos_socket_close_ks", sig(1));
+
+    // --- JSON ---
+    decl!("kryos_json_parse", "kryos_json_parse", sig(1));
+    decl!("kryos_json_stringify", "kryos_json_stringify", sig(1));
+    decl!("kryos_json_object", "kryos_json_object", sig(2));
+    decl!("kryos_json_array", "kryos_json_array", sig(1));
+    decl!("kryos_json_string", "kryos_json_string", sig(1));
+    decl!("kryos_json_number", "kryos_json_number", sig_f64_i64);
+    decl!("kryos_json_bool", "kryos_json_bool", sig(1));
+    decl!("kryos_json_null", "kryos_json_null", sig(0));
+    decl!("kryos_json_get", "kryos_json_get", sig(2));
+    decl!("kryos_json_get_index", "kryos_json_get_index", sig(2));
+    decl!("kryos_json_to_str", "kryos_json_to_str", sig(1));
+    decl!("kryos_json_to_int", "kryos_json_to_int", sig(1));
+    decl!("kryos_json_to_float", "kryos_json_to_float", sig_i64_f64);
+    decl!("kryos_json_is_null", "kryos_json_is_null", sig(1));
+    decl!("kryos_json_length", "kryos_json_length", sig(1));
+    decl!("kryos_json_type", "kryos_json_type", sig(1));
+
+    // --- Crypto / Regex / HTTP (handle-based wrappers in `bindings`) ---
+    decl!("kryos_sha256_ks", "kryos_sha256_ks", sig(1));
+    decl!("kryos_sha512_ks", "kryos_sha512_ks", sig(1));
+    decl!("kryos_random_bytes_ks", "kryos_random_bytes_ks", sig(1));
+    decl!("kryos_regex_new_ks", "kryos_regex_new_ks", sig(1));
+    decl!("kryos_regex_is_match_ks", "kryos_regex_is_match_ks", sig(2));
+    decl!("kryos_regex_find_ks", "kryos_regex_find_ks", sig(2));
+    decl!("kryos_regex_replace_all_ks", "kryos_regex_replace_all_ks", sig(3));
+    decl!("kryos_regex_drop_ks", "kryos_regex_drop_ks", sig(1));
+    decl!("kryos_http_request_ks", "kryos_http_request_ks", sig(5));
+    decl!("kryos_https_get_ks", "kryos_https_get_ks", sig(1));
+
+    // --- Time / Mutex (no string args) ---
+    decl!("kryos_time_now_secs", "kryos_time_now_secs", sig(0));
+    decl!("kryos_time_now_millis", "kryos_time_now_millis", sig(0));
+    decl!("kryos_mutex_new", "kryos_mutex_new", sig(0));
+    decl!("kryos_mutex_lock", "kryos_mutex_lock", sig(1));
+    decl!("kryos_mutex_unlock", "kryos_mutex_unlock", sig(1));
+    decl!("kryos_mutex_drop", "kryos_mutex_drop", sig(1));
 
     Ok(())
 }

@@ -3124,6 +3124,231 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         ret: Type::Void,
     });
 
+    // -----------------------------------------------------------------------
+    // JSON builtins
+    // -----------------------------------------------------------------------
+    checker.env.define_function(FunctionSig {
+        name: "json_parse".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("s".to_string(), Type::Str)],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "json_stringify".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("node".to_string(), Type::I64)],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "json_object".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![
+            ("keys".to_string(), Type::Array { element: Box::new(Type::Str), size: None }),
+            ("vals".to_string(), Type::Array { element: Box::new(Type::I64), size: None }),
+        ],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "json_array".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("items".to_string(), Type::Array { element: Box::new(Type::I64), size: None })],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "json_string".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("s".to_string(), Type::Str)],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "json_number".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("v".to_string(), Type::F64)],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "json_bool".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("v".to_string(), Type::Bool)],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "json_null".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "json_get".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("obj".to_string(), Type::I64), ("key".to_string(), Type::Str)],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "json_get_index".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("arr".to_string(), Type::I64), ("idx".to_string(), Type::I64)],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "json_to_str".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("node".to_string(), Type::I64)],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "json_to_int".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("node".to_string(), Type::I64)],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "json_to_float".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("node".to_string(), Type::I64)],
+        ret: Type::F64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "json_is_null".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("node".to_string(), Type::I64)],
+        ret: Type::Bool,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "json_length".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("node".to_string(), Type::I64)],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "json_type".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("node".to_string(), Type::I64)],
+        ret: Type::Str,
+    });
+
+    // -----------------------------------------------------------------------
+    // Crypto / hashing
+    // -----------------------------------------------------------------------
+    checker.env.define_function(FunctionSig {
+        name: "sha256".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("s".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "sha512".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("s".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "random_bytes".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("n".to_string(), Type::I64)],
+        ret: Type::Str,
+    });
+
+    // -----------------------------------------------------------------------
+    // Regex
+    // -----------------------------------------------------------------------
+    checker.env.define_function(FunctionSig {
+        name: "regex_new".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("pattern".to_string(), Type::Str)],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "regex_match".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("re".to_string(), Type::I64), ("text".to_string(), Type::Str)],
+        ret: Type::Bool,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "regex_find".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("re".to_string(), Type::I64), ("text".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "regex_replace_all".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![
+            ("re".to_string(), Type::I64),
+            ("text".to_string(), Type::Str),
+            ("replacement".to_string(), Type::Str),
+        ],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "regex_drop".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("re".to_string(), Type::I64)],
+        ret: Type::Void,
+    });
+
+    // -----------------------------------------------------------------------
+    // HTTP / HTTPS
+    // -----------------------------------------------------------------------
+    checker.env.define_function(FunctionSig {
+        name: "http_request".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![
+            ("method".to_string(), Type::Str),
+            ("url".to_string(), Type::Str),
+            ("headers".to_string(), Type::Str),
+            ("body".to_string(), Type::Str),
+            ("timeout_ms".to_string(), Type::I64),
+        ],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "https_get".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("url".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+
+    // -----------------------------------------------------------------------
+    // Time / Mutex
+    // -----------------------------------------------------------------------
+    checker.env.define_function(FunctionSig {
+        name: "time_now_secs".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "time_now_millis".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "mutex_new".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "mutex_lock".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("m".to_string(), Type::I64)],
+        ret: Type::Void,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "mutex_unlock".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("m".to_string(), Type::I64)],
+        ret: Type::Void,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "mutex_drop".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("m".to_string(), Type::I64)],
+        ret: Type::Void,
+    });
+
     checker.check_module(module);
     checker.diagnostics
 }

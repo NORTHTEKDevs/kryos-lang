@@ -328,6 +328,12 @@ impl<'src> Lexer<'src> {
                         b'\\' => text.push('\\'),
                         b'"' => text.push('"'),
                         b'0' => text.push('\0'),
+                        // \{ and \} escape the interpolation braces so that
+                        // string literals can contain literal `{` and `}`
+                        // characters (useful for embedded JSON, format
+                        // templates, etc.).
+                        b'{' => text.push('{'),
+                        b'}' => text.push('}'),
                         _ => {
                             text.push('\\');
                             text.push(esc as char);

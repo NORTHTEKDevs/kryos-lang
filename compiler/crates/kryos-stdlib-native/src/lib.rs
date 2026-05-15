@@ -14,6 +14,7 @@
 
 #[cfg(feature = "crypto")]
 pub mod crypto;
+pub mod bindings;
 pub mod datetime;
 pub mod env;
 pub mod fs;
