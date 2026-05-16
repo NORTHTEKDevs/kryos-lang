@@ -1,10 +1,12 @@
 pub mod decl;
+pub mod derive_expand;
 pub mod expr;
 pub mod stmt;
 pub mod types;
 pub mod visitor;
 
 pub use decl::*;
+pub use derive_expand::expand_derives;
 pub use expr::*;
 pub use kryos_errors::Span;
 pub use stmt::*;

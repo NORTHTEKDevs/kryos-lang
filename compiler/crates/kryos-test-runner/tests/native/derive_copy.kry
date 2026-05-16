@@ -1,0 +1,20 @@
+// expect-stdout: 30
+// Tests that @derive(Copy) gives the struct copy semantics, so the same
+// value can be passed to a function more than once without being moved.
+
+@derive(Copy)
+struct Pair {
+    a: i64,
+    b: i64
+}
+
+fn first(p: Pair) -> i64 {
+    return p.a
+}
+
+fn main() {
+    let p: Pair = Pair { a: 10, b: 99 }
+    let x: i64 = first(p)
+    let y: i64 = first(p)
+    println(to_string(x + y + 10))
+}

@@ -299,6 +299,13 @@ fn compile_module_impl(
     config: &BuildConfig,
     backend: Option<&dyn Backend>,
 ) -> CompileResult {
+    // 4b. Expand @derive(...) annotations into concrete decls (e.g. add @copy
+    //     for derive(Copy), synthesise inherent Debug methods, etc.) before
+    //     type-checking so the rest of the pipeline sees a fully-elaborated
+    //     module.
+    let mut module = module;
+    kryos_ast::expand_derives(&mut module);
+
     // 5. Type check
     let type_diags = type_check(&module);
     let has_type_errors = type_diags.iter().any(|d| d.is_error());
@@ -931,6 +938,9 @@ pub fn check_file(path: &Path) -> (Vec<Diagnostic>, SourceMap) {
     merged_decls.append(&mut module.declarations);
     module.declarations = merged_decls;
 
+    // Expand @derive(...) annotations.
+    kryos_ast::expand_derives(&mut module);
+
     // Type check
     diagnostics.extend(type_check(&module));
 
@@ -994,6 +1004,9 @@ pub fn check_file_with_options(path: &Path, skip_ownership: bool) -> (Vec<Diagno
     merged_decls.append(&mut module.declarations);
     module.declarations = merged_decls;
 
+    // Expand @derive(...) annotations.
+    kryos_ast::expand_derives(&mut module);
+
     // Type check
     diagnostics.extend(type_check(&module));
 
@@ -1023,10 +1036,13 @@ pub fn check_source(source: &str, file_name: &str) -> (Vec<Diagnostic>, SourceMa
     let tokens = Lexer::new(source, file_id).tokenize();
 
     // Parse
-    let module = match parse(tokens) {
+    let mut module = match parse(tokens) {
         Ok(module) => module,
         Err(parse_errors) => return (parse_errors, source_map),
     };
+
+    // Expand @derive(...) annotations.
+    kryos_ast::expand_derives(&mut module);
 
     // Type check
     diagnostics.extend(type_check(&module));

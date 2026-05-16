@@ -1,0 +1,14 @@
+// expect-stdout: Point(x=3, y=7)
+// Tests that @derive(Debug) synthesizes an inherent `fmt_debug(self) -> str`
+// method that formats the struct as `Name(field=value, ...)`.
+
+@derive(Debug)
+struct Point {
+    x: i64,
+    y: i64
+}
+
+fn main() {
+    let p: Point = Point { x: 3, y: 7 }
+    println(p.fmt_debug())
+}
