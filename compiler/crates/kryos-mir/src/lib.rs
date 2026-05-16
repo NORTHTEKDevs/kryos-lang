@@ -15,6 +15,7 @@
 //! **Passes:**
 //! - [`lower::lower_module`] — AST -> MIR lowering
 
+pub mod async_lower;
 pub mod consteval;
 pub mod display;
 pub mod ir;

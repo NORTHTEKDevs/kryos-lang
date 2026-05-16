@@ -942,6 +942,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                 ret_ty,
                 body: Some(body),
                 annotations,
+                is_async,
                 ..
             } => {
                 // Skip generic functions — they are lowered on demand via monomorphization.
@@ -950,6 +951,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                 }
                 let mut func = lower_function(&mut ctx, name, params, ret_ty, body);
                 func.attributes = annotations_to_mir_attributes(annotations);
+                func.attributes.is_async = *is_async;
                 functions.push(func);
             }
             ast::Decl::Impl {
@@ -970,9 +972,11 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                         ret_ty,
                         body: Some(body),
                         annotations,
+                        is_async,
                         ..
                     } = method
                     {
+                        let m_is_async = *is_async;
                         let mangled = format!("{target}__{name}");
                         impl_method_names.push(mangled.clone());
                         let mut all_params = Vec::new();
@@ -1002,6 +1006,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                         let mut func =
                             lower_function(&mut ctx, &mangled, &all_params, ret_ty, body);
                         func.attributes = annotations_to_mir_attributes(annotations);
+                        func.attributes.is_async = m_is_async;
                         functions.push(func);
                     }
                 }
@@ -1026,6 +1031,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                                 ret_ty,
                                 body: Some(body),
                                 annotations,
+                                is_async,
                                 ..
                             } = default_method
                             {
@@ -1071,6 +1077,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
                                         body,
                                     );
                                     func.attributes = annotations_to_mir_attributes(annotations);
+                                    func.attributes.is_async = *is_async;
                                     functions.push(func);
                                 }
                             }

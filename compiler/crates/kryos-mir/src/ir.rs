@@ -216,6 +216,9 @@ pub struct MirAttributes {
     pub test: bool,
     /// Function is marked `@deprecated`.
     pub deprecated: bool,
+    /// Function is declared `async fn` — eligible for state-machine
+    /// lowering by `kryos_mir::async_lower`.
+    pub is_async: bool,
 }
 
 /// A single MIR function.
