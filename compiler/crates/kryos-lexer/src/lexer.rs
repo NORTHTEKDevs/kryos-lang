@@ -234,7 +234,7 @@ impl<'src> Lexer<'src> {
                 if self.match_char(b'=') {
                     self.emit(TokenKind::BangEq, start, self.pos, "!=".into());
                 } else {
-                    self.emit(TokenKind::Error, start, self.pos, "!".into());
+                    self.emit(TokenKind::Bang, start, self.pos, "!".into());
                 }
             }
             b'<' => {

@@ -54,7 +54,7 @@ fn infix_binding_power(kind: TokenKind, next: Option<TokenKind>) -> Option<(u8, 
 fn prefix_binding_power(kind: TokenKind) -> Option<u8> {
     match kind {
         // 12. unary - not ~ *
-        TokenKind::Minus | TokenKind::Not | TokenKind::Tilde | TokenKind::Star => Some(24),
+        TokenKind::Minus | TokenKind::Not | TokenKind::Bang | TokenKind::Tilde | TokenKind::Star => Some(24),
         // & (borrow / address-of) — same precedence as other unary prefix ops
         TokenKind::Amp => Some(24),
         // shared / move / weak / await — prefix keyword operators (very low, just above range)
@@ -1457,7 +1457,7 @@ impl Parser {
                         span: start.merge(end),
                     }
                 }
-                TokenKind::Not => {
+                TokenKind::Not | TokenKind::Bang => {
                     let operand = self.parse_expr_bp(bp);
                     let end = operand.span();
                     Expr::UnaryOp {
