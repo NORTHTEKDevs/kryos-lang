@@ -2,8 +2,14 @@
   "name": "kryos",
   "displayName": "Kryos",
   "description": "Kryos language support — syntax highlighting, snippets, and LSP integration",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "northtekdevs",
+  "license": "Apache-2.0",
+  "icon": "icon.png",
+  "homepage": "https://github.com/NORTHTEKDevs/kryos-lang",
+  "bugs": {
+    "url": "https://github.com/NORTHTEKDevs/kryos-lang/issues"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/NORTHTEKDevs/kryos-lang"
@@ -12,8 +18,22 @@
     "vscode": "^1.75.0"
   },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Snippets",
+    "Linters"
   ],
+  "keywords": [
+    "kryos",
+    "kryos-lang",
+    "systems",
+    "compiled",
+    "language-server",
+    "lsp"
+  ],
+  "galleryBanner": {
+    "color": "#0b1e3a",
+    "theme": "dark"
+  },
   "main": "./out/extension.js",
   "activationEvents": [
     "onLanguage:kryos"
@@ -72,7 +92,9 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p .",
-    "watch": "tsc -w -p ."
+    "watch": "tsc -w -p .",
+    "package": "vsce package",
+    "publish": "vsce publish"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"
@@ -80,6 +102,7 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.75.0",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "@vscode/vsce": "^3.0.0"
   }
 }

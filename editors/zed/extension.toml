@@ -1,0 +1,22 @@
+id = "kryos"
+name = "Kryos"
+description = "Syntax highlighting and LSP integration for the Kryos programming language"
+version = "0.1.0"
+schema_version = 1
+authors = ["NORTHTEKDevs <info@frostbytedigitalak.com>"]
+repository = "https://github.com/NORTHTEKDevs/kryos-lang"
+
+[languages.kryos]
+name = "Kryos"
+grammar = "kryos"
+path_suffixes = ["kry"]
+line_comments = ["// "]
+
+[language_servers.kryos]
+name = "Kryos LSP"
+languages = ["Kryos"]
+
+[grammars.kryos]
+repository = "https://github.com/NORTHTEKDevs/kryos-lang"
+commit = "master"
+path = "editors/tree-sitter-kryos"

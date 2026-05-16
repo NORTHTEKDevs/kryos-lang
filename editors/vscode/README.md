@@ -29,6 +29,27 @@ npm run compile          # produces out/extension.js
 # Press F5 in VS Code with this folder open to launch an Extension Development Host.
 ```
 
+## Packaging for the Marketplace
+
+```bash
+cd editors/vscode
+npm install
+npm run compile
+npm run package            # produces kryos-<version>.vsix
+# or, with @vscode/vsce installed globally:
+#   vsce package
+```
+
+The resulting `.vsix` can be installed in VS Code via:
+Command Palette → "Extensions: Install from VSIX..."
+
+Publishing requires a `vsce` publisher token for the `northtekdevs` publisher:
+
+```bash
+vsce login northtekdevs
+npm run publish
+```
+
 ## Configuration
 
 | Setting             | Default   | Description                                                 |
