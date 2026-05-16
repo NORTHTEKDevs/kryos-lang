@@ -57,6 +57,10 @@ pub struct LlvmCodegen {
     /// Closure call signatures: func_name -> (user_param_count, ret_ty_llvm).
     /// Used to emit `{name}_env` thunks and to dispatch CallIndirect via env.
     closure_user_sig: HashMap<String, (usize, String)>,
+    /// Trait vtable map from MIR: (concrete_type, trait_name) -> ordered list
+    /// of mangled method names. Used to materialize trait objects and
+    /// dispatch VtableCall.
+    trait_vtables: HashMap<(String, String), Vec<String>>,
     /// Names of functions that have been emitted, in order — used when
     /// emitting DWARF debug metadata at module footer.
     emitted_function_names: Vec<String>,
@@ -82,6 +86,7 @@ impl LlvmCodegen {
             copy_structs: HashSet::new(),
             closure_cap_types: HashMap::new(),
             closure_user_sig: HashMap::new(),
+            trait_vtables: HashMap::new(),
             func_sig_aggs: HashMap::new(),
             emitted_function_names: Vec::new(),
         }
@@ -119,6 +124,7 @@ impl LlvmCodegen {
         self.struct_defs = module.struct_defs.clone();
         self.enum_defs = module.enum_defs.clone();
         self.copy_structs = module.copy_structs.clone();
+        self.trait_vtables = module.trait_vtables.clone();
 
         // Pre-scan: collect string constants, detect ARC usage, record
         // function signatures, and collect closure capture types.
@@ -226,6 +232,11 @@ impl LlvmCodegen {
         // uniform `(env, user_args...)` calling convention via CallIndirect.
         self.emit_closure_thunks();
 
+        // Emit dyn-thunks for trait methods so VtableCall can dispatch via
+        // an all-i64 indirect-call ABI regardless of whether the underlying
+        // method uses byval/sret aggregate ABI.
+        self.emit_vtable_thunks();
+
         // Emit type drop helpers for struct/enum types with heap-owning fields.
         // These enable array element drop to recursively clean up nested fields.
         self.emit_type_drop_helpers();
@@ -261,6 +272,7 @@ impl LlvmCodegen {
         self.struct_defs = header.struct_defs.clone();
         self.enum_defs = header.enum_defs.clone();
         self.copy_structs = header.copy_structs.clone();
+        self.trait_vtables = header.trait_vtables.clone();
         self.closure_cap_types.clear();
         self.closure_user_sig.clear();
 
@@ -361,6 +373,7 @@ impl LlvmCodegen {
     pub fn emit_footer_section(&mut self, has_void_main: bool) {
         self.emit_closure_droppers();
         self.emit_closure_thunks();
+        self.emit_vtable_thunks();
         self.emit_type_drop_helpers();
         if has_void_main {
             self.emit_main_wrapper();
@@ -1018,6 +1031,126 @@ impl LlvmCodegen {
                     let coerced = self.coerce_value(&r, &underlying_ret, "i64");
                     self.emit_line(&format!("  ret i64 {coerced}"));
                 }
+            }
+            self.emit_line("}");
+            self.emit_blank();
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Vtable dyn-thunks
+    // -----------------------------------------------------------------------
+
+    /// Emit `{method_name}_dyn(i64 self, i64 args...) -> i64` thunks for every
+    /// trait method referenced from a vtable.  Each thunk:
+    ///   1. inttoptr-converts the i64 self to a pointer to the concrete struct,
+    ///   2. coerces each i64 user-arg to the underlying parameter's LLVM type,
+    ///   3. calls the real method (forwarding aggregate self by `byval`),
+    ///   4. widens the return value back to i64.
+    /// This gives every method a uniform i64-only ABI suitable for indirect
+    /// dispatch via the fat pointer, regardless of byval/sret usage.
+    fn emit_vtable_thunks(&mut self) {
+        // Collect unique method names across all vtables.
+        let mut method_set: Vec<String> = Vec::new();
+        for methods in self.trait_vtables.values() {
+            for m in methods {
+                if !method_set.iter().any(|x| x == m) {
+                    method_set.push(m.clone());
+                }
+            }
+        }
+
+        for method_name in method_set {
+            let param_types = match self.func_param_types.get(&method_name).cloned() {
+                Some(v) => v,
+                None => continue, // unknown method — skip
+            };
+            let ret_ty_llvm = self
+                .func_ret_types
+                .get(&method_name)
+                .cloned()
+                .unwrap_or_else(|| "void".to_string());
+            let (ret_agg, param_aggs) = self
+                .func_sig_aggs
+                .get(&method_name)
+                .cloned()
+                .unwrap_or_else(|| (None, vec![None; param_types.len()]));
+
+            let thunk_name = format!("{method_name}_dyn");
+            self.emit_line(&format!("; Vtable dyn-thunk for {method_name}"));
+
+            // Build parameter list: i64 self, i64 u1, i64 u2, ...
+            let mut sig = String::new();
+            for i in 0..param_types.len() {
+                if !sig.is_empty() {
+                    sig.push_str(", ");
+                }
+                sig.push_str(&format!("i64 %u{i}"));
+            }
+            self.emit_line(&format!(
+                "define internal i64 @{thunk_name}({sig}) {{"
+            ));
+            self.emit_line("entry:");
+
+            // Build the inner call's argument list, handling sret/byval ABI.
+            let mut call_parts: Vec<String> = Vec::new();
+
+            // If the underlying method returns an aggregate via sret, allocate
+            // a slot and prepend a `ptr sret(%T) <slot>` arg.
+            let sret_slot = if let Some(agg) = &ret_agg {
+                let s = self.next_temp();
+                self.emit_line(&format!("  {s} = alloca {agg}"));
+                call_parts.push(format!("ptr sret({agg}) {s}"));
+                Some((s, agg.clone()))
+            } else {
+                None
+            };
+
+            // Coerce each user-arg from i64 to its expected param ABI.
+            for (i, p_ty) in param_types.iter().enumerate() {
+                let u = format!("%u{i}");
+                if let Some(agg) = param_aggs.get(i).and_then(|x| x.as_ref()) {
+                    // Aggregate param: the i64 is a pointer to the aggregate.
+                    let p = self.next_temp();
+                    self.emit_line(&format!("  {p} = inttoptr i64 {u} to ptr"));
+                    call_parts.push(format!("ptr byval({agg}) {p}"));
+                } else {
+                    // Scalar param: coerce i64 → p_ty.
+                    let coerced = self.coerce_value(&u, "i64", p_ty);
+                    call_parts.push(format!("{p_ty} {coerced}"));
+                }
+            }
+            let arg_list = call_parts.join(", ");
+
+            // Emit the call.  If the method uses sret, it returns void at the
+            // ABI level — we load the aggregate, then widen its first slot to
+            // i64 for the uniform dyn return.
+            if let Some((slot, agg)) = sret_slot {
+                self.emit_line(&format!(
+                    "  call void @{method_name}({arg_list})"
+                ));
+                // Load the first i64 of the aggregate as a best-effort return.
+                let loaded = self.next_temp();
+                self.emit_line(&format!(
+                    "  {loaded} = load {agg}, ptr {slot}"
+                ));
+                let first = self.next_temp();
+                self.emit_line(&format!(
+                    "  {first} = extractvalue {agg} {loaded}, 0"
+                ));
+                self.emit_line(&format!("  ret i64 {first}"));
+            } else if ret_ty_llvm == "void" {
+                self.emit_line(&format!(
+                    "  call void @{method_name}({arg_list})"
+                ));
+                self.emit_line("  ret i64 0");
+            } else {
+                let r = self.next_temp();
+                self.emit_line(&format!(
+                    "  {r} = call {ret_ty_llvm} @{method_name}({arg_list})"
+                ));
+                let widened = self.coerce_value(&r, &ret_ty_llvm, "i64");
+                self.emit_line(&format!("  ret i64 {widened}"));
             }
             self.emit_line("}");
             self.emit_blank();
@@ -3758,12 +3891,84 @@ impl LlvmCodegen {
                 self.emit_assign(dest, inner, func)?;
             }
 
-            RValue::MakeTraitObject { value, .. } => {
-                // LLVM release mode: create fat pointer. For now, pass data through directly.
-                // Full vtable codegen for LLVM deferred to Ring 3.
+            RValue::MakeTraitObject {
+                value,
+                concrete_type,
+                trait_name,
+            } => {
+                // Materialize a fat pointer: [data: i64, fn_ptr_0: i64, fn_ptr_1: i64, ...]
+                // Allocated via the ARC runtime so the trait object survives
+                // the current scope and is freed when its refcount drops.
                 let data_val = self.operand_to_llvm(value, func);
                 let val_ty = self.operand_type(value, func);
-                let coerced = self.coerce_value(&data_val, &val_ty, &dest_ty);
+
+                // For aggregate (struct/tuple) self values, spill to a heap
+                // slot and store the pointer's integer representation.  The
+                // matching `{method}_dyn` thunk loads via inttoptr and forwards
+                // by `byval` to the underlying method.
+                let is_aggregate =
+                    val_ty.starts_with('%') || val_ty.starts_with('{');
+                let data_i64 = if is_aggregate {
+                    // Compute size: use sizeof via a GEP trick.
+                    let size_tmp = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {size_tmp} = getelementptr {val_ty}, ptr null, i64 1"
+                    ));
+                    let size_int = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {size_int} = ptrtoint ptr {size_tmp} to i64"
+                    ));
+                    let slot_i64 = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {slot_i64} = call i64 @kryos_arc_alloc_i64(i64 {size_int})"
+                    ));
+                    let slot_ptr = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {slot_ptr} = inttoptr i64 {slot_i64} to ptr"
+                    ));
+                    self.emit_line(&format!(
+                        "  store {val_ty} {data_val}, ptr {slot_ptr}"
+                    ));
+                    slot_i64
+                } else {
+                    self.coerce_value(&data_val, &val_ty, "i64")
+                };
+
+                let vtable_key = (concrete_type.clone(), trait_name.clone());
+                let method_names = self
+                    .trait_vtables
+                    .get(&vtable_key)
+                    .cloned()
+                    .unwrap_or_default();
+                let num_methods = method_names.len().max(1);
+                let alloc_size = 8 + 8 * num_methods;
+
+                let fat_i64 = self.next_temp();
+                self.emit_line(&format!(
+                    "  {fat_i64} = call i64 @kryos_arc_alloc_i64(i64 {alloc_size})"
+                ));
+                let fat_ptr = self.next_temp();
+                self.emit_line(&format!("  {fat_ptr} = inttoptr i64 {fat_i64} to ptr"));
+                // Store data at offset 0.
+                self.emit_line(&format!("  store i64 {data_i64}, ptr {fat_ptr}"));
+                // Store each method dyn-thunk pointer at offset (i+1)*8.
+                // The dyn-thunk accepts uniform `(i64 self, i64 args...) -> i64`
+                // and forwards to the real method (handling byval/sret).
+                for (i, method_name) in method_names.iter().enumerate() {
+                    let slot = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {slot} = getelementptr i64, ptr {fat_ptr}, i64 {}",
+                        i + 1
+                    ));
+                    let fn_int = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {fn_int} = ptrtoint ptr @{method_name}_dyn to i64"
+                    ));
+                    self.emit_line(&format!("  store i64 {fn_int}, ptr {slot}"));
+                }
+
+                // Coerce fat_ptr to dest_ty (typically ptr).
+                let coerced = self.coerce_value(&fat_ptr, "ptr", &dest_ty);
                 if is_mutable {
                     self.emit_line(&format!(
                         "  store {dest_ty} {coerced}, ptr %_{}.addr",
@@ -3777,23 +3982,84 @@ impl LlvmCodegen {
 
             RValue::VtableCall {
                 object,
-                method_index: _,
+                method_index,
                 args,
-                ..
+                return_ty,
             } => {
-                // LLVM release mode: for now, emit a placeholder.
-                // Full vtable dispatch for LLVM deferred to Ring 3.
-                let obj_val = self.operand_to_llvm(object, func);
-                let _ = obj_val;
-                for arg in args {
-                    let _ = self.operand_to_llvm(arg, func);
-                }
-                let zero = default_value_for_type(&dest_ty);
-                if is_mutable {
-                    self.emit_line(&format!("  store {dest_ty} {zero}, ptr %_{}.addr", dest.0));
+                // Dynamic dispatch: load self/data from fat[0], fn_ptr from
+                // fat[1+method_index], then call fn_ptr(self, args...).
+                let obj_raw = self.operand_to_llvm(object, func);
+                let obj_ty = self.operand_type(object, func);
+                // Treat the trait object as a pointer to the fat pointer.
+                let fat_ptr = if obj_ty == "ptr" {
+                    obj_raw
                 } else {
-                    let name = format!("%_{}", dest.0);
-                    self.emit_identity_copy(&name, &dest_ty, zero);
+                    self.coerce_value(&obj_raw, &obj_ty, "ptr")
+                };
+
+                // Load data (self) at offset 0.
+                let data_val = self.next_temp();
+                self.emit_line(&format!("  {data_val} = load i64, ptr {fat_ptr}"));
+
+                // Load fn_ptr at offset (1 + method_index)*8.
+                let fn_slot = self.next_temp();
+                self.emit_line(&format!(
+                    "  {fn_slot} = getelementptr i64, ptr {fat_ptr}, i64 {}",
+                    method_index + 1
+                ));
+                let fn_i64 = self.next_temp();
+                self.emit_line(&format!("  {fn_i64} = load i64, ptr {fn_slot}"));
+                let fn_ptr = self.next_temp();
+                self.emit_line(&format!("  {fn_ptr} = inttoptr i64 {fn_i64} to ptr"));
+
+                // Build argument list: [self (i64), args (i64)...].
+                let mut arg_vals: Vec<String> = Vec::with_capacity(1 + args.len());
+                arg_vals.push(data_val.clone());
+                for a in args {
+                    let av = self.operand_to_llvm(a, func);
+                    let aty = self.operand_type(a, func);
+                    let coerced = self.coerce_value(&av, &aty, "i64");
+                    arg_vals.push(coerced);
+                }
+                let arg_list = arg_vals
+                    .iter()
+                    .map(|v| format!("i64 {v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                let is_void = matches!(return_ty, MirType::Void);
+                if is_void {
+                    self.emit_line(&format!("  call void {fn_ptr}({arg_list})"));
+                    // No value to bind; if dest is mutable, leave as-is.
+                } else {
+                    let raw = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {raw} = call i64 {fn_ptr}({arg_list})"
+                    ));
+                    let coerced = self.coerce_value(&raw, "i64", &dest_ty);
+                    if is_mutable {
+                        self.emit_line(&format!(
+                            "  store {dest_ty} {coerced}, ptr %_{}.addr",
+                            dest.0
+                        ));
+                    } else if dest_ty == "ptr" {
+                        self.emit_line(&format!(
+                            "  %_{} = getelementptr i8, ptr {coerced}, i64 0",
+                            dest.0
+                        ));
+                    } else if dest_ty == "double" || dest_ty == "float" {
+                        self.emit_line(&format!(
+                            "  %_{} = fadd {dest_ty} {coerced}, 0.0",
+                            dest.0
+                        ));
+                    } else if dest_ty == "void" {
+                        // dest already void — nothing to bind.
+                    } else {
+                        self.emit_line(&format!(
+                            "  %_{} = add {dest_ty} {coerced}, 0",
+                            dest.0
+                        ));
+                    }
                 }
             }
 
