@@ -228,8 +228,11 @@ impl kryos_driver::Backend for LlvmBackend {
             ))
         })?;
 
-        // Clean up .ll file (best effort).
-        let _ = std::fs::remove_file(&ll_path);
+        // Clean up .ll file (best effort, unless KRYOS_KEEP_LL is set).
+        let keep_ll = std::env::var("KRYOS_KEEP_LL").is_ok();
+        if !keep_ll {
+            let _ = std::fs::remove_file(&ll_path);
+        }
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -401,7 +404,10 @@ impl kryos_driver::Backend for LlvmBackend {
             ))
         })?;
 
-        let _ = std::fs::remove_file(&ll_path);
+        let keep_ll = std::env::var("KRYOS_KEEP_LL").is_ok();
+        if !keep_ll {
+            let _ = std::fs::remove_file(&ll_path);
+        }
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

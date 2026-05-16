@@ -397,7 +397,7 @@ impl LlvmCodegen {
 
     fn emit_arc_declarations(&mut self) {
         self.emit_line("; ARC runtime");
-        self.emit_line("declare ptr @kryos_arc_alloc(i64, ptr)");
+        self.emit_line("declare ptr @kryos_arc_alloc(i64, i64)");
         self.emit_line("declare void @kryos_arc_retain(ptr)");
         self.emit_line("declare void @kryos_arc_release(ptr)");
         self.emit_line("declare void @kryos_arc_set_drop(ptr, ptr)");
@@ -659,6 +659,10 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_mutex_lock(i64)");
         self.emit_line("declare void @kryos_mutex_unlock(i64)");
         self.emit_line("declare void @kryos_mutex_drop(i64)");
+        self.emit_line("; Exception runtime (used by try/catch)");
+        self.emit_line("declare void @kryos_exception_throw(i64)");
+        self.emit_line("declare i64 @kryos_exception_check()");
+        self.emit_line("declare i64 @kryos_exception_take()");
         self.emit_blank();
     }
 
@@ -1253,10 +1257,12 @@ impl LlvmCodegen {
         self.emit_line(&format!("bb{}:", first_block.id.0));
 
         // Emit allocas for all mutable locals at the top of the entry block.
+        // Use the resolved local_types so enums/aggregates get the correct
+        // backing storage size (e.g. `alloca { i64, i64 }`, not `alloca i64`).
         let _param_ids: HashSet<u32> = func.params.iter().map(|p| p.local.0).collect();
         for local in &func.locals {
             if self.mutable_locals.contains(&local.id.0) {
-                let ty = mir_type_to_llvm(&local.ty);
+                let ty = self.local_type(local.id);
                 if ty != "void" {
                     self.emit_line(&format!("  %_{}.addr = alloca {ty}", local.id.0));
                 }
@@ -1359,8 +1365,16 @@ impl LlvmCodegen {
                     .find(|l| l.id == *local)
                     .map(|l| l.ty.clone());
                 let val = if self.mutable_locals.contains(&local.0) {
+                    // Load using the local's actual LLVM type, not always `ptr`.
+                    // Aggregate locals (enum/struct stored in alloca) must be
+                    // loaded as the aggregate type so subsequent emit_*_drop
+                    // calls operate on the correct shape.
+                    let load_ty = self.local_type(*local);
                     let tmp = self.next_temp();
-                    self.emit_line(&format!("  {tmp} = load ptr, ptr %_{}.addr", local.0));
+                    self.emit_line(&format!(
+                        "  {tmp} = load {load_ty}, ptr %_{}.addr",
+                        local.0
+                    ));
                     tmp
                 } else {
                     format!("%_{}", local.0)
@@ -1402,17 +1416,30 @@ impl LlvmCodegen {
                         }
                     }
                     Some(MirType::Enum(name)) => {
-                        // emit_enum_drop expects a ptr to enum data. If the local
-                        // is held as an SSA aggregate, spill it to a temp alloca first.
+                        // emit_enum_drop expects a ptr to enum data.
+                        // - If the local is held as an SSA aggregate (or as
+                        //   storage backing an alloca, i.e. mutable), the
+                        //   buffer is stack-allocated — drop the payload but
+                        //   do NOT free the buffer.
+                        // - Otherwise the enum is heap-allocated via malloc
+                        //   and the buffer itself must be freed.
                         let local_llvm = self.local_type(*local);
                         if local_llvm.starts_with('{') {
-                            let max = self.enum_max_fields(name);
-                            let agg = self.enum_llvm_type(name, max);
-                            let buf = self.next_temp();
-                            self.emit_line(&format!("  {buf} = alloca {agg}"));
-                            self.emit_line(&format!("  store {agg} {val}, ptr {buf}"));
-                            self.emit_enum_drop(&buf, name, func);
+                            // Aggregate value. If this is a mutable local, the
+                            // buffer is already %_N.addr (stack); otherwise spill.
+                            if self.mutable_locals.contains(&local.0) {
+                                let buf = format!("%_{}.addr", local.0);
+                                self.emit_enum_drop_payload(&buf, name, func);
+                            } else {
+                                let max = self.enum_max_fields(name);
+                                let agg = self.enum_llvm_type(name, max);
+                                let buf = self.next_temp();
+                                self.emit_line(&format!("  {buf} = alloca {agg}"));
+                                self.emit_line(&format!("  store {agg} {val}, ptr {buf}"));
+                                self.emit_enum_drop_payload(&buf, name, func);
+                            }
                         } else {
+                            // Heap-allocated enum via malloc — free after drop.
                             self.emit_enum_drop(&val, name, func);
                         }
                     }
@@ -1427,15 +1454,21 @@ impl LlvmCodegen {
                 let ptr_ty = self.operand_type(ptr, func);
                 let val = self.operand_to_llvm(value, func);
                 let val_ty = self.operand_type(value, func);
-                // Coerce to ptr if not already.
-                let real_ptr = if ptr_ty == "ptr" {
+                // Coerce to ptr if not already. Void-typed sources (e.g. ARC ptrs
+                // whose MIR type was lost) are already raw ptrs at the LLVM level.
+                let real_ptr = if ptr_ty == "ptr" || ptr_ty == "void" {
                     ptr_val
                 } else {
                     let tmp = self.next_temp();
                     self.emit_line(&format!("  {tmp} = inttoptr {ptr_ty} {ptr_val} to ptr"));
                     tmp
                 };
-                self.emit_line(&format!("  store {val_ty} {val}, ptr {real_ptr}"));
+                let (store_val_ty, store_val) = if val_ty == "void" {
+                    ("i64".to_string(), "0".to_string())
+                } else {
+                    (val_ty, val)
+                };
+                self.emit_line(&format!("  store {store_val_ty} {store_val}, ptr {real_ptr}"));
             }
             Instruction::Nop => {}
             Instruction::Spawn {
@@ -1706,8 +1739,9 @@ impl LlvmCodegen {
                 let val = self.operand_to_llvm(value, func);
                 let field_idx = self.resolve_field_index(object, field, func);
 
-                // Coerce object to ptr if not already.
-                let ptr_tmp = if obj_ty == "ptr" {
+                // Coerce object to ptr if not already. Treat void-typed values
+                // as already-ptr (they originate from runtime calls returning ptr).
+                let ptr_tmp = if obj_ty == "ptr" || obj_ty == "void" {
                     obj_val
                 } else {
                     let tmp = self.next_temp();
@@ -1812,20 +1846,42 @@ impl LlvmCodegen {
             // ----- Simple use / copy -----
             RValue::Use(op) => {
                 let val = self.operand_to_llvm(op, func);
-                let val_ty = self.operand_type(op, func);
-                if dest_ty == "void" {
-                    return Ok(());
+                let mut val_ty = self.operand_type(op, func);
+                // If MIR reports void but we have a real SSA value, recover the
+                // actual LLVM type from the value tracker. This avoids substituting
+                // null/0 for legitimate pointer/integer values whose MIR type was
+                // lost (e.g. ARC handles assigned to `let b = a`).
+                if val_ty == "void" {
+                    if let Some(real_ty) = self.actual_type(&val) {
+                        if real_ty != "void" {
+                            val_ty = real_ty;
+                        }
+                    }
                 }
+                // If the destination MIR type is void, fall back to the source's
+                // LLVM type (or ptr) so we still produce a usable SSA value.
+                let effective_dest_ty = if dest_ty == "void" {
+                    if val_ty == "void" {
+                        "ptr".to_string()
+                    } else {
+                        val_ty.clone()
+                    }
+                } else {
+                    dest_ty.clone()
+                };
                 // Coerce value to the destination type if they differ.
-                let coerced = self.coerce_value(&val, &val_ty, &dest_ty);
+                let coerced = self.coerce_value(&val, &val_ty, &effective_dest_ty);
                 if is_mutable {
                     // For mutable locals: compute value, store to alloca.
                     let tmp = self.next_temp();
-                    self.emit_identity_copy(&tmp, &dest_ty, &coerced);
-                    self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
+                    self.emit_identity_copy(&tmp, &effective_dest_ty, &coerced);
+                    self.emit_line(&format!(
+                        "  store {effective_dest_ty} {tmp}, ptr %_{}.addr",
+                        dest.0
+                    ));
                 } else {
                     let name = format!("%_{}", dest.0);
-                    self.emit_identity_copy(&name, &dest_ty, &coerced);
+                    self.emit_identity_copy(&name, &effective_dest_ty, &coerced);
                 }
             }
 
@@ -2734,18 +2790,65 @@ impl LlvmCodegen {
 
             // ----- ARC alloc -----
             RValue::ArcAlloc { inner } => {
+                // Matches the Cranelift backend semantics: allocate 8 bytes of
+                // ARC-managed memory and store the inner value at offset 0.
                 let inner_val = self.operand_to_llvm(inner, func);
                 let inner_ty = self.operand_type(inner, func);
-                let tmp = self.next_temp();
-                self.emit_line(&format!("  {tmp} = inttoptr {inner_ty} {inner_val} to ptr"));
+
+                // Allocate via kryos_arc_alloc(size, align) -> ptr.
                 let target_name = if is_mutable {
                     self.next_temp()
                 } else {
                     format!("%_{}", dest.0)
                 };
                 self.emit_line(&format!(
-                    "  {target_name} = call ptr @kryos_arc_alloc(i64 8, ptr {tmp})"
+                    "  {target_name} = call ptr @kryos_arc_alloc(i64 8, i64 8)"
                 ));
+                self.track_type(&target_name, "ptr");
+
+                // Store the inner value at offset 0.
+                // - i64/i32/i8/bool: store directly as i64
+                // - double: bitcast to i64 then store
+                // - ptr: store as ptr
+                // - void/unknown: store i64 0 (best-effort)
+                let (store_ty, store_val) = match inner_ty.as_str() {
+                    "i64" => ("i64".to_string(), inner_val.clone()),
+                    "i32" => {
+                        let t = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {t} = sext i32 {inner_val} to i64"
+                        ));
+                        ("i64".to_string(), t)
+                    }
+                    "i8" => {
+                        let t = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {t} = sext i8 {inner_val} to i64"
+                        ));
+                        ("i64".to_string(), t)
+                    }
+                    "i1" => {
+                        let t = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {t} = zext i1 {inner_val} to i64"
+                        ));
+                        ("i64".to_string(), t)
+                    }
+                    "double" => {
+                        let t = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {t} = bitcast double {inner_val} to i64"
+                        ));
+                        ("i64".to_string(), t)
+                    }
+                    "ptr" => ("ptr".to_string(), inner_val.clone()),
+                    "void" => ("i64".to_string(), "0".to_string()),
+                    other => (other.to_string(), inner_val.clone()),
+                };
+                self.emit_line(&format!(
+                    "  store {store_ty} {store_val}, ptr {target_name}"
+                ));
+
                 if is_mutable {
                     self.emit_line(&format!("  store ptr {target_name}, ptr %_{}.addr", dest.0));
                 }
@@ -3199,8 +3302,10 @@ impl LlvmCodegen {
                 // Load from a reference/pointer.
                 let ptr_val = self.operand_to_llvm(operand, func);
                 let ptr_ty = self.operand_type(operand, func);
-                // Coerce to ptr if not already.
-                let real_ptr = if ptr_ty == "ptr" {
+                // Coerce to ptr if not already. If the MIR type is unknown/void,
+                // the operand value (e.g. from kryos_arc_alloc) is already a ptr,
+                // so use it directly rather than emitting `inttoptr void ...`.
+                let real_ptr = if ptr_ty == "ptr" || ptr_ty == "void" {
                     ptr_val
                 } else {
                     let tmp = self.next_temp();
@@ -3809,11 +3914,29 @@ impl LlvmCodegen {
                 } else {
                     let from_ty = self.operand_type(op, func);
                     let mut val = self.operand_to_llvm(op, func);
-                    let want_ty = mir_type_to_llvm(&func.ret_ty);
+                    // Use sig_ty_to_llvm so enum returns get the correct
+                    // aggregate type (`{ i64, i64 }`) rather than the bare
+                    // tag (`i64`).
+                    let want_ty = self.sig_ty_to_llvm(&func.ret_ty);
                     // Coerce when the operand's LLVM type differs from the
-                    // function's declared return type (the common case is
-                    // i64 → i32 because Kryos arithmetic stays in i64).
+                    // function's declared return type.
                     if from_ty != want_ty {
+                        // If the destination is an aggregate but the source
+                        // is a scalar, we need a different strategy. For
+                        // enums, the source is usually already the aggregate
+                        // SSA value — trust the operand and bypass coerce.
+                        if (want_ty.starts_with('{') || want_ty.starts_with('%'))
+                            && !(from_ty.starts_with('{') || from_ty.starts_with('%'))
+                        {
+                            // Scalar → aggregate: synthesize the aggregate by
+                            // inserting the scalar into the tag slot. Best-effort.
+                            let agg_tmp = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {agg_tmp} = insertvalue {want_ty} undef, {from_ty} {val}, 0"
+                            ));
+                            self.emit_line(&format!("  ret {want_ty} {agg_tmp}"));
+                            return Ok(());
+                        }
                         val = self.coerce_value(&val, &from_ty, &want_ty);
                     }
                     self.emit_line(&format!("  ret {want_ty} {val}"));
@@ -4075,6 +4198,25 @@ impl LlvmCodegen {
                 self.emit_line(&format!("  {tmp} = zext i1 {value} to i32"));
                 self.track_type(&tmp, "i32");
             }
+            (from, "i64") if from.starts_with('%') || from.starts_with('{') => {
+                // Struct/aggregate → i64: extract the first field.
+                // This matches Cranelift's by-value-as-i64 semantics for
+                // single-field passes (e.g. dyn-trait lowering) and is a
+                // conservative fallback for multi-field aggregates.
+                self.emit_line(&format!(
+                    "  {tmp} = extractvalue {from} {value}, 0"
+                ));
+                self.track_type(&tmp, "i64");
+            }
+            (from, "ptr") if from.starts_with('%') || from.starts_with('{') => {
+                // Struct/aggregate → ptr: extract first field as i64, then inttoptr.
+                let f0 = self.next_temp();
+                self.emit_line(&format!(
+                    "  {f0} = extractvalue {from} {value}, 0"
+                ));
+                self.emit_line(&format!("  {tmp} = inttoptr i64 {f0} to ptr"));
+                self.track_type(&tmp, "ptr");
+            }
             _ => return value.to_string(), // no conversion needed/possible
         }
         tmp
@@ -4089,10 +4231,16 @@ impl LlvmCodegen {
         if ty == "ptr" {
             self.emit_line(&format!("  {target} = getelementptr i8, ptr {val}, i64 0"));
             self.track_type(target, "ptr");
+        } else if ty == "void" {
+            // Void-typed locals are unrepresentable in LLVM as first-class values.
+            // The source value usually came from a runtime call returning ptr.
+            // Treat as ptr identity copy. Track as ptr so subsequent uses are sound.
+            self.emit_line(&format!("  {target} = getelementptr i8, ptr {val}, i64 0"));
+            self.track_type(target, "ptr");
         } else if is_float_type(ty) {
             self.emit_line(&format!("  {target} = fadd {ty} {val}, 0.0"));
             self.track_type(target, ty);
-        } else if ty.starts_with('%') || ty.starts_with('{') || ty == "void" {
+        } else if ty.starts_with('%') || ty.starts_with('{') {
             // Named struct types and inline aggregate types do not support
             // `add ty x, 0`. Use `select` on a true constant — LLVM optimizes
             // this away, but it is type-correct for any first-class value.
@@ -4348,12 +4496,31 @@ impl LlvmCodegen {
     /// Emit drop logic for an enum value: load the tag, dispatch on it to
     /// drop heap-owning payload fields for the active variant, then free
     /// the enum pointer.
+    /// Drop the heap-managed payload fields of an enum (strings, arrays, etc.)
+    /// without freeing the enum's backing storage itself. Use this for
+    /// stack-allocated enum locals (alloca).
+    fn emit_enum_drop_payload(&mut self, val: &str, enum_name: &str, func: &MirFunction) {
+        self.emit_enum_drop_inner(val, enum_name, func, /*free_buf=*/ false);
+    }
+
     fn emit_enum_drop(&mut self, val: &str, enum_name: &str, func: &MirFunction) {
+        self.emit_enum_drop_inner(val, enum_name, func, /*free_buf=*/ true);
+    }
+
+    fn emit_enum_drop_inner(
+        &mut self,
+        val: &str,
+        enum_name: &str,
+        func: &MirFunction,
+        free_buf: bool,
+    ) {
         let variants = match self.enum_defs.get(enum_name).cloned() {
             Some(v) => v,
             None => {
-                // Unknown enum — just free the pointer.
-                self.emit_line(&format!("  call void @free(ptr {val})"));
+                // Unknown enum — free the pointer if requested.
+                if free_buf {
+                    self.emit_line(&format!("  call void @free(ptr {val})"));
+                }
                 return;
             }
         };
@@ -4469,8 +4636,10 @@ impl LlvmCodegen {
             self.emit_line(&format!("{merge_label}:"));
         }
 
-        // Free the heap-allocated enum itself.
-        self.emit_line(&format!("  call void @free(ptr {val})"));
+        // Free the heap-allocated enum itself (only when free_buf is true).
+        if free_buf {
+            self.emit_line(&format!("  call void @free(ptr {val})"));
+        }
     }
 }
 
