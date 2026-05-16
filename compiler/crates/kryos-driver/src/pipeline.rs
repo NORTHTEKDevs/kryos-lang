@@ -206,18 +206,34 @@ fn compile_file_impl(
     let file_id = source_map.add_file(file_name.to_string(), source.to_string());
 
     // 3. Lex
-    let tokens = Lexer::new(source, file_id).tokenize();
+    let (tokens, lex_diags) = Lexer::new(source, file_id).tokenize_with_diagnostics();
+    diagnostics.extend(lex_diags);
 
     if config.verbose {
         eprintln!("[kryos] lexer: {} tokens from '{file_name}'", tokens.len());
+    }
+
+    // If the lexer emitted hard errors (e.g. unterminated string), stop
+    // before the parser produces a confusing cascade.
+    if diagnostics.iter().any(|d| d.is_error()) {
+        return CompileResult {
+            diagnostics,
+            source_map,
+            success: false,
+            output_path: None,
+            mir: None,
+            object_bytes: None,
+            llvm_ir: None,
+        };
     }
 
     // 4. Parse
     let mut module = match parse(tokens) {
         Ok(module) => module,
         Err(parse_errors) => {
+            diagnostics.extend(parse_errors);
             return CompileResult {
-                diagnostics: parse_errors,
+                diagnostics,
                 source_map,
                 success: false,
                 output_path: None,

@@ -1,5 +1,5 @@
 use crate::token::*;
-use kryos_errors::Span;
+use kryos_errors::{Diagnostic, Span};
 
 /// Kryos lexer — tokenizes UTF-8 source into a token stream.
 pub struct Lexer<'src> {
@@ -8,6 +8,7 @@ pub struct Lexer<'src> {
     file_id: u32,
     pos: usize,
     tokens: Vec<Token>,
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl<'src> Lexer<'src> {
@@ -18,6 +19,7 @@ impl<'src> Lexer<'src> {
             file_id,
             pos: 0,
             tokens: Vec::new(),
+            diagnostics: Vec::new(),
         }
     }
 
@@ -31,6 +33,25 @@ impl<'src> Lexer<'src> {
         }
         self.emit(TokenKind::Eof, self.pos, self.pos, String::new());
         self.tokens
+    }
+
+    /// Like `tokenize`, but also returns any lexer-level diagnostics
+    /// (currently: unterminated string literals).
+    pub fn tokenize_with_diagnostics(mut self) -> (Vec<Token>, Vec<Diagnostic>) {
+        while !self.at_end() {
+            self.skip_whitespace_and_comments();
+            if self.at_end() {
+                break;
+            }
+            self.scan_token();
+        }
+        self.emit(TokenKind::Eof, self.pos, self.pos, String::new());
+        (self.tokens, self.diagnostics)
+    }
+
+    #[allow(dead_code)]
+    fn emit_diag(&mut self, diag: Diagnostic) {
+        self.diagnostics.push(diag);
     }
 
     fn at_end(&self) -> bool {
@@ -147,6 +168,7 @@ impl<'src> Lexer<'src> {
                 continue;
             }
             if self.peek() == b'/' && self.peek_at(1) == b'*' {
+                let block_start = self.pos;
                 self.advance();
                 self.advance();
                 let mut depth = 1u32;
@@ -162,6 +184,13 @@ impl<'src> Lexer<'src> {
                     } else {
                         self.advance();
                     }
+                }
+                if depth > 0 {
+                    let span = Span::new(self.file_id, block_start as u32, (block_start + 2) as u32);
+                    let diag = Diagnostic::error("unterminated block comment")
+                        .with_label(span, "this block comment is never closed")
+                        .with_note("block comments must end with `*/`");
+                    self.emit_diag(diag);
                 }
                 continue;
             }
@@ -348,6 +377,15 @@ impl<'src> Lexer<'src> {
 
         if !self.at_end() {
             self.advance(); // closing "
+        } else {
+            // Unterminated string literal — emit a precise diagnostic that
+            // points at the opening quote, so users don't see misleading
+            // "unexpected end of file" from the parser further down.
+            let span = Span::new(self.file_id, start as u32, (start + 1) as u32);
+            let diag = Diagnostic::error("unterminated string literal")
+                .with_label(span, "this string is never closed")
+                .with_note("add a matching `\"` before end of file");
+            self.emit_diag(diag);
         }
 
         if has_interpolation {
@@ -375,6 +413,12 @@ impl<'src> Lexer<'src> {
 
         if !self.at_end() && self.peek() == b'\'' {
             self.advance();
+        } else if self.at_end() {
+            let span = Span::new(self.file_id, start as u32, (start + 1) as u32);
+            let diag = Diagnostic::error("unterminated character literal")
+                .with_label(span, "this character literal is never closed")
+                .with_note("character literals are a single quoted code point: `'a'`");
+            self.emit_diag(diag);
         }
 
         self.emit(TokenKind::Char, start, self.pos, ch.to_string());
