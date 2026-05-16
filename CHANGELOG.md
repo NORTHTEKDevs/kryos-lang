@@ -4,6 +4,89 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.1.0] - 2026-05-15 — "LLVM backend correctness sweep: 112/115 native release tests"
+
+The 2.1 milestone is a focused correctness pass on the LLVM `--release`
+backend, raising the native release test suite from 78/115 to **112/115**
+(97.4%) and stamping the three remaining failures as documented architectural
+items for v2.2 (see STABILITY.md, "Known limitations").
+
+No language semantics changed in this release; every fix targets a real
+codegen or runtime bug.
+
+### Fixed (LLVM backend & runtime)
+
+- **`kryos-codegen-llvm`: void operand in `inttoptr`** — Functions returning
+  `()` were lowered to `void` but their SSA result was still consumed in
+  later `inttoptr` casts. The backend now elides the use site when the
+  source operand has void type. Fixes `ownership_shared`, `shared_deref`.
+- **`kryos-codegen-llvm`: aggregate store / aggregate return** — Stores of
+  `{ i64, i64 }` aggregates where the source operand was a pointer (e.g.
+  cross-function throw payloads) were emitted as raw `store` without
+  coercion. The backend now materializes a properly-typed aggregate via
+  `insertvalue` first, then stores. Fixes `cross_fn_throw`,
+  `cross_fn_throw_deep`, `nested_try`, `try_catch`.
+- **`kryos-codegen-llvm`: switch terminator uses MIR default block** —
+  Previously synthesized a fresh default block that fell off the end of the
+  function. Now wires the MIR's recorded default and handles enum aggregate
+  comparison. Fixes `match_basic`, `match_default`, `enum_match`,
+  `enum_param`, `try_throw`.
+- **`kryos-codegen-llvm`: TCO entry block label collision** — The TCO pass
+  re-emitted the entry block, producing `multiple definition of '_0'`.
+  Entry-block emission now guarded. Fixes `opt_tco`.
+- **`kryos-codegen-llvm`: array element load in for-loop body** — For-loop
+  body was reading the array slot instead of the element. Fixes
+  `for_array_sum`, `for_continue`.
+- **`kryos-codegen-llvm`: call-arg type coercion for `i32`/`i64`/`ptr`
+  mismatches at the call site** — Fixes `pipe_basic`.
+- **`kryos-codegen-llvm`: method dispatch through `Function`-typed struct
+  fields** — MIR's `infer_expr_type` for `MethodCall` now returns the
+  function field's recorded return type instead of falling through to
+  `Void`. Fixes `closure_in_struct` (compile-time half).
+- **`kryos-rt::arc`: ARC magic sentinel** — `kryos_arc_{retain,release,
+  set_drop,ref_count}` now check a 64-bit magic word
+  (`0xA7C0_DEAD_BEEF_CAFE`) at the head of every ARC header and no-op on
+  pointers that don't carry it. This unblocks struct drops involving
+  non-capturing function-pointer fields (which are wrapped as closures but
+  point to static code), used by `closure_in_struct` and others.
+- **`kryos-rt::map`: string-key insert path** — String-keyed maps were
+  inserting with the integer-key entry point, so subsequent
+  `kryos_map_get_str` lookups missed (content-hash vs pointer-identity
+  mismatch). The codegen now emits `kryos_map_insert_str` for string keys.
+  Fixes `map_basic`.
+- **`kryos-rt::spawn`: drain spawned tasks at program exit** —
+  `emit_main_wrapper` now emits `call void @kryos_spawn_wait_all()` before
+  `ret i32 0`, so detached `spawn` tasks complete deterministically before
+  the process returns. Fixes `spawn_basic`.
+
+### Added
+
+- **`STABILITY.md`** — First public stability document. Pins backend
+  guarantees (Cranelift JIT 100% on native runner, LLVM release 112/115),
+  enumerates the three known closure-ABI / vtable limitations, lists
+  features explicitly out-of-scope (full borrow checker, hygienic macros,
+  Vulkan/Metal/DX12, HTTP/3 server, retained-mode GUI, etc.), and documents
+  the test-pass policy for cutting releases.
+
+### Known limitations (carried to v2.2)
+
+- **Closures that escape via return or are passed as function arguments**
+  (`closure_escape`, `closure_capture_fn`) — The lambda ABI currently takes
+  captures as direct parameters and only works when the `closure_locals`
+  optimization fires (direct call at the same lexical scope). Fixing this
+  requires either passing the env pointer as the first lambda arg and
+  loading captures from env slots, or recording capture-count metadata so
+  call sites can load captures dynamically. Tracked for v2.2's full capture
+  analysis.
+- **`dyn Trait` method dispatch** (`dyn_trait`) — `VtableCall` in the LLVM
+  backend is a placeholder that returns 0. Real vtable construction and
+  indirect dispatch is planned for v2.2.
+
+### Build / packaging
+
+- Workspace version bumped to **2.1.0**.
+- No public CLI/stdlib surface changed.
+
 ## [2.0.0] - 2026-05-15 — "Production: LLVM blocker fix, WebSocket + Unix sockets, LTO, lockfile tooling"
 
 The 2.0 milestone closes a pre-existing v1.9.0 LLVM blocker that prevented
