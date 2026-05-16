@@ -4,6 +4,68 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.3.0] - 2026-05-16 — "Async pipeline wired, DWARF, WASM parity, registry"
+
+This release wires the v2.2 async substrate end-to-end and completes a
+seven-item finish-line list. **No breaking language changes.** Everything
+additive.
+
+### Added
+
+- **Async state-machine pipeline (codegen consumes the post-split CFG)**
+  — `apply_split_at_awaits` is now called from `kryos-driver`'s
+  pipeline after `apply_state_structs`, behind the `split_async_awaits`
+  config flag (opt out via `KRYOS_DISABLE_AWAIT_SPLIT=1`). The
+  Cranelift poll-wrapper now detects split functions heuristically
+  (blocks>1 + entry Switch) and propagates the dispatcher's READY/PENDING
+  status, only stamping state=-1 (DONE) when the call returned READY.
+  Legacy single-block async functions remain eager-DONE.
+- **LLVM DWARF debug info** — per-function `DISubprogram`s and per-call
+  `!dbg` locations emitted from the LLVM codegen. Uses LineTablesOnly
+  emissionKind so `ret`/`br` don't need `!dbg`. Verified end-to-end:
+  `addr2line` resolves user functions to Kryos source lines in clang -O2 -g
+  binaries. No runtime cost.
+- **WASM stdlib parity surface** — 18 new host imports for strings,
+  arrays, JSON, regex, and HTTP. Index assignment uses `self.type_count`
+  and `self.func_count` rather than hardcoded indices so future
+  additions are safe. Reference host shim landed in
+  `examples/wasm_runner.js`; full doc in `docs/wasm-stdlib.md`. The
+  language-level binding (a `kryos-stdlib-wasm` shim crate) is a
+  deliberate follow-up; this release ships the capability surface.
+- **Refreshed benchmark numbers** — fresh runs of the full suite
+  (`benchmarks/run.sh`) with the v2.3.0 toolchain, including a clear
+  callout of the subprocess-launch floor on the sandbox VM (~30 ms).
+  `BENCHMARKS.md` rewritten with honest per-benchmark notes for `fib`,
+  `mandelbrot`, `nbody`, `binary_trees`, `fannkuch`, `matmul`.
+- **VS Code extension v0.4.0 — marketplace-ready packaging** — added
+  `LICENSE`, icon, `.vscodeignore`, `CHANGELOG.md`, gallery banner,
+  `categories`/`keywords`, `vsce`-based `package`/`publish` scripts.
+  Bundled LSP client wiring stable on `kryos lsp` stdio.
+- **Zed extension scaffold (`editors/zed/`)** — `extension.toml`,
+  `languages/kryos/config.toml`, Rust LSP launcher (`src/lib.rs`)
+  targeting `wasm32-wasi` per the Zed extension API. Auto-discovers a
+  `kryos` binary on PATH or in `compiler/target/release/`.
+- **Package registry: full design + reference server** —
+  `docs/package-registry.md` specifies the on-disk index format,
+  client protocol, security model, and what is intentionally out of
+  scope. `tools/registry/` ships a dependency-free Rust HTTP server
+  (`std::net` only) exposing `/v1/health`, `/v1/packages/<name>`,
+  `/v1/packages/<name>/<version>`, `/v1/search?q=...`. Periodically
+  `git pull`s the index. The kryos-package client (sync/lookup/search/
+  pack/publish) was already wired in v2.2; this release completes the
+  spec and provides a runnable reference impl.
+
+### Notes
+
+- Sweep: **123/123** native --release tests passing.
+- MIR lib tests: **79/79**.
+- kryos-codegen-wasm tests: **1/1**.
+- Build warnings: **zero**.
+- Registry hosting (canonical `kryos-registry` repo + tarball host)
+  remains an operational decision intentionally deferred until
+  someone is ready to provision infrastructure. The client and server
+  are ready when that decision is made.
+
 ## [2.2.1] - 2026-05-16 — "Async substrate, repo polish, zero warnings"
 
 Post-2.2 cleanup pass. No language-behavior changes. Everything here is
