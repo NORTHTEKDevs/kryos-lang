@@ -37,6 +37,26 @@ pub struct LinkerConfig {
     pub extra_libs: Vec<String>,
     /// Extra library search directories (-L flags).
     pub extra_lib_dirs: Vec<PathBuf>,
+    /// Enable Link-Time Optimization. Passes `-flto=thin` to the link
+    /// driver so cross-module inlining of runtime helpers takes effect.
+    /// Default: false.
+    pub lto: bool,
+}
+
+impl Default for LinkerConfig {
+    fn default() -> Self {
+        Self {
+            target: Target::host(),
+            object_files: Vec::new(),
+            runtime_lib: None,
+            stdlib_native: None,
+            output: PathBuf::from("a.out"),
+            link_type: LinkType::Dynamic,
+            extra_libs: Vec::new(),
+            extra_lib_dirs: Vec::new(),
+            lto: false,
+        }
+    }
 }
 
 /// Errors that can occur during linking.
@@ -87,10 +107,21 @@ impl std::error::Error for LinkError {}
 /// Run the system linker with the given configuration.
 pub fn link(config: &LinkerConfig) -> Result<(), LinkError> {
     if config.object_files.is_empty() {
+        let _ = ();
         return Err(LinkError::NoObjectFiles);
     }
 
-    let linker_path = find_system_linker(&config.target).map_err(LinkError::LinkerNotFound)?;
+    // When LTO is enabled the object files contain LLVM bitcode rather than
+    // native machine code, so the linker must be clang (which knows how to
+    // invoke LLVM's gold/lld plugin). Plain gcc/cc will fail with
+    // "file format not recognized".
+    let linker_path = if config.lto {
+        find_clang_linker(&config.target)
+            .or_else(|_| find_system_linker(&config.target))
+            .map_err(LinkError::LinkerNotFound)?
+    } else {
+        find_system_linker(&config.target).map_err(LinkError::LinkerNotFound)?
+    };
 
     let mut cmd = build_command(&linker_path, config);
 
@@ -169,6 +200,14 @@ fn build_unix_command(cmd: &mut Command, config: &LinkerConfig) {
     // Extra libraries
     for lib in &config.extra_libs {
         cmd.arg(format!("-l{lib}"));
+    }
+
+    // LTO: pass through to link driver so the linker invokes LLVM's
+    // cross-module optimizer. Combined with `-flto=thin` on the per-object
+    // clang invocation this lets the linker inline runtime helpers
+    // (kryos_array_get/set/len) directly into user code.
+    if config.lto {
+        cmd.arg("-flto=thin");
     }
 }
 
@@ -350,6 +389,17 @@ fn build_wasm_command(cmd: &mut Command, config: &LinkerConfig) {
 /// - Windows/MSVC: VS Build Tools `link.exe`, then PATH
 /// - Windows/GNU (MinGW): `gcc`, `cc`
 /// - Unix: `cc`, `gcc`, `clang`
+/// Find clang, used as the link driver when LTO is enabled so the linker
+/// can invoke LLVM's LTO plugin to read bitcode object files.
+pub fn find_clang_linker(_target: &Target) -> Result<PathBuf, String> {
+    for name in &["clang", "clang-19", "clang-18", "clang-17", "clang-16"] {
+        if let Some(p) = which(name) {
+            return Ok(p);
+        }
+    }
+    Err("could not find clang (required for LTO builds)".to_string())
+}
+
 pub fn find_system_linker(target: &Target) -> Result<PathBuf, String> {
     // On Windows/MSVC, try to find the real MSVC link.exe first
     if target.os == Os::Windows && target.env == Env::Msvc {

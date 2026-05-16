@@ -51,6 +51,13 @@ pub struct BuildConfig {
     pub verbose: bool,
     /// Skip ownership analysis (needed for self-host bootstrap).
     pub skip_ownership: bool,
+    /// Link-Time Optimization. Enables `-flto=thin` on the per-object
+    /// clang invocation and on the link step so the runtime helpers
+    /// (which are marked `#[inline]`) get inlined into user code.
+    /// Default: false. Release builds turn this on by default in the CLI.
+    pub lto: bool,
+    /// Emit DWARF debug info (`-g`).
+    pub debug_info: bool,
 }
 
 impl BuildConfig {
@@ -65,6 +72,8 @@ impl BuildConfig {
             capabilities: Vec::new(),
             verbose: false,
             skip_ownership: false,
+            lto: false,
+            debug_info: false,
         }
     }
 
@@ -79,6 +88,8 @@ impl BuildConfig {
             capabilities: Vec::new(),
             verbose: false,
             skip_ownership: false,
+            lto: false,
+            debug_info: false,
         }
     }
 

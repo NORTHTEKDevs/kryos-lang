@@ -64,6 +64,16 @@ pub struct EmitOptions {
     pub target_triple: Option<String>,
     /// Target data layout string. When `None`, omitted.
     pub target_datalayout: Option<String>,
+    /// Enable Link-Time Optimization (`-flto`). Allows the linker to inline
+    /// runtime helper functions (like `kryos_array_get`) into user code,
+    /// eliminating call overhead in array-heavy hot loops.
+    pub lto: bool,
+    /// Number of parallel codegen threads to use during clang invocation
+    /// (passed via `-mllvm -threads=N`). 0 = let LLVM decide.
+    pub codegen_threads: u32,
+    /// Emit DWARF debug info (`-g`). When true, source-level debugging
+    /// works in gdb/lldb on the produced binary.
+    pub debug_info: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +195,17 @@ impl kryos_driver::Backend for LlvmBackend {
         // Pass target triple if specified.
         if let Some(ref triple) = self.options.target_triple {
             cmd.arg(format!("--target={triple}"));
+        }
+
+        // LTO: emit bitcode-bearing object so the linker can do cross-module
+        // inlining of runtime helpers.
+        if self.options.lto {
+            cmd.arg("-flto=thin");
+        }
+
+        // Debug info.
+        if self.options.debug_info {
+            cmd.arg("-g");
         }
 
         let output = cmd.output().map_err(|e| {
@@ -352,6 +373,12 @@ impl kryos_driver::Backend for LlvmBackend {
             .arg(&obj_path);
         if let Some(ref triple) = self.options.target_triple {
             cmd.arg(format!("--target={triple}"));
+        }
+        if self.options.lto {
+            cmd.arg("-flto=thin");
+        }
+        if self.options.debug_info {
+            cmd.arg("-g");
         }
 
         let output = cmd.output().map_err(|e| {

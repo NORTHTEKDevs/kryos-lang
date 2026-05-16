@@ -97,20 +97,40 @@ pub unsafe extern "C" fn kryos_array_push(arr: *mut KryosArray, val: i64) {
     (*arr).len = (len + 1) as i64;
 }
 
+/// Cold path: panic with formatted out-of-bounds message. Kept out-of-line
+/// so the hot `kryos_array_get`/`kryos_array_set` path stays small and inlineable.
+#[cold]
+#[inline(never)]
+unsafe fn oob_panic(idx: i64, len: i64) -> ! {
+    let msg = format!(
+        "array index out of bounds: index {} but length is {}",
+        idx, len
+    );
+    crate::panic::kryos_panic(msg.as_ptr(), msg.len());
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn null_panic() -> ! {
+    let msg = b"array is null";
+    crate::panic::kryos_panic(msg.as_ptr(), msg.len());
+}
+
 /// Get the element at `idx`. Bounds-checked: panics on out-of-bounds access.
+///
+/// Marked `#[inline]` so LLVM (with LTO enabled in the AOT link) can inline
+/// the hot path of `len`-load + bounds compare + data-load into callers,
+/// eliminating the call overhead that dominates array-heavy loops.
 #[no_mangle]
+#[inline]
 pub unsafe extern "C" fn kryos_array_get(arr: *const KryosArray, idx: i64) -> i64 {
     if arr.is_null() {
-        let msg = b"array is null";
-        crate::panic::kryos_panic(msg.as_ptr(), msg.len());
+        null_panic();
     }
     let len = (*arr).len;
-    if idx < 0 || idx >= len {
-        let msg = format!(
-            "array index out of bounds: index {} but length is {}",
-            idx, len
-        );
-        crate::panic::kryos_panic(msg.as_ptr(), msg.len());
+    if (idx as u64) >= (len as u64) {
+        // Unsigned compare handles negative idx in one branch.
+        oob_panic(idx, len);
     }
     let slot = (*arr).data.add(idx as usize * ELEM_SIZE) as *const i64;
     *slot
@@ -118,18 +138,14 @@ pub unsafe extern "C" fn kryos_array_get(arr: *const KryosArray, idx: i64) -> i6
 
 /// Set the element at `idx`. Bounds-checked: panics on out-of-bounds access.
 #[no_mangle]
+#[inline]
 pub unsafe extern "C" fn kryos_array_set(arr: *mut KryosArray, idx: i64, val: i64) {
     if arr.is_null() {
-        let msg = b"array is null";
-        crate::panic::kryos_panic(msg.as_ptr(), msg.len());
+        null_panic();
     }
     let len = (*arr).len;
-    if idx < 0 || idx >= len {
-        let msg = format!(
-            "array index out of bounds: index {} but length is {}",
-            idx, len
-        );
-        crate::panic::kryos_panic(msg.as_ptr(), msg.len());
+    if (idx as u64) >= (len as u64) {
+        oob_panic(idx, len);
     }
     let slot = (*arr).data.add(idx as usize * ELEM_SIZE) as *mut i64;
     *slot = val;

@@ -367,6 +367,8 @@ pub fn run_test_with(test: &TestCase, opts: RunOptions) -> TestResult {
                 capabilities: Vec::new(),
                 verbose: false,
                 skip_ownership: false,
+                lto: false,
+                debug_info: false,
             };
 
             let backend = CraneliftBackend::new();

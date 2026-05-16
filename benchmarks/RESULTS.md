@@ -6,12 +6,12 @@ _C: gcc 14 -O3 and clang 19 -O3 (Kryos uses -O2, so C has a slight opt-level adv
 
 | Benchmark | Kryos LLVM | Kryos Cranelift | Rust --release | gcc -O3 | clang -O3 | Go | Python | Kryos / gcc |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| fib | 0.0263 | 1.8135 | 0.0264 | 0.0185 | 0.0265 | 0.0533 | 1.1169 | 1.42x |
-| mandelbrot | 0.0299 | 0.0325 | 0.0300 | 0.0311 | 0.0296 | 0.0305 | 0.7157 | 0.96x |
-| nbody | 0.0200 | 0.0209 | 0.0048 | 0.0057 | 0.0059 | 0.0088 | 0.7656 | 3.49x |
-| binary_trees | 0.0019 | 0.0379 | 0.0018 | 0.0012 | 0.0017 | 0.0020 | 0.0640 | 1.53x |
-| fannkuch | 0.1007 | 0.1527 | 0.0094 | 0.0081 | 0.0059 | 0.0074 | 0.4651 | 12.42x |
-| matmul | 0.0468 | 0.0618 | 0.0177 | 0.0175 | 0.0176 | 0.0225 | 2.9231 | 2.67x |
+| fib | 0.0317 | 1.8192 | 0.0317 | 0.0318 | 0.0317 | 0.0638 | 1.1171 | 1.00x |
+| mandelbrot | 0.0319 | 0.0641 | 0.0318 | 0.0318 | 0.0318 | 0.0318 | 0.7166 | 1.00x |
+| nbody | 0.0318 | 0.0318 | 0.0075 | 0.0075 | 0.0075 | 0.0155 | 0.8164 | 4.24x |
+| binary_trees | 0.0034 | 0.0380 | 0.0034 | 0.0013 | 0.0033 | 0.0033 | 0.0640 | 2.62x |
+| fannkuch | 0.1141 | 0.1642 | 0.0156 | 0.0156 | 0.0075 | 0.0074 | 0.4650 | 7.31x |
+| matmul | 0.0640 | 0.1141 | 0.0318 | 0.0318 | 0.0318 | 0.0317 | 2.8227 | 2.01x |
 
 ## Notes
 
@@ -25,21 +25,3 @@ _C: gcc 14 -O3 and clang 19 -O3 (Kryos uses -O2, so C has a slight opt-level adv
 Kryos LLVM: `kryos build --release` → clang 19 -O2 backend.
 Kryos Cranelift: `kryos build` (fast-compile, unoptimised runtime).
 Python >60 means the run exceeded the 60 s timeout.
-
-## Bug fixed in v1.9.0
-
-Two LLVM codegen bugs were fixed to enable the nbody benchmark:
-
-1. **Float array reads** — `kryos_array_get` returns `i64` bits; when the element type
-   is `f64`, the result must be `bitcast i64 → double`. Previously the codegen emitted
-   `fadd double {raw_i64}, 0` which clang rejected as a type mismatch.
-
-2. **Float array writes** — `kryos_array_set(ptr, i64, i64)` expects the value as an
-   `i64`. When the value operand is `double` the codegen was passing `double` directly,
-   causing another type mismatch. Fixed by adding `kryos_array_set` to the
-   `runtime_param_types` table so `coerce_value` applies `bitcast double → i64`.
-
-3. **Math function declarations** — `sqrt`, `floor`, `ceil`, `sin`, `cos`, etc. are
-   bare C names in the runtime but were missing from the LLVM IR `declare` block,
-   causing an `undefined value '@sqrt'` error. Fixed by adding `declare double @sqrt(double)`
-   and friends to `emit_extern_declarations`.

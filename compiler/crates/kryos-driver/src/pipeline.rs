@@ -713,6 +713,7 @@ fn codegen_and_link(
                                 },
                                 extra_libs,
                                 extra_lib_dirs: vec![],
+                                lto: config.lto,
                             };
 
                             if let Err(e) = kryos_linker::link(&linker_config) {

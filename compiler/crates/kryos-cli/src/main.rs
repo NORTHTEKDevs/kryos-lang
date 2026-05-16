@@ -62,6 +62,19 @@ enum Commands {
         /// Skip ownership analysis (for self-host bootstrap)
         #[arg(long)]
         skip_ownership: bool,
+
+        /// Enable Link-Time Optimization (cross-module inlining).
+        /// Implied by --release. Disable with --no-lto.
+        #[arg(long)]
+        lto: bool,
+
+        /// Force-disable LTO even in release builds.
+        #[arg(long)]
+        no_lto: bool,
+
+        /// Emit DWARF debug info for gdb/lldb source-level debugging.
+        #[arg(short = 'g', long)]
+        debug_info: bool,
     },
 
     /// Compile and run a Kryos file
@@ -237,17 +250,26 @@ fn main() {
             emit_llvm,
             verbose,
             skip_ownership,
-        } => commands::build::execute(
-            &path,
-            release,
-            backend.as_deref(),
-            target.as_deref(),
-            output.as_deref(),
-            emit_mir,
-            emit_llvm,
-            verbose,
-            skip_ownership,
-        ),
+            lto,
+            no_lto,
+            debug_info,
+        } => {
+            // --no-lto wins over both --lto and the release-implied LTO default.
+            let effective_lto = if no_lto { false } else { lto };
+            commands::build::execute(
+                &path,
+                release,
+                backend.as_deref(),
+                target.as_deref(),
+                output.as_deref(),
+                emit_mir,
+                emit_llvm,
+                verbose,
+                skip_ownership,
+                effective_lto,
+                debug_info,
+            )
+        }
 
         Commands::Run { file, args } => commands::run::execute(&file, &args),
 

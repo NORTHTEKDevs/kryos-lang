@@ -6,6 +6,7 @@ use kryos_driver::{Backend, BuildConfig, BuildMode, OutputType};
 use kryos_errors::render_diagnostic;
 
 /// Execute the build command.
+#[allow(clippy::too_many_arguments)]
 pub fn execute(
     path: &str,
     release: bool,
@@ -16,6 +17,8 @@ pub fn execute(
     emit_llvm: bool,
     verbose: bool,
     skip_ownership: bool,
+    lto: bool,
+    debug_info: bool,
 ) -> Result<(), String> {
     let mode = if release {
         BuildMode::Release
@@ -31,6 +34,9 @@ pub fn execute(
         OutputType::Binary
     };
 
+    // Effective LTO: explicit flag wins; otherwise release implies LTO.
+    let effective_lto = lto || release;
+
     let config = BuildConfig {
         input: path.to_string(),
         output: output.map(|s| s.to_string()),
@@ -40,6 +46,8 @@ pub fn execute(
         capabilities: Vec::new(),
         verbose,
         skip_ownership,
+        lto: effective_lto,
+        debug_info,
     };
 
     if verbose {
@@ -71,6 +79,9 @@ pub fn execute(
                 opt_level: kryos_codegen_llvm::OptLevel::O2,
                 target_triple: Some(resolved_target.clone()),
                 target_datalayout: None,
+                lto: effective_lto,
+                codegen_threads: 0,
+                debug_info,
             },
         )),
         Some("cranelift") => Box::new(kryos_codegen_cranelift::CraneliftBackend::new()),
@@ -86,6 +97,12 @@ pub fn execute(
                     opt_level: kryos_codegen_llvm::OptLevel::O2,
                     target_triple: Some(resolved_target.clone()),
                     target_datalayout: None,
+                    // Default release builds to LTO on — the runtime helpers
+                    // (kryos_array_get/set) are `#[inline]` and only inline
+                    // across crate boundaries when LTO is enabled.
+                    lto: effective_lto,
+                    codegen_threads: 0,
+                    debug_info,
                 },
             )),
         },
