@@ -1027,12 +1027,17 @@ pub fn compile_module_with_options(
     // For each async fn F, emit __kryos_poll_F(state: *mut u8) -> i32:
     //   1. Read parameter values from the state struct fields (those marked
     //      is_param in the AsyncPlan have known offsets via the struct layout).
-    //   2. Call F(params...) synchronously. (Today `await` lowers as a direct
-    //      call, so this is correct -- when true split-at-await lands, this
-    //      body becomes a dispatch over the `state` discriminant.)
-    //   3. Store the return value into the struct's `result` field.
-    //   4. Set state = -1 (done) so the executor will never re-poll.
-    //   5. Return KRYOS_READY = 1.
+    //   2. Call F(params..., state_ptr) — when split-at-await has rewritten F,
+    //      F itself is the dispatcher and returns KRYOS_PENDING (0) or
+    //      KRYOS_READY (1). When split-at-await did not run (no awaits, or
+    //      `KRYOS_DISABLE_AWAIT_SPLIT=1`), F's natural return value is the
+    //      computed result and we store it into the state's `result` field.
+    //   3. Store the call's return into `result` (only meaningful when the
+    //      callee runs to completion in this poll).
+    //   4. Mark state = -1 (done) only when the callee reported READY. When
+    //      the callee reported PENDING, leave the state discriminant so the
+    //      next poll resumes at the correct split.
+    //   5. Return the propagated status.
     //
     // If any prerequisite is missing (no state struct, fields don't match,
     // etc.), we emit a stub that just returns KRYOS_READY = 1 so the binary
@@ -1136,6 +1141,15 @@ pub fn compile_module_with_options(
                                 }
                             }
 
+                            // Capture poll-status awareness: if the function
+                            // was split, its signature's first non-param slot
+                            // is the *status* (READY/PENDING). We detect this
+                            // by checking whether the function was rewritten
+                            // (heuristic: it has more than one block and the
+                            // entry block ends in a Switch on `state`). For
+                            // simplicity and safety we always propagate the
+                            // returned i32/i64 as the status when the callee's
+                            // single return is an integer type.
                             let callee_id = func_ids[&mir_func.name];
                             let callee_ref =
                                 object_module.declare_func_in_func(callee_id, builder.func);
@@ -1175,15 +1189,102 @@ pub fn compile_module_with_options(
                                 );
                             }
 
-                            // Mark state = -1 (done).
-                            if let Some(&(s_off, s_ty)) = off.get("state") {
-                                let done = builder.ins().iconst(s_ty, -1);
-                                builder.ins().store(
-                                    MemFlags::new(),
-                                    done,
-                                    state_ptr,
-                                    s_off as i32,
+                            // Mark state = -1 (done). After split-at-await,
+                            // the rewritten dispatcher itself updates the
+                            // state discriminant on each suspend; if it
+                            // returned READY (1) the function is fully
+                            // complete and we can stamp DONE. If the callee
+                            // returns PENDING (0), the state field already
+                            // holds the resume index — do NOT overwrite it.
+                            //
+                            // We resolve this conservatively by inspecting
+                            // the call result: if results[0] is non-zero,
+                            // stamp done. For the non-split (legacy) path,
+                            // results[0] is the user return value, which we
+                            // can't safely interpret as a status — so we keep
+                            // the old eager DONE behaviour when there is no
+                            // detectable split.
+                            let function_was_split =
+                                mir_func.blocks.len() > 1
+                                && matches!(
+                                    mir_func.blocks.first().map(|b| &b.terminator),
+                                    Some(kryos_mir::ir::Terminator::Switch { .. })
                                 );
+                            if let Some(&(s_off, s_ty)) = off.get("state") {
+                                if function_was_split && !results.is_empty() {
+                                    // Only stamp DONE if the dispatcher
+                                    // returned READY (non-zero).
+                                    let status = results[0];
+                                    let status_ty = builder.func.dfg.value_type(status);
+                                    let zero = builder.ins().iconst(status_ty, 0);
+                                    let is_done = builder.ins().icmp(
+                                        cranelift_codegen::ir::condcodes::IntCC::NotEqual,
+                                        status,
+                                        zero,
+                                    );
+                                    let done_const = builder.ins().iconst(s_ty, -1);
+                                    // Read current state for the false arm.
+                                    let cur_state =
+                                        builder.ins().load(
+                                            s_ty,
+                                            MemFlags::new(),
+                                            state_ptr,
+                                            s_off as i32,
+                                        );
+                                    let new_state = builder.ins().select(
+                                        is_done,
+                                        done_const,
+                                        cur_state,
+                                    );
+                                    builder.ins().store(
+                                        MemFlags::new(),
+                                        new_state,
+                                        state_ptr,
+                                        s_off as i32,
+                                    );
+                                } else {
+                                    let done = builder.ins().iconst(s_ty, -1);
+                                    builder.ins().store(
+                                        MemFlags::new(),
+                                        done,
+                                        state_ptr,
+                                        s_off as i32,
+                                    );
+                                }
+                            }
+
+                            // Propagate the dispatcher's return status when
+                            // the function was split; otherwise the legacy
+                            // always-READY return below still applies.
+                            if function_was_split && !results.is_empty() {
+                                let r = results[0];
+                                let rt = builder.func.dfg.value_type(r);
+                                let status = if rt == types::I32 {
+                                    r
+                                } else if rt.is_int() {
+                                    if rt.bits() > 32 {
+                                        builder.ins().ireduce(types::I32, r)
+                                    } else {
+                                        builder.ins().sextend(types::I32, r)
+                                    }
+                                } else {
+                                    builder.ins().iconst(types::I32, 1)
+                                };
+                                builder.ins().return_(&[status]);
+                                builder.seal_all_blocks();
+                                builder.finalize();
+
+                                let mut ctx = Context::for_function(cl_func);
+                                object_module
+                                    .define_function(poll_id, &mut ctx)
+                                    .map_err(|e| {
+                                        eprintln!(
+                                            "[kryos] codegen error in async poll wrapper for '{}': {e}",
+                                            mir_func.name
+                                        );
+                                        CodegenError::Module(e)
+                                    })?;
+                                continue;
                             }
 
                             emitted_real_body = true;

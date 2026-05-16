@@ -605,11 +605,17 @@ fn compile_module_impl(
         }
         let inserted = kryos_mir::async_lower::apply_state_structs(&mut mir, &report);
         kryos_mir::async_lower::stamp_attributes(&mut mir);
+        let splits_applied = if config.split_async_awaits {
+            kryos_mir::async_lower::apply_split_at_awaits(&mut mir, &report)
+        } else {
+            0
+        };
         if config.verbose {
             eprintln!(
-                "[kryos] async lowering: {} plan(s), {} state-struct(s) synthesised",
+                "[kryos] async lowering: {} plan(s), {} state-struct(s) synthesised, {} fn(s) split at await",
                 report.plans.len(),
-                inserted
+                inserted,
+                splits_applied
             );
         }
     }

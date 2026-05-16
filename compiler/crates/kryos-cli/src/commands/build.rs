@@ -50,6 +50,7 @@ pub fn execute(
         lto: effective_lto,
         debug_info,
         use_cache,
+        split_async_awaits: BuildConfig::_split_async_awaits_default(),
     };
 
     if verbose {

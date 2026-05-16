@@ -62,6 +62,11 @@ pub struct BuildConfig {
     /// invocations on the same `(source, target, mode, output_type)` tuple.
     /// Default: false. Opt-in so existing call sites are unaffected.
     pub use_cache: bool,
+    /// Apply `kryos_mir::async_lower::apply_split_at_awaits` so async
+    /// functions become real suspendable state machines at codegen time.
+    /// Default: true. Can be disabled via `KRYOS_DISABLE_AWAIT_SPLIT=1` for
+    /// debugging or to fall back to the pre-split synchronous lowering.
+    pub split_async_awaits: bool,
 }
 
 impl BuildConfig {
@@ -79,6 +84,7 @@ impl BuildConfig {
             lto: false,
             debug_info: false,
             use_cache: false,
+            split_async_awaits: default_split_async_awaits(),
         }
     }
 
@@ -96,6 +102,7 @@ impl BuildConfig {
             lto: false,
             debug_info: false,
             use_cache: false,
+            split_async_awaits: default_split_async_awaits(),
         }
     }
 
@@ -132,9 +139,25 @@ impl BuildConfig {
     }
 
     /// Return the effective target triple string.
+    #[doc(hidden)]
+    pub fn _split_async_awaits_default() -> bool {
+        default_split_async_awaits()
+    }
+
+    /// Return the effective target triple string.
     pub fn effective_target(&self) -> String {
         self.target
             .clone()
             .unwrap_or_else(|| kryos_linker::Target::host().triple_string())
+    }
+}
+
+/// Default for [`BuildConfig::split_async_awaits`]. ON unless the
+/// `KRYOS_DISABLE_AWAIT_SPLIT` environment variable is set to a truthy
+/// value (anything non-empty other than `0`/`false`/`no`/`off`).
+fn default_split_async_awaits() -> bool {
+    match std::env::var("KRYOS_DISABLE_AWAIT_SPLIT").ok().as_deref() {
+        None | Some("") | Some("0") | Some("false") | Some("no") | Some("off") => true,
+        _ => false,
     }
 }

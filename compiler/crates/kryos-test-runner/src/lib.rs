@@ -370,6 +370,7 @@ pub fn run_test_with(test: &TestCase, opts: RunOptions) -> TestResult {
                 lto: false,
                 debug_info: false,
                 use_cache: false,
+                split_async_awaits: true,
             };
 
             let backend = CraneliftBackend::new();

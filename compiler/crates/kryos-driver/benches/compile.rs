@@ -638,6 +638,7 @@ fn bench_pipeline(c: &mut Criterion) {
         lto: false,
         debug_info: false,
         use_cache: false,
+        split_async_awaits: true,
     };
 
     let mut group = c.benchmark_group("pipeline");

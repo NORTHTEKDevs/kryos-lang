@@ -51,6 +51,7 @@ pub fn execute(file: &str, args: &[String]) -> Result<(), String> {
         lto: false,
         debug_info: false,
         use_cache: false,
+        split_async_awaits: true,
     };
 
     // Compile first, then execute.
