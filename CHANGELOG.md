@@ -4,6 +4,68 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.2.0] - 2026-05-15 — "Developer-platform completeness: 115/115 native release tests"
+
+The 2.2 milestone closes the last three architectural gaps from v2.1's
+"known limitations" list and lands the bulk of the developer-platform
+work (tooling, packaging, language ergonomics) needed for v2.x to be
+usable as a commercial language. The native `--release` test suite is
+now **115/115** (100%).
+
+No behavior in correct existing programs changed — every item is either
+a new feature, a tooling addition, or a fix for a previously documented
+v2.1 limitation.
+
+### Added (language)
+
+- **HashMap literal syntax `#{key: value, ...}`** — explicit, unambiguous
+  map construction at the expression level. Empty literal `#{}` produces
+  an empty map. Lexer + parser + typechecker support across all three
+  backends.
+- **`Result<T, E>` and `Option<T>` in the prelude** — first-class enum
+  types with `Ok/Err` and `Some/None` variants, including the
+  **`?` postfix try-operator**. `expr?` desugars at parse-time to
+  `match expr { Result::Ok(__v) => __v, Result::Err(__e) => return Result.Err(__e) }`,
+  with matching `arm_body_diverges()` typechecker handling so the Err
+  arm doesn't pollute match-type unification.
+- **Full closure capture analysis** — escaping closures (returned from
+  functions or stored in structs) now work in the LLVM backend through
+  a uniform `(env, user_args...)` calling convention. Every closure
+  value, including no-capture lambdas, is wrapped in an ARC env
+  `[thunk_ptr, cap0, cap1, ...]`; CallIndirect dispatches via env[0].
+  Fixes the v2.1 `closure_escape` and `closure_capture_fn` limitations.
+- **`dyn Trait` dynamic dispatch in LLVM** — real vtable codegen,
+  replacing the v2.1 placeholder that returned 0. Trait objects are
+  fat pointers `[data, fn_ptr_0, fn_ptr_1, ...]`; per-method dyn-thunks
+  give every method a uniform i64-only ABI suitable for indirect
+  dispatch, handling byval-self/sret-return correctly.
+
+### Added (tooling)
+
+- **`kryos doc --html`** — HTML output for the documentation generator,
+  alongside the existing markdown writer.
+- **LSP validation pass** — the language server now publishes parser
+  and type diagnostics to the editor, not just structural info.
+- **`kryos pkg add` command** — adds a dependency to the project's
+  manifest from the CLI.
+- **CI matrix + release artifact build** — multi-OS GitHub Actions
+  matrix produces signed release binaries on tag pushes.
+- **`-g` / `--debug-info` flag plumbed end-to-end** — emits a minimal
+  DWARF compile-unit and `!DIFile` so `gdb`/`lldb` can resolve
+  source-level frames for LLVM-built binaries.
+
+### Improved
+
+- **Lexer diagnostics for unterminated literals** — precise spans and
+  messages for unterminated strings / char literals, replacing the
+  generic "unexpected EOF".
+
+### Test sweep
+
+- Native `--release` builds: **115 passed, 0 failed**.
+- Resolves the three v2.1 "known limitations":
+  `closure_escape`, `closure_capture_fn`, `dyn_trait`.
+
 ## [2.1.0] - 2026-05-15 — "LLVM backend correctness sweep: 112/115 native release tests"
 
 The 2.1 milestone is a focused correctness pass on the LLVM `--release`
