@@ -3004,6 +3004,200 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         },
     });
 
+    // ── Self-host intrinsics ─────────────────────────────────────
+    //
+    // The self-hosted runtime (`compiler/self-host/runtime.kry`) wraps a
+    // handful of low-level intrinsics. For stage-0 builds (Rust compiler →
+    // stage-1) the Rust runtime provides these as C-callable symbols. For
+    // stage-1+ self-compiled builds, the codegen emits inline syscall /
+    // mov / load / store instructions. Either way the type checker has
+    // to know about them so `runtime.kry` passes `check`.
+
+    // Linux x86_64 syscalls. The codegen recognises these names and emits
+    // the `syscall` instruction with the appropriate argument registers.
+    for (name, arity) in [
+        ("syscall1", 1usize),
+        ("syscall2", 2),
+        ("syscall3", 3),
+        ("syscall6", 6),
+    ] {
+        let mut params = vec![("nr".to_string(), Type::I64)];
+        for i in 1..=arity {
+            params.push((format!("a{i}"), Type::I64));
+        }
+        checker.env.define_function(FunctionSig {
+            name: name.to_string(),
+            generic_params: vec![],
+            generic_var_ids: vec![],
+            params,
+            ret: Type::I64,
+        });
+    }
+
+    // Raw memory ops. Codegen emits inline load/store instructions.
+    checker.env.define_function(FunctionSig {
+        name: "mem_read_byte".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("ptr".to_string(), Type::I64)],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "mem_write_byte".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("ptr".to_string(), Type::I64),
+            ("val".to_string(), Type::I64),
+        ],
+        ret: Type::Void,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "mem_read_i64".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("ptr".to_string(), Type::I64)],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "mem_write_i64".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("ptr".to_string(), Type::I64),
+            ("val".to_string(), Type::I64),
+        ],
+        ret: Type::Void,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "mem_copy".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("src".to_string(), Type::I64),
+            ("dst".to_string(), Type::I64),
+            ("len".to_string(), Type::I64),
+        ],
+        ret: Type::Void,
+    });
+
+    // String view intrinsics. A Kryos `str` is an opaque handle; these
+    // expose its byte length and data pointer for low-level work. The
+    // self-hosted runtime sometimes carries the handle around as raw
+    // `i64`, so the intrinsic accepts either a `str` or an `i64` handle.
+    checker.env.define_function(FunctionSig {
+        name: "str_byte_len".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("s".to_string(), Type::Error)],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "str_data_ptr".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("s".to_string(), Type::Error)],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "str_from_bytes".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("ptr".to_string(), Type::I64),
+            ("len".to_string(), Type::I64),
+        ],
+        ret: Type::Str,
+    });
+
+    // Numeric/process intrinsics.
+    checker.env.define_function(FunctionSig {
+        name: "__int_to_float".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("x".to_string(), Type::I64)],
+        ret: Type::F64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "__get_process_args".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![],
+        ret: Type::Array {
+            element: Box::new(Type::Str),
+            size: None,
+        },
+    });
+
+    // `__builtin_*` thin wrappers — the runtime's user-facing `len`,
+    // `push`, `pop`, `range`, `map_*` functions delegate to these.
+    // They mirror the existing high-level builtins but live under a
+    // namespaced name so codegen can dispatch them differently from a
+    // user-defined `len`/`push`.
+    checker.env.define_function(FunctionSig {
+        name: "__builtin_len".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("collection".to_string(), Type::Error)],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "__builtin_push".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("arr".to_string(), Type::Error),
+            ("val".to_string(), Type::Error),
+        ],
+        ret: Type::Error,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "__builtin_pop".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("arr".to_string(), Type::Error)],
+        ret: Type::Error,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "__builtin_range".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("start".to_string(), Type::I64),
+            ("end".to_string(), Type::I64),
+        ],
+        ret: Type::Array {
+            element: Box::new(Type::I64),
+            size: None,
+        },
+    });
+    for name in [
+        "__builtin_map_has",
+        "__builtin_map_has_str",
+        "__builtin_map_delete",
+        "__builtin_map_delete_str",
+    ] {
+        checker.env.define_function(FunctionSig {
+            name: name.to_string(),
+            generic_params: vec![],
+            generic_var_ids: vec![],
+            params: vec![
+                ("m".to_string(), Type::Error),
+                ("key".to_string(), Type::Error),
+            ],
+            ret: Type::I64,
+        });
+    }
+    for name in ["__builtin_map_keys", "__builtin_map_keys_str"] {
+        checker.env.define_function(FunctionSig {
+            name: name.to_string(),
+            generic_params: vec![],
+            generic_var_ids: vec![],
+            params: vec![("m".to_string(), Type::Error)],
+            ret: Type::Error,
+        });
+    }
+
     // ── String utility builtins ────────────────────────────────────
 
     // contains(haystack: str, needle: str) -> bool

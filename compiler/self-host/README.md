@@ -1,22 +1,26 @@
 # Kryos Self-Hosting Compiler
 
-## Status: 15/16 FILES CLEAN, STAGE 1 COMPILES
+## Status: 16/16 FILES CLEAN, STAGE 1 COMPILES
 
-As of 2026-05-15, the self-hosting compiler **compiles to a working Stage-1 binary**
-and the ownership checker is happy with the source: `main.kry` reports **0 errors**
-(7 warnings only). The remaining 89 errors are confined to `runtime.kry`, and are
-all **undefined-builtin** errors for low-level intrinsics (`syscall6`, `mem_read_i64`,
-and friends) that the Rust compiler does not yet expose as builtins. They are
-unrelated to ownership / partial moves.
+As of 2026-05-16, the self-hosting compiler **compiles to a working Stage-1 binary**
+and **all 16 self-host files pass `kryos check` cleanly**. The previous 89 errors in
+`runtime.kry` were undefined-builtin errors for low-level intrinsics (`syscall6`,
+`mem_read_i64`, `__builtin_*`, and friends); these are now registered as compiler
+builtins in `kryos-types/src/check.rs` so the type checker recognises them. The
+intrinsics are still implemented by the Rust runtime for stage-0 builds and by
+inline codegen for stage-1+ builds.
 
 The code is structurally complete (16 files, 19,202 lines).
 
 ### What works
 
 - **Stage-1 binary compiles** using the Rust compiler
+- **All 16 self-host files pass `check` cleanly** -- `runtime.kry` now resolves
+  every intrinsic it calls (`syscall1`/`2`/`3`/`6`, `mem_read_i64`,
+  `mem_write_i64`, `mem_copy`, `mem_read_byte`, `mem_write_byte`,
+  `str_byte_len`, `str_data_ptr`, `str_from_bytes`, `__int_to_float`,
+  `__get_process_args`, and the `__builtin_*` family).
 - **`main.kry` passes `check` with 0 errors** (7 warnings)
-- **15 of 16 files pass `check` cleanly** -- only `runtime.kry` reports errors
-  (89 undefined-builtin errors for `syscall6`, `mem_read_i64`, etc.)
 - **`@copy` annotations** are applied across all self-host structs (65 structs
   across 10 files)
 - **Partial-move on @copy structs is fixed** -- the ownership checker correctly
@@ -32,9 +36,6 @@ The code is structurally complete (16 files, 19,202 lines).
 
 ### What is still rough
 
-- **`runtime.kry` -- 89 undefined-builtin errors**: requires intrinsics support
-  (e.g. `syscall6`, `mem_read_i64`, `mem_write_i64`). Tracked as a separate item;
-  not blocking on ownership analysis.
 - **Stage-2 self-host bootstrap is very slow** (>600s on the current machine).
   Stage 1 produces a usable binary, but Stage 2 (Stage-1 compiling itself end-to-end)
   needs further codegen / runtime work before it is practical to time-bound.
@@ -55,7 +56,7 @@ The code is structurally complete (16 files, 19,202 lines).
 | optimize.kry | clean |
 | parser.kry | clean (3 warnings) |
 | regalloc.kry | clean (1 warning) |
-| runtime.kry | 89 errors (undefined builtins) |
+| runtime.kry | clean |
 | token.kry | clean |
 | types.kry | clean |
 | x86.kry | clean |
@@ -181,10 +182,7 @@ cargo run --release -- check self-host/x86.kry
 cargo run --release -- check self-host/elf.kry
 cargo run --release -- check self-host/coff.kry
 
-# Pass with --skip-ownership (15 of 16 files):
-cargo run --release -- check self-host/main.kry --skip-ownership
-
-# Full check (0 errors in main.kry, only 89 errors remain in runtime.kry):
+# Full check (0 errors in main.kry, 0 errors in runtime.kry as of 2026-05-16):
 cargo run --release -- check self-host/main.kry
 ```
 
@@ -207,8 +205,7 @@ before it is practical to time-bound.
   PASS  token.kry
   PASS  lexer.kry
   ...
-  Files passing check:                 15 / 16
-  Files failing (runtime intrinsics):   1 / 16  (runtime.kry, 89 errors)
+  Files passing check:                 16 / 16
 
 === Stage 1: Compiling self-host with Rust compiler -> stage-1 ===
   Stage 1 binary: .../kryos-stage1
@@ -238,23 +235,23 @@ partial-move-on-`@copy` and array-sentinel-reuse bugs are fixed in the
 ownership analyzer and covered by regression tests in
 `compiler/crates/kryos-ownership/tests/ownership.rs`.
 
-### 3. Runtime builtins as intrinsics (blocks runtime.kry -- 89 errors)
-`runtime.kry` calls low-level primitives (`syscall6`, `mem_read_i64`,
-`mem_write_i64`, `__builtin_map_keys_str`, etc.) that are not defined in
-user-space Kryos. These need to be:
-- Compiler intrinsics recognized by the Stage-0 compiler
-- Or inline assembly support
-- Or an FFI mechanism to call platform-native functions
-
-Note: For Stage-0 builds (Rust compiler -> Stage-1), the runtime is excluded and
-the Rust compiler provides these builtins natively. This only blocks the Stage-1+
-builds where the self-host must be fully self-contained.
+### 3. ~~Runtime builtins as intrinsics~~ (DONE 2026-05-16)
+`runtime.kry` previously failed `check` with 89 errors for undefined low-level
+primitives (`syscall6`, `mem_read_i64`, `mem_write_i64`, `__builtin_map_keys_str`,
+etc.). All 24 distinct intrinsics are now registered in the type checker's
+builtin table (see `compiler/crates/kryos-types/src/check.rs`, search for
+"Self-host intrinsics"). Stage-0 codegen still calls into the Rust runtime for
+the implementations; a future change will teach the self-hosted codegen to emit
+inline `syscall` and load/store instructions for stage-1+ builds.
 
 ### Priority path to self-hosting
 
 1. ~~**Fix ownership checker for @copy + array-sentinel reuse**~~ (DONE 2026-05)
-2. **Speed up Stage-2 bootstrap** -- profile/optimize hot paths so Stage-2
+2. ~~**Compiler intrinsics for runtime**~~ (DONE 2026-05-16) -- runtime.kry now
+   passes `check` cleanly
+3. **Speed up Stage-2 bootstrap** -- profile/optimize hot paths so Stage-2
    completes within a reasonable wall-clock budget
-3. **Compiler intrinsics for runtime** -- makes runtime.kry compilable for
-   Stage-1+ self-contained builds
-4. **Full bootstrap verification** -- Stage-2 == Stage-3 binary identity check
+4. **Inline-syscall codegen** -- teach stage-1+ codegen to emit `syscall` and
+   load/store instructions directly for the new intrinsics so the runtime no
+   longer needs the Rust C-shim
+5. **Full bootstrap verification** -- Stage-2 == Stage-3 binary identity check
