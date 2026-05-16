@@ -246,6 +246,13 @@ impl LlvmCodegen {
             self.emit_main_wrapper();
         }
 
+        // Emit DWARF compile-unit + DIFile metadata if `-g` is enabled.
+        // Matches the incremental path in `emit_footer_section`.
+        if self.options.debug_info && self.options.source_file_path.is_some() {
+            self.emit_dwarf_anchor_fn();
+            self.emit_dwarf_metadata();
+        }
+
         Ok(self.output.clone())
     }
 
@@ -379,6 +386,7 @@ impl LlvmCodegen {
             self.emit_main_wrapper();
         }
         if self.options.debug_info && self.options.source_file_path.is_some() {
+            self.emit_dwarf_anchor_fn();
             self.emit_dwarf_metadata();
         }
     }
@@ -432,7 +440,17 @@ impl LlvmCodegen {
         self.emit_line("!4 = !DISubroutineType(types: !5)");
         self.emit_line("!5 = !{null}");
 
-        // DISubprograms intentionally omitted — see emit_function_as note.
+        // !6 = DISubprogram anchor attached to @__kryos_dwarf_anchor. We
+        // emit exactly one DISubprogram so LLVM's verifier keeps the
+        // !DICompileUnit alive (orphan CUs are stripped). Per-function
+        // DISubprograms with real line info is a v2.3 item gated on
+        // MIR-side span plumbing.
+        self.emit_line(
+            "!6 = distinct !DISubprogram(name: \"__kryos_dwarf_anchor\", linkageName: \"__kryos_dwarf_anchor\", scope: !1, file: !1, line: 1, type: !4, scopeLine: 1, spFlags: DISPFlagDefinition, unit: !0)",
+        );
+        // !8 = a single DILocation pointing at the start of the user
+        // source so LLVM emits a real .debug_line program.
+        self.emit_line("!8 = !DILocation(line: 1, column: 1, scope: !6)");
     }
 
     // -----------------------------------------------------------------------
@@ -1435,6 +1453,29 @@ impl LlvmCodegen {
         self.emit_line("  call void @kryos_spawn_wait_all()");
         self.emit_line("  ret i32 0");
         self.emit_line("}");
+        self.emit_blank();
+    }
+
+    /// Emit a tiny no-op function `@__kryos_dwarf_anchor` that carries
+    /// a `DISubprogram` (!6) + `DILocation` (!8). LLVM strips orphan
+    /// `!DICompileUnit` nodes — i.e. CUs not referenced by any
+    /// instruction's `!dbg` — leaving only `.debug_frame`. Anchoring
+    /// the CU on this dummy function preserves `.debug_info`,
+    /// `.debug_line`, `.debug_str`, etc., so addr2line and gdb see
+    /// the user's `.kry` source path.
+    ///
+    /// We retain the function via `@llvm.used` so opt/LTO cannot DCE it,
+    /// which would also drop the metadata.
+    fn emit_dwarf_anchor_fn(&mut self) {
+        self.emit_blank();
+        self.emit_line("; DWARF metadata anchor — keeps !DICompileUnit live.");
+        self.emit_line("define internal void @__kryos_dwarf_anchor() !dbg !6 {");
+        self.emit_line("entry:");
+        self.emit_line("  ret void, !dbg !8");
+        self.emit_line("}");
+        self.emit_line(
+            "@llvm.used = appending global [1 x ptr] [ptr @__kryos_dwarf_anchor], section \"llvm.metadata\"",
+        );
         self.emit_blank();
     }
 
