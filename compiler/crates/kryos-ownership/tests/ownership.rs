@@ -1228,3 +1228,444 @@ fn builtin_fn_call_is_copy() {
         move_errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 }
+
+// ── Regression: @copy struct field access does NOT partial-move ─
+//
+// Repro of the self-host checker bug seen in the Kryos compiler
+// front-end where @copy struct field access was incorrectly flagged
+// as a partial move. Code:
+//
+//   @copy struct Token { kind: i32, line: i32 }
+//   fn main(t: Token) {
+//       let k = t.kind   ← copy of field (not a partial move)
+//       let l = t.line   ← still OK; t is intact
+//       use(t)           ← OK: @copy struct stays usable
+//   }
+//
+// Before the fix `analyze_expr_move` for FieldAccess unconditionally
+// recorded `moved_fields`, and `analyze_expr_use` then raised
+// "partially moved". The fix checks `info.is_copy` first.
+
+#[test]
+fn copy_struct_field_access_no_partial_move() {
+    let module = Module {
+        name: "test".into(),
+        declarations: vec![
+            Decl::Struct {
+                name: "Token".into(),
+                generics: vec![],
+                fields: vec![
+                    StructField {
+                        name: "kind".into(),
+                        ty: TypeExpr::Simple {
+                            name: "i32".into(),
+                            span: dummy_span(),
+                        },
+                        public: true,
+                        default: None,
+                        span: dummy_span(),
+                    },
+                    StructField {
+                        name: "line".into(),
+                        ty: TypeExpr::Simple {
+                            name: "i32".into(),
+                            span: dummy_span(),
+                        },
+                        public: true,
+                        default: None,
+                        span: dummy_span(),
+                    },
+                ],
+                public: true,
+                annotations: vec![Annotation {
+                    name: "copy".into(),
+                    args: vec![],
+                    span: dummy_span(),
+                }],
+                doc_comments: vec![],
+                span: dummy_span(),
+            },
+            Decl::Function {
+                name: "main".into(),
+                generics: vec![],
+                params: vec![Param {
+                    name: "t".into(),
+                    ty: Some(TypeExpr::Simple {
+                        name: "Token".into(),
+                        span: dummy_span(),
+                    }),
+                    default: None,
+                    span: Span::new(0, 0, 5),
+                }],
+                ret_ty: None,
+                body: Some(Block {
+                    stmts: vec![
+                        let_move(
+                            "k",
+                            Expr::FieldAccess {
+                                object: Box::new(ident("t")),
+                                field: "kind".into(),
+                                span: Span::new(0, 10, 15),
+                            },
+                        ),
+                        let_move(
+                            "l",
+                            Expr::FieldAccess {
+                                object: Box::new(ident("t")),
+                                field: "line".into(),
+                                span: Span::new(0, 16, 20),
+                            },
+                        ),
+                        expr_stmt(call("use", vec![ident("t")])),
+                    ],
+                    span: dummy_span(),
+                }),
+                public: false,
+                is_async: false,
+                annotations: vec![],
+                doc_comments: vec![],
+                span: dummy_span(),
+            },
+        ],
+        span: dummy_span(),
+    };
+    let result = analyze_ownership(&module);
+    let partial = result
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("partially moved"))
+        .collect::<Vec<_>>();
+    let moved = result
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("use of moved value"))
+        .collect::<Vec<_>>();
+    assert!(
+        partial.is_empty(),
+        "@copy struct field access must not raise partial-move, got: {:?}",
+        partial.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+    assert!(
+        moved.is_empty(),
+        "@copy struct must not raise use-of-moved, got: {:?}",
+        moved.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+// ── Regression: @copy struct field accessed via let, then parent used ─
+//
+// Tighter variant of the above where we explicitly read a field
+// into a local and then read another field — both must stay legal
+// because the struct is @copy.
+
+#[test]
+fn copy_struct_field_then_other_field() {
+    let module = Module {
+        name: "test".into(),
+        declarations: vec![
+            Decl::Struct {
+                name: "Pair".into(),
+                generics: vec![],
+                fields: vec![
+                    StructField {
+                        name: "a".into(),
+                        ty: TypeExpr::Simple {
+                            name: "i32".into(),
+                            span: dummy_span(),
+                        },
+                        public: true,
+                        default: None,
+                        span: dummy_span(),
+                    },
+                    StructField {
+                        name: "b".into(),
+                        ty: TypeExpr::Simple {
+                            name: "i32".into(),
+                            span: dummy_span(),
+                        },
+                        public: true,
+                        default: None,
+                        span: dummy_span(),
+                    },
+                ],
+                public: true,
+                annotations: vec![Annotation {
+                    name: "copy".into(),
+                    args: vec![],
+                    span: dummy_span(),
+                }],
+                doc_comments: vec![],
+                span: dummy_span(),
+            },
+            Decl::Function {
+                name: "main".into(),
+                generics: vec![],
+                params: vec![],
+                ret_ty: None,
+                body: Some(Block {
+                    stmts: vec![
+                        // let p: Pair = Pair { a: 1, b: 2 }
+                        Stmt::Let {
+                            name: "p".into(),
+                            mutable: false,
+                            ty: Some(TypeExpr::Simple {
+                                name: "Pair".into(),
+                                span: dummy_span(),
+                            }),
+                            value: Some(Expr::StructLiteral {
+                                name: "Pair".into(),
+                                fields: vec![
+                                    ("a".into(), int_lit(1)),
+                                    ("b".into(), int_lit(2)),
+                                ],
+                                span: dummy_span(),
+                            }),
+                            pattern: None,
+                            span: Span::new(0, 0, 10),
+                        },
+                        let_move(
+                            "x",
+                            Expr::FieldAccess {
+                                object: Box::new(ident("p")),
+                                field: "a".into(),
+                                span: Span::new(0, 11, 15),
+                            },
+                        ),
+                        expr_stmt(Expr::FieldAccess {
+                            object: Box::new(ident("p")),
+                            field: "b".into(),
+                            span: Span::new(0, 16, 20),
+                        }),
+                    ],
+                    span: dummy_span(),
+                }),
+                public: false,
+                is_async: false,
+                annotations: vec![],
+                doc_comments: vec![],
+                span: dummy_span(),
+            },
+        ],
+        span: dummy_span(),
+    };
+    let result = analyze_ownership(&module);
+    let partial = result
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("partially moved"))
+        .collect::<Vec<_>>();
+    assert!(
+        partial.is_empty(),
+        "@copy struct must allow multiple field reads, got: {:?}",
+        partial.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+// ── Regression: Non-@copy struct partial move IS still detected ─
+//
+// Companion to the test above — ensures the @copy carve-out did
+// not break the original partial-move detection for plain structs.
+// (Mirrors `struct_partial_move` above, but adds an explicit
+// non-@copy struct *declaration* so the checker takes the same
+// code path as the @copy tests above, only with `is_copy = false`.)
+
+#[test]
+fn non_copy_struct_partial_move_still_detected() {
+    let module = Module {
+        name: "test".into(),
+        declarations: vec![
+            Decl::Struct {
+                name: "Owned".into(),
+                generics: vec![],
+                fields: vec![StructField {
+                    name: "buf".into(),
+                    // BigBuf is unknown to the ownership analyzer
+                    // → treated as non-copy, so field access genuinely
+                    // moves the field out of the parent.
+                    ty: TypeExpr::Simple {
+                        name: "BigBuf".into(),
+                        span: dummy_span(),
+                    },
+                    public: true,
+                    default: None,
+                    span: dummy_span(),
+                }],
+                public: true,
+                annotations: vec![], // ← deliberately NOT @copy
+                doc_comments: vec![],
+                span: dummy_span(),
+            },
+            Decl::Function {
+                name: "main".into(),
+                generics: vec![],
+                params: vec![],
+                ret_ty: None,
+                body: Some(Block {
+                    stmts: vec![
+                        Stmt::Let {
+                            name: "o".into(),
+                            mutable: false,
+                            ty: Some(TypeExpr::Simple {
+                                name: "Owned".into(),
+                                span: dummy_span(),
+                            }),
+                            value: Some(Expr::StructLiteral {
+                                name: "Owned".into(),
+                                // non_copy_val produces an opaque fn call,
+                                // whose result defaults to non-copy.
+                                fields: vec![("buf".into(), non_copy_val("buf"))],
+                                span: dummy_span(),
+                            }),
+                            pattern: None,
+                            span: Span::new(0, 0, 10),
+                        },
+                        // partial move: pull `buf` out by move
+                        let_move(
+                            "b",
+                            Expr::FieldAccess {
+                                object: Box::new(ident("o")),
+                                field: "buf".into(),
+                                span: Span::new(0, 11, 15),
+                            },
+                        ),
+                        // re-read same field → partially-moved error expected
+                        expr_stmt(Expr::FieldAccess {
+                            object: Box::new(ident("o")),
+                            field: "buf".into(),
+                            span: Span::new(0, 16, 20),
+                        }),
+                    ],
+                    span: dummy_span(),
+                }),
+                public: false,
+                is_async: false,
+                annotations: vec![],
+                doc_comments: vec![],
+                span: dummy_span(),
+            },
+        ],
+        span: dummy_span(),
+    };
+    let result = analyze_ownership(&module);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("partially moved")),
+        "non-@copy struct must still raise partial-move, got: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+// ── Regression: Empty array sentinel reused across struct fields ─
+//
+// Repro of the self-host "array sentinel reuse" pattern: an empty
+// array literal `[]` (often used as `empty_ti` in the Kryos
+// self-host) is used to initialize multiple struct fields.
+// Each `[]` is its own value and must not interfere with the
+// others — there should be no "use of moved value" complaints.
+//
+//   struct Holder { a: [i32], b: [i32] }
+//   fn main() {
+//       let h = Holder { a: [], b: [] }   ← both `[]` are fresh
+//       use(h)
+//   }
+
+#[test]
+fn empty_array_sentinel_reused_in_struct_fields() {
+    let module = Module {
+        name: "test".into(),
+        declarations: vec![
+            Decl::Struct {
+                name: "Holder".into(),
+                generics: vec![],
+                fields: vec![
+                    StructField {
+                        name: "a".into(),
+                        ty: TypeExpr::Array {
+                            element: Box::new(TypeExpr::Simple {
+                                name: "i32".into(),
+                                span: dummy_span(),
+                            }),
+                            size: None,
+                            span: dummy_span(),
+                        },
+                        public: true,
+                        default: None,
+                        span: dummy_span(),
+                    },
+                    StructField {
+                        name: "b".into(),
+                        ty: TypeExpr::Array {
+                            element: Box::new(TypeExpr::Simple {
+                                name: "i32".into(),
+                                span: dummy_span(),
+                            }),
+                            size: None,
+                            span: dummy_span(),
+                        },
+                        public: true,
+                        default: None,
+                        span: dummy_span(),
+                    },
+                ],
+                public: true,
+                annotations: vec![],
+                doc_comments: vec![],
+                span: dummy_span(),
+            },
+            Decl::Function {
+                name: "main".into(),
+                generics: vec![],
+                params: vec![],
+                ret_ty: None,
+                body: Some(Block {
+                    stmts: vec![
+                        let_move(
+                            "h",
+                            Expr::StructLiteral {
+                                name: "Holder".into(),
+                                fields: vec![
+                                    (
+                                        "a".into(),
+                                        Expr::ArrayLiteral {
+                                            elements: vec![],
+                                            span: Span::new(0, 1, 3),
+                                        },
+                                    ),
+                                    (
+                                        "b".into(),
+                                        Expr::ArrayLiteral {
+                                            elements: vec![],
+                                            span: Span::new(0, 4, 6),
+                                        },
+                                    ),
+                                ],
+                                span: dummy_span(),
+                            },
+                        ),
+                        expr_stmt(call("use", vec![ident("h")])),
+                    ],
+                    span: dummy_span(),
+                }),
+                public: false,
+                is_async: false,
+                annotations: vec![],
+                doc_comments: vec![],
+                span: dummy_span(),
+            },
+        ],
+        span: dummy_span(),
+    };
+    let result = analyze_ownership(&module);
+    let moved: Vec<_> = result
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("use of moved value"))
+        .collect();
+    assert!(
+        moved.is_empty(),
+        "reusing [] across struct fields must not raise move errors, got: {:?}",
+        moved.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}

@@ -1,46 +1,64 @@
 # Kryos Self-Hosting Compiler
 
-## Status: STAGE 1 COMPILES, STAGE 2 SEGFAULTS
+## Status: 15/16 FILES CLEAN, STAGE 1 COMPILES
 
-As of 2026-04-11, the self-hosting compiler **compiles to a working Stage-1 binary**
-via `--skip-ownership`, but the Stage-1 binary segfaults when attempting to compile
-itself (Stage 2). The code is structurally complete (16 files, 19,202 lines) and the
-Stage-1 binary successfully tokenizes the full 97,329-token source before crashing
-during parsing or later phases.
+As of 2026-05-15, the self-hosting compiler **compiles to a working Stage-1 binary**
+and the ownership checker is happy with the source: `main.kry` reports **0 errors**
+(7 warnings only). The remaining 89 errors are confined to `runtime.kry`, and are
+all **undefined-builtin** errors for low-level intrinsics (`syscall6`, `mem_read_i64`,
+and friends) that the Rust compiler does not yet expose as builtins. They are
+unrelated to ownership / partial moves.
+
+The code is structurally complete (16 files, 19,202 lines).
 
 ### What works
 
-- **Stage-1 binary compiles** (15.2 MB) using the Rust compiler with `--skip-ownership`
-- **Stage-1 runs** and successfully tokenizes 97K+ tokens from its own source
-- **`@copy` annotations** added to all self-host structs, reducing ownership errors
-  from 153 to 127 (17% reduction, 26 errors eliminated)
-- **0 non-ownership errors** -- the self-host passes `check --skip-ownership` cleanly
-- **15 of 16 files pass with `--skip-ownership`** -- only `runtime.kry` still fails
+- **Stage-1 binary compiles** using the Rust compiler
+- **`main.kry` passes `check` with 0 errors** (7 warnings)
+- **15 of 16 files pass `check` cleanly** -- only `runtime.kry` reports errors
   (89 undefined-builtin errors for `syscall6`, `mem_read_i64`, etc.)
+- **`@copy` annotations** are applied across all self-host structs (65 structs
+  across 10 files)
+- **Partial-move on @copy structs is fixed** -- the ownership checker correctly
+  skips partial-move tracking when the parent struct is `@copy`. Regression tests:
+  see `compiler/crates/kryos-ownership/tests/ownership.rs`
+  (`copy_struct_field_access_no_partial_move`,
+  `copy_struct_field_then_other_field`,
+  `non_copy_struct_partial_move_still_detected`).
+- **Array sentinel reuse across struct fields is OK** -- empty array literals
+  (`[]`) used to initialize multiple struct fields each construct a fresh value
+  and do not interfere with one another. Regression test:
+  `empty_array_sentinel_reused_in_struct_fields`.
 
-### Where it breaks
+### What is still rough
 
-- **Stage 2 segfault**: The Stage-1 binary crashes after tokenizing when it tries
-  to compile itself. This is likely a codegen bug in the Rust compiler's handling
-  of complex struct operations under `--skip-ownership` mode.
-- **127 ownership errors** prevent compilation without `--skip-ownership`.
-  These fall into two categories that `@copy` cannot fix:
-  1. **Array sentinel reuse** (~100 errors): Variables like `empty_ti: [TypeInfo] = []`
-     are moved into struct fields and then reused. `@copy` applies to struct types,
-     not array types.
-  2. **Partial-move checker bug** (~22 errors): The ownership checker tracks partial
-     moves on `@copy` structs (e.g., `tok.start` on a `@copy Token`), but it should
-     skip partial-move tracking for copy types entirely. This is a Rust compiler bug.
+- **`runtime.kry` -- 89 undefined-builtin errors**: requires intrinsics support
+  (e.g. `syscall6`, `mem_read_i64`, `mem_write_i64`). Tracked as a separate item;
+  not blocking on ownership analysis.
+- **Stage-2 self-host bootstrap is very slow** (>600s on the current machine).
+  Stage 1 produces a usable binary, but Stage 2 (Stage-1 compiling itself end-to-end)
+  needs further codegen / runtime work before it is practical to time-bound.
 
-### Remaining ownership errors (127 total in main.kry)
+### Per-file `check` status (kryos 2.2.0)
 
-| Error type | Count | Cause |
-|------------|-------|-------|
-| E0300: array sentinel reuse | ~85 | `empty_ti`, `empty_mt`, `empty_op`, `empty_ex`, etc. -- array variables moved into struct fields then reused |
-| E0382: partial move on @copy struct | ~18 | `tok.start`/`tok.end` on @copy Token -- checker bug, should skip for copy types |
-| E0300: string variable reuse | ~15 | `output_path`, `target`, `name`, `params` -- str is not copy |
-| E0382: other partial moves | ~4 | `d.name`, `ty.name`, `pr.pattern` -- str fields in @copy structs |
-| W0383: conditional move | 2 | `esc`, `stack_offset` -- warnings only |
+| File | Status |
+|------|--------|
+| ast.kry | clean |
+| codegen.kry | clean (1 warning) |
+| coff.kry | clean |
+| elf.kry | clean |
+| lexer.kry | clean |
+| linker.kry | clean |
+| lower.kry | clean (1 warning) |
+| **main.kry** | **0 errors, 7 warnings** |
+| mir.kry | clean |
+| optimize.kry | clean |
+| parser.kry | clean (3 warnings) |
+| regalloc.kry | clean (1 warning) |
+| runtime.kry | 89 errors (undefined builtins) |
+| token.kry | clean |
+| types.kry | clean |
+| x86.kry | clean |
 
 ### @copy annotations applied (2026-04-11)
 
@@ -62,13 +80,12 @@ All 65 structs across 10 files now have `@copy`. Key structs annotated:
   `LinkerReloc`, `LinkerInput`, `LinkerMerged`, `ResolvedSymbol`, `LinkerResult`,
   `ElfObject`, `ShstrtabResult`, `CoffObject`
 
-These are not bugs in the self-host code. They reflect two gaps:
-1. **Array types are not copyable** -- `[T]` arrays are always moved, even when `T`
-   is `@copy`. The self-host uses empty array sentinels (`let empty_ti: [TypeInfo] = []`)
-   that get moved into struct fields and cannot be reused.
-2. **Ownership checker partial-move bug** -- the checker tracks field moves on `@copy`
-   structs, but `@copy` means the whole struct (and its fields) should be implicitly
-   copied, making partial-move tracking unnecessary.
+Historical note: an earlier revision of this README documented two ownership-
+checker bugs that blocked the self-host (partial-move on `@copy` structs, and
+array sentinel reuse). Both are now fixed in `kryos-ownership/src/analysis.rs`
+and covered by regression tests in `kryos-ownership/tests/ownership.rs`. The
+remaining 89 errors are all in `runtime.kry` and are undefined-builtin errors
+for low-level intrinsics, not ownership.
 
 ## Architecture
 
@@ -167,7 +184,7 @@ cargo run --release -- check self-host/coff.kry
 # Pass with --skip-ownership (15 of 16 files):
 cargo run --release -- check self-host/main.kry --skip-ownership
 
-# Full check (currently 127 errors in main.kry):
+# Full check (0 errors in main.kry, only 89 errors remain in runtime.kry):
 cargo run --release -- check self-host/main.kry
 ```
 
@@ -177,9 +194,11 @@ cargo run --release -- check self-host/main.kry
 ./self-host/bootstrap.sh --verbose
 ```
 
-The script strips internal `use` statements from the concatenated source and passes
-`--skip-ownership` to the Stage-0 compiler. Stage 1 compiles successfully, but
-Stage 2 segfaults.
+The script strips internal `use` statements from the concatenated source and
+feeds it to the Stage-0 compiler. Stage 1 compiles successfully; Stage 2
+(Stage-1 compiling itself) currently runs but is too slow to complete inside
+the project's default timeouts (>600s) and needs more codegen/runtime work
+before it is practical to time-bound.
 
 ### Expected output (current state)
 
@@ -188,20 +207,14 @@ Stage 2 segfaults.
   PASS  token.kry
   PASS  lexer.kry
   ...
-  Files passing check:                 6 / 16
-  Files passing with --skip-ownership: 15 / 16
-  Total ownership errors:              127
+  Files passing check:                 15 / 16
+  Files failing (runtime intrinsics):   1 / 16  (runtime.kry, 89 errors)
 
 === Stage 1: Compiling self-host with Rust compiler -> stage-1 ===
   Stage 1 binary: .../kryos-stage1
-  Stage 1 size: 15187456 bytes
 
 === Stage 2: Compiling self-host with stage-1 -> stage-2 ===
-=== Kryos Self-Hosted Compiler ===
-File: .../kryos-sh-full.kry
-Tokens: 97329
-Segmentation fault
-FAIL: Stage 2 compilation failed
+  (currently very slow; see Roadmap)
 ```
 
 ## Roadmap
@@ -209,33 +222,21 @@ FAIL: Stage 2 compilation failed
 To achieve full self-hosting (Stage-2 == Stage-3), the following issues must be
 resolved in roughly this priority order:
 
-### 1. Fix Stage-2 segfault (CRITICAL -- blocks bootstrap)
-The Stage-1 binary successfully tokenizes its own source (97K tokens) but segfaults
-during parsing or a later phase. This is most likely a codegen bug in the Rust
-compiler's `--skip-ownership` mode -- moved values are used after being invalidated,
-leading to dangling pointers or corrupt data at runtime. Debugging approach:
-- Run Stage-1 under a debugger (gdb/lldb) to find the crash site
-- Check if the crash is in parser, type-checker, or lowering
-- May require fixing the ownership errors first (see item 2)
+### 1. Speed up Stage-2 self-host bootstrap
+The Stage-1 binary now successfully runs the full pipeline on its own source,
+but Stage 2 is too slow to complete within reasonable bounds (>600s). This is
+likely a combination of unoptimized codegen for hot inner loops in the
+self-host (lexer / parser / type-checker) and runtime allocation pressure.
+Next steps:
+- Profile Stage-1 under perf/cargo-flamegraph to find hot spots
+- Audit lexer / parser tight loops for unnecessary cloning
+- Ensure the optimizer is actually running on the Stage-1 build
 
-### 2. Fix remaining ownership errors (127 errors)
-With `@copy` on all structs, 127 errors remain. Two fixes needed in the Rust compiler:
-
-**a. Fix partial-move tracking for @copy structs** (~22 errors):
-The ownership checker should skip `moved_fields` tracking when `info.is_copy` is true.
-In `analysis.rs`, the `FieldAccess` case in `analyze_expr_use` (line ~770) and
-`analyze_expr_move` (line ~975) should check `info.is_copy` before recording/checking
-partial moves. This would fix all `tok.start`/`tok.end` errors on `@copy Token`.
-
-**b. Make `str` and array literals copy types** (~100 errors):
-String variables and empty array sentinels (`let empty_ti: [TypeInfo] = []`) are
-reused across struct construction but tracked as moves. Options:
-- Treat `str` as a primitive copy type (add to `is_primitive_copy_type`)
-- Treat empty array literals `[]` as copy (they allocate nothing)
-- Add a `clone()` builtin for explicit array/string duplication
-
-Fixing both would eliminate all 127 remaining errors and remove the need for
-`--skip-ownership`, which would likely also fix the Stage-2 segfault.
+### 2. ~~Fix remaining ownership errors~~ (DONE)
+Resolved 2026-05. `main.kry` reports 0 errors; the previously listed
+partial-move-on-`@copy` and array-sentinel-reuse bugs are fixed in the
+ownership analyzer and covered by regression tests in
+`compiler/crates/kryos-ownership/tests/ownership.rs`.
 
 ### 3. Runtime builtins as intrinsics (blocks runtime.kry -- 89 errors)
 `runtime.kry` calls low-level primitives (`syscall6`, `mem_read_i64`,
@@ -251,10 +252,9 @@ builds where the self-host must be fully self-contained.
 
 ### Priority path to self-hosting
 
-1. **Fix ownership checker for @copy + str/array copy** -- eliminates 127 remaining
-   ownership errors, removes need for `--skip-ownership`, likely fixes Stage-2 segfault
-2. **Debug Stage-2 crash** -- if it persists after ownership fixes, investigate
-   codegen correctness in the Rust compiler
+1. ~~**Fix ownership checker for @copy + array-sentinel reuse**~~ (DONE 2026-05)
+2. **Speed up Stage-2 bootstrap** -- profile/optimize hot paths so Stage-2
+   completes within a reasonable wall-clock budget
 3. **Compiler intrinsics for runtime** -- makes runtime.kry compilable for
    Stage-1+ self-contained builds
 4. **Full bootstrap verification** -- Stage-2 == Stage-3 binary identity check
