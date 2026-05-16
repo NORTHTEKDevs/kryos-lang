@@ -1,0 +1,35 @@
+// expect-stdout: and-true
+// expect-stdout: or-true
+// expect-stdout: short-circuit-and
+// expect-stdout: short-circuit-or
+// Tests that `&&` and `||` are recognised as synonyms for `and` / `or`,
+// including their short-circuit semantics.
+
+fn boom() -> bool {
+    println("boom-called")
+    return true
+}
+
+fn main() {
+    let t = true
+    let f = false
+
+    if t && t {
+        println("and-true")
+    }
+    if t || f {
+        println("or-true")
+    }
+
+    // Short-circuit: `false && boom()` should NOT call `boom`.
+    if f && boom() {
+        println("and-no-short")
+    } else {
+        println("short-circuit-and")
+    }
+
+    // Short-circuit: `true || boom()` should NOT call `boom`.
+    if t || boom() {
+        println("short-circuit-or")
+    }
+}

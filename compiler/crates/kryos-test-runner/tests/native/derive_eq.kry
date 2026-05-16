@@ -1,0 +1,22 @@
+// expect-stdout: eq
+// expect-stdout: neq
+// Tests that @derive(Eq) synthesizes an inherent `eq(self, other) -> bool`
+// method that compares all fields with `and`.
+
+@derive(Eq)
+struct Point {
+    x: i64,
+    y: i64
+}
+
+fn main() {
+    let p1: Point = Point { x: 1, y: 2 }
+    let p2: Point = Point { x: 1, y: 2 }
+    let p3: Point = Point { x: 9, y: 9 }
+    if p1.eq(p2) {
+        println("eq")
+    }
+    if !p1.eq(p3) {
+        println("neq")
+    }
+}

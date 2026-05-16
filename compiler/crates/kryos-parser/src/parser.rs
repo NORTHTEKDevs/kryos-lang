@@ -16,10 +16,10 @@ fn infix_binding_power(kind: TokenKind, next: Option<TokenKind>) -> Option<(u8, 
     let bp = match kind {
         // 1. Pipe  |>  — lowest binary
         TokenKind::Pipe if next == Some(TokenKind::Gt) => (2, 3),
-        // 2. or
-        TokenKind::Or => (4, 5),
-        // 3. and
-        TokenKind::And => (6, 7),
+        // 2. or  (also `||`)
+        TokenKind::Or | TokenKind::PipePipe => (4, 5),
+        // 3. and  (also `&&`)
+        TokenKind::And | TokenKind::AmpAmp => (6, 7),
         // 4. == != < > <= >=
         TokenKind::EqEq
         | TokenKind::BangEq
@@ -2602,8 +2602,8 @@ fn token_to_binop(kind: TokenKind) -> BinOp {
         TokenKind::Gt => BinOp::Gt,
         TokenKind::LtEq => BinOp::LtEq,
         TokenKind::GtEq => BinOp::GtEq,
-        TokenKind::And => BinOp::And,
-        TokenKind::Or => BinOp::Or,
+        TokenKind::And | TokenKind::AmpAmp => BinOp::And,
+        TokenKind::Or | TokenKind::PipePipe => BinOp::Or,
         TokenKind::Amp => BinOp::BitAnd,
         TokenKind::Pipe => BinOp::BitOr,
         TokenKind::Caret => BinOp::BitXor,

@@ -1,0 +1,22 @@
+// expect-stdout: equal-hash
+// expect-stdout: distinct-hash
+// Tests that @derive(Hash) synthesizes an inherent `hash(self) -> i64`
+// method that returns a stable, field-derived hash.
+
+@derive(Hash)
+struct Point {
+    x: i64,
+    y: i64
+}
+
+fn main() {
+    let a: Point = Point { x: 1, y: 2 }
+    let b: Point = Point { x: 1, y: 2 }
+    let c: Point = Point { x: 9, y: 9 }
+    if a.hash() == b.hash() {
+        println("equal-hash")
+    }
+    if a.hash() != c.hash() {
+        println("distinct-hash")
+    }
+}

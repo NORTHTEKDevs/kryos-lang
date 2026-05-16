@@ -216,7 +216,13 @@ impl<'src> Lexer<'src> {
             b'#' => self.emit(TokenKind::Hash, start, self.pos, "#".into()),
             b'?' => self.emit(TokenKind::Question, start, self.pos, "?".into()),
             b'^' => self.emit(TokenKind::Caret, start, self.pos, "^".into()),
-            b'&' => self.emit(TokenKind::Amp, start, self.pos, "&".into()),
+            b'&' => {
+                if self.match_char(b'&') {
+                    self.emit(TokenKind::AmpAmp, start, self.pos, "&&".into());
+                } else {
+                    self.emit(TokenKind::Amp, start, self.pos, "&".into());
+                }
+            }
 
             b'+' => {
                 if self.match_char(b'=') {
@@ -286,7 +292,13 @@ impl<'src> Lexer<'src> {
                     self.emit(TokenKind::Gt, start, self.pos, ">".into());
                 }
             }
-            b'|' => self.emit(TokenKind::Pipe, start, self.pos, "|".into()),
+            b'|' => {
+                if self.match_char(b'|') {
+                    self.emit(TokenKind::PipePipe, start, self.pos, "||".into());
+                } else {
+                    self.emit(TokenKind::Pipe, start, self.pos, "|".into());
+                }
+            }
 
             b':' => {
                 if self.match_char(b':') {

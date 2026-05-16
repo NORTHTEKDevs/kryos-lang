@@ -12,13 +12,15 @@
 //!   `to_string(self.<field>)`; non-stringifiable fields fall back to the
 //!   field name placeholder.
 //!
-//! `@derive(Eq)` and `@derive(Hash)` are recognised by the parser but
-//! currently *no-ops* at this layer. They are left as a future expansion
-//! point because they require multi-parameter struct comparison, which is
-//! still affected by an unrelated reference-coercion path in the type
-//! checker (two struct-typed parameters in the same signature surface the
-//! second one's fields as `&T` instead of `T`). Until that is fixed, the
-//! synthesised `eq` / `hash` bodies cannot type-check reliably.
+//! * `@derive(Eq)` — synthesises an inherent
+//!   `impl <Name> { fn eq(self, other: <Name>) -> bool { ... } }` block that
+//!   compares every field pairwise with `and`. Only valid when every field
+//!   itself supports `==` (primitives, strings, and other structs that
+//!   themselves derive `Eq`).
+//! * `@derive(Hash)` — synthesises an inherent
+//!   `impl <Name> { fn hash(self) -> i64 { ... } }` block that combines the
+//!   field hashes using a FNV-style multiply-add fold. Primitive fields are
+//!   used as-is; non-primitive fields fall back to `0` (stable but coarse).
 //!
 //! Unknown derive names are silently ignored — the pass is conservative by
 //! design and never inserts an error of its own.
@@ -64,7 +66,12 @@ pub fn expand_derives(module: &mut Module) {
                 if derives.iter().any(|d| d == "Debug") {
                     synthesized.push(synthesize_debug_impl(name, fields, *span));
                 }
-                // Eq / Hash: parsed and accepted, expansion deferred.
+                if derives.iter().any(|d| d == "Eq") {
+                    synthesized.push(synthesize_eq_impl(name, fields, *span));
+                }
+                if derives.iter().any(|d| d == "Hash") {
+                    synthesized.push(synthesize_hash_impl(name, fields, *span));
+                }
             }
             Decl::Enum {
                 annotations, span, ..
@@ -238,6 +245,220 @@ fn concat(left: Expr, right: Expr, span: Span) -> Expr {
     }
 }
 
+/// Build `impl <name> { fn eq(self, other: <name>) -> bool { <body> } }`.
+fn synthesize_eq_impl(name: &str, fields: &[StructField], span: Span) -> Decl {
+    let body = build_eq_body(name, fields, span);
+
+    let method = Decl::Function {
+        name: "eq".to_string(),
+        generics: Vec::<GenericParam>::new(),
+        params: vec![
+            Param {
+                name: "self".to_string(),
+                ty: None,
+                default: None,
+                span,
+            },
+            Param {
+                name: "other".to_string(),
+                ty: Some(TypeExpr::Simple {
+                    name: name.to_string(),
+                    span,
+                }),
+                default: None,
+                span,
+            },
+        ],
+        ret_ty: Some(TypeExpr::Simple {
+            name: "bool".to_string(),
+            span,
+        }),
+        body: Some(body),
+        public: true,
+        is_async: false,
+        annotations: Vec::new(),
+        doc_comments: Vec::new(),
+        span,
+    };
+
+    Decl::Impl {
+        target: name.to_string(),
+        trait_name: None,
+        generics: Vec::new(),
+        methods: vec![method],
+        doc_comments: Vec::new(),
+        span,
+    }
+}
+
+/// Build the body of the synthesised `eq`:
+///   `return self.f1 == other.f1 and self.f2 == other.f2 and ...`
+/// For a fieldless struct, returns `true`.
+fn build_eq_body(_name: &str, fields: &[StructField], span: Span) -> Block {
+    let expr: Expr = if fields.is_empty() {
+        Expr::BoolLiteral { value: true, span }
+    } else {
+        let mut iter = fields.iter().map(|f| field_eq(&f.name, span));
+        let mut acc = iter.next().expect("non-empty");
+        for next in iter {
+            acc = Expr::BinaryOp {
+                op: BinOp::And,
+                left: Box::new(acc),
+                right: Box::new(next),
+                span,
+            };
+        }
+        acc
+    };
+    Block {
+        stmts: vec![Stmt::Return {
+            value: Some(expr),
+            span,
+        }],
+        span,
+    }
+}
+
+/// `self.<field> == other.<field>`
+fn field_eq(field: &str, span: Span) -> Expr {
+    let self_field = Expr::FieldAccess {
+        object: Box::new(Expr::Identifier {
+            name: "self".to_string(),
+            span,
+        }),
+        field: field.to_string(),
+        span,
+    };
+    let other_field = Expr::FieldAccess {
+        object: Box::new(Expr::Identifier {
+            name: "other".to_string(),
+            span,
+        }),
+        field: field.to_string(),
+        span,
+    };
+    Expr::BinaryOp {
+        op: BinOp::Eq,
+        left: Box::new(self_field),
+        right: Box::new(other_field),
+        span,
+    }
+}
+
+/// Build `impl <name> { fn hash(self) -> i64 { <body> } }`.
+fn synthesize_hash_impl(name: &str, fields: &[StructField], span: Span) -> Decl {
+    let body = build_hash_body(fields, span);
+
+    let method = Decl::Function {
+        name: "hash".to_string(),
+        generics: Vec::<GenericParam>::new(),
+        params: vec![Param {
+            name: "self".to_string(),
+            ty: None,
+            default: None,
+            span,
+        }],
+        ret_ty: Some(TypeExpr::Simple {
+            name: "i64".to_string(),
+            span,
+        }),
+        body: Some(body),
+        public: true,
+        is_async: false,
+        annotations: Vec::new(),
+        doc_comments: Vec::new(),
+        span,
+    };
+
+    Decl::Impl {
+        target: name.to_string(),
+        trait_name: None,
+        generics: Vec::new(),
+        methods: vec![method],
+        doc_comments: Vec::new(),
+        span,
+    }
+}
+
+/// Build the body of the synthesised `hash`:
+///   `return ((seed * 1099511628211) + h(self.f1)) * 1099511628211 + h(self.f2) + ...`
+/// Hashable-primitive fields contribute their numeric value (cast to i64
+/// where needed); non-primitive fields contribute 0.
+fn build_hash_body(fields: &[StructField], span: Span) -> Block {
+    let fnv_prime: i64 = 1099511628211;
+    let fnv_offset: i64 = -3750763034362895579; // FNV-1a 64-bit offset basis as i64
+
+    let mut expr: Expr = Expr::IntLiteral {
+        value: fnv_offset,
+        span,
+    };
+    for field in fields {
+        // expr = (expr * fnv_prime) + field_hash
+        let mul = Expr::BinaryOp {
+            op: BinOp::Mul,
+            left: Box::new(expr),
+            right: Box::new(Expr::IntLiteral {
+                value: fnv_prime,
+                span,
+            }),
+            span,
+        };
+        expr = Expr::BinaryOp {
+            op: BinOp::Add,
+            left: Box::new(mul),
+            right: Box::new(field_hash(field, span)),
+            span,
+        };
+    }
+    Block {
+        stmts: vec![Stmt::Return {
+            value: Some(expr),
+            span,
+        }],
+        span,
+    }
+}
+
+/// Hash contribution for a single field. Numeric primitives are passed
+/// through; bool maps to 1/0 via a cast; everything else falls back to 0.
+fn field_hash(field: &StructField, span: Span) -> Expr {
+    let access = Expr::FieldAccess {
+        object: Box::new(Expr::Identifier {
+            name: "self".to_string(),
+            span,
+        }),
+        field: field.name.clone(),
+        span,
+    };
+    match &field.ty {
+        TypeExpr::Simple { name, .. }
+            if matches!(
+                name.as_str(),
+                "i8" | "i16"
+                    | "i32"
+                    | "i64"
+                    | "u8"
+                    | "u16"
+                    | "u32"
+                    | "u64"
+                    | "char"
+                    | "bool"
+            ) =>
+        {
+            // Cast to i64 so the fold expression stays i64-typed end-to-end.
+            Expr::Cast {
+                expr: Box::new(access),
+                ty: TypeExpr::Simple {
+                    name: "i64".to_string(),
+                    span,
+                },
+                span,
+            }
+        }
+        _ => Expr::IntLiteral { value: 0, span },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,6 +591,71 @@ mod tests {
         expand_derives(&mut m);
         // Should not error, and should not synthesize anything for unknowns.
         assert_eq!(m.declarations.len(), before);
+    }
+
+    #[test]
+    fn derive_eq_synthesizes_impl() {
+        let mut m = Module {
+            name: "t".to_string(),
+            declarations: vec![make_struct(
+                "Point",
+                vec![("x", "i64"), ("y", "i64")],
+                vec!["Eq"],
+            )],
+            span: dummy_span(),
+        };
+        expand_derives(&mut m);
+        assert_eq!(m.declarations.len(), 2, "should have appended an Impl");
+        let Decl::Impl { target, methods, .. } = &m.declarations[1] else {
+            panic!("expected impl, got {:?}", m.declarations[1]);
+        };
+        assert_eq!(target, "Point");
+        let Decl::Function {
+            name: mname,
+            params,
+            ..
+        } = &methods[0]
+        else {
+            panic!("expected function method");
+        };
+        assert_eq!(mname, "eq");
+        assert_eq!(params.len(), 2, "`eq` should have (self, other)");
+        assert_eq!(params[0].name, "self");
+        assert_eq!(params[1].name, "other");
+    }
+
+    #[test]
+    fn derive_hash_synthesizes_impl() {
+        let mut m = Module {
+            name: "t".to_string(),
+            declarations: vec![make_struct(
+                "Point",
+                vec![("x", "i64"), ("y", "i64")],
+                vec!["Hash"],
+            )],
+            span: dummy_span(),
+        };
+        expand_derives(&mut m);
+        assert_eq!(m.declarations.len(), 2, "should have appended an Impl");
+        let Decl::Impl { target, methods, .. } = &m.declarations[1] else {
+            panic!("expected impl, got {:?}", m.declarations[1]);
+        };
+        assert_eq!(target, "Point");
+        let Decl::Function {
+            name: mname,
+            params,
+            ret_ty,
+            ..
+        } = &methods[0]
+        else {
+            panic!("expected function method");
+        };
+        assert_eq!(mname, "hash");
+        assert_eq!(params.len(), 1, "`hash` should have only (self,)");
+        assert!(matches!(
+            ret_ty,
+            Some(TypeExpr::Simple { name, .. }) if name == "i64"
+        ));
     }
 
     #[test]

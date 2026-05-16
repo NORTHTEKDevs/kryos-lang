@@ -108,7 +108,9 @@ fn operators_single_and_compound() {
         ("*=", TokenKind::StarEq),
         ("/=", TokenKind::SlashEq),
         ("&", TokenKind::Amp),
+        ("&&", TokenKind::AmpAmp),
         ("|", TokenKind::Pipe),
+        ("||", TokenKind::PipePipe),
         ("^", TokenKind::Caret),
         ("~", TokenKind::Tilde),
         ("<<", TokenKind::Shl),
@@ -629,14 +631,16 @@ fn lex_match_expression() {
 }
 
 // ==========================================================================
-// Bang alone is an error token
+// `!` alone is a logical-not token (prefix operator), not an error
 // ==========================================================================
 
 #[test]
-fn bang_alone_is_error() {
+fn bang_alone_is_logical_not_token() {
+    // `!` on its own is the prefix logical-not operator (alias for `not`).
+    // Two-char `!=` is handled by the `BangEq` arm before this falls through.
     let tokens = lex_kinds("!");
     assert_eq!(tokens.len(), 1);
-    assert_eq!(tokens[0].0, TokenKind::Error);
+    assert_eq!(tokens[0].0, TokenKind::Bang);
     assert_eq!(tokens[0].1, "!");
 }
 
