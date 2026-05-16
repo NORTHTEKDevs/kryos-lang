@@ -5,7 +5,7 @@ guarantee at each release, what is explicitly **not** guaranteed, and the
 process by which a release is cut. It is the source of truth referenced
 from `CHANGELOG.md` and tooling.
 
-Last updated: 2026-05-15 (v2.1.0).
+Last updated: 2026-05-16 (v2.3.0).
 
 ---
 
@@ -60,56 +60,43 @@ A release tag is cut when **all** of the following hold:
 
 ---
 
-## 4. Current pass rates (v2.1.0)
+## 4. Current pass rates (v2.3.0)
 
 - Cranelift JIT (`kryos run`): **100%** on the native runner suite.
-- LLVM release (`kryos build --release`): **112 / 115 (97.4%)** on the
+- LLVM release (`kryos build --release`): **123 / 123 (100%)** on the
   `native_build_release_tests` suite.
+- Compiler build warnings: **zero**.
 
-The three remaining LLVM-release failures are tracked as known
-architectural limitations (§5) and are scheduled for v2.2.
+The v2.1 "known limitations" (escaping closures, `dyn Trait` dispatch)
+were closed in v2.2 and remain green through v2.3.
 
 ---
 
-## 5. Known limitations (v2.1.0)
+## 5. Known limitations (v2.3.0)
 
-These are real, reproducible gaps. They are documented here so that users
-do not hit them by surprise. None of them affect `kryos run` (Cranelift
-JIT) — they are all on the `kryos build --release` (LLVM) path.
+There are no architectural failures in the release-gating sweep at
+v2.3.0. The v2.1 "known limitations" listed below were all closed in
+v2.2 and are kept here as historical context.
 
-### 5.1 Closures that escape their defining scope
+### 5.1 (Closed in v2.2) Closures that escape their defining scope
 
-**Affected tests:** `closure_escape`, `closure_capture_fn`.
+**Previously affected tests:** `closure_escape`, `closure_capture_fn`.
 
-The current LLVM lambda ABI takes captures as **direct parameters** to
-the generated lambda function. This works correctly when the
-`closure_locals` optimization fires and the closure is called in the
-same lexical scope where it was defined, because the call site has the
-captures in hand and passes them directly.
+v2.2 changed the LLVM lambda ABI to a uniform `(env, user_args...)`
+calling convention. Every closure value, including no-capture lambdas,
+is wrapped in an ARC env `[thunk_ptr, cap0, cap1, ...]`; `CallIndirect`
+dispatches via `env[0]`. Both tests have been green since v2.2 and
+remain green at v2.3.
 
-It does **not** work when the closure escapes (returned from a function,
-stored in a struct field that outlives the defining scope, or passed as
-a callback through an indirect call site) because the indirect call site
-only has an env pointer; it does not know the capture count or types,
-so it cannot reconstruct the direct-parameter call.
+### 5.2 (Closed in v2.2) `dyn Trait` method dispatch
 
-**Fix path (v2.2):** Either (a) change the lambda ABI to take the env
-pointer as the first parameter and emit a prologue that loads captures
-from env slots, or (b) record capture-count metadata in the env header
-so call sites can dynamically marshal captures. Option (a) is preferred
-because it composes with `closure_locals`.
+**Previously affected test:** `dyn_trait`.
 
-### 5.2 `dyn Trait` method dispatch
-
-**Affected test:** `dyn_trait`.
-
-The LLVM backend's `VtableCall` MIR opcode is currently a documented
-Ring-3 placeholder that returns `0`. Real vtable construction (per-impl
-fn-pointer table, fat pointer layout `{ data_ptr, vtable_ptr }`, and
-indirect dispatch at call sites) is scheduled for v2.2.
-
-Workaround in user code: replace `dyn Trait` with a tagged enum and
-explicit match.
+v2.2 replaced the `VtableCall` placeholder with real vtable codegen:
+trait objects are fat pointers `[data, fn_ptr_0, fn_ptr_1, ...]` and
+per-method dyn-thunks give every method a uniform i64-only ABI suitable
+for indirect dispatch (handling byval-self / sret-return correctly).
+Green since v2.2.
 
 ---
 

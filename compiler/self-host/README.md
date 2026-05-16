@@ -40,7 +40,7 @@ The code is structurally complete (16 files, 19,202 lines).
   Stage 1 produces a usable binary, but Stage 2 (Stage-1 compiling itself end-to-end)
   needs further codegen / runtime work before it is practical to time-bound.
 
-### Per-file `check` status (kryos 2.2.0)
+### Per-file `check` status (kryos 2.3.0)
 
 | File | Status |
 |------|--------|

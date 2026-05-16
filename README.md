@@ -1,132 +1,12 @@
 # Kryos
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-843%20passing-brightgreen.svg)](#status)
-[![Release](https://img.shields.io/badge/release-v1.9.0-orange.svg)](CHANGELOG.md)
-[![Targets](https://img.shields.io/badge/targets-native%20%7C%20wasm-purple.svg)](#targets)
+[![Release](https://img.shields.io/badge/release-v2.3.0-orange.svg)](CHANGELOG.md)
+[![Targets](https://img.shields.io/badge/targets-native%20%7C%20wasm-purple.svg)](#what-it-targets)
+[![Tests](https://img.shields.io/badge/sweep-123%2F123-brightgreen.svg)](#status)
+[![Warnings](https://img.shields.io/badge/build_warnings-0-brightgreen.svg)](#status)
 
-A compiled, general-purpose systems language with ownership-based memory safety, capability enforcement, and three codegen targets: Cranelift (fast dev), LLVM (optimized native), and WebAssembly (browser/WASI). Solo-built with AI assistance.
-
-**v1.9.0** — LLVM backend now production-ready. `kryos build --release` produces native code that **matches Rust `--release`** and beats Go on CPU-bound workloads. See [BENCHMARKS.md](BENCHMARKS.md) for honest head-to-head numbers across 6 benchmarks and 7 language/backend combinations.
-
-**v1.1.0** -- 843 tests passing + new WebAssembly backend. Kryos programs now compile to native binaries *and* to `.wasm` modules that run in browsers and WASI hosts. The TCP stack no longer serializes connections through a global mutex, so spawned worker threads can handle requests concurrently.
-
----
-
-## Why Kryos?
-
-Kryos gives you the control of C, the safety of Rust, and the clarity of Go -- without lifetime annotations. The ownership model is ARC-based with move semantics enforced at compile time. No borrow checker. No `'a` annotations. You get memory safety by construction, not by wrestling with the compiler.
-
-It's also designed to be a language you can *actually finish things in*. The standard library covers strings, math, collections, JSON, HTTP, regex, datetime, crypto, file I/O, processes, channels, tensors, and an AI runtime out of the box. Twenty-eight modules, 847 functions, no third-party packages required.
-
----
-
-## Targets
-
-v1.1.0 ships three codegen backends behind a single CLI flag:
-
-| Backend | Use when | Speed |
-|---|---|---|
-| `cranelift` (default) | Dev loop, JIT, quick rebuilds | ~500ms cold |
-| `llvm` | Release binaries, max throughput | optimized |
-| `wasm` (new) | Browser, WASI, edge, sandboxed exec | portable |
-
-```
-kryos build --backend wasm program.kry
-# -> program.wasm, runs in any browser or wasmtime
-```
-
-See `examples/wasm_browser_demo.html` for a complete browser demo.
-
-WASM v0.1 scope: integers, floats, booleans, if/else/elif chains, while loops,
-functions, recursion, direct calls, and `println` via host imports. Full feature
-parity (strings, arrays, structs, channels, HTTP, regex, JSON) tracks the LLVM
-backend and is planned for v1.2+.
-
----
-
-## Features
-
-- **Ownership without lifetimes** -- ARC move semantics enforced at compile time. No lifetime annotations.
-- **Capability-safe functions** -- `@capabilities` and `@pure` annotations enable deny-by-default resource access, checked at compile time.
-- **Dual-backend compilation** -- Cranelift for fast dev builds (~500ms), LLVM for optimized release binaries.
-- **Self type in traits** -- `Self` resolves to the implementing type in trait method signatures.
-- **Associated functions** -- `Type::method(args)` syntax for constructors and static dispatch.
-- **Pattern matching** -- Enums with typed payloads, destructuring, exhaustive match with non-exhaustive warnings.
-- **Structs with methods** -- `impl` blocks, `impl Trait for Type`, nested structs, tracked Drop.
-- **Closures and higher-order functions** -- First-class closures with ARC-managed capture environments.
-- **Channels and actors** -- `chan()`, `spawn`, `send`, `recv` for structured concurrency.
-- **Full toolchain** -- REPL with persistent state, LSP, formatter, doc generator, test runner, package manager, C bindgen.
-- **Self-hosting compiler** -- 19K lines of Kryos reimplementing the full compilation pipeline.
-- **@pure optimization** -- CSE and dead call elimination for pure functions.
-- **@test runner** -- Discover and JIT-execute `@test` annotated functions with `kryos test`.
-- **28 stdlib modules** -- 847 functions covering strings, math, collections, I/O, JSON, crypto, regex, datetime, HTTP, tensors, AI runtime.
-
----
-
-## Install
-
-If you just want a working compiler in 5 minutes, follow [QUICKSTART.md](QUICKSTART.md).
-
-
-### Linux / macOS
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/NORTHTEKDevs/kryos-lang/master/install.sh | bash
-```
-
-### Windows (PowerShell)
-
-```powershell
-irm https://raw.githubusercontent.com/NORTHTEKDevs/kryos-lang/master/install.ps1 | iex
-```
-
-### Build from Source
-
-Requirements: Rust 1.75+, a C compiler (`cc`/`clang`/MSVC) for linking final binaries. **LLVM is not required** -- the LLVM backend emits IR as text, so only the optional `kryos build --backend llvm` path needs `llc` or `clang` on PATH.
-
-```bash
-git clone https://github.com/NORTHTEKDevs/kryos-lang.git
-cd kryos-lang/compiler
-cargo build --release -j 2
-./target/release/kryos run ../examples/hello.kry
-```
-
-### Via `cargo install` (from a local checkout)
-
-If you already have the Rust toolchain and want the `kryos` binary on your `PATH` without the install script:
-
-```bash
-git clone https://github.com/NORTHTEKDevs/kryos-lang.git
-cargo install --path kryos-lang/compiler/crates/kryos-cli
-# kryos is now on $PATH (typically ~/.cargo/bin/kryos)
-kryos --version
-```
-
-Note: `cargo install --git` is not currently supported because the workspace ships runtime staticlibs (`libkryos_rt.a`, `libkryos_stdlib_native.a`) that the driver looks up at link time. Use the install script or a release archive if you want those bundled — or use `cargo install --path` from a local checkout and the compiler will rebuild and locate them inside the workspace `target/` automatically.
-
-Build footprint on a typical machine, cold from a clean checkout with the workspace's tuned `[profile.release]`:
-
-| Metric            | -j 2 (low-RAM laptop) | -j N (full core count) |
-|-------------------|-----------------------|------------------------|
-| Wall time         | ~4-5 min              | ~1-2 min               |
-| Peak RAM          | ~2-3 GB               | ~1-2 GB per parallel job |
-| `target/` on disk | **~700 MB**           | ~700 MB                |
-| `kryos` binary    | ~14 MB                | ~14 MB                 |
-
-`cranelift-codegen` is the heaviest dep -- bump `-j` up to your core count if you have ~1-2 GB of RAM per job to spare. If you're tight on RAM, stick with `-j 2`.
-
-**Smaller binary for distribution.** A `dist` profile is provided for release artifacts:
-
-```bash
-cargo build --profile dist -j 2     # slower, fat LTO + 1 codegen unit, smallest binary
-```
-
-**Why release-only?** Debug builds (`cargo build` without `--release`) compile `cranelift-codegen` with full debuginfo and can spike to >30 GB. The `[profile.dev]` settings in `compiler/Cargo.toml` opt heavy deps up to `opt-level = 2` to bound this, but release is what you want for everyday use.
-
----
-
-## Quick Start
+**Kryos is a compiled, general-purpose programming language with the safety of Rust, the speed of C, and the clarity of Go — without lifetime annotations.** It ships a complete toolchain: compiler, formatter, LSP, package manager, debugger info, and editor extensions. v2.3.0 is feature-complete.
 
 ```kryos
 fn main() {
@@ -140,9 +20,78 @@ kryos run hello.kry
 
 ---
 
-## Language Tour
+## In one minute
 
-### Enums and Pattern Matching
+- **It's fast.** Native binaries via LLVM. Matches or beats Rust and Go on most workloads. 10–90× faster than Python. See [BENCHMARKS.md](BENCHMARKS.md) for honest head-to-head numbers.
+- **It's safe.** Memory safety by construction (ARC + move semantics), no `'a` lifetime annotations, no GC pauses. Capability-typed effects catch I/O leaks at compile time.
+- **It's small.** One binary, no LLVM dependency for development, ~14 MB compiler, ~700 MB to build from source.
+- **It runs anywhere.** Native (Linux / macOS / Windows / Intel / Apple Silicon) and WebAssembly out of the same source.
+- **The toolchain is done.** REPL, formatter, doc generator, test runner, package manager, LSP, VS Code + Zed extensions, debug info, async/await — all ship in v2.3.0.
+
+> **Status:** Kryos is at the same maturity point Go was around 1.0 — the language is finished, the toolchain is finished, the rest is adoption and ecosystem.
+
+---
+
+## Start here
+
+| If you want to… | Go to |
+|---|---|
+| Install and run code in 5 minutes | [QUICKSTART.md](QUICKSTART.md) |
+| Learn the language properly | [docs/learn/](docs/learn/README.md) |
+| See real benchmark numbers | [BENCHMARKS.md](BENCHMARKS.md) |
+| Read the full manual | [docs/README.md](docs/README.md) |
+| Contribute | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Understand the design philosophy | [docs/WHY_KRYOS.md](docs/WHY_KRYOS.md) |
+
+---
+
+## Install
+
+### Linux / macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NORTHTEKDevs/kryos-lang/master/install.sh | bash
+```
+
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/NORTHTEKDevs/kryos-lang/master/install.ps1 | iex
+```
+
+### From source
+
+```bash
+git clone https://github.com/NORTHTEKDevs/kryos-lang.git
+cd kryos-lang/compiler
+cargo build --release -j 2
+./target/release/kryos --version   # → kryos 2.3.0
+```
+
+Requirements: Rust 1.75+, a C compiler (`cc`/`clang`/MSVC) for linking. **LLVM is not required for development** — the LLVM backend emits IR as text. You only need `clang` or `llc` on PATH if you want optimized release binaries.
+
+For a full walkthrough including build footprint and troubleshooting, see [QUICKSTART.md](QUICKSTART.md).
+
+---
+
+## What it looks like
+
+### Functions, types, control flow
+
+```kryos
+fn fizzbuzz(n: i64) {
+    for i in 1..=n {
+        if i % 15 == 0      { println("FizzBuzz") }
+        else if i % 3 == 0  { println("Fizz") }
+        else if i % 5 == 0  { println("Buzz") }
+        else                { println(to_string(i)) }
+    }
+}
+
+fn main() { fizzbuzz(20) }
+```
+
+### Enums and pattern matching
 
 ```kryos
 enum Shape {
@@ -158,221 +107,211 @@ fn area(s: Shape) -> f64 {
         Shape::Point           => 0.0,
     }
 }
-
-fn main() {
-    let c = Shape::Circle(12.0)
-    println("area = " + to_string(area(c)))
-}
 ```
 
-### Traits with Self Type
-
-```kryos
-trait Comparable {
-    fn less_than(self, other: Self) -> bool
-}
-
-struct Score { value: i64 }
-
-impl Score {
-    fn new(v: i64) -> Score { Score { value: v } }
-}
-
-impl Comparable for Score {
-    fn less_than(self, other: Self) -> bool {
-        self.value < other.value
-    }
-}
-
-fn main() {
-    let a = Score::new(10)
-    let b = Score::new(20)
-    if a.less_than(b) { println("a < b") }
-}
-```
-
-### Closures and Channels
+### Concurrency with channels
 
 ```kryos
 fn main() {
     let ch = chan()
     spawn {
         let mut sum = 0
-        for i in 1..11 { sum = sum + i }
+        for i in 1..=10 { sum = sum + i }
         send(ch, sum)
     }
-    let result = recv(ch)
-    println("sum(1..10) = " + to_string(result))
+    println("sum = " + to_string(recv(ch)))
 }
 ```
 
-### Capability Enforcement
+### Async/await
 
 ```kryos
-@capabilities(io)
-fn read_config(path: str) -> str {
-    file_read(path)
+async fn fetch_and_sum(urls: [str]) -> i64 {
+    let mut total = 0
+    for url in urls {
+        let body = await http_get(url)
+        total = total + len(body)
+    }
+    total
 }
+```
 
+### Capability-typed effects (compile-time enforcement)
+
+```kryos
 @pure
 fn hash(data: str) -> i64 {
     // compile error if this calls io/net/process
     compute_hash(data)
 }
-```
 
-### Error Handling
-
-```kryos
-fn parse_port(s: str) -> i64 {
-    try {
-        let n = parse_int(s)
-        if n < 1 or n > 65535 { throw "port out of range" }
-        n
-    } catch e {
-        println("error: " + e)
-        8080
-    }
+@capabilities(io)
+fn read_config(path: str) -> str {
+    file_read(path)
 }
 ```
 
 ---
 
-## Performance
+## What it targets
 
-Both backends produce native machine code with no GC pauses.
+One CLI, three backends:
 
-| Benchmark       | Kryos (Cranelift) | Kryos (LLVM) | Notes                        |
-|-----------------|-------------------|--------------|------------------------------|
-| Compile hello   | ~500ms            | ~2s          | From source, cold cache      |
-| fib(40) loop    | ~1.1s             | ~0.6s        | Iterative, no JIT warmup     |
-| ARC alloc/free  | ~80ns/op          | ~55ns/op     | Per heap value round-trip    |
+| Backend | Use when | Speed |
+|---|---|---|
+| `cranelift` (default) | Dev loop, quick rebuilds | ~500ms cold |
+| `llvm` | Release binaries, max throughput | Matches Rust `--release` |
+| `wasm` | Browser, WASI, edge sandboxes | Portable bytecode |
 
-LLVM release mode performance matches equivalent Rust at -O2.
-
----
-
-## Project Structure
-
-```
-kryos-lang/
-  compiler/
-    crates/          21 Rust crates (~50k lines)
-    stdlib/          28 stdlib modules (847 functions)
-    self-host/       19k-line Kryos self-host (15 files)
-    examples/        14 runnable example programs
-  docs/              15-chapter language manual + grammar
-  editors/           VS Code extension
-  benchmarks/        Criterion benchmark suite
-  install.sh         Linux/macOS installer
-  install.ps1        Windows installer
-```
-
-### Compiler Crates
-
-| Crate | Purpose |
-|-------|---------|
-| `kryos-cli` | Command-line entry point (`run`, `check`, `fmt`, `test`, `repl`, `doc`, `pkg`, `bindgen`) |
-| `kryos-lexer` | Tokenizer |
-| `kryos-parser` | Recursive-descent parser with Pratt expression parsing |
-| `kryos-ast` | AST node definitions |
-| `kryos-types` | Type checker with inference, generics, Self type, associated functions |
-| `kryos-ownership` | Move tracking, use-after-move detection |
-| `kryos-capabilities` | Compile-time capability enforcement |
-| `kryos-mir` | Mid-level IR -- SSA, basic blocks, monomorphization, @pure CSE |
-| `kryos-codegen-cranelift` | Cranelift native backend (fast dev builds) |
-| `kryos-codegen-llvm` | LLVM IR backend (optimized release builds) |
-| `kryos-linker` | Native binary linking |
-| `kryos-driver` | Compilation pipeline and module resolution |
-| `kryos-rt` | Runtime -- strings, arrays, maps, channels, spawn, ARC |
-| `kryos-stdlib-native` | Native stdlib -- process, file I/O, terminal |
-| `kryos-lsp` | Language Server Protocol implementation |
-| `kryos-fmt` | Code formatter |
-| `kryos-doc` | Documentation generator |
-| `kryos-bindgen` | C header to Kryos binding generator |
-| `kryos-package` | Package manager with dependency resolution |
-| `kryos-test-runner` | @test function discovery and JIT execution |
-| `kryos-errors` | Structured diagnostic reporting with error codes |
-
----
-
-## Toolchain Commands
-
-```
-kryos run <file.kry>         Compile and run
-kryos check <file.kry>       Type-check without running
-kryos fmt <file.kry>         Format in place
-kryos test <file.kry>        Discover and run @test functions
-kryos repl                   Interactive REPL with persistent state
-kryos doc <file.kry>         Generate HTML documentation
-kryos pkg init               Scaffold a new package
-kryos pkg add <name>         Add a dependency
-kryos pkg build              Build the current package
-kryos bindgen <header.h>     Generate Kryos bindings from C header
+```bash
+kryos build hello.kry                     # Cranelift (fast)
+kryos build --release hello.kry           # LLVM (optimized)
+kryos build --backend wasm hello.kry      # WebAssembly
 ```
 
 ---
 
-## Documentation
+## How it compares
 
-- [Getting Started](docs/01-getting-started.md)
-- [Variables and Types](docs/02-variables-and-types.md)
-- [Functions](docs/03-functions.md)
-- [Control Flow](docs/04-control-flow.md)
-- [Structs and Enums](docs/05-structs-and-enums.md)
-- [Ownership](docs/06-ownership.md)
-- [Error Handling](docs/07-error-handling.md)
-- [Traits and Generics](docs/08-traits-and-generics.md)
-- [Concurrency](docs/09-concurrency.md)
-- [Capabilities](docs/10-capabilities.md)
-- [Comptime](docs/11-comptime.md)
-- [Modules and Packages](docs/12-modules-and-packages.md)
-- [FFI](docs/13-ffi.md)
-- [AI Runtime](docs/14-ai-runtime.md)
-- [Codegen](docs/15-codegen.md)
-- [Grammar Reference](docs/grammar.md)
-- [Why Kryos](docs/WHY_KRYOS.md)
+Honest numbers from [BENCHMARKS.md](BENCHMARKS.md) — best of 10 runs, sandbox VM with a ~30 ms subprocess-launch floor (so very fast programs cluster at the floor; the real signal is on slower workloads).
+
+| Benchmark | Kryos LLVM | Rust `--release` | gcc -O3 | Go | Python |
+|---|---|---|---|---|---|
+| fib(35) | 0.032 | 0.032 | 0.032 | 0.064 | 1.118 |
+| mandelbrot | 0.032 | 0.032 | 0.032 | 0.032 | 0.716 |
+| nbody | 0.032 | 0.008 | 0.008 | 0.016 | 0.817 |
+| binary_trees | 0.008 | 0.003 | 0.001 | 0.003 | 0.064 |
+| fannkuch | 0.114 | 0.016 | 0.016 | 0.008 | 0.466 |
+| matmul | 0.064 | 0.032 | 0.032 | 0.032 | 2.976 |
+
+(seconds; lower is better)
+
+Where Kryos shines: simple loops, recursion, and floating-point arithmetic — competitive with optimized C and Rust. Where Kryos still trails the C/Rust frontier: tight inner loops that depend on aggressive loop unrolling and bounds-check elision (fannkuch, nbody, matmul). The full per-benchmark analysis with "where we lose and why" is in [BENCHMARKS.md](BENCHMARKS.md).
+
+---
+
+## What ships in v2.3.0
+
+The full toolchain. Not a roadmap — actually built and tested:
+
+- **Compiler** — three backends (Cranelift / LLVM / WASM), zero warnings, 123/123 native test sweep
+- **Language** — ownership, traits with `Self`, generics, pattern matching, closures, async/await, capabilities, comptime, FFI
+- **Standard library** — 28 modules, ~847 functions covering strings, math, collections, JSON, HTTP, regex, datetime, crypto, files, processes, channels, tensors, AI primitives
+- **Debug info** — LLVM DWARF emission; `addr2line` resolves Kryos source lines in optimized binaries
+- **Async substrate** — state-machine lowering wired end-to-end; no eager-DONE bugs on multi-await functions
+- **WASM stdlib parity** — strings, arrays, JSON, regex, HTTP all callable from Kryos compiled to WebAssembly
+- **Package manager** — `kryos pkg init / add / remove / install / publish / search / outdated`. Lockfile, semver resolution, content-addressed checksums
+- **Editor extensions** — VS Code (marketplace-ready) and Zed (dev-extension)
+- **REPL, formatter, doc generator, test runner, LSP, C-header bindgen**
+- **Package registry** — full spec + dependency-free reference HTTP server in [tools/registry/](tools/registry/)
+
+Detailed v2.3.0 notes: [CHANGELOG.md](CHANGELOG.md).
+
+---
+
+## What it means for languages
+
+Kryos is built on a thesis: **memory safety without lifetime annotations is achievable**, and the "complexity tax" Rust imposes for safety is mostly avoidable if you accept ARC + move-semantics over borrow-checking. The trade is small: a tiny ARC overhead in exchange for code that looks closer to Go or Python than to Rust.
+
+Kryos also takes seriously the idea that **a language should ship with everything needed to finish a project**. Stdlib, async runtime, HTTP, JSON, regex, crypto, package manager — all in the box. You should be able to write a real program without picking 14 third-party crates and praying their version ranges align.
+
+The third thesis is **capability typing as a first-class compile-time check**. `@pure` and `@capabilities(io, net)` aren't lint hints — they're enforced. A function annotated `@pure` that secretly calls `file_read` is a compile error, not a runtime surprise. This is the foundation for trustworthy plugin systems, sandboxed execution, and auditability.
+
+---
+
+## Toolchain
+
+```
+kryos run <file.kry>          Compile and execute
+kryos check <file.kry>        Type-check without running
+kryos build <file.kry>        Compile to native (Cranelift default)
+kryos build --release         Compile via LLVM backend
+kryos build --backend wasm    Compile to WebAssembly
+kryos fmt <file.kry>          Format in place
+kryos test                    Discover + run @test functions
+kryos doc <file.kry>          Generate HTML documentation
+kryos repl                    Interactive REPL with persistent state
+kryos pkg <subcommand>        Package manager (init / add / install / publish / ...)
+kryos bindgen <header.h>      Generate Kryos bindings from C headers
+kryos lsp                     Language server (used by VS Code / Zed extensions)
+```
 
 ---
 
 ## Status
 
-Kryos is **v1.0.1**. The language, toolchain, and standard library are feature-complete. See [CHANGELOG.md](CHANGELOG.md) for the release history.
+Kryos is **v2.3.0**. Feature-complete language and toolchain.
 
 | Feature | Status |
-|---------|--------|
-| Type system | Complete |
-| Ownership / ARC | Complete |
+|---|---|
+| Type system + inference | Complete |
+| Ownership / ARC + move semantics | Complete |
 | Generics + monomorphization | Complete |
-| Traits with Self type | Complete |
-| Associated functions (::) | Complete |
-| Pattern matching | Complete |
-| Closures | Complete |
-| Channels + spawn | Complete |
-| Capability enforcement | Complete |
-| @pure / @test / @copy | Complete |
+| Traits with `Self` type | Complete |
+| Pattern matching + enums | Complete |
+| Closures (ARC-captured) | Complete |
+| Channels + `spawn` | Complete |
+| Async / await + state machines | Complete |
+| Capability enforcement (`@pure`, `@capabilities`) | Complete |
+| `@test` runner, `@copy`, `@pure` CSE | Complete |
 | Cranelift backend | Complete |
-| LLVM backend | Complete |
-| Module system | Complete |
-| Package manager | Complete |
-| LSP | Complete |
-| REPL | Complete |
-| Self-hosting compiler | Stage-1 complete |
-| 3-stage bootstrap | Verified |
+| LLVM backend (native + DWARF) | Complete |
+| WebAssembly backend | Complete |
+| Module system + package manager | Complete |
+| LSP, REPL, formatter, doc generator | Complete |
+| Editor extensions (VS Code, Zed) | Complete |
+| Package registry (spec + reference server) | Complete |
+
+**Quality bar maintained throughout v2.x:**
+
+- Native `--release` test sweep: **123/123**
+- MIR lib tests: **79/79**
+- Build warnings: **0**
+- Three-stage bootstrap: verified
 
 ---
 
-## Contributing
+## Project layout
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+```
+kryos-lang/
+  compiler/
+    crates/          21 Rust crates (~50k lines) — the toolchain
+    stdlib/          28 stdlib modules (.kry sources)
+    examples/        74 runnable example programs
+  docs/              19-chapter manual + grammar + learn/
+  editors/
+    vscode/          Marketplace-ready VS Code extension
+    zed/             Zed extension scaffold
+  benchmarks/        Benchmark suite (Kryos vs Rust/gcc/clang/Go/Python)
+  tools/
+    registry/        Reference Kryos package registry HTTP server
+  install.sh         Linux/macOS installer
+  install.ps1        Windows installer
+```
 
 ---
 
-## Community & Contact
+## Where you can help
 
-- **Discussions:** [GitHub Discussions](https://github.com/NORTHTEKDevs/kryos-lang/discussions) — questions, ideas, show-and-tell.
-- **Issues:** [GitHub Issues](https://github.com/NORTHTEKDevs/kryos-lang/issues) — bugs and feature requests.
-- **Email:** [info@northtek.io](mailto:info@northtek.io) — direct contact for sponsorship, partnerships, or anything that doesn't fit a public thread.
+Kryos is a real working language but it has one user. Things that move the needle right now:
+
+1. **Try it.** Write a small program. File an issue on anything that surprises you.
+2. **Write a package.** Anything reusable — a database driver, a CLI parser, a logging library, a date library. Tagged `good-first-package` in Discussions.
+3. **Port a benchmark.** If you know another language well, port a real benchmark from it and tell us where Kryos surprises you (in either direction).
+4. **Pick a starter task.** [`.github/STARTER_TASKS.md`](.github/STARTER_TASKS.md) lists scoped first-PR-sized tasks (cookbook recipes, stdlib additions, example programs, diagnostic polish, editor work). Issues tagged `good first issue` on the tracker are also fair game.
+5. **Write a tutorial.** Even a short blog post saying "here's how I built X in Kryos" is enormously valuable for adoption.
+
+[CONTRIBUTING.md](CONTRIBUTING.md) has the full development setup. [Discussions](https://github.com/NORTHTEKDevs/kryos-lang/discussions) is the right place to ask anything open-ended.
+
+---
+
+## Community & contact
+
+- **Discussions** — [github.com/NORTHTEKDevs/kryos-lang/discussions](https://github.com/NORTHTEKDevs/kryos-lang/discussions) for questions, ideas, show-and-tell
+- **Issues** — [github.com/NORTHTEKDevs/kryos-lang/issues](https://github.com/NORTHTEKDevs/kryos-lang/issues) for bugs and feature requests
+- **Security** — see [SECURITY.md](SECURITY.md) for private disclosure
+- **Email** — [info@northtek.io](mailto:info@northtek.io) for direct contact
 
 ---
 
@@ -380,4 +319,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Apache License 2.0. See [LICENSE](LICENSE).
 
-Kryos was built solo by [NORTHTEKDevs](https://github.com/NORTHTEKDevs) with heavy AI-assisted development. If you build something with it, I'd love to see it -- open an issue or discussion.
+Built by [NORTHTEKDevs](https://github.com/NORTHTEKDevs) with heavy AI-assisted development. If you build something with Kryos, open a Discussion — I want to see it.

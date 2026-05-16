@@ -35,7 +35,7 @@ kryos version
 You should see output like:
 
 ```
-Kryos v1.0.1
+kryos 2.3.0
 ```
 
 ### Optional: LLVM toolchain
@@ -183,7 +183,7 @@ kryos repl
 ```
 
 ```
-Kryos v1.0.1 REPL
+kryos 2.3.0 REPL
 Type 'exit' or Ctrl+D to quit.
 
 kryos> let x = 42

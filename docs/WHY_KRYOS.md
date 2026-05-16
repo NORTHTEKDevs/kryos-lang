@@ -142,7 +142,7 @@ These optimizations improve debug build performance significantly. Release build
 
 ## Status
 
-Kryos v1.0.1 is a complete, production-capable compiler with:
+Kryos v2.3.0 is a complete, production-capable compiler with:
 
 - 21-crate Rust implementation (~50,000 lines)
 - Dual backends: Cranelift (fast dev, ~500ms) and LLVM (optimized release, Rust parity)

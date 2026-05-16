@@ -56,23 +56,29 @@ Every example file starts with one or more `// expect-stdout: <text>` lines that
 
 ## 4. Editor support
 
+**VS Code** — install the **Kryos** extension from the marketplace, or build the dev extension locally:
+
 ```bash
-cp -r editors/vscode ~/.vscode/extensions/kryos-0.3.6
+cd editors/vscode && npm install && npm run package
+# Produces kryos-0.4.0.vsix — install via VS Code: "Extensions: Install from VSIX…"
 ```
 
-Then reload your VS Code window. You get syntax highlighting and snippets. For LSP, point your editor's LSP client at:
+**Zed** — in Zed, open Extensions (`cmd+shift+x` / `ctrl+shift+x`) → "Install Dev Extension" → select `editors/zed/`.
 
-```
-kryos lsp
-```
+**Anything else** — point your editor's LSP client at `kryos lsp` over stdio. Standard LSP, no custom protocol.
 
 ## 5. Where to next
 
+The **[Learn Kryos](docs/learn/README.md)** track is the recommended path from here: a 30-minute tour of the language followed by 6 runnable cookbook recipes (CLI tools, HTTP servers, JSON pipelines, worker pools, async fetch, libraries).
+
+For deeper reference:
+
 - [docs/01-getting-started.md](docs/01-getting-started.md) — full beginner tour
+- [docs/19-language-reference.md](docs/19-language-reference.md) — complete spec
 - [docs/grammar.md](docs/grammar.md) — formal grammar
-- [docs/06-ownership.md](docs/06-ownership.md) — how ARC + move semantics work without lifetimes
+- [docs/06-ownership.md](docs/06-ownership.md) — ARC + move semantics without lifetimes
 - [docs/10-capabilities.md](docs/10-capabilities.md) — `@capabilities` / `@pure` annotations
-- [CHANGELOG.md](CHANGELOG.md) — what's new
+- [CHANGELOG.md](CHANGELOG.md) — what's new in v2.3.0
 
 ## Troubleshooting
 

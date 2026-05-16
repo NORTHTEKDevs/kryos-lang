@@ -4,6 +4,26 @@ Thank you for your interest in contributing. This document covers how to set up 
 
 ---
 
+## Where to start
+
+If this is your first time touching the repo, here is the recommended path:
+
+1. **Learn the language first.** Read `docs/learn/README.md` and walk through `docs/learn/tour.md`. You don't need to be an expert, but knowing what the surface looks like makes the compiler much easier to read.
+2. **Build it locally.** Follow the Setup section below. Confirm `./target/release/kryos run tests/smoke.kry` works.
+3. **Pick a starter task.** See [`.github/STARTER_TASKS.md`](.github/STARTER_TASKS.md) for a curated list of small, scoped tasks suitable for a first PR (cookbook recipes, stdlib additions, example programs, diagnostic improvements, editor polish). The open issue tracker also carries a `good first issue` label: <https://github.com/NORTHTEKDevs/kryos-lang/labels/good%20first%20issue>.
+4. **Ask before you build big things.** For anything larger than a starter issue — new language syntax, new MIR passes, codegen changes — open a [Discussion](https://github.com/NORTHTEKDevs/kryos-lang/discussions) first so we can talk through the design before you write code.
+
+Areas where help is always welcome, in rough order of accessibility:
+
+- **Cookbook recipes.** New programs under `docs/learn/cookbook/` that show one concrete task end-to-end. Keep them short and runnable.
+- **Example programs.** New `.kry` files in `compiler/examples/` demonstrating real features.
+- **Stdlib functions.** Add a new function to an existing module under `compiler/stdlib/` with `@test` coverage.
+- **Diagnostics.** Improve error messages in `kryos-errors`, `kryos-parser`, or `kryos-types` — even one clearer message helps every user.
+- **Editor tooling.** The VS Code extension in `editors/vscode/` and the Zed extension scaffold in `editors/zed/` both have room for polish.
+- **Compiler internals.** MIR passes, codegen, runtime, type-checker. Higher bar, more impact — talk to us first.
+
+---
+
 ## Prerequisites
 
 - Rust 1.75 or later (`rustup update stable`)
@@ -61,12 +81,17 @@ kryos-lang/
   compiler/
     crates/          21 Rust crates (the compiler)
     stdlib/          28 Kryos stdlib modules (.kry)
-    self-host/       Self-hosting compiler in Kryos (19k lines)
-    examples/        20 runnable example programs
-    tests/           Integration test suite
-  docs/              Language manual (15 chapters)
-  editors/           VS Code extension
-  benchmarks/        Criterion benchmarks
+    self-host/       Self-hosting compiler in Kryos (~19k lines)
+    examples/        runnable example programs
+    tests/           integration test suite
+  docs/
+    learn/           getting-started + tour + cookbook (read this first)
+    01..19           19-chapter reference manual
+  editors/
+    vscode/          VS Code extension (marketplace-packaged)
+    zed/             Zed extension scaffold
+  benchmarks/        Criterion benchmarks + run.sh harness
+  tools/registry/    Reference package-registry server
   install.sh         Unix installer
   install.ps1        Windows installer
 ```
@@ -215,4 +240,7 @@ Every feature must be handled in all 10 locations. Missing any one causes a comp
 
 ## Contact
 
-Open an issue on GitHub for bugs, questions, or feature proposals.
+- **Bugs:** file an issue with the `Bug report` template. Always include `kryos --version` output and a minimal `.kry` reproduction.
+- **Feature ideas:** start in [Discussions](https://github.com/NORTHTEKDevs/kryos-lang/discussions) if the idea is open-ended. Once it's concrete, file a `Feature request` issue.
+- **Security issues:** email `info@northtek.io` privately. Do not file public issues for vulnerabilities.
+- **Anything else:** Discussions is the right place. We try to respond within a few days.
