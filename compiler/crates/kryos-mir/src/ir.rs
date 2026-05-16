@@ -12,11 +12,11 @@ use std::fmt;
 // ---------------------------------------------------------------------------
 
 /// Index into `MirFunction::locals`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LocalId(pub u32);
 
 /// Index into `MirFunction::blocks`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BlockId(pub u32);
 
 impl fmt::Display for LocalId {
