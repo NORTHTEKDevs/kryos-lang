@@ -57,8 +57,10 @@ jobs:
         shell: bash
         # Showcase apps exercise the wider stdlib surface area: JSON, file I/O,
         # channels, markdown rendering. They must compile and exit cleanly.
+        # ssg.kry writes to /tmp/kryos_site and assumes that directory exists.
         run: |
           set -e
+          mkdir -p /tmp/kryos_site
           for ex in markdown kvdb ssg worker_pool; do
             echo "== showcase/$ex.kry =="
             ./target/release/kryos run ../examples/showcase/$ex.kry > /dev/null
