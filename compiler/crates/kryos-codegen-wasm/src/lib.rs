@@ -245,6 +245,44 @@ struct WasmCodegen {
     /// `kryos_fetch_text(url_off, url_len) -> packed string i64` (sync xhr).
     fetch_text_idx: u32,
 
+    // ---- WASM v2.3: stdlib parity primitives ----
+    /// `kryos_string_length(packed) -> i32`.
+    string_length_idx: u32,
+    /// `kryos_string_slice(packed, start, end) -> packed`.
+    string_slice_idx: u32,
+    /// `kryos_string_to_upper(packed) -> packed`.
+    string_to_upper_idx: u32,
+    /// `kryos_string_to_lower(packed) -> packed`.
+    string_to_lower_idx: u32,
+    /// `kryos_string_trim(packed) -> packed`.
+    string_trim_idx: u32,
+    /// `kryos_string_index_of(packed_haystack, packed_needle) -> i32` (-1 if not found).
+    string_index_of_idx: u32,
+    /// `kryos_string_parse_int(packed) -> i64`.
+    string_parse_int_idx: u32,
+    /// `kryos_string_parse_float(packed) -> f64`.
+    string_parse_float_idx: u32,
+    /// `kryos_array_length(packed) -> i32`.
+    array_length_idx: u32,
+    /// `kryos_array_push(packed, value) -> packed` (returns new packed handle).
+    array_push_idx: u32,
+    /// `kryos_array_pop(packed) -> i64` (returns -1 sentinel if empty).
+    array_pop_idx: u32,
+    /// `kryos_json_parse(packed_str) -> handle_i64` (opaque doc handle).
+    json_parse_idx: u32,
+    /// `kryos_json_stringify(handle) -> packed_str`.
+    json_stringify_idx: u32,
+    /// `kryos_json_get_int(handle, key_off, key_len) -> i64`.
+    json_get_int_idx: u32,
+    /// `kryos_json_get_str(handle, key_off, key_len) -> packed_str`.
+    json_get_str_idx: u32,
+    /// `kryos_regex_test(packed_pat, packed_subject) -> i32` (0/1).
+    regex_test_idx: u32,
+    /// `kryos_regex_replace(packed_pat, packed_subject, packed_repl) -> packed`.
+    regex_replace_idx: u32,
+    /// `kryos_http_fetch(method_off,method_len, url_off,url_len, body_off,body_len) -> packed`.
+    http_fetch_idx: u32,
+
     /// String literal interning: maps the literal -> (offset, len) in memory.
     string_table: HashMap<String, (u32, u32)>,
     /// Next free byte in the data segment.
@@ -281,6 +319,24 @@ impl WasmCodegen {
             canvas_fill_rect_idx: 0,
             canvas_clear_idx: 0,
             fetch_text_idx: 0,
+            string_length_idx: 0,
+            string_slice_idx: 0,
+            string_to_upper_idx: 0,
+            string_to_lower_idx: 0,
+            string_trim_idx: 0,
+            string_index_of_idx: 0,
+            string_parse_int_idx: 0,
+            string_parse_float_idx: 0,
+            array_length_idx: 0,
+            array_push_idx: 0,
+            array_pop_idx: 0,
+            json_parse_idx: 0,
+            json_stringify_idx: 0,
+            json_get_int_idx: 0,
+            json_get_str_idx: 0,
+            regex_test_idx: 0,
+            regex_replace_idx: 0,
+            http_fetch_idx: 0,
             string_table: HashMap::new(),
             // Reserve the first 16 bytes so offset 0 stays sentinel-free.
             string_cursor: 16,
@@ -486,6 +542,174 @@ impl WasmCodegen {
         self.fetch_text_idx = 12;
         self.func_count = 13;
         self.type_count = 13;
+
+        // ====================================================================
+        // WASM v2.3: stdlib parity primitives
+        //
+        // Each block follows the pattern:
+        //   * push a TypeSection signature
+        //   * import the host function under env::kryos_<name>
+        //   * record idx in self.<name>_idx
+        //   * bump func_count + type_count
+        //
+        // All string-bearing primitives use the packed-i64 convention
+        // (low 32 = byte offset, high 32 = byte length) consistent with
+        // kryos_string_concat. Array primitives use the same scheme.
+        // ====================================================================
+
+        // string_length(packed) -> i32
+        self.types.ty().function(vec![ValType::I64], vec![ValType::I32]);
+        self.imports.import(env_module, "kryos_string_length",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.string_length_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // string_slice(packed, start, end) -> packed
+        self.types.ty().function(
+            vec![ValType::I64, ValType::I32, ValType::I32],
+            vec![ValType::I64],
+        );
+        self.imports.import(env_module, "kryos_string_slice",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.string_slice_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // string_to_upper(packed) -> packed
+        self.types.ty().function(vec![ValType::I64], vec![ValType::I64]);
+        self.imports.import(env_module, "kryos_string_to_upper",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.string_to_upper_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // string_to_lower(packed) -> packed
+        self.types.ty().function(vec![ValType::I64], vec![ValType::I64]);
+        self.imports.import(env_module, "kryos_string_to_lower",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.string_to_lower_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // string_trim(packed) -> packed
+        self.types.ty().function(vec![ValType::I64], vec![ValType::I64]);
+        self.imports.import(env_module, "kryos_string_trim",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.string_trim_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // string_index_of(packed_haystack, packed_needle) -> i32 (-1 if absent)
+        self.types.ty().function(
+            vec![ValType::I64, ValType::I64],
+            vec![ValType::I32],
+        );
+        self.imports.import(env_module, "kryos_string_index_of",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.string_index_of_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // string_parse_int(packed) -> i64
+        self.types.ty().function(vec![ValType::I64], vec![ValType::I64]);
+        self.imports.import(env_module, "kryos_string_parse_int",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.string_parse_int_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // string_parse_float(packed) -> f64
+        self.types.ty().function(vec![ValType::I64], vec![ValType::F64]);
+        self.imports.import(env_module, "kryos_string_parse_float",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.string_parse_float_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // array_length(packed) -> i32
+        self.types.ty().function(vec![ValType::I64], vec![ValType::I32]);
+        self.imports.import(env_module, "kryos_array_length",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.array_length_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // array_push(packed, value) -> packed (new handle, since growth may reallocate)
+        self.types.ty().function(
+            vec![ValType::I64, ValType::I64],
+            vec![ValType::I64],
+        );
+        self.imports.import(env_module, "kryos_array_push",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.array_push_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // array_pop(packed) -> i64 (-1 sentinel when empty)
+        self.types.ty().function(vec![ValType::I64], vec![ValType::I64]);
+        self.imports.import(env_module, "kryos_array_pop",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.array_pop_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // json_parse(packed_str) -> handle_i64
+        self.types.ty().function(vec![ValType::I64], vec![ValType::I64]);
+        self.imports.import(env_module, "kryos_json_parse",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.json_parse_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // json_stringify(handle) -> packed_str
+        self.types.ty().function(vec![ValType::I64], vec![ValType::I64]);
+        self.imports.import(env_module, "kryos_json_stringify",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.json_stringify_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // json_get_int(handle, key_off, key_len) -> i64
+        self.types.ty().function(
+            vec![ValType::I64, ValType::I32, ValType::I32],
+            vec![ValType::I64],
+        );
+        self.imports.import(env_module, "kryos_json_get_int",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.json_get_int_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // json_get_str(handle, key_off, key_len) -> packed_str
+        self.types.ty().function(
+            vec![ValType::I64, ValType::I32, ValType::I32],
+            vec![ValType::I64],
+        );
+        self.imports.import(env_module, "kryos_json_get_str",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.json_get_str_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // regex_test(packed_pat, packed_subject) -> i32 (0/1)
+        self.types.ty().function(
+            vec![ValType::I64, ValType::I64],
+            vec![ValType::I32],
+        );
+        self.imports.import(env_module, "kryos_regex_test",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.regex_test_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // regex_replace(packed_pat, packed_subject, packed_repl) -> packed
+        self.types.ty().function(
+            vec![ValType::I64, ValType::I64, ValType::I64],
+            vec![ValType::I64],
+        );
+        self.imports.import(env_module, "kryos_regex_replace",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.regex_replace_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // http_fetch(method_off,len, url_off,len, body_off,len) -> packed_response
+        self.types.ty().function(
+            vec![
+                ValType::I32, ValType::I32,
+                ValType::I32, ValType::I32,
+                ValType::I32, ValType::I32,
+            ],
+            vec![ValType::I64],
+        );
+        self.imports.import(env_module, "kryos_http_fetch",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.http_fetch_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
     }
 
     /// Walk the module once to assign function indices and signature indices.
