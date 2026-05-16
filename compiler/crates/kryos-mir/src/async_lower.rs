@@ -533,6 +533,95 @@ fn rewrite_terminator_ids(term: &mut Terminator, map: &BTreeMap<BlockId, BlockId
     }
 }
 
+// ---------------------------------------------------------------------------
+// Driver: discover await split points + apply the transform
+// ---------------------------------------------------------------------------
+
+/// Scan a MIR function for await suspension points.
+///
+/// An "await point" is currently identified as: any `Instruction::Assign`
+/// whose RValue is a `Call` to a function name listed in `async_callees`.
+/// In other words, calls to *other* async functions are treated as
+/// suspension boundaries.
+///
+/// This is a deliberately conservative wiring — it does not require any
+/// changes to AST→MIR lowering. The lowering of `await e` in `lower.rs`
+/// still produces a direct `Call`, which we then recognise here.
+///
+/// **Returns** split points sorted by `(BlockId, inst_idx ASC)`, which is
+/// the order `split_at_await` expects (so that earlier splits don't shift
+/// indices used by later splits).
+pub fn find_split_points(func: &MirFunction, async_callees: &BTreeSet<String>) -> Vec<SplitPoint> {
+    let mut points: Vec<SplitPoint> = Vec::new();
+    for block in &func.blocks {
+        for (idx, inst) in block.instructions.iter().enumerate() {
+            if let Instruction::Assign {
+                value: RValue::Call { func: callee, .. },
+                ..
+            } = inst
+            {
+                if async_callees.contains(callee) {
+                    points.push(SplitPoint {
+                        block: block.id,
+                        inst_idx: idx,
+                    });
+                }
+            }
+        }
+    }
+    // Sort by (block, idx) ascending.
+    points.sort_by(|a, b| a.block.cmp(&b.block).then(a.inst_idx.cmp(&b.inst_idx)));
+    points
+}
+
+/// Apply [`split_at_await`] to every async function in `module`, using
+/// each function's own `AsyncPlan` to know its state-struct name and the
+/// global set of async callees to identify suspension points.
+///
+/// This is **opt-in**: the driver calls it only when the `split_awaits`
+/// flag is set, since downstream codegen does not yet consume the post-
+/// split CFG. Returns the number of (function, splits applied) pairs.
+///
+/// Functions where `find_split_points` returns multiple splits in the
+/// same block are processed one split per block per call — the
+/// `DuplicateBlock` guard in `split_at_await` is honoured by dropping any
+/// duplicate-block points beyond the first. A single block can hold at
+/// most one await without further wiring; this matches typical async
+/// code (one await per straight-line sequence) and keeps the transform
+/// well-defined.
+pub fn apply_split_at_awaits(module: &mut MirModule, report: &AsyncLoweringReport) -> usize {
+    // Build the set of async callee names from the report's plans.
+    let async_callees: BTreeSet<String> = report
+        .plans
+        .keys()
+        .cloned()
+        .collect();
+
+    let mut applied = 0;
+    for func in module.functions.iter_mut() {
+        if !func.attributes.is_async {
+            continue;
+        }
+        let Some(plan) = report.plans.get(&func.name) else {
+            continue;
+        };
+        let raw_points = find_split_points(func, &async_callees);
+        if raw_points.is_empty() {
+            continue;
+        }
+        // Deduplicate by block: keep only the first split per block.
+        let mut seen_blocks: BTreeSet<BlockId> = BTreeSet::new();
+        let unique: Vec<SplitPoint> = raw_points
+            .into_iter()
+            .filter(|sp| seen_blocks.insert(sp.block))
+            .collect();
+        if split_at_await(func, &plan.state_struct_name, &unique).is_ok() {
+            applied += 1;
+        }
+    }
+    applied
+}
+
 /// Convenience: mark each async function with a deterministic suffix so
 /// downstream tooling can spot lowered async fns. Idempotent.
 pub fn stamp_attributes(module: &mut MirModule) {

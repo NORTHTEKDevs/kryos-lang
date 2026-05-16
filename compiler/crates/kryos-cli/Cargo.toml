@@ -2,6 +2,14 @@
 name = "kryos-cli"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Kryos programming language compiler and tooling — a memory-safe systems language with first-class async, actors, and capabilities."
+readme = "../../../README.md"
+keywords = ["language", "compiler", "systems", "async", "actor"]
+categories = ["compilers", "development-tools", "command-line-utilities"]
 
 [[bin]]
 name = "kryos"

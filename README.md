@@ -92,6 +92,19 @@ cargo build --release -j 2
 ./target/release/kryos run ../examples/hello.kry
 ```
 
+### Via `cargo install` (from a local checkout)
+
+If you already have the Rust toolchain and want the `kryos` binary on your `PATH` without the install script:
+
+```bash
+git clone https://github.com/NORTHTEKDevs/kryos-lang.git
+cargo install --path kryos-lang/compiler/crates/kryos-cli
+# kryos is now on $PATH (typically ~/.cargo/bin/kryos)
+kryos --version
+```
+
+Note: `cargo install --git` is not currently supported because the workspace ships runtime staticlibs (`libkryos_rt.a`, `libkryos_stdlib_native.a`) that the driver looks up at link time. Use the install script or a release archive if you want those bundled — or use `cargo install --path` from a local checkout and the compiler will rebuild and locate them inside the workspace `target/` automatically.
+
 Build footprint on a typical machine, cold from a clean checkout with the workspace's tuned `[profile.release]`:
 
 | Metric            | -j 2 (low-RAM laptop) | -j N (full core count) |
@@ -352,6 +365,14 @@ Kryos is **v1.0.1**. The language, toolchain, and standard library are feature-c
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+## Community & Contact
+
+- **Discussions:** [GitHub Discussions](https://github.com/NORTHTEKDevs/kryos-lang/discussions) — questions, ideas, show-and-tell.
+- **Issues:** [GitHub Issues](https://github.com/NORTHTEKDevs/kryos-lang/issues) — bugs and feature requests.
+- **Email:** [info@northtek.io](mailto:info@northtek.io) — direct contact for sponsorship, partnerships, or anything that doesn't fit a public thread.
 
 ---
 
