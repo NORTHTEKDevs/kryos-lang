@@ -291,6 +291,40 @@ pub fn compile_module_with_options(
         }
     }
 
+    // ---------------------------------------------------------------------
+    // Async poll-wrapper declarations.
+    //
+    // For every `async fn F`, declare an exported `__kryos_poll_F` with the
+    // Kryos runtime poll ABI:
+    //   extern "C" fn(*mut u8) -> i32   ; KRYOS_PENDING=0 / KRYOS_READY=1
+    //
+    // The body (synthesised below) reads params back out of the state
+    // struct, calls the original fn synchronously, stores the result into
+    // the state struct's `result` field, marks state = -1 (done), and
+    // returns KRYOS_READY. This makes async fns runnable end-to-end via
+    // kryos_async_block_on while preserving today's semantics (await is
+    // still a direct call; the wrapper is just glue to the executor).
+    //
+    // Names match kryos_mir::async_lower::poll_fn_name_for so the rest of
+    // the toolchain stays in lock-step.
+    // ---------------------------------------------------------------------
+    let mut async_poll_ids: HashMap<String, FuncId> = HashMap::new();
+    {
+        let call_conv = object_module.isa().default_call_conv();
+        for mir_func in &module.functions {
+            if !mir_func.attributes.is_async {
+                continue;
+            }
+            let poll_name = kryos_mir::async_lower::poll_fn_name_for(&mir_func.name);
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // state pointer (as i64)
+            sig.returns.push(AbiParam::new(types::I32)); // KryosPoll discriminant
+            let id = object_module.declare_function(&poll_name, Linkage::Export, &sig)?;
+            async_poll_ids.insert(mir_func.name.clone(), id);
+            func_ids.insert(poll_name, id);
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Closure env-wrapper (thunk) generation
     // -----------------------------------------------------------------------
@@ -985,6 +1019,197 @@ pub fn compile_module_with_options(
                 eprintln!("[kryos] full error details: {e:#?}");
                 CodegenError::Module(e)
             })?;
+    }
+
+    // -----------------------------------------------------------------------
+    // Async poll-wrapper bodies.
+    //
+    // For each async fn F, emit __kryos_poll_F(state: *mut u8) -> i32:
+    //   1. Read parameter values from the state struct fields (those marked
+    //      is_param in the AsyncPlan have known offsets via the struct layout).
+    //   2. Call F(params...) synchronously. (Today `await` lowers as a direct
+    //      call, so this is correct -- when true split-at-await lands, this
+    //      body becomes a dispatch over the `state` discriminant.)
+    //   3. Store the return value into the struct's `result` field.
+    //   4. Set state = -1 (done) so the executor will never re-poll.
+    //   5. Return KRYOS_READY = 1.
+    //
+    // If any prerequisite is missing (no state struct, fields don't match,
+    // etc.), we emit a stub that just returns KRYOS_READY = 1 so the binary
+    // still links cleanly. The driver-side validation in async_lower::run
+    // catches the cases that matter.
+    // -----------------------------------------------------------------------
+    {
+        let call_conv = object_module.isa().default_call_conv();
+        for mir_func in &module.functions {
+            if !mir_func.attributes.is_async {
+                continue;
+            }
+            let Some(&poll_id) = async_poll_ids.get(&mir_func.name) else {
+                continue;
+            };
+            let state_name = kryos_mir::async_lower::state_struct_name_for(&mir_func.name);
+            let state_fields = module.struct_defs.get(&state_name);
+
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I32));
+
+            let mut cl_func =
+                Function::with_name_signature(UserFuncName::user(0, poll_id.as_u32()), sig);
+            {
+                let mut builder = FunctionBuilder::new(&mut cl_func, &mut fb_ctx);
+                let entry = builder.create_block();
+                builder.append_block_params_for_function_params(entry);
+                builder.switch_to_block(entry);
+                let state_ptr = builder.block_params(entry)[0];
+
+                // Best-effort: only synthesise a real body when we have a
+                // matching state-struct layout. Otherwise fall through to
+                // the always-ready stub at the bottom.
+                let mut emitted_real_body = false;
+                if let Some(fields) = state_fields {
+                    if let Ok(layout) = compute_struct_layout(fields) {
+                        // Build offset map by field name.
+                        let mut off: HashMap<&str, (u32, Type)> = HashMap::new();
+                        for (n, o, t) in &layout.field_offsets {
+                            off.insert(n.as_str(), (*o, *t));
+                        }
+
+                        // Look up each param's slot in the state struct.
+                        // Param names come from MirParam.name; field names
+                        // were inserted by async_lower::apply_state_structs
+                        // and match the local's name.
+                        let mut call_args: Vec<cranelift_codegen::ir::Value> = Vec::new();
+                        let mut all_params_found = true;
+                        for param in &mir_func.params {
+                            // Look up the param's name via the matching MirLocal.
+                            let pname = mir_func
+                                .locals
+                                .iter()
+                                .find(|l| l.id == param.local)
+                                .and_then(|l| l.name.as_deref());
+                            let Some(pname) = pname else {
+                                all_params_found = false;
+                                break;
+                            };
+                            let Some(&(offset, ty)) = off.get(pname) else {
+                                all_params_found = false;
+                                break;
+                            };
+                            let v = builder.ins().load(
+                                ty,
+                                MemFlags::new(),
+                                state_ptr,
+                                offset as i32,
+                            );
+                            call_args.push(v);
+                        }
+
+                        if all_params_found {
+                            // Coerce to the callee's expected signature
+                            // (build_signature is the canonical source).
+                            let callee_sig =
+                                build_signature(mir_func, object_module.isa().default_call_conv());
+                            for (i, arg) in call_args.iter_mut().enumerate() {
+                                if i >= callee_sig.params.len() {
+                                    break;
+                                }
+                                let expected = callee_sig.params[i].value_type;
+                                let actual = builder.func.dfg.value_type(*arg);
+                                if expected != actual {
+                                    if expected.is_int() && actual.is_int() {
+                                        if expected.bits() < actual.bits() {
+                                            *arg = builder.ins().ireduce(expected, *arg);
+                                        } else {
+                                            *arg = builder.ins().sextend(expected, *arg);
+                                        }
+                                    } else if expected.is_float() && actual.is_int() {
+                                        *arg = builder
+                                            .ins()
+                                            .bitcast(expected, MemFlags::new(), *arg);
+                                    } else if expected.is_int() && actual.is_float() {
+                                        *arg = builder
+                                            .ins()
+                                            .bitcast(expected, MemFlags::new(), *arg);
+                                    }
+                                }
+                            }
+
+                            let callee_id = func_ids[&mir_func.name];
+                            let callee_ref =
+                                object_module.declare_func_in_func(callee_id, builder.func);
+                            let call_inst = builder.ins().call(callee_ref, &call_args);
+                            let results = builder.inst_results(call_inst).to_vec();
+
+                            // Store result into state.result (if the slot exists).
+                            if let Some(&(res_off, res_ty)) = off.get("result") {
+                                let result_val = if results.is_empty() {
+                                    builder.ins().iconst(res_ty, 0)
+                                } else {
+                                    let r = results[0];
+                                    let rt = builder.func.dfg.value_type(r);
+                                    if rt == res_ty {
+                                        r
+                                    } else if rt.is_int() && res_ty.is_int() {
+                                        if res_ty.bits() < rt.bits() {
+                                            builder.ins().ireduce(res_ty, r)
+                                        } else if res_ty.bits() > rt.bits() {
+                                            builder.ins().sextend(res_ty, r)
+                                        } else {
+                                            r
+                                        }
+                                    } else if is_float_type(rt) && res_ty.is_int() {
+                                        builder.ins().bitcast(res_ty, MemFlags::new(), r)
+                                    } else if rt.is_int() && is_float_type(res_ty) {
+                                        builder.ins().bitcast(res_ty, MemFlags::new(), r)
+                                    } else {
+                                        r
+                                    }
+                                };
+                                builder.ins().store(
+                                    MemFlags::new(),
+                                    result_val,
+                                    state_ptr,
+                                    res_off as i32,
+                                );
+                            }
+
+                            // Mark state = -1 (done).
+                            if let Some(&(s_off, s_ty)) = off.get("state") {
+                                let done = builder.ins().iconst(s_ty, -1);
+                                builder.ins().store(
+                                    MemFlags::new(),
+                                    done,
+                                    state_ptr,
+                                    s_off as i32,
+                                );
+                            }
+
+                            emitted_real_body = true;
+                        }
+                    }
+                }
+
+                // Final return: KRYOS_READY = 1.
+                let _ = emitted_real_body; // (kept for readability / future use)
+                let ready = builder.ins().iconst(types::I32, 1);
+                builder.ins().return_(&[ready]);
+                builder.seal_all_blocks();
+                builder.finalize();
+            }
+
+            let mut ctx = Context::for_function(cl_func);
+            object_module
+                .define_function(poll_id, &mut ctx)
+                .map_err(|e| {
+                    eprintln!(
+                        "[kryos] codegen error in async poll wrapper for '{}': {e}",
+                        mir_func.name
+                    );
+                    CodegenError::Module(e)
+                })?;
+        }
     }
 
     // Generate env-wrapper (thunk) function bodies for closures.

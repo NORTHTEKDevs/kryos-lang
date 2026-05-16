@@ -3939,3 +3939,162 @@ fn jit_comparison_eq() {
     assert_eq!(f(5, 6), 0);
     assert_eq!(f(0, 0), 1);
 }
+
+// ---------------------------------------------------------------------------
+// Async poll-wrapper codegen (Item 8 Stage 4)
+// ---------------------------------------------------------------------------
+
+/// Build a tiny MIR module containing one async fn `compute(x: i64) -> i64`
+/// whose body just returns `x + 1`, plus the synthesised state struct that
+/// async_lower would have produced. We then AOT-compile and verify that the
+/// resulting object file exports the `__kryos_poll_compute` symbol.
+#[test]
+fn async_poll_wrapper_is_emitted() {
+    // -- 1. Build the async fn `compute(x: i64) -> i64 { return x + 1 }`.
+    let x_local = MirLocal {
+        id: LocalId(0),
+        name: Some("x".to_string()),
+        ty: MirType::I64,
+        mutable: false,
+    };
+    let one_local = MirLocal {
+        id: LocalId(1),
+        name: Some("__t".to_string()),
+        ty: MirType::I64,
+        mutable: false,
+    };
+    let blocks = vec![BasicBlock {
+        id: BlockId(0),
+        instructions: vec![Instruction::Assign {
+            dest: LocalId(1),
+            value: RValue::BinOp {
+                op: MirBinOp::Add,
+                left: Operand::Local(LocalId(0)),
+                right: Operand::Constant(Constant::Int(1)),
+            },
+        }],
+        terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
+    }];
+    let mut compute = make_function(
+        "compute",
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
+        MirType::I64,
+        vec![x_local, one_local],
+        blocks,
+    );
+    compute.attributes.is_async = true;
+
+    // `main` so the module is well-formed for AOT (it expects a binary entry).
+    let main = make_function(
+        "main",
+        vec![],
+        MirType::Void,
+        vec![],
+        vec![BasicBlock {
+            id: BlockId(0),
+            instructions: vec![],
+            terminator: Terminator::Return(None),
+        }],
+    );
+
+    // -- 2. Build the module + synthesise the state struct the async_lower
+    //       pass would have produced (state: i32, x: i64, __t: i64, result: i64).
+    let mut module = MirModule {
+        functions: vec![compute, main],
+        struct_defs: HashMap::new(),
+        enum_defs: HashMap::new(),
+        trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
+    };
+    let report = kryos_mir::async_lower::run(&module);
+    assert!(report.errors.is_empty(), "unexpected: {:?}", report.errors);
+    let inserted = kryos_mir::async_lower::apply_state_structs(&mut module, &report);
+    assert_eq!(inserted, 1);
+
+    // -- 3. AOT-compile.
+    let obj_bytes = codegen::compile_module(&module).expect("AOT compile failed");
+
+    // -- 4. The symbol name appears verbatim somewhere in the object bytes
+    //       (ELF / Mach-O / COFF all store symbol names as null-terminated
+    //       strings, which means a byte-window search is the cheapest
+    //       portable check we can do without pulling in the `object` crate).
+    let needle = b"__kryos_poll_compute";
+    let found = obj_bytes.windows(needle.len()).any(|w| w == needle);
+    assert!(
+        found,
+        "expected `__kryos_poll_compute` symbol in {} object bytes",
+        obj_bytes.len()
+    );
+
+    // The state-struct name is NOT a symbol (structs don't get codegen),
+    // so we don't expect it in the object -- skipping that check.
+}
+
+/// Same as above but a non-async fn must NOT cause a poll wrapper to be
+/// emitted. Guards against accidentally stamping every function.
+#[test]
+fn non_async_fn_gets_no_poll_wrapper() {
+    let x_local = MirLocal {
+        id: LocalId(0),
+        name: Some("x".to_string()),
+        ty: MirType::I64,
+        mutable: false,
+    };
+    let one_local = MirLocal {
+        id: LocalId(1),
+        name: Some("__t".to_string()),
+        ty: MirType::I64,
+        mutable: false,
+    };
+    let plain = make_function(
+        "plain",
+        vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
+        MirType::I64,
+        vec![x_local, one_local],
+        vec![BasicBlock {
+            id: BlockId(0),
+            instructions: vec![Instruction::Assign {
+                dest: LocalId(1),
+                value: RValue::BinOp {
+                    op: MirBinOp::Add,
+                    left: Operand::Local(LocalId(0)),
+                    right: Operand::Constant(Constant::Int(1)),
+                },
+            }],
+            terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
+        }],
+    );
+    let main = make_function(
+        "main",
+        vec![],
+        MirType::Void,
+        vec![],
+        vec![BasicBlock {
+            id: BlockId(0),
+            instructions: vec![],
+            terminator: Terminator::Return(None),
+        }],
+    );
+
+    let module = MirModule {
+        functions: vec![plain, main],
+        struct_defs: HashMap::new(),
+        enum_defs: HashMap::new(),
+        trait_vtables: HashMap::new(),
+        copy_structs: HashSet::new(),
+    };
+
+    let obj_bytes = codegen::compile_module(&module).expect("AOT compile failed");
+    let needle = b"__kryos_poll_";
+    let found = obj_bytes.windows(needle.len()).any(|w| w == needle);
+    assert!(
+        !found,
+        "non-async module should not contain any `__kryos_poll_*` symbol"
+    );
+}
