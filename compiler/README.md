@@ -172,4 +172,4 @@ See [`examples/`](examples/) for 9 example programs covering:
 
 ## License
 
-MIT. Copyright (c) 2026 NORTHTEKDevs. See top-level LICENSE.
+Apache License 2.0. Copyright 2026 NORTHTEKDevs. See top-level LICENSE.
