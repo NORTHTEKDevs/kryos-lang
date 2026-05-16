@@ -92,9 +92,24 @@ cargo build --release -j 2
 ./target/release/kryos run ../examples/hello.kry
 ```
 
-Build footprint on a typical machine: ~6 GB disk, ~3 GB peak RAM with `-j 2`, ~2 minutes cold from a clean checkout. Bump `-j` up to your core count if you have more RAM to spare -- `cranelift-codegen` is the heaviest dep and each parallel rustc job needs ~1-2 GB.
+Build footprint on a typical machine, cold from a clean checkout with the workspace's tuned `[profile.release]`:
 
-> Debug builds (`cargo build` without `--release`) compile `cranelift-codegen` with full debuginfo and can spike to >30 GB. The `[profile.dev]` settings in `compiler/Cargo.toml` already opt heavy deps up to `opt-level = 2` to keep this bounded, but release is still recommended.
+| Metric            | -j 2 (low-RAM laptop) | -j N (full core count) |
+|-------------------|-----------------------|------------------------|
+| Wall time         | ~4-5 min              | ~1-2 min               |
+| Peak RAM          | ~2-3 GB               | ~1-2 GB per parallel job |
+| `target/` on disk | **~700 MB**           | ~700 MB                |
+| `kryos` binary    | ~14 MB                | ~14 MB                 |
+
+`cranelift-codegen` is the heaviest dep -- bump `-j` up to your core count if you have ~1-2 GB of RAM per job to spare. If you're tight on RAM, stick with `-j 2`.
+
+**Smaller binary for distribution.** A `dist` profile is provided for release artifacts:
+
+```bash
+cargo build --profile dist -j 2     # slower, fat LTO + 1 codegen unit, smallest binary
+```
+
+**Why release-only?** Debug builds (`cargo build` without `--release`) compile `cranelift-codegen` with full debuginfo and can spike to >30 GB. The `[profile.dev]` settings in `compiler/Cargo.toml` opt heavy deps up to `opt-level = 2` to bound this, but release is what you want for everyday use.
 
 ---
 

@@ -100,3 +100,34 @@ opt-level = 2
 
 [profile.dev.package."*"]
 opt-level = 1
+
+# Release profile: tuned for small target dir and reasonable build time.
+#
+# Compared to the cargo default:
+# - debug = false       : no debuginfo in rlibs (drops the target dir from
+#                         ~6 GB down to ~1-1.5 GB on a typical build).
+# - strip = "symbols"   : strips final binary symbols (~15 MB -> ~10 MB).
+# - incremental = false : release shouldn't pay incremental's disk cost.
+# - debug-assertions    : off in release (Kryos compiler is heavily exercised
+#   / overflow-checks     and these are pure speed/size wins).
+#
+# LTO is intentionally left at cargo's default (off) so cold release builds
+# stay around ~2 minutes at -j 2. Use the `dist` profile below when you want
+# the smallest possible binary for distribution -- it enables fat LTO and
+# single-codegen-unit at the cost of a much longer build.
+[profile.release]
+opt-level = 3
+debug = false
+strip = "symbols"
+codegen-units = 16
+incremental = false
+debug-assertions = false
+overflow-checks = false
+
+# Distribution profile: smallest possible binary. Slow to compile.
+# Inherits release defaults, then tightens further.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
