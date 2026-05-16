@@ -4094,24 +4094,33 @@ impl LlvmCodegen {
             } => {
                 let ty = self.operand_type(value, func);
                 let val = self.operand_to_llvm(value, func);
+                // Coerce subject to i64 if needed — LLVM `switch` requires
+                // all case constants to share the subject's integer type, and
+                // MIR lowering emits case constants sized for i64.
+                // For enum aggregates ({ i64, i64 } etc.), extract the tag field.
+                let (switch_ty, switch_val) = if ty.starts_with('{') || ty.starts_with('%') {
+                    let tag = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {tag} = extractvalue {ty} {val}, 0"
+                    ));
+                    ("i64".to_string(), tag)
+                } else if ty != "i64" {
+                    let coerced = self.coerce_value(&val, &ty, "i64");
+                    ("i64".to_string(), coerced)
+                } else {
+                    (ty, val)
+                };
                 let cases = targets
                     .iter()
-                    .map(|(v, b)| format!("    {ty} {v}, label %bb{}", b.0))
+                    .map(|(v, b)| format!("    {switch_ty} {v}, label %bb{}", b.0))
                     .collect::<Vec<_>>()
                     .join("\n");
-                // Kryos matches are exhaustive: the MIR-supplied default is the
-                // merge/exit block, not an actual fall-through. Route the LLVM
-                // switch default through an `unreachable` shim so SSA values
-                // defined in arm blocks still dominate their uses in the merge.
-                let unreach_id = self.temp_counter;
-                self.temp_counter += 1;
-                let unreach_label = format!("switch_default_{unreach_id}");
+                // Use the MIR-supplied default block as the LLVM switch default.
+                // This is where wildcard `_` arms live.
                 self.emit_line(&format!(
-                    "  switch {ty} {val}, label %{unreach_label} [\n{cases}\n  ]"
+                    "  switch {switch_ty} {switch_val}, label %bb{} [\n{cases}\n  ]",
+                    default.0
                 ));
-                self.emit_line(&format!("{unreach_label}:"));
-                self.emit_line("  unreachable");
-                let _ = default;
             }
             Terminator::Unreachable => {
                 self.emit_line("  unreachable");
