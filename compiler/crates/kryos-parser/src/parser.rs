@@ -379,11 +379,64 @@ impl Parser {
         let mut end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
 
         if self.eat(TokenKind::LParen) {
-            while !self.check(TokenKind::RParen) && !self.at_end() {
-                let tok = self.advance().clone();
-                args.push(tok.text.clone());
-                if !self.check(TokenKind::RParen) {
-                    self.eat(TokenKind::Comma);
+            // Parse top-level comma-separated args, preserving nested
+            // parentheses inside each arg as a single string so consumers
+            // like the `@cfg(not(...))` evaluator can re-parse them.
+            //
+            // Each arg is built by concatenating token `text` with single
+            // spaces between adjacent identifier-like tokens (so `not test`
+            // stays readable), but with no space adjacent to parentheses or
+            // commas inside the arg. Whitespace inside a single arg is
+            // collapsed to a single space.
+            loop {
+                if self.check(TokenKind::RParen) {
+                    break;
+                }
+                let mut buf = String::new();
+                let mut depth: u32 = 0;
+                while !self.at_end() {
+                    // At depth 0, a comma or RParen terminates the arg.
+                    if depth == 0
+                        && (self.check(TokenKind::Comma) || self.check(TokenKind::RParen))
+                    {
+                        break;
+                    }
+                    let tok = self.advance().clone();
+                    match tok.kind {
+                        TokenKind::LParen => {
+                            depth += 1;
+                            buf.push('(');
+                        }
+                        TokenKind::RParen => {
+                            // Safe: we already checked depth>0 because
+                            // depth==0 RParen exits the loop above.
+                            depth -= 1;
+                            buf.push(')');
+                        }
+                        TokenKind::Comma => {
+                            // Only reachable inside nested parens.
+                            buf.push(',');
+                        }
+                        _ => {
+                            // Re-introduce a separator between adjacent
+                            // word-ish tokens. Avoid spaces immediately
+                            // after `(` or before `)`/`,`.
+                            let needs_space = !buf.is_empty()
+                                && !buf.ends_with('(')
+                                && !buf.ends_with(',');
+                            if needs_space {
+                                buf.push(' ');
+                            }
+                            buf.push_str(&tok.text);
+                        }
+                    }
+                    if self.at_end() {
+                        break;
+                    }
+                }
+                args.push(buf.trim().to_string());
+                if !self.eat(TokenKind::Comma) {
+                    break;
                 }
             }
             let rparen = self.expect(TokenKind::RParen);

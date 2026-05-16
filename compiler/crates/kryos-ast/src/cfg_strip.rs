@@ -23,9 +23,10 @@
 //! decl is stripped. This is conservative: the compiler never compiles
 //! code that asked for a feature gate it doesn't understand.
 //!
-//! Negation, `not(...)`, `all(...)`, and `any(...)` are *not* supported in
-//! this version because the annotation parser does not yet handle nested
-//! parentheses; this pass treats nested-paren predicates as unrecognised.
+//! Combinators `not(P)`, `all(P, Q, ...)`, and `any(P, Q, ...)` are also
+//! recognised and may be nested arbitrarily. `all()` with no args is
+//! vacuously true; `any()` with no args is false. Anything that fails to
+//! parse falls through to the unrecognised-predicate rule (false).
 //!
 //! # Where it runs
 //!
@@ -119,7 +120,25 @@ fn evaluate(ann: &Annotation, ctx: &CfgContext) -> bool {
 }
 
 fn match_predicate(arg: &str, ctx: &CfgContext) -> bool {
-    let key = arg.trim().to_ascii_lowercase();
+    let trimmed = arg.trim();
+    // Handle combinators first. `not(X)` / `all(...)` / `any(...)`.
+    if let Some(inner) = strip_call(trimmed, "not") {
+        // `not(...)` requires exactly one inner predicate.
+        let parts = split_top_level(inner);
+        if parts.len() != 1 {
+            return false;
+        }
+        return !match_predicate(&parts[0], ctx);
+    }
+    if let Some(inner) = strip_call(trimmed, "all") {
+        let parts = split_top_level(inner);
+        return parts.iter().all(|p| match_predicate(p, ctx));
+    }
+    if let Some(inner) = strip_call(trimmed, "any") {
+        let parts = split_top_level(inner);
+        return parts.iter().any(|p| match_predicate(p, ctx));
+    }
+    let key = trimmed.to_ascii_lowercase();
     match key.as_str() {
         "linux" => ctx.target_os == "linux",
         "windows" => ctx.target_os == "windows",
@@ -129,6 +148,73 @@ fn match_predicate(arg: &str, ctx: &CfgContext) -> bool {
         "release" => ctx.release,
         _ => false, // Unknown predicates fail closed.
     }
+}
+
+/// If `s` looks like `name(...)` with balanced parens, return the inside
+/// of the parens. Whitespace between `name` and `(` is tolerated.
+fn strip_call<'a>(s: &'a str, name: &str) -> Option<&'a str> {
+    let s = s.trim();
+    let lower = s.to_ascii_lowercase();
+    if !lower.starts_with(name) {
+        return None;
+    }
+    let rest = s[name.len()..].trim_start();
+    if !rest.starts_with('(') || !rest.ends_with(')') {
+        return None;
+    }
+    // Confirm the closing paren matches the opening paren (i.e. the whole
+    // tail of `s` is the parenthesised group, not e.g. `not(x) trailing`).
+    let bytes = rest.as_bytes();
+    let mut depth: i32 = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    // Must end exactly at the last byte.
+                    if i + 1 != bytes.len() {
+                        return None;
+                    }
+                    return Some(&rest[1..i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split `s` at top-level commas, respecting nested parentheses.
+fn split_top_level(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth: i32 = 0;
+    let mut cur = String::new();
+    for ch in s.chars() {
+        match ch {
+            '(' => {
+                depth += 1;
+                cur.push(ch);
+            }
+            ')' => {
+                depth -= 1;
+                cur.push(ch);
+            }
+            ',' if depth == 0 => {
+                let t = cur.trim().to_string();
+                if !t.is_empty() {
+                    out.push(t);
+                }
+                cur.clear();
+            }
+            _ => cur.push(ch),
+        }
+    }
+    let t = cur.trim().to_string();
+    if !t.is_empty() {
+        out.push(t);
+    }
+    out
 }
 
 /// Resolve the host operating system, lower-cased. Maps Rust's
@@ -321,6 +407,73 @@ mod tests {
         };
         strip_cfg(&mut m, &CfgContext::host_debug());
         assert_eq!(decl_names(&m).len(), 1);
+    }
+
+    #[test]
+    fn not_combinator() {
+        let ctx = CfgContext {
+            target_os: "linux".into(),
+            release: false,
+        };
+        // not(windows) on linux => true (keep)
+        assert!(match_predicate("not(windows)", &ctx));
+        // not(linux) on linux => false (strip)
+        assert!(!match_predicate("not(linux)", &ctx));
+        // Nested: not(not(linux)) on linux => true
+        assert!(match_predicate("not(not(linux))", &ctx));
+        // Malformed: not() with no args => false
+        assert!(!match_predicate("not()", &ctx));
+        // Malformed: not(a, b) => false (single-arg rule)
+        assert!(!match_predicate("not(linux, debug)", &ctx));
+    }
+
+    #[test]
+    fn all_combinator() {
+        let ctx = CfgContext {
+            target_os: "linux".into(),
+            release: false,
+        };
+        assert!(match_predicate("all(linux, debug)", &ctx));
+        assert!(!match_predicate("all(linux, release)", &ctx));
+        assert!(!match_predicate("all(windows, debug)", &ctx));
+        // Empty all() is vacuously true.
+        assert!(match_predicate("all()", &ctx));
+        // Nested.
+        assert!(match_predicate("all(linux, not(release))", &ctx));
+    }
+
+    #[test]
+    fn any_combinator() {
+        let ctx = CfgContext {
+            target_os: "linux".into(),
+            release: false,
+        };
+        assert!(match_predicate("any(linux, windows)", &ctx));
+        assert!(match_predicate("any(windows, linux)", &ctx));
+        assert!(!match_predicate("any(windows, macos)", &ctx));
+        // Empty any() is false.
+        assert!(!match_predicate("any()", &ctx));
+        // Nested combinators.
+        assert!(match_predicate("any(windows, all(linux, debug))", &ctx));
+        assert!(!match_predicate("any(windows, all(linux, release))", &ctx));
+    }
+
+    #[test]
+    fn deeply_nested_combinators() {
+        let ctx = CfgContext {
+            target_os: "macos".into(),
+            release: true,
+        };
+        // unix && release && !windows
+        assert!(match_predicate(
+            "all(unix, release, not(windows))",
+            &ctx
+        ));
+        // (linux || macos) && !debug
+        assert!(match_predicate(
+            "all(any(linux, macos), not(debug))",
+            &ctx
+        ));
     }
 
     #[test]

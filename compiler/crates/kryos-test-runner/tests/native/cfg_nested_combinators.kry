@@ -1,0 +1,35 @@
+// expect-stdout: kept
+// Tests nested @cfg(...) combinators: not(), all(), any().
+//
+// On Linux (the native runner host) we expect:
+//   - @cfg(not(windows))                  => keep
+//   - @cfg(all(linux, not(release)))      => debug build only => keep
+//                                            (release builds strip it, see
+//                                             expect for the matching variant
+//                                             below)
+//   - @cfg(any(windows, macos))           => strip
+//   - @cfg(not(linux))                    => strip
+//
+// To make this test robust across debug/release we use a pair that always
+// picks exactly one definition of `kept()` on Linux:
+//   - @cfg(all(linux, any(debug, release))) => keep (always true on Linux)
+//   - @cfg(not(linux))                       => strip
+
+@cfg(all(linux, any(debug, release)))
+fn kept() -> str {
+    return "kept"
+}
+
+@cfg(not(linux))
+fn kept() -> str {
+    return "stripped"
+}
+
+@cfg(any(windows, macos))
+fn never_keep() -> str {
+    return "should-be-stripped"
+}
+
+fn main() {
+    println(kept())
+}

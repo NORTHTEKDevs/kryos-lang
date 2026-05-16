@@ -119,6 +119,69 @@ fn test_annotation_with_args() {
     }
 }
 
+#[test]
+fn test_annotation_multiple_args() {
+    let m = parse_ok("@capabilities(net, io)\nfn run() { }");
+    match &m.declarations[0] {
+        Decl::Function { annotations, .. } => {
+            assert_eq!(annotations[0].name, "capabilities");
+            assert_eq!(annotations[0].args, vec!["net", "io"]);
+        }
+        other => panic!("expected Function, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_annotation_nested_not() {
+    // @cfg(not(windows)) should parse as a single arg "not(windows)".
+    let m = parse_ok("@cfg(not(windows))\nfn run() { }");
+    match &m.declarations[0] {
+        Decl::Function { annotations, .. } => {
+            assert_eq!(annotations[0].name, "cfg");
+            assert_eq!(annotations[0].args, vec!["not(windows)"]);
+        }
+        other => panic!("expected Function, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_annotation_nested_all_any() {
+    let m = parse_ok("@cfg(all(linux, not(release)))\nfn run() { }");
+    match &m.declarations[0] {
+        Decl::Function { annotations, .. } => {
+            assert_eq!(
+                annotations[0].args,
+                vec!["all(linux,not(release))"]
+            );
+        }
+        other => panic!("expected Function, got {:?}", other),
+    }
+    let m = parse_ok("@cfg(any(windows, all(linux, debug)))\nfn run() { }");
+    match &m.declarations[0] {
+        Decl::Function { annotations, .. } => {
+            assert_eq!(
+                annotations[0].args,
+                vec!["any(windows,all(linux,debug))"]
+            );
+        }
+        other => panic!("expected Function, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_annotation_multiple_top_level_combinators() {
+    let m = parse_ok("@cfg(linux, not(release))\nfn run() { }");
+    match &m.declarations[0] {
+        Decl::Function { annotations, .. } => {
+            assert_eq!(
+                annotations[0].args,
+                vec!["linux", "not(release)"]
+            );
+        }
+        other => panic!("expected Function, got {:?}", other),
+    }
+}
+
 // ======================== Struct declarations ========================
 
 #[test]
