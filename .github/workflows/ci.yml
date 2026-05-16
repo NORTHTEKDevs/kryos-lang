@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "compiler"
+
+      - name: Install native deps
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y libsqlite3-dev libssl-dev pkg-config
+
+      - name: Build (release)
+        working-directory: compiler
+        run: cargo build --release -j 2 -p kryos-cli
+
+      - name: Smoke test (kryos run tests/smoke.kry)
+        working-directory: compiler
+        shell: bash
+        run: |
+          ./target/release/kryos run tests/smoke.kry > smoke_output.txt
+          printf "30\n2\nKryos\n" > expected.txt
+          diff expected.txt smoke_output.txt
+
+      - name: Example smoke tests
+        working-directory: compiler
+        shell: bash
+        # Run a curated set of examples end-to-end. Each example is required to
+        # exit cleanly. This is the cheapest regression gate against
+        # codegen / linker / runtime breakage.
+        run: |
+          set -e
+          for ex in hello fibonacci calculator word_count shapes; do
+            echo "== examples/$ex.kry =="
+            ./target/release/kryos run ../examples/$ex.kry > /dev/null
+          done
+
+      - name: Showcase smoke tests
+        working-directory: compiler
+        shell: bash
+        # Showcase apps exercise the wider stdlib surface area: JSON, file I/O,
+        # channels, markdown rendering. They must compile and exit cleanly.
+        run: |
+          set -e
+          for ex in markdown kvdb ssg worker_pool; do
+            echo "== showcase/$ex.kry =="
+            ./target/release/kryos run ../examples/showcase/$ex.kry > /dev/null
+          done
