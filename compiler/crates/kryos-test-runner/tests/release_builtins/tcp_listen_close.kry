@@ -1,0 +1,15 @@
+// Validates tcp_listen/tcp_close link and runtime-call through LLVM --release.
+// This is the exact bug pattern that hid undetected through v1.9.0:
+// tcp_listen was advertised but failed at link time with 'use of
+// undefined value @tcp_listen' under --release builds.
+// expect-stdout: bound
+// expect-stdout: closed
+fn main() {
+    // port 0 = kernel picks an ephemeral port; no external resource needed
+    let fd = tcp_listen("127.0.0.1", 0)
+    if fd > 0 {
+        println("bound")
+    }
+    tcp_close(fd)
+    println("closed")
+}

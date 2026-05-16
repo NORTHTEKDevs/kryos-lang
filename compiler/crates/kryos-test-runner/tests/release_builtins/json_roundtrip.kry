@@ -1,0 +1,14 @@
+// Validates JSON builtins link and roundtrip through LLVM --release.
+// Note: \{ and \} escape Kryos string-interpolation braces; the resulting
+// runtime string is plain JSON object syntax.
+// expect-stdout: number
+// expect-stdout: 42
+// expect-stdout: hello
+fn main() {
+    let v = json_parse("\{\"n\": 42, \"s\": \"hello\"\}")
+    let n = json_get(v, "n")
+    println(json_type(n))
+    println(to_string(json_to_int(n)))
+    let s = json_get(v, "s")
+    println(json_to_str(s))
+}

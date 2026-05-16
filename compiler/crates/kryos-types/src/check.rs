@@ -2357,6 +2357,27 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         ret: Type::I64,
     });
 
+    // Legacy file IO aliases: read_file/write_file mirror file_read/file_write.
+    // These exist because the LLVM codegen and several v1.x examples used the
+    // *_file form; the canonical name is the file_* form.
+    checker.env.define_function(FunctionSig {
+        name: "read_file".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("path".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "write_file".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("path".to_string(), Type::Str),
+            ("content".to_string(), Type::Str),
+        ],
+        ret: Type::I64,
+    });
+
     // create_dir(path: str) -> i64 — create directory recursively
     checker.env.define_function(FunctionSig {
         name: "create_dir".to_string(),
@@ -2538,6 +2559,24 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     // pop(arr: any) -> any — remove and return last element
     checker.env.define_function(FunctionSig {
         name: "pop".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("arr".to_string(), Type::Error)],
+        ret: Type::Error,
+    });
+
+    // sort(arr: any) -> any — in-place ascending sort
+    checker.env.define_function(FunctionSig {
+        name: "sort".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("arr".to_string(), Type::Error)],
+        ret: Type::Error,
+    });
+
+    // reverse(arr: any) -> any — in-place reverse
+    checker.env.define_function(FunctionSig {
+        name: "reverse".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
         params: vec![("arr".to_string(), Type::Error)],

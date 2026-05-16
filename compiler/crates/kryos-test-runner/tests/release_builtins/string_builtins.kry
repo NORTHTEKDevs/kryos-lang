@@ -1,0 +1,16 @@
+// Validates string builtins through the LLVM --release backend.
+// expect-stdout: HELLO
+// expect-stdout: hello
+// expect-stdout: lo
+// expect-stdout: true
+// expect-stdout: false
+// expect-stdout: 5
+fn main() {
+    let s = "Hello"
+    println(to_upper(s))
+    println(to_lower(s))
+    println(substr(s, 3, 5))
+    println(to_string(contains(s, "ell")))
+    println(to_string(starts_with(s, "x")))
+    println(to_string(len(s)))
+}

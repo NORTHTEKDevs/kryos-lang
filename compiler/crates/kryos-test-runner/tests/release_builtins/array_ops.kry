@@ -1,0 +1,27 @@
+// Validates array builtins (sort, reverse, len, push) through LLVM --release.
+// Uses numeric arrays — sort() is currently typed as i64-ascending in the
+// runtime; string sort would require an array element-type tag we don't
+// carry yet (documented gap, see Tier 4).
+// expect-stdout: 3
+// expect-stdout: 1
+// expect-stdout: 2
+// expect-stdout: 3
+// expect-stdout: 3
+// expect-stdout: 2
+// expect-stdout: 1
+fn main() {
+    let xs: [i64] = [2, 1, 3]
+    sort(xs)
+    println(to_string(len(xs)))
+    let i = 0
+    while i < len(xs) {
+        println(to_string(xs[i]))
+        i = i + 1
+    }
+    reverse(xs)
+    let j = 0
+    while j < len(xs) {
+        println(to_string(xs[j]))
+        j = j + 1
+    }
+}

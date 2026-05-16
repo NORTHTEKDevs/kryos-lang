@@ -168,10 +168,9 @@ impl LlvmCodegen {
         // String constant globals.
         self.emit_string_globals();
 
-        // ARC runtime declarations (if needed).
-        if self.needs_arc_runtime {
-            self.emit_arc_declarations();
-        }
+        // ARC runtime declarations — always emit; some codegen paths use
+        // ARC calls without going through ArcRetain/ArcRelease MIR.
+        self.emit_arc_declarations();
 
         // External C function declarations used by builtins.
         self.emit_extern_declarations();
@@ -286,9 +285,12 @@ impl LlvmCodegen {
         self.emit_header();
         self.emit_struct_type_decls();
         self.emit_string_globals();
-        if self.needs_arc_runtime {
-            self.emit_arc_declarations();
-        }
+        // Always emit ARC declarations — some codegen paths (drop helpers,
+        // aggregate dispatch) emit kryos_arc_release / kryos_arc_alloc_i64
+        // calls without going through ArcRetain/ArcRelease MIR instructions,
+        // so we cannot rely on `needs_arc_runtime` alone (was the root cause
+        // of "undefined value '@kryos_arc_release'" linker errors).
+        self.emit_arc_declarations();
         self.emit_extern_declarations();
     }
 
@@ -433,6 +435,7 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_string_free(ptr)");
         self.emit_line("declare ptr @kryos_array_new(i64, i64)");
         self.emit_line("declare void @kryos_array_push(ptr, i64)");
+        self.emit_line("declare i64 @kryos_builtin_pop(i64)");
         self.emit_line("declare i64 @kryos_array_get(ptr, i64)");
         self.emit_line("declare void @kryos_array_set(ptr, i64, i64)");
         self.emit_line("declare i64 @kryos_array_len(ptr)");
@@ -651,7 +654,7 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_time_now_millis()");
         self.emit_line("declare void @kryos_sleep_ms(i64)");
         self.emit_line("declare i64 @kryos_regex_new_ks(i64)");
-        self.emit_line("declare i64 @kryos_regex_match_ks(i64, i64)");
+        self.emit_line("declare i64 @kryos_regex_is_match_ks(i64, i64)");
         self.emit_line("declare i64 @kryos_mutex_new()");
         self.emit_line("declare void @kryos_mutex_lock(i64)");
         self.emit_line("declare void @kryos_mutex_unlock(i64)");
@@ -1881,12 +1884,36 @@ impl LlvmCodegen {
                         self.emit_line(&format!("  %_{} = xor i1 {eq_tmp}, 0", dest.0));
                     }
                 } else {
-                    let left_val = self.operand_to_llvm(left, func);
-                    let right_val = self.operand_to_llvm(right, func);
+                    let mut left_val = self.operand_to_llvm(left, func);
+                    let mut right_val = self.operand_to_llvm(right, func);
                     let is_float = self.operand_is_float(left, func);
                     let operand_ty = self.operand_type(left, func);
-
-                    if is_mutable {
+                    let right_ty = self.operand_type(right, func);
+                    // Both operands must share LLVM type for `add`/`sub`/etc.
+                    // The left operand defines the canonical type; coerce
+                    // right to match. This catches the common case of mixing
+                    // i64 locals with i32 function returns (e.g. score + bool_to_int(...)).
+                    if right_ty != operand_ty {
+                        right_val = self.coerce_value(&right_val, &right_ty, &operand_ty);
+                    }
+                    // If left is bool (i1) and we are doing an arithmetic op,
+                    // widen both to i64 so the add/sub is well-typed.
+                    if operand_ty == "i1" && matches!(op,
+                        MirBinOp::Add | MirBinOp::Sub | MirBinOp::Mul | MirBinOp::Div |
+                        MirBinOp::Mod | MirBinOp::BitAnd | MirBinOp::BitOr | MirBinOp::BitXor |
+                        MirBinOp::Shl | MirBinOp::Shr
+                    ) {
+                        left_val = self.coerce_value(&left_val, "i1", "i64");
+                        right_val = self.coerce_value(&right_val, "i1", "i64");
+                        let operand_ty_w = "i64".to_string();
+                        if is_mutable {
+                            let tmp = self.next_temp();
+                            self.emit_binop_to(&tmp, *op, &left_val, &right_val, &operand_ty_w, is_float)?;
+                            self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
+                        } else {
+                            self.emit_binop(dest, *op, &left_val, &right_val, &operand_ty_w, is_float)?;
+                        }
+                    } else if is_mutable {
                         let tmp = self.next_temp();
                         self.emit_binop_to(
                             &tmp,
@@ -1937,14 +1964,36 @@ impl LlvmCodegen {
                         let val_ptr = self.coerce_value(&val, &val_ty, "ptr");
                         self.emit_line(&format!("  call void @{print_fn}(ptr {val_ptr})"));
                     } else {
-                        // Non-string arg: convert to string first.
+                        // Non-string arg: convert to string first, dispatching on type
+                        // (bool/float/int produce different formats; previously all i64).
                         let val = self.operand_to_llvm(&args[0], func);
                         let val_ty = self.operand_type(&args[0], func);
-                        // Coerce to i64 for the runtime call.
-                        let coerced = self.coerce_value(&val, &val_ty, "i64");
+                        let (runtime_fn, call_arg) = if val_ty == "double" || val_ty == "float" {
+                            let coerced = if val_ty == "float" {
+                                let tmp = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {tmp} = fpext float {val} to double"
+                                ));
+                                tmp
+                            } else {
+                                val.clone()
+                            };
+                            ("kryos_f64_to_string", format!("double {coerced}"))
+                        } else if val_ty == "i1" {
+                            let ext = self.next_temp();
+                            self.emit_line(&format!("  {ext} = zext i1 {val} to i64"));
+                            ("kryos_bool_to_string", format!("i64 {ext}"))
+                        } else if val_ty == "ptr" {
+                            let as_i64 = self.next_temp();
+                            self.emit_line(&format!("  {as_i64} = ptrtoint ptr {val} to i64"));
+                            ("kryos_builtin_to_string", format!("i64 {as_i64}"))
+                        } else {
+                            let coerced = self.coerce_value(&val, &val_ty, "i64");
+                            ("kryos_builtin_to_string", format!("i64 {coerced}"))
+                        };
                         let handle_i64 = self.next_temp();
                         self.emit_line(&format!(
-                            "  {handle_i64} = call i64 @kryos_builtin_to_string(i64 {coerced})"
+                            "  {handle_i64} = call i64 @{runtime_fn}({call_arg})"
                         ));
                         let handle_ptr = self.next_temp();
                         self.emit_line(&format!(
@@ -2150,6 +2199,32 @@ impl LlvmCodegen {
                                 ));
                             }
                         }
+                        "pop" => {
+                            // pop(arr: [T]) -> T
+                            // Runtime: kryos_builtin_pop(arr: i64) -> i64
+                            let arr_val = if !args.is_empty() {
+                                let v = self.operand_to_llvm(&args[0], func);
+                                let ty = self.operand_type(&args[0], func);
+                                self.coerce_value(&v, &ty, "i64")
+                            } else {
+                                "0".to_string()
+                            };
+                            if is_mutable {
+                                let tmp = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {tmp} = call i64 @kryos_builtin_pop(i64 {arr_val})"
+                                ));
+                                self.emit_line(&format!(
+                                    "  store i64 {tmp}, ptr %_{}.addr",
+                                    dest.0
+                                ));
+                            } else {
+                                self.emit_line(&format!(
+                                    "  %_{} = call i64 @kryos_builtin_pop(i64 {arr_val})",
+                                    dest.0
+                                ));
+                            }
+                        }
                         "push" => {
                             // push(arr: [T], val: T) -> void
                             // Runtime: kryos_array_push(arr: ptr, val: i64) -> void
@@ -2213,6 +2288,89 @@ impl LlvmCodegen {
                                 "  call i64 @kryos_builtin_assert(i64 {cond_val}, i64 {msg_val})"
                             ));
                         }
+                        "abs" if args.len() == 1 && !self.func_param_types.contains_key("abs") => {
+                            // Polymorphic abs: dispatch to llvm.fabs.f64 for floats,
+                            // branchless integer abs for ints. Mirrors Cranelift behavior.
+                            // Skipped when the user has defined their own `abs`.
+                            let arg_ty = self.operand_type(&args[0], func);
+                            let arg_val = self.operand_to_llvm(&args[0], func);
+                            let is_f = self.operand_is_float(&args[0], func) || arg_ty == "double";
+                            if is_f {
+                                let v = self.coerce_value(&arg_val, &arg_ty, "double");
+                                if is_mutable {
+                                    let tmp = self.next_temp();
+                                    self.emit_line(&format!(
+                                        "  {tmp} = call double @llvm.fabs.f64(double {v})"
+                                    ));
+                                    self.emit_line(&format!("  store double {tmp}, ptr %_{}.addr", dest.0));
+                                } else {
+                                    self.emit_line(&format!(
+                                        "  %_{} = call double @llvm.fabs.f64(double {v})",
+                                        dest.0
+                                    ));
+                                }
+                            } else {
+                                let v = self.coerce_value(&arg_val, &arg_ty, "i64");
+                                // Branchless: (v ^ (v >> 63)) - (v >> 63)
+                                let sm = self.next_temp();
+                                self.emit_line(&format!("  {sm} = ashr i64 {v}, 63"));
+                                let xr = self.next_temp();
+                                self.emit_line(&format!("  {xr} = xor i64 {v}, {sm}"));
+                                if is_mutable {
+                                    let tmp = self.next_temp();
+                                    self.emit_line(&format!("  {tmp} = sub i64 {xr}, {sm}"));
+                                    self.emit_line(&format!("  store i64 {tmp}, ptr %_{}.addr", dest.0));
+                                } else {
+                                    self.emit_line(&format!(
+                                        "  %_{} = sub i64 {xr}, {sm}",
+                                        dest.0
+                                    ));
+                                }
+                            }
+                        }
+                        "min" | "max" if args.len() == 2 && !self.func_param_types.contains_key(fname.as_str()) => {
+                            // Polymorphic min/max: dispatch by operand type.
+                            // Skipped when the user has defined their own min/max.
+                            let a_ty = self.operand_type(&args[0], func);
+                            let a_val = self.operand_to_llvm(&args[0], func);
+                            let b_val = self.operand_to_llvm(&args[1], func);
+                            let b_ty = self.operand_type(&args[1], func);
+                            let is_f = self.operand_is_float(&args[0], func) || a_ty == "double";
+                            let is_min = fname.as_str() == "min";
+                            if is_f {
+                                let a = self.coerce_value(&a_val, &a_ty, "double");
+                                let b = self.coerce_value(&b_val, &b_ty, "double");
+                                let intrin = if is_min { "llvm.minnum.f64" } else { "llvm.maxnum.f64" };
+                                if is_mutable {
+                                    let tmp = self.next_temp();
+                                    self.emit_line(&format!(
+                                        "  {tmp} = call double @{intrin}(double {a}, double {b})"
+                                    ));
+                                    self.emit_line(&format!("  store double {tmp}, ptr %_{}.addr", dest.0));
+                                } else {
+                                    self.emit_line(&format!(
+                                        "  %_{} = call double @{intrin}(double {a}, double {b})",
+                                        dest.0
+                                    ));
+                                }
+                            } else {
+                                let a = self.coerce_value(&a_val, &a_ty, "i64");
+                                let b = self.coerce_value(&b_val, &b_ty, "i64");
+                                let cmp_op = if is_min { "slt" } else { "sgt" };
+                                let cmp = self.next_temp();
+                                self.emit_line(&format!("  {cmp} = icmp {cmp_op} i64 {a}, {b}"));
+                                if is_mutable {
+                                    let tmp = self.next_temp();
+                                    self.emit_line(&format!("  {tmp} = select i1 {cmp}, i64 {a}, i64 {b}"));
+                                    self.emit_line(&format!("  store i64 {tmp}, ptr %_{}.addr", dest.0));
+                                } else {
+                                    self.emit_line(&format!(
+                                        "  %_{} = select i1 {cmp}, i64 {a}, i64 {b}",
+                                        dest.0
+                                    ));
+                                }
+                            }
+                        }
                         _ => {
                             // Translate Kryos user-facing builtin names to runtime symbols.
                             let runtime_fname: &str = match fname.as_str() {
@@ -2230,6 +2388,12 @@ impl LlvmCodegen {
                                 "join" => "kryos_builtin_join",
                                 "sort" => "kryos_builtin_sort",
                                 "reverse" => "kryos_builtin_reverse",
+                                // Canonical names (match Cranelift + typechecker + runtime).
+                                "file_read" => "kryos_builtin_file_read",
+                                "file_write" => "kryos_builtin_file_write",
+                                "file_append" => "kryos_builtin_file_append",
+                                // Legacy aliases kept for source-compatibility; will
+                                // be retired once stdlib examples are migrated.
                                 "read_file" => "kryos_builtin_file_read",
                                 "write_file" => "kryos_builtin_file_write",
                                 "append_file" => "kryos_builtin_file_append",
@@ -2315,7 +2479,7 @@ impl LlvmCodegen {
                                 "sleep_ms" => "kryos_sleep_ms",
                                 // Regex
                                 "regex_new" => "kryos_regex_new_ks",
-                                "regex_match" => "kryos_regex_match_ks",
+                                "regex_match" => "kryos_regex_is_match_ks",
                                 // Mutex
                                 "mutex_new" => "kryos_mutex_new",
                                 "mutex_lock" => "kryos_mutex_lock",
@@ -2374,7 +2538,9 @@ impl LlvmCodegen {
                     tmp
                 };
 
-                if is_mutable {
+                if dest_ty == "void" {
+                    self.emit_line(&format!("  call void {fn_ptr}({arg_list})"));
+                } else if is_mutable {
                     let tmp = self.next_temp();
                     self.emit_line(&format!("  {tmp} = call {dest_ty} {fn_ptr}({arg_list})"));
                     self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
@@ -2538,9 +2704,18 @@ impl LlvmCodegen {
                     }
                 } else {
                     // Fixed-size array or tuple aggregate — direct GEP + load.
+                    // Coerce obj to ptr if it is carried as an i64 handle in the
+                    // local type map (was the cause of "defined with type 'i64'
+                    // but expected 'ptr'" in for-loop iteration over fixed-size
+                    // arrays).
+                    let obj_ptr = if obj_ty == "ptr" {
+                        obj_val.clone()
+                    } else {
+                        self.coerce_value(&obj_val, &obj_ty, "ptr")
+                    };
                     let elem_ptr = self.next_temp();
                     self.emit_line(&format!(
-                        "  {elem_ptr} = getelementptr i64, ptr {obj_val}, {idx_ty} {idx_val}"
+                        "  {elem_ptr} = getelementptr i64, ptr {obj_ptr}, {idx_ty} {idx_val}"
                     ));
                     let target_name = if is_mutable {
                         self.next_temp()
@@ -2613,7 +2788,13 @@ impl LlvmCodegen {
                         let mut val = self.operand_to_llvm(field_op, func);
                         let val_ty = self.operand_type(field_op, func);
                         // Payload slot is i64; cast non-i64 values (e.g. ptr) first.
-                        if val_ty != "i64" {
+                        // void-typed operands (rare — result of a void-returning
+                        // call cached into a local before the throw/catch
+                        // rewrite) get replaced with a literal 0 to keep the
+                        // emitted IR well-typed.
+                        if val_ty == "void" {
+                            val = "0".to_string();
+                        } else if val_ty != "i64" {
                             let casted = self.next_temp();
                             let op = if val_ty == "ptr" {
                                 "ptrtoint"
@@ -2866,9 +3047,13 @@ impl LlvmCodegen {
                 self.emit_line(&format!("  {map_handle} = call i64 @kryos_map_new()"));
                 for (k, v) in entries {
                     let key_val = self.operand_to_llvm(k, func);
+                    let key_ty = self.operand_type(k, func);
                     let val_val = self.operand_to_llvm(v, func);
+                    let val_ty = self.operand_type(v, func);
+                    let key_i64 = self.coerce_value(&key_val, &key_ty, "i64");
+                    let val_i64 = self.coerce_value(&val_val, &val_ty, "i64");
                     self.emit_line(&format!(
-                        "  call void @kryos_map_insert(i64 {map_handle}, i64 {key_val}, i64 {val_val})"
+                        "  call void @kryos_map_insert(i64 {map_handle}, i64 {key_i64}, i64 {val_i64})"
                     ));
                 }
                 if is_mutable {
@@ -3462,9 +3647,23 @@ impl LlvmCodegen {
         // Structs are lowered identically to tuples in LLVM IR (insertvalue by index).
         // When the destination is mutable, the final value is stored to its alloca
         // via a temporary so subsequent loads from %_X.addr see the correct value.
+        //
+        // Look up the declared struct field types so we can coerce the
+        // initializer value to match (e.g. literal `10: i64` into an `i32` field).
+        let struct_name = dest_ty.strip_prefix('%').unwrap_or(dest_ty);
+        let declared_field_tys: Vec<String> = self
+            .struct_defs
+            .get(struct_name)
+            .map(|fs| fs.iter().map(|(_, t)| mir_type_to_llvm(t)).collect())
+            .unwrap_or_default();
         for (i, (field_name, op)) in fields.iter().enumerate() {
             let val = self.operand_to_llvm(op, func);
-            let ty = self.operand_type(op, func);
+            let actual_ty = self.operand_type(op, func);
+            let expected_ty = declared_field_tys
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| actual_ty.clone());
+            let coerced_val = self.coerce_value(&val, &actual_ty, &expected_ty);
             let prev = if i == 0 {
                 "undef".to_string()
             } else {
@@ -3481,7 +3680,7 @@ impl LlvmCodegen {
                 format!("%_{}_fld_{}", dest.0, i)
             };
             self.emit_line(&format!(
-                "  {this} = insertvalue {dest_ty} {prev}, {ty} {val}, {i} ; .{field_name}"
+                "  {this} = insertvalue {dest_ty} {prev}, {expected_ty} {coerced_val}, {i} ; .{field_name}"
             ));
             // If this was the last field and the local is mutable, store to alloca.
             if i + 1 == fields.len() && is_mutable {
@@ -3608,9 +3807,16 @@ impl LlvmCodegen {
                     self.emit_line(&format!("  store {agg} {val}, ptr %_sret"));
                     self.emit_line("  ret void");
                 } else {
-                    let ty = self.operand_type(op, func);
-                    let val = self.operand_to_llvm(op, func);
-                    self.emit_line(&format!("  ret {ty} {val}"));
+                    let from_ty = self.operand_type(op, func);
+                    let mut val = self.operand_to_llvm(op, func);
+                    let want_ty = mir_type_to_llvm(&func.ret_ty);
+                    // Coerce when the operand's LLVM type differs from the
+                    // function's declared return type (the common case is
+                    // i64 → i32 because Kryos arithmetic stays in i64).
+                    if from_ty != want_ty {
+                        val = self.coerce_value(&val, &from_ty, &want_ty);
+                    }
+                    self.emit_line(&format!("  ret {want_ty} {val}"));
                 }
             }
             Terminator::Goto(target) => {
@@ -3621,7 +3827,11 @@ impl LlvmCodegen {
                 then_block,
                 else_block,
             } => {
-                let cond_val = self.operand_to_llvm(cond, func);
+                let from_ty = self.operand_type(cond, func);
+                let mut cond_val = self.operand_to_llvm(cond, func);
+                if from_ty != "i1" {
+                    cond_val = self.coerce_value(&cond_val, &from_ty, "i1");
+                }
                 self.emit_line(&format!(
                     "  br i1 {cond_val}, label %bb{}, label %bb{}",
                     then_block.0, else_block.0
@@ -3799,6 +4009,17 @@ impl LlvmCodegen {
         if from_type == to_type {
             return value.to_string();
         }
+        // void operands cannot be coerced — substitute a typed zero/null.
+        // This arises when a MIR local was assigned the result of a
+        // void-returning call (try/catch lowering pre-allocates payload
+        // slots) and is later read in an expression position.
+        if from_type == "void" {
+            return match to_type {
+                "ptr" => "null".to_string(),
+                "double" | "float" => "0.0".to_string(),
+                _ => "0".to_string(),
+            };
+        }
         let tmp = self.next_temp();
         match (from_type, to_type) {
             ("i64", "ptr") => {
@@ -3817,6 +4038,43 @@ impl LlvmCodegen {
                 self.emit_line(&format!("  {tmp} = bitcast double {value} to i64"));
                 self.track_type(&tmp, "i64");
             }
+            // Integer width changes — used by `fn -> i32` returns and i32
+            // arithmetic that the rest of the codegen carries as i64.
+            ("i64", "i32") => {
+                self.emit_line(&format!("  {tmp} = trunc i64 {value} to i32"));
+                self.track_type(&tmp, "i32");
+            }
+            ("i32", "i64") => {
+                self.emit_line(&format!("  {tmp} = sext i32 {value} to i64"));
+                self.track_type(&tmp, "i64");
+            }
+            ("i64", "i8") => {
+                self.emit_line(&format!("  {tmp} = trunc i64 {value} to i8"));
+                self.track_type(&tmp, "i8");
+            }
+            ("i8", "i64") => {
+                self.emit_line(&format!("  {tmp} = sext i8 {value} to i64"));
+                self.track_type(&tmp, "i64");
+            }
+            // Bool conversions — Kryos carries booleans as i64; LLVM `br` and
+            // `select` require i1, and the typechecker carries booleans as i64
+            // when read from variables.
+            ("i64", "i1") => {
+                self.emit_line(&format!("  {tmp} = icmp ne i64 {value}, 0"));
+                self.track_type(&tmp, "i1");
+            }
+            ("i1", "i64") => {
+                self.emit_line(&format!("  {tmp} = zext i1 {value} to i64"));
+                self.track_type(&tmp, "i64");
+            }
+            ("i32", "i1") => {
+                self.emit_line(&format!("  {tmp} = icmp ne i32 {value}, 0"));
+                self.track_type(&tmp, "i1");
+            }
+            ("i1", "i32") => {
+                self.emit_line(&format!("  {tmp} = zext i1 {value} to i32"));
+                self.track_type(&tmp, "i32");
+            }
             _ => return value.to_string(), // no conversion needed/possible
         }
         tmp
@@ -3833,6 +4091,14 @@ impl LlvmCodegen {
             self.track_type(target, "ptr");
         } else if is_float_type(ty) {
             self.emit_line(&format!("  {target} = fadd {ty} {val}, 0.0"));
+            self.track_type(target, ty);
+        } else if ty.starts_with('%') || ty.starts_with('{') || ty == "void" {
+            // Named struct types and inline aggregate types do not support
+            // `add ty x, 0`. Use `select` on a true constant — LLVM optimizes
+            // this away, but it is type-correct for any first-class value.
+            self.emit_line(&format!(
+                "  {target} = select i1 true, {ty} {val}, {ty} {val}"
+            ));
             self.track_type(target, ty);
         } else {
             self.emit_line(&format!("  {target} = add {ty} {val}, 0"));

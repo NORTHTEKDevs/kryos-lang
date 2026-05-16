@@ -500,6 +500,8 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("sort", MirType::Void),
         ("reverse", MirType::Void),
         ("append_file", MirType::I64),
+        ("read_file", MirType::Str),
+        ("write_file", MirType::I64),
         ("http_get", MirType::Str),
         ("read_line", MirType::Str),
         ("file_exists", MirType::Bool),

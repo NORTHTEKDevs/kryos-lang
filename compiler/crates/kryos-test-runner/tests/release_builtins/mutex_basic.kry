@@ -1,0 +1,13 @@
+// Validates mutex builtins link and execute through LLVM --release.
+// expect-stdout: locked
+// expect-stdout: unlocked
+// expect-stdout: dropped
+fn main() {
+    let m = mutex_new()
+    mutex_lock(m)
+    println("locked")
+    mutex_unlock(m)
+    println("unlocked")
+    mutex_drop(m)
+    println("dropped")
+}

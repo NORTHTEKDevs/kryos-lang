@@ -1,0 +1,11 @@
+// Validates file I/O builtins through LLVM --release.
+// expect-stdout: written
+// expect-stdout: hello world
+// expect-stdout: true
+fn main() {
+    let path = "/tmp/kryos_release_file_test.txt"
+    write_file(path, "hello world")
+    println("written")
+    println(read_file(path))
+    println(to_string(file_exists(path)))
+}

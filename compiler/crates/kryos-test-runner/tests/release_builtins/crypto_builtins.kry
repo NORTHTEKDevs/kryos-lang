@@ -1,0 +1,12 @@
+// Validates crypto/encoding builtins through LLVM --release.
+// SHA-1 of "abc" is a9993e364706816aba3e25717850c26c9cd0d89d
+// base64("Hello") == "SGVsbG8="
+// expect-stdout: a9993e364706816aba3e25717850c26c9cd0d89d
+// expect-stdout: SGVsbG8=
+// expect-stdout: Hello
+fn main() {
+    println(sha1_hex("abc"))
+    let enc = base64_encode("Hello")
+    println(enc)
+    println(base64_decode(enc))
+}

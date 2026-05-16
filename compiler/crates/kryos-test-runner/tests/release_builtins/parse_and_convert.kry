@@ -1,0 +1,12 @@
+// Validates parsing/conversion builtins through LLVM --release.
+// expect-stdout: 42
+// expect-stdout: 3.14
+// expect-stdout: A
+// expect-stdout: 65
+fn main() {
+    println(to_string(parse_int("42")))
+    let f = parse_float("3.14")
+    println(to_string(f))
+    println(char_from(65))
+    println(to_string(char_code("A")))
+}

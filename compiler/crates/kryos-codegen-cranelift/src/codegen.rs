@@ -2927,6 +2927,9 @@ fn translate_rvalue<M: Module>(
                 "recv" => ("kryos_chan_recv_i64", 1),
                 "file_read" => ("kryos_builtin_file_read", 1),
                 "file_write" => ("kryos_builtin_file_write", 2),
+                // Legacy aliases (LLVM codegen uses these too)
+                "read_file" => ("kryos_builtin_file_read", 1),
+                "write_file" => ("kryos_builtin_file_write", 2),
                 "env_get" => ("kryos_builtin_env_get", 1),
                 "time_now" => ("kryos_builtin_time_now", 0),
                 "parse_int" => ("kryos_builtin_parse_int", 1),

@@ -1,0 +1,11 @@
+// Validates time + sleep builtins link through LLVM --release.
+// expect-stdout: positive
+// expect-stdout: slept
+fn main() {
+    let t = time_now_millis()
+    if t > 0 {
+        println("positive")
+    }
+    sleep_ms(10)
+    println("slept")
+}
