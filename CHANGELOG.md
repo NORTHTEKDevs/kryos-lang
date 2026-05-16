@@ -4,6 +4,109 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.0.0] - 2026-05-15 — "Production: LLVM blocker fix, WebSocket + Unix sockets, LTO, lockfile tooling"
+
+The 2.0 milestone closes a pre-existing v1.9.0 LLVM blocker that prevented
+`tcp_listen`, `tls_send`, `pg_query` and friends from working under
+`--release` builds, adds RFC 6455 WebSocket helpers and Unix domain socket
+primitives to the stdlib, lands link-time optimization in the build
+pipeline, and rounds out the package manager with `kryos pkg outdated`.
+
+This release is **production**: every advertised builtin now works on both
+Cranelift (`kryos run`) and LLVM (`kryos build --release`) backends.
+
+### Fixed
+
+- **`kryos-codegen-llvm`: user-facing builtins translated to runtime symbols** —
+  Pre-existing v1.9.0 blocker. The LLVM codegen emitted `call @{fname}` using
+  the user-facing name without translating it to the corresponding
+  `kryos_*_ks` runtime symbol, so any `--release` build calling `tcp_listen`,
+  `tls_send`, `pg_query` (and ~60 other builtins) failed at link time with
+  `clang: use of undefined value '@tcp_listen'`. Cranelift had this
+  translation table; LLVM did not. Added a 60+ entry `runtime_fname` match
+  block and matching `declare` statements in `emit_extern_declarations`
+  covering tcp/tls/pg/uds/ws/json/crypto/regex/mutex. Validated end-to-end:
+  `tcp_listen`, `ws_accept_key`, and `uds_bind` all work in `--release` now.
+- **`kryos-rt::array`: silence harmless `inline ignored on no_mangle` warning** —
+  `#[inline]` is meaningless on `#[no_mangle]` exports. Switched to
+  `#[cfg_attr(not(debug_assertions), inline)]` so the attribute only applies
+  where it has effect.
+
+### Added
+
+- **WebSocket stdlib (`kryos-stdlib-native::websocket`)** — RFC 6455 helpers:
+  `ws_accept_key` (SHA-1 + base64 handshake, validated against the RFC 6455
+  reference vector `dGhlIHNhbXBsZSBub25jZQ==` → `s3pPLMBiTxaQ9kYGzzhZRbK+xOo=`),
+  frame encoders `ws_encode_{text,binary,close,ping,pong}`, `ws_unmask`, and
+  `ws_read_frame` for server-side parsing. Reuses the existing `kryos_sha1`
+  implementation in `crypto.rs` plus the `base64 = "0.22"` crate. New example
+  `examples/ws_handshake.kry` validates the canonical handshake.
+- **Unix domain sockets (`kryos-stdlib-native::unix_socket`)** —
+  `uds_{connect,bind,accept,send,recv,close}` with full `cfg(unix)`
+  implementation and `cfg(not(unix))` stubs that return `-1` so portable
+  code still compiles on Windows.
+- **`kryos pkg outdated`** — Compares versions in `kryos.lock` against the
+  latest available in the registry index and reports up-to-date / outdated /
+  unknown counts. Skips path-source entries cleanly, reports
+  missing-from-index packages without failing, and prints a tabular
+  PACKAGE / INSTALLED / LATEST view.
+- **Link-time optimization (LTO) in release builds** —
+  `compiler/Cargo.toml`: `[profile.release] lto = "fat"`, `codegen-units = 1`,
+  `panic = "abort"`. Generated binaries now use `clang` as the linker for
+  better cross-module inlining. Inlineable runtime helpers (`kryos_array_get`,
+  `kryos_array_len`, `kryos_string_concat`) marked `#[inline]` so LTO can
+  fold them through user call sites.
+- **Bare `!` as logical-NOT alias** — Lexer/parser now accept `!x` in
+  addition to `not x`. Mixed forms work in the same expression.
+- **`--flto-jobs=N`** — Surface for parallel codegen passes through the
+  build driver.
+- **DWARF debug info (`-g`)** — `kryos build --release -g` emits source-level
+  debug info that `lldb` / `gdb` understand.
+
+### Changed
+
+- **Wiring for `ws_*` and `uds_*` builtins across the compiler**:
+  - MIR return types (`kryos-mir::lower`)
+  - Net capability gates (`kryos-capabilities::model`)
+  - Typechecker `FunctionSig` entries (`kryos-types::check`)
+  - Cranelift codegen builtin map + JIT symbol registration
+  (`kryos-codegen-cranelift::{codegen,jit}`)
+  - LLVM codegen name-translation table + declarations
+  (`kryos-codegen-llvm::codegen`)
+
+### Benchmark baseline (vs gcc -O3)
+
+After the LTO commit (`9c43547`):
+
+| Benchmark      | Ratio vs gcc -O3 |
+|----------------|------------------|
+| fib            | 1.00×            |
+| mandelbrot     | 1.00×            |
+| nbody          | 4.24×            |
+| binary_trees   | 2.62×            |
+| fannkuch       | **7.31×** (was 12.4×) |
+| matmul         | **2.01×** (was 2.67×) |
+
+LTO closed the biggest two gaps on the matmul and fannkuch workloads.
+
+### Honestly deferred to a future major
+
+These are tracked but require multi-day work and are not in 2.0:
+
+- `?` operator — needs first-class `Result` / `Option` as built-in types.
+- Closures (`|x| ...`) — needs capture analysis pass.
+- HashMap `{}` literals — parser collision with block syntax; needs a
+  disambiguation pass.
+
+### Not pursued in this release
+
+Items from the gap list that we intentionally did not chase in 2.0:
+borrow checker, hygienic macros, Vulkan / Metal / DX12 backends,
+HTTP/3 / QUIC, full profile-guided optimization, video decode,
+Windows-tested toolchain, iOS / Android / embedded targets, retained-mode
+GUI toolkit, full Unicode normalization. These are acknowledged as
+future-major work, not 2.0 commitments.
+
 ## [1.9.0] - 2026-05-16 — "LLVM backend production-ready: full benchmark suite"
 
 The `kryos-codegen-llvm` crate has always existed but couldn't be exercised in
