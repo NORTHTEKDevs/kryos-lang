@@ -1,0 +1,16 @@
+// expect-stdout: hello
+// Tests that @cfg(...) stripping happens before type-check.
+//
+// The @cfg(windows) function body references an undefined identifier.
+// If stripping ran after type-check, this would fail to compile.
+// Because stripping runs first, the gated decl is removed and the
+// remaining program type-checks cleanly.
+
+@cfg(windows)
+fn never_compiled() -> i64 {
+    return totally_undefined_function() + 1
+}
+
+fn main() {
+    println("hello")
+}

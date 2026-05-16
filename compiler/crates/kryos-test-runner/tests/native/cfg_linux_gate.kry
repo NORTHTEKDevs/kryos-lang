@@ -1,0 +1,26 @@
+// expect-stdout: linux-only
+// Tests @cfg(...) conditional compilation.
+//
+// On Linux the native test runner runs, so the @cfg(linux) branch is kept
+// and @cfg(windows) / @cfg(macos) branches are stripped before type-check.
+// Both variants define `pick()` with the same name; without stripping
+// this would be a duplicate-symbol error.
+
+@cfg(linux)
+fn pick() -> str {
+    return "linux-only"
+}
+
+@cfg(windows)
+fn pick() -> str {
+    return "windows-only"
+}
+
+@cfg(macos)
+fn pick() -> str {
+    return "macos-only"
+}
+
+fn main() {
+    println(pick())
+}

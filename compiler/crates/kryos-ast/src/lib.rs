@@ -1,3 +1,4 @@
+pub mod cfg_strip;
 pub mod decl;
 pub mod derive_expand;
 pub mod expr;
@@ -5,6 +6,7 @@ pub mod stmt;
 pub mod types;
 pub mod visitor;
 
+pub use cfg_strip::{strip_cfg, CfgContext};
 pub use decl::*;
 pub use derive_expand::expand_derives;
 pub use expr::*;

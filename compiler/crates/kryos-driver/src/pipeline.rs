@@ -15,7 +15,7 @@ use kryos_ownership::analyze_ownership;
 use kryos_parser::parse;
 use kryos_types::type_check;
 
-use crate::config::{BuildConfig, OutputType};
+use crate::config::{BuildConfig, BuildMode, OutputType};
 use crate::resolve;
 
 // ---------------------------------------------------------------------------
@@ -305,6 +305,16 @@ fn compile_module_impl(
     //     module.
     let mut module = module;
     kryos_ast::expand_derives(&mut module);
+
+    // 4c. Strip @cfg(...)-gated declarations that don't apply to the
+    //     active target / build mode. Has to run before type-check so
+    //     stripped functions don't generate stray "missing main" or
+    //     "unused type" diagnostics.
+    let cfg_ctx = kryos_ast::CfgContext::from_triple(
+        config.target.as_deref(),
+        matches!(config.mode, BuildMode::Release),
+    );
+    kryos_ast::strip_cfg(&mut module, &cfg_ctx);
 
     // 5. Type check
     let type_diags = type_check(&module);
@@ -941,6 +951,10 @@ pub fn check_file(path: &Path) -> (Vec<Diagnostic>, SourceMap) {
     // Expand @derive(...) annotations.
     kryos_ast::expand_derives(&mut module);
 
+    // Strip @cfg(...)-gated decls for the host (check_file targets the
+    // host in debug mode by default — no BuildConfig is available here).
+    kryos_ast::strip_cfg(&mut module, &kryos_ast::CfgContext::for_host(false));
+
     // Type check
     diagnostics.extend(type_check(&module));
 
@@ -1007,6 +1021,9 @@ pub fn check_file_with_options(path: &Path, skip_ownership: bool) -> (Vec<Diagno
     // Expand @derive(...) annotations.
     kryos_ast::expand_derives(&mut module);
 
+    // Strip @cfg(...)-gated decls for the host (debug mode).
+    kryos_ast::strip_cfg(&mut module, &kryos_ast::CfgContext::for_host(false));
+
     // Type check
     diagnostics.extend(type_check(&module));
 
@@ -1043,6 +1060,9 @@ pub fn check_source(source: &str, file_name: &str) -> (Vec<Diagnostic>, SourceMa
 
     // Expand @derive(...) annotations.
     kryos_ast::expand_derives(&mut module);
+
+    // Strip @cfg(...)-gated decls for the host (debug mode).
+    kryos_ast::strip_cfg(&mut module, &kryos_ast::CfgContext::for_host(false));
 
     // Type check
     diagnostics.extend(type_check(&module));
