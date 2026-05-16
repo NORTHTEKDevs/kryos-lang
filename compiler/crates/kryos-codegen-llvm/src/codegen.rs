@@ -586,6 +586,76 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_file_write(i64, ptr, i64)");
         self.emit_line("declare i32 @kryos_file_close(i64)");
         self.emit_line("declare i64 @kryos_stderr_write(ptr, i64)");
+        // TCP / TLS / PostgreSQL (handle-ABI: i64 in, i64 out)
+        self.emit_line("declare i64 @kryos_tcp_connect_ks(i64, i64)");
+        self.emit_line("declare i64 @kryos_tcp_bind_ks(i64, i64)");
+        self.emit_line("declare i64 @kryos_tcp_accept(i64)");
+        self.emit_line("declare i64 @kryos_tcp_send_ks(i64, i64)");
+        self.emit_line("declare i64 @kryos_tcp_recv_ks(i64, i64)");
+        self.emit_line("declare i64 @kryos_socket_close_ks(i64)");
+        self.emit_line("declare i64 @kryos_tcp_set_nonblocking(i64, i64)");
+        self.emit_line("declare i64 @kryos_tcp_try_accept(i64)");
+        self.emit_line("declare i64 @kryos_tcp_try_recv_ks(i64, i64)");
+        self.emit_line("declare i64 @kryos_tls_server_config_ks(i64, i64)");
+        self.emit_line("declare i64 @kryos_tls_accept(i64, i64)");
+        self.emit_line("declare i64 @kryos_tls_send_ks(i64, i64)");
+        self.emit_line("declare i64 @kryos_tls_recv_ks(i64, i64)");
+        self.emit_line("declare i64 @kryos_tls_close_ks(i64)");
+        self.emit_line("declare i64 @kryos_pg_connect_ks(i64)");
+        self.emit_line("declare i64 @kryos_pg_exec_ks(i64, i64)");
+        self.emit_line("declare i64 @kryos_pg_query_ks(i64, i64)");
+        self.emit_line("declare i64 @kryos_pg_close_ks(i64)");
+        // Unix domain sockets (v2.0)
+        self.emit_line("declare i64 @kryos_uds_connect_ks(i64)");
+        self.emit_line("declare i64 @kryos_uds_bind_ks(i64)");
+        self.emit_line("declare i64 @kryos_uds_accept(i64)");
+        self.emit_line("declare i64 @kryos_uds_send_ks(i64, i64)");
+        self.emit_line("declare i64 @kryos_uds_recv_ks(i64, i64)");
+        self.emit_line("declare i64 @kryos_uds_close(i64)");
+        // WebSocket (RFC 6455) helpers (v2.0)
+        self.emit_line("declare i64 @kryos_ws_accept_key_ks(i64)");
+        self.emit_line("declare i64 @kryos_ws_encode_text_ks(i64)");
+        self.emit_line("declare i64 @kryos_ws_encode_binary_ks(i64)");
+        self.emit_line("declare i64 @kryos_ws_encode_close(i64)");
+        self.emit_line("declare i64 @kryos_ws_encode_ping_ks(i64)");
+        self.emit_line("declare i64 @kryos_ws_encode_pong_ks(i64)");
+        self.emit_line("declare i64 @kryos_ws_unmask_ks(i64, i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_ws_read_frame_ks(i64)");
+        // JSON / Crypto / Regex / Time (handle ABI)
+        self.emit_line("declare i64 @kryos_json_parse(i64)");
+        self.emit_line("declare i64 @kryos_json_stringify(i64)");
+        self.emit_line("declare i64 @kryos_json_get(i64, i64)");
+        self.emit_line("declare i64 @kryos_json_get_index(i64, i64)");
+        self.emit_line("declare i64 @kryos_json_to_str(i64)");
+        self.emit_line("declare i64 @kryos_json_to_int(i64)");
+        self.emit_line("declare double @kryos_json_to_float(i64)");
+        self.emit_line("declare i64 @kryos_json_is_null(i64)");
+        self.emit_line("declare i64 @kryos_json_length(i64)");
+        self.emit_line("declare i64 @kryos_json_type(i64)");
+        self.emit_line("declare i64 @kryos_json_string(i64)");
+        self.emit_line("declare i64 @kryos_json_number(double)");
+        self.emit_line("declare i64 @kryos_json_bool(i64)");
+        self.emit_line("declare i64 @kryos_json_null()");
+        self.emit_line("declare i64 @kryos_json_object(i64, i64)");
+        self.emit_line("declare i64 @kryos_json_array(i64)");
+        self.emit_line("declare i64 @kryos_sha256_ks(i64)");
+        self.emit_line("declare i64 @kryos_sha512_ks(i64)");
+        self.emit_line("declare i64 @kryos_sha1_hex_ks(i64)");
+        self.emit_line("declare i64 @kryos_sha1_base64_ks(i64)");
+        self.emit_line("declare i64 @kryos_base64_encode_ks(i64)");
+        self.emit_line("declare i64 @kryos_base64_decode_ks(i64)");
+        self.emit_line("declare i64 @kryos_random_bytes_ks(i64)");
+        self.emit_line("declare i64 @kryos_chr_ks(i64)");
+        self.emit_line("declare i64 @kryos_byte_at_ks(i64, i64)");
+        self.emit_line("declare i64 @kryos_time_now_secs()");
+        self.emit_line("declare i64 @kryos_time_now_millis()");
+        self.emit_line("declare void @kryos_sleep_ms(i64)");
+        self.emit_line("declare i64 @kryos_regex_new_ks(i64)");
+        self.emit_line("declare i64 @kryos_regex_match_ks(i64, i64)");
+        self.emit_line("declare i64 @kryos_mutex_new()");
+        self.emit_line("declare void @kryos_mutex_lock(i64)");
+        self.emit_line("declare void @kryos_mutex_unlock(i64)");
+        self.emit_line("declare void @kryos_mutex_drop(i64)");
         self.emit_blank();
     }
 
@@ -2175,6 +2245,82 @@ impl LlvmCodegen {
                                 "char_from" => "kryos_builtin_char_from",
                                 "substr" => "kryos_builtin_substr",
                                 "time_now" => "kryos_builtin_time_now",
+                                // TCP
+                                "tcp_connect" => "kryos_tcp_connect_ks",
+                                "tcp_listen" => "kryos_tcp_bind_ks",
+                                "tcp_accept" => "kryos_tcp_accept",
+                                "tcp_send" => "kryos_tcp_send_ks",
+                                "tcp_recv" => "kryos_tcp_recv_ks",
+                                "tcp_close" => "kryos_socket_close_ks",
+                                "tcp_set_nonblocking" => "kryos_tcp_set_nonblocking",
+                                "tcp_try_accept" => "kryos_tcp_try_accept",
+                                "tcp_try_recv" => "kryos_tcp_try_recv_ks",
+                                // TLS server
+                                "tls_server_config" => "kryos_tls_server_config_ks",
+                                "tls_accept" => "kryos_tls_accept",
+                                "tls_send" => "kryos_tls_send_ks",
+                                "tls_recv" => "kryos_tls_recv_ks",
+                                "tls_close" => "kryos_tls_close_ks",
+                                // PostgreSQL
+                                "pg_connect" => "kryos_pg_connect_ks",
+                                "pg_exec" => "kryos_pg_exec_ks",
+                                "pg_query" => "kryos_pg_query_ks",
+                                "pg_close" => "kryos_pg_close_ks",
+                                // Unix domain sockets (v2.0)
+                                "uds_connect" => "kryos_uds_connect_ks",
+                                "uds_bind" => "kryos_uds_bind_ks",
+                                "uds_accept" => "kryos_uds_accept",
+                                "uds_send" => "kryos_uds_send_ks",
+                                "uds_recv" => "kryos_uds_recv_ks",
+                                "uds_close" => "kryos_uds_close",
+                                // WebSocket (RFC 6455) (v2.0)
+                                "ws_accept_key" => "kryos_ws_accept_key_ks",
+                                "ws_encode_text" => "kryos_ws_encode_text_ks",
+                                "ws_encode_binary" => "kryos_ws_encode_binary_ks",
+                                "ws_encode_close" => "kryos_ws_encode_close",
+                                "ws_encode_ping" => "kryos_ws_encode_ping_ks",
+                                "ws_encode_pong" => "kryos_ws_encode_pong_ks",
+                                "ws_unmask" => "kryos_ws_unmask_ks",
+                                "ws_read_frame" => "kryos_ws_read_frame_ks",
+                                // JSON
+                                "json_parse" => "kryos_json_parse",
+                                "json_stringify" => "kryos_json_stringify",
+                                "json_get" => "kryos_json_get",
+                                "json_get_index" => "kryos_json_get_index",
+                                "json_to_str" => "kryos_json_to_str",
+                                "json_to_int" => "kryos_json_to_int",
+                                "json_to_float" => "kryos_json_to_float",
+                                "json_is_null" => "kryos_json_is_null",
+                                "json_length" => "kryos_json_length",
+                                "json_type" => "kryos_json_type",
+                                "json_string" => "kryos_json_string",
+                                "json_number" => "kryos_json_number",
+                                "json_bool" => "kryos_json_bool",
+                                "json_null" => "kryos_json_null",
+                                "json_object" => "kryos_json_object",
+                                "json_array" => "kryos_json_array",
+                                // Crypto
+                                "sha256" => "kryos_sha256_ks",
+                                "sha512" => "kryos_sha512_ks",
+                                "sha1_hex" => "kryos_sha1_hex_ks",
+                                "sha1_base64" => "kryos_sha1_base64_ks",
+                                "base64_encode" => "kryos_base64_encode_ks",
+                                "base64_decode" => "kryos_base64_decode_ks",
+                                "random_bytes" => "kryos_random_bytes_ks",
+                                "chr" => "kryos_chr_ks",
+                                "byte_at" => "kryos_byte_at_ks",
+                                // Time / sleep
+                                "time_now_secs" => "kryos_time_now_secs",
+                                "time_now_millis" => "kryos_time_now_millis",
+                                "sleep_ms" => "kryos_sleep_ms",
+                                // Regex
+                                "regex_new" => "kryos_regex_new_ks",
+                                "regex_match" => "kryos_regex_match_ks",
+                                // Mutex
+                                "mutex_new" => "kryos_mutex_new",
+                                "mutex_lock" => "kryos_mutex_lock",
+                                "mutex_unlock" => "kryos_mutex_unlock",
+                                "mutex_drop" => "kryos_mutex_drop",
                                 other => other,
                             };
                             if dest_ty == "void" {

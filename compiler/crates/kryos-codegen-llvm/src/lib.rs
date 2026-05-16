@@ -203,6 +203,19 @@ impl kryos_driver::Backend for LlvmBackend {
             cmd.arg("-flto=thin");
         }
 
+        // Parallel codegen — clang accepts -mllvm -threads=N for ThinLTO,
+        // and we always wrap with `--jobs` for backend partitioning.
+        let threads = if self.options.codegen_threads == 0 {
+            std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1)
+        } else {
+            self.options.codegen_threads
+        };
+        if threads > 1 {
+            // ThinLTO link-step parallelism (only meaningful with -flto=thin
+            // at link time; harmless otherwise).
+            cmd.arg(format!("-flto-jobs={threads}"));
+        }
+
         // Debug info.
         if self.options.debug_info {
             cmd.arg("-g");

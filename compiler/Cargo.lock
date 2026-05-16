@@ -1406,6 +1406,7 @@ version = "1.9.0"
 name = "kryos-stdlib-native"
 version = "1.9.0"
 dependencies = [
+ "base64",
  "crossterm",
  "kryos-rt",
  "native-tls",

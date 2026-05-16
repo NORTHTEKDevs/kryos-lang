@@ -122,7 +122,8 @@ unsafe fn null_panic() -> ! {
 /// the hot path of `len`-load + bounds compare + data-load into callers,
 /// eliminating the call overhead that dominates array-heavy loops.
 #[no_mangle]
-#[inline]
+#[allow(clippy::missing_safety_doc)]
+#[cfg_attr(not(debug_assertions), inline)]
 pub unsafe extern "C" fn kryos_array_get(arr: *const KryosArray, idx: i64) -> i64 {
     if arr.is_null() {
         null_panic();
@@ -138,7 +139,8 @@ pub unsafe extern "C" fn kryos_array_get(arr: *const KryosArray, idx: i64) -> i6
 
 /// Set the element at `idx`. Bounds-checked: panics on out-of-bounds access.
 #[no_mangle]
-#[inline]
+#[allow(clippy::missing_safety_doc)]
+#[cfg_attr(not(debug_assertions), inline)]
 pub unsafe extern "C" fn kryos_array_set(arr: *mut KryosArray, idx: i64, val: i64) {
     if arr.is_null() {
         null_panic();
