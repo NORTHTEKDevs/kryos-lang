@@ -2374,7 +2374,10 @@ fn lower_for(
         _ => MirType::I64,
     };
 
-    let iter_local = ctx.alloc_temp(MirType::I64);
+    // Preserve the iterable's real type (Array, etc.) so downstream codegen
+    // routes Index through the dynamic-array path (kryos_array_get) instead
+    // of treating an opaque i64 handle as a raw i64* buffer.
+    let iter_local = ctx.alloc_temp(iter_type.clone());
     let iter_rvalue = lower_expr_to_rvalue(ctx, iterable);
     ctx.emit(Instruction::Assign {
         dest: iter_local,

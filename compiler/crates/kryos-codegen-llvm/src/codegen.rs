@@ -34,6 +34,8 @@ pub struct LlvmCodegen {
     local_types: HashMap<u32, String>,
     /// Function signatures: name -> list of LLVM parameter type strings.
     func_param_types: HashMap<String, Vec<String>>,
+    /// Function return types: name -> LLVM return type string.
+    func_ret_types: HashMap<String, String>,
     /// Aggregate-passing info: name -> (ret_agg_ty, per-param agg_ty).
     /// When ret_agg is Some, the function uses sret (returns void, takes ptr sret first).
     /// When a param entry is Some, that param is passed via ptr byval.
@@ -66,6 +68,7 @@ impl LlvmCodegen {
             needs_arc_runtime: false,
             local_types: HashMap::new(),
             func_param_types: HashMap::new(),
+            func_ret_types: HashMap::new(),
             struct_defs: HashMap::new(),
             enum_defs: HashMap::new(),
             mutable_locals: HashSet::new(),
@@ -103,6 +106,7 @@ impl LlvmCodegen {
         self.string_counter = 0;
         self.needs_arc_runtime = false;
         self.func_param_types.clear();
+        self.func_ret_types.clear();
         self.func_sig_aggs.clear();
         self.struct_defs = module.struct_defs.clone();
         self.enum_defs = module.enum_defs.clone();
@@ -119,6 +123,8 @@ impl LlvmCodegen {
                 .map(|p| self.sig_ty_to_llvm(&p.ty))
                 .collect();
             self.func_param_types.insert(func.name.clone(), param_types);
+            let ret_ty_str = self.sig_ty_to_llvm(&func.ret_ty);
+            self.func_ret_types.insert(func.name.clone(), ret_ty_str);
             let ret_agg = self.aggregate_llvm_ty(&func.ret_ty);
             let param_aggs: Vec<Option<String>> = func
                 .params
@@ -225,6 +231,7 @@ impl LlvmCodegen {
         self.string_counter = 0;
         self.needs_arc_runtime = false;
         self.func_param_types.clear();
+        self.func_ret_types.clear();
         self.struct_defs = header.struct_defs.clone();
         self.enum_defs = header.enum_defs.clone();
         self.copy_structs = header.copy_structs.clone();
@@ -238,6 +245,8 @@ impl LlvmCodegen {
                 .map(|p| self.sig_ty_to_llvm(&p.ty))
                 .collect();
             self.func_param_types.insert(func.name.clone(), param_types);
+            let ret_ty_str = self.sig_ty_to_llvm(&func.ret_ty);
+            self.func_ret_types.insert(func.name.clone(), ret_ty_str);
             let ret_agg = self.aggregate_llvm_ty(&func.ret_ty);
             let param_aggs: Vec<Option<String>> = func
                 .params
@@ -912,14 +921,32 @@ impl LlvmCodegen {
                     )
                 })
             });
-            if !has_droppable {
-                continue;
-            }
-
+            // Always emit a drop helper for every enum, even when no fields
+            // need recursive cleanup. Array-of-enum drop loops call this
+            // unconditionally; a missing symbol would break linking.
             let drop_name = format!("__kryos_drop_{name}");
             self.emit_line(&format!("; Type drop helper for enum {name}"));
             self.emit_line(&format!("define internal void @{drop_name}(ptr %ptr) {{"));
             self.emit_line("entry:");
+
+            if !has_droppable {
+                // Stub: enum has no droppable fields. Release the arc-allocated
+                // buffer (matches the path used by `array_push` for aggregate
+                // elements, which routes through `kryos_arc_alloc`).
+                let nck = self.next_temp();
+                self.emit_line(&format!("  {nck} = icmp eq ptr %ptr, null"));
+                self.emit_line(&format!(
+                    "  br i1 {nck}, label %stub_ret_{name}, label %stub_rel_{name}"
+                ));
+                self.emit_line(&format!("stub_rel_{name}:"));
+                self.emit_line("  call void @kryos_arc_release(ptr %ptr)");
+                self.emit_line(&format!("  br label %stub_ret_{name}"));
+                self.emit_line(&format!("stub_ret_{name}:"));
+                self.emit_line("  ret void");
+                self.emit_line("}");
+                self.emit_blank();
+                continue;
+            }
 
             let uid = self.temp_counter;
             self.temp_counter += 1;
@@ -1252,9 +1279,25 @@ impl LlvmCodegen {
 
         self.emit_line(&format!("define {ret} @{name}({params}) {{"));
 
-        // Emit entry block label and allocas for mutable locals.
+        // Detect TCO loops: if any other block branches back to bb0, we must
+        // emit the param-spill + alloca init in a separate `entry:` block
+        // (which falls through to bb0). Otherwise the back-edge re-executes
+        // the `store %_0, ptr %_0.addr` and overwrites the updated value.
+        let entry_id = func.blocks[0].id;
+        let has_back_edge_to_entry = func.blocks.iter().skip(1).any(|b| match &b.terminator {
+            Terminator::Goto(t) => *t == entry_id,
+            Terminator::Branch { then_block, else_block, .. } => {
+                *then_block == entry_id || *else_block == entry_id
+            }
+            _ => false,
+        });
+
         let first_block = &func.blocks[0];
-        self.emit_line(&format!("bb{}:", first_block.id.0));
+        if has_back_edge_to_entry {
+            self.emit_line("entry:");
+        } else {
+            self.emit_line(&format!("bb{}:", first_block.id.0));
+        }
 
         // Emit allocas for all mutable locals at the top of the entry block.
         // Use the resolved local_types so enums/aggregates get the correct
@@ -1298,6 +1341,13 @@ impl LlvmCodegen {
                     ));
                 }
             }
+        }
+
+        // If we emitted a separate `entry:` block for TCO, branch into bb0 now
+        // so the param-spill happens exactly once.
+        if has_back_edge_to_entry {
+            self.emit_line(&format!("  br label %bb{}", first_block.id.0));
+            self.emit_line(&format!("bb{}:", first_block.id.0));
         }
 
         // Emit the entry block's instructions and terminator (label already emitted).
@@ -2543,24 +2593,56 @@ impl LlvmCodegen {
                                 "mutex_drop" => "kryos_mutex_drop",
                                 other => other,
                             };
-                            if dest_ty == "void" {
+                            // Use callee's *actual* return type for the call instruction,
+                            // then coerce into dest_ty if they differ. Without this the
+                            // emitter would write e.g. `call ptr @add_one(i32 %x)` when
+                            // add_one actually returns i32, causing a type mismatch when
+                            // the result is later passed to another callee.
+                            let actual_ret_ty = self
+                                .func_ret_types
+                                .get(runtime_fname)
+                                .cloned()
+                                .unwrap_or_else(|| dest_ty.to_string());
+                            if dest_ty == "void" || actual_ret_ty == "void" {
                                 self.emit_line(&format!(
                                     "  call void @{runtime_fname}({arg_list})"
                                 ));
-                            } else if is_mutable {
-                                let tmp = self.next_temp();
-                                self.emit_line(&format!(
-                                    "  {tmp} = call {dest_ty} @{runtime_fname}({arg_list})"
-                                ));
-                                self.emit_line(&format!(
-                                    "  store {dest_ty} {tmp}, ptr %_{}.addr",
-                                    dest.0
-                                ));
+                            } else if actual_ret_ty == dest_ty {
+                                if is_mutable {
+                                    let tmp = self.next_temp();
+                                    self.emit_line(&format!(
+                                        "  {tmp} = call {dest_ty} @{runtime_fname}({arg_list})"
+                                    ));
+                                    self.emit_line(&format!(
+                                        "  store {dest_ty} {tmp}, ptr %_{}.addr",
+                                        dest.0
+                                    ));
+                                } else {
+                                    self.emit_line(&format!(
+                                        "  %_{} = call {dest_ty} @{runtime_fname}({arg_list})",
+                                        dest.0
+                                    ));
+                                }
                             } else {
+                                // Call with actual return type, then coerce to dest_ty.
+                                let raw = self.next_temp();
                                 self.emit_line(&format!(
-                                    "  %_{} = call {dest_ty} @{runtime_fname}({arg_list})",
-                                    dest.0
+                                    "  {raw} = call {actual_ret_ty} @{runtime_fname}({arg_list})"
                                 ));
+                                let coerced = self.coerce_value(&raw, &actual_ret_ty, dest_ty.as_str());
+                                if is_mutable {
+                                    self.emit_line(&format!(
+                                        "  store {dest_ty} {coerced}, ptr %_{}.addr",
+                                        dest.0
+                                    ));
+                                } else {
+                                    // Need to materialize as %_N. Use an emit_identity_copy.
+                                    self.emit_identity_copy(
+                                        &format!("%_{}", dest.0),
+                                        dest_ty.as_str(),
+                                        &coerced,
+                                    );
+                                }
                             }
                         }
                     }
@@ -2733,6 +2815,9 @@ impl LlvmCodegen {
                         "  {raw} = call i64 @kryos_array_get(ptr {obj_val}, i64 {idx_i64})"
                     ));
                     // Convert i64 -> dest_ty, naming the result %_N for non-mutable.
+                    let is_aggregate = dest_ty.starts_with('{')
+                        || dest_ty.starts_with('[')
+                        || dest_ty.starts_with('%');
                     if is_mutable {
                         let coerced = if dest_ty == "ptr" {
                             let t = self.next_temp();
@@ -2742,6 +2827,13 @@ impl LlvmCodegen {
                             let t = self.next_temp();
                             self.emit_line(&format!("  {t} = bitcast i64 {raw} to double"));
                             t
+                        } else if is_aggregate {
+                            // Aggregate stored as ptr-as-i64: inttoptr, then load.
+                            let p = self.next_temp();
+                            self.emit_line(&format!("  {p} = inttoptr i64 {raw} to ptr"));
+                            let v = self.next_temp();
+                            self.emit_line(&format!("  {v} = load {dest_ty}, ptr {p}"));
+                            v
                         } else {
                             raw
                         };
@@ -2754,6 +2846,13 @@ impl LlvmCodegen {
                     } else if dest_ty == "double" {
                         // Float array element: stored as i64 bits, must bitcast back to double.
                         self.emit_line(&format!("  %_{} = bitcast i64 {raw} to double", dest.0));
+                    } else if is_aggregate {
+                        let p = self.next_temp();
+                        self.emit_line(&format!("  {p} = inttoptr i64 {raw} to ptr"));
+                        self.emit_line(&format!(
+                            "  %_{} = load {dest_ty}, ptr {p}",
+                            dest.0
+                        ));
                     } else {
                         // Identity: use add 0 for integer types.
                         self.emit_line(&format!("  %_{} = add {dest_ty} {raw}, 0", dest.0));
@@ -3612,9 +3711,37 @@ impl LlvmCodegen {
                     let t = self.next_temp();
                     self.emit_line(&format!("  {t} = bitcast double {elem_val} to i64"));
                     t
-                } else {
+                } else if elem_ty.starts_with('{') || elem_ty.starts_with('[') || elem_ty.starts_with('%') {
+                    // Aggregate (struct/array/named): heap-allocate enough bytes,
+                    // store the value, and pass the pointer as i64.
+                    // Use the LLVM `getelementptr null, i32 1` size-of trick to
+                    // compute the aggregate's size at the IR level.
+                    let size_ptr = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {size_ptr} = getelementptr {elem_ty}, ptr null, i32 1"
+                    ));
+                    let size_i64 = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {size_i64} = ptrtoint ptr {size_ptr} to i64"
+                    ));
+                    let buf = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {buf} = call ptr @kryos_arc_alloc(i64 {size_i64}, i64 8)"
+                    ));
+                    self.emit_line(&format!(
+                        "  store {elem_ty} {elem_val}, ptr {buf}"
+                    ));
+                    let t = self.next_temp();
+                    self.emit_line(&format!("  {t} = ptrtoint ptr {buf} to i64"));
+                    t
+                } else if elem_ty == "i1" || elem_ty == "i8" || elem_ty == "i16" || elem_ty == "i32" {
                     let t = self.next_temp();
                     self.emit_line(&format!("  {t} = sext {elem_ty} {elem_val} to i64"));
+                    t
+                } else {
+                    // Unknown type: emit identity and let the verifier flag it.
+                    let t = self.next_temp();
+                    self.emit_line(&format!("  {t} = bitcast {elem_ty} {elem_val} to i64"));
                     t
                 };
                 self.emit_line(&format!(
@@ -4196,6 +4323,28 @@ impl LlvmCodegen {
             }
             ("i1", "i32") => {
                 self.emit_line(&format!("  {tmp} = zext i1 {value} to i32"));
+                self.track_type(&tmp, "i32");
+            }
+            // i32 <-> ptr: widen/narrow via i64.
+            ("i32", "ptr") => {
+                let wide = self.next_temp();
+                self.emit_line(&format!("  {wide} = sext i32 {value} to i64"));
+                self.emit_line(&format!("  {tmp} = inttoptr i64 {wide} to ptr"));
+                self.track_type(&tmp, "ptr");
+            }
+            ("ptr", "i32") => {
+                let wide = self.next_temp();
+                self.emit_line(&format!("  {wide} = ptrtoint ptr {value} to i64"));
+                self.emit_line(&format!("  {tmp} = trunc i64 {wide} to i32"));
+                self.track_type(&tmp, "i32");
+            }
+            // i32 <-> double.
+            ("i32", "double") => {
+                self.emit_line(&format!("  {tmp} = sitofp i32 {value} to double"));
+                self.track_type(&tmp, "double");
+            }
+            ("double", "i32") => {
+                self.emit_line(&format!("  {tmp} = fptosi double {value} to i32"));
                 self.track_type(&tmp, "i32");
             }
             (from, "i64") if from.starts_with('%') || from.starts_with('{') => {

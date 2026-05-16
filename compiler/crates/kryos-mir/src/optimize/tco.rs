@@ -39,10 +39,43 @@ fn optimize_function(func: &mut MirFunction) {
     let self_name = func.name.clone();
     let param_locals: Vec<LocalId> = func.params.iter().map(|p| p.local).collect();
 
+    // Detect whether any block is actually a tail-call to self. If so, we'll
+    // reassign param locals in the loop back-edge, so they must be marked
+    // mutable so the backend codegen emits them as alloca + store/load
+    // rather than SSA temporaries (which would conflict with the function's
+    // entry-block parameter SSA names like %_0).
+    let has_tail_call = func.blocks.iter().any(|b| is_tail_self_call(b, &self_name));
+    if has_tail_call {
+        for pl in &param_locals {
+            if let Some(local) = func.locals.iter_mut().find(|l| l.id == *pl) {
+                local.mutable = true;
+            }
+        }
+    }
+
     // Iterate over all blocks looking for tail-recursive patterns.
     for bi in 0..func.blocks.len() {
         try_optimize_block(&mut func.blocks[bi], &self_name, &param_locals);
     }
+}
+
+/// Return true if this block ends with a tail-recursive self-call.
+fn is_tail_self_call(block: &BasicBlock, self_name: &str) -> bool {
+    let ret_local = match &block.terminator {
+        Terminator::Return(Some(Operand::Local(id))) => *id,
+        _ => return false,
+    };
+    let last_idx = match block.instructions.len().checked_sub(1) {
+        Some(i) => i,
+        None => return false,
+    };
+    matches!(
+        &block.instructions[last_idx],
+        Instruction::Assign {
+            dest,
+            value: RValue::Call { func, .. },
+        } if func == self_name && *dest == ret_local
+    )
 }
 
 /// Attempt to convert a tail-recursive call in a single block.
