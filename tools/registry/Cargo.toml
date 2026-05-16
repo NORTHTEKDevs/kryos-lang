@@ -1,0 +1,16 @@
+[package]
+name = "kryos-registry-server"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Reference HTTP server for the Kryos package registry. Serves the index repo over a read-only JSON API."
+publish = false
+
+[[bin]]
+name = "kryos-registry-server"
+path = "src/main.rs"
+
+# Intentionally zero dependencies — uses std::net only.
+# Keeping this dependency-free makes it easy to audit, easy to deploy
+# (single static binary), and easy to copy as a starting point for a
+# self-hosted registry.
