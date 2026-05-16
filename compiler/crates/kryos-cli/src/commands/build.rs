@@ -58,6 +58,22 @@ pub fn execute(
     // it; otherwise default to the host.
     let resolved_target = resolve_target(target)?;
 
+    // For DWARF: resolve the absolute source path. If the user pointed at
+    // a project directory, this stays None and codegen falls back to
+    // skipping DI metadata.
+    let source_file_path: Option<String> = if debug_info {
+        let p = Path::new(path);
+        if p.is_file() {
+            std::fs::canonicalize(p)
+                .ok()
+                .and_then(|c| c.to_str().map(|s| s.to_string()))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // Warn if cross-compile was requested in debug mode — Cranelift only
     // targets the host. Tell the user to add --release for LLVM cross.
     if target.is_some() && matches!(mode, BuildMode::Debug) && resolved_target != host_target_triple() {
@@ -82,6 +98,7 @@ pub fn execute(
                 lto: effective_lto,
                 codegen_threads: 0,
                 debug_info,
+                source_file_path: source_file_path.clone(),
             },
         )),
         Some("cranelift") => Box::new(kryos_codegen_cranelift::CraneliftBackend::new()),
@@ -103,6 +120,7 @@ pub fn execute(
                     lto: effective_lto,
                     codegen_threads: 0,
                     debug_info,
+                    source_file_path: source_file_path.clone(),
                 },
             )),
         },

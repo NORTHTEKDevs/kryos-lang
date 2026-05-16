@@ -41,6 +41,11 @@ pub struct LinkerConfig {
     /// driver so cross-module inlining of runtime helpers takes effect.
     /// Default: false.
     pub lto: bool,
+    /// Emit/preserve debug info at link time (passes `-g` to the link
+    /// driver). Required when the per-object clang invocation embedded
+    /// DWARF and LTO is enabled — otherwise the link step would strip
+    /// our `!llvm.dbg.cu` compile unit during cross-module merge.
+    pub debug_info: bool,
 }
 
 impl Default for LinkerConfig {
@@ -55,6 +60,7 @@ impl Default for LinkerConfig {
             extra_libs: Vec::new(),
             extra_lib_dirs: Vec::new(),
             lto: false,
+            debug_info: false,
         }
     }
 }
@@ -208,6 +214,12 @@ fn build_unix_command(cmd: &mut Command, config: &LinkerConfig) {
     // (kryos_array_get/set/len) directly into user code.
     if config.lto {
         cmd.arg("-flto=thin");
+    }
+
+    // Debug info: when -g was passed at compile time, also pass -g to
+    // the link driver so LTO preserves our DWARF compile unit.
+    if config.debug_info {
+        cmd.arg("-g");
     }
 }
 

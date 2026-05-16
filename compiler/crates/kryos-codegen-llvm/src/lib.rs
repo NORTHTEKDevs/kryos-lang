@@ -74,6 +74,11 @@ pub struct EmitOptions {
     /// Emit DWARF debug info (`-g`). When true, source-level debugging
     /// works in gdb/lldb on the produced binary.
     pub debug_info: bool,
+    /// Absolute path of the primary source file. When `debug_info` is
+    /// true and this is `Some`, the codegen emits a `!DICompileUnit` and
+    /// per-function `!DISubprogram` nodes referencing this file, so
+    /// backtraces in `lldb`/`gdb` map symbols to the user's `.kry` file.
+    pub source_file_path: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

@@ -54,6 +54,9 @@ pub struct LlvmCodegen {
     /// Closure capture types: func_name -> Vec of capture MIR types.
     /// Used to generate per-closure dropper functions that free heap captures.
     closure_cap_types: HashMap<String, Vec<Option<MirType>>>,
+    /// Names of functions that have been emitted, in order — used when
+    /// emitting DWARF debug metadata at module footer.
+    emitted_function_names: Vec<String>,
 }
 
 impl LlvmCodegen {
@@ -76,6 +79,7 @@ impl LlvmCodegen {
             copy_structs: HashSet::new(),
             closure_cap_types: HashMap::new(),
             func_sig_aggs: HashMap::new(),
+            emitted_function_names: Vec::new(),
         }
     }
 
@@ -326,6 +330,61 @@ impl LlvmCodegen {
         if has_void_main {
             self.emit_main_wrapper();
         }
+        if self.options.debug_info && self.options.source_file_path.is_some() {
+            self.emit_dwarf_metadata();
+        }
+    }
+
+    /// Emit a minimal `!llvm.dbg.cu` compile unit and `!DIFile` pointing
+    /// at the user's `.kry` source. This is the lightweight tier of
+    /// DWARF support: addr2line resolves the source filename for backtraces,
+    /// but per-function DISubprograms and per-instruction !dbg locations
+    /// require MIR-level source span plumbing (tracked for v2.3).
+    fn emit_dwarf_metadata(&mut self) {
+        let source_path = match self.options.source_file_path.as_ref() {
+            Some(p) => p.clone(),
+            None => return,
+        };
+        // Split into directory and filename for DIFile.
+        let path = std::path::Path::new(&source_path);
+        let dir = path
+            .parent()
+            .and_then(|p| p.to_str())
+            .unwrap_or(".")
+            .replace('\\', "/");
+        let file = path
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("<unknown>.kry");
+
+        self.emit_blank();
+        self.emit_line("; --- DWARF debug info ---");
+        self.emit_line("!llvm.dbg.cu = !{!0}");
+        self.emit_line("!llvm.module.flags = !{!2, !3}");
+        self.emit_blank();
+
+        // !0 = compile unit
+        self.emit_line(&format!(
+            "!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: \"kryos {}\", isOptimized: {}, runtimeVersion: 0, emissionKind: FullDebug)",
+            env!("CARGO_PKG_VERSION"),
+            !matches!(self.options.opt_level, crate::OptLevel::O0),
+        ));
+        // !1 = file
+        self.emit_line(&format!(
+            "!1 = !DIFile(filename: \"{}\", directory: \"{}\")",
+            file, dir,
+        ));
+        // !2, !3 = required module flags
+        self.emit_line("!2 = !{i32 7, !\"Dwarf Version\", i32 4}");
+        self.emit_line("!3 = !{i32 2, !\"Debug Info Version\", i32 3}");
+
+        // !4 = empty subroutine type (void()). LineTablesOnly mode does
+        // not require parameter types, so we use a single null-typed
+        // signature shared across all DISubprograms.
+        self.emit_line("!4 = !DISubroutineType(types: !5)");
+        self.emit_line("!5 = !{null}");
+
+        // DISubprograms intentionally omitted — see emit_function_as note.
     }
 
     // -----------------------------------------------------------------------
@@ -1279,6 +1338,17 @@ impl LlvmCodegen {
         }
         let params = param_strs.join(", ");
 
+        // Note: we intentionally do NOT attach `!dbg` to function `define`
+        // headers. Doing so requires every `call` instruction inside the
+        // function to carry a matching `!dbg !DILocation`, otherwise the
+        // LLVM verifier strips all debug info as invalid. Since Kryos
+        // does not yet plumb MIR spans through codegen, we emit only the
+        // module-level !DICompileUnit + !DIFile so addr2line resolves
+        // file/dir names. Per-function DISubprogram + per-call !dbg is
+        // tracked for v2.3 once MIR carries source locations.
+        if self.options.debug_info && self.options.source_file_path.is_some() {
+            self.emitted_function_names.push(name.to_string());
+        }
         self.emit_line(&format!("define {ret} @{name}({params}) {{"));
 
         // Detect TCO loops: if any other block branches back to bb0, we must
