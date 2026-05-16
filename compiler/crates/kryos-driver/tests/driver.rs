@@ -993,6 +993,136 @@ fn compile_file_with_std_import() {
 }
 
 // ---------------------------------------------------------------------------
+// Async lowering integration (Item 8 Stage 3)
+// ---------------------------------------------------------------------------
+
+/// Source containing a single `async fn` plus `main`. The async pass should
+/// see this, produce a plan, and stamp a `__kryos_state_compute` struct.
+const ASYNC_SOURCE: &str = r#"async fn compute(x: i64) -> i64 {
+    return x + 1
+}
+
+fn main() {
+    let _ = compute(41)
+}
+"#;
+
+#[test]
+fn async_function_flagged_as_async_in_mir() {
+    let path = temp_kry_file("async_flag.kry", ASYNC_SOURCE);
+    let config = BuildConfig {
+        input: path.to_string_lossy().to_string(),
+        output: None,
+        mode: BuildMode::Debug,
+        output_type: OutputType::Mir,
+        target: None,
+        capabilities: Vec::new(),
+        verbose: false,
+        skip_ownership: false,
+        lto: false,
+        debug_info: false,
+        use_cache: false,
+    };
+
+    let result = compile_file(&path, &config);
+    assert!(result.success, "compile failed: {:?}", result.errors());
+    let mir = result.mir.expect("MIR should be produced");
+
+    // The MIR function should carry is_async = true.
+    let compute = mir
+        .functions
+        .iter()
+        .find(|f| f.name == "compute")
+        .expect("compute fn must exist in MIR");
+    assert!(
+        compute.attributes.is_async,
+        "compute should have is_async = true in MIR attributes"
+    );
+
+    // The async_lower pass should have synthesised a state struct.
+    let state_name = kryos_mir::async_lower::state_struct_name_for("compute");
+    assert!(
+        mir.struct_defs.contains_key(&state_name),
+        "expected synthesised state struct `{state_name}`, got: {:?}",
+        mir.struct_defs.keys().collect::<Vec<_>>()
+    );
+
+    // Non-async fn must remain unflagged.
+    let main = mir
+        .functions
+        .iter()
+        .find(|f| f.name == "main")
+        .expect("main fn must exist in MIR");
+    assert!(
+        !main.attributes.is_async,
+        "main should NOT have is_async = true"
+    );
+}
+
+#[test]
+fn async_function_compiles_end_to_end() {
+    // Sanity: a program containing async fn must still build cleanly
+    // (the async pass should be a no-op semantically; await currently
+    // lowers as a direct call).
+    let path = temp_kry_file("async_e2e.kry", ASYNC_SOURCE);
+    let config = BuildConfig {
+        input: path.to_string_lossy().to_string(),
+        output: None,
+        mode: BuildMode::Debug,
+        output_type: OutputType::Mir,
+        target: None,
+        capabilities: Vec::new(),
+        verbose: false,
+        skip_ownership: false,
+        lto: false,
+        debug_info: false,
+        use_cache: false,
+    };
+
+    let result = compile_file(&path, &config);
+    assert!(
+        result.success,
+        "async program should compile: {:?}",
+        result.errors()
+    );
+    assert_eq!(result.error_count(), 0);
+}
+
+#[test]
+fn async_plus_inline_is_rejected() {
+    // @inline + async is an explicit error in the async pass.
+    let src = r#"@inline
+async fn bad(x: i64) -> i64 { return x }
+
+fn main() { let _ = bad(1) }
+"#;
+    let path = temp_kry_file("async_inline.kry", src);
+    let config = BuildConfig {
+        input: path.to_string_lossy().to_string(),
+        output: None,
+        mode: BuildMode::Debug,
+        output_type: OutputType::Mir,
+        target: None,
+        capabilities: Vec::new(),
+        verbose: false,
+        skip_ownership: false,
+        lto: false,
+        debug_info: false,
+        use_cache: false,
+    };
+
+    let result = compile_file(&path, &config);
+    assert!(!result.success, "expected compile failure for async+inline");
+    let msgs: Vec<String> = result.errors().iter().map(|d| d.message.clone()).collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("async lowering error")
+            && m.contains("bad")
+            && m.contains("inline")),
+        "expected async-lowering error mentioning `bad` + inline, got: {msgs:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Version
 // ---------------------------------------------------------------------------
 

@@ -580,6 +580,40 @@ fn compile_module_impl(
     // 9b. Comptime evaluation: fold constant expressions in comptime blocks.
     kryos_mir::consteval::run_comptime_pass(&mut mir);
 
+    // 9b'. Async lowering analysis: compute AsyncPlan for every `async fn`
+    //      and stamp synthesised state-structs into the module. This is the
+    //      non-destructive prelude to codegen-time poll-fn synthesis
+    //      (kryos_mir::async_lower).
+    {
+        let report = kryos_mir::async_lower::run(&mir);
+        if !report.errors.is_empty() {
+            for e in &report.errors {
+                diagnostics.push(Diagnostic::error(format!(
+                    "async lowering error in `{}`: {}",
+                    e.function, e.message
+                )));
+            }
+            return CompileResult {
+                diagnostics,
+                source_map,
+                success: false,
+                output_path: None,
+                mir: Some(mir),
+                object_bytes: None,
+                llvm_ir: None,
+            };
+        }
+        let inserted = kryos_mir::async_lower::apply_state_structs(&mut mir, &report);
+        kryos_mir::async_lower::stamp_attributes(&mut mir);
+        if config.verbose {
+            eprintln!(
+                "[kryos] async lowering: {} plan(s), {} state-struct(s) synthesised",
+                report.plans.len(),
+                inserted
+            );
+        }
+    }
+
     // 9c. Optimization passes (release builds): inlining, constant folding,
     //     dead code elimination, tail call optimization, strength reduction.
     if config.mode == crate::config::BuildMode::Release {
