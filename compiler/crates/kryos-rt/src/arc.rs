@@ -13,9 +13,17 @@
 use std::alloc::Layout;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// Sentinel value used to detect valid ArcHeaders. Helps the runtime avoid
+/// dereferencing non-ARC pointers (e.g. static function pointers wrapped
+/// as closures) when retain/release is called defensively.
+pub const ARC_MAGIC: u64 = 0xA7C0_DEAD_BEEF_CAFEu64;
+
 /// Header prepended to every ARC-managed allocation.
 #[repr(C)]
 pub struct ArcHeader {
+    /// Sentinel — must equal ARC_MAGIC. Checked by retain/release to avoid
+    /// touching non-ARC memory (e.g. static fn pointers wrapped as closures).
+    pub magic: u64,
     /// Current reference count (starts at 1).
     pub ref_count: AtomicUsize,
     /// Optional destructor called when ref_count reaches 0.
@@ -100,6 +108,7 @@ pub extern "C" fn kryos_arc_alloc(size: usize, align: usize) -> *mut u8 {
     let header = base as *mut ArcHeader;
     unsafe {
         header.write(ArcHeader {
+            magic: ARC_MAGIC,
             ref_count: AtomicUsize::new(1),
             drop_fn: None,
             size,
@@ -111,16 +120,50 @@ pub extern "C" fn kryos_arc_alloc(size: usize, align: usize) -> *mut u8 {
     unsafe { base.add(offset) }
 }
 
-/// Atomically increment the reference count of an ARC object.
+/// Validate that a pointer looks like a real ARC-allocated object by checking
+/// the magic sentinel. Returns true only if the pointer is non-null AND the
+/// preceding header carries the expected magic value.
+///
+/// This protects against retain/release being called on static function
+/// pointers or other non-ARC memory that the front-end currently treats as
+/// closures (a known limitation of the Function-typed ABI).
 ///
 /// # Safety
-/// `ptr` must have been returned by `kryos_arc_alloc` and must still be live.
+/// Reads from `ptr - sizeof(ArcHeader)` if `ptr` is non-null. Caller must
+/// ensure the address space is at least readable at that offset; in practice
+/// the only failure mode is a SIGSEGV from unmapped memory, which we cannot
+/// guard against without a signal handler. The magic check filters out the
+/// common case of static-data pointers.
+unsafe fn is_arc_ptr(ptr: *mut u8) -> bool {
+    if ptr.is_null() {
+        return false;
+    }
+    let min_align = std::mem::align_of::<ArcHeader>();
+    let candidate = header_from_user_ptr(ptr, min_align);
+    // Read the magic field at a fixed offset. We use std::ptr::read_unaligned
+    // since `candidate` may be inside an arbitrary page.
+    let magic = std::ptr::read_unaligned(&(*candidate).magic as *const u64);
+    magic == ARC_MAGIC
+}
+
+/// Atomically increment the reference count of an ARC object.
+///
+/// Defensive: silently no-ops on non-ARC pointers (detected via magic sentinel),
+/// so the front-end can uniformly emit retain/release for Function-typed
+/// values even when the underlying value is a static function pointer.
+///
+/// # Safety
+/// `ptr` must either be null, a real `kryos_arc_alloc` return, or a pointer
+/// whose preceding bytes are readable (so the magic check can run).
 #[no_mangle]
 pub extern "C" fn kryos_arc_retain(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
     unsafe {
+        if !is_arc_ptr(ptr) {
+            return;
+        }
         let header = header_from_ptr(ptr);
         (*header).ref_count.fetch_add(1, Ordering::Relaxed);
     }
@@ -138,6 +181,9 @@ pub extern "C" fn kryos_arc_release(ptr: *mut u8) {
         return;
     }
     unsafe {
+        if !is_arc_ptr(ptr) {
+            return;
+        }
         let header = header_from_ptr(ptr);
 
         // Use Release ordering on decrement so all prior writes are visible
@@ -174,6 +220,9 @@ pub extern "C" fn kryos_arc_set_drop(ptr: *mut u8, drop_fn: extern "C" fn(*mut u
         return;
     }
     unsafe {
+        if !is_arc_ptr(ptr) {
+            return;
+        }
         let header = header_from_ptr(ptr);
         (*header).drop_fn = Some(drop_fn);
     }
@@ -188,6 +237,9 @@ pub extern "C" fn kryos_arc_ref_count(ptr: *mut u8) -> usize {
         return 0;
     }
     unsafe {
+        if !is_arc_ptr(ptr) {
+            return 0;
+        }
         let header = header_from_ptr(ptr);
         (*header).ref_count.load(Ordering::Relaxed)
     }

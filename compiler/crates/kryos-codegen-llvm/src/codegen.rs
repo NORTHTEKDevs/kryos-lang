@@ -1049,6 +1049,8 @@ impl LlvmCodegen {
         self.emit_line("define i32 @main() {");
         self.emit_line("entry:");
         self.emit_line("  call void @_kryos_main()");
+        // Wait for any spawned threads to complete before exit (no-op if none).
+        self.emit_line("  call void @kryos_spawn_wait_all()");
         self.emit_line("  ret i32 0");
         self.emit_line("}");
         self.emit_blank();
@@ -3180,10 +3182,24 @@ impl LlvmCodegen {
                                 self.emit_line(&format!(
                                     "  call void @kryos_arc_retain(ptr {cap_val})"
                                 ));
-                                self.emit_line(&format!("  store i64 {cap_val}, ptr {cap_ptr}"));
+                                // cap_val is a ptr -- store as ptr to avoid type mismatch
+                                self.emit_line(&format!("  store ptr {cap_val}, ptr {cap_ptr}"));
                             }
                             _ => {
-                                self.emit_line(&format!("  store i64 {cap_val}, ptr {cap_ptr}"));
+                                // If cap_val is a ptr, coerce to i64; otherwise store as-is.
+                                let actual = self
+                                    .actual_type(&cap_val)
+                                    .unwrap_or_else(|| "i64".to_string());
+                                if actual == "i64" {
+                                    self.emit_line(&format!(
+                                        "  store i64 {cap_val}, ptr {cap_ptr}"
+                                    ));
+                                } else {
+                                    let coerced = self.coerce_value(&cap_val, &actual, "i64");
+                                    self.emit_line(&format!(
+                                        "  store i64 {coerced}, ptr {cap_ptr}"
+                                    ));
+                                }
                             }
                         }
                     }
@@ -3254,8 +3270,15 @@ impl LlvmCodegen {
                     let val_ty = self.operand_type(v, func);
                     let key_i64 = self.coerce_value(&key_val, &key_ty, "i64");
                     let val_i64 = self.coerce_value(&val_val, &val_ty, "i64");
+                    // Use string-aware insert for string keys (content hashing).
+                    let is_string_key = Self::operand_is_string(k, func);
+                    let insert_fn = if is_string_key {
+                        "kryos_map_insert_str"
+                    } else {
+                        "kryos_map_insert"
+                    };
                     self.emit_line(&format!(
-                        "  call void @kryos_map_insert(i64 {map_handle}, i64 {key_i64}, i64 {val_i64})"
+                        "  call void @{insert_fn}(i64 {map_handle}, i64 {key_i64}, i64 {val_i64})"
                     ));
                 }
                 if is_mutable {

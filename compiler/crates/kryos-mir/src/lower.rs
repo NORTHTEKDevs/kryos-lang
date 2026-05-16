@@ -3674,6 +3674,17 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             if let Some(ret_ty) = ctx.func_ret_types.get(method.as_str()) {
                 return ret_ty.clone();
             }
+            // Function-typed struct field: e.g. t.transform(5) where
+            // `transform: fn(i64) -> i64`. Return the closure's declared ret ty.
+            if let Some(type_name) = infer_type_name(ctx, object) {
+                if let Some(fields) = ctx.struct_defs.get(type_name.as_str()) {
+                    if let Some((_, ty)) = fields.iter().find(|(n, _)| n == method) {
+                        if let MirType::Function { ret, .. } = ty {
+                            return (**ret).clone();
+                        }
+                    }
+                }
+            }
             MirType::Void
         }
 
