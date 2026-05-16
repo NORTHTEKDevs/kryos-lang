@@ -3266,6 +3266,78 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     });
 
     // -----------------------------------------------------------------------
+    // Unix domain sockets (v2.0)
+    // -----------------------------------------------------------------------
+    checker.env.define_function(FunctionSig {
+        name: "uds_connect".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("path".to_string(), Type::Str)], ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "uds_bind".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("path".to_string(), Type::Str)], ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "uds_accept".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("fd".to_string(), Type::I64)], ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "uds_send".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("fd".to_string(), Type::I64), ("data".to_string(), Type::Str)],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "uds_recv".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("fd".to_string(), Type::I64), ("max_bytes".to_string(), Type::I64)],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "uds_close".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("fd".to_string(), Type::I64)], ret: Type::I64,
+    });
+
+    // -----------------------------------------------------------------------
+    // WebSocket (RFC 6455) helpers (v2.0)
+    // -----------------------------------------------------------------------
+    checker.env.define_function(FunctionSig {
+        name: "ws_accept_key".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("key".to_string(), Type::Str)], ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "ws_encode_text".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("payload".to_string(), Type::Str)], ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "ws_encode_binary".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("payload".to_string(), Type::Str)], ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "ws_encode_close".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("code".to_string(), Type::I64)], ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "ws_encode_ping".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("payload".to_string(), Type::Str)], ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "ws_encode_pong".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("payload".to_string(), Type::Str)], ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "ws_unmask".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        params: vec![
+            ("buf".to_string(), Type::Str),
+            ("payload_off".to_string(), Type::I64),
+            ("payload_len".to_string(), Type::I64),
+            ("mask_off".to_string(), Type::I64),
+        ],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "ws_read_frame".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("fd".to_string(), Type::I64)], ret: Type::Str,
+    });
+
+    // -----------------------------------------------------------------------
     // JSON builtins
     // -----------------------------------------------------------------------
     checker.env.define_function(FunctionSig {

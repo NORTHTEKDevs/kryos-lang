@@ -697,6 +697,66 @@ impl JitCompiler {
             kryos_stdlib_native::tls::kryos_tls_close_ks as *const u8,
         );
 
+        // Unix domain sockets (v2.0)
+        jit_builder.symbol(
+            "kryos_uds_connect_ks",
+            kryos_stdlib_native::unix_socket::kryos_uds_connect_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_uds_bind_ks",
+            kryos_stdlib_native::unix_socket::kryos_uds_bind_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_uds_accept",
+            kryos_stdlib_native::unix_socket::kryos_uds_accept as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_uds_send_ks",
+            kryos_stdlib_native::unix_socket::kryos_uds_send_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_uds_recv_ks",
+            kryos_stdlib_native::unix_socket::kryos_uds_recv_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_uds_close",
+            kryos_stdlib_native::unix_socket::kryos_uds_close as *const u8,
+        );
+
+        // WebSocket helpers (RFC 6455) (v2.0)
+        jit_builder.symbol(
+            "kryos_ws_accept_key_ks",
+            kryos_stdlib_native::websocket::kryos_ws_accept_key_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_ws_encode_text_ks",
+            kryos_stdlib_native::websocket::kryos_ws_encode_text_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_ws_encode_binary_ks",
+            kryos_stdlib_native::websocket::kryos_ws_encode_binary_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_ws_encode_close",
+            kryos_stdlib_native::websocket::kryos_ws_encode_close as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_ws_encode_ping_ks",
+            kryos_stdlib_native::websocket::kryos_ws_encode_ping_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_ws_encode_pong_ks",
+            kryos_stdlib_native::websocket::kryos_ws_encode_pong_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_ws_unmask_ks",
+            kryos_stdlib_native::websocket::kryos_ws_unmask_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_ws_read_frame_ks",
+            kryos_stdlib_native::websocket::kryos_ws_read_frame_ks as *const u8,
+        );
+
         // PostgreSQL (Gap B)
         jit_builder.symbol(
             "kryos_pg_connect_ks",
@@ -1432,6 +1492,22 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_tls_send_ks", "kryos_tls_send_ks", sig(2));
     decl!("kryos_tls_recv_ks", "kryos_tls_recv_ks", sig(2));
     decl!("kryos_tls_close_ks", "kryos_tls_close_ks", sig(1));
+    // Unix domain sockets (v2.0)
+    decl!("kryos_uds_connect_ks", "kryos_uds_connect_ks", sig(1));
+    decl!("kryos_uds_bind_ks", "kryos_uds_bind_ks", sig(1));
+    decl!("kryos_uds_accept", "kryos_uds_accept", sig(1));
+    decl!("kryos_uds_send_ks", "kryos_uds_send_ks", sig(2));
+    decl!("kryos_uds_recv_ks", "kryos_uds_recv_ks", sig(2));
+    decl!("kryos_uds_close", "kryos_uds_close", sig(1));
+    // WebSocket helpers (v2.0)
+    decl!("kryos_ws_accept_key_ks", "kryos_ws_accept_key_ks", sig(1));
+    decl!("kryos_ws_encode_text_ks", "kryos_ws_encode_text_ks", sig(1));
+    decl!("kryos_ws_encode_binary_ks", "kryos_ws_encode_binary_ks", sig(1));
+    decl!("kryos_ws_encode_close", "kryos_ws_encode_close", sig(1));
+    decl!("kryos_ws_encode_ping_ks", "kryos_ws_encode_ping_ks", sig(1));
+    decl!("kryos_ws_encode_pong_ks", "kryos_ws_encode_pong_ks", sig(1));
+    decl!("kryos_ws_unmask_ks", "kryos_ws_unmask_ks", sig(4));
+    decl!("kryos_ws_read_frame_ks", "kryos_ws_read_frame_ks", sig(1));
     // kryos_sleep_ms is declared above in the spawn block.
     // PostgreSQL (Gap B)
     decl!("kryos_pg_connect_ks", "kryos_pg_connect_ks", sig(1));

@@ -3007,6 +3007,22 @@ fn translate_rvalue<M: Module>(
                 "tls_send" => ("kryos_tls_send_ks", 2),
                 "tls_recv" => ("kryos_tls_recv_ks", 2),
                 "tls_close" => ("kryos_tls_close_ks", 1),
+                // Unix domain sockets (v2.0)
+                "uds_connect" => ("kryos_uds_connect_ks", 1),
+                "uds_bind" => ("kryos_uds_bind_ks", 1),
+                "uds_accept" => ("kryos_uds_accept", 1),
+                "uds_send" => ("kryos_uds_send_ks", 2),
+                "uds_recv" => ("kryos_uds_recv_ks", 2),
+                "uds_close" => ("kryos_uds_close", 1),
+                // WebSocket helpers (RFC 6455) (v2.0)
+                "ws_accept_key" => ("kryos_ws_accept_key_ks", 1),
+                "ws_encode_text" => ("kryos_ws_encode_text_ks", 1),
+                "ws_encode_binary" => ("kryos_ws_encode_binary_ks", 1),
+                "ws_encode_close" => ("kryos_ws_encode_close", 1),
+                "ws_encode_ping" => ("kryos_ws_encode_ping_ks", 1),
+                "ws_encode_pong" => ("kryos_ws_encode_pong_ks", 1),
+                "ws_unmask" => ("kryos_ws_unmask_ks", 4),
+                "ws_read_frame" => ("kryos_ws_read_frame_ks", 1),
                 // PostgreSQL (Gap B)
                 "pg_connect" => ("kryos_pg_connect_ks", 1),
                 "pg_exec" => ("kryos_pg_exec_ks", 2),

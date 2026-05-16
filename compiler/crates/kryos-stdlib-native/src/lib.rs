@@ -32,6 +32,8 @@ pub mod sqlite;
 pub mod string;
 pub mod sync_prims;
 pub mod term;
+pub mod unix_socket;
+pub mod websocket;
 #[cfg(feature = "tls")]
 pub mod tls;
 #[cfg(feature = "postgres")]

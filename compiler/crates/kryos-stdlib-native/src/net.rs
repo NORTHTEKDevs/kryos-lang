@@ -47,6 +47,17 @@ where
     f(table)
 }
 
+/// Returns a clone of the TCP stream for the given fd, if it exists.
+///
+/// Used by adjacent modules (e.g. `websocket`) that need to do I/O on a fd
+/// the user has already established via `tcp_accept`.
+pub(crate) fn with_tcp_stream(fd: i64) -> Option<TcpStream> {
+    with_socket_table(|t| match t.map.get(&fd) {
+        Some(SocketEntry::Stream(s)) => s.try_clone().ok(),
+        _ => None,
+    })
+}
+
 /// Connects to a TCP server at `host:port`.
 ///
 /// Returns a socket descriptor on success, or -1 on error.

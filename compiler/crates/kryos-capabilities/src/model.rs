@@ -245,7 +245,10 @@ pub fn required_capability_for_builtin(name: &str) -> Option<Capability> {
         "http_get" | "http_post" | "tcp_connect" | "tcp_listen" | "tcp_accept" | "tcp_send"
         | "tcp_recv" | "tls_server_config" | "tls_accept" | "tls_send" | "tls_recv"
         | "tls_close" | "pg_connect" | "pg_exec" | "pg_query" | "pg_close"
-        | "http2_get" | "http2_post" | "http2_request" => Some(Capability::Net),
+        | "http2_get" | "http2_post" | "http2_request"
+        | "uds_connect" | "uds_bind" | "uds_accept" | "uds_send" | "uds_recv" | "uds_close"
+        | "ws_accept_key" | "ws_encode_text" | "ws_encode_binary" | "ws_encode_close"
+        | "ws_encode_ping" | "ws_encode_pong" | "ws_unmask" | "ws_read_frame" => Some(Capability::Net),
 
         // Terminal
         "term_clear" | "term_raw_mode" | "term_size" => Some(Capability::Term),

@@ -583,6 +583,22 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("pg_exec", MirType::I64),
         ("pg_query", MirType::Str),
         ("pg_close", MirType::I64),
+        // Unix domain sockets (v2.0)
+        ("uds_connect", MirType::I64),
+        ("uds_bind", MirType::I64),
+        ("uds_accept", MirType::I64),
+        ("uds_send", MirType::I64),
+        ("uds_recv", MirType::Str),
+        ("uds_close", MirType::I64),
+        // WebSocket (RFC 6455) (v2.0)
+        ("ws_accept_key", MirType::Str),
+        ("ws_encode_text", MirType::Str),
+        ("ws_encode_binary", MirType::Str),
+        ("ws_encode_close", MirType::Str),
+        ("ws_encode_ping", MirType::Str),
+        ("ws_encode_pong", MirType::Str),
+        ("ws_unmask", MirType::Str),
+        ("ws_read_frame", MirType::Str),
     ] {
         ctx.func_ret_types.insert(name.to_string(), ret_ty);
     }
