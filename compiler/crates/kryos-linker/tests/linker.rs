@@ -167,6 +167,7 @@ fn make_test_config(target: Target, link_type: LinkType) -> LinkerConfig {
         extra_libs: vec!["m".to_string(), "pthread".to_string()],
         extra_lib_dirs: vec![PathBuf::from("/usr/local/lib")],
         lto: false,
+        debug_info: false,
     }
 }
 
@@ -298,6 +299,7 @@ fn command_without_optional_libs() {
         extra_libs: vec![],
         extra_lib_dirs: vec![],
         lto: false,
+        debug_info: false,
     };
     let linker_path = PathBuf::from("cc");
     let cmd = build_command(&linker_path, &config);

@@ -41,8 +41,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use kryos_mir::ir::{
-    BasicBlock, BlockId, Constant, Instruction, LocalId, MirBinOp, MirFunction, MirModule,
-    MirType, MirUnOp, Operand, RValue, Terminator,
+    BasicBlock, BlockId, Constant, Instruction, MirBinOp, MirFunction, MirModule, MirType,
+    MirUnOp, Operand, RValue, Terminator,
 };
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, DataSection, ExportKind, ExportSection, Function,
@@ -696,6 +696,10 @@ struct FnEmitter<'a> {
     cg: &'a mut WasmCodegen,
     func: &'a MirFunction,
     wfunc: &'a mut Function,
+    /// Number of formal parameters — retained for future use by passes
+    /// that need to distinguish params from locals when emitting wasm
+    /// `local.get` / `local.set` indices.
+    #[allow(dead_code)]
     n_params: usize,
     /// Maps a `BlockId.0` to its index in `func.blocks`. Block ids are
     /// not contiguous, so we always go through this map.
@@ -711,6 +715,9 @@ impl<'a> FnEmitter<'a> {
         })
     }
 
+    /// Retained for ergonomic block-id-to-block lookups by future passes
+    /// that need the full `BasicBlock` rather than just the index.
+    #[allow(dead_code)]
     fn block_by_id(&self, id: BlockId) -> Result<&'a BasicBlock, WasmCodegenError> {
         let idx = self.block_index(id)?;
         Ok(&self.func.blocks[idx])

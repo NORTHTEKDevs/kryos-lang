@@ -622,7 +622,7 @@ pub extern "C" fn kryos_json_get_index(arr_handle: i64, index: i64) -> i64 {
 /// Convert a JsonNode to a Kryos string handle (for strings, stringify for others).
 #[no_mangle]
 pub extern "C" fn kryos_json_to_str(node_handle: i64) -> i64 {
-    let mut handle_out: Option<i64> = None;
+    let handle_out: Option<i64> = None;
     let mut bare_string: Option<String> = None;
     with_node_table(|table| {
         if let Some(node) = table.get(node_handle) {

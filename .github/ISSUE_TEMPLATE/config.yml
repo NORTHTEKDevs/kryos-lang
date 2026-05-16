@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Q&A and ideas
+    url: https://github.com/NORTHTEKDevs/kryos-lang/discussions
+    about: Open-ended questions, ideas, and show-and-tell go in Discussions.
+  - name: Security report
+    url: https://github.com/NORTHTEKDevs/kryos-lang/security/policy
+    about: Report a vulnerability privately to info@northtek.io. Do not file a public issue.

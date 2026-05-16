@@ -139,6 +139,7 @@ type Fn4V = unsafe extern "C" fn(i64, i64, i64, i64);
 type Fn5V = unsafe extern "C" fn(i64, i64, i64, i64, i64);
 type Fn6V = unsafe extern "C" fn(i64, i64, i64, i64, i64, i64);
 type Fn7V = unsafe extern "C" fn(i64, i64, i64, i64, i64, i64, i64);
+#[allow(dead_code)]
 type Fn8V = unsafe extern "C" fn(i64, i64, i64, i64, i64, i64, i64, i64);
 
 macro_rules! dlcall_arity {

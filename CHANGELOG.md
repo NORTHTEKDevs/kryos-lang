@@ -4,6 +4,66 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.2.1] - 2026-05-16 — "Async substrate, repo polish, zero warnings"
+
+Post-2.2 cleanup pass. No language-behavior changes. Everything here is
+additive infrastructure, fixes, or repo polish.
+
+### Added (MIR / async substrate)
+
+- **MIR liveness analysis** (`kryos_mir::liveness`) — backward-dataflow
+  live_in / live_out per block on the existing CFG, with a per-program-
+  point query (`live_after_instruction`). Foundation for any pass that
+  needs to know which locals survive a given program point.
+- **`split_at_await` CFG transform** (`kryos_mir::async_lower`) — takes
+  a list of `(BlockId, inst_idx)` suspension points and rewrites the
+  function into a stackless state machine: per-split persist of
+  live-after locals via `StoreField` on the state struct, early
+  `Return(0)` (KRYOS_PENDING) as the pre-half terminator, reload via
+  `Field` at the top of a freshly-created resume block, and a synthetic
+  dispatch entry block that `Switch`es on the state discriminant.
+- **`apply_split_at_awaits` driver** — opt-in module-wide pass that
+  scans for calls to async callees as suspension points and applies
+  the transform without touching AST→MIR lowering. Not yet wired into
+  the main pipeline (codegen still consumes the pre-split CFG), but
+  the API is stable and tested.
+
+### Added (packaging)
+
+- **`cargo install` support** — `kryos-cli` Cargo.toml now carries
+  description, keywords, categories, license, repository, homepage,
+  authors, and a readme path so `cargo install --path compiler/crates/
+  kryos-cli` works against a local checkout. README documents the
+  exact command.
+- **Contact & community** — README has a new Community & Contact
+  section: GitHub Discussions, Issues, and `info@northtek.io` for
+  direct contact. The email is also embedded in the workspace
+  `authors` field so it propagates into every crate.
+- **GitHub Discussions enabled** on the public repo.
+
+### Fixed
+
+- **`kryos-linker` test build** — added missing `debug_info: false`
+  to two `LinkerConfig` initializers in `tests/linker.rs`. 27/27
+  linker tests now compile and pass (previously: did not compile).
+- **Cleared all compiler warnings** — four small fixes: removed
+  `#[inline]` from two `#[no_mangle] extern "C"` exports in
+  `kryos_rt::array` (rustc was ignoring it), dropped an unnecessary
+  `mut` in `kryos_stdlib_native::json`, added `#[allow(dead_code)]`
+  on a forward-declared `Fn8V` arity alias and on intentionally-kept
+  WASM `FnEmitter::block_by_id` / `n_params`. Release build is now
+  warning-free.
+
+### Tests
+
+- 4 new liveness unit tests (entry, after-call, branch propagation,
+  loop back-edge fixpoint).
+- 7 new split-at-await unit tests (1/2/3 splits, bad-block guard,
+  duplicate-block guard, empty-input no-op, basic-shape with persist
+  + reload assertions).
+- `kryos-mir` lib tests: 79/79.
+- Native `--release` sweep: 123/123 maintained.
+
 ## [2.2.0] - 2026-05-15 — "Developer-platform completeness: 115/115 native release tests"
 
 The 2.2 milestone closes the last three architectural gaps from v2.1's

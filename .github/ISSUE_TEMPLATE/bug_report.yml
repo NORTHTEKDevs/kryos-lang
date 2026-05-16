@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a bug in the compiler, runtime, or standard library.
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please include a minimal reproduction —
+        a `.kry` program plus the exact command you ran is ideal.
+  - type: input
+    id: version
+    attributes:
+      label: Kryos version
+      description: Output of `kryos --version`.
+      placeholder: kryos 2.2.1
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Host OS / arch
+      placeholder: Ubuntu 24.04 x86_64
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend
+      options:
+        - cranelift (default — kryos run / kryos build)
+        - llvm (kryos build --backend llvm)
+        - wasm (kryos build --backend wasm)
+        - not sure / multiple
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: A minimal `.kry` snippet and the exact command(s) that trigger the bug.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include any stderr, panic message, or stack trace.
+      render: text
+    validations:
+      required: true
