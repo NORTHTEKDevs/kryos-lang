@@ -635,6 +635,9 @@ fn bench_pipeline(c: &mut Criterion) {
         capabilities: Vec::new(),
         verbose: false,
         skip_ownership: false,
+        lto: false,
+        debug_info: false,
+        use_cache: false,
     };
 
     let mut group = c.benchmark_group("pipeline");

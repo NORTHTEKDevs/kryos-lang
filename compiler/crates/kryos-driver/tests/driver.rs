@@ -53,6 +53,9 @@ fn compile_valid_source_succeeds() {
         capabilities: Vec::new(),
         verbose: false,
         skip_ownership: false,
+    lto: false,
+    debug_info: false,
+    use_cache: false,
     };
 
     let result = compile_file(&path, &config);
@@ -88,6 +91,9 @@ fn compile_syntax_error_fails() {
         capabilities: Vec::new(),
         verbose: false,
         skip_ownership: false,
+    lto: false,
+    debug_info: false,
+    use_cache: false,
     };
 
     let result = compile_file(&path, &config);
@@ -116,6 +122,9 @@ fn compile_type_error_fails() {
         capabilities: Vec::new(),
         verbose: false,
         skip_ownership: false,
+    lto: false,
+    debug_info: false,
+    use_cache: false,
     };
 
     let result = compile_file(&path, &config);
@@ -199,6 +208,9 @@ fn compile_source_valid() {
         capabilities: Vec::new(),
         verbose: false,
         skip_ownership: false,
+    lto: false,
+    debug_info: false,
+    use_cache: false,
     };
 
     let result = compile_source(VALID_SOURCE, "inline.kry", &config);
@@ -221,6 +233,9 @@ fn compile_source_with_binary_output_no_backend() {
         capabilities: Vec::new(),
         verbose: false,
         skip_ownership: false,
+    lto: false,
+    debug_info: false,
+    use_cache: false,
     };
 
     let result = compile_source(VALID_SOURCE, "inline.kry", &config);
@@ -267,6 +282,9 @@ fn build_config_derive_output_path() {
         capabilities: Vec::new(),
         verbose: false,
         skip_ownership: false,
+    lto: false,
+    debug_info: false,
+    use_cache: false,
     };
 
     let derived = config.derive_output_path();
@@ -284,6 +302,9 @@ fn build_config_derive_output_mir() {
         capabilities: Vec::new(),
         verbose: false,
         skip_ownership: false,
+    lto: false,
+    debug_info: false,
+    use_cache: false,
     };
 
     let derived = config.derive_output_path();
@@ -301,6 +322,9 @@ fn build_config_explicit_output_overrides_derived() {
         capabilities: Vec::new(),
         verbose: false,
         skip_ownership: false,
+    lto: false,
+    debug_info: false,
+    use_cache: false,
     };
 
     let derived = config.derive_output_path();
@@ -347,6 +371,9 @@ fn main() {
         capabilities: Vec::new(),
         verbose: true,
         skip_ownership: false,
+    lto: false,
+    debug_info: false,
+    use_cache: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -406,6 +433,9 @@ fn main() {
         capabilities: Vec::new(),
         verbose: false,
         skip_ownership: false,
+    lto: false,
+    debug_info: false,
+    use_cache: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -463,6 +493,9 @@ fn main() {
         capabilities: Vec::new(),
         verbose: true,
         skip_ownership: false,
+    lto: false,
+    debug_info: false,
+    use_cache: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -540,6 +573,9 @@ fn main() {
         capabilities: Vec::new(),
         verbose: true,
         skip_ownership: false,
+    lto: false,
+    debug_info: false,
+    use_cache: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -645,6 +681,9 @@ fn main() {
         capabilities: Vec::new(),
         verbose: true,
         skip_ownership: false,
+    lto: false,
+    debug_info: false,
+    use_cache: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -704,6 +743,9 @@ fn main() {
         capabilities: Vec::new(),
         verbose: true,
         skip_ownership: false,
+    lto: false,
+    debug_info: false,
+    use_cache: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -756,6 +798,9 @@ fn main() {
         capabilities: Vec::new(),
         verbose: true,
         skip_ownership: false,
+    lto: false,
+    debug_info: false,
+    use_cache: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -911,6 +956,9 @@ fn compile_file_with_std_import() {
         capabilities: Vec::new(),
         verbose: false,
         skip_ownership: false,
+    lto: false,
+    debug_info: false,
+    use_cache: false,
     };
 
     let result = compile_file(&main_path, &config);

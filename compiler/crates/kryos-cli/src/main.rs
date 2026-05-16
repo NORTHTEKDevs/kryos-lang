@@ -75,6 +75,18 @@ enum Commands {
         /// Emit DWARF debug info for gdb/lldb source-level debugging.
         #[arg(short = 'g', long)]
         debug_info: bool,
+
+        /// Enable the cross-build artifact cache. Identical source +
+        /// (target, mode, output_type, compiler version) tuples reuse a
+        /// previously produced binary without rerunning the pipeline. The
+        /// cache lives under `$KRYOS_CACHE_DIR` (or `$XDG_CACHE_HOME/kryos`,
+        /// `$HOME/.cache/kryos`). Disable with --no-cache.
+        #[arg(long)]
+        cache: bool,
+
+        /// Force-disable the cross-build artifact cache.
+        #[arg(long)]
+        no_cache: bool,
     },
 
     /// Compile and run a Kryos file
@@ -260,9 +272,17 @@ fn main() {
             lto,
             no_lto,
             debug_info,
+            cache,
+            no_cache,
         } => {
             // --no-lto wins over both --lto and the release-implied LTO default.
             let effective_lto = if no_lto { false } else { lto };
+            // --no-cache wins over --cache and the KRYOS_CACHE env var.
+            // Otherwise: explicit --cache flag, or KRYOS_CACHE=1, opts in.
+            let env_opt_in = std::env::var("KRYOS_CACHE")
+                .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+                .unwrap_or(false);
+            let effective_cache = if no_cache { false } else { cache || env_opt_in };
             commands::build::execute(
                 &path,
                 release,
@@ -275,6 +295,7 @@ fn main() {
                 skip_ownership,
                 effective_lto,
                 debug_info,
+                effective_cache,
             )
         }
 

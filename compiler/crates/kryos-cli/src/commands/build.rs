@@ -19,6 +19,7 @@ pub fn execute(
     skip_ownership: bool,
     lto: bool,
     debug_info: bool,
+    use_cache: bool,
 ) -> Result<(), String> {
     let mode = if release {
         BuildMode::Release
@@ -48,6 +49,7 @@ pub fn execute(
         skip_ownership,
         lto: effective_lto,
         debug_info,
+        use_cache,
     };
 
     if verbose {

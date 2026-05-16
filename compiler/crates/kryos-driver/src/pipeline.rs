@@ -15,8 +15,140 @@ use kryos_ownership::analyze_ownership;
 use kryos_parser::parse;
 use kryos_types::type_check;
 
+use crate::build_cache::{self, CacheContext, CacheKey};
 use crate::config::{BuildConfig, BuildMode, OutputType};
 use crate::resolve;
+
+// ---------------------------------------------------------------------------
+// Build-cache helpers (private)
+// ---------------------------------------------------------------------------
+
+/// Returns true if this output type produces a single artifact whose final
+/// byte contents can be safely cached and restored by copying. Anything else
+/// (MIR dump, LLVM IR text) is too small or text-shaped to be worth caching
+/// and is intentionally skipped.
+fn cacheable_output(t: OutputType) -> bool {
+    matches!(t, OutputType::Binary | OutputType::Object | OutputType::Library)
+}
+
+fn build_mode_str(m: BuildMode) -> &'static str {
+    match m {
+        BuildMode::Debug => "debug",
+        BuildMode::Release => "release",
+    }
+}
+
+fn output_type_str(t: OutputType) -> &'static str {
+    match t {
+        OutputType::Binary => "binary",
+        OutputType::Library => "library",
+        OutputType::Object => "object",
+        OutputType::LlvmIr => "llvm_ir",
+        OutputType::Mir => "mir",
+    }
+}
+
+/// Render the effective target string for caching. We deliberately do *not*
+/// call `BuildConfig::effective_target` here because that pulls in
+/// `kryos_linker` work the cache doesn't need; a plain host fallback is
+/// sufficient and matches what the rest of the driver does when `target` is
+/// `None`.
+fn cache_target_str(config: &BuildConfig) -> String {
+    if let Some(t) = &config.target {
+        return t.clone();
+    }
+    format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS)
+}
+
+/// Attempt to short-circuit compilation via the on-disk build cache. Returns
+/// `Some(result)` only when the cache is enabled, the output type is
+/// cacheable, and a matching artifact exists on disk. Any I/O or permission
+/// problem silently returns `None`, falling back to a normal build.
+fn try_cache_hit(
+    source: &str,
+    config: &BuildConfig,
+) -> Option<(CacheKey, CompileResult)> {
+    if !config.use_cache || !cacheable_output(config.output_type) {
+        return None;
+    }
+    let target = cache_target_str(config);
+    let ctx = CacheContext {
+        target_triple: &target,
+        build_mode: build_mode_str(config.mode),
+        output_type: output_type_str(config.output_type),
+        compiler_version: env!("CARGO_PKG_VERSION"),
+    };
+    let key = CacheKey::new(source, &ctx);
+    let bytes = build_cache::lookup(&key)?;
+
+    let out_path = config.derive_output_path();
+    if let Some(parent) = out_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            let _ = fs::create_dir_all(parent);
+        }
+    }
+    if fs::write(&out_path, &bytes).is_err() {
+        return None;
+    }
+
+    // Restore the executable bit on Unix so cached binaries actually run.
+    #[cfg(unix)]
+    if config.output_type == OutputType::Binary {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = fs::metadata(&out_path) {
+            let mut perms = meta.permissions();
+            perms.set_mode(perms.mode() | 0o111);
+            let _ = fs::set_permissions(&out_path, perms);
+        }
+    }
+
+    if config.verbose {
+        eprintln!(
+            "[kryos] cache: hit {} -> {}",
+            key.as_filename(),
+            out_path.display()
+        );
+    }
+
+    Some((
+        key,
+        CompileResult {
+            diagnostics: Vec::new(),
+            source_map: SourceMap::default(),
+            success: true,
+            output_path: Some(out_path.to_string_lossy().to_string()),
+            mir: None,
+            object_bytes: None,
+            llvm_ir: None,
+        },
+    ))
+}
+
+/// Best-effort: if the cache is enabled and the just-built artifact path is
+/// readable, capture its bytes into the cache for future runs.
+fn try_cache_store(source: &str, config: &BuildConfig, result: &CompileResult) {
+    if !config.use_cache || !cacheable_output(config.output_type) || !result.success {
+        return;
+    }
+    let Some(ref out) = result.output_path else {
+        return;
+    };
+    let Ok(bytes) = fs::read(out) else {
+        return;
+    };
+    let target = cache_target_str(config);
+    let ctx = CacheContext {
+        target_triple: &target,
+        build_mode: build_mode_str(config.mode),
+        output_type: output_type_str(config.output_type),
+        compiler_version: env!("CARGO_PKG_VERSION"),
+    };
+    let key = CacheKey::new(source, &ctx);
+    build_cache::store(&key, &bytes, &ctx);
+    if config.verbose {
+        eprintln!("[kryos] cache: stored {} ({} bytes)", key.as_filename(), bytes.len());
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Backend trait — codegen backends implement this
@@ -185,7 +317,22 @@ pub fn compile_file_with_backend(
         }
     };
 
-    compile_file_impl(&source, path, config, backend)
+    // 1a. Build-cache fast path. If the user opted in via `use_cache` and an
+    //     identical (source, target, mode, output_type, compiler_version)
+    //     entry is on disk, we restore the artifact directly and skip the
+    //     entire pipeline. Misses fall through silently to a fresh build.
+    if let Some((_key, hit)) = try_cache_hit(&source, config) {
+        return hit;
+    }
+
+    let result = compile_file_impl(&source, path, config, backend);
+
+    // 1b. On a successful build, capture the produced artifact for the next
+    //     time. Errors here are non-fatal — the cache is purely an
+    //     optimization.
+    try_cache_store(&source, config, &result);
+
+    result
 }
 
 /// Internal: compile a file with full import resolution support.

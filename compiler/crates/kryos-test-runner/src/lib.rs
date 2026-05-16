@@ -369,6 +369,7 @@ pub fn run_test_with(test: &TestCase, opts: RunOptions) -> TestResult {
                 skip_ownership: false,
                 lto: false,
                 debug_info: false,
+                use_cache: false,
             };
 
             let backend = CraneliftBackend::new();

@@ -58,6 +58,10 @@ pub struct BuildConfig {
     pub lto: bool,
     /// Emit DWARF debug info (`-g`).
     pub debug_info: bool,
+    /// Use the cross-build artifact cache to short-circuit repeated
+    /// invocations on the same `(source, target, mode, output_type)` tuple.
+    /// Default: false. Opt-in so existing call sites are unaffected.
+    pub use_cache: bool,
 }
 
 impl BuildConfig {
@@ -74,6 +78,7 @@ impl BuildConfig {
             skip_ownership: false,
             lto: false,
             debug_info: false,
+            use_cache: false,
         }
     }
 
@@ -90,6 +95,7 @@ impl BuildConfig {
             skip_ownership: false,
             lto: false,
             debug_info: false,
+            use_cache: false,
         }
     }
 

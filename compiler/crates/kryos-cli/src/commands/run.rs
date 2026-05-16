@@ -50,6 +50,7 @@ pub fn execute(file: &str, args: &[String]) -> Result<(), String> {
         skip_ownership: false,
         lto: false,
         debug_info: false,
+        use_cache: false,
     };
 
     // Compile first, then execute.

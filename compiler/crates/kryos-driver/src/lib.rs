@@ -14,6 +14,7 @@
 //! [`Backend`] trait and are provided at call time, so the driver crate can be
 //! built without pulling in Cranelift or LLVM.
 
+pub mod build_cache;
 pub mod config;
 pub mod pipeline;
 pub mod resolve;
