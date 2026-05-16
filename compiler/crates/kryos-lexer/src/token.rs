@@ -94,6 +94,7 @@ pub enum TokenKind {
     Tilde,
     Shl,
     Shr,
+    Hash,
 
     // --- Punctuation ---
     Arrow,
@@ -269,6 +270,7 @@ impl fmt::Display for TokenKind {
             Self::Tilde => "'~'",
             Self::Shl => "'<<'",
             Self::Shr => "'>>'",
+            Self::Hash => "'#'",
 
             // Punctuation
             Self::Arrow => "'->'",

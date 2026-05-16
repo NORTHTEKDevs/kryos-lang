@@ -213,6 +213,7 @@ impl<'src> Lexer<'src> {
             b',' => self.emit(TokenKind::Comma, start, self.pos, ",".into()),
             b'~' => self.emit(TokenKind::Tilde, start, self.pos, "~".into()),
             b'@' => self.emit(TokenKind::At, start, self.pos, "@".into()),
+            b'#' => self.emit(TokenKind::Hash, start, self.pos, "#".into()),
             b'^' => self.emit(TokenKind::Caret, start, self.pos, "^".into()),
             b'&' => self.emit(TokenKind::Amp, start, self.pos, "&".into()),
 

@@ -1716,6 +1716,11 @@ impl Parser {
             // Map literal: `{ key: value }`
             TokenKind::LBrace => self.parse_map_or_block_expr(),
 
+            // Explicit hashmap literal: `#{ key: value }` or `#{}`
+            // Disambiguates from a block expression when the body could be
+            // either (e.g. empty `{}` or single-line forms).
+            TokenKind::Hash => self.parse_hash_map_literal(),
+
             _ => {
                 let span = tok.span;
                 let token_text = if tok.text.is_empty() {
@@ -1996,6 +2001,22 @@ impl Parser {
             self.expect(TokenKind::RParen);
             first
         }
+    }
+
+    /// Parse `#{ key: value, ... }` or `#{}` — always a HashMap literal.
+    /// The leading `#` disambiguates from a block expression.
+    fn parse_hash_map_literal(&mut self) -> Expr {
+        let hash_tok = self.expect(TokenKind::Hash);
+        let lbrace = self.expect(TokenKind::LBrace);
+        let start = hash_tok.span.merge(lbrace.span);
+        if self.check(TokenKind::RBrace) {
+            let rbrace = self.expect(TokenKind::RBrace);
+            return Expr::MapLiteral {
+                entries: Vec::new(),
+                span: hash_tok.span.merge(rbrace.span),
+            };
+        }
+        self.parse_map_literal_body(start)
     }
 
     fn parse_map_or_block_expr(&mut self) -> Expr {
