@@ -1890,7 +1890,17 @@ impl TypeChecker {
                     self.env.push_scope();
                     self.bind_pattern(&arm.pattern, &subject_ty);
                     let arm_ty = self.infer_expr(&arm.body);
+                    // An arm body that diverges (always returns/throws) does
+                    // not contribute to the match expression's type.  This
+                    // lets the `?` operator desugar — whose Err arm is
+                    // `{ return Err(e) }` of type Void — coexist with an Ok
+                    // arm that yields the unwrapped value.
+                    let arm_diverges = arm_body_diverges(&arm.body);
                     self.env.pop_scope();
+
+                    if arm_diverges {
+                        continue;
+                    }
 
                     if let Some(ref first) = result_ty {
                         if let Err(diag) = self.engine.unify(first, &arm_ty, *span) {
@@ -3730,6 +3740,16 @@ fn block_returns(block: &Block) -> bool {
         stmt_returns(last)
     } else {
         false
+    }
+}
+
+/// Returns true if a match-arm body expression is guaranteed to
+/// diverge (return/throw on every path) and therefore should not
+/// contribute its type to the match expression's unified type.
+fn arm_body_diverges(body: &Expr) -> bool {
+    match body {
+        Expr::Block { block, .. } => block_returns(block),
+        _ => false,
     }
 }
 

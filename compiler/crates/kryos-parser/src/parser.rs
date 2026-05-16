@@ -78,6 +78,8 @@ pub struct Parser {
     /// Set while parsing conditions for `if`, `while`, `elif`, `for`, `match`
     /// so that `{` is treated as a block opener, not a struct-literal opener.
     no_struct_literal: bool,
+    /// Counter for parser-generated fresh names (e.g. `?` operator desugar).
+    fresh_counter: u64,
 }
 
 impl Parser {
@@ -87,7 +89,14 @@ impl Parser {
             pos: 0,
             diagnostics: Vec::new(),
             no_struct_literal: false,
+            fresh_counter: 0,
         }
+    }
+
+    fn fresh_name(&mut self, hint: &str) -> String {
+        let n = self.fresh_counter;
+        self.fresh_counter += 1;
+        format!("__kry_try_{}_{}", hint, n)
     }
 
     pub fn into_diagnostics(self) -> Vec<Diagnostic> {
@@ -1349,6 +1358,101 @@ impl Parser {
                 continue;
             }
 
+            // Postfix `?`: try operator for Result
+            //   expr?
+            // desugars to:
+            //   match expr {
+            //     Result::Ok(__kry_try_v_N) => __kry_try_v_N,
+            //     Result::Err(__kry_try_e_N) => { return Result.Err(__kry_try_e_N) }
+            //   }
+            // The Err arm is wrapped in a Block { return ... } so the early
+            // return fires regardless of where the `?` appears in the
+            // enclosing expression.
+            if kind == TokenKind::Question && POSTFIX_BP >= min_bp {
+                let q_span = self.peek().span;
+                self.advance(); // eat '?'
+                let inner_span = lhs.span();
+                let merged = inner_span.merge(q_span);
+                let v_name = self.fresh_name("v");
+                let e_name = self.fresh_name("e");
+
+                // Pattern: Result::Ok(__kry_try_v_N)
+                let ok_pat = Pattern::Enum {
+                    name: "Result".to_string(),
+                    variant: "Ok".to_string(),
+                    fields: vec![Pattern::Ident {
+                        name: v_name.clone(),
+                        mutable: false,
+                        span: q_span,
+                    }],
+                    span: q_span,
+                };
+                // Body: __kry_try_v_N
+                let ok_body = Expr::Identifier {
+                    name: v_name,
+                    span: q_span,
+                };
+
+                // Pattern: Result::Err(__kry_try_e_N)
+                let err_pat = Pattern::Enum {
+                    name: "Result".to_string(),
+                    variant: "Err".to_string(),
+                    fields: vec![Pattern::Ident {
+                        name: e_name.clone(),
+                        mutable: false,
+                        span: q_span,
+                    }],
+                    span: q_span,
+                };
+                // Build `Result.Err(__kry_try_e_N)` as a MethodCall — this
+                // matches how the parser shapes user-written enum variant
+                // construction (the type checker treats `Type.Variant(args)`
+                // specially via MethodCall, not FnCall(FieldAccess)).
+                let err_ctor = Expr::MethodCall {
+                    object: Box::new(Expr::Identifier {
+                        name: "Result".to_string(),
+                        span: q_span,
+                    }),
+                    method: "Err".to_string(),
+                    args: vec![Expr::Identifier {
+                        name: e_name,
+                        span: q_span,
+                    }],
+                    span: q_span,
+                };
+                // Body: { return Result.Err(__kry_try_e_N) }
+                let err_body = Expr::Block {
+                    block: Block {
+                        stmts: vec![Stmt::Return {
+                            value: Some(err_ctor),
+                            span: q_span,
+                        }],
+                        span: q_span,
+                    },
+                    span: q_span,
+                };
+
+                lhs = Expr::MatchExpr {
+                    subject: Box::new(lhs),
+                    arms: vec![
+                        MatchArm {
+                            pattern: ok_pat,
+                            guard: None,
+                            body: Box::new(ok_body),
+                            span: q_span,
+                        },
+                        MatchArm {
+                            pattern: err_pat,
+                            guard: None,
+                            body: Box::new(err_body),
+                            span: q_span,
+                        },
+                    ],
+                    span: merged,
+                };
+                continue;
+            }
+
             // Range operators (special: very low precedence, and both sides are optional)
             if (kind == TokenKind::DotDot || kind == TokenKind::DotDotEq) && min_bp <= 1 {
                 let inclusive = kind == TokenKind::DotDotEq;
@@ -2286,7 +2390,7 @@ impl Parser {
         let tok = self.peek().clone();
         match tok.kind {
             // Optional: `?T`
-            TokenKind::Ident if tok.text == "?" => {
+            TokenKind::Question => {
                 self.advance();
                 let inner = self.parse_type();
                 let end = inner.span();

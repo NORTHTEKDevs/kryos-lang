@@ -95,6 +95,7 @@ pub enum TokenKind {
     Shl,
     Shr,
     Hash,
+    Question,
 
     // --- Punctuation ---
     Arrow,
@@ -271,6 +272,7 @@ impl fmt::Display for TokenKind {
             Self::Shl => "'<<'",
             Self::Shr => "'>>'",
             Self::Hash => "'#'",
+            Self::Question => "'?'",
 
             // Punctuation
             Self::Arrow => "'->'",
