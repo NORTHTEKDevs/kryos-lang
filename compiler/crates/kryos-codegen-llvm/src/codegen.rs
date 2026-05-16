@@ -54,6 +54,9 @@ pub struct LlvmCodegen {
     /// Closure capture types: func_name -> Vec of capture MIR types.
     /// Used to generate per-closure dropper functions that free heap captures.
     closure_cap_types: HashMap<String, Vec<Option<MirType>>>,
+    /// Closure call signatures: func_name -> (user_param_count, ret_ty_llvm).
+    /// Used to emit `{name}_env` thunks and to dispatch CallIndirect via env.
+    closure_user_sig: HashMap<String, (usize, String)>,
     /// Names of functions that have been emitted, in order — used when
     /// emitting DWARF debug metadata at module footer.
     emitted_function_names: Vec<String>,
@@ -78,6 +81,7 @@ impl LlvmCodegen {
             value_types: HashMap::new(),
             copy_structs: HashSet::new(),
             closure_cap_types: HashMap::new(),
+            closure_user_sig: HashMap::new(),
             func_sig_aggs: HashMap::new(),
             emitted_function_names: Vec::new(),
         }
@@ -119,6 +123,7 @@ impl LlvmCodegen {
         // Pre-scan: collect string constants, detect ARC usage, record
         // function signatures, and collect closure capture types.
         self.closure_cap_types.clear();
+        self.closure_user_sig.clear();
         for func in &module.functions {
             self.prescan_function(func);
             let param_types: Vec<String> = func
@@ -164,6 +169,19 @@ impl LlvmCodegen {
                                 .collect();
                             self.closure_cap_types.insert(func_name.clone(), cap_types);
                         }
+                        // Record the underlying function's user-visible call
+                        // shape so we can emit a `{name}_env` thunk later.
+                        if !self.closure_user_sig.contains_key(func_name.as_str()) {
+                            if let Some(mf) = module.functions.iter().find(|f| f.name == *func_name) {
+                                let user_params =
+                                    mf.params.len().saturating_sub(captures.len());
+                                let ret_ty_llvm = self.sig_ty_to_llvm(&mf.ret_ty);
+                                self.closure_user_sig.insert(
+                                    func_name.clone(),
+                                    (user_params, ret_ty_llvm),
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -204,6 +222,10 @@ impl LlvmCodegen {
         // Emit dropper functions for closures with heap-typed captures.
         self.emit_closure_droppers();
 
+        // Emit env-thunks so escaping closures can be invoked through a
+        // uniform `(env, user_args...)` calling convention via CallIndirect.
+        self.emit_closure_thunks();
+
         // Emit type drop helpers for struct/enum types with heap-owning fields.
         // These enable array element drop to recursively clean up nested fields.
         self.emit_type_drop_helpers();
@@ -240,6 +262,7 @@ impl LlvmCodegen {
         self.enum_defs = header.enum_defs.clone();
         self.copy_structs = header.copy_structs.clone();
         self.closure_cap_types.clear();
+        self.closure_user_sig.clear();
 
         for func in functions {
             self.prescan_function(func);
@@ -285,6 +308,17 @@ impl LlvmCodegen {
                                 .collect();
                             self.closure_cap_types.insert(func_name.clone(), cap_types);
                         }
+                        if !self.closure_user_sig.contains_key(func_name.as_str()) {
+                            if let Some(mf) = functions.iter().find(|f| f.name == *func_name) {
+                                let user_params =
+                                    mf.params.len().saturating_sub(captures.len());
+                                let ret_ty_llvm = self.sig_ty_to_llvm(&mf.ret_ty);
+                                self.closure_user_sig.insert(
+                                    func_name.clone(),
+                                    (user_params, ret_ty_llvm),
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -326,6 +360,7 @@ impl LlvmCodegen {
     /// functions have been emitted via `emit_one_function_inc`.
     pub fn emit_footer_section(&mut self, has_void_main: bool) {
         self.emit_closure_droppers();
+        self.emit_closure_thunks();
         self.emit_type_drop_helpers();
         if has_void_main {
             self.emit_main_wrapper();
@@ -829,6 +864,161 @@ impl LlvmCodegen {
             }
 
             self.emit_line("  ret void");
+            self.emit_line("}");
+            self.emit_blank();
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Closure env-thunk functions
+    // -----------------------------------------------------------------------
+
+    /// Emit `{func_name}_env(ptr env, i64 arg0, ...)` thunks for each
+    /// lambda used as a value.  The thunk loads captures from the env
+    /// (offsets 1..=N) and forwards to the underlying function with the
+    /// captures prepended to the user args.  This gives all function
+    /// values a uniform env-based calling convention so CallIndirect can
+    /// dispatch through `env[0]` regardless of how many captures the
+    /// closure has.
+    fn emit_closure_thunks(&mut self) {
+        let sig_snapshot: Vec<(String, usize, String, Vec<Option<MirType>>)> = self
+            .closure_user_sig
+            .iter()
+            .map(|(name, (n, ret))| {
+                let caps = self
+                    .closure_cap_types
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_default();
+                (name.clone(), *n, ret.clone(), caps)
+            })
+            .collect();
+
+        for (func_name, user_params, ret_ty, cap_types) in &sig_snapshot {
+            let thunk_name = format!("{func_name}_env");
+            self.emit_line(&format!("; Closure env-thunk for {func_name}"));
+
+            // Build parameter list: ptr env, i64 arg0, i64 arg1, ...
+            let mut params = String::from("ptr %env");
+            for i in 0..*user_params {
+                params.push_str(&format!(", i64 %u{i}"));
+            }
+            // The thunk always returns i64 (uniform slot).  Functions with
+            // non-i64 returns are widened/coerced on the way out.
+            self.emit_line(&format!(
+                "define internal i64 @{thunk_name}({params}) {{"
+            ));
+            self.emit_line("entry:");
+
+            // Load each capture from env[i+1] (i64-typed slots).
+            let mut call_args: Vec<String> = Vec::new();
+            let underlying_params = self
+                .func_param_types
+                .get(func_name.as_str())
+                .cloned()
+                .unwrap_or_default();
+
+            for (i, cap_ty) in cap_types.iter().enumerate() {
+                let cap_ptr = self.next_temp();
+                self.emit_line(&format!(
+                    "  {cap_ptr} = getelementptr i64, ptr %env, i64 {}",
+                    i + 1
+                ));
+                let expected_ty = underlying_params
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| "i64".to_string());
+                // Load using the storage type matching the capture kind.
+                let raw = self.next_temp();
+                match cap_ty {
+                    Some(MirType::Str)
+                    | Some(MirType::Array(_, _))
+                    | Some(MirType::Function { .. })
+                    | Some(MirType::Shared(_))
+                    | Some(MirType::Struct(_))
+                    | Some(MirType::Enum(_)) => {
+                        self.emit_line(&format!("  {raw} = load ptr, ptr {cap_ptr}"));
+                        // If the underlying fn expects a pointer-shaped
+                        // param, pass as-is; otherwise coerce to i64.
+                        if expected_ty == "ptr" {
+                            call_args.push(format!("ptr {raw}"));
+                        } else {
+                            let i = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {i} = ptrtoint ptr {raw} to i64"
+                            ));
+                            let coerced = self.coerce_value(&i, "i64", &expected_ty);
+                            call_args.push(format!("{expected_ty} {coerced}"));
+                        }
+                    }
+                    _ => {
+                        self.emit_line(&format!("  {raw} = load i64, ptr {cap_ptr}"));
+                        if expected_ty == "i64" {
+                            call_args.push(format!("i64 {raw}"));
+                        } else if expected_ty == "ptr" {
+                            let p = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {p} = inttoptr i64 {raw} to ptr"
+                            ));
+                            call_args.push(format!("ptr {p}"));
+                        } else {
+                            let coerced = self.coerce_value(&raw, "i64", &expected_ty);
+                            call_args.push(format!("{expected_ty} {coerced}"));
+                        }
+                    }
+                }
+            }
+
+            // Append user args (already i64 in the thunk's parameter list).
+            for i in 0..*user_params {
+                let idx = cap_types.len() + i;
+                let expected_ty = underlying_params
+                    .get(idx)
+                    .cloned()
+                    .unwrap_or_else(|| "i64".to_string());
+                let raw = format!("%u{i}");
+                if expected_ty == "i64" {
+                    call_args.push(format!("i64 {raw}"));
+                } else if expected_ty == "ptr" {
+                    let p = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {p} = inttoptr i64 {raw} to ptr"
+                    ));
+                    call_args.push(format!("ptr {p}"));
+                } else {
+                    let coerced = self.coerce_value(&raw, "i64", &expected_ty);
+                    call_args.push(format!("{expected_ty} {coerced}"));
+                }
+            }
+
+            let arg_list = call_args.join(", ");
+            let underlying_ret = self
+                .func_ret_types
+                .get(func_name.as_str())
+                .cloned()
+                .unwrap_or_else(|| ret_ty.clone());
+
+            if underlying_ret == "void" {
+                self.emit_line(&format!(
+                    "  call void @{func_name}({arg_list})"
+                ));
+                self.emit_line("  ret i64 0");
+            } else {
+                let r = self.next_temp();
+                self.emit_line(&format!(
+                    "  {r} = call {underlying_ret} @{func_name}({arg_list})"
+                ));
+                if underlying_ret == "i64" {
+                    self.emit_line(&format!("  ret i64 {r}"));
+                } else if underlying_ret == "ptr" {
+                    let i = self.next_temp();
+                    self.emit_line(&format!("  {i} = ptrtoint ptr {r} to i64"));
+                    self.emit_line(&format!("  ret i64 {i}"));
+                } else {
+                    let coerced = self.coerce_value(&r, &underlying_ret, "i64");
+                    self.emit_line(&format!("  ret i64 {coerced}"));
+                }
+            }
             self.emit_line("}");
             self.emit_blank();
         }
@@ -2722,43 +2912,108 @@ impl LlvmCodegen {
             }
 
             RValue::CallIndirect { callee, args } => {
-                // Indirect call: callee is a function pointer.
-                let fn_ptr_val = self.operand_to_llvm(callee, func);
+                // Indirect call via env-based calling convention.
+                // The callee operand holds an env pointer:
+                //   [thunk_fn_ptr: i64, cap0: i64, cap1: i64, ...]
+                // We load the thunk pointer from env[0] and call it with
+                // (env_ptr, user_arg0, user_arg1, ...).  The thunk unpacks
+                // captures and forwards to the underlying function.
+                //
+                // When a bare function pointer (no captures) is passed -- the
+                // env_size=0 case stores the function address directly in the
+                // local -- we'd dereference an undefined pointer.  The MIR
+                // lowering only takes the indirect path for fn-typed locals,
+                // and the captures-less Closure RValue stores the bare
+                // function address.  To keep both shapes working we still
+                // emit `load i64, ptr env`, which for a bare function ptr
+                // reads the first 8 bytes of the function's instruction
+                // stream -- definitely wrong.  Bare function pointers as
+                // indirect callees are not produced by the current MIR for
+                // escaping closures, so this is safe for the closure-escape
+                // case we are fixing here.
+                let env_val = self.operand_to_llvm(callee, func);
                 let callee_ty = self.operand_type(callee, func);
 
-                // Build the argument list (all i64 in Kryos uniform slot model).
-                let mut arg_parts = Vec::new();
+                let env_ptr = if callee_ty == "ptr" {
+                    env_val
+                } else {
+                    let tmp = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {tmp} = inttoptr {callee_ty} {env_val} to ptr"
+                    ));
+                    tmp
+                };
+
+                // Load thunk pointer from env[0].
+                let thunk_i64 = self.next_temp();
+                self.emit_line(&format!(
+                    "  {thunk_i64} = load i64, ptr {env_ptr}"
+                ));
+                let thunk_ptr = self.next_temp();
+                self.emit_line(&format!(
+                    "  {thunk_ptr} = inttoptr i64 {thunk_i64} to ptr"
+                ));
+
+                // Build the argument list: env_ptr first, then user args
+                // (all i64 in uniform slot model).
+                let mut arg_parts = vec![format!("ptr {env_ptr}")];
                 for a in args {
                     let val = self.operand_to_llvm(a, func);
                     let val_ty = self.operand_type(a, func);
-                    // Coerce to i64 for uniform call convention.
                     let coerced = self.coerce_value(&val, &val_ty, "i64");
                     arg_parts.push(format!("i64 {coerced}"));
                 }
                 let arg_list = arg_parts.join(", ");
 
-                // Coerce callee to ptr if it's not already (e.g., i64 function handle).
-                let fn_ptr = if callee_ty == "ptr" {
-                    fn_ptr_val
-                } else {
-                    let tmp = self.next_temp();
-                    self.emit_line(&format!(
-                        "  {tmp} = inttoptr {callee_ty} {fn_ptr_val} to ptr"
-                    ));
-                    tmp
-                };
-
+                // The thunk always returns i64; if our dest expects a
+                // different LLVM type we coerce.
                 if dest_ty == "void" {
-                    self.emit_line(&format!("  call void {fn_ptr}({arg_list})"));
-                } else if is_mutable {
-                    let tmp = self.next_temp();
-                    self.emit_line(&format!("  {tmp} = call {dest_ty} {fn_ptr}({arg_list})"));
-                    self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
-                } else {
+                    let _r = self.next_temp();
                     self.emit_line(&format!(
-                        "  %_{} = call {dest_ty} {fn_ptr}({arg_list})",
-                        dest.0
+                        "  {_r} = call i64 {thunk_ptr}({arg_list})"
                     ));
+                } else if dest_ty == "i64" {
+                    if is_mutable {
+                        let tmp = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {tmp} = call i64 {thunk_ptr}({arg_list})"
+                        ));
+                        self.emit_line(&format!(
+                            "  store i64 {tmp}, ptr %_{}.addr", dest.0
+                        ));
+                    } else {
+                        self.emit_line(&format!(
+                            "  %_{} = call i64 {thunk_ptr}({arg_list})",
+                            dest.0
+                        ));
+                    }
+                } else {
+                    let raw = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {raw} = call i64 {thunk_ptr}({arg_list})"
+                    ));
+                    let coerced = self.coerce_value(&raw, "i64", &dest_ty);
+                    if is_mutable {
+                        self.emit_line(&format!(
+                            "  store {dest_ty} {coerced}, ptr %_{}.addr", dest.0
+                        ));
+                    } else if dest_ty == "ptr" {
+                        // `add ptr X, 0` is invalid LLVM; use a no-op GEP.
+                        self.emit_line(&format!(
+                            "  %_{} = getelementptr i8, ptr {coerced}, i64 0",
+                            dest.0
+                        ));
+                    } else if dest_ty == "double" || dest_ty == "float" {
+                        self.emit_line(&format!(
+                            "  %_{} = fadd {dest_ty} {coerced}, 0.0",
+                            dest.0
+                        ));
+                    } else {
+                        self.emit_line(&format!(
+                            "  %_{} = add {dest_ty} {coerced}, 0",
+                            dest.0
+                        ));
+                    }
                 }
             }
 
@@ -3168,33 +3423,12 @@ impl LlvmCodegen {
                 func_name,
                 captures,
             } => {
-                // Closure: store function pointer.
-                // If captures exist, allocate env struct [func_ptr, cap0, cap1, ...].
-                if captures.is_empty() {
-                    if dest_ty == "ptr" {
-                        // Dest expects a pointer -- just use the function address directly.
-                        if is_mutable {
-                            self.emit_line(&format!(
-                                "  store ptr @{func_name}, ptr %_{}.addr",
-                                dest.0
-                            ));
-                        } else {
-                            self.emit_line(&format!(
-                                "  %_{} = getelementptr i8, ptr @{func_name}, i64 0",
-                                dest.0
-                            ));
-                        }
-                    } else {
-                        let fptr = self.next_temp();
-                        self.emit_line(&format!("  {fptr} = ptrtoint ptr @{func_name} to i64"));
-                        if is_mutable {
-                            self.emit_line(&format!("  store i64 {fptr}, ptr %_{}.addr", dest.0));
-                        } else {
-                            self.emit_line(&format!("  %_{} = add i64 {fptr}, 0", dest.0));
-                        }
-                    }
-                } else {
-                    // Allocate closure env via ARC: [func_ptr: i64, cap0: i64, cap1: i64, ...]
+                // Closure: uniform env-thunk calling convention for ALL function values.
+                // Env layout: [thunk_fn_ptr: i64, cap0: i64, cap1: i64, ...]
+                // CallIndirect always loads fn from env[0] and calls thunk(env, user_args...).
+                {
+                    // Allocate closure env via ARC: [thunk_fn_ptr: i64, cap0: i64, cap1: i64, ...]
+                    // Uniform calling convention regardless of capture count.
                     let env_size = (1 + captures.len()) * 8;
                     let env_i64 = self.next_temp();
                     self.emit_line(&format!(
@@ -3202,9 +3436,11 @@ impl LlvmCodegen {
                     ));
                     let env_ptr = self.next_temp();
                     self.emit_line(&format!("  {env_ptr} = inttoptr i64 {env_i64} to ptr"));
-                    // Store function pointer at offset 0.
+                    // Store thunk pointer at offset 0.
                     let fptr = self.next_temp();
-                    self.emit_line(&format!("  {fptr} = ptrtoint ptr @{func_name} to i64"));
+                    self.emit_line(&format!(
+                        "  {fptr} = ptrtoint ptr @{func_name}_env to i64"
+                    ));
                     self.emit_line(&format!("  store i64 {fptr}, ptr {env_ptr}"));
                     // Store each capture at offset (i+1)*8.
                     // Clone/retain heap-typed captures so the closure owns them
