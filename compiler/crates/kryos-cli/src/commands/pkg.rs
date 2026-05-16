@@ -453,6 +453,92 @@ pub fn info(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `kryos pkg outdated` — list locked packages that have newer versions
+/// available in the registry index.
+pub fn outdated() -> Result<(), String> {
+    let lock_path = Path::new("kryos.lock");
+    if !lock_path.exists() {
+        return Err(
+            "no kryos.lock found — run `kryos pkg update` or `kryos pkg install` first"
+                .to_string(),
+        );
+    }
+
+    let lock = kryos_package::LockFile::from_file(lock_path)
+        .map_err(|e| format!("failed to read kryos.lock: {e}"))?;
+
+    if lock.packages.is_empty() {
+        eprintln!("no locked packages");
+        return Ok(());
+    }
+
+    let client = kryos_package::RegistryClient::new();
+    let mut outdated_count: usize = 0;
+    let mut unknown_count: usize = 0;
+    let mut current_count: usize = 0;
+
+    eprintln!("checking {} locked package(s) against registry...", lock.packages.len());
+
+    // Print header for the table.
+    eprintln!("{:<28} {:<14} {:<14}", "PACKAGE", "INSTALLED", "LATEST");
+
+    for entry in &lock.packages {
+        // Skip path-source entries — they don't have a registry counterpart.
+        if entry.source.starts_with("path:") {
+            eprintln!("{:<28} {:<14} {:<14}", entry.name, entry.version, "(path)");
+            continue;
+        }
+
+        match client.lookup(&entry.name) {
+            Ok(Some(entries)) => {
+                if let Some(latest) = entries.last() {
+                    let latest_v = latest.version.to_string();
+                    if latest_v != entry.version {
+                        outdated_count += 1;
+                        eprintln!(
+                            "{:<28} {:<14} {:<14} (outdated)",
+                            entry.name, entry.version, latest_v
+                        );
+                    } else {
+                        current_count += 1;
+                        eprintln!(
+                            "{:<28} {:<14} {:<14}",
+                            entry.name, entry.version, latest_v
+                        );
+                    }
+                } else {
+                    unknown_count += 1;
+                    eprintln!(
+                        "{:<28} {:<14} {:<14}",
+                        entry.name, entry.version, "(no versions)"
+                    );
+                }
+            }
+            Ok(None) => {
+                unknown_count += 1;
+                eprintln!(
+                    "{:<28} {:<14} {:<14}",
+                    entry.name, entry.version, "(not in index)"
+                );
+            }
+            Err(e) => {
+                unknown_count += 1;
+                eprintln!("{:<28} {:<14} (lookup error: {e})", entry.name, entry.version);
+            }
+        }
+    }
+
+    eprintln!();
+    eprintln!(
+        "summary: {current_count} up-to-date, {outdated_count} outdated, {unknown_count} unknown"
+    );
+    if outdated_count > 0 {
+        eprintln!("run `kryos pkg update` to refresh kryos.lock");
+    }
+
+    Ok(())
+}
+
 /// `kryos pkg sync` — sync the registry index.
 pub fn sync() -> Result<(), String> {
     eprintln!("syncing registry index...");

@@ -234,6 +234,9 @@ enum PkgAction {
 
     /// Sync the registry index
     Sync,
+
+    /// List locked packages with newer versions available
+    Outdated,
 }
 
 fn main() {
@@ -331,6 +334,7 @@ fn main() {
             PkgAction::Search { query } => commands::pkg::search(&query),
             PkgAction::Info { name } => commands::pkg::info(&name),
             PkgAction::Sync => commands::pkg::sync(),
+            PkgAction::Outdated => commands::pkg::outdated(),
         },
 
         Commands::Lsp => commands::lsp::execute(),
