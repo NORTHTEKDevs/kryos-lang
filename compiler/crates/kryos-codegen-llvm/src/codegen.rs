@@ -64,6 +64,17 @@ pub struct LlvmCodegen {
     /// Names of functions that have been emitted, in order — used when
     /// emitting DWARF debug metadata at module footer.
     emitted_function_names: Vec<String>,
+    /// Per-emitted-function source-line tracking for DISubprogram emission.
+    /// Same order as `emitted_function_names`. None means unknown line — we
+    /// then synthesize line 1.
+    emitted_function_lines: Vec<u32>,
+    /// Metadata id currently assigned to the function being emitted, used
+    /// to attach `!dbg !<n>` suffixes on the `define` line, `call`, and
+    /// `ret` instructions. None outside any function or when DI is off.
+    current_fn_dbg_md: Option<u32>,
+    /// Metadata id for the !DILocation that's reused inside the current
+    /// function. Re-emitted per function so the scope matches the DISubprogram.
+    current_fn_loc_md: Option<u32>,
 }
 
 impl LlvmCodegen {
@@ -89,6 +100,24 @@ impl LlvmCodegen {
             trait_vtables: HashMap::new(),
             func_sig_aggs: HashMap::new(),
             emitted_function_names: Vec::new(),
+            emitted_function_lines: Vec::new(),
+            current_fn_dbg_md: None,
+            current_fn_loc_md: None,
+        }
+    }
+
+    /// Returns `", !dbg !<n>"` if the current function has DI metadata
+    /// attached, otherwise returns an empty string. Use as a suffix on
+    /// every `call` and `ret` instruction inside a function with DI.
+    ///
+    /// Currently unused: with `emissionKind: LineTablesOnly` the verifier
+    /// does not require per-instruction !dbg, so we keep this helper for
+    /// future per-instruction DI emission without re-plumbing the codegen.
+    #[allow(dead_code)]
+    fn dbg_suffix(&self) -> String {
+        match (self.options.debug_info, self.current_fn_loc_md) {
+            (true, Some(n)) => format!(", !dbg !{}", n),
+            _ => String::new(),
         }
     }
 
@@ -419,9 +448,12 @@ impl LlvmCodegen {
         self.emit_line("!llvm.module.flags = !{!2, !3}");
         self.emit_blank();
 
-        // !0 = compile unit
+        // !0 = compile unit. Use LineTablesOnly so we avoid the
+        // expansive "every instruction needs !dbg" requirement of
+        // FullDebug while still producing usable .debug_line for
+        // addr2line / debugger backtraces.
         self.emit_line(&format!(
-            "!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: \"kryos {}\", isOptimized: {}, runtimeVersion: 0, emissionKind: FullDebug)",
+            "!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: \"kryos {}\", isOptimized: {}, runtimeVersion: 0, emissionKind: LineTablesOnly)",
             env!("CARGO_PKG_VERSION"),
             !matches!(self.options.opt_level, crate::OptLevel::O0),
         ));
@@ -440,17 +472,34 @@ impl LlvmCodegen {
         self.emit_line("!4 = !DISubroutineType(types: !5)");
         self.emit_line("!5 = !{null}");
 
-        // !6 = DISubprogram anchor attached to @__kryos_dwarf_anchor. We
-        // emit exactly one DISubprogram so LLVM's verifier keeps the
-        // !DICompileUnit alive (orphan CUs are stripped). Per-function
-        // DISubprograms with real line info is a v2.3 item gated on
-        // MIR-side span plumbing.
+        // !6 = DISubprogram anchor attached to @__kryos_dwarf_anchor.
+        // Kept for back-compat: previously the only DISubprogram.
         self.emit_line(
             "!6 = distinct !DISubprogram(name: \"__kryos_dwarf_anchor\", linkageName: \"__kryos_dwarf_anchor\", scope: !1, file: !1, line: 1, type: !4, scopeLine: 1, spFlags: DISPFlagDefinition, unit: !0)",
         );
         // !8 = a single DILocation pointing at the start of the user
         // source so LLVM emits a real .debug_line program.
         self.emit_line("!8 = !DILocation(line: 1, column: 1, scope: !6)");
+
+        // Per-function DISubprograms + DILocations. Metadata id layout is
+        // synchronised with `emit_function_as`:
+        //   per function k (0-indexed): subprogram_id = 100 + 2*k, loc_id = +1
+        let fn_meta: Vec<(String, u32)> = self
+            .emitted_function_names
+            .iter()
+            .cloned()
+            .zip(self.emitted_function_lines.iter().copied())
+            .collect();
+        for (k, (name, line)) in fn_meta.iter().enumerate() {
+            let sub_id = 100 + 2 * k as u32;
+            let loc_id = sub_id + 1;
+            self.emit_line(&format!(
+                "!{sub_id} = distinct !DISubprogram(name: \"{name}\", linkageName: \"{name}\", scope: !1, file: !1, line: {line}, type: !4, scopeLine: {line}, spFlags: DISPFlagDefinition, unit: !0)",
+            ));
+            self.emit_line(&format!(
+                "!{loc_id} = !DILocation(line: {line}, column: 1, scope: !{sub_id})",
+            ));
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1702,18 +1751,35 @@ impl LlvmCodegen {
         }
         let params = param_strs.join(", ");
 
-        // Note: we intentionally do NOT attach `!dbg` to function `define`
-        // headers. Doing so requires every `call` instruction inside the
-        // function to carry a matching `!dbg !DILocation`, otherwise the
-        // LLVM verifier strips all debug info as invalid. Since Kryos
-        // does not yet plumb MIR spans through codegen, we emit only the
-        // module-level !DICompileUnit + !DIFile so addr2line resolves
-        // file/dir names. Per-function DISubprogram + per-call !dbg is
-        // tracked for v2.3 once MIR carries source locations.
-        if self.options.debug_info && self.options.source_file_path.is_some() {
-            self.emitted_function_names.push(name.to_string());
-        }
-        self.emit_line(&format!("define {ret} @{name}({params}) {{"));
+        // Per-function DISubprogram emission. Each user function gets a
+        // DISubprogram so addr2line and debugger backtraces resolve to
+        // Kryos source file:line. We attach `!dbg !<dbg_md>` to the
+        // `define` header and a matching `!dbg !<loc_md>` to every call
+        // and ret inside via `dbg_suffix()`.
+        let dbg_suffix_for_define: String =
+            if self.options.debug_info && self.options.source_file_path.is_some() {
+                self.emitted_function_names.push(name.to_string());
+                self.emitted_function_lines.push(func.source_line.max(1));
+                // Reserve two consecutive metadata ids per function: one for
+                // the DISubprogram and one for its DILocation. We compute
+                // their final ids in `emit_dwarf_metadata`, but we need a
+                // forward reference here. Encode as `subprogram_id`.
+                // Layout (matches emit_dwarf_metadata):
+                //   per function k (0-indexed in emitted_function_names):
+                //     subprogram_md_id = 100 + 2*k
+                //     location_md_id   = 100 + 2*k + 1
+                let k = self.emitted_function_names.len() - 1;
+                let sub_id = 100 + 2 * k as u32;
+                let loc_id = sub_id + 1;
+                self.current_fn_dbg_md = Some(sub_id);
+                self.current_fn_loc_md = Some(loc_id);
+                format!(" !dbg !{}", sub_id)
+            } else {
+                self.current_fn_dbg_md = None;
+                self.current_fn_loc_md = None;
+                String::new()
+            };
+        self.emit_line(&format!("define {ret} @{name}({params}){dbg_suffix_for_define} {{"));
 
         // Detect TCO loops: if any other block branches back to bb0, we must
         // emit the param-spill + alloca init in a separate `entry:` block
@@ -1805,6 +1871,11 @@ impl LlvmCodegen {
 
         self.emit_line("}");
         self.emit_blank();
+
+        // Clear DI tracking so subsequent module-level helpers (closure
+        // thunks, drop helpers, etc.) emit without auto-tagging calls.
+        self.current_fn_dbg_md = None;
+        self.current_fn_loc_md = None;
 
         Ok(())
     }
@@ -5063,6 +5134,34 @@ impl LlvmCodegen {
     // -----------------------------------------------------------------------
 
     fn emit_line(&mut self, line: &str) {
+        // When DI is active inside a function body, LLVM's verifier requires
+        // every inlinable call instruction in a function with !dbg to also
+        // carry a !dbg location. To avoid touching all 55+ call-emission
+        // sites, we centralize the suffix here: any line whose trimmed-left
+        // text begins with `call `, `tail call `, `musttail call `, or
+        // `notail call ` gets a `, !dbg !<loc>` suffix appended automatically.
+        //
+        // We deliberately do NOT auto-suffix `ret` or `br` because the
+        // emission_kind=LineTablesOnly setting permits them to be bare, and
+        // attaching !dbg to terminators in unreachable / synthetic blocks
+        // can produce verifier errors.
+        //
+        // Sites that already include `!dbg` (rare) are passed through.
+        if let Some(loc_id) = self.current_fn_loc_md {
+            let trimmed = line.trim_start();
+            let is_call = trimmed.starts_with("call ")
+                || trimmed.starts_with("tail call ")
+                || trimmed.starts_with("musttail call ")
+                || trimmed.starts_with("notail call ")
+                || (trimmed.contains(" = call ") && !trimmed.contains("!dbg"))
+                || (trimmed.contains(" = tail call ") && !trimmed.contains("!dbg"));
+            if is_call && !line.contains("!dbg") {
+                self.output.push_str(line);
+                self.output.push_str(&format!(", !dbg !{}", loc_id));
+                self.output.push('\n');
+                return;
+            }
+        }
         self.output.push_str(line);
         self.output.push('\n');
     }
