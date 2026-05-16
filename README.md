@@ -2,10 +2,12 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-843%20passing-brightgreen.svg)](#status)
-[![Release](https://img.shields.io/badge/release-v1.1.0-orange.svg)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-v1.9.0-orange.svg)](CHANGELOG.md)
 [![Targets](https://img.shields.io/badge/targets-native%20%7C%20wasm-purple.svg)](#targets)
 
 A compiled, general-purpose systems language with ownership-based memory safety, capability enforcement, and three codegen targets: Cranelift (fast dev), LLVM (optimized native), and WebAssembly (browser/WASI). Solo-built with AI assistance.
+
+**v1.9.0** — LLVM backend now production-ready. `kryos build --release` produces native code that **matches Rust `--release`** and beats Go on CPU-bound workloads. See [BENCHMARKS.md](BENCHMARKS.md) for honest head-to-head numbers across 6 benchmarks and 7 language/backend combinations.
 
 **v1.1.0** -- 843 tests passing + new WebAssembly backend. Kryos programs now compile to native binaries *and* to `.wasm` modules that run in browsers and WASI hosts. The TCP stack no longer serializes connections through a global mutex, so spawned worker threads can handle requests concurrently.
 

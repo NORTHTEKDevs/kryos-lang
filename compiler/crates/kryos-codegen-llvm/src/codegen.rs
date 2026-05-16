@@ -490,6 +490,18 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_ipow(i64, i64)");
         self.emit_line("declare double @kryos_fpow(double, double)");
         self.emit_line("declare double @kryos_fmod(double, double)");
+        // C math functions (used by sqrt, floor, ceil, sin, cos, etc. builtins)
+        self.emit_line("declare double @sqrt(double)");
+        self.emit_line("declare double @floor(double)");
+        self.emit_line("declare double @ceil(double)");
+        self.emit_line("declare double @round(double)");
+        self.emit_line("declare double @sin(double)");
+        self.emit_line("declare double @cos(double)");
+        self.emit_line("declare double @tan(double)");
+        self.emit_line("declare double @log(double)");
+        self.emit_line("declare double @log2(double)");
+        self.emit_line("declare double @log10(double)");
+        self.emit_line("declare double @fabs(double)");
         self.emit_line("declare i64 @kryos_i64_to_string(i64)");
         self.emit_line("declare i64 @kryos_f64_to_string(double)");
         self.emit_line("declare i64 @kryos_bool_to_string(i64)");
@@ -1884,7 +1896,9 @@ impl LlvmCodegen {
                     }
 
                     // Look up the callee's parameter types for type-correct emission.
-                    let callee_param_types = self.func_param_types.get(fname.as_str()).cloned();
+                    // Fall back to known runtime function signatures when not in the user-defined table.
+                    let callee_param_types = self.func_param_types.get(fname.as_str()).cloned()
+                        .or_else(|| runtime_param_types(fname.as_str()));
 
                     let mut arg_parts = Vec::new();
                     for (i, a) in args.iter().enumerate() {
@@ -2356,6 +2370,10 @@ impl LlvmCodegen {
                             let t = self.next_temp();
                             self.emit_line(&format!("  {t} = inttoptr i64 {raw} to ptr"));
                             t
+                        } else if dest_ty == "double" {
+                            let t = self.next_temp();
+                            self.emit_line(&format!("  {t} = bitcast i64 {raw} to double"));
+                            t
                         } else {
                             raw
                         };
@@ -2365,6 +2383,9 @@ impl LlvmCodegen {
                         ));
                     } else if dest_ty == "ptr" {
                         self.emit_line(&format!("  %_{} = inttoptr i64 {raw} to ptr", dest.0));
+                    } else if dest_ty == "double" {
+                        // Float array element: stored as i64 bits, must bitcast back to double.
+                        self.emit_line(&format!("  %_{} = bitcast i64 {raw} to double", dest.0));
                     } else {
                         // Identity: use add 0 for integer types.
                         self.emit_line(&format!("  %_{} = add {dest_ty} {raw}, 0", dest.0));
@@ -4185,4 +4206,27 @@ fn llvm_escape_string(s: &str) -> String {
         }
     }
     out
+}
+
+/// Return the known LLVM parameter types for Kryos runtime functions.
+/// These are used to coerce arguments correctly when calling runtime functions
+/// that are not in the user-defined function table (func_param_types).
+fn runtime_param_types(fname: &str) -> Option<Vec<String>> {
+    match fname {
+        // kryos_array_set(ptr arr, i64 idx, i64 val) -> void
+        // Values are stored as raw i64 bits (floats bitcast to i64).
+        "kryos_array_set" => Some(vec!["ptr".into(), "i64".into(), "i64".into()]),
+        // kryos_array_push(ptr arr, i64 val) -> void
+        "kryos_array_push" => Some(vec!["ptr".into(), "i64".into()]),
+        // kryos_array_get(ptr arr, i64 idx) -> i64
+        "kryos_array_get" => Some(vec!["ptr".into(), "i64".into()]),
+        // kryos_map_insert(i64 map, i64 key, i64 val) -> void
+        "kryos_map_insert" => Some(vec!["i64".into(), "i64".into(), "i64".into()]),
+        // kryos_map_get(i64 map, i64 key) -> i64
+        "kryos_map_get" => Some(vec!["i64".into(), "i64".into()]),
+        // C math functions — single double argument
+        "sqrt" | "floor" | "ceil" | "round" | "sin" | "cos" | "tan"
+        | "log" | "log2" | "log10" | "fabs" => Some(vec!["double".into()]),
+        _ => None,
+    }
 }

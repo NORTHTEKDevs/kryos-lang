@@ -1,0 +1,46 @@
+// Mandelbrot set escape-time, fixed-point arithmetic so we don't need floats.
+// Counts iterations across a WxH grid; prints the total iteration count.
+
+fn mandel(cr: i64, ci: i64, max_iter: i64, scale: i64) -> i64 {
+    let mut zr = 0
+    let mut zi = 0
+    let mut i = 0
+    let four = 4 * scale * scale
+    while i < max_iter {
+        let zr2 = (zr * zr) / scale
+        let zi2 = (zi * zi) / scale
+        if zr2 + zi2 > four {
+            return i
+        }
+        let new_zr = zr2 - zi2 + cr
+        let new_zi = (2 * zr * zi) / scale + ci
+        zr = new_zr
+        zi = new_zi
+        i = i + 1
+    }
+    return max_iter
+}
+
+fn main() {
+    let scale = 1000
+    let w = 800
+    let h = 800
+    let max_iter = 1000
+    let xmin = -2 * scale
+    let xmax = 1 * scale
+    let ymin = -1 * scale
+    let ymax = 1 * scale
+    let mut total = 0
+    let mut y = 0
+    while y < h {
+        let ci = ymin + ((ymax - ymin) * y) / h
+        let mut x = 0
+        while x < w {
+            let cr = xmin + ((xmax - xmin) * x) / w
+            total = total + mandel(cr, ci, max_iter, scale)
+            x = x + 1
+        }
+        y = y + 1
+    }
+    println("total iterations = " + to_string(total))
+}

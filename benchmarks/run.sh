@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
-# Benchmark runner: builds and times Kryos vs Rust vs C versions of each
-# benchmark, writes results to RESULTS.md.
+# Benchmark runner: builds and times Kryos (LLVM + Cranelift) vs Rust, gcc, clang, Go, Python.
+# Writes results to RESULTS.md.
 #
-# Requires: kryos (built in release mode), rustc, cc.
-# Optional: hyperfine (better stats). Falls back to plain `time`.
+# Kryos LLVM backend uses -O2 (via clang 19). C is compiled with -O3.
+# Requires: kryos (built in release mode), rustc, gcc, clang, go, python3.
 
 set -u
+source "$HOME/.cargo/env" 2>/dev/null || true
 cd "$(dirname "$0")"
 
 KRYOS_BIN="${KRYOS_BIN:-../compiler/target/release/kryos}"
 OUT_DIR="bin"
 mkdir -p "$OUT_DIR"
 
-# Benchmark list. Each entry: name
+# Benchmark list
 BENCHES=(fib mandelbrot nbody binary_trees fannkuch matmul)
 
-# Linker flags for C
+# Extra linker flags for C
 declare -A CFLAGS_EXTRA=(
     [nbody]="-lm"
 )
@@ -24,80 +25,148 @@ build_one() {
     local name="$1"
     local cflags="${CFLAGS_EXTRA[$name]:-}"
 
-    echo "  building $name (kryos)..."
-    # Note: Kryos uses Cranelift backend by default. --release uses LLVM but
-    # requires clang installed. We use Cranelift for portability of the suite.
-    "$KRYOS_BIN" build "kryos/$name.kry" -o "$OUT_DIR/${name}_kry" 2>&1 \
-        | grep -v warning | head -5 || true
+    # ---- Kryos LLVM (--release → LLVM O2 via clang) ----
+    echo "  building $name (kryos LLVM)..."
+    "$KRYOS_BIN" build "kryos/$name.kry" -o "$OUT_DIR/${name}_kry_llvm" --release 2>&1 \
+        | grep -E "^error" | head -3 || true
 
+    # ---- Kryos Cranelift (default debug codegen) ----
+    echo "  building $name (kryos Cranelift)..."
+    "$KRYOS_BIN" build "kryos/$name.kry" -o "$OUT_DIR/${name}_kry_cl" 2>&1 \
+        | grep -E "^error" | head -3 || true
+
+    # ---- Rust --release ----
     echo "  building $name (rust)..."
-    rustc -O "rust/$name.rs" -o "$OUT_DIR/${name}_rs" 2>&1 | tail -3 || true
+    rustc -O "rust/$name.rs" -o "$OUT_DIR/${name}_rs" 2>&1 | tail -2 || true
 
-    echo "  building $name (c)..."
-    cc -O2 "c/$name.c" -o "$OUT_DIR/${name}_c" $cflags 2>&1 | tail -3 || true
+    # ---- C gcc -O3 ----
+    echo "  building $name (gcc -O3)..."
+    gcc -O3 "c/$name.c" -o "$OUT_DIR/${name}_c_gcc" $cflags 2>&1 | tail -2 || true
+
+    # ---- C clang -O3 ----
+    echo "  building $name (clang -O3)..."
+    clang -O3 "c/$name.c" -o "$OUT_DIR/${name}_c_clang" $cflags 2>&1 | tail -2 || true
+
+    # ---- Go ----
+    echo "  building $name (go)..."
+    if [[ -f "go/$name.go" ]]; then
+        go build -o "$OUT_DIR/${name}_go" "go/$name.go" 2>&1 | tail -2 || true
+    fi
 }
 
 time_one() {
-    # Returns wall-clock seconds (3 runs, best of 3).
+    # Returns wall-clock seconds: best of 5 runs, or >60 if timeout.
     local bin="$1"
+    local timeout_secs="${2:-60}"
     if [[ ! -x "$bin" ]]; then
         echo "SKIP"
         return
     fi
-    local best=999999
-    for _ in 1 2 3; do
-        # Use python3 monotonic timer for portable sub-millisecond timing
-        local t
-        t=$(python3 -c "import subprocess, time; s=time.monotonic(); subprocess.run(['$bin'], stdout=subprocess.DEVNULL); print(f'{time.monotonic()-s:.3f}')")
-        local better
-        better=$(awk -v a="$t" -v b="$best" 'BEGIN { print (a<b)?1:0 }')
-        if [[ "$better" == "1" ]]; then
-            best="$t"
-        fi
-    done
-    printf "%s" "$best"
+    local t
+    t=$(python3 -c "
+import subprocess, time, sys, os
+results = []
+devnull = open(os.devnull, 'wb')
+for _ in range(10):
+    try:
+        s = time.perf_counter()
+        subprocess.run(['$bin'], stdout=devnull, stderr=devnull, timeout=$timeout_secs)
+        results.append(time.perf_counter()-s)
+    except subprocess.TimeoutExpired:
+        devnull.close()
+        print('>$timeout_secs')
+        sys.exit(0)
+devnull.close()
+if results:
+    print(f'{min(results):.4f}')
+" 2>/dev/null)
+    printf "%s" "$t"
 }
 
-echo "Kryos benchmark suite"
-echo "====================="
-echo
+time_python() {
+    # Times a Python script: best of 3 runs, 60 s timeout.
+    local script="$1"
+    if [[ ! -f "$script" ]]; then
+        echo "SKIP"
+        return
+    fi
+    local t
+    t=$(python3 -c "
+import subprocess, time, sys, os
+results = []
+devnull = open(os.devnull, 'wb')
+for _ in range(3):
+    try:
+        s = time.perf_counter()
+        subprocess.run(['python3', '$script'], stdout=devnull, stderr=devnull, timeout=60)
+        results.append(time.perf_counter()-s)
+    except subprocess.TimeoutExpired:
+        devnull.close()
+        print('>60')
+        sys.exit(0)
+devnull.close()
+if results:
+    print(f'{min(results):.4f}')
+" 2>/dev/null)
+    printf "%s" "$t"
+}
+
+echo "Kryos v1.9 benchmark suite (LLVM + Cranelift + Rust + gcc + clang + Go + Python)"
+echo "=================================================================================="
+echo ""
 echo "Building..."
 for b in "${BENCHES[@]}"; do
     build_one "$b"
 done
 
-echo
-echo "Timing (best of 3, wall-clock seconds)..."
-echo
+echo ""
+echo "Timing (best of 10, wall-clock seconds, perf_counter)..."
+echo ""
 
 {
     echo "# Kryos benchmark results"
-    echo
-    echo "_Generated by \`benchmarks/run.sh\`. Each cell is best of 3 wall-clock seconds._"
-    echo
-    echo "| Benchmark | Kryos | Rust (rustc -O) | C (cc -O2) | Kryos / C |"
-    echo "| --- | --- | --- | --- | --- |"
+    echo ""
+    echo "_Generated by \`benchmarks/run.sh\`. Each cell is best of 10 wall-clock seconds (Python best of 3)._"
+    echo "_Kryos LLVM: \`kryos build --release\` → clang 19 -O2._"
+    echo "_C: gcc 14 -O3 and clang 19 -O3 (Kryos uses -O2, so C has a slight opt-level advantage)._"
+    echo ""
+    echo "| Benchmark | Kryos LLVM | Kryos Cranelift | Rust --release | gcc -O3 | clang -O3 | Go | Python | Kryos / gcc |"
+    echo "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+
     for b in "${BENCHES[@]}"; do
-        kt=$(time_one "$OUT_DIR/${b}_kry")
-        rt=$(time_one "$OUT_DIR/${b}_rs")
-        ct=$(time_one "$OUT_DIR/${b}_c")
-        ratio=$(awk -v k="$kt" -v c="$ct" 'BEGIN { if (c+0 > 0) printf "%.2fx", k/c; else printf "n/a" }')
-        printf "| %s | %s | %s | %s | %s |\n" "$b" "$kt" "$rt" "$ct" "$ratio"
-        echo "  $b: kryos=${kt}s  rust=${rt}s  c=${ct}s  ratio=${ratio}" >&2
+        kl=$(time_one   "$OUT_DIR/${b}_kry_llvm")
+        kc=$(time_one   "$OUT_DIR/${b}_kry_cl")
+        rt=$(time_one   "$OUT_DIR/${b}_rs")
+        cg=$(time_one   "$OUT_DIR/${b}_c_gcc")
+        cl=$(time_one   "$OUT_DIR/${b}_c_clang")
+        go=$(time_one   "$OUT_DIR/${b}_go")
+        py=$(time_python "python/${b}.py")
+
+        ratio=$(awk -v k="$kl" -v c="$cg" 'BEGIN {
+            if (k+0 > 0 && c+0 > 0) printf "%.2fx", k/c
+            else printf "n/a"
+        }')
+
+        printf "| %s | %s | %s | %s | %s | %s | %s | %s | %s |\n" \
+            "$b" "$kl" "$kc" "$rt" "$cg" "$cl" "$go" "$py" "$ratio"
+
+        echo "  $b: kryos_llvm=${kl}s  kryos_cl=${kc}s  rust=${rt}s  gcc=${cg}s  clang=${cl}s  go=${go}s  python=${py}s  ratio=${ratio}" >&2
     done
-    echo
+
+    echo ""
     echo "## Notes"
-    echo
-    echo "- \`fib(35)\` — recursive Fibonacci; function-call and branching test."
-    echo "- \`mandelbrot\` — 200x200 grid, 1000 max iters; tight floating-point loop."
-    echo "- \`nbody\` — 5 bodies, 50000 steps; floats and indexed mutation."
-    echo "- \`binary_trees\` — pure recursion; depth 18 = 524288 leaves."
-    echo "- \`fannkuch\` — 9!=362880 permutations with reversal flip counting."
-    echo "- \`matmul\` — 256x256 integer matmul; nested-loop indexing test."
-    echo
-    echo "Kryos uses the Cranelift backend by default. Add \`--release\` to use LLVM"
-    echo "(when available) for closer-to-Rust numbers."
+    echo ""
+    echo "- \`fib(35)\` — recursive Fibonacci; function-call overhead and branch prediction test."
+    echo "- \`mandelbrot\` — 200×200 grid, 1000 max iters; tight floating-point inner loop."
+    echo "- \`nbody\` — 5 bodies, 50 000 steps; float arithmetic + indexed array mutation."
+    echo "- \`binary_trees\` — pure recursion; depth 18 = 524 288 leaves."
+    echo "- \`fannkuch\` — 9!=362 880 permutations with reversal flip counting."
+    echo "- \`matmul\` — 256×256 integer matmul; nested-loop indexing throughput test."
+    echo ""
+    echo "Kryos LLVM: \`kryos build --release\` → clang 19 -O2 backend."
+    echo "Kryos Cranelift: \`kryos build\` (fast-compile, unoptimised runtime)."
+    echo "Python >60 means the run exceeded the 60 s timeout."
 } > RESULTS.md
 
-echo
+echo ""
 echo "Results written to benchmarks/RESULTS.md"
