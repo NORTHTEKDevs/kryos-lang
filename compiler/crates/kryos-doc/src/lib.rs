@@ -653,6 +653,295 @@ pub fn render_module_index(modules: &[(String, Vec<DocItem>)]) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// HTML rendering
+// ---------------------------------------------------------------------------
+
+/// Escape a string for safe insertion into HTML text/attribute content.
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Convert a name into a stable HTML id slug (lowercase, alnum + dash).
+fn slug(name: &str) -> String {
+    let mut s = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            s.push(c.to_ascii_lowercase());
+        } else {
+            s.push('-');
+        }
+    }
+    s
+}
+
+/// Render a turn-key HTML page wrapping `body`.
+fn html_page(title: &str, body: &str) -> String {
+    let css = include_str_default_css();
+    format!(
+        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n  <title>{title}</title>\n  <style>\n{css}\n  </style>\n</head>\n<body>\n<main class=\"kryos-doc\">\n{body}\n</main>\n</body>\n</html>\n",
+        title = html_escape(title),
+        css = css,
+        body = body,
+    )
+}
+
+fn include_str_default_css() -> &'static str {
+    r#"    :root { color-scheme: light dark; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; }
+    main.kryos-doc { max-width: 960px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+    h1, h2, h3, h4, h5 { line-height: 1.25; margin-top: 1.8em; margin-bottom: 0.5em; }
+    h1 { border-bottom: 1px solid #8884; padding-bottom: 0.3em; }
+    h2 { border-bottom: 1px solid #8882; padding-bottom: 0.2em; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    code { background: #8881; padding: 0.1em 0.35em; border-radius: 4px; font-size: 0.92em; }
+    pre { background: #8881; padding: 1em; border-radius: 6px; overflow-x: auto; }
+    pre code { background: transparent; padding: 0; }
+    table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+    th, td { text-align: left; padding: 0.45em 0.7em; border-bottom: 1px solid #8883; }
+    th { font-weight: 600; }
+    a { color: #2563eb; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .kryos-kind { display: inline-block; font-size: 0.72em; font-weight: 600; padding: 0.1em 0.5em; border-radius: 999px; background: #2563eb22; color: #2563eb; vertical-align: middle; margin-left: 0.4em; }
+    .kryos-item { margin: 1.4em 0 1.8em; padding-top: 0.4em; }
+    .kryos-item-sig { margin-bottom: 0.75em; }
+    .kryos-meta { font-size: 0.9em; opacity: 0.85; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #0f1115; color: #e6e6e6; }
+      a { color: #60a5fa; }
+      .kryos-kind { background: #60a5fa22; color: #60a5fa; }
+    }"#
+}
+
+fn kind_label(kind: &DocKind) -> &'static str {
+    match kind {
+        DocKind::Function => "fn",
+        DocKind::Struct => "struct",
+        DocKind::Enum => "enum",
+        DocKind::Trait => "trait",
+        DocKind::TypeAlias => "type",
+        DocKind::Actor => "actor",
+        DocKind::Constant => "const",
+    }
+}
+
+fn render_html_doc_item(out: &mut String, item: &DocItem, heading_level: usize) {
+    let level = heading_level.clamp(2, 6);
+    let id = slug(&item.name);
+    out.push_str(&format!(
+        "<section class=\"kryos-item\" id=\"{id}\">\n  <h{level}><code>{name}</code><span class=\"kryos-kind\">{kind}</span></h{level}>\n",
+        id = html_escape(&id),
+        level = level,
+        name = html_escape(&item.name),
+        kind = kind_label(&item.kind),
+    ));
+    out.push_str(&format!(
+        "  <pre class=\"kryos-item-sig\"><code>{}</code></pre>\n",
+        html_escape(&item.signature),
+    ));
+    if !item.doc_comment.is_empty() {
+        // Doc comment is rendered as plain text paragraphs (no markdown
+        // interpretation here — keep it simple and predictable).
+        for para in item.doc_comment.split("\n\n") {
+            let trimmed = para.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            out.push_str(&format!("  <p>{}</p>\n", html_escape(trimmed)));
+        }
+    }
+    if !item.params.is_empty() {
+        out.push_str("  <p><strong>Parameters:</strong></p>\n  <ul>\n");
+        for p in &item.params {
+            let ty_str = p.ty.as_deref().unwrap_or("_");
+            out.push_str(&format!(
+                "    <li><code>{}</code>: <code>{}</code></li>\n",
+                html_escape(&p.name),
+                html_escape(ty_str),
+            ));
+        }
+        out.push_str("  </ul>\n");
+    }
+    if let Some(ref ret) = item.return_type {
+        out.push_str(&format!(
+            "  <p><strong>Returns:</strong> <code>{}</code></p>\n",
+            html_escape(ret),
+        ));
+    }
+    if !item.fields.is_empty() {
+        out.push_str("  <p><strong>Fields:</strong></p>\n  <ul>\n");
+        for f in &item.fields {
+            out.push_str(&format!("    <li><code>{}</code></li>\n", html_escape(f)));
+        }
+        out.push_str("  </ul>\n");
+    }
+    if !item.variants.is_empty() {
+        out.push_str("  <p><strong>Variants:</strong></p>\n  <ul>\n");
+        for v in &item.variants {
+            out.push_str(&format!("    <li><code>{}</code></li>\n", html_escape(v)));
+        }
+        out.push_str("  </ul>\n");
+    }
+    if !item.methods.is_empty() {
+        out.push_str("  <p><strong>Methods:</strong></p>\n");
+        for m in &item.methods {
+            render_html_doc_item(out, m, heading_level + 1);
+        }
+    }
+    out.push_str("</section>\n");
+}
+
+fn render_html_section(out: &mut String, title: &str, items: &[&DocItem]) {
+    if items.is_empty() {
+        return;
+    }
+    out.push_str(&format!(
+        "<h2 id=\"{}\">{}</h2>\n",
+        slug(title),
+        html_escape(title)
+    ));
+    for item in items {
+        render_html_doc_item(out, item, 3);
+    }
+}
+
+/// Render a module's docs as a full HTML page.
+pub fn render_html(items: &[DocItem], module_name: &str) -> String {
+    let mut body = String::new();
+    body.push_str(&format!(
+        "<h1>Module <code>{}</code></h1>\n",
+        html_escape(module_name)
+    ));
+
+    let functions: Vec<&DocItem> = items
+        .iter()
+        .filter(|i| i.kind == DocKind::Function)
+        .collect();
+    let structs: Vec<&DocItem> = items.iter().filter(|i| i.kind == DocKind::Struct).collect();
+    let enums: Vec<&DocItem> = items.iter().filter(|i| i.kind == DocKind::Enum).collect();
+    let traits: Vec<&DocItem> = items.iter().filter(|i| i.kind == DocKind::Trait).collect();
+    let type_aliases: Vec<&DocItem> = items
+        .iter()
+        .filter(|i| i.kind == DocKind::TypeAlias)
+        .collect();
+    let actors: Vec<&DocItem> = items.iter().filter(|i| i.kind == DocKind::Actor).collect();
+    let constants: Vec<&DocItem> = items
+        .iter()
+        .filter(|i| i.kind == DocKind::Constant)
+        .collect();
+
+    body.push_str("<h2>Overview</h2>\n<ul>\n");
+    let mut any_overview = false;
+    for (label, count) in [
+        ("Functions", functions.len()),
+        ("Structs", structs.len()),
+        ("Enums", enums.len()),
+        ("Traits", traits.len()),
+        ("Type aliases", type_aliases.len()),
+        ("Actors", actors.len()),
+        ("Constants", constants.len()),
+    ] {
+        if count > 0 {
+            body.push_str(&format!(
+                "  <li><strong>{}:</strong> {}</li>\n",
+                label, count
+            ));
+            any_overview = true;
+        }
+    }
+    if !any_overview {
+        body.push_str("  <li><em>(empty module)</em></li>\n");
+    }
+    body.push_str("</ul>\n");
+
+    if !functions.is_empty() {
+        body.push_str("<h2>Function Index</h2>\n<table>\n  <thead><tr><th>Function</th><th>Signature</th></tr></thead>\n  <tbody>\n");
+        for f in &functions {
+            body.push_str(&format!(
+                "    <tr><td><a href=\"#{id}\"><code>{name}</code></a></td><td><code>{sig}</code></td></tr>\n",
+                id = html_escape(&slug(&f.name)),
+                name = html_escape(&f.name),
+                sig = html_escape(&f.signature),
+            ));
+        }
+        body.push_str("  </tbody>\n</table>\n");
+    }
+
+    render_html_section(&mut body, "Structs", &structs);
+    render_html_section(&mut body, "Enums", &enums);
+    render_html_section(&mut body, "Traits", &traits);
+    render_html_section(&mut body, "Type Aliases", &type_aliases);
+    render_html_section(&mut body, "Actors", &actors);
+    render_html_section(&mut body, "Constants", &constants);
+    render_html_section(&mut body, "Functions", &functions);
+
+    html_page(&format!("Module {} — Kryos", module_name), &body)
+}
+
+/// Render a module index page as HTML linking to each module's page.
+pub fn render_html_index(modules: &[(String, Vec<DocItem>)]) -> String {
+    let mut body = String::new();
+    body.push_str("<h1>Module Index</h1>\n");
+    body.push_str("<table>\n  <thead><tr><th>Module</th><th>Functions</th><th>Structs</th><th>Enums</th><th>Traits</th></tr></thead>\n  <tbody>\n");
+    for (name, items) in modules {
+        let fn_count = items.iter().filter(|i| i.kind == DocKind::Function).count();
+        let struct_count = items.iter().filter(|i| i.kind == DocKind::Struct).count();
+        let enum_count = items.iter().filter(|i| i.kind == DocKind::Enum).count();
+        let trait_count = items.iter().filter(|i| i.kind == DocKind::Trait).count();
+        body.push_str(&format!(
+            "    <tr><td><a href=\"{name}.html\"><code>{name}</code></a></td><td>{fns}</td><td>{ss}</td><td>{es}</td><td>{ts}</td></tr>\n",
+            name = html_escape(name),
+            fns = fn_count,
+            ss = struct_count,
+            es = enum_count,
+            ts = trait_count,
+        ));
+    }
+    body.push_str("  </tbody>\n</table>\n");
+
+    let mut all_types: Vec<(&str, &str)> = Vec::new();
+    for (mod_name, items) in modules {
+        for item in items {
+            if matches!(
+                item.kind,
+                DocKind::Struct
+                    | DocKind::Enum
+                    | DocKind::Trait
+                    | DocKind::TypeAlias
+                    | DocKind::Constant
+            ) {
+                all_types.push((&item.name, mod_name));
+            }
+        }
+    }
+    if !all_types.is_empty() {
+        all_types.sort_by_key(|(name, _)| *name);
+        body.push_str("<h2>Type Cross-Reference</h2>\n<table>\n  <thead><tr><th>Type</th><th>Module</th></tr></thead>\n  <tbody>\n");
+        for (type_name, mod_name) in &all_types {
+            body.push_str(&format!(
+                "    <tr><td><code>{tn}</code></td><td><a href=\"{mn}.html#{anchor}\"><code>{mn}</code></a></td></tr>\n",
+                tn = html_escape(type_name),
+                mn = html_escape(mod_name),
+                anchor = html_escape(&slug(type_name)),
+            ));
+        }
+        body.push_str("  </tbody>\n</table>\n");
+    }
+
+    html_page("Module Index — Kryos", &body)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

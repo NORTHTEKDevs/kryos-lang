@@ -146,9 +146,13 @@ enum Commands {
         /// Files to generate documentation for (default: all .kry files)
         files: Vec<String>,
 
-        /// Output directory for markdown files (default: stdout)
+        /// Output directory for rendered files (default: stdout)
         #[arg(short, long)]
         output: Option<String>,
+
+        /// Emit HTML instead of markdown
+        #[arg(long)]
+        html: bool,
     },
 
     /// Generate Kryos bindings from C header files
@@ -317,7 +321,11 @@ fn main() {
 
         Commands::Fmt { files, check } => commands::fmt::execute(&files, check),
 
-        Commands::Doc { files, output } => commands::doc::execute(&files, output.as_deref()),
+        Commands::Doc {
+            files,
+            output,
+            html,
+        } => commands::doc::execute(&files, output.as_deref(), html),
 
         Commands::Bindgen { header, output } => {
             commands::bindgen::execute(&header, output.as_deref())

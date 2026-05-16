@@ -2,13 +2,13 @@
 
 use std::path::Path;
 
-use kryos_doc::{extract_docs, render_markdown};
+use kryos_doc::{extract_docs, render_html, render_html_index, render_markdown};
 
 /// Execute the doc command.
 ///
 /// Parses the given source file(s), extracts doc comments and declarations,
-/// and renders them as markdown to stdout.
-pub fn execute(files: &[String], output_dir: Option<&str>) -> Result<(), String> {
+/// and renders them as markdown (default) or HTML to stdout / a directory.
+pub fn execute(files: &[String], output_dir: Option<&str>, html: bool) -> Result<(), String> {
     let targets = if files.is_empty() {
         discover_kry_files(Path::new("."))?
     } else {
@@ -43,16 +43,21 @@ pub fn execute(files: &[String], output_dir: Option<&str>) -> Result<(), String>
             .unwrap_or("unknown")
             .to_string();
 
-        let markdown = render_markdown(&items, &module_name);
+        let rendered = if html {
+            render_html(&items, &module_name)
+        } else {
+            render_markdown(&items, &module_name)
+        };
+        let ext = if html { "html" } else { "md" };
 
         if let Some(dir) = output_path {
-            let out_file = dir.join(format!("{module_name}.md"));
-            std::fs::write(&out_file, &markdown)
+            let out_file = dir.join(format!("{module_name}.{ext}"));
+            std::fs::write(&out_file, &rendered)
                 .map_err(|e| format!("cannot write `{}`: {e}", out_file.display()))?;
             eprintln!("  wrote {}", out_file.display());
         } else {
             // Print to stdout
-            print!("{markdown}");
+            print!("{rendered}");
         }
 
         all_modules.push((module_name, items));
@@ -61,8 +66,12 @@ pub fn execute(files: &[String], output_dir: Option<&str>) -> Result<(), String>
     // If writing to a directory, also generate an index.
     if let Some(dir) = output_path {
         if all_modules.len() > 1 {
-            let index = kryos_doc::render_module_index(&all_modules);
-            let index_path = dir.join("index.md");
+            let (index, ext) = if html {
+                (render_html_index(&all_modules), "html")
+            } else {
+                (kryos_doc::render_module_index(&all_modules), "md")
+            };
+            let index_path = dir.join(format!("index.{ext}"));
             std::fs::write(&index_path, &index)
                 .map_err(|e| format!("cannot write `{}`: {e}", index_path.display()))?;
             eprintln!("  wrote {}", index_path.display());
