@@ -26,7 +26,10 @@ jobs:
 
       - name: Build (release)
         working-directory: compiler
-        run: cargo build --release -j 2 -p kryos-cli
+        # Build the full workspace so that kryos-rt and kryos-stdlib-native
+        # are produced as staticlibs alongside the kryos binary; the driver
+        # looks them up at link time.
+        run: cargo build --release -j 2
 
       - name: Smoke test (kryos run tests/smoke.kry)
         working-directory: compiler
