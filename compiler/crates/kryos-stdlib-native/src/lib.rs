@@ -4,6 +4,35 @@
 //! Every public function in the submodules is `#[no_mangle] pub extern "C"` so
 //! compiled Kryos object code can link directly against this crate's static library.
 //!
+//! # Cargo features
+//!
+//! - `full` (default) — enables `crypto`, `sqlite`, `tls`, `postgres`, `http2`.
+//!   This is the recommended variant for desktop / server targets.
+//! - `minimal` — explicit no-extras alias; equivalent to building with
+//!   `--no-default-features`. Excludes every heavy native dep (`ring`,
+//!   `rusqlite`, `rustls`, `postgres`, `reqwest`). The core POSIX-backed
+//!   stdlib (`fs`, `net`, `env`, `datetime`, `json`, `regex`, `math`,
+//!   `term`, `process`, `websocket` framing, etc.) is still present.
+//!   Functions that require crypto (e.g. `kryos_ws_accept_key_ks`) become
+//!   stubs that signal failure to the caller.
+//! - Individual feature flags (`crypto`, `sqlite`, `tls`, `postgres`,
+//!   `http2`) can be enabled à la carte on top of `minimal` to build a
+//!   target-tailored stdlib.
+//!
+//! Examples:
+//!
+//! ```text
+//! # Full build (default):
+//! cargo build -p kryos-stdlib-native
+//!
+//! # Minimal build, no external native deps:
+//! cargo build -p kryos-stdlib-native --no-default-features
+//!
+//! # Minimal + only SQLite:
+//! cargo build -p kryos-stdlib-native \
+//!   --no-default-features --features sqlite
+//! ```
+//!
 //! # Safety
 //!
 //! All public functions are FFI boundary functions called exclusively from

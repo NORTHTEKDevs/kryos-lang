@@ -13,8 +13,10 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+#[cfg(feature = "crypto")]
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 
+#[cfg(feature = "crypto")]
 const GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 #[repr(C)]
@@ -44,6 +46,12 @@ fn vec_to_handle(v: Vec<u8>) -> i64 {
 }
 
 /// `ws_accept_key(key: str) -> str` — computes the Sec-WebSocket-Accept header.
+///
+/// Requires the `crypto` feature (SHA-1 from `ring`). When `crypto` is
+/// disabled (e.g. on a `--no-default-features` minimal build) this function
+/// returns `0` to signal that the operation is unavailable; callers must
+/// fall back to a different handshake path or refuse the upgrade.
+#[cfg(feature = "crypto")]
 #[no_mangle]
 pub extern "C" fn kryos_ws_accept_key_ks(key_handle: i64) -> i64 {
     let (ptr, len) = unsafe { handle_to_bytes(key_handle) };
@@ -66,6 +74,14 @@ pub extern "C" fn kryos_ws_accept_key_ks(key_handle: i64) -> i64 {
     }
     let encoded = B64.encode(digest);
     vec_to_handle(encoded.into_bytes())
+}
+
+/// Stub for `kryos_ws_accept_key_ks` when the `crypto` feature is
+/// disabled. Returns `0` so callers detect the missing capability.
+#[cfg(not(feature = "crypto"))]
+#[no_mangle]
+pub extern "C" fn kryos_ws_accept_key_ks(_key_handle: i64) -> i64 {
+    0
 }
 
 fn encode_frame(opcode: u8, data: &[u8]) -> Vec<u8> {

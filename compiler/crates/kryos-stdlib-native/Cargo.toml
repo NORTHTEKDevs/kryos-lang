@@ -7,7 +7,15 @@ edition.workspace = true
 crate-type = ["staticlib", "rlib"]
 
 [features]
-default = ["crypto", "sqlite", "tls", "postgres", "http2"]
+# `full` is the all-batteries-included default. Switch to `minimal` (or use
+# `--no-default-features`) for a small static library that excludes crypto,
+# SQLite, TLS, Postgres, and HTTP/2. The minimal variant still provides the
+# core POSIX-backed stdlib (fs, net, env, term, datetime, json, regex,
+# math, websocket framing, etc.) and is suitable for embedded / WASM-host /
+# offline targets where pulling in OpenSSL / ring is undesirable.
+default = ["full"]
+full = ["crypto", "sqlite", "tls", "postgres", "http2"]
+minimal = []
 crypto = ["ring"]
 sqlite = ["rusqlite"]
 tls = ["rustls", "rustls-pemfile", "rustls-pki-types", "webpki-roots"]
