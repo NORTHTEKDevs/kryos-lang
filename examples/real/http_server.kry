@@ -1,0 +1,157 @@
+// http_server -- a tiny single-threaded HTTP/1.1 server.
+//
+// Usage:  http_server PORT
+//
+// Routes (all GET):
+//   /                 -> plain text greeting
+//   /health           -> {"status":"ok"}
+//   /echo?msg=...     -> echoes msg as JSON
+//   /stats            -> {"requests":N,"uptime_secs":T}
+//   anything else     -> 404
+//
+// Single-process accept loop -- one request per connection,
+// Connection: close on every response.  Good enough to demo
+// HTTP semantics, routing, query parsing, JSON output, and
+// uptime tracking without spawning threads.
+
+use std::os::{args, exit}
+
+fn find_in(s: str, needle: str, from: i64) -> i64 {
+    let slen = len(s)
+    let nlen = len(needle)
+    if nlen == 0 { return from }
+    if from < 0 { return -1 }
+    let mut i = from
+    let limit = slen - nlen
+    while i <= limit {
+        let mut j = 0
+        let mut matched = true
+        while j < nlen {
+            if s[i + j] != needle[j] {
+                matched = false
+                j = nlen
+            } else {
+                j = j + 1
+            }
+        }
+        if matched { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+// Extract method and path from the first HTTP request line.
+fn parse_request_line(req: str) -> [str] {
+    let eol = find_in(req, "\r\n", 0)
+    let mut line = req
+    if eol >= 0 {
+        line = substr(req, 0, eol)
+    }
+    let sp1 = find_in(line, " ", 0)
+    if sp1 < 0 { return ["", "", ""] }
+    let method = substr(line, 0, sp1)
+    let sp2 = find_in(line, " ", sp1 + 1)
+    if sp2 < 0 { return [method, substr(line, sp1 + 1, len(line)), ""] }
+    let target = substr(line, sp1 + 1, sp2)
+    let version = substr(line, sp2 + 1, len(line))
+    return [method, target, version]
+}
+
+// Split "/echo?msg=hello" -> ["/echo", "msg=hello"].
+fn split_target(target: str) -> [str] {
+    let q = find_in(target, "?", 0)
+    if q < 0 { return [target, ""] }
+    return [substr(target, 0, q), substr(target, q + 1, len(target))]
+}
+
+// Lookup "msg" in "msg=hello&foo=bar".  No URL decoding -- good enough for ASCII demo.
+fn query_get(qs: str, key: str) -> str {
+    let probe = key + "="
+    let mut i = 0
+    let qlen = len(qs)
+    let plen = len(probe)
+    while i <= qlen - plen {
+        // Match probe at i AND (i==0 or previous char is '&')
+        let mut j = 0
+        let mut matched = true
+        while j < plen {
+            if qs[i + j] != probe[j] {
+                matched = false
+                j = plen
+            } else {
+                j = j + 1
+            }
+        }
+        if matched and (i == 0 or qs[i - 1] == "&") {
+            let v_start = i + plen
+            let amp = find_in(qs, "&", v_start)
+            if amp < 0 { return substr(qs, v_start, qlen) }
+            return substr(qs, v_start, amp)
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+fn http_response(status_line: str, ctype: str, body: str) -> str {
+    return "HTTP/1.1 " + status_line + "\r\nContent-Type: " + ctype + "\r\nContent-Length: " + to_string(len(body)) + "\r\nConnection: close\r\n\r\n" + body
+}
+
+// Build a tiny JSON-escaped string value (no \u escapes; handles \ and ").
+fn json_escape(s: str) -> str {
+    return replace(replace(s, "\\", "\\\\"), "\"", "\\\"")
+}
+
+@capabilities(net, io, env, time, process)
+fn main() {
+    let argv = args()
+    if len(argv) < 2 {
+        eprintln("usage: http_server PORT")
+        exit(2)
+    }
+    let port = parse_int(argv[1])
+    let srv = tcp_listen("0.0.0.0", port)
+    if srv < 0 {
+        eprintln("http_server: bind failed on port " + to_string(port))
+        exit(2)
+    }
+    let started_at = time_now_secs()
+    let mut requests = 0
+    println("http_server listening on :" + to_string(port))
+
+    while true {
+        let conn = tcp_accept(srv)
+        if conn < 0 {
+            continue
+        }
+        let req = tcp_recv(conn, 65536)
+        requests = requests + 1
+
+        let parts = parse_request_line(req)
+        let method = parts[0]
+        let target = parts[1]
+        let split = split_target(target)
+        let path = split[0]
+        let qs = split[1]
+
+        let mut resp = ""
+        if method == "GET" and path == "/" {
+            resp = http_response("200 OK", "text/plain; charset=utf-8", "hello from kryos http_server\n")
+        } else if method == "GET" and path == "/health" {
+            resp = http_response("200 OK", "application/json", "\{\"status\":\"ok\"\}")
+        } else if method == "GET" and path == "/echo" {
+            let msg = query_get(qs, "msg")
+            let body = "\{\"echo\":\"" + json_escape(msg) + "\"\}"
+            resp = http_response("200 OK", "application/json", body)
+        } else if method == "GET" and path == "/stats" {
+            let uptime = time_now_secs() - started_at
+            let body = "\{\"requests\":" + to_string(requests) + ",\"uptime_secs\":" + to_string(uptime) + "\}"
+            resp = http_response("200 OK", "application/json", body)
+        } else {
+            resp = http_response("404 Not Found", "text/plain; charset=utf-8", "not found\n")
+        }
+
+        tcp_send(conn, resp)
+        tcp_close(conn)
+    }
+}
