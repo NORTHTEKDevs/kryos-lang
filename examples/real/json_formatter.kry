@@ -1,0 +1,296 @@
+// JSON formatter / pretty-printer in pure Kryos.
+//
+// Parses a minimal JSON grammar (null, bool, number, string, array, object)
+// into a JsonValue enum and emits a pretty-printed re-serialization with
+// configurable indent.
+//
+// Exercises:
+//   - recursive enums with multiple primitive payload shapes
+//   - vector-of-enum payloads (arrays, objects)
+//   - tree-walking enum match for serialization
+//   - manual character-classification and string-building loops
+//   - parser combinators with done-flag termination
+//
+// No external crates, no Option/Result; uses sentinel enum variants
+// (JsonValue.Error) for parse failures.
+
+enum JsonValue {
+    Null,
+    Bool(bool),
+    Num(i64),
+    Str(str),
+    Arr([JsonValue]),
+    Obj([str], [JsonValue]),   // parallel keys + values
+    Error(str),
+}
+
+struct Parser {
+    src: str,
+    pos: i64,
+    len: i64,
+}
+
+// Single-char access. Returns the i-th character of `s` as a length-1
+// string. Caller is responsible for bounds-checking.
+fn ch(s: str, i: i64) -> str {
+    return substr(s, i, i + 1)
+}
+
+fn is_space(c: str) -> bool {
+    return c == " " || c == "\t" || c == "\n" || c == "\r"
+}
+
+fn is_digit(c: str) -> bool {
+    return c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
+        || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+}
+
+fn skip_ws(p: Parser) -> Parser {
+    let mut i = p.pos
+    let n = p.len
+    let mut done = false
+    while !done && i < n {
+        if is_space(ch(p.src, i)) {
+            i = i + 1
+        } else {
+            done = true
+        }
+    }
+    return Parser { src: p.src, pos: i, len: n }
+}
+
+fn starts_with_at(s: str, at: i64, kw: str) -> bool {
+    let kl = len(kw)
+    if at + kl > len(s) {
+        return false
+    }
+    let mut i = 0
+    while i < kl {
+        if ch(s, at + i) != ch(kw, i) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+fn parse_value(p0: Parser) -> (JsonValue, Parser) {
+    let p = skip_ws(p0)
+    if p.pos >= p.len {
+        return (JsonValue.Error("eof"), p)
+    }
+    let c = ch(p.src, p.pos)
+
+    // null / true / false literals
+    if c == "n" {
+        if starts_with_at(p.src, p.pos, "null") {
+            return (JsonValue.Null, Parser { src: p.src, pos: p.pos + 4, len: p.len })
+        }
+    }
+    if c == "t" {
+        if starts_with_at(p.src, p.pos, "true") {
+            return (JsonValue.Bool(true), Parser { src: p.src, pos: p.pos + 4, len: p.len })
+        }
+    }
+    if c == "f" {
+        if starts_with_at(p.src, p.pos, "false") {
+            return (JsonValue.Bool(false), Parser { src: p.src, pos: p.pos + 5, len: p.len })
+        }
+    }
+
+    // number: optional minus + one or more digits
+    if c == "-" || is_digit(c) {
+        let mut i = p.pos
+        if c == "-" { i = i + 1 }
+        let start = i
+        let mut done = false
+        while !done && i < p.len {
+            if is_digit(ch(p.src, i)) {
+                i = i + 1
+            } else {
+                done = true
+            }
+        }
+        if i == start {
+            return (JsonValue.Error("bad number"), p)
+        }
+        let lex = substr(p.src, p.pos, i)
+        let n = parse_int(lex)
+        return (JsonValue.Num(n), Parser { src: p.src, pos: i, len: p.len })
+    }
+
+    // string
+    let q = char_from(34)
+    if c == q {
+        let mut i = p.pos + 1
+        let mut done = false
+        while !done && i < p.len {
+            if ch(p.src, i) == q {
+                done = true
+            } else {
+                i = i + 1
+            }
+        }
+        if !done {
+            return (JsonValue.Error("unterminated string"), p)
+        }
+        let s = substr(p.src, p.pos + 1, i)
+        return (JsonValue.Str(s), Parser { src: p.src, pos: i + 1, len: p.len })
+    }
+
+    // array
+    if c == "[" {
+        let mut elems: [JsonValue] = []
+        let mut cur = Parser { src: p.src, pos: p.pos + 1, len: p.len }
+        cur = skip_ws(cur)
+        if cur.pos < cur.len && ch(cur.src, cur.pos) == "]" {
+            return (JsonValue.Arr(elems), Parser { src: cur.src, pos: cur.pos + 1, len: cur.len })
+        }
+        let mut done = false
+        while !done {
+            let (v, np) = parse_value(cur)
+            push(elems, v)
+            cur = skip_ws(np)
+            if cur.pos >= cur.len {
+                return (JsonValue.Error("unterminated array"), cur)
+            }
+            let nc = ch(cur.src, cur.pos)
+            if nc == "," {
+                cur = Parser { src: cur.src, pos: cur.pos + 1, len: cur.len }
+            } else {
+                if nc == "]" {
+                    done = true
+                    cur = Parser { src: cur.src, pos: cur.pos + 1, len: cur.len }
+                } else {
+                    return (JsonValue.Error("expected , or ]"), cur)
+                }
+            }
+        }
+        return (JsonValue.Arr(elems), cur)
+    }
+
+    // object
+    let lb = char_from(123)
+    let rb = char_from(125)
+    if c == lb {
+        let mut keys: [str] = []
+        let mut vals: [JsonValue] = []
+        let mut cur = Parser { src: p.src, pos: p.pos + 1, len: p.len }
+        cur = skip_ws(cur)
+        if cur.pos < cur.len && ch(cur.src, cur.pos) == rb {
+            return (JsonValue.Obj(keys, vals), Parser { src: cur.src, pos: cur.pos + 1, len: cur.len })
+        }
+        let mut done = false
+        while !done {
+            cur = skip_ws(cur)
+            let (kv, kp) = parse_value(cur)
+            match kv {
+                JsonValue.Str(k) => { push(keys, k) },
+                _ => { return (JsonValue.Error("expected string key"), cur) },
+            }
+            cur = skip_ws(kp)
+            if cur.pos >= cur.len || ch(cur.src, cur.pos) != ":" {
+                return (JsonValue.Error("expected :"), cur)
+            }
+            cur = Parser { src: cur.src, pos: cur.pos + 1, len: cur.len }
+            let (v, np) = parse_value(cur)
+            push(vals, v)
+            cur = skip_ws(np)
+            if cur.pos >= cur.len {
+                return (JsonValue.Error("unterminated object"), cur)
+            }
+            let nc = ch(cur.src, cur.pos)
+            if nc == "," {
+                cur = Parser { src: cur.src, pos: cur.pos + 1, len: cur.len }
+            } else {
+                if nc == rb {
+                    done = true
+                    cur = Parser { src: cur.src, pos: cur.pos + 1, len: cur.len }
+                } else {
+                    return (JsonValue.Error("expected , or close-brace"), cur)
+                }
+            }
+        }
+        return (JsonValue.Obj(keys, vals), cur)
+    }
+
+    return (JsonValue.Error("unknown token"), p)
+}
+
+fn parse_json(src: str) -> JsonValue {
+    let p = Parser { src: src, pos: 0, len: len(src) }
+    let (v, _) = parse_value(p)
+    return v
+}
+
+fn make_indent(n: i64) -> str {
+    let mut s = ""
+    let mut i = 0
+    while i < n {
+        s = s + "  "
+        i = i + 1
+    }
+    return s
+}
+
+fn format_value(v: JsonValue, depth: i64) -> str {
+    match v {
+        JsonValue.Null => { return "null" },
+        JsonValue.Bool(b) => {
+            if b { return "true" } else { return "false" }
+        },
+        JsonValue.Num(n) => { return to_string(n) },
+        JsonValue.Str(s) => { return "\"" + s + "\"" },
+        JsonValue.Arr(elems) => {
+            if len(elems) == 0 { return "[]" }
+            let inner = make_indent(depth + 1)
+            let outer = make_indent(depth)
+            let mut out = "[\n"
+            let mut i = 0
+            while i < len(elems) {
+                out = out + inner + format_value(elems[i], depth + 1)
+                if i < len(elems) - 1 { out = out + "," }
+                out = out + "\n"
+                i = i + 1
+            }
+            return out + outer + "]"
+        },
+        JsonValue.Obj(keys, vals) => {
+            let lb = char_from(123)
+            let rb = char_from(125)
+            if len(keys) == 0 { return lb + rb }
+            let inner = make_indent(depth + 1)
+            let outer = make_indent(depth)
+            let mut out = lb + "\n"
+            let mut i = 0
+            while i < len(keys) {
+                let q = char_from(34)
+                out = out + inner + q + keys[i] + q + ": " + format_value(vals[i], depth + 1)
+                if i < len(keys) - 1 { out = out + "," }
+                out = out + "\n"
+                i = i + 1
+            }
+            return out + outer + rb
+        },
+        JsonValue.Error(msg) => { return "<error: " + msg + ">" },
+    }
+}
+
+fn quote(s: str) -> str {
+    let q = char_from(34)
+    return q + s + q
+}
+
+fn main() {
+    // Build the source string at runtime to avoid both " escapes and
+    // string-interpolation braces in literals.
+    let lb = char_from(123)
+    let rb = char_from(125)
+    let src = lb + quote("name") + ":" + quote("kryos") + ","
+           + quote("version") + ":268,"
+           + quote("flags") + ":[true,false,null],"
+           + quote("nested") + ":" + lb + quote("a") + ":1," + quote("b") + ":[10,20,30]" + rb + rb
+    let v = parse_json(src)
+    let out = format_value(v, 0)
+    println(out)
+}
