@@ -4,6 +4,46 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.6.0] - 2026-05-17 — "Struct string fields: no more double-free on alias"
+
+A correctness fix in struct-literal lowering. No new language surface,
+no breaking changes. All 17 smoke tests, 21 router tests, 12
+config-parser tests, and all 10 real-program examples build and run.
+
+### Fixed
+
+- **String fields stored in non-`@copy` structs no longer double-free
+  when the source values alias.** When a function like
+  `fn ident(s: str) -> str { return s }` returned its argument and the
+  caller stored both the original and the returned value in two
+  different struct fields, the same heap pointer ended up in both
+  fields. On struct drop the runtime called `kryos_string_free` on the
+  same allocation twice, producing `free(): double free detected in
+  tcache 2` (AOT) or `LayoutError` (occasionally surfacing through
+  `kryos run`) on later allocations.
+  Concretely affected: `agent_router.kry`'s `run_step_with_retry` —
+  after a retry succeeded, the `output: output` field of the returned
+  `StepResult` aliased a loop-local string that the caller then double-
+  freed when dropping the struct fields plus the original.
+  Fix is in `compiler/crates/kryos-codegen-cranelift/src/codegen.rs`,
+  in the non-`@copy` branch of `RValue::Struct`. Heap-typed string
+  fields are now cloned via `kryos_string_clone` on store, mirroring
+  the existing `kryos_array_retain` treatment of array fields. The
+  `@copy` branch already cloned strings and is unchanged.
+  Regression test: `tests/smoke/test_struct_string_alias.kry`.
+
+### Added
+
+- **Three new real-program examples** (already passing under v2.5.1
+  except `agent_router.kry`, which is now functional):
+  - `examples/real/ssg.kry` — static site generator: markdown ->
+    HTML with escaping, alternating bold/code markers, index page.
+  - `examples/real/installer.kry` — install/uninstall with manifest
+    and receipt, multi-segment directory creation.
+  - `examples/real/agent_router.kry` — multi-subagent dispatcher
+    with retry/backoff. Triggered the struct-string alias double-free
+    described above; now runs cleanly.
+
 ## [2.5.1] - 2026-05-17 — "Generics: correct return-type substitution"
 
 A correctness fix in monomorphization. No new language surface, no

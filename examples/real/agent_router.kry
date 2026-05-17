@@ -1,0 +1,142 @@
+// agent_router.kry -- a small "agentic system" with named subagents.
+//
+// Demonstrates dispatching a task to one of several named subagents
+// based on routing rules, with per-subagent state, a simple
+// retry/backoff policy, and a final aggregated transcript. Pure-Kryos
+// (no LLM call here) so it's deterministic and tested.
+//
+// Subagents are not parallel threads -- they're named functions
+// dispatched from a single loop. This is the same pattern Anthropic
+// and others describe for tool-using agents: a planner picks the next
+// "tool" by name and routes the call through a registry.
+//
+// Usage:
+//   kryos run examples/real/agent_router.kry
+
+struct Step {
+    subagent: str,
+    payload: str
+}
+
+struct StepResult {
+    subagent: str,
+    payload: str,
+    output: str,
+    ok: bool,
+    attempts: i64
+}
+
+// --- subagents -----------------------------------------------------------
+
+fn agent_uppercase(payload: str) -> str {
+    return to_upper(payload)
+}
+
+fn agent_reverse(payload: str) -> str {
+    let n = len(payload)
+    let mut out = ""
+    let mut i = n - 1
+    while i >= 0 {
+        out = out + substr(payload, i, i + 1)
+        i = i - 1
+    }
+    return out
+}
+
+fn agent_count(payload: str) -> str {
+    return "len=" + to_string(len(payload))
+}
+
+fn agent_echo(payload: str) -> str {
+    return payload
+}
+
+// A flaky subagent that fails when payload contains the word "fail",
+// otherwise echoes "fixed: " + payload. Used to exercise the retry
+// loop -- in a real system this would be a remote tool call.
+fn agent_flaky(payload: str, attempt: i64) -> str {
+    if attempt < 2 {
+        // first attempt: fail
+        return "ERR: transient"
+    }
+    return "fixed: " + payload
+}
+
+// --- dispatcher ----------------------------------------------------------
+
+fn dispatch(name: str, payload: str, attempt: i64) -> str {
+    if name == "uppercase" {
+        return agent_uppercase(payload)
+    } elif name == "reverse" {
+        return agent_reverse(payload)
+    } elif name == "count" {
+        return agent_count(payload)
+    } elif name == "echo" {
+        return agent_echo(payload)
+    } elif name == "flaky" {
+        return agent_flaky(payload, attempt)
+    }
+    return "ERR: unknown subagent: " + name
+}
+
+fn run_step_with_retry(step: Step, max_attempts: i64) -> StepResult {
+    let mut attempt = 1
+    let mut output = ""
+    while attempt <= max_attempts {
+        output = dispatch(step.subagent, step.payload, attempt)
+        if !starts_with(output, "ERR:") {
+            return StepResult {
+                subagent: step.subagent,
+                payload: step.payload,
+                output: output,
+                ok: true,
+                attempts: attempt
+            }
+        }
+        attempt = attempt + 1
+    }
+    return StepResult {
+        subagent: step.subagent,
+        payload: step.payload,
+        output: output,
+        ok: false,
+        attempts: max_attempts
+    }
+}
+
+fn format_result(r: StepResult) -> str {
+    let status = "ok"
+    if !r.ok {
+        status = "fail"
+    }
+    return "[" + status + " a=" + to_string(r.attempts) + "] "
+        + r.subagent + "(" + r.payload + ") -> " + r.output
+}
+
+fn main() {
+    let plan = [
+        Step { subagent: "uppercase", payload: "hello kryos" },
+        Step { subagent: "reverse",   payload: "agent" },
+        Step { subagent: "count",     payload: "abcdef" },
+        Step { subagent: "echo",      payload: "static" },
+        Step { subagent: "flaky",     payload: "data" },
+        Step { subagent: "nope",      payload: "ignored" }
+    ]
+
+    let n = len(plan)
+    let mut ok_count = 0
+    let mut fail_count = 0
+    let mut i = 0
+    while i < n {
+        let r = run_step_with_retry(plan[i], 3)
+        println(format_result(r))
+        if r.ok {
+            ok_count = ok_count + 1
+        } else {
+            fail_count = fail_count + 1
+        }
+        i = i + 1
+    }
+    println("---")
+    println("done: " + to_string(ok_count) + " ok / " + to_string(fail_count) + " fail")
+}

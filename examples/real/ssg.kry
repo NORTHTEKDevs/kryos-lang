@@ -1,0 +1,230 @@
+// Static site generator.
+//
+// Reads a list of .md files, converts a small subset of markdown to
+// HTML, wraps each in a template, and writes the results to an
+// output directory. Also produces an index page listing the posts.
+//
+// Usage:
+//   kryos run examples/real/ssg.kry <output_dir> <file.md> [<file.md> ...]
+//
+// Markdown supported:
+//   # H1          -> <h1>...</h1>
+//   ## H2         -> <h2>...</h2>
+//   ### H3        -> <h3>...</h3>
+//   blank line    -> paragraph break
+//   `code`        -> <code>...</code>
+//   **bold**      -> <strong>...</strong>
+//   regular text  -> wrapped in <p>...</p>
+//
+// Not a full CommonMark implementation -- just enough to demonstrate
+// that you can write a static site generator in Kryos without leaning
+// on a host language.
+
+fn html_escape(s: str) -> str {
+    let mut out = ""
+    let n = len(s)
+    let mut i = 0
+    while i < n {
+        let c = substr(s, i, i + 1)
+        if c == "<" {
+            out = out + "&lt;"
+        } elif c == ">" {
+            out = out + "&gt;"
+        } elif c == "&" {
+            out = out + "&amp;"
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Replace all occurrences of `find` in `s` with `repl`. Used for
+// `code` and **bold** inline formatting.
+fn replace_all(s: str, find: str, repl: str) -> str {
+    let parts = split(s, find)
+    let n = len(parts)
+    if n <= 1 {
+        return s
+    }
+    let mut out = parts[0]
+    let mut i = 1
+    while i < n {
+        out = out + repl + parts[i]
+        i = i + 1
+    }
+    return out
+}
+
+// Apply alternating wrap: turn the first occurrence of `marker` into
+// `open`, the second into `close`, third into `open`, etc.
+fn alternating_wrap(s: str, marker: str, open: str, close: str) -> str {
+    let parts = split(s, marker)
+    let n = len(parts)
+    if n <= 1 {
+        return s
+    }
+    let mut out = parts[0]
+    let mut i = 1
+    while i < n {
+        if i % 2 == 1 {
+            out = out + open + parts[i]
+        } else {
+            out = out + close + parts[i]
+        }
+        i = i + 1
+    }
+    return out
+}
+
+fn render_inline(line: str) -> str {
+    let escaped = html_escape(line)
+    // Bold uses `**` -- a two-character marker. alternating_wrap accepts
+    // any string marker.
+    let bolded = alternating_wrap(escaped, "**", "<strong>", "</strong>")
+    let coded = alternating_wrap(bolded, "`", "<code>", "</code>")
+    return coded
+}
+
+fn render_markdown(md: str) -> str {
+    let lines = split(md, "\n")
+    let n = len(lines)
+    let mut out = ""
+    let mut in_para = false
+    let mut i = 0
+    while i < n {
+        let raw = lines[i]
+        let line = trim(raw)
+        if line == "" {
+            if in_para {
+                out = out + "</p>\n"
+                in_para = false
+            }
+        } elif starts_with(line, "### ") {
+            if in_para {
+                out = out + "</p>\n"
+                in_para = false
+            }
+            out = out + "<h3>" + render_inline(substr(line, 4, len(line))) + "</h3>\n"
+        } elif starts_with(line, "## ") {
+            if in_para {
+                out = out + "</p>\n"
+                in_para = false
+            }
+            out = out + "<h2>" + render_inline(substr(line, 3, len(line))) + "</h2>\n"
+        } elif starts_with(line, "# ") {
+            if in_para {
+                out = out + "</p>\n"
+                in_para = false
+            }
+            out = out + "<h1>" + render_inline(substr(line, 2, len(line))) + "</h1>\n"
+        } else {
+            if !in_para {
+                out = out + "<p>"
+                in_para = true
+            } else {
+                out = out + " "
+            }
+            out = out + render_inline(line)
+        }
+        i = i + 1
+    }
+    if in_para {
+        out = out + "</p>\n"
+    }
+    return out
+}
+
+fn wrap_page(title: str, body: str) -> str {
+    return "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>"
+        + html_escape(title)
+        + "</title>\n<style>body\{max-width:42rem;margin:2rem auto;font-family:system-ui,sans-serif;line-height:1.5;padding:0 1rem;color:#222\}code\{background:#eee;padding:0 .25rem;border-radius:.25rem\}a\{color:#0a5}</style>\n"
+        + "</head><body>\n"
+        + body
+        + "\n<p><a href=\"index.html\">&larr; back</a></p></body></html>\n"
+}
+
+fn page_slug(filename: str) -> str {
+    // strip ".md" suffix; strip leading path components if present.
+    let name = filename
+    let parts = split(name, "/")
+    let base = parts[len(parts) - 1]
+    let bn = len(base)
+    if bn > 3 {
+        let tail = substr(base, bn - 3, bn)
+        if tail == ".md" {
+            return substr(base, 0, bn - 3)
+        }
+    }
+    return base
+}
+
+fn extract_title(md: str) -> str {
+    let lines = split(md, "\n")
+    let n = len(lines)
+    let mut i = 0
+    while i < n {
+        let line = trim(lines[i])
+        if starts_with(line, "# ") {
+            return substr(line, 2, len(line))
+        }
+        i = i + 1
+    }
+    return "untitled"
+}
+
+fn build_index(titles: [str], slugs: [str]) -> str {
+    let mut body = "<h1>Posts</h1>\n<ul>\n"
+    let n = len(titles)
+    let mut i = 0
+    while i < n {
+        body = body + "<li><a href=\"" + slugs[i] + ".html\">" + html_escape(titles[i]) + "</a></li>\n"
+        i = i + 1
+    }
+    body = body + "</ul>\n"
+    return body
+}
+
+fn main() {
+    let argv = args()
+    let argc = len(argv)
+    if argc < 3 {
+        println("usage: kryos run ssg.kry <output_dir> <file.md> [<file.md> ...]")
+        exit(1)
+    }
+    let dst = argv[1]
+
+    if file_exists(dst) == 0 {
+        create_dir(dst)
+    }
+
+    let titles: [str] = []
+    let slugs: [str] = []
+    let mut i = 2
+    while i < argc {
+        let full = argv[i]
+        if file_exists(full) == 0 {
+            println("skip (not found): " + full)
+            i = i + 1
+            continue
+        }
+        let md = read_file(full)
+        let title = extract_title(md)
+        let slug = page_slug(full)
+        let html_body = render_markdown(md)
+        let page = wrap_page(title, html_body)
+        let out_path = dst + "/" + slug + ".html"
+        write_file(out_path, page)
+        push(titles, title)
+        push(slugs, slug)
+        println("wrote " + out_path)
+        i = i + 1
+    }
+
+    let index_body = build_index(titles, slugs)
+    let index = wrap_page("Index", index_body)
+    write_file(dst + "/index.html", index)
+    println("wrote " + dst + "/index.html")
+    println("done (" + to_string(len(titles)) + " posts)")
+}

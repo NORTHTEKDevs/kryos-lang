@@ -3835,6 +3835,12 @@ fn translate_rvalue<M: Module>(
                             // both the source and destination own the allocation
                             // and `kryos_array_free` only frees when the last
                             // owner drops it.
+                            //
+                            // For strings (which are not ref-counted), clone so each
+                            // struct field owns an independent allocation. Otherwise
+                            // aliased sources (e.g. `let o = ident(p); Box{a: p, b: o}`
+                            // where `ident` returns its argument) put the same pointer
+                            // in two fields and double-free on drop.
                             let field_mir_ty = struct_def
                                 .iter()
                                 .find(|(n, _)| n == field_name)
@@ -3849,6 +3855,17 @@ fn translate_rvalue<M: Module>(
                                         1,
                                     )?;
                                     let c = builder.ins().call(retain_ref, &[val]);
+                                    builder.inst_results(c)[0]
+                                }
+                                Some(MirType::Str) => {
+                                    let clone_ref = ensure_func_ref_with_args(
+                                        "kryos_string_clone",
+                                        builder,
+                                        translator,
+                                        module,
+                                        1,
+                                    )?;
+                                    let c = builder.ins().call(clone_ref, &[val]);
                                     builder.inst_results(c)[0]
                                 }
                                 _ => val,

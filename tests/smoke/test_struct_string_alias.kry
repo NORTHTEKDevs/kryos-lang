@@ -1,0 +1,25 @@
+// Regression: aliased strings stored in struct fields must not double-free.
+// Bug: `ident(p)` returns its parameter; storing both `p` and the result
+// of `ident(p)` in struct fields caused both to share a pointer and
+// double-free on drop.
+
+struct Pair {
+    a: str,
+    b: str
+}
+
+fn ident(s: str) -> str { return s }
+
+fn make_pair(p: str) -> Pair {
+    let o = ident(p)
+    return Pair { a: p, b: o }
+}
+
+fn main() {
+    let mut i = 0
+    while i < 5 {
+        let r = make_pair("payload" + to_string(i))
+        println(r.a + "+" + r.b)
+        i = i + 1
+    }
+}
