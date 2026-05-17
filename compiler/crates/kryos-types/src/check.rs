@@ -519,11 +519,18 @@ impl TypeChecker {
                         }
                     })
                     .collect();
-                // Register each method as a standalone function so check_decl
-                // can look it up and bind params (including `self`) correctly.
-                for sig in &method_sigs {
-                    self.env.define_function(sig.clone());
-                }
+                // Impl methods are NOT registered as global functions.
+                // They live only in the `impls` map and are looked up via
+                // `lookup_method`. The per-impl-method check site below
+                // pushes a scope and defines the method signature there,
+                // so `check_decl(Function)` can find the right param types
+                // (including `self`) while checking the method body.
+                //
+                // This avoids polluting the global namespace: a stdlib impl
+                // method named `push` no longer shadows the `push` builtin
+                // for unrelated call sites — including call sites inside
+                // sibling impl method bodies.
+                let _ = &method_sigs;
 
                 // If this is a trait impl, inherit default methods from the
                 // trait that are not explicitly overridden in this impl block.
@@ -559,7 +566,9 @@ impl TypeChecker {
                                     params: rewritten_params,
                                     ret: trait_method.ret.clone(),
                                 };
-                                self.env.define_function(default_sig.clone());
+                                // Inherited trait defaults: also kept out of
+                                // the global function table; available via
+                                // method/static-method lookup only.
                                 all_method_sigs.push(default_sig);
                             }
                         }
@@ -761,28 +770,68 @@ impl TypeChecker {
                         Some(ref ty),
                         Decl::Function {
                             name: mname,
-                            body: Some(_),
+                            body: Some(body),
+                            params: m_params,
+                            ret_ty: m_ret,
+                            generics: m_generics,
                             ..
                         },
                     ) = (&target_ty, method)
                     {
-                        // Push scope, bind `self` to the concrete target type,
-                        // then check the method body normally.
+                        // Check the method body inline, binding `self` and
+                        // the rest of the params directly from the impl's
+                        // signature — without registering the method as a
+                        // global function (which would shadow same-named
+                        // builtins inside the body).
                         self.env.push_scope();
                         self.env.define_var("self".to_string(), ty.clone());
-                        // Re-register the correct method signature for this
-                        // specific impl in the inner scope.  Methods with the
-                        // same name across different impl blocks (e.g. two
-                        // structs implementing the same trait) are registered
-                        // globally during the registration pass, where the last
-                        // impl overwrites earlier ones.  By placing the correct
-                        // per-impl signature here, lookup_function(name) inside
-                        // check_decl(Function) will find it first, ensuring
-                        // `self` and other params resolve to the right types.
-                        if let Some(sig) = self.env.lookup_method(target, mname).cloned() {
-                            self.env.define_function(sig);
+
+                        // Bind generics so param/return types resolve.
+                        for gp in m_generics {
+                            let tv = self.engine.fresh_var();
+                            self.env.define_var(gp.name.clone(), tv);
                         }
-                        self.check_decl(method);
+
+                        // Bind non-self params using the impl method's
+                        // recorded signature when available (preserves the
+                        // exact types used elsewhere), otherwise resolve
+                        // them directly from the AST.
+                        if let Some(sig) = self.env.lookup_method(target, mname).cloned() {
+                            for (pname, pty) in &sig.params {
+                                if pname == "self" {
+                                    continue;
+                                }
+                                self.env.define_var(pname.clone(), pty.clone());
+                            }
+                            let prev_ret = self.current_return_type.take();
+                            self.current_return_type = Some(sig.ret.clone());
+                            let prev_fn = self.current_function_name.take();
+                            self.current_function_name = Some(mname.clone());
+                            self.check_block(body);
+                            self.current_function_name = prev_fn;
+                            self.current_return_type = prev_ret;
+                        } else {
+                            for param in m_params {
+                                if param.name == "self" {
+                                    continue;
+                                }
+                                let ty = param
+                                    .ty
+                                    .as_ref()
+                                    .map(|t| self.resolve_type_expr(t))
+                                    .unwrap_or_else(|| self.engine.fresh_var());
+                                self.env.define_var(param.name.clone(), ty);
+                            }
+                            let prev_ret = self.current_return_type.take();
+                            self.current_return_type =
+                                m_ret.as_ref().map(|t| self.resolve_type_expr(t));
+                            let prev_fn = self.current_function_name.take();
+                            self.current_function_name = Some(mname.clone());
+                            self.check_block(body);
+                            self.current_function_name = prev_fn;
+                            self.current_return_type = prev_ret;
+                        }
+
                         self.env.pop_scope();
                     } else {
                         self.check_decl(method);
@@ -1420,6 +1469,20 @@ impl TypeChecker {
                             && args.len() == 1
                             && params.len() == 2;
 
+                        // Opaque any-callable shape produced by bare `fn`
+                        // type annotations: `fn(any) -> any`. Skip arity and
+                        // parameter-type checking entirely. We still infer
+                        // each argument so its own type errors surface.
+                        let is_opaque_callable = params.len() == 1
+                            && matches!(&params[0], Type::Error)
+                            && matches!(ret.as_ref(), Type::Error);
+                        if is_opaque_callable {
+                            for arg in args.iter() {
+                                let _ = self.infer_expr(arg);
+                            }
+                            return *ret.clone();
+                        }
+
                         if !is_assert_1arg && args.len() != params.len() {
                             let fn_name = match callee_name_str {
                                 Some(ref n) => format!("`{n}`"),
@@ -1461,6 +1524,24 @@ impl TypeChecker {
                 args,
                 span,
             } => {
+                // If the receiver is a bare identifier that names a struct or
+                // enum (not a value in scope), treat the call as a static
+                // method/associated-function call. This makes `List.new()`,
+                // `Map.new()` etc. work the same as `List::new()`.
+                if let Expr::Identifier { name: ident, .. } = object.as_ref() {
+                    let is_var = self.env.lookup_var(ident).is_some();
+                    let is_type = self.env.lookup_struct(ident).is_some()
+                        || self.env.lookup_enum(ident).is_some();
+                    if !is_var && is_type {
+                        let static_call = Expr::StaticMethodCall {
+                            type_name: ident.clone(),
+                            method: method.clone(),
+                            args: args.clone(),
+                            span: *span,
+                        };
+                        return self.infer_expr(&static_call);
+                    }
+                }
                 let obj_ty = self.infer_expr(object);
                 let obj_ty = self.engine.resolve(&obj_ty);
 
@@ -1586,6 +1667,16 @@ impl TypeChecker {
                         ret: fn_ret,
                     }) = self.env.lookup_field(tname, method).cloned()
                     {
+                        // Opaque callable (bare `fn` type) accepts any arity.
+                        let is_opaque = fn_params.len() == 1
+                            && matches!(&fn_params[0], Type::Error)
+                            && matches!(fn_ret.as_ref(), Type::Error);
+                        if is_opaque {
+                            for arg in args.iter() {
+                                let _ = self.infer_expr(arg);
+                            }
+                            return *fn_ret;
+                        }
                         if args.len() != fn_params.len() {
                             self.error(
                                 format!(
@@ -2455,6 +2546,24 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         generic_var_ids: vec![],
         params: vec![],
         ret: Type::I64,
+    });
+
+    // sleep(ms: i64) -> void — block the current task for `ms` milliseconds
+    checker.env.define_function(FunctionSig {
+        name: "sleep".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("ms".to_string(), Type::I64)],
+        ret: Type::Void,
+    });
+
+    // close_chan(ch: chan) -> void — close a channel (further sends panic, recvs drain then 0)
+    checker.env.define_function(FunctionSig {
+        name: "close_chan".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("ch".to_string(), Type::I64)],
+        ret: Type::Void,
     });
 
     // assert(condition: bool, msg: str) -> void — abort if condition is false

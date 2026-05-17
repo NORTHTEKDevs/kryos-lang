@@ -270,6 +270,13 @@ impl InferenceEngine {
             }
 
             // Function: same arity, pairwise param + return unification.
+            //
+            // The bare `fn` type (produced by the parser when no signature
+            // follows the `fn` keyword) encodes an opaque any-callable as
+            // `fn(any) -> any` (after type resolution, that's a function
+            // type whose single parameter and return are both Type::Error).
+            // Any concrete function type unifies with the opaque callable
+            // without arity or parameter-type checking.
             (
                 Type::Function {
                     params: p1,
@@ -280,6 +287,14 @@ impl InferenceEngine {
                     ret: r2,
                 },
             ) => {
+                let is_opaque = |params: &Vec<Type>, ret: &Box<Type>| -> bool {
+                    params.len() == 1
+                        && matches!(&params[0], Type::Error)
+                        && matches!(ret.as_ref(), Type::Error)
+                };
+                if is_opaque(p1, r1) || is_opaque(p2, r2) {
+                    return Ok(());
+                }
                 if p1.len() != p2.len() {
                     return Err(Diagnostic::error(format!(
                         "function parameter count mismatch: {} vs {}",

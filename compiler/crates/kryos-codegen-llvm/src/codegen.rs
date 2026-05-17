@@ -3143,6 +3143,8 @@ impl LlvmCodegen {
                                 "time_now_secs" => "kryos_time_now_secs",
                                 "time_now_millis" => "kryos_time_now_millis",
                                 "sleep_ms" => "kryos_sleep_ms",
+                                "sleep" => "kryos_sleep",
+                                "close_chan" => "kryos_chan_close_i64",
                                 // Regex
                                 "regex_new" => "kryos_regex_new_ks",
                                 "regex_match" => "kryos_regex_is_match_ks",

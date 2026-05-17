@@ -230,18 +230,16 @@ fn to_array(r: Result) -> [any] {
 
 /// Apply a function to the Ok value for side effects, return unchanged.
 fn inspect(r: Result, f: fn) -> Result {
-    match r {
-        Result.Ok(v) => f(v),
-        Result.Err(_) => {},
+    if is_ok(r) {
+        f(unwrap(r))
     }
     return r
 }
 
 /// Apply a function to the Err value for side effects, return unchanged.
 fn inspect_err(r: Result, f: fn) -> Result {
-    match r {
-        Result.Ok(_) => {},
-        Result.Err(e) => f(e),
+    if is_err(r) {
+        f(unwrap_err(r))
     }
     return r
 }
@@ -272,14 +270,16 @@ fn contains_err(r: Result, val: any) -> bool {
 
 // --- Try pattern -------------------------------------------------------------
 
-/// Execute a function, capturing the result or any thrown error as a Result.
+/// Execute a function and wrap its return value as Ok.
+///
+/// The language does not currently support exception-style error capture, so
+/// a function that panics will abort the process before this can wrap it.
+/// Treat this as a convenience constructor: pass functions whose errors are
+/// returned as values (e.g. wrap a Result-returning call) and use
+/// `map_err` / `or_else` to transform them.
 fn try_fn(f: fn) -> Result {
-    try {
-        let val = f()
-        return Result.Ok(val)
-    } catch (e) {
-        return Result.Err(e)
-    }
+    let val = f()
+    return Result.Ok(val)
 }
 
 /// Collect an array of Results into a single Result.

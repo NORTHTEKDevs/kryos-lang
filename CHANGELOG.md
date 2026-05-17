@@ -4,6 +4,130 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.3.3] - 2026-05-17 — "Stdlib continuation: parser and checker primitives, 10 more modules type-check"
+
+Follow-on maintenance release after 2.3.2. No breaking changes. Adds
+foundational parser/checker primitives that several stdlib modules
+relied on, and finishes the surface-level cleanup of the modules
+those primitives unblock.
+
+After this release, 21 of 31 stdlib modules type-check cleanly:
+`agent`, `chan`, `collections`, `cost`, `datetime`, `ffi`, `fmt`,
+`http`, `iter`, `json`, `math`, `option`, `path`, `probable`,
+`result`, `stream`, `string`, `sync`, `tensor`, `test`, `wasm`.
+The remaining 10 (`crypto`, `db`, `fs`, `io`, `net`, `os`,
+`process`, `re`, `term`, `tracked`) still depend on lower-level
+builtins or syntax that is not yet implemented and are tracked
+separately.
+
+### Added
+
+- **`sleep(ms: i64) -> void` builtin.** Wired through the
+  type-checker, MIR, and LLVM codegen (maps to the existing
+  `kryos_sleep` runtime entry). Already used by `std::chan` for
+  timeouts and tickers; previously only the lower-level
+  `sleep_ms` was reachable.
+- **`close_chan(ch: i64) -> void` builtin.** Maps to the existing
+  `kryos_chan_close_i64` runtime hook. Lets channel users mark a
+  channel closed from Kryos code without dropping into FFI.
+- **Bare `fn` type as an opaque callable.** Function-typed struct
+  fields and parameters declared as `fn` (with no following
+  parameter list) are now accepted by the type checker and treated
+  as an opaque callable. Call sites and field-call sites bypass
+  arity/argument checking for the opaque-callable shape. This is
+  the type that `std::chan` uses for `SelectCase.handler`,
+  `fan_out`'s `handler`, and friends.
+- **`catch (name)` syntax** in `try` / `catch`. Both `catch name`
+  and `catch (name)` now parse, matching the form used in several
+  stdlib modules.
+
+### Fixed
+
+- **Empty match-arm body parses as `void`, not `MapLiteral`.**
+  `_ => {}` arms (used heavily in `std::result` and `std::test`)
+  previously parsed the `{}` as an empty map-literal expression,
+  causing spurious type errors. The parser now detects the
+  `{` `}` token pair in match-arm body context and emits an empty
+  block expression instead.
+- **`throw` inside match arms desugars to `assert(false, msg)`.**
+  Functions like `Result::unwrap` and `Option::unwrap` use `throw`
+  inside individual arms to signal failure. The parser now
+  rewrites those into `assert(false, ...)` calls so the modules
+  type-check without requiring a full exception runtime.
+- **`MethodCall` on a bare type name routes to `StaticMethodCall`.**
+  `List.new()` and similar `Type.method()` calls (the form used
+  throughout `std::collections`) previously failed because the
+  parser produced a `MethodCall` AST node with an `Identifier`
+  receiver, but only `::` static calls were recognised. Both the
+  type checker and the MIR lowerer now detect this shape and
+  rewrite to the equivalent `Type__method` static call. Closes a
+  long-standing inconsistency between `Type.method` (expression
+  position) and `Type::method`.
+- **Impl methods no longer pollute the global function namespace.**
+  Defining `impl Foo { fn bar(...) }` used to register `bar` as a
+  free function as well, causing name collisions when multiple
+  impls used the same method name (e.g. `len`, `push`). Methods
+  now live only in the per-type impl table and are looked up via
+  `lookup_method` from method/static-call positions.
+- **`std::chan` rewritten to compile against the available
+  channel primitives.** Removed `throw` outside of match arms
+  (now `assert(condition, msg)`), removed `try` / `catch`
+  blocks around `send` / `recv` (the runtime aborts on closed-
+  channel send, which is the desired semantics), replaced the
+  inline literal `{ ... }` blocks inside `select` with a
+  round-robin poll over the dynamic `[SelectCase]` array,
+  dropped the placeholder `shared bool` annotation on
+  `Channel.is_closed`, and reshaped `try_receive` to return a
+  named `TryRecv { ok, value }` struct.
+- **`std::collections` no longer shadows the built-in `Map<K,V>`
+  type.** Renamed the user-defined struct `Map` → `Dict`. The
+  builtin generic `Map` was being hijacked by the stdlib
+  definition, causing every map literal to fail to type-check.
+  Also rewrote the impl methods to use the new
+  `Type.method`/`Type::method` static-call rewrite and removed
+  the lingering `map_get` / `map_set` builtin references.
+- **`std::test` cleaned up.** `try` / `catch` was using
+  parenthesised `catch (e)` form; that now parses thanks to the
+  added syntax. `null` assertions renamed to
+  `assert_empty` / `assert_not_empty` (the language has no
+  nullable primitive). `time_ms` calls migrated to the
+  available `time_now`. Elapsed-time arithmetic switched from
+  `f64` to `i64` to match the builtin's return type.
+  `test.fn` field renamed to `test.body_fn` to avoid the `fn`
+  keyword in field-access position. Loop bodies restructured to
+  tally before consuming the test value.
+- **`std::option` / `std::result` / `std::iter` finalised.**
+  `none` renamed to `none_value` (since `none` is a reserved
+  keyword), `throw` removed outside of match arms, `fn`-arity
+  mismatches and `map_get` / `map_set` references replaced with
+  the corresponding indexing expressions. (Started in 2.3.2,
+  finished here.)
+- **`std::sync`, `std::tensor`, `std::stream` surface fixes.**
+  `mutex_new`'s null check removed (the runtime aborts on
+  allocation failure already, and `*mut void` cannot be
+  compared to an integer literal), `AtomicInt::increment` and
+  `decrement` reshaped to avoid spurious move-after-store
+  errors, `tensor_arange` declared with `i64` parameters to
+  match the runtime ABI, and `stream_concat`/`stream_from_list`
+  / `stream_from_range` updated to bind the array length to a
+  local before constructing the `Stream` so the array isn't
+  observed after move.
+- **Regex literals in `std::re`** now use `\{` / `\}` brace
+  escapes so that quantifiers like `\d{1,3}` and `[a-zA-Z]{2,}`
+  parse as intended. (Module still has other unrelated issues
+  and remains in the broken list.)
+
+### Notes
+
+The 10 still-broken stdlib modules need lower-level primitives
+that have not been built yet: a `null` value comparable to
+`*mut void` handles (or runtime-side null-aborting allocators
+everywhere), `str_to_ptr`/`buf_set_byte` and the bytestring
+family, the `!` never type for `exit_error`, capability syntax
+(`@capabilities(net)` and friends), and a few module-specific
+builtins. They are intentionally left out of this release so
+2.3.3 can ship the work that is actually done.
+
 ## [2.3.2] - 2026-05-17 — "Audit pass: stdlib surface fixes, type resolution, pattern syntax"
 
 Maintenance release driven by an end-to-end audit of every example and

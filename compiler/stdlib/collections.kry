@@ -1,7 +1,7 @@
 // ============================================================
 // std.collections -- Data structures
 //
-// Provides List, Map, Set, Stack, Queue, and Deque types
+// Provides List, Dict, Set, Stack, Queue, and Deque types
 // implemented in pure Kryos using arrays and maps as backing
 // storage.
 //
@@ -255,121 +255,121 @@ impl List {
 }
 
 // =========================================================================
-// Map -- Key-value store with string keys
+// Dict -- Key-value store with string keys
 // =========================================================================
 
-struct Map {
+struct Dict {
     store: any,
     length: i64
 }
 
-impl Map {
+impl Dict {
     /// Create an empty map.
-    fn new() -> Map {
-        return Map { store: {}, length: 0 }
+    fn new() -> Dict {
+        return Dict { store: {}, length: 0 }
     }
 
     /// Create a map from an existing object.
-    fn from(obj: any) -> Map {
+    fn from(obj: any) -> Dict {
         let keys = map_keys(obj)
         let klen = len(keys)
         let mut store = {}
         let mut i = 0
         while i < klen {
-            map_set(store, keys[i], map_get(obj, keys[i]))
+            store[keys[i]] = obj[keys[i]]
             i = i + 1
         }
-        return Map { store: store, length: klen }
+        return Dict { store: store, length: klen }
     }
 
     /// Set a key-value pair. Returns the map for chaining.
-    fn set(self: Map, key: str, val: any) -> Map {
+    fn set(self: Dict, key: str, val: any) -> Dict {
         let existed = map_has(self.store, key)
-        map_set(self.store, key, val)
+        self.store[key] = val
         if not existed {
-            return Map { store: self.store, length: self.length + 1 }
+            return Dict { store: self.store, length: self.length + 1 }
         }
         return self
     }
 
     /// Get the value for a key. Throws if key not found.
-    fn get(self: Map, key: str) -> any {
+    fn get(self: Dict, key: str) -> any {
         if not map_has(self.store, key) {
-            throw "Map.get: key not found: " + key
+            throw "Dict.get: key not found: " + key
         }
-        return map_get(self.store, key)
+        return self.store[key]
     }
 
     /// Get the value for a key, or return a default.
-    fn get_or(self: Map, key: str, default: any) -> any {
+    fn get_or(self: Dict, key: str, default: any) -> any {
         if map_has(self.store, key) {
-            return map_get(self.store, key)
+            return self.store[key]
         }
         return default
     }
 
     /// True if the key exists in the map.
-    fn has(self: Map, key: str) -> bool {
+    fn has(self: Dict, key: str) -> bool {
         return map_has(self.store, key)
     }
 
     /// Remove a key. Returns the map for chaining.
-    fn delete(self: Map, key: str) -> Map {
+    fn delete(self: Dict, key: str) -> Dict {
         if map_has(self.store, key) {
             map_delete(self.store, key)
-            return Map { store: self.store, length: self.length - 1 }
+            return Dict { store: self.store, length: self.length - 1 }
         }
         return self
     }
 
     /// Get all keys as an array.
-    fn keys(self: Map) -> [str] {
+    fn keys(self: Dict) -> [str] {
         return map_keys(self.store)
     }
 
     /// Get all values as an array.
-    fn values(self: Map) -> [any] {
+    fn values(self: Dict) -> [any] {
         let keys = map_keys(self.store)
         let mut vals = []
         let klen = len(keys)
         let mut i = 0
         while i < klen {
-            push(vals, map_get(self.store, keys[i]))
+            push(vals, self.store[keys[i]])
             i = i + 1
         }
         return vals
     }
 
     /// Get all entries as an array of [key, value] pairs.
-    fn entries(self: Map) -> [any] {
+    fn entries(self: Dict) -> [any] {
         let keys = map_keys(self.store)
         let mut result = []
         let klen = len(keys)
         let mut i = 0
         while i < klen {
-            push(result, [keys[i], map_get(self.store, keys[i])])
+            push(result, [keys[i], self.store[keys[i]]])
             i = i + 1
         }
         return result
     }
 
     /// Number of key-value pairs.
-    fn len(self: Map) -> i64 {
+    fn len(self: Dict) -> i64 {
         return self.length
     }
 
     /// True if the map has no entries.
-    fn is_empty(self: Map) -> bool {
+    fn is_empty(self: Dict) -> bool {
         return self.length == 0
     }
 
     /// Remove all entries.
-    fn clear(self: Map) -> Map {
-        return Map { store: {}, length: 0 }
+    fn clear(self: Dict) -> Dict {
+        return Dict { store: {}, length: 0 }
     }
 
     /// Merge another map into this one (other's values override).
-    fn merge(self: Map, other: Map) -> Map {
+    fn merge(self: Dict, other: Dict) -> Dict {
         let keys = map_keys(other.store)
         let klen = len(keys)
         let mut new_store = self.store
@@ -380,25 +380,25 @@ impl Map {
             if not map_has(new_store, k) {
                 new_length = new_length + 1
             }
-            map_set(new_store, k, map_get(other.store, k))
+            new_store[k] = other.store[k]
             i = i + 1
         }
-        return Map { store: new_store, length: new_length }
+        return Dict { store: new_store, length: new_length }
     }
 
     /// Convert to a display string.
-    fn to_string(self: Map) -> str {
+    fn to_string(self: Dict) -> str {
         let keys = map_keys(self.store)
         let klen = len(keys)
         let mut parts = []
         let mut i = 0
         while i < klen {
             let k = keys[i]
-            let v = map_get(self.store, k)
+            let v = self.store[k]
             push(parts, k + ": " + to_string(v))
             i = i + 1
         }
-        let mut result = "{"
+        let mut result = "\{"
         let mut j = 0
         while j < len(parts) {
             if j > 0 {
@@ -407,7 +407,7 @@ impl Map {
             result = result + parts[j]
             j = j + 1
         }
-        return result + "}"
+        return result + "\}"
     }
 }
 
@@ -435,7 +435,7 @@ impl Set {
         while i < alen {
             let key = to_string(arr[i])
             if not map_has(store, key) {
-                map_set(store, key, arr[i])
+                store[key] = arr[i]
                 count = count + 1
             }
             i = i + 1
@@ -447,7 +447,7 @@ impl Set {
     fn add(self: Set, val: any) -> Set {
         let key = to_string(val)
         if not map_has(self.store, key) {
-            map_set(self.store, key, val)
+            self.store[key] = val
             return Set { store: self.store, length: self.length + 1 }
         }
         return self
@@ -554,7 +554,7 @@ impl Set {
         let klen = len(keys)
         let mut i = 0
         while i < klen {
-            push(result, map_get(self.store, keys[i]))
+            push(result, self.store[keys[i]])
             i = i + 1
         }
         return result
@@ -569,7 +569,7 @@ impl Set {
     fn to_string(self: Set) -> str {
         let items = self.to_list()
         let ilen = len(items)
-        let mut result = "Set{"
+        let mut result = "Set\{"
         let mut i = 0
         while i < ilen {
             if i > 0 {
@@ -578,7 +578,7 @@ impl Set {
             result = result + to_string(items[i])
             i = i + 1
         }
-        return result + "}"
+        return result + "\}"
     }
 }
 

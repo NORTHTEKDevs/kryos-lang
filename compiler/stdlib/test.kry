@@ -52,17 +52,20 @@ fn assert_false(val: bool) -> void {
     }
 }
 
-/// Assert that a value is null.
-fn assert_null(val: any) -> void {
-    if val != null {
-        throw "assertion failed: expected null but got " + to_string(val)
+/// Assert that a value is empty/zero. Kryos has no null literal; this checks
+/// against the conventional sentinel values (0, "", []).
+fn assert_empty(val: any) -> void {
+    let s = to_string(val)
+    if s != "" and s != "0" and s != "[]" {
+        throw "assertion failed: expected empty/zero value but got " + s
     }
 }
 
-/// Assert that a value is not null.
-fn assert_not_null(val: any) -> void {
-    if val == null {
-        throw "assertion failed: expected non-null value"
+/// Assert that a value is not empty/zero.
+fn assert_not_empty(val: any) -> void {
+    let s = to_string(val)
+    if s == "" or s == "0" or s == "[]" {
+        throw "assertion failed: expected non-empty value"
     }
 }
 
@@ -199,7 +202,7 @@ enum TestStatus {
 struct TestResult {
     name: str,
     status: TestStatus,
-    elapsed_ms: f64
+    elapsed_ms: i64
 }
 
 struct TestReport {
@@ -209,7 +212,7 @@ struct TestReport {
     passed: i64,
     failed: i64,
     skipped: i64,
-    total_elapsed_ms: f64
+    total_elapsed_ms: i64
 }
 
 // --- Test case definition ----------------------------------------------------
@@ -320,17 +323,17 @@ fn run_test(test: TestCase, before_hook: fn, after_hook: fn) -> TestResult {
         return TestResult {
             name: test.name,
             status: TestStatus.Skipped(test.skip_reason),
-            elapsed_ms: 0.0
+            elapsed_ms: 0
         }
     }
 
-    let start = time_ms()
+    let start = time_now()
     let mut status = TestStatus.Passed
 
     try {
         before_hook()
     } catch (e) {
-        let elapsed = time_ms() - start
+        let elapsed = time_now() - start
         return TestResult {
             name: test.name,
             status: TestStatus.Failed("before_each hook failed: " + to_string(e)),
@@ -356,7 +359,7 @@ fn run_test(test: TestCase, before_hook: fn, after_hook: fn) -> TestResult {
         }
     }
 
-    let elapsed = time_ms() - start
+    let elapsed = time_now() - start
     return TestResult {
         name: test.name,
         status: status,
@@ -366,7 +369,7 @@ fn run_test(test: TestCase, before_hook: fn, after_hook: fn) -> TestResult {
 
 /// Run a complete test suite.  Returns a TestReport.
 fn run_suite(suite: TestSuite) -> TestReport {
-    let suite_start = time_ms()
+    let suite_start = time_now()
     let mut results = []
     let mut passed = 0
     let mut failed = 0
@@ -383,13 +386,13 @@ fn run_suite(suite: TestSuite) -> TestReport {
             let result = TestResult {
                 name: suite.tests[i].name,
                 status: TestStatus.Failed("before_all hook failed: " + to_string(e)),
-                elapsed_ms: 0.0
+                elapsed_ms: 0
             }
             push(results, result)
             failed = failed + 1
             i = i + 1
         }
-        let suite_elapsed = time_ms() - suite_start
+        let suite_elapsed = time_now() - suite_start
         return TestReport {
             suite_name: suite.name,
             results: results,
@@ -406,12 +409,13 @@ fn run_suite(suite: TestSuite) -> TestReport {
     let mut i = 0
     while i < count {
         let result = run_test(suite.tests[i], suite.before_each_hook, suite.after_each_hook)
-        push(results, result)
+        // Tally status before moving `result` into the results array.
         match result.status {
             TestStatus.Passed => { passed = passed + 1 },
             TestStatus.Failed(_) => { failed = failed + 1 },
             TestStatus.Skipped(_) => { skipped = skipped + 1 }
         }
+        push(results, result)
         i = i + 1
     }
 
@@ -422,7 +426,7 @@ fn run_suite(suite: TestSuite) -> TestReport {
         // Log but don't fail tests for after_all
     }
 
-    let suite_elapsed = time_ms() - suite_start
+    let suite_elapsed = time_now() - suite_start
     return TestReport {
         suite_name: suite.name,
         results: results,
@@ -435,9 +439,9 @@ fn run_suite(suite: TestSuite) -> TestReport {
 }
 
 /// Run an array of test functions (simple mode, no suites).
-/// Each entry is {"name": str, "fn": fn}.
+/// Each entry is {"name": str, "body_fn": fn}.
 fn run_tests(tests: [any]) -> TestReport {
-    let suite_start = time_ms()
+    let suite_start = time_now()
     let mut results = []
     let mut passed = 0
     let mut failed = 0
@@ -446,29 +450,37 @@ fn run_tests(tests: [any]) -> TestReport {
     while i < count {
         let test = tests[i]
         let name = test.name
-        let body = test.fn
-        let start = time_ms()
+        let body = test.body_fn
+        let start = time_now()
         let mut status = TestStatus.Passed
+        let mut this_failed = false
         try {
             body()
         } catch (e) {
             status = TestStatus.Failed(to_string(e))
+            this_failed = true
         }
-        let elapsed = time_ms() - start
+        if this_failed {
+            failed = failed + 1
+        } else {
+            passed = passed + 1
+        }
+        let elapsed = time_now() - start
+        // Build TestResult first, then tally via its (moved) status by
+        // re-reading from the pushed result. Since `result` is moved into
+        // `results`, capture the tally signal before construction via a
+        // small boolean flag set inside the try/catch above.
         let result = TestResult {
             name: name,
             status: status,
             elapsed_ms: elapsed
         }
         push(results, result)
-        match status {
-            TestStatus.Passed => { passed = passed + 1 },
-            TestStatus.Failed(_) => { failed = failed + 1 },
-            _ => {}
-        }
+        // Note: passed/failed counters tallied via inspection of `failed`
+        // increments inside the catch block above (status starts Passed).
         i = i + 1
     }
-    let suite_elapsed = time_ms() - suite_start
+    let suite_elapsed = time_now() - suite_start
     return TestReport {
         suite_name: "tests",
         results: results,
@@ -573,17 +585,15 @@ fn _repeat(s: str, n: i64) -> str {
     return result
 }
 
-fn _format_ms(ms: f64) -> str {
-    if ms < 1.0 {
+fn _format_ms(ms: i64) -> str {
+    if ms < 1 {
         return "<1ms"
     }
-    if ms < 1000.0 {
-        return to_string(int(ms)) + "ms"
+    if ms < 1000 {
+        return to_string(ms) + "ms"
     }
-    let seconds = ms / 1000.0
-    // Format to 2 decimal places
-    let whole = int(seconds)
-    let frac = int((seconds - float(whole)) * 100.0)
+    let whole = ms / 1000
+    let frac = (ms / 10) % 100
     let mut frac_str = to_string(frac)
     if frac < 10 {
         frac_str = "0" + frac_str

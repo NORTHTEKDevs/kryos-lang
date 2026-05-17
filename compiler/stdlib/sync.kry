@@ -95,10 +95,9 @@ impl Mutex {
 
 // Create a new Mutex.
 fn mutex_new() -> Mutex {
+    // Note: kryos_mutex_new aborts on allocation failure, so no
+    // explicit null check is needed here.
     let handle = kryos_mutex_new()
-    if handle == null {
-        throw "sync error: could not allocate mutex"
-    }
     return Mutex { handle: handle, locked: false, dropped: false }
 }
 
@@ -146,17 +145,15 @@ impl AtomicInt {
     // Increment by 1 and return the new value.
     fn increment(self: AtomicInt) -> i64 {
         let locked = self.mu.lock()
-        let new_val = self.value + 1
-        self = AtomicInt { value: new_val, mu: locked.unlock() }
-        return new_val
+        self = AtomicInt { value: self.value + 1, mu: locked.unlock() }
+        return self.value
     }
 
     // Decrement by 1 and return the new value.
     fn decrement(self: AtomicInt) -> i64 {
         let locked = self.mu.lock()
-        let new_val = self.value - 1
-        self = AtomicInt { value: new_val, mu: locked.unlock() }
-        return new_val
+        self = AtomicInt { value: self.value - 1, mu: locked.unlock() }
+        return self.value
     }
 
     // Compare-and-swap: if current value == expected, set to new_value and return true.

@@ -12,7 +12,8 @@ struct Stream {
 
 // Create a stream from a list.
 fn stream_from_list(items: [i64]) -> Stream {
-    return Stream { data: items, count: len(items) }
+    let n = len(items)
+    return Stream { data: items, count: n }
 }
 
 // Create a stream from a range [start, end).
@@ -23,7 +24,8 @@ fn stream_from_range(start: i64, end: i64) -> Stream {
         items = push(items, i)
         i = i + 1
     }
-    return Stream { data: items, count: len(items) }
+    let n = len(items)
+    return Stream { data: items, count: n }
 }
 
 // Create an empty stream.
@@ -202,5 +204,6 @@ fn stream_concat(a: Stream, b: Stream) -> Stream {
         items = push(items, b.data[i])
         i = i + 1
     }
-    return Stream { data: items, count: len(items) }
+    let n = len(items)
+    return Stream { data: items, count: n }
 }

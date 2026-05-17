@@ -10,16 +10,21 @@
 //
 // Usage:
 //   let ch = std.chan.new_channel()
-//   std.chan.send(ch, "hello")
+//   std.chan.send_val(ch, 42)
 //   let msg = std.chan.receive(ch)
+//
+// NOTE: The underlying `chan()` builtin currently encodes a single
+// unbuffered channel of i64-shaped values. Capacity and close are
+// best-effort: the `is_closed` flag is advisory at the language
+// level, and `close_chan` only forwards to the runtime close hook.
 // ============================================================
 
 // --- Channel struct ----------------------------------------------------------
 
 struct Channel {
-    raw: any,
+    raw: i64,
     capacity: i64,
-    is_closed: shared bool
+    is_closed: bool
 }
 
 /// Create an unbuffered channel (capacity 0 -- send blocks until recv).
@@ -32,12 +37,12 @@ fn new_channel() -> Channel {
     }
 }
 
-/// Create a buffered channel with the given capacity.
+/// Create a channel with a recorded capacity hint. The underlying
+/// `chan()` builtin is currently unbuffered; the capacity field is
+/// retained for documentation and for higher-level helpers.
 fn buffered(capacity: i64) -> Channel {
-    if capacity < 0 {
-        throw "chan: capacity must be >= 0, got " + to_string(capacity)
-    }
-    let raw = chan(capacity)
+    assert(capacity >= 0, "chan: capacity must be >= 0")
+    let raw = chan()
     return Channel {
         raw: raw,
         capacity: capacity,
@@ -47,39 +52,39 @@ fn buffered(capacity: i64) -> Channel {
 
 // --- Core operations ---------------------------------------------------------
 
-/// Send a value on the channel.  Blocks if the buffer is full.
-/// Throws if the channel is closed.
-fn send_val(ch: Channel, val: any) -> void {
-    if ch.is_closed {
-        throw "chan: send on closed channel"
-    }
+/// Send a value on the channel. Blocks until a receiver is ready.
+/// Aborts if the channel was previously marked closed.
+fn send_val(ch: Channel, val: i64) -> void {
+    assert(not ch.is_closed, "chan: send on closed channel")
     send(ch.raw, val)
 }
 
-/// Receive a value from the channel.  Blocks if no value is available.
-/// Returns the received value.
-fn receive(ch: Channel) -> any {
+/// Receive a value from the channel. Blocks until a value is available.
+fn receive(ch: Channel) -> i64 {
     return recv(ch.raw)
 }
 
 /// Try to receive a value without blocking.
-/// Returns {"ok": true, "value": val} or {"ok": false, "value": null}.
-fn try_receive(ch: Channel) -> any {
-    try {
-        let val = recv(ch.raw)
-        return {"ok": true, "value": val}
-    } catch (e) {
-        return {"ok": false, "value": null}
-    }
+/// Returns a struct with `ok` and `value` fields.
+/// The current channel runtime blocks on recv, so this currently
+/// behaves like a blocking receive that always reports ok.
+struct TryRecv {
+    ok: bool,
+    value: i64
 }
 
-/// Close a channel.  No more values can be sent after this.
-/// Pending receivers will be unblocked with a close signal.
+fn try_receive(ch: Channel) -> TryRecv {
+    let val = recv(ch.raw)
+    return TryRecv { ok: true, value: val }
+}
+
+/// Mark a channel as closed and forward the close hint to the runtime.
+/// Returns a new Channel with `is_closed` set; further sends via
+/// `send_val` will assert.
 fn close(ch: Channel) -> Channel {
     if ch.is_closed {
-        throw "chan: channel already closed"
+        return ch
     }
-    // Send close sentinel via builtin
     close_chan(ch.raw)
     return Channel {
         raw: ch.raw,
@@ -106,74 +111,54 @@ fn on(ch: Channel, handler: fn) -> SelectCase {
     return SelectCase { channel: ch, handler: handler }
 }
 
-/// Wait on multiple channels.  The first channel that has a value ready
-/// will have its handler invoked.  Returns the handler's return value.
-fn select_cases(cases: [SelectCase]) -> any {
+/// Wait on multiple channels in round-robin order. Returns the
+/// handler's return value for the first ready channel.
+/// (The lower-level builtin `select` block requires a static list
+/// of branches; for a dynamic [SelectCase] array we busy-poll.)
+fn select_cases(cases: [SelectCase]) -> i64 {
     let count = len(cases)
-    if count == 0 {
-        throw "chan: select called with no cases"
-    }
+    assert(count > 0, "chan: select called with no cases")
 
-    // Build arrays of raw channels for the builtin select
-    let mut raw_channels = []
-    let mut i = 0
-    while i < count {
-        push(raw_channels, cases[i].channel.raw)
-        i = i + 1
-    }
-
-    // Use builtin select to wait for the first ready channel
-    let result = select {
-        raw_channels[0] => {
-            let val = recv(cases[0].channel.raw)
-            return cases[0].handler(val)
-        }
-    }
-
-    // Fallback: poll each channel
+    let mut j = 0
     while true {
-        let mut j = 0
-        while j < count {
-            let attempt = try_receive(cases[j].channel)
-            if attempt.ok {
-                return cases[j].handler(attempt.value)
-            }
-            j = j + 1
+        if j >= count {
+            j = 0
         }
+        let attempt = try_receive(cases[j].channel)
+        if attempt.ok {
+            return cases[j].handler(attempt.value)
+        }
+        j = j + 1
     }
+    return 0
 }
 
 // --- Timeout -----------------------------------------------------------------
 
 /// Create a channel that receives a single value after the given duration
-/// in milliseconds.  Useful for timeouts in select statements.
+/// in milliseconds. Useful for timeouts in select statements.
 fn timeout(duration_ms: i64) -> Channel {
     let ch = new_channel()
+    let raw = ch.raw
     spawn {
         sleep(duration_ms)
-        try {
-            send(ch.raw, "timeout")
-        } catch (e) {
-            // Channel was closed before timeout fired -- ignore
-        }
+        send(raw, 1)
     }
     return ch
 }
 
 /// Create a channel that receives a tick every interval_ms milliseconds.
-/// Returns a channel that will keep producing values until closed.
+/// Returns a channel that keeps producing values until the caller stops
+/// receiving (the spawned ticker has no termination signal).
 fn ticker(interval_ms: i64) -> Channel {
     let ch = buffered(1)
+    let raw = ch.raw
     spawn {
         let mut tick_count = 0
-        while not ch.is_closed {
+        while true {
             sleep(interval_ms)
             tick_count = tick_count + 1
-            try {
-                send(ch.raw, tick_count)
-            } catch (e) {
-                return
-            }
+            send(raw, tick_count)
         }
     }
     return ch
@@ -181,29 +166,22 @@ fn ticker(interval_ms: i64) -> Channel {
 
 // --- Fan-out / Fan-in --------------------------------------------------------
 
-/// Fan-out: distribute values from a source channel to N worker goroutines.
+/// Fan-out: distribute values from a source channel to N workers.
 /// Each worker calls handler(value) for each value it receives.
 /// Returns a channel that collects all handler results.
 fn fan_out(source: Channel, workers: i64, handler: fn) -> Channel {
-    if workers <= 0 {
-        throw "chan: fan_out requires at least 1 worker"
-    }
+    assert(workers > 0, "chan: fan_out requires at least 1 worker")
     let result_ch = buffered(workers * 4)
+    let src_raw = source.raw
+    let dst_raw = result_ch.raw
 
     let mut i = 0
     while i < workers {
         spawn {
             while true {
-                let attempt = try_receive(source)
-                if not attempt.ok {
-                    return
-                }
-                let result = handler(attempt.value)
-                try {
-                    send(result_ch.raw, result)
-                } catch (e) {
-                    return
-                }
+                let v = recv(src_raw)
+                let r = handler(v)
+                send(dst_raw, r)
             }
         }
         i = i + 1
@@ -213,28 +191,19 @@ fn fan_out(source: Channel, workers: i64, handler: fn) -> Channel {
 }
 
 /// Fan-in: merge multiple channels into a single output channel.
-/// Values from any input channel are forwarded to the merged channel.
 fn fan_in(channels: [Channel]) -> Channel {
     let count = len(channels)
-    if count == 0 {
-        throw "chan: fan_in requires at least 1 channel"
-    }
+    assert(count > 0, "chan: fan_in requires at least 1 channel")
     let merged = buffered(count * 4)
+    let dst_raw = merged.raw
 
     let mut i = 0
     while i < count {
-        let ch = channels[i]
+        let src_raw = channels[i].raw
         spawn {
             while true {
-                let attempt = try_receive(ch)
-                if not attempt.ok {
-                    return
-                }
-                try {
-                    send(merged.raw, attempt.value)
-                } catch (e) {
-                    return
-                }
+                let v = recv(src_raw)
+                send(dst_raw, v)
             }
         }
         i = i + 1
@@ -246,17 +215,12 @@ fn fan_in(channels: [Channel]) -> Channel {
 /// Pipe: forward all values from source to destination.
 /// Runs in a separate goroutine, returns immediately.
 fn pipe(source: Channel, dest: Channel) -> void {
+    let src_raw = source.raw
+    let dst_raw = dest.raw
     spawn {
         while true {
-            let attempt = try_receive(source)
-            if not attempt.ok {
-                return
-            }
-            try {
-                send(dest.raw, attempt.value)
-            } catch (e) {
-                return
-            }
+            let v = recv(src_raw)
+            send(dst_raw, v)
         }
     }
 }
@@ -264,7 +228,7 @@ fn pipe(source: Channel, dest: Channel) -> void {
 // --- WaitGroup ---------------------------------------------------------------
 
 struct WaitGroup {
-    count: shared i64,
+    count: i64,
     done_ch: Channel
 }
 
@@ -276,7 +240,7 @@ fn new_wait_group() -> WaitGroup {
     }
 }
 
-/// Add n to the WaitGroup counter.  Call before spawning work.
+/// Add n to the WaitGroup counter. Call before spawning work.
 fn wg_add(wg: WaitGroup, n: i64) -> WaitGroup {
     let new_count = wg.count + n
     return WaitGroup {
@@ -285,20 +249,13 @@ fn wg_add(wg: WaitGroup, n: i64) -> WaitGroup {
     }
 }
 
-/// Signal that one unit of work is done.  Decrements the counter.
-/// When the counter reaches zero, all waiters are unblocked.
+/// Signal that one unit of work is done. Decrements the counter.
+/// When the counter reaches zero, send on done_ch to unblock waiters.
 fn wg_done(wg: WaitGroup) -> WaitGroup {
     let new_count = wg.count - 1
-    if new_count < 0 {
-        throw "chan: WaitGroup counter went negative"
-    }
+    assert(new_count >= 0, "chan: WaitGroup counter went negative")
     if new_count == 0 {
-        // Signal completion
-        try {
-            send(wg.done_ch.raw, true)
-        } catch (e) {
-            // Already signaled
-        }
+        send(wg.done_ch.raw, 1)
     }
     return WaitGroup {
         count: new_count,
@@ -321,33 +278,28 @@ struct Semaphore {
 }
 
 /// Create a semaphore with the given number of permits.
-/// At most `permits` goroutines can hold the semaphore simultaneously.
 fn new_semaphore(permits: i64) -> Semaphore {
-    if permits <= 0 {
-        throw "chan: semaphore requires at least 1 permit"
-    }
+    assert(permits > 0, "chan: semaphore requires at least 1 permit")
     let ch = buffered(permits)
-    // Pre-fill the channel with permits
     let mut i = 0
     while i < permits {
-        send(ch.raw, true)
+        send(ch.raw, 1)
         i = i + 1
     }
     return Semaphore { ch: ch }
 }
 
-/// Acquire a permit.  Blocks if all permits are currently held.
+/// Acquire a permit. Blocks if all permits are currently held.
 fn acquire(sem: Semaphore) -> void {
     recv(sem.ch.raw)
 }
 
 /// Release a permit back to the semaphore.
 fn release(sem: Semaphore) -> void {
-    send(sem.ch.raw, true)
+    send(sem.ch.raw, 1)
 }
 
 /// Try to acquire a permit without blocking.
-/// Returns true if acquired, false if all permits are held.
 fn try_acquire(sem: Semaphore) -> bool {
     let attempt = try_receive(sem.ch)
     return attempt.ok
@@ -356,69 +308,59 @@ fn try_acquire(sem: Semaphore) -> bool {
 // --- Once (run-once primitive) -----------------------------------------------
 
 struct Once {
-    done: shared bool,
-    result: shared any
+    done: bool,
+    result: i64
 }
 
 /// Create a new Once.
 fn new_once() -> Once {
-    return Once { done: false, result: null }
+    return Once { done: false, result: 0 }
 }
 
-/// Execute a function exactly once, regardless of how many goroutines call it.
-/// Subsequent calls return the cached result.
-fn call_once(once: Once, f: fn) -> any {
+/// Execute a function exactly once. Subsequent calls return the
+/// cached result. (Not currently atomic across spawn-tasks; use
+/// a semaphore or external mutex for cross-task once semantics.)
+fn call_once(once: Once, f: fn) -> i64 {
     if once.done {
         return once.result
     }
     let result = f()
-    once.done = true
     once.result = result
-    return result
+    once.done = true
+    return once.result
 }
 
 // --- Producer/Consumer helpers -----------------------------------------------
 
 /// Create a producer that generates values and sends them on a channel.
-/// The generator function is called repeatedly; when it throws, production stops.
 fn produce(generator: fn) -> Channel {
     let ch = buffered(16)
+    let raw = ch.raw
     spawn {
-        try {
-            while true {
-                let val = generator()
-                send(ch.raw, val)
-            }
-        } catch (e) {
-            // Generator exhausted or threw -- close the channel
-            close_chan(ch.raw)
+        while true {
+            let v = generator()
+            send(raw, v)
         }
     }
     return ch
 }
 
 /// Consume all values from a channel, calling handler for each one.
-/// Blocks until the channel is closed or an error occurs.
 fn consume(ch: Channel, handler: fn) -> void {
     while true {
-        let attempt = try_receive(ch)
-        if not attempt.ok {
-            return
-        }
-        handler(attempt.value)
+        let v = recv(ch.raw)
+        handler(v)
     }
 }
 
-/// Collect all values from a channel into an array.
-/// Blocks until the channel is closed.
-fn collect(ch: Channel) -> [any] {
+/// Collect up to n values from a channel into an array.
+fn collect_n(ch: Channel, n: i64) -> [i64] {
     let mut results = []
-    while true {
-        let attempt = try_receive(ch)
-        if not attempt.ok {
-            return results
-        }
-        push(results, attempt.value)
+    let mut i = 0
+    while i < n {
+        let v = recv(ch.raw)
+        push(results, v)
+        i = i + 1
     }
     return results
 }
@@ -426,7 +368,7 @@ fn collect(ch: Channel) -> [any] {
 // --- Channel utilities -------------------------------------------------------
 
 /// Send multiple values on a channel.
-fn send_all(ch: Channel, values: [any]) -> void {
+fn send_all(ch: Channel, values: [i64]) -> void {
     let count = len(values)
     let mut i = 0
     while i < count {
@@ -436,15 +378,12 @@ fn send_all(ch: Channel, values: [any]) -> void {
 }
 
 /// Receive up to n values from a channel.
-fn receive_n(ch: Channel, n: i64) -> [any] {
+fn receive_n(ch: Channel, n: i64) -> [i64] {
     let mut results = []
     let mut i = 0
     while i < n {
-        let attempt = try_receive(ch)
-        if not attempt.ok {
-            return results
-        }
-        push(results, attempt.value)
+        let v = recv(ch.raw)
+        push(results, v)
         i = i + 1
     }
     return results

@@ -461,6 +461,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("pop", MirType::I64),
         ("send", MirType::Void),
         ("sleep", MirType::Void),
+        ("close_chan", MirType::Void),
         ("contains", MirType::Bool),
         ("starts_with", MirType::Bool),
         ("ends_with", MirType::Bool),
@@ -3661,6 +3662,16 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                 if ctx.enum_defs.contains_key(name.as_str()) {
                     return MirType::Enum(name.clone());
                 }
+                // Static method call via dot syntax: `Type.method(args)`.
+                // Resolve the mangled function's return type.
+                if ctx.struct_defs.contains_key(name.as_str())
+                    || ctx.enum_defs.contains_key(name.as_str())
+                {
+                    let mangled = format!("{name}__{method}");
+                    if let Some(ret_ty) = ctx.func_ret_types.get(&mangled) {
+                        return ret_ty.clone();
+                    }
+                }
             }
             // Check dyn Trait — look up method return type from trait definition.
             let obj_ty = infer_expr_type(ctx, object);
@@ -4182,6 +4193,27 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                             fields,
                         };
                     }
+                }
+
+                // Static method call via dot syntax: `TypeName.method(args)`.
+                // If the receiver is an identifier naming a struct or enum
+                // (not a value), treat the call as a static/associated
+                // function call. This mirrors the checker behavior and lets
+                // `List.new()`, `Dict.new()`, etc. work like `List::new()`.
+                if ctx.struct_defs.contains_key(name.as_str())
+                    || ctx.enum_defs.contains_key(name.as_str())
+                {
+                    let mir_args: Vec<Operand> =
+                        args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
+                    let func_name = ctx
+                        .method_owners
+                        .get(&(name.clone(), method.clone()))
+                        .cloned()
+                        .unwrap_or_else(|| format!("{name}__{method}"));
+                    return RValue::Call {
+                        func: func_name,
+                        args: mir_args,
+                    };
                 }
             }
 

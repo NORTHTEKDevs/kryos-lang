@@ -1221,7 +1221,15 @@ impl Parser {
         let start = kw.span;
         let try_block = self.parse_block();
         self.expect(TokenKind::Catch);
+        // Accept both `catch name { ... }` and `catch (name) { ... }`.
+        let has_parens = self.check(TokenKind::LParen);
+        if has_parens {
+            self.advance();
+        }
         let (catch_name, _) = self.expect_name();
+        if has_parens {
+            self.expect(TokenKind::RParen);
+        }
         let catch_block = self.parse_block();
         let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
         Stmt::TryCatch {
@@ -2087,7 +2095,47 @@ impl Parser {
             if self.check(TokenKind::Return) {
                 self.advance(); // consume `return`
             }
-            let body = Box::new(self.parse_expr());
+            // Allow `throw expr` in match arms by desugaring to a call to the
+            // `assert(false, msg)` builtin, which aborts the process with the
+            // message. This matches the diverging semantics callers expect
+            // (the arm value never returns) without requiring exceptions.
+            // Empty `{}` body in a match arm is a void block, not a map
+            // literal. Detect this case so arms like `_ => {}` typecheck.
+            let body = if self.check(TokenKind::LBrace)
+                && self.peek_nth(1) == TokenKind::RBrace
+            {
+                let lbrace = self.advance().clone();
+                let rbrace = self.advance().clone();
+                let span = lbrace.span.merge(rbrace.span);
+                Box::new(Expr::Block {
+                    block: Block {
+                        stmts: Vec::new(),
+                        span,
+                    },
+                    span,
+                })
+            } else if self.check(TokenKind::Throw) {
+                let kw = self.advance().clone();
+                let msg_expr = self.parse_expr();
+                let end = msg_expr.span();
+                let merged = kw.span.merge(end);
+                Box::new(Expr::FnCall {
+                    callee: Box::new(Expr::Identifier {
+                        name: "assert".to_string(),
+                        span: kw.span,
+                    }),
+                    args: vec![
+                        Expr::BoolLiteral {
+                            value: false,
+                            span: kw.span,
+                        },
+                        msg_expr,
+                    ],
+                    span: merged,
+                })
+            } else {
+                Box::new(self.parse_expr())
+            };
             let arm_end = body.span();
             arms.push(MatchArm {
                 pattern,
@@ -2501,9 +2549,34 @@ impl Parser {
                     span: tok.span.merge(end),
                 }
             }
-            // Function type: `fn(i32, i32) -> i32`
+            // Function type: `fn(i32, i32) -> i32`, or bare `fn` (any callable).
+            //
+            // The bare form is a shorthand used pervasively in the standard
+            // library for higher-order parameters that accept arbitrary
+            // callables (e.g. `f: fn`). It resolves to the type-checker's
+            // error-recovery sentinel (`any`-equivalent) so calls through it
+            // bypass arity and parameter-type checks.
             TokenKind::Fn => {
                 self.advance();
+                if !self.check(TokenKind::LParen) {
+                    // Bare `fn` — opaque callable. We encode this as a
+                    // function type whose single "parameter" is the `any`
+                    // sentinel and whose return is `any`. The type checker
+                    // recognises this shape and skips arity / argument-type
+                    // checking, so the value can be called with any number
+                    // of arguments of any type.
+                    return TypeExpr::Function {
+                        params: vec![TypeExpr::Simple {
+                            name: "any".to_string(),
+                            span: tok.span,
+                        }],
+                        ret: Box::new(TypeExpr::Simple {
+                            name: "any".to_string(),
+                            span: tok.span,
+                        }),
+                        span: tok.span,
+                    };
+                }
                 self.expect(TokenKind::LParen);
                 let mut params = Vec::new();
                 while !self.check(TokenKind::RParen) && !self.at_end() {
@@ -2513,9 +2586,20 @@ impl Parser {
                     }
                 }
                 self.expect(TokenKind::RParen);
-                self.expect(TokenKind::Arrow);
-                let ret = self.parse_type();
-                let end = ret.span();
+                // Return type is optional for bare-style callables.
+                let (ret, end) = if self.eat(TokenKind::Arrow) {
+                    let r = self.parse_type();
+                    let e = r.span();
+                    (r, e)
+                } else {
+                    (
+                        TypeExpr::Simple {
+                            name: "void".to_string(),
+                            span: tok.span,
+                        },
+                        tok.span,
+                    )
+                };
                 TypeExpr::Function {
                     params,
                     ret: Box::new(ret),

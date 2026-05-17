@@ -473,7 +473,7 @@ fn unique(arr: [any]) -> [any] {
         let key = to_string(arr[i])
         if not map_has(seen, key) {
             push(result, arr[i])
-            map_set(seen, key, true)
+            seen[key] = true
         }
         i = i + 1
     }
@@ -593,9 +593,9 @@ fn group_by(arr: [any], key_fn: fn) -> any {
     while i < alen {
         let key = to_string(key_fn(arr[i]))
         if not map_has(groups, key) {
-            map_set(groups, key, [])
+            groups[key] = []
         }
-        let group = map_get(groups, key)
+        let group = groups[key]
         push(group, arr[i])
         i = i + 1
     }

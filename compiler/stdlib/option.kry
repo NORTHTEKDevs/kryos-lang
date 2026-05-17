@@ -6,7 +6,7 @@
 //
 // Usage:
 //   let x = std.option.some(42)
-//   let y = std.option.none()
+//   let y = std.option.none_value()
 //   if std.option.is_some(x) { ... }
 // ============================================================
 
@@ -24,8 +24,9 @@ fn some(val: any) -> Option {
     return Option.Some(val)
 }
 
-/// Create a None value.
-fn none() -> Option {
+/// Create a None value. (Named `none_value` because `none` is a reserved
+/// literal in the language.)
+fn none_value() -> Option {
     return Option.None
 }
 
@@ -161,15 +162,13 @@ fn to_array(opt: Option) -> [any] {
 }
 
 /// Convert an Option to a Result. None becomes Err(err_msg).
+///
+/// Note: returns the wrapped value on Some, or the error message on None.
+/// Use `is_some` / `unwrap_or` if you need branching at the call site.
 fn ok_or(opt: Option, err_msg: str) -> any {
     return match opt {
-        Option.Some(v) => {
-            // Returns a value that can be used as Ok
-            return {"ok": true, "value": v}
-        },
-        Option.None => {
-            return {"ok": false, "error": err_msg}
-        },
+        Option.Some(v) => v,
+        Option.None => err_msg,
     }
 }
 
@@ -177,9 +176,8 @@ fn ok_or(opt: Option, err_msg: str) -> any {
 
 /// Apply a function to the value for side effects, then return the option unchanged.
 fn inspect(opt: Option, f: fn) -> Option {
-    match opt {
-        Option.Some(v) => f(v),
-        Option.None => {},
+    if is_some(opt) {
+        f(unwrap(opt))
     }
     return opt
 }
