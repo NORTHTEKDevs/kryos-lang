@@ -249,6 +249,14 @@ fn build_msvc_command(cmd: &mut Command, config: &LinkerConfig) {
         }
     }
 
+    // Debug info: when -g was passed at compile time, the codegen emits
+    // CodeView records into the .debug$S/.debug$T COFF sections of each
+    // object file. /DEBUG tells link.exe to consume those records and
+    // produce a .pdb sidecar next to the output binary.
+    if config.debug_info {
+        cmd.arg("/DEBUG");
+    }
+
     // Object files
     for obj in &config.object_files {
         cmd.arg(obj);

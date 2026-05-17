@@ -249,9 +249,18 @@ impl kryos_driver::Backend for LlvmBackend {
             cmd.arg(format!("-flto-jobs={threads}"));
         }
 
-        // Debug info.
+        // Debug info. On Windows targets we want CodeView (`.debug$S` /
+        // `.debug$T` records in the COFF object, rolled up into a `.pdb`
+        // sidecar by `link.exe /DEBUG`) rather than DWARF (`.debug_*`
+        // sections that link.exe will reject with LNK1107). The IR
+        // metadata is format-agnostic — only the module flag and clang's
+        // `-gcodeview` vs `-g` switch differ.
         if self.options.debug_info {
-            cmd.arg("-g");
+            if self.is_windows_msvc_target() {
+                cmd.arg("-gcodeview");
+            } else {
+                cmd.arg("-g");
+            }
         }
 
         let output = cmd.output().map_err(|e| {

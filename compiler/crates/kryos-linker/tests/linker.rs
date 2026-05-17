@@ -263,6 +263,45 @@ fn msvc_shared_lib_command_line() {
     assert!(args.contains(&"/DLL".to_string()));
 }
 
+/// /DEBUG must NOT be on the link.exe command line for a release build
+/// (debug_info: false). Emitting /DEBUG produces a .pdb sidecar even
+/// for stripped binaries, which is wasted bytes and a confusing
+/// debugging signal in CI artifacts.
+#[test]
+fn msvc_no_debug_flag_in_release() {
+    let target = Target {
+        arch: Arch::X86_64,
+        os: Os::Windows,
+        env: Env::Msvc,
+    };
+    let config = make_test_config(target, LinkType::Dynamic);
+    assert!(!config.debug_info, "test fixture should be release");
+    let linker_path = PathBuf::from("link.exe");
+    let cmd = build_command(&linker_path, &config);
+    let args = command_to_args(&cmd);
+
+    assert!(!args.contains(&"/DEBUG".to_string()));
+}
+
+/// /DEBUG MUST be on the link.exe command line for a debug build
+/// (debug_info: true). Without it, link.exe ignores the CodeView
+/// records in .debug$S/.debug$T COFF sections and no .pdb is produced.
+#[test]
+fn msvc_debug_flag_when_debug_info_enabled() {
+    let target = Target {
+        arch: Arch::X86_64,
+        os: Os::Windows,
+        env: Env::Msvc,
+    };
+    let mut config = make_test_config(target, LinkType::Dynamic);
+    config.debug_info = true;
+    let linker_path = PathBuf::from("link.exe");
+    let cmd = build_command(&linker_path, &config);
+    let args = command_to_args(&cmd);
+
+    assert!(args.contains(&"/DEBUG".to_string()));
+}
+
 #[test]
 fn wasm_command_line() {
     let target = Target {

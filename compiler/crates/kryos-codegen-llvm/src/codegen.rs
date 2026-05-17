@@ -16,6 +16,17 @@ use crate::{CodegenError, EmitOptions};
 // Codegen state
 // ---------------------------------------------------------------------------
 
+/// Container the host linker uses for debug-info records.
+///
+/// Selected by target OS: ELF + Mach-O use DWARF; Windows COFF uses
+/// CodeView (`.pdb`). The choice changes the module-flag declaration
+/// LLVM emits alongside the (otherwise format-agnostic) DI nodes.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DebugInfoFormat {
+    Dwarf,
+    CodeView,
+}
+
 /// LLVM IR text emitter.
 pub struct LlvmCodegen {
     /// Accumulated LLVM IR output.
@@ -463,8 +474,21 @@ impl LlvmCodegen {
             "!1 = !DIFile(filename: \"{}\", directory: \"{}\")",
             file, dir,
         ));
-        // !2, !3 = required module flags
-        self.emit_line("!2 = !{i32 7, !\"Dwarf Version\", i32 4}");
+        // !2, !3 = required module flags. Module-flag !2 selects between
+        // DWARF and CodeView; both are recognised by clang, and the value
+        // tag matches what clang itself emits when invoked with `-g` (DWARF
+        // version 4 -> matches `clang -gdwarf-4`) or `-gcodeview` (CodeView
+        // -> value 1, present-or-not). !3 stays at Debug Info Version 3 for
+        // both formats; that's the LLVM metadata-schema version, not the
+        // container format version.
+        match self.debug_info_format() {
+            DebugInfoFormat::CodeView => {
+                self.emit_line("!2 = !{i32 2, !\"CodeView\", i32 1}");
+            }
+            DebugInfoFormat::Dwarf => {
+                self.emit_line("!2 = !{i32 7, !\"Dwarf Version\", i32 4}");
+            }
+        }
         self.emit_line("!3 = !{i32 2, !\"Debug Info Version\", i32 3}");
 
         // !4 = empty subroutine type (void()). LineTablesOnly mode does
@@ -859,23 +883,32 @@ impl LlvmCodegen {
         }
     }
 
-    /// Returns true if we should emit DWARF debug metadata for this build.
-    ///
-    /// DWARF debug sections (`.debug_info`, `.debug_line`, etc.) are an ELF
-    /// convention. On Windows COFF targets, debug info uses CodeView
-    /// (`.pdb` sidecar). When clang sees DWARF metadata in the IR while
-    /// targeting `*-pc-windows-msvc`, it still emits `.debug_*` sections
-    /// into the COFF object; `link.exe` then rejects the object with
-    /// LNK1107 ("invalid or corrupt file") at the metadata byte offset.
-    ///
-    /// Until we wire a CodeView emitter, gate all DWARF emission off when
-    /// the active target is Windows. `kryos build --release` on Windows
-    /// will still produce a working `.exe`, just without source-line debug
-    /// info; `kryos run` (Cranelift) is unaffected.
+    /// Returns true if we should emit LLVM debug-info metadata for this
+    /// build. The metadata itself is format-agnostic at the IR level
+    /// (`DICompileUnit`, `DIFile`, `DISubprogram`, `DILocation`); what
+    /// distinguishes DWARF from CodeView is the module-flag declaration
+    /// emitted alongside it, plus the format-selection flag clang receives
+    /// (`-g` for default-DWARF on Unix, `-gcodeview` for CodeView on
+    /// Windows). See `debug_info_format()` for the selector.
     fn should_emit_dwarf(&self) -> bool {
-        self.options.debug_info
-            && self.options.source_file_path.is_some()
-            && !self.is_windows_target()
+        self.options.debug_info && self.options.source_file_path.is_some()
+    }
+
+    /// Which debug-info container the host linker will consume.
+    ///
+    /// On ELF + Mach-O targets, DWARF is the convention: `.debug_info` /
+    /// `.debug_line` / `.debug_str` sections embedded directly in the
+    /// object, resolved by `addr2line` / `dsymutil`.
+    ///
+    /// On Windows/COFF, the convention is CodeView: type and symbol
+    /// records embedded in `.debug$S`/`.debug$T` sections of the object,
+    /// which `link.exe /DEBUG` rolls up into a `.pdb` sidecar at link time.
+    fn debug_info_format(&self) -> DebugInfoFormat {
+        if self.is_windows_target() {
+            DebugInfoFormat::CodeView
+        } else {
+            DebugInfoFormat::Dwarf
+        }
     }
 
     // -----------------------------------------------------------------------
