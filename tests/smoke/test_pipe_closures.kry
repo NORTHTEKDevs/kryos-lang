@@ -1,0 +1,56 @@
+// Regression test for Rust-style `|x, y|` closure syntax + void-body
+// closure execution + indirect-call-as-stmt emission.
+//
+// v2.6.3 had three related issues this release fixes together:
+//
+//   1. `|x|`, `|x, y|`, `||` were not parsed; only `fn(...) { ... }` worked
+//      as a closure literal.
+//
+//   2. Void-bodied closures (e.g. `|| println("hello")` or
+//      `fn() { println("hello") }`) silently dropped their body: lambda
+//      lowering wrapped the body in `Stmt::Return { value: Some(body) }`
+//      and defaulted the missing return type to i64, so MIR cleanup
+//      stripped the call when there was no actual return value to produce.
+//
+//   3. `g()` where `g` was a void-returning closure local was lowered as
+//      `RValue::CallIndirect`, but `Stmt::Expr` only emitted Assign for
+//      `RValue::Call`. The indirect call was lowered but never reached
+//      codegen, so the call to the closure body never happened.
+
+fn apply2(f: fn(i64, i64) -> i64, a: i64, b: i64) -> i64 {
+    return f(a, b)
+}
+
+fn map_int(xs: [i64], f: fn(i64) -> i64) -> [i64] {
+    let mut out: [i64] = []
+    for x in xs {
+        out = push(out, f(x))
+    }
+    return out
+}
+
+fn main() {
+    // Zero-argument closure with a void body \u2014 must execute println.
+    let greet = || println("hello")
+    greet()
+
+    // Annotated multi-arg closure with explicit return type and brace body.
+    let add = |x: i64, y: i64| -> i64 { x + y }
+    println(apply2(add, 3, 4))
+
+    // Annotated two-param expression-body closure.
+    let mul = |a: i64, b: i64| a * b
+    println(apply2(mul, 6, 7))
+
+    // Closure passed inline to a higher-order function.
+    let doubled = map_int([1, 2, 3, 4], |x: i64| x * 2)
+    for v in doubled { println(v) }
+
+    // Closure capturing a value from the enclosing scope.
+    let n = 100
+    let add_n = |x: i64| x + n
+    println(add_n(5))
+
+    // Closure with capture passed through a fn-pointer parameter.
+    println(apply2(|a: i64, b: i64| a - b, 50, 8))
+}

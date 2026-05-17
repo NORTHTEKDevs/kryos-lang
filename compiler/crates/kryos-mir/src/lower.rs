@@ -1929,15 +1929,31 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
 
             // Function calls need to be emitted as instructions even when
             // their return value is discarded, so assign to a temp.
-            if matches!(&rvalue, RValue::Call { .. }) {
-                let temp = ctx.alloc_temp(MirType::Void);
-                if let RValue::Call { ref args, .. } = rvalue {
-                    consume_call_args(ctx, temp, args);
+            // This applies to both direct calls (RValue::Call) and indirect
+            // calls through function pointers / closure values
+            // (RValue::CallIndirect) — without the indirect arm, statements
+            // like `g()` where g is a void-returning closure local would be
+            // silently dropped during stmt lowering.
+            match &rvalue {
+                RValue::Call { args, .. } => {
+                    let temp = ctx.alloc_temp(MirType::Void);
+                    let args_clone = args.clone();
+                    consume_call_args(ctx, temp, &args_clone);
+                    ctx.emit(Instruction::Assign {
+                        dest: temp,
+                        value: rvalue,
+                    });
                 }
-                ctx.emit(Instruction::Assign {
-                    dest: temp,
-                    value: rvalue,
-                });
+                RValue::CallIndirect { args, .. } => {
+                    let temp = ctx.alloc_temp(MirType::Void);
+                    let args_clone = args.clone();
+                    consume_call_args(ctx, temp, &args_clone);
+                    ctx.emit(Instruction::Assign {
+                        dest: temp,
+                        value: rvalue,
+                    });
+                }
+                _ => {}
             }
 
             // If the expression is a match, it was already lowered via
@@ -4696,22 +4712,65 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 .collect();
             all_params.extend_from_slice(params);
 
+            // Detect whether the body is a void-returning expression (e.g.
+            // `println(...)`, a method call to a void method, or a Block
+            // statement). When no explicit ret_ty is given and the body is
+            // void, emit the body as an expression statement instead of
+            // wrapping it in `return body` and defaulting the return type
+            // to i64 — which would silently discard the call and produce a
+            // closure that does nothing observable.
+            let body_is_void_call = if ret_ty.is_none() {
+                match body.as_ref() {
+                    ast::Expr::FnCall { callee, .. } => {
+                        if let ast::Expr::Identifier { name: cname, .. } = callee.as_ref() {
+                            matches!(
+                                ctx.func_ret_types.get(cname),
+                                Some(MirType::Void)
+                            ) || matches!(
+                                cname.as_str(),
+                                "println" | "print" | "eprintln" | "eprint" | "sleep_ms" | "sleep"
+                            )
+                        } else {
+                            false
+                        }
+                    }
+                    ast::Expr::Block { block, .. } => {
+                        // A block with no trailing expression is void.
+                        !matches!(block.stmts.last(), Some(ast::Stmt::Expr { .. }))
+                    }
+                    _ => false,
+                }
+            } else {
+                false
+            };
+
             // Save state, lower the lambda as a standalone function.
             let saved = ctx.save_function_state();
 
             // Create a block from the body expression.
             let body_block = ast::Block {
-                stmts: vec![ast::Stmt::Return {
-                    value: Some(body.as_ref().clone()),
-                    span: kryos_errors::Span::DUMMY,
+                stmts: vec![if body_is_void_call {
+                    ast::Stmt::Expr {
+                        expr: body.as_ref().clone(),
+                        span: kryos_errors::Span::DUMMY,
+                    }
+                } else {
+                    ast::Stmt::Return {
+                        value: Some(body.as_ref().clone()),
+                        span: kryos_errors::Span::DUMMY,
+                    }
                 }],
                 span: kryos_errors::Span::DUMMY,
             };
 
-            // If no explicit return type, default to i64 (not void).
+            // If no explicit return type, default to i64 — except when the
+            // body is a void-returning call, in which case the lambda has
+            // no return value and we pass None so `lower_function` treats
+            // the function as returning void.
             let inferred_ret: Option<ast::TypeExpr>;
             let effective_ret = match ret_ty {
                 Some(_) => ret_ty,
+                None if body_is_void_call => &None,
                 None => {
                     inferred_ret = Some(ast::TypeExpr::Simple {
                         name: "i64".to_string(),
@@ -4729,6 +4788,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // Register the lambda's return type.
             let mir_ret = match ret_ty {
                 Some(ty) => ctx.resolve_type(ty),
+                None if body_is_void_call => MirType::Void,
                 None => MirType::I64,
             };
             ctx.func_ret_types.insert(lambda_name.clone(), mir_ret);

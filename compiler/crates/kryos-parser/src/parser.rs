@@ -1851,6 +1851,16 @@ impl Parser {
             // Lambda: `fn(params) -> RetType { body }` or `fn(params) { body }`
             TokenKind::Fn => self.parse_lambda(),
 
+            // Rust-style closure literal: `|x| expr`, `|x, y| expr`,
+            // `|x: i64| -> i64 { ... }`. The body may be a single expression
+            // or a brace-delimited block.
+            TokenKind::Pipe => self.parse_pipe_closure(),
+
+            // Zero-argument Rust-style closure: `|| expr` / `|| { ... }`.
+            // The lexer produces a single `||` token (PipePipe) here, so we
+            // handle it as a separate closure-prefix case.
+            TokenKind::PipePipe => self.parse_pipe_pipe_closure(),
+
             // If expression
             TokenKind::If => self.parse_if_expr(),
 
@@ -1950,6 +1960,100 @@ impl Parser {
             name,
             fields,
             span: start.merge(rbrace.span),
+        }
+    }
+
+    /// Parse a Rust-style closure literal: `|x| expr`, `|x, y| expr`,
+    /// `|x: i64, y: i64| -> i64 { ... }`. Body may be a single expression
+    /// (lowest-precedence parse) or a brace-delimited block. Desugars to
+    /// `Expr::Lambda` so downstream lowering, typing, and codegen are
+    /// identical to the `fn(...) { ... }` lambda form.
+    fn parse_pipe_closure(&mut self) -> Expr {
+        let open = self.expect(TokenKind::Pipe);
+        let start = open.span;
+
+        let mut params: Vec<Param> = Vec::new();
+        if !self.check(TokenKind::Pipe) {
+            loop {
+                let (pname, pspan) = self.expect_name();
+                let pty = if self.eat(TokenKind::Colon) {
+                    Some(self.parse_type())
+                } else {
+                    None
+                };
+                params.push(Param {
+                    name: pname,
+                    ty: pty,
+                    default: None,
+                    span: pspan,
+                });
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(TokenKind::Pipe);
+
+        let ret_ty = if self.eat(TokenKind::Arrow) {
+            Some(self.parse_type())
+        } else {
+            None
+        };
+
+        let body = self.parse_pipe_closure_body();
+        let end = body.span();
+
+        Expr::Lambda {
+            params,
+            ret_ty,
+            body: Box::new(body),
+            span: start.merge(end),
+        }
+    }
+
+    /// Parse a zero-argument Rust-style closure: `|| expr` / `|| { ... }`.
+    /// The lexer fuses `||` into a single `PipePipe` token, so the empty
+    /// param list case is handled here.
+    fn parse_pipe_pipe_closure(&mut self) -> Expr {
+        let open = self.expect(TokenKind::PipePipe);
+        let start = open.span;
+
+        let ret_ty = if self.eat(TokenKind::Arrow) {
+            Some(self.parse_type())
+        } else {
+            None
+        };
+
+        let body = self.parse_pipe_closure_body();
+        let end = body.span();
+
+        Expr::Lambda {
+            params: Vec::new(),
+            ret_ty,
+            body: Box::new(body),
+            span: start.merge(end),
+        }
+    }
+
+    /// Parse the body of a Rust-style closure. Accepts either a brace block
+    /// or a single expression. Block bodies are wrapped as `Expr::Block`;
+    /// single-statement blocks containing one expression are unwrapped so
+    /// the lambda body is the expression itself.
+    fn parse_pipe_closure_body(&mut self) -> Expr {
+        if self.check(TokenKind::LBrace) {
+            let body_block = self.parse_block();
+            let span = body_block.span;
+            if body_block.stmts.len() == 1 {
+                if let Stmt::Expr { ref expr, .. } = body_block.stmts[0] {
+                    return expr.clone();
+                }
+            }
+            Expr::Block {
+                block: body_block,
+                span,
+            }
+        } else {
+            self.parse_expr()
         }
     }
 

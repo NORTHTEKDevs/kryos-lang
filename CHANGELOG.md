@@ -4,6 +4,68 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.6.4] - 2026-05-17 — "`|x, y|` closures, void-body lambdas, indirect-call statements"
+
+One parser addition and two correctness fixes. No breaking changes. All
+21 smoke tests, 21 router tests, 12 config-parser tests, and 10 real
+example builds pass.
+
+### Added
+
+- Rust-style closure literal syntax: `|x| expr`, `|x, y| expr`,
+  `|x: i64, y: i64| -> i64 { ... }`, and `|| expr` / `|| { ... }` for the
+  zero-argument form. The body may be a single expression or a brace
+  block. Param type annotations are optional but required when the type
+  cannot be inferred from a higher-order function's `fn(...) -> ...`
+  parameter type (no bidirectional inference yet). Desugars to
+  `Expr::Lambda`, so downstream lowering, typing, and codegen are
+  identical to the `fn(...) { ... }` form.
+
+### Fixed
+
+- Void-bodied closures — `|| println("hi")` or `fn() { println("hi") }`
+  — previously discarded their body. Lambda lowering wrapped the body
+  in `Stmt::Return { value: Some(body) }` and defaulted the missing
+  return type to i64, producing a closure that allocated a return value
+  out of a void expression. MIR cleanup then stripped the call. Fix:
+  when no explicit return type is given and the body is a known
+  void-returning call (`println`, `print`, `sleep_ms`, etc., or any
+  user function registered as returning Void) or a block with no
+  trailing expression, emit the body as `Stmt::Expr` and set the
+  lambda's return type to Void.
+
+- `g()` where `g` was bound to a closure local was lowered as
+  `RValue::CallIndirect`, but `Stmt::Expr` only emitted Assign for
+  `RValue::Call`. The indirect call therefore never reached codegen and
+  the closure body never ran when its result was discarded. Fix:
+  emit Assign for both Call and CallIndirect at statement position.
+
+  Regression test: `tests/smoke/test_pipe_closures.kry`.
+
+### Known limitations (not blockers, documented for follow-up)
+
+- Bidirectional inference for un-annotated multi-arg closures (e.g.
+  `|a, b| a * b` passed to `fn(i64, i64) -> i64`) is not implemented;
+  param types must be annotated when the inferencer cannot otherwise
+  determine them.
+- A separate edge case — a captured closure used inside another
+  closure's body and that inner closure passed to a higher-order
+  function — still produces incorrect results in some configurations.
+  Not regressed by this release; will be addressed in a future patch.
+
+### Stress-test matrix update
+
+| Feature | Status |
+|---|---|
+| `\|x\|` / `\|x, y\|` closure literal | works (this release) |
+| `\|\|` zero-arg closure literal | works (this release) |
+| `\|\| println(...)` void-body execution | works (this release) |
+| `fn() { println(...) }` void-body execution | works (this release) |
+| Closure local invocation as statement (`g()` discarding result) | works (this release) |
+| `fn(x: i64) -> i64 { ... }` closure | works (unchanged) |
+
+---
+
 ## [2.6.3] - 2026-05-17 — "Trait-bounded generics: method calls through `<T: Trait>`"
 
 A correctness fix in the type checker. No new language surface, no breaking
