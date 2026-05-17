@@ -2099,9 +2099,17 @@ impl Parser {
             // the expression value becomes the arm body.  When the match is the
             // tail expression of a function the result flows as the return value
             // automatically.  For early returns inside a block arm, use `{ return expr }`.
-            if self.check(TokenKind::Return) {
-                self.advance(); // consume `return`
-            }
+            //
+            // When `return expr` appears as the arm body, wrap it in a Block
+            // containing `Stmt::Return` so MIR lowering emits a Return terminator
+            // for the arm instead of treating the value as the arm's result.
+            // Without this, the match is in statement position the arm's result
+            // is silently discarded and `return n` becomes a no-op.
+            let explicit_return = if self.check(TokenKind::Return) {
+                Some(self.advance().clone()) // consume `return`
+            } else {
+                None
+            };
             // Allow `throw expr` in match arms by desugaring to a call to the
             // `assert(false, msg)` builtin, which aborts the process with the
             // message. This matches the diverging semantics callers expect
@@ -2117,6 +2125,23 @@ impl Parser {
                 Box::new(Expr::Block {
                     block: Block {
                         stmts: Vec::new(),
+                        span,
+                    },
+                    span,
+                })
+            } else if explicit_return.is_some() {
+                // Arm body is `return <expr>` — wrap into a Block whose only
+                // statement is `Stmt::Return { value: Some(expr) }`. The match
+                // arm's "value" is then unreachable; the return terminator fires.
+                let value_expr = self.parse_expr();
+                let ret_kw = explicit_return.unwrap();
+                let span = ret_kw.span.merge(value_expr.span());
+                Box::new(Expr::Block {
+                    block: Block {
+                        stmts: vec![Stmt::Return {
+                            value: Some(value_expr),
+                            span,
+                        }],
                         span,
                     },
                     span,

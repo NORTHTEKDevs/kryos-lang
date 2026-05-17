@@ -4,6 +4,30 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.6.1] - 2026-05-17 — "`return` inside `match` arms actually returns"
+
+A correctness fix in the parser. No new language surface, no breaking
+changes. All 18 smoke tests, 21 router tests, 12 config-parser tests,
+and all 10 real-program examples build and run.
+
+### Fixed
+
+- **`return <expr>` as a `match` arm body silently discarded the value.**
+  The parser previously absorbed the `return` keyword and parsed the
+  rest of the arm as an ordinary expression. The match expression's
+  value was then either dropped (statement position) or implicitly
+  returned (tail position) — but the `return` was effectively a no-op.
+  Affected programs included any recursive enum interpreter that used
+  `match expr { Variant(x) => return f(x) ... }`. A tiny calculator
+  evaluating `(1+2)*3` returned `0` instead of `9`.
+  Fix is in `compiler/crates/kryos-parser/src/parser.rs`,
+  `parse_match_expr`: when `return` is the first token of an arm body,
+  the body is now wrapped in a `Block { stmts: [Stmt::Return { value }] }`
+  so MIR lowering emits a `Terminator::Return` for that arm. Arms
+  without explicit `return` still flow their value up to the match
+  expression as before.
+  Regression test: `tests/smoke/test_match_return.kry`.
+
 ## [2.6.0] - 2026-05-17 — "Struct string fields: no more double-free on alias"
 
 A correctness fix in struct-literal lowering. No new language surface,

@@ -1,0 +1,26 @@
+// Regression: `return expr` inside a match arm must emit a Return terminator,
+// not silently discard the value. Previously the parser absorbed `return` and
+// treated the arm body as an ordinary expression value; in statement position
+// the value was thrown away and `return 0` (or fall-through) ran instead.
+
+enum Expr {
+    Num(i64),
+    Add(Expr, Expr),
+    Mul(Expr, Expr)
+}
+
+fn eval(e: Expr) -> i64 {
+    match e {
+        Expr::Num(n) => return n
+        Expr::Add(a, b) => return eval(a) + eval(b)
+        Expr::Mul(a, b) => return eval(a) * eval(b)
+    }
+    return 0
+}
+
+fn main() {
+    let e = Expr.Mul(Expr.Add(Expr.Num(1), Expr.Num(2)), Expr.Num(3))
+    let v = eval(e)
+    assert(v == 9, "expected 9, got " + to_string(v))
+    println("ok")
+}
