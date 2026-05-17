@@ -2357,8 +2357,13 @@ impl Parser {
                 self.advance();
                 let name = tok.text.clone();
 
-                // Enum pattern: `Name::Variant` or `Name::Variant(fields)`
-                if self.eat(TokenKind::ColonColon) {
+                // Enum pattern: `Name::Variant` or `Name.Variant`
+                // (with optional `(fields)`)
+                //
+                // Both `::` (Rust-style) and `.` (Kryos stdlib style) are
+                // accepted. The dotted form is what the standard library uses
+                // (e.g. `Option.Some(v) => ...`) so it must parse here.
+                if self.eat(TokenKind::ColonColon) || self.eat(TokenKind::Dot) {
                     let (variant, variant_span) = self.expect_name();
                     let mut fields = Vec::new();
                     let mut end = variant_span;

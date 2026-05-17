@@ -19,7 +19,7 @@ fn format(template: str, args: [any]) -> str {
     let argc = len(args)
     let mut i = 0
     while i < argc {
-        let placeholder = "{" + to_string(i) + "}"
+        let placeholder = "\{" + to_string(i) + "\}"
         result = _replace_all(result, placeholder, to_string(args[i]))
         i = i + 1
     }
@@ -373,11 +373,11 @@ fn debug(val: any) -> str {
         let mut i = 0
         while i < klen {
             let k = keys[i]
-            let v = map_get(val, k)
+            let v = val[k]
             push(parts, debug(k) + ": " + debug(v))
             i = i + 1
         }
-        return "{" + _join_parts(parts, ", ") + "}"
+        return "\{" + _join_parts(parts, ", ") + "\}"
     }
     if t == "bool" {
         if val {

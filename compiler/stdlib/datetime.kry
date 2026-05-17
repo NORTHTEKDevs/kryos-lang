@@ -55,7 +55,11 @@ impl Duration {
     }
 
     // Format the duration as a human-readable string.
-    fn to_string(self: Duration) -> str {
+    //
+    // Renamed from `to_string` because the built-in `to_string` is in scope
+    // inside the method body and the user-defined version would shadow it,
+    // breaking the body's own calls to convert i64 components to strings.
+    fn format(self: Duration) -> str {
         let total_secs = self.millis / 1000
         let ms = self.millis % 1000
 

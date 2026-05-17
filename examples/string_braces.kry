@@ -1,0 +1,21 @@
+// Regression test: literal `{` and `}` in string literals must be escaped
+// with `\{` and `\}` because unescaped braces are reserved for string
+// interpolation (e.g. `"value = {x}"`).
+//
+// Earlier versions of the standard library accidentally used unescaped
+// braces in fmt.kry, which caused parser errors when programs imported
+// `std::fmt`. This file pins down the correct usage.
+
+fn main() {
+    let placeholder = "\{0\}"
+    println(placeholder)
+
+    let object = "\{name: \"kryos\", version: 2\}"
+    println(object)
+
+    // Mixed: an escaped brace next to a real interpolation
+    let n = 7
+    println("count = {n}, brace = \{")
+
+    println("ok")
+}

@@ -183,6 +183,18 @@ impl Type {
             "isize" => Some(Type::ISize),
             "void" => Some(Type::Void),
             "never" | "Never" => Some(Type::Never),
+            // `ptr` — opaque mutable raw pointer used by stdlib FFI declarations.
+            // Resolves to a raw pointer with void element type.
+            "ptr" => Some(Type::Pointer {
+                inner: Box::new(Type::Void),
+                mutable: true,
+            }),
+            // `any` — dynamic / unchecked type used in stdlib signatures that
+            // need to accept arbitrary values (e.g. Option's wrapped value,
+            // generic format args). Resolves to `Type::Error` which the type
+            // checker treats as an error-recovery sentinel that unifies with
+            // anything without emitting a mismatch diagnostic.
+            "any" | "Any" => Some(Type::Error),
             _ => None,
         }
     }

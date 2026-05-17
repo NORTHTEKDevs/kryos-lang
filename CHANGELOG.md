@@ -4,6 +4,60 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.3.2] - 2026-05-17 — "Audit pass: stdlib surface fixes, type resolution, pattern syntax"
+
+Maintenance release driven by an end-to-end audit of every example and
+standard library module. No breaking changes. Every previously-passing
+example still passes; the bug fixes below unblock additional stdlib modules.
+
+### Fixed
+
+- **`std::fmt` now imports cleanly.** `fmt.kry` used unescaped literal
+  braces (`"{"` and `"}"`) inside string contents, but `{` is reserved
+  for string interpolation. Replaced with the documented `\{` / `\}`
+  escape sequences so the module parses again. Also replaced a call to
+  the nonexistent `map_get` builtin with the equivalent map-index
+  expression (`val[k]`) inside `debug()`.
+- **`std::datetime` now type-checks cleanly.** `Duration::to_string`
+  shadowed the in-scope `to_string` builtin inside its own body and
+  the user-defined version was being called recursively with the wrong
+  argument type. Renamed to `Duration::format` to remove the shadow.
+- **Parser: pattern variants accept `.` as well as `::`.** Match patterns
+  like `Option.Some(v) => ...` (the form used throughout the standard
+  library) now parse alongside `Option::Some(v) => ...`. Previously only
+  `::` was accepted in patterns even though `.` was accepted in
+  expressions, which made some stdlib modules look invalid from the user
+  side.
+- **Type resolver: `any` and `ptr` resolve as primitive type names.**
+  `any` resolves to the type-checker's error-recovery sentinel (which
+  unifies with anything without emitting a mismatch) and `ptr` resolves
+  to `*mut void`. This is what `extern` declarations and dynamically-
+  typed stdlib signatures already assumed; the resolver was just
+  missing the entry.
+
+### Added
+
+- `examples/string_braces.kry` — regression example pinning down the
+  correct `\{` / `\}` escape behavior for literal braces in strings.
+
+### Standard library status (honest accounting)
+
+- **Importable and usable:** `math`, `string`, `fmt`, `path`,
+  `datetime`, `json`, `http`, `probable`, `agent`, `wasm`, `ffi`.
+- **Not yet usable in this release:** `option`, `result`, `iter`,
+  `collections`, `test`, `chan`, `crypto`, `fs`, `io`, `net`, `db`,
+  `term`, `process`, `re`, `tensor`, `sync`, `stream`, `cost`,
+  `tracked`. These modules either depend on low-level builtins that
+  do not exist yet (`alloc`, `free`, `ptr_byte_at`, `str_to_ptr`),
+  use reserved keywords as identifiers (e.g. a function literally
+  named `none`), or rely on exception-style `throw` expressions that
+  the language doesn't implement. Programs that only use builtins
+  (`println`, `file_read`/`file_write`, `len`, `to_string`,
+  `parse_int`/`parse_float`, `push`, `substr`, `split_lines`,
+  `contains`, `sqrt`, `pow`, `sin`, `cos`, `abs`, `exit`, `args`,
+  etc.) are unaffected and continue to work. Fixing the remaining
+  modules is a substantial scope of work tracked for a future release.
+
 ## [2.3.0] - 2026-05-16 — "Async pipeline wired, DWARF, WASM parity, registry"
 
 This release wires the v2.2 async substrate end-to-end and completes a
