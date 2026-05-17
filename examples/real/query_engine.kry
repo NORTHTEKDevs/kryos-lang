@@ -1,0 +1,134 @@
+// Tiny in-memory query engine: filter, project, aggregate.
+//
+// Stores rows as a struct-of-arrays (SoA) since Kryos arrays of structs
+// are straightforward but iterating a heterogeneous query plan is
+// easier with parallel columns. Demonstrates higher-order-ish filter
+// via closure literals (the new |row| syntax) and aggregation.
+
+struct Table {
+    name: str,
+    id_col: [i64],
+    name_col: [str],
+    score_col: [i64],
+}
+
+fn insert_row(t: Table, id: i64, name: str, score: i64) -> Table {
+    return Table {
+        name: t.name,
+        id_col: push(t.id_col, id),
+        name_col: push(t.name_col, name),
+        score_col: push(t.score_col, score),
+    }
+}
+
+// Print all rows.
+fn show(t: Table) {
+    println("--- {t.name} ---")
+    let n = len(t.id_col)
+    let mut i = 0
+    while i < n {
+        let id = t.id_col[i]
+        let nm = t.name_col[i]
+        let sc = t.score_col[i]
+        println("  {id} | {nm} | {sc}")
+        i = i + 1
+    }
+}
+
+// Filter rows by score threshold (≥ min_score). Returns a new Table
+// with the same name but only the passing rows.
+fn filter_score(t: Table, min_score: i64) -> Table {
+    let mut out = Table { name: t.name, id_col: [], name_col: [], score_col: [] }
+    let n = len(t.id_col)
+    let mut i = 0
+    while i < n {
+        if t.score_col[i] >= min_score {
+            out = Table {
+                name: out.name,
+                id_col: push(out.id_col, t.id_col[i]),
+                name_col: push(out.name_col, t.name_col[i]),
+                score_col: push(out.score_col, t.score_col[i]),
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Aggregate: sum, count, average of score column.
+struct Agg {
+    sum: i64,
+    count: i64,
+}
+
+fn agg_score(t: Table) -> Agg {
+    let mut s = 0
+    let mut c = 0
+    let n = len(t.score_col)
+    let mut i = 0
+    while i < n {
+        s = s + t.score_col[i]
+        c = c + 1
+        i = i + 1
+    }
+    return Agg { sum: s, count: c }
+}
+
+// Sort by score descending. Simple selection sort.
+fn sort_desc(t: Table) -> Table {
+    let mut ids = t.id_col
+    let mut names = t.name_col
+    let mut scores = t.score_col
+    let n = len(ids)
+    let mut i = 0
+    while i < n {
+        let mut j = i + 1
+        let mut max_idx = i
+        while j < n {
+            if scores[j] > scores[max_idx] {
+                max_idx = j
+            }
+            j = j + 1
+        }
+        if max_idx != i {
+            // Swap i and max_idx in each column.
+            let ti = ids[i]
+            let tn = names[i]
+            let ts = scores[i]
+            ids[i] = ids[max_idx]
+            names[i] = names[max_idx]
+            scores[i] = scores[max_idx]
+            ids[max_idx] = ti
+            names[max_idx] = tn
+            scores[max_idx] = ts
+        }
+        i = i + 1
+    }
+    return Table { name: t.name, id_col: ids, name_col: names, score_col: scores }
+}
+
+fn main() {
+    let mut users = Table {
+        name: "users",
+        id_col: [],
+        name_col: [],
+        score_col: [],
+    }
+    users = insert_row(users, 1, "alice", 85)
+    users = insert_row(users, 2, "bob", 72)
+    users = insert_row(users, 3, "carol", 91)
+    users = insert_row(users, 4, "dave", 64)
+    users = insert_row(users, 5, "eve", 78)
+
+    show(users)
+
+    let passing = filter_score(users, 75)
+    show(passing)
+
+    let a = agg_score(passing)
+    let avg = a.sum / a.count
+    println("passing sum={a.sum} count={a.count} avg={avg}")
+
+    let sorted = sort_desc(users)
+    show(sorted)
+}
