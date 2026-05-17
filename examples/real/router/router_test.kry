@@ -1,0 +1,155 @@
+// router_test.kry -- @test functions exercising the sibling `router` module.
+//
+// Run with:
+//   kryos test examples/real/router/router_test.kry
+
+use router
+
+@test
+fn test_split_path_simple() {
+    let s = split_path("/users/42")
+    assert(len(s) == 2)
+    assert(s[0] == "users")
+    assert(s[1] == "42")
+}
+
+@test
+fn test_split_path_root() {
+    let s = split_path("/")
+    assert(len(s) == 0)
+}
+
+@test
+fn test_split_path_trailing_slash() {
+    let s = split_path("/a/b/")
+    assert(len(s) == 2)
+    assert(s[1] == "b")
+}
+
+@test
+fn test_match_segment_literal() {
+    assert(match_segment("users", "users") == "match")
+    assert(match_segment("users", "posts") == "nomatch")
+}
+
+@test
+fn test_match_segment_param() {
+    let r = match_segment(":id", "42")
+    assert(r == "param:id")
+}
+
+@test
+fn test_match_route_literal_ok() {
+    let r = match_route("/health", "/health")
+    assert(route_matched(r))
+    let params = route_params(r)
+    assert(len(params) == 0)
+}
+
+@test
+fn test_match_route_param_extraction() {
+    let r = match_route("/users/:id", "/users/42")
+    assert(route_matched(r))
+    let params = route_params(r)
+    assert(len(params) == 1)
+    assert(params[0] == "id=42")
+}
+
+@test
+fn test_match_route_multi_params() {
+    let r = match_route("/users/:uid/posts/:pid", "/users/7/posts/99")
+    assert(route_matched(r))
+    let params = route_params(r)
+    assert(len(params) == 2)
+    assert(params[0] == "uid=7")
+    assert(params[1] == "pid=99")
+}
+
+@test
+fn test_match_route_length_mismatch() {
+    let r = match_route("/users/:id", "/users/42/extra")
+    assert(not route_matched(r))
+}
+
+@test
+fn test_match_route_literal_mismatch() {
+    let r = match_route("/users/:id", "/posts/42")
+    assert(not route_matched(r))
+}
+
+@test
+fn test_apply_stage_upper() {
+    assert(apply_stage("upper", "hi") == "HI")
+}
+
+@test
+fn test_apply_stage_trim() {
+    assert(apply_stage("trim", "  hi  ") == "hi")
+}
+
+@test
+fn test_apply_stage_deny_admin() {
+    let r = apply_stage("deny_admin", "/admin/users")
+    assert(starts_with(r, "halt:"))
+}
+
+@test
+fn test_apply_stage_passthrough() {
+    assert(apply_stage("unknown_stage", "abc") == "abc")
+}
+
+@test
+fn test_run_chain_basic() {
+    let chain = "trim\nupper\ntag"
+    let r = run_chain(chain, "  hello  ")
+    assert(r == "[tagged] HELLO")
+}
+
+@test
+fn test_run_chain_halt() {
+    let chain = "trim\ndeny_admin\nupper"
+    let r = run_chain(chain, "  go to /admin  ")
+    assert(r == "403 forbidden")
+}
+
+@test
+fn test_run_chain_empty_stage_skipped() {
+    let chain = "trim\n\nupper"
+    let r = run_chain(chain, "  hi  ")
+    assert(r == "HI")
+}
+
+@test
+fn test_dispatch_match() {
+    let table = "GET /health -> health\nGET /users/:id -> show_user\nPOST /users -> create_user"
+    let r = dispatch(table, "GET", "/users/42")
+    let lines = split(r, "\n")
+    assert(lines[0] == "show_user")
+    assert(lines[1] == "id=42")
+}
+
+@test
+fn test_dispatch_method_filter() {
+    let table = "GET /users/:id -> show_user\nPOST /users/:id -> update_user"
+    let r = dispatch(table, "POST", "/users/7")
+    let lines = split(r, "\n")
+    assert(lines[0] == "update_user")
+    assert(lines[1] == "id=7")
+}
+
+@test
+fn test_dispatch_404() {
+    let table = "GET /health -> health\n"
+    let r = dispatch(table, "GET", "/nope")
+    assert(r == "404")
+}
+
+@test
+fn test_route_helper_format() {
+    let r = route("GET", "/x/:y", "do_x")
+    assert(r == "GET /x/:y -> do_x")
+}
+
+fn main() {
+    println("router_test: run via `kryos test examples/real/router/router_test.kry`")
+}

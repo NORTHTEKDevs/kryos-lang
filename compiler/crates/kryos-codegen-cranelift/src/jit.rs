@@ -40,7 +40,7 @@ pub fn jit_compile_function(func: &MirFunction) -> Result<*const u8, CodegenErro
 /// All functions are declared first so cross-function calls resolve correctly.
 pub fn jit_compile_module(module: &MirModule) -> Result<HashMap<String, *const u8>, CodegenError> {
     let mut jit = JitCompiler::new()?;
-    jit.compile_all(&module.functions)
+    jit.compile_all_with_module(module)
 }
 
 // ---------------------------------------------------------------------------
@@ -1117,6 +1117,65 @@ impl JitCompiler {
             kryos_rt::builtins::kryos_builtin_args as *const u8,
         );
 
+        // --- Bulk registration of additional builtins (math, strings,
+        //     filesystem helpers, etc) that the AOT pipeline already
+        //     declares via auto-declare in `ensure_func_ref_with_args`.
+        //     Without these the JIT cannot resolve the symbols at runtime.
+        jit_builder.symbol("kryos_builtin_abs", kryos_rt::builtins::kryos_builtin_abs as *const u8);
+        jit_builder.symbol("kryos_builtin_abs_f", kryos_rt::builtins::kryos_builtin_abs_f as *const u8);
+        jit_builder.symbol("kryos_builtin_ceil", kryos_rt::builtins::kryos_builtin_ceil as *const u8);
+        jit_builder.symbol("kryos_builtin_char_code", kryos_rt::builtins::kryos_builtin_char_code as *const u8);
+        jit_builder.symbol("kryos_builtin_char_from", kryos_rt::builtins::kryos_builtin_char_from as *const u8);
+        jit_builder.symbol("kryos_builtin_contains", kryos_rt::builtins::kryos_builtin_contains as *const u8);
+        jit_builder.symbol("kryos_builtin_cos", kryos_rt::builtins::kryos_builtin_cos as *const u8);
+        jit_builder.symbol("kryos_builtin_create_dir", kryos_rt::builtins::kryos_builtin_create_dir as *const u8);
+        jit_builder.symbol("kryos_builtin_ends_with", kryos_rt::builtins::kryos_builtin_ends_with as *const u8);
+        jit_builder.symbol("kryos_builtin_file_append", kryos_rt::builtins::kryos_builtin_file_append as *const u8);
+        jit_builder.symbol("kryos_builtin_file_exists", kryos_rt::builtins::kryos_builtin_file_exists as *const u8);
+        jit_builder.symbol("kryos_builtin_file_size", kryos_rt::builtins::kryos_builtin_file_size as *const u8);
+        jit_builder.symbol("kryos_builtin_float", kryos_rt::builtins::kryos_builtin_float as *const u8);
+        jit_builder.symbol("kryos_builtin_float_from_float", kryos_rt::builtins::kryos_builtin_float_from_float as *const u8);
+        jit_builder.symbol("kryos_builtin_floor", kryos_rt::builtins::kryos_builtin_floor as *const u8);
+        jit_builder.symbol("kryos_builtin_http_get", kryos_rt::builtins::kryos_builtin_http_get as *const u8);
+        jit_builder.symbol("kryos_builtin_index_of", kryos_rt::builtins::kryos_builtin_index_of as *const u8);
+        jit_builder.symbol("kryos_builtin_int", kryos_rt::builtins::kryos_builtin_int as *const u8);
+        jit_builder.symbol("kryos_builtin_int_from_float", kryos_rt::builtins::kryos_builtin_int_from_float as *const u8);
+        jit_builder.symbol("kryos_builtin_join", kryos_rt::builtins::kryos_builtin_join as *const u8);
+        jit_builder.symbol("kryos_builtin_log", kryos_rt::builtins::kryos_builtin_log as *const u8);
+        jit_builder.symbol("kryos_builtin_log10", kryos_rt::builtins::kryos_builtin_log10 as *const u8);
+        jit_builder.symbol("kryos_builtin_log2", kryos_rt::builtins::kryos_builtin_log2 as *const u8);
+        jit_builder.symbol("kryos_builtin_max", kryos_rt::builtins::kryos_builtin_max as *const u8);
+        jit_builder.symbol("kryos_builtin_max_f", kryos_rt::builtins::kryos_builtin_max_f as *const u8);
+        jit_builder.symbol("kryos_builtin_min", kryos_rt::builtins::kryos_builtin_min as *const u8);
+        jit_builder.symbol("kryos_builtin_min_f", kryos_rt::builtins::kryos_builtin_min_f as *const u8);
+        jit_builder.symbol("kryos_builtin_pop", kryos_rt::builtins::kryos_builtin_pop as *const u8);
+        jit_builder.symbol("kryos_builtin_pow", kryos_rt::builtins::kryos_builtin_pow as *const u8);
+        jit_builder.symbol("kryos_builtin_push", kryos_rt::builtins::kryos_builtin_push as *const u8);
+        jit_builder.symbol("kryos_builtin_read_line", kryos_rt::builtins::kryos_builtin_read_line as *const u8);
+        jit_builder.symbol("kryos_builtin_replace", kryos_rt::builtins::kryos_builtin_replace as *const u8);
+        jit_builder.symbol("kryos_builtin_reverse", kryos_rt::builtins::kryos_builtin_reverse as *const u8);
+        jit_builder.symbol("kryos_builtin_sin", kryos_rt::builtins::kryos_builtin_sin as *const u8);
+        jit_builder.symbol("kryos_builtin_sort", kryos_rt::builtins::kryos_builtin_sort as *const u8);
+        jit_builder.symbol("kryos_builtin_split", kryos_rt::builtins::kryos_builtin_split as *const u8);
+        jit_builder.symbol("kryos_builtin_sqrt", kryos_rt::builtins::kryos_builtin_sqrt as *const u8);
+        jit_builder.symbol("kryos_builtin_starts_with", kryos_rt::builtins::kryos_builtin_starts_with as *const u8);
+        jit_builder.symbol("kryos_builtin_substr", kryos_rt::builtins::kryos_builtin_substr as *const u8);
+        jit_builder.symbol("kryos_builtin_tan", kryos_rt::builtins::kryos_builtin_tan as *const u8);
+        jit_builder.symbol("kryos_builtin_to_lower", kryos_rt::builtins::kryos_builtin_to_lower as *const u8);
+        jit_builder.symbol("kryos_builtin_to_upper", kryos_rt::builtins::kryos_builtin_to_upper as *const u8);
+        jit_builder.symbol("kryos_builtin_trim", kryos_rt::builtins::kryos_builtin_trim as *const u8);
+        jit_builder.symbol("kryos_builtin_trim_end", kryos_rt::builtins::kryos_builtin_trim_end as *const u8);
+        jit_builder.symbol("kryos_builtin_trim_start", kryos_rt::builtins::kryos_builtin_trim_start as *const u8);
+        jit_builder.symbol("kryos_string_char_at", kryos_rt::builtins::kryos_string_char_at as *const u8);
+        jit_builder.symbol("kryos_string_contains", kryos_rt::string::kryos_string_contains as *const u8);
+        jit_builder.symbol("kryos_string_ends_with", kryos_rt::string::kryos_string_ends_with as *const u8);
+        jit_builder.symbol("kryos_string_hash", kryos_rt::string::kryos_string_hash as *const u8);
+        jit_builder.symbol("kryos_string_replace", kryos_rt::string::kryos_string_replace as *const u8);
+        jit_builder.symbol("kryos_string_starts_with", kryos_rt::string::kryos_string_starts_with as *const u8);
+        jit_builder.symbol("kryos_string_to_lower", kryos_rt::string::kryos_string_to_lower as *const u8);
+        jit_builder.symbol("kryos_string_to_upper", kryos_rt::string::kryos_string_to_upper as *const u8);
+        jit_builder.symbol("kryos_string_trim", kryos_rt::string::kryos_string_trim as *const u8);
+
         let module = JITModule::new(jit_builder);
 
         Ok(Self {
@@ -1130,9 +1189,48 @@ impl JitCompiler {
     ///
     /// Declares every function first, then translates each body, then
     /// finalizes once. Returns a map of function name -> executable pointer.
+    ///
+    /// Deprecated thin wrapper. Use `compile_all_with_module` so that
+    /// struct/enum definitions are available to the translator. Without
+    /// them, struct field access falls back to returning zero, silently
+    /// producing wrong results.
     pub fn compile_all(
         &mut self,
         functions: &[MirFunction],
+    ) -> Result<HashMap<String, *const u8>, CodegenError> {
+        self.compile_all_inner(
+            functions,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
+        )
+    }
+
+    /// Like `compile_all` but takes the full MIR module so struct/enum
+    /// definitions are passed to the function translator. This is what
+    /// `kryos test` and `kryos run` use to get correct behaviour for
+    /// programs that touch structs or enums.
+    pub fn compile_all_with_module(
+        &mut self,
+        module: &MirModule,
+    ) -> Result<HashMap<String, *const u8>, CodegenError> {
+        self.compile_all_inner(
+            &module.functions,
+            &module.struct_defs,
+            &module.enum_defs,
+            &module.trait_vtables,
+            &module.copy_structs,
+        )
+    }
+
+    fn compile_all_inner(
+        &mut self,
+        functions: &[MirFunction],
+        struct_defs: &std::collections::HashMap<String, Vec<(String, kryos_mir::ir::MirType)>>,
+        enum_defs: &std::collections::HashMap<String, Vec<kryos_mir::ir::EnumVariantDef>>,
+        trait_vtables: &std::collections::HashMap<(String, String), Vec<String>>,
+        copy_structs: &std::collections::HashSet<String>,
     ) -> Result<HashMap<String, *const u8>, CodegenError> {
         use cranelift_module::FuncId;
 
@@ -1201,31 +1299,36 @@ impl JitCompiler {
             let mut cl_func = Function::with_name_signature(UserFuncName::user(0, func_index), sig);
 
             {
-                let empty_struct_defs = std::collections::HashMap::new();
-                let empty_enum_defs = std::collections::HashMap::new();
-                let empty_trait_vtables = std::collections::HashMap::new();
-                let empty_copy_structs = std::collections::HashSet::new();
                 let mut builder = FunctionBuilder::new(&mut cl_func, &mut self.fb_ctx);
                 crate::codegen::translate_function(
                     mir_func,
                     &mut builder,
                     &func_ids,
                     &mut self.module,
-                    &empty_struct_defs,
-                    &empty_enum_defs,
+                    struct_defs,
+                    enum_defs,
                     &mut str_counter,
-                    &empty_trait_vtables,
+                    trait_vtables,
                     false,
-                    &empty_copy_structs,
+                    copy_structs,
                 )?;
                 builder.seal_all_blocks();
                 builder.finalize();
             }
 
             let mut ctx = Context::for_function(cl_func);
-            self.module
-                .define_function(func_id, &mut ctx)
-                .map_err(CodegenError::Module)?;
+            self.module.define_function(func_id, &mut ctx).map_err(|e| {
+                // Include the function name AND a debug-formatted error so
+                // verifier reports are actionable. `Debug` for ModuleError
+                // includes the underlying CompileError variant details.
+                if std::env::var("KRYOS_JIT_DUMP_IR").is_ok() {
+                    eprintln!("[kryos-jit] IR for '{}':\n{}", mir_func.name, ctx.func.display());
+                }
+                CodegenError::Internal(format!(
+                    "function `{}`: {e:?}",
+                    mir_func.name
+                ))
+            })?;
         }
 
         // Phase 3: Finalize once.
@@ -1425,7 +1528,7 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_string_clone", "kryos_string_clone", sig(1));
 
     // --- Array runtime ---
-    decl!("kryos_array_new", "kryos_array_new", sig(1));
+    decl!("kryos_array_new", "kryos_array_new", sig(2));
     decl!("kryos_array_push", "kryos_array_push", sig(2));
     decl!("kryos_array_get", "kryos_array_get", sig(2));
     decl!("kryos_array_set", "kryos_array_set", sig(3));

@@ -19,6 +19,8 @@ use kryos_codegen_cranelift::CraneliftBackend;
 use kryos_driver::{
     compile_file, compile_file_with_backend, compile_source, render_diagnostics, BuildConfig,
     BuildMode, OutputType,
+    // compile_source remains imported for the in-memory test_case_from_source
+    // path; do not remove unless that fallback is also dropped.
 };
 
 // ---------------------------------------------------------------------------
@@ -143,6 +145,30 @@ pub fn discover_tests(dir: &Path) -> Vec<TestCase> {
     let mut tests = Vec::new();
     discover_tests_recursive(dir, dir, &mut tests);
     tests.sort_by(|a, b| a.name.cmp(&b.name));
+    tests
+}
+
+/// Discover tests from a single `.kry` file (no recursion).
+///
+/// Useful for `kryos test path/to/file.kry`, where the caller wants to run
+/// only that file's tests regardless of any sibling `.kry` files.
+pub fn discover_tests_in_file(path: &Path) -> Vec<TestCase> {
+    let mut tests = Vec::new();
+    if path.extension().and_then(|e| e.to_str()) != Some("kry") {
+        return tests;
+    }
+    if let Ok(source) = fs::read_to_string(path) {
+        let (expectation, skip) = parse_annotations(&source);
+        let base = path.parent().unwrap_or_else(|| Path::new("."));
+        let name = derive_test_name(path, base);
+        tests.push(TestCase {
+            name,
+            source_path: path.to_path_buf(),
+            source,
+            expectation,
+            skip,
+        });
+    }
     tests
 }
 
@@ -706,6 +732,41 @@ pub fn discover_annotated_tests(dir: &Path) -> Vec<(PathBuf, Vec<String>)> {
     results
 }
 
+/// Discover `@test`-annotated functions in a single file.
+pub fn discover_annotated_tests_in_file(path: &Path) -> Vec<(PathBuf, Vec<String>)> {
+    let mut results = Vec::new();
+    if path.extension().and_then(|e| e.to_str()) != Some("kry") {
+        return results;
+    }
+    if let Ok(source) = fs::read_to_string(path) {
+        if !source.contains("@test") {
+            return results;
+        }
+        let mut config = BuildConfig::for_file(path.to_string_lossy().to_string());
+        // Stop at MIR — we only need attributes to discover @test fns. This
+        // also avoids the "no main function" error when the file only contains
+        // tests.
+        config.output_type = OutputType::Mir;
+        // Use compile_file so `use` imports (sibling modules) resolve correctly.
+        let result = compile_file(path, &config);
+        if !result.success {
+            return results;
+        }
+        if let Some(ref mir) = result.mir {
+            let test_fns: Vec<String> = mir
+                .functions
+                .iter()
+                .filter(|f| f.attributes.test)
+                .map(|f| f.name.clone())
+                .collect();
+            if !test_fns.is_empty() {
+                results.push((path.to_path_buf(), test_fns));
+            }
+        }
+    }
+    results
+}
+
 fn discover_annotated_recursive(dir: &Path, results: &mut Vec<(PathBuf, Vec<String>)>) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
@@ -722,8 +783,14 @@ fn discover_annotated_recursive(dir: &Path, results: &mut Vec<(PathBuf, Vec<Stri
                 if !source.contains("@test") {
                     continue;
                 }
-                let config = BuildConfig::for_file(path.to_string_lossy().to_string());
-                let result = compile_source(&source, &path.to_string_lossy(), &config);
+                let mut config = BuildConfig::for_file(path.to_string_lossy().to_string());
+                // Stop at MIR — we only need attributes to discover @test fns,
+                // and the test file may not have a `main()` entry point.
+                config.output_type = OutputType::Mir;
+                // Use compile_file so `use` imports (sibling modules) resolve
+                // correctly. compile_source has no file-path context and would
+                // silently fail on any imported symbol.
+                let result = compile_file(&path, &config);
                 if !result.success {
                     continue;
                 }
@@ -758,25 +825,40 @@ pub fn run_annotated_tests(dir: &Path, filter: Option<&str>) -> TestReport {
 /// run; otherwise the filter is matched as a substring (the historical
 /// behaviour).
 pub fn run_annotated_tests_with(dir: &Path, filter: Option<&str>, exact: bool) -> TestReport {
+    run_annotated_tests_internal(discover_annotated_tests(dir), filter, exact)
+}
+
+/// Run `@test`-annotated functions in a single file.
+pub fn run_annotated_tests_in_file(
+    path: &Path,
+    filter: Option<&str>,
+    exact: bool,
+) -> TestReport {
+    run_annotated_tests_internal(discover_annotated_tests_in_file(path), filter, exact)
+}
+
+fn run_annotated_tests_internal(
+    discovered: Vec<(PathBuf, Vec<String>)>,
+    filter: Option<&str>,
+    exact: bool,
+) -> TestReport {
     let start = Instant::now();
     let mut results = Vec::new();
     let mut passed = 0usize;
     let mut failed = 0usize;
     let mut skipped = 0usize;
 
-    let discovered = discover_annotated_tests(dir);
-
     // Enable test mode so assert/panic raise catchable panics instead of
     // aborting the process.
     kryos_rt::set_test_mode(true);
 
     for (path, test_fns) in &discovered {
-        let source = match fs::read_to_string(path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let config = BuildConfig::for_file(path.to_string_lossy().to_string());
-        let result = compile_source(&source, &path.to_string_lossy(), &config);
+        // `compile_file` is required so `use` imports of sibling modules
+        // resolve correctly. Stop at MIR — we then hand the MIR module to
+        // the JIT directly, and the file may not have a `main()` entry point.
+        let mut config = BuildConfig::for_file(path.to_string_lossy().to_string());
+        config.output_type = OutputType::Mir;
+        let result = compile_file(path, &config);
         if !result.success {
             // File-level compilation failure — report all test fns as failed.
             let diags = render_diagnostics(&result);

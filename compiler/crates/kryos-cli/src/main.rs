@@ -141,6 +141,11 @@ enum Commands {
         /// List discovered test names and exit, one per line.
         #[arg(long)]
         list: bool,
+
+        /// Path to a `.kry` file or directory to search for tests. When omitted,
+        /// `kryos test` looks for a `tests/` directory and falls back to `.`.
+        #[arg(long, value_name = "PATH")]
+        path: Option<String>,
     },
 
     /// Format source files
@@ -315,9 +320,16 @@ fn main() {
             nocapture,
             format,
             list,
+            path,
         } => {
             // Positional FILTER takes precedence over --filter; otherwise fall back.
-            let chosen_filter = filter_pos.or(filter);
+            // Special case: if filter_pos points to an existing path on disk and
+            // --path was not given, treat it as the path. This lets users run
+            // `kryos test path/to/file.kry` or `kryos test path/to/dir/` directly.
+            let (chosen_path, chosen_filter) = match (filter_pos, path) {
+                (Some(p), None) if std::path::Path::new(&p).exists() => (Some(p), filter),
+                (fp, p) => (p, fp.or(filter)),
+            };
             match format.as_str() {
                 "pretty" | "json" => {
                     let fmt = if format == "json" {
@@ -331,6 +343,7 @@ fn main() {
                         nocapture,
                         format: fmt,
                         list,
+                        path: chosen_path,
                     })
                 }
                 other => Err(format!(
@@ -483,6 +496,7 @@ mod tests {
                 nocapture,
                 format,
                 list,
+                path: _,
             } => {
                 assert_eq!(filter.as_deref(), Some("math"));
                 assert!(filter_pos.is_none());

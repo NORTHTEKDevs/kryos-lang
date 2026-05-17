@@ -2938,9 +2938,20 @@ fn translate_rvalue<M: Module>(
                 let eq_ref =
                     ensure_func_ref_with_args("kryos_string_eq", builder, translator, module, 2)?;
                 let call = builder.ins().call(eq_ref, &[lhs, rhs]);
-                let eq_val = builder.inst_results(call)[0];
+                let raw = builder.inst_results(call)[0];
+                // kryos_string_eq returns Rust `bool` (1 byte). The declared
+                // ABI return type depends on the pipeline: AOT declares i8,
+                // JIT declares i64. Normalize to a single-byte boolean so
+                // subsequent bitwise ops don't mix widths.
+                let raw_ty = builder.func.dfg.value_type(raw);
+                let eq_val = if raw_ty == types::I8 {
+                    raw
+                } else {
+                    let masked = builder.ins().band_imm(raw, 1);
+                    builder.ins().ireduce(types::I8, masked)
+                };
                 if *op == MirBinOp::Neq {
-                    // Invert the boolean: xor with 1.
+                    // Invert the boolean: xor with 1 (both i8).
                     let one = builder.ins().iconst(types::I8, 1);
                     let neq = builder.ins().bxor(eq_val, one);
                     return Ok(Some(neq));

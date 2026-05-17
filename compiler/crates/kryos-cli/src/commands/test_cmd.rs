@@ -8,8 +8,9 @@
 use std::path::Path;
 
 use kryos_test_runner::{
-    discover_annotated_tests, discover_tests, format_report, format_report_json, run_all_with,
-    run_annotated_tests_with, RunOptions, TestReport, TestResult,
+    discover_annotated_tests, discover_annotated_tests_in_file, discover_tests,
+    discover_tests_in_file, format_report, format_report_json, run_all_with,
+    run_annotated_tests_in_file, run_annotated_tests_with, RunOptions, TestReport, TestResult,
 };
 
 /// Report format selector for `kryos test`.
@@ -34,6 +35,9 @@ pub struct TestOptions {
     pub format: OutputFormat,
     /// Just list discovered test names and exit.
     pub list: bool,
+    /// Optional path to a `.kry` file or directory. When `None`, defaults to
+    /// `tests/` if it exists, otherwise the current directory.
+    pub path: Option<String>,
 }
 
 impl Default for OutputFormat {
@@ -44,22 +48,55 @@ impl Default for OutputFormat {
 
 /// Execute the test command with the given options.
 pub fn execute(opts: TestOptions) -> Result<(), String> {
-    // Look for a tests/ directory first, fall back to current directory.
-    let test_dir = if Path::new("tests").is_dir() {
-        Path::new("tests")
-    } else {
-        Path::new(".")
-    };
+    // Resolve the discovery root.
+    //
+    // Precedence:
+    //   1. `opts.path` if provided — may be a file or directory.
+    //   2. `tests/` if it exists in the current directory.
+    //   3. current directory.
+    //
+    // When the user passes a single `.kry` file, we use file-specific
+    // discovery so we don't pick up unrelated tests in sibling files.
+    let (test_dir_buf, single_file): (std::path::PathBuf, Option<std::path::PathBuf>) =
+        match &opts.path {
+            Some(p) => {
+                let pb = std::path::PathBuf::from(p);
+                if pb.is_file() {
+                    let parent = pb.parent().map(|q| q.to_path_buf()).unwrap_or_else(|| {
+                        std::path::PathBuf::from(".")
+                    });
+                    (parent, Some(pb))
+                } else if pb.is_dir() {
+                    (pb, None)
+                } else {
+                    return Err(format!(
+                        "kryos test: path '{}' does not exist",
+                        pb.display()
+                    ));
+                }
+            }
+            None => {
+                if Path::new("tests").is_dir() {
+                    (std::path::PathBuf::from("tests"), None)
+                } else {
+                    (std::path::PathBuf::from("."), None)
+                }
+            }
+        };
+    let test_dir: &Path = test_dir_buf.as_path();
 
     let filter_opt: Option<&str> = opts.filter.as_deref();
 
     // ---- --list mode: enumerate and exit ----
     if opts.list {
-        return list_tests(test_dir, filter_opt, opts.exact);
+        return list_tests(test_dir, single_file.as_deref(), filter_opt, opts.exact);
     }
 
     // ---- Phase 1: file-level annotation tests (`// expect:` / `// run-expect:`) ----
-    let mut tests = discover_tests(test_dir);
+    let mut tests = match &single_file {
+        Some(f) => discover_tests_in_file(f),
+        None => discover_tests(test_dir),
+    };
     if let Some(f) = filter_opt {
         if opts.exact {
             tests.retain(|t| t.name == f);
@@ -87,7 +124,10 @@ pub fn execute(opts: TestOptions) -> Result<(), String> {
     };
 
     // ---- Phase 2: `@test`-annotated function tests ----
-    let annotated_report = run_annotated_tests_with(test_dir, filter_opt, opts.exact);
+    let annotated_report = match &single_file {
+        Some(f) => run_annotated_tests_in_file(f, filter_opt, opts.exact),
+        None => run_annotated_tests_with(test_dir, filter_opt, opts.exact),
+    };
 
     if tests.is_empty() && annotated_report.total == 0 {
         if opts.format == OutputFormat::Json {
@@ -176,15 +216,26 @@ fn merge_reports(reports: &[TestReport]) -> TestReport {
 }
 
 /// Implement `--list`: enumerate file-test names and `@test` function names.
-fn list_tests(test_dir: &Path, filter: Option<&str>, exact: bool) -> Result<(), String> {
+fn list_tests(
+    test_dir: &Path,
+    single_file: Option<&Path>,
+    filter: Option<&str>,
+    exact: bool,
+) -> Result<(), String> {
     let mut names: Vec<String> = Vec::new();
 
-    let file_tests = discover_tests(test_dir);
+    let file_tests = match single_file {
+        Some(f) => discover_tests_in_file(f),
+        None => discover_tests(test_dir),
+    };
     for t in &file_tests {
         names.push(t.name.clone());
     }
 
-    let annotated = discover_annotated_tests(test_dir);
+    let annotated = match single_file {
+        Some(f) => discover_annotated_tests_in_file(f),
+        None => discover_annotated_tests(test_dir),
+    };
     for (_path, fns) in &annotated {
         for n in fns {
             names.push(n.clone());

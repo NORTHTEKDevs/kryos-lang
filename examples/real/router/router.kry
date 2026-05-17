@@ -1,0 +1,203 @@
+// router.kry -- a small HTTP-style URL router & middleware library.
+//
+// This module is meant to be imported from a sibling file via `use router`.
+// It exposes pure functions that operate on plain values (no I/O, no caps),
+// which makes it trivial to unit-test with `@test` functions.
+//
+// The design mirrors what you'd find in tiny TS/Rust routers (express,
+// axum-lite): you register patterns with method + path, then ask the router
+// to match a request and return the matched handler key plus extracted path
+// parameters.
+
+// ---------------------------------------------------------------------------
+// Route patterns
+// ---------------------------------------------------------------------------
+
+/// Split a path like "/users/42/posts" into its non-empty segments.
+/// "/" => [], "/a" => ["a"], "/a/b/" => ["a","b"].
+fn split_path(path: str) -> [str] {
+    let raw = split(path, "/")
+    let mut out: [str] = []
+    let mut i = 0
+    while i < len(raw) {
+        let s = raw[i]
+        if len(s) > 0 {
+            push(out, s)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+/// Match a single pattern segment against a concrete segment.
+/// Returns one of: "match", "param:<name>", or "nomatch".
+///
+/// Pattern segments may be literal (`users`) or a placeholder (`:id`).
+fn match_segment(pat: str, seg: str) -> str {
+    if starts_with(pat, ":") {
+        let name = substr(pat, 1, len(pat))
+        return "param:" + name
+    }
+    if pat == seg {
+        return "match"
+    }
+    return "nomatch"
+}
+
+// ---------------------------------------------------------------------------
+// Public API: match_route
+// ---------------------------------------------------------------------------
+
+/// Try to match `path` against `pattern`. Returns an encoded result string:
+///
+///   - On success: "ok\n<k1>=<v1>\n<k2>=<v2>\n..."
+///   - On failure: "no"
+///
+/// Encoding it as a string keeps the surface compatible with the parts of
+/// Kryos that are most stable today (no map handles required by callers).
+fn match_route(pattern: str, path: str) -> str {
+    let pseg = split_path(pattern)
+    let xseg = split_path(path)
+    if len(pseg) != len(xseg) {
+        return "no"
+    }
+    let mut out = "ok"
+    let mut i = 0
+    while i < len(pseg) {
+        let res = match_segment(pseg[i], xseg[i])
+        if res == "nomatch" {
+            return "no"
+        }
+        if starts_with(res, "param:") {
+            let name = substr(res, 6, len(res))
+            out = out + "\n" + name + "=" + xseg[i]
+        }
+        i = i + 1
+    }
+    return out
+}
+
+/// Parse the parameter portion of a `match_route` result into a list of
+/// "key=value" strings. Returns an empty list if the result is "no" or has
+/// no parameters.
+fn route_params(result: str) -> [str] {
+    if result == "no" {
+        let empty: [str] = []
+        return empty
+    }
+    let lines = split(result, "\n")
+    let mut out: [str] = []
+    let mut i = 1  // skip the "ok" header
+    while i < len(lines) {
+        push(out, lines[i])
+        i = i + 1
+    }
+    return out
+}
+
+/// Was the route a successful match?
+fn route_matched(result: str) -> bool {
+    return result != "no"
+}
+
+// ---------------------------------------------------------------------------
+// Middleware chain
+// ---------------------------------------------------------------------------
+//
+// A middleware chain is encoded as a "\n"-separated list of named stages.
+// Each stage runs in order; if any stage's transform returns a string
+// starting with "halt:" the remainder is short-circuited and the rest of
+// the value after "halt:" is returned as the response.
+
+/// Apply a single middleware stage. This is a pure function: real apps would
+/// dispatch to actual middleware logic by name, but for testing purposes we
+/// implement two well-known stages here.
+fn apply_stage(stage: str, payload: str) -> str {
+    if stage == "upper" {
+        return to_upper(payload)
+    }
+    if stage == "trim" {
+        return trim(payload)
+    }
+    if stage == "deny_admin" {
+        if contains(payload, "admin") {
+            return "halt:403 forbidden"
+        }
+        return payload
+    }
+    if stage == "tag" {
+        return "[tagged] " + payload
+    }
+    // Unknown stage = no-op
+    return payload
+}
+
+/// Run a chain of stages against an initial payload. Returns the final
+/// payload (or the halt reason, if a stage short-circuited).
+fn run_chain(chain: str, payload: str) -> str {
+    let stages = split(chain, "\n")
+    let mut acc = payload
+    let mut i = 0
+    while i < len(stages) {
+        let s = stages[i]
+        if len(s) > 0 {
+            acc = apply_stage(s, acc)
+            if starts_with(acc, "halt:") {
+                return substr(acc, 5, len(acc))
+            }
+        }
+        i = i + 1
+    }
+    return acc
+}
+
+// ---------------------------------------------------------------------------
+// Method + path dispatcher
+// ---------------------------------------------------------------------------
+
+/// Encode a route table entry as "METHOD <pattern> -> <handler_key>".
+fn route(method: str, pattern: str, handler: str) -> str {
+    return method + " " + pattern + " -> " + handler
+}
+
+/// Given a "\n"-separated route table and a request (method + path), return
+/// the matched handler key plus any extracted params, or "404" if nothing
+/// matched.
+///
+/// Returned shape on success: "<handler>\n<k1>=<v1>\n<k2>=<v2>..."
+fn dispatch(table: str, method: str, path: str) -> str {
+    let rows = split(table, "\n")
+    let mut i = 0
+    while i < len(rows) {
+        let row = trim(rows[i])
+        if len(row) > 0 {
+            // Parse "METHOD <pattern> -> <handler>"
+            let arrow = " -> "
+            let aparts = split(row, arrow)
+            if len(aparts) == 2 {
+                let left = aparts[0]
+                let handler = aparts[1]
+                let lparts = split(left, " ")
+                if len(lparts) == 2 {
+                    let m = lparts[0]
+                    let pat = lparts[1]
+                    if m == method {
+                        let mr = match_route(pat, path)
+                        if route_matched(mr) {
+                            let params = route_params(mr)
+                            let mut out = handler
+                            let mut j = 0
+                            while j < len(params) {
+                                out = out + "\n" + params[j]
+                                j = j + 1
+                            }
+                            return out
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return "404"
+}

@@ -1,0 +1,88 @@
+// Tests for the config-parser library. Run with:
+//     kryos test examples/real/config_parser/config_test.kry
+use config
+
+@test
+fn test_trim_ws_basic() {
+    assert(trim_ws("  hi  ") == "hi", "leading and trailing spaces")
+    assert(trim_ws("") == "", "empty trim")
+    assert(trim_ws("nope") == "nope", "no-op trim")
+}
+
+@test
+fn test_parse_int() {
+    assert(parse_int("0") == 0, "zero")
+    assert(parse_int("7") == 7, "single")
+    assert(parse_int("123") == 123, "multi")
+}
+
+@test
+fn test_is_all_digits() {
+    assert(is_all_digits("123"), "all digits")
+    assert(not is_all_digits(""), "empty is not digits")
+    assert(not is_all_digits("12x"), "trailing letter")
+    assert(not is_all_digits("hello"), "letters")
+}
+
+@test
+fn test_parse_value_int() {
+    let v = parse_value("42")
+    assert(value_to_string(v) == "int:42", "parses int")
+}
+
+@test
+fn test_parse_value_bool_true() {
+    let v = parse_value("true")
+    assert(value_to_string(v) == "bool:true", "parses true")
+}
+
+@test
+fn test_parse_value_bool_false() {
+    let v = parse_value("false")
+    assert(value_to_string(v) == "bool:false", "parses false")
+}
+
+@test
+fn test_parse_value_str() {
+    let v = parse_value("hello world")
+    assert(value_to_string(v) == "str:hello world", "parses string")
+}
+
+@test
+fn test_parse_config_basic() {
+    let text = "name = kryos\ncount = 42\nenabled = true\n"
+    let cfg = parse_config(text)
+    assert(len(cfg.keys) == 3, "three keys parsed")
+    assert(value_to_string(get(cfg, "name")) == "str:kryos", "name lookup")
+    assert(value_to_string(get(cfg, "count")) == "int:42", "count lookup")
+    assert(value_to_string(get(cfg, "enabled")) == "bool:true", "enabled lookup")
+}
+
+@test
+fn test_parse_config_skips_comments() {
+    let text = "# this is a comment\nname = foo\n# another\nlevel = 9\n"
+    let cfg = parse_config(text)
+    assert(len(cfg.keys) == 2, "comments skipped")
+    assert(value_to_string(get(cfg, "level")) == "int:9", "value after comments")
+}
+
+@test
+fn test_parse_config_missing_key() {
+    let text = "name = foo\n"
+    let cfg = parse_config(text)
+    assert(value_to_string(get(cfg, "absent")) == "str:", "missing -> empty str")
+}
+
+@test
+fn test_parse_config_empty_input() {
+    let cfg = parse_config("")
+    assert(len(cfg.keys) == 0, "empty -> no keys")
+}
+
+@test
+fn test_index_of_eq() {
+    assert(index_of_eq("a=b") == 1, "eq at 1")
+    assert(index_of_eq("") == -1, "no eq")
+    assert(index_of_eq("none here") == -1, "no eq in text")
+}
+

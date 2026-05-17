@@ -4,6 +4,79 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.5.0] - 2026-05-17 — "Test runner, importable libraries, JIT correctness"
+
+This release closes the gap between AOT and JIT compilation paths, makes
+`kryos test` work on single files and on libraries imported via `use`,
+and adds two new real-world example libraries with full @test suites.
+All 15 smoke tests, 21 router tests, and 12 config-parser tests pass.
+
+No breaking changes. No new language surface.
+
+### Added
+
+- **`kryos test PATH`** now accepts a single `.kry` file or a directory
+  as a positional argument. `--path` is the new explicit flag; if the
+  positional argument is an existing file or directory it is treated
+  as a path, otherwise as a name filter (existing behaviour preserved).
+  `kryos-test-runner` gained `discover_tests_in_file`,
+  `discover_annotated_tests_in_file`, and
+  `run_annotated_tests_in_file` for per-file discovery.
+
+- **Test runner uses `compile_file` instead of `compile_source`** so
+  `use module` imports resolve correctly when running @test functions
+  in a file that pulls in a sibling library. Test files without
+  `main()` now compile because the runner explicitly sets
+  `OutputType::Mir` for discovery.
+
+- **Two new real-program examples:**
+  - `examples/real/router/` — a small HTTP-style URL router and
+    middleware library plus 21 @test functions covering path
+    splitting, segment matching, parameter extraction, and chain
+    dispatch. Demonstrates importable pure-function libraries.
+  - `examples/real/config_parser/` — a key/value config parser using
+    a `Value` sum type (`Str(str) | Int(i64) | Bool(bool)`) and a
+    `Config` struct. 12 @test functions cover parsing, comments,
+    missing keys, and value coercion. Demonstrates struct + enum
+    + match-with-payload-binding through the JIT path.
+
+### Fixed
+
+- **JIT used empty struct/enum/trait_vtable/copy_struct definitions.**
+  `jit_compile_module` now passes `module.struct_defs`,
+  `module.enum_defs`, `module.trait_vtables`, and
+  `module.copy_structs` through to `translate_function` so struct
+  field access on JIT-compiled code works correctly. Previously the
+  translator hit a fallback path that returned zero with a warning,
+  silently producing wrong results in any program (or @test) that
+  touched a struct field.
+
+- **JIT declared `kryos_array_new` with the wrong signature.** The
+  runtime takes `(elem_size, cap)` but the JIT declared `sig(1)`,
+  producing `mismatched argument count for fn7(...)` verifier errors
+  on any program using array literals.
+
+- **JIT missing 53 builtin symbol registrations.** Math (`sqrt`,
+  `sin`, `cos`, `log`, `pow`, ...), string helpers (`split`, `substr`,
+  `starts_with`, `trim`, `to_upper`, ...), filesystem helpers, and
+  array/map operations existed in `kryos-rt` but were never registered
+  with the JIT builder, so JIT-compiled code crashed with
+  `can't resolve symbol kryos_builtin_split` and similar.
+
+- **String `==` / `!=` produced i8/i64 width mismatches.**
+  `kryos_string_eq` returns Rust `bool` (lowered to i8), but the JIT
+  signature declared the return as i64. The `!=` codegen path XOR'd
+  the result with an i8 constant `1`, failing Cranelift verification.
+  Codegen now branches on the actual Cranelift value type and
+  normalizes both operands to i8 before the XOR.
+
+- **JIT compile error reporting.** Verifier errors now include the
+  failing function name and a Debug-formatted error chain so the
+  exact mismatching instruction and signature are visible. Setting
+  `KRYOS_JIT_DUMP_IR=1` prints full Cranelift IR for every function
+  the JIT compiles, which made the four bugs above straightforward
+  to diagnose.
+
 ## [2.4.1] - 2026-05-17 — "Stdlib modules actually run"
 
 This is the runtime follow-up to 2.4.0. 2.4.0 made the unblocked stdlib
