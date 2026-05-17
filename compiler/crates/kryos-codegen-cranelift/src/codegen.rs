@@ -3525,6 +3525,8 @@ fn translate_rvalue<M: Module>(
                 "regex_new" => ("kryos_regex_new_ks", 1),
                 "regex_match" => ("kryos_regex_is_match_ks", 2),
                 "regex_find" => ("kryos_regex_find_ks", 2),
+                "regex_find_pos" => ("kryos_regex_find_pos_ks", 3),
+                "regex_find_end" => ("kryos_regex_find_end_ks", 3),
                 "regex_replace_all" => ("kryos_regex_replace_all_ks", 3),
                 "regex_drop" => ("kryos_regex_drop_ks", 1),
                 // HTTP/HTTPS request

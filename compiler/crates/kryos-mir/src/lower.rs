@@ -540,6 +540,8 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("regex_new", MirType::I64),
         ("regex_match", MirType::Bool),
         ("regex_find", MirType::Str),
+        ("regex_find_pos", MirType::I64),
+        ("regex_find_end", MirType::I64),
         ("regex_replace_all", MirType::Str),
         ("regex_drop", MirType::Void),
         // HTTP / HTTPS

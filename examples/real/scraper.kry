@@ -1,0 +1,77 @@
+// scraper -- fetch a web page, extract links, persist as JSON.
+//
+// Usage:  scraper URL [OUTFILE]
+//
+// Fetches URL over HTTPS, regex-extracts every href="..." value,
+// dedupes the URLs, writes a JSON array to OUTFILE (default ./links.json).
+// Prints a one-line summary to stdout.
+//
+// Exit codes:
+//   0 -- success (any number of links, including zero)
+//   2 -- usage error or fetch failed
+
+use std::os::{args, exit}
+use std::io::{println, eprintln}
+use std::fs::{write_file}
+
+@capabilities(net, io, compute, process)
+fn main() {
+    let argv = args()
+    let argc = len(argv)
+    if argc < 2 {
+        eprintln("usage: scraper URL [OUTFILE]")
+        exit(2)
+    }
+    let url = argv[1]
+    let mut outfile = "links.json"
+    if argc >= 3 {
+        outfile = argv[2]
+    }
+
+    let body = http2_get(url)
+    if len(body) == 0 {
+        eprintln("scraper: empty response from " + url)
+        exit(2)
+    }
+
+    // Walk every href="..." occurrence using the position-aware regex
+    // builtins.  Avoids the O(n^3) stdlib find_all algorithm.
+    let re = regex_new("href=\"[^\"]+\"")
+    let body_len = len(body)
+    let mut links = []
+    let mut seen = ","         // simple dedupe via comma-bracketed string
+    let mut from = 0
+    while from < body_len {
+        let s = regex_find_pos(re, body, from)
+        if s < 0 {
+            from = body_len
+        } else {
+            let e = regex_find_end(re, body, from)
+            // Match looks like:  href="..."  -- strip prefix and trailing quote
+            let inner = substr(body, s + 6, e - 1)
+            let key = "," + inner + ","
+            if not contains(seen, key) {
+                push(links, inner)
+                seen = seen + inner + ","
+            }
+            from = e
+        }
+    }
+    regex_drop(re)
+
+    // Build JSON array by hand.
+    let mut json = "["
+    let lc = len(links)
+    let mut j = 0
+    while j < lc {
+        if j > 0 { json = json + "," }
+        let v = links[j]
+        let esc = replace(replace(v, "\\", "\\\\"), "\"", "\\\"")
+        json = json + "\"" + esc + "\""
+        j = j + 1
+    }
+    json = json + "]\n"
+
+    write_file(outfile, json)
+    println("fetched " + to_string(len(body)) + " bytes, " + to_string(lc) + " unique links -> " + outfile)
+}

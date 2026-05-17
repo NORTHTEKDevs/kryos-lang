@@ -891,6 +891,14 @@ impl JitCompiler {
             kryos_stdlib_native::bindings::kryos_regex_find_ks as *const u8,
         );
         jit_builder.symbol(
+            "kryos_regex_find_pos_ks",
+            kryos_stdlib_native::bindings::kryos_regex_find_pos_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_regex_find_end_ks",
+            kryos_stdlib_native::bindings::kryos_regex_find_end_ks as *const u8,
+        );
+        jit_builder.symbol(
             "kryos_regex_replace_all_ks",
             kryos_stdlib_native::bindings::kryos_regex_replace_all_ks as *const u8,
         );
@@ -1546,6 +1554,8 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_regex_new_ks", "kryos_regex_new_ks", sig(1));
     decl!("kryos_regex_is_match_ks", "kryos_regex_is_match_ks", sig(2));
     decl!("kryos_regex_find_ks", "kryos_regex_find_ks", sig(2));
+    decl!("kryos_regex_find_pos_ks", "kryos_regex_find_pos_ks", sig(3));
+    decl!("kryos_regex_find_end_ks", "kryos_regex_find_end_ks", sig(3));
     decl!("kryos_regex_replace_all_ks", "kryos_regex_replace_all_ks", sig(3));
     decl!("kryos_regex_drop_ks", "kryos_regex_drop_ks", sig(1));
     decl!("kryos_http_request_ks", "kryos_http_request_ks", sig(5));

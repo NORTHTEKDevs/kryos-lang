@@ -150,6 +150,45 @@ pub extern "C" fn kryos_regex_find_ks(re_handle: i64, text_handle: i64) -> i64 {
     }
 }
 
+/// `regex_find_pos(re: i64, text: str, from: i64) -> i64` — start byte offset of the
+/// next match in `text` at or after `from`, or -1 if no match. Out-of-range `from`
+/// returns -1.
+#[no_mangle]
+pub extern "C" fn kryos_regex_find_pos_ks(re_handle: i64, text_handle: i64, from: i64) -> i64 {
+    if re_handle == 0 {
+        return -1;
+    }
+    let s = unsafe { handle_to_str(text_handle) };
+    let start = if from < 0 { 0 } else { from as usize };
+    if start > s.len() {
+        return -1;
+    }
+    let re = unsafe { &*(re_handle as *const regex::Regex) };
+    match re.find_at(s, start) {
+        Some(m) => m.start() as i64,
+        None => -1,
+    }
+}
+
+/// `regex_find_end(re: i64, text: str, from: i64) -> i64` — end byte offset of the
+/// next match in `text` at or after `from`, or -1 if no match.
+#[no_mangle]
+pub extern "C" fn kryos_regex_find_end_ks(re_handle: i64, text_handle: i64, from: i64) -> i64 {
+    if re_handle == 0 {
+        return -1;
+    }
+    let s = unsafe { handle_to_str(text_handle) };
+    let start = if from < 0 { 0 } else { from as usize };
+    if start > s.len() {
+        return -1;
+    }
+    let re = unsafe { &*(re_handle as *const regex::Regex) };
+    match re.find_at(s, start) {
+        Some(m) => m.end() as i64,
+        None => -1,
+    }
+}
+
 /// `regex_replace_all(re: i64, text: str, replacement: str) -> str`.
 #[no_mangle]
 pub extern "C" fn kryos_regex_replace_all_ks(

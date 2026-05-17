@@ -3980,6 +3980,26 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
+        name: "regex_find_pos".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![
+            ("re".to_string(), Type::I64),
+            ("text".to_string(), Type::Str),
+            ("from".to_string(), Type::I64),
+        ],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "regex_find_end".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![
+            ("re".to_string(), Type::I64),
+            ("text".to_string(), Type::Str),
+            ("from".to_string(), Type::I64),
+        ],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
         name: "regex_replace_all".to_string(),
         generic_params: vec![], generic_var_ids: vec![],
         params: vec![
