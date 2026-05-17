@@ -68,6 +68,13 @@ pub struct LoweringContext {
     try_catch_target: Option<TryCatchTarget>,
     /// Tracks locals that are closures with captures: local_name -> (func_name, capture_operands).
     closure_locals: HashMap<String, (String, Vec<Operand>)>,
+    /// Pending closure-local re-registrations for the next `lower_function`
+    /// call. Used when lowering nested lambdas that capture other closures:
+    /// the outer frame stages entries here so that after the inner frame
+    /// allocates its parameter locals, body lowering can find the captured
+    /// closures in `closure_locals` keyed by inner-frame local IDs. Each
+    /// entry is (closure_local_name, real_function_name, capture_var_names).
+    pending_closure_regs: Vec<(String, String, Vec<String>)>,
     /// Actor definitions: actor_name -> ordered list of (handler_name, param_count).
     actor_defs: HashMap<String, Vec<(String, usize)>>,
     /// The current `Self` type name — set when lowering trait/impl blocks.
@@ -171,6 +178,7 @@ impl LoweringContext {
             type_aliases: HashMap::new(),
             try_catch_target: None,
             closure_locals: HashMap::new(),
+            pending_closure_regs: Vec::new(),
             actor_defs: HashMap::new(),
             actor_state_fields: HashMap::new(),
             const_defs: HashMap::new(),
@@ -316,6 +324,7 @@ impl LoweringContext {
             loop_headers: std::mem::take(&mut self.loop_headers),
             loop_exits: std::mem::take(&mut self.loop_exits),
             hidden_locals: std::mem::take(&mut self.hidden_locals),
+            closure_locals: std::mem::take(&mut self.closure_locals),
         }
     }
 
@@ -330,6 +339,7 @@ impl LoweringContext {
         self.loop_headers = state.loop_headers;
         self.loop_exits = state.loop_exits;
         self.hidden_locals = state.hidden_locals;
+        self.closure_locals = state.closure_locals;
     }
 }
 
@@ -344,6 +354,7 @@ struct FunctionState {
     loop_headers: Vec<BlockId>,
     loop_exits: Vec<BlockId>,
     hidden_locals: HashSet<u32>,
+    closure_locals: HashMap<String, (String, Vec<Operand>)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1185,6 +1196,29 @@ pub fn lower_function(
             MirParam { local, ty }
         })
         .collect();
+
+    // Consume staged closure-local re-registrations from the enclosing
+    // frame. The outer Lambda case populated `pending_closure_regs` with
+    // (closure_name, real_func, capture_var_names). Now that this frame's
+    // params are allocated, re-key those entries onto inner-frame local IDs.
+    if !ctx.pending_closure_regs.is_empty() {
+        let regs = std::mem::take(&mut ctx.pending_closure_regs);
+        for (clos_name, real_func, cap_names) in regs {
+            let cap_ops: Option<Vec<Operand>> = cap_names
+                .iter()
+                .map(|n| {
+                    ctx.locals
+                        .iter()
+                        .find(|l| l.name.as_deref() == Some(n.as_str()))
+                        .map(|l| Operand::Local(l.id))
+                })
+                .collect();
+            if let Some(cap_ops) = cap_ops {
+                ctx.closure_locals
+                    .insert(clos_name, (real_func, cap_ops));
+            }
+        }
+    }
 
     // Module-level globals initializer. For the program entry point (`main`)
     // we evaluate every `let mut NAME: TY = EXPR` top-level decl exactly once
@@ -4691,6 +4725,50 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // Analyze free variables in the lambda body (captures from enclosing scope).
             let captures = find_free_variables(ctx, body, params);
 
+            // Stage closure_locals re-registrations for the inner frame.
+            // For each captured variable that is itself a tracked closure
+            // with captures, record (closure_name, real_func, capture_names).
+            // `find_free_variables` above already added the transitive
+            // captures (e.g. `n` from `add_n`'s capture list) as free vars
+            // of this lambda, so those names will exist as params in the
+            // inner frame. After `lower_function` allocates inner-frame
+            // params, it consumes `pending_closure_regs` and rebuilds
+            // `closure_locals` entries pointing at the inner-frame locals.
+            for capname in &captures {
+                if let Some((real_func, capture_ops)) =
+                    ctx.closure_locals.get(capname).cloned()
+                {
+                    let mut inner_capture_names: Vec<String> = Vec::new();
+                    let mut ok = true;
+                    for op in capture_ops {
+                        if let Operand::Local(lid) = op {
+                            let lname = ctx
+                                .locals
+                                .iter()
+                                .find(|l| l.id == lid)
+                                .and_then(|l| l.name.clone());
+                            match lname {
+                                Some(n) => inner_capture_names.push(n),
+                                None => {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                        } else {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if ok {
+                        ctx.pending_closure_regs.push((
+                            capname.clone(),
+                            real_func,
+                            inner_capture_names,
+                        ));
+                    }
+                }
+            }
+
             // Build params BEFORE saving state — save_function_state() takes ctx.locals,
             // so type lookups must happen while the enclosing scope is still live.
             let mut all_params: Vec<ast::Param> = captures
@@ -5278,6 +5356,36 @@ fn find_free_variables(
     let mut free_vars = Vec::new();
     let mut seen = std::collections::HashSet::new();
     collect_identifiers(body, &param_names, &mut free_vars, &mut seen, ctx);
+
+    // Transitive closure-capture expansion: if any free var is a tracked
+    // closure local (i.e. its initializer was a Closure RValue with captures),
+    // those captures' source locals must also be free vars of the enclosing
+    // lambda. Without this, the synthesized inner-lambda function would
+    // re-emit the direct-call optimization for the captured closure using
+    // local IDs from the outer frame that don't exist in the inner frame.
+    let mut i = 0;
+    while i < free_vars.len() {
+        let name = free_vars[i].clone();
+        if let Some((_, capture_ops)) = ctx.closure_locals.get(&name).cloned() {
+            for op in capture_ops {
+                if let Operand::Local(lid) = op {
+                    let lname = ctx
+                        .locals
+                        .iter()
+                        .find(|l| l.id == lid)
+                        .and_then(|l| l.name.clone());
+                    if let Some(lname) = lname {
+                        if !param_names.contains(&lname) && !seen.contains(&lname) {
+                            seen.insert(lname.clone());
+                            free_vars.push(lname);
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
     free_vars
 }
 

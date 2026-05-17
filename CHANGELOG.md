@@ -4,6 +4,48 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.6.8] - 2026-05-17 — "closures that capture other closures"
+
+A closure that captures a `let`-bound closure value as one of its free
+variables now works correctly, both when called directly and when
+passed through a higher-order function. Previously the inner lambda's
+body, lowered as a fresh standalone function, kept reading the outer
+frame's stale `Operand::Local(...)` IDs through the shared
+`closure_locals` direct-call optimization, producing garbage results
+(pointer-shaped integers) and sometimes a segfault.
+
+No breaking changes. All 25 smoke tests + 21 router + 12 config_parser
+tests pass.
+
+### Fixed
+
+- Nested closure capture across frames is now correct. Code like
+
+  ```kryos
+  let n = 10
+  let add_n = |x: i64| -> i64 { x + n }
+  let f = |x: i64| -> i64 { add_n(x) * 2 }   // f captures add_n
+  map_int(xs, f)
+  ```
+
+  used to compute garbage because the synthesized function for `f`
+  re-used the direct-call optimization for `add_n` with local IDs from
+  the outer frame.
+
+- The fix has two parts. First, `find_free_variables` transitively
+  expands captured closures: if `f` captures `add_n` and `add_n` itself
+  captures `n`, then `n` is added as a free variable of `f` so it
+  becomes an additional parameter of the synthesized function. Second,
+  `lower_function` now consumes a `pending_closure_regs` queue staged
+  by the outer Lambda case before saving function state, rebuilding
+  `closure_locals` entries keyed onto the inner frame's freshly
+  allocated parameter local IDs.
+
+- `closure_locals` is now saved/restored across function-state
+  boundaries (added to `FunctionState`) so nested lambda lowering
+  starts with a clean slate rather than inheriting stale outer-frame
+  entries.
+
 ## [2.6.7] - 2026-05-17 — "bidirectional inference for un-annotated lambda args"
 
 Closures passed as function arguments now have their parameter and

@@ -1,0 +1,53 @@
+// Regression test: a closure capturing another local that is itself a
+// closure-with-captures must work both when called directly and when
+// passed through a higher-order function.
+//
+// v2.6.7 and earlier: the inner lambda's body was lowered in a fresh
+// per-function frame, but `closure_locals` was shared across frames and
+// still held the OUTER frame's `Operand::Local(...)` IDs for the
+// captured closure's own captures. When the inner body called the
+// captured closure, the direct-call optimization fired with stale local
+// IDs from the outer frame, producing garbage values or, worse, a
+// segfault if those IDs no longer existed.
+//
+// v2.6.8: `find_free_variables` now transitively expands captured
+// closures so their underlying captures are also added to the inner
+// lambda's parameter list. `lower_function` then drains a
+// `pending_closure_regs` queue staged by the outer Lambda case and
+// rebuilds `closure_locals` keyed by the inner frame's local IDs.
+
+fn map_int(xs: [i64], f: fn(i64) -> i64) -> [i64] {
+    let mut ys: [i64] = []
+    for x in xs {
+        push(ys, f(x))
+    }
+    return ys
+}
+
+fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
+    return f(x)
+}
+
+fn main() {
+    // Single-level: closure captures a closure-with-captures, call directly.
+    let n = 10
+    let add_n = |x: i64| -> i64 { x + n }
+    let f = |x: i64| -> i64 { add_n(x) * 2 }
+    assert(f(5) == 30)
+    assert(f(7) == 34)
+
+    // Same setup, but called through a HOF.
+    let xs: [i64] = [1, 2, 3]
+    let ys = map_int(xs, f)
+    assert(ys[0] == 22)
+    assert(ys[1] == 24)
+    assert(ys[2] == 26)
+
+    // Three-level: f3 captures f2 captures f1 captures a.
+    let a = 1
+    let f1 = |x: i64| -> i64 { x + a }
+    let f2 = |x: i64| -> i64 { f1(x) * 2 }
+    let f3 = |x: i64| -> i64 { f2(x) + 100 }
+    assert(f3(5) == 112)
+    assert(apply(f3, 10) == 122)
+}
