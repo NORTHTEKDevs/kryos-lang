@@ -1,0 +1,133 @@
+// todo_sqlite -- a tiny CRUD todo manager backed by SQLite.
+//
+// Usage:
+//   todo_sqlite DB add  TEXT         # add a todo, prints new id
+//   todo_sqlite DB list              # list all open todos
+//   todo_sqlite DB all               # list all (open and done)
+//   todo_sqlite DB done ID           # mark a todo done
+//   todo_sqlite DB del  ID           # delete a todo
+//
+// On first run the schema is created via a single migration step.
+// Persists to the SQLite file at DB (use ":memory:" for ephemeral).
+//
+// Exit codes:
+//   0 -- success
+//   2 -- usage error
+//   3 -- not found
+
+use std::os::{args, exit}
+use std::db::{open, close, execute, query, step, col_int, col_text, finalize}
+
+// Single migration step: schema + a meta table tracking migration version.
+fn migrate(conn: Connection) {
+    execute(conn, "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT)")
+    execute(conn, "CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)")
+    // Idempotent version write.
+    execute(conn, "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '1')")
+}
+
+// Very small single-quote escaper so we can inline strings safely.
+fn sql_escape(s: str) -> str {
+    return replace(s, "'", "''")
+}
+
+fn cmd_add(conn: Connection, text: str) {
+    let ts = time_now_secs()
+    let sql = "INSERT INTO todos (text, done, created_at) VALUES ('" + sql_escape(text) + "', 0, " + to_string(ts) + ")"
+    execute(conn, sql)
+    // Read back last_insert_rowid()
+    let cur = query(conn, "SELECT last_insert_rowid()")
+    if step(cur) {
+        let id = col_int(cur, 0)
+        println("added id=" + to_string(id))
+    }
+    finalize(cur)
+}
+
+fn cmd_list(conn: Connection, include_done: bool) {
+    let mut sql = "SELECT id, text, done FROM todos WHERE done = 0 ORDER BY id"
+    if include_done {
+        sql = "SELECT id, text, done FROM todos ORDER BY id"
+    }
+    let cur = query(conn, sql)
+    let mut rows = 0
+    while step(cur) {
+        let id = col_int(cur, 0)
+        let txt = col_text(cur, 1)
+        let done = col_int(cur, 2)
+        let mut mark = "[ ]"
+        if done != 0 { mark = "[x]" }
+        println(to_string(id) + " " + mark + " " + txt)
+        rows = rows + 1
+    }
+    finalize(cur)
+    if rows == 0 {
+        println("(no rows)")
+    }
+}
+
+fn cmd_done(conn: Connection, id: i64) {
+    let n = execute(conn, "UPDATE todos SET done = 1 WHERE id = " + to_string(id))
+    if n == 0 {
+        eprintln("todo_sqlite: id " + to_string(id) + " not found")
+        exit(3)
+    }
+    println("done id=" + to_string(id))
+}
+
+fn cmd_del(conn: Connection, id: i64) {
+    let n = execute(conn, "DELETE FROM todos WHERE id = " + to_string(id))
+    if n == 0 {
+        eprintln("todo_sqlite: id " + to_string(id) + " not found")
+        exit(3)
+    }
+    println("deleted id=" + to_string(id))
+}
+
+@capabilities(db, io, env, time, process)
+fn main() {
+    let argv = args()
+    let argc = len(argv)
+    if argc < 3 {
+        eprintln("usage: todo_sqlite DB <add TEXT | list | all | done ID | del ID>")
+        exit(2)
+    }
+    let db_path = argv[1]
+    let cmd = argv[2]
+
+    let conn = open(db_path)
+    migrate(conn)
+
+    if cmd == "add" {
+        if argc < 4 {
+            eprintln("usage: add TEXT")
+            close(conn)
+            exit(2)
+        }
+        cmd_add(conn, argv[3])
+    } else if cmd == "list" {
+        cmd_list(conn, false)
+    } else if cmd == "all" {
+        cmd_list(conn, true)
+    } else if cmd == "done" {
+        if argc < 4 {
+            eprintln("usage: done ID")
+            close(conn)
+            exit(2)
+        }
+        cmd_done(conn, parse_int(argv[3]))
+    } else if cmd == "del" {
+        if argc < 4 {
+            eprintln("usage: del ID")
+            close(conn)
+            exit(2)
+        }
+        cmd_del(conn, parse_int(argv[3]))
+    } else {
+        eprintln("todo_sqlite: unknown command: " + cmd)
+        close(conn)
+        exit(2)
+    }
+
+    close(conn)
+}
