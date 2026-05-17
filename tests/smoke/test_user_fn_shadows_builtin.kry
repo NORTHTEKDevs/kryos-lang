@@ -1,0 +1,51 @@
+// Regression test for v2.6.5.
+//
+// Before v2.6.5, a user-defined function whose name collided with a Kryos
+// runtime builtin (e.g. `index_of`, `sort`, `reverse`, `contains`,
+// `replace`) was silently rerouted to the builtin's C symbol by the
+// codegen builtin-map. The arguments were passed through as-is, so a
+// user definition like
+//
+//     fn index_of(arr: [str], target: str) -> i64
+//
+// would actually invoke `kryos_builtin_index_of(s: str, sub: str) -> i64`,
+// returning -1 because the array handle and the target string are not a
+// string-haystack and string-needle pair. Function bodies (println,
+// branches, loops) never ran.
+//
+// The fix threads the set of user-defined function names through to the
+// codegen, and when a name appears in that set the builtin-map rewrite
+// is skipped — the user definition wins, exactly as a programmer would
+// expect.
+
+fn index_of(arr: [str], target: str) -> i64 {
+    let n = len(arr)
+    let mut i = 0
+    while i < n {
+        if arr[i] == target {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+fn contains(arr: [str], target: str) -> bool {
+    return index_of(arr, target) >= 0
+}
+
+fn main() {
+    let xs: [str] = ["id", "name", "score"]
+    let i0 = index_of(xs, "id")
+    let i1 = index_of(xs, "name")
+    let i2 = index_of(xs, "score")
+    let i3 = index_of(xs, "missing")
+    println("idx id={i0}")
+    println("idx name={i1}")
+    println("idx score={i2}")
+    println("idx missing={i3}")
+    let has_score = contains(xs, "score")
+    let has_age = contains(xs, "age")
+    println("has score={has_score}")
+    println("has age={has_age}")
+}

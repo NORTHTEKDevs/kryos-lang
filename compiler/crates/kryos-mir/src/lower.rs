@@ -4735,8 +4735,17 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         }
                     }
                     ast::Expr::Block { block, .. } => {
-                        // A block with no trailing expression is void.
-                        !matches!(block.stmts.last(), Some(ast::Stmt::Expr { .. }))
+                        // A block is void only if it has no trailing
+                        // expression AND contains no `return` statements.
+                        // A block like `{ if cond { return 1 } return 0 }`
+                        // returns i64 even though the last stmt is a Return.
+                        let trailing_is_expr =
+                            matches!(block.stmts.last(), Some(ast::Stmt::Expr { .. }));
+                        let has_return = block
+                            .stmts
+                            .iter()
+                            .any(|s| matches!(s, ast::Stmt::Return { .. }));
+                        !trailing_is_expr && !has_return
                     }
                     _ => false,
                 }

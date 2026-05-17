@@ -1278,6 +1278,8 @@ impl JitCompiler {
 
         // Phase 1: Declare ALL user functions so cross-calls resolve.
         let mut declared: Vec<FuncId> = Vec::new();
+        let user_func_names: std::collections::HashSet<String> =
+            functions.iter().map(|f| f.name.clone()).collect();
         for mir_func in functions {
             let sig = build_signature(mir_func, call_conv);
             let func_id = self
@@ -1311,6 +1313,7 @@ impl JitCompiler {
                     trait_vtables,
                     false,
                     copy_structs,
+                    &user_func_names,
                 )?;
                 builder.seal_all_blocks();
                 builder.finalize();
@@ -1401,6 +1404,8 @@ impl JitCompiler {
             let empty_enum_defs = std::collections::HashMap::new();
             let empty_trait_vtables = std::collections::HashMap::new();
             let empty_copy_structs = std::collections::HashSet::new();
+            let single_user_func_names: std::collections::HashSet<String> =
+                std::iter::once(mir_func.name.clone()).collect();
             let mut str_counter = 0u32;
             let mut builder = FunctionBuilder::new(&mut cl_func, &mut self.fb_ctx);
             crate::codegen::translate_function(
@@ -1414,6 +1419,7 @@ impl JitCompiler {
                 &empty_trait_vtables,
                 false, // no checked arithmetic in JIT/REPL
                 &empty_copy_structs,
+                &single_user_func_names,
             )?;
             builder.seal_all_blocks();
             builder.finalize();

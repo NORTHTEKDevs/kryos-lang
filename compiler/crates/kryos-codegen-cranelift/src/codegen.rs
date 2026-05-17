@@ -1134,6 +1134,7 @@ pub fn compile_module_with_options(
                 &module.trait_vtables,
                 options.checked_arithmetic,
                 &module.copy_structs,
+                &user_func_names,
             )?;
             builder.seal_all_blocks();
             builder.finalize();
@@ -1944,6 +1945,11 @@ struct FuncTranslator<'a> {
     checked_arithmetic: bool,
     /// Structs annotated with `@copy` — assignment deep-copies the struct.
     copy_structs: &'a HashSet<String>,
+    /// Names of functions defined by the user (or imported user modules).
+    /// Used to suppress builtin-name rewriting when a user fn shadows a
+    /// builtin of the same name (e.g. user-defined `index_of(arr, target)`
+    /// must not be routed to `kryos_builtin_index_of`).
+    user_func_names: &'a HashSet<String>,
 }
 
 /// Translate a MIR function body into Cranelift IR instructions.
@@ -1958,6 +1964,7 @@ pub fn translate_function<M: Module>(
     trait_vtables: &HashMap<(String, String), Vec<String>>,
     checked_arithmetic: bool,
     copy_structs: &HashSet<String>,
+    user_func_names: &HashSet<String>,
 ) -> Result<(), CodegenError> {
     // Check if this function already contains MIR-level exception checks
     // (from try/catch lowering).  If so, the codegen must NOT add its own
@@ -1984,6 +1991,7 @@ pub fn translate_function<M: Module>(
         has_mir_exception_checks,
         checked_arithmetic,
         copy_structs,
+        user_func_names,
     };
 
     // Create Cranelift blocks for each MIR basic block.
@@ -3388,8 +3396,21 @@ fn translate_rvalue<M: Module>(
                 return Ok(None);
             }
 
+            // If the user has defined a function with this exact name, the
+            // user definition shadows any builtin of the same name. Skip the
+            // builtin map entirely and dispatch directly to the user function
+            // (which is already registered in func_ids under its plain name).
+            //
+            // Without this guard, e.g. `fn index_of(arr: [str], target: str)`
+            // would silently be routed to `kryos_builtin_index_of(s, sub)`
+            // because the builtin map below unconditionally rewrites the
+            // function name.
+            let user_shadows_builtin = translator.user_func_names.contains(func.as_str());
+
             // Map Kryos builtin names to their runtime function names.
-            let (runtime_name, runtime_arg_count) = match func.as_str() {
+            let (runtime_name, runtime_arg_count) = if user_shadows_builtin {
+                (func.as_str(), args.len())
+            } else { match func.as_str() {
                 "chan" => ("kryos_chan_new_i64", 0usize),
                 "send" => ("kryos_chan_send_i64", 2),
                 "recv" => ("kryos_chan_recv_i64", 1),
@@ -3568,7 +3589,7 @@ fn translate_rvalue<M: Module>(
                 "saturating_sub" => ("kryos_saturating_sub_i64", 2),
                 "saturating_mul" => ("kryos_saturating_mul_i64", 2),
                 _ => (func.as_str(), args.len()),
-            };
+            } };
 
             // Translate argument operands first
             let mut arg_vals: Vec<cranelift_codegen::ir::Value> = args

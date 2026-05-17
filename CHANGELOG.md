@@ -4,6 +4,37 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.6.5] - 2026-05-17 — "user functions shadow same-named builtins"
+
+One correctness fix. No breaking changes. All 22 smoke tests, 21 router
+tests, 12 config-parser tests, and 11 real example builds pass.
+
+### Fixed
+
+- A user-defined function whose name collided with a Kryos runtime
+  builtin (`index_of`, `sort`, `reverse`, `contains`, `replace`,
+  `split`, `join`, `push`, `pop`, etc.) was silently rerouted to the
+  builtin's C symbol. The cranelift codegen's builtin-name map
+  unconditionally rewrote the call target, so e.g. a user-defined
+
+  ```kryos
+  fn index_of(arr: [str], target: str) -> i64 { ... }
+  ```
+
+  actually invoked `kryos_builtin_index_of(s: str, sub: str) -> i64`
+  (the substring-search runtime). The arguments were passed through
+  unmodified, the body never ran, and the call returned -1. The bug
+  was easy to miss because direct comparisons like `xs[0] == "id"`
+  worked in `main`, but the same comparison inside a function with an
+  `arr: [str]` parameter appeared to fail.
+
+  The fix threads the set of user-defined function names through to the
+  codegen (alongside `func_ids`, `struct_defs`, etc.) and skips the
+  builtin-map rewrite when the call target is in that set. User
+  definitions now win over builtins of the same name, the way a
+  programmer would expect. Regression test:
+  `tests/smoke/test_user_fn_shadows_builtin.kry`.
+
 ## [2.6.4] - 2026-05-17 — "`|x, y|` closures, void-body lambdas, indirect-call statements"
 
 One parser addition and two correctness fixes. No breaking changes. All
