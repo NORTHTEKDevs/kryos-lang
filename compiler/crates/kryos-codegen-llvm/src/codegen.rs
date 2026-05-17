@@ -3592,6 +3592,14 @@ impl LlvmCodegen {
                             let casted = self.next_temp();
                             let op = if val_ty == "ptr" {
                                 "ptrtoint"
+                            } else if val_ty == "double" {
+                                // 64-bit float: reinterpret as i64 via bitcast.
+                                "bitcast"
+                            } else if llvm_type_width(&val_ty) < 64 {
+                                // narrow integer (i1/i8/i16/i32): zero-extend to i64.
+                                // bitcast requires equal bit-width and would be rejected
+                                // by LLVM ("invalid cast opcode for cast from 'i1' to 'i64'").
+                                "zext"
                             } else {
                                 "bitcast"
                             };
@@ -3659,14 +3667,17 @@ impl LlvmCodegen {
                     };
                     let op = if dest_ty == "ptr" {
                         "inttoptr"
+                    } else if dest_ty == "double" {
+                        // 64-bit float: reinterpret from i64 via bitcast.
+                        "bitcast"
+                    } else if llvm_type_width(&dest_ty) < 64 {
+                        // narrow integer (i1/i8/i16/i32): truncate from i64.
+                        // bitcast requires equal bit-width.
+                        "trunc"
                     } else {
                         "bitcast"
                     };
-                    if op == "inttoptr" {
-                        self.emit_line(&format!("  {t} = inttoptr i64 {slot_tmp} to {dest_ty}"));
-                    } else {
-                        self.emit_line(&format!("  {t} = bitcast i64 {slot_tmp} to {dest_ty}"));
-                    }
+                    self.emit_line(&format!("  {t} = {op} i64 {slot_tmp} to {dest_ty}"));
                     t
                 } else {
                     slot_tmp.clone()
@@ -4762,8 +4773,18 @@ impl LlvmCodegen {
             }
             Terminator::Return(Some(op)) => {
                 if let Some(agg) = self.aggregate_llvm_ty(&func.ret_ty) {
+                    let from_ty = self.operand_type(op, func);
                     let val = self.operand_to_llvm(op, func);
-                    self.emit_line(&format!("  store {agg} {val}, ptr %_sret"));
+                    // Mirror the scalar-return coercion logic. The operand type may
+                    // not match the aggregate return type after a `kryos_exception_throw`
+                    // fallthrough (void/i64 result feeds a Return in an aggregate-returning
+                    // function). The ret is dead code in that case — store undef to keep
+                    // the IR well-typed instead of emitting `store %Parser 0, ptr ...`.
+                    if from_ty == agg {
+                        self.emit_line(&format!("  store {agg} {val}, ptr %_sret"));
+                    } else {
+                        self.emit_line(&format!("  store {agg} undef, ptr %_sret"));
+                    }
                     self.emit_line("  ret void");
                 } else {
                     let from_ty = self.operand_type(op, func);

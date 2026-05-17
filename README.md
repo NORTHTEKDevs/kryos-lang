@@ -36,6 +36,10 @@ kryos run hello.kry
 
 | If you want to… | Go to |
 |---|---|
+| Try Kryos in your browser | [play.kryos.dev](https://play.kryos.dev) |
+| Browse the docs | [kryos.dev](https://kryos.dev) |
+| Find a package | [packages.kryos.dev](https://packages.kryos.dev) |
+| Build an MCP server in 60 seconds | [kryos-mcp-template](https://github.com/NORTHTEKDevs/kryos-mcp-template) |
 | Install and run code in 5 minutes | [QUICKSTART.md](QUICKSTART.md) |
 | Learn the language properly | [docs/learn/](docs/learn/README.md) |
 | See real benchmark numbers | [BENCHMARKS.md](BENCHMARKS.md) |

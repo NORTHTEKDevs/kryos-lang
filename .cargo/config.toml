@@ -1,0 +1,19 @@
+# Memory-pressure mitigations for Strix Halo (Ryzen AI Max+ 395, 64 GB unified)
+# Without these, full-workspace debug builds of the 21-crate kryos-lang compiler
+# consume ~48 GB RAM and have been causing kernel watchdog crashes (LiveKernel 0x141).
+
+[build]
+jobs = 4                        # cap parallel rustc instances; default would use all 16 cores
+
+[profile.dev]
+debug = "line-tables-only"      # ~40% less debug-info RAM than full debug=2
+codegen-units = 1               # serialize LLVM codegen per crate; less peak RAM
+incremental = true              # keep incremental on for dev iteration speed
+opt-level = 0
+
+[profile.dev.package."*"]
+opt-level = 1                   # lightly optimize dependencies once; cuts perf overhead
+
+[profile.test]
+debug = "line-tables-only"
+codegen-units = 1
