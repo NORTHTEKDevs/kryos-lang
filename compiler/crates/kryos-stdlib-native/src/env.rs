@@ -57,35 +57,53 @@ pub extern "C" fn kryos_env_cwd() -> *mut u8 {
 }
 
 /// Gets the home directory.
-/// Returns a newly allocated string, or null if unavailable. Caller owns the pointer.
+///
+/// On Unix, returns `$HOME`. On Windows, returns the first of
+/// `%USERPROFILE%`, `%HOMEDRIVE%%HOMEPATH%`, or `$HOME` that is set
+/// (Windows users rarely set `HOME`, so checking it first would force a
+/// fallback for nearly every Windows program). Returns a newly allocated
+/// string, or null if no home directory is discoverable. Caller owns the
+/// pointer.
 #[no_mangle]
 pub extern "C" fn kryos_env_home() -> *mut u8 {
-    match std::env::var_os("HOME") {
-        Some(home) => {
-            let home_str = home.to_string_lossy();
-            match CString::new(home_str.into_owned()) {
-                Ok(cstr) => cstr.into_raw() as *mut u8,
-                Err(_) => std::ptr::null_mut(),
+    fn return_cstring(s: std::ffi::OsString) -> *mut u8 {
+        let owned = s.to_string_lossy().into_owned();
+        match CString::new(owned) {
+            Ok(cstr) => cstr.into_raw() as *mut u8,
+            Err(_) => std::ptr::null_mut(),
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(home) = std::env::var_os("USERPROFILE") {
+            if !home.is_empty() {
+                return return_cstring(home);
             }
         }
-        None => {
-            #[cfg(target_os = "windows")]
-            {
-                match std::env::var_os("USERPROFILE") {
-                    Some(home) => {
-                        let home_str = home.to_string_lossy();
-                        match CString::new(home_str.into_owned()) {
-                            Ok(cstr) => cstr.into_raw() as *mut u8,
-                            Err(_) => std::ptr::null_mut(),
-                        }
-                    }
-                    None => std::ptr::null_mut(),
-                }
+        // Compose %HOMEDRIVE%%HOMEPATH% if both are set (legacy Windows).
+        let drive = std::env::var_os("HOMEDRIVE");
+        let path = std::env::var_os("HOMEPATH");
+        if let (Some(d), Some(p)) = (drive, path) {
+            if !d.is_empty() && !p.is_empty() {
+                let mut composed = d;
+                composed.push(p);
+                return return_cstring(composed);
             }
-            #[cfg(not(target_os = "windows"))]
-            {
-                std::ptr::null_mut()
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            if !home.is_empty() {
+                return return_cstring(home);
             }
+        }
+        std::ptr::null_mut()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        match std::env::var_os("HOME") {
+            Some(home) if !home.is_empty() => return_cstring(home),
+            _ => std::ptr::null_mut(),
         }
     }
 }
