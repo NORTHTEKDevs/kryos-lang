@@ -1,0 +1,194 @@
+// Tiny parser combinator library + arithmetic expression parser/evaluator.
+//
+// Implements a value-typed parser-combinator framework around a Parser
+// struct that holds the input and a cursor. Combinators return a Result
+// enum carrying either a parsed value (i64 for this demo) or an error
+// position. Demonstrates structs, enums with payloads, recursion across
+// many helper functions, string slicing, and closure-free combinator
+// chaining.
+//
+// Grammar:
+//
+//   expr   := term (('+' | '-') term)*
+//   term   := factor (('*' | '/') factor)*
+//   factor := number | '(' expr ')'
+//   number := [0-9]+
+
+enum Outcome {
+    Ok(i64, i64),  // (value, new_pos)
+    Err(i64),      // error position
+}
+
+struct Parser {
+    src: str,
+    pos: i64,
+}
+
+fn is_digit(c: str) -> bool {
+    return c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
+        || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+}
+
+fn peek(p: Parser) -> str {
+    if p.pos >= len(p.src) {
+        return ""
+    }
+    return substr(p.src, p.pos, p.pos + 1)
+}
+
+fn skip_ws(p: Parser) -> Parser {
+    let mut i = p.pos
+    let n = len(p.src)
+    while i < n {
+        let c = substr(p.src, i, i + 1)
+        if c == " " || c == "\t" || c == "\n" {
+            i = i + 1
+        } else {
+            return Parser { src: p.src, pos: i }
+        }
+    }
+    return Parser { src: p.src, pos: i }
+}
+
+fn parse_number(p: Parser) -> Outcome {
+    let q = skip_ws(p)
+    let mut i = q.pos
+    let n = len(q.src)
+    let start = i
+    let mut done = false
+    while !done && i < n {
+        let c = substr(q.src, i, i + 1)
+        if is_digit(c) {
+            i = i + 1
+        } else {
+            done = true
+        }
+    }
+    if i == start {
+        return Outcome.Err(q.pos)
+    }
+    let text = substr(q.src, start, i)
+    let v = parse_int(text)
+    return Outcome.Ok(v, i)
+}
+
+fn parse_factor(p: Parser) -> Outcome {
+    let q = skip_ws(p)
+    let c = peek(q)
+    if c == "(" {
+        let inner = Parser { src: q.src, pos: q.pos + 1 }
+        let r = parse_expr(inner)
+        match r {
+            Outcome::Ok(v, np) => {
+                let r2 = skip_ws(Parser { src: q.src, pos: np })
+                if peek(r2) == ")" {
+                    return Outcome.Ok(v, r2.pos + 1)
+                }
+                return Outcome.Err(r2.pos)
+            }
+            Outcome::Err(e) => {
+                return Outcome.Err(e)
+            }
+        }
+    }
+    return parse_number(q)
+}
+
+fn parse_term(p: Parser) -> Outcome {
+    let first = parse_factor(p)
+    match first {
+        Outcome::Err(e) => { return Outcome.Err(e) }
+        Outcome::Ok(left_init, pos_init) => {
+            let mut left = left_init
+            let mut pos = pos_init
+            let mut keep_going = true
+            while keep_going {
+                let q = skip_ws(Parser { src: p.src, pos: pos })
+                let c = peek(q)
+                if c == "*" || c == "/" {
+                    let rhs = parse_factor(Parser { src: p.src, pos: q.pos + 1 })
+                    match rhs {
+                        Outcome::Err(e) => { return Outcome.Err(e) }
+                        Outcome::Ok(rv, np) => {
+                            if c == "*" {
+                                left = left * rv
+                            } else {
+                                left = left / rv
+                            }
+                            pos = np
+                        }
+                    }
+                } else {
+                    keep_going = false
+                }
+            }
+            return Outcome.Ok(left, pos)
+        }
+    }
+}
+
+fn parse_expr(p: Parser) -> Outcome {
+    let first = parse_term(p)
+    match first {
+        Outcome::Err(e) => { return Outcome.Err(e) }
+        Outcome::Ok(left_init, pos_init) => {
+            let mut left = left_init
+            let mut pos = pos_init
+            let mut keep_going = true
+            while keep_going {
+                let q = skip_ws(Parser { src: p.src, pos: pos })
+                let c = peek(q)
+                if c == "+" || c == "-" {
+                    let rhs = parse_term(Parser { src: p.src, pos: q.pos + 1 })
+                    match rhs {
+                        Outcome::Err(e) => { return Outcome.Err(e) }
+                        Outcome::Ok(rv, np) => {
+                            if c == "+" {
+                                left = left + rv
+                            } else {
+                                left = left - rv
+                            }
+                            pos = np
+                        }
+                    }
+                } else {
+                    keep_going = false
+                }
+            }
+            return Outcome.Ok(left, pos)
+        }
+    }
+}
+
+fn eval(src: str) -> i64 {
+    let p = Parser { src: src, pos: 0 }
+    let r = parse_expr(p)
+    match r {
+        Outcome::Ok(v, _np) => { return v }
+        Outcome::Err(e) => {
+            println("parse error at pos {e}")
+            return -1
+        }
+    }
+}
+
+fn main() {
+    let inputs: [str] = [
+        "1 + 2",
+        "2 * 3 + 4",
+        "2 + 3 * 4",
+        "(2 + 3) * 4",
+        "10 - 3 - 2",
+        "100 / 5 / 2",
+        "((1 + 2) * (3 + 4))",
+        "42",
+    ]
+    let mut i = 0
+    let n = len(inputs)
+    while i < n {
+        let s = inputs[i]
+        let v = eval(s)
+        println("{s} = {v}")
+        i = i + 1
+    }
+}

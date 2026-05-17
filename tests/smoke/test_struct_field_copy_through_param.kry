@@ -1,0 +1,77 @@
+// Regression test for v2.6.6.
+//
+// Before v2.6.6, the ownership/borrow analyzer treated primitive fields
+// of a non-@copy struct parameter as moves rather than copies. So a
+// natural-looking function like
+//
+//     fn skip(p: Parser) -> Parser {
+//         let mut i = p.pos       // E0300: `p` moved here
+//         let n = len(p.src)      // E0300: use of moved value: `p`
+//         ...
+//     }
+//
+// would fail to compile even though `pos: i64` and `src: str` are both
+// fine to read without moving the struct. The fix:
+//
+//   1. Function parameter struct types are registered in
+//      `var_struct_names` so FieldAccess can look up the field's TypeExpr
+//      and call `is_type_expr_copy` on it.
+//   2. Local lets initialized from a function or method call whose
+//      declared return type is a struct also register the struct type
+//      name, so `let q = skip(p); let i = q.pos` works.
+//   3. Match-arm patterns now bind their identifiers with the correct
+//      is_copy flag based on the enum variant's declared field types,
+//      via a new `enum_variant_fields` registry. So `match r {
+//      Outcome::Ok(v, pos) => { let mut p2 = pos; ... } }` correctly
+//      treats `pos: i64` as copy.
+
+struct Parser {
+    src: str,
+    pos: i64,
+}
+
+enum Outcome {
+    Ok(i64, i64),
+    Err(i64),
+}
+
+fn skip(p: Parser) -> Parser {
+    // Reads p.pos and p.src as copy/borrow without moving p.
+    let mut i = p.pos
+    let n = len(p.src)
+    while i < n {
+        let c = substr(p.src, i, i + 1)
+        if c == " " {
+            i = i + 1
+        } else {
+            return Parser { src: p.src, pos: i }
+        }
+    }
+    return Parser { src: p.src, pos: i }
+}
+
+fn step(p: Parser) -> Outcome {
+    let q = skip(p)
+    let n = len(q.src)
+    if q.pos >= n {
+        return Outcome.Err(q.pos)
+    }
+    return Outcome.Ok(char_code(substr(q.src, q.pos, q.pos + 1)), q.pos + 1)
+}
+
+fn main() {
+    let p = Parser { src: "  hi", pos: 0 }
+    let r = step(p)
+    match r {
+        Outcome::Ok(code, np) => {
+            // Pattern-bound primitives are copy: we can read both
+            // multiple times without move errors.
+            let dup = code
+            let pos2 = np
+            println("ok code={code} np={np} dup={dup} pos2={pos2}")
+        }
+        Outcome::Err(e) => {
+            println("err {e}")
+        }
+    }
+}

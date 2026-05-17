@@ -4,6 +4,61 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.6.6] - 2026-05-17 — "primitive fields and enum-variant binds are copy"
+
+Three related correctness fixes in ownership/borrow analysis. No
+breaking changes. All 23 smoke tests, 21 router tests, 12 config-parser
+tests, and 12 real example builds pass, including the new
+`examples/real/parser_combinator.kry` (a recursive-descent arithmetic
+evaluator).
+
+### Fixed
+
+- Primitive fields of non-`@copy` struct parameters were treated as
+  moves. Code as plain as
+
+  ```kryos
+  fn skip(p: Parser) -> Parser {
+      let mut i = p.pos    // E0300: `p` moved here
+      let n = len(p.src)   // E0300: use of moved value
+      ...
+  }
+  ```
+
+  failed to compile because the FieldAccess copy check couldn't find
+  `p` in the variable→struct-name registry, fell back to the parameter's
+  own copy status, and concluded the field access was a move. Fix:
+  function parameters whose type is a `Simple` struct name register
+  themselves in `var_struct_names`, so `p.pos: i64` is correctly
+  classified as copy via the existing `struct_fields` lookup.
+
+- `let q = some_fn(p)` where `some_fn` returns a struct no longer
+  loses the struct type. The Let analyzer now consults a new
+  `fn_return_struct_names` registry (populated from `Decl::Function`
+  and `Decl::Impl::methods` return-type annotations) for FnCall
+  and MethodCall initializers and records the result in
+  `var_struct_names`, so subsequent `q.pos`/`q.src` reads behave
+  correctly.
+
+- Enum-variant pattern bindings now carry their declared field types.
+  Previously match arms like
+
+  ```kryos
+  match outcome {
+      Outcome::Ok(value, pos) => { let p2 = pos; ... }
+  }
+  ```
+
+  bound `value` and `pos` with `is_copy: false`, so any subsequent
+  use of the bound names produced E0300 “use of moved value” errors
+  even for `i64` payloads. Fix: collect enum variant field types
+  into `enum_variant_fields` during the first pass and a new
+  `bind_pattern` helper assigns each `Pattern::Ident` the correct
+  `is_copy` flag (and struct-name mapping where relevant) before
+  the arm body is analyzed.
+
+Regression test: `tests/smoke/test_struct_field_copy_through_param.kry`.
+
 ## [2.6.5] - 2026-05-17 — "user functions shadow same-named builtins"
 
 One correctness fix. No breaking changes. All 22 smoke tests, 21 router

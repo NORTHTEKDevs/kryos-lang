@@ -79,8 +79,17 @@ pub struct OwnershipAnalyzer {
     copy_structs: HashSet<String>,
     /// Function name → whether return type is a primitive copy type.
     fn_copy_returns: HashMap<String, bool>,
+    /// Map from function name -> declared struct return-type name (if any).
+    /// Used by FieldAccess copy-analysis on direct call results like
+    /// `make_parser(s).pos`.
+    fn_return_struct_names: HashMap<String, String>,
     /// Struct name → field name → field TypeExpr, for field-access copy analysis.
     struct_fields: HashMap<String, HashMap<String, kryos_ast::TypeExpr>>,
+    /// Enum variant field types, keyed by (enum_name, variant_name).
+    /// Used to assign correct is_copy state to pattern-bound variables
+    /// in match arms (e.g. `Outcome::Ok(v, pos)` binds `v: i64`, `pos: i64`
+    /// which must be marked is_copy = true).
+    enum_variant_fields: HashMap<(String, String), Vec<kryos_ast::TypeExpr>>,
     /// Variable name → struct type name, populated from let bindings.
     var_struct_names: HashMap<String, String>,
 }
@@ -99,7 +108,9 @@ impl OwnershipAnalyzer {
             arc_insertions: Vec::new(),
             copy_structs: HashSet::new(),
             fn_copy_returns: HashMap::new(),
+            fn_return_struct_names: HashMap::new(),
             struct_fields: HashMap::new(),
+            enum_variant_fields: HashMap::new(),
             var_struct_names: HashMap::new(),
         }
     }
@@ -118,6 +129,89 @@ impl OwnershipAnalyzer {
     /// Define a variable in the current scope.
     fn define_var(&mut self, name: String, info: VarInfo) {
         self.current_scope_mut().vars.insert(name, info);
+    }
+
+    /// Bind variables introduced by a match-arm pattern. Walks the pattern
+    /// tree, looks up the variant's field types via `enum_variant_fields`,
+    /// and defines each identifier binding with the right is_copy flag so
+    /// pattern-bound primitives behave as copy values in the arm body.
+    ///
+    /// Used at the start of each match arm. Wildcard, literal, and Or
+    /// patterns introduce no bindings; Tuple/Struct/Enum recurse.
+    fn bind_pattern(&mut self, pat: &kryos_ast::Pattern) {
+        use kryos_ast::Pattern as P;
+        match pat {
+            P::Wildcard { .. } | P::Literal { .. } => {}
+            P::Ident { name, mutable, span } => {
+                self.define_var(
+                    name.clone(),
+                    VarInfo {
+                        state: OwnershipState::Owned,
+                        mutable: *mutable,
+                        // Conservatively non-copy when the type is unknown.
+                        // Enum-variant binds set this correctly below.
+                        is_copy: false,
+                        decl_span: *span,
+                        moved_span: None,
+                        moved_fields: HashSet::new(),
+                    },
+                );
+            }
+            P::Tuple { elements, .. } => {
+                for elem in elements {
+                    self.bind_pattern(elem);
+                }
+            }
+            P::Struct { fields, .. } => {
+                for (_fname, fpat) in fields {
+                    self.bind_pattern(fpat);
+                }
+            }
+            P::Enum { name, variant, fields, span } => {
+                let field_tys = self
+                    .enum_variant_fields
+                    .get(&(name.clone(), variant.clone()))
+                    .cloned();
+                for (i, fpat) in fields.iter().enumerate() {
+                    if let P::Ident { name: bname, mutable, span: bspan } = fpat {
+                        let is_copy = field_tys
+                            .as_ref()
+                            .and_then(|tys| tys.get(i))
+                            .map(|t| self.is_type_expr_copy(t))
+                            .unwrap_or(false);
+                        // Also record struct type name for field-access
+                        // copy analysis on this binding.
+                        if let Some(kryos_ast::TypeExpr::Simple { name: sn, .. }) =
+                            field_tys.as_ref().and_then(|tys| tys.get(i))
+                        {
+                            self.var_struct_names
+                                .insert(bname.clone(), sn.clone());
+                        }
+                        self.define_var(
+                            bname.clone(),
+                            VarInfo {
+                                state: OwnershipState::Owned,
+                                mutable: *mutable,
+                                is_copy,
+                                decl_span: *bspan,
+                                moved_span: None,
+                                moved_fields: HashSet::new(),
+                            },
+                        );
+                    } else {
+                        self.bind_pattern(fpat);
+                    }
+                }
+                let _ = span;
+            }
+            P::Or { patterns, .. } => {
+                // Bind from the first alternative; assume all alternatives
+                // produce the same bindings.
+                if let Some(first) = patterns.first() {
+                    self.bind_pattern(first);
+                }
+            }
+        }
     }
 
     /// Look up a variable's info, searching from innermost scope outward.
@@ -366,6 +460,16 @@ impl OwnershipAnalyzer {
                         self.var_struct_names.get(name.as_str()).cloned()
                     }
                     Expr::StructLiteral { name, .. } => Some(name.clone()),
+                    // Direct field access on a function call result whose
+                    // return type is a known struct. Looks up the function's
+                    // declared return type in `fn_return_struct_names`.
+                    Expr::FnCall { callee, .. } => {
+                        if let Expr::Identifier { name: fname, .. } = callee.as_ref() {
+                            self.fn_return_struct_names.get(fname.as_str()).cloned()
+                        } else {
+                            None
+                        }
+                    }
                     _ => None,
                 };
                 if let Some(ref sn) = struct_name_opt {
@@ -374,6 +478,14 @@ impl OwnershipAnalyzer {
                         return self.is_type_expr_copy(field_ty);
                     }
                 }
+                // If the field is a known primitive type by name and the
+                // object is a struct (any struct, copy or not), the field
+                // result is copy. Without knowing the struct name we cannot
+                // verify this, so we conservatively fall back to the object's
+                // own copy status. Common field names like `pos`, `len`,
+                // `id` are virtually always primitives in user code, but we
+                // do not special-case here — the fn_return_struct_names map
+                // covers the typical pattern.
                 self.expr_is_copy(object)
             }
 
@@ -485,6 +597,18 @@ impl OwnershipAnalyzer {
                         .map(|t| self.is_type_expr_copy(t))
                         .unwrap_or(false);
                     self.fn_copy_returns.insert(name.clone(), is_copy_ret);
+                    if let Some(kryos_ast::TypeExpr::Simple { name: sn, .. }) = ret_ty.as_ref() {
+                        self.fn_return_struct_names
+                            .insert(name.clone(), sn.clone());
+                    }
+                }
+                Decl::Enum { name, variants, .. } => {
+                    for variant in variants {
+                        self.enum_variant_fields.insert(
+                            (name.clone(), variant.name.clone()),
+                            variant.fields.clone(),
+                        );
+                    }
                 }
                 _ => {}
             }
@@ -500,6 +624,12 @@ impl OwnershipAnalyzer {
                             .map(|t| self.is_type_expr_copy(t))
                             .unwrap_or(false);
                         self.fn_copy_returns.insert(name.clone(), is_copy_ret);
+                        if let Some(kryos_ast::TypeExpr::Simple { name: sn, .. }) =
+                            ret_ty.as_ref()
+                        {
+                            self.fn_return_struct_names
+                                .insert(name.clone(), sn.clone());
+                        }
                     }
                 }
             }
@@ -537,6 +667,20 @@ impl OwnershipAnalyzer {
                             moved_fields: HashSet::new(),
                         },
                     );
+                    // Track the parameter's struct type so field accesses
+                    // like `p.pos` on a struct parameter can be resolved
+                    // through `struct_fields` and (where the field type is
+                    // a primitive) correctly treated as a copy. Without this
+                    // mapping, the FieldAccess copy check falls back to the
+                    // object's copy status, which is false for non-@copy
+                    // structs, and `let n = p.pos` would be classified as a
+                    // move even though `pos: i64`.
+                    if let Some(kryos_ast::TypeExpr::Simple { name: sn, .. }) =
+                        param.ty.as_ref()
+                    {
+                        self.var_struct_names
+                            .insert(param.name.clone(), sn.clone());
+                    }
                 }
                 self.analyze_block(body);
                 self.pop_scope();
@@ -675,6 +819,20 @@ impl OwnershipAnalyzer {
                         // analysis can look up individual field types.
                         let struct_name_from_init = match init_expr {
                             Expr::StructLiteral { name: sn, .. } => Some(sn.clone()),
+                            // Function call that returns a struct type.
+                            Expr::FnCall { callee, .. } => {
+                                if let Expr::Identifier { name: fname, .. } = callee.as_ref() {
+                                    self.fn_return_struct_names
+                                        .get(fname.as_str())
+                                        .cloned()
+                                } else {
+                                    None
+                                }
+                            }
+                            // Method call that returns a struct type.
+                            Expr::MethodCall { method, .. } => {
+                                self.fn_return_struct_names.get(method.as_str()).cloned()
+                            }
                             _ => None,
                         };
                         let struct_name_from_ty = ty.as_ref().and_then(|t| match t {
@@ -1022,6 +1180,7 @@ impl OwnershipAnalyzer {
                 self.analyze_expr_move(subject);
                 for arm in arms {
                     self.push_scope();
+                    self.bind_pattern(&arm.pattern);
                     if let Some(guard) = &arm.guard {
                         self.analyze_expr_use(guard);
                     }
