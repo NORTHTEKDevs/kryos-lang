@@ -41,6 +41,17 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update -q && sudo apt-get install -y libsqlite3-dev libssl-dev pkg-config
 
+      - name: Set up MSVC developer environment (Windows)
+        if: runner.os == 'Windows'
+        # Exports INCLUDE / LIB / PATH so link.exe and clang find
+        # msvcrt.lib, ucrt.lib, kernel32.lib, and the Windows SDK
+        # without extra /LIBPATH flags. The shipped kryos.exe honors
+        # %LIB% at runtime but falls back to filesystem discovery on
+        # end-user machines without a Developer Prompt active.
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Build release binary
         working-directory: compiler
         run: cargo build --release --target ${{ matrix.target }} -j 4

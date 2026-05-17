@@ -81,6 +81,15 @@ jobs:
         with:
           workspaces: "compiler"
 
+      - name: Set up MSVC developer environment
+        # Exports the same INCLUDE / LIB / PATH that `vcvars64.bat` would,
+        # so `link.exe` and `clang` can find msvcrt.lib, ucrt.lib, kernel32.lib,
+        # and the Windows SDK without any extra /LIBPATH flags. Our linker
+        # crate honors %LIB% when it is set and skips its own discovery.
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Build (release)
         working-directory: compiler
         # Full workspace release build. Produces kryos.exe, kryos_rt.lib,

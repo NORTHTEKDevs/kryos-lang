@@ -254,9 +254,22 @@ fn build_msvc_command(cmd: &mut Command, config: &LinkerConfig) {
         cmd.arg(stdlib);
     }
 
-    // Add MSVC CRT and Windows SDK library paths
-    for lib_path in find_msvc_lib_paths(config.target.arch) {
-        cmd.arg(format!("/LIBPATH:{}", lib_path.display()));
+    // Add MSVC CRT and Windows SDK library paths.
+    //
+    // When the MSVC Developer Command Prompt is active (e.g. after
+    // running `vcvars64.bat` or the `ilammy/msvc-dev-cmd` GitHub Action),
+    // the `LIB` env var already contains every required path. `link.exe`
+    // reads `%LIB%` automatically when invoked, so we don't need to pass
+    // /LIBPATH at all in that case — doing so risks /LIBPATH ordering bugs
+    // between an SDK we found and an SDK the dev-prompt expects. Only fall
+    // back to filesystem probing when `LIB` is empty.
+    let lib_env_set = std::env::var_os("LIB")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    if !lib_env_set {
+        for lib_path in find_msvc_lib_paths(config.target.arch) {
+            cmd.arg(format!("/LIBPATH:{}", lib_path.display()));
+        }
     }
 
     // Link the C runtime and kernel libraries.
@@ -284,6 +297,20 @@ fn build_msvc_command(cmd: &mut Command, config: &LinkerConfig) {
 }
 
 /// Find MSVC CRT and Windows SDK library directories.
+///
+/// Used as a fallback when `%LIB%` is not set (i.e. we're not running
+/// under a Developer Command Prompt). Probes a wide range of common
+/// installation layouts:
+///
+///   * VS Enterprise 2022 ships under `C:\Program Files\...` (64-bit),
+///     not `Program Files (x86)`. GitHub Actions `windows-latest` uses
+///     Enterprise.
+///   * VS Community / BuildTools default to `Program Files (x86)`.
+///   * `vswhere.exe` (always installed at `C:\Program Files (x86)\Microsoft
+///     Visual Studio\Installer\vswhere.exe`) is the canonical discovery
+///     mechanism and we try it first when present.
+///   * Windows SDKs live at either `Program Files (x86)\Windows Kits\10`
+///     or `Program Files\Windows Kits\10` depending on installer choices.
 fn find_msvc_lib_paths(arch: Arch) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     let arch_dir = match arch {
@@ -292,76 +319,148 @@ fn find_msvc_lib_paths(arch: Arch) -> Vec<PathBuf> {
         _ => return paths,
     };
 
-    let program_files = [
-        std::env::var("ProgramFiles(x86)").ok(),
-        Some("C:\\Program Files (x86)".to_string()),
-    ];
+    // ---- 1. vswhere.exe: the canonical Microsoft discovery tool. ----
+    if let Some(vs_install) = vswhere_install_path() {
+        let msvc_root = vs_install.join("VC").join("Tools").join("MSVC");
+        if let Some(lib_dir) = latest_versioned_subdir(&msvc_root, |ver| {
+            let lib = ver.join("lib").join(arch_dir);
+            if lib.is_dir() { Some(lib) } else { None }
+        }) {
+            paths.push(lib_dir);
+        }
+    }
 
-    let editions = ["BuildTools", "Enterprise", "Professional", "Community"];
-
-    // Find MSVC CRT lib path
-    for pf in program_files.iter().flatten() {
-        for edition in &editions {
-            let msvc_dir = PathBuf::from(pf)
-                .join("Microsoft Visual Studio")
-                .join("2022")
-                .join(edition)
-                .join("VC")
-                .join("Tools")
-                .join("MSVC");
-
-            if let Ok(entries) = std::fs::read_dir(&msvc_dir) {
-                let mut versions: Vec<PathBuf> = entries
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| p.is_dir())
-                    .collect();
-                versions.sort();
-                versions.reverse();
-
-                for ver_dir in versions {
-                    let lib_dir = ver_dir.join("lib").join(arch_dir);
-                    if lib_dir.is_dir() {
-                        paths.push(lib_dir);
-                        break;
-                    }
+    // ---- 2. Filesystem probe across both Program Files roots. ----
+    if paths.is_empty() {
+        for pf in program_files_roots() {
+            for edition in &["Enterprise", "Professional", "Community", "BuildTools"] {
+                let msvc_dir = pf
+                    .join("Microsoft Visual Studio")
+                    .join("2022")
+                    .join(edition)
+                    .join("VC")
+                    .join("Tools")
+                    .join("MSVC");
+                if let Some(lib_dir) = latest_versioned_subdir(&msvc_dir, |ver| {
+                    let lib = ver.join("lib").join(arch_dir);
+                    if lib.is_dir() { Some(lib) } else { None }
+                }) {
+                    paths.push(lib_dir);
+                    break;
                 }
             }
             if !paths.is_empty() {
                 break;
             }
         }
-        if !paths.is_empty() {
+    }
+
+    // ---- 3. Windows SDK (ucrt + um). Try both Program Files roots. ----
+    let sdk_roots = [
+        PathBuf::from("C:\\Program Files (x86)\\Windows Kits\\10\\Lib"),
+        PathBuf::from("C:\\Program Files\\Windows Kits\\10\\Lib"),
+    ];
+    for sdk_root in &sdk_roots {
+        if !sdk_root.is_dir() {
+            continue;
+        }
+        if let Some(sdk_ver) = latest_versioned_subdir(sdk_root, |v| {
+            if v.is_dir() { Some(v.to_path_buf()) } else { None }
+        }) {
+            let ucrt_dir = sdk_ver.join("ucrt").join(arch_dir);
+            if ucrt_dir.is_dir() {
+                paths.push(ucrt_dir);
+            }
+            let um_dir = sdk_ver.join("um").join(arch_dir);
+            if um_dir.is_dir() {
+                paths.push(um_dir);
+            }
             break;
         }
     }
 
-    // Find Windows SDK lib paths (ucrt and um)
-    let sdk_root = PathBuf::from("C:\\Program Files (x86)\\Windows Kits\\10\\Lib");
-    if sdk_root.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(&sdk_root) {
-            let mut versions: Vec<PathBuf> = entries
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.is_dir())
-                .collect();
-            versions.sort();
-            versions.reverse();
+    paths
+}
 
-            if let Some(sdk_ver) = versions.first() {
-                let ucrt_dir = sdk_ver.join("ucrt").join(arch_dir);
-                if ucrt_dir.is_dir() {
-                    paths.push(ucrt_dir);
-                }
-                let um_dir = sdk_ver.join("um").join(arch_dir);
-                if um_dir.is_dir() {
-                    paths.push(um_dir);
-                }
-            }
+/// Return the candidate Program Files roots to probe, with `Program Files`
+/// (64-bit) listed before `Program Files (x86)` because modern VS 2022
+/// installs the 64-bit toolchain to the 64-bit root.
+fn program_files_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(pf) = std::env::var("ProgramFiles") {
+        roots.push(PathBuf::from(pf));
+    }
+    if let Ok(pfx86) = std::env::var("ProgramFiles(x86)") {
+        roots.push(PathBuf::from(pfx86));
+    }
+    // Hard-coded fallbacks in case the env vars aren't set.
+    for hc in ["C:\\Program Files", "C:\\Program Files (x86)"] {
+        let p = PathBuf::from(hc);
+        if !roots.contains(&p) {
+            roots.push(p);
         }
     }
+    roots
+}
 
-    paths
+/// Run `vswhere.exe -latest -property installationPath` to locate the
+/// most recent VS install. Returns `None` if vswhere isn't present or
+/// reports no installs.
+fn vswhere_install_path() -> Option<PathBuf> {
+    let vswhere_paths = [
+        PathBuf::from(
+            "C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe",
+        ),
+        PathBuf::from(
+            "C:\\Program Files\\Microsoft Visual Studio\\Installer\\vswhere.exe",
+        ),
+    ];
+    let vswhere = vswhere_paths.iter().find(|p| p.is_file())?;
+    let output = Command::new(vswhere)
+        .args([
+            "-latest",
+            "-products",
+            "*",
+            "-requires",
+            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+            "-property",
+            "installationPath",
+            "-nologo",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() {
+        return None;
+    }
+    let p = PathBuf::from(path);
+    if p.is_dir() { Some(p) } else { None }
+}
+
+/// Read a directory expected to contain versioned subdirectories (e.g.
+/// `14.39.33519`), sort them newest-first, and return the first match
+/// for which `pick` returns `Some`.
+fn latest_versioned_subdir<F>(root: &std::path::Path, pick: F) -> Option<PathBuf>
+where
+    F: Fn(&std::path::Path) -> Option<PathBuf>,
+{
+    let entries = std::fs::read_dir(root).ok()?;
+    let mut versions: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    versions.sort();
+    versions.reverse();
+    for ver_dir in versions {
+        if let Some(picked) = pick(&ver_dir) {
+            return Some(picked);
+        }
+    }
+    None
 }
 
 /// Build a command line for wasm-ld.
@@ -451,7 +550,11 @@ pub fn find_system_linker(target: &Target) -> Result<PathBuf, String> {
     ))
 }
 
-/// Search for MSVC's link.exe in Visual Studio Build Tools installation.
+/// Search for MSVC's link.exe in a Visual Studio 2022 installation.
+///
+/// Prefers `vswhere.exe` for discovery, then falls back to scanning both
+/// `Program Files` and `Program Files (x86)` across the four common
+/// editions (Enterprise, Professional, Community, BuildTools).
 fn find_msvc_link_exe(arch: Arch) -> Option<PathBuf> {
     let host = if cfg!(target_arch = "x86_64") {
         "Hostx64"
@@ -464,50 +567,35 @@ fn find_msvc_link_exe(arch: Arch) -> Option<PathBuf> {
         _ => return None,
     };
 
-    // Search common VS installation paths
-    let program_files = [
-        std::env::var("ProgramFiles(x86)").ok(),
-        std::env::var("ProgramFiles").ok(),
-        Some("C:\\Program Files (x86)".to_string()),
-        Some("C:\\Program Files".to_string()),
-    ];
+    // ---- 1. vswhere.exe ----
+    if let Some(vs_install) = vswhere_install_path() {
+        let msvc_root = vs_install.join("VC").join("Tools").join("MSVC");
+        if let Some(link_exe) = latest_versioned_subdir(&msvc_root, |ver| {
+            let p = ver.join("bin").join(host).join(target_dir).join("link.exe");
+            if p.is_file() { Some(p) } else { None }
+        }) {
+            return Some(link_exe);
+        }
+    }
 
-    let editions = ["BuildTools", "Enterprise", "Professional", "Community"];
-
-    for pf in program_files.iter().flatten() {
-        for edition in &editions {
-            let vs_dir = PathBuf::from(pf)
+    // ---- 2. Filesystem probe. ----
+    for pf in program_files_roots() {
+        for edition in &["Enterprise", "Professional", "Community", "BuildTools"] {
+            let vs_dir = pf
                 .join("Microsoft Visual Studio")
                 .join("2022")
                 .join(edition)
                 .join("VC")
                 .join("Tools")
                 .join("MSVC");
-
             if !vs_dir.is_dir() {
                 continue;
             }
-
-            // Find the latest MSVC version
-            if let Ok(entries) = std::fs::read_dir(&vs_dir) {
-                let mut versions: Vec<PathBuf> = entries
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| p.is_dir())
-                    .collect();
-                versions.sort();
-                versions.reverse();
-
-                for ver_dir in versions {
-                    let link_exe = ver_dir
-                        .join("bin")
-                        .join(host)
-                        .join(target_dir)
-                        .join("link.exe");
-                    if link_exe.is_file() {
-                        return Some(link_exe);
-                    }
-                }
+            if let Some(link_exe) = latest_versioned_subdir(&vs_dir, |ver| {
+                let p = ver.join("bin").join(host).join(target_dir).join("link.exe");
+                if p.is_file() { Some(p) } else { None }
+            }) {
+                return Some(link_exe);
             }
         }
     }
