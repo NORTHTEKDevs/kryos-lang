@@ -150,6 +150,33 @@ impl LlvmBackend {
             inc: RefCell::new(None),
         }
     }
+
+    /// Returns true when the active target is `*-pc-windows-msvc`.
+    ///
+    /// When `target_triple` is unspecified, we fall back to the host
+    /// platform via `cfg!(target_os = "windows")` so cross-compiling and
+    /// host builds behave the same.
+    fn is_windows_msvc_target(&self) -> bool {
+        if let Some(ref triple) = self.options.target_triple {
+            triple.contains("windows") && triple.contains("msvc")
+        } else {
+            cfg!(all(target_os = "windows", target_env = "msvc"))
+        }
+    }
+
+    /// Returns true if we should pass `-flto=thin` to the clang compile
+    /// step (which makes clang emit LLVM bitcode-bearing objects rather
+    /// than native code).
+    ///
+    /// On Windows/MSVC the linker is `link.exe`, which cannot read LLVM
+    /// bitcode — it requires native COFF objects and does its own LTO via
+    /// `/LTCG`. Emitting bitcode objects on Windows/MSVC produces objects
+    /// that link.exe rejects with LNK1107 ("invalid or corrupt file"). So
+    /// we suppress `-flto=thin` for that target even when the user passed
+    /// `--release` (which implies LTO on every other platform).
+    fn should_emit_lto_objects(&self) -> bool {
+        self.options.lto && !self.is_windows_msvc_target()
+    }
 }
 
 impl Default for LlvmBackend {
@@ -203,8 +230,9 @@ impl kryos_driver::Backend for LlvmBackend {
         }
 
         // LTO: emit bitcode-bearing object so the linker can do cross-module
-        // inlining of runtime helpers.
-        if self.options.lto {
+        // inlining of runtime helpers. Gated off for Windows/MSVC because
+        // link.exe cannot consume LLVM bitcode — see `should_emit_lto_objects`.
+        if self.should_emit_lto_objects() {
             cmd.arg("-flto=thin");
         }
 
@@ -395,7 +423,7 @@ impl kryos_driver::Backend for LlvmBackend {
         if let Some(ref triple) = self.options.target_triple {
             cmd.arg(format!("--target={triple}"));
         }
-        if self.options.lto {
+        if self.should_emit_lto_objects() {
             cmd.arg("-flto=thin");
         }
         if self.options.debug_info {

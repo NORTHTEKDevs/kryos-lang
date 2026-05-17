@@ -920,6 +920,16 @@ fn codegen_and_link(
                             // System libraries required by the Rust-based runtime staticlib.
                             let extra_libs = crate::runtime::system_libs(&target);
 
+                            // The LLVM backend suppresses `-flto=thin` when
+                            // targeting Windows/MSVC because link.exe can't
+                            // consume bitcode-bearing objects. Keep the
+                            // linker's view of `lto` in sync so the linker
+                            // doesn't try to invoke clang-as-driver for an
+                            // object that's actually native COFF.
+                            let is_msvc = target.os == kryos_linker::Os::Windows
+                                && target.env == kryos_linker::Env::Msvc;
+                            let effective_lto = config.lto && !is_msvc;
+
                             let linker_config = kryos_linker::LinkerConfig {
                                 target,
                                 object_files: vec![obj_path.clone()],
@@ -933,7 +943,7 @@ fn codegen_and_link(
                                 },
                                 extra_libs,
                                 extra_lib_dirs: vec![],
-                                lto: config.lto,
+                                lto: effective_lto,
                                 debug_info: config.debug_info,
                             };
 

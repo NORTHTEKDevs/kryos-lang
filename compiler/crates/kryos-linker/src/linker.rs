@@ -117,11 +117,19 @@ pub fn link(config: &LinkerConfig) -> Result<(), LinkError> {
         return Err(LinkError::NoObjectFiles);
     }
 
-    // When LTO is enabled the object files contain LLVM bitcode rather than
-    // native machine code, so the linker must be clang (which knows how to
+    // When LTO is enabled and the object files contain LLVM bitcode rather
+    // than native machine code, the linker must be clang (which knows how to
     // invoke LLVM's gold/lld plugin). Plain gcc/cc will fail with
     // "file format not recognized".
-    let linker_path = if config.lto {
+    //
+    // The clang-driver path is Unix-only: it builds a Unix-style command line
+    // (`-o`, `-l`, `-L`). On Windows/MSVC the link command is MSVC-syntax
+    // (`/OUT:`, `/LIBPATH:`, `kernel32.lib`), which clang cannot parse — and
+    // anyway link.exe has its own LTO via `/LTCG` on native COFF objects, so
+    // codegen does not emit bitcode-bearing objects when targeting MSVC.
+    // For Windows/MSVC always go straight to `find_system_linker` (link.exe).
+    let is_msvc = config.target.os == Os::Windows && config.target.env == Env::Msvc;
+    let linker_path = if config.lto && !is_msvc {
         find_clang_linker(&config.target)
             .or_else(|_| find_system_linker(&config.target))
             .map_err(LinkError::LinkerNotFound)?
