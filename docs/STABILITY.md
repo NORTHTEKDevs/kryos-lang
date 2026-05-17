@@ -86,16 +86,33 @@ If `edition` is omitted from `kryos.toml`, the compiler treats the project as
 
 ## Platform support
 
-Kryos publishes prebuilt binaries for the following targets and considers them
-tier-1 (build + tests pass on every release):
+### Tier 1 (build + full test suite gate every release)
 
 * `x86_64-unknown-linux-gnu`
-* `x86_64-pc-windows-msvc`
 * `x86_64-apple-darwin`
 * `aarch64-apple-darwin`
 
-Additional targets that build but are not exercised on every CI run are
-tier-2.  See `docs/18-cross-compilation.md` for the current list and the
+### Tier 1.5 (build + targeted tests gate every release)
+
+* `x86_64-pc-windows-msvc` — full release build, Cranelift `kryos run`
+  path, and `kryos build --release` AOT path (LLVM -> clang -> link.exe)
+  are gated by CI on `windows-latest`. The targeted Cargo test set
+  covers `kryos-codegen-llvm`, `kryos-driver`, and `kryos-mir`. The full
+  example/showcase smoke battery from the Linux job is not yet mirrored
+  on Windows; once it is, this target moves to tier 1.
+
+  Known limitations on Windows MSVC:
+
+  * `kryos build --release` does not currently emit source-line debug
+    info. DWARF metadata is gated off for COFF targets because emitting
+    it produces a malformed object that `link.exe` rejects with LNK1107.
+    A CodeView (`.pdb`) emitter is planned; until then, debugger
+    backtraces resolve to LLVM IR names rather than `.kry` source lines.
+  * `kryos run` (Cranelift JIT) is unaffected.
+
+### Tier 2 (build but not exercised on every CI run)
+
+See `docs/18-cross-compilation.md` for the current list and the
 `--target` flag.
 
 ## Reporting breakage

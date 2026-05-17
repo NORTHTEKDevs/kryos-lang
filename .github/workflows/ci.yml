@@ -65,3 +65,56 @@ jobs:
             echo "== showcase/$ex.kry =="
             ./target/release/kryos run ../examples/showcase/$ex.kry > /dev/null
           done
+
+  build-and-test-windows:
+    # Windows MSVC gate. Catches regressions in the LLVM codegen +
+    # link.exe path that the Linux job cannot see. Specifically guards
+    # against LNK1107 regressions caused by emitting DWARF metadata into
+    # COFF objects (codegen now gates DWARF off for Windows targets).
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "compiler"
+
+      - name: Build (release)
+        working-directory: compiler
+        # Full workspace release build. Produces kryos.exe, kryos_rt.lib,
+        # and kryos_stdlib_native.lib that the driver links at AOT time.
+        run: cargo build --release -j 2
+
+      - name: Cargo tests (driver + mir)
+        working-directory: compiler
+        # Cargo tests for crates relevant to the Windows toolchain path.
+        # kryos-driver covers linker invocation + runtime lib lookup,
+        # kryos-mir covers platform-agnostic IR. kryos-codegen-llvm has a
+        # handful of pre-existing IR-shape assertions that drift with the
+        # emitter (also failing on Linux); re-enable that crate here once
+        # those tests are realigned with current IR output.
+        run: cargo test --release -j 2 -p kryos-driver -p kryos-mir
+
+      - name: Smoke test (kryos run tests/smoke.kry)
+        working-directory: compiler
+        shell: bash
+        # Cranelift path. Should already work on Windows.
+        run: |
+          ./target/release/kryos.exe run tests/smoke.kry > smoke_output.txt
+          printf "30\n2\nKryos\n" > expected.txt
+          diff expected.txt smoke_output.txt
+
+      - name: AOT release smoke (kryos build --release examples/hello.kry)
+        working-directory: compiler
+        shell: bash
+        # The exact regression this job exists to catch. Builds hello.kry
+        # via the full LLVM -> clang -> link.exe path and runs the result.
+        # Must exit 0 with the expected stdout.
+        run: |
+          set -e
+          ./target/release/kryos.exe build --release ../examples/hello.kry -o hello.exe
+          ./hello.exe > hello_output.txt
+          printf "Hello, Kryos!\n" > hello_expected.txt
+          diff hello_expected.txt hello_output.txt

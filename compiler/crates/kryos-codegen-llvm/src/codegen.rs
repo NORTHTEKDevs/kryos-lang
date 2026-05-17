@@ -275,9 +275,10 @@ impl LlvmCodegen {
             self.emit_main_wrapper();
         }
 
-        // Emit DWARF compile-unit + DIFile metadata if `-g` is enabled.
+        // Emit DWARF compile-unit + DIFile metadata if `-g` is enabled and
+        // the target supports DWARF (ELF/Mach-O). Skipped on Windows COFF.
         // Matches the incremental path in `emit_footer_section`.
-        if self.options.debug_info && self.options.source_file_path.is_some() {
+        if self.should_emit_dwarf() {
             self.emit_dwarf_anchor_fn();
             self.emit_dwarf_metadata();
         }
@@ -414,7 +415,7 @@ impl LlvmCodegen {
         if has_void_main {
             self.emit_main_wrapper();
         }
-        if self.options.debug_info && self.options.source_file_path.is_some() {
+        if self.should_emit_dwarf() {
             self.emit_dwarf_anchor_fn();
             self.emit_dwarf_metadata();
         }
@@ -856,6 +857,25 @@ impl LlvmCodegen {
         } else {
             cfg!(target_os = "windows")
         }
+    }
+
+    /// Returns true if we should emit DWARF debug metadata for this build.
+    ///
+    /// DWARF debug sections (`.debug_info`, `.debug_line`, etc.) are an ELF
+    /// convention. On Windows COFF targets, debug info uses CodeView
+    /// (`.pdb` sidecar). When clang sees DWARF metadata in the IR while
+    /// targeting `*-pc-windows-msvc`, it still emits `.debug_*` sections
+    /// into the COFF object; `link.exe` then rejects the object with
+    /// LNK1107 ("invalid or corrupt file") at the metadata byte offset.
+    ///
+    /// Until we wire a CodeView emitter, gate all DWARF emission off when
+    /// the active target is Windows. `kryos build --release` on Windows
+    /// will still produce a working `.exe`, just without source-line debug
+    /// info; `kryos run` (Cranelift) is unaffected.
+    fn should_emit_dwarf(&self) -> bool {
+        self.options.debug_info
+            && self.options.source_file_path.is_some()
+            && !self.is_windows_target()
     }
 
     // -----------------------------------------------------------------------
@@ -1757,7 +1777,7 @@ impl LlvmCodegen {
         // `define` header and a matching `!dbg !<loc_md>` to every call
         // and ret inside via `dbg_suffix()`.
         let dbg_suffix_for_define: String =
-            if self.options.debug_info && self.options.source_file_path.is_some() {
+            if self.should_emit_dwarf() {
                 self.emitted_function_names.push(name.to_string());
                 self.emitted_function_lines.push(func.source_line.max(1));
                 // Reserve two consecutive metadata ids per function: one for
