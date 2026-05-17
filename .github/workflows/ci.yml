@@ -67,10 +67,16 @@ jobs:
           done
 
   build-and-test-windows:
-    # Windows MSVC gate. Catches regressions in the LLVM codegen +
-    # link.exe path that the Linux job cannot see. Specifically guards
-    # against LNK1107 regressions caused by emitting DWARF metadata into
-    # COFF objects (codegen now gates DWARF off for Windows targets).
+    # Windows MSVC tier-1 job. Mirrors the Linux build battery across
+    # both backends: Cranelift (`kryos run`) and LLVM AOT (`kryos build
+    # --release`). Specifically guards against:
+    #   - LNK1107 regressions caused by emitting DWARF metadata into
+    #     COFF objects (codegen routes DI through CodeView on Windows
+    #     and link.exe consumes it via /DEBUG).
+    #   - kryos-codegen-llvm IR-shape regressions (these tests must pass
+    #     on Windows too, not just Linux).
+    #   - ThinLTO bitcode-into-COFF regressions (LTO is gated off for
+    #     Windows/MSVC; kryos-linker has tests that lock the gate in).
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -101,15 +107,17 @@ jobs:
         # and kryos_stdlib_native.lib that the driver links at AOT time.
         run: cargo build --release -j 2
 
-      - name: Cargo tests (driver + mir)
+      - name: Cargo tests (driver, mir, codegen-llvm, linker)
         working-directory: compiler
-        # Cargo tests for crates relevant to the Windows toolchain path.
-        # kryos-driver covers linker invocation + runtime lib lookup,
-        # kryos-mir covers platform-agnostic IR. kryos-codegen-llvm has a
-        # handful of pre-existing IR-shape assertions that drift with the
-        # emitter (also failing on Linux); re-enable that crate here once
-        # those tests are realigned with current IR output.
-        run: cargo test --release -j 2 -p kryos-driver -p kryos-mir
+        # Tier-1 cargo coverage for the Windows toolchain path:
+        #   - kryos-driver: linker invocation + runtime lib lookup
+        #   - kryos-mir: platform-agnostic IR
+        #   - kryos-codegen-llvm: IR-shape assertions (43 tests, now passing
+        #     on both Linux and Windows after the IR-emitter alignment).
+        #   - kryos-linker: command-line construction, including the
+        #     MSVC /DEBUG flag toggle and the LTO-gated-off-for-MSVC
+        #     regression tests.
+        run: cargo test --release -j 2 -p kryos-driver -p kryos-mir -p kryos-codegen-llvm -p kryos-linker
 
       - name: Smoke test (kryos run tests/smoke.kry)
         working-directory: compiler
@@ -119,6 +127,20 @@ jobs:
           ./target/release/kryos.exe run tests/smoke.kry > smoke_output.txt
           printf "30\n2\nKryos\n" > expected.txt
           diff expected.txt smoke_output.txt
+
+      - name: Example smoke tests (Cranelift, kryos run)
+        working-directory: compiler
+        shell: bash
+        # Mirror of the Linux "Example smoke tests" step. Exercises the
+        # Cranelift codegen + JIT path on Windows for the same example
+        # set Linux runs. calculator is interactive and is intentionally
+        # NOT included (it would block on stdin).
+        run: |
+          set -e
+          for ex in hello fibonacci word_count shapes; do
+            echo "== examples/$ex.kry (Cranelift) =="
+            ./target/release/kryos.exe run ../examples/$ex.kry > /dev/null
+          done
 
       - name: AOT release smoke (kryos build --release examples/hello.kry)
         working-directory: compiler
@@ -147,3 +169,41 @@ jobs:
             ./target/release/kryos.exe build --release ../examples/$ex.kry -o $ex.exe
             ./$ex.exe > /dev/null
           done
+
+      - name: Showcase smoke tests (portable subset)
+        working-directory: compiler
+        shell: bash
+        # Mirror of the Linux "Showcase smoke tests" step, restricted to
+        # the showcase apps that don't hardcode Unix-only filesystem paths.
+        # kvdb and ssg both hardcode `/tmp/...` and need to be made
+        # OS-portable (via std::os::temp_dir()) before they can run here.
+        run: |
+          set -e
+          for ex in markdown worker_pool; do
+            echo "== showcase/$ex.kry (Cranelift) =="
+            ./target/release/kryos.exe run ../examples/showcase/$ex.kry > /dev/null
+          done
+
+      - name: CodeView (.pdb) emission smoke
+        working-directory: compiler
+        shell: bash
+        # Verifies the end-to-end CodeView -> .pdb pipeline:
+        #   1. codegen routes DI metadata through the CodeView module flag,
+        #   2. clang lowers it via `-gcodeview` into .debug$S/.debug$T
+        #      COFF records,
+        #   3. link.exe consumes them via /DEBUG and produces a .pdb
+        #      sidecar next to the output binary.
+        # Without /DEBUG on the linker command line the .pdb is silently
+        # dropped; this step catches that regression.
+        run: |
+          set -e
+          ./target/release/kryos.exe build --release -g ../examples/hello.kry -o hello_debug.exe
+          if [ ! -f hello_debug.pdb ]; then
+            echo "FAIL: hello_debug.pdb was not produced by link.exe /DEBUG"
+            ls -la hello_debug*
+            exit 1
+          fi
+          echo "OK: hello_debug.pdb size=$(stat -c%s hello_debug.pdb 2>/dev/null || stat -f%z hello_debug.pdb) bytes"
+          ./hello_debug.exe > hello_debug_out.txt
+          printf "Hello, Kryos!\n" > hello_debug_expected.txt
+          diff hello_debug_expected.txt hello_debug_out.txt
