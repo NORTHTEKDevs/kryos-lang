@@ -1,0 +1,13 @@
+use std::os::{name, arch, is_linux, home_dir, temp_dir, path_sep}
+
+@capabilities(env)
+fn main() {
+    println("os=" + name())
+    println("arch=" + arch())
+    if is_linux() {
+        println("linux=true")
+    }
+    println("home_present=" + to_string(len(home_dir()) > 0))
+    println("temp=" + temp_dir())
+    println("sep=" + path_sep())
+}

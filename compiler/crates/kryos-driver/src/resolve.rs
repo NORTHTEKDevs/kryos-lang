@@ -386,18 +386,20 @@ pub fn resolve_imports(
             if matches!(decl, Decl::Import { .. }) {
                 continue;
             }
-            if !import_path.items.is_empty() {
-                // Selective import: include matching declarations AND all constants.
-                if matches!(decl, Decl::Const { .. }) {
-                    resolved_decls.push(decl);
-                } else if let Some(name) = decl_name_of(&decl) {
-                    if import_path.items.contains(&name) {
-                        resolved_decls.push(decl);
-                    }
-                }
-            } else {
-                resolved_decls.push(decl);
-            }
+            // Note: selective imports (`use foo::{a, b}`) used to filter
+            // the imported module down to just the named items, but that
+            // breaks any selected function whose body transitively calls
+            // other (unselected) helpers in the same module. Doing proper
+            // dependency tracing is a larger change; for now we always
+            // include the full module so private helpers, types, externs,
+            // and constants are all reachable. The `items` list still
+            // serves as documentation of what the importer cares about.
+            //
+            // To avoid duplicate symbols when several modules are imported
+            // and happen to share helper names, the dedup pass below will
+            // surface conflicts.
+            let _ = &import_path.items;
+            resolved_decls.push(decl);
         }
     }
 

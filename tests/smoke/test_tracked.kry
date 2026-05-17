@@ -1,0 +1,11 @@
+use std::tracked::{tracked_source, Tracked}
+
+@capabilities(time)
+fn main() {
+    let t = tracked_source("hello world", "user_input", "raw text from user")
+    let t2 = t.transform("HELLO WORLD", "uppercase", "to upper")
+    println("value=" + t2.value)
+    println("source=" + t2.source)
+    println("lineage_size=" + to_string(len(t2.lineage)))
+    println("tracked_ok")
+}

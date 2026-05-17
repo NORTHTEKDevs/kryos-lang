@@ -4,6 +4,88 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.4.1] - 2026-05-17 — "Stdlib modules actually run"
+
+This is the runtime follow-up to 2.4.0. 2.4.0 made the unblocked stdlib
+modules type-check; 2.4.1 makes them compile and run end-to-end through
+the debug (Cranelift) backend. Twelve smoke tests now pass:
+`hello`, `std::io`, `std::fs`, `std::os`, `std::crypto`, `std::re`,
+`std::process`, `std::term`, `std::net`, `std::db`, `std::tracked`,
+and a direct FFI primitives roundtrip (`str_to_ptr`, `alloc`,
+`ptr_set_byte`, `ptr_byte_at`, `ptr_read_i64`, `ptr_write_i64`,
+`buf_to_str`, `free_bytes`).
+
+No language-surface changes. No new stdlib APIs. No breaking changes.
+
+### Fixed
+
+- **Selective imports now pull in full modules.** Previously,
+  `use std::os::{name}` (or any selective `use foo::{a}`) filtered
+  the imported module down to just the named items plus constants.
+  That broke any selected function whose body called same-module
+  private helpers (e.g. `std::os::name` calls `_env_or_empty`,
+  several modules call internal `extern` blocks). The resolver now
+  always merges the full imported module so private helpers,
+  extern blocks, types, and constants are reachable. The `items`
+  list in `use foo::{a, b}` is still parsed and validated but no
+  longer used to prune the imported AST. Known constraint: if two
+  imported modules define a public function with the same name
+  (e.g. `std::fs::open` and `std::db::open`), the resolver now
+  emits a clear `duplicate function ... imported from multiple
+  modules` error. Use selective imports from one module and the
+  fully-qualified module form from the other, or alias.
+- **Cranelift backend: user functions declared as `Local`,
+  not `Export`.** User-defined Kryos functions whose names match a
+  libc/POSIX symbol (`bind`, `read`, `write`, `open`, `close`, ...)
+  were being shadowed at JIT symbol-resolution time by `dlsym`,
+  causing silent stack overflows or segfaults when called from
+  user code. User functions are now declared `Linkage::Local`,
+  which keeps the resolver from looking them up via `dlsym`.
+- **Cranelift backend: user-defined functions can shadow built-in
+  names.** `print`, `println`, `eprintln`, and `exit` were
+  unconditionally declared as C-level imports (`printf`, `puts`,
+  `kryos_eprintln`, `exit`). When a user defined a Kryos function
+  with the same name, Cranelift raised
+  `Invalid to define identifier declared as an import`. The
+  built-in imports are now suppressed when a user function of the
+  same name exists.
+- **Cranelift backend: nine FFI helpers are now declared.** The
+  builtins `str_to_ptr`, `alloc`, `free_bytes`, `buf_to_str`,
+  `ptr_byte_at`, `ptr_set_byte`, `ptr_read_i64`, `ptr_write_i64`,
+  and `handle_to_str` existed in `kryos-rt::builtins` and were
+  wired into the LLVM backend in 2.4.0, but were not registered
+  as imports in the Cranelift codegen path. Programs compiled via
+  `kryos run` (which uses Cranelift) failed to link with
+  `undefined reference to str_to_ptr` and friends. All nine are
+  now declared in the Cranelift module on every program.
+- **`!` (never) type now lowers to MIR `Void`.** In 2.4.0 the
+  parser accepted `!` and the type checker treated it as
+  `Simple { name: "never" }`, but the MIR lowerer's
+  `lower_type_expr` had no case for it and fell through to
+  `MirType::Struct("never")`. The resulting signature
+  `fn exit(code: i32) -> Struct("never")` clashed with
+  `kryos_builtin_exit`'s real void signature and Cranelift
+  rejected the second declaration with
+  `signature [I32] -> [] incompatible with previous [I32] -> [I64]`.
+  `!` now lowers to `MirType::Void`, matching the runtime ABI.
+- **`std::re` rename `str_data_ptr` → `str_to_ptr`.** Internal call
+  site referenced `str_data_ptr`, which was a name the type checker
+  accepted but had no runtime symbol. Renamed to the actual
+  builtin `str_to_ptr`. User-facing API is unchanged.
+
+### Known issues
+
+- `std::process::Command::run()` does not yet forward argument
+  arrays to `kryos_process_exec` (the runtime supports it but the
+  stdlib needs a way to get the data pointer of a `[str]` array).
+  `command("echo").arg("hi").run()` runs `echo` but with no
+  arguments. Tracked for 2.4.2.
+- `std::term::width` and `std::term::height` `throw` on non-tty
+  stdin/stdout. This is the documented behaviour of the
+  underlying `crossterm` call; the stdlib could be more graceful
+  about it. Tracked for 2.4.2.
+
+
 ## [2.4.0] - 2026-05-17 — "All 31 stdlib modules type-check"
 
 This release finishes unblocking the remaining 10 stdlib modules

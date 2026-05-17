@@ -1,0 +1,16 @@
+use std::crypto::{sha256, random_hex, random_int}
+
+@capabilities(crypto)
+fn main() {
+    let h = sha256("hello")
+    println("sha256_hello=" + h)
+    let r = random_hex(8)
+    println("random_hex_len=" + to_string(len(r)))
+    let n = random_int(1, 100)
+    if n >= 1 and n <= 100 {
+        println("random_int_in_range=true")
+    } else {
+        println("FAIL: " + to_string(n))
+    }
+    println("crypto_ok")
+}

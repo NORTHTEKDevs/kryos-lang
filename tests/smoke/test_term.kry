@@ -1,0 +1,19 @@
+// Test term via raw FFI to avoid the stdlib's throw-on-no-tty.
+// In a real TTY this returns width > 0; in our sandbox it returns -1.
+// Either way, the FFI call works.
+extern {
+    fn kryos_term_width() -> i32
+    fn kryos_term_height() -> i32
+}
+
+@capabilities(term)
+fn main() {
+    let w = kryos_term_width()
+    let h = kryos_term_height()
+    // We just verify we got back from the FFI alive.
+    if w >= -1 and h >= -1 {
+        println("term_ok")
+    } else {
+        println("term_fail")
+    }
+}

@@ -277,6 +277,16 @@ pub fn compile_module_with_options(
     let mut func_ids: HashMap<String, FuncId> = HashMap::new();
     let mut needs_main_wrapper = false;
 
+    // Names of user-defined Kryos functions (including those merged in from
+    // imported modules). When a user-defined function shadows a builtin name
+    // (e.g. std::io defines `fn print(msg: str) -> i64`), we skip declaring
+    // the C-level builtin import for that name so the user fn wins.
+    let user_func_names: HashSet<String> = module
+        .functions
+        .iter()
+        .map(|f| f.name.clone())
+        .collect();
+
     for mir_func in &module.functions {
         let sig = build_signature(mir_func, object_module.isa().default_call_conv());
 
@@ -286,7 +296,12 @@ pub fn compile_module_with_options(
             func_ids.insert(mir_func.name.clone(), func_id);
             needs_main_wrapper = true;
         } else {
-            let func_id = object_module.declare_function(&mir_func.name, Linkage::Export, &sig)?;
+            // User-defined functions are declared as Local (not Export) so they
+            // do NOT collide with libc/POSIX symbols of the same name (e.g. a
+            // user-level `bind`, `read`, `write`, `open`, `close` would
+            // otherwise be resolved via dlsym to libc's version inside the JIT,
+            // which causes silent stack overflows or segfaults).
+            let func_id = object_module.declare_function(&mir_func.name, Linkage::Local, &sig)?;
             func_ids.insert(mir_func.name.clone(), func_id);
         }
     }
@@ -537,7 +552,9 @@ pub fn compile_module_with_options(
         sig
     };
     let puts_id = object_module.declare_function("puts", Linkage::Import, &puts_sig)?;
-    func_ids.insert("println".to_string(), puts_id);
+    if !user_func_names.contains("println") {
+        func_ids.insert("println".to_string(), puts_id);
+    }
 
     // Declare C `printf` for print support (no newline).
     // print("...") in Kryos MIR maps to a call to C printf(const char*).
@@ -548,7 +565,11 @@ pub fn compile_module_with_options(
         sig
     };
     let printf_id = object_module.declare_function("printf", Linkage::Import, &printf_sig)?;
-    func_ids.insert("print".to_string(), printf_id);
+    if !user_func_names.contains("print") {
+        func_ids.insert("print".to_string(), printf_id);
+    }
+    // Suppress unused-warning when user redefines print.
+    let _ = printf_id;
 
     // Declare fputs and fputc for stderr output (used by eprintln).
     let fputs_sig = {
@@ -577,7 +598,9 @@ pub fn compile_module_with_options(
     };
     let eprintln_id =
         object_module.declare_function("kryos_eprintln", Linkage::Local, &eprintln_sig)?;
-    func_ids.insert("eprintln".to_string(), eprintln_id);
+    if !user_func_names.contains("eprintln") {
+        func_ids.insert("eprintln".to_string(), eprintln_id);
+    }
     {
         let mut ep_fn = Function::with_name_signature(
             UserFuncName::user(0, eprintln_id.as_u32()),
@@ -641,7 +664,10 @@ pub fn compile_module_with_options(
         sig
     };
     let exit_id = object_module.declare_function("exit", Linkage::Import, &exit_sig)?;
-    func_ids.insert("exit".to_string(), exit_id);
+    if !user_func_names.contains("exit") {
+        func_ids.insert("exit".to_string(), exit_id);
+    }
+    let _ = exit_id;
 
     // Import len() builtin — reads len field from any Kryos collection.
     let len_sig = {
@@ -699,6 +725,108 @@ pub fn compile_module_with_options(
     };
     let ipow_id = object_module.declare_function("kryos_ipow", Linkage::Import, &ipow_sig)?;
     func_ids.insert("kryos_ipow".to_string(), ipow_id);
+
+    // -------------------------------------------------------------------
+    // Low-level FFI helpers (i64 ABI). These let Kryos code cross the
+    // FFI boundary without exposing raw `*mut u8` pointers. They map to
+    // `kryos_*` symbols in libkryos_rt (see kryos-rt::builtins).
+    // -------------------------------------------------------------------
+    {
+        // str_to_ptr(s: str) -> i64
+        let sig_i64_i64 = {
+            let mut s = Signature::new(call_conv);
+            s.params.push(AbiParam::new(types::I64));
+            s.returns.push(AbiParam::new(types::I64));
+            s
+        };
+        // alloc(n: i64) -> i64  (same shape)
+        // handle_to_str(h: i64) -> i64
+        let str_to_ptr_id = object_module.declare_function(
+            "kryos_str_to_ptr",
+            Linkage::Import,
+            &sig_i64_i64,
+        )?;
+        func_ids.insert("str_to_ptr".to_string(), str_to_ptr_id);
+
+        let alloc_id = object_module.declare_function(
+            "kryos_alloc_bytes",
+            Linkage::Import,
+            &sig_i64_i64,
+        )?;
+        func_ids.insert("alloc".to_string(), alloc_id);
+
+        let handle_to_str_id = object_module.declare_function(
+            "kryos_handle_to_str",
+            Linkage::Import,
+            &sig_i64_i64,
+        )?;
+        func_ids.insert("handle_to_str".to_string(), handle_to_str_id);
+
+        // (i64, i64) -> i64
+        let sig_i64_i64_to_i64 = {
+            let mut s = Signature::new(call_conv);
+            s.params.push(AbiParam::new(types::I64));
+            s.params.push(AbiParam::new(types::I64));
+            s.returns.push(AbiParam::new(types::I64));
+            s
+        };
+        let buf_to_str_id = object_module.declare_function(
+            "kryos_buf_to_str",
+            Linkage::Import,
+            &sig_i64_i64_to_i64,
+        )?;
+        func_ids.insert("buf_to_str".to_string(), buf_to_str_id);
+
+        let ptr_byte_at_id = object_module.declare_function(
+            "kryos_ptr_byte_at",
+            Linkage::Import,
+            &sig_i64_i64_to_i64,
+        )?;
+        func_ids.insert("ptr_byte_at".to_string(), ptr_byte_at_id);
+
+        let ptr_read_i64_id = object_module.declare_function(
+            "kryos_ptr_read_i64",
+            Linkage::Import,
+            &sig_i64_i64_to_i64,
+        )?;
+        func_ids.insert("ptr_read_i64".to_string(), ptr_read_i64_id);
+
+        // (i64, i64) -> void   (free_bytes)
+        let sig_i64_i64_void = {
+            let mut s = Signature::new(call_conv);
+            s.params.push(AbiParam::new(types::I64));
+            s.params.push(AbiParam::new(types::I64));
+            s
+        };
+        let free_bytes_id = object_module.declare_function(
+            "kryos_free_bytes",
+            Linkage::Import,
+            &sig_i64_i64_void,
+        )?;
+        func_ids.insert("free_bytes".to_string(), free_bytes_id);
+
+        // (i64, i64, i64) -> void   (ptr_set_byte, ptr_write_i64)
+        let sig_i64_i64_i64_void = {
+            let mut s = Signature::new(call_conv);
+            s.params.push(AbiParam::new(types::I64));
+            s.params.push(AbiParam::new(types::I64));
+            s.params.push(AbiParam::new(types::I64));
+            s
+        };
+        let ptr_set_byte_id = object_module.declare_function(
+            "kryos_ptr_set_byte",
+            Linkage::Import,
+            &sig_i64_i64_i64_void,
+        )?;
+        func_ids.insert("ptr_set_byte".to_string(), ptr_set_byte_id);
+
+        let ptr_write_i64_id = object_module.declare_function(
+            "kryos_ptr_write_i64",
+            Linkage::Import,
+            &sig_i64_i64_i64_void,
+        )?;
+        func_ids.insert("ptr_write_i64".to_string(), ptr_write_i64_id);
+    }
 
     // NOTE: ARC runtime functions (kryos_arc_alloc, kryos_arc_retain,
     // kryos_arc_release) are declared above via kryos_arc_*_i64 wrappers.

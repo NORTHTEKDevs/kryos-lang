@@ -4919,6 +4919,10 @@ pub fn lower_type_expr(ty: &ast::TypeExpr) -> MirType {
             "char" => MirType::Char,
             "str" | "string" | "String" => MirType::Str,
             "void" => MirType::Void,
+            // The `!` (never) type denotes a function that never returns
+            // normally (it diverges via exit/throw/loop). At the MIR level
+            // we represent it as Void so the ABI matches `() -> ()`.
+            "never" => MirType::Void,
             other => MirType::Struct(other.to_string()),
         },
         ast::TypeExpr::Array { element, size, .. } => {

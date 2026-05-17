@@ -1,0 +1,24 @@
+// Minimal net test: use raw FFI to connect to a known service.
+// We avoid the higher-level wrappers because some require @capabilities(net)
+// and we want a tight smoke test.
+extern {
+    fn kryos_tcp_bind(host_ptr: i64, host_len: i64, port: i32) -> i64
+    fn kryos_socket_close(fd: i64) -> i32
+}
+
+@capabilities(net, ffi)
+fn main() {
+    let host = "127.0.0.1"
+    // Bind to a random ephemeral port (0).
+    let fd = kryos_tcp_bind(str_to_ptr(host), len(host), 0)
+    if fd < 0 {
+        println("net_bind_fail")
+        return
+    }
+    let r = kryos_socket_close(fd)
+    if r == 0 {
+        println("net_ok")
+    } else {
+        println("net_close_fail")
+    }
+}

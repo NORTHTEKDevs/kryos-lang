@@ -45,7 +45,7 @@ impl Regex {
         if self.dropped {
             throw "re error: is_match on dropped regex"
         }
-        let result = kryos_regex_is_match(self.handle, str_data_ptr(text), len(text))
+        let result = kryos_regex_is_match(self.handle, str_to_ptr(text), len(text))
         if result < 0 {
             throw "re error: is_match failed for pattern: " + self.pattern
         }
@@ -68,7 +68,7 @@ impl Regex {
             let mut end = start + 1
             while end <= text_len {
                 let candidate = substr(text, start, end)
-                let result = kryos_regex_is_match(self.handle, str_data_ptr(candidate), len(candidate))
+                let result = kryos_regex_is_match(self.handle, str_to_ptr(candidate), len(candidate))
                 if result == 1 {
                     // Found a match -- now try to find the shortest at this start
                     // (already found since we scan end from start+1 up)
@@ -242,7 +242,7 @@ impl Regex {
 
 // Compile a regex pattern.  Throws on invalid pattern.
 fn compile(pattern: str) -> Regex {
-    let handle = kryos_regex_new(str_data_ptr(pattern), len(pattern))
+    let handle = kryos_regex_new(str_to_ptr(pattern), len(pattern))
     // kryos_regex_new aborts on invalid pattern; no explicit null check.
     return Regex { handle: handle, pattern: pattern, dropped: false }
 }

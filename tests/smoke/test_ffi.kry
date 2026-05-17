@@ -1,0 +1,43 @@
+// Direct FFI primitive roundtrip:
+//   1. Take a string, get its pointer with str_to_ptr.
+//   2. Allocate a buffer with alloc, write bytes via ptr_set_byte.
+//   3. Read bytes back via ptr_byte_at.
+//   4. Reconstruct a string from the buffer via buf_to_str.
+//   5. Free with free_bytes.
+
+@capabilities(ffi)
+fn main() {
+    // Step 1: str_to_ptr
+    let s = "ABC"
+    let p = str_to_ptr(s)
+    if p == 0 {
+        println("ffi_fail: str_to_ptr returned 0")
+        return
+    }
+    let b0 = ptr_byte_at(p, 0)
+    let b1 = ptr_byte_at(p, 1)
+    let b2 = ptr_byte_at(p, 2)
+    println("ptr_byte_at: " + to_string(b0) + "," + to_string(b1) + "," + to_string(b2))
+
+    // Step 2: alloc + ptr_set_byte
+    let buf = alloc(5)
+    ptr_set_byte(buf, 0, 72)   // 'H'
+    ptr_set_byte(buf, 1, 73)   // 'I'
+    ptr_set_byte(buf, 2, 33)   // '!'
+    ptr_set_byte(buf, 3, 0)
+    ptr_set_byte(buf, 4, 0)
+
+    // Step 3: read back
+    let r0 = ptr_byte_at(buf, 0)
+    let r1 = ptr_byte_at(buf, 1)
+    let r2 = ptr_byte_at(buf, 2)
+    println("roundtrip: " + to_string(r0) + "," + to_string(r1) + "," + to_string(r2))
+
+    // Step 4: buf_to_str
+    let s2 = buf_to_str(buf, 3)
+    println("buf_to_str: " + s2)
+
+    // Step 5: free
+    free_bytes(buf, 5)
+    println("ffi_ok")
+}

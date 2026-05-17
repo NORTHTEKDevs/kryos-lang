@@ -1,0 +1,16 @@
+use std::re::{is_match, is_email}
+
+@capabilities(compute)
+fn main() {
+    if is_match("h.llo", "hello") {
+        println("match=true")
+    } else {
+        println("FAIL: should match")
+    }
+    if is_email("a@b.co") {
+        println("email=true")
+    } else {
+        println("FAIL: should be email")
+    }
+    println("re_ok")
+}

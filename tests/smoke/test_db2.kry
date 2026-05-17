@@ -1,0 +1,21 @@
+use std::db::{open_memory, execute, query, step, col_int, col_text, finalize, close}
+
+@capabilities(db)
+fn main() {
+    let conn = open_memory()
+    execute(conn, "CREATE TABLE t (k INTEGER, v TEXT)")
+    execute(conn, "INSERT INTO t VALUES (1, 'alpha')")
+    execute(conn, "INSERT INTO t VALUES (2, 'beta')")
+    let cur = query(conn, "SELECT k, v FROM t ORDER BY k")
+    let mut total = 0
+    while step(cur) {
+        let k = col_int(cur, 0)
+        let v = col_text(cur, 1)
+        println("row k=" + to_string(k) + " v=" + v)
+        total = total + 1
+    }
+    finalize(cur)
+    close(conn)
+    println("db_rows=" + to_string(total))
+    println("db_query_ok")
+}

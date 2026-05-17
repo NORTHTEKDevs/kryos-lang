@@ -1,0 +1,33 @@
+@capabilities(ffi)
+fn main() {
+    let buf = alloc(16)
+    ptr_write_i64(buf, 0, 0x1122334455667788)
+    ptr_write_i64(buf, 8, 42)
+    let a = ptr_read_i64(buf, 0)
+    let b = ptr_read_i64(buf, 8)
+    if a == 0x1122334455667788 {
+        println("i64_a_ok")
+    } else {
+        println("i64_a_fail=" + to_string(a))
+    }
+    if b == 42 {
+        println("i64_b_ok")
+    } else {
+        println("i64_b_fail=" + to_string(b))
+    }
+    free_bytes(buf, 16)
+
+    // handle_to_str: turn an i64 string handle back into a str.
+    // We get a handle by hashing a known KryosString.
+    let s = "round-trip"
+    // str_to_ptr returns a raw byte pointer (not a handle), so we just
+    // round-trip through buf_to_str instead.
+    let p = str_to_ptr(s)
+    let s2 = buf_to_str(p, len(s))
+    if s2 == s {
+        println("buf_to_str_roundtrip_ok")
+    } else {
+        println("buf_to_str_roundtrip_fail=" + s2)
+    }
+    println("ffi2_ok")
+}

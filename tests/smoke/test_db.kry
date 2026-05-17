@@ -1,0 +1,11 @@
+use std::db::{open_memory, execute, close}
+
+@capabilities(db)
+fn main() {
+    let conn = open_memory()
+    execute(conn, "CREATE TABLE t (k INTEGER, v TEXT)")
+    let n = execute(conn, "INSERT INTO t (k, v) VALUES (1, 'a'), (2, 'b')")
+    close(conn)
+    println("db_insert_rows=" + to_string(n))
+    println("db_ok")
+}

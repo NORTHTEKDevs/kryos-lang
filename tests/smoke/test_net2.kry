@@ -1,0 +1,8 @@
+use std::net::{net_listen}
+
+@capabilities(net)
+fn main() {
+    let listener = net_listen("127.0.0.1", 0)
+    listener.close()
+    println("net_wrapper_ok")
+}

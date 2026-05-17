@@ -1,0 +1,9 @@
+use std::io::{print, println, eprint, eprintln}
+
+@capabilities(io)
+fn main() {
+    print("io_print_no_newline")
+    println("")
+    println("io_println_ok")
+    eprintln("io_eprintln_ok_stderr")
+}

@@ -1,0 +1,11 @@
+use std::process::{command}
+
+@capabilities(process)
+fn main() {
+    let c = command("echo")
+    let cc = c.arg("hello_proc")
+    let r = cc.run()
+    println("exit=" + to_string(r.exit_code))
+    println("stdout=" + r.stdout)
+    println("process_ok")
+}

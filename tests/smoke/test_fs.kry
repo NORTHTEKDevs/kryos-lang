@@ -1,0 +1,22 @@
+use std::fs::{write_file, read_file, exists, file_size, remove_file}
+
+@capabilities(io)
+fn main() {
+    let path = "/tmp/kryos_fs_smoketest.txt"
+    let data = "hello fs"
+    write_file(path, data)
+    if !exists(path) {
+        println("FAIL: file should exist after write")
+        return
+    }
+    let sz = file_size(path)
+    println("size=" + to_string(sz))
+    let got = read_file(path)
+    println("data=" + got)
+    remove_file(path)
+    if exists(path) {
+        println("FAIL: file should not exist after remove")
+        return
+    }
+    println("fs_ok")
+}
