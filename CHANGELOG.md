@@ -4,6 +4,46 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.6.7] - 2026-05-17 — "bidirectional inference for un-annotated lambda args"
+
+Closures passed as function arguments now have their parameter and
+return types inferred from the callee's signature. Previously this
+worked for single-argument closures because each fresh type variable
+had only one numeric/integer usage to anchor against, but two-argument
+bodies like `|a, b| a + b` failed with `cannot apply \`+\` to type \`?T\``
+because both operands were unresolved type variables when the binary
+operator was checked.
+
+No breaking changes. All 24 smoke tests pass (including the new
+`test_bidirectional_closure_inference.kry`), and all real example
+builds still succeed.
+
+### Fixed
+
+- Un-annotated multi-argument lambdas now type-check when passed to a
+  function expecting a specific `fn(...) -> ...` shape. Code like
+
+  ```kryos
+  fn reduce_int(xs: [i64], init: i64, f: fn(i64, i64) -> i64) -> i64 { ... }
+
+  let sum = reduce_int(xs, 0, |a, b| a + b)
+  ```
+
+  now compiles. Previously the inference engine created fresh type
+  variables for `a` and `b`, then visited the body before the outer
+  `FnCall` had a chance to unify the lambda's type with the param's
+  declared `fn(i64, i64) -> i64`, so the `+` operator rejected the
+  unresolved variables.
+
+- The fix threads expected types from the call site into the lambda:
+  `Expr::FnCall`'s arg-vs-param loop now detects when an argument is a
+  `Expr::Lambda` and the corresponding parameter resolves to a
+  `Type::Function` with matching arity. When so, it pushes the expected
+  parameter and return types into a span-keyed map on the type
+  checker. The `Expr::Lambda` case then consumes that entry and uses
+  the pushed types in place of fresh variables for any un-annotated
+  param or return slot, so the body sees concrete types from the start.
+
 ## [2.6.6] - 2026-05-17 — "primitive fields and enum-variant binds are copy"
 
 Three related correctness fixes in ownership/borrow analysis. No

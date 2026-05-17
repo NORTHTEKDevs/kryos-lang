@@ -35,6 +35,11 @@ pub struct TypeChecker {
     /// traits' method signatures so `x.show()` typechecks inside
     /// `fn announce<T: Showable>(x: T)`.
     generic_var_bounds: std::collections::HashMap<u32, Vec<String>>,
+    /// Bidirectional inference: pushed expected types for lambda args,
+    /// keyed by the lambda's span. Set by `Expr::FnCall` before inferring
+    /// a Lambda arg whose corresponding param is a Function type; consumed
+    /// by `Expr::Lambda` to pre-unify un-annotated params and return.
+    lambda_expected_types: std::collections::HashMap<Span, (Vec<Type>, Type)>,
 }
 
 impl Default for TypeChecker {
@@ -56,6 +61,7 @@ impl TypeChecker {
             in_pure_function: false,
             current_self_type: None,
             generic_var_bounds: std::collections::HashMap::new(),
+            lambda_expected_types: std::collections::HashMap::new(),
         }
     }
 
@@ -1529,6 +1535,30 @@ impl TypeChecker {
                             );
                         } else {
                             for (arg, param_ty) in args.iter().zip(params.iter()) {
+                                // Bidirectional inference: if arg is an un-annotated
+                                // Lambda and param_ty resolves to a Function type with
+                                // matching arity, push the expected param/return types
+                                // down so the Lambda body can be typed against them.
+                                if let Expr::Lambda {
+                                    params: lparams,
+                                    span: lspan,
+                                    ..
+                                } = arg
+                                {
+                                    let resolved_pty = self.engine.resolve(param_ty);
+                                    if let Type::Function {
+                                        params: eps,
+                                        ret: er,
+                                    } = &resolved_pty
+                                    {
+                                        if eps.len() == lparams.len() {
+                                            self.lambda_expected_types.insert(
+                                                *lspan,
+                                                (eps.clone(), (**er).clone()),
+                                            );
+                                        }
+                                    }
+                                }
                                 let arg_ty = self.infer_expr(arg);
                                 if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span())
                                 {
@@ -1974,21 +2004,39 @@ impl TypeChecker {
                 params,
                 ret_ty,
                 body,
-                ..
+                span: lambda_span,
             } => {
+                // Bidirectional inference: if an outer FnCall pushed expected
+                // types for this lambda, use them for any un-annotated params
+                // and the return type. This is what makes `|a, b| a + b` work
+                // when passed to a function expecting `fn(i64, i64) -> i64`.
+                let expected = self.lambda_expected_types.remove(lambda_span);
+
                 let param_types: Vec<Type> = params
                     .iter()
-                    .map(|p| {
-                        p.ty.as_ref()
-                            .map(|t| self.resolve_type_expr(t))
-                            .unwrap_or_else(|| self.engine.fresh_var())
+                    .enumerate()
+                    .map(|(i, p)| {
+                        if let Some(t) = p.ty.as_ref() {
+                            self.resolve_type_expr(t)
+                        } else if let Some((ref eps, _)) = expected {
+                            if let Some(et) = eps.get(i) {
+                                et.clone()
+                            } else {
+                                self.engine.fresh_var()
+                            }
+                        } else {
+                            self.engine.fresh_var()
+                        }
                     })
                     .collect();
 
-                let ret = ret_ty
-                    .as_ref()
-                    .map(|t| self.resolve_type_expr(t))
-                    .unwrap_or_else(|| self.engine.fresh_var());
+                let ret = if let Some(t) = ret_ty.as_ref() {
+                    self.resolve_type_expr(t)
+                } else if let Some((_, ref er)) = expected {
+                    er.clone()
+                } else {
+                    self.engine.fresh_var()
+                };
 
                 // Set current_return_type so `return` statements inside the
                 // lambda body are validated against the declared return type.

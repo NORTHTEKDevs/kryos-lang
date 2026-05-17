@@ -1,0 +1,64 @@
+// Bidirectional inference for un-annotated lambda arguments.
+//
+// v2.6.6 and earlier: `|a, b| a + b` passed to a function expecting
+// `fn(i64, i64) -> i64` failed with `cannot apply \`+\` to type \`?T\``
+// because both `a` and `b` were fresh type variables when the body was
+// checked, and the outer FnCall hadn't unified the lambda type with the
+// expected param type yet.
+//
+// v2.6.7: the FnCall arg-vs-param loop now detects Lambda arguments
+// whose corresponding param resolves to `Type::Function` and pushes the
+// expected param/return types into a span-keyed map before inferring
+// the body. The Lambda case consults that map and uses the pushed types
+// in place of fresh vars for un-annotated slots.
+
+fn reduce_int(xs: [i64], init: i64, f: fn(i64, i64) -> i64) -> i64 {
+    let mut acc = init
+    for x in xs {
+        acc = f(acc, x)
+    }
+    return acc
+}
+
+fn map_int(xs: [i64], f: fn(i64) -> i64) -> [i64] {
+    let mut ys: [i64] = []
+    for x in xs {
+        push(ys, f(x))
+    }
+    return ys
+}
+
+fn filter_int(xs: [i64], pred: fn(i64) -> bool) -> [i64] {
+    let mut ys: [i64] = []
+    for x in xs {
+        if pred(x) {
+            push(ys, x)
+        }
+    }
+    return ys
+}
+
+fn main() {
+    let xs: [i64] = [1, 2, 3, 4, 5]
+
+    // Two-argument un-annotated closure, integer body.
+    let sum = reduce_int(xs, 0, |a, b| a + b)
+    assert(sum == 15)
+
+    // Single-argument un-annotated closure (already worked pre-2.6.7,
+    // included as a regression guard).
+    let ys = map_int(xs, |x| x * 10)
+    assert(ys[0] == 10)
+    assert(ys[4] == 50)
+
+    // Single-argument un-annotated closure with bool return type
+    // inferred from the predicate parameter.
+    let evens = filter_int(xs, |x| x % 2 == 0)
+    assert(len(evens) == 2)
+    assert(evens[0] == 2)
+    assert(evens[1] == 4)
+
+    // Two-argument multiplicative reduce.
+    let prod = reduce_int(xs, 1, |a, b| a * b)
+    assert(prod == 120)
+}
