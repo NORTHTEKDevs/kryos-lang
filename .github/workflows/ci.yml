@@ -78,6 +78,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        # The post-job cache save is flaky on Windows runners (tar/zstd over
+        # several GiB of target/) and occasionally times out even when the
+        # actual build was perfectly green. A failed cache save must NOT
+        # mask a successful compile + test cycle.
+        continue-on-error: true
         with:
           workspaces: "compiler"
 
@@ -127,3 +132,18 @@ jobs:
           ./hello.exe > hello_output.txt
           printf "Hello, Kryos!\n" > hello_expected.txt
           diff hello_expected.txt hello_output.txt
+
+      - name: AOT release smoke - additional examples
+        working-directory: compiler
+        shell: bash
+        # Broader coverage of the Windows AOT path. Each example exercises
+        # different stdlib/codegen surface area: fibonacci (recursion, math),
+        # word_count (strings, arrays), shapes (structs, methods).
+        # calculator is interactive and is intentionally NOT included.
+        run: |
+          set -e
+          for ex in fibonacci word_count shapes; do
+            echo "== examples/$ex.kry (AOT release) =="
+            ./target/release/kryos.exe build --release ../examples/$ex.kry -o $ex.exe
+            ./$ex.exe > /dev/null
+          done

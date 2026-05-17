@@ -50,14 +50,12 @@ fn count_bin_entries(cache_root: &std::path::Path) -> usize {
 
 #[test]
 fn build_cache_roundtrip_with_cli() {
-    // ELF/Mach-O hosts only — Windows path semantics for executables differ
-    // enough that we skip on Windows to avoid false negatives. The Rust-side
-    // unit tests already cover Windows paths for key derivation.
-    if cfg!(windows) {
-        eprintln!("Windows host — skipping build_cache CLI smoke test");
-        return;
-    }
-
+    // Used to be skipped on Windows back when 'kryos build --release'
+    // couldn't link on Windows/MSVC. That path now works end-to-end
+    // (see Windows CI), so the test runs on every platform. The
+    // executable extension is already handled by the `cfg!(windows)`
+    // branch below, and the byte-exact comparison holds because the
+    // MSVC linker is deterministic for a given toolchain.
     let kryos = kryos_binary();
     let work = std::env::temp_dir().join(format!(
         "kryos_build_cache_smoke_{}",
