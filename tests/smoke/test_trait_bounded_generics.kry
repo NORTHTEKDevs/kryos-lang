@@ -1,0 +1,48 @@
+// Regression test for trait-bounded generic method resolution.
+//
+// v2.6.2 bug: `fn announce<T: Showable>(x: T) { x.show() }` failed with E0107
+// because the type checker had no record of T's trait bounds and did not try
+// resolving `x.show()` through the bound trait's method signatures.
+//
+// Fix: register `generic_var_id -> Vec<bound_name>` during register_decl
+// (the IDs that end up in the function signature's param types) and consult
+// this map in MethodCall resolution when obj_ty is Type::Var.
+
+trait Showable {
+    fn show(self) -> str
+}
+
+struct Cat { name: str }
+struct Dog { breed: str }
+
+impl Showable for Cat {
+    fn show(self) -> str { return "Cat:" + self.name }
+}
+
+impl Showable for Dog {
+    fn show(self) -> str { return "Dog:" + self.breed }
+}
+
+fn announce<T: Showable>(x: T) {
+    println(x.show())
+}
+
+// Multiple trait-bounded type parameters in one signature.
+fn pair_say<A: Showable, B: Showable>(a: A, b: B) {
+    println(a.show())
+    println(b.show())
+}
+
+// Use the bounded value's method in a larger expression.
+fn bracket<T: Showable>(x: T) -> str {
+    return "[" + x.show() + "]"
+}
+
+fn main() {
+    announce(Cat { name: "Felix" })
+    announce(Dog { breed: "Husky" })
+
+    pair_say(Cat { name: "Tom" }, Dog { breed: "Shiba" })
+
+    println(bracket(Cat { name: "Mia" }))
+}

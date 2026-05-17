@@ -4,6 +4,55 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.6.3] - 2026-05-17 — "Trait-bounded generics: method calls through `<T: Trait>`"
+
+A correctness fix in the type checker. No new language surface, no breaking
+changes. All 20 smoke tests, 21 router tests, 12 config-parser tests, and
+10 real example builds pass.
+
+### Fixed
+
+- `fn announce<T: Showable>(x: T) { x.show() }` previously failed type
+  checking with E0107 "no method `show` found for type `?T`". The type
+  checker bound generic parameters as fresh type variables but did not
+  record their declared trait bounds anywhere, so when `x.show()` reached
+  the MethodCall handler the receiver was an unbounded `Type::Var` and no
+  fallback resolution path existed.
+
+  Fix:
+
+  1. `TypeChecker` now carries `generic_var_bounds: HashMap<u32, Vec<String>>`
+     mapping the type-variable id used in the function signature's parameter
+     types to the list of declared trait bound names.
+  2. `register_decl` for `Decl::Function` populates this map (keyed by the
+     sig var IDs, which are the IDs that appear in parameter types when the
+     body is checked).
+  3. `MethodCall` resolution checks: if `obj_ty` resolves to `Type::Var(id)`
+     and that id has registered bounds, look the method name up on each
+     bound trait's method list, unify arguments against the trait method's
+     parameter types, and return the trait method's return type.
+  4. Bounds are cleared when the enclosing function finishes checking, so
+     they don't leak into the next function.
+
+  Affected pattern: any function with `<T: TraitName>` (or multiple bounds
+  like `<A: Trait, B: Trait>`) that calls trait methods on `T`. Concrete
+  dispatch to the impl method still happens in MIR monomorphization based
+  on the call-site argument type, exactly as before.
+
+  Regression test: `tests/smoke/test_trait_bounded_generics.kry`.
+
+### Stress-test matrix update
+
+| Feature | Status |
+|---|---|
+| Trait-bounded generics `<T: Trait>` method call | works (this release) |
+| Multiple bounded params `<A: T, B: T>` | works (this release) |
+| Bounded method in larger expression | works (this release) |
+| `dyn Trait` dispatch | works (unchanged) |
+| Traits with default methods | works (unchanged) |
+
+---
+
 ## [2.6.2] - 2026-05-17 — "`spawn(fn() { ... })` actually runs the closure"
 
 A correctness fix in MIR lowering. No new language surface, no breaking

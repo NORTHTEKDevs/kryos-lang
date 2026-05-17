@@ -28,6 +28,13 @@ pub struct TypeChecker {
     in_pure_function: bool,
     /// The current `Self` type — set when checking trait/impl blocks.
     current_self_type: Option<Type>,
+    /// Maps generic type variable id → list of trait bound names. Populated
+    /// when entering a generic function with bounds (e.g. `<T: Showable>`).
+    /// Used in MethodCall resolution: when `obj_ty` resolves to a Type::Var
+    /// that has registered bounds, the method is looked up on the bound
+    /// traits' method signatures so `x.show()` typechecks inside
+    /// `fn announce<T: Showable>(x: T)`.
+    generic_var_bounds: std::collections::HashMap<u32, Vec<String>>,
 }
 
 impl Default for TypeChecker {
@@ -48,6 +55,7 @@ impl TypeChecker {
             pure_functions: std::collections::HashSet::new(),
             in_pure_function: false,
             current_self_type: None,
+            generic_var_bounds: std::collections::HashMap::new(),
         }
     }
 
@@ -342,6 +350,9 @@ impl TypeChecker {
                 // Temporarily bind generic params so they resolve in param/return types.
                 // Capture the type variable IDs so we can instantiate fresh copies
                 // at each call site (prevents generic pinning bug).
+                // Also register trait bounds keyed by the *sig* var IDs — these
+                // are the IDs that show up in parameter types when the function
+                // body is checked, so MethodCall bound-resolution must see them.
                 let mut generic_var_ids = Vec::new();
                 if !generics.is_empty() {
                     self.env.push_scope();
@@ -349,6 +360,10 @@ impl TypeChecker {
                         let tv = self.engine.fresh_var();
                         if let Type::Var(id) = &tv {
                             generic_var_ids.push(*id);
+                            if !gp.bounds.is_empty() {
+                                self.generic_var_bounds
+                                    .insert(*id, gp.bounds.clone());
+                            }
                         }
                         self.env.define_var(gp.name.clone(), tv);
                     }
@@ -695,8 +710,17 @@ impl TypeChecker {
 
                 // Bind generic type parameters as type variables so they resolve
                 // in parameter types, return types, and the function body.
+                // Record trait bounds so method calls on this type var can be
+                // resolved through the bound trait's method signatures.
+                let mut bound_var_ids: Vec<u32> = Vec::new();
                 for gp in generics {
                     let tv = self.engine.fresh_var();
+                    if let Type::Var(id) = &tv {
+                        if !gp.bounds.is_empty() {
+                            self.generic_var_bounds.insert(*id, gp.bounds.clone());
+                            bound_var_ids.push(*id);
+                        }
+                    }
                     self.env.define_var(gp.name.clone(), tv);
                 }
 
@@ -738,6 +762,11 @@ impl TypeChecker {
 
                 self.current_return_type = None;
                 self.in_pure_function = was_pure;
+                // Clear trait bounds for this function's generic vars so they
+                // don't leak into the next function's checking.
+                for id in &bound_var_ids {
+                    self.generic_var_bounds.remove(id);
+                }
                 self.env.pop_scope();
 
                 let _ = span; // suppress unused warning
@@ -1544,6 +1573,58 @@ impl TypeChecker {
                 }
                 let obj_ty = self.infer_expr(object);
                 let obj_ty = self.engine.resolve(&obj_ty);
+
+                // Resolve method calls on a generic type variable through its
+                // declared trait bounds. For `fn announce<T: Showable>(x: T)`,
+                // `x.show()` typechecks because `T`'s bound is `Showable` and
+                // `Showable::show(self) -> str` is in scope. Each impl resolves
+                // the actual function during monomorphization in MIR lowering.
+                if let Type::Var(id) = &obj_ty {
+                    if let Some(bounds) = self.generic_var_bounds.get(id).cloned() {
+                        for trait_name in &bounds {
+                            if let Some(trait_def) =
+                                self.env.lookup_trait(trait_name).cloned()
+                            {
+                                if let Some(sig) =
+                                    trait_def.methods.iter().find(|m| m.name == *method)
+                                {
+                                    let expected_params: Vec<_> = if sig
+                                        .params
+                                        .first()
+                                        .map(|(n, _)| n.as_str())
+                                        == Some("self")
+                                    {
+                                        sig.params[1..].to_vec()
+                                    } else {
+                                        sig.params.clone()
+                                    };
+                                    if args.len() != expected_params.len() {
+                                        self.error(
+                                            format!(
+                                                "method `{method}` expects {} arguments, found {}",
+                                                expected_params.len(),
+                                                args.len()
+                                            ),
+                                            *span,
+                                        );
+                                    } else {
+                                        for (arg, (_, param_ty)) in
+                                            args.iter().zip(expected_params.iter())
+                                        {
+                                            let arg_ty = self.infer_expr(arg);
+                                            if let Err(diag) =
+                                                self.engine.unify(param_ty, &arg_ty, arg.span())
+                                            {
+                                                self.diagnostics.push(diag);
+                                            }
+                                        }
+                                    }
+                                    return sig.ret.clone();
+                                }
+                            }
+                        }
+                    }
+                }
 
                 // Handle method calls on dyn Trait objects via trait definition lookup.
                 if let Type::DynTrait { ref trait_name } = obj_ty {
