@@ -4,6 +4,40 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.5.1] - 2026-05-17 — "Generics: correct return-type substitution"
+
+A correctness fix in monomorphization. No new language surface, no
+breaking changes. Smoke tests still 15/15, router 21/21, config 12/12,
+all 7 prior real-program examples still build.
+
+### Fixed
+
+- **Generic functions returning `T` extracted from a generic-typed
+  parameter crashed on return.** When a generic function declared
+  `fn first<T>(items: [T]) -> T` was called with a concrete array, the
+  call-site return-type inference and the monomorphization step both
+  only recognised `T` when it appeared as a bare `Simple` type at the
+  parameter level. They missed `T` nested inside `[T]`, `(A, B)`,
+  `fn(T) -> U`, `&T`, `Ptr<T>`, and `Shared<T>`. The fallback path
+  resolved the un-substituted `T` to `MirType::Struct("T")`, which
+  caused the caller to treat plain `i64` results as heap pointers and
+  call `free()` on them at function-exit drop, segfaulting.
+  Replaced the two ad-hoc match-only-`Simple` substitution sites in
+  `compiler/crates/kryos-mir/src/lower.rs` with recursive helpers
+  `extract_type_bindings` and `substitute_type_expr_to_mir` that walk
+  compound type shapes.
+  Affected programs: any use of `fn f<T>(xs: [T]) -> T`,
+  `fn pair<A, B>(...) -> A`, etc. Minimal reproducer:
+  `fn first<T>(items: [T]) -> T { return items[0] } fn main() { println(to_string(first([10, 20, 30]))) }`
+  printed `10` and then `kryos panic: stack overflow`.
+
+### Added
+
+- **`KRYOS_DUMP_IR=1` environment variable** dumps Cranelift IR for
+  every AOT-compiled function to stderr. Companion to the existing
+  `KRYOS_JIT_DUMP_IR=1` for the JIT path. Useful for debugging
+  codegen-level issues like the one fixed above.
+
 ## [2.5.0] - 2026-05-17 — "Test runner, importable libraries, JIT correctness"
 
 This release closes the gap between AOT and JIT compilation paths, makes

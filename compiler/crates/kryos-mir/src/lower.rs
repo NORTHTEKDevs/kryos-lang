@@ -3620,24 +3620,23 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                     let generic_params = template.generic_params.clone();
                     let template_params = template.params.clone();
                     let template_ret_ty = template.ret_ty.clone();
-                    // Infer type map from arguments.
+                    // Build type map by recursively matching each parameter's
+                    // declared TypeExpr against the inferred concrete argument
+                    // type. Handles `[T]`, `(A, B)`, `fn(T) -> U`, `&T`, etc.
                     let mut type_map: HashMap<String, MirType> = HashMap::new();
                     for (i, param) in template_params.iter().enumerate() {
-                        if let Some(ast::TypeExpr::Simple { name: tn, .. }) = &param.ty {
-                            if generic_params.contains(tn) {
-                                if let Some(arg) = args.get(i) {
-                                    type_map.insert(tn.clone(), infer_expr_type(ctx, arg));
-                                }
-                            }
+                        if let (Some(param_ty), Some(arg)) = (&param.ty, args.get(i)) {
+                            let arg_ty = infer_expr_type(ctx, arg);
+                            extract_type_bindings(
+                                param_ty,
+                                &arg_ty,
+                                &generic_params,
+                                &mut type_map,
+                            );
                         }
                     }
                     if let Some(ret_ty) = &template_ret_ty {
-                        if let ast::TypeExpr::Simple { name: rn, .. } = ret_ty {
-                            if let Some(concrete) = type_map.get(rn) {
-                                return concrete.clone();
-                            }
-                        }
-                        return ctx.resolve_type(ret_ty);
+                        return substitute_type_expr_to_mir(ctx, ret_ty, &type_map);
                     }
                     return MirType::Void;
                 }
@@ -5646,6 +5645,107 @@ fn find_free_variables_block(ctx: &LoweringContext, stmts: &[ast::Stmt]) -> Vec<
 // Monomorphization
 // ---------------------------------------------------------------------------
 
+/// Walk a parameter's TypeExpr against a concrete MirType, binding any
+/// generic type-param names encountered (those listed in `generic_params`)
+/// to the matching position in the concrete type. Recurses into Array,
+/// Tuple, Function, and Reference shapes so `[T]`, `(A, B)`, `fn(T) -> U`,
+/// and `&T` all contribute bindings.
+fn extract_type_bindings(
+    param_ty: &ast::TypeExpr,
+    concrete: &MirType,
+    generic_params: &[String],
+    out: &mut HashMap<String, MirType>,
+) {
+    match (param_ty, concrete) {
+        (ast::TypeExpr::Simple { name, .. }, c) => {
+            if generic_params.iter().any(|gp| gp == name) {
+                out.entry(name.clone()).or_insert_with(|| c.clone());
+            }
+        }
+        (ast::TypeExpr::Array { element, .. }, MirType::Array(elem_ty, _)) => {
+            extract_type_bindings(element, elem_ty, generic_params, out);
+        }
+        (ast::TypeExpr::Tuple { elements, .. }, MirType::Tuple(c_elems)) => {
+            for (pe, ce) in elements.iter().zip(c_elems.iter()) {
+                extract_type_bindings(pe, ce, generic_params, out);
+            }
+        }
+        (
+            ast::TypeExpr::Function { params, ret, .. },
+            MirType::Function {
+                params: c_params,
+                ret: c_ret,
+            },
+        ) => {
+            for (pe, ce) in params.iter().zip(c_params.iter()) {
+                extract_type_bindings(pe, ce, generic_params, out);
+            }
+            extract_type_bindings(ret, c_ret, generic_params, out);
+        }
+        (ast::TypeExpr::Reference { inner, .. }, MirType::Ref { inner: c_inner, .. }) => {
+            extract_type_bindings(inner, c_inner, generic_params, out);
+        }
+        (ast::TypeExpr::Pointer { inner, .. }, MirType::Ptr(c_inner)) => {
+            extract_type_bindings(inner, c_inner, generic_params, out);
+        }
+        (ast::TypeExpr::Shared { inner, .. }, MirType::Shared(c_inner)) => {
+            extract_type_bindings(inner, c_inner, generic_params, out);
+        }
+        // Optional<T> lowers to Struct("Option") -- we can't recover T from it,
+        // so just skip. Generic structs / enums likewise can't be recovered
+        // from a bare MirType::Struct(name) without auxiliary tracking.
+        _ => {}
+    }
+}
+
+/// Apply a generic-parameter type map to a TypeExpr-shaped return type
+/// and produce a concrete MirType. Recurses through compound shapes so that
+/// `[T]`, `(A, B)`, `fn(T) -> U`, and `&T` are all substituted, not just
+/// bare `Simple T`. Anything that cannot be bound falls back to
+/// `resolve_type`.
+fn substitute_type_expr_to_mir(
+    ctx: &mut LoweringContext,
+    ty: &ast::TypeExpr,
+    type_map: &HashMap<String, MirType>,
+) -> MirType {
+    match ty {
+        ast::TypeExpr::Simple { name, .. } => {
+            if let Some(concrete) = type_map.get(name) {
+                return concrete.clone();
+            }
+            ctx.resolve_type(ty)
+        }
+        ast::TypeExpr::Array { element, size, .. } => MirType::Array(
+            Box::new(substitute_type_expr_to_mir(ctx, element, type_map)),
+            *size,
+        ),
+        ast::TypeExpr::Tuple { elements, .. } => MirType::Tuple(
+            elements
+                .iter()
+                .map(|e| substitute_type_expr_to_mir(ctx, e, type_map))
+                .collect(),
+        ),
+        ast::TypeExpr::Function { params, ret, .. } => MirType::Function {
+            params: params
+                .iter()
+                .map(|p| substitute_type_expr_to_mir(ctx, p, type_map))
+                .collect(),
+            ret: Box::new(substitute_type_expr_to_mir(ctx, ret, type_map)),
+        },
+        ast::TypeExpr::Reference { inner, mutable, .. } => MirType::Ref {
+            inner: Box::new(substitute_type_expr_to_mir(ctx, inner, type_map)),
+            mutable: *mutable,
+        },
+        ast::TypeExpr::Pointer { inner, .. } => {
+            MirType::Ptr(Box::new(substitute_type_expr_to_mir(ctx, inner, type_map)))
+        }
+        ast::TypeExpr::Shared { inner, .. } => MirType::Shared(Box::new(
+            substitute_type_expr_to_mir(ctx, inner, type_map),
+        )),
+        _ => ctx.resolve_type(ty),
+    }
+}
+
 /// Produce a mangled name for a monomorphized specialization.
 /// e.g., `id` with `[I64]` → `id___i64`.
 fn mono_mangled_name(base: &str, concrete_types: &[MirType]) -> String {
@@ -5842,12 +5942,8 @@ fn monomorphize(ctx: &mut LoweringContext, func_name: &str, arg_types: &[MirType
 
     let mut type_map: HashMap<String, MirType> = HashMap::new();
     for (i, param) in template_params.iter().enumerate() {
-        if let Some(ast::TypeExpr::Simple { name, .. }) = &param.ty {
-            if generic_params.contains(name) {
-                if let Some(concrete) = arg_types.get(i) {
-                    type_map.insert(name.clone(), concrete.clone());
-                }
-            }
+        if let (Some(param_ty), Some(concrete)) = (&param.ty, arg_types.get(i)) {
+            extract_type_bindings(param_ty, concrete, &generic_params, &mut type_map);
         }
     }
 
@@ -5864,17 +5960,10 @@ fn monomorphize(ctx: &mut LoweringContext, func_name: &str, arg_types: &[MirType
     }
     ctx.monomorphized.insert(mangled.clone(), true);
 
-    // Register the return type for the specialized function.
+    // Register the return type for the specialized function. Substitute
+    // generic params recursively (handles `-> T`, `-> [T]`, `-> (A, B)`).
     let specialized_ret = if let Some(ret_ty) = &template_ret_ty {
-        if let ast::TypeExpr::Simple { name, .. } = ret_ty {
-            if let Some(concrete) = type_map.get(name) {
-                concrete.clone()
-            } else {
-                ctx.resolve_type(ret_ty)
-            }
-        } else {
-            ctx.resolve_type(ret_ty)
-        }
+        substitute_type_expr_to_mir(ctx, ret_ty, &type_map)
     } else {
         MirType::Void
     };

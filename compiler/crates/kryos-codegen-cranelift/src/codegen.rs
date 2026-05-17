@@ -1140,6 +1140,9 @@ pub fn compile_module_with_options(
         }
 
         let mut ctx = Context::for_function(cl_func);
+        if std::env::var("KRYOS_DUMP_IR").is_ok() {
+            eprintln!("[kryos-aot] IR for '{}':\n{}", mir_func.name, ctx.func.display());
+        }
         object_module
             .define_function(func_id, &mut ctx)
             .map_err(|e| {

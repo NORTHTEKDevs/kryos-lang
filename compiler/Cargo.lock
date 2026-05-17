@@ -1215,7 +1215,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-ast"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "kryos-errors",
  "serde",
@@ -1223,7 +1223,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-bindgen"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "kryos-ast",
  "kryos-errors",
@@ -1231,7 +1231,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-capabilities"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "kryos-ast",
  "kryos-errors",
@@ -1239,7 +1239,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-cli"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "clap",
  "kryos-bindgen",
@@ -1257,7 +1257,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-codegen-cranelift"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -1274,7 +1274,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-codegen-llvm"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "kryos-driver",
  "kryos-errors",
@@ -1283,7 +1283,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-codegen-wasm"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "kryos-driver",
  "kryos-mir",
@@ -1292,7 +1292,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-doc"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "kryos-ast",
  "kryos-errors",
@@ -1302,7 +1302,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-driver"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "criterion",
  "kryos-ast",
@@ -1323,11 +1323,11 @@ dependencies = [
 
 [[package]]
 name = "kryos-errors"
-version = "2.5.0"
+version = "2.5.1"
 
 [[package]]
 name = "kryos-fmt"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "kryos-ast",
  "kryos-errors",
@@ -1337,21 +1337,21 @@ dependencies = [
 
 [[package]]
 name = "kryos-lexer"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "kryos-errors",
 ]
 
 [[package]]
 name = "kryos-linker"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "kryos-errors",
 ]
 
 [[package]]
 name = "kryos-lsp"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "kryos-ast",
  "kryos-errors",
@@ -1363,7 +1363,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-mir"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "kryos-ast",
  "kryos-errors",
@@ -1372,7 +1372,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-ownership"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "kryos-ast",
  "kryos-errors",
@@ -1381,7 +1381,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-package"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "kryos-errors",
  "serde",
@@ -1391,7 +1391,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-parser"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "kryos-ast",
  "kryos-errors",
@@ -1400,11 +1400,11 @@ dependencies = [
 
 [[package]]
 name = "kryos-rt"
-version = "2.5.0"
+version = "2.5.1"
 
 [[package]]
 name = "kryos-stdlib-native"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "base64",
  "crossterm",
@@ -1424,7 +1424,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-test-runner"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "kryos-codegen-cranelift",
  "kryos-driver",
@@ -1435,7 +1435,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-types"
-version = "2.5.0"
+version = "2.5.1"
 dependencies = [
  "kryos-ast",
  "kryos-errors",

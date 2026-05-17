@@ -1,0 +1,75 @@
+// Smoke test: generic functions with type params used inside compound
+// parameter shapes ([T], (A, B), fn(T) -> U).
+//
+// Regression for v2.5.1: returning T extracted from a [T] parameter
+// previously segfaulted because the return-type substitution only
+// looked at bare `Simple T` parameters.
+
+fn first<T>(items: [T]) -> T {
+    return items[0]
+}
+
+fn last<T>(items: [T]) -> T {
+    return items[len(items) - 1]
+}
+
+fn map_arr<T, U>(items: [T], f: fn(T) -> U) -> [U] {
+    let n = len(items)
+    let result: [U] = []
+    for i in 0..n {
+        push(result, f(items[i]))
+    }
+    return result
+}
+
+fn double(x: i64) -> i64 {
+    return x * 2
+}
+
+fn pair<A, B>(a: A, b: B) -> [str] {
+    return [to_string(a), to_string(b)]
+}
+
+fn main() {
+    let xs = [10, 20, 30]
+    let ss = ["alpha", "beta", "gamma"]
+
+    if first(xs) != 10 {
+        println("FAIL first int")
+        exit(1)
+    }
+    if last(xs) != 30 {
+        println("FAIL last int")
+        exit(1)
+    }
+    if first(ss) != "alpha" {
+        println("FAIL first str")
+        exit(1)
+    }
+    if last(ss) != "gamma" {
+        println("FAIL last str")
+        exit(1)
+    }
+
+    let doubled = map_arr(xs, double)
+    if doubled[0] != 20 {
+        println("FAIL map double[0]")
+        exit(1)
+    }
+    if doubled[2] != 60 {
+        println("FAIL map double[2]")
+        exit(1)
+    }
+
+    let p = pair(42, "hello")
+    if p[0] != "42" {
+        println("FAIL pair[0]")
+        exit(1)
+    }
+    if p[1] != "hello" {
+        println("FAIL pair[1]")
+        exit(1)
+    }
+
+    println("ok")
+}
