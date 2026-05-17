@@ -1,0 +1,89 @@
+// HTTP-style middleware chain.
+//
+// Each middleware takes a Request and a "next" function pointer, and
+// returns a Response. Demonstrates function-pointer composition,
+// recursion through fn parameters, and tracing across layers.
+
+struct Request {
+    method: str,
+    path: str,
+    auth_token: str,
+}
+
+struct Response {
+    status: i64,
+    body: str,
+}
+
+// The final handler signature.
+//   fn(Request) -> Response
+
+// Logger middleware: prints, then delegates to next.
+fn mw_log(req: Request, next: fn(Request) -> Response) -> Response {
+    println("[log] {req.method} {req.path}")
+    let resp = next(req)
+    println("[log] -> {resp.status}")
+    return resp
+}
+
+// Auth middleware: checks header, short-circuits if missing.
+fn mw_auth(req: Request, next: fn(Request) -> Response) -> Response {
+    if req.auth_token == "" {
+        return Response { status: 401, body: "unauthorized" }
+    }
+    return next(req)
+}
+
+// Rate-limit middleware: trivial demo, always allows.
+fn mw_rate_limit(req: Request, next: fn(Request) -> Response) -> Response {
+    println("[rate-limit] ok")
+    return next(req)
+}
+
+// Terminal handlers.
+fn handler_ping(req: Request) -> Response {
+    let _ = req
+    return Response { status: 200, body: "pong" }
+}
+
+fn handler_echo(req: Request) -> Response {
+    return Response { status: 200, body: req.path }
+}
+
+// Compose: build a closure that chains middlewares around a handler.
+// Because Kryos doesn't have automatic closure binding for these
+// signatures yet, we build chain manually.
+
+fn chain_ping(req: Request) -> Response {
+    return mw_log(req, |r: Request| -> Response {
+        mw_auth(r, |r2: Request| -> Response {
+            mw_rate_limit(r2, |r3: Request| -> Response {
+                handler_ping(r3)
+            })
+        })
+    })
+}
+
+fn chain_echo(req: Request) -> Response {
+    return mw_log(req, |r: Request| -> Response {
+        mw_auth(r, |r2: Request| -> Response {
+            mw_rate_limit(r2, |r3: Request| -> Response {
+                handler_echo(r3)
+            })
+        })
+    })
+}
+
+fn main() {
+    let r1 = Request { method: "GET", path: "/ping", auth_token: "abc" }
+    let resp1 = chain_ping(r1)
+    println("status={resp1.status} body={resp1.body}")
+
+    let r2 = Request { method: "GET", path: "/echo/hello", auth_token: "abc" }
+    let resp2 = chain_echo(r2)
+    println("status={resp2.status} body={resp2.body}")
+
+    let r3 = Request { method: "GET", path: "/ping", auth_token: "" }
+    let resp3 = chain_ping(r3)
+    println("status={resp3.status} body={resp3.body}")
+}
