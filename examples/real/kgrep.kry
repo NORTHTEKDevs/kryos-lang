@@ -1,0 +1,61 @@
+// kgrep -- a tiny grep clone.
+//
+// Usage:  kgrep PATTERN FILE [FILE ...]
+//
+// Prints lines from each FILE that match the PCRE-style PATTERN.
+// Exit codes:
+//   0  -- at least one line matched
+//   1  -- no matches
+//   2  -- usage error or unreadable file
+
+use std::os::{args, exit}
+use std::io::{println, eprintln}
+use std::fs::{read_file, exists}
+use std::re::{is_match}
+
+@capabilities(env, io, compute, process)
+fn main() {
+    let argv = args()
+    let argc = len(argv)
+    if argc < 3 {
+        eprintln("usage: kgrep PATTERN FILE [FILE ...]")
+        exit(2)
+    }
+
+    let pattern = argv[1]
+    let mut any_match = false
+    let mut i = 2
+    while i < argc {
+        let path = argv[i]
+        if not exists(path) {
+            eprintln("kgrep: " + path + ": no such file")
+            i = i + 1
+            continue
+        }
+        let body = read_file(path)
+        let lines = split(body, "\n")
+        let mut lineno = 1
+        let mut j = 0
+        while j < len(lines) {
+            let line = lines[j]
+            if is_match(pattern, line) {
+                if argc > 3 {
+                    // multiple files: prefix with filename
+                    println(path + ":" + to_string(lineno) + ":" + line)
+                } else {
+                    println(to_string(lineno) + ":" + line)
+                }
+                any_match = true
+            }
+            lineno = lineno + 1
+            j = j + 1
+        }
+        i = i + 1
+    }
+
+    if any_match {
+        exit(0)
+    } else {
+        exit(1)
+    }
+}

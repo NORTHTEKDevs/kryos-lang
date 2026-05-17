@@ -494,7 +494,7 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("buf_write_to_file", MirType::I64),
         ("buf_free", MirType::Void),
         ("exit", MirType::Void),
-        ("args", MirType::I64),
+        ("args", MirType::Array(Box::new(MirType::Str), None)),
         ("trim_start", MirType::Str),
         ("trim_end", MirType::Str),
         ("index_of", MirType::I64),
