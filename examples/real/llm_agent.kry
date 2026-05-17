@@ -1,0 +1,198 @@
+// llm_agent -- a tiny single-turn chat agent against an OpenAI-compatible API.
+//
+// Usage:
+//   OPENAI_API_KEY=sk-...   (required)
+//   OPENAI_BASE_URL=...     (optional, defaults to https://api.openai.com)
+//   OPENAI_MODEL=...        (optional, defaults to gpt-4o-mini)
+//
+//   llm_agent "your prompt here"
+//
+// Sends a POST to {BASE}/v1/chat/completions, prints the assistant
+// text reply to stdout.  No streaming, no tools -- just one round.
+//
+// Works against any OpenAI-compatible endpoint: real OpenAI, Azure,
+// Together, Groq, an Ollama instance with /v1 enabled, or a local
+// mock.  We construct the JSON by hand to avoid a full json stdlib.
+//
+// Exit codes:
+//   0 -- success
+//   2 -- missing API key or usage error
+//   3 -- HTTP non-2xx response or parse failure
+
+use std::os::{args, exit}
+
+// Find a substring starting at `from`.
+fn find_in(s: str, needle: str, from: i64) -> i64 {
+    let slen = len(s)
+    let nlen = len(needle)
+    if nlen == 0 { return from }
+    if from < 0 { return -1 }
+    let mut i = from
+    let limit = slen - nlen
+    while i <= limit {
+        let mut j = 0
+        let mut matched = true
+        while j < nlen {
+            if s[i + j] != needle[j] {
+                matched = false
+                j = nlen
+            } else {
+                j = j + 1
+            }
+        }
+        if matched { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+// Escape a string for use inside a JSON string literal.
+// Handles \, ", \n, \r, \t.  Other control chars become \uXXXX form.
+fn json_escape(s: str) -> str {
+    let mut out = ""
+    let slen = len(s)
+    let mut i = 0
+    while i < slen {
+        let c = s[i]
+        let code = char_code(c)
+        if c == "\\" {
+            out = out + "\\\\"
+        } else if c == "\"" {
+            out = out + "\\\""
+        } else if code == 10 {
+            out = out + "\\n"
+        } else if code == 13 {
+            out = out + "\\r"
+        } else if code == 9 {
+            out = out + "\\t"
+        } else if code < 32 {
+            // generic control char -- skip rather than emit; cheap and safe.
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// http2_request returns:  "{status}\n{headers}\n\n{body}"
+fn http_body(raw: str) -> str {
+    let sep = find_in(raw, "\n\n", 0)
+    if sep < 0 { return raw }
+    return substr(raw, sep + 2, len(raw))
+}
+
+fn http_status(raw: str) -> i64 {
+    let eol = find_in(raw, "\n", 0)
+    if eol < 0 { return 0 }
+    return parse_int(substr(raw, 0, eol))
+}
+
+// Pull out the first "content":"..." value from a chat completions JSON.
+// Returns "" if not found.  Robust to nested objects but assumes the
+// content string contains no unescaped quotes (which OpenAI guarantees).
+fn extract_content(json: str) -> str {
+    let needle = "\"content\":"
+    let p = find_in(json, needle, 0)
+    if p < 0 { return "" }
+    // Skip whitespace until opening quote.
+    let mut i = p + len(needle)
+    let jl = len(json)
+    while i < jl and json[i] != "\"" { i = i + 1 }
+    if i >= jl { return "" }
+    i = i + 1
+    let start = i
+    // Walk forward to the closing unescaped quote.
+    while i < jl {
+        let c = json[i]
+        if c == "\\" {
+            // Skip the next char unconditionally.
+            i = i + 2
+        } else if c == "\"" {
+            return unescape_json(substr(json, start, i))
+        } else {
+            i = i + 1
+        }
+    }
+    return ""
+}
+
+// Undo JSON string escapes that we are likely to see in chat replies.
+fn unescape_json(s: str) -> str {
+    let mut out = ""
+    let slen = len(s)
+    let mut i = 0
+    while i < slen {
+        let c = s[i]
+        if c == "\\" and i + 1 < slen {
+            let next = s[i + 1]
+            if next == "n" {
+                out = out + char_from(10)
+            } else if next == "t" {
+                out = out + char_from(9)
+            } else if next == "r" {
+                out = out + char_from(13)
+            } else if next == "\"" {
+                out = out + "\""
+            } else if next == "\\" {
+                out = out + "\\"
+            } else if next == "/" {
+                out = out + "/"
+            } else {
+                // Unknown escape: keep literal.
+                out = out + next
+            }
+            i = i + 2
+        } else {
+            out = out + c
+            i = i + 1
+        }
+    }
+    return out
+}
+
+@capabilities(net, io, process)
+fn main() {
+    let argv = args()
+    if len(argv) < 2 {
+        eprintln("usage: llm_agent PROMPT")
+        exit(2)
+    }
+    let prompt = argv[1]
+
+    let api_key = env_get("OPENAI_API_KEY")
+    if len(api_key) == 0 {
+        eprintln("llm_agent: OPENAI_API_KEY not set")
+        exit(2)
+    }
+    let mut base = env_get("OPENAI_BASE_URL")
+    if len(base) == 0 {
+        base = "https://api.openai.com"
+    }
+    let mut model = env_get("OPENAI_MODEL")
+    if len(model) == 0 {
+        model = "gpt-4o-mini"
+    }
+
+    let url = base + "/v1/chat/completions"
+    let body = "\{\"model\":\"" + json_escape(model) + "\",\"messages\":[\{\"role\":\"user\",\"content\":\"" + json_escape(prompt) + "\"\}]\}"
+    let headers = "Authorization: Bearer " + api_key + "\nContent-Type: application/json\n"
+
+    let raw = http2_request("POST", url, headers, body)
+    let status = http_status(raw)
+    let response_body = http_body(raw)
+
+    if status < 200 or status >= 300 {
+        eprintln("llm_agent: HTTP " + to_string(status))
+        eprintln(response_body)
+        exit(3)
+    }
+
+    let content = extract_content(response_body)
+    if len(content) == 0 {
+        eprintln("llm_agent: could not parse content from response")
+        eprintln(response_body)
+        exit(3)
+    }
+    println(content)
+}
