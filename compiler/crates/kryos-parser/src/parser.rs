@@ -712,8 +712,15 @@ impl Parser {
         let mut methods = Vec::new();
         while !self.check(TokenKind::RBrace) && !self.at_end() {
             let method_docs = self.collect_doc_comments();
+            // Accept (and currently ignore) attribute annotations on methods,
+            // e.g. `@capabilities(net)`. They are parsed for forward
+            // compatibility but do not influence type checking yet.
+            let mut method_annotations = Vec::new();
+            while self.check(TokenKind::At) {
+                method_annotations.push(self.parse_annotation());
+            }
             let pub_method = self.eat(TokenKind::Pub);
-            methods.push(self.parse_fn_decl(pub_method, false, Vec::new(), method_docs));
+            methods.push(self.parse_fn_decl(pub_method, false, method_annotations, method_docs));
         }
         let rbrace = self.expect(TokenKind::RBrace);
         Decl::Impl {
@@ -2495,6 +2502,14 @@ impl Parser {
     pub fn parse_type(&mut self) -> TypeExpr {
         let tok = self.peek().clone();
         match tok.kind {
+            // Never type: `!` (diverging functions, e.g. `fn exit_error(...) -> !`).
+            TokenKind::Bang => {
+                self.advance();
+                TypeExpr::Simple {
+                    name: "never".to_string(),
+                    span: tok.span,
+                }
+            }
             // Optional: `?T`
             TokenKind::Question => {
                 self.advance();

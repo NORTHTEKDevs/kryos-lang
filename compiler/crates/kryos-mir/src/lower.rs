@@ -602,6 +602,16 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("ws_encode_pong", MirType::Str),
         ("ws_unmask", MirType::Str),
         ("ws_read_frame", MirType::Str),
+        // Low-level FFI helpers (v2.3.4)
+        ("str_to_ptr", MirType::I64),
+        ("buf_to_str", MirType::Str),
+        ("alloc", MirType::I64),
+        ("free_bytes", MirType::Void),
+        ("ptr_byte_at", MirType::I64),
+        ("ptr_set_byte", MirType::Void),
+        ("ptr_read_i64", MirType::I64),
+        ("ptr_write_i64", MirType::Void),
+        ("handle_to_str", MirType::Str),
     ] {
         ctx.func_ret_types.insert(name.to_string(), ret_ty);
     }
@@ -3838,6 +3848,10 @@ fn lower_expr_to_operand(ctx: &mut LoweringContext, expr: &ast::Expr) -> Operand
         ast::Expr::StringLiteral { value, .. } => Operand::Constant(Constant::Str(value.clone())),
         ast::Expr::NoneLiteral { .. } => Operand::Constant(Constant::None),
         ast::Expr::Identifier { name, .. } => {
+            // Built-in `null` constant — lowers to integer 0 (raw pointer/handle sentinel).
+            if name == "null" {
+                return Operand::Constant(Constant::Int(0));
+            }
             let is_local = ctx
                 .locals
                 .iter()
@@ -3896,6 +3910,10 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
         ast::Expr::NoneLiteral { .. } => RValue::ConstNone,
 
         ast::Expr::Identifier { name, .. } => {
+            // Built-in `null` constant — lowers to integer 0 (raw pointer/handle sentinel).
+            if name == "null" {
+                return RValue::ConstInt(0);
+            }
             // Check if this is a unit enum variant (e.g., `None`, `Red`).
             if let Some((enum_name, variant_idx)) = find_enum_variant(ctx, name) {
                 return RValue::EnumVariant {

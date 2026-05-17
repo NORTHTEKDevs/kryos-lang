@@ -108,7 +108,7 @@ impl Tracked {
 
     // Export lineage as a JSON-like string for compliance.
     fn to_json(self: Tracked) -> str {
-        let mut result = "{\"value\":" + "\"" + self.value + "\","
+        let mut result = "\{\"value\":" + "\"" + self.value + "\","
         result = result + "\"source\":\"" + self.source + "\","
         result = result + "\"lineage\":["
         let mut i = 0
@@ -117,12 +117,12 @@ impl Tracked {
                 result = result + ","
             }
             let entry = self.lineage[i]
-            result = result + "{\"op\":\"" + entry.operation + "\","
+            result = result + "\{\"op\":\"" + entry.operation + "\","
             result = result + "\"desc\":\"" + entry.description + "\","
-            result = result + "\"ts\":" + to_string(entry.timestamp) + "}"
+            result = result + "\"ts\":" + to_string(entry.timestamp) + "\}"
             i = i + 1
         }
-        result = result + "]}"
+        result = result + "]\}"
         return result
     }
 }

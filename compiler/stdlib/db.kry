@@ -8,8 +8,8 @@
 //   use std::db
 //
 //   let conn = db::open("myapp.db")
-//   db::exec(conn, "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT)")
-//   db::exec(conn, "INSERT INTO users (name) VALUES ('Alice')")
+//   db::execute(conn, "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT)")
+//   db::execute(conn, "INSERT INTO users (name) VALUES ('Alice')")
 //
 //   let cursor = db::query(conn, "SELECT id, name FROM users")
 //   while db::step(cursor) {
@@ -23,17 +23,18 @@
 
 // --- Native FFI declarations ------------------------------------------------
 
+// All raw pointers are passed as i64 (handles/addresses) across the FFI.
 extern {
-    fn kryos_db_open(path_ptr: ptr, path_len: i64) -> i64
+    fn kryos_db_open(path_ptr: i64, path_len: i64) -> i64
     fn kryos_db_open_memory() -> i64
     fn kryos_db_close(conn: i64) -> i32
-    fn kryos_db_exec(conn: i64, sql_ptr: ptr, sql_len: i64) -> i64
-    fn kryos_db_prepare(conn: i64, sql_ptr: ptr, sql_len: i64) -> i64
+    fn kryos_db_exec(conn: i64, sql_ptr: i64, sql_len: i64) -> i64
+    fn kryos_db_prepare(conn: i64, sql_ptr: i64, sql_len: i64) -> i64
     fn kryos_db_step(cursor: i64) -> i32
     fn kryos_db_col_count(cursor: i64) -> i32
     fn kryos_db_col_int(cursor: i64, col: i32) -> i64
     fn kryos_db_col_text_len(cursor: i64, col: i32) -> i64
-    fn kryos_db_col_text_copy(cursor: i64, col: i32, buf: ptr, buf_len: i64) -> i64
+    fn kryos_db_col_text_copy(cursor: i64, col: i32, buf: i64, buf_len: i64) -> i64
     fn kryos_db_finalize(cursor: i64) -> i32
 }
 
@@ -54,7 +55,7 @@ struct Cursor {
 
 // Open a SQLite database file at `path`.  The file is created if it does not exist.
 // Throws on failure.
-@capabilities(fs, db)
+@capabilities(db)
 fn open(path: str) -> Connection {
     let h = kryos_db_open(str_to_ptr(path), len(path))
     if h < 0 {
@@ -84,10 +85,10 @@ fn close(conn: Connection) {
 // Execute a DDL or DML statement (CREATE, INSERT, UPDATE, DELETE, etc.).
 // Returns the number of rows changed.  Throws on SQL error.
 @capabilities(db)
-fn exec(conn: Connection, sql: str) -> i64 {
+fn execute(conn: Connection, sql: str) -> i64 {
     let n = kryos_db_exec(conn.handle, str_to_ptr(sql), len(sql))
     if n < 0 {
-        throw "db error: exec failed: " + sql
+        throw "db error: execute failed: " + sql
     }
     return n
 }
@@ -149,7 +150,7 @@ fn finalize(cursor: Cursor) {
 // --- Convenience helpers ----------------------------------------------------
 
 // Execute multiple semicolon-separated statements (e.g. a migration script).
-// Uses exec() for each statement.  Returns total rows affected.
+// Uses execute() for each statement.  Returns total rows affected.
 @capabilities(db)
 fn exec_multi(conn: Connection, sql: str) -> i64 {
     let mut total = 0
@@ -160,7 +161,7 @@ fn exec_multi(conn: Connection, sql: str) -> i64 {
         if sql[i] == ";" {
             let stmt = trim(substr(sql, start, i))
             if len(stmt) > 0 {
-                total = total + exec(conn, stmt)
+                total = total + execute(conn, stmt)
             }
             start = i + 1
         }
@@ -169,7 +170,7 @@ fn exec_multi(conn: Connection, sql: str) -> i64 {
     // Trailing statement without semicolon.
     let last = trim(substr(sql, start, sql_len))
     if len(last) > 0 {
-        total = total + exec(conn, last)
+        total = total + execute(conn, last)
     }
     return total
 }

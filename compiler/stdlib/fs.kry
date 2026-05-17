@@ -8,16 +8,17 @@
 
 // --- Native FFI declarations ------------------------------------------------
 
+// All raw pointers are passed as i64 (handles/addresses) across the FFI.
 extern {
-    fn kryos_path_exists(path_ptr: ptr, path_len: i64) -> i32
-    fn kryos_dir_create(path_ptr: ptr, path_len: i64) -> i32
-    fn kryos_file_remove(path_ptr: ptr, path_len: i64) -> i32
-    fn kryos_file_open(path_ptr: ptr, path_len: i64, mode: i32) -> i64
-    fn kryos_file_read(fd: i64, buf: ptr, buf_len: i64) -> i64
-    fn kryos_file_write(fd: i64, data: ptr, data_len: i64) -> i64
+    fn kryos_path_exists(path_ptr: i64, path_len: i64) -> i32
+    fn kryos_dir_create(path_ptr: i64, path_len: i64) -> i32
+    fn kryos_file_remove(path_ptr: i64, path_len: i64) -> i32
+    fn kryos_file_open(path_ptr: i64, path_len: i64, mode: i32) -> i64
+    fn kryos_file_read(fd: i64, buf: i64, buf_len: i64) -> i64
+    fn kryos_file_write(fd: i64, data: i64, data_len: i64) -> i64
     fn kryos_file_close(fd: i64) -> i32
-    fn kryos_dir_list(path_ptr: ptr, path_len: i64, out_array: ptr, max_entries: i64) -> i64
-    fn kryos_dir_walk(path_ptr: ptr, path_len: i64, out_array: ptr, max_entries: i64) -> i64
+    fn kryos_dir_list(path_ptr: i64, path_len: i64, out_array: i64, max_entries: i64) -> i64
+    fn kryos_dir_walk(path_ptr: i64, path_len: i64, out_array: i64, max_entries: i64) -> i64
 }
 
 // --- Path existence and type ------------------------------------------------

@@ -15,8 +15,8 @@ extern {
     fn kryos_term_height() -> i32
     fn kryos_term_cursor_move(col: i32, row: i32) -> i32
     fn kryos_term_clear(mode: i32) -> i32
-    fn kryos_stdout_write(data: ptr, len: i64) -> i64
-    fn kryos_stdin_read(buf: ptr, buf_len: i64) -> i64
+    fn kryos_stdout_write(data: i64, len: i64) -> i64
+    fn kryos_stdin_read(buf: i64, buf_len: i64) -> i64
 }
 
 // --- Terminal size ----------------------------------------------------------

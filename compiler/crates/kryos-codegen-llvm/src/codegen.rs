@@ -867,6 +867,16 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_mutex_lock(i64)");
         self.emit_line("declare void @kryos_mutex_unlock(i64)");
         self.emit_line("declare void @kryos_mutex_drop(i64)");
+        self.emit_line("; Low-level FFI helpers (v2.3.4) — pointers carried as i64 in IR.");
+        self.emit_line("declare i64 @kryos_str_to_ptr(i64)");
+        self.emit_line("declare i64 @kryos_buf_to_str(i64, i64)");
+        self.emit_line("declare i64 @kryos_alloc_bytes(i64)");
+        self.emit_line("declare void @kryos_free_bytes(i64, i64)");
+        self.emit_line("declare i64 @kryos_ptr_byte_at(i64, i64)");
+        self.emit_line("declare void @kryos_ptr_set_byte(i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_ptr_read_i64(i64, i64)");
+        self.emit_line("declare void @kryos_ptr_write_i64(i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_handle_to_str(i64)");
         self.emit_line("; Exception runtime (used by try/catch)");
         self.emit_line("declare void @kryos_exception_throw(i64)");
         self.emit_line("declare i64 @kryos_exception_check()");
@@ -3153,6 +3163,16 @@ impl LlvmCodegen {
                                 "mutex_lock" => "kryos_mutex_lock",
                                 "mutex_unlock" => "kryos_mutex_unlock",
                                 "mutex_drop" => "kryos_mutex_drop",
+                                // Low-level FFI helpers (v2.3.4)
+                                "str_to_ptr" => "kryos_str_to_ptr",
+                                "buf_to_str" => "kryos_buf_to_str",
+                                "alloc" => "kryos_alloc_bytes",
+                                "free_bytes" => "kryos_free_bytes",
+                                "ptr_byte_at" => "kryos_ptr_byte_at",
+                                "ptr_set_byte" => "kryos_ptr_set_byte",
+                                "ptr_read_i64" => "kryos_ptr_read_i64",
+                                "ptr_write_i64" => "kryos_ptr_write_i64",
+                                "handle_to_str" => "kryos_handle_to_str",
                                 other => other,
                             };
                             // Use callee's *actual* return type for the call instruction,

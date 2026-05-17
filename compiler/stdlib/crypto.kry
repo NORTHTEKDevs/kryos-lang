@@ -9,9 +9,9 @@
 // --- Native FFI declarations ------------------------------------------------
 
 extern {
-    fn kryos_sha256(data: ptr, len: i64, out: ptr) -> i32
-    fn kryos_sha512(data: ptr, len: i64, out: ptr) -> i32
-    fn kryos_random_bytes(buf: ptr, len: i64) -> i32
+    fn kryos_sha256(data: i64, len: i64, out: i64) -> i32
+    fn kryos_sha512(data: i64, len: i64, out: i64) -> i32
+    fn kryos_random_bytes(buf: i64, len: i64) -> i32
 }
 
 // --- Internal hex encoding --------------------------------------------------
@@ -23,7 +23,7 @@ fn _byte_to_hex(byte: i32) -> str {
     return hex_chars[high] + hex_chars[low]
 }
 
-fn _bytes_to_hex(data: ptr, length: i64) -> str {
+fn _bytes_to_hex(data: i64, length: i64) -> str {
     let mut result = ""
     let mut i = 0
     while i < length {
@@ -38,7 +38,7 @@ fn _bytes_to_hex(data: ptr, length: i64) -> str {
 
 // Compute the SHA-256 hash of a string, returning 32 raw bytes.
 @capabilities(crypto)
-fn sha256_raw(data: str) -> ptr {
+fn sha256_raw(data: str) -> i64 {
     let out = alloc(32)
     let result = kryos_sha256(str_to_ptr(data), len(data), out)
     if result < 0 {
@@ -62,7 +62,7 @@ fn sha256(data: str) -> str {
 
 // Compute the SHA-512 hash of a string, returning 64 raw bytes.
 @capabilities(crypto)
-fn sha512_raw(data: str) -> ptr {
+fn sha512_raw(data: str) -> i64 {
     let out = alloc(64)
     let result = kryos_sha512(str_to_ptr(data), len(data), out)
     if result < 0 {
@@ -86,7 +86,7 @@ fn sha512(data: str) -> str {
 
 // Generate `n` bytes of cryptographically secure random data.
 @capabilities(crypto)
-fn random_bytes(n: i64) -> ptr {
+fn random_bytes(n: i64) -> i64 {
     if n <= 0 {
         throw "crypto error: random_bytes requires n > 0"
     }

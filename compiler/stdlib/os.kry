@@ -8,9 +8,10 @@
 
 // --- Native FFI declarations ------------------------------------------------
 
+// All raw pointers are passed as i64 (handles/addresses) across the FFI.
 extern {
-    fn kryos_env_get(key_ptr: ptr, key_len: i64, val_buf: ptr, val_buf_len: i64) -> i64
-    fn kryos_path_exists(path_ptr: ptr, path_len: i64) -> i32
+    fn kryos_env_get(key_ptr: i64, key_len: i64, val_buf: i64, val_buf_len: i64) -> i64
+    fn kryos_path_exists(path_ptr: i64, path_len: i64) -> i32
 }
 
 // --- Internal helpers -------------------------------------------------------

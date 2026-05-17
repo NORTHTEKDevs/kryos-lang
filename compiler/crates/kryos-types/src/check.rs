@@ -2566,6 +2566,114 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         ret: Type::Void,
     });
 
+    // ---------------------------------------------------------------------
+    // Low-level FFI helpers — used by stdlib `extern { ... }` blocks that
+    // need raw byte access. All take/return i64 (handles or pointers cast
+    // to i64) to avoid distinguishing between `ptr` and `i64` in the user
+    // surface.
+    // ---------------------------------------------------------------------
+
+    // str_to_ptr(s: str) -> i64 — raw data pointer (as i64) of a string.
+    checker.env.define_function(FunctionSig {
+        name: "str_to_ptr".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("s".to_string(), Type::Str)],
+        ret: Type::I64,
+    });
+
+    // buf_to_str(ptr: i64, len: i64) -> str — copy `len` bytes at `ptr` to a new string.
+    checker.env.define_function(FunctionSig {
+        name: "buf_to_str".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("ptr".to_string(), Type::I64),
+            ("len".to_string(), Type::I64),
+        ],
+        ret: Type::Str,
+    });
+
+    // alloc(size: i64) -> i64 — allocate `size` zero-initialized bytes. Returns 0 on failure.
+    checker.env.define_function(FunctionSig {
+        name: "alloc".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("size".to_string(), Type::I64)],
+        ret: Type::I64,
+    });
+
+    // free_bytes(ptr: i64, size: i64) -> void — release memory from `alloc`.
+    checker.env.define_function(FunctionSig {
+        name: "free_bytes".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("ptr".to_string(), Type::I64),
+            ("size".to_string(), Type::I64),
+        ],
+        ret: Type::Void,
+    });
+
+    // ptr_byte_at(ptr: i64, i: i64) -> i64 — read byte at offset.
+    checker.env.define_function(FunctionSig {
+        name: "ptr_byte_at".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("ptr".to_string(), Type::I64),
+            ("i".to_string(), Type::I64),
+        ],
+        ret: Type::I64,
+    });
+
+    // ptr_set_byte(ptr: i64, i: i64, b: i64) -> void — write byte at offset.
+    checker.env.define_function(FunctionSig {
+        name: "ptr_set_byte".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("ptr".to_string(), Type::I64),
+            ("i".to_string(), Type::I64),
+            ("b".to_string(), Type::I64),
+        ],
+        ret: Type::Void,
+    });
+
+    // handle_to_str(handle: i64) -> str — reinterpret KryosString handle as typed str.
+    checker.env.define_function(FunctionSig {
+        name: "handle_to_str".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("handle".to_string(), Type::I64)],
+        ret: Type::Str,
+    });
+
+    // ptr_read_i64(ptr: i64, i: i64) -> i64 — read 8-byte slot at i*8.
+    checker.env.define_function(FunctionSig {
+        name: "ptr_read_i64".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("ptr".to_string(), Type::I64),
+            ("i".to_string(), Type::I64),
+        ],
+        ret: Type::I64,
+    });
+
+    // ptr_write_i64(ptr: i64, i: i64, v: i64) -> void.
+    checker.env.define_function(FunctionSig {
+        name: "ptr_write_i64".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("ptr".to_string(), Type::I64),
+            ("i".to_string(), Type::I64),
+            ("v".to_string(), Type::I64),
+        ],
+        ret: Type::Void,
+    });
+
     // assert(condition: bool, msg: str) -> void — abort if condition is false
     checker.env.define_function(FunctionSig {
         name: "assert".to_string(),
@@ -4028,6 +4136,10 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         params: vec![("m".to_string(), Type::I64)],
         ret: Type::Void,
     });
+
+    // `null` is a global constant of type i64 = 0. We treat raw pointers/handles
+    // as i64 throughout the stdlib FFI, so this is the canonical null sentinel.
+    checker.env.define_var("null".to_string(), Type::I64);
 
     checker.check_module(module);
     checker.diagnostics

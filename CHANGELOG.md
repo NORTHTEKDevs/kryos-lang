@@ -4,6 +4,132 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.4.0] - 2026-05-17 — "All 31 stdlib modules type-check"
+
+This release finishes unblocking the remaining 10 stdlib modules
+(`crypto`, `db`, `fs`, `io`, `net`, `os`, `process`, `re`, `term`,
+`tracked`). All 31 stdlib modules now pass `kryos check`.
+
+To get there, the language gained a low-level FFI surface (raw
+handles as `i64`, a `null` literal, the `!` never type, and nine
+new builtins for crossing the FFI boundary). The `@capabilities`
+annotation is now also accepted on impl-block methods.
+
+This release is **2.4.0 rather than 2.3.4** because two stdlib
+API surfaces had to be renamed to clear collisions with reserved
+keywords and builtin names. See **Breaking changes** below.
+
+### Breaking changes
+
+- **`std::net::TcpStream` / `std::net::TlsStream`**: methods
+  `send`, `send_all`, `recv`, `recv_all` were renamed to `write`,
+  `write_all`, `read`, `read_all`. `send` and `recv` are reserved
+  channel keywords and could not be used as method names. Call
+  sites of `http_get` / `http_post` inside `std::net` were updated
+  to match. User code that called `stream.send(...)` /
+  `stream.recv(...)` must be updated to `stream.write(...)` /
+  `stream.read(...)`.
+- **`std::db::exec`** was renamed to **`std::db::execute`**. The
+  function was shadowed by the `exec` process builtin (which
+  requires the `process` capability) and could not be called from
+  within the `db` module itself. User code that called
+  `db::exec(conn, sql)` must be updated to
+  `db::execute(conn, sql)`. `db::exec_multi` is unchanged.
+
+### Added
+
+- **`null` literal.** A built-in `null` value of type `i64`,
+  intended for use with raw FFI handle / pointer values. Wired
+  through the type checker (`null: i64`), MIR
+  (`Operand::Constant(Constant::Int(0))` /
+  `RValue::ConstInt(0)`), and codegen.
+- **`!` (never) type.** The `!` token is now parsed as a type
+  expression equivalent to `never`, mainly for FFI signatures and
+  divergent functions. Treated as a `Simple { name: "never" }`
+  type at the AST level.
+- **Nine new FFI builtins (all use the `i64` ABI):**
+  - `str_to_ptr(s: str) -> i64`: get a raw data pointer (as an
+    `i64` handle) for a Kryos string. Pair with `len(s)` when
+    calling C.
+  - `buf_to_str(buf: i64, len: i64) -> str`: copy `len` bytes from
+    a raw buffer handle into a new Kryos string.
+  - `alloc(n: i64) -> i64`: allocate `n` bytes, return the handle.
+  - `free_bytes(buf: i64, n: i64) -> void`: release a buffer
+    previously returned by `alloc`.
+  - `ptr_byte_at(buf: i64, i: i64) -> i64`: read byte at offset.
+  - `ptr_set_byte(buf: i64, i: i64, b: i64) -> void`: write byte
+    at offset.
+  - `ptr_read_i64(buf: i64, i: i64) -> i64`: read an 8-byte
+    little-endian integer.
+  - `ptr_write_i64(buf: i64, i: i64, v: i64) -> void`: write an
+    8-byte little-endian integer.
+  - `handle_to_str(h: i64) -> str`: decode a runtime handle into
+    a string view (used by `std::os::args` and friends).
+  Runtime helpers (`kryos_str_to_ptr`, `kryos_buf_to_str`,
+  `kryos_alloc_bytes`, `kryos_free_bytes`, `kryos_ptr_byte_at`,
+  `kryos_ptr_set_byte`, `kryos_ptr_read_i64`,
+  `kryos_ptr_write_i64`, `kryos_handle_to_str`) live in
+  `kryos-rt::builtins` and are declared with `i64`-only signatures
+  in the LLVM codegen.
+- **`@capabilities(...)` on impl-block methods.** The annotation
+  was already accepted on free functions; the parser now also
+  accepts it on methods declared inside `impl` blocks (e.g.
+  `@capabilities(net) fn write(self: TcpStream, data: str)` in
+  `std::net`).
+
+### Fixed — stdlib
+
+All ten previously-broken modules now type-check. The recurring
+pattern was an extern block declaring handle / pointer arguments
+as `ptr` (or `*mut void`) while the rest of the module already
+threaded them as `i64`. Extern blocks are now `i64`-only across
+the stdlib so they line up with `str_to_ptr`, `alloc`, and
+`null`.
+
+- **`std::fs`**: extern block migrated to `i64`. `read_all`,
+  `write_all`, `stat`, and friends now type-check.
+- **`std::io`**: extern block migrated to `i64`. Fixed a borrow
+  issue in the line-reader (snapshot `reader.position` into
+  `start_val` before taking a `&mut` cursor).
+- **`std::os`**: extern block migrated to `i64`. `env`, `args`,
+  `exit` now type-check.
+- **`std::term`**: extern block migrated to `i64`
+  (`kryos_stdout_write`, `kryos_stdin_read`).
+- **`std::net`**: extern block migrated to `i64`. Methods renamed
+  (see Breaking changes). `http_get` and `http_post` call sites
+  updated.
+- **`std::process`**: extern block migrated to `i64`. Replaced a
+  stale `ptr_null()` call with the new `null` literal. Fixed a
+  move-after-use of `exit_code` when constructing the result
+  struct.
+- **`std::db`**: extern block migrated to `i64`. `exec` renamed to
+  `execute` (see Breaking changes). Dropped the spurious `fs`
+  capability from the file-level `@capabilities` annotation
+  (`@capabilities(fs, db)` → `@capabilities(db)`).
+- **`std::crypto`**: extern block migrated to `i64`. `sha256_raw`,
+  `sha512_raw`, `random_bytes`, `random_int`, `random_uuid` now
+  type-check.
+- **`std::re`**: extern block migrated to `i64`. `is_match` and
+  `find_all` now type-check.
+- **`std::tracked`**: worked around the JSON-encoder construction
+  in `Tracked::to_json` by escaping literal `{` and `}` with `\{`
+  / `\}` so the lexer does not enter interpolation mode at the
+  start of the string. (The lexer-level fix — treating `{` as
+  literal unless preceded by something that indicates
+  interpolation intent — is tracked separately and will land in a
+  later patch release.)
+
+### Migration
+
+- Replace `stream.send(...)` / `stream.recv(...)` with
+  `stream.write(...)` / `stream.read(...)` on `TcpStream` and
+  `TlsStream`.
+- Replace `db::exec(conn, sql)` with `db::execute(conn, sql)`.
+- In any FFI bindings that declared handles as `ptr` or
+  `*mut void`, switch to `i64`. Use `str_to_ptr(s)` to obtain a
+  data pointer for a Kryos string and pair it with `len(s)`. Use
+  `null` instead of `ptr_null()`.
+
 ## [2.3.3] - 2026-05-17 — "Stdlib continuation: parser and checker primitives, 10 more modules type-check"
 
 Follow-on maintenance release after 2.3.2. No breaking changes. Adds

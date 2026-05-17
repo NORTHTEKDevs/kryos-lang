@@ -9,15 +9,15 @@
 // --- Native FFI declarations ------------------------------------------------
 
 extern {
-    fn kryos_regex_new(pattern_ptr: ptr, pattern_len: i64) -> ptr
-    fn kryos_regex_is_match(re: ptr, text_ptr: ptr, text_len: i64) -> i32
-    fn kryos_regex_drop(re: ptr) -> i32
+    fn kryos_regex_new(pattern_ptr: i64, pattern_len: i64) -> i64
+    fn kryos_regex_is_match(re: i64, text_ptr: i64, text_len: i64) -> i32
+    fn kryos_regex_drop(re: i64) -> i32
 }
 
 // --- Regex struct -----------------------------------------------------------
 
 struct Regex {
-    handle: ptr,
+    handle: i64,
     pattern: str,
     dropped: bool
 }

@@ -1484,6 +1484,113 @@ pub extern "C" fn kryos_builtin_max_f(a: f64, b: f64) -> f64 {
     a.max(b)
 }
 
+// ---------------------------------------------------------------------------
+// FFI helpers — used by stdlib `extern { ... }` blocks that need raw byte
+// buffers and raw pointers into KryosString contents.
+//
+// These accept a KryosString handle (cast to i64; `0` is null) and return a
+// raw `*mut u8` pointer into the heap-allocated byte buffer. The caller must
+// NOT free the returned pointer — it is owned by the KryosString.
+// ---------------------------------------------------------------------------
+
+use crate::string::KryosString;
+
+/// `str_to_ptr(s) -> i64` — raw data pointer (as i64) of a KryosString.
+/// Returns 0 for a null handle.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_str_to_ptr(handle: i64) -> i64 {
+    if handle == 0 {
+        return 0;
+    }
+    let s = handle as *const KryosString;
+    (*s).data as i64
+}
+
+/// `buf_to_str(ptr, len) -> str` — build a KryosString by copying `len` bytes
+/// from `ptr`. Returns 0 (null) if `ptr` is null and `len > 0`.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_buf_to_str(ptr: i64, len: i64) -> i64 {
+    if ptr == 0 && len > 0 {
+        return 0;
+    }
+    crate::string::kryos_string_new(ptr as *const u8, len) as i64
+}
+
+/// `ptr_byte_at(ptr, i) -> i64` — read a single byte at offset `i`.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_ptr_byte_at(ptr: i64, i: i64) -> i64 {
+    if ptr == 0 || i < 0 {
+        return 0;
+    }
+    let p = ptr as *const u8;
+    *p.add(i as usize) as i64
+}
+
+/// `ptr_set_byte(ptr, i, b) -> void` — write a single byte at offset `i`.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_ptr_set_byte(ptr: i64, i: i64, b: i64) {
+    if ptr == 0 || i < 0 {
+        return;
+    }
+    let p = ptr as *mut u8;
+    *p.add(i as usize) = b as u8;
+}
+
+/// `alloc(size) -> i64` — heap allocate `size` bytes, zero-initialized.
+/// Use `free_bytes` to release. Returns 0 on failure.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_alloc_bytes(size: i64) -> i64 {
+    if size <= 0 {
+        return 0;
+    }
+    let layout = match std::alloc::Layout::from_size_align(size as usize, 1) {
+        Ok(l) => l,
+        Err(_) => return 0,
+    };
+    std::alloc::alloc_zeroed(layout) as i64
+}
+
+/// `free_bytes(ptr, size) -> void` — release memory from `alloc`.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_free_bytes(ptr: i64, size: i64) {
+    if ptr == 0 || size <= 0 {
+        return;
+    }
+    let layout = match std::alloc::Layout::from_size_align(size as usize, 1) {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+    std::alloc::dealloc(ptr as *mut u8, layout);
+}
+
+/// `handle_to_str(handle) -> str` — identity for KryosString handle; lets the
+/// stdlib convert opaque i64 handles returned from native fns into typed
+/// strings without a no-op call. Returns 0 for null.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_handle_to_str(handle: i64) -> i64 {
+    handle
+}
+
+/// `ptr_read_i64(p, i) -> i64` — read 8 bytes at offset `i*8`.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_ptr_read_i64(ptr: i64, i: i64) -> i64 {
+    if ptr == 0 || i < 0 {
+        return 0;
+    }
+    let slot = (ptr as *const i64).add(i as usize);
+    *slot
+}
+
+/// `ptr_write_i64(p, i, v) -> void` — write 8 bytes at offset `i*8`.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_ptr_write_i64(ptr: i64, i: i64, v: i64) {
+    if ptr == 0 || i < 0 {
+        return;
+    }
+    let slot = (ptr as *mut i64).add(i as usize);
+    *slot = v;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

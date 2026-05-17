@@ -8,17 +8,18 @@
 
 // --- Native FFI declarations ------------------------------------------------
 
+// All raw pointers are passed as i64 (handles/addresses) across the FFI.
 extern {
-    fn kryos_tcp_connect(host_ptr: ptr, host_len: i64, port: i32) -> i64
-    fn kryos_tcp_bind(host_ptr: ptr, host_len: i64, port: i32) -> i64
+    fn kryos_tcp_connect(host_ptr: i64, host_len: i64, port: i32) -> i64
+    fn kryos_tcp_bind(host_ptr: i64, host_len: i64, port: i32) -> i64
     fn kryos_tcp_accept(listener_fd: i64) -> i64
-    fn kryos_tcp_send(fd: i64, data: ptr, len: i64) -> i64
-    fn kryos_tcp_recv(fd: i64, buf: ptr, buf_len: i64) -> i64
+    fn kryos_tcp_send(fd: i64, data: i64, len: i64) -> i64
+    fn kryos_tcp_recv(fd: i64, buf: i64, buf_len: i64) -> i64
     fn kryos_socket_close(fd: i64) -> i32
     // TLS (HTTPS)
-    fn kryos_tls_connect(host_ptr: ptr, host_len: i64, port: i32) -> i64
-    fn kryos_tls_send(fd: i64, data: ptr, len: i64) -> i64
-    fn kryos_tls_recv(fd: i64, buf: ptr, buf_len: i64) -> i64
+    fn kryos_tls_connect(host_ptr: i64, host_len: i64, port: i32) -> i64
+    fn kryos_tls_send(fd: i64, data: i64, len: i64) -> i64
+    fn kryos_tls_recv(fd: i64, buf: i64, buf_len: i64) -> i64
     fn kryos_tls_close(fd: i64) -> i32
 }
 
@@ -33,24 +34,25 @@ struct TcpStream {
 
 impl TcpStream {
     // Send data over the stream.  Returns the number of bytes sent.
+    // (Method name `write` avoids the reserved channel keyword `send`.)
     @capabilities(net)
-    fn send(self: TcpStream, data: str) -> i64 {
+    fn write(self: TcpStream, data: str) -> i64 {
         if self.closed {
-            throw "net error: send on closed stream"
+            throw "net error: write on closed stream"
         }
         let ptr = str_to_ptr(data)
         let n = kryos_tcp_send(self.fd, ptr, len(data))
         if n < 0 {
-            throw "net error: send failed on " + self.host + ":" + to_string(self.port)
+            throw "net error: write failed on " + self.host + ":" + to_string(self.port)
         }
         return n
     }
 
     // Send all data, retrying until everything is written.
     @capabilities(net)
-    fn send_all(self: TcpStream, data: str) -> i64 {
+    fn write_all(self: TcpStream, data: str) -> i64 {
         if self.closed {
-            throw "net error: send_all on closed stream"
+            throw "net error: write_all on closed stream"
         }
         let total_len = len(data)
         let mut offset = 0
@@ -59,7 +61,7 @@ impl TcpStream {
             let ptr = str_to_ptr(remaining)
             let n = kryos_tcp_send(self.fd, ptr, len(remaining))
             if n < 0 {
-                throw "net error: send_all failed on " + self.host + ":" + to_string(self.port)
+                throw "net error: write_all failed on " + self.host + ":" + to_string(self.port)
             }
             offset = offset + n
         }
@@ -67,22 +69,23 @@ impl TcpStream {
     }
 
     // Receive up to `max_bytes` from the stream.
+    // (Method name `read` avoids the reserved channel keyword `recv`.)
     @capabilities(net)
-    fn recv(self: TcpStream, max_bytes: i64) -> str {
+    fn read(self: TcpStream, max_bytes: i64) -> str {
         if self.closed {
-            throw "net error: recv on closed stream"
+            throw "net error: read on closed stream"
         }
         let buf = alloc(max_bytes)
         let n = kryos_tcp_recv(self.fd, buf, max_bytes)
         if n < 0 {
-            throw "net error: recv failed on " + self.host + ":" + to_string(self.port)
+            throw "net error: read failed on " + self.host + ":" + to_string(self.port)
         }
         return buf_to_str(buf, n)
     }
 
     // Receive all data until the connection closes (EOF).
     @capabilities(net)
-    fn recv_all(self: TcpStream) -> str {
+    fn read_all(self: TcpStream) -> str {
         if self.closed {
             throw "net error: recv_all on closed stream"
         }
@@ -199,9 +202,9 @@ struct TlsStream {
 
 impl TlsStream {
     @capabilities(net)
-    fn send_all(self: TlsStream, data: str) -> i64 {
+    fn write_all(self: TlsStream, data: str) -> i64 {
         if self.closed {
-            throw "net error: send_all on closed TLS stream"
+            throw "net error: write_all on closed TLS stream"
         }
         let total_len = len(data)
         let mut offset = 0
@@ -209,7 +212,7 @@ impl TlsStream {
             let remaining = substr(data, offset, total_len)
             let n = kryos_tls_send(self.fd, str_to_ptr(remaining), len(remaining))
             if n < 0 {
-                throw "net error: TLS send failed on " + self.host + ":" + to_string(self.port)
+                throw "net error: TLS write failed on " + self.host + ":" + to_string(self.port)
             }
             offset = offset + n
         }
@@ -217,7 +220,7 @@ impl TlsStream {
     }
 
     @capabilities(net)
-    fn recv_all(self: TlsStream) -> str {
+    fn read_all(self: TlsStream) -> str {
         if self.closed {
             throw "net error: recv_all on closed TLS stream"
         }
@@ -420,15 +423,15 @@ fn http_get(url: str) -> HttpResponse {
 
     if scheme == "https" {
         let tls = connect_tls(host, port)
-        tls.send_all(request)
-        let raw = tls.recv_all()
+        tls.write_all(request)
+        let raw = tls.read_all()
         tls.close()
         return parse_http_response(raw)
     }
 
     let stream = connect(host, port)
-    stream.send_all(request)
-    let raw = stream.recv_all()
+    stream.write_all(request)
+    let raw = stream.read_all()
     stream.close()
 
     return parse_http_response(raw)
@@ -455,15 +458,15 @@ fn http_post(url: str, body: str, content_type: str) -> HttpResponse {
 
     if scheme == "https" {
         let tls = connect_tls(host, port)
-        tls.send_all(request)
-        let raw = tls.recv_all()
+        tls.write_all(request)
+        let raw = tls.read_all()
         tls.close()
         return parse_http_response(raw)
     }
 
     let stream = connect(host, port)
-    stream.send_all(request)
-    let raw = stream.recv_all()
+    stream.write_all(request)
+    let raw = stream.read_all()
     stream.close()
 
     return parse_http_response(raw)
