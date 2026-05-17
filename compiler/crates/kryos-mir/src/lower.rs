@@ -2829,6 +2829,30 @@ fn lower_spawn(ctx: &mut LoweringContext, expr: &ast::Expr) {
             lower_spawn_block(ctx, &block.stmts);
         }
 
+        // Case 3: spawn a lambda — use the lambda's body directly so the
+        // closure actually executes on the spawned thread. Without this,
+        // the lambda would be wrapped as a stmt-expr and merely evaluated
+        // (creating a closure value) then discarded, never invoking the body.
+        ast::Expr::Lambda { body, .. } => {
+            // The lambda body is an Expr — usually a Block, but could be any
+            // expression. Extract its stmts if it's a Block; otherwise wrap
+            // the body as a single expression statement.
+            match body.as_ref() {
+                ast::Expr::Block { block, .. } => {
+                    lower_spawn_block(ctx, &block.stmts);
+                }
+                other_body => {
+                    lower_spawn_block(
+                        ctx,
+                        &[ast::Stmt::Expr {
+                            expr: other_body.clone(),
+                            span: kryos_errors::Span::DUMMY,
+                        }],
+                    );
+                }
+            }
+        }
+
         // Fallback: wrap arbitrary expression in a block.
         other => {
             lower_spawn_block(

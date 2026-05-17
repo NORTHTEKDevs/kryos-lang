@@ -1,0 +1,25 @@
+// Regression test for spawn(fn() { ... }) — the closure body must execute.
+//
+// v2.6.1 bug: spawn lowering wrapped a Lambda expression as a stmt-expr,
+// which evaluated the lambda value and discarded it, so the body never ran.
+// Fix: in lower_spawn, detect Lambda and use its body as the spawn function
+// body (lower_spawn_block on its inner block stmts).
+
+fn main() {
+    println("before")
+
+    // No-capture spawn
+    spawn(fn() {
+        println("ran-no-capture")
+    })
+
+    // Capture from enclosing scope
+    let x = 7
+    spawn(fn() {
+        println("ran-capture")
+        println(x)
+    })
+
+    sleep_ms(100)
+    println("after")
+}

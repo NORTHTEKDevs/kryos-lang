@@ -4,6 +4,42 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.6.2] - 2026-05-17 — "`spawn(fn() { ... })` actually runs the closure"
+
+A correctness fix in MIR lowering. No new language surface, no breaking
+changes. All 18 smoke tests, 21 router tests, 12 config-parser tests, and
+10 real example builds pass.
+
+### Fixed
+
+- `spawn(fn() { ... })` previously compiled without error but the closure
+  body never executed. The MIR `lower_spawn` fallback wrapped the lambda
+  expression as a stmt-expr inside a generated `__spawn_N` wrapper, which
+  evaluated the lambda value and discarded it instead of invoking its body.
+  The wrapper function body therefore did nothing observable.
+
+  Fix: `lower_spawn` now matches `Expr::Lambda` explicitly and lowers the
+  lambda's inner block as the spawn body, so captures from the enclosing
+  scope flow through the existing `__spawn_N` capture-parameter machinery
+  and the body runs on the spawned thread.
+
+  Affected pattern: any `spawn(fn() { ... })` form. Direct-call spawn
+  (`spawn worker(arg)`) and block spawn (`spawn { ... }`) were unaffected
+  and continue to work as before.
+
+  Regression test: `tests/smoke/test_spawn_lambda.kry`.
+
+### Stress-test matrix update
+
+| Feature | Status |
+|---|---|
+| `spawn(fn() { ... })` closure spawn | works (this release) |
+| `spawn(fn() { ... })` with captured variables | works (this release) |
+| `spawn worker(arg)` direct-call spawn | works (unchanged) |
+| `spawn { ... }` block spawn | works (unchanged) |
+
+---
+
 ## [2.6.1] - 2026-05-17 — "`return` inside `match` arms actually returns"
 
 A correctness fix in the parser. No new language surface, no breaking
