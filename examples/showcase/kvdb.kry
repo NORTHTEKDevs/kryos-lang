@@ -10,7 +10,32 @@
 //
 // Usage:
 //   kryos run examples/showcase/kvdb.kry              # runs a built-in demo
-//   (the demo uses /tmp/kryos_kvdb.log as its store)
+//   (the demo uses <std::os::temp_dir()>/kryos_kvdb.log as its store —
+//    /tmp/kryos_kvdb.log on Unix, %TEMP%\kryos_kvdb.log on Windows.)
+
+// ----- platform-portable temp dir ----------------------------------------
+//
+// Uses the env_get builtin to resolve a writable temp directory across
+// Linux, macOS, and Windows. Same priority order as std::os::temp_dir().
+
+fn portable_temp_dir() -> str {
+  // Windows: TEMP or TMP
+  let temp: str = env_get("TEMP")
+  if len(temp) > 0 { return temp }
+  let tmp: str = env_get("TMP")
+  if len(tmp) > 0 { return tmp }
+  // Unix: TMPDIR or /tmp
+  let tmpdir: str = env_get("TMPDIR")
+  if len(tmpdir) > 0 { return tmpdir }
+  return "/tmp"
+}
+
+fn portable_path_sep() -> str {
+  // WINDIR is only set on Windows.
+  let windir: str = env_get("WINDIR")
+  if len(windir) > 0 { return "\\" }
+  return "/"
+}
 
 // ----- escaping ----------------------------------------------------------
 
@@ -118,7 +143,7 @@ fn append_line(path: str, line: str) {
 
 // ----- core ops (in-memory view replayed from log) -----------------------
 
-let mut DB_PATH: str = "/tmp/kryos_kvdb.log"
+let mut DB_PATH: str = portable_temp_dir() + portable_path_sep() + "kryos_kvdb.log"
 let mut KEYS: [str] = []
 let mut VALS: [str] = []
 

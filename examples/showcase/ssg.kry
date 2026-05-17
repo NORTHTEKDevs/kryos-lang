@@ -391,15 +391,35 @@ fn write_demo_sources(dir: str) {
   file_write(dir + "/blog.md", bl)
 }
 
+// Portable temp dir resolver. Mirrors std::os::temp_dir() priority order
+// (TMPDIR/TEMP/TMP/-> /tmp). Inlined to avoid pulling stdlib FFI helpers
+// that the module resolver can't currently follow transitively.
+fn portable_temp_dir() -> str {
+  let temp: str = env_get("TEMP")
+  if len(temp) > 0 { return temp }
+  let tmp: str = env_get("TMP")
+  if len(tmp) > 0 { return tmp }
+  let tmpdir: str = env_get("TMPDIR")
+  if len(tmpdir) > 0 { return tmpdir }
+  return "/tmp"
+}
+
+fn portable_path_sep() -> str {
+  let windir: str = env_get("WINDIR")
+  if len(windir) > 0 { return "\\" }
+  return "/"
+}
+
 fn main() {
   let args: [str] = args()
   let mut manifest_path: str = ""
   if len(args) >= 2 {
     manifest_path = args[1]
   } else {
-    // build the demo
-    let dir: str = "/tmp/kryos_site"
-    // make sure the dir exists by writing a marker (file_write creates parent dirs? unknown -- caller should mkdir)
+    // build the demo into <portable_temp_dir>/kryos_site (/tmp/kryos_site
+    // on Unix, %TEMP%\kryos_site on Windows). create_dir is idempotent.
+    let dir: str = portable_temp_dir() + portable_path_sep() + "kryos_site"
+    create_dir(dir)
     write_demo_sources(dir)
 
     let manifest_str: str = json_stringify(json_object(

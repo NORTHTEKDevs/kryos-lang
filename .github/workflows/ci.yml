@@ -57,10 +57,10 @@ jobs:
         shell: bash
         # Showcase apps exercise the wider stdlib surface area: JSON, file I/O,
         # channels, markdown rendering. They must compile and exit cleanly.
-        # ssg.kry writes to /tmp/kryos_site and assumes that directory exists.
+        # ssg and kvdb resolve their output paths via env_get(TMPDIR/TEMP/TMP),
+        # so the same step works identically on the Windows job.
         run: |
           set -e
-          mkdir -p /tmp/kryos_site
           for ex in markdown kvdb ssg worker_pool; do
             echo "== showcase/$ex.kry =="
             ./target/release/kryos run ../examples/showcase/$ex.kry > /dev/null
@@ -170,16 +170,15 @@ jobs:
             ./$ex.exe > /dev/null
           done
 
-      - name: Showcase smoke tests (portable subset)
+      - name: Showcase smoke tests
         working-directory: compiler
         shell: bash
-        # Mirror of the Linux "Showcase smoke tests" step, restricted to
-        # the showcase apps that don't hardcode Unix-only filesystem paths.
-        # kvdb and ssg both hardcode `/tmp/...` and need to be made
-        # OS-portable (via std::os::temp_dir()) before they can run here.
+        # Mirror of the Linux "Showcase smoke tests" step. All four
+        # showcase apps are now OS-portable (kvdb and ssg use env_get to
+        # resolve a writable temp directory across Unix and Windows).
         run: |
           set -e
-          for ex in markdown worker_pool; do
+          for ex in markdown kvdb ssg worker_pool; do
             echo "== showcase/$ex.kry (Cranelift) =="
             ./target/release/kryos.exe run ../examples/showcase/$ex.kry > /dev/null
           done
