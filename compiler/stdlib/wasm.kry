@@ -1,0 +1,279 @@
+// ============================================================
+// std.wasm — language-level binding for the WASM host import surface
+//
+// When a Kryos module is compiled to WebAssembly via the kryos-codegen-wasm
+// backend, the resulting `.wasm` module imports a set of host primitives
+// under the `env` namespace (see docs/wasm-stdlib.md). This module is the
+// thin AST-level binding: importing it gives Kryos source a normal
+// function-call surface to those imports, without the user having to
+// reach for `extern "C"` blocks of their own.
+//
+// On non-WASM targets these symbols are not available; this module is
+// intended for code that is compiled with `kryos build --target wasm`
+// (or its equivalent in `kryos.toml`). The kryos-codegen-wasm backend
+// guarantees that the import names below match the host runner's
+// `env.kryos_*` bindings (`examples/wasm_runner.js` for Node,
+// `examples/wasm_web_runner.html` for the browser).
+//
+// String / array convention: strings and arrays cross the WASM boundary
+// as a "packed i64":
+//   packed = (length << 32) | (offset & 0xffffffff)
+// where `offset` is a byte position inside the module's exported linear
+// `memory`. The compiler manages packing for normal `str` and `[i64]`
+// values automatically; the helpers below are for code that needs to
+// drive the host import surface directly (e.g. interop with a custom
+// host runner).
+//
+// Usage:
+//   import wasm
+//
+//   wasm.print_i64(42)
+//   let upper = wasm.string_to_upper(packed)
+//   let resp  = wasm.http_fetch_get("https://example.com/data.json")
+//
+// The pure-Kryos helpers at the bottom of the file (`http_fetch_get`,
+// `http_fetch_post`) compose the raw import surface into ergonomic
+// shapes for common cases.
+
+extern "C" {
+    // ---- Basic I/O (v0.2) -----------------------------------------------
+    fn kryos_print_i64(value: i64)
+    fn kryos_print_f64(value: f64)
+    fn kryos_print_str(offset: i32, length: i32)
+    fn kryos_string_concat(a_off: i32, a_len: i32, b_off: i32, b_len: i32) -> i64
+    fn kryos_array_new(count: i32) -> i64
+    fn kryos_array_get(packed: i64, idx: i32) -> i64
+    fn kryos_array_set(packed: i64, idx: i32, value: i64)
+
+    // ---- Web host (v0.4) ------------------------------------------------
+    fn kryos_dom_set_text(id_off: i32, id_len: i32, text_off: i32, text_len: i32)
+    fn kryos_dom_get_value(id_off: i32, id_len: i32) -> i64
+    fn kryos_alert(text_off: i32, text_len: i32)
+    fn kryos_canvas_fill_rect(
+        id_off: i32, id_len: i32,
+        x: i64, y: i64, w: i64, h: i64,
+        color_off: i32, color_len: i32
+    )
+    fn kryos_canvas_clear(id_off: i32, id_len: i32)
+    fn kryos_fetch_text(url_off: i32, url_len: i32) -> i64
+
+    // ---- Stdlib parity (v2.3): strings ----------------------------------
+    fn kryos_string_length(packed: i64) -> i32
+    fn kryos_string_slice(packed: i64, start: i32, end: i32) -> i64
+    fn kryos_string_to_upper(packed: i64) -> i64
+    fn kryos_string_to_lower(packed: i64) -> i64
+    fn kryos_string_trim(packed: i64) -> i64
+    fn kryos_string_index_of(haystack: i64, needle: i64) -> i32
+    fn kryos_string_parse_int(packed: i64) -> i64
+    fn kryos_string_parse_float(packed: i64) -> f64
+
+    // ---- Stdlib parity (v2.3): arrays -----------------------------------
+    fn kryos_array_length(packed: i64) -> i32
+    fn kryos_array_push(packed: i64, value: i64) -> i64
+    fn kryos_array_pop(packed: i64) -> i64
+
+    // ---- Stdlib parity (v2.3): JSON -------------------------------------
+    fn kryos_json_parse(packed_str: i64) -> i64
+    fn kryos_json_stringify(handle: i64) -> i64
+    fn kryos_json_get_int(handle: i64, key_off: i32, key_len: i32) -> i64
+    fn kryos_json_get_str(handle: i64, key_off: i32, key_len: i32) -> i64
+
+    // ---- Stdlib parity (v2.3): regex ------------------------------------
+    fn kryos_regex_test(pattern: i64, subject: i64) -> i32
+    fn kryos_regex_replace(pattern: i64, subject: i64, replacement: i64) -> i64
+
+    // ---- Stdlib parity (v2.3): HTTP -------------------------------------
+    fn kryos_http_fetch(
+        method_off: i32, method_len: i32,
+        url_off: i32, url_len: i32,
+        body_off: i32, body_len: i32
+    ) -> i64
+}
+
+// ---- Packed-i64 helpers -----------------------------------------------
+//
+// `pack(length, offset)` and the matching `pack_length` / `pack_offset`
+// getters let user code construct packed handles directly when it
+// already owns a buffer inside linear memory (e.g. via a custom
+// allocator).
+
+fn pack(length: i32, offset: i32) -> i64 {
+    let hi = length as i64
+    let lo = offset as i64
+    return (hi << 32) | (lo & 0xffffffff)
+}
+
+fn pack_length(packed: i64) -> i32 {
+    return (packed >> 32) as i32
+}
+
+fn pack_offset(packed: i64) -> i32 {
+    return (packed & 0xffffffff) as i32
+}
+
+// ---- Print convenience -------------------------------------------------
+
+fn print_i64(value: i64) {
+    kryos_print_i64(value)
+}
+
+fn print_f64(value: f64) {
+    kryos_print_f64(value)
+}
+
+fn print_str(packed: i64) {
+    kryos_print_str(pack_offset(packed), pack_length(packed))
+}
+
+// ---- String wrappers --------------------------------------------------
+
+fn string_length(packed: i64) -> i32 {
+    return kryos_string_length(packed)
+}
+
+fn string_slice(packed: i64, start: i32, end: i32) -> i64 {
+    return kryos_string_slice(packed, start, end)
+}
+
+fn string_to_upper(packed: i64) -> i64 {
+    return kryos_string_to_upper(packed)
+}
+
+fn string_to_lower(packed: i64) -> i64 {
+    return kryos_string_to_lower(packed)
+}
+
+fn string_trim(packed: i64) -> i64 {
+    return kryos_string_trim(packed)
+}
+
+fn string_index_of(haystack: i64, needle: i64) -> i32 {
+    return kryos_string_index_of(haystack, needle)
+}
+
+fn string_parse_int(packed: i64) -> i64 {
+    return kryos_string_parse_int(packed)
+}
+
+fn string_parse_float(packed: i64) -> f64 {
+    return kryos_string_parse_float(packed)
+}
+
+// ---- Array wrappers ---------------------------------------------------
+
+fn array_new(count: i32) -> i64 {
+    return kryos_array_new(count)
+}
+
+fn array_length(packed: i64) -> i32 {
+    return kryos_array_length(packed)
+}
+
+fn array_get(packed: i64, idx: i32) -> i64 {
+    return kryos_array_get(packed, idx)
+}
+
+fn array_set(packed: i64, idx: i32, value: i64) {
+    kryos_array_set(packed, idx, value)
+}
+
+// push() returns a NEW packed handle; growth may reallocate, so the
+// caller MUST update its handle from the return value.
+fn array_push(packed: i64, value: i64) -> i64 {
+    return kryos_array_push(packed, value)
+}
+
+// pop() returns -1 when the array is empty.
+fn array_pop(packed: i64) -> i64 {
+    return kryos_array_pop(packed)
+}
+
+// ---- JSON wrappers ----------------------------------------------------
+
+fn json_parse(packed_str: i64) -> i64 {
+    return kryos_json_parse(packed_str)
+}
+
+fn json_stringify(handle: i64) -> i64 {
+    return kryos_json_stringify(handle)
+}
+
+fn json_get_int(handle: i64, key_packed: i64) -> i64 {
+    return kryos_json_get_int(handle, pack_offset(key_packed), pack_length(key_packed))
+}
+
+fn json_get_str(handle: i64, key_packed: i64) -> i64 {
+    return kryos_json_get_str(handle, pack_offset(key_packed), pack_length(key_packed))
+}
+
+// ---- Regex wrappers ---------------------------------------------------
+
+fn regex_test(pattern_packed: i64, subject_packed: i64) -> i32 {
+    return kryos_regex_test(pattern_packed, subject_packed)
+}
+
+fn regex_replace(pattern_packed: i64, subject_packed: i64, replacement_packed: i64) -> i64 {
+    return kryos_regex_replace(pattern_packed, subject_packed, replacement_packed)
+}
+
+// ---- HTTP wrappers ----------------------------------------------------
+//
+// Raw form: caller supplies packed handles for method, URL, and body.
+// Convenience forms below cover the common GET/POST cases.
+
+fn http_fetch(method_packed: i64, url_packed: i64, body_packed: i64) -> i64 {
+    return kryos_http_fetch(
+        pack_offset(method_packed), pack_length(method_packed),
+        pack_offset(url_packed),    pack_length(url_packed),
+        pack_offset(body_packed),   pack_length(body_packed),
+    )
+}
+
+fn http_fetch_get(url_packed: i64) -> i64 {
+    // Empty method / body packed-i64s mean "use the conventional GET"
+    // and "no body" respectively. The host runner is responsible for
+    // defaulting an empty method packing to GET.
+    return http_fetch(pack(0, 0), url_packed, pack(0, 0))
+}
+
+fn http_fetch_post(url_packed: i64, body_packed: i64) -> i64 {
+    // Note: the host runner is expected to interpret an empty method
+    // packing as GET; this helper does NOT pre-pack the literal string
+    // "POST" because doing so would require a memory layout the wasm
+    // module already owns. Users wanting a non-GET non-empty method
+    // should call `http_fetch` directly with their own method handle.
+    return http_fetch(pack(0, 0), url_packed, body_packed)
+}
+
+// ---- Web host wrappers ------------------------------------------------
+
+fn dom_set_text(id_packed: i64, text_packed: i64) {
+    kryos_dom_set_text(
+        pack_offset(id_packed),   pack_length(id_packed),
+        pack_offset(text_packed), pack_length(text_packed),
+    )
+}
+
+fn dom_get_value(id_packed: i64) -> i64 {
+    return kryos_dom_get_value(pack_offset(id_packed), pack_length(id_packed))
+}
+
+fn alert(text_packed: i64) {
+    kryos_alert(pack_offset(text_packed), pack_length(text_packed))
+}
+
+fn canvas_fill_rect(id_packed: i64, x: i64, y: i64, w: i64, h: i64, color_packed: i64) {
+    kryos_canvas_fill_rect(
+        pack_offset(id_packed),    pack_length(id_packed),
+        x, y, w, h,
+        pack_offset(color_packed), pack_length(color_packed),
+    )
+}
+
+fn canvas_clear(id_packed: i64) {
+    kryos_canvas_clear(pack_offset(id_packed), pack_length(id_packed))
+}
+
+fn fetch_text(url_packed: i64) -> i64 {
+    return kryos_fetch_text(pack_offset(url_packed), pack_length(url_packed))
+}

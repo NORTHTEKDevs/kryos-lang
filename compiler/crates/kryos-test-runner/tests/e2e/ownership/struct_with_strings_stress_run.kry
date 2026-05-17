@@ -1,0 +1,52 @@
+// Long-form companion to struct_with_strings_return_run.kry. Drives the
+// same struct-with-strings return pattern 1000 iterations in a tight loop,
+// reads back every field, and validates against the expected payload.
+// If any iteration carries a stale string handle, len()/equality will fail
+// and the test prints FAILED.
+//
+// run-expect: OK: 1000 iterations passed
+
+struct Action {
+    kind: i64
+    name: str
+    arg_s: str
+    arg_i: i64
+}
+
+fn plan_next(q: str, i: i64) -> Action {
+    if contains(q, "echo ") {
+        let stripped = replace(q, "echo ", "")
+        return Action { kind: 1, name: "echo", arg_s: stripped, arg_i: i }
+    }
+    return Action { kind: 2, name: "", arg_s: q, arg_i: i }
+}
+
+fn main() {
+    let mut i = 0
+    let mut ok = true
+    while i < 1000 {
+        let q = "echo iter-" + to_string(i) + "-payload"
+        let expected = "iter-" + to_string(i) + "-payload"
+        let a = plan_next(q, i)
+        if a.arg_s != expected {
+            println("MISMATCH at " + to_string(i))
+            ok = false
+        }
+        if len(a.arg_s) != len(expected) {
+            println("LEN MISMATCH at " + to_string(i))
+            ok = false
+        }
+        if a.name != "echo" {
+            ok = false
+        }
+        if a.arg_i != i {
+            ok = false
+        }
+        i = i + 1
+    }
+    if ok {
+        println("OK: 1000 iterations passed")
+    } else {
+        println("FAILED")
+    }
+}

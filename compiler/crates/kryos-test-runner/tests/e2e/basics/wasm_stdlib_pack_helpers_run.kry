@@ -1,0 +1,21 @@
+// Smoke test for std::wasm pack/unpack helpers — these are pure-Kryos and
+// thus work on every target, including the native build. They drive the
+// packed-i64 string/array convention used at the WASM boundary.
+//
+// run-expect: hi=10
+// run-expect: lo=32
+// run-expect: roundtrip=ok
+
+use std::wasm::{pack, pack_length, pack_offset}
+
+fn main() {
+    let p = pack(10, 32)
+    println("hi=" + to_string(pack_length(p)))
+    println("lo=" + to_string(pack_offset(p)))
+    let p2 = pack(pack_length(p), pack_offset(p))
+    if p2 == p {
+        println("roundtrip=ok")
+    } else {
+        println("roundtrip=FAIL")
+    }
+}

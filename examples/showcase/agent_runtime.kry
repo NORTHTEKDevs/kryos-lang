@@ -11,6 +11,10 @@
 //     parallel string arrays — flat and easy to reason about
 //   * The classic plan → tool-call → observe → respond cycle
 //   * Bounded budgets and a graceful stop condition
+//   * The planner returns a real `Action` struct carrying str
+//     fields (the original v0.4-era struct-with-strings ownership
+//     bug from docs/BUGS.md is resolved and tested in
+//     tests/e2e/ownership/struct_with_strings_*_run.kry)
 //
 // The "LLM" is a tiny rule-based planner that inspects the user
 // query and emits either a tool call or a final answer. Replacing
@@ -52,66 +56,46 @@ fn dispatch_tool(name: str, s: str, n: i64) -> str {
 
 // ---- Planner (rule-based stand-in for an LLM) ---------------
 //
-// Returns the next action encoded as a tuple of out-parameters
-// — passed as single-element arrays so this function can mutate
-// them. Returns the action kind directly: 1 = call tool, 2 = final.
-//
-// Using arrays-as-out-params avoids returning a struct-with-strings,
-// which the v0.4 ownership model does not yet handle losslessly
-// across function boundaries (tracked separately).
-fn plan_next(
-    user_query: str,
-    has_observation: bool,
-    observation: str,
-    out_tool_name: [str],
-    out_tool_s: [str],
-    out_tool_i: [i64],
-    out_final: [str],
-) -> i64 {
+// The planner returns an `Action` carrying both the tool-call
+// arguments and the final-answer text. `kind` selects between:
+//   1 = tool call (read `name`, `arg_s`, `arg_i`)
+//   2 = final answer (read `arg_s`)
+
+struct Action {
+    kind: i64
+    name: str
+    arg_s: str
+    arg_i: i64
+}
+
+fn plan_next(user_query: str, has_observation: bool, observation: str) -> Action {
     if has_observation {
-        out_final[0] = observation
-        return 2
+        return Action { kind: 2, name: "", arg_s: observation, arg_i: 0 }
     }
     if contains(user_query, "square of 6") {
-        out_tool_name[0] = "calc"
-        out_tool_s[0] = "square"
-        out_tool_i[0] = 6
-        return 1
+        return Action { kind: 1, name: "calc", arg_s: "square", arg_i: 6 }
     }
     if contains(user_query, "21 doubled") {
-        out_tool_name[0] = "calc"
-        out_tool_s[0] = "double"
-        out_tool_i[0] = 21
-        return 1
+        return Action { kind: 1, name: "calc", arg_s: "double", arg_i: 21 }
     }
     if contains(user_query, "triangular") {
-        out_tool_name[0] = "calc"
-        out_tool_s[0] = "triangular"
-        out_tool_i[0] = 7
-        return 1
+        return Action { kind: 1, name: "calc", arg_s: "triangular", arg_i: 7 }
     }
     if contains(user_query, "system info") {
-        out_tool_name[0] = "sysinfo"
-        out_tool_s[0] = ""
-        out_tool_i[0] = 0
-        return 1
+        return Action { kind: 1, name: "sysinfo", arg_s: "", arg_i: 0 }
     }
     if contains(user_query, "echo ") {
-        out_tool_name[0] = "echo"
-        out_tool_s[0] = replace(user_query, "echo ", "")
-        out_tool_i[0] = 0
-        return 1
+        let stripped = replace(user_query, "echo ", "")
+        return Action { kind: 1, name: "echo", arg_s: stripped, arg_i: 0 }
     }
-    out_final[0] = "I don't know how to handle that query."
-    return 2
+    return Action { kind: 2, name: "", arg_s: "I don't know how to handle that query.", arg_i: 0 }
 }
 
 // ---- The agent loop -----------------------------------------
 //
 // Runs at most `max_steps` planner iterations. Returns the final
 // assistant message, or a budget-exceeded notice. The history is
-// flattened into two parallel arrays of (role, content) so we
-// never carry strings across struct boundaries.
+// flattened into two parallel arrays of (role, content).
 fn run_agent(initial_query: str, max_steps: i64) -> str {
     let mut roles: [str] = []
     let mut contents: [str] = []
@@ -137,33 +121,24 @@ fn run_agent(initial_query: str, max_steps: i64) -> str {
             k = k + 1
         }
 
-        // Out-parameter boxes.
-        let mut tool_name: [str] = [""]
-        let mut tool_s: [str] = [""]
-        let mut tool_i: [i64] = [0]
-        let mut final_ans: [str] = [""]
+        let act = plan_next(last_user, has_obs, last_obs)
 
-        let kind = plan_next(
-            last_user,
-            has_obs,
-            last_obs,
-            tool_name,
-            tool_s,
-            tool_i,
-            final_ans,
-        )
-
-        if kind == 2 {
-            let answer = final_ans[0]
+        if act.kind == 2 {
+            // Final answer. Clone the str field so we can both store it in
+            // history and return it (each consumer needs its own owned copy).
+            let answer = act.arg_s + ""
             push(roles, "assistant")
             push(contents, answer)
-            return answer
+            return act.arg_s
         }
 
-        // kind == 1 → tool call
-        let name = tool_name[0]
-        let s    = tool_s[0]
-        let i    = tool_i[0]
+        // kind == 1 → tool call.
+        // Clone the planner's str fields so dispatch_tool gets owned copies
+        // and the println below still has valid handles for `act.name` /
+        // `act.arg_s`.
+        let name = act.name + ""
+        let s    = act.arg_s + ""
+        let i    = act.arg_i
         println("  [tool] " + name + "(" + s + ", " + to_string(i) + ")")
         let observation = dispatch_tool(name, s, i)
         push(roles, "tool")

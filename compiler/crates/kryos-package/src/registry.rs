@@ -7,7 +7,6 @@
 //! Default registry: `https://github.com/NORTHTEKDevs/kryos-registry`
 
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use crate::manifest::Manifest;
@@ -123,6 +122,15 @@ pub fn pack(project_dir: &Path) -> Result<PublishPackage, String> {
 }
 
 /// Generate a registry index entry JSON for a package.
+///
+/// The checksum is `sha256:<64-hex>` of the tarball bytes at
+/// `pkg.tarball_path`. This matches the canonical kryos-registry
+/// schema (one NDJSON line per published version, immutable). If the
+/// tarball file cannot be read, the checksum field is emitted as
+/// `sha256:unavailable` so the call still produces a syntactically
+/// valid JSON line; downstream tools that need a real hash will
+/// observe the literal and fail loudly rather than silently accept a
+/// fake digest.
 pub fn generate_index_entry(pkg: &PublishPackage) -> String {
     let deps: Vec<String> = pkg
         .manifest
@@ -137,26 +145,17 @@ pub fn generate_index_entry(pkg: &PublishPackage) -> String {
         format!("{{\n{}\n  }}", deps.join(",\n"))
     };
 
-    // Compute a deterministic content hash from package metadata.
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    pkg.name.hash(&mut hasher);
-    pkg.version.hash(&mut hasher);
-    deps_json.hash(&mut hasher);
-    let hash = hasher.finish();
-    let checksum = format!(
-        "{:016x}{:016x}{:016x}{:016x}",
-        hash,
-        hash.wrapping_mul(31),
-        hash.wrapping_mul(37),
-        hash.wrapping_mul(41)
-    );
+    let checksum = match std::fs::read(&pkg.tarball_path) {
+        Ok(bytes) => format!("sha256:{}", crate::sha256::sha256_hex(&bytes)),
+        Err(_) => "sha256:unavailable".to_string(),
+    };
 
     format!(
         r#"{{
   "name": "{}",
   "version": "{}",
   "dependencies": {},
-  "checksum": "blake3:{}"
+  "checksum": "{}"
 }}"#,
         pkg.name, pkg.version, deps_json, checksum
     )
@@ -307,11 +306,19 @@ fn parse_index_entry(json: &str, name: &str) -> Option<RegistryEntry> {
         )
     });
 
+    // Accept both `dependencies` (canonical, used by the live registry)
+    // and the historical `deps` shorthand from early-version index files
+    // so old entries don't suddenly fail to resolve.
+    let mut deps = extract_deps_object(json, "dependencies");
+    if deps.is_empty() {
+        deps = extract_deps_object(json, "deps");
+    }
+
     Some(RegistryEntry {
         name: name.to_string(),
         version,
         checksum,
-        dependencies: extract_deps_object(json, "deps"),
+        dependencies: deps,
         download_url,
     })
 }
@@ -415,5 +422,101 @@ fn dirs_or_default() -> PathBuf {
         PathBuf::from(profile).join(".kryos")
     } else {
         PathBuf::from(".kryos")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_canonical_registry_entry() {
+        // This is the byte-for-byte index entry that lives at
+        // https://github.com/NORTHTEKDevs/kryos-registry/blob/master/ht/http-router.json
+        // — the canonical shape the live registry actually uses.
+        let line = r#"{"name": "http-router", "version": "0.1.0", "dependencies": {}, "checksum": "sha256:176df653ffa02096dfc3c486afb553040fed2e7e9d00270b3b0ae127a3e99469", "download_url": "https://raw.githubusercontent.com/NORTHTEKDevs/kryos-registry/master/tarballs/http-router-0.1.0.tar.gz"}"#;
+
+        let entry = parse_index_entry(line, "http-router").expect("must parse");
+        assert_eq!(entry.name, "http-router");
+        assert_eq!(entry.version.to_string(), "0.1.0");
+        assert_eq!(
+            entry.checksum,
+            "sha256:176df653ffa02096dfc3c486afb553040fed2e7e9d00270b3b0ae127a3e99469"
+        );
+        assert!(entry.dependencies.is_empty());
+        assert!(entry
+            .download_url
+            .starts_with("https://raw.githubusercontent.com/NORTHTEKDevs/kryos-registry/"));
+    }
+
+    #[test]
+    fn parse_legacy_deps_shorthand_still_works() {
+        // Older index files used `deps` instead of `dependencies`. Make sure
+        // we don't suddenly fail to resolve them.
+        let line = r#"{"name": "old-pkg", "version": "1.2.3", "deps": { "regex": "0.1.0" }, "checksum": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "download_url": "https://example.com/old-pkg-1.2.3.tar.gz"}"#;
+        let entry = parse_index_entry(line, "old-pkg").expect("must parse");
+        assert_eq!(entry.version.to_string(), "1.2.3");
+        assert_eq!(entry.dependencies.get("regex"), Some(&"0.1.0".to_string()));
+    }
+
+    #[test]
+    fn parse_dependencies_with_values() {
+        let line = r#"{"name": "app", "version": "0.2.0", "dependencies": {"json":"0.1.0","http-router":"0.1.0"}, "checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111", "download_url": "https://example.com/app-0.2.0.tar.gz"}"#;
+        let entry = parse_index_entry(line, "app").expect("must parse");
+        assert_eq!(entry.dependencies.len(), 2);
+        assert_eq!(entry.dependencies.get("json"), Some(&"0.1.0".to_string()));
+        assert_eq!(
+            entry.dependencies.get("http-router"),
+            Some(&"0.1.0".to_string())
+        );
+    }
+
+    #[test]
+    fn generate_index_entry_emits_sha256_of_tarball() {
+        // Round-trip: write a known byte payload to a temp tarball path, run the
+        // generator, and verify the checksum field matches the SHA-256 of those
+        // bytes — *not* a stable hash of metadata.
+        use crate::manifest::PackageInfo;
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("kryos-registry-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let tarball_path = dir.join("demo-0.1.0.tar.gz");
+        let body: &[u8] = b"hello kryos registry test";
+        {
+            let mut f = std::fs::File::create(&tarball_path).unwrap();
+            f.write_all(body).unwrap();
+        }
+        let manifest = Manifest {
+            package: PackageInfo {
+                name: "demo".into(),
+                version: "0.1.0".into(),
+                edition: "2026".into(),
+                description: None,
+                authors: vec![],
+                license: None,
+                repository: None,
+            },
+            dependencies: Default::default(),
+            build: Default::default(),
+            capabilities: Default::default(),
+        };
+        let pkg = PublishPackage {
+            name: "demo".into(),
+            version: "0.1.0".parse().unwrap(),
+            tarball_path: tarball_path.clone(),
+            manifest,
+        };
+        let entry = generate_index_entry(&pkg);
+        let expected = format!("sha256:{}", crate::sha256::sha256_hex(body));
+        assert!(
+            entry.contains(&expected),
+            "expected checksum {expected} in entry:\n{entry}"
+        );
+        // Body sanity: the entry should be a single JSON object that names the
+        // package, version, and an empty dependencies object.
+        assert!(entry.contains("\"name\": \"demo\""));
+        assert!(entry.contains("\"version\": \"0.1.0\""));
+        assert!(entry.contains("\"dependencies\": {}"));
+        let _ = std::fs::remove_file(&tarball_path);
     }
 }

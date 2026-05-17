@@ -9,6 +9,7 @@ pub mod manifest;
 pub mod registry;
 pub mod resolve;
 pub mod semver;
+pub mod sha256;
 
 pub use lock::{LockEntry, LockFile};
 pub use manifest::{BuildConfig, CapabilitiesConfig, DepSpec, Manifest, PackageInfo};

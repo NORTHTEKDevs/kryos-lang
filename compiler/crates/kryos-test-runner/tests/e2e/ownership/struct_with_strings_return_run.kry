@@ -1,0 +1,54 @@
+// Regression test for the historical "string-in-struct ownership leak"
+// across function returns documented in docs/BUGS.md. The original symptom
+// was that a returned struct carrying str fields would surface garbage
+// lengths (e.g. len(action.arg_s) = 7305790164731371552) when the field
+// was assigned from a previously-moved-from local.
+//
+// This test reconstructs the agent_runtime planner pattern that originally
+// triggered the bug, including:
+//   * a struct mixing scalar (i64) and heap-owned (str) fields,
+//   * multiple return sites all materialising the struct directly,
+//   * one return site that builds the str field via a heap-allocating
+//     stdlib call (replace) on a local that wasn't a literal,
+//   * field reads on the returned struct via both println and len().
+//
+// run-expect: kind=1
+// run-expect: name=echo
+// run-expect: arg_s=hello kryos
+// run-expect: arg_s_len=11
+// run-expect: arg_i=0
+// run-expect: kind=2
+// run-expect: arg_s=this is the observation
+// run-expect: arg_s_len=23
+
+struct Action {
+    kind: i64
+    name: str
+    arg_s: str
+    arg_i: i64
+}
+
+fn plan_next(user_query: str, has_observation: bool, observation: str) -> Action {
+    if has_observation {
+        return Action { kind: 2, name: "", arg_s: observation, arg_i: 0 }
+    }
+    if contains(user_query, "echo ") {
+        let stripped = replace(user_query, "echo ", "")
+        return Action { kind: 1, name: "echo", arg_s: stripped, arg_i: 0 }
+    }
+    return Action { kind: 2, name: "", arg_s: "I don't know how to handle that query.", arg_i: 0 }
+}
+
+fn main() {
+    let a1 = plan_next("echo hello kryos", false, "")
+    println("kind=" + to_string(a1.kind))
+    println("name=" + a1.name)
+    println("arg_s=" + a1.arg_s)
+    println("arg_s_len=" + to_string(len(a1.arg_s)))
+    println("arg_i=" + to_string(a1.arg_i))
+
+    let a2 = plan_next("anything", true, "this is the observation")
+    println("kind=" + to_string(a2.kind))
+    println("arg_s=" + a2.arg_s)
+    println("arg_s_len=" + to_string(len(a2.arg_s)))
+}
