@@ -1,0 +1,87 @@
+// pg_inventory -- a small Postgres-backed inventory tool.
+//
+// Usage:
+//   pg_inventory CONNSTR <init | seed | list | restock SKU QTY | low N>
+//
+// CONNSTR is a libpq-style string, e.g.
+//   "host=127.0.0.1 user=kryos password=kryos dbname=kryos_demo sslmode=disable"
+//
+// Commands:
+//   init       -- create schema (drops first, idempotent)
+//   seed       -- insert a few demo rows
+//   list       -- print every product
+//   restock SKU QTY  -- add QTY to product SKU inside a transaction
+//   low N      -- print all products with stock <= N
+//
+// Exit codes:
+//   0 -- success
+//   2 -- usage error
+//   3 -- SKU not found / no rows affected
+
+use std::os::{args, exit}
+
+@capabilities(db, net, io, process)
+fn main() {
+    let argv = args()
+    let argc = len(argv)
+    if argc < 3 {
+        eprintln("usage: pg_inventory CONNSTR <init|seed|list|restock SKU QTY|low N>")
+        exit(2)
+    }
+    let conn_str = argv[1]
+    let cmd = argv[2]
+
+    let conn = pg_connect(conn_str)
+    if conn < 0 {
+        eprintln("pg_inventory: connect failed")
+        exit(2)
+    }
+
+    if cmd == "init" {
+        pg_exec(conn, "DROP TABLE IF EXISTS products")
+        pg_exec(conn, "CREATE TABLE products (sku TEXT PRIMARY KEY, name TEXT NOT NULL, stock INTEGER NOT NULL DEFAULT 0, price_cents INTEGER NOT NULL)")
+        println("schema initialized")
+    } else if cmd == "seed" {
+        pg_exec(conn, "INSERT INTO products (sku, name, stock, price_cents) VALUES ('TEA-001', 'Earl Grey 100g', 12, 1295), ('TEA-002', 'Sencha 80g', 4, 1495), ('COF-001', 'Espresso Beans 250g', 20, 1795), ('MUG-001', 'Kryos Mug', 1, 1995) ON CONFLICT (sku) DO NOTHING")
+        println("seeded")
+    } else if cmd == "list" {
+        let json = pg_query(conn, "SELECT sku, name, stock, price_cents FROM products ORDER BY sku")
+        println(json)
+    } else if cmd == "restock" {
+        if argc < 5 {
+            eprintln("usage: restock SKU QTY")
+            pg_close(conn)
+            exit(2)
+        }
+        let sku = argv[3]
+        let qty = parse_int(argv[4])
+        // Quote the SKU.  Postgres uses '...' for strings.
+        let esc = replace(sku, "'", "''")
+        pg_exec(conn, "BEGIN")
+        let n = pg_exec(conn, "UPDATE products SET stock = stock + " + to_string(qty) + " WHERE sku = '" + esc + "'")
+        if n == 0 {
+            pg_exec(conn, "ROLLBACK")
+            eprintln("pg_inventory: SKU not found: " + sku)
+            pg_close(conn)
+            exit(3)
+        }
+        pg_exec(conn, "COMMIT")
+        let json = pg_query(conn, "SELECT sku, name, stock FROM products WHERE sku = '" + esc + "'")
+        println("restocked " + sku + " +" + to_string(qty) + " -> " + json)
+    } else if cmd == "low" {
+        if argc < 4 {
+            eprintln("usage: low N")
+            pg_close(conn)
+            exit(2)
+        }
+        let n = parse_int(argv[3])
+        let json = pg_query(conn, "SELECT sku, name, stock FROM products WHERE stock <= " + to_string(n) + " ORDER BY stock")
+        println(json)
+    } else {
+        eprintln("pg_inventory: unknown command: " + cmd)
+        pg_close(conn)
+        exit(2)
+    }
+
+    pg_close(conn)
+}
