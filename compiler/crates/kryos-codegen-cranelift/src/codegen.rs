@@ -2166,6 +2166,8 @@ fn translate_instruction<M: Module>(
                                     | "min"
                                     | "max"
                                     | "assert"
+                                    | "assert_eq"
+                                    | "panic"
                                     | "len"
                                     | "range"
                                     | "to_string"
@@ -3393,6 +3395,89 @@ fn translate_rvalue<M: Module>(
                     2,
                 )?;
                 builder.ins().call(assert_ref, &[condition, message]);
+                return Ok(None);
+            }
+
+            // assert_eq(left, right) — stringify both args using the same
+            // type-aware to_string lowering used for `{x}` interpolation,
+            // then forward the two KryosString handles to the runtime.
+            // The runtime compares the strings and prints a diff on failure.
+            if func == "assert_eq" && args.len() == 2 {
+                let mut handles: Vec<cranelift_codegen::ir::Value> = Vec::with_capacity(2);
+                for arg in args.iter() {
+                    if is_string_operand(arg, &translator.mir_func.locals) {
+                        let val = translate_operand(arg, builder, translator, module)?;
+                        handles.push(val);
+                        continue;
+                    }
+                    let val = translate_operand(arg, builder, translator, module)?;
+                    if is_float_operand(arg, &translator.mir_func.locals) {
+                        let f64_ref = ensure_func_ref_with_args(
+                            "kryos_f64_to_string",
+                            builder,
+                            translator,
+                            module,
+                            1,
+                        )?;
+                        let call = builder.ins().call(f64_ref, &[val]);
+                        handles.push(builder.inst_results(call)[0]);
+                    } else if is_bool_operand(arg, &translator.mir_func.locals) {
+                        let mut v = val;
+                        let val_ty = builder.func.dfg.value_type(v);
+                        if val_ty.is_int() && val_ty.bits() < 64 {
+                            v = builder.ins().sextend(types::I64, v);
+                        }
+                        let bool_ref = ensure_func_ref_with_args(
+                            "kryos_bool_to_string",
+                            builder,
+                            translator,
+                            module,
+                            1,
+                        )?;
+                        let call = builder.ins().call(bool_ref, &[v]);
+                        handles.push(builder.inst_results(call)[0]);
+                    } else {
+                        // Default: stringify as i64.
+                        let mut v = val;
+                        let val_ty = builder.func.dfg.value_type(v);
+                        if val_ty.is_int() && val_ty.bits() < 64 {
+                            v = builder.ins().sextend(types::I64, v);
+                        }
+                        let i_ref = ensure_func_ref_with_args(
+                            "kryos_i64_to_string",
+                            builder,
+                            translator,
+                            module,
+                            1,
+                        )?;
+                        let call = builder.ins().call(i_ref, &[v]);
+                        handles.push(builder.inst_results(call)[0]);
+                    }
+                }
+                let assert_eq_ref = ensure_func_ref_with_args(
+                    "kryos_builtin_assert_eq",
+                    builder,
+                    translator,
+                    module,
+                    2,
+                )?;
+                builder.ins().call(assert_eq_ref, &handles);
+                return Ok(None);
+            }
+
+            // panic(msg: str) — abort the process with a user message.
+            // Lowering: forward the single string argument to
+            // kryos_builtin_panic, which never returns at runtime.
+            if func == "panic" && !args.is_empty() {
+                let message = translate_operand(&args[0], builder, translator, module)?;
+                let panic_ref = ensure_func_ref_with_args(
+                    "kryos_builtin_panic",
+                    builder,
+                    translator,
+                    module,
+                    1,
+                )?;
+                builder.ins().call(panic_ref, &[message]);
                 return Ok(None);
             }
 

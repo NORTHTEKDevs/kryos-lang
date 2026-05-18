@@ -198,6 +198,8 @@ fn builtin_fn_info(word: &str) -> Option<String> {
         "ceil" => "```kryos\nfn ceil(x: f64) -> f64\n```\nRound a float up to the nearest integer value.".to_string(),
         // Other
         "assert" => "```kryos\nfn assert(cond: bool, msg: str)\n```\nAssert that a condition is true, or panic with the given message.".to_string(),
+        "assert_eq" => "```kryos\nfn assert_eq(left, right)\n```\nAssert that two values are equal. On failure prints both stringified values and aborts (or records a test failure under `@test`).".to_string(),
+        "panic" => "```kryos\nfn panic(msg: str)\n```\nAbort the process with the given message. Prints `panic: <msg>` to stderr and exits with status 101.".to_string(),
         "time_now" => "```kryos\nfn time_now() -> i64\n```\nReturn the current unix timestamp in seconds.".to_string(),
         "file_read" => "```kryos\nfn file_read(path: str) -> str\n```\nRead the entire contents of a file as a string.".to_string(),
         "file_write" => "```kryos\nfn file_write(path: str, content: str)\n```\nWrite a string to a file, creating or overwriting it.".to_string(),

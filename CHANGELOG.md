@@ -4,6 +4,72 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.7.0] - 2026-05-17 — "language polish for launch"
+
+Two correctness gaps and one missing builtin that would have been
+awkward to explain at launch. No surface-language changes; existing
+code keeps compiling. All 29 smoke tests (with 5 @test functions in
+the new files) + 21 router + 12 config_parser tests pass under both
+JIT (`kryos test`) and AOT (`kryos run` / `kryos build`).
+
+### Added
+
+- `panic(msg: str) -> void` builtin. Prints `panic: <msg>` to stderr
+  and exits with status 101. Under the `@test` harness, panics are
+  recorded as test failures instead of aborting the process. The
+  type checker, MIR, both codegen backends (Cranelift, LLVM), and
+  the LSP completion/hover docs all know about it.
+
+- `assert_eq(left, right) -> void` builtin. `assert(bool)` only tells
+  you the condition was false; `assert_eq` prints both stringified
+  values on failure so tests are debuggable without rerunning. The
+  codegen converts each argument to a string using the same
+  type-aware lowering as `{x}` interpolation — ints, bools, floats,
+  and strings all print correctly. Failure output looks like:
+
+  ```
+  assertion failed: left != right
+    left:  4
+    right: 5
+  ```
+
+### Fixed
+
+- `@test` functions that took a fn-pointer value (e.g.
+  `let f: fn(i64) -> i64 = some_fn; f(arg)`) segfaulted with exit
+  139. The root cause was that the AOT codegen path generates per-
+  function env thunks (`{name}_env`) so the env-based `CallIndirect`
+  ABI (`env[0] = thunk_fn_ptr`) is uniform, but the JIT path used by
+  `kryos test` skipped that scan/declare/define step. The raw
+  function address flowed through unchanged and the `load(env, 0)`
+  inside `CallIndirect` dereferenced the function's own instruction
+  bytes as a pointer, then jumped through the garbage result.
+
+  The JIT `compile_all_inner` now mirrors the AOT phases: scan all
+  MIR functions for `RValue::Closure`, declare an `{name}_env` thunk
+  with signature `(env, user_args...) -> i64`, translate user
+  function bodies, then emit thunk bodies that load captures from
+  env at offsets 8.. and tail-call the original function. Closures
+  with non-empty captures already worked in the JIT through the same
+  path; this fix completes the bare-function-pointer case.
+
+### Tests
+
+- New smoke test `test_fn_pointer.kry` exercises bare fn-pointer
+  assignment and call in both `@test` (JIT) and `fn main()` (AOT)
+  for unary and binary signatures.
+
+- New smoke test `test_assert_eq.kry` covers the success path for
+  int, string, and bool comparisons under `@test` and AOT.
+
+### Build note
+
+Editing `kryos-rt/src/builtins.rs` only rebuilds the rlib by default.
+The AOT linker uses `target/release/libkryos_rt.a` (staticlib), so
+after touching that file you must `cargo build --release -p kryos-rt`
+explicitly to regenerate the static archive. Otherwise `kryos run`
+and `kryos build` fail with `undefined reference to <new symbol>`.
+
 ## [2.6.9] - 2026-05-17 — "parser hardening for self-hosting"
 
 Three parser bugs blocking self-hosting are fixed. None of these

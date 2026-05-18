@@ -1,0 +1,41 @@
+// Regression test for v2.7.0.
+//
+// Before v2.7.0, a `@test` function that took a fn-pointer value (e.g.
+// `let f: fn(i64) -> i64 = some_fn`) and called it segfaulted with
+// exit 139. The MIR `CallIndirect` expects the callee to be an env
+// block `[thunk_fn_ptr, cap0, cap1, ...]` and loads offset 0 to get the
+// thunk address. The AOT path generated those thunks but the JIT path
+// used by `kryos test` did not, so the value flowed through as a raw
+// function address and the load at offset 0 dereferenced the function's
+// own instruction bytes as if they were a pointer.
+//
+// The fix mirrors the AOT thunk scan/declare/define logic in
+// `compile_all_inner` (kryos-codegen-cranelift::jit). Each function
+// that appears as a closure value gets an `{name}_env` thunk so the
+// env-based ABI is uniform between JIT and AOT.
+//
+// This test exercises the bare fn-pointer path. Closure capture is
+// covered by tests in examples/real/router and config_parser.
+
+fn double(x: i64) -> i64 { return x * 2 }
+fn add(a: i64, b: i64) -> i64 { return a + b }
+
+@test
+fn test_fn_ptr_unary() {
+    let f: fn(i64) -> i64 = double
+    let r = f(21)
+    assert(r == 42)
+}
+
+@test
+fn test_fn_ptr_binary() {
+    let g: fn(i64, i64) -> i64 = add
+    let r = g(3, 4)
+    assert(r == 7)
+}
+
+fn main() {
+    // Smoke path: also exercise the AOT path via `kryos build` / `kryos run`.
+    let f: fn(i64) -> i64 = double
+    println("double(5)={f(5)}")
+}

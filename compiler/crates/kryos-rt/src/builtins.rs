@@ -435,6 +435,78 @@ pub extern "C" fn kryos_builtin_time_now() -> i64 {
     }
 }
 
+/// Abort the process with a user-supplied message. `msg_handle` is a
+/// KryosString handle. Prints "panic: <msg>" to stderr (or records it
+/// as a test failure when running under the test harness) and exits.
+/// Returns i64 only so codegen can treat it as a normal extern call;
+/// the call never actually returns.
+#[no_mangle]
+pub extern "C" fn kryos_builtin_panic(msg_handle: i64) -> i64 {
+    let msg = if msg_handle == 0 {
+        "<no message>".to_string()
+    } else {
+        let ks = msg_handle as *const crate::string::KryosString;
+        unsafe {
+            let len = (*ks).len as usize;
+            let data = (*ks).data;
+            if data.is_null() || len == 0 {
+                "<no message>".to_string()
+            } else {
+                let slice = std::slice::from_raw_parts(data, len);
+                std::str::from_utf8(slice)
+                    .unwrap_or("<invalid utf-8>")
+                    .to_string()
+            }
+        }
+    };
+    if crate::is_test_mode() {
+        crate::set_test_failure(format!("panic: {}", msg));
+        return 0;
+    }
+    eprintln!("panic: {}", msg);
+    std::process::exit(101);
+}
+
+/// Assert that two values are equal by comparing their stringified forms.
+/// Both args are KryosString handles produced at the call site via the
+/// type-aware `to_string` codegen path (so ints, bools, floats, and
+/// strings all print correctly). If the contents differ, prints a
+/// multi-line diff to stderr and aborts (or records a test failure when
+/// running under the test harness). Returns 0 (ignored).
+#[no_mangle]
+pub extern "C" fn kryos_builtin_assert_eq(a_handle: i64, b_handle: i64) -> i64 {
+    fn read_str(handle: i64) -> String {
+        if handle == 0 {
+            return String::new();
+        }
+        let ks = handle as *const crate::string::KryosString;
+        unsafe {
+            let len = (*ks).len as usize;
+            let data = (*ks).data;
+            if data.is_null() || len == 0 {
+                String::new()
+            } else {
+                let slice = std::slice::from_raw_parts(data, len);
+                std::str::from_utf8(slice)
+                    .unwrap_or("<invalid utf-8>")
+                    .to_string()
+            }
+        }
+    }
+    let a = read_str(a_handle);
+    let b = read_str(b_handle);
+    if a == b {
+        return 0;
+    }
+    let msg = format!("assertion failed: left != right\n  left:  {}\n  right: {}", a, b);
+    if crate::is_test_mode() {
+        crate::set_test_failure(msg);
+        return 0;
+    }
+    eprintln!("{}", msg);
+    std::process::abort();
+}
+
 /// Assert that `condition` is non-zero (truthy). If it is zero, print
 /// "assertion failed: <msg>" to stderr and abort the process.
 /// `msg_handle` is a KryosString handle. Returns 0 (ignored).

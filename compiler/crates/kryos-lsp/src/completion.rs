@@ -185,6 +185,16 @@ pub fn get_completions(source: &str, line: u32, character: u32) -> Vec<Value> {
             "Assert condition or panic with message",
         ),
         (
+            "assert_eq",
+            "fn(left, right)",
+            "Assert two values are equal; prints both on failure",
+        ),
+        (
+            "panic",
+            "fn(msg: str)",
+            "Abort the process with the given message",
+        ),
+        (
             "time_now",
             "fn() -> i64",
             "Current unix timestamp in seconds",

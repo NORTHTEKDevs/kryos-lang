@@ -2815,6 +2815,32 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         ret: Type::Void,
     });
 
+    // assert_eq(left, right) -> void — abort if left != right, printing both
+    // values. Codegen converts each argument to its stringified form via the
+    // type-aware `to_string` lowering, so the runtime always sees two strings.
+    // Both args use Type::Error to accept any type (matched at codegen).
+    checker.env.define_function(FunctionSig {
+        name: "assert_eq".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("left".to_string(), Type::Error),
+            ("right".to_string(), Type::Error),
+        ],
+        ret: Type::Void,
+    });
+
+    // panic(msg: str) -> void — abort the process with the given message.
+    // Return type is void but the call never actually returns; control
+    // flow analysis treats it like a regular call for now.
+    checker.env.define_function(FunctionSig {
+        name: "panic".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("msg".to_string(), Type::Str)],
+        ret: Type::Void,
+    });
+
     // parse_int(s: str) -> i64 — parse string to integer (0 on failure)
     checker.env.define_function(FunctionSig {
         name: "parse_int".to_string(),

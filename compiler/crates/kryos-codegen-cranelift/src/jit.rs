@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use cranelift_codegen::ir::{types, AbiParam, Function, Signature, UserFuncName};
+use cranelift_codegen::ir::{types, AbiParam, Function, InstBuilder, MemFlags, Signature, UserFuncName};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
 use cranelift_frontend::FunctionBuilder;
@@ -14,7 +14,7 @@ use cranelift_frontend::FunctionBuilderContext;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module};
 
-use kryos_mir::ir::{MirFunction, MirModule};
+use kryos_mir::ir::{Instruction, MirFunction, MirModule, RValue};
 
 use crate::codegen::build_signature;
 use crate::CodegenError;
@@ -287,6 +287,14 @@ impl JitCompiler {
         jit_builder.symbol(
             "kryos_builtin_assert",
             kryos_rt::builtins::kryos_builtin_assert as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_builtin_assert_eq",
+            kryos_rt::builtins::kryos_builtin_assert_eq as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_builtin_panic",
+            kryos_rt::builtins::kryos_builtin_panic as *const u8,
         );
         jit_builder.symbol(
             "kryos_builtin_parse_int",
@@ -1289,6 +1297,55 @@ impl JitCompiler {
             declared.push(func_id);
         }
 
+        // Phase 1.5: Scan for `RValue::Closure` and declare an env-thunk
+        // `{func_name}_env(env, user_args...) -> i64` for each function used
+        // as a function-pointer value. This is required for the env-based
+        // CallIndirect calling convention (env[0] = thunk fn ptr). The AOT
+        // path does the same scan/declare/define dance — without it, a
+        // `let f: fn(...) = bare_fn; f(arg)` lowers to a CallIndirect that
+        // dereferences the raw function address as if it were an env block,
+        // causing a segfault (regression test: tests/smoke/test_fn_pointer).
+        let mir_func_map: HashMap<&str, &MirFunction> =
+            functions.iter().map(|f| (f.name.as_str(), f)).collect();
+        // closure_name -> (num_captures, user_param_count)
+        let mut closure_info: HashMap<String, (usize, usize)> = HashMap::new();
+        for mir_func in functions {
+            for bb in &mir_func.blocks {
+                for inst in &bb.instructions {
+                    if let Instruction::Assign {
+                        value: RValue::Closure { func_name, captures },
+                        ..
+                    } = inst
+                    {
+                        if !closure_info.contains_key(func_name.as_str()) {
+                            let user_params = if let Some(f) = mir_func_map.get(func_name.as_str()) {
+                                f.params.len().saturating_sub(captures.len())
+                            } else {
+                                0
+                            };
+                            closure_info.insert(func_name.clone(), (captures.len(), user_params));
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut thunk_ids: HashMap<String, cranelift_module::FuncId> = HashMap::new();
+        for (func_name, (_, user_param_count)) in &closure_info {
+            let env_thunk_name = format!("{func_name}_env");
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // env pointer
+            for _ in 0..*user_param_count {
+                sig.params.push(AbiParam::new(types::I64));
+            }
+            sig.returns.push(AbiParam::new(types::I64));
+            let id = self
+                .module
+                .declare_function(&env_thunk_name, Linkage::Export, &sig)?;
+            thunk_ids.insert(func_name.clone(), id);
+            func_ids.insert(env_thunk_name, id);
+        }
+
         // Phase 2: Translate each function body.
         // string_counter is module-wide so data section names are unique
         // across all functions (e.g. `.trace_name.0`, `.trace_name.1`, ...).
@@ -1332,6 +1389,114 @@ impl JitCompiler {
                     mir_func.name
                 ))
             })?;
+        }
+
+        // Phase 2.5: Generate the env-thunk function bodies. Each thunk loads
+        // captures from env at offsets 8.. (count=num_captures), appends user
+        // args from its own parameters, and tail-calls the original function.
+        for (func_name, (num_captures, user_param_count)) in &closure_info {
+            let env_thunk_id = thunk_ids[func_name.as_str()];
+
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // env
+            for _ in 0..*user_param_count {
+                sig.params.push(AbiParam::new(types::I64));
+            }
+            sig.returns.push(AbiParam::new(types::I64));
+
+            let func_index = self.func_counter;
+            self.func_counter += 1;
+            let mut cl_func =
+                Function::with_name_signature(UserFuncName::user(0, func_index), sig);
+
+            {
+                let mut builder = FunctionBuilder::new(&mut cl_func, &mut self.fb_ctx);
+                let entry = builder.create_block();
+                builder.append_block_params_for_function_params(entry);
+                builder.switch_to_block(entry);
+
+                let block_params: Vec<_> = builder.block_params(entry).to_vec();
+                let env_val = block_params[0];
+
+                // Load captures from env at offsets 8, 16, ...
+                let mut call_args: Vec<cranelift_codegen::ir::Value> = Vec::new();
+                for i in 0..*num_captures {
+                    let offset = ((i + 1) * 8) as i32;
+                    let cap = builder
+                        .ins()
+                        .load(types::I64, MemFlags::new(), env_val, offset);
+                    call_args.push(cap);
+                }
+
+                // Append user args from thunk parameters (indices 1..).
+                for i in 0..*user_param_count {
+                    call_args.push(block_params[1 + i]);
+                }
+
+                // Coerce args to match the original function's signature types.
+                let orig_sig = if let Some(f) = mir_func_map.get(func_name.as_str()) {
+                    build_signature(f, call_conv)
+                } else {
+                    let mut s = Signature::new(call_conv);
+                    for _ in 0..call_args.len() {
+                        s.params.push(AbiParam::new(types::I64));
+                    }
+                    s.returns.push(AbiParam::new(types::I64));
+                    s
+                };
+                for (i, arg) in call_args.iter_mut().enumerate() {
+                    if i < orig_sig.params.len() {
+                        let expected = orig_sig.params[i].value_type;
+                        let actual = builder.func.dfg.value_type(*arg);
+                        if expected != actual {
+                            if expected.is_int() && actual.is_int() {
+                                if expected.bits() < actual.bits() {
+                                    *arg = builder.ins().ireduce(expected, *arg);
+                                } else {
+                                    *arg = builder.ins().sextend(expected, *arg);
+                                }
+                            } else if expected.is_float() && actual.is_int() {
+                                *arg = builder.ins().bitcast(expected, MemFlags::new(), *arg);
+                            } else if expected.is_int() && actual.is_float() {
+                                *arg = builder.ins().bitcast(expected, MemFlags::new(), *arg);
+                            }
+                        }
+                    }
+                }
+
+                // Call the original function and widen its return to i64.
+                let orig_id = func_ids[func_name.as_str()];
+                let orig_ref = self.module.declare_func_in_func(orig_id, builder.func);
+                let call_inst = builder.ins().call(orig_ref, &call_args);
+
+                let results = builder.inst_results(call_inst).to_vec();
+                let ret_val = if results.is_empty() {
+                    builder.ins().iconst(types::I64, 0)
+                } else {
+                    let result = results[0];
+                    let result_ty = builder.func.dfg.value_type(result);
+                    if result_ty == types::I64 {
+                        result
+                    } else if result_ty.is_int() && result_ty.bits() < 64 {
+                        builder.ins().sextend(types::I64, result)
+                    } else if result_ty.is_float() {
+                        builder.ins().bitcast(types::I64, MemFlags::new(), result)
+                    } else {
+                        result
+                    }
+                };
+
+                builder.ins().return_(&[ret_val]);
+                builder.seal_all_blocks();
+                builder.finalize();
+            }
+
+            let mut ctx = Context::for_function(cl_func);
+            self.module
+                .define_function(env_thunk_id, &mut ctx)
+                .map_err(|e| {
+                    CodegenError::Internal(format!("env thunk `{}_env`: {e:?}", func_name))
+                })?;
         }
 
         // Phase 3: Finalize once.
@@ -1509,6 +1674,8 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_i64_to_string", "kryos_i64_to_string", sig(1));
     decl!("kryos_ipow", "kryos_ipow", sig(2));
     decl!("kryos_builtin_assert", "kryos_builtin_assert", sig(2));
+    decl!("kryos_builtin_assert_eq", "kryos_builtin_assert_eq", sig(2));
+    decl!("kryos_builtin_panic", "kryos_builtin_panic", sig(1));
     decl!("kryos_builtin_type_of", "kryos_builtin_type_of", sig(1));
     decl!("kryos_builtin_parse_int", "kryos_builtin_parse_int", sig(1));
     decl!(

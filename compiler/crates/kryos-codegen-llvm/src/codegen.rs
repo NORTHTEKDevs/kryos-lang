@@ -690,6 +690,7 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_builtin_parse_float(i64)");
         self.emit_line("declare i64 @kryos_builtin_type_of(i64)");
         self.emit_line("declare i64 @kryos_builtin_assert(i64, i64)");
+        self.emit_line("declare i64 @kryos_builtin_panic(i64)");
         self.emit_line("declare i64 @kryos_builtin_char_code(i64)");
         self.emit_line("declare i64 @kryos_builtin_char_from(i64)");
         self.emit_line("declare i64 @kryos_builtin_substr(i64, i64, i64)");
@@ -2962,6 +2963,26 @@ impl LlvmCodegen {
                             // Discard the return value — assert is void in Kryos.
                             self.emit_line(&format!(
                                 "  call i64 @kryos_builtin_assert(i64 {cond_val}, i64 {msg_val})"
+                            ));
+                        }
+                        "panic" => {
+                            // panic(msg: str) -> void
+                            // Runtime: kryos_builtin_panic(i64) -> i64 (never returns)
+                            let msg_val = if !args.is_empty() {
+                                let v = self.operand_to_llvm(&args[0], func);
+                                let ty = self.operand_type(&args[0], func);
+                                if ty == "ptr" {
+                                    let tmp = self.next_temp();
+                                    self.emit_line(&format!("  {tmp} = ptrtoint ptr {v} to i64"));
+                                    tmp
+                                } else {
+                                    self.coerce_value(&v, &ty, "i64")
+                                }
+                            } else {
+                                "0".to_string()
+                            };
+                            self.emit_line(&format!(
+                                "  call i64 @kryos_builtin_panic(i64 {msg_val})"
                             ));
                         }
                         "abs" if args.len() == 1 && !self.func_param_types.contains_key("abs") => {

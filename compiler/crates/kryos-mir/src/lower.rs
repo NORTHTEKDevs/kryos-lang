@@ -463,6 +463,8 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ("env_get", MirType::Str),
         ("time_now", MirType::I64),
         ("assert", MirType::Void),
+        ("assert_eq", MirType::Void),
+        ("panic", MirType::Void),
         ("chan", MirType::I64),
         ("recv", MirType::I64),
         ("println", MirType::Void),

@@ -1,0 +1,31 @@
+// Smoke test for the `assert_eq` builtin introduced in v2.7.0.
+//
+// `assert(bool)` only tells you the condition failed; `assert_eq(a, b)`
+// prints both stringified values on failure so tests are debuggable
+// without rerunning. The codegen converts each argument to a string
+// using the same type-aware to_string lowering as `{x}` interpolation,
+// so ints, bools, floats, and strings all print correctly.
+//
+// This file covers the happy path. Failure-path printing is covered by
+// the runtime unit tests.
+
+@test
+fn test_int_eq_success() {
+    assert_eq(2 + 2, 4)
+}
+
+@test
+fn test_str_eq_success() {
+    assert_eq("hello", "hello")
+}
+
+@test
+fn test_bool_eq_success() {
+    assert_eq(1 == 1, true)
+}
+
+fn main() {
+    // Exercise the AOT path too.
+    assert_eq(7 * 6, 42)
+    println("assert_eq ok")
+}
