@@ -43,6 +43,7 @@
 
 #[cfg(feature = "crypto")]
 pub mod crypto;
+pub mod base64;
 pub mod bindings;
 pub mod datetime;
 pub mod env;
@@ -62,6 +63,7 @@ pub mod string;
 pub mod sync_prims;
 pub mod term;
 pub mod unix_socket;
+pub mod uuid;
 pub mod websocket;
 #[cfg(feature = "tls")]
 pub mod tls;

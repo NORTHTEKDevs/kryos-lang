@@ -4,6 +4,38 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.2.0-rc.1] — 2026-05-18 — "stdlib breadth"
+
+Fleshes out four under-built stdlib modules and adds two new ones. Every
+new function ships with #[cfg(test)] unit tests in the same file. All
+12 stdlib unit tests pass.
+
+### Added
+
+- **`std::datetime` expanded** — `kryos_time_now_nanos`,
+  `kryos_time_sleep_millis`, full UTC date breakdown
+  (`kryos_time_{year,month,day,hour,minute,second,weekday}_utc`),
+  `kryos_time_from_ymdhms_utc` constructor, and
+  `kryos_time_format_rfc3339_utc` RFC 3339 formatter. Civil-from-days
+  conversion uses Howard Hinnant's algorithm — works for any year in
+  the proleptic Gregorian calendar.
+- **`std::re` expanded** — `kryos_regex_find` (first-match span),
+  `kryos_regex_replace_all` (caller-buffer with overflow signaling),
+  `kryos_regex_capture_count`, and `kryos_regex_capture` (per-group
+  span extraction including group-didn't-participate handling).
+- **`std::base64` (new)** — RFC 4648 standard-alphabet encoder and
+  decoder. Both write into caller-provided buffers with `*needed`
+  set on overflow. No external dep — fits inline.
+- **`std::uuid` (new)** — UUID v4 generation per RFC 4122
+  (`kryos_uuid_v4_bytes`), canonical `xxxxxxxx-xxxx-...` formatter
+  (`kryos_uuid_format`), and parser (`kryos_uuid_parse`). Random
+  source is splitmix64-mixed nanos+counter — good for IDs, not for
+  CSPRNG (use `crypto` feature for that).
+
+### Changed
+
+- Workspace version bumped from `3.1.0-rc.1` to `3.2.0-rc.1`.
+
 ## [3.1.0-rc.1] — 2026-05-18 — "IDE depth + diagnostic hints"
 
 LSP feature set fleshed out to mainstream-language quality. Diagnostics

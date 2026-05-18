@@ -1215,7 +1215,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-ast"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 dependencies = [
  "kryos-errors",
  "serde",
@@ -1223,7 +1223,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-bindgen"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 dependencies = [
  "kryos-ast",
  "kryos-errors",
@@ -1231,7 +1231,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-capabilities"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 dependencies = [
  "kryos-ast",
  "kryos-errors",
@@ -1239,7 +1239,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-cli"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 dependencies = [
  "clap",
  "kryos-bindgen",
@@ -1257,7 +1257,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-codegen-cranelift"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -1274,7 +1274,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-codegen-llvm"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 dependencies = [
  "kryos-driver",
  "kryos-errors",
@@ -1283,7 +1283,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-codegen-wasm"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 dependencies = [
  "kryos-driver",
  "kryos-mir",
@@ -1292,7 +1292,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-doc"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 dependencies = [
  "kryos-ast",
  "kryos-errors",
@@ -1302,7 +1302,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-driver"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 dependencies = [
  "criterion",
  "kryos-ast",
@@ -1323,11 +1323,11 @@ dependencies = [
 
 [[package]]
 name = "kryos-errors"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 
 [[package]]
 name = "kryos-fmt"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 dependencies = [
  "kryos-ast",
  "kryos-errors",
@@ -1337,21 +1337,21 @@ dependencies = [
 
 [[package]]
 name = "kryos-lexer"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 dependencies = [
  "kryos-errors",
 ]
 
 [[package]]
 name = "kryos-linker"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 dependencies = [
  "kryos-errors",
 ]
 
 [[package]]
 name = "kryos-lsp"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 dependencies = [
  "kryos-ast",
  "kryos-errors",
@@ -1364,7 +1364,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-mir"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 dependencies = [
  "kryos-ast",
  "kryos-errors",
@@ -1373,7 +1373,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-ownership"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 dependencies = [
  "kryos-ast",
  "kryos-errors",
@@ -1382,7 +1382,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-package"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 dependencies = [
  "kryos-errors",
  "serde",
@@ -1392,7 +1392,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-parser"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 dependencies = [
  "kryos-ast",
  "kryos-errors",
@@ -1401,11 +1401,11 @@ dependencies = [
 
 [[package]]
 name = "kryos-rt"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 
 [[package]]
 name = "kryos-stdlib-native"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 dependencies = [
  "base64",
  "crossterm",
@@ -1425,7 +1425,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-test-runner"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 dependencies = [
  "kryos-codegen-cranelift",
  "kryos-driver",
@@ -1436,7 +1436,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-types"
-version = "3.1.0-rc.1"
+version = "3.2.0-rc.1"
 dependencies = [
  "kryos-ast",
  "kryos-errors",
