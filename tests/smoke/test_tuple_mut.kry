@@ -1,0 +1,55 @@
+// Regression test for v2.8.0 fix: `let (mut a, mut b) = expr` and
+// `let mut (a, b) = expr` both produce mutable bindings.
+//
+// Before the fix, per-element `mut` inside a tuple pattern was parsed
+// into Pattern::Ident { mutable: true } but the type checker's
+// bind_pattern() ignored it and always called env.define_var() (immutable).
+// Subsequent assignments produced a confusing "assignment to immutable
+// variable" warning even though the source clearly wrote `mut`.
+//
+// Fix locations:
+//   - kryos-types: bind_pattern_with_mut threads outer + per-element mut
+//   - kryos-mir:   tuple destructuring lowering honors per-element mut
+
+fn pair() -> (i64, i64) {
+    return (10, 20)
+}
+
+@test
+fn test_per_element_mut() {
+    // Per-element mut should make a mutable, leave b immutable.
+    let (mut a, b) = pair()
+    a = a + 1
+    assert_eq(a, 11)
+    assert_eq(b, 20)
+}
+
+@test
+fn test_outer_mut_all_elements() {
+    // `let mut (...)` should make every binding mutable.
+    let mut (c, d) = pair()
+    c = c + 100
+    d = d + 200
+    assert_eq(c, 110)
+    assert_eq(d, 220)
+}
+
+@test
+fn test_both_mut_explicit() {
+    // `let (mut a, mut b)` — original failing case from the bug report.
+    let (mut a, mut b) = pair()
+    a = a + 1
+    b = b + 1
+    assert_eq(a, 11)
+    assert_eq(b, 21)
+}
+
+fn main() {
+    // Exercise the AOT path too.
+    let (mut a, mut b) = pair()
+    a = a + 5
+    b = b + 5
+    assert_eq(a, 15)
+    assert_eq(b, 25)
+    println("tuple_mut_ok")
+}

@@ -337,6 +337,16 @@ impl<'src> Lexer<'src> {
 
         while !self.at_end() && self.peek() != b'"' {
             if self.peek() == b'{' {
+                // `{{` -> literal `{`.  Lets templates that need braces
+                // (CSS / JSON / shell scripts) coexist with interpolation
+                // without resorting to `\{` everywhere.  Mirrors Rust /
+                // Python f-string conventions.
+                if self.peek_at(1) == b'{' {
+                    self.advance(); // consume first `{`
+                    self.advance(); // consume second `{`
+                    text.push('{');
+                    continue;
+                }
                 if !text.is_empty() || !has_interpolation {
                     self.emit(TokenKind::StringPart, start, self.pos, text.clone());
                     text.clear();
@@ -357,6 +367,16 @@ impl<'src> Lexer<'src> {
                     self.advance();
                     self.emit(TokenKind::InterpEnd, end_start, self.pos, "}".into());
                 }
+                continue;
+            }
+
+            // `}}` outside an interpolation -> literal `}`.  Symmetric with
+            // `{{` so users can write `"if (x) {{ foo() }}"` without escapes.
+            // A bare `}` is still allowed (passes through) for back-compat.
+            if self.peek() == b'}' && self.peek_at(1) == b'}' {
+                self.advance();
+                self.advance();
+                text.push('}');
                 continue;
             }
 

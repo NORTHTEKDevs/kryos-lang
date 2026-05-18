@@ -4,6 +4,113 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.8.0] - 2026-05-17 — "language polish, round two"
+
+Three correctness fixes plus a stdlib reference doc and a public
+roadmap. No surface-language changes; existing code keeps compiling.
+All 326 cargo tests and every smoke test pass. The one pre-existing
+failure (`compile_file_with_selective_import` in kryos-driver and
+`build_cache_roundtrip_with_cli` linker-stub test) is unrelated to v2.8
+work and predates this release.
+
+### Fixed
+
+- **String-local clobber across recursion.** Use-after-free when a named
+  string local was passed to a function that stored it in a heap struct
+  field, then the caller's scope cleanup `drop()`ed the now-aliased
+  string. Concrete repro: a `Ctx { strs: [str] }` struct, a `push_str`
+  helper that mutates a copy of the struct, and a recursive `expr()`
+  loop containing `let s = op(); pp = expr(pp, ...); pp = push_str(pp,
+  s)`. Strings at certain iteration indices came out empty or as garbage
+  (`"["`).
+
+  Root cause: MIR lowering for `Stmt::Assign -> identifier` evaluated
+  the RHS but never called `consume_call_args` when the RHS was a
+  direct `RValue::Call`. The other call sites (`let x = f(...)` and
+  discarded `f()`) did. Scope cleanup then emitted `drop(s)` on a local
+  the callee had already taken ownership of, freeing memory the struct
+  still referenced.
+
+  Fix in `compiler/crates/kryos-mir/src/lower.rs`: extend the
+  `Stmt::Assign` identifier branch to call `consume_call_args` for both
+  `RValue::Call` and `RValue::CallIndirect`. Also implement the
+  self-consuming skip that `consume_call_args`' docstring claimed (and
+  the unused `_dest` parameter implied) but did not actually perform —
+  in `pp = push_str(pp, s)` the dest `pp` must NOT be marked dropped
+  because the call's return value is a fresh owned struct that still
+  needs to be dropped at scope end.
+
+  Permanent regression test: `tests/smoke/test_string_clobber.kry`. With
+  `depth=4` the test produces 31 strings and checks every one is either
+  `"leaf"` or `"OP"`. Verified to fail (panic with `FAIL at 5: got ''`)
+  on the unfixed build and pass on the fixed build.
+
+- **Per-element `mut` in tuple destructuring.** `let (mut a, mut b) =
+  expr` and `let mut (a, b) = expr` are documented in the language
+  reference but the former silently produced immutable bindings. Any
+  subsequent assignment raised "assignment to immutable variable"
+  warnings.
+
+  Root cause: the parser correctly built `Pattern::Ident { mutable: true,
+  ... }` for `mut`-prefixed identifiers inside tuple patterns, but the
+  type checker's `bind_pattern` ignored the per-element flag and always
+  called `env.define_var()` (immutable).
+
+  Fix in `compiler/crates/kryos-types/src/check.rs`: split `bind_pattern`
+  into a thin wrapper plus `bind_pattern_with_mut(pat, ty, outer_mut)`.
+  The recursive walker threads the outer `let mut (...)` modifier and
+  the per-element `Pattern::Ident.mutable` flag, OR-ing them together
+  to decide whether each binding goes into the env as mutable. The MIR
+  lowering path was also updated to honor the per-element mut when
+  allocating the destructured locals.
+
+  All three forms (`let (mut a, b)`, `let mut (a, b)`, `let (mut a,
+  mut b)`) now work and immutable bindings still warn correctly.
+  Permanent regression test: `tests/smoke/test_tuple_mut.kry` (3 @test
+  functions + AOT main).
+
+- **Brace escapes in string literals.** `{{` and `}}` now produce a
+  single literal `{` and `}` respectively inside string literals,
+  matching Rust / Python f-string conventions. The older `\{` and
+  `\}` escapes still work for back-compat. This makes embedding CSS,
+  JSON, and shell scripts inside interpolated strings far less
+  painful.
+
+  Fix in `compiler/crates/kryos-lexer/src/lexer.rs scan_string`:
+  before treating `{` as the start of an interpolation, peek ahead.
+  If the next byte is also `{`, consume both and append a literal
+  `{` to the current text segment. Same for `}}`. A bare `}` still
+  passes through unchanged so existing code compiles.
+
+  Permanent regression test: `tests/smoke/test_string_brace_escape.kry`
+  (5 @test functions covering double-open, mixed interpolation, CSS
+  templates, back-compat `\{` form, and bare `}`).
+
+### Added
+
+- **`docs/STDLIB.md`** — single-page reference covering every
+  always-available builtin (I/O, strings, numbers, arrays, FS, network,
+  JSON, crypto, regex, concurrency, browser host), every `use std::*`
+  module, the naming-gotchas table (`length` vs `len`, `string` vs
+  `to_string`, etc.), the `@test` annotation, and the complete `kryos`
+  CLI surface. Complements rather than replaces the deeper per-module
+  docs under `docs/stdlib/`.
+
+- **`ROADMAP.md`** — public commitment for v2.9 (LLVM backend parity),
+  v3.0 (FFI audit + extension on top of existing `kryos bindgen`),
+  v3.1 (LSP depth audit), v3.2 (package manager + registry content),
+  v3.3 (threads + async), and beyond. Each milestone is described in
+  plain language with the concrete deliverables it must produce. This
+  file is updated on every release.
+
+### Notes
+
+- Cargo workspace version is now `2.8.0`. Every crate inherits via
+  `version.workspace = true`.
+- The pre-existing test failures (`compile_file_with_selective_import`,
+  `build_cache_roundtrip_with_cli`) are tracked separately and do not
+  block v2.8.0.
+
 ## [2.7.0] - 2026-05-17 — "language polish for launch"
 
 Two correctness gaps and one missing builtin that would have been

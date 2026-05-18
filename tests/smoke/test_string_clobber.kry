@@ -1,0 +1,69 @@
+// Regression test for the string-local clobber across recursion bug fixed
+// in v2.8.0.
+//
+// Before the fix, this pattern produced empty / garbage strings at certain
+// positions of `c.strs`:
+//
+//   pp = expr(pp, ...)        // recursive call that touches strings
+//   pp = push_str(pp, op_local)  // pass `op_local` to a fn that stores it
+//
+// Root cause: MIR lowering for `Stmt::Assign` (`pp = push_str(pp, op_local)`)
+// did not call `consume_call_args` on the RHS, so `op_local` was not marked
+// as moved.  Scope cleanup then emitted `drop(op_local)` after `push_str`
+// had stored `op_local`'s pointer into the struct field.  The drop freed
+// memory the struct still referenced -> use-after-free / clobber on
+// subsequent allocations.
+//
+// The fix lives in compiler/crates/kryos-mir/src/lower.rs: the
+// `Stmt::Assign` -> identifier branch now calls `consume_call_args` for
+// RValue::Call / RValue::CallIndirect RHS, and `consume_call_args` skips
+// args whose local id matches `dest` (so `pp = push_str(pp, x)` doesn't
+// mark `pp` as dropped — only `x`).
+
+struct Ctx { strs: [str] }
+
+fn op() -> str {
+    return "OP"
+}
+
+fn push_str(c: Ctx, s: str) -> Ctx {
+    let mut nc = c
+    push(nc.strs, s)
+    return nc
+}
+
+fn primary(c: Ctx) -> Ctx {
+    return push_str(c, "leaf")
+}
+
+fn expr(c: Ctx, depth: i64) -> Ctx {
+    if depth == 0 { return primary(c) }
+    let cc = primary(c)
+    let mut pp = cc
+    let mut iter = 0
+    while iter < depth {
+        let op_local = op()
+        pp = expr(pp, depth - iter - 1)
+        pp = push_str(pp, op_local)
+        iter = iter + 1
+    }
+    return pp
+}
+
+fn main() {
+    // depth=4 produces 31 entries.  Each must be either "leaf" or "OP".
+    let c = expr(Ctx { strs: [] }, 4)
+    let n = len(c.strs)
+    let mut i = 0
+    while i < n {
+        let s = c.strs[i]
+        if s != "leaf" {
+            if s != "OP" {
+                println("FAIL at {i}: got '{s}', expected 'leaf' or 'OP'")
+                panic("string clobber regression")
+            }
+        }
+        i = i + 1
+    }
+    println("string_clobber_ok ({n} entries)")
+}

@@ -976,7 +976,11 @@ impl TypeChecker {
 
                 if let Some(pat) = pattern {
                     // Tuple / struct destructuring: bind each variable in the pattern.
-                    self.bind_pattern(pat, &final_ty);
+                    // Pass through the outer `let mut` so `let mut (a, b) = ...`
+                    // makes both bindings mutable, and `let (mut a, b) = ...`
+                    // makes only `a` mutable via the per-element `mut` flag
+                    // inside bind_pattern_with_mut.
+                    self.bind_pattern_with_mut(pat, &final_ty, *mutable);
                 } else if *mutable {
                     self.env.define_var_mut(name.clone(), final_ty);
                 } else {
@@ -1129,11 +1133,30 @@ impl TypeChecker {
     /// For example, `Option::Some(val)` binds `val` to a fresh type variable.
     /// `Ident` patterns bind the name to the subject type.
     /// Wildcards and literals bind nothing.
+    ///
+    /// `outer_mut` is true when the binding site (`let mut (...)` /
+    /// match arm under a `mut` binding) declared the whole pattern
+    /// mutable.  Per-element `mut` inside the pattern
+    /// (`let (mut a, b) = ...`) is also honored — the binding is
+    /// mutable if either source says so.
     fn bind_pattern(&mut self, pattern: &Pattern, subject_ty: &Type) {
+        self.bind_pattern_with_mut(pattern, subject_ty, false);
+    }
+
+    fn bind_pattern_with_mut(
+        &mut self,
+        pattern: &Pattern,
+        subject_ty: &Type,
+        outer_mut: bool,
+    ) {
         match pattern {
             Pattern::Wildcard { .. } | Pattern::Literal { .. } => {}
-            Pattern::Ident { name, .. } => {
-                self.env.define_var(name.clone(), subject_ty.clone());
+            Pattern::Ident { name, mutable, .. } => {
+                if outer_mut || *mutable {
+                    self.env.define_var_mut(name.clone(), subject_ty.clone());
+                } else {
+                    self.env.define_var(name.clone(), subject_ty.clone());
+                }
             }
             Pattern::Tuple { elements, .. } => {
                 // Resolve the subject type so we can extract element types.
@@ -1148,13 +1171,13 @@ impl TypeChecker {
                         .get(i)
                         .cloned()
                         .unwrap_or_else(|| self.engine.fresh_var());
-                    self.bind_pattern(elem, &elem_ty);
+                    self.bind_pattern_with_mut(elem, &elem_ty, outer_mut);
                 }
             }
             Pattern::Struct { fields, .. } => {
                 for (_field_name, pat) in fields {
                     let tv = self.engine.fresh_var();
-                    self.bind_pattern(pat, &tv);
+                    self.bind_pattern_with_mut(pat, &tv, outer_mut);
                 }
             }
             Pattern::Enum {
@@ -1180,12 +1203,12 @@ impl TypeChecker {
                         .get(i)
                         .cloned()
                         .unwrap_or_else(|| self.engine.fresh_var());
-                    self.bind_pattern(pat, &field_ty);
+                    self.bind_pattern_with_mut(pat, &field_ty, outer_mut);
                 }
             }
             Pattern::Or { patterns, .. } => {
                 for pat in patterns {
-                    self.bind_pattern(pat, subject_ty);
+                    self.bind_pattern_with_mut(pat, subject_ty, outer_mut);
                 }
             }
         }

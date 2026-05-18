@@ -1589,7 +1589,9 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 }
                 for (idx, elem_pat) in elements.iter().enumerate() {
                     if let ast::Pattern::Ident {
-                        name: elem_name, ..
+                        name: elem_name,
+                        mutable: elem_mut,
+                        ..
                     } = elem_pat
                     {
                         let elem_ty = if let MirType::Tuple(ref elems) = mir_ty {
@@ -1597,8 +1599,14 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                         } else {
                             MirType::I64
                         };
+                        // Honor either the outer `let mut (...)` modifier or a
+                        // per-element `mut` inside the tuple pattern
+                        // (`let (mut a, b) = ...`). Without this, per-element
+                        // mut was silently dropped and assignments to `a`
+                        // raised "assignment to immutable variable" warnings.
+                        let is_mutable = *mutable || *elem_mut;
                         let elem_local =
-                            ctx.alloc_local(Some(elem_name.clone()), elem_ty, *mutable);
+                            ctx.alloc_local(Some(elem_name.clone()), elem_ty, is_mutable);
                         ctx.emit(Instruction::Assign {
                             dest: elem_local,
                             value: RValue::Field {
@@ -1762,6 +1770,16 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 if !is_copy_type(ctx, &src_ty) {
                                     ctx.dropped_locals.insert(src.0);
                                 }
+                            }
+                            // If RHS is a direct call (e.g. `pp = push_str(pp, op_local)`),
+                            // mark non-copy local args as consumed so scope cleanup
+                            // doesn't double-free strings/enums the callee took ownership of.
+                            // The dest local itself is skipped by consume_call_args even when
+                            // it appears as an arg (self-consuming pattern).
+                            if let RValue::Call { ref args, .. } = rvalue {
+                                consume_call_args(ctx, dest, args);
+                            } else if let RValue::CallIndirect { ref args, .. } = rvalue {
+                                consume_call_args(ctx, dest, args);
                             }
                             ctx.emit(Instruction::Assign {
                                 dest,
@@ -3498,10 +3516,17 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
 
 /// Mark non-copy (str / enum) call arguments as consumed so scope cleanup
 /// won't emit a double-free after the callee takes ownership.
-/// Skips args where arg.id == dest.id (self-consuming: `x = f(x)`).
-fn consume_call_args(ctx: &mut LoweringContext, _dest: LocalId, args: &[Operand]) {
+///
+/// Skips args where arg.id == dest.id (self-consuming: `x = f(x)` or
+/// `x = f(x, y)`). In that pattern, the old `x` is moved into the callee,
+/// but `dest` is reassigned with the call's return value, which is a fresh
+/// owned value that still needs to be dropped at scope end.
+fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, args: &[Operand]) {
     for arg in args {
         if let Operand::Local(local_id) = arg {
+            if *local_id == dest {
+                continue;
+            }
             let local_ty = ctx
                 .locals
                 .iter()

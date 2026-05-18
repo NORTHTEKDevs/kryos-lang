@@ -1,0 +1,59 @@
+// Regression test for v2.8.0: `{{` and `}}` produce literal braces in
+// string literals, matching Rust / Python f-string conventions.
+//
+// Before v2.8.0, the only way to write a literal `{` in a string was
+// `\{` (which still works for back-compat).  `{{` was a parse error
+// because the lexer treated the second `{` as the start of an empty
+// interpolation.
+//
+// The fix lives in kryos-lexer/src/lexer.rs scan_string():
+//   - `{{` is consumed as a literal `{`
+//   - `}}` is consumed as a literal `}`
+//   - a bare `}` still passes through (for back-compat)
+//
+// This lets users embed CSS / JSON / shell scripts inside interpolated
+// strings without sprinkling backslash escapes through the whole template.
+
+fn make_css(color: str) -> str {
+    return ".btn {{ color: {color}; padding: 4px; }}"
+}
+
+@test
+fn test_double_open() {
+    let s = "{{not interpolated}}"
+    assert_eq(s, "\{not interpolated\}")
+}
+
+@test
+fn test_with_interpolation() {
+    let name = "kryos"
+    let s = "{{lang: {name}}}"
+    assert_eq(s, "\{lang: kryos\}")
+}
+
+@test
+fn test_css_template() {
+    let css = make_css("red")
+    assert_eq(css, ".btn \{ color: red; padding: 4px; \}")
+}
+
+@test
+fn test_backslash_still_works() {
+    // `\{` and `\}` are the original escapes and must continue to work.
+    let s = "\{ \}"
+    assert_eq(s, "\{ \}")
+}
+
+@test
+fn test_bare_close_brace() {
+    // A solitary `}` (no interpolation context) still passes through.
+    let s = "close: }"
+    assert_eq(s, "close: \}")
+}
+
+fn main() {
+    let n = "main"
+    assert_eq("{{x}} {n}", "\{x\} main")
+    assert_eq("a }} b", "a \} b")
+    println("string_brace_escape_ok")
+}
