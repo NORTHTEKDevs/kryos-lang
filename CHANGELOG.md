@@ -4,6 +4,52 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.1.0-rc.1] — 2026-05-18 — "IDE depth + diagnostic hints"
+
+LSP feature set fleshed out to mainstream-language quality. Diagnostics
+gain "did you mean?" hints across more error sites.
+
+### Added
+
+- **LSP: textDocument/documentSymbol** — full file outline (functions,
+  structs, enums, traits, impls, actors, type aliases, consts, externs)
+  with nested children for fields, variants, and trait/impl methods.
+- **LSP: workspace/symbol** — fuzzy subsequence search across all open
+  buffers + every `.kry` file under the workspace root (up to 4 levels
+  deep, skipping `target/`, `node_modules/`, hidden dirs).
+- **LSP: textDocument/references** — finds every identifier-token
+  occurrence in the current file plus every workspace `.kry` file.
+  Lexer-driven, so matches inside string and comment spans are skipped.
+- **LSP: textDocument/rename** — returns a WorkspaceEdit covering every
+  reference site. Rejects invalid identifiers (must start with letter
+  or underscore, only word chars allowed).
+- **LSP: textDocument/documentHighlight** — highlights every occurrence
+  of the identifier under the cursor inside the current file.
+  Distinguishes write sites (`x = ...`, `x += ...`) from reads.
+- **LSP: textDocument/foldingRange** — folds every `{ ... }` block plus
+  consecutive comment runs.
+- **LSP: textDocument/formatting** — delegates to `kryos-fmt`. Returns
+  a single document-spanning TextEdit. Empty edit on parse failure so
+  the editor leaves the buffer untouched.
+- **LSP: textDocument/signatureHelp** — pops the active function
+  signature with the current parameter highlighted while typing args.
+  Triggered on `(` and `,`. Walks backward through balanced brackets
+  to find the enclosing call.
+- **LSP: textDocument/inlayHint** — type hints for `let` bindings with
+  literal RHS (i64, f64, str, bool) plus parameter-name hints at call
+  sites for user-defined functions.
+- **Diagnostics: "did you mean?" expanded** — now fires for unknown
+  struct fields, unknown enum variants, and unknown methods (both
+  instance and static), in addition to the previously-covered unknown
+  variables (E0102) and unknown types (E0101).
+
+### Changed
+
+- `kryos-lsp` server version bumped from `0.1.0` to `0.2.0` (reported
+  via the `serverInfo` block in the initialize response).
+- Workspace version bumped from `3.0.0-rc.1` to `3.1.0-rc.1` across
+  all 22 crates.
+
 ## [3.0.0-rc.1] — 2026-05-18 — "production hardening"
 
 The v2.8 → v3.0 prod-hardening shift. Audits / parity work / CI

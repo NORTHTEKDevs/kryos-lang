@@ -9,4 +9,5 @@ kryos-ast.workspace = true
 kryos-lexer.workspace = true
 kryos-parser.workspace = true
 kryos-types.workspace = true
+kryos-fmt.workspace = true
 serde_json.workspace = true

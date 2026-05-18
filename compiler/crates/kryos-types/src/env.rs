@@ -253,6 +253,24 @@ impl TypeEnv {
         None
     }
 
+    /// Collect every method name visible for the given type (across all impls
+    /// in scope). Used by the "did you mean?" diagnostics.
+    pub fn all_method_names(&self, type_name: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        for scope in self.scopes.iter().rev() {
+            for ((ty, _trait), methods) in &scope.impls {
+                if ty == type_name {
+                    for m in methods {
+                        if !names.contains(&m.name) {
+                            names.push(m.name.clone());
+                        }
+                    }
+                }
+            }
+        }
+        names
+    }
+
     /// Look up a field type on a struct.
     pub fn lookup_field(&self, type_name: &str, field_name: &str) -> Option<&Type> {
         if let Some(def) = self.lookup_struct(type_name) {

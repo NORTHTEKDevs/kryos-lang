@@ -5,9 +5,17 @@ use std::collections::HashMap;
 
 use crate::completion;
 use crate::diagnostics;
+use crate::document_symbols;
+use crate::folding;
+use crate::formatting;
 use crate::goto_def;
+use crate::highlight;
 use crate::hover;
+use crate::inlay_hints;
 use crate::protocol::{self, Message};
+use crate::references;
+use crate::signature_help;
+use crate::workspace_symbols;
 
 /// The Kryos Language Server.
 pub struct LspServer {
@@ -102,10 +110,21 @@ impl LspServer {
                             },
                             "hoverProvider": true,
                             "definitionProvider": true,
+                            "documentSymbolProvider": true,
+                            "workspaceSymbolProvider": true,
+                            "referencesProvider": true,
+                            "renameProvider": true,
+                            "documentHighlightProvider": true,
+                            "foldingRangeProvider": true,
+                            "documentFormattingProvider": true,
+                            "signatureHelpProvider": {
+                                "triggerCharacters": ["(", ","],
+                            },
+                            "inlayHintProvider": true,
                         },
                         "serverInfo": {
                             "name": "kryos-lsp",
-                            "version": "0.1.0",
+                            "version": "0.2.0",
                         }
                     }),
                 ))
@@ -178,6 +197,118 @@ impl LspServer {
                 } else {
                     Some(protocol::make_response(id.clone(), Value::Null))
                 }
+            }
+            "textDocument/documentSymbol" => {
+                let uri = params.pointer("/textDocument/uri")?.as_str()?;
+                let result = if let Some(source) = self.documents.get(uri) {
+                    document_symbols::document_symbols(source)
+                } else {
+                    serde_json::json!([])
+                };
+                Some(protocol::make_response(id.clone(), result))
+            }
+            "workspace/symbol" => {
+                let query = params.pointer("/query").and_then(|v| v.as_str()).unwrap_or("");
+                let result = workspace_symbols::workspace_symbols(
+                    query,
+                    self.workspace_root.as_deref(),
+                    &self.documents,
+                );
+                Some(protocol::make_response(id.clone(), result))
+            }
+            "textDocument/references" => {
+                let uri = params.pointer("/textDocument/uri")?.as_str()?;
+                let line = params.pointer("/position/line")?.as_u64()? as u32;
+                let character = params.pointer("/position/character")?.as_u64()? as u32;
+                let include_decl = params
+                    .pointer("/context/includeDeclaration")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let result = if let Some(source) = self.documents.get(uri) {
+                    references::find_references(
+                        source,
+                        uri,
+                        line,
+                        character,
+                        self.workspace_root.as_deref(),
+                        &self.documents,
+                        include_decl,
+                    )
+                } else {
+                    serde_json::json!([])
+                };
+                Some(protocol::make_response(id.clone(), result))
+            }
+            "textDocument/rename" => {
+                let uri = params.pointer("/textDocument/uri")?.as_str()?;
+                let line = params.pointer("/position/line")?.as_u64()? as u32;
+                let character = params.pointer("/position/character")?.as_u64()? as u32;
+                let new_name = params.pointer("/newName")?.as_str()?;
+                let result = if let Some(source) = self.documents.get(uri) {
+                    references::prepare_rename(
+                        source,
+                        uri,
+                        line,
+                        character,
+                        new_name,
+                        self.workspace_root.as_deref(),
+                        &self.documents,
+                    )
+                } else {
+                    Value::Null
+                };
+                Some(protocol::make_response(id.clone(), result))
+            }
+            "textDocument/documentHighlight" => {
+                let uri = params.pointer("/textDocument/uri")?.as_str()?;
+                let line = params.pointer("/position/line")?.as_u64()? as u32;
+                let character = params.pointer("/position/character")?.as_u64()? as u32;
+                let result = if let Some(source) = self.documents.get(uri) {
+                    highlight::document_highlight(source, line, character)
+                } else {
+                    serde_json::json!([])
+                };
+                Some(protocol::make_response(id.clone(), result))
+            }
+            "textDocument/foldingRange" => {
+                let uri = params.pointer("/textDocument/uri")?.as_str()?;
+                let result = if let Some(source) = self.documents.get(uri) {
+                    folding::folding_ranges(source)
+                } else {
+                    serde_json::json!([])
+                };
+                Some(protocol::make_response(id.clone(), result))
+            }
+            "textDocument/formatting" => {
+                let uri = params.pointer("/textDocument/uri")?.as_str()?;
+                let result = if let Some(source) = self.documents.get(uri) {
+                    formatting::format_document(source)
+                } else {
+                    serde_json::json!([])
+                };
+                Some(protocol::make_response(id.clone(), result))
+            }
+            "textDocument/signatureHelp" => {
+                let uri = params.pointer("/textDocument/uri")?.as_str()?;
+                let line = params.pointer("/position/line")?.as_u64()? as u32;
+                let character = params.pointer("/position/character")?.as_u64()? as u32;
+                let result = if let Some(source) = self.documents.get(uri) {
+                    signature_help::signature_help(source, line, character)
+                } else {
+                    Value::Null
+                };
+                Some(protocol::make_response(id.clone(), result))
+            }
+            "textDocument/inlayHint" => {
+                let uri = params.pointer("/textDocument/uri")?.as_str()?;
+                let start = params.pointer("/range/start/line")?.as_u64()? as u32;
+                let end = params.pointer("/range/end/line")?.as_u64()? as u32;
+                let result = if let Some(source) = self.documents.get(uri) {
+                    inlay_hints::inlay_hints(source, start, end)
+                } else {
+                    serde_json::json!([])
+                };
+                Some(protocol::make_response(id.clone(), result))
             }
             _ => Some(protocol::make_error_response(
                 id.clone(),

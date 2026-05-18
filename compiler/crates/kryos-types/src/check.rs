@@ -1291,6 +1291,19 @@ impl TypeChecker {
                                 *span,
                                 kryos_errors::codes::E0106,
                             );
+                            let field_names: Vec<String> = self
+                                .env
+                                .lookup_struct(name)
+                                .map(|d| d.fields.iter().map(|(n, _)| n.clone()).collect())
+                                .unwrap_or_default();
+                            if let Some(s) = crate::suggest::closest_match(
+                                field,
+                                field_names.iter().map(|s| s.as_str()),
+                            ) {
+                                if let Some(diag) = self.diagnostics.last_mut() {
+                                    diag.notes.push(format!("did you mean `{s}`?"));
+                                }
+                            }
                             Type::Error
                         }
                     }
@@ -1340,7 +1353,17 @@ impl TypeChecker {
                                     generics: generics.clone(),
                                 }
                             } else {
+                                let variants: Vec<String> =
+                                    edef.variants.iter().map(|(n, _)| n.clone()).collect();
                                 self.error(format!("no variant `{field}` on enum `{name}`"), *span);
+                                if let Some(s) = crate::suggest::closest_match(
+                                    field,
+                                    variants.iter().map(|s| s.as_str()),
+                                ) {
+                                    if let Some(diag) = self.diagnostics.last_mut() {
+                                        diag.notes.push(format!("did you mean `{s}`?"));
+                                    }
+                                }
                                 Type::Error
                             }
                         } else {
@@ -1838,6 +1861,16 @@ impl TypeChecker {
                     *span,
                     kryos_errors::codes::E0107,
                 );
+                if let Type::Struct { name, .. } | Type::Enum { name, .. } = &obj_ty {
+                    let methods = self.env.all_method_names(name);
+                    if let Some(s) =
+                        crate::suggest::closest_match(method, methods.iter().map(|s| s.as_str()))
+                    {
+                        if let Some(diag) = self.diagnostics.last_mut() {
+                            diag.notes.push(format!("did you mean `{s}`?"));
+                        }
+                    }
+                }
                 Type::Error
             }
 
@@ -1913,6 +1946,14 @@ impl TypeChecker {
                         format!("no method `{method}` found on type `{type_name}`"),
                         *span,
                     );
+                    let methods = self.env.all_method_names(type_name);
+                    if let Some(s) =
+                        crate::suggest::closest_match(method, methods.iter().map(|s| s.as_str()))
+                    {
+                        if let Some(diag) = self.diagnostics.last_mut() {
+                            diag.notes.push(format!("did you mean `{s}`?"));
+                        }
+                    }
                     Type::Error
                 }
             }
