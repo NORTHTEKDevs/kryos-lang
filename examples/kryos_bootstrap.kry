@@ -1,45 +1,178 @@
 // ============================================================
-// Kryos Bootstrap -- Self-Hosting Lexer Subset
+// Kryos Bootstrap Lexer (Stage 0)
 //
-// This file implements a basic tokenizer for Kryos, written IN
-// Kryos itself.  It proves the language is expressive enough to
-// build its own compiler components.
+// A real lexer for Kryos, written in Kryos. Goal: cover enough of
+// the surface syntax that the lexer can plausibly tokenize its own
+// source (modulo the few corners noted below). When it can, that's
+// the Stage 0 milestone.
 //
-// All logic uses copy-type variables (i32, i64, bool) for loop
-// state and passes the source string only to leaf functions that
-// consume it.  This avoids use-after-move issues.
+// Coverage:
+//   - All current Kryos keywords (let, mut, fn, struct, enum, if,
+//     else, while, for, in, match, return, true, false, and, or,
+//     not, break, continue, impl, trait, pub, use, as, mod, type,
+//     async, await, move, try, catch, throw, spawn, send, recv,
+//     ask, select, actor, parallel, dyn, shared, weak, comptime,
+//     elif, chan, extern, quantum)
+//   - Identifiers, with keyword/identifier distinction
+//   - Integer literals: decimal, 0x hex, 0b binary, 0o octal
+//   - String literals with \" \n \t \\ \0 escapes
+//   - Operators: + - * / % == != < <= > >= && || ! = += -= *= /= %=
+//     -> => :: .. ..= . , ; : ? @ # | & ^ ~
+//   - Delimiters: ( ) [ ] { }
+//   - Line comments //
+//   - Block comments /* ... */ (non-nested for now)
+//   - Whitespace
+//   - Line/col position tracking
+//
+// Known gaps (revisit as the bootstrap grows):
+//   - No raw strings, no escaped unicode (\u{...}), no string
+//     interpolation. The lexer treats { inside a string as a normal
+//     character so it does not get confused by interpolation; the
+//     real parser would re-scan.
+//   - Numbers are integers only (no floats yet).
+//   - No char literals (Kryos uses single-char strings).
+//   - Block comments are flat, not nested.
+//
+// Style: copy-type loop state (i64), pass the source string to leaf
+// helpers, and accumulate tokens into an [Token] array.
 // ============================================================
 
 // --- Token kinds ----------------------------------------------------------
+//
+// Hand-numbered constants keep things minimal (no enum yet). The
+// numbering is internal to the bootstrap and may change.
 
-let TK_INT    = 1
-let TK_IDENT  = 2
-let TK_PLUS   = 3
-let TK_MINUS  = 4
-let TK_STAR   = 5
-let TK_SLASH  = 6
-let TK_LPAREN = 7
-let TK_RPAREN = 8
-let TK_EOF    = 9
-let TK_ERROR  = 10
+let TK_EOF        = 0
+let TK_ERROR      = 1
 
-fn token_kind_name(kind: i32) -> str {
-    if kind == 1 { return "INT" }
-    if kind == 2 { return "IDENT" }
-    if kind == 3 { return "PLUS" }
-    if kind == 4 { return "MINUS" }
-    if kind == 5 { return "STAR" }
-    if kind == 6 { return "SLASH" }
-    if kind == 7 { return "LPAREN" }
-    if kind == 8 { return "RPAREN" }
-    if kind == 9 { return "EOF" }
-    return "ERROR"
+// Literals
+let TK_INT        = 10
+let TK_STR        = 11
+let TK_IDENT      = 12
+
+// Keywords (one number per keyword; range 20-79 reserved)
+let TK_LET        = 20
+let TK_MUT        = 21
+let TK_FN         = 22
+let TK_RETURN     = 23
+let TK_IF         = 24
+let TK_ELSE       = 25
+let TK_ELIF       = 26
+let TK_WHILE      = 27
+let TK_FOR        = 28
+let TK_IN         = 29
+let TK_BREAK      = 30
+let TK_CONTINUE   = 31
+let TK_STRUCT     = 32
+let TK_ENUM       = 33
+let TK_IMPL       = 34
+let TK_TRAIT      = 35
+let TK_DYN        = 36
+let TK_PUB        = 37
+let TK_USE        = 38
+let TK_EXTERN     = 39
+let TK_AS         = 40
+let TK_MOD        = 41
+let TK_TYPE       = 42
+let TK_ACTOR      = 43
+let TK_SPAWN      = 44
+let TK_SELECT     = 45
+let TK_SEND       = 46
+let TK_RECV       = 47
+let TK_ASK        = 48
+let TK_CHAN       = 49
+let TK_PARALLEL   = 50
+let TK_QUANTUM    = 51
+let TK_COMPTIME   = 52
+let TK_MATCH      = 53
+let TK_AND_KW     = 54
+let TK_OR_KW      = 55
+let TK_NOT_KW     = 56
+let TK_TRY        = 57
+let TK_CATCH      = 58
+let TK_THROW      = 59
+let TK_ASYNC      = 60
+let TK_AWAIT      = 61
+let TK_SHARED     = 62
+let TK_WEAK       = 63
+let TK_MOVE       = 64
+let TK_TRUE       = 65
+let TK_FALSE      = 66
+let TK_NONE       = 67
+
+// Punctuation / operators (range 100+)
+let TK_PLUS       = 100  // +
+let TK_MINUS      = 101  // -
+let TK_STAR       = 102  // *
+let TK_SLASH      = 103  // /
+let TK_PERCENT    = 104  // %
+let TK_EQ         = 105  // =
+let TK_EQEQ       = 106  // ==
+let TK_BANG       = 107  // !
+let TK_NEQ        = 108  // !=
+let TK_LT         = 109  // <
+let TK_LE         = 110  // <=
+let TK_GT         = 111  // >
+let TK_GE         = 112  // >=
+let TK_AMPAMP     = 113  // &&
+let TK_PIPEPIPE   = 114  // ||
+let TK_AMP        = 115  // &
+let TK_PIPE       = 116  // |
+let TK_CARET      = 117  // ^
+let TK_TILDE      = 118  // ~
+let TK_PLUSEQ     = 119  // +=
+let TK_MINUSEQ    = 120  // -=
+let TK_STAREQ     = 121  // *=
+let TK_SLASHEQ    = 122  // /=
+let TK_PERCENTEQ  = 123  // %=
+let TK_ARROW      = 124  // ->
+let TK_FATARROW   = 125  // =>
+let TK_COLONCOLON = 126  // ::
+let TK_DOTDOT     = 127  // ..
+let TK_DOTDOTEQ   = 128  // ..=
+let TK_DOT        = 129  // .
+let TK_COMMA      = 130  // ,
+let TK_SEMI       = 131  // ;
+let TK_COLON      = 132  // :
+let TK_QUESTION   = 133  // ?
+let TK_AT         = 134  // @
+let TK_HASH       = 135  // #
+let TK_LPAREN     = 140  // (
+let TK_RPAREN     = 141  // )
+let TK_LBRACKET   = 142  // [
+let TK_RBRACKET   = 143  // ]
+let TK_LBRACE     = 144  // {
+let TK_RBRACE     = 145  // }
+
+struct Token {
+    kind: i64,
+    text: str,
+    line: i64,
+    col: i64,
 }
 
-// --- Character classification (work on code points, all i64 = copy) ------
+// --- Char-class helpers --------------------------------------------------
+//
+// Code-point ranges are spelled out so a future port to a target with
+// no ctype works directly.
 
 fn is_digit_code(c: i64) -> bool {
     return c >= 48 and c <= 57
+}
+
+fn is_hex_digit_code(c: i64) -> bool {
+    if is_digit_code(c) { return true }
+    if c >= 65 and c <= 70 { return true }   // A..F
+    if c >= 97 and c <= 102 { return true }  // a..f
+    return false
+}
+
+fn is_bin_digit_code(c: i64) -> bool {
+    return c == 48 or c == 49
+}
+
+fn is_oct_digit_code(c: i64) -> bool {
+    return c >= 48 and c <= 55
 }
 
 fn is_alpha_code(c: i64) -> bool {
@@ -51,154 +184,606 @@ fn is_alnum_code(c: i64) -> bool {
 }
 
 fn is_ws_code(c: i64) -> bool {
-    return c == 32 or c == 9 or c == 10 or c == 13
+    // space, tab, CR (newline handled separately for line tracking)
+    return c == 32 or c == 9 or c == 13
 }
 
-// --- Helper: get char code at position -----------------------------------
+// --- Source access -------------------------------------------------------
+//
+// `code_at` returns -1 past EOF so callers can treat EOF uniformly
+// without separate length checks at every site.
 
-fn code_at(source: str, pos: i32) -> i64 {
+fn code_at(source: str, pos: i64) -> i64 {
+    if pos >= len(source) { return -1 }
     let ch = substr(source, pos, pos + 1)
     return char_code(ch)
 }
 
-// --- Scanning helpers (return new position) -------------------------------
+// --- Keyword table -------------------------------------------------------
+//
+// Linear chain. Hash tables would be faster but pure-Kryos string
+// hashing buys nothing in clarity here. Returns -1 (not a keyword)
+// or the TK_* code.
 
-fn scan_skip_ws(source: str, pos: i32) -> i32 {
-    let src_len = len(source)
-    let mut p = pos
-    let mut scanning = true
-    while scanning {
-        if p >= src_len {
-            scanning = false
-        } else {
-            let c = code_at(source, p)
-            if is_ws_code(c) {
-                p = p + 1
-            } else {
-                scanning = false
-            }
-        }
-    }
-    return p
+fn keyword_kind(word: str) -> i64 {
+    if word == "let"      { return 20 }
+    if word == "mut"      { return 21 }
+    if word == "fn"       { return 22 }
+    if word == "return"   { return 23 }
+    if word == "if"       { return 24 }
+    if word == "else"     { return 25 }
+    if word == "elif"     { return 26 }
+    if word == "while"    { return 27 }
+    if word == "for"      { return 28 }
+    if word == "in"       { return 29 }
+    if word == "break"    { return 30 }
+    if word == "continue" { return 31 }
+    if word == "struct"   { return 32 }
+    if word == "enum"     { return 33 }
+    if word == "impl"     { return 34 }
+    if word == "trait"    { return 35 }
+    if word == "dyn"      { return 36 }
+    if word == "pub"      { return 37 }
+    if word == "use"      { return 38 }
+    if word == "extern"   { return 39 }
+    if word == "as"       { return 40 }
+    if word == "mod"      { return 41 }
+    if word == "type"     { return 42 }
+    if word == "actor"    { return 43 }
+    if word == "spawn"    { return 44 }
+    if word == "select"   { return 45 }
+    if word == "send"     { return 46 }
+    if word == "recv"     { return 47 }
+    if word == "ask"      { return 48 }
+    if word == "chan"     { return 49 }
+    if word == "parallel" { return 50 }
+    if word == "quantum"  { return 51 }
+    if word == "comptime" { return 52 }
+    if word == "match"    { return 53 }
+    if word == "and"      { return 54 }
+    if word == "or"       { return 55 }
+    if word == "not"      { return 56 }
+    if word == "try"      { return 57 }
+    if word == "catch"    { return 58 }
+    if word == "throw"    { return 59 }
+    if word == "async"    { return 60 }
+    if word == "await"    { return 61 }
+    if word == "shared"   { return 62 }
+    if word == "weak"     { return 63 }
+    if word == "move"     { return 64 }
+    if word == "true"     { return 65 }
+    if word == "false"    { return 66 }
+    if word == "None"     { return 67 }
+    return -1
 }
 
-fn scan_digits(source: str, pos: i32) -> i32 {
-    let src_len = len(source)
-    let mut p = pos
-    let mut scanning = true
-    while scanning {
-        if p >= src_len {
-            scanning = false
-        } else {
-            let c = code_at(source, p)
-            if is_digit_code(c) {
-                p = p + 1
-            } else {
-                scanning = false
-            }
-        }
-    }
-    return p
+fn token_kind_name(kind: i64) -> str {
+    if kind == 0   { return "EOF" }
+    if kind == 1   { return "ERROR" }
+    if kind == 10  { return "INT" }
+    if kind == 11  { return "STR" }
+    if kind == 12  { return "IDENT" }
+    if kind == 20  { return "LET" }
+    if kind == 21  { return "MUT" }
+    if kind == 22  { return "FN" }
+    if kind == 23  { return "RETURN" }
+    if kind == 24  { return "IF" }
+    if kind == 25  { return "ELSE" }
+    if kind == 26  { return "ELIF" }
+    if kind == 27  { return "WHILE" }
+    if kind == 28  { return "FOR" }
+    if kind == 29  { return "IN" }
+    if kind == 30  { return "BREAK" }
+    if kind == 31  { return "CONTINUE" }
+    if kind == 32  { return "STRUCT" }
+    if kind == 33  { return "ENUM" }
+    if kind == 34  { return "IMPL" }
+    if kind == 35  { return "TRAIT" }
+    if kind == 36  { return "DYN" }
+    if kind == 37  { return "PUB" }
+    if kind == 38  { return "USE" }
+    if kind == 39  { return "EXTERN" }
+    if kind == 40  { return "AS" }
+    if kind == 41  { return "MOD" }
+    if kind == 42  { return "TYPE" }
+    if kind == 43  { return "ACTOR" }
+    if kind == 44  { return "SPAWN" }
+    if kind == 45  { return "SELECT" }
+    if kind == 46  { return "SEND" }
+    if kind == 47  { return "RECV" }
+    if kind == 48  { return "ASK" }
+    if kind == 49  { return "CHAN" }
+    if kind == 50  { return "PARALLEL" }
+    if kind == 51  { return "QUANTUM" }
+    if kind == 52  { return "COMPTIME" }
+    if kind == 53  { return "MATCH" }
+    if kind == 54  { return "AND" }
+    if kind == 55  { return "OR" }
+    if kind == 56  { return "NOT" }
+    if kind == 57  { return "TRY" }
+    if kind == 58  { return "CATCH" }
+    if kind == 59  { return "THROW" }
+    if kind == 60  { return "ASYNC" }
+    if kind == 61  { return "AWAIT" }
+    if kind == 62  { return "SHARED" }
+    if kind == 63  { return "WEAK" }
+    if kind == 64  { return "MOVE" }
+    if kind == 65  { return "TRUE" }
+    if kind == 66  { return "FALSE" }
+    if kind == 67  { return "NONE" }
+    if kind == 100 { return "PLUS" }
+    if kind == 101 { return "MINUS" }
+    if kind == 102 { return "STAR" }
+    if kind == 103 { return "SLASH" }
+    if kind == 104 { return "PERCENT" }
+    if kind == 105 { return "EQ" }
+    if kind == 106 { return "EQEQ" }
+    if kind == 107 { return "BANG" }
+    if kind == 108 { return "NEQ" }
+    if kind == 109 { return "LT" }
+    if kind == 110 { return "LE" }
+    if kind == 111 { return "GT" }
+    if kind == 112 { return "GE" }
+    if kind == 113 { return "AMPAMP" }
+    if kind == 114 { return "PIPEPIPE" }
+    if kind == 115 { return "AMP" }
+    if kind == 116 { return "PIPE" }
+    if kind == 117 { return "CARET" }
+    if kind == 118 { return "TILDE" }
+    if kind == 119 { return "PLUSEQ" }
+    if kind == 120 { return "MINUSEQ" }
+    if kind == 121 { return "STAREQ" }
+    if kind == 122 { return "SLASHEQ" }
+    if kind == 123 { return "PERCENTEQ" }
+    if kind == 124 { return "ARROW" }
+    if kind == 125 { return "FATARROW" }
+    if kind == 126 { return "COLONCOLON" }
+    if kind == 127 { return "DOTDOT" }
+    if kind == 128 { return "DOTDOTEQ" }
+    if kind == 129 { return "DOT" }
+    if kind == 130 { return "COMMA" }
+    if kind == 131 { return "SEMI" }
+    if kind == 132 { return "COLON" }
+    if kind == 133 { return "QUESTION" }
+    if kind == 134 { return "AT" }
+    if kind == 135 { return "HASH" }
+    if kind == 140 { return "LPAREN" }
+    if kind == 141 { return "RPAREN" }
+    if kind == 142 { return "LBRACKET" }
+    if kind == 143 { return "RBRACKET" }
+    if kind == 144 { return "LBRACE" }
+    if kind == 145 { return "RBRACE" }
+    return "UNKNOWN"
 }
 
-fn scan_ident(source: str, pos: i32) -> i32 {
-    let src_len = len(source)
-    let mut p = pos
-    let mut scanning = true
-    while scanning {
-        if p >= src_len {
-            scanning = false
-        } else {
-            let c = code_at(source, p)
-            if is_alnum_code(c) {
-                p = p + 1
-            } else {
-                scanning = false
-            }
-        }
-    }
-    return p
+// --- Position-tracking source ------------------------------------------
+//
+// All scan helpers take the current (pos, line, col) and return the
+// new (pos, line, col) by re-bundling into a small inline tuple. We
+// pass things by parameter because Kryos doesn't yet have ergonomic
+// shared mutable state for non-actor scanners.
+
+struct Cursor {
+    pos: i64,
+    line: i64,
+    col: i64,
 }
 
-// --- Tokenize and print ---------------------------------------------------
+fn advance_one(cur: Cursor, source: str) -> Cursor {
+    let c = code_at(source, cur.pos)
+    if c == 10 {
+        return Cursor { pos: cur.pos + 1, line: cur.line + 1, col: 1 }
+    }
+    return Cursor { pos: cur.pos + 1, line: cur.line, col: cur.col + 1 }
+}
 
-fn tokenize_and_print(source: str) -> i32 {
+// --- Scanners ------------------------------------------------------------
+
+fn skip_trivia(source: str, start: Cursor) -> Cursor {
     let src_len = len(source)
-    let mut pos = 0
-    let mut count = 0
-    let mut done = false
-
-    println("Tokenizing: " + source)
-    println("---")
-
-    while not done {
-        // Skip whitespace
-        pos = scan_skip_ws(source, pos)
-
-        // Check for EOF
-        if pos >= src_len {
-            println("EOF")
-            count = count + 1
-            done = true
+    let mut cur = start
+    let mut running = true
+    while running {
+        if cur.pos >= src_len {
+            running = false
         } else {
-            let c = code_at(source, pos)
-
-            if is_digit_code(c) {
-                // Read integer
-                let end = scan_digits(source, pos)
-                let value = substr(source, pos, end)
-                let kind_name = token_kind_name(TK_INT)
-                println(kind_name + "  " + value)
-                count = count + 1
-                pos = end
+            let c = code_at(source, cur.pos)
+            if is_ws_code(c) or c == 10 {
+                cur = advance_one(cur, source)
             } else {
-                if is_alpha_code(c) {
-                    // Read identifier
-                    let end = scan_ident(source, pos)
-                    let value = substr(source, pos, end)
-                    let kind_name = token_kind_name(TK_IDENT)
-                    println(kind_name + "  " + value)
-                    count = count + 1
-                    pos = end
+                if c == 47 {  // '/'
+                    let c2 = code_at(source, cur.pos + 1)
+                    if c2 == 47 {
+                        // line comment, eat until newline
+                        let mut scanning = true
+                        while scanning {
+                            if cur.pos >= src_len {
+                                scanning = false
+                            } else {
+                                let cc = code_at(source, cur.pos)
+                                if cc == 10 {
+                                    scanning = false
+                                } else {
+                                    cur = advance_one(cur, source)
+                                }
+                            }
+                        }
+                    } else {
+                        if c2 == 42 {
+                            // block comment /* ... */ (not nested)
+                            cur = advance_one(cur, source)  // consume '/'
+                            cur = advance_one(cur, source)  // consume '*'
+                            let mut scanning = true
+                            while scanning {
+                                if cur.pos >= src_len {
+                                    scanning = false
+                                } else {
+                                    let cc = code_at(source, cur.pos)
+                                    let nx = code_at(source, cur.pos + 1)
+                                    if cc == 42 and nx == 47 {
+                                        cur = advance_one(cur, source)
+                                        cur = advance_one(cur, source)
+                                        scanning = false
+                                    } else {
+                                        cur = advance_one(cur, source)
+                                    }
+                                }
+                            }
+                        } else {
+                            running = false
+                        }
+                    }
                 } else {
-                    // Single-character tokens
-                    let mut kind = TK_ERROR
-                    if c == 43 { kind = TK_PLUS }
-                    if c == 45 { kind = TK_MINUS }
-                    if c == 42 { kind = TK_STAR }
-                    if c == 47 { kind = TK_SLASH }
-                    if c == 40 { kind = TK_LPAREN }
-                    if c == 41 { kind = TK_RPAREN }
-
-                    let ch = substr(source, pos, pos + 1)
-                    let kind_name = token_kind_name(kind)
-                    println(kind_name + "  " + ch)
-                    count = count + 1
-                    pos = pos + 1
+                    running = false
                 }
             }
         }
     }
+    return cur
+}
 
-    println("---")
-    println("Total tokens: " + to_string(count))
-    return count
+// Returns the end Cursor after scanning a run of digit-class
+// characters from `start`. Hex/binary/octal share this with a
+// classifier passed in via kind argument:
+//   kind = 0 : decimal
+//   kind = 1 : hex
+//   kind = 2 : binary
+//   kind = 3 : octal
+
+fn scan_digit_run(source: str, start: Cursor, kind: i64) -> Cursor {
+    let src_len = len(source)
+    let mut cur = start
+    let mut running = true
+    while running {
+        if cur.pos >= src_len {
+            running = false
+        } else {
+            let c = code_at(source, cur.pos)
+            let mut ok = false
+            if kind == 0 { ok = is_digit_code(c) }
+            if kind == 1 { ok = is_hex_digit_code(c) }
+            if kind == 2 { ok = is_bin_digit_code(c) }
+            if kind == 3 { ok = is_oct_digit_code(c) }
+            // Underscores allowed inside numeric literals.
+            if c == 95 { ok = true }
+            if ok {
+                cur = advance_one(cur, source)
+            } else {
+                running = false
+            }
+        }
+    }
+    return cur
+}
+
+fn scan_ident(source: str, start: Cursor) -> Cursor {
+    let src_len = len(source)
+    let mut cur = start
+    let mut running = true
+    while running {
+        if cur.pos >= src_len {
+            running = false
+        } else {
+            let c = code_at(source, cur.pos)
+            if is_alnum_code(c) {
+                cur = advance_one(cur, source)
+            } else {
+                running = false
+            }
+        }
+    }
+    return cur
+}
+
+// Scan a "..."-delimited string, processing the standard escapes.
+// Returns the (end_cursor, processed_text). On unterminated string
+// or unknown escape we still return what we got and the caller can
+// emit an ERROR token.
+
+fn scan_string(source: str, start: Cursor) -> (Cursor, str, bool) {
+    let src_len = len(source)
+    // Caller has already validated and we're sitting on the opening '"'.
+    let mut cur = advance_one(start, source)
+    let mut out = ""
+    let mut ok = true
+    let mut running = true
+    while running {
+        if cur.pos >= src_len {
+            // unterminated
+            ok = false
+            running = false
+        } else {
+            let c = code_at(source, cur.pos)
+            if c == 34 {  // closing '"'
+                cur = advance_one(cur, source)
+                running = false
+            } else {
+                if c == 92 {  // backslash
+                    let nx = code_at(source, cur.pos + 1)
+                    if nx == 110 {  // \n
+                        out = out + char_from(10)
+                        cur = advance_one(cur, source)
+                        cur = advance_one(cur, source)
+                    } else {
+                        if nx == 116 {  // \t
+                            out = out + char_from(9)
+                            cur = advance_one(cur, source)
+                            cur = advance_one(cur, source)
+                        } else {
+                            if nx == 114 {  // \r
+                                out = out + char_from(13)
+                                cur = advance_one(cur, source)
+                                cur = advance_one(cur, source)
+                            } else {
+                                if nx == 48 {  // \0
+                                    out = out + char_from(0)
+                                    cur = advance_one(cur, source)
+                                    cur = advance_one(cur, source)
+                                } else {
+                                    if nx == 92 {  // \\
+                                        out = out + char_from(92)
+                                        cur = advance_one(cur, source)
+                                        cur = advance_one(cur, source)
+                                    } else {
+                                        if nx == 34 {  // \"
+                                            out = out + char_from(34)
+                                            cur = advance_one(cur, source)
+                                            cur = advance_one(cur, source)
+                                        } else {
+                                            // unknown escape: keep literally
+                                            ok = false
+                                            out = out + char_from(c)
+                                            cur = advance_one(cur, source)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    out = out + char_from(c)
+                    cur = advance_one(cur, source)
+                }
+            }
+        }
+    }
+    return (cur, out, ok)
+}
+
+// --- One token at a time ------------------------------------------------
+//
+// Returns (next cursor, token). The caller is responsible for skipping
+// trivia before calling this.
+
+fn lex_one(source: str, start: Cursor) -> (Cursor, Token) {
+    let src_len = len(source)
+    if start.pos >= src_len {
+        let t = Token { kind: TK_EOF, text: "", line: start.line, col: start.col }
+        return (start, t)
+    }
+    let c = code_at(source, start.pos)
+    let c2 = code_at(source, start.pos + 1)
+    let c3 = code_at(source, start.pos + 2)
+
+    // identifiers / keywords
+    if is_alpha_code(c) {
+        let end = scan_ident(source, start)
+        let text = substr(source, start.pos, end.pos)
+        let kw = keyword_kind(text)
+        let kind = if kw >= 0 { kw } else { TK_IDENT }
+        let t = Token { kind: kind, text: text, line: start.line, col: start.col }
+        return (end, t)
+    }
+
+    // numbers
+    if is_digit_code(c) {
+        if c == 48 and (c2 == 120 or c2 == 88) {  // 0x / 0X
+            let after_prefix = advance_one(advance_one(start, source), source)
+            let end = scan_digit_run(source, after_prefix, 1)
+            let text = substr(source, start.pos, end.pos)
+            let t = Token { kind: TK_INT, text: text, line: start.line, col: start.col }
+            return (end, t)
+        }
+        if c == 48 and (c2 == 98 or c2 == 66) {  // 0b / 0B
+            let after_prefix = advance_one(advance_one(start, source), source)
+            let end = scan_digit_run(source, after_prefix, 2)
+            let text = substr(source, start.pos, end.pos)
+            let t = Token { kind: TK_INT, text: text, line: start.line, col: start.col }
+            return (end, t)
+        }
+        if c == 48 and (c2 == 111 or c2 == 79) {  // 0o / 0O
+            let after_prefix = advance_one(advance_one(start, source), source)
+            let end = scan_digit_run(source, after_prefix, 3)
+            let text = substr(source, start.pos, end.pos)
+            let t = Token { kind: TK_INT, text: text, line: start.line, col: start.col }
+            return (end, t)
+        }
+        let end = scan_digit_run(source, start, 0)
+        let text = substr(source, start.pos, end.pos)
+        let t = Token { kind: TK_INT, text: text, line: start.line, col: start.col }
+        return (end, t)
+    }
+
+    // strings
+    if c == 34 {
+        let (end, text, ok) = scan_string(source, start)
+        let kind = if ok { TK_STR } else { TK_ERROR }
+        let t = Token { kind: kind, text: text, line: start.line, col: start.col }
+        return (end, t)
+    }
+
+    // three-char operators
+    if c == 46 and c2 == 46 and c3 == 61 {
+        let mut cur = advance_one(start, source)
+        cur = advance_one(cur, source)
+        cur = advance_one(cur, source)
+        let t = Token { kind: TK_DOTDOTEQ, text: "..=", line: start.line, col: start.col }
+        return (cur, t)
+    }
+
+    // two-char operators
+    let pair_kind = two_char_kind(c, c2)
+    if pair_kind >= 0 {
+        let mut cur = advance_one(start, source)
+        cur = advance_one(cur, source)
+        let text = substr(source, start.pos, start.pos + 2)
+        let t = Token { kind: pair_kind, text: text, line: start.line, col: start.col }
+        return (cur, t)
+    }
+
+    // single-char operators / delimiters
+    let single_kind = single_char_kind(c)
+    let next = advance_one(start, source)
+    let text = substr(source, start.pos, start.pos + 1)
+    let t = Token { kind: single_kind, text: text, line: start.line, col: start.col }
+    return (next, t)
+}
+
+fn two_char_kind(c: i64, c2: i64) -> i64 {
+    if c == 61 and c2 == 61 { return 106 }  // ==
+    if c == 33 and c2 == 61 { return 108 }  // !=
+    if c == 60 and c2 == 61 { return 110 }  // <=
+    if c == 62 and c2 == 61 { return 112 }  // >=
+    if c == 38 and c2 == 38 { return 113 }  // &&
+    if c == 124 and c2 == 124 { return 114 }  // ||
+    if c == 43 and c2 == 61 { return 119 }  // +=
+    if c == 45 and c2 == 61 { return 120 }  // -=
+    if c == 42 and c2 == 61 { return 121 }  // *=
+    if c == 47 and c2 == 61 { return 122 }  // /=
+    if c == 37 and c2 == 61 { return 123 }  // %=
+    if c == 45 and c2 == 62 { return 124 }  // ->
+    if c == 61 and c2 == 62 { return 125 }  // =>
+    if c == 58 and c2 == 58 { return 126 }  // ::
+    if c == 46 and c2 == 46 { return 127 }  // ..
+    return -1
+}
+
+fn single_char_kind(c: i64) -> i64 {
+    if c == 43 { return 100 }  // +
+    if c == 45 { return 101 }  // -
+    if c == 42 { return 102 }  // *
+    if c == 47 { return 103 }  // /
+    if c == 37 { return 104 }  // %
+    if c == 61 { return 105 }  // =
+    if c == 33 { return 107 }  // !
+    if c == 60 { return 109 }  // <
+    if c == 62 { return 111 }  // >
+    if c == 38 { return 115 }  // &
+    if c == 124 { return 116 }  // |
+    if c == 94 { return 117 }  // ^
+    if c == 126 { return 118 }  // ~
+    if c == 46 { return 129 }  // .
+    if c == 44 { return 130 }  // ,
+    if c == 59 { return 131 }  // ;
+    if c == 58 { return 132 }  // :
+    if c == 63 { return 133 }  // ?
+    if c == 64 { return 134 }  // @
+    if c == 35 { return 135 }  // #
+    if c == 40 { return 140 }  // (
+    if c == 41 { return 141 }  // )
+    if c == 91 { return 142 }  // [
+    if c == 93 { return 143 }  // ]
+    if c == 123 { return 144 }  // {
+    if c == 125 { return 145 }  // }
+    return TK_ERROR
+}
+
+// --- Top-level lex driver -----------------------------------------------
+
+fn lex_all(source: str) -> [Token] {
+    let mut tokens: [Token] = []
+    let mut cur = Cursor { pos: 0, line: 1, col: 1 }
+    let mut done = false
+    while not done {
+        cur = skip_trivia(source, cur)
+        let (next, tok) = lex_one(source, cur)
+        if tok.kind == TK_EOF {
+            push(tokens, tok)
+            done = true
+        } else {
+            push(tokens, tok)
+            cur = next
+        }
+    }
+    return tokens
+}
+
+fn print_tokens(tokens: [Token]) -> i64 {
+    let mut i = 0
+    let n = len(tokens)
+    while i < n {
+        let t = tokens[i]
+        let name = token_kind_name(t.kind)
+        println(to_string(t.line) + ":" + to_string(t.col) + "  " + name + "  " + t.text)
+        i = i + 1
+    }
+    return n
 }
 
 // --- Main -----------------------------------------------------------------
 
 fn main() {
-    println("=== Kryos Bootstrap Lexer ===")
+    println("=== Kryos Bootstrap Lexer (Stage 0) ===")
     println("")
 
-    // Tokenize a simple arithmetic expression
-    tokenize_and_print("2 + 3 * (4 - 1)")
-
+    println("-- arithmetic --")
+    let t1 = lex_all("2 + 3 * (4 - 1)")
+    let n1 = print_tokens(t1)
+    println("(" + to_string(n1) + " tokens)")
     println("")
 
-    // Tokenize something with identifiers
-    tokenize_and_print("foo + bar * 42")
-
+    println("-- let binding --")
+    let t2 = lex_all("let mut x: i64 = 0x1F + 0b1010")
+    let n2 = print_tokens(t2)
+    println("(" + to_string(n2) + " tokens)")
     println("")
+
+    println("-- function with operators --")
+    let lb = char_from(123)
+    let rb = char_from(125)
+    let src3 = "fn add(a: i64, b: i64) -> i64 " + lb + " return a + b " + rb
+    let t3 = lex_all(src3)
+    let n3 = print_tokens(t3)
+    println("(" + to_string(n3) + " tokens)")
+    println("")
+
+    println("-- strings, comments, range --")
+    // Build the source string at runtime since Kryos source itself
+    // has no \" escape; we splice a literal quote with char_from(34).
+    let q = char_from(34)
+    let src4 = "for i in 0..10 " + char_from(123) + " println(" + q + "hi" + q + ") " + char_from(125)
+    let t4 = lex_all(src4)
+    let n4 = print_tokens(t4)
+    println("(" + to_string(n4) + " tokens)")
+    println("")
+
+    println("-- multi-line with line comment --")
+    let nl = char_from(10)
+    let src5 = "let a = 1" + nl + "// a comment" + nl + "let b = 2"
+    let t5 = lex_all(src5)
+    let n5 = print_tokens(t5)
+    println("(" + to_string(n5) + " tokens)")
+    println("")
+
     println("=== Bootstrap lexer complete ===")
 }

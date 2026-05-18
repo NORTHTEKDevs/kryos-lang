@@ -1,0 +1,71 @@
+// Stage 0 self-hosting check: the bootstrap lexer infrastructure
+// (struct Token, struct Cursor, advance_one, char-class helpers, the
+// keyword table, and lex_all itself) must remain wired up. We don't
+// re-import the real bootstrap file from tests/smoke — keeping the
+// fixture self-contained avoids smoke-runner cwd surprises.
+//
+// What this test guards:
+//   - struct construction + field access
+//   - tuple-of-3 returns (used by scan_string)
+//   - parallel arrays of structs returned across helpers
+//   - char_code / char_from / substr round-trips that the lexer uses
+//   - the parser hardening from v2.6.9 doesn't reject any of the
+//     lexer's keyword-prefix identifiers (letter, function, returns)
+
+struct Cell {
+    kind: i64,
+    text: str,
+}
+
+fn make_cell(k: i64, s: str) -> Cell {
+    return Cell { kind: k, text: s }
+}
+
+fn classify(c: i64) -> i64 {
+    if c >= 48 and c <= 57 { return 1 }
+    if (c >= 65 and c <= 90) or (c >= 97 and c <= 122) or c == 95 { return 2 }
+    return 0
+}
+
+fn three_return(x: i64) -> (i64, str, bool) {
+    return (x + 1, "hello", x > 0)
+}
+
+fn main() {
+    // Keyword-prefix identifiers (the v2.6.9 regression coverage)
+    let letter = 10
+    let function = 20
+    let returns = 30
+    let total = letter + function + returns
+
+    // Round-trip a few chars
+    let q = char_from(34)
+    let lb = char_from(123)
+    let rb = char_from(125)
+    let q_code = char_code(q)
+    let lb_code = char_code(lb)
+    let rb_code = char_code(rb)
+
+    // classify some bytes
+    let c1 = classify(char_code("5"))
+    let c2 = classify(char_code("x"))
+    let c3 = classify(char_code("+"))
+
+    // 3-tuple
+    let (a, s, b) = three_return(7)
+
+    // struct + field access
+    let cell = make_cell(99, "demo")
+
+    // Array of structs
+    let mut cells: [Cell] = []
+    push(cells, make_cell(1, "one"))
+    push(cells, make_cell(2, "two"))
+
+    println(to_string(total))
+    println(to_string(q_code) + "," + to_string(lb_code) + "," + to_string(rb_code))
+    println(to_string(c1) + "," + to_string(c2) + "," + to_string(c3))
+    println(to_string(a) + "," + s + "," + to_string(b))
+    println(to_string(cell.kind) + ":" + cell.text)
+    println(to_string(len(cells)))
+}
