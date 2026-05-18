@@ -178,11 +178,6 @@ impl Parser {
                 self.advance();
                 (tok.text.clone(), tok.span)
             }
-            // Allow keywords used as identifiers in certain positions
-            _ if tok.kind.is_keyword() => {
-                self.advance();
-                (tok.text.clone(), tok.span)
-            }
             _ => {
                 let span = tok.span;
                 let token_text = if tok.text.is_empty() {
@@ -190,11 +185,15 @@ impl Parser {
                 } else {
                     format!("'{}'", tok.text)
                 };
-                self.error_with_code(
-                    format!("unexpected token {}, expected identifier", token_text),
-                    span,
-                    kryos_errors::codes::E0002,
-                );
+                let msg = if tok.kind.is_keyword() {
+                    format!(
+                        "reserved keyword {} cannot be used as an identifier here",
+                        token_text
+                    )
+                } else {
+                    format!("unexpected token {}, expected identifier", token_text)
+                };
+                self.error_with_code(msg, span, kryos_errors::codes::E0002);
                 if !self.at_end() {
                     self.advance();
                 }
@@ -217,10 +216,15 @@ impl Parser {
                 } else {
                     format!("'{}'", tok.text)
                 };
-                self.error(
-                    format!("unexpected token {}, expected name", token_text),
-                    span,
-                );
+                let msg = if tok.kind.is_keyword() {
+                    format!(
+                        "reserved keyword {} cannot be used as a name here",
+                        token_text
+                    )
+                } else {
+                    format!("unexpected token {}, expected name", token_text)
+                };
+                self.error(msg, span);
                 if !self.at_end() {
                     self.advance();
                 }
@@ -1184,24 +1188,55 @@ impl Parser {
         self.expect(TokenKind::LBrace);
 
         let mut branches = Vec::new();
-        let mut timeout = None;
+        let mut timeout: Option<Box<SelectTimeout>> = None;
 
         while !self.check(TokenKind::RBrace) && !self.at_end() {
             let tok = self.peek().clone();
+            // A branch begins with either the contextual keyword `timeout`
+            // (an identifier whose TEXT is exactly "timeout") or with a
+            // pattern identifier naming the value bound by the receive.
+            // The previous implementation string-compared `tok.text` for
+            // `"timeout"` regardless of token kind, which meant a string
+            // literal or some other token whose text happened to be that
+            // word would have been mis-routed. Pin the check to token kind.
+            let is_timeout_branch =
+                tok.kind == TokenKind::Ident && tok.text == "timeout";
+
+            if !is_timeout_branch && tok.kind != TokenKind::Ident {
+                // Recover by emitting an error and skipping to the next
+                // brace so we don't infinite-loop on a malformed branch.
+                self.error(
+                    format!(
+                        "expected an identifier or `timeout` at start of select branch, found `{}`",
+                        tok.text
+                    ),
+                    tok.span,
+                );
+                self.advance();
+                continue;
+            }
+
             let pattern = tok.text.clone();
             self.advance();
 
-            // Check if this is a timeout branch.
-            if pattern == "timeout" {
+            if is_timeout_branch {
+                if timeout.is_some() {
+                    self.error(
+                        "select statement may have at most one `timeout` branch".to_string(),
+                        tok.span,
+                    );
+                }
                 let duration_ms = self.parse_expr();
                 self.expect(TokenKind::FatArrow);
                 let body = self.parse_block();
                 let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
-                timeout = Some(Box::new(SelectTimeout {
-                    duration_ms,
-                    body,
-                    span: tok.span.merge(end),
-                }));
+                if timeout.is_none() {
+                    timeout = Some(Box::new(SelectTimeout {
+                        duration_ms,
+                        body,
+                        span: tok.span.merge(end),
+                    }));
+                }
             } else {
                 let channel = self.parse_expr();
                 self.expect(TokenKind::FatArrow);
@@ -1716,7 +1751,16 @@ impl Parser {
             // Literals
             TokenKind::Integer => {
                 self.advance();
-                let value = parse_int_literal(&tok.text);
+                let value = match parse_int_literal_checked(&tok.text) {
+                    Ok(v) => v,
+                    Err(why) => {
+                        self.error(
+                            format!("{why}: `{}`", tok.text),
+                            tok.span,
+                        );
+                        0
+                    }
+                };
                 Expr::IntLiteral {
                     value,
                     span: tok.span,
@@ -2477,7 +2521,16 @@ impl Parser {
             // Literal patterns: integers, strings, bools
             TokenKind::Integer => {
                 self.advance();
-                let value = parse_int_literal(&tok.text);
+                let value = match parse_int_literal_checked(&tok.text) {
+                    Ok(v) => v,
+                    Err(why) => {
+                        self.error(
+                            format!("{why}: `{}`", tok.text),
+                            tok.span,
+                        );
+                        0
+                    }
+                };
                 Pattern::Literal {
                     expr: Box::new(Expr::IntLiteral {
                         value,
@@ -2499,7 +2552,21 @@ impl Parser {
                 self.advance(); // consume '-'
                 let int_tok = self.peek().clone();
                 self.advance(); // consume integer
-                let value = -parse_int_literal(&int_tok.text);
+                let raw = match parse_int_literal_checked(&int_tok.text) {
+                    Ok(v) => v,
+                    Err(why) => {
+                        self.error(
+                            format!("{why}: `{}`", int_tok.text),
+                            int_tok.span,
+                        );
+                        0
+                    }
+                };
+                // Use wrapping_neg so that the legal pattern `-9223372036854775808`
+                // (i.e. i64::MIN, whose positive form already overflowed above
+                // and was surfaced as an error) doesn't trigger a second panic
+                // path. Real overflow is already reported on the digits.
+                let value = raw.wrapping_neg();
                 let span = tok.span.merge(int_tok.span);
                 Pattern::Literal {
                     expr: Box::new(Expr::IntLiteral { value, span }),
@@ -2899,17 +2966,56 @@ fn token_to_binop(kind: TokenKind) -> BinOp {
     }
 }
 
-fn parse_int_literal(text: &str) -> i64 {
+/// Parse an integer literal text into an i64. Returns `Ok(value)` on success.
+/// On overflow or malformed digits, returns `Err(kind)` where `kind` is a
+/// short, human-readable description of the failure ("overflow",
+/// "invalid hex", etc.). Callers MUST surface the error as a diagnostic
+/// rather than substituting a 0 — silent zero on overflow used to mask
+/// real bugs in the compiler source (bitmasks like `0xffff_ffff_ffff_ffff`
+/// silently became 0).
+fn parse_int_literal_checked(text: &str) -> Result<i64, &'static str> {
     let clean = text.replace('_', "");
-    if clean.starts_with("0x") || clean.starts_with("0X") {
-        i64::from_str_radix(&clean[2..], 16).unwrap_or(0)
-    } else if clean.starts_with("0b") || clean.starts_with("0B") {
-        i64::from_str_radix(&clean[2..], 2).unwrap_or(0)
-    } else if clean.starts_with("0o") || clean.starts_with("0O") {
-        i64::from_str_radix(&clean[2..], 8).unwrap_or(0)
-    } else {
-        clean.parse().unwrap_or(0)
+    let (radix, body, label): (u32, &str, &'static str) =
+        if let Some(rest) = clean.strip_prefix("0x").or_else(|| clean.strip_prefix("0X")) {
+            (16, rest, "hex")
+        } else if let Some(rest) = clean.strip_prefix("0b").or_else(|| clean.strip_prefix("0B")) {
+            (2, rest, "binary")
+        } else if let Some(rest) = clean.strip_prefix("0o").or_else(|| clean.strip_prefix("0O")) {
+            (8, rest, "octal")
+        } else {
+            (10, clean.as_str(), "decimal")
+        };
+
+    if body.is_empty() {
+        return Err("empty integer literal");
     }
+
+    // First try as signed i64. If that fails with an overflow error, try
+    // parsing as u64 so that the special-cased `i64::MIN` (which is also
+    // a valid bitmask used as `0x8000_0000_0000_0000`) survives. Anything
+    // that fits in u64 is bit-cast to i64; truly-out-of-range values
+    // surface as overflow.
+    match i64::from_str_radix(body, radix) {
+        Ok(v) => Ok(v),
+        Err(_) => match u64::from_str_radix(body, radix) {
+            Ok(v) => Ok(v as i64),
+            Err(_) => Err(match label {
+                "decimal" => "integer literal overflows i64",
+                "hex" => "hex literal overflows 64 bits",
+                "binary" => "binary literal overflows 64 bits",
+                "octal" => "octal literal overflows 64 bits",
+                _ => "integer literal overflow",
+            }),
+        },
+    }
+}
+
+/// Legacy infallible wrapper. Returns 0 on error. Kept for the rare
+/// call site that operates without parser context (e.g. type-expression
+/// array sizes parsed from a known-valid lexer token). Prefer the
+/// `_checked` form in any path that has `&mut self` available.
+fn parse_int_literal(text: &str) -> i64 {
+    parse_int_literal_checked(text).unwrap_or(0)
 }
 
 fn looks_like_type_name(name: &str) -> bool {

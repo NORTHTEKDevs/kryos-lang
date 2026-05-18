@@ -4,6 +4,44 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.6.9] - 2026-05-17 — "parser hardening for self-hosting"
+
+Three parser bugs blocking self-hosting are fixed. None of these
+change the surface language; they tighten how malformed or edge-case
+input is reported and parsed so the lexer-in-Kryos work can rely on
+consistent diagnostics. All 26 smoke tests + 21 router + 12
+config_parser tests pass.
+
+### Fixed
+
+- `parse_int_literal` no longer returns a silent 0 when an integer
+  literal does not fit in `i64`. It now falls back to `u64` (so hex
+  bitmasks like `0x8000_0000_0000_0000` reinterpreted as `i64` parse
+  cleanly), and otherwise produces a labelled overflow error. Hex,
+  binary, and octal prefixes share the same path. Affected call sites:
+  general integer literals, attribute argument parsing, and pattern
+  integer literals.
+
+- `parse_select` no longer enters the timeout branch on a token whose
+  textual content happens to equal `"timeout"`. It now requires the
+  token to be a real `Ident` named `timeout`, detects duplicate
+  `timeout` branches, and recovers cleanly when a non-ident leads a
+  branch.
+
+- `expect_ident` and `expect_name` no longer silently accept reserved
+  keywords as identifiers. Using `let`, `fn`, `match`, etc. in a name
+  position now produces `reserved keyword 'X' cannot be used as an
+  identifier here` (or `...as a name here`) instead of being accepted.
+  Identifiers that share a prefix with keywords (`letter`, `function`,
+  `returns`, `matched`, `asphalt`, ...) are unaffected.
+
+### Tests
+
+- New smoke test `test_keyword_rejection.kry` verifies that
+  keyword-prefix identifiers still parse and bind correctly. The
+  negative cases (`let let = 1`, `@let`) are confirmed manually to
+  emit the new errors.
+
 ## [2.6.8] - 2026-05-17 — "closures that capture other closures"
 
 A closure that captures a `let`-bound closure value as one of its free

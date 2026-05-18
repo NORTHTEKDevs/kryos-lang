@@ -1,0 +1,18 @@
+// Regression for v2.6.9 parser hardening:
+// expect_ident / expect_name no longer silently accept reserved keywords
+// as identifiers. Legitimate uses must still parse.
+//
+// Negative cases (reserved keyword in identifier position) are exercised
+// manually outside the smoke runner since the runner only accepts
+// programs that parse and run.
+
+fn main() {
+    // Identifiers that look like keyword prefixes but aren't keywords.
+    let letter = 1
+    let function = 2
+    let returns = 3
+    let matched = 4
+    let asphalt = 5
+    let total = letter + function + returns + matched + asphalt
+    println(total)
+}
