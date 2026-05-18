@@ -1,0 +1,91 @@
+// stage0_lex_self.kry -- Stage 0 closure demonstration.
+//
+// Reads the bootstrap lexer's own source from disk, tokenizes it
+// using the bootstrap lexer (token.kry + lexer.kry), and reports
+// the token count plus a sampling of the first and last tokens.
+//
+// This is the milestone "Stage 0 closure": the bootstrap lexer
+// successfully consumes its own source. It is NOT a self-host
+// (we still rely on the Rust compiler to run this driver), but
+// it proves the bootstrap lexer is real, works on real input,
+// and that the language is expressive enough to hold its own
+// lexer.
+
+use token
+use lexer
+
+fn main() {
+    let src = file_read("compiler/self-host/lexer.kry")
+    let src_len = len(src)
+    println("read lexer.kry: {src_len} bytes")
+
+    let tokens = tokenize(src)
+    let n = len(tokens)
+    println("tokenized: {n} tokens")
+
+    // Spot-check: the first non-comment token in lexer.kry is `use`,
+    // which the keyword table maps to TK_USE. The last token must be
+    // TK_EOF.
+    if n > 0 {
+        let first = tokens[0]
+        let last = tokens[n - 1]
+        let first_kind = first.kind
+        let first_text = first.text
+        let last_kind = last.kind
+        println("first token: kind={first_kind} text={first_text}")
+        println("last  token: kind={last_kind} (TK_EOF expected)")
+        assert_eq(last_kind, TK_EOF)
+    }
+
+    // Walk the tokens and count a few classes so we know lex_all
+    // is really doing work, not just emitting EOF.
+    let mut idents = 0
+    let mut keywords = 0
+    let mut integers = 0
+    let mut strings = 0
+    let mut i = 0
+    while i < n {
+        let t = tokens[i]
+        let k = t.kind
+        if k == TK_IDENT { idents = idents + 1 }
+        if is_keyword(k) { keywords = keywords + 1 }
+        if k == TK_INTEGER { integers = integers + 1 }
+        if k == TK_STRING or k == TK_STRING_PART { strings = strings + 1 }
+        i = i + 1
+    }
+
+    println("identifiers: {idents}")
+    println("keywords:    {keywords}")
+    println("integers:    {integers}")
+    println("strings:     {strings}")
+
+    // Sanity guards: the lexer source has lots of identifiers and
+    // keywords. If either is zero, the lexer is broken.
+    assert(idents > 100)
+    assert(keywords > 50)
+
+    // Round-trip: lex token.kry too. It is larger and exercises the
+    // string-literal and integer-literal paths heavily.
+    let tok_src = file_read("compiler/self-host/token.kry")
+    let tok_tokens = tokenize(tok_src)
+    let tn = len(tok_tokens)
+    let tlast = tok_tokens[tn - 1]
+    let tlast_kind = tlast.kind
+    println("token.kry: {tn} tokens (last kind {tlast_kind})")
+    assert_eq(tlast_kind, TK_EOF)
+
+    // Tiny synthetic source: exercise every basic shape in one shot.
+    // Braces are built via char_from(123)/char_from(125) so the {}
+    // characters do not trigger string interpolation in the host source.
+    let lb = char_from(123)
+    let rb = char_from(125)
+    let mini = "fn add(x: i64, y: i64) -> i64 " + lb + " return x + y " + rb
+    let mini_tokens = tokenize(mini)
+    let mini_n = len(mini_tokens)
+    println("mini program: {mini_n} tokens")
+    // fn add ( x : i64 , y : i64 ) -> i64 { return x + y } EOF
+    // = 19 lexeme tokens + EOF = 20.
+    assert_eq(mini_n, 20)
+
+    println("stage 0 closure: ok")
+}
