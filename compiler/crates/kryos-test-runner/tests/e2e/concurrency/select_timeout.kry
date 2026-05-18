@@ -1,9 +1,10 @@
 // run-expect: timeout fired
+// See note in select_basic.kry — branch syntax is `<binding> <channel> =>`.
 fn main() {
     let ch = chan()
 
     select {
-        recv ch => {
+        v ch => {
             println("received")
         }
         timeout 100 => {

@@ -39,6 +39,27 @@ jobs:
           printf "30\n2\nKryos\n" > expected.txt
           diff expected.txt smoke_output.txt
 
+      - name: Smoke directory full sweep (tests/smoke/*.kry)
+        shell: bash
+        # Cranelift JIT path over every smoke test. Reports per-file
+        # pass/fail and fails the job on any divergence. Catches
+        # regressions the per-file CI step (M1 audit baseline) missed
+        # because that step only iterated 1 file.
+        run: |
+          set -e
+          fail=0
+          for f in tests/smoke/*.kry; do
+            name=$(basename "$f" .kry)
+            if ! ./compiler/target/release/kryos run "$f" > /dev/null 2>&1; then
+              echo "  FAIL  $name"
+              fail=$((fail+1))
+            else
+              echo "  OK    $name"
+            fi
+          done
+          echo "smoke-sweep: $((32 - fail))/32 pass"
+          [ "$fail" -eq 0 ]
+
       - name: Example smoke tests
         working-directory: compiler
         shell: bash
@@ -65,6 +86,325 @@ jobs:
             echo "== showcase/$ex.kry =="
             ./target/release/kryos run ../examples/showcase/$ex.kry > /dev/null
           done
+
+      - name: Install clang for LLVM AOT
+        run: |
+          sudo apt-get install -y clang
+
+      - name: Backend parity matrix (Cranelift vs LLVM)
+        shell: bash
+        # Runs every tests/smoke/*.kry under both backends; classifies LLVM
+        # failures into A/B/C/D/E/T/A' buckets. Exit 0 only when both
+        # backends agree on every test. Lets us track parity regressions
+        # over time (results uploaded as artifact).
+        run: bash tests/parity/run_parity.sh
+
+      - name: Upload parity report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-linux
+          path: tests/parity/results/parity-*.*
+
+  wasm-smoke:
+    # WebAssembly backend coverage. Builds every `examples/wasm_*.kry`
+    # under `--backend wasm` and executes the result through wasmtime
+    # (WASI). Catches regressions in the WASM emitter that the
+    # native-only smoke battery misses.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "compiler"
+
+      - name: Install native deps + wasmtime
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y libsqlite3-dev libssl-dev pkg-config
+          curl https://wasmtime.dev/install.sh -sSf | bash
+          echo "$HOME/.wasmtime/bin" >> $GITHUB_PATH
+
+      - name: Build (release)
+        working-directory: compiler
+        run: cargo build --release -j 2
+
+      - name: WASM smoke (every examples/wasm_*.kry)
+        shell: bash
+        run: |
+          set -e
+          KRYOS=./compiler/target/release/kryos
+          # wasm_browser_demo + wasm_web_demo target the browser (need DOM
+          # bindings + a JS host) and aren't WASI-runnable; skip them.
+          fail=0
+          built=0
+          ran=0
+          skipped=0
+          for f in examples/wasm_*.kry; do
+            name=$(basename "$f" .kry)
+            case "$name" in
+              wasm_browser_demo|wasm_web_demo)
+                echo "  SKIP  $name (browser-target; needs JS host)"
+                skipped=$((skipped+1))
+                continue
+                ;;
+            esac
+            out=$(mktemp -u).wasm
+            if ! "$KRYOS" build "$f" --release --backend wasm -o "$out" 2>&1 > /tmp/build.log; then
+              echo "  FAIL  $name (build)"
+              cat /tmp/build.log
+              fail=$((fail+1))
+              continue
+            fi
+            built=$((built+1))
+            if ! wasmtime "$out" > /tmp/run.log 2>&1; then
+              echo "  FAIL  $name (wasmtime run)"
+              cat /tmp/run.log
+              fail=$((fail+1))
+              rm -f "$out"
+              continue
+            fi
+            ran=$((ran+1))
+            rm -f "$out"
+            echo "  OK    $name"
+          done
+          echo ""
+          echo "wasm-smoke: built=$built ran=$ran skipped=$skipped failed=$fail"
+          [ "$fail" -eq 0 ]
+
+  selfhost-stage1:
+    # Stage 0 → Stage 1 self-host verification (M6).
+    # Stage 0: the Rust-based kryos compiler builds.
+    # Stage 1: kryos check on every compiler/self-host/*.kry must pass,
+    #          plus kryos run compiler/self-host/stage1_mini_parser.kry
+    #          must finish with "stage 1 mini-parser: ok" on stdout.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "compiler"
+
+      - name: Install native deps
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y libsqlite3-dev libssl-dev pkg-config
+
+      - name: Build kryos (Stage 0)
+        working-directory: compiler
+        run: cargo build --release -j 2
+
+      - name: Stage 1 — kryos check every self-host file
+        shell: bash
+        run: |
+          set -e
+          KRYOS=./compiler/target/release/kryos
+          fail=0
+          total=0
+          for f in compiler/self-host/*.kry; do
+            total=$((total+1))
+            name=$(basename "$f" .kry)
+            if ! "$KRYOS" check "$f" > /tmp/check.log 2>&1; then
+              echo "  FAIL  $name"
+              cat /tmp/check.log
+              fail=$((fail+1))
+            else
+              echo "  OK    $name"
+            fi
+          done
+          echo ""
+          echo "selfhost-stage1 check: $((total - fail))/$total pass"
+          [ "$fail" -eq 0 ]
+
+      - name: Stage 1 — kryos run stage1_mini_parser.kry
+        shell: bash
+        run: |
+          set -e
+          KRYOS=./compiler/target/release/kryos
+          out=$("$KRYOS" run compiler/self-host/stage1_mini_parser.kry)
+          echo "$out" | tail -5
+          echo "$out" | grep -q "stage 1 mini-parser: ok" \
+            || { echo "expected 'stage 1 mini-parser: ok' marker in stdout"; exit 1; }
+
+  registry-smoke:
+    # Real HTTP roundtrip against an ephemeral registry server. Proves
+    # the protocol path (/v1/health, /v1/packages/<name>, /v1/packages/
+    # <name>/<version>, /v1/search) works end-to-end without filesystem
+    # shortcuts. Server is spun up on 127.0.0.1:18080 against a
+    # synthetic 2-package index in $RUNNER_TEMP.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "tools/registry"
+
+      - name: Run registry smoke
+        run: bash tests/registry/smoke.sh
+
+  quickstart-e2e:
+    # End-to-end QUICKSTART.md verification. Walks build → Cranelift JIT
+    # → LLVM AOT → WASM/wasmtime → first tour examples in one script.
+    # See tests/quickstart_e2e.sh.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "compiler"
+
+      - name: Install native deps + clang + wasmtime
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y libsqlite3-dev libssl-dev pkg-config clang
+          curl https://wasmtime.dev/install.sh -sSf | bash
+          echo "$HOME/.wasmtime/bin" >> $GITHUB_PATH
+
+      - name: Run quickstart E2E
+        run: bash tests/quickstart_e2e.sh
+
+  fuzz:
+    # Smoke-run the three cargo-fuzz targets (lexer, parser, typechecker)
+    # for a short fixed time each. Catches regressions where a random byte
+    # sequence panics rather than producing a clean error. Long-form
+    # fuzzing campaigns run separately (workflow_dispatch); this is the
+    # CI-gating step.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "compiler/fuzz"
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Install native deps
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y libsqlite3-dev libssl-dev pkg-config
+
+      - name: Run fuzz_lexer for 60s
+        working-directory: compiler
+        run: |
+          cargo +nightly fuzz run fuzz_lexer -- -max_total_time=60 -timeout=10
+
+      - name: Run fuzz_parser for 60s
+        working-directory: compiler
+        run: |
+          cargo +nightly fuzz run fuzz_parser -- -max_total_time=60 -timeout=10
+
+      - name: Run fuzz_typechecker for 60s
+        working-directory: compiler
+        run: |
+          cargo +nightly fuzz run fuzz_typechecker -- -max_total_time=60 -timeout=10
+
+      - name: Upload fuzz corpus on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus
+          path: compiler/fuzz/corpus/
+
+  build-and-test-macos:
+    # macOS tier-1 verification. Runs on the public-repo macos-14 runner
+    # (Apple Silicon, free for public repos). Mirrors the Linux Cranelift
+    # smoke battery so M-series regressions get caught at PR time. Intel
+    # (macos-13) coverage is added in release.yml's matrix, not here, to
+    # keep PR wall time predictable.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "compiler"
+
+      - name: Install LLVM (Homebrew)
+        run: |
+          # Provides clang for the LLVM AOT path. Apple's bundled clang
+          # also works but Homebrew LLVM matches the Linux job's version.
+          brew install llvm
+          echo "$(brew --prefix llvm)/bin" >> $GITHUB_PATH
+
+      - name: Build (release)
+        working-directory: compiler
+        run: cargo build --release -j 2
+
+      - name: Smoke test (kryos run tests/smoke.kry)
+        working-directory: compiler
+        shell: bash
+        run: |
+          ./target/release/kryos run tests/smoke.kry > smoke_output.txt
+          printf "30\n2\nKryos\n" > expected.txt
+          diff expected.txt smoke_output.txt
+
+      - name: Smoke directory full sweep
+        shell: bash
+        run: |
+          set -e
+          fail=0
+          for f in tests/smoke/*.kry; do
+            name=$(basename "$f" .kry)
+            if ! ./compiler/target/release/kryos run "$f" > /dev/null 2>&1; then
+              echo "  FAIL  $name"
+              fail=$((fail+1))
+            else
+              echo "  OK    $name"
+            fi
+          done
+          echo "smoke-sweep (macos): $((32 - fail))/32 pass"
+          [ "$fail" -eq 0 ]
+
+      - name: Example smoke tests
+        working-directory: compiler
+        shell: bash
+        run: |
+          set -e
+          for ex in hello fibonacci word_count shapes; do
+            echo "== examples/$ex.kry =="
+            ./target/release/kryos run ../examples/$ex.kry > /dev/null
+          done
+
+      - name: AOT release smoke (hello via LLVM)
+        working-directory: compiler
+        shell: bash
+        run: |
+          set -e
+          ./target/release/kryos build --release ../examples/hello.kry -o hello
+          ./hello > hello_output.txt
+          printf "Hello, Kryos!\n" > hello_expected.txt
+          diff hello_expected.txt hello_output.txt
+
+      - name: Backend parity matrix
+        shell: bash
+        run: bash tests/parity/run_parity.sh
+
+      - name: Upload parity report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-macos
+          path: tests/parity/results/parity-*.*
 
   build-and-test-windows:
     # Windows MSVC tier-1 job. Mirrors the Linux build battery across

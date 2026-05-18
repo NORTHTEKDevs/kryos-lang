@@ -1,0 +1,15 @@
+// expect-error: @pure
+// A @pure function cannot call print (I/O builtin), even when wrapped in
+// a conditional. Tests that the @pure check sees through control flow.
+
+@pure
+fn maybe_log(x: i64, verbose: bool) -> i64 {
+    if verbose {
+        print("debug: ")
+    }
+    return x + 1
+}
+
+fn main() {
+    maybe_log(42, true)
+}

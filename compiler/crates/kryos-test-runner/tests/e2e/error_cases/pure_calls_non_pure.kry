@@ -1,0 +1,17 @@
+// expect-error: @pure
+// A @pure function cannot call a non-pure user function. Tests user-fn
+// chain enforcement (not just I/O builtins).
+
+fn touches_io(x: i64) -> i64 {
+    println("side effect")
+    return x
+}
+
+@pure
+fn wrapper(x: i64) -> i64 {
+    return touches_io(x) + 1
+}
+
+fn main() {
+    wrapper(5)
+}

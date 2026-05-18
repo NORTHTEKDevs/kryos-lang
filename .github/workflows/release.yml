@@ -5,7 +5,14 @@ on:
     tags: ['v*']
 
 permissions:
+  # contents:write   — create-release uploads tarballs + attaches release notes
+  # id-token:write   — actions/attest-build-provenance requests an OIDC token
+  #                    to sign a SLSA-style provenance attestation per artifact
+  # attestations:write — store the attestation on the workflow run so users can
+  #                      verify with `gh attestation verify`
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   build-release:
@@ -93,14 +100,85 @@ jobs:
           cp -r compiler/stdlib/. dist/stdlib/
           7z a ${{ matrix.artifact }}.zip ./dist/*
 
-      - name: Upload artifact
+      - name: SHA-256 checksum
+        shell: bash
+        run: |
+          # macOS uses shasum; Linux uses sha256sum; Windows-msys has both.
+          if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum ${{ matrix.artifact }}.* > ${{ matrix.artifact }}.sha256
+          else
+              shasum -a 256 ${{ matrix.artifact }}.* > ${{ matrix.artifact }}.sha256
+          fi
+          echo "----- ${{ matrix.artifact }}.sha256 -----"
+          cat ${{ matrix.artifact }}.sha256
+
+      - name: Attest build provenance (SLSA / OIDC)
+        # Lets users run `gh attestation verify <file> --repo NORTHTEKDevs/kryos-lang`
+        # to confirm the artifact was built by this exact workflow run.
+        # Provides a real chain of custody without paid code-signing certs.
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ matrix.artifact }}.*
+
+      - name: Upload artifact + checksum
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}.*
+          path: |
+            ${{ matrix.artifact }}.*
+
+  package-vscode:
+    # Build the VS Code extension as a .vsix that VS Code can install
+    # via "Extensions: Install from VSIX…" and that vsce can publish
+    # to the marketplace. The artifact gets attached to the release.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build + package
+        working-directory: editors/vscode
+        run: |
+          npm install
+          npm run compile
+          npx --yes @vscode/vsce package -o kryos-vscode.vsix
+
+      - name: Upload .vsix
+        uses: actions/upload-artifact@v4
+        with:
+          name: kryos-vscode-vsix
+          path: editors/vscode/kryos-vscode.vsix
+
+  package-zed:
+    # Build the Zed extension as a wasm32-wasip1 cdylib that Zed loads.
+    # Artifact attached to the release alongside the .vsix.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "editors/zed"
+
+      - name: Build (wasm32-wasip1)
+        working-directory: editors/zed
+        run: cargo build --release --target wasm32-wasip1
+
+      - name: Upload .wasm
+        uses: actions/upload-artifact@v4
+        with:
+          name: kryos-zed-extension
+          path: editors/zed/target/wasm32-wasip1/release/*.wasm
 
   create-release:
-    needs: build-release
+    needs: [build-release, package-vscode, package-zed]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

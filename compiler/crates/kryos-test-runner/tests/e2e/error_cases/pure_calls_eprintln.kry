@@ -1,0 +1,15 @@
+// expect-error: @pure
+// A @pure function cannot call eprintln. Tests stderr is also gated.
+
+@pure
+fn validate(x: i64) -> bool {
+    if x < 0 {
+        eprintln("warn: negative input")
+        return false
+    }
+    return true
+}
+
+fn main() {
+    validate(-1)
+}

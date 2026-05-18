@@ -1,0 +1,13 @@
+// expect-error: net
+// A @capabilities(io) function cannot make HTTP calls (which require net).
+
+use std::http::{http_get}
+
+@capabilities(io)
+fn read_remote_log(url: str) -> str {
+    return http_get(url)
+}
+
+fn main() {
+    read_remote_log("http://example.invalid/log")
+}

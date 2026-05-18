@@ -17,7 +17,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use kryos_ast::{Decl, ImportPath, Module};
+use kryos_ast::{Block, Decl, Expr, ImportPath, Module, Stmt};
 use kryos_errors::Diagnostic;
 use kryos_lexer::Lexer;
 use kryos_parser::parse;
@@ -377,29 +377,73 @@ pub fn resolve_imports(
         )?;
 
         // Collect non-import declarations from the imported module.
-        // When selective import is used (`use foo::{a, b}`), only include
-        // declarations whose names match the requested items, plus ALL
-        // module-level constants (Decl::Const). Constants are always
-        // included because selected functions may depend on them internally
-        // (e.g., `sqrt` uses `NAN`, trig functions use `PI`/`TAU`).
-        for decl in imported_module.declarations {
-            if matches!(decl, Decl::Import { .. }) {
-                continue;
+        // When selective import is used (`use foo::{a, b}`), include:
+        //   1. All non-Function decls (types, traits, impls, constants,
+        //      externs) — these are cheap and often referenced silently
+        //      by selected functions' parameter / return types.
+        //   2. Functions whose names are in the transitive closure of
+        //      `import_path.items` over identifier / FnCall references.
+        //      So `use math::{clamp}` pulls in `clamp` + (transitively)
+        //      `min` and `max` because clamp() calls them.
+        // Empty `items` (`use foo`) means "import everything".
+        let selected: HashSet<String> = import_path
+            .items
+            .iter()
+            .cloned()
+            .collect();
+
+        if selected.is_empty() {
+            for decl in imported_module.declarations {
+                if !matches!(decl, Decl::Import { .. }) {
+                    resolved_decls.push(decl);
+                }
             }
-            // Note: selective imports (`use foo::{a, b}`) used to filter
-            // the imported module down to just the named items, but that
-            // breaks any selected function whose body transitively calls
-            // other (unselected) helpers in the same module. Doing proper
-            // dependency tracing is a larger change; for now we always
-            // include the full module so private helpers, types, externs,
-            // and constants are all reachable. The `items` list still
-            // serves as documentation of what the importer cares about.
-            //
-            // To avoid duplicate symbols when several modules are imported
-            // and happen to share helper names, the dedup pass below will
-            // surface conflicts.
-            let _ = &import_path.items;
-            resolved_decls.push(decl);
+        } else {
+            // Build name → Decl-index for fast lookup during the closure.
+            let fn_by_name: HashMap<String, usize> = imported_module
+                .declarations
+                .iter()
+                .enumerate()
+                .filter_map(|(i, d)| match d {
+                    Decl::Function { name, .. } => Some((name.clone(), i)),
+                    _ => None,
+                })
+                .collect();
+
+            // Transitive closure of identifier references over selected
+            // function bodies. Seeded with `selected`. New names that
+            // resolve to functions in this module get added; missing names
+            // (builtins, types, helpers from other modules) are ignored —
+            // the type-checker will resolve / diagnose them later.
+            let mut needed: HashSet<String> = selected.clone();
+            let mut worklist: Vec<String> = selected.into_iter().collect();
+            while let Some(name) = worklist.pop() {
+                if let Some(&idx) = fn_by_name.get(&name) {
+                    let mut refs: HashSet<String> = HashSet::new();
+                    collect_idents_in_decl(&imported_module.declarations[idx], &mut refs);
+                    for r in refs {
+                        if !needed.contains(&r) {
+                            needed.insert(r.clone());
+                            worklist.push(r);
+                        }
+                    }
+                }
+            }
+
+            for decl in imported_module.declarations {
+                match &decl {
+                    Decl::Import { .. } => continue,
+                    Decl::Function { name, .. } => {
+                        if needed.contains(name) {
+                            resolved_decls.push(decl);
+                        }
+                    }
+                    // Always include types, constants, externs, impls,
+                    // traits, actors, type aliases. Selecting `{a, b}`
+                    // shouldn't hide the struct definitions they need.
+                    _ => resolved_decls.push(decl),
+                }
+            }
         }
     }
 
@@ -470,5 +514,161 @@ fn decl_name_of(decl: &Decl) -> Option<String> {
         Decl::Actor { name, .. } => Some(name.clone()),
         Decl::Const { name, .. } => Some(name.clone()),
         _ => None,
+    }
+}
+
+// ─── Identifier collection (selective-import transitive closure) ───────────
+
+/// Collect every identifier name appearing inside a decl's body. Used by
+/// selective-import resolution: a function selected via `use foo::{bar}`
+/// transitively pulls in any other in-module function whose name appears
+/// in its body. Conservative — we collect ALL identifier names, including
+/// local variables. Non-function names get filtered out at the call site.
+fn collect_idents_in_decl(d: &Decl, out: &mut HashSet<String>) {
+    match d {
+        Decl::Function { body: Some(b), .. } => collect_idents_in_block(b, out),
+        Decl::Impl { methods, .. } | Decl::Trait { methods, .. } => {
+            for m in methods {
+                collect_idents_in_decl(m, out);
+            }
+        }
+        Decl::Const { value, .. } => collect_idents_in_expr(value, out),
+        _ => {}
+    }
+}
+
+fn collect_idents_in_block(b: &Block, out: &mut HashSet<String>) {
+    for stmt in &b.stmts {
+        collect_idents_in_stmt(stmt, out);
+    }
+}
+
+fn collect_idents_in_stmt(s: &Stmt, out: &mut HashSet<String>) {
+    match s {
+        Stmt::Let { value, .. } => {
+            if let Some(v) = value {
+                collect_idents_in_expr(v, out);
+            }
+        }
+        Stmt::Assign { target, value, .. } => {
+            collect_idents_in_expr(target, out);
+            collect_idents_in_expr(value, out);
+        }
+        Stmt::Return { value: Some(v), .. } => collect_idents_in_expr(v, out),
+        Stmt::Return { value: None, .. } => {}
+        Stmt::If {
+            condition,
+            then_block,
+            elif_clauses,
+            else_block,
+            ..
+        } => {
+            collect_idents_in_expr(condition, out);
+            collect_idents_in_block(then_block, out);
+            for (c, b) in elif_clauses {
+                collect_idents_in_expr(c, out);
+                collect_idents_in_block(b, out);
+            }
+            if let Some(b) = else_block {
+                collect_idents_in_block(b, out);
+            }
+        }
+        Stmt::For {
+            iterable, body, ..
+        } => {
+            collect_idents_in_expr(iterable, out);
+            collect_idents_in_block(body, out);
+        }
+        Stmt::While {
+            condition, body, ..
+        } => {
+            collect_idents_in_expr(condition, out);
+            collect_idents_in_block(body, out);
+        }
+        Stmt::Expr { expr, .. }
+        | Stmt::Spawn { expr, .. }
+        | Stmt::Throw { expr, .. } => collect_idents_in_expr(expr, out),
+        Stmt::Select {
+            branches, timeout, ..
+        } => {
+            for br in branches {
+                collect_idents_in_expr(&br.channel, out);
+                collect_idents_in_block(&br.body, out);
+            }
+            if let Some(t) = timeout {
+                collect_idents_in_expr(&t.duration_ms, out);
+                collect_idents_in_block(&t.body, out);
+            }
+        }
+        Stmt::TryCatch {
+            try_block,
+            catch_block,
+            ..
+        } => {
+            collect_idents_in_block(try_block, out);
+            collect_idents_in_block(catch_block, out);
+        }
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
+    }
+}
+
+fn collect_idents_in_expr(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::Identifier { name, .. } => {
+            out.insert(name.clone());
+        }
+        Expr::FieldAccess { object, .. } => collect_idents_in_expr(object, out),
+        Expr::IndexAccess { object, index, .. } => {
+            collect_idents_in_expr(object, out);
+            collect_idents_in_expr(index, out);
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            collect_idents_in_expr(left, out);
+            collect_idents_in_expr(right, out);
+        }
+        Expr::UnaryOp { operand, .. } => collect_idents_in_expr(operand, out),
+        Expr::FnCall { callee, args, .. } => {
+            collect_idents_in_expr(callee, out);
+            for a in args {
+                collect_idents_in_expr(a, out);
+            }
+        }
+        Expr::MethodCall { object, args, .. } => {
+            collect_idents_in_expr(object, out);
+            for a in args {
+                collect_idents_in_expr(a, out);
+            }
+        }
+        Expr::StaticMethodCall { type_name, args, .. } => {
+            out.insert(type_name.clone());
+            for a in args {
+                collect_idents_in_expr(a, out);
+            }
+        }
+        Expr::ArrayLiteral { elements, .. }
+        | Expr::TupleLiteral { elements, .. } => {
+            for el in elements {
+                collect_idents_in_expr(el, out);
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                collect_idents_in_expr(k, out);
+                collect_idents_in_expr(v, out);
+            }
+        }
+        Expr::StructLiteral { name, fields, .. } => {
+            out.insert(name.clone());
+            for (_, v) in fields {
+                collect_idents_in_expr(v, out);
+            }
+        }
+        Expr::Lambda { body, .. } => collect_idents_in_expr(body, out),
+        // Other expression variants (literals, control-flow expressions,
+        // closures, etc.) — best-effort coverage; conservative defaults
+        // mean unmatched variants just don't contribute to the closure,
+        // which is harmless: if a name isn't collected the user can
+        // always explicitly list it in the import.
+        _ => {}
     }
 }

@@ -32,6 +32,26 @@ SMOKE_DIR="$REPO_ROOT/tests/smoke"
 RESULTS_DIR="$REPO_ROOT/tests/parity/results"
 mkdir -p "$RESULTS_DIR"
 
+# Ensure clang is reachable. The LLVM AOT path shells out to clang for
+# the .ll -> object step. On Windows, the standard LLVM installer puts
+# clang.exe at C:\Program Files\LLVM\bin which isn't on PATH by default.
+if ! command -v clang >/dev/null 2>&1; then
+    for candidate in \
+        "/c/Program Files/LLVM/bin" \
+        "/c/Program Files (x86)/LLVM/bin" \
+        "$HOME/scoop/apps/llvm/current/bin"; do
+        if [[ -x "$candidate/clang.exe" || -x "$candidate/clang" ]]; then
+            export PATH="$candidate:$PATH"
+            echo "parity: added clang to PATH from $candidate"
+            break
+        fi
+    done
+fi
+if ! command -v clang >/dev/null 2>&1; then
+    echo "parity: WARN — clang not found on PATH; LLVM AOT half will fail with no-such-clang"
+    echo "parity: install LLVM and re-run, e.g.: winget install LLVM.LLVM"
+fi
+
 SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo nogit)"
 TXT_OUT="$RESULTS_DIR/parity-$SHA.txt"
 JSON_OUT="$RESULTS_DIR/parity-$SHA.json"

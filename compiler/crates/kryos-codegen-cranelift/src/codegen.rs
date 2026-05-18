@@ -290,8 +290,20 @@ pub fn compile_module_with_options(
     for mir_func in &module.functions {
         let sig = build_signature(mir_func, object_module.isa().default_call_conv());
 
-        if mir_func.name == "main" && mir_func.ret_ty == MirType::Void {
-            // Declare the user's main under an internal name.
+        if mir_func.name == "main" {
+            // Declare the user's main under an internal name. The exported
+            // `int main()` C-runtime entry point is the wrapper synthesised
+            // below — it calls `_kryos_main`, ignores any user return value,
+            // runs `kryos_spawn_wait_all`, and returns `0i32`.
+            //
+            // Both `fn main()` (void) and `fn main() -> i64` route through
+            // the same wrapper. Previously only the void form did, and a
+            // user `fn main() -> i64` ended up declared as `Linkage::Local`
+            // with the bare name `main`, which collided with the C
+            // runtime's expected entry-point symbol at link time:
+            //   error LNK2019: unresolved external symbol main
+            // (the test build_cache_roundtrip_with_cli in v2.8.0 used
+            //  `fn main() -> i64 { return 7 }` and exercised this path).
             let func_id = object_module.declare_function("_kryos_main", Linkage::Local, &sig)?;
             func_ids.insert(mir_func.name.clone(), func_id);
             needs_main_wrapper = true;
@@ -1850,7 +1862,17 @@ pub fn compile_module_with_options(
             let callee_sig = build_signature(main_func, call_conv);
             let callee_sig_ref = builder.import_signature(callee_sig);
             let callee_ref = object_module.declare_func_in_func(kryos_main_id, builder.func);
-            builder.ins().call(callee_ref, &[]);
+            let user_call = builder.ins().call(callee_ref, &[]);
+
+            // Preserve the user's main return value (truncated to i32) so a
+            // shell-script `$?` reflects what the program intended. Void
+            // user-mains fall through to the 0i32 default.
+            let user_ret = if !matches!(main_func.ret_ty, MirType::Void) {
+                let rets = builder.inst_results(user_call);
+                rets.first().copied()
+            } else {
+                None
+            };
 
             // Wait for all spawned threads before exiting.
             let wait_sig = {
@@ -1866,9 +1888,23 @@ pub fn compile_module_with_options(
             let wait_ref = object_module.declare_func_in_func(wait_id, builder.func);
             builder.ins().call(wait_ref, &[]);
 
-            // Return 0i32.
-            let zero = builder.ins().iconst(types::I32, 0);
-            builder.ins().return_(&[zero]);
+            // Return the user's i64 truncated to i32, or 0 if void.
+            let exit_code = match user_ret {
+                Some(v) => {
+                    let actual_ty = builder.func.dfg.value_type(v);
+                    if actual_ty == types::I32 {
+                        v
+                    } else if actual_ty.is_int() && actual_ty.bits() > 32 {
+                        builder.ins().ireduce(types::I32, v)
+                    } else if actual_ty.is_int() && actual_ty.bits() < 32 {
+                        builder.ins().sextend(types::I32, v)
+                    } else {
+                        builder.ins().iconst(types::I32, 0)
+                    }
+                }
+                None => builder.ins().iconst(types::I32, 0),
+            };
+            builder.ins().return_(&[exit_code]);
 
             builder.seal_all_blocks();
             builder.finalize();

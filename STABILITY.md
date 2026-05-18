@@ -32,14 +32,20 @@ in this repo; out-of-tree consumers should pin both.
 | Platform                  | Tier | Cranelift JIT (`kryos run`) | LLVM release (`kryos build --release`) | CI |
 |---------------------------|------|-----------------------------|----------------------------------------|----|
 | Linux x86_64 (glibc)      | 1    | Supported                   | Supported                              | Yes |
-| macOS x86_64 / aarch64    | 2    | Best-effort                 | Best-effort                            | No  |
-| Windows x86_64 (MSVC)     | 3    | Compiles                    | Not tested end-to-end                  | No  |
+| macOS aarch64 (macOS-14)  | 1    | Supported                   | Supported                              | Yes |
+| Windows x86_64 (MSVC)     | 1    | Supported                   | Supported                              | Yes |
+| macOS x86_64              | 2    | Best-effort                 | Best-effort                            | No  |
 | iOS / Android / embedded  | —    | Out of scope                | Out of scope                           | —   |
 
-"Tier 1" means every release is verified on this platform. "Tier 2" means
+"Tier 1" means every release is verified on this platform via the
+`parity-matrix` CI job (Linux / macOS-14 / Windows). "Tier 2" means
 breakages on this platform may slip a release but will be fixed promptly
-when reported. "Tier 3" means the platform is wired up but not part of the
-release gating set.
+when reported.
+
+At v3.0 the LLVM release path is **tier-1 alongside Cranelift JIT** —
+both backends are required to pass the full smoke suite on all three
+tier-1 platforms before any tag is cut. See `AUDIT-llvm-parity.md` for
+the parity-matrix definition of done.
 
 ---
 
@@ -60,15 +66,20 @@ A release tag is cut when **all** of the following hold:
 
 ---
 
-## 4. Current pass rates (v2.3.0)
+## 4. Current pass rates (v3.0.0)
 
 - Cranelift JIT (`kryos run`): **100%** on the native runner suite.
-- LLVM release (`kryos build --release`): **123 / 123 (100%)** on the
+- LLVM release (`kryos build --release`): **100%** on the
   `native_build_release_tests` suite.
+- Parity matrix (`tests/parity/run_parity.sh`): **34 / 34
+  both_pass on Cranelift + LLVM** across the smoke suite.
 - Compiler build warnings: **zero**.
 
 The v2.1 "known limitations" (escaping closures, `dyn Trait` dispatch)
-were closed in v2.2 and remain green through v2.3.
+were closed in v2.2 and remain green. The v2.8 known-failures
+(`test_generics`, `test_process`, `test_match_return`, `test_tuple_mut`,
+plus the full B/B' string-vs-ptr class on LLVM) all closed in v3.0
+— see `AUDIT-llvm-parity.md` for the per-test fix breakdown.
 
 ---
 

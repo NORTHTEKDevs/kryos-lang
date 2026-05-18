@@ -82,7 +82,9 @@ fn test_emit_add_function() {
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
 
     // Should define the function with correct signature.
-    assert!(ir.contains("define i32 @add(i32 %_0, i32 %_1)"));
+    // User functions get `internal` linkage to avoid colliding with libc
+    // symbols (see emit_function_as in codegen.rs); only `main` is external.
+    assert!(ir.contains("define internal i32 @add(i32 %_0, i32 %_1)"));
     // Should contain the add instruction.
     assert!(ir.contains("add i32 %_0, %_1"));
     // Should contain a return.
@@ -193,7 +195,7 @@ fn test_emit_return_void() {
     let module = module_with(func);
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
 
-    assert!(ir.contains("define void @noop()"));
+    assert!(ir.contains("define internal void @noop()"));
     assert!(ir.contains("ret void"));
 }
 
@@ -836,8 +838,8 @@ fn test_multiple_functions() {
     };
     let ir = emit_module(&module, &EmitOptions::default()).unwrap();
 
-    assert!(ir.contains("define i32 @add("));
-    assert!(ir.contains("define i32 @sub("));
+    assert!(ir.contains("define internal i32 @add("));
+    assert!(ir.contains("define internal i32 @sub("));
     assert!(ir.contains("sub i32 %_0, %_1"));
 }
 

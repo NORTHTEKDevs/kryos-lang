@@ -202,7 +202,7 @@ The full toolchain. Not a roadmap — actually built and tested:
 - **Language** — ownership, traits with `Self`, generics, pattern matching, closures, async/await, capabilities, comptime, FFI
 - **Standard library** — 28 modules, ~847 functions covering strings, math, collections, JSON, HTTP, regex, datetime, crypto, files, processes, channels, tensors, AI primitives
 - **Debug info** — LLVM DWARF emission; `addr2line` resolves Kryos source lines in optimized binaries
-- **Async substrate** — state-machine lowering wired end-to-end; no eager-DONE bugs on multi-await functions
+- **Async substrate** — state-machine lowering wired end-to-end; no eager-DONE bugs on multi-await functions. Promoted from "experimental" pending the `Future<T>`-unwrap fix tracked in [STABILITY-v3.0.md §6](STABILITY-v3.0.md).
 - **WASM stdlib parity** — strings, arrays, JSON, regex, HTTP all callable from Kryos compiled to WebAssembly
 - **Package manager** — `kryos pkg init / add / remove / install / publish / search / outdated`. Lockfile, semver resolution, content-addressed checksums
 - **Editor extensions** — VS Code (marketplace-ready) and Zed (dev-extension)

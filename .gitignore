@@ -32,6 +32,19 @@ __pycache__/
 # Internal planning docs (keep out of public repo)
 docs/plans/
 
+# Shift-engineer state (per-clone, not shared)
+.shift/
+
+# Parity matrix results (per-run artifacts)
+tests/parity/results/
+
+# Editor packaging artifacts (CI uploads them to releases)
+editors/vscode/out/
+editors/vscode/node_modules/
+editors/vscode/package-lock.json
+editors/vscode/*.vsix
+editors/zed/Cargo.lock
+
 # Misc
 .env
 *.log

@@ -1,15 +1,73 @@
-# LLVM-vs-Cranelift parity audit (M3 baseline)
+# LLVM-vs-Cranelift parity audit (M3)
 
-This document captures the backend parity baseline at the start of
-M3 work, separate from the high-level production audit in
-[AUDIT-v2.8.0.md](AUDIT-v2.8.0.md). It exists because the LLVM
-backend is the "release" path (`kryos build --release`) and currently
-fails ~66% of the smoke suite that Cranelift passes. M3 closes that
-gap.
+This document captures the backend parity work for M3, separate from
+the high-level production audit in [AUDIT-v2.8.0.md](AUDIT-v2.8.0.md).
+The LLVM backend is the "release" path (`kryos build --release`).
+At v2.8.0 baseline it failed 66% of the smoke suite Cranelift passes.
 
 This is what the in-tree `ROADMAP.md` called "v2.9 — LLVM backend
 parity". Per the decisions on PR #1, that milestone is folded into
 the single v3.0 cut.
+
+## Current state (after PR #3 final)
+
+| Backend | Pass | Fail | Rate |
+| ------- | ---: | ---: | ---: |
+| Cranelift | 34 | 0 | **100%** |
+| LLVM | **34** | 0 | **100%** |
+
+Verified locally on Windows + clang 21.1.8. CI verification pending
+the GitHub Actions billing fix on NORTHTEKDevs.
+
+The two follow-up failures noted earlier (test_generics, test_process)
+both closed in PR #3's final commits:
+
+- **test_process** — push() result aliased to dest local. Kryos's
+  `push(arr, item)` is `-> void` at the runtime ABI, but MIR binds
+  the call result. The LLVM "push" arm now emits the void call
+  AND aliases `%_<dest>` to the input array (since push mutates in
+  place), matching Cranelift's behavior.
+
+- **test_generics** — two layered bugs:
+  1. KryosArray drop loop used offset 24 (`ref_count`) instead of
+     offset 32 (`data`) when iterating elements for per-element
+     `kryos_string_free` calls. Iterating ref_count-as-data
+     segfaulted on every string-element array at scope exit. A
+     4-line minimum repro reproduces the crash:
+     `fn main() { let p = ["hello"] }`
+  2. With the crash fixed, `to_string<T=str>` was returning the
+     decimal of the pointer address. Switched to
+     `kryos_string_clone` so the caller owns a fresh KryosString.
+
+### Tests fixed (19 of 21 baseline failures)
+
+| Test | Class fixed | Path |
+| ---- | ----------- | ---- |
+| test_assert_eq | A | assert_eq builtin codegen path |
+| test_string_brace_escape | A | (same) |
+| test_io | C → A' | SSA name collision; then runtime decl |
+| test_string_clobber | B → MIR-ownership | StringConcat ptr coercion + downstream |
+| test_fn_pointer | B → T → cleared | Multiple fixes converged |
+| test_struct_field_copy_through_param | B → T → cleared | Same |
+| test_crypto | A' | runtime decls added |
+| test_db / test_db2 | A' | runtime decls added |
+| test_fs | A' | runtime decls added |
+| test_net | A' | runtime decls added |
+| test_term | A' | runtime decls added |
+| test_bootstrap_lexer_smoke | E | tuple aggregate type lowering |
+| test_tuple_mut | E | (same) |
+| test_match_return | D | recursive enum payload heap-alloc + load |
+| test_re | B' | coerce_value field0-is-ptr fix |
+| test_tracked | B' | (same) |
+| test_user_fn_shadows_builtin | shadow + interp | user-fn shadow detection + bool stringify |
+| test_net2 | A + link | int/float mapping + internal linkage |
+
+### Remaining 2 failures
+
+| Test | Class | Detail |
+| ---- | ----- | ------ |
+| test_generics | T (runtime) | Outputs `FAIL pair[1]` — generic monomorphization for `pair<A, B>(a: A, b: B) -> [str]` produces wrong result for the B=str arg. Build is clean; semantic divergence between Cranelift and LLVM in how `to_string<T>` resolves T=str. Needs MIR-layer investigation. |
+| test_process | new codegen bug | Surface: `error: use of undefined value '%_3'` at `inttoptr i64 %_3 to ptr`. Surfaced when internal-linkage suppressed the libc-exit conflict; %_3 was always undefined but earlier link failure masked it. Likely interaction between aggregate-as-payload heap-alloc (M3 class D fix) and Command struct field handling. Needs codegen trace. |
 
 ## Baseline @ commit `9c37e0b` (v2.8.0)
 

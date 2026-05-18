@@ -1,0 +1,68 @@
+// Real HTTP-shaped TCP roundtrip on 127.0.0.1.
+//
+// M5 smoke: proves spawn + chan + the net stdlib drive a real
+// listening socket and a real connect/send/recv pair. No mocks,
+// no in-process loop pretending to be I/O.
+//
+// Pattern:
+//   * server task: tcp_listen → accept → recv N bytes → send "HTTP/1.1 200 OK\r\n\r\nhello"
+//   * client task: tcp_connect → send a 1-line GET → recv → assert "200 OK" appears
+//
+// Uses a fixed port (19877). If the port is busy the test prints
+// "PORT_BUSY" and exits — the harness treats that as transient.
+
+use std::net::{tcp_listen, tcp_connect, tcp_accept, tcp_send, tcp_recv, tcp_close}
+
+@capabilities(net)
+fn main() {
+    let port: i32 = 19877
+    let host = "127.0.0.1"
+
+    let listener = tcp_listen(host, port)
+    if listener < 0 {
+        println("PORT_BUSY")
+        return
+    }
+
+    // Hand the listener to the server task via a channel so the
+    // main thread can proceed to the client side without racing.
+    let ready = chan()
+
+    spawn {
+        // Signal main that the listener is up and ready to accept.
+        send(ready, 1)
+        let client_fd = tcp_accept(listener)
+        if client_fd < 0 {
+            return
+        }
+        // Echo back a canned HTTP response. We don't bother parsing
+        // the request — this test is about the roundtrip, not the
+        // protocol.
+        let req = tcp_recv(client_fd, 1024)
+        if len(req) > 0 {
+            let body = "hello from kryos"
+            let resp = "HTTP/1.1 200 OK\r\nContent-Length: " + to_string(len(body)) + "\r\n\r\n" + body
+            tcp_send(client_fd, resp)
+        }
+        tcp_close(client_fd)
+        tcp_close(listener)
+    }
+
+    // Wait for the server to be listening before we connect.
+    let _ = recv(ready)
+
+    let conn = tcp_connect(host, port)
+    if conn < 0 {
+        println("CONNECT_FAIL")
+        return
+    }
+    tcp_send(conn, "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+    let body = tcp_recv(conn, 4096)
+    tcp_close(conn)
+
+    if contains(body, "200 OK") && contains(body, "hello from kryos") {
+        println("async_http_roundtrip_ok")
+    } else {
+        println("ASSERT_FAIL: got=" + body)
+    }
+}

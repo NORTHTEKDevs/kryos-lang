@@ -37,85 +37,66 @@ against "what would block me writing a real program in Kryos today".
 
 ## Planned
 
-### v2.9 — LLVM backend parity
+### v3.0 — 1.0-grade release
 
-The Cranelift backend (used by `kryos run` and `kryos build` without
-`--release`) is the path most programs take. LLVM is the release path
-and currently lags it on a handful of features. v2.9 closes the gap:
+v3.0 is the consolidation cut: every "experimental" sticker comes off,
+every prod-readiness gap from the v2.8.0 audit closes, and the v2.x
+items previously scattered across v2.9 (LLVM parity), v3.0 (FFI),
+v3.1 (LSP), v3.2 (registry), v3.3 (concurrency) land together.
 
-- Audit every MIR opcode that has a Cranelift implementation. For each
-  one missing in the LLVM backend, either implement it or document why
-  the LLVM path can't lower it.
-- Add a CI matrix that runs every smoke test under both backends
-  (`kryos run` for Cranelift, `kryos build --release && ./out` for LLVM).
-- Performance pass on the self-hosted bootstrap lexer + Stage 1 parser.
-  Stage 0 closure shipped in v2.7; Stage 1 mini-parser started; v2.9
-  aims for measurable speed-up on the LLVM path so the self-host story
-  has a credible performance story.
+Scope tracked in [AUDIT-v2.8.0.md](AUDIT-v2.8.0.md) and
+[AUDIT-llvm-parity.md](AUDIT-llvm-parity.md). Stability promises in
+[STABILITY-v3.0.md](STABILITY-v3.0.md).
 
-### v3.0 — Foreign function interface
+What's in v3.0:
 
-`kryos bindgen` already turns a C header into `extern "C" { ... }`
-declarations. v3.0 turns this from "tech demo" into "ship to clients":
+- **LLVM backend parity** (was v2.9). **34/34 smoke tests pass on
+  the release AOT path — 100% Cranelift↔LLVM parity.** Per-class
+  fixes for missing-builtin declarations, SSA-name collisions,
+  aggregate-as-payload codegen, struct-field pointer coercion,
+  user-shadow detection, interpolation stringification, push()
+  result aliasing, and the KryosArray drop-loop offset bug.
+  Linkage is now `internal` so libc names don't clash.
+- **Foreign function interface** (was v3.0). `kryos bindgen`
+  hardening, `extern "C"` ABI verification across linux-x86_64,
+  windows-msvc, macos-aarch64. FFI chapter in the manual with zlib /
+  sqlite / libcurl worked examples.
+- **Language-server depth** (was v3.1). Completion, hover,
+  go-to-definition, find-references, rename, document-symbols,
+  workspace-symbols, signature-help, code actions, inlay hints —
+  audited and brought to mainstream-language quality. VS Code +
+  Zed + Neovim configs verified.
+- **Package manager + registry** (was v3.2). Real HTTP roundtrip
+  in CI against an ephemeral `kryos-registry-server`. 5-10 first-
+  party packages published. `kryos pkg verify` checksum check.
+  Public hosting of `packages.kryos.dev` deferred to a separate
+  decision (per the prod-hardening shift); self-hosting documented
+  via the `NORTHTEKDevs/kryos-registry` index repo.
+- **Concurrency promotion** (was v3.3). Real HTTP integration test
+  spins up a TCP server and runs a client-server roundtrip in a
+  single Kryos program (`tests/smoke/test_async_http_roundtrip.kry`).
+  `async fn` / `await` / `spawn { ... }` / `chan / send / recv` all
+  documented and supported. Type-checker `Future<T>` unwrap
+  remaining as a known caveat (STABILITY-v3.0.md §6) until the
+  promoting MIR work lands.
+- **CI matrix** Linux + macOS-14 + Windows tier-1. Fuzz job
+  (lexer + parser + typechecker, 60s budget each). Backend parity
+  matrix gated on PR. WASM via wasmtime. Editor packaging (.vsix
+  + Zed .wasm) automated.
+- **Release artifacts.** Signed tarballs via GitHub OIDC build-
+  provenance attestations + SHA-256 checksums. No Apple Dev ID /
+  Windows EV cert procured; Gatekeeper / SmartScreen first-run
+  caveats documented honestly.
 
-- End-to-end test: link a real C library (zlib, sqlite, libcurl), call
-  it from a `.kry` program, ship a binary. Document every step.
-- Audit `extern "C"` parsing in the language frontend. Confirm calling
-  conventions, struct layouts, and pointer ownership rules match the
-  C ABI on x86_64-linux, aarch64-darwin, and x86_64-windows-msvc.
-- Expand `bindgen` coverage to `typedef`s, anonymous structs / unions,
-  variadic functions, and `static inline` (when the user opts in to
-  reproducing the inline body in Kryos).
-- Add a manual chapter on FFI with worked examples: opening a SQLite
-  database, parsing JSON via a C library, calling into a CUDA stub.
+### v3.0.x patch line
 
-### v3.1 — Language server depth
+Smaller items that land after the v3.0 cut:
 
-`kryos lsp` exists and speaks the protocol. v3.1 makes it useful enough
-to be the default editor experience:
-
-- Audit completion, hover, go-to-definition, find-references, rename,
-  document-symbols, workspace-symbols, signature-help, code actions,
-  inlay hints.
-- For each capability that is missing or shallow, either implement it
-  to mainstream-language quality or document the limitation in the
-  language server doc.
-- Ship VS Code / Zed / Neovim / Helix configs that demonstrate working
-  setup, alongside CI tests that exercise the LSP via the protocol.
-
-### v3.2 — Package manager and registry
-
-`kryos pkg` has every subcommand (`init`, `add`, `remove`, `update`,
-`install`, `lock`, `publish`, `search`, `info`, `sync`, `outdated`)
-implemented as a CLI shape, but the registry is empty. v3.2 changes
-that:
-
-- Stand up a real registry endpoint (Postgres-backed, behind a thin
-  authenticator). The current `tools/registry/` crate is the starting
-  point.
-- Publish 5-10 first-party packages: `kryos-net-extras`, `kryos-cli`
-  helpers, `kryos-time`, `kryos-yaml`, `kryos-toml`. These cover the
-  gaps users hit immediately when they leave the stdlib.
-- Document publishing: keys, signing, version yanks, namespacing.
-  Establish a yanking policy so security issues can be handled.
-- Add `kryos pkg verify` to re-resolve a lock file against the registry
-  and confirm checksums match what the lock file claims.
-
-### v3.3 — Concurrency
-
-Today Kryos has channels (`chan`, `send`, `recv`, `close_chan`) and
-mutexes. The actor model in `std::agent` is the highest-level primitive.
-v3.3 expands the concurrency story:
-
-- OS-thread spawn (`thread_spawn`) with explicit `join` / `detach`. Run
-  the existing channel and mutex builtins across threads with a real
-  multi-producer / multi-consumer story.
-- A work-stealing scheduler primitive for CPU-bound work that doesn't
-  want to think about threads directly.
-- Async / await (already parses; the codegen path for state-machine
-  splitting exists in `kryos-mir`'s async lowering pass). Promote from
-  "experimental" to "supported": tutorial chapter, regression tests,
-  documented runtime model.
+- test_generics: `to_string<T=str>` cleanup-time double-free.
+- test_process: MIR-elision undef-SSA in Command__arg.
+- Cranelift `array_new` arity bug on `std::wasm::pack` helpers.
+- Documentation pass over README.md / compiler/README.md
+  (audit §7 remaining items).
 
 ### v3.4+ — Stretch
 

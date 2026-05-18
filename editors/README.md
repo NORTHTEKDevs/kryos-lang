@@ -13,8 +13,8 @@ across editors.
 
 ## Tree-sitter grammar
 
-The Zed extension references a tree-sitter grammar at
-`editors/tree-sitter-kryos/`. That grammar is a work-in-progress; for
-the v2.3 release window the Zed extension uses a minimal language
+A tree-sitter grammar for Kryos is planned (`editors/tree-sitter-kryos/`)
+but not yet checked in. The Zed extension uses a minimal language
 configuration that delegates highlighting decisions to the LSP's
-semantic tokens. The full tree-sitter grammar will land in a follow-up.
+semantic tokens, which works without a tree-sitter grammar. Status
+tracked in v3.x follow-ups.

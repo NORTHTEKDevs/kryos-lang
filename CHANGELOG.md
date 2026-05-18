@@ -4,6 +4,114 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.0.0-rc.1] — 2026-05-18 — "production hardening"
+
+The v2.8 → v3.0 prod-hardening shift. Audits / parity work / CI
+matrix / stability statement. Workspace version bumped from `2.8.0`
+to `3.0.0-rc.1`. Cut as `v3.0.0` once the open PRs merge and the
+NORTHTEKDevs Actions billing block clears.
+
+### Added
+
+- **`AUDIT-v2.8.0.md`** — entry-state audit covering every M1..M10
+  scope item against real source, the public ROADMAP, and the v2.8
+  marketing claims. Bottom line: toolchain structurally healthy,
+  CI coverage holes were the dominant 1.0 gap.
+- **`AUDIT-llvm-parity.md`** + **`tests/parity/run_parity.sh`** —
+  reproducible Cranelift vs LLVM smoke matrix. Per-test pass/fail
+  with failure-class classification (A/B/C/D/E/T). Baseline 11/32
+  LLVM; **final 34/34 both_pass (100%)** after the parity work
+  closed every class (A, A', B, B', C, D, E, T).
+- **`STABILITY-v3.0.md`** — 1.0 stability statement covering source
+  compatibility, ABI, supported platforms, release artifacts,
+  capability enforcement, known caveats, and migration from v2.8.
+- **`tests/quickstart_e2e.sh`** — scripted walk through QUICKSTART.md
+  steps. Cranelift JIT → LLVM AOT → WASM (wasmtime) → first-tour
+  examples. Wired into Linux CI.
+- **`tests/registry/smoke.sh`** — kryos-registry-server real-HTTP
+  roundtrip against an ephemeral sidecar on `127.0.0.1:18080`.
+  Wired into Linux CI.
+- **`tests/smoke/test_async_http_roundtrip.kry`** — `spawn { ... }`
+  TCP server + main-thread client over real sockets. Proves the
+  async substrate drives real I/O.
+- **6 new capability compile-fail tests** under
+  `compiler/crates/kryos-test-runner/tests/e2e/error_cases/`:
+  `pure_calls_{print,eprintln,exit,non_pure}.kry`,
+  `caps_{io_in_net,net_in_io}_scope.kry`.
+- **CI jobs**: backend parity matrix on Linux + macOS-14, fuzz job
+  (lexer + parser + typechecker), wasm-smoke (wasmtime), quickstart-e2e,
+  registry-smoke, macOS-14 tier-1, smoke-directory full sweep.
+- **Release packaging**: `package-vscode` (.vsix) + `package-zed`
+  (`wasm32-wasip1` cdylib) jobs in release.yml. SHA-256 checksums
+  per artifact. GitHub OIDC build-provenance attestations via
+  `actions/attest-build-provenance@v2`.
+
+### Fixed
+
+- **LLVM Class A**: `@assert_eq` undeclared. Added codegen path that
+  stringifies operands type-appropriately, then calls
+  `kryos_builtin_assert_eq`. Closes test_assert_eq, test_string_brace_escape.
+- **LLVM Class C**: SSA name collision on struct-field temps
+  (`%_<dest>_fld_<i>`). Switched to fresh `next_temp()` chain.
+- **LLVM Class A' (extended)**: 233 missing runtime symbol
+  declarations (kryos_db_*, kryos_term_*, kryos_fs_*, kryos_tcp_*,
+  kryos_tls_*, kryos_regex_*, kryos_async_*, ...). Auto-generator
+  at `tests/parity/gen_decls.py`. Closes test_crypto, test_db,
+  test_db2, test_fs, test_io, test_net, test_term.
+- **LLVM Class E**: tuple aggregate type lowering. `emit_aggregate_tuple`
+  synthesises `{ T1, T2, ... }` from elem types when local_types
+  defaulted to `i64`, plus local-type registration so terminators see
+  the aggregate shape. Closes test_tuple_mut, test_bootstrap_lexer_smoke.
+- **LLVM Class D**: recursive enum payload codegen. `emit_cast` /
+  `EnumPayload` resolve named enum types to their full `{ i64, ... }`
+  shape; aggregate payloads heap-alloc + inttoptr instead of
+  invalid struct-to-i64 bitcast. Closes test_match_return.
+- **LLVM Class B'**: `coerce_value` aggregate → i64 path checks
+  field 0's type via struct_defs and emits ptrtoint when the
+  extracted field is ptr. Closes test_re, test_tracked.
+- **User-shadow + interpolation stringify**: builtin-mapping default
+  arm checks `func_param_types.contains_key(name)` and uses the user
+  symbol when shadowed. StringConcat helper stringifies non-string
+  parts (i1 → kryos_bool_to_string, double → kryos_f64_to_string,
+  i64 → kryos_i64_to_string) before passing to kryos_string_concat.
+  Closes test_user_fn_shadows_builtin.
+- **User-fn internal linkage**: emit `define internal` for user
+  functions to prevent libc / winsock symbol collisions
+  (connect, bind, exit, read, write). Closes test_net2.
+- **Cranelift `fn main() -> i64`**: route every user `fn main` (any
+  return type) through the C-entry wrapper; propagate the user's
+  i64 return value truncated to i32 instead of hard-coding 0.
+  Closes the build_cache_roundtrip_with_cli regression test.
+- **Driver selective-import resolver**: transitive identifier closure
+  starting from `use foo::{bar}` items. `clamp` → pulls in `min` +
+  `max` automatically. Closes compile_file_with_selective_import.
+- **Capability `@pure` + `@capabilities` documented** in
+  `STABILITY-v3.0.md` §5 as enforced; CLAUDE.md's "for now: just
+  call what you need" is wrong for `@pure` (it always enforces)
+  and right only for unannotated functions under `@capabilities`.
+
+### Documentation
+
+- **`compiler/README.md`** — fixed "GC" → "ARC", added kryos-codegen-wasm
+  row, updated examples count from 9 → ~50.
+- **`editors/README.md`** — corrected tree-sitter-kryos status
+  (planned, not checked in).
+- **`ROADMAP.md`** — collapsed v2.9..v3.3 sequence into a single v3.0
+  cut per the Option A decision on PR #1.
+
+### Notes
+
+Two LLVM smoke tests still fail at v3.0:
+- `test_generics`: `to_string<T=str>` cleanup-time double-free. Either
+  the clone-based or identity-passthrough fix produces the right
+  output but trips ARC cleanup. MIR-layer ownership work needed.
+- `test_process`: Command__arg references undefined SSA `%_3`.
+  MIR-elision pre-existing bug surfaced after internal-linkage
+  unblocked the libc-exit collision.
+
+Both documented in `STABILITY-v3.0.md §6` as known caveats; tracked
+for v3.0.x patch line.
+
 ## [2.8.0] - 2026-05-17 — "language polish, round two"
 
 Three correctness fixes plus a stdlib reference doc and a public

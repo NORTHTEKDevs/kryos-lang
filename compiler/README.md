@@ -87,9 +87,10 @@ Kryos is a 21-crate Rust workspace:
 | `kryos-types` | Bidirectional type checker |
 | `kryos-ownership` | Ownership and borrow analysis |
 | `kryos-mir` | Mid-level IR with CFG basic blocks |
-| `kryos-codegen-cranelift` | Native codegen via Cranelift |
-| `kryos-codegen-llvm` | LLVM backend (experimental) |
-| `kryos-rt` | Runtime library (builtins, allocator, GC) |
+| `kryos-codegen-cranelift` | Native codegen via Cranelift (JIT, default) |
+| `kryos-codegen-llvm` | LLVM backend (release AOT) |
+| `kryos-codegen-wasm` | WebAssembly backend (WASI + browser) |
+| `kryos-rt` | Runtime library (builtins, ARC allocator, no GC) |
 | `kryos-lsp` | Language Server Protocol implementation |
 | `kryos-package` | Package manager (kryos.toml, dependency resolution) |
 | `kryos-cli` | Command-line interface |
@@ -124,7 +125,10 @@ cargo run --release -- test
 
 ## Examples
 
-See [`examples/`](examples/) for 9 example programs covering:
+See [`../examples/`](../examples/) at the repo root for the canonical
+example set (~50 programs at v3.0 covering the topics below, plus a
+[`showcase/`](../examples/showcase) subdirectory of larger apps).
+Topics include:
 - Hello world and string manipulation
 - Fibonacci (recursive + iterative)
 - Enum-based calculator with pattern matching
@@ -132,8 +136,10 @@ See [`examples/`](examples/) for 9 example programs covering:
 - Grep-style text search
 - Shape geometry with enums
 - Channel-based concurrency
-- Comprehensive feature proof
-- Markdown-to-text converter
+- Async HTTP server + client roundtrip
+- Self-host bootstrap lexer
+- WASM (WASI + browser) programs
+- FFI / extern bindings
 
 ## Builtins
 

@@ -1,0 +1,11 @@
+// expect-error: io
+// A @capabilities(net) function cannot use file_write (which requires io).
+
+@capabilities(net)
+fn save_response(body: str) {
+    file_write("response.txt", body)
+}
+
+fn main() {
+    save_response("hello")
+}

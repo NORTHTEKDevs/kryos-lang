@@ -1,0 +1,25 @@
+// REGRESSION test for the v3.0 LLVM-backend cleanup segfault.
+//
+// 4 lines previously produced a reliable SIGSEGV at process exit
+// under LLVM AOT. No to_string, no generics, no map_arr, no
+// function-pointer args — just an array literal containing a
+// string constant. Cranelift JIT was unaffected.
+//
+//   fn main() {
+//       let p = ["hello"]
+//   }
+//
+// Root cause: the array drop loop in `emit_aggregate_array`
+// (kryos-codegen-llvm/src/codegen.rs) walked offset 24 (which
+// is the KryosArray.ref_count field at #[repr(C)] layout)
+// instead of offset 32 (KryosArray.data). Iterating ref_count
+// as a data pointer caused per-element kryos_string_free calls
+// against a corrupt pointer, segfaulting at scope exit.
+//
+// Fixed in commit 202457a. This file stays in tests/smoke/ as
+// a permanent regression target — if the offset slides back,
+// the parity matrix flips red here first.
+
+fn main() {
+    let p = ["hello"]
+}

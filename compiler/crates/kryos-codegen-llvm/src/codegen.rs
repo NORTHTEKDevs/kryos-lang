@@ -621,7 +621,15 @@ impl LlvmCodegen {
         self.emit_line("; External C functions (used by Kryos builtins)");
         self.emit_line("declare i32 @puts(ptr)");
         self.emit_line("declare i32 @printf(ptr, ...)");
-        self.emit_line("declare void @exit(i32)");
+        // libc exit declaration — suppressed when the program defines its
+        // own `fn exit` (the std::process stdlib does), because the
+        // user's `define internal void @exit(i32)` would otherwise clash
+        // with this external declare AND with the libc-exported `exit`
+        // at link time. The user's exit is reachable from the "exit"
+        // builtin call site through user-shadow detection.
+        if !self.func_param_types.contains_key("exit") {
+            self.emit_line("declare void @exit(i32)");
+        }
         self.emit_line("declare i32 @fputs(ptr, ptr)");
         self.emit_line("declare i32 @fputc(i32, ptr)");
         self.emit_line("declare ptr @malloc(i64)");
@@ -690,6 +698,7 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_builtin_parse_float(i64)");
         self.emit_line("declare i64 @kryos_builtin_type_of(i64)");
         self.emit_line("declare i64 @kryos_builtin_assert(i64, i64)");
+        self.emit_line("declare i64 @kryos_builtin_assert_eq(i64, i64)");
         self.emit_line("declare i64 @kryos_builtin_panic(i64)");
         self.emit_line("declare i64 @kryos_builtin_char_code(i64)");
         self.emit_line("declare i64 @kryos_builtin_char_from(i64)");
@@ -882,6 +891,254 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_exception_throw(i64)");
         self.emit_line("declare i64 @kryos_exception_check()");
         self.emit_line("declare i64 @kryos_exception_take()");
+        // ---------------------------------------------------------------
+        // Auto-generated runtime symbol declarations (Class A' fix).
+        //
+        // Mirrors every `pub (unsafe)? extern "C" fn kryos_*` exported by
+        // `kryos-rt` and `kryos-stdlib-native`. The Cranelift JIT resolves
+        // these symbols dynamically through its symbol map (`jit.rs`); the
+        // LLVM AOT path needs explicit `declare` lines so clang knows the
+        // signature when it links the emitted IR against the staticlibs.
+        //
+        // Generator: tests/parity/gen_decls.py. Regenerate when adding new
+        // runtime exports.
+        self.emit_line("; Auto-generated runtime symbol declarations (M3 Class A')");
+        self.emit_line("declare i32 @kryos_actor_lock(i64)");
+        self.emit_line("declare i32 @kryos_actor_recv(ptr, i64)");
+        self.emit_line("declare i64 @kryos_actor_recv_timeout_i64(i64)");
+        self.emit_line("declare i32 @kryos_actor_send(i64, ptr, i64)");
+        self.emit_line("declare void @kryos_actor_spawn(i64)");
+        self.emit_line("declare i32 @kryos_actor_unlock(i64)");
+        self.emit_line("declare void @kryos_alert_ks(i64)");
+        self.emit_line("declare ptr @kryos_alloc(i64, i64)");
+        self.emit_line("declare i64 @kryos_arc_ref_count(ptr)");
+        self.emit_line("declare void @kryos_arc_release_i64(i64)");
+        self.emit_line("declare void @kryos_arc_retain_i64(i64)");
+        self.emit_line("declare void @kryos_arc_set_drop_i64(i64, i64)");
+        self.emit_line("declare ptr @kryos_array_retain(ptr)");
+        self.emit_line("declare i64 @kryos_async_current_task()");
+        self.emit_line("declare i64 @kryos_async_park_current()");
+        self.emit_line("declare void @kryos_async_run()");
+        self.emit_line("declare void @kryos_async_set_result(i64)");
+        self.emit_line("declare void @kryos_async_spawn(i64)");
+        self.emit_line("declare i64 @kryos_async_take_result()");
+        self.emit_line("declare void @kryos_async_wake(i64)");
+        self.emit_line("declare void @kryos_async_yield_now()");
+        self.emit_line("declare void @kryos_buf_free(i64)");
+        self.emit_line("declare i64 @kryos_buf_get_byte(i64, i64)");
+        self.emit_line("declare i64 @kryos_buf_len(i64)");
+        self.emit_line("declare i64 @kryos_buf_new(i64)");
+        self.emit_line("declare void @kryos_buf_patch_i32_le(i64, i64, i64)");
+        self.emit_line("declare void @kryos_buf_patch_i64_le(i64, i64, i64)");
+        self.emit_line("declare void @kryos_buf_set_byte(i64, i64, i64)");
+        self.emit_line("declare void @kryos_buf_write_byte(i64, i64)");
+        self.emit_line("declare void @kryos_buf_write_bytes(i64, i64, i64)");
+        self.emit_line("declare void @kryos_buf_write_i16_le(i64, i64)");
+        self.emit_line("declare void @kryos_buf_write_i32_le(i64, i64)");
+        self.emit_line("declare void @kryos_buf_write_i64_le(i64, i64)");
+        self.emit_line("declare void @kryos_buf_write_str(i64, i64)");
+        self.emit_line("declare i64 @kryos_buf_write_to_file(i64, i64)");
+        self.emit_line("declare void @kryos_buf_write_zeros(i64, i64)");
+        self.emit_line("declare i64 @kryos_builtin_abs(i64)");
+        self.emit_line("declare double @kryos_builtin_abs_f(double)");
+        self.emit_line("declare double @kryos_builtin_ceil(double)");
+        self.emit_line("declare double @kryos_builtin_cos(double)");
+        self.emit_line("declare i64 @kryos_builtin_create_dir(i64)");
+        self.emit_line("declare i64 @kryos_builtin_file_size(i64)");
+        self.emit_line("declare i64 @kryos_builtin_float_from_float(double)");
+        self.emit_line("declare double @kryos_builtin_floor(double)");
+        self.emit_line("declare i64 @kryos_builtin_int_from_float(double)");
+        self.emit_line("declare double @kryos_builtin_log(double)");
+        self.emit_line("declare double @kryos_builtin_log10(double)");
+        self.emit_line("declare double @kryos_builtin_log2(double)");
+        self.emit_line("declare i64 @kryos_builtin_max(i64, i64)");
+        self.emit_line("declare double @kryos_builtin_max_f(double, double)");
+        self.emit_line("declare i64 @kryos_builtin_min(i64, i64)");
+        self.emit_line("declare double @kryos_builtin_min_f(double, double)");
+        self.emit_line("declare double @kryos_builtin_pow(double, double)");
+        self.emit_line("declare i64 @kryos_builtin_push(i64, i64)");
+        self.emit_line("declare double @kryos_builtin_sin(double)");
+        self.emit_line("declare double @kryos_builtin_sqrt(double)");
+        self.emit_line("declare double @kryos_builtin_tan(double)");
+        self.emit_line("declare void @kryos_canvas_clear_ks(i64)");
+        self.emit_line("declare ptr @kryos_chan_clone(ptr)");
+        self.emit_line("declare void @kryos_chan_close(ptr)");
+        self.emit_line("declare void @kryos_chan_close_i64(i64)");
+        self.emit_line("declare void @kryos_chan_drop(ptr)");
+        self.emit_line("declare void @kryos_chan_drop_i64(i64)");
+        self.emit_line("declare i32 @kryos_chan_is_closed(ptr)");
+        self.emit_line("declare ptr @kryos_chan_new(i64)");
+        self.emit_line("declare i32 @kryos_chan_recv(ptr, ptr, i64)");
+        self.emit_line("declare i64 @kryos_chan_recv_timeout_i64(i64, i64)");
+        self.emit_line("declare i32 @kryos_chan_send(ptr, ptr, i64)");
+        self.emit_line("declare i32 @kryos_chan_try_recv(ptr, ptr, i64)");
+        self.emit_line("declare void @kryos_check_div_zero_f64(double)");
+        self.emit_line("declare void @kryos_check_div_zero_i64(i64)");
+        self.emit_line("declare i64 @kryos_checked_add_i64(i64, i64)");
+        self.emit_line("declare i64 @kryos_checked_mul_i64(i64, i64)");
+        self.emit_line("declare i64 @kryos_checked_sub_i64(i64, i64)");
+        self.emit_line("declare i32 @kryos_db_close(i64)");
+        self.emit_line("declare i32 @kryos_db_col_count(i64)");
+        self.emit_line("declare i64 @kryos_db_col_int(i64, i32)");
+        self.emit_line("declare i64 @kryos_db_col_text_len(i64, i32)");
+        self.emit_line("declare i64 @kryos_db_exec(i64, ptr, i64)");
+        self.emit_line("declare i32 @kryos_db_finalize(i64)");
+        self.emit_line("declare i64 @kryos_db_open(ptr, i64)");
+        self.emit_line("declare i64 @kryos_db_open_memory()");
+        self.emit_line("declare i64 @kryos_db_prepare(i64, ptr, i64)");
+        self.emit_line("declare i32 @kryos_db_step(i64)");
+        self.emit_line("declare void @kryos_dealloc(ptr, i64, i64)");
+        self.emit_line("declare i64 @kryos_dom_get_value_ks(i64)");
+        self.emit_line("declare void @kryos_dom_set_text_ks(i64, i64)");
+        self.emit_line("declare i64 @kryos_env_args_count()");
+        self.emit_line("declare ptr @kryos_env_cwd()");
+        self.emit_line("declare ptr @kryos_env_home()");
+        self.emit_line("declare ptr @kryos_env_platform()");
+        self.emit_line("declare i32 @kryos_env_set(ptr, ptr)");
+        self.emit_line("declare i32 @kryos_env_unset(ptr)");
+        self.emit_line("declare i64 @kryos_fetch_text_ks(i64)");
+        self.emit_line("declare i64 @kryos_ffi_cstr(ptr)");
+        self.emit_line("declare void @kryos_ffi_dlcallv_3f32(i64, i64, i64, i64)");
+        self.emit_line("declare void @kryos_ffi_dlcallv_4f(i64, double, double, double, double)");
+        self.emit_line("declare void @kryos_ffi_dlcallv_4f32(i64, i64, i64, i64, i64)");
+        self.emit_line("declare void @kryos_ffi_dlcallv0(i64)");
+        self.emit_line("declare void @kryos_ffi_dlcallv1(i64, i64)");
+        self.emit_line("declare void @kryos_ffi_dlcallv2(i64, i64, i64)");
+        self.emit_line("declare void @kryos_ffi_dlcallv3(i64, i64, i64, i64)");
+        self.emit_line("declare void @kryos_ffi_dlcallv4(i64, i64, i64, i64, i64)");
+        self.emit_line("declare void @kryos_ffi_dlcallv5(i64, i64, i64, i64, i64, i64)");
+        self.emit_line("declare void @kryos_ffi_dlcallv6(i64, i64, i64, i64, i64, i64, i64)");
+        self.emit_line("declare void @kryos_ffi_dlcallv7(i64, i64, i64, i64, i64, i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_ffi_dlclose(i64)");
+        self.emit_line("declare i64 @kryos_ffi_dlopen(ptr)");
+        self.emit_line("declare i64 @kryos_ffi_dlsym(i64, ptr)");
+        self.emit_line("declare void @kryos_ffi_free(i64, i64)");
+        self.emit_line("declare i64 @kryos_ffi_malloc(i64)");
+        self.emit_line("declare i64 @kryos_ffi_string_from_ptr(i64, i64)");
+        self.emit_line("declare i64 @kryos_ffi_strlen(ptr)");
+        self.emit_line("declare i64 @kryos_fs_delete(ptr, i64)");
+        self.emit_line("declare i64 @kryos_fs_exists(ptr, i64)");
+        self.emit_line("declare i64 @kryos_global_get(i64)");
+        self.emit_line("declare i64 @kryos_global_has(i64)");
+        self.emit_line("declare i64 @kryos_global_set(i64, i64)");
+        self.emit_line("declare i64 @kryos_http2_get_ks(i64)");
+        self.emit_line("declare i64 @kryos_http2_post_ks(i64, i64)");
+        self.emit_line("declare i64 @kryos_https_get_ks(i64)");
+        self.emit_line("declare i64 @kryos_map_delete(i64, i64)");
+        self.emit_line("declare i64 @kryos_map_delete_str(i64, i64)");
+        self.emit_line("declare i64 @kryos_map_has(i64, i64)");
+        self.emit_line("declare i64 @kryos_map_has_str(i64, i64)");
+        self.emit_line("declare i64 @kryos_map_keys(i64)");
+        self.emit_line("declare i64 @kryos_map_keys_str(i64)");
+        self.emit_line("declare double @kryos_math_abs_f64(double)");
+        self.emit_line("declare i64 @kryos_math_abs_i64(i64)");
+        self.emit_line("declare double @kryos_math_ceil(double)");
+        self.emit_line("declare double @kryos_math_clamp_f64(double, double, double)");
+        self.emit_line("declare double @kryos_math_cos(double)");
+        self.emit_line("declare double @kryos_math_e()");
+        self.emit_line("declare double @kryos_math_floor(double)");
+        self.emit_line("declare double @kryos_math_log(double)");
+        self.emit_line("declare double @kryos_math_log10(double)");
+        self.emit_line("declare double @kryos_math_log2(double)");
+        self.emit_line("declare double @kryos_math_max_f64(double, double)");
+        self.emit_line("declare i64 @kryos_math_max_i64(i64, i64)");
+        self.emit_line("declare double @kryos_math_min_f64(double, double)");
+        self.emit_line("declare i64 @kryos_math_min_i64(i64, i64)");
+        self.emit_line("declare double @kryos_math_pi()");
+        self.emit_line("declare double @kryos_math_pow(double, double)");
+        self.emit_line("declare double @kryos_math_round(double)");
+        self.emit_line("declare double @kryos_math_sin(double)");
+        self.emit_line("declare double @kryos_math_sqrt(double)");
+        self.emit_line("declare double @kryos_math_tan(double)");
+        self.emit_line("declare i64 @kryos_panic(ptr, i64)");
+        self.emit_line("declare ptr @kryos_path_absolute(ptr)");
+        self.emit_line("declare ptr @kryos_path_basename(ptr)");
+        self.emit_line("declare ptr @kryos_path_dirname(ptr)");
+        self.emit_line("declare ptr @kryos_path_extension(ptr)");
+        self.emit_line("declare void @kryos_path_free(ptr)");
+        self.emit_line("declare i32 @kryos_path_is_dir(ptr)");
+        self.emit_line("declare i32 @kryos_path_is_file(ptr)");
+        self.emit_line("declare ptr @kryos_path_join(ptr, ptr)");
+        self.emit_line("declare i64 @kryos_pg_close(i64)");
+        self.emit_line("declare i64 @kryos_pg_connect(ptr, i64)");
+        self.emit_line("declare i64 @kryos_pg_exec(i64, ptr, i64)");
+        self.emit_line("declare i64 @kryos_poll_readable(ptr, i64, i64)");
+        self.emit_line("declare void @kryos_print_int(i64)");
+        self.emit_line("declare void @kryos_println_int(i64)");
+        self.emit_line("declare i32 @kryos_rand_bool()");
+        self.emit_line("declare void @kryos_rand_bytes(ptr, i64)");
+        self.emit_line("declare double @kryos_rand_f64()");
+        self.emit_line("declare i64 @kryos_rand_i64(i64, i64)");
+        self.emit_line("declare void @kryos_rand_seed(i64)");
+        self.emit_line("declare i32 @kryos_random_bytes(ptr, i64)");
+        self.emit_line("declare void @kryos_regex_drop(ptr)");
+        self.emit_line("declare void @kryos_regex_drop_ks(i64)");
+        self.emit_line("declare i64 @kryos_regex_find_end_ks(i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_regex_find_ks(i64, i64)");
+        self.emit_line("declare i64 @kryos_regex_find_pos_ks(i64, i64, i64)");
+        self.emit_line("declare i32 @kryos_regex_is_match(ptr, ptr, i64)");
+        self.emit_line("declare ptr @kryos_regex_new(ptr, i64)");
+        self.emit_line("declare void @kryos_rt_init()");
+        self.emit_line("declare i64 @kryos_saturating_add_i64(i64, i64)");
+        self.emit_line("declare i64 @kryos_saturating_mul_i64(i64, i64)");
+        self.emit_line("declare i64 @kryos_saturating_sub_i64(i64, i64)");
+        self.emit_line("declare i32 @kryos_sha1(ptr, i64, ptr)");
+        self.emit_line("declare i32 @kryos_sha256(ptr, i64, ptr)");
+        self.emit_line("declare i32 @kryos_sha512(ptr, i64, ptr)");
+        self.emit_line("declare i32 @kryos_socket_close(i64)");
+        self.emit_line("declare i64 @kryos_stdin_read(ptr, i64)");
+        self.emit_line("declare i64 @kryos_stdout_write(ptr, i64)");
+        self.emit_line("declare ptr @kryos_str_concat(ptr, ptr)");
+        self.emit_line("declare i32 @kryos_str_contains(ptr, ptr)");
+        self.emit_line("declare i32 @kryos_str_ends_with(ptr, ptr)");
+        self.emit_line("declare void @kryos_str_free(ptr)");
+        self.emit_line("declare i64 @kryos_str_len(ptr)");
+        self.emit_line("declare i32 @kryos_str_parse_f64(ptr, ptr)");
+        self.emit_line("declare i32 @kryos_str_parse_i64(ptr, ptr)");
+        self.emit_line("declare ptr @kryos_str_repeat(ptr, i64)");
+        self.emit_line("declare ptr @kryos_str_replace(ptr, ptr, ptr)");
+        self.emit_line("declare i32 @kryos_str_starts_with(ptr, ptr)");
+        self.emit_line("declare ptr @kryos_str_to_lower(ptr)");
+        self.emit_line("declare ptr @kryos_str_to_upper(ptr)");
+        self.emit_line("declare ptr @kryos_str_trim(ptr)");
+        self.emit_line("declare i64 @kryos_string_char_at(i64, i64)");
+        self.emit_line("declare i64 @kryos_string_hash(ptr)");
+        self.emit_line("declare ptr @kryos_string_to_lower(ptr)");
+        self.emit_line("declare ptr @kryos_string_to_upper(ptr)");
+        self.emit_line("declare ptr @kryos_string_trim(ptr)");
+        self.emit_line("declare i64 @kryos_tcp_bind(ptr, i64, i16)");
+        self.emit_line("declare i64 @kryos_tcp_connect(ptr, i64, i16)");
+        self.emit_line("declare i64 @kryos_tcp_recv(i64, ptr, i64)");
+        self.emit_line("declare i64 @kryos_tcp_send(i64, ptr, i64)");
+        self.emit_line("declare i32 @kryos_term_clear(i8)");
+        self.emit_line("declare i32 @kryos_term_cursor_move(i16, i16)");
+        self.emit_line("declare i32 @kryos_term_height()");
+        self.emit_line("declare i32 @kryos_term_raw_disable()");
+        self.emit_line("declare i32 @kryos_term_raw_enable()");
+        self.emit_line("declare i32 @kryos_term_width()");
+        self.emit_line("declare i32 @kryos_tls_close(i64)");
+        self.emit_line("declare i64 @kryos_tls_connect(ptr, i64, i16)");
+        self.emit_line("declare i64 @kryos_tls_recv(i64, ptr, i64)");
+        self.emit_line("declare i64 @kryos_tls_send(i64, ptr, i64)");
+        self.emit_line("declare void @kryos_trace_exit()");
+        self.emit_line("declare i64 @kryos_uds_bind(ptr, i64)");
+        self.emit_line("declare i64 @kryos_uds_connect(ptr, i64)");
+        self.emit_line("declare i64 @kryos_uds_recv(i64, ptr, i64)");
+        self.emit_line("declare i64 @kryos_uds_send(i64, ptr, i64)");
+        self.emit_line("declare i64 @kryos_wrapping_add_i64(i64, i64)");
+        self.emit_line("declare i64 @kryos_wrapping_mul_i64(i64, i64)");
+        self.emit_line("declare i64 @kryos_wrapping_sub_i64(i64, i64)");
+        // Multi-line runtime signatures the auto-generator skipped — added by
+        // hand. Only entries NOT already declared above; types match the
+        // actual extern "C" fn declarations in kryos-stdlib-native / kryos-rt.
+        self.emit_line("declare i64 @kryos_db_col_text_copy(i64, i32, i64, i64)");
+        self.emit_line("declare i64 @kryos_ws_decode_frame_ks(i64, i64, i64)");
+        self.emit_line("declare ptr @kryos_realloc(ptr, i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_fs_read(ptr, i64, ptr, i64)");
+        self.emit_line("declare i64 @kryos_fs_write(ptr, i64, ptr, i64)");
+        self.emit_line("declare void @kryos_async_spawn_task(i64, i64)");
+        self.emit_line("declare i64 @kryos_async_block_on(i64)");
+        self.emit_line("declare void @kryos_panic_with_location(ptr, i64, ptr, i64, i64, i64)");
         self.emit_blank();
     }
 
@@ -1764,6 +2021,120 @@ impl LlvmCodegen {
         self.emit_function_as(func, &func.name.clone())
     }
 
+    /// Walk an MIR Operand and append any referenced LocalId to `acc`.
+    fn collect_operand(op: &Operand, acc: &mut HashSet<u32>) {
+        if let Operand::Local(id) = op {
+            acc.insert(id.0);
+        }
+    }
+
+    /// Walk an MIR RValue's operands.
+    fn collect_rvalue_locals(rv: &RValue, acc: &mut HashSet<u32>) {
+        match rv {
+            RValue::Use(op) => Self::collect_operand(op, acc),
+            RValue::BinOp { left, right, .. } => {
+                Self::collect_operand(left, acc);
+                Self::collect_operand(right, acc);
+            }
+            RValue::UnOp { operand, .. } => Self::collect_operand(operand, acc),
+            RValue::Call { args, .. } => {
+                for a in args {
+                    Self::collect_operand(a, acc);
+                }
+            }
+            RValue::CallIndirect { callee, args } => {
+                Self::collect_operand(callee, acc);
+                for a in args {
+                    Self::collect_operand(a, acc);
+                }
+            }
+            RValue::Tuple(elems) | RValue::Array(elems) => {
+                for e in elems {
+                    Self::collect_operand(e, acc);
+                }
+            }
+            RValue::Struct { fields, .. } => {
+                for (_, op) in fields {
+                    Self::collect_operand(op, acc);
+                }
+            }
+            RValue::StringConcat(parts) => {
+                for p in parts {
+                    Self::collect_operand(p, acc);
+                }
+            }
+            RValue::Field { object, .. } => Self::collect_operand(object, acc),
+            RValue::Index { object, index } => {
+                Self::collect_operand(object, acc);
+                Self::collect_operand(index, acc);
+            }
+            RValue::Cast { operand, .. } => Self::collect_operand(operand, acc),
+            // Variants that don't reference operands are ignored (constants,
+            // closures, ranges, addr-of etc. — best-effort coverage).
+            _ => {}
+        }
+    }
+
+    /// Walk an MIR Instruction's operands.
+    fn collect_operand_locals(inst: &Instruction, acc: &mut HashSet<u32>) {
+        match inst {
+            Instruction::Assign { value, .. } => Self::collect_rvalue_locals(value, acc),
+            Instruction::ArcRetain { ptr } | Instruction::ArcRelease { ptr } => {
+                acc.insert(ptr.0);
+            }
+            Instruction::Drop { local } => {
+                acc.insert(local.0);
+            }
+            Instruction::StoreField { object, value, .. } => {
+                Self::collect_operand(object, acc);
+                Self::collect_operand(value, acc);
+            }
+            Instruction::StoreDeref { ptr, value } => {
+                Self::collect_operand(ptr, acc);
+                Self::collect_operand(value, acc);
+            }
+            Instruction::Spawn { args, .. } => {
+                for a in args {
+                    Self::collect_operand(a, acc);
+                }
+            }
+            Instruction::Send { channel, value } => {
+                acc.insert(channel.0);
+                acc.insert(value.0);
+            }
+            Instruction::Receive { channel, .. } => {
+                acc.insert(channel.0);
+            }
+            Instruction::ActorSpawn { state, .. } => Self::collect_operand(state, acc),
+            Instruction::ActorSend { actor, args, .. } => {
+                acc.insert(actor.0);
+                for a in args {
+                    Self::collect_operand(a, acc);
+                }
+            }
+            Instruction::ActorStateLoad { state_ptr, .. } => {
+                acc.insert(state_ptr.0);
+            }
+            Instruction::ActorStateStore { state_ptr, value, .. } => {
+                acc.insert(state_ptr.0);
+                Self::collect_operand(value, acc);
+            }
+            Instruction::Nop => {}
+        }
+    }
+
+    /// Walk an MIR Terminator's operands.
+    fn collect_terminator_locals(term: &Terminator, acc: &mut HashSet<u32>) {
+        match term {
+            Terminator::Return(Some(op)) => Self::collect_operand(op, acc),
+            Terminator::Branch { cond, .. } => Self::collect_operand(cond, acc),
+            Terminator::Switch { value, .. } => {
+                Self::collect_operand(value, acc);
+            }
+            _ => {}
+        }
+    }
+
     fn emit_function_as(&mut self, func: &MirFunction, name: &str) -> Result<(), CodegenError> {
         // Build the local type map for this function.
         self.local_types.clear();
@@ -1843,7 +2214,20 @@ impl LlvmCodegen {
                 self.current_fn_loc_md = None;
                 String::new()
             };
-        self.emit_line(&format!("define {ret} @{name}({params}){dbg_suffix_for_define} {{"));
+        // User functions get `internal` linkage so their names cannot collide
+        // with libc / system DLL symbols. Without this, Kryos stdlib names
+        // like `connect`, `bind`, `exit`, `read`, `write` (all valid Kryos
+        // function names) clash with the C runtime at link time:
+        //   error LNK2005: connect already defined in foo.o
+        //                  (ws2_32.dll already exports `connect`)
+        // `main` is the program entry point and must stay external. Everything
+        // else is module-local; the Kryos compiler emits the whole program
+        // as a single LLVM module so internal linkage doesn't break cross-fn
+        // references.
+        let linkage = if name == "main" { "" } else { "internal " };
+        self.emit_line(&format!(
+            "define {linkage}{ret} @{name}({params}){dbg_suffix_for_define} {{"
+        ));
 
         // Detect TCO loops: if any other block branches back to bb0, we must
         // emit the param-spill + alloca init in a separate `entry:` block
@@ -1907,6 +2291,73 @@ impl LlvmCodegen {
                     ));
                 }
             }
+        }
+
+        // Defensive zero-init pass for locals referenced as Operands but
+        // never bound via Instruction::Assign and not declared as a param.
+        // The MIR layer occasionally elides a producing Cast (observed in
+        // Command__arg / test_process: local 3 referenced as i64 form of
+        // .arguments without an emit_assign generating it, and not present
+        // in func.locals either). Without this pre-init, the LLVM IR uses
+        // `%_N` undef and clang rejects the IR with "use of undefined
+        // value '%_N'".
+        //
+        // Zero-init is the LEAST-WRONG behavior: it lets the IR link and
+        // run; tests relying on the elided value will fail loudly at
+        // runtime instead of a misleading link-time error that masks the
+        // underlying MIR bug.
+        let param_ids_set: HashSet<u32> =
+            func.params.iter().map(|p| p.local.0).collect();
+        let mut assigned: HashSet<u32> = HashSet::new();
+        let mut referenced: HashSet<u32> = HashSet::new();
+        for block in &func.blocks {
+            for inst in &block.instructions {
+                if let Instruction::Assign { dest, .. } = inst {
+                    assigned.insert(dest.0);
+                }
+                Self::collect_operand_locals(inst, &mut referenced);
+            }
+            Self::collect_terminator_locals(&block.terminator, &mut referenced);
+        }
+        // Build the union of `referenced` and `func.locals` ids — local 3 in
+        // the test_process bug is referenced but not in func.locals.
+        let mut candidate_ids: Vec<u32> = referenced.iter().copied().collect();
+        for local in &func.locals {
+            candidate_ids.push(local.id.0);
+        }
+        candidate_ids.sort_unstable();
+        candidate_ids.dedup();
+        for id in candidate_ids {
+            if param_ids_set.contains(&id) {
+                continue;
+            }
+            if self.mutable_locals.contains(&id) {
+                continue;
+            }
+            if assigned.contains(&id) {
+                continue;
+            }
+            let ty = self
+                .local_types
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| "i64".to_string());
+            let init = match ty.as_str() {
+                "void" => continue,
+                "ptr" => format!("  %_{id} = inttoptr i64 0 to ptr"),
+                "double" => format!("  %_{id} = fadd double 0.0, 0.0"),
+                "float" => format!("  %_{id} = fadd float 0.0, 0.0"),
+                "i1" => format!("  %_{id} = icmp ne i64 0, 0"),
+                t if t.starts_with('{') => {
+                    format!("  %_{id} = select i1 true, {t} undef, {t} undef")
+                }
+                t if t.starts_with('%') => {
+                    format!("  %_{id} = select i1 true, {t} undef, {t} undef")
+                }
+                t => format!("  %_{id} = add {t} 0, 0"),
+            };
+            self.emit_line(&init);
+            self.track_type(&format!("%_{id}"), &ty);
         }
 
         // If we emitted a separate `entry:` block for TCO, branch into bb0 now
@@ -2770,10 +3221,47 @@ impl LlvmCodegen {
                                 self.emit_line(&format!("  {ext} = zext i1 {val} to i64"));
                                 ("kryos_bool_to_string", format!("i64 {ext}"))
                             } else if arg_ty == "ptr" {
-                                // Already a string handle -- ptrtoint to i64 for the runtime call.
-                                let as_i64 = self.next_temp();
-                                self.emit_line(&format!("  {as_i64} = ptrtoint ptr {val} to i64"));
-                                ("kryos_builtin_to_string", format!("i64 {as_i64}"))
+                                // Already a string handle. `to_string<T=str>`
+                                // is the identity — clone the string so the
+                                // caller can own + drop the result without
+                                // touching the original. (kryos_string_clone
+                                // makes a fresh KryosString with its own
+                                // refcount.) Short-circuit out of the shared
+                                // post-match logic — that path emits with
+                                // i64 return type, but kryos_string_clone
+                                // returns ptr.
+                                let cloned = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {cloned} = call ptr @kryos_string_clone(ptr {val})"
+                                ));
+                                if is_mutable {
+                                    if dest_ty == "ptr" {
+                                        self.emit_line(&format!(
+                                            "  store ptr {cloned}, ptr %_{}.addr",
+                                            dest.0
+                                        ));
+                                    } else {
+                                        let as_i64 = self.next_temp();
+                                        self.emit_line(&format!(
+                                            "  {as_i64} = ptrtoint ptr {cloned} to i64"
+                                        ));
+                                        self.emit_line(&format!(
+                                            "  store i64 {as_i64}, ptr %_{}.addr",
+                                            dest.0
+                                        ));
+                                    }
+                                } else if dest_ty == "ptr" {
+                                    self.emit_line(&format!(
+                                        "  %_{} = getelementptr i8, ptr {cloned}, i64 0",
+                                        dest.0
+                                    ));
+                                } else {
+                                    self.emit_line(&format!(
+                                        "  %_{} = ptrtoint ptr {cloned} to i64",
+                                        dest.0
+                                    ));
+                                }
+                                return Ok(());
                             } else {
                                 // Integer types: coerce to i64 if needed.
                                 let coerced = self.coerce_value(&val, &arg_ty, "i64");
@@ -2915,19 +3403,118 @@ impl LlvmCodegen {
                             };
                             let elem_val = if args.len() >= 2 {
                                 let v = self.operand_to_llvm(&args[1], func);
-                                let ty = self.operand_type(&args[1], func);
-                                if ty == "ptr" {
+                                // Prefer the SSA value's actual type if we tracked
+                                // it (operand_type only knows the MIR-declared type;
+                                // an extractvalue from a named struct can yield a
+                                // ptr at the SSA layer even when MIR says i64,
+                                // causing "'ptr' but expected 'i64'" at the call).
+                                let actual = self
+                                    .actual_type(&v)
+                                    .unwrap_or_else(|| self.operand_type(&args[1], func));
+                                if actual == "ptr" {
                                     let tmp = self.next_temp();
                                     self.emit_line(&format!("  {tmp} = ptrtoint ptr {v} to i64"));
                                     tmp
                                 } else {
-                                    self.coerce_value(&v, &ty, "i64")
+                                    self.coerce_value(&v, &actual, "i64")
                                 }
                             } else {
                                 "0".to_string()
                             };
                             self.emit_line(&format!(
                                 "  call void @kryos_array_push(ptr {arr_val}, i64 {elem_val})"
+                            ));
+                            // MIR binds push's result to the dest local (e.g.
+                            // `_3 = call push(_2, _1)`) but the runtime
+                            // `kryos_array_push` returns void — it mutates the
+                            // array in-place. Alias dest to the same array so
+                            // downstream uses of `_3` (struct rebuilds, drop
+                            // tracking) see the right SSA value. Closes
+                            // test_process Command__arg undef-`%_3`.
+                            if is_mutable {
+                                if dest_ty == "ptr" {
+                                    self.emit_line(&format!(
+                                        "  store ptr {arr_val}, ptr %_{}.addr",
+                                        dest.0
+                                    ));
+                                } else if dest_ty == "i64" {
+                                    let as_i64 = self.next_temp();
+                                    self.emit_line(&format!(
+                                        "  {as_i64} = ptrtoint ptr {arr_val} to i64"
+                                    ));
+                                    self.emit_line(&format!(
+                                        "  store i64 {as_i64}, ptr %_{}.addr",
+                                        dest.0
+                                    ));
+                                }
+                            } else if dest_ty == "ptr" {
+                                self.emit_line(&format!(
+                                    "  %_{} = getelementptr i8, ptr {arr_val}, i64 0",
+                                    dest.0
+                                ));
+                            } else if dest_ty == "i64" {
+                                self.emit_line(&format!(
+                                    "  %_{} = ptrtoint ptr {arr_val} to i64",
+                                    dest.0
+                                ));
+                            }
+                        }
+                        "assert_eq" if args.len() == 2 => {
+                            // assert_eq(left, right) -> void
+                            // Runtime: kryos_builtin_assert_eq(i64 left_handle, i64 right_handle)
+                            // Mirrors the Cranelift path: stringify both args using the
+                            // type-appropriate runtime helper (i64/f64/bool/str), then call
+                            // the runtime which prints both values on failure.
+                            let mut handles = Vec::with_capacity(2);
+                            for arg in args.iter() {
+                                let v = self.operand_to_llvm(arg, func);
+                                let ty = self.operand_type(arg, func);
+                                let handle = if ty == "double" || ty == "float" {
+                                    let coerced = if ty == "float" {
+                                        let t = self.next_temp();
+                                        self.emit_line(&format!(
+                                            "  {t} = fpext float {v} to double"
+                                        ));
+                                        t
+                                    } else {
+                                        v.clone()
+                                    };
+                                    let h = self.next_temp();
+                                    self.emit_line(&format!(
+                                        "  {h} = call i64 @kryos_f64_to_string(double {coerced})"
+                                    ));
+                                    h
+                                } else if ty == "i1" {
+                                    let ext = self.next_temp();
+                                    self.emit_line(&format!(
+                                        "  {ext} = zext i1 {v} to i64"
+                                    ));
+                                    let h = self.next_temp();
+                                    self.emit_line(&format!(
+                                        "  {h} = call i64 @kryos_bool_to_string(i64 {ext})"
+                                    ));
+                                    h
+                                } else if ty == "ptr" {
+                                    // KryosString* — already a packed string handle. Convert
+                                    // ptr -> i64 for the runtime's i64-handle ABI.
+                                    let t = self.next_temp();
+                                    self.emit_line(&format!(
+                                        "  {t} = ptrtoint ptr {v} to i64"
+                                    ));
+                                    t
+                                } else {
+                                    let coerced = self.coerce_value(&v, &ty, "i64");
+                                    let h = self.next_temp();
+                                    self.emit_line(&format!(
+                                        "  {h} = call i64 @kryos_i64_to_string(i64 {coerced})"
+                                    ));
+                                    h
+                                };
+                                handles.push(handle);
+                            }
+                            self.emit_line(&format!(
+                                "  call i64 @kryos_builtin_assert_eq(i64 {}, i64 {})",
+                                handles[0], handles[1]
                             ));
                         }
                         "assert" => {
@@ -3069,8 +3656,15 @@ impl LlvmCodegen {
                             }
                         }
                         _ => {
+                            // User-defined functions shadow same-named builtins
+                            // (matches Cranelift's user_shadows_builtin behavior).
+                            // Without this guard, `fn contains(arr, target) -> bool`
+                            // would silently route to `kryos_builtin_contains(str, str)`
+                            // — the test_user_fn_shadows_builtin regression.
+                            let user_shadow =
+                                self.func_param_types.contains_key(fname.as_str());
                             // Translate Kryos user-facing builtin names to runtime symbols.
-                            let runtime_fname: &str = match fname.as_str() {
+                            let mapped: &str = match fname.as_str() {
                                 "trim" => "kryos_builtin_trim",
                                 "trim_start" => "kryos_builtin_trim_start",
                                 "trim_end" => "kryos_builtin_trim_end",
@@ -3101,6 +3695,12 @@ impl LlvmCodegen {
                                 "http_get" => "kryos_builtin_http_get",
                                 "parse_int" => "kryos_builtin_parse_int",
                                 "parse_float" => "kryos_builtin_parse_float",
+                                // int() / float() coercion builtins. Cranelift
+                                // routes these to kryos_builtin_int / _float;
+                                // LLVM previously left them as bare @int /
+                                // @float, which clang rejected as undefined.
+                                "int" => "kryos_builtin_int",
+                                "float" => "kryos_builtin_float",
                                 "type_of" => "kryos_builtin_type_of",
                                 "char_code" => "kryos_builtin_char_code",
                                 "char_from" => "kryos_builtin_char_from",
@@ -3195,6 +3795,12 @@ impl LlvmCodegen {
                                 "ptr_write_i64" => "kryos_ptr_write_i64",
                                 "handle_to_str" => "kryos_handle_to_str",
                                 other => other,
+                            };
+                            // User-defined shadow wins over builtin mapping.
+                            let runtime_fname: &str = if user_shadow {
+                                fname.as_str()
+                            } else {
+                                mapped
                             };
                             // Use callee's *actual* return type for the call instruction,
                             // then coerce into dest_ty if they differ. Without this the
@@ -3455,6 +4061,23 @@ impl LlvmCodegen {
                 self.emit_line(&format!(
                     "  {target_name} = extractvalue {obj_ty} {obj_val}, {field_idx} ; .{field}"
                 ));
+                // Track the SSA value's actual LLVM type so downstream callers
+                // (kryos_array_push, kryos_string_concat, ...) that look at
+                // actual_type can coerce ptr→i64 / i64→ptr correctly. Without
+                // this, a ptr-typed field extracted from a named struct flows
+                // into an i64-arg slot at the call and clang errors with
+                // "defined with type 'ptr' but expected 'i64'".
+                if let Some(struct_name) = obj_ty
+                    .strip_prefix('%')
+                    .or_else(|| if obj_ty.starts_with('{') { None } else { Some(obj_ty.as_str()) })
+                {
+                    if let Some(fields) = self.struct_defs.get(struct_name) {
+                        if let Some((_, field_mir_ty)) = fields.get(field_idx) {
+                            let field_llvm_ty = mir_type_to_llvm(field_mir_ty);
+                            self.track_type(&target_name, &field_llvm_ty);
+                        }
+                    }
+                }
                 if is_mutable {
                     self.emit_line(&format!(
                         "  store {dest_ty} {target_name}, ptr %_{}.addr",
@@ -3664,6 +4287,32 @@ impl LlvmCodegen {
                         // emitted IR well-typed.
                         if val_ty == "void" {
                             val = "0".to_string();
+                        } else if val_ty.starts_with('{') || val_ty.starts_with('%') {
+                            // Aggregate-valued payload (recursive enum: an Expr
+                            // child packed into another Expr's payload slot).
+                            // bitcast { i64, i64, i64 } -> i64 is invalid; heap-
+                            // allocate a copy and pass the pointer as i64.
+                            // Use the GEP-sizeof trick to size the allocation.
+                            let size_tmp = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {size_tmp} = getelementptr {val_ty}, ptr null, i64 1"
+                            ));
+                            let size_int = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {size_int} = ptrtoint ptr {size_tmp} to i64"
+                            ));
+                            let heap_i64 = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {heap_i64} = call i64 @kryos_arc_alloc_i64(i64 {size_int})"
+                            ));
+                            let heap_ptr = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {heap_ptr} = inttoptr i64 {heap_i64} to ptr"
+                            ));
+                            self.emit_line(&format!(
+                                "  store {val_ty} {val}, ptr {heap_ptr}"
+                            ));
+                            val = heap_i64;
                         } else if val_ty != "i64" {
                             let casted = self.next_temp();
                             let op = if val_ty == "ptr" {
@@ -3741,19 +4390,46 @@ impl LlvmCodegen {
                     } else {
                         format!("%_{}", dest.0)
                     };
-                    let op = if dest_ty == "ptr" {
-                        "inttoptr"
-                    } else if dest_ty == "double" {
-                        // 64-bit float: reinterpret from i64 via bitcast.
-                        "bitcast"
-                    } else if llvm_type_width(&dest_ty) < 64 {
-                        // narrow integer (i1/i8/i16/i32): truncate from i64.
-                        // bitcast requires equal bit-width.
-                        "trunc"
+                    // dest_ty pointing at a named struct or aggregate ({...} / %X)
+                    // means the i64 payload slot is actually a heap-handle to the
+                    // enum value (the recursive-Expr case). Materialise it via
+                    // inttoptr+load instead of bitcast — bitcasting i64 to an
+                    // opaque struct is invalid LLVM ("invalid cast opcode for
+                    // cast from 'i64' to '%Expr = type opaque'").
+                    if dest_ty.starts_with('%') || dest_ty.starts_with('{') {
+                        // Resolve the bare named type (`%Expr`) into the full
+                        // aggregate so the load operand is a first-class type
+                        // (`{ i64, i64, i64 }`). Without this, `load %Expr` fails
+                        // ("load operand must be a pointer to a first class type")
+                        // because %Expr was only forward-declared.
+                        let resolved_ty = if let Some(name) = dest_ty.strip_prefix('%') {
+                            let max = self.enum_max_fields(name);
+                            self.enum_llvm_type(name, max)
+                        } else {
+                            dest_ty.clone()
+                        };
+                        let ptr = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {ptr} = inttoptr i64 {slot_tmp} to ptr"
+                        ));
+                        self.emit_line(&format!(
+                            "  {t} = load {resolved_ty}, ptr {ptr}"
+                        ));
                     } else {
-                        "bitcast"
-                    };
-                    self.emit_line(&format!("  {t} = {op} i64 {slot_tmp} to {dest_ty}"));
+                        let op = if dest_ty == "ptr" {
+                            "inttoptr"
+                        } else if dest_ty == "double" {
+                            // 64-bit float: reinterpret from i64 via bitcast.
+                            "bitcast"
+                        } else if llvm_type_width(&dest_ty) < 64 {
+                            // narrow integer (i1/i8/i16/i32): truncate from i64.
+                            // bitcast requires equal bit-width.
+                            "trunc"
+                        } else {
+                            "bitcast"
+                        };
+                        self.emit_line(&format!("  {t} = {op} i64 {slot_tmp} to {dest_ty}"));
+                    }
                     t
                 } else {
                     slot_tmp.clone()
@@ -4284,6 +4960,65 @@ impl LlvmCodegen {
 
             RValue::StringConcat(parts) => {
                 // Chain kryos_string_concat calls: fold left across all parts.
+                //
+                // Every operand passed to @kryos_string_concat must be a `ptr`. A
+                // string-typed local that was loaded from an i64-shaped alloca
+                // (the common case for mutable string locals — see test_string_clobber)
+                // arrives here as an i64 SSA value and must be `inttoptr`-cast first.
+                // Without the cast, clang rejects the IR with
+                //   "'%tN' defined with type 'i64' but expected 'ptr'"
+                let load_part_as_ptr = |this: &mut Self, op: &Operand| -> String {
+                    let val = this.operand_to_llvm(op, func);
+                    let ty = this.operand_type(op, func);
+                    // Non-string parts (bool / float / numeric int) used inside
+                    // an interpolated string `"x={v}"` must be stringified before
+                    // they can flow into kryos_string_concat. Without this, an i1
+                    // (or double) is naively cast to ptr and clang rejects the
+                    // call: "'%_N' defined with type 'i1' but expected 'ptr'".
+                    if ty == "i1" {
+                        let ext = this.next_temp();
+                        this.emit_line(&format!("  {ext} = zext i1 {val} to i64"));
+                        let h = this.next_temp();
+                        this.emit_line(&format!(
+                            "  {h} = call i64 @kryos_bool_to_string(i64 {ext})"
+                        ));
+                        let p = this.next_temp();
+                        this.emit_line(&format!("  {p} = inttoptr i64 {h} to ptr"));
+                        return p;
+                    }
+                    if ty == "double" || ty == "float" {
+                        let coerced = if ty == "float" {
+                            let t = this.next_temp();
+                            this.emit_line(&format!("  {t} = fpext float {val} to double"));
+                            t
+                        } else {
+                            val.clone()
+                        };
+                        let h = this.next_temp();
+                        this.emit_line(&format!(
+                            "  {h} = call i64 @kryos_f64_to_string(double {coerced})"
+                        ));
+                        let p = this.next_temp();
+                        this.emit_line(&format!("  {p} = inttoptr i64 {h} to ptr"));
+                        return p;
+                    }
+                    if ty == "i64"
+                        || ty == "i32"
+                        || ty == "i16"
+                        || ty == "i8"
+                    {
+                        let widened = this.coerce_value(&val, &ty, "i64");
+                        let h = this.next_temp();
+                        this.emit_line(&format!(
+                            "  {h} = call i64 @kryos_i64_to_string(i64 {widened})"
+                        ));
+                        let p = this.next_temp();
+                        this.emit_line(&format!("  {p} = inttoptr i64 {h} to ptr"));
+                        return p;
+                    }
+                    this.coerce_value(&val, &ty, "ptr")
+                };
+
                 if parts.is_empty() {
                     if is_mutable {
                         self.emit_line(&format!("  store ptr null, ptr %_{}.addr", dest.0));
@@ -4291,7 +5026,7 @@ impl LlvmCodegen {
                         self.emit_line(&format!("  %_{} = inttoptr i64 0 to ptr", dest.0));
                     }
                 } else if parts.len() == 1 {
-                    let val = self.operand_to_llvm(&parts[0], func);
+                    let val = load_part_as_ptr(self, &parts[0]);
                     if is_mutable {
                         self.emit_line(&format!("  store ptr {val}, ptr %_{}.addr", dest.0));
                     } else {
@@ -4303,14 +5038,14 @@ impl LlvmCodegen {
                     }
                 } else {
                     // Fold: acc = concat(parts[0], parts[1]), acc = concat(acc, parts[2]), ...
-                    let first = self.operand_to_llvm(&parts[0], func);
-                    let second = self.operand_to_llvm(&parts[1], func);
+                    let first = load_part_as_ptr(self, &parts[0]);
+                    let second = load_part_as_ptr(self, &parts[1]);
                     let mut acc = self.next_temp();
                     self.emit_line(&format!(
                         "  {acc} = call ptr @kryos_string_concat(ptr {first}, ptr {second})"
                     ));
                     for part in &parts[2..] {
-                        let next_val = self.operand_to_llvm(part, func);
+                        let next_val = load_part_as_ptr(self, part);
                         let next_acc = self.next_temp();
                         self.emit_line(&format!(
                             "  {next_acc} = call ptr @kryos_string_concat(ptr {acc}, ptr {next_val})"
@@ -4641,14 +5376,34 @@ impl LlvmCodegen {
     ) -> Result<(), CodegenError> {
         // Same approach as arrays — insertvalue into a struct type.
         // When the destination is mutable, the final value is stored to its alloca.
+        //
+        // Resolve the aggregate type. `dest_ty` arrives from local_type(),
+        // which defaults to `i64` if the local wasn't registered with its
+        // proper aggregate shape. `insertvalue i64 undef, ...` is invalid
+        // LLVM ("insertvalue operand must be aggregate type"). When dest_ty
+        // is `i64`, synthesize `{ T1, T2, ... }` from each elem's actual
+        // type so the chained insertvalue is well-typed.
+        //
+        // Use fresh next_temp() names for the intermediate insertvalue chain
+        // instead of `_<dest>_tup_<i>` so a mutable local re-assigned to a
+        // tuple in two blocks doesn't redefine the same SSA name (same fix
+        // pattern as Class C struct field SSA collision).
+        let elem_tys: Vec<String> = elems
+            .iter()
+            .map(|e| self.operand_type(e, func))
+            .collect();
+        let agg_ty = if dest_ty.starts_with('{') || dest_ty.starts_with('%') {
+            dest_ty.to_string()
+        } else if !elems.is_empty() {
+            format!("{{ {} }}", elem_tys.join(", "))
+        } else {
+            dest_ty.to_string()
+        };
+
+        let mut prev = "undef".to_string();
         for (i, elem) in elems.iter().enumerate() {
             let elem_val = self.operand_to_llvm(elem, func);
-            let elem_ty = self.operand_type(elem, func);
-            let prev = if i == 0 {
-                "undef".to_string()
-            } else {
-                format!("%_{}_tup_{}", dest.0, i - 1)
-            };
+            let elem_ty = &elem_tys[i];
             let this = if i + 1 == elems.len() {
                 if is_mutable {
                     self.next_temp()
@@ -4656,14 +5411,24 @@ impl LlvmCodegen {
                     format!("%_{}", dest.0)
                 }
             } else {
-                format!("%_{}_tup_{}", dest.0, i)
+                self.next_temp()
             };
             self.emit_line(&format!(
-                "  {this} = insertvalue {dest_ty} {prev}, {elem_ty} {elem_val}, {i}"
+                "  {this} = insertvalue {agg_ty} {prev}, {elem_ty} {elem_val}, {i}"
             ));
             if i + 1 == elems.len() && is_mutable {
-                self.emit_line(&format!("  store {dest_ty} {this}, ptr %_{}.addr", dest.0));
+                self.emit_line(&format!("  store {agg_ty} {this}, ptr %_{}.addr", dest.0));
             }
+            prev = this;
+        }
+        // Register the destination local's actual type so downstream readers
+        // (terminator, sret-store) see the aggregate type instead of falling
+        // back to `i64`. Without this, Return(Some(tuple)) emits
+        //   store { i64, i64 } undef, ptr %_sret
+        // because operand_type(%_<dest>) returned `i64`.
+        if !elems.is_empty() {
+            self.local_types.insert(dest.0, agg_ty.clone());
+            self.track_type(&format!("%_{}", dest.0), &agg_ty);
         }
 
         if elems.is_empty() {
@@ -4702,6 +5467,12 @@ impl LlvmCodegen {
             .get(struct_name)
             .map(|fs| fs.iter().map(|(_, t)| mir_type_to_llvm(t)).collect())
             .unwrap_or_default();
+        // Thread chained insertvalue temps through fresh SSA names from next_temp()
+        // instead of dest-indexed names. Dest-indexed names ("%_3_fld_0", ...) collide
+        // when the same mutable local is re-assigned in the same function, e.g. an
+        // `if`-each-arm sets a Ctx struct: LLVM rejects the second insertvalue chain
+        // as "multiple definition of local value named '_3_fld_0'".
+        let mut prev = "undef".to_string();
         for (i, (field_name, op)) in fields.iter().enumerate() {
             let val = self.operand_to_llvm(op, func);
             let actual_ty = self.operand_type(op, func);
@@ -4710,11 +5481,6 @@ impl LlvmCodegen {
                 .cloned()
                 .unwrap_or_else(|| actual_ty.clone());
             let coerced_val = self.coerce_value(&val, &actual_ty, &expected_ty);
-            let prev = if i == 0 {
-                "undef".to_string()
-            } else {
-                format!("%_{}_fld_{}", dest.0, i - 1)
-            };
             let this = if i + 1 == fields.len() {
                 if is_mutable {
                     // Use a temp name; we will store it to the alloca below.
@@ -4723,7 +5489,8 @@ impl LlvmCodegen {
                     format!("%_{}", dest.0)
                 }
             } else {
-                format!("%_{}_fld_{}", dest.0, i)
+                // Fresh SSA name per step in the chain — never reuses dest.0.
+                self.next_temp()
             };
             self.emit_line(&format!(
                 "  {this} = insertvalue {dest_ty} {prev}, {expected_ty} {coerced_val}, {i} ; .{field_name}"
@@ -4732,6 +5499,7 @@ impl LlvmCodegen {
             if i + 1 == fields.len() && is_mutable {
                 self.emit_line(&format!("  store {dest_ty} {this}, ptr %_{}.addr", dest.0));
             }
+            prev = this;
         }
 
         if fields.is_empty() {
@@ -4764,7 +5532,12 @@ impl LlvmCodegen {
     ) -> Result<(), CodegenError> {
         let src_val = self.operand_to_llvm(operand, func);
         let src_ty = self.operand_type(operand, func);
-        let dst_ty = mir_type_to_llvm(target_ty);
+        // For enums use the proper aggregate type so recursive payloads
+        // (an Expr-inside-Expr) get loaded as `{ i64, i64, ... }`, not
+        // bitcast to an opaque `%Expr`. The bare named type emission
+        // produced  `bitcast i64 X to %Expr`  which LLVM rejects because
+        // `%Expr` is forward-declared opaque at the bitcast site.
+        let dst_ty = self.sig_ty_to_llvm(target_ty);
 
         if src_ty == dst_ty {
             if is_mutable {
@@ -4774,6 +5547,24 @@ impl LlvmCodegen {
             } else {
                 let name = format!("%_{}", dest.0);
                 self.emit_identity_copy(&name, &dst_ty, &src_val);
+            }
+            return Ok(());
+        }
+
+        // i64 → enum aggregate (`{ i64, i64, ... }`). The i64 is a
+        // heap-handle to the enum value; dereference it.
+        if src_ty == "i64" && (dst_ty.starts_with('{') || dst_ty.starts_with('%')) {
+            let ptr = self.next_temp();
+            self.emit_line(&format!("  {ptr} = inttoptr i64 {src_val} to ptr"));
+            if is_mutable {
+                let tmp = self.next_temp();
+                self.emit_line(&format!("  {tmp} = load {dst_ty}, ptr {ptr}"));
+                self.emit_line(&format!("  store {dst_ty} {tmp}, ptr %_{}.addr", dest.0));
+            } else {
+                self.emit_line(&format!(
+                    "  %_{} = load {dst_ty}, ptr {ptr}",
+                    dest.0
+                ));
             }
             return Ok(());
         }
@@ -4967,6 +5758,10 @@ impl LlvmCodegen {
                     if ty != "void" {
                         let tmp = self.next_temp();
                         self.emit_line(&format!("  {tmp} = load {ty}, ptr %_{}.addr", id.0));
+                        // Track the load result's actual LLVM type so callers
+                        // that inspect actual_type (e.g. kryos_array_push,
+                        // kryos_string_concat) coerce ptr↔i64 correctly.
+                        self.value_types.insert(tmp.clone(), ty);
                         return tmp;
                     }
                 }
@@ -5185,9 +5980,31 @@ impl LlvmCodegen {
                 // This matches Cranelift's by-value-as-i64 semantics for
                 // single-field passes (e.g. dyn-trait lowering) and is a
                 // conservative fallback for multi-field aggregates.
+                //
+                // If field 0 is a `ptr` (e.g. %Match.text in std::re), the
+                // extractvalue yields a ptr-typed SSA value. Naively claiming
+                // it as i64 then passing it to a function expecting i64
+                // fails ("defined with type 'ptr' but expected 'i64'"). The
+                // fix is to detect the field type via struct_defs and emit
+                // a ptrtoint between the extractvalue and the i64 use site.
                 self.emit_line(&format!(
                     "  {tmp} = extractvalue {from} {value}, 0"
                 ));
+                let field0_is_ptr = if let Some(name) = from.strip_prefix('%') {
+                    self.struct_defs
+                        .get(name)
+                        .and_then(|fields| fields.first())
+                        .map(|(_, t)| mir_type_to_llvm(t) == "ptr")
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+                if field0_is_ptr {
+                    let i = self.next_temp();
+                    self.emit_line(&format!("  {i} = ptrtoint ptr {tmp} to i64"));
+                    self.track_type(&i, "i64");
+                    return i;
+                }
                 self.track_type(&tmp, "i64");
             }
             (from, "ptr") if from.starts_with('%') || from.starts_with('{') => {
@@ -5418,12 +6235,25 @@ impl LlvmCodegen {
             ));
 
             // Pre-block: load array length and data pointer.
+            //
+            // KryosArray (kryos-rt/src/array.rs) is #[repr(C)] with layout:
+            //   offset  0: len: i64
+            //   offset  8: cap: i64
+            //   offset 16: elem_size: i64
+            //   offset 24: ref_count: i64
+            //   offset 32: data: *mut u8
+            //
+            // The drop loop previously read offset 24 expecting `data`, which
+            // is actually `ref_count`. Iterating a ref_count-as-pointer
+            // segfaulted on the very first element access. Closes the
+            // 4-line minimum repro `let p = ["hello"]` segfault that
+            // surfaced test_generics' cleanup crash.
             self.emit_line(&format!("{pre_label}:"));
             let len = self.next_temp();
             self.emit_line(&format!("  {len} = load i64, ptr {val}"));
             let data_gep = self.next_temp();
             self.emit_line(&format!(
-                "  {data_gep} = getelementptr i8, ptr {val}, i64 24"
+                "  {data_gep} = getelementptr i8, ptr {val}, i64 32"
             ));
             let data = self.next_temp();
             self.emit_line(&format!("  {data} = load ptr, ptr {data_gep}"));

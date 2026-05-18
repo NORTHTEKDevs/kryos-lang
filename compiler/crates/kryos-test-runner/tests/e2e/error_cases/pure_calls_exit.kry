@@ -1,0 +1,14 @@
+// expect-error: @pure
+// A @pure function cannot call exit (process termination is a side effect).
+
+@pure
+fn checked(x: i64) -> i64 {
+    if x == 0 {
+        exit(1)
+    }
+    return 100 / x
+}
+
+fn main() {
+    checked(0)
+}
