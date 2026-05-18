@@ -148,6 +148,20 @@ enum Commands {
         path: Option<String>,
     },
 
+    /// Generate a new Kryos project from a template
+    New {
+        /// Project name (also the directory name).
+        name: String,
+
+        /// Template: cli (default), http, lib, agent.
+        #[arg(long, value_name = "TEMPLATE", default_value = "cli")]
+        template: String,
+
+        /// Parent directory in which to create the project. Default: cwd.
+        #[arg(long, value_name = "PATH")]
+        path: Option<String>,
+    },
+
     /// Lint Kryos source for stylistic + correctness issues
     Lint {
         /// Path to lint (file or directory). Default: current directory.
@@ -409,6 +423,14 @@ fn main() {
                     other
                 )),
             }
+        }
+
+        Commands::New { name, template, path } => {
+            commands::new_cmd::execute(commands::new_cmd::NewOptions {
+                name,
+                template,
+                path,
+            })
         }
 
         Commands::Lint { path, format, enable, disable, strict } => {

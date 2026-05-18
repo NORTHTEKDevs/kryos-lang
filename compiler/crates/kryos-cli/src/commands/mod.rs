@@ -6,6 +6,7 @@ pub mod bindgen;
 pub mod build;
 pub mod check;
 pub mod lint_cmd;
+pub mod new_cmd;
 pub mod doc;
 pub mod explain;
 pub mod fmt;

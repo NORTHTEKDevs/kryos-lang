@@ -4,6 +4,30 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.6.0-rc.1] — 2026-05-18 — "kryos new — project scaffolder"
+
+### Added
+
+- **`kryos new <name>`** subcommand — generates a complete starter
+  project from a template. Outputs:
+  - `kryos.toml` — package manifest (name, 0.1.0, edition 2026)
+  - `src/main.kry` — entry point matching the chosen template
+  - `tests/smoke.kry` — `@test`-annotated smoke test
+  - `README.md` — build instructions + project layout
+  - `.gitignore` — Kryos build artifacts + editor noise
+- **Four templates**:
+  - `cli` (default): argv-handling hello-world
+  - `http`: TCP listener on 127.0.0.1:8080 with HTTP/1.1 200 response
+  - `lib`: public `greet()` function + ad-hoc `main()`
+  - `agent`: spawn + channel round-trip
+- Project name validation: must start with letter/underscore, only
+  contain letters/digits/underscores/hyphens. Refuses to overwrite
+  an existing directory.
+
+### Changed
+
+- Workspace version bumped from `3.5.0-rc.1` to `3.6.0-rc.1`.
+
 ## [3.5.0-rc.1] — 2026-05-18 — "lint + audit"
 
 Two new subcommands aimed at code review and production-readiness checks.
