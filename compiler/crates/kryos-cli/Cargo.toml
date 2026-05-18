@@ -30,4 +30,5 @@ kryos-fmt.workspace = true
 kryos-ast.workspace = true
 kryos-lexer.workspace = true
 kryos-parser.workspace = true
+kryos-rt.workspace = true
 clap.workspace = true

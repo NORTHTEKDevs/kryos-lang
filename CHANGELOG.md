@@ -4,6 +4,42 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.7.0-rc.1] — 2026-05-18 — "kryos trace — execution tracing"
+
+Useful starting-point for debugging without spinning up a full step
+debugger. The existing software call-stack infrastructure
+(`kryos_trace_enter` / `kryos_trace_exit` emitted at every function
+entry/exit) gained a verbose mode that prints to stderr.
+
+### Added
+
+- **`kryos trace <file> [-- args...]`** subcommand — JIT-compiles and
+  runs a program with depth-indented function entry/exit tracing
+  printed to stderr.
+- **`KRYOS_TRACE=1` env var** — runtime probes this on startup. Set
+  by `kryos trace` for subprocess inheritance; also usable directly
+  on a Kryos-built binary (`KRYOS_TRACE=1 ./my_prog`).
+- **`kryos_rt::trace::set_verbose_trace(bool)`** — public Rust API
+  for embedding contexts that don't go through env vars.
+
+### Example
+
+```text
+$ kryos trace examples/factorial.kry
+kryos trace enabled for examples/factorial.kry
+
+trace → main() at factorial.kry:9
+trace   → factorial() at factorial.kry:1
+trace     → factorial() at factorial.kry:1
+trace     ← factorial()
+trace   ← factorial()
+trace ← main()
+```
+
+### Changed
+
+- Workspace version bumped from `3.6.0-rc.1` to `3.7.0-rc.1`.
+
 ## [3.6.0-rc.1] — 2026-05-18 — "kryos new — project scaffolder"
 
 ### Added

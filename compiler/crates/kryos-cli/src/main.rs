@@ -148,6 +148,16 @@ enum Commands {
         path: Option<String>,
     },
 
+    /// Run a Kryos program with verbose function-entry/exit tracing
+    Trace {
+        /// File to execute via the JIT.
+        file: String,
+
+        /// Optional args passed to the program (after `--`).
+        #[arg(last = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
     /// Generate a new Kryos project from a template
     New {
         /// Project name (also the directory name).
@@ -424,6 +434,8 @@ fn main() {
                 )),
             }
         }
+
+        Commands::Trace { file, args } => commands::trace_cmd::execute(&file, &args),
 
         Commands::New { name, template, path } => {
             commands::new_cmd::execute(commands::new_cmd::NewOptions {

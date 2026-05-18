@@ -6,6 +6,7 @@
 
 use std::cell::RefCell;
 use std::fmt::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A single frame on the software call stack.
 struct TraceFrame {
@@ -16,6 +17,34 @@ struct TraceFrame {
 
 thread_local! {
     static CALL_STACK: RefCell<Vec<TraceFrame>> = RefCell::new(Vec::with_capacity(64));
+}
+
+/// When set to `true`, the trace runtime prints a line on every function
+/// entry and exit instead of (or in addition to) building the silent call
+/// stack. Enable from the `kryos trace` subcommand.
+static VERBOSE_TRACE: AtomicBool = AtomicBool::new(false);
+
+/// Toggle verbose tracing globally. Safe to call from outside Kryos code
+/// (e.g. from a host CLI command before invoking JIT-compiled main).
+pub fn set_verbose_trace(on: bool) {
+    VERBOSE_TRACE.store(on, Ordering::Relaxed);
+}
+
+fn verbose_trace_enabled() -> bool {
+    // Lazy env probe: read once at runtime startup. The atomic flag is
+    // mutable in-process; the env variable lets child processes spawned by
+    // `kryos trace` inherit the setting without explicit plumbing.
+    use std::sync::atomic::{AtomicU8, Ordering as O};
+    static ENV_PROBED: AtomicU8 = AtomicU8::new(0); // 0=unprobed, 1=off, 2=on
+    let probed = ENV_PROBED.load(O::Relaxed);
+    if probed == 0 {
+        let on = std::env::var("KRYOS_TRACE").map(|v| v != "0" && !v.is_empty()).unwrap_or(false);
+        ENV_PROBED.store(if on { 2 } else { 1 }, O::Relaxed);
+        if on {
+            VERBOSE_TRACE.store(true, Ordering::Relaxed);
+        }
+    }
+    VERBOSE_TRACE.load(Ordering::Relaxed)
 }
 
 /// Push a frame onto the call stack. Called at function entry.
@@ -46,6 +75,11 @@ pub extern "C" fn kryos_trace_enter(
             String::from_utf8_lossy(std::slice::from_raw_parts(file_ptr, file_len)).into_owned()
         }
     };
+    if verbose_trace_enabled() {
+        let depth = CALL_STACK.with(|s| s.borrow().len());
+        let indent = "  ".repeat(depth);
+        eprintln!("\x1b[36mtrace\x1b[0m {indent}→ {name}() at {file}:{line}");
+    }
     CALL_STACK.with(|stack| {
         stack.borrow_mut().push(TraceFrame {
             func_name: name,
@@ -58,9 +92,14 @@ pub extern "C" fn kryos_trace_enter(
 /// Pop a frame from the call stack. Called at function return.
 #[no_mangle]
 pub extern "C" fn kryos_trace_exit() {
-    CALL_STACK.with(|stack| {
-        stack.borrow_mut().pop();
-    });
+    let popped = CALL_STACK.with(|stack| stack.borrow_mut().pop());
+    if verbose_trace_enabled() {
+        if let Some(frame) = popped {
+            let depth = CALL_STACK.with(|s| s.borrow().len());
+            let indent = "  ".repeat(depth);
+            eprintln!("\x1b[36mtrace\x1b[0m {indent}← {}()", frame.func_name);
+        }
+    }
 }
 
 /// Format the current call stack as a human-readable string.
