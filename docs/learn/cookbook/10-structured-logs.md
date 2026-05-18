@@ -1,0 +1,89 @@
+# Cookbook 10 · Read structured logs
+
+You're staring at a million-line `app.log` of JSONL records. You want to group by `level` and print counts. Kryos's stdlib has everything you need: `file_read`, `split_lines`, `std::json`.
+
+## The input
+
+`app.log` (one JSON object per line):
+
+```jsonl
+{"ts": 1716057600, "level": "info",  "msg": "boot"}
+{"ts": 1716057601, "level": "warn",  "msg": "slow disk"}
+{"ts": 1716057602, "level": "error", "msg": "out of memory"}
+{"ts": 1716057603, "level": "info",  "msg": "recovered"}
+{"ts": 1716057604, "level": "warn",  "msg": "slow disk"}
+```
+
+## The program
+
+```kryos
+use std::json::{json_parse, json_string_field, json_int_field}
+
+@capabilities(io)
+fn main() {
+    let body = file_read("app.log")
+    let lines = split_lines(body)
+
+    let mut info_count: i64 = 0
+    let mut warn_count: i64 = 0
+    let mut error_count: i64 = 0
+    let mut other_count: i64 = 0
+
+    let mut earliest: i64 = 0
+    let mut latest: i64 = 0
+    let mut first = true
+
+    for line in lines {
+        if len(line) == 0 { continue }
+        let rec = json_parse(line)
+        let level = json_string_field(rec, "level")
+        let ts = json_int_field(rec, "ts")
+
+        if first {
+            earliest = ts
+            latest = ts
+            first = false
+        } else {
+            if ts < earliest { earliest = ts }
+            if ts > latest { latest = ts }
+        }
+
+        if level == "info" {
+            info_count = info_count + 1
+        } elif level == "warn" {
+            warn_count = warn_count + 1
+        } elif level == "error" {
+            error_count = error_count + 1
+        } else {
+            other_count = other_count + 1
+        }
+    }
+
+    println("=== Log summary ===")
+    println("info:   " + to_string(info_count))
+    println("warn:   " + to_string(warn_count))
+    println("error:  " + to_string(error_count))
+    if other_count > 0 {
+        println("other:  " + to_string(other_count))
+    }
+    println("span:   " + to_string(latest - earliest) + " seconds")
+}
+```
+
+## Run it
+
+```bash
+kryos run app.log.kry
+# === Log summary ===
+# info:   2
+# warn:   2
+# error:  1
+# span:   4 seconds
+```
+
+## Things to know
+
+- `split_lines` handles both `\n` and `\r\n` — safe across platforms.
+- `json_parse` on a malformed line returns an empty handle; field reads off it return zero values. For strict mode you'd add an `if json_is_null(rec) { throw "bad line: " + line }` guard.
+- Counts are kept in `let mut` locals — no need for a `map<str, i64>` for the four well-known levels. For arbitrary user-defined levels, switch to `map<str, i64>` and use `m["new_level"] = (m["new_level"] + 1)`.
+- For 100M-line files this loop is the bottleneck; switch to a buffered iterator if you hit memory pressure (see `std::stream::file_lines`).

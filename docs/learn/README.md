@@ -17,7 +17,7 @@ Pick the route that matches your system. The full guide is [QUICKSTART.md](../..
 Sanity check:
 
 ```bash
-kryos --version   # → kryos 2.3.0
+kryos --version   # → kryos 3.3.0-rc.1 (or newer)
 ```
 
 ---
@@ -64,8 +64,14 @@ Practical, runnable recipes for things people actually build:
 | [04 · Concurrent worker pool](./cookbook/04-worker-pool.md) | `spawn` + channels for parallel work |
 | [05 · Async fetch many](./cookbook/05-async-fetch.md) | Async/await across many HTTP calls without thread explosion |
 | [06 · Build a small library](./cookbook/06-library.md) | Package your code as a reusable module |
+| [07 · Dates and time](./cookbook/07-dates-and-time.md) | Now, format, parse, compute — UTC date math without dependencies |
+| [08 · Regex everywhere](./cookbook/08-regex.md) | Match, find, capture, replace using `std::re` |
+| [09 · Base64 + UUID](./cookbook/09-encoding.md) | Encode binary payloads, mint v4 UUIDs |
+| [10 · Read structured logs](./cookbook/10-structured-logs.md) | Parse line-delimited JSON, group by field, summarize |
 
 Each recipe is a complete, working program — copy it, run it, modify it.
+
+See also: [Common errors](./common-errors.md) for the top-20 errors and how to fix them, and the [Cheatsheet](./cheatsheet.md) for syntax-at-a-glance.
 
 ---
 

@@ -4,6 +4,37 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.3.0-rc.1] — 2026-05-18 — "learn-Kryos onboarding"
+
+Documentation push. Four new cookbook recipes covering the v3.2 stdlib
+additions plus a "common errors" reference and a one-page cheatsheet.
+
+### Added
+
+- **docs/learn/cookbook/07-dates-and-time.md** — `std::datetime` recipe:
+  current time, UTC date breakdown, RFC 3339, ymdhms constructor, tiny
+  benchmark loop.
+- **docs/learn/cookbook/08-regex.md** — `std::re` recipe: is_match,
+  replace_all, capture iteration over a log file.
+- **docs/learn/cookbook/09-encoding.md** — `std::base64` + `std::uuid`
+  recipe: round-trip encoding, mint v4 UUIDs, parse known UUID strings.
+- **docs/learn/cookbook/10-structured-logs.md** — JSONL parsing recipe:
+  group by level, compute span, summarize.
+- **docs/learn/common-errors.md** — top-20 compile and runtime errors
+  with verbatim messages and fixes. Covers E0101/E0102/E0106/E0107/
+  E0382/E0501 plus syntax-and-layout gotchas (semicolons, `elif`,
+  block balance).
+- **docs/learn/cheatsheet.md** — one-page syntax reference: variables,
+  types, control flow, structs, enums, errors, capabilities, async,
+  tooling.
+
+### Changed
+
+- `docs/learn/README.md` version stamp updated from `2.3.0` to
+  `3.3.0-rc.1`.
+- Cookbook table now lists 10 recipes (was 6).
+- Workspace version bumped from `3.2.0-rc.1` to `3.3.0-rc.1`.
+
 ## [3.2.0-rc.1] — 2026-05-18 — "stdlib breadth"
 
 Fleshes out four under-built stdlib modules and adds two new ones. Every
