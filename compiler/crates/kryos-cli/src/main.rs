@@ -148,6 +148,40 @@ enum Commands {
         path: Option<String>,
     },
 
+    /// Lint Kryos source for stylistic + correctness issues
+    Lint {
+        /// Path to lint (file or directory). Default: current directory.
+        #[arg(value_name = "PATH")]
+        path: Option<String>,
+
+        /// Output format: pretty (default) or json.
+        #[arg(long, value_name = "FORMAT", default_value = "pretty")]
+        format: String,
+
+        /// Only enable these lint codes (comma-separated, e.g. L001,L003).
+        #[arg(long, value_delimiter = ',')]
+        enable: Vec<String>,
+
+        /// Disable these lint codes (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        disable: Vec<String>,
+
+        /// Exit non-zero if any lint diagnostic is emitted (CI mode).
+        #[arg(long)]
+        strict: bool,
+    },
+
+    /// Audit the project: capability usage, extern surface, secret patterns
+    Audit {
+        /// Path to audit. Default: current directory.
+        #[arg(value_name = "PATH")]
+        path: Option<String>,
+
+        /// Output format: pretty (default) or json.
+        #[arg(long, value_name = "FORMAT", default_value = "pretty")]
+        format: String,
+    },
+
     /// Run `@bench`-annotated micro-benchmarks
     Bench {
         /// Filter bench names by substring (positional).
@@ -375,6 +409,23 @@ fn main() {
                     other
                 )),
             }
+        }
+
+        Commands::Lint { path, format, enable, disable, strict } => {
+            commands::lint_cmd::execute(commands::lint_cmd::LintOptions {
+                path,
+                format,
+                enable,
+                disable,
+                strict,
+            })
+        }
+
+        Commands::Audit { path, format } => {
+            commands::audit_cmd::execute(commands::audit_cmd::AuditOptions {
+                path,
+                format,
+            })
         }
 
         Commands::Bench {

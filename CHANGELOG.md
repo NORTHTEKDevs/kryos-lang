@@ -4,6 +4,33 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.5.0-rc.1] — 2026-05-18 — "lint + audit"
+
+Two new subcommands aimed at code review and production-readiness checks.
+
+### Added
+
+- **`kryos lint`** — AST-driven source linter with 4 lints:
+  - `L001` large-function (>100 stmts)
+  - `L003` magic-number (integer > 10 outside common round values)
+  - `L005` shadowed-name (`let x` rebinding an outer `x`)
+  - `L006` todo-comment (`// TODO` / `// FIXME` / `// XXX`)
+  - `--format=pretty|json`, `--enable`, `--disable`, `--strict` flags
+- **`kryos audit`** — project-wide capability + extern + secret scan:
+  - Capability inventory grouped by capability name
+  - Every `extern "..." { ... }` block listed with item counts
+  - String literals matching 13 secret patterns flagged CRITICAL
+    (AWS access keys, GitHub PATs, Slack tokens, OpenAI keys,
+    bearer auth headers, PEM/OpenSSH private-key markers,
+    `password=` / `API_KEY=` env assignments)
+- **`examples/lint_demo.kry`** — demo file triggering each lint code.
+
+### Changed
+
+- Workspace version bumped from `3.4.0-rc.1` to `3.5.0-rc.1`.
+- `kryos-cli` Cargo.toml gained direct `kryos-ast`, `kryos-lexer`,
+  `kryos-parser` deps (previously transitive via `kryos-driver`).
+
 ## [3.4.0-rc.1] — 2026-05-18 — "benchmark runner"
 
 New `kryos bench` subcommand plus the `@bench` attribute for declaring

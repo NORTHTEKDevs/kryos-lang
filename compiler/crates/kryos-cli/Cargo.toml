@@ -27,4 +27,7 @@ kryos-codegen-llvm.workspace = true
 kryos-codegen-wasm.workspace = true
 kryos-test-runner.workspace = true
 kryos-fmt.workspace = true
+kryos-ast.workspace = true
+kryos-lexer.workspace = true
+kryos-parser.workspace = true
 clap.workspace = true

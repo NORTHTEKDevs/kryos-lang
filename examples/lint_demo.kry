@@ -1,0 +1,20 @@
+// Demo file for `kryos lint`. Intentionally triggers several lint codes.
+
+// TODO: implement proper error handling for division by zero
+
+fn main() {
+    let x: i64 = 42
+    let y: i64 = 99999       // magic number
+    if y > 50000 {           // another magic number
+        let x: i64 = y / 2   // shadow
+        println(to_string(x))
+    }
+}
+
+// FIXME: this function is over-large
+fn maybe_big() {
+    let a: i64 = 1
+    let b: i64 = 2
+    let c: i64 = 3
+    let d: i64 = 4
+}

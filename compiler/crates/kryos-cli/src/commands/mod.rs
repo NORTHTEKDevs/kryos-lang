@@ -1,9 +1,11 @@
 //! Command implementations for the `kryos` CLI.
 
+pub mod audit_cmd;
 pub mod bench_cmd;
 pub mod bindgen;
 pub mod build;
 pub mod check;
+pub mod lint_cmd;
 pub mod doc;
 pub mod explain;
 pub mod fmt;
