@@ -1,0 +1,16 @@
+// Smoke bench for kryos bench — verifies @bench discovery and execution.
+
+@bench
+fn bench_arith_loop() {
+    let mut sum: i64 = 0
+    let mut i: i64 = 0
+    while i < 10000 {
+        sum = sum + i
+        i = i + 1
+    }
+}
+
+@bench
+fn bench_noop() {
+    let _x: i64 = 1
+}

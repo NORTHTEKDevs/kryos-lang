@@ -214,6 +214,8 @@ pub struct MirAttributes {
     pub pure_fn: bool,
     /// Function is marked `@test` — discoverable by the test runner.
     pub test: bool,
+    /// Function is marked `@bench` — discoverable by the benchmark runner.
+    pub bench: bool,
     /// Function is marked `@deprecated`.
     pub deprecated: bool,
     /// Function is declared `async fn` — eligible for state-machine

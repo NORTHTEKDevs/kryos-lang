@@ -1,5 +1,6 @@
 //! Command implementations for the `kryos` CLI.
 
+pub mod bench_cmd;
 pub mod bindgen;
 pub mod build;
 pub mod check;

@@ -23,6 +23,12 @@ use kryos_driver::{
     // path; do not remove unless that fallback is also dropped.
 };
 
+pub mod bench;
+pub use bench::{
+    discover_annotated_benches, format_bench_report, run_benches, BenchOptions, BenchReport,
+    BenchResult,
+};
+
 // ---------------------------------------------------------------------------
 // Core types
 // ---------------------------------------------------------------------------

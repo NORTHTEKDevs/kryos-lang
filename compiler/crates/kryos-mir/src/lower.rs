@@ -370,6 +370,7 @@ fn annotations_to_mir_attributes(annotations: &[ast::Annotation]) -> MirAttribut
             "inline" => attrs.inline = true,
             "pure" => attrs.pure_fn = true,
             "test" => attrs.test = true,
+            "bench" => attrs.bench = true,
             "deprecated" => attrs.deprecated = true,
             _ => {}
         }

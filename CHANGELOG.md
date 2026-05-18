@@ -4,6 +4,32 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.4.0-rc.1] — 2026-05-18 — "benchmark runner"
+
+New `kryos bench` subcommand plus the `@bench` attribute for declaring
+micro-benchmarks alongside source.
+
+### Added
+
+- **`@bench` attribute** — MIR-level annotation parsed from source.
+  Functions marked `@bench` are discoverable by the new runner.
+- **`kryos bench`** subcommand — discovers `@bench`-annotated `.kry`
+  files (defaults to `benches/`, falls back to `tests/`, then cwd),
+  JIT-compiles each module via Cranelift, runs warmup iterations
+  followed by measurement iterations, and reports min/median/mean/
+  p95/max in human-readable units (ns/µs/ms/s).
+- **`kryos-test-runner::bench` module** — public engine surface:
+  `discover_annotated_benches`, `run_benches`, `BenchOptions`,
+  `BenchReport`, `BenchResult`, `format_bench_report`.
+- **`benches/smoke_bench.kry`** — minimal regression target that
+  exercises the discovery + execution path.
+
+### Changed
+
+- Workspace version bumped from `3.3.0-rc.1` to `3.4.0-rc.1`.
+- `MirAttributes` grew a `bench: bool` field alongside `test`,
+  `inline`, `pure_fn`, `deprecated`, `is_async`.
+
 ## [3.3.0-rc.1] — 2026-05-18 — "learn-Kryos onboarding"
 
 Documentation push. Four new cookbook recipes covering the v3.2 stdlib

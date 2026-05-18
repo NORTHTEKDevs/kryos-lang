@@ -148,6 +148,30 @@ enum Commands {
         path: Option<String>,
     },
 
+    /// Run `@bench`-annotated micro-benchmarks
+    Bench {
+        /// Filter bench names by substring (positional).
+        #[arg(value_name = "FILTER")]
+        filter_pos: Option<String>,
+
+        /// Match the filter exactly (not as a substring).
+        #[arg(long)]
+        exact: bool,
+
+        /// Warmup iterations before each measurement run.
+        #[arg(long, value_name = "N")]
+        warmup: Option<usize>,
+
+        /// Measurement iterations per bench function.
+        #[arg(long, value_name = "N")]
+        measure: Option<usize>,
+
+        /// Path to a `.kry` file or directory. Defaults to `benches/`,
+        /// falling back to `tests/`, then the current directory.
+        #[arg(long, value_name = "PATH")]
+        path: Option<String>,
+    },
+
     /// Format source files
     Fmt {
         /// Files to format (default: all .kry files in project)
@@ -351,6 +375,26 @@ fn main() {
                     other
                 )),
             }
+        }
+
+        Commands::Bench {
+            filter_pos,
+            exact,
+            warmup,
+            measure,
+            path,
+        } => {
+            let (chosen_path, chosen_filter) = match (filter_pos, path) {
+                (Some(p), None) if std::path::Path::new(&p).exists() => (Some(p), None),
+                (fp, p) => (p, fp),
+            };
+            commands::bench_cmd::execute(commands::bench_cmd::BenchCliOptions {
+                filter: chosen_filter,
+                exact,
+                warmup,
+                measure,
+                path: chosen_path,
+            })
         }
 
         Commands::Fmt { files, check } => commands::fmt::execute(&files, check),
