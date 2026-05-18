@@ -1,0 +1,27 @@
+// Function-call-overhead bench. Measures the cost of N function
+// invocations — sensitive to trace_enter/trace_exit overhead, the
+// allocator, and the Cranelift call sequence.
+
+fn small_call(x: i64) -> i64 {
+    return x + 1
+}
+
+@bench
+fn bench_million_small_calls() {
+    let mut sum: i64 = 0
+    let mut i: i64 = 0
+    while i < 1000 {
+        sum = sum + small_call(i)
+        i = i + 1
+    }
+}
+
+@bench
+fn bench_deep_recursion() {
+    let _ = factorial(20)
+}
+
+fn factorial(n: i64) -> i64 {
+    if n <= 1 { return 1 }
+    return n * factorial(n - 1)
+}

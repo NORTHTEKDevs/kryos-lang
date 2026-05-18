@@ -9,11 +9,22 @@ use std::fmt::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A single frame on the software call stack.
+///
+/// v3.8: stores raw pointers into the compiled program's .data section
+/// instead of allocating `String`s. The pointers come from data segments
+/// declared by the codegen at function-definition time and have `'static`
+/// lifetime in the loaded image, so they're safe to store. This eliminates
+/// the per-call String allocation that previously dominated trace overhead.
 struct TraceFrame {
-    func_name: String,
-    file: String,
+    name_ptr: *const u8,
+    name_len: usize,
+    file_ptr: *const u8,
+    file_len: usize,
     line: u32,
 }
+
+// SAFETY: Raw pointers into .data segments are 'static and not mutated.
+unsafe impl Send for TraceFrame {}
 
 thread_local! {
     static CALL_STACK: RefCell<Vec<TraceFrame>> = RefCell::new(Vec::with_capacity(64));
@@ -61,29 +72,32 @@ pub extern "C" fn kryos_trace_enter(
     file_len: usize,
     line: u32,
 ) {
-    let name = if name_ptr.is_null() || name_len == 0 {
-        "<unknown>".to_string()
-    } else {
-        unsafe {
-            String::from_utf8_lossy(std::slice::from_raw_parts(name_ptr, name_len)).into_owned()
-        }
-    };
-    let file = if file_ptr.is_null() || file_len == 0 {
-        "<unknown>".to_string()
-    } else {
-        unsafe {
-            String::from_utf8_lossy(std::slice::from_raw_parts(file_ptr, file_len)).into_owned()
-        }
-    };
     if verbose_trace_enabled() {
+        // Lazy borrow of the name/file slices for the rare verbose path.
+        let name = if name_ptr.is_null() || name_len == 0 {
+            "<unknown>"
+        } else {
+            unsafe {
+                std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
+            }
+        };
+        let file = if file_ptr.is_null() || file_len == 0 {
+            "<unknown>"
+        } else {
+            unsafe {
+                std::str::from_utf8_unchecked(std::slice::from_raw_parts(file_ptr, file_len))
+            }
+        };
         let depth = CALL_STACK.with(|s| s.borrow().len());
         let indent = "  ".repeat(depth);
         eprintln!("\x1b[36mtrace\x1b[0m {indent}→ {name}() at {file}:{line}");
     }
     CALL_STACK.with(|stack| {
         stack.borrow_mut().push(TraceFrame {
-            func_name: name,
-            file,
+            name_ptr,
+            name_len,
+            file_ptr,
+            file_len,
             line,
         });
     });
@@ -97,7 +111,17 @@ pub extern "C" fn kryos_trace_exit() {
         if let Some(frame) = popped {
             let depth = CALL_STACK.with(|s| s.borrow().len());
             let indent = "  ".repeat(depth);
-            eprintln!("\x1b[36mtrace\x1b[0m {indent}← {}()", frame.func_name);
+            let name = if frame.name_ptr.is_null() || frame.name_len == 0 {
+                "<unknown>"
+            } else {
+                unsafe {
+                    std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                        frame.name_ptr,
+                        frame.name_len,
+                    ))
+                }
+            };
+            eprintln!("\x1b[36mtrace\x1b[0m {indent}← {name}()");
         }
     }
 }
@@ -113,11 +137,27 @@ pub fn format_stack_trace() -> String {
         }
         let mut out = String::from("\nstack trace (most recent call last):\n");
         for (i, frame) in stack.iter().rev().enumerate() {
-            let _ = writeln!(
-                out,
-                "  {}: {}() at {}:{}",
-                i, frame.func_name, frame.file, frame.line
-            );
+            let name = if frame.name_ptr.is_null() || frame.name_len == 0 {
+                "<unknown>"
+            } else {
+                unsafe {
+                    std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                        frame.name_ptr,
+                        frame.name_len,
+                    ))
+                }
+            };
+            let file = if frame.file_ptr.is_null() || frame.file_len == 0 {
+                "<unknown>"
+            } else {
+                unsafe {
+                    std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                        frame.file_ptr,
+                        frame.file_len,
+                    ))
+                }
+            };
+            let _ = writeln!(out, "  {i}: {name}() at {file}:{line}", line = frame.line);
         }
         out
     })

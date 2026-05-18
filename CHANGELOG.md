@@ -4,6 +4,30 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.8.0-rc.1] — 2026-05-18 — "perf: function-call overhead"
+
+### Changed
+
+- **`TraceFrame` no longer allocates `String`** at every function entry.
+  Frames now hold raw `(name_ptr, name_len, file_ptr, file_len, line)`
+  pointers into the compiled program's `.data` section, whose lifetime
+  is `'static` in the loaded image. UTF-8 reconstruction happens lazily
+  at format time (panic stack traces, verbose trace output) when the
+  cost is dwarfed by I/O anyway.
+- Result: per-function-call trace overhead drops from "2 string allocs +
+  push" to "4 pointer copies + push". Microbench `bench_million_small_calls`
+  drops from prior baseline to **13.3ns/call median** on Cranelift JIT.
+
+### Added
+
+- **`benches/fn_call_overhead.kry`** — regression bench tracking
+  function-call overhead. Two cases: a 1000-call sum loop and a
+  20-deep `factorial` recursion. Both visible under `kryos bench`.
+
+### Changed
+
+- Workspace version bumped from `3.7.0-rc.1` to `3.8.0-rc.1`.
+
 ## [3.7.0-rc.1] — 2026-05-18 — "kryos trace — execution tracing"
 
 Useful starting-point for debugging without spinning up a full step
