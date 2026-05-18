@@ -1,0 +1,38 @@
+// kryos-test-ext — extra assertion helpers.
+//
+// Use as: use kryos_test_ext::{assert_eq, assert_lt, assert_contains_str}
+
+/// Assert that two i64 values are equal. Panics with a useful message if not.
+pub fn assert_eq_i64(actual: i64, expected: i64) {
+    if actual != expected {
+        throw "assert_eq_i64 failed: expected " + to_string(expected) + ", got " + to_string(actual)
+    }
+}
+
+/// Assert that two strings are equal. Panics with a useful message if not.
+pub fn assert_eq_str(actual: str, expected: str) {
+    if actual != expected {
+        throw "assert_eq_str failed: expected `" + expected + "`, got `" + actual + "`"
+    }
+}
+
+/// Assert that a < b.
+pub fn assert_lt(a: i64, b: i64) {
+    if !(a < b) {
+        throw "assert_lt failed: " + to_string(a) + " is not less than " + to_string(b)
+    }
+}
+
+/// Assert that a string contains a substring.
+pub fn assert_contains_str(haystack: str, needle: str) {
+    if !contains(haystack, needle) {
+        throw "assert_contains_str failed: `" + haystack + "` does not contain `" + needle + "`"
+    }
+}
+
+/// Assert that a boolean is true. Carries a user-supplied message.
+pub fn assert_msg(cond: bool, msg: str) {
+    if !cond {
+        throw msg
+    }
+}

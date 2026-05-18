@@ -1,0 +1,9 @@
+[package]
+name = "kryos-test-ext"
+version = "0.1.0"
+edition = "2026"
+description = "Extra assertion helpers for kryos test: assert_eq, assert_lt, assert_contains."
+authors = ["NORTHTEK <info@northtek.io>"]
+license = "Apache-2.0"
+
+[dependencies]

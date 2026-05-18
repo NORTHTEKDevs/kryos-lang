@@ -1,0 +1,9 @@
+[package]
+name = "kryos-uuid-pkg"
+version = "0.1.0"
+edition = "2026"
+description = "Ergonomic Kryos wrapper around std::uuid for v4 UUIDs."
+authors = ["NORTHTEK <info@northtek.io>"]
+license = "Apache-2.0"
+
+[dependencies]

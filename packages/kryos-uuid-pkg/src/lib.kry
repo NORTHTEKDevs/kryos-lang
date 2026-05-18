@@ -1,0 +1,29 @@
+// kryos-uuid-pkg — ergonomic v4 UUID helpers.
+
+use std::uuid::{uuid_v4, uuid_parse}
+
+/// Generate a fresh v4 UUID as a canonical hyphenated string.
+pub fn v4() -> str {
+    return uuid_v4()
+}
+
+/// Validate that `s` is a syntactically valid hyphenated UUID. Returns true
+/// only if `s` parses cleanly via std::uuid::uuid_parse.
+pub fn is_valid(s: str) -> bool {
+    if len(s) != 36 {
+        return false
+    }
+    let bytes = uuid_parse(s)
+    return len(bytes) == 16
+}
+
+/// Generate `n` UUIDs as an array.
+pub fn many(n: i64) -> [str] {
+    let mut out: [str] = []
+    let mut i: i64 = 0
+    while i < n {
+        out = push(out, v4())
+        i = i + 1
+    }
+    return out
+}

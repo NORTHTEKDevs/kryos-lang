@@ -570,3 +570,59 @@ fn derive_dep_name(spec: &str) -> String {
     // Take the last path segment
     base.rsplit('/').next().unwrap_or(base).to_string()
 }
+
+/// `kryos pkg list-local [--root PATH]` — discover packages on disk.
+///
+/// Walks `<root>/` (default `./packages`) one level deep, reads each
+/// subdirectory's `kryos.toml`, and prints `(name, version, description)`.
+pub fn list_local(root: Option<&str>) -> Result<(), String> {
+    let root = match root {
+        Some(p) => PathBuf::from(p),
+        None => PathBuf::from("packages"),
+    };
+    if !root.is_dir() {
+        return Err(format!(
+            "kryos pkg list-local: '{}' is not a directory",
+            root.display()
+        ));
+    }
+
+    let entries = std::fs::read_dir(&root)
+        .map_err(|e| format!("kryos pkg list-local: read {}: {e}", root.display()))?;
+
+    let mut found: Vec<(String, String, String)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let manifest = path.join("kryos.toml");
+        if !manifest.is_file() {
+            continue;
+        }
+        let Ok(m) = Manifest::from_file(&manifest) else {
+            continue;
+        };
+        found.push((
+            m.package.name.clone(),
+            m.package.version.clone(),
+            m.package.description.clone().unwrap_or_default(),
+        ));
+    }
+
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+
+    if found.is_empty() {
+        println!("(no packages found under {})", root.display());
+    } else {
+        println!("\x1b[1mLocal packages under {}\x1b[0m", root.display());
+        println!();
+        let name_w = found.iter().map(|(n, _, _)| n.len()).max().unwrap_or(20).max(20);
+        for (n, v, d) in &found {
+            println!("  \x1b[36m{:<width$}\x1b[0m {}  {}", n, v, d, width = name_w);
+        }
+        println!();
+        println!("{} package(s)", found.len());
+    }
+    Ok(())
+}

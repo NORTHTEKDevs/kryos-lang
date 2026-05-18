@@ -1,0 +1,9 @@
+[package]
+name = "kryos-base64-pkg"
+version = "0.1.0"
+edition = "2026"
+description = "Ergonomic Kryos wrapper around std::base64."
+authors = ["NORTHTEK <info@northtek.io>"]
+license = "Apache-2.0"
+
+[dependencies]

@@ -365,6 +365,14 @@ enum PkgAction {
 
     /// List locked packages with newer versions available
     Outdated,
+
+    /// List first-party / local packages discovered under `packages/` (or a
+    /// custom directory).
+    ListLocal {
+        /// Root directory to scan. Default: `./packages`.
+        #[arg(long, value_name = "PATH")]
+        root: Option<String>,
+    },
 }
 
 fn main() {
@@ -546,6 +554,7 @@ fn main() {
             PkgAction::Info { name } => commands::pkg::info(&name),
             PkgAction::Sync => commands::pkg::sync(),
             PkgAction::Outdated => commands::pkg::outdated(),
+            PkgAction::ListLocal { root } => commands::pkg::list_local(root.as_deref()),
         },
 
         Commands::Lsp => commands::lsp::execute(),

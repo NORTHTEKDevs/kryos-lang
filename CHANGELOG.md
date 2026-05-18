@@ -4,6 +4,33 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.10.0-rc.1] — 2026-05-18 — "first-party packages"
+
+### Added
+
+- **`packages/`** directory under the repo root containing five
+  first-party libraries that ship alongside the compiler:
+  - **`kryos-test-ext`** — assertion helpers (`assert_eq_i64`,
+    `assert_eq_str`, `assert_lt`, `assert_contains_str`, `assert_msg`)
+  - **`kryos-http-router`** — HTTP/1.1 method+path parser + response
+    builder for use inside a TCP accept loop. Handles 200/201/204/
+    301/302/400/401/403/404/500/503 status text.
+  - **`kryos-uuid-pkg`** — v4 UUID helpers (`v4`, `is_valid`, `many`)
+    wrapping `std::uuid`.
+  - **`kryos-base64-pkg`** — encode/decode + `data_url(mime, body)`
+    builder wrapping `std::base64`.
+  - **`kryos-time-pkg`** — `UtcDate` struct + `now_utc()`, `now_iso()`,
+    `ymd_utc()`, `days_between()`, `weekday_short()` on top of
+    `std::datetime`.
+- **`kryos pkg list-local [--root PATH]`** — discovers packages under
+  `packages/` (or a custom directory) by scanning each subdirectory's
+  `kryos.toml`. Prints `name  version  description` for each.
+- **`packages/README.md`** — overview + local-install instructions.
+
+### Changed
+
+- Workspace version bumped from `3.9.0-rc.1` to `3.10.0-rc.1`.
+
 ## [3.9.0-rc.1] — 2026-05-18 — "watch, clean, REPL history"
 
 Three quality-of-life additions for the day-to-day dev loop.

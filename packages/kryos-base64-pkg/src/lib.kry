@@ -1,0 +1,19 @@
+// kryos-base64-pkg — ergonomic base64 wrappers.
+
+use std::base64::{base64_encode, base64_decode}
+
+/// Encode a string to standard-alphabet base64 (RFC 4648).
+pub fn encode(s: str) -> str {
+    return base64_encode(s)
+}
+
+/// Decode standard-alphabet base64 back to a string. Returns "" on
+/// malformed input.
+pub fn decode(b64: str) -> str {
+    return base64_decode(b64)
+}
+
+/// Encode and prefix with the data: URL scheme for inline embedding.
+pub fn data_url(mime: str, body: str) -> str {
+    return "data:" + mime + ";base64," + base64_encode(body)
+}

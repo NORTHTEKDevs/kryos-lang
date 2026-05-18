@@ -1,0 +1,9 @@
+[package]
+name = "kryos-time-pkg"
+version = "0.1.0"
+edition = "2026"
+description = "Ergonomic datetime helpers on top of std::datetime."
+authors = ["NORTHTEK <info@northtek.io>"]
+license = "Apache-2.0"
+
+[dependencies]

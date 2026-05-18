@@ -1,0 +1,65 @@
+// kryos-time-pkg — datetime helpers around std::datetime.
+
+use std::datetime::{
+    time_now_secs,
+    time_year_utc,
+    time_month_utc,
+    time_day_utc,
+    time_hour_utc,
+    time_minute_utc,
+    time_second_utc,
+    time_weekday_utc,
+    time_format_rfc3339_utc,
+    time_from_ymdhms_utc,
+}
+
+pub struct UtcDate {
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+    weekday: i64,
+}
+
+/// Current UTC time as a structured breakdown.
+pub fn now_utc() -> UtcDate {
+    let t = time_now_secs()
+    return UtcDate {
+        year: time_year_utc(t),
+        month: time_month_utc(t),
+        day: time_day_utc(t),
+        hour: time_hour_utc(t),
+        minute: time_minute_utc(t),
+        second: time_second_utc(t),
+        weekday: time_weekday_utc(t),
+    }
+}
+
+/// Current time as an RFC 3339 UTC string.
+pub fn now_iso() -> str {
+    return time_format_rfc3339_utc(time_now_secs())
+}
+
+/// Convert (year, month, day) at 00:00:00 UTC to an epoch-seconds value.
+pub fn ymd_utc(year: i64, month: i64, day: i64) -> i64 {
+    return time_from_ymdhms_utc(year, month, day, 0, 0, 0)
+}
+
+/// Difference in days between two epoch-seconds values.
+pub fn days_between(a: i64, b: i64) -> i64 {
+    let diff = b - a
+    return diff / 86400
+}
+
+/// Convert weekday number to short English name (0=Sun ... 6=Sat).
+pub fn weekday_short(w: i64) -> str {
+    if w == 0 { return "Sun" }
+    if w == 1 { return "Mon" }
+    if w == 2 { return "Tue" }
+    if w == 3 { return "Wed" }
+    if w == 4 { return "Thu" }
+    if w == 5 { return "Fri" }
+    return "Sat"
+}

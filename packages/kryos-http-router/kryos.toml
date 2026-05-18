@@ -1,0 +1,9 @@
+[package]
+name = "kryos-http-router"
+version = "0.1.0"
+edition = "2026"
+description = "Minimal HTTP/1.1 method+path router built on std::net."
+authors = ["NORTHTEK <info@northtek.io>"]
+license = "Apache-2.0"
+
+[dependencies]
