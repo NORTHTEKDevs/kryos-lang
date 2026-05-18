@@ -148,6 +148,31 @@ enum Commands {
         path: Option<String>,
     },
 
+    /// Watch a file and auto-rebuild on changes
+    Watch {
+        /// File to watch.
+        file: String,
+
+        /// Poll interval in milliseconds (default 250).
+        #[arg(long, value_name = "MS")]
+        interval: Option<u64>,
+
+        /// Action on change: "run" (default) or "check".
+        #[arg(long, value_name = "ACTION", default_value = "run")]
+        run: String,
+    },
+
+    /// Remove build artifacts (target/, *.exe, *.pdb, *.o, *.ll, *.wasm, kryos.lock)
+    Clean {
+        /// Project directory (default: cwd).
+        #[arg(value_name = "PATH")]
+        path: Option<String>,
+
+        /// Print what would be removed without removing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Run a Kryos program with verbose function-entry/exit tracing
     Trace {
         /// File to execute via the JIT.
@@ -433,6 +458,21 @@ fn main() {
                     other
                 )),
             }
+        }
+
+        Commands::Watch { file, interval, run } => {
+            commands::watch_cmd::execute(commands::watch_cmd::WatchOptions {
+                file,
+                interval_ms: interval,
+                run,
+            })
+        }
+
+        Commands::Clean { path, dry_run } => {
+            commands::clean_cmd::execute(commands::clean_cmd::CleanOptions {
+                path,
+                dry_run,
+            })
         }
 
         Commands::Trace { file, args } => commands::trace_cmd::execute(&file, &args),

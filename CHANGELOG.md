@@ -4,6 +4,31 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.9.0-rc.1] — 2026-05-18 — "watch, clean, REPL history"
+
+Three quality-of-life additions for the day-to-day dev loop.
+
+### Added
+
+- **`kryos watch <file>`** — polls the file's mtime every 250ms (override
+  with `--interval`) and re-runs `kryos run` on change. `--run check`
+  switches to type-check-only mode for faster feedback. Cooperative
+  poll loop, no external `notify` crate — works the same on every
+  supported platform.
+- **`kryos clean`** — removes `target/`, root-level `*.exe`/`*.pdb`/
+  `*.o`/`*.obj`/`*.ll`/`*.wasm`/`*.lib`/`*.a`/`*.wat`, and any
+  `kryos.lock` files in the project tree. `--dry-run` previews
+  without removing.
+- **REPL persistent history** — every accepted input line is recorded
+  to `~/.kryos_history` (or `%USERPROFILE%\.kryos_history` on Windows).
+  Re-loaded at REPL startup so you can see what you typed last time.
+- **REPL `:history` and `:history-clear` commands** — list the session
+  history with numbered entries, or wipe the on-disk file.
+
+### Changed
+
+- Workspace version bumped from `3.8.0-rc.1` to `3.9.0-rc.1`.
+
 ## [3.8.0-rc.1] — 2026-05-18 — "perf: function-call overhead"
 
 ### Changed

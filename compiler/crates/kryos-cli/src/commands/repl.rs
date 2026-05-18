@@ -9,6 +9,13 @@ pub fn execute() -> Result<(), String> {
         env!("CARGO_PKG_VERSION")
     );
 
+    // Persistent history: load from ~/.kryos_history on startup, append
+    // each accepted input line during the session. Lines starting with `:`
+    // (REPL meta-commands) are recorded too — they're useful context when
+    // re-reading the history.
+    let history_path = history_file_path();
+    let mut session_history: Vec<String> = read_history(&history_path);
+
     // Install Ctrl+C handler so the process exits cleanly.
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     {
@@ -63,17 +70,37 @@ pub fn execute() -> Result<(), String> {
             continue;
         }
 
+        // Record every accepted input in the persistent history.
+        session_history.push(trimmed.to_string());
+        append_history(&history_path, trimmed);
+
         match trimmed {
             ":quit" | ":q" | ":exit" => break,
             ":help" | ":h" => {
                 println!("Commands:");
-                println!("  :help, :h     Show this help");
-                println!("  :quit, :q     Exit the REPL");
-                println!("  :type <expr>  Show the type of an expression");
-                println!("  :clear        Clear the screen");
-                println!("  :reset        Clear accumulated definitions");
+                println!("  :help, :h       Show this help");
+                println!("  :quit, :q       Exit the REPL");
+                println!("  :type <expr>    Show the type of an expression");
+                println!("  :clear          Clear the screen");
+                println!("  :reset          Clear accumulated definitions");
+                println!("  :history        Show the persistent input history");
+                println!("  :history-clear  Wipe the on-disk history file");
                 println!();
                 println!("Enter any Kryos expression or statement to evaluate.");
+            }
+            ":history" => {
+                if session_history.is_empty() {
+                    println!("(history empty)");
+                } else {
+                    for (i, h) in session_history.iter().enumerate() {
+                        println!("{:>4}: {}", i + 1, h);
+                    }
+                }
+            }
+            ":history-clear" => {
+                session_history.clear();
+                let _ = std::fs::remove_file(&history_path);
+                println!("(history cleared)");
             }
             ":clear" => {
                 // ANSI clear screen
@@ -326,5 +353,33 @@ fn ctrlc_install<F: Fn() + Send + 'static>(handler: F) -> Result<(), String> {
     {
         let _ = handler;
         Ok(())
+    }
+}
+
+// ─── Persistent history ──────────────────────────────────────────────────
+
+fn history_file_path() -> std::path::PathBuf {
+    let dir = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    dir.join(".kryos_history")
+}
+
+fn read_history(path: &std::path::Path) -> Vec<String> {
+    match std::fs::read_to_string(path) {
+        Ok(s) => s.lines().map(|l| l.to_string()).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn append_history(path: &std::path::Path, line: &str) {
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(f, "{line}");
     }
 }
