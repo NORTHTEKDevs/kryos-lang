@@ -1,8 +1,35 @@
 //! `kryos check` — type-check without compiling.
 
 use std::path::Path;
+use std::time::Duration;
 
 use kryos_errors::render_diagnostic;
+
+/// Execute the check command, polling for mtime changes every 300ms.
+/// Loops forever (Ctrl-C to exit).
+pub fn execute_watch(path: &str, skip_ownership: bool) -> Result<(), String> {
+    let p = Path::new(path);
+    if !p.exists() {
+        return Err(format!("kryos check: '{}' does not exist", path));
+    }
+    let mut last_mtime = std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    eprintln!(
+        "\x1b[1mkryos check --watch\x1b[0m {} (every 300ms; Ctrl-C to exit)",
+        p.display()
+    );
+    eprintln!();
+    let _ = execute(path, skip_ownership);
+    loop {
+        std::thread::sleep(Duration::from_millis(300));
+        let cur = std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        if cur != last_mtime {
+            last_mtime = cur;
+            eprintln!();
+            eprintln!("\x1b[33mwatch:\x1b[0m change detected, re-checking…");
+            let _ = execute(path, skip_ownership);
+        }
+    }
+}
 
 /// Execute the check command.
 pub fn execute(path: &str, skip_ownership: bool) -> Result<(), String> {

@@ -4,6 +4,30 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.16.0-rc.1] — 2026-05-18 — "kryos check --watch + kryos eval"
+
+### Added
+
+- **`kryos check --watch`** — runs type-check, then polls the source
+  file's mtime every 300ms. On detected change, re-checks and prints
+  the result. Cooperative poll loop — no `notify` dep, same on every
+  OS. Ctrl-C to exit.
+- **`kryos eval "<expr>"`** — one-liner evaluator. Wraps the
+  expression(s) in a generated `fn main()` and runs via the existing
+  `kryos run` path. Semicolons in the expression are rewritten to
+  newlines (Kryos uses newline-terminated statements). `--show-source`
+  (`-v`) prints the wrapped source before running.
+
+### Verified
+
+- `kryos eval 'println(to_string(42 + 1))'` → `43`
+- `kryos eval -v 'let x = 7; let y = 6; println(to_string(x * y))'` →
+  prints wrapped source, then `42`.
+
+### Changed
+
+- Workspace version bumped from `3.15.0-rc.1` to `3.16.0-rc.1`.
+
 ## [3.15.0-rc.1] — 2026-05-18 — "doc serve + member-access completion"
 
 ### Added

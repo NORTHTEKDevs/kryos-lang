@@ -112,6 +112,22 @@ enum Commands {
         /// Skip ownership analysis (for self-host bootstrap)
         #[arg(long)]
         skip_ownership: bool,
+
+        /// Watch the file/directory and re-check on every save.
+        #[arg(long)]
+        watch: bool,
+    },
+
+    /// Evaluate a one-liner expression (wraps in fn main and runs)
+    Eval {
+        /// Expression / statements to evaluate. Multiple tokens are joined
+        /// with spaces. Use `;` to separate statements (rewritten to newlines).
+        #[arg(trailing_var_arg = true)]
+        expr: Vec<String>,
+
+        /// Print the generated source before running.
+        #[arg(long, short = 'v')]
+        show_source: bool,
     },
 
     /// Interactive REPL
@@ -483,7 +499,18 @@ fn main() {
         Commands::Check {
             path,
             skip_ownership,
-        } => commands::check::execute(&path, skip_ownership),
+            watch,
+        } => {
+            if watch {
+                commands::check::execute_watch(&path, skip_ownership)
+            } else {
+                commands::check::execute(&path, skip_ownership)
+            }
+        }
+
+        Commands::Eval { expr, show_source } => commands::eval_cmd::execute(
+            commands::eval_cmd::from_argv(expr, show_source),
+        ),
 
         Commands::Repl => commands::repl::execute(),
 
