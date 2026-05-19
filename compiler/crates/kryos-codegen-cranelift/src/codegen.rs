@@ -3916,7 +3916,7 @@ fn translate_rvalue<M: Module>(
                 // strings) so the new struct owns its own copies and is
                 // safe to drop independently.
                 for (field_name, operand) in fields {
-                    if let Some((_, offset, _cl_ty)) = layout
+                    if let Some((_, offset, cl_ty)) = layout
                         .field_offsets
                         .iter()
                         .find(|(n, _, _)| n == field_name)
@@ -4019,9 +4019,32 @@ fn translate_rvalue<M: Module>(
                                 _ => val,
                             }
                         };
+                        // Coerce stored_val to the field's Cranelift type before
+                        // storing. translate_operand emits Constant::Int as I64
+                        // regardless of dest field width, so a narrow field (i32,
+                        // i16, i8, bool) would receive an 8-byte store into a
+                        // 4/2/1-byte slot — overrunning past the calloc'd struct
+                        // and corrupting adjacent heap. This mirrors the coercion
+                        // already done in Instruction::StoreField and Instruction::Assign.
+                        let val_ty = builder.func.dfg.value_type(stored_val);
+                        let coerced = if val_ty != *cl_ty {
+                            if is_float_type(val_ty) && !is_float_type(*cl_ty) {
+                                builder.ins().bitcast(*cl_ty, MemFlags::new(), stored_val)
+                            } else if !is_float_type(val_ty) && is_float_type(*cl_ty) {
+                                builder.ins().bitcast(*cl_ty, MemFlags::new(), stored_val)
+                            } else if val_ty.bits() < cl_ty.bits() {
+                                builder.ins().sextend(*cl_ty, stored_val)
+                            } else if val_ty.bits() > cl_ty.bits() {
+                                builder.ins().ireduce(*cl_ty, stored_val)
+                            } else {
+                                stored_val
+                            }
+                        } else {
+                            stored_val
+                        };
                         builder
                             .ins()
-                            .store(MemFlags::new(), stored_val, ptr, *offset as i32);
+                            .store(MemFlags::new(), coerced, ptr, *offset as i32);
                     }
                 }
 
