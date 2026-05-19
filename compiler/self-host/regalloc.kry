@@ -223,6 +223,16 @@ fn liveness_map_new(max_id: i32) -> LivenessMap {
 // Liveness recording helpers
 // ===================================================================
 
+fn ra_record_def_and_use(lm: LivenessMap, local_id: i32, pos: i32) {
+    ra_record_def(lm, local_id, pos)
+    // Extend the live range whenever a local is re-assigned. This is a
+    // crude workaround for the loop-lifetime problem: a variable that
+    // is reassigned in a back-edge body would otherwise have its
+    // interval end at its highest USE position (in the loop body),
+    // freeing the register before the next iteration reads it.
+    ra_record_use(lm, local_id, pos)
+}
+
 fn ra_record_def(lm: LivenessMap, local_id: i32, pos: i32) {
     if local_id < 0 { return }
     if local_id > lm.max_id { return }
@@ -390,7 +400,7 @@ fn ra_scan_terminator(lm: LivenessMap, term: Terminator, pos: i32) {
 
 fn ra_scan_instruction(lm: LivenessMap, inst: Instruction, pos: i32) {
     if inst.kind == INST_ASSIGN {
-        ra_record_def(lm, inst.dest, pos)
+        ra_record_def_and_use(lm, inst.dest, pos)
         if len(inst.value) > 0 {
             ra_scan_rvalue(lm, inst.value[0], pos)
         }
@@ -476,7 +486,13 @@ fn ra_compute_liveness(func: MirFunction) -> [LiveInterval] {
         bi = bi + 1
     }
 
-    // Build LiveInterval array from the defs/uses maps
+    // Build LiveInterval array from the defs/uses maps. To work
+    // around the loop-lifetime problem in this linear-scan
+    // implementation, extend every mutable local's interval to the
+    // last position in the function. Pessimistic for non-loop locals
+    // but correct in the presence of back-edges. A future pass should
+    // compute live-out sets per BB to be more precise.
+    let last_pos = pos - 1
     let mut intervals: [LiveInterval] = []
     let mut lid = 0
     while lid <= max_id {
@@ -484,6 +500,21 @@ fn ra_compute_liveness(func: MirFunction) -> [LiveInterval] {
             let mut interval_end = lm.uses[lid]
             if interval_end < lm.defs[lid] {
                 interval_end = lm.defs[lid]
+            }
+            // Find the MirLocal flag for this id (if mutable). Locals
+            // are appended in id order; index lookup is safe.
+            let mut is_mut: bool = false
+            let mut li = 0
+            while li < len(func.locals) {
+                if func.locals[li].id == lid {
+                    is_mut = func.locals[li].mutable
+                    li = len(func.locals)
+                } else {
+                    li = li + 1
+                }
+            }
+            if is_mut and interval_end < last_pos {
+                interval_end = last_pos
             }
             let interval = LiveInterval {
                 local_id: lid,
