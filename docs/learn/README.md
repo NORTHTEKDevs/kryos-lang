@@ -87,7 +87,7 @@ Practical, runnable recipes for things people actually build:
 
 Each recipe is a complete, working program — copy it, run it, modify it.
 
-See also: [Common errors](./common-errors.md) for the top-20 errors and how to fix them, and the [Cheatsheet](./cheatsheet.md) for syntax-at-a-glance.
+See also: [Common errors](./common-errors.md) for the top-20 errors and how to fix them, the [Cheatsheet](./cheatsheet.md) for syntax-at-a-glance, and the [HTTP API tutorial](./tutorial-http-api.md) for a complete walkthrough.
 
 ---
 

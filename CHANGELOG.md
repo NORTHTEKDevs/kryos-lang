@@ -4,6 +4,21 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.36.0-rc.1] — 2026-05-18 — "HTTP API tutorial"
+
+### Added
+
+- **`docs/learn/tutorial-http-api.md`** — complete 7-step walkthrough
+  for building a working HTTP API server in Kryos with no external
+  dependencies. Demonstrates request parsing, JSON handling, rate
+  limiting, tests, profiling, and Docker/systemd deployment paths.
+  Wires together std::net, std::json, std::ratelimit, std::log, and
+  the cookbook recipes.
+
+### Changed
+
+- Workspace version bumped from `4.35.0-rc.1` to `4.36.0-rc.1`.
+
 ## [4.35.0-rc.1] — 2026-05-18 — "std::stat (running statistics)"
 
 ### Added
