@@ -4,6 +4,23 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.4.0-rc.1] — 2026-05-18 — "kryos workspace — multi-package projects"
+
+### Added
+
+- **`kryos workspace list|check|test`** — multi-package workspace mode.
+  A workspace is a `kryos.toml` with a `[workspace]` section listing
+  member package paths. `list` enumerates members + versions, `check`
+  runs `kryos check` over each, `test` runs `kryos test` over each.
+- Lightweight inline TOML parser for the `[workspace] members = [...]`
+  array — no extra dependency.
+- 3 new parser tests + verified end-to-end on a 2-member temp
+  workspace.
+
+### Changed
+
+- Workspace version bumped from `4.3.0-rc.1` to `4.4.0-rc.1`.
+
 ## [4.3.0-rc.1] — 2026-05-18 — "stdlib: collections + 3 cookbook recipes"
 
 ### Added

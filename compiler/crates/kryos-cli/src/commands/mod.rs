@@ -25,3 +25,4 @@ pub mod repl;
 pub mod run;
 pub mod test_cmd;
 pub mod version;
+pub mod workspace_cmd;

@@ -179,6 +179,12 @@ enum Commands {
         format: String,
     },
 
+    /// Multi-package workspace orchestration
+    Workspace {
+        #[command(subcommand)]
+        action: WorkspaceAction,
+    },
+
     /// Diagnose toolchain installation
     Doctor {
         /// Verbose output (show full paths and version banners).
@@ -386,6 +392,27 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+enum WorkspaceAction {
+    /// List workspace member packages.
+    List {
+        #[arg(long, value_name = "PATH")]
+        root: Option<String>,
+    },
+
+    /// Run `kryos check` over every workspace member.
+    Check {
+        #[arg(long, value_name = "PATH")]
+        root: Option<String>,
+    },
+
+    /// Run `kryos test` over every workspace member.
+    Test {
+        #[arg(long, value_name = "PATH")]
+        root: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum PkgAction {
     /// Initialize a new Kryos project
     Init {
@@ -559,6 +586,16 @@ fn main() {
                 path,
                 format,
             })
+        }
+
+        Commands::Workspace { action } => {
+            use commands::workspace_cmd::{WorkspaceAction as A, WorkspaceOptions};
+            let (act, root) = match action {
+                WorkspaceAction::List { root } => (A::List, root),
+                WorkspaceAction::Check { root } => (A::Check, root),
+                WorkspaceAction::Test { root } => (A::Test, root),
+            };
+            commands::workspace_cmd::execute(WorkspaceOptions { action: act, root })
         }
 
         Commands::Doctor { verbose } => {
@@ -750,7 +787,7 @@ mod tests {
     fn parse_run() {
         let cli = Cli::try_parse_from(["kryos", "run", "hello.kry", "--", "arg1", "arg2"]).unwrap();
         match cli.command {
-            super::Commands::Run { file, args } => {
+            super::Commands::Run { file, args, .. } => {
                 assert_eq!(file, "hello.kry");
                 assert_eq!(args, vec!["arg1", "arg2"]);
             }
