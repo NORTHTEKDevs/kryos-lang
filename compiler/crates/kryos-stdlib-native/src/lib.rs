@@ -54,6 +54,7 @@ pub mod env;
 pub mod ffi;
 pub mod fs;
 pub mod hash;
+pub mod heap;
 pub mod io;
 pub mod iter;
 pub mod json;

@@ -4,6 +4,24 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.21.0-rc.1] — 2026-05-18 — "std::heap (binary min-heap)"
+
+### Added
+
+- **`std::heap`** — binary min-heap (priority queue) over caller-owned
+  `[i64; cap]` + `(len, cap)` state. O(log n) push/pop.
+  - `heap_init(state, cap)`
+  - `heap_push(buf, state, v)` → 1 on success / 0 if full
+  - `heap_pop_min(buf, state, *out)` → 1 on success / 0 if empty
+  - `heap_peek_min(buf, state, *out)`
+  - For a max-heap, negate on push + pop.
+- 3 new tests covering ascending-pop order, peek-non-mutation, and
+  full-buffer reject. 66 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.20.0-rc.1` to `4.21.0-rc.1`.
+
 ## [4.20.0-rc.1] — 2026-05-18 — "README polish"
 
 ### Changed
