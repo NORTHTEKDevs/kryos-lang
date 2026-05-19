@@ -27,7 +27,7 @@ members = [
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "4.1.0-rc.1"
+version = "4.2.0-rc.1"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/NORTHTEKDevs/kryos-lang"

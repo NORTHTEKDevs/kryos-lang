@@ -4,6 +4,24 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.2.0-rc.1] — 2026-05-18 — "stdlib: hash + strext"
+
+### Added
+
+- **`std::hash`** — 3 non-cryptographic hashes:
+  - `kryos_hash_fnv1a64` — FNV-1a 64-bit, fast + reasonable distribution
+  - `kryos_hash_djb2` — DJB2 string hash (well-known reference)
+  - `kryos_hash_crc32` — CRC32 IEEE polynomial (zip/png/ethernet)
+- **`std::strext`** — extended string ops:
+  - `kryos_str_ascii_lower` / `kryos_str_ascii_upper` — in-place case-fold
+  - `kryos_str_trim_ascii` — start+len out-params (no allocation)
+  - `kryos_str_count` — count non-overlapping occurrences
+- 7 new tests (3 hash + 4 strext). 24 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.1.0-rc.1` to `4.2.0-rc.1`.
+
 ## [4.1.0-rc.1] — 2026-05-18 — "stdlib: sort + log"
 
 ### Added

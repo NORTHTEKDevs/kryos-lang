@@ -49,6 +49,7 @@ pub mod datetime;
 pub mod env;
 pub mod ffi;
 pub mod fs;
+pub mod hash;
 pub mod io;
 pub mod json;
 pub mod log;
@@ -61,6 +62,7 @@ pub mod re;
 pub mod sort;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
+pub mod strext;
 pub mod string;
 pub mod sync_prims;
 pub mod term;
