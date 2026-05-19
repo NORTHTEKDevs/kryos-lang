@@ -1449,8 +1449,12 @@ fn cg_emit_start_shim_linux(ctx: CodegenCtx) {
 fn cg_emit_module(ctx: CodegenCtx, module: MirModule) {
     // First pass: emit all functions
     let mut i = 0
+    let trace = env_get("KRYOS_CG_TRACE")
     while i < len(module.functions) {
         let func = module.functions[i]
+        if len(trace) > 0 {
+            eprintln("cg[" + to_string(i) + "/" + to_string(len(module.functions)) + "]: " + func.name)
+        }
         // Run register allocation per target ABI
         let ra = ra_allocate_for(func, ctx.target_os)
         // Emit function code

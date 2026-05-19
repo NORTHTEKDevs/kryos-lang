@@ -1,0 +1,17 @@
+struct R { a: [i32] }
+
+fn singleton_i32(x: i32) -> [i32] {
+    return [x]
+}
+
+fn make_r(x: i32) -> R {
+    let empty: [i32] = []
+    let mut r = R { a: empty }
+    r.a = singleton_i32(x)
+    return r
+}
+
+fn main() {
+    let r = make_r(7)
+    println("len: " + to_string(len(r.a)))
+}

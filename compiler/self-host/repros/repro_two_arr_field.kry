@@ -1,0 +1,20 @@
+// Probe: two array-literal field stores in same function
+
+struct R {
+    a: [i32],
+    b: [i32]
+}
+
+fn make_r(x: i32, y: i32) -> R {
+    let empty: [i32] = []
+    let mut r = R { a: empty, b: empty }
+    r.a = [x]
+    r.b = [y]
+    return r
+}
+
+fn main() {
+    let r = make_r(1, 2)
+    println("len a: " + to_string(len(r.a)))
+    println("len b: " + to_string(len(r.b)))
+}

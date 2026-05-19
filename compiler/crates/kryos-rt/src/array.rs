@@ -103,27 +103,35 @@ pub unsafe extern "C" fn kryos_array_push(arr: *mut KryosArray, val: i64) {
     let cap = raw_cap as usize;
 
     if len >= cap {
-        // Grow the data buffer. We use alloc+copy+leak rather than realloc:
-        // realloc on Windows (HeapReAlloc) probes adjacent heap block headers,
-        // so any nearby buffer overrun manifests as a segfault inside ntdll
-        // (the stage-2 bootstrap blocker). alloc+copy+leak is forgiving of
-        // overruns in neighbouring blocks at the cost of a small leak (the
-        // old buffer is unreachable once we overwrite (*arr).data, but the
-        // process is short-lived). Set KRYOS_USE_REALLOC=1 to opt back into
-        // the historic realloc path.
-        let use_realloc = std::env::var_os("KRYOS_USE_REALLOC").is_some();
+        // Grow the data buffer with realloc (the correct, leak-free path).
+        //
+        // History: between v4.42.0-rc.1 and the cranelift codegen.rs:RValue::Struct
+        // fix (commit baff370), realloc would non-deterministically segfault inside
+        // ntdll!RtlpReAllocateHeap during the stage-2 bootstrap. HeapReAlloc probes
+        // adjacent heap-block headers as a sanity check; a buffer-overrun bug in
+        // RValue::Struct (uncoerced I64 stores into i32 fields) was corrupting
+        // nearby allocations, and HeapReAlloc was the canary that surfaced the
+        // crash. The fix in cranelift codegen eliminates the corruption at its
+        // source, so realloc is safe again.
+        //
+        // KRYOS_USE_ALLOC_LEAK=1 reinstates the old alloc+copy+leak grow path
+        // (leaks the old buffer, but is forgiving of overruns in neighbouring
+        // blocks) as a diagnostic for any FUTURE corruption regression — if
+        // HeapReAlloc ever crashes again here, flip the env var and you can
+        // separate "real codegen bug elsewhere" from "realloc misuse here".
+        let use_leak_path = std::env::var_os("KRYOS_USE_ALLOC_LEAK").is_some();
         let new_cap = cap * 2;
         let new_size = new_cap * ELEM_SIZE;
         let new_layout = KryosArray::data_layout(new_cap);
-        let new_data = if use_realloc {
-            let old_layout = KryosArray::data_layout(cap);
-            realloc((*arr).data, old_layout, new_size)
-        } else {
+        let new_data = if use_leak_path {
             let buf = alloc(new_layout);
             if !buf.is_null() {
                 ptr::copy_nonoverlapping((*arr).data, buf, cap * ELEM_SIZE);
             }
             buf
+        } else {
+            let old_layout = KryosArray::data_layout(cap);
+            realloc((*arr).data, old_layout, new_size)
         };
         if new_data.is_null() {
             let msg = b"array push: allocation failed";
