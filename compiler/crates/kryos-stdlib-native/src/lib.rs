@@ -76,6 +76,7 @@ pub mod random;
 pub mod ratelimit;
 pub mod re;
 pub mod semaphore;
+pub mod semver;
 pub mod set;
 pub mod sort;
 #[cfg(feature = "sqlite")]

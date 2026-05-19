@@ -4,6 +4,21 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.30.0-rc.1] — 2026-05-18 — "std::semver"
+
+### Added
+
+- **`std::semver`** — semver.org compatible parse + compare:
+  - `semver_parse(s, len, *major, *minor, *patch, *has_pre)` — handles
+    `MAJOR.MINOR.PATCH[-pre][+build]`, optional `v` prefix
+  - `semver_compare(a..., b...)` — -1/0/1 with prereleases sorting
+    before the corresponding release per spec
+- 5 new tests. 96 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.29.0-rc.1` to `4.30.0-rc.1`.
+
 ## [4.29.0-rc.1] — 2026-05-18 — "std::backoff (exponential + jitter)"
 
 ### Added
