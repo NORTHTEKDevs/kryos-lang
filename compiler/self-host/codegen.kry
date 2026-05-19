@@ -156,20 +156,28 @@ fn cg_stack_offset(spill_slot: i32) -> i32 {
 
 fn cg_emit_prologue(ctx: CodegenCtx, ra: RegAllocResult) {
     let buf = ctx.text_buf
-    // push rbp
+    // push rbp                              ; rsp: 8 -> 0 (mod 16)
     x86_push_reg(buf, REG_RBP)
     // mov rbp, rsp
     x86_mov_reg_reg(buf, REG_RBP, REG_RSP)
-    // sub rsp, frame_size (aligned to 16)
-    let frame = cg_align16(ra.stack_size * 8)
-    if frame > 0 {
-        x86_sub_reg_imm32(buf, REG_RSP, frame)
-    }
-    // Save callee-saved registers
+    // Save callee-saved registers FIRST so the subsequent sub rsp
+    // amount can include alignment padding for an odd push count.
     let mut i = 0
     while i < len(ra.callee_saved) {
         x86_push_reg(buf, ra.callee_saved[i])
         i = i + 1
+    }
+    // After N callee-saved pushes, rsp is mod-16 == 8*(N % 2).
+    // We need rsp to be 0 (mod 16) at any subsequent call site.
+    // The shadow space (32 bytes) is always 16-aligned so doesn't
+    // change parity. The frame is rounded up to 16 too. So if N is
+    // odd, add 8 extra bytes of padding to restore alignment.
+    let mut frame = cg_align16(ra.stack_size * 8)
+    if (len(ra.callee_saved) % 2) != 0 {
+        frame = frame + 8
+    }
+    if frame > 0 {
+        x86_sub_reg_imm32(buf, REG_RSP, frame)
     }
 }
 
@@ -179,14 +187,22 @@ fn cg_emit_prologue(ctx: CodegenCtx, ra: RegAllocResult) {
 
 fn cg_emit_epilogue(ctx: CodegenCtx, ra: RegAllocResult) {
     let buf = ctx.text_buf
+    // Tear down the local frame first; rsp = rbp - sizeof(saved regs).
+    // `mov rsp, rbp` would overshoot the saved registers, so add the
+    // exact local-frame size back instead.
+    let mut frame = cg_align16(ra.stack_size * 8)
+    if (len(ra.callee_saved) % 2) != 0 {
+        frame = frame + 8
+    }
+    if frame > 0 {
+        x86_add_reg_imm32(buf, REG_RSP, frame)
+    }
     // Restore callee-saved registers (reverse order)
     let mut i = len(ra.callee_saved) - 1
     while i >= 0 {
         x86_pop_reg(buf, ra.callee_saved[i])
         i = i - 1
     }
-    // mov rsp, rbp
-    x86_mov_reg_reg(buf, REG_RSP, REG_RBP)
     // pop rbp
     x86_pop_reg(buf, REG_RBP)
     // ret
@@ -1300,13 +1316,17 @@ fn cg_emit_function(ctx: CodegenCtx, func: MirFunction, ra: RegAllocResult) {
         i = i + 1
     }
 
-    // Patch branch offsets
+    // Patch branch offsets. NOTE: the inner `let` block must REASSIGN
+    // target_off, not shadow it. Previously this used `let target_off = ...`
+    // in the if branch, which created a new binding visible only inside
+    // the block; the outer variable kept its initial 0 and every jump
+    // resolved to the start of the function.
     let mut p = 0
     while p < len(ctx.branch_patches) {
         let patch = ctx.branch_patches[p]
-        let target_off = 0
+        let mut target_off: i32 = 0
         if patch.target_block < len(ctx.block_offsets) {
-            let target_off = ctx.block_offsets[patch.target_block]
+            target_off = ctx.block_offsets[patch.target_block]
         }
         let rel = target_off - (patch.patch_offset + 4)
         buf_patch_i32_le(buf, patch.patch_offset, rel)
@@ -1364,8 +1384,8 @@ fn cg_emit_module(ctx: CodegenCtx, module: MirModule) {
     let mut i = 0
     while i < len(module.functions) {
         let func = module.functions[i]
-        // Run register allocation
-        let ra = ra_allocate(func)
+        // Run register allocation per target ABI
+        let ra = ra_allocate_for(func, ctx.target_os)
         // Emit function code
         cg_emit_function(ctx, func, ra)
         i = i + 1

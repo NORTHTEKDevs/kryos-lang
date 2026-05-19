@@ -479,8 +479,11 @@ fn emit_object(filename: str, output: str) {
     let mir_mod = lower_module(module, tc)
     println("MIR functions: " + to_string(len(mir_mod.functions)))
 
-    optimize(mir_mod)
-    println("Optimization: done")
+    // Skip optimizer for the obj path -- inlining merges local IDs
+    // across functions in a way the current regalloc cannot follow,
+    // producing miscompiles where two non-overlapping intervals get
+    // unified and clobber each other.
+    println("Optimization: skipped (obj path)")
 
     let target = detect_target_os()
     let success = compile_to_object(mir_mod, output, target)
@@ -573,6 +576,22 @@ fn main() {
             output = cli_args[4]
         }
         compile_file(input, output)
+    } elif command == "mir" {
+        if len(cli_args) < 3 {
+            println("error: mir requires an input file")
+            exit(1)
+            return
+        }
+        let input = cli_args[2]
+        let source = file_read(input)
+        let tokens = tokenize(source)
+        let p = parser_new(tokens)
+        let module = parse_module(p)
+        let mut tc = tc_new()
+        tc = tc_register_builtins(tc)
+        tc = tc_check_module(tc, module)
+        let mir_mod = lower_module(module, tc)
+        mir_print_module(mir_mod)
     } elif command == "obj" {
         if len(cli_args) < 3 {
             println("error: obj requires an input file")

@@ -107,6 +107,18 @@ fn ra_arg_reg(index: i32) -> i32 {
     return REG_NONE
 }
 
+// Win64 ABI: RCX, RDX, R8, R9. Only 4 register args; rest on stack.
+fn ra_arg_reg_for(target_os: str, index: i32) -> i32 {
+    if target_os == "windows" {
+        if index == 0 { return REG_RCX }
+        if index == 1 { return REG_RDX }
+        if index == 2 { return REG_R8 }
+        if index == 3 { return REG_R9 }
+        return REG_NONE
+    }
+    return ra_arg_reg(index)
+}
+
 // ===================================================================
 // Register classification helpers
 // ===================================================================
@@ -172,11 +184,18 @@ fn ra_reg_name(reg: i32) -> str {
 // ===================================================================
 
 fn ra_allocatable_regs() -> [i32] {
+    // Callee-saved first so values survive function calls. The
+    // overlap-detection in this linear-scan implementation does not
+    // model call-clobber correctly: when a local interval crosses a
+    // CALL, it should be barred from any caller-saved register.
+    // Until that is fixed, preferring callee-saved registers makes
+    // every interval safe at the cost of a few extra prologue
+    // push/pop pairs.
     return [
+        REG_RBX, REG_R12, REG_R13, REG_R14, REG_R15,
         REG_R10, REG_R11,
         REG_RAX, REG_RCX, REG_RDX, REG_RSI, REG_RDI,
-        REG_R8, REG_R9,
-        REG_RBX, REG_R12, REG_R13, REG_R14, REG_R15
+        REG_R8, REG_R9
     ]
 }
 
@@ -601,12 +620,13 @@ fn reg_pool_alloc(pool: RegPool) -> i32 {
 // ra_fix_arg_intervals -- pre-assign ABI argument registers
 // ===================================================================
 
-fn ra_fix_arg_intervals(intervals: [LiveInterval], func: MirFunction) {
+fn ra_fix_arg_intervals(intervals: [LiveInterval], func: MirFunction, target_os: str) {
+    let arg_reg_count: i32 = if target_os == "windows" { 4 } else { ARG_REG_COUNT }
     let mut pi = 0
     while pi < len(func.params) {
-        if pi < ARG_REG_COUNT {
+        if pi < arg_reg_count {
             let param_local = func.params[pi].local_id
-            let arg_reg = ra_arg_reg(pi)
+            let arg_reg = ra_arg_reg_for(target_os, pi)
 
             let mut ii = 0
             while ii < len(intervals) {
@@ -619,9 +639,12 @@ fn ra_fix_arg_intervals(intervals: [LiveInterval], func: MirFunction) {
                 }
             }
         } else {
-            // Parameters beyond 6 are passed on the stack
+            // Parameters beyond the register limit come on the stack.
+            // On Win64 the first stack-passed arg sits at rbp+48 (16 +
+            // 32 shadow). On SYS V it sits at rbp+16.
             let param_local = func.params[pi].local_id
-            let stack_offset = (pi - ARG_REG_COUNT) * 8 + 16
+            let base_off: i32 = if target_os == "windows" { 48 } else { 16 }
+            let stack_offset = (pi - arg_reg_count) * 8 + base_off
 
             let mut ii = 0
             while ii < len(intervals) {
@@ -1182,8 +1205,12 @@ fn ra_debug_result(result: RegAllocResult) -> str {
 // ===================================================================
 
 fn ra_allocate(func: MirFunction) -> RegAllocResult {
+    return ra_allocate_for(func, "linux")
+}
+
+fn ra_allocate_for(func: MirFunction, target_os: str) -> RegAllocResult {
     let mut intervals = ra_compute_liveness(func)
-    ra_fix_arg_intervals(intervals, func)
+    ra_fix_arg_intervals(intervals, func, target_os)
     let result = ra_linear_scan(intervals)
     return result
 }
@@ -1194,7 +1221,7 @@ fn ra_allocate(func: MirFunction) -> RegAllocResult {
 
 fn ra_allocate_with_hints(func: MirFunction) -> RegAllocResult {
     let mut intervals = ra_compute_liveness(func)
-    ra_fix_arg_intervals(intervals, func)
+    ra_fix_arg_intervals(intervals, func, "linux")
     ra_hint_return_register(intervals, func)
     let result = ra_linear_scan(intervals)
     return result
