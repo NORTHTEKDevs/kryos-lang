@@ -15,6 +15,7 @@ pub mod eval_cmd;
 pub mod info_cmd;
 pub mod lint_cmd;
 pub mod new_cmd;
+pub mod pack_cmd;
 pub mod profile_cmd;
 pub mod trace_cmd;
 pub mod tree_cmd;

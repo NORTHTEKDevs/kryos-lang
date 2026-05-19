@@ -4,6 +4,25 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.8.0-rc.1] — 2026-05-18 — "kryos pack — deterministic tar archives"
+
+### Added
+
+- **`kryos pack [path] [-o FILE]`** — builds a USTAR-compliant `.tar`
+  archive of the current project. Includes `src/`, `tests/`,
+  `examples/`, `kryos.toml`, `README.md`, `LICENSE*`, `CHANGELOG.md`.
+  Output is deterministic — sorted entries, zeroed mtimes, no
+  ownership info — so two runs on the same tree produce
+  byte-identical archives (useful for content-addressable storage +
+  reproducible release builds).
+- Skips: `target/`, hidden dirs, `node_modules`, any existing `*.tar`.
+- Tar header writer is a 100-line inlined helper — no `tar` crate
+  dep. Verified extractable with system `tar -xf`.
+
+### Changed
+
+- Workspace version bumped from `4.7.0-rc.1` to `4.8.0-rc.1`.
+
 ## [4.7.0-rc.1] — 2026-05-18 — "kryos changelog + std::iter"
 
 ### Added

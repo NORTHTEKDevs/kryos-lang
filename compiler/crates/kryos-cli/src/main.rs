@@ -209,6 +209,17 @@ enum Commands {
         since: Option<String>,
     },
 
+    /// Build a deterministic .tar archive of the current project
+    Pack {
+        /// Project directory (default: cwd).
+        #[arg(value_name = "PATH")]
+        path: Option<String>,
+
+        /// Output file path. Default: <name>-<version>.tar in the project root.
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<String>,
+    },
+
     /// Diagnose toolchain installation
     Doctor {
         /// Verbose output (show full paths and version banners).
@@ -657,6 +668,10 @@ fn main() {
                 last,
                 since,
             })
+        }
+
+        Commands::Pack { path, output } => {
+            commands::pack_cmd::execute(commands::pack_cmd::PackOptions { path, output })
         }
 
         Commands::Doctor { verbose } => {
