@@ -4,6 +4,22 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.38.0-rc.1] — 2026-05-18 — "std::mathx (gcd, lcm, isqrt, primes)"
+
+### Added
+
+- **`std::mathx`** — extended integer math:
+  - `gcd`, `lcm` (Euclid)
+  - `isqrt` (floor sqrt), `ilog2`
+  - `popcount`, `trailing_zeros`, `leading_zeros`
+  - `is_prime` — Miller-Rabin with deterministic u64 witnesses
+- 5 new tests including primality on `1_000_000_007`. 115 total stdlib
+  tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.37.0-rc.1` to `4.38.0-rc.1`.
+
 ## [4.37.0-rc.1] — 2026-05-18 — "std::slice_ops (take/drop/partition/zip)"
 
 ### Added

@@ -67,6 +67,7 @@ pub mod json;
 pub mod log;
 pub mod lru;
 pub mod math;
+pub mod mathx;
 pub mod net;
 pub mod numfmt;
 pub mod path;
