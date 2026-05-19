@@ -4,6 +4,23 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.39.0-rc.1] — 2026-05-18 — "std::matrix (small dense i64 matrices)"
+
+### Added
+
+- **`std::matrix`** — row-major i64 matrix arithmetic over caller-owned
+  storage. All ops saturating to avoid wrap on overflow.
+  - `mat_add(a, b, dst, rows, cols)`
+  - `mat_mul(a, b, dst, m, k, n)` — (m × k) × (k × n) → (m × n)
+  - `mat_transpose(a, dst, rows, cols)`
+  - `mat_scale(a, scalar, dst, n)`
+- 4 new tests covering 2×2 add, 2×3 × 3×2 multiply, 3×2 transpose,
+  scalar multiply. 119 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.38.0-rc.1` to `4.39.0-rc.1`.
+
 ## [4.38.0-rc.1] — 2026-05-18 — "std::mathx (gcd, lcm, isqrt, primes)"
 
 ### Added

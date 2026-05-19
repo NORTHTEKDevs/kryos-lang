@@ -68,6 +68,7 @@ pub mod log;
 pub mod lru;
 pub mod math;
 pub mod mathx;
+pub mod matrix;
 pub mod net;
 pub mod numfmt;
 pub mod path;
