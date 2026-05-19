@@ -479,10 +479,8 @@ fn emit_object(filename: str, output: str) {
     let mir_mod = lower_module(module, tc)
     println("MIR functions: " + to_string(len(mir_mod.functions)))
 
-    // Optimizer crashes stage-1 with the new [i32]-handle local-id
-    // counter on some programs. Keep it off for the obj path until
-    // opt_inline is taught about the wrapped counter.
-    println("Optimization: skipped (obj path)")
+    optimize(mir_mod)
+    println("Optimization: done")
 
     let target = detect_target_os()
     let success = compile_to_object(mir_mod, output, target)
