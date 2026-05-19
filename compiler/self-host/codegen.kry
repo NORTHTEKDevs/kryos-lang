@@ -588,6 +588,52 @@ fn cg_arg_reg(idx: i32) -> i32 {
     return -1  // stack argument
 }
 
+// Emit the strlen-via-`repne scasb` sequence + write(2) for the
+// null-terminated string whose pointer is in RDI. Used by both the
+// `print` and `println` inline lowerings. The RSI register is set to
+// the string pointer so a subsequent write(2) for a newline can reuse
+// the saved address from RSI without recomputing it.
+fn cg_emit_write_strz_linux(ctx: CodegenCtx, ra: RegAllocResult) {
+    let buf = ctx.text_buf
+
+    // strlen via repne scasb:
+    //   mov rsi, rdi        ; save original ptr for the write syscall
+    //   xor rax, rax        ; al = 0 (scasb sentinel)
+    //   mov rcx, -1         ; max count
+    //   cld                 ; direction = forward
+    //   repne scasb         ; scan [rdi]++ until [rdi]==al
+    //   not rcx             ; rcx = strlen + 1
+    //   dec rcx             ; rcx = strlen
+    x86_mov_reg_reg(buf, REG_RSI, REG_RDI)
+    x86_xor_reg_reg(buf, REG_RAX, REG_RAX)
+    x86_mov_reg_imm32(buf, REG_RCX, -1)
+    buf_write_byte(buf, 0xFC)               // cld
+    buf_write_byte(buf, 0xF2)               // repne prefix
+    buf_write_byte(buf, 0xAE)               // scasb
+    buf_write_byte(buf, 0x48)               // REX.W
+    buf_write_byte(buf, 0xF7)               // not r/m64
+    buf_write_byte(buf, 0xD1)               // modrm: mod=11, /2, rm=rcx
+    buf_write_byte(buf, 0x48)               // REX.W
+    buf_write_byte(buf, 0xFF)               // dec r/m64
+    buf_write_byte(buf, 0xC9)               // modrm: mod=11, /1, rm=rcx
+
+    // write(1, rsi, rcx):
+    x86_mov_reg_reg(buf, REG_RDX, REG_RCX)
+    x86_mov_reg_imm32(buf, REG_RAX, 1)
+    x86_mov_reg_imm32(buf, REG_RDI, 1)
+    x86_syscall(buf)
+}
+
+// Inline-syscall lowering of `kryos_print_str` for Linux.
+fn cg_emit_print_inline_linux(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue) {
+    let buf = ctx.text_buf
+    let arg_r = cg_load_operand(ctx, ra, rv.args[0], REG_RDI)
+    if arg_r != REG_RDI {
+        x86_mov_reg_reg(buf, REG_RDI, arg_r)
+    }
+    cg_emit_write_strz_linux(ctx, ra)
+}
+
 // Inline-syscall lowering of `kryos_println_str` for Linux. Bypasses
 // the runtime entirely: emits write(2) for the string body + a second
 // write(2) for the trailing newline. The string is expected to be a
@@ -650,6 +696,54 @@ fn cg_emit_println_inline_linux(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue)
     x86_add_reg_imm32(buf, REG_RSP, 8)
 }
 
+// Generic syscallN intrinsic lowering for Linux.
+//
+// `n_syscall_args` excludes the syscall number itself. So a call to
+// `syscall1(num, a)` has n_syscall_args = 1, and the Kryos call has
+// 2 arguments total: rv.args[0] is the syscall number (goes to RAX),
+// rv.args[1] is the first syscall arg (goes to RDI), etc.
+//
+// Linux x86_64 syscall ABI: RAX=number, args in RDI, RSI, RDX, R10,
+// R8, R9. Return value comes back in RAX.
+fn cg_emit_syscall_n_inline_linux(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32, n_syscall_args: i32) {
+    let buf = ctx.text_buf
+    let n_total = n_syscall_args + 1
+
+    // syscall arg register table (index 0 = syscall number register)
+    let regs: [i32] = [REG_RAX, REG_RDI, REG_RSI, REG_RDX, REG_R10, REG_R8, REG_R9]
+
+    // Load args in reverse so we don't clobber inputs as we go.
+    let mut i = n_total - 1
+    while i >= 0 {
+        let target = regs[i]
+        let r = cg_load_operand(ctx, ra, rv.args[i], target)
+        if r != target {
+            x86_mov_reg_reg(buf, target, r)
+        }
+        i = i - 1
+    }
+
+    x86_syscall(buf)
+
+    if dest_reg != REG_RAX {
+        x86_mov_reg_reg(buf, dest_reg, REG_RAX)
+    }
+}
+
+// Inline lowering of `kryos_builtin_exit(code)` -> sys_exit_group.
+// Marks the call as never-returning (no need to preserve dest_reg).
+fn cg_emit_exit_inline_linux(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue) {
+    let buf = ctx.text_buf
+    // Load exit code into RDI.
+    let arg_r = cg_load_operand(ctx, ra, rv.args[0], REG_RDI)
+    if arg_r != REG_RDI {
+        x86_mov_reg_reg(buf, REG_RDI, arg_r)
+    }
+    // mov rax, 231   ; sys_exit_group
+    x86_mov_reg_imm32(buf, REG_RAX, 231)
+    x86_syscall(buf)
+}
+
 fn cg_emit_call(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) {
     let buf = ctx.text_buf
     let n_args = len(rv.args)
@@ -658,6 +752,30 @@ fn cg_emit_call(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) 
     if ctx.target_os == "linux" {
         if rv.func_name == "kryos_println_str" {
             cg_emit_println_inline_linux(ctx, ra, rv)
+            return
+        }
+        if rv.func_name == "kryos_print_str" {
+            cg_emit_print_inline_linux(ctx, ra, rv)
+            return
+        }
+        if rv.func_name == "kryos_builtin_exit" {
+            cg_emit_exit_inline_linux(ctx, ra, rv)
+            return
+        }
+        if rv.func_name == "syscall1" {
+            cg_emit_syscall_n_inline_linux(ctx, ra, rv, dest_reg, 1)
+            return
+        }
+        if rv.func_name == "syscall2" {
+            cg_emit_syscall_n_inline_linux(ctx, ra, rv, dest_reg, 2)
+            return
+        }
+        if rv.func_name == "syscall3" {
+            cg_emit_syscall_n_inline_linux(ctx, ra, rv, dest_reg, 3)
+            return
+        }
+        if rv.func_name == "syscall6" {
+            cg_emit_syscall_n_inline_linux(ctx, ra, rv, dest_reg, 6)
             return
         }
     }
