@@ -4,6 +4,24 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.11.0-rc.1] — 2026-05-18 — "std::cmd subprocess capture + recipe"
+
+### Added
+
+- **`std::cmd`** — subprocess capture for scripting.
+  `kryos_cmd_run(cmd_ptr, cmd_len, out, out_cap, needed)` spawns a
+  command (shellword-split), captures stdout + stderr + exit code,
+  and writes the bundle in `exit_code\nstderr_len\nstderr<stdout>`
+  format. Closed stdin, no shell expansion, no escape sequences in
+  the splitter (sufficient for typical CLI invocations).
+- **`docs/learn/cookbook/19-running-subprocesses.md`** — recipe with
+  bundle parsing pattern.
+- 2 new shellword tests. 34 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.10.0-rc.1` to `4.11.0-rc.1`.
+
 ## [4.10.0-rc.1] — 2026-05-18 — "cookbook expansion + http client"
 
 ### Added
