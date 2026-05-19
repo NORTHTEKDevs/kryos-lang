@@ -62,6 +62,7 @@ pub mod numfmt;
 pub mod path;
 pub mod pathext;
 pub mod process;
+pub mod queue;
 pub mod rand;
 pub mod random;
 pub mod re;

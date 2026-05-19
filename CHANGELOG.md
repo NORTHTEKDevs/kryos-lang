@@ -4,6 +4,24 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.16.0-rc.1] — 2026-05-18 — "std::queue (ring-buffer FIFO)"
+
+### Added
+
+- **`std::queue`** — ring-buffer FIFO over caller-owned `[i64; cap]`
+  storage and a 4-element state vector `(head, tail, cap, count)`.
+  All ops O(1), allocation-free.
+  - `queue_init(state, cap)` — zero head/tail/count, set capacity
+  - `queue_push(buf, state, v)` — returns 1 on success, 0 if full
+  - `queue_pop(buf, state, *out)` — returns 1 on success, 0 if empty
+  - `queue_peek(buf, state, *out)` — read without removing
+- 3 new tests covering FIFO order, full/empty edges, and wrap-around.
+  51 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.15.0-rc.1` to `4.16.0-rc.1`.
+
 ## [4.15.0-rc.1] — 2026-05-18 — "std::random + cookbook 22"
 
 ### Added
