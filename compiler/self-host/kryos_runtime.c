@@ -94,6 +94,90 @@ void kryos_builtin_exit(int code) {
     ExitProcess((UINT)code);
 }
 
+/* ---- File I/O -------------------------------------------------------- */
+
+/*
+ * Read an entire file into a freshly allocated null-terminated buffer.
+ * Returns the buffer pointer (cast to long long for the Kryos i64
+ * handle) or 0 on failure. The path argument is a C string.
+ */
+long long kryos_builtin_file_read(const char *path) {
+    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) { return 0; }
+    LARGE_INTEGER size;
+    if (!GetFileSizeEx(h, &size)) { CloseHandle(h); return 0; }
+    if (size.QuadPart < 0 || size.QuadPart > (LONGLONG)0x10000000) {
+        CloseHandle(h);
+        return 0;
+    }
+    SIZE_T n = (SIZE_T)size.QuadPart;
+    char *buf = (char *)HeapAlloc(GetProcessHeap(), 0, n + 1);
+    if (buf == NULL) { CloseHandle(h); return 0; }
+    DWORD read;
+    if (!ReadFile(h, buf, (DWORD)n, &read, NULL)) {
+        HeapFree(GetProcessHeap(), 0, buf);
+        CloseHandle(h);
+        return 0;
+    }
+    buf[n] = 0;
+    CloseHandle(h);
+    return (long long)buf;
+}
+
+/*
+ * Write a null-terminated string to a file. Truncates existing content.
+ */
+long long kryos_builtin_file_write(const char *path, const char *content) {
+    HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, NULL,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) { return 0; }
+    SIZE_T n = kryos__strlen(content);
+    DWORD written;
+    BOOL ok = WriteFile(h, content, (DWORD)n, &written, NULL);
+    CloseHandle(h);
+    return ok ? 1 : 0;
+}
+
+long long kryos_builtin_file_exists(const char *path) {
+    DWORD attrs = GetFileAttributesA(path);
+    if (attrs == INVALID_FILE_ATTRIBUTES) { return 0; }
+    return 1;
+}
+
+/* ---- Environment ----------------------------------------------------- */
+
+/*
+ * Get an environment variable's value as a fresh null-terminated string.
+ * Returns 0 (treated as empty string by callers) if unset.
+ */
+long long kryos_builtin_env_get(const char *name) {
+    char small[1024];
+    DWORD n = GetEnvironmentVariableA(name, small, sizeof(small));
+    if (n == 0) {
+        static const char empty = 0;
+        return (long long)&empty;
+    }
+    if (n < sizeof(small)) {
+        char *buf = (char *)HeapAlloc(GetProcessHeap(), 0, n + 1);
+        if (buf == NULL) {
+            static const char empty = 0;
+            return (long long)&empty;
+        }
+        SIZE_T i;
+        for (i = 0; i <= n; i++) { buf[i] = small[i]; }
+        return (long long)buf;
+    }
+    char *buf = (char *)HeapAlloc(GetProcessHeap(), 0, n + 1);
+    if (buf == NULL) {
+        static const char empty = 0;
+        return (long long)&empty;
+    }
+    GetEnvironmentVariableA(name, buf, n);
+    buf[n] = 0;
+    return (long long)buf;
+}
+
 /* ---- Numeric conversion --------------------------------------------- */
 
 /*
