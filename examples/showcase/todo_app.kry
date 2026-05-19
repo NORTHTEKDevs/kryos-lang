@@ -1,0 +1,97 @@
+// todo_app.kry — file-backed todo list with add / list / done / clear.
+//
+// Stores items in `todo.txt` one per line. Lines starting with `[x]` are
+// done; `[ ]` are open.
+//
+// Commands:
+//   kryos run todo_app.kry add "write more Kryos"
+//   kryos run todo_app.kry list
+//   kryos run todo_app.kry done 1
+//   kryos run todo_app.kry clear
+
+@capabilities(io)
+fn main() {
+    let argv = args()
+    if len(argv) < 2 {
+        print_help()
+        return
+    }
+    let cmd = argv[1]
+
+    if cmd == "add" {
+        if len(argv) < 3 {
+            println("usage: add <text>")
+            return
+        }
+        let text = argv[2]
+        let body = load_or_empty()
+        let new_body = body + "[ ] " + text + "\n"
+        file_write("todo.txt", new_body)
+        println("added: " + text)
+        return
+    }
+
+    if cmd == "list" {
+        let body = load_or_empty()
+        let lines = split_lines(body)
+        let mut i: i64 = 1
+        let mut printed: i64 = 0
+        for line in lines {
+            if len(line) == 0 { continue }
+            println("  " + to_string(i) + ". " + line)
+            i = i + 1
+            printed = printed + 1
+        }
+        if printed == 0 {
+            println("(no items)")
+        }
+        return
+    }
+
+    if cmd == "done" {
+        if len(argv) < 3 {
+            println("usage: done <n>")
+            return
+        }
+        let idx = parse_int(argv[2])
+        let body = load_or_empty()
+        let lines = split_lines(body)
+        let mut out: str = ""
+        let mut i: i64 = 1
+        for line in lines {
+            if len(line) == 0 { continue }
+            if i == idx && substr(line, 0, 3) == "[ ]" {
+                out = out + "[x]" + substr(line, 3, len(line)) + "\n"
+            } else {
+                out = out + line + "\n"
+            }
+            i = i + 1
+        }
+        file_write("todo.txt", out)
+        println("done #" + to_string(idx))
+        return
+    }
+
+    if cmd == "clear" {
+        file_write("todo.txt", "")
+        println("cleared")
+        return
+    }
+
+    print_help()
+}
+
+fn load_or_empty() -> str {
+    if file_exists("todo.txt") == 1 {
+        return file_read("todo.txt")
+    }
+    return ""
+}
+
+fn print_help() {
+    println("usage:")
+    println("  todo_app add <text>     add a new item")
+    println("  todo_app list           list all items")
+    println("  todo_app done <n>       mark item #n as done")
+    println("  todo_app clear          remove all items")
+}

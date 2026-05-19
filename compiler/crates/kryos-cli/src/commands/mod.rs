@@ -9,6 +9,7 @@ pub mod check;
 pub mod clean_cmd;
 pub mod config_cmd;
 pub mod coverage_cmd;
+pub mod diff_cmd;
 pub mod doc_serve_cmd;
 pub mod doctor_cmd;
 pub mod eval_cmd;

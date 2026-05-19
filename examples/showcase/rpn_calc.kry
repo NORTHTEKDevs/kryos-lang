@@ -1,0 +1,140 @@
+// rpn_calc.kry — Reverse Polish notation calculator REPL.
+//
+// Input: tokens separated by spaces. Integers push, operators pop+combine.
+// Operators: + - * / mod neg dup drop swap print
+//
+// Example session:
+//   > 3 4 +          # push 3, push 4, add → top = 7
+//   > 2 *            # multiply by 2 → top = 14
+//   > print          # → 14
+//   > drop quit
+
+@capabilities(io)
+fn main() {
+    println("rpn calc — try: 3 4 + print quit")
+    let mut stack: [i64] = []
+
+    loop {
+        print("> ")
+        let line = stdin_line()
+        if len(line) == 0 { break }
+        let toks = tokenize(line)
+        let mut i: i64 = 0
+        let n = len(toks)
+        while i < n {
+            let t = toks[i]
+            if t == "quit" || t == "exit" { return }
+            stack = eval(t, stack)
+            i = i + 1
+        }
+    }
+}
+
+fn eval(t: str, stack: [i64]) -> [i64] {
+    let mut s = stack
+
+    if t == "+" || t == "-" || t == "*" || t == "/" || t == "mod" {
+        if len(s) < 2 {
+            println("error: need 2 operands for " + t)
+            return s
+        }
+        let n = len(s)
+        let b = s[n - 1]
+        let a = s[n - 2]
+        s = pop_n(s, 2)
+        let r: i64 = if t == "+" {
+            a + b
+        } elif t == "-" {
+            a - b
+        } elif t == "*" {
+            a * b
+        } elif t == "/" {
+            if b == 0 {
+                println("error: division by zero")
+                return s
+            }
+            a / b
+        } else {
+            if b == 0 {
+                println("error: modulo by zero")
+                return s
+            }
+            a - (a / b) * b
+        }
+        return push(s, r)
+    }
+
+    if t == "neg" {
+        let n = len(s)
+        if n == 0 { return s }
+        let top = s[n - 1]
+        s = pop_n(s, 1)
+        return push(s, -top)
+    }
+
+    if t == "dup" {
+        let n = len(s)
+        if n == 0 { return s }
+        return push(s, s[n - 1])
+    }
+
+    if t == "drop" {
+        return pop_n(s, 1)
+    }
+
+    if t == "swap" {
+        let n = len(s)
+        if n < 2 { return s }
+        let b = s[n - 1]
+        let a = s[n - 2]
+        s = pop_n(s, 2)
+        s = push(s, b)
+        return push(s, a)
+    }
+
+    if t == "print" {
+        let n = len(s)
+        if n == 0 {
+            println("(empty stack)")
+        } else {
+            println(to_string(s[n - 1]))
+        }
+        return s
+    }
+
+    return push(s, parse_int(t))
+}
+
+fn pop_n(s: [i64], k: i64) -> [i64] {
+    let n = len(s)
+    if k >= n { return [] }
+    let mut out: [i64] = []
+    let mut i: i64 = 0
+    let limit = n - k
+    while i < limit {
+        out = push(out, s[i])
+        i = i + 1
+    }
+    return out
+}
+
+fn tokenize(line: str) -> [str] {
+    let mut out: [str] = []
+    let n = len(line)
+    let mut start: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        let c = char_code(substr(line, i, i + 1))
+        if c == 32 || c == 9 || c == 10 || c == 13 {
+            if i > start {
+                out = push(out, substr(line, start, i))
+            }
+            start = i + 1
+        }
+        i = i + 1
+    }
+    if n > start {
+        out = push(out, substr(line, start, n))
+    }
+    return out
+}

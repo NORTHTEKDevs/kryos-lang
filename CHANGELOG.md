@@ -4,6 +4,25 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.9.0-rc.1] — 2026-05-18 — "kryos diff + 3 showcase examples"
+
+### Added
+
+- **`kryos diff <a> <b>`** — semantic diff between two Kryos source
+  files. Reports added / removed / modified declarations with
+  signatures (less noisy than line-by-line diff when whitespace
+  shifts around). Shows summary `+X -Y ~Z =N`.
+- **`examples/showcase/rpn_calc.kry`** — Reverse Polish notation
+  calculator REPL with stack ops (`+ - * / mod neg dup drop swap`).
+- **`examples/showcase/todo_app.kry`** — file-backed todo list with
+  add/list/done/clear commands.
+- **`examples/showcase/dir_walker.kry`** — directory walker that
+  counts `.kry` files + total bytes.
+
+### Changed
+
+- Workspace version bumped from `4.8.0-rc.1` to `4.9.0-rc.1`.
+
 ## [4.8.0-rc.1] — 2026-05-18 — "kryos pack — deterministic tar archives"
 
 ### Added

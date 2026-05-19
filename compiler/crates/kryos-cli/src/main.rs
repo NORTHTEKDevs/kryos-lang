@@ -209,6 +209,14 @@ enum Commands {
         since: Option<String>,
     },
 
+    /// Compare two Kryos source files semantically (added/removed/modified decls)
+    Diff {
+        /// First source file.
+        a: String,
+        /// Second source file.
+        b: String,
+    },
+
     /// Build a deterministic .tar archive of the current project
     Pack {
         /// Project directory (default: cwd).
@@ -672,6 +680,10 @@ fn main() {
 
         Commands::Pack { path, output } => {
             commands::pack_cmd::execute(commands::pack_cmd::PackOptions { path, output })
+        }
+
+        Commands::Diff { a, b } => {
+            commands::diff_cmd::execute(commands::diff_cmd::DiffOptions { a, b })
         }
 
         Commands::Doctor { verbose } => {
