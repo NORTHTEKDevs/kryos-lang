@@ -103,11 +103,28 @@ pub unsafe extern "C" fn kryos_array_push(arr: *mut KryosArray, val: i64) {
     let cap = raw_cap as usize;
 
     if len >= cap {
-        // Double capacity.
+        // Grow the data buffer. We use alloc+copy+leak rather than realloc:
+        // realloc on Windows (HeapReAlloc) probes adjacent heap block headers,
+        // so any nearby buffer overrun manifests as a segfault inside ntdll
+        // (the stage-2 bootstrap blocker). alloc+copy+leak is forgiving of
+        // overruns in neighbouring blocks at the cost of a small leak (the
+        // old buffer is unreachable once we overwrite (*arr).data, but the
+        // process is short-lived). Set KRYOS_USE_REALLOC=1 to opt back into
+        // the historic realloc path.
+        let use_realloc = std::env::var_os("KRYOS_USE_REALLOC").is_some();
         let new_cap = cap * 2;
-        let old_layout = KryosArray::data_layout(cap);
         let new_size = new_cap * ELEM_SIZE;
-        let new_data = realloc((*arr).data, old_layout, new_size);
+        let new_layout = KryosArray::data_layout(new_cap);
+        let new_data = if use_realloc {
+            let old_layout = KryosArray::data_layout(cap);
+            realloc((*arr).data, old_layout, new_size)
+        } else {
+            let buf = alloc(new_layout);
+            if !buf.is_null() {
+                ptr::copy_nonoverlapping((*arr).data, buf, cap * ELEM_SIZE);
+            }
+            buf
+        };
         if new_data.is_null() {
             let msg = b"array push: allocation failed";
             crate::panic::kryos_panic(msg.as_ptr(), msg.len());
