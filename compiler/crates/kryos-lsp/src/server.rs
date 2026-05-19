@@ -3,6 +3,7 @@
 use serde_json::Value;
 use std::collections::HashMap;
 
+use crate::code_actions;
 use crate::completion;
 use crate::diagnostics;
 use crate::document_symbols;
@@ -121,6 +122,9 @@ impl LspServer {
                                 "triggerCharacters": ["(", ","],
                             },
                             "inlayHintProvider": true,
+                            "codeActionProvider": {
+                                "codeActionKinds": ["quickfix"],
+                            },
                         },
                         "serverInfo": {
                             "name": "kryos-lsp",
@@ -305,6 +309,17 @@ impl LspServer {
                 let end = params.pointer("/range/end/line")?.as_u64()? as u32;
                 let result = if let Some(source) = self.documents.get(uri) {
                     inlay_hints::inlay_hints(source, start, end)
+                } else {
+                    serde_json::json!([])
+                };
+                Some(protocol::make_response(id.clone(), result))
+            }
+            "textDocument/codeAction" => {
+                let uri = params.pointer("/textDocument/uri")?.as_str()?;
+                let start = params.pointer("/range/start/line")?.as_u64()? as u32;
+                let end = params.pointer("/range/end/line")?.as_u64()? as u32;
+                let result = if let Some(source) = self.documents.get(uri) {
+                    code_actions::code_actions(source, uri, start, end)
                 } else {
                     serde_json::json!([])
                 };

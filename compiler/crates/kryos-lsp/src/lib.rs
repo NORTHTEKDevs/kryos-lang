@@ -5,6 +5,7 @@
 //! document highlight, folding ranges, and formatting.
 //! Communicates via JSON-RPC over stdin/stdout.
 
+pub mod code_actions;
 pub mod completion;
 pub mod diagnostics;
 pub mod document_symbols;

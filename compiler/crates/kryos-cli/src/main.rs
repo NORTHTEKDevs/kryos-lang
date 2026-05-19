@@ -148,6 +148,24 @@ enum Commands {
         path: Option<String>,
     },
 
+    /// Diagnose toolchain installation
+    Doctor {
+        /// Verbose output (show full paths and version banners).
+        #[arg(long)]
+        verbose: bool,
+    },
+
+    /// Show the project's dependency tree
+    Tree {
+        /// Project directory (default: cwd).
+        #[arg(value_name = "PATH")]
+        path: Option<String>,
+
+        /// Show transitive dependencies via path-resolved sub-manifests.
+        #[arg(long)]
+        transitive: bool,
+    },
+
     /// Watch a file and auto-rebuild on changes
     Watch {
         /// File to watch.
@@ -476,6 +494,14 @@ fn main() {
                     other
                 )),
             }
+        }
+
+        Commands::Doctor { verbose } => {
+            commands::doctor_cmd::execute(commands::doctor_cmd::DoctorOptions { verbose })
+        }
+
+        Commands::Tree { path, transitive } => {
+            commands::tree_cmd::execute(commands::tree_cmd::TreeOptions { path, transitive })
         }
 
         Commands::Watch { file, interval, run } => {

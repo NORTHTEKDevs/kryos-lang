@@ -4,6 +4,31 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.12.0-rc.1] — 2026-05-18 — "doctor + tree + LSP code actions"
+
+### Added
+
+- **`kryos doctor`** — diagnoses the toolchain. Reports kryos version,
+  platform, kryos_rt and kryos_stdlib_native static library locations,
+  C/C++ linker discovery (clang/cc/gcc + link.exe on Windows), and
+  KRYOS_* environment variables. Returns non-zero on missing runtime
+  libraries.
+- **`kryos tree [--transitive]`** — prints the project's dependency
+  tree from `kryos.toml`. Path dependencies recurse into their own
+  `kryos.toml`; remote/registry deps show as leaves. Cycle-safe.
+- **LSP `textDocument/codeAction`** — quick-fix actions. Extracts the
+  suggested replacement from `"did you mean \`X\`?"` notes that the
+  type checker already emits (for E0101, E0102, unknown fields,
+  unknown variants, unknown methods) and offers a "Replace `bad`
+  with `good`" workspace edit.
+- LSP `codeActionProvider.codeActionKinds = ["quickfix"]` advertised
+  in the initialize response.
+- 2 new tests in `kryos-lsp/tests/v312_code_actions.rs`.
+
+### Changed
+
+- Workspace version bumped from `3.11.0-rc.1` to `3.12.0-rc.1`.
+
 ## [3.11.0-rc.1] — 2026-05-18 — "kryos profile + showcase examples"
 
 ### Added
