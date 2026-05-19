@@ -58,6 +58,7 @@ pub mod json;
 pub mod log;
 pub mod math;
 pub mod net;
+pub mod numfmt;
 pub mod path;
 pub mod process;
 pub mod rand;

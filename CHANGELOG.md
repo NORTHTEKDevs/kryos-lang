@@ -4,6 +4,22 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.13.0-rc.1] — 2026-05-18 — "std::numfmt + cookbook 20"
+
+### Added
+
+- **`std::numfmt`** — number formatting helpers:
+  - `kryos_fmt_hex(v)` → `"0xff"`
+  - `kryos_fmt_bin(v)` → `"0b101"`
+  - `kryos_fmt_decimal_padded(v, width)` → zero-pad to `width` digits
+  - `kryos_fmt_bytes(v)` → human-readable B/KB/MB/GB/TB
+- **`docs/learn/cookbook/20-formatting-numbers.md`** — recipe.
+- 4 new tests. 38 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.12.0-rc.1` to `4.13.0-rc.1`.
+
 ## [4.12.0-rc.1] — 2026-05-18 — "kryos welcome + kryos cheat"
 
 ### Added
