@@ -191,6 +191,13 @@ enum Commands {
         action: ConfigSubcmd,
     },
 
+    /// Show project metadata + source statistics
+    Info {
+        /// Project directory (default: cwd).
+        #[arg(value_name = "PATH")]
+        path: Option<String>,
+    },
+
     /// Diagnose toolchain installation
     Doctor {
         /// Verbose output (show full paths and version banners).
@@ -628,6 +635,10 @@ fn main() {
                 ConfigSubcmd::Path => A::Path,
             };
             commands::config_cmd::execute(a)
+        }
+
+        Commands::Info { path } => {
+            commands::info_cmd::execute(commands::info_cmd::InfoOptions { path })
         }
 
         Commands::Doctor { verbose } => {

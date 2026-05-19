@@ -1,0 +1,64 @@
+// stats_pipeline.kry — read CSV-style numbers and summarize.
+//
+// Demonstrates: file_read, split_lines, parse_int, std::sort,
+// std::collections aggregates. Outputs min/median/max/sum/count.
+//
+// Usage: kryos run stats_pipeline.kry numbers.csv
+
+use std::sort::sort_i64
+use std::collections::{sum_i64, min_i64, max_i64}
+
+@capabilities(io)
+fn main() {
+    let argv = args()
+    if len(argv) < 2 {
+        println("usage: stats_pipeline <file.csv>")
+        return
+    }
+    let raw = file_read(argv[1])
+    let lines = split_lines(raw)
+
+    let mut nums: [i64] = []
+    for line in lines {
+        let t = strip(line)
+        if len(t) == 0 { continue }
+        nums = push(nums, parse_int(t))
+    }
+
+    if len(nums) == 0 {
+        println("no numbers parsed")
+        return
+    }
+
+    sort_i64(nums)
+    let median = nums[len(nums) / 2]
+
+    println("count:  " + to_string(len(nums)))
+    println("sum:    " + to_string(sum_i64(nums)))
+    println("min:    " + to_string(min_i64(nums)))
+    println("max:    " + to_string(max_i64(nums)))
+    println("median: " + to_string(median))
+}
+
+fn strip(s: str) -> str {
+    let n = len(s)
+    let mut start: i64 = 0
+    while start < n {
+        let c = char_code(substr(s, start, start + 1))
+        if c == 32 || c == 9 || c == 10 || c == 13 {
+            start = start + 1
+        } else {
+            break
+        }
+    }
+    let mut end: i64 = n
+    while end > start {
+        let c = char_code(substr(s, end - 1, end))
+        if c == 32 || c == 9 || c == 10 || c == 13 {
+            end = end - 1
+        } else {
+            break
+        }
+    }
+    return substr(s, start, end)
+}

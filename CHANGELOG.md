@@ -4,6 +4,25 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.6.0-rc.1] — 2026-05-18 — "kryos info + showcase example"
+
+### Added
+
+- **`kryos info [path]`** — project summary. Reports package
+  metadata (from kryos.toml) + source stats: files, lines, function
+  count, `@test` count, `@bench` count, struct/enum/trait counts.
+  Walks the project recursively, skipping `target/`, hidden dirs,
+  `node_modules`.
+- **`examples/showcase/stats_pipeline.kry`** — CSV-style numeric
+  input → sort → min/max/sum/median report. Demonstrates the
+  std::sort + std::collections pipeline pattern.
+- **`docs/learn/cookbook/14-deduplicate.md`** — dedup + reverse +
+  aggregate recipe combining std::sort and std::collections.
+
+### Changed
+
+- Workspace version bumped from `4.5.0-rc.1` to `4.6.0-rc.1`.
+
 ## [4.5.0-rc.1] — 2026-05-18 — "kryos config + deploy recipes"
 
 ### Added
