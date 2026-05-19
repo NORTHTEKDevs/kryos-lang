@@ -1,0 +1,33 @@
+// 2 stmt body: rv_empty + rv.op = binop only.
+
+@copy
+struct Operand {
+    is_local: bool,
+    local_id: i32,
+    int_val: i32,
+    str_val: str
+}
+
+@copy
+struct RValue {
+    kind: i32,
+    op: i32,
+    left: [Operand],
+    right: [Operand]
+}
+
+fn rv_empty(k: i32) -> RValue {
+    let e: [Operand] = []
+    return RValue { kind: k, op: 0, left: e, right: e }
+}
+
+fn rv_binop(binop: i32) -> RValue {
+    let mut rv = rv_empty(2)
+    rv.op = binop
+    return rv
+}
+
+fn main() {
+    let rv = rv_binop(1)
+    println("op=" + to_string(rv.op))
+}
