@@ -198,6 +198,12 @@ enum Commands {
         path: Option<String>,
     },
 
+    /// Print a friendly first-run welcome banner with example workflow
+    Welcome,
+
+    /// Print the Kryos syntax cheatsheet to stdout
+    Cheat,
+
     /// Auto-generate a markdown changelog from git tags
     Changelog {
         /// Limit to the latest N tags. Default: all.
@@ -670,6 +676,9 @@ fn main() {
         Commands::Info { path } => {
             commands::info_cmd::execute(commands::info_cmd::InfoOptions { path })
         }
+
+        Commands::Welcome => commands::welcome_cmd::execute(),
+        Commands::Cheat => commands::cheat_cmd::execute(),
 
         Commands::Changelog { last, since } => {
             commands::changelog_cmd::execute(commands::changelog_cmd::ChangelogOptions {

@@ -4,6 +4,21 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.12.0-rc.1] — 2026-05-18 — "kryos welcome + kryos cheat"
+
+### Added
+
+- **`kryos welcome`** — friendly first-run banner with example
+  workflow. Boxed ASCII art, lists the most-useful subcommands,
+  points at the cookbook + command reference + stdlib docs.
+- **`kryos cheat`** — prints `docs/learn/cheatsheet.md` to stdout
+  (embedded at compile time via `include_str!`, so always available
+  even if the docs directory isn't installed).
+
+### Changed
+
+- Workspace version bumped from `4.11.0-rc.1` to `4.12.0-rc.1`.
+
 ## [4.11.0-rc.1] — 2026-05-18 — "std::cmd subprocess capture + recipe"
 
 ### Added
