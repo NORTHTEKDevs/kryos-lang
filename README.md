@@ -1,12 +1,13 @@
 # Kryos
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v2.3.0-orange.svg)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-v4.19.0--rc.1-orange.svg)](CHANGELOG.md)
 [![Targets](https://img.shields.io/badge/targets-native%20%7C%20wasm-purple.svg)](#what-it-targets)
-[![Tests](https://img.shields.io/badge/sweep-123%2F123-brightgreen.svg)](#status)
+[![Parity](https://img.shields.io/badge/Cranelift_vs_LLVM-34%2F34-brightgreen.svg)](AUDIT-llvm-parity.md)
+[![Stdlib tests](https://img.shields.io/badge/stdlib_tests-63%2F63-brightgreen.svg)](#status)
 [![Warnings](https://img.shields.io/badge/build_warnings-0-brightgreen.svg)](#status)
 
-**Kryos is a compiled, general-purpose programming language with the safety of Rust, the speed of C, and the clarity of Go — without lifetime annotations.** It ships a complete toolchain: compiler, formatter, LSP, package manager, debugger info, and editor extensions. v2.3.0 is feature-complete.
+**Kryos is a compiled, general-purpose programming language with the safety of Rust, the speed of C, and the clarity of Go — without lifetime annotations.** It ships a complete toolchain: compiler, formatter, LSP, package manager, debug info, and editor extensions. v4.19 ships 30+ subcommands, 15 LSP capabilities, 30+ stdlib modules, and 22 cookbook recipes.
 
 ```kryos
 fn main() {
@@ -26,9 +27,10 @@ kryos run hello.kry
 - **It's safe.** Memory safety by construction (ARC + move semantics), no `'a` lifetime annotations, no GC pauses. Capability-typed effects catch I/O leaks at compile time.
 - **It's small.** One binary, no LLVM dependency for development, ~14 MB compiler, ~700 MB to build from source.
 - **It runs anywhere.** Native (Linux / macOS / Windows / Intel / Apple Silicon) and WebAssembly out of the same source.
-- **The toolchain is done.** REPL, formatter, doc generator, test runner, package manager, LSP, VS Code + Zed extensions, debug info, async/await — all ship in v2.3.0.
+- **The toolchain is done.** 30+ subcommands including `run`, `build`, `check`, `test`, `bench`, `fmt`, `lint`, `audit`, `coverage`, `profile`, `trace`, `new`, `watch`, `clean`, `eval`, `doc serve`, `doctor`, `tree`, `pack`, `diff`, `info`, `workspace`, `config`, `welcome`, `cheat`, `changelog` — all stable at v4.0.
+- **Stdlib is broad.** 30+ modules: fs, net, http, json, regex, datetime, duration, base64, uuid, hash, sort, collections, queue, stack, set, random, log, bytes, pathext, numfmt, strext, cmd, iter, and more.
 
-> **Status:** Kryos is at the same maturity point Go was around 1.0 — the language is finished, the toolchain is finished, the rest is adoption and ecosystem.
+> **Status:** Kryos is at the v4 stability cut — CLI surface, LSP method set, stdlib symbol table, and ABI symbols are all frozen for v4.x.y backwards compatibility. See [STABILITY-v4.0.md](STABILITY-v4.0.md) for the contract.
 
 ---
 
@@ -69,7 +71,7 @@ irm https://raw.githubusercontent.com/NORTHTEKDevs/kryos-lang/master/install.ps1
 git clone https://github.com/NORTHTEKDevs/kryos-lang.git
 cd kryos-lang/compiler
 cargo build --release -j 2
-./target/release/kryos --version   # → kryos 2.3.0
+./target/release/kryos --version   # → kryos 4.19.0-rc.1
 ```
 
 Requirements: Rust 1.75+, a C compiler (`cc`/`clang`/MSVC) for linking. **LLVM is not required for development** — the LLVM backend emits IR as text. You only need `clang` or `llc` on PATH if you want optimized release binaries.

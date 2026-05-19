@@ -4,6 +4,17 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.20.0-rc.1] — 2026-05-18 — "README polish"
+
+### Changed
+
+- **`README.md`** — refreshed for v4. Updated badges (release v4.19,
+  parity 34/34, stdlib 63/63 tests). Replaced the "v2.3.0 feature-
+  complete" framing with "v4 stability cut" + the 30+ subcommand list
+  and 30+ stdlib module catalog. Updated `--version` output to
+  `4.19.0-rc.1`.
+- Workspace version bumped from `4.19.0-rc.1` to `4.20.0-rc.1`.
+
 ## [4.19.0-rc.1] — 2026-05-18 — "std::duration"
 
 ### Added
