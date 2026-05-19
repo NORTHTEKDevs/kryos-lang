@@ -4,6 +4,22 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.14.0-rc.1] — 2026-05-18 — "std::pathext + cookbook 21"
+
+### Added
+
+- **`std::pathext`** — path string manipulation (no syscalls):
+  - `kryos_path_is_absolute(p)` — POSIX `/` or Windows `C:\`
+  - `kryos_path_normalize(p)` — collapse slashes, resolve `.` and `..`,
+    convert `\` to `/`. Pure lexical, no fs lookup.
+  - `kryos_path_component_count(p)` — number of non-empty segments
+- **`docs/learn/cookbook/21-path-manipulation.md`** — recipe.
+- 6 new tests. 44 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.13.0-rc.1` to `4.14.0-rc.1`.
+
 ## [4.13.0-rc.1] — 2026-05-18 — "std::numfmt + cookbook 20"
 
 ### Added

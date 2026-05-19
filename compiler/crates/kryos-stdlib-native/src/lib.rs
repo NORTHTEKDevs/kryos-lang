@@ -60,6 +60,7 @@ pub mod math;
 pub mod net;
 pub mod numfmt;
 pub mod path;
+pub mod pathext;
 pub mod process;
 pub mod rand;
 pub mod re;
