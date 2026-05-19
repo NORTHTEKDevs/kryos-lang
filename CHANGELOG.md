@@ -4,6 +4,22 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.37.0-rc.1] — 2026-05-18 — "std::slice_ops (take/drop/partition/zip)"
+
+### Added
+
+- **`std::slice_ops`** — composable slice operations:
+  - `slice_take(src, n, dst)` — first N elements
+  - `slice_drop(src, n, dst)` — skip first N
+  - `slice_partition_i64(src, pred, threshold, yes, no)` — split by
+    predicate (positive / negative / >= / <)
+  - `slice_zip_pack(a, b, dst)` — pack two `i64`s into one (high 32 / low 32)
+- 3 new tests. 110 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.36.0-rc.1` to `4.37.0-rc.1`.
+
 ## [4.36.0-rc.1] — 2026-05-18 — "HTTP API tutorial"
 
 ### Added

@@ -80,6 +80,7 @@ pub mod re;
 pub mod semaphore;
 pub mod semver;
 pub mod set;
+pub mod slice_ops;
 pub mod sort;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
