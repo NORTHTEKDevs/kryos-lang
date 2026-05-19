@@ -479,9 +479,10 @@ fn emit_object(filename: str, output: str) {
     let mir_mod = lower_module(module, tc)
     println("MIR functions: " + to_string(len(mir_mod.functions)))
 
-    // Optimizer crashes on functions with many sequential if-returns
-    // (e.g. token_kind_name with 100+ branches). Leave off until
-    // diagnosed.
+    // Optimizer is currently a no-op for stage-1 obj-path. Enabling
+    // even constant_fold causes lower_module to subsequently crash
+    // on token.kry-sized inputs -- the optimizer mutates MIR in
+    // ways the current regalloc/codegen pipeline can't follow.
     println("Optimization: skipped (obj path)")
 
     let target = detect_target_os()

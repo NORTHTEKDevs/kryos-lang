@@ -1579,21 +1579,7 @@ fn remap_rvalue(rv: RValue, from_ids: [i32], to_ids: [i32]) -> RValue {
 // ===================================================================
 
 fn optimize(module: MirModule) {
-    // Phase 1: per-function local optimizations
     for i in range(0, len(module.functions)) {
         opt_constant_fold(module.functions[i])
-        opt_strength_reduce(module.functions[i])
-        opt_dead_code_elim(module.functions[i])
-        opt_tail_call(module.functions[i])
-    }
-
-    // Phase 2: cross-function inlining
-    opt_inline(module)
-
-    // Phase 3: re-run local optimizations after inlining
-    // to catch new folding / DCE opportunities
-    for i in range(0, len(module.functions)) {
-        opt_constant_fold(module.functions[i])
-        opt_dead_code_elim(module.functions[i])
     }
 }
