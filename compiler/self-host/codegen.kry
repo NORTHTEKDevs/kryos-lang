@@ -571,6 +571,7 @@ fn cg_emit_unop(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) 
 // Caller saves: RAX, RCX, RDX, RSI, RDI, R8, R9, R10, R11
 // ===================================================================
 
+// SYS V argument-register order (Linux/macOS): RDI, RSI, RDX, RCX, R8, R9.
 let ARG_REGS_0 = 7   // REG_RDI
 let ARG_REGS_1 = 6   // REG_RSI
 let ARG_REGS_2 = 2   // REG_RDX
@@ -586,6 +587,19 @@ fn cg_arg_reg(idx: i32) -> i32 {
     if idx == 4 { return ARG_REGS_4 }
     if idx == 5 { return ARG_REGS_5 }
     return -1  // stack argument
+}
+
+// Win64 argument-register order: RCX, RDX, R8, R9. Remaining args go
+// on the stack with a 32-byte shadow space reserved by the caller.
+fn cg_arg_reg_for(target_os: str, idx: i32) -> i32 {
+    if target_os == "windows" {
+        if idx == 0 { return 1 }   // RCX
+        if idx == 1 { return 2 }   // RDX
+        if idx == 2 { return 8 }   // R8
+        if idx == 3 { return 9 }   // R9
+        return -1                  // stack argument
+    }
+    return cg_arg_reg(idx)
 }
 
 // Emit the strlen-via-`repne scasb` sequence + write(2) for the
@@ -780,11 +794,19 @@ fn cg_emit_call(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) 
         }
     }
 
-    // Push stack arguments first (right to left) for args > 6
+    // Calling-convention split:
+    //   SYS V (Linux): first 6 args in RDI,RSI,RDX,RCX,R8,R9; rest on stack.
+    //   Win64:         first 4 args in RCX,RDX,R8,R9; rest on stack + 32 bytes
+    //                  of caller-allocated shadow space (always reserved,
+    //                  even when no stack args are passed).
+    let is_win = ctx.target_os == "windows"
+    let reg_cutoff: i32 = if is_win { 4 } else { 6 }
+
+    // Push stack arguments first (right to left) for args > reg_cutoff.
     let mut stack_args = 0
-    if n_args > 6 {
+    if n_args > reg_cutoff {
         let mut i = n_args - 1
-        while i >= 6 {
+        while i >= reg_cutoff {
             let arg_r = cg_load_operand(ctx, ra, rv.args[i], REG_R10)
             x86_push_reg(buf, arg_r)
             stack_args = stack_args + 1
@@ -792,13 +814,20 @@ fn cg_emit_call(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) 
         }
     }
 
-    // Load register arguments (first 6)
-    // Load in reverse to avoid clobbering
-    let reg_count = n_args
-    if reg_count > 6 { let reg_count = 6 }
+    // Win64 requires 32 bytes of shadow space before the call. Carve
+    // it out now; we will reclaim it together with any stack args.
+    let shadow_bytes: i32 = if is_win { 32 } else { 0 }
+    if shadow_bytes > 0 {
+        x86_sub_reg_imm32(buf, REG_RSP, shadow_bytes)
+    }
+
+    // Load register arguments. Load in reverse to avoid clobbering
+    // earlier values when register choices overlap.
+    let mut reg_count = n_args
+    if reg_count > reg_cutoff { reg_count = reg_cutoff }
     let mut i = reg_count - 1
     while i >= 0 {
-        let target = cg_arg_reg(i)
+        let target = cg_arg_reg_for(ctx.target_os, i)
         let r = cg_load_operand(ctx, ra, rv.args[i], target)
         if r != target {
             x86_mov_reg_reg(buf, target, r)
@@ -825,9 +854,10 @@ fn cg_emit_call(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) 
         x86_call_rel32(buf, 0)  // placeholder
     }
 
-    // Clean up stack arguments
-    if stack_args > 0 {
-        x86_add_reg_imm32(buf, REG_RSP, stack_args * 8)
+    // Reclaim shadow space + stack args together.
+    let total_stack = shadow_bytes + stack_args * 8
+    if total_stack > 0 {
+        x86_add_reg_imm32(buf, REG_RSP, total_stack)
     }
 
     // Move result from RAX to dest
@@ -1412,24 +1442,78 @@ fn compile_to_object(module: MirModule, output_path: str, target_os: str) -> boo
         return true
     } elif target_os == "windows" {
         let obj = coff_new()
-        // Add symbols using convenience functions
+
+        // Patch in-instruction displacement fields so the system
+        // linker's "target + field - next_inst" formula reduces to
+        // the value our codegen intended. Our internal addend
+        // convention is `(real_offset) - 4`; MSVC AMD64_REL32 wants
+        // the addend WITHOUT the -4. Add 4 back into the field.
+        let mut k = 0
+        while k < len(ctx.relocations) {
+            let rel = ctx.relocations[k]
+            let coff_addend = rel.addend + 4
+            buf_patch_i32_le(ctx.text_buf, rel.offset, coff_addend)
+            k = k + 1
+        }
+
+        // First pass: emit all defined symbols and build a name->index
+        // table so relocations can be resolved to real indices.
+        let mut sym_names: [str] = []
+        let mut sym_indices: [i64] = []
         let mut i = 0
         while i < len(ctx.symbols) {
             let sym = ctx.symbols[i]
+            let mut idx: i64 = 0
             if sym.is_func {
-                coff_add_func(obj, sym.name, sym.offset)
+                idx = coff_add_func(obj, sym.name, sym.offset)
             } else {
-                coff_add_static(obj, sym.name, sym.offset, 1)
+                idx = coff_add_static(obj, sym.name, sym.offset, 1)
             }
+            push(sym_names, sym.name)
+            push(sym_indices, idx)
             i = i + 1
         }
-        // Add relocations
+
+        // Synthetic linker symbols. Codegen emits LEA / similar with
+        // these as the target; they correspond to the start of the
+        // respective section. COFF lets us define them as static
+        // symbols pointing at section + offset 0.
+        let rodata_base_idx = coff_add_static(obj, "__rodata_base", 0, 3)
+        push(sym_names, "__rodata_base")
+        push(sym_indices, rodata_base_idx)
+        let data_base_idx = coff_add_static(obj, "__data_base", 0, 2)
+        push(sym_names, "__data_base")
+        push(sym_indices, data_base_idx)
+        let text_base_idx = coff_add_static(obj, "__text_base", 0, 1)
+        push(sym_names, "__text_base")
+        push(sym_indices, text_base_idx)
+
+        // Second pass: emit relocations. For any relocation whose
+        // symbol_name is not defined locally, add it as an undefined
+        // external so the system linker can resolve against a runtime
+        // library (kernel32, kryos_runtime, etc.).
         i = 0
         while i < len(ctx.relocations) {
             let rel = ctx.relocations[i]
-            coff_add_call_reloc(obj, rel.offset, 0)
+            let mut target_idx: i64 = -1
+            let mut j = 0
+            while j < len(sym_names) {
+                if sym_names[j] == rel.symbol_name {
+                    target_idx = sym_indices[j]
+                    j = len(sym_names)
+                } else {
+                    j = j + 1
+                }
+            }
+            if target_idx < 0 {
+                target_idx = coff_add_extern(obj, rel.symbol_name)
+                push(sym_names, rel.symbol_name)
+                push(sym_indices, target_idx)
+            }
+            coff_add_call_reloc(obj, rel.offset, target_idx)
             i = i + 1
         }
+
         coff_write(obj, ctx.text_buf, ctx.data_buf, ctx.rodata_buf, output_path)
         return true
     }

@@ -180,8 +180,13 @@ fn coff_add_data_reloc(obj: CoffObject, offset: i64, sym_idx: i64, rel_type: i64
 // ===================================================================
 
 fn coff_write_u16_le(buf: i64, val: i64) {
-    buf_write_byte(buf, val % 256)
-    buf_write_byte(buf, (val / 256) % 256)
+    // Stage-0 codegen elides `buf_write_byte(buf, X)` when X folds to
+    // a constant 0 at compile time. Both bytes are computed and stored
+    // in locals so they are opaque to constant propagation.
+    let lo: i64 = val % 256
+    let hi: i64 = (val / 256) % 256
+    buf_write_byte(buf, lo)
+    buf_write_byte(buf, hi)
 }
 
 // ===================================================================
@@ -213,10 +218,22 @@ fn coff_write_sym_name(buf: i64, strtab: i64, name: str) {
             buf_write_zeros(buf, pad)
         }
     } else {
-        // Long name: 4 zero bytes + string table offset
+        // Long name: 4 zero bytes + string table offset.
+        //
+        // BUG: stage-1's `buf_write_byte(buf, 0)` is a no-op (literal
+        // zero argument is treated as default value and the call is
+        // elided). To actually write a zero byte we have to launder
+        // the zero through a variable.
         let str_offset = coff_add_string(strtab, name)
-        buf_write_i32_le(buf, 0)
-        buf_write_i32_le(buf, str_offset)
+        let zero: i64 = 0
+        buf_write_byte(buf, zero)
+        buf_write_byte(buf, zero)
+        buf_write_byte(buf, zero)
+        buf_write_byte(buf, zero)
+        buf_write_byte(buf, str_offset % 256)
+        buf_write_byte(buf, (str_offset / 256) % 256)
+        buf_write_byte(buf, (str_offset / 65536) % 256)
+        buf_write_byte(buf, (str_offset / 16777216) % 256)
     }
 }
 
@@ -310,6 +327,7 @@ fn coff_write_relocs(buf: i64, offsets: [i64], sym_idxs: [i64], types: [i64]) {
 
 fn coff_write_symbols(buf: i64, sym_names: [str], sym_values: [i64], sym_sections: [i64], sym_types: [i64], sym_classes: [i64], strtab: i64) {
     let n = len(sym_names)
+    let zero: i64 = 0
     for i in range(0, n) {
         // Name[8]
         coff_write_sym_name(buf, strtab, sym_names[i])
@@ -321,8 +339,9 @@ fn coff_write_symbols(buf: i64, sym_names: [str], sym_values: [i64], sym_section
         coff_write_u16_le(buf, sym_types[i])
         // StorageClass (u8)
         buf_write_byte(buf, sym_classes[i])
-        // NumberOfAuxSymbols (u8) -- 0
-        buf_write_byte(buf, 0)
+        // NumberOfAuxSymbols (u8) -- 0 (laundered through var to dodge
+        // stage-1's `buf_write_byte(buf, 0)` no-op codegen bug).
+        buf_write_byte(buf, zero)
     }
 }
 
@@ -399,8 +418,11 @@ fn coff_write(obj: CoffObject, text_buf: i64, data_buf: i64, rdata_buf: i64, pat
     // ---------------------------------------------------------------
     // Finalize string table: patch the size field at offset 0
     // ---------------------------------------------------------------
-    let strtab_size = buf_len(obj.strtab)
-    buf_patch_i32_le(obj.strtab, 0, strtab_size)
+    //
+    // NOTE: the size patch happens *after* coff_write_symbols runs,
+    // because long names (>8 chars) are only appended to obj.strtab
+    // when their symbol is written. Patching here would record only
+    // the 4-byte placeholder.
 
     // ---------------------------------------------------------------
     // Build the output buffer
@@ -412,22 +434,27 @@ fn coff_write(obj: CoffObject, text_buf: i64, data_buf: i64, rdata_buf: i64, pat
 
     // -- Section headers --
 
-    // .text header
+    // .text header. PointerToRawData must be 0 for empty sections
+    // (Microsoft COFF spec). Otherwise dumpbin / link.exe crash with
+    // LNK1000 when they try to read past EOF.
     let mut text_relocs_ptr: i64 = 0
     if num_text_relocs > 0 {
         text_relocs_ptr = text_relocs_offset
     }
-    coff_write_sec_hdr(output, ".text", text_size, text_offset, text_relocs_ptr, num_text_relocs, COFF_TEXT_FLAGS)
+    let text_data_ptr = if text_size > 0 { text_offset } else { 0 }
+    coff_write_sec_hdr(output, ".text", text_size, text_data_ptr, text_relocs_ptr, num_text_relocs, COFF_TEXT_FLAGS)
 
-    // .data header
+    // .data header.
     let mut data_relocs_ptr: i64 = 0
     if num_data_relocs > 0 {
         data_relocs_ptr = data_relocs_offset
     }
-    coff_write_sec_hdr(output, ".data", data_size, data_offset, data_relocs_ptr, num_data_relocs, COFF_DATA_FLAGS)
+    let data_data_ptr = if data_size > 0 { data_offset } else { 0 }
+    coff_write_sec_hdr(output, ".data", data_size, data_data_ptr, data_relocs_ptr, num_data_relocs, COFF_DATA_FLAGS)
 
-    // .rdata header (no relocations)
-    coff_write_sec_hdr(output, ".rdata", rdata_size, rdata_offset, 0, 0, COFF_RDATA_FLAGS)
+    // .rdata header (no relocations).
+    let rdata_data_ptr = if rdata_size > 0 { rdata_offset } else { 0 }
+    coff_write_sec_hdr(output, ".rdata", rdata_size, rdata_data_ptr, 0, 0, COFF_RDATA_FLAGS)
 
     // -- .text raw data --
     coff_copy_buf(output, text_buf)
@@ -445,7 +472,14 @@ fn coff_write(obj: CoffObject, text_buf: i64, data_buf: i64, rdata_buf: i64, pat
     coff_copy_buf(output, rdata_buf)
 
     // -- Symbol table --
+    // (this populates obj.strtab with the long names referenced by
+    // sym records, so the strtab size patch must come after.)
     coff_write_symbols(output, obj.sym_names, obj.sym_values, obj.sym_sections, obj.sym_types, obj.sym_classes, obj.strtab)
+
+    // Now that strtab is final, patch its leading 4-byte size field.
+    let final_strtab_size = buf_len(obj.strtab)
+    let strtab_patch_off: i64 = 0
+    buf_patch_i32_le(obj.strtab, strtab_patch_off, final_strtab_size)
 
     // -- String table --
     coff_copy_buf(output, obj.strtab)
@@ -470,7 +504,9 @@ fn coff_add_func(obj: CoffObject, name: str, offset: i64) -> i64 {
 // ===================================================================
 
 fn coff_add_extern(obj: CoffObject, name: str) -> i64 {
-    return coff_add_symbol(obj, name, 0, IMAGE_SYM_UNDEFINED, IMAGE_SYM_CLASS_EXTERNAL, IMAGE_SYM_TYPE_NULL)
+    let zero: i64 = 0
+    let class_ext: i64 = 2
+    return coff_add_symbol(obj, name, zero, zero, class_ext, zero)
 }
 
 // ===================================================================
