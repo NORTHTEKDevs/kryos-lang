@@ -231,20 +231,57 @@ codegened so the crash can be located precisely on any new repro.
 
 ## Open items for the next session
 
-1. **Stage-1 codegen bug on inline-array StoreField** — pin down with
-   the simplest repro that still triggers (`repros/repro_one_arr_field.kry`,
-   2 MIR fns). Hypothesis: `lower.kry` produces a MIR shape with an
-   anonymous array temp that `regalloc.kry` mishandles, OR
-   `codegen.kry`'s `cg_emit_struct_lit` / `cg_emit_array_lit` interact
-   badly when an array literal is the rvalue of a field store.
-2. **Stage-1 parser drops decls** — `lexer.kry` has 22 top-level decls
+### Highest-value lead: kryos_array_clone shallow-copy double-free
+
+**Hypothesis (likely the next root cause).** Stage-1's @copy structs
+that contain `[str]` / `[[T]]` / `[Struct]` fields trigger a
+**double-free** under the current `kryos_array_clone` semantics:
+
+- `compiler/crates/kryos-rt/src/array.rs:kryos_array_clone` allocates
+  a new array and does `ptr::copy_nonoverlapping((*arr).data,
+  (*result).data, len * ELEM_SIZE)`. That bulk-copy duplicates the
+  element pointers verbatim — no per-element clone / no ref_count
+  bump on heap-pointer elements.
+- The new clone array has `ref_count = 1`. The original still has
+  `ref_count = 1`. Both arrays now own the same string/sub-array
+  pointers.
+- Drop (`compiler/crates/kryos-codegen-cranelift/src/codegen.rs`
+  line 5681, `MirType::Array` branch) iterates elements when
+  `ref_count == 1` and calls `kryos_string_free` /
+  `kryos_array_free` / `__kryos_drop_<Struct>` per element.
+- When BOTH the original and the clone get dropped — each one is
+  sole owner of its array header, so each enters the iterate-and-free
+  branch — they both free the SAME element pointers. Double-free.
+
+Empirically matches the symptoms: heap-fragmentation-sensitive
+crashes that hit specifically when modules have many @copy structs
+with array-of-pointer fields (`mir.kry`, `lower.kry`, etc.) and
+that don't trigger on the smaller bootstrap-OK modules.
+
+**Fix paths:**
+1. Per-element deep-clone in `kryos_array_clone`. Needs element type
+   info at runtime — KryosArray has `elem_size` but no type tag.
+   Could store a per-array drop-fn pointer in the header.
+2. In codegen.rs `RValue::Struct` (line 3895) and `emit_deep_copy_struct`,
+   after calling `kryos_array_clone`, iterate elements and call
+   appropriate per-element clone (`kryos_string_clone` /
+   recursive `kryos_array_clone` / `__kryos_clone_<Struct>`).
+   This is the canonical fix — keeps the runtime polymorphism-free.
+3. Or: change @copy struct array fields to use retain semantics
+   (`kryos_array_retain`) instead of clone, sharing the underlying
+   array. Breaks @copy invariant on mutation but most stage-1 @copy
+   structs don't mutate after copy. Diagnostic value.
+
+### Other open items
+
+1. **Stage-1 parser drops decls** — `lexer.kry` has 22 top-level decls
    but the parser only reports 18. Bisect: parser bails on something in
    `lex_scan_string` (line 192-272). Lex_scan_string has nested while
    with `continue` inside it.
-3. **Stage-1 type checker is incomplete** — produces many false-positive
+2. **Stage-1 type checker is incomplete** — produces many false-positive
    errors on source that stage-0 type-checks cleanly. KRYOS_SKIP_TYPES=1
    added as escape hatch but proper fix needed for production.
-4. **Optimizer disabled on obj path** — even constant_fold causes
+3. **Optimizer disabled on obj path** — even constant_fold causes
    lower to subsequently crash. Symptom of the same regalloc/codegen
    fragility above.
-5. **Stage-3 fixed point** — gated on every module above passing.
+4. **Stage-3 fixed point** — gated on every module above passing.
