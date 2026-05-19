@@ -4,6 +4,20 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.25.0-rc.1] — 2026-05-18 — "std::histogram"
+
+### Added
+
+- **`std::histogram`** — fixed-bucket histogram with under/overflow:
+  - `hist_record(edges, n, counts, value)` — increment matching bucket
+  - `hist_total(counts, n)` — sum across all buckets
+  - `hist_percentile(edges, n, counts, p)` — pXX edge lookup
+- 2 new tests. 78 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.24.0-rc.1` to `4.25.0-rc.1`.
+
 ## [4.24.0-rc.1] — 2026-05-18 — "std::utf8 helpers"
 
 ### Added
