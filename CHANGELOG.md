@@ -4,6 +4,22 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.26.0-rc.1] — 2026-05-18 — "std::ratelimit (token bucket)"
+
+### Added
+
+- **`std::ratelimit`** — token-bucket rate limiter:
+  - `ratelimit_init(state, capacity, refill_per_sec, now_nanos)`
+  - `ratelimit_try_acquire(state, now_nanos)` → 1 if allowed / 0 if limited
+  - `ratelimit_tokens(state)` — current available token count
+  - Fixed-point milli-tokens internally; no float math at FFI.
+- 4 new tests (initial-full, drain-and-block, refill-over-time,
+  capped-at-capacity). 82 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.25.0-rc.1` to `4.26.0-rc.1`.
+
 ## [4.25.0-rc.1] — 2026-05-18 — "std::histogram"
 
 ### Added

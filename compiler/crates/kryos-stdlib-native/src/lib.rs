@@ -71,6 +71,7 @@ pub mod process;
 pub mod queue;
 pub mod rand;
 pub mod random;
+pub mod ratelimit;
 pub mod re;
 pub mod set;
 pub mod sort;
