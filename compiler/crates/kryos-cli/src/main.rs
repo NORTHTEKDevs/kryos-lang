@@ -94,6 +94,10 @@ enum Commands {
         /// Source file to run
         file: String,
 
+        /// Print compile + exec + total timings after the program exits.
+        #[arg(long)]
+        time: bool,
+
         /// Arguments to pass to the program
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
@@ -458,7 +462,13 @@ fn main() {
             )
         }
 
-        Commands::Run { file, args } => commands::run::execute(&file, &args),
+        Commands::Run { file, args, time } => {
+            if time {
+                commands::run::execute_timed(&file, &args)
+            } else {
+                commands::run::execute(&file, &args)
+            }
+        }
 
         Commands::Check {
             path,

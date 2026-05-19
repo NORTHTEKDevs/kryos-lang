@@ -17,6 +17,7 @@ pub mod hover;
 pub mod inlay_hints;
 pub mod protocol;
 pub mod references;
+pub mod semantic_tokens;
 pub mod server;
 pub mod signature_help;
 pub mod workspace_symbols;

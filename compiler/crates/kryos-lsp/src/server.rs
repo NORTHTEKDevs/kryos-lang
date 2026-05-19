@@ -15,6 +15,7 @@ use crate::hover;
 use crate::inlay_hints;
 use crate::protocol::{self, Message};
 use crate::references;
+use crate::semantic_tokens;
 use crate::signature_help;
 use crate::workspace_symbols;
 
@@ -124,6 +125,10 @@ impl LspServer {
                             "inlayHintProvider": true,
                             "codeActionProvider": {
                                 "codeActionKinds": ["quickfix"],
+                            },
+                            "semanticTokensProvider": {
+                                "legend": semantic_tokens::legend(),
+                                "full": true,
                             },
                         },
                         "serverInfo": {
@@ -311,6 +316,15 @@ impl LspServer {
                     inlay_hints::inlay_hints(source, start, end)
                 } else {
                     serde_json::json!([])
+                };
+                Some(protocol::make_response(id.clone(), result))
+            }
+            "textDocument/semanticTokens/full" => {
+                let uri = params.pointer("/textDocument/uri")?.as_str()?;
+                let result = if let Some(source) = self.documents.get(uri) {
+                    semantic_tokens::semantic_tokens(source)
+                } else {
+                    serde_json::json!({ "data": [] })
                 };
                 Some(protocol::make_response(id.clone(), result))
             }

@@ -4,6 +4,27 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.14.0-rc.1] — 2026-05-18 — "semantic tokens + run timing"
+
+### Added
+
+- **LSP `textDocument/semanticTokens/full`** — accurate semantic
+  syntax highlighting. Lexes the source, looks up identifier role from
+  an in-file symbol map (function / struct / enum / variant / param /
+  variable / property), and emits the LSP delta-encoded token stream.
+  Builtins (`println`, `to_string`, `len`, etc.) get the `macro` color
+  so they stand out from user-defined names. 12 token types, 5 modifiers
+  declared in the legend.
+- **`kryos run --time`** — prints
+  `compile: Xms, exec: Yms, total: Zms` to stderr after the program
+  exits. Useful for diagnosing whether compile-time or runtime is the
+  bottleneck.
+- 3 new tests in `kryos-lsp/tests/v314_semantic_tokens.rs`.
+
+### Changed
+
+- Workspace version bumped from `3.13.0-rc.1` to `3.14.0-rc.1`.
+
 ## [3.13.0-rc.1] — 2026-05-18 — "where-clauses + coverage"
 
 ### Added

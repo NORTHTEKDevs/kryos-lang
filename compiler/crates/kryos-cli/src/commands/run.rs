@@ -1,12 +1,24 @@
 //! `kryos run` — compile and execute a Kryos file.
 
 use std::path::Path;
+use std::time::Instant;
 
 use kryos_driver::{BuildConfig, BuildMode, OutputType};
 use kryos_errors::render_diagnostic;
 
-/// Execute the run command.
+/// Execute the run command without timing output (the historical entry point).
 pub fn execute(file: &str, args: &[String]) -> Result<(), String> {
+    execute_inner(file, args, false)
+}
+
+/// Execute with `--time` enabled — prints "compile: Xms, exec: Yms, total: Zms"
+/// to stderr after the program exits.
+pub fn execute_timed(file: &str, args: &[String]) -> Result<(), String> {
+    execute_inner(file, args, true)
+}
+
+fn execute_inner(file: &str, args: &[String], time: bool) -> Result<(), String> {
+    let total_start = Instant::now();
     let path = Path::new(file);
 
     if !path.exists() {
@@ -56,8 +68,10 @@ pub fn execute(file: &str, args: &[String]) -> Result<(), String> {
 
     // Compile first, then execute.
     // `run` always uses the fast Cranelift backend (debug mode).
+    let compile_start = Instant::now();
     let backend = kryos_codegen_cranelift::CraneliftBackend::new();
     let result = kryos_driver::compile_file_with_backend(path, &config, Some(&backend));
+    let compile_elapsed = compile_start.elapsed();
 
     for diag in &result.diagnostics {
         let rendered = render_diagnostic(diag, &result.source_map);
@@ -70,12 +84,23 @@ pub fn execute(file: &str, args: &[String]) -> Result<(), String> {
 
     match result.output_path {
         Some(ref bin) => {
+            let exec_start = Instant::now();
             let status = std::process::Command::new(bin)
                 .args(args)
                 .status()
                 .map_err(|e| format!("failed to execute `{bin}`: {e}"))?;
+            let exec_elapsed = exec_start.elapsed();
             // Clean up the temp binary produced by `kryos run`
             let _ = std::fs::remove_file(bin);
+            if time {
+                let total = total_start.elapsed();
+                eprintln!(
+                    "\x1b[36mkryos run\x1b[0m  compile: {}ms, exec: {}ms, total: {}ms",
+                    compile_elapsed.as_millis(),
+                    exec_elapsed.as_millis(),
+                    total.as_millis()
+                );
+            }
             if !status.success() {
                 std::process::exit(status.code().unwrap_or(1));
             }
