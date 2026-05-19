@@ -1,0 +1,46 @@
+// Probe: @copy struct with [Struct] field, many copies happen.
+// Hypothesis: this is the heap-corruption pattern that crashes
+// mir.kry / lower.kry / etc on stage-1's codegen.
+
+@copy
+struct Item {
+    name: str,
+    val: i32
+}
+
+@copy
+struct Bag {
+    items: [Item]
+}
+
+fn make_item(n: str, v: i32) -> Item {
+    return Item { name: n, val: v }
+}
+
+fn make_bag() -> Bag {
+    let empty: [Item] = []
+    let mut b = Bag { items: empty }
+    let i1 = make_item("alpha", 1)
+    let i2 = make_item("beta", 2)
+    let i3 = make_item("gamma", 3)
+    push(b.items, i1)
+    push(b.items, i2)
+    push(b.items, i3)
+    return b
+}
+
+fn use_bag(b: Bag) -> i32 {
+    let mut sum = 0
+    for i in range(0, len(b.items)) {
+        sum = sum + b.items[i].val
+    }
+    return sum
+}
+
+fn main() {
+    let b = make_bag()
+    let s1 = use_bag(b)
+    let s2 = use_bag(b)
+    let s3 = use_bag(b)
+    println("sum: " + to_string(s1 + s2 + s3))
+}
