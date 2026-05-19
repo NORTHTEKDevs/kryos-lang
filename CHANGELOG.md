@@ -4,6 +4,36 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.0.0-rc.1] — 2026-05-18 — "stability statement, v4.x line begins"
+
+This is the first cut of the v4.x line. **The CLI surface, LSP method
+set, stdlib symbol table, and ABI symbols are now frozen for v4.x.y
+backwards compatibility.** Future minor releases are forward-additive
+only — no rename, no removal, no signature change for the items listed
+in `STABILITY-v4.0.md`.
+
+### Added
+
+- **`STABILITY-v4.0.md`** — 8-section semver contract covering source,
+  ABI, CLI, LSP, platform support, release process, and migration
+  paths from v3.x.
+- The 26+ subcommands accumulated across v3.0..v3.17 are now part of
+  the stable v4 CLI surface.
+- The 15 LSP methods implemented across v3.0..v3.15 are now part of
+  the stable v4 LSP surface.
+- The stdlib expansions (datetime, re, base64, uuid) are now part of
+  the stable v4 std::* surface.
+
+### Migration from v3.17
+
+- `kryos --version` reports `4.0.0-rc.1` (was `3.17.0-rc.1`).
+- No source-level or behavior changes for existing programs.
+- Pre-1.0 caveats from the v3.0 stability statement no longer apply.
+
+### Changed
+
+- Workspace version bumped from `3.17.0-rc.1` to `4.0.0-rc.1`.
+
 ## [3.17.0-rc.1] — 2026-05-18 — "command reference + polish"
 
 ### Added
