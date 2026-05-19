@@ -197,7 +197,7 @@ OK    runtime.kry    (75 decls,  75 MIR fns)
 OK    main.kry       (18 decls,  10 MIR fns)
 ```
 
-**12/16 modules pass stage-1.** Up from 4/16 prior to the fix
+**11/16 modules pass stage-1.** Up from 4/16 prior to the fix
 (token, ast, x86, runtime — the Cranelift-overrun bug was crashing
 the rest non-deterministically).
 
@@ -213,13 +213,19 @@ the rest non-deterministically).
 | optimize   | FAIL       | FAIL                         | FAIL                         |
 | regalloc   | FAIL       | FAIL                         | FAIL                         |
 | x86        | OK         | OK                           | OK                           |
-| codegen    | FAIL       | FAIL                         | OK                           |
+| codegen    | FAIL       | FAIL                         | FAIL (flaky, sometimes OK)   |
 | elf        | FAIL       | OK (skip-types)              | OK (skip-types)              |
 | coff       | FAIL       | OK (skip-types)              | OK (skip-types)              |
 | linker     | FAIL       | OK (skip-types)              | OK (skip-types)              |
 | runtime    | OK         | OK                           | OK                           |
 | main       | FAIL       | OK (skip-types)              | OK (skip-types)              |
-| **TOTAL**  | **4/16**   | **10/16**                    | **12/16**                    |
+| **TOTAL**  | **4/16**   | **10/16**                    | **11/16 (codegen flaky)**    |
+
+The "flaky" mark on codegen.kry: across recent test runs it has
+both passed and failed on identical source, indicating the same
+heap-fragmentation-sensitive bug class that blocks mir/lower/
+optimize/regalloc. So 11/16 is the firm count; codegen.kry hops
+the line depending on heap state.
 
 The remaining 6 modules crash with a DIFFERENT bug class, also in
 stage-1's codegen. Investigation narrowed it to functions that contain
