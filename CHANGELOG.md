@@ -4,6 +4,24 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.1.0-rc.1] — 2026-05-18 — "stdlib: sort + log"
+
+### Added
+
+- **`std::sort`** — `kryos_sort_i64`, `kryos_sort_i64_reverse`,
+  `kryos_sort_f64`, `kryos_bsearch_i64`, `kryos_is_sorted_i64`. Uses
+  Rust's Timsort under the hood; in-place, no allocation.
+- **`std::log`** — structured single-line logging to stderr.
+  `LEVEL ts=<epoch_secs> msg="..." k=v k=v` format. 6 levels (trace,
+  debug, info, warn, error, fatal) with runtime-settable min-level via
+  `kryos_log_set_level`.
+- 5 new tests in `kryos-stdlib-native::sort` + 1 in `log`. All 17
+  stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.0.0-rc.1` to `4.1.0-rc.1`.
+
 ## [4.0.0-rc.1] — 2026-05-18 — "stability statement, v4.x line begins"
 
 This is the first cut of the v4.x line. **The CLI surface, LSP method

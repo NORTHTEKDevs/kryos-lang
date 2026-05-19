@@ -51,12 +51,14 @@ pub mod ffi;
 pub mod fs;
 pub mod io;
 pub mod json;
+pub mod log;
 pub mod math;
 pub mod net;
 pub mod path;
 pub mod process;
 pub mod rand;
 pub mod re;
+pub mod sort;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 pub mod string;
