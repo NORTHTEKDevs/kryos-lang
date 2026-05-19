@@ -1,0 +1,10 @@
+// Probe: does stage-1's type checker accept i32 vs integer literal?
+
+fn check(x: i32) -> bool {
+    return x == 0
+}
+
+fn main() {
+    let r = check(5)
+    println(to_string(r))
+}

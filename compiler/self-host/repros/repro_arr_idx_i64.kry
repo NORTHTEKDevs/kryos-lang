@@ -1,0 +1,10 @@
+// Probe: array index with i64
+
+fn first(arr: [i32]) -> i32 {
+    return arr[0]
+}
+
+fn main() {
+    let a: [i32] = [1, 2, 3]
+    println(to_string(first(a)))
+}

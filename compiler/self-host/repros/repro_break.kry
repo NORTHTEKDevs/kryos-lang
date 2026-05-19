@@ -1,0 +1,17 @@
+// Probe whether stage-1's parser handles `break` inside a while.
+
+fn find_first_zero(arr: [i32]) -> i32 {
+    let mut i = 0
+    while i < len(arr) {
+        if arr[i] == 0 {
+            break
+        }
+        i = i + 1
+    }
+    return i
+}
+
+fn main() {
+    let a: [i32] = [1, 2, 0, 3]
+    println(to_string(find_first_zero(a)))
+}

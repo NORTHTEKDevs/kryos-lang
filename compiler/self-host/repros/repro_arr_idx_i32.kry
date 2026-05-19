@@ -1,0 +1,10 @@
+// Probe: array index with i32 variable
+
+fn nth(arr: [i32], i: i32) -> i32 {
+    return arr[i]
+}
+
+fn main() {
+    let a: [i32] = [1, 2, 3]
+    println(to_string(nth(a, 1)))
+}

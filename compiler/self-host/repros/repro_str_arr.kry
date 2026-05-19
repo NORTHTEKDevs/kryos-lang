@@ -1,0 +1,11 @@
+// Probe: does stage-1 correctly store + iterate strings in an array?
+
+fn main() {
+    let mut errs: [str] = []
+    push(errs, "hello")
+    push(errs, "world")
+    println("count: " + to_string(len(errs)))
+    for i in range(0, len(errs)) {
+        println("  " + errs[i])
+    }
+}
