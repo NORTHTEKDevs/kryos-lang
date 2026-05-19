@@ -44,7 +44,9 @@ if errorlevel 1 exit /b 1
 
 echo [2/2] msvc-link: %OBJ% -^> %OUTPUT%
 call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >NUL
-link.exe /NOLOGO /SUBSYSTEM:CONSOLE /ENTRY:mainCRTStartup /OUT:"%OUTPUT%" "%OBJ%" "%HERE%kryos_runtime.lib" kernel32.lib
+link.exe /NOLOGO /SUBSYSTEM:CONSOLE /ENTRY:mainCRTStartup /OUT:"%OUTPUT%" "%OBJ%" ^
+    "%HERE%kryos_runtime.lib" ^
+    kernel32.lib
 if errorlevel 1 exit /b 1
 
 echo done: %OUTPUT%

@@ -981,34 +981,30 @@ fn cg_emit_field_access(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_re
 fn cg_emit_index(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) {
     let buf = ctx.text_buf
     if len(rv.index_obj) > 0 and len(rv.index_idx) > 0 {
+        // arr is a pointer to the KryosArray header:
+        //   { i64 len, i64 cap, i64 elem_size, i64 ref_count, *u8 data }
+        // data lives at offset 32 from the header.
         let arr_reg = cg_load_operand(ctx, ra, rv.index_obj[0], REG_R10)
         let idx_reg = cg_load_operand(ctx, ra, rv.index_idx[0], REG_R11)
-        // Array elements are 8 bytes each
-        // LEA scratch, [arr + idx*8]
-        // We can't directly encode SIB scale*index+base easily
-        // Instead: imul idx, 8; add arr, idx; mov dest, [arr]
-        x86_imul_reg_reg(buf, idx_reg, idx_reg)  // This is wrong, need *8
-        // Actually: shl idx, 3 (multiply by 8)
-        // Save RCX if needed
-        x86_mov_reg_reg(buf, REG_RCX, idx_reg)  // move idx to RCX... no
-        // Simpler approach: shift left by 3
-        // We need idx in some register, shift it, add to base, load
-        // Use R11 for idx
+        // Move both to scratch registers we own, so we can clobber.
+        if arr_reg != REG_R10 {
+            x86_mov_reg_reg(buf, REG_R10, arr_reg)
+        }
         if idx_reg != REG_R11 {
             x86_mov_reg_reg(buf, REG_R11, idx_reg)
         }
-        // shl R11, 3  (multiply by 8)
-        // Need CL = 3 for variable shift, or use imm8 shift
-        // SHL r64, imm8: REX.W + C1 /4 ib
+        // R10 = arr_header_ptr. Load data pointer: r10 = [r10 + 32].
+        x86_mov_reg_mem(buf, REG_R10, REG_R10, 32)
+        // shl R11, 3  (multiply index by 8)  -- C1 /4 ib
         let rex = x86_rex(1, 0, 0, x86_reg_rex_bit(REG_R11))
         buf_write_byte(buf, rex)
         buf_write_byte(buf, 0xC1)
         buf_write_byte(buf, x86_modrm(3, 4, x86_reg_lo3(REG_R11)))
-        buf_write_byte(buf, 3)  // shift by 3 = multiply by 8
-        // add arr, idx*8
-        x86_add_reg_reg(buf, arr_reg, REG_R11)
-        // load [arr + idx*8]
-        x86_mov_reg_mem(buf, dest_reg, arr_reg, 0)
+        buf_write_byte(buf, 3)
+        // r10 = data + idx*8
+        x86_add_reg_reg(buf, REG_R10, REG_R11)
+        // dest = [r10]
+        x86_mov_reg_mem(buf, dest_reg, REG_R10, 0)
     }
 }
 
@@ -1053,9 +1049,18 @@ fn cg_emit_struct_lit(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg:
 fn cg_emit_array_lit(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) {
     let buf = ctx.text_buf
     let n_elems = len(rv.elements)
-    // Array = header (length, capacity, data pointer) or just raw allocation
-    // Call runtime: kryos_array_new() then kryos_array_push for each element
-    // For simplicity: call runtime
+    let is_win = ctx.target_os == "windows"
+    let r_arg0: i32 = if is_win { REG_RCX } else { REG_RDI }
+    let r_arg1: i32 = if is_win { REG_RDX } else { REG_RSI }
+    let shadow: i32 = if is_win { 32 } else { 0 }
+
+    // Call kryos_array_new(elem_size=8, cap=n_elems_or_4).
+    x86_mov_reg_imm32(buf, r_arg0, 8)
+    let init_cap: i32 = if n_elems > 0 { n_elems } else { 4 }
+    x86_mov_reg_imm32(buf, r_arg1, init_cap)
+    if shadow > 0 {
+        x86_sub_reg_imm32(buf, REG_RSP, shadow)
+    }
     push(ctx.relocations, LinkerReloc {
         offset: buf_len(buf) + 1,
         symbol_name: "kryos_array_new",
@@ -1063,29 +1068,43 @@ fn cg_emit_array_lit(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: 
         addend: -4
     })
     x86_call_rel32(buf, 0)
-    // RAX = array handle
-    // Save array handle
+    if shadow > 0 {
+        x86_add_reg_imm32(buf, REG_RSP, shadow)
+    }
+    // RAX = array handle. Save on stack across element pushes.
     x86_push_reg(buf, REG_RAX)
+
     let mut i = 0
     while i < n_elems {
-        // Load element
-        let elem_reg = cg_load_operand(ctx, ra, rv.elements[i], REG_RSI)
-        if elem_reg != REG_RSI {
-            x86_mov_reg_reg(buf, REG_RSI, elem_reg)
+        // Win64 push needs an 8-byte stack adjustment to keep rsp
+        // 16-aligned across the call (since we just pushed RAX).
+        if shadow > 0 {
+            x86_sub_reg_imm32(buf, REG_RSP, 8)
+            x86_sub_reg_imm32(buf, REG_RSP, shadow)
         }
-        // Load array handle from stack
-        x86_mov_reg_mem(buf, REG_RDI, REG_RSP, 0)
-        // Call push
+        // Load element value into r_arg1 (second arg of push).
+        let elem_reg = cg_load_operand(ctx, ra, rv.elements[i], r_arg1)
+        if elem_reg != r_arg1 {
+            x86_mov_reg_reg(buf, r_arg1, elem_reg)
+        }
+        // Load array handle from the saved slot. Win64: rsp moved by
+        // (shadow + 8), so handle is at [rsp + shadow + 8].
+        let saved_off: i32 = if is_win { shadow + 8 } else { 0 }
+        x86_mov_reg_mem(buf, r_arg0, REG_RSP, saved_off)
         push(ctx.relocations, LinkerReloc {
             offset: buf_len(buf) + 1,
-            symbol_name: "kryos_array_push",
+            symbol_name: "kryos_builtin_push",
             rel_type: LREL_PC32,
             addend: -4
         })
         x86_call_rel32(buf, 0)
+        if shadow > 0 {
+            x86_add_reg_imm32(buf, REG_RSP, shadow)
+            x86_add_reg_imm32(buf, REG_RSP, 8)
+        }
         i = i + 1
     }
-    // Pop array handle into dest
+    // Pop array handle into dest_reg.
     x86_pop_reg(buf, dest_reg)
 }
 
