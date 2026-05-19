@@ -4,6 +4,22 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.22.0-rc.1] — 2026-05-18 — "std::bloom filter"
+
+### Added
+
+- **`std::bloom`** — bloom filter (probabilistic set membership):
+  - `bloom_add(bits, bits_cap, data, len)` — insert
+  - `bloom_contains(bits, bits_cap, data, len)` → 1 (possibly present)
+    or 0 (definitely absent)
+  - `bloom_load_ppm(bits, bits_cap)` → load factor in parts-per-thousand
+  - 7-probe FNV-1a double hashing, ~1% FPR at 10 bits/element.
+- 3 new tests. 69 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.21.0-rc.1` to `4.22.0-rc.1`.
+
 ## [4.21.0-rc.1] — 2026-05-18 — "std::heap (binary min-heap)"
 
 ### Added
