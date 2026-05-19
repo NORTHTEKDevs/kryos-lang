@@ -625,13 +625,22 @@ fn ra_fix_arg_intervals(intervals: [LiveInterval], func: MirFunction, target_os:
     let mut pi = 0
     while pi < len(func.params) {
         if pi < arg_reg_count {
+            // Spill every register-passed parameter to a fixed stack
+            // slot at function entry. This is slower than keeping them
+            // in a register, but it sidesteps the cross-call clobber
+            // problem: `fib(n)` then doing `fib(n-2)` after `fib(n-1)`
+            // would otherwise see RCX clobbered. The prologue emits
+            // the actual store; uses load from [rbp - slot].
+            //
+            // spill_slot is a slot INDEX (cg_stack_offset multiplies
+            // by 8). pi maps to slot pi; linear_scan starts allocating
+            // local spill slots at len(params).
             let param_local = func.params[pi].local_id
-            let arg_reg = ra_arg_reg_for(target_os, pi)
-
             let mut ii = 0
             while ii < len(intervals) {
                 if intervals[ii].local_id == param_local {
-                    intervals[ii].reg = arg_reg
+                    intervals[ii].reg = REG_SPILLED
+                    intervals[ii].spill_slot = pi
                     intervals[ii].is_fixed = true
                     ii = len(intervals)  // break
                 } else {
@@ -761,7 +770,18 @@ fn ra_linear_scan(intervals: [LiveInterval]) -> RegAllocResult {
 
     let pool = reg_pool_new()
     let mut active: [LiveInterval] = []
+    // Start spill-slot allocation past any slots already used by
+    // fixed-spilled intervals (function parameters).
     let mut next_spill_slot = 0
+    let mut si = 0
+    while si < len(intervals) {
+        if intervals[si].is_fixed and intervals[si].reg == REG_SPILLED {
+            if intervals[si].spill_slot + 1 > next_spill_slot {
+                next_spill_slot = intervals[si].spill_slot + 1
+            }
+        }
+        si = si + 1
+    }
 
     // Reserve registers for fixed intervals (function args)
     let mut fi = 0

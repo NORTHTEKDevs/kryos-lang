@@ -146,8 +146,23 @@ fn cg_lookup_func(ctx: CodegenCtx, name: str) -> i32 {
 // ===================================================================
 
 fn cg_stack_offset(spill_slot: i32) -> i32 {
-    // spill_slot 0 -> [rbp-8], slot 1 -> [rbp-16], etc.
+    // DEPRECATED: ignores callee-saved area, which would alias spills
+    // onto the pushed callee-saved registers. Use cg_stack_offset_ra
+    // instead. Kept for callers that have not been migrated.
     return -8 * (spill_slot + 1)
+}
+
+fn cg_stack_offset_ra(ra: RegAllocResult, spill_slot: i32) -> i32 {
+    // Prologue order:
+    //   push rbp
+    //   mov rbp, rsp
+    //   push <callee-saved>...
+    //   sub rsp, frame
+    // So bytes [rbp-8 .. rbp - 8 * cs_count] hold the saved callee-
+    // saved regs, and the local frame begins at rbp - 8 * cs_count - 8.
+    let cs_count = len(ra.callee_saved)
+    let base: i32 = -8 * cs_count
+    return base - 8 * (spill_slot + 1)
 }
 
 // ===================================================================
@@ -178,6 +193,25 @@ fn cg_emit_prologue(ctx: CodegenCtx, ra: RegAllocResult) {
     }
     if frame > 0 {
         x86_sub_reg_imm32(buf, REG_RSP, frame)
+    }
+    // Spill register-passed parameters to their fixed stack slots.
+    // ra_fix_arg_intervals marked params with reg=REG_SPILLED and
+    // spill_slot=pi. Match each param to its incoming arg register
+    // and store there. Done AFTER frame is allocated so [rbp - off]
+    // is valid stack memory.
+    let mut pi: i32 = 0
+    while pi < len(ra.intervals) {
+        let iv = ra.intervals[pi]
+        if iv.is_fixed and iv.reg == REG_SPILLED and iv.spill_slot >= 0 {
+            // Locate this param's index by spill_slot (we encoded
+            // param-index directly into spill_slot).
+            let arg_reg = cg_arg_reg_for(ctx.target_os, iv.spill_slot)
+            if arg_reg >= 0 {
+                let offset = cg_stack_offset_ra(ra, iv.spill_slot)
+                x86_mov_mem_reg(buf, REG_RBP, offset, arg_reg)
+            }
+        }
+        pi = pi + 1
     }
 }
 
@@ -232,7 +266,7 @@ fn cg_get_local_reg(ctx: CodegenCtx, ra: RegAllocResult, local_id: i32, scratch:
                 return interval.reg
             }
             // Spilled — load into scratch register
-            let offset = cg_stack_offset(interval.spill_slot)
+            let offset = cg_stack_offset_ra(ra, interval.spill_slot)
             x86_mov_reg_mem(ctx.text_buf, scratch, REG_RBP, offset)
             return scratch
         }
@@ -258,7 +292,7 @@ fn cg_store_local(ctx: CodegenCtx, ra: RegAllocResult, local_id: i32, src_reg: i
                 }
             } else {
                 // Spilled — store to stack
-                let offset = cg_stack_offset(interval.spill_slot)
+                let offset = cg_stack_offset_ra(ra, interval.spill_slot)
                 x86_mov_mem_reg(ctx.text_buf, REG_RBP, offset, src_reg)
             }
             return
@@ -1107,22 +1141,33 @@ fn cg_emit_string_concat(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_r
         x86_xor_reg_reg(buf, dest_reg, dest_reg)
         return
     }
-    // Start with first part
-    let r0 = cg_load_operand(ctx, ra, rv.concat_parts[0], REG_RDI)
-    if r0 != REG_RDI {
-        x86_mov_reg_reg(buf, REG_RDI, r0)
+    let is_win = ctx.target_os == "windows"
+    // Per-ABI arg register for str_concat(left, right):
+    //   SYS V: RDI, RSI
+    //   Win64: RCX, RDX
+    let r_left: i32 = if is_win { REG_RCX } else { REG_RDI }
+    let r_right: i32 = if is_win { REG_RDX } else { REG_RSI }
+    let shadow: i32 = if is_win { 32 } else { 0 }
+
+    // Start with first part loaded into the "left" arg register.
+    let r0 = cg_load_operand(ctx, ra, rv.concat_parts[0], r_left)
+    if r0 != r_left {
+        x86_mov_reg_reg(buf, r_left, r0)
     }
     // Concat remaining parts one by one
     let mut i = 1
     while i < n_parts {
-        // Save current result
-        x86_push_reg(buf, REG_RDI)
-        let ri = cg_load_operand(ctx, ra, rv.concat_parts[i], REG_RSI)
-        if ri != REG_RSI {
-            x86_mov_reg_reg(buf, REG_RSI, ri)
+        // Save current accumulator across the call.
+        x86_push_reg(buf, r_left)
+        let ri = cg_load_operand(ctx, ra, rv.concat_parts[i], r_right)
+        if ri != r_right {
+            x86_mov_reg_reg(buf, r_right, ri)
         }
-        x86_pop_reg(buf, REG_RDI)
-        // Call string concat runtime
+        x86_pop_reg(buf, r_left)
+        // Win64 shadow space.
+        if shadow > 0 {
+            x86_sub_reg_imm32(buf, REG_RSP, shadow)
+        }
         push(ctx.relocations, LinkerReloc {
             offset: buf_len(buf) + 1,
             symbol_name: "kryos_str_concat",
@@ -1130,18 +1175,21 @@ fn cg_emit_string_concat(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_r
             addend: -4
         })
         x86_call_rel32(buf, 0)
-        // Result in RAX, move to RDI for next iteration
-        x86_mov_reg_reg(buf, REG_RDI, REG_RAX)
+        if shadow > 0 {
+            x86_add_reg_imm32(buf, REG_RSP, shadow)
+        }
+        // Result in RAX, move to "left" reg for next iteration.
+        x86_mov_reg_reg(buf, r_left, REG_RAX)
         i = i + 1
     }
-    // Final result in RDI (or RAX if only one concat)
+    // Final result in r_left (or RAX if only one concat)
     if n_parts > 1 {
         if dest_reg != REG_RAX {
             x86_mov_reg_reg(buf, dest_reg, REG_RAX)
         }
     } else {
-        if dest_reg != REG_RDI {
-            x86_mov_reg_reg(buf, dest_reg, REG_RDI)
+        if dest_reg != r_left {
+            x86_mov_reg_reg(buf, dest_reg, r_left)
         }
     }
 }

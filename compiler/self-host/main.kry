@@ -479,10 +479,9 @@ fn emit_object(filename: str, output: str) {
     let mir_mod = lower_module(module, tc)
     println("MIR functions: " + to_string(len(mir_mod.functions)))
 
-    // Skip optimizer for the obj path -- inlining merges local IDs
-    // across functions in a way the current regalloc cannot follow,
-    // producing miscompiles where two non-overlapping intervals get
-    // unified and clobber each other.
+    // Optimizer crashes stage-1 with the new [i32]-handle local-id
+    // counter on some programs. Keep it off for the obj path until
+    // opt_inline is taught about the wrapped counter.
     println("Optimization: skipped (obj path)")
 
     let target = detect_target_os()
