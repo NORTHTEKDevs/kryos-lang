@@ -84,6 +84,7 @@ pub mod sort;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 pub mod stack;
+pub mod stat;
 pub mod strext;
 pub mod string;
 pub mod sync_prims;

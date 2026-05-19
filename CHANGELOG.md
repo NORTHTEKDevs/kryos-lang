@@ -4,6 +4,21 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.35.0-rc.1] — 2026-05-18 — "std::stat (running statistics)"
+
+### Added
+
+- **`std::stat`** — Welford's online statistics: count + mean + variance
+  + min + max in O(1) per sample, no buffer needed.
+  - `stat_init`, `stat_add(x)`
+  - `stat_count`, `stat_mean_x1000` (fixed-point), `stat_min`,
+    `stat_max`, `stat_variance`
+- 2 new tests. 107 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.34.0-rc.1` to `4.35.0-rc.1`.
+
 ## [4.34.0-rc.1] — 2026-05-18 — "cookbook batch: 4 new recipes"
 
 ### Added
