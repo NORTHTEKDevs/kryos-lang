@@ -197,9 +197,29 @@ OK    runtime.kry    (75 decls,  75 MIR fns)
 OK    main.kry       (18 decls,  10 MIR fns)
 ```
 
-**10/16 modules pass stage-1.** Up from 4/16 prior to the fix
+**12/16 modules pass stage-1.** Up from 4/16 prior to the fix
 (token, ast, x86, runtime — the Cranelift-overrun bug was crashing
 the rest non-deterministically).
+
+| Module     | Before fix | After cranelift + ty_compat | After lower.kry copy-to-temp |
+|------------|------------|------------------------------|------------------------------|
+| token      | OK         | OK                           | OK                           |
+| lexer      | FAIL       | OK (skip-types)              | OK (skip-types)              |
+| ast        | OK         | OK                           | OK                           |
+| parser     | FAIL       | FAIL                         | OK                           |
+| types      | FAIL       | OK (skip-types)              | OK (skip-types)              |
+| mir        | FAIL       | FAIL                         | FAIL                         |
+| lower      | FAIL       | FAIL                         | FAIL                         |
+| optimize   | FAIL       | FAIL                         | FAIL                         |
+| regalloc   | FAIL       | FAIL                         | FAIL                         |
+| x86        | OK         | OK                           | OK                           |
+| codegen    | FAIL       | FAIL                         | OK                           |
+| elf        | FAIL       | OK (skip-types)              | OK (skip-types)              |
+| coff       | FAIL       | OK (skip-types)              | OK (skip-types)              |
+| linker     | FAIL       | OK (skip-types)              | OK (skip-types)              |
+| runtime    | OK         | OK                           | OK                           |
+| main       | FAIL       | OK (skip-types)              | OK (skip-types)              |
+| **TOTAL**  | **4/16**   | **10/16**                    | **12/16**                    |
 
 The remaining 6 modules crash with a DIFFERENT bug class, also in
 stage-1's codegen. Investigation narrowed it to functions that contain
