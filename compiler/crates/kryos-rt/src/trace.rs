@@ -35,27 +35,113 @@ thread_local! {
 /// stack. Enable from the `kryos trace` subcommand.
 static VERBOSE_TRACE: AtomicBool = AtomicBool::new(false);
 
+/// When set to `true`, every `kryos_trace_enter` call increments a per-name
+/// counter. Read by `kryos profile` at exit to produce a hot-list.
+static PROFILE_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Global counter table — Mutex (not thread-local) so the atexit hook can
+/// safely read it during shutdown without hitting TLS destruction-order
+/// issues.
+static PROFILE_COUNTS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, u64>>,
+> = std::sync::OnceLock::new();
+
+fn profile_counts(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, u64>> {
+    PROFILE_COUNTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
 /// Toggle verbose tracing globally. Safe to call from outside Kryos code
 /// (e.g. from a host CLI command before invoking JIT-compiled main).
 pub fn set_verbose_trace(on: bool) {
     VERBOSE_TRACE.store(on, Ordering::Relaxed);
 }
 
+/// Toggle profile (call-count) mode. When on, each trace_enter increments
+/// a counter keyed by function name. Read via `take_profile_counts`.
+pub fn set_profile_mode(on: bool) {
+    PROFILE_MODE.store(on, Ordering::Relaxed);
+}
+
+/// Atomically remove and return all accumulated profile counts.
+/// Returns a Vec of (name, count) sorted descending by count.
+pub fn take_profile_counts() -> Vec<(String, u64)> {
+    let map = profile_counts();
+    let guard = match map.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    let mut v: Vec<(String, u64)> = guard.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1));
+    v
+}
+
+fn profile_mode_enabled() -> bool {
+    PROFILE_MODE.load(Ordering::Relaxed)
+}
+
 fn verbose_trace_enabled() -> bool {
     // Lazy env probe: read once at runtime startup. The atomic flag is
-    // mutable in-process; the env variable lets child processes spawned by
-    // `kryos trace` inherit the setting without explicit plumbing.
+    // mutable in-process; the env variables let child processes spawned by
+    // `kryos trace` or `kryos profile` inherit the setting without explicit
+    // plumbing.
     use std::sync::atomic::{AtomicU8, Ordering as O};
-    static ENV_PROBED: AtomicU8 = AtomicU8::new(0); // 0=unprobed, 1=off, 2=on
+    static ENV_PROBED: AtomicU8 = AtomicU8::new(0); // 0=unprobed, 1=done
     let probed = ENV_PROBED.load(O::Relaxed);
     if probed == 0 {
-        let on = std::env::var("KRYOS_TRACE").map(|v| v != "0" && !v.is_empty()).unwrap_or(false);
-        ENV_PROBED.store(if on { 2 } else { 1 }, O::Relaxed);
-        if on {
+        let trace_on =
+            std::env::var("KRYOS_TRACE").map(|v| v != "0" && !v.is_empty()).unwrap_or(false);
+        let profile_on =
+            std::env::var("KRYOS_PROFILE").map(|v| v != "0" && !v.is_empty()).unwrap_or(false);
+        if trace_on {
             VERBOSE_TRACE.store(true, Ordering::Relaxed);
         }
+        if profile_on {
+            PROFILE_MODE.store(true, Ordering::Relaxed);
+            // Register an atexit-style hook via a Drop guard on a static.
+            install_profile_dump_hook();
+        }
+        ENV_PROBED.store(1, O::Relaxed);
     }
     VERBOSE_TRACE.load(Ordering::Relaxed)
+}
+
+/// Install a hook that dumps the profile counts on process exit.
+///
+/// Uses libc `atexit` so the dump runs at controlled-shutdown time, *not*
+/// during thread-local destruction (which would deny access to TLS values
+/// and crash with "cannot access a Thread Local Storage value during or
+/// after destruction").
+fn install_profile_dump_hook() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        // SAFETY: libc::atexit takes a `extern "C" fn()` — our hook is
+        // exactly that. The hook only locks a global Mutex and writes to
+        // stderr, both safe at process-exit time.
+        unsafe {
+            extern "C" {
+                fn atexit(cb: extern "C" fn()) -> i32;
+            }
+            atexit(profile_dump_hook);
+        }
+    });
+}
+
+extern "C" fn profile_dump_hook() {
+    let counts = take_profile_counts();
+    if counts.is_empty() {
+        return;
+    }
+    eprintln!();
+    eprintln!(
+        "\x1b[1mkryos profile\x1b[0m — call counts (top {})",
+        counts.len().min(20)
+    );
+    let max_name_w = counts.iter().take(20).map(|(n, _)| n.len()).max().unwrap_or(20);
+    for (name, n) in counts.iter().take(20) {
+        eprintln!("  {:<width$}  {:>10}", name, n, width = max_name_w);
+    }
 }
 
 /// Push a frame onto the call stack. Called at function entry.
@@ -72,7 +158,20 @@ pub extern "C" fn kryos_trace_enter(
     file_len: usize,
     line: u32,
 ) {
-    if verbose_trace_enabled() {
+    // Probe env vars on first call. Re-checks profile/verbose state after.
+    let verbose = verbose_trace_enabled();
+
+    // Cheap path: tag a counter if profile mode is on.
+    if profile_mode_enabled() && !name_ptr.is_null() && name_len > 0 {
+        let name_str = unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
+        };
+        if let Ok(mut counts) = profile_counts().lock() {
+            *counts.entry(name_str.to_string()).or_insert(0) += 1;
+        }
+    }
+
+    if verbose {
         // Lazy borrow of the name/file slices for the rare verbose path.
         let name = if name_ptr.is_null() || name_len == 0 {
             "<unknown>"

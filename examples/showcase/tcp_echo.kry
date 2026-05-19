@@ -1,0 +1,41 @@
+// tcp_echo.kry — a TCP echo server.
+//
+// Listens on 127.0.0.1:7000 and echoes each line back to the client.
+// Stops after `max_clients` connections to keep CI / smoke runs bounded.
+//
+// Test from another terminal:
+//   nc 127.0.0.1 7000
+//   <type a line, see it echoed back>
+//
+// Demonstrates: std::net (tcp_listen, accept, recv_str, send, close),
+// bounded loop control, basic protocol framing.
+
+use std::net::{tcp_listen, accept, send, recv_str, close}
+
+@capabilities(net, io)
+fn main() {
+    let listener = tcp_listen("127.0.0.1", 7000)
+    println("tcp_echo: listening on 127.0.0.1:7000 (max 100 connections)")
+    let max_clients: i64 = 100
+    let mut served: i64 = 0
+    while served < max_clients {
+        let conn = accept(listener)
+        if conn < 0 {
+            println("tcp_echo: accept failed, retrying")
+            continue
+        }
+        served = served + 1
+        println("tcp_echo: client #" + to_string(served) + " connected")
+
+        // Read up to 4 KB then echo back. Production code would buffer
+        // until newline, but this demo round-trips one read per client.
+        let msg = recv_str(conn, 4096)
+        if len(msg) == 0 {
+            close(conn)
+            continue
+        }
+        send(conn, msg)
+        close(conn)
+    }
+    println("tcp_echo: served " + to_string(max_clients) + " clients, exiting")
+}

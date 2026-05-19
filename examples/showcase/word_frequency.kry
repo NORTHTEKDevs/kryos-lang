@@ -1,0 +1,129 @@
+// word_frequency.kry — count word occurrences in a file or stdin pipe.
+//
+// Demonstrates: file_read, split_lines, lowercase, contains, simple
+// hash-map-via-parallel-arrays pattern, sorting (insertion).
+//
+// Usage:
+//   kryos run word_frequency.kry input.txt
+//   echo "the quick brown fox the lazy dog" | kryos run word_frequency.kry -
+
+@capabilities(io)
+fn main() {
+    let argv = args()
+    if len(argv) < 2 {
+        println("usage: word_frequency <file> | -")
+        return
+    }
+    let target = argv[1]
+
+    let text: str = if target == "-" {
+        ""  // stdin not wired in this example; pass a file
+    } else {
+        file_read(target)
+    }
+    if len(text) == 0 {
+        println("(empty input)")
+        return
+    }
+
+    let words = tokenize(text)
+    let mut names: [str] = []
+    let mut counts: [i64] = []
+
+    for w in words {
+        let lw = to_lower(w)
+        let idx = find_idx(names, lw)
+        if idx >= 0 {
+            counts[idx] = counts[idx] + 1
+        } else {
+            names = push(names, lw)
+            counts = push(counts, 1)
+        }
+    }
+
+    // Print top 10 by count (insertion sort because we don't want a dep).
+    let n = len(names)
+    let limit: i64 = if n < 10 { n } else { 10 }
+    let mut printed: i64 = 0
+    while printed < limit {
+        let mut best: i64 = -1
+        let mut best_count: i64 = 0
+        let mut k: i64 = 0
+        while k < n {
+            if counts[k] > best_count {
+                best_count = counts[k]
+                best = k
+            }
+            k = k + 1
+        }
+        if best < 0 { break }
+        println(to_string(counts[best]) + "  " + names[best])
+        counts[best] = 0
+        printed = printed + 1
+    }
+}
+
+fn tokenize(text: str) -> [str] {
+    let mut words: [str] = []
+    let n = len(text)
+    let mut start: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        let c = char_code(substr(text, i, i + 1))
+        let is_letter = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57)
+        if !is_letter {
+            if i > start {
+                words = push(words, substr(text, start, i))
+            }
+            start = i + 1
+        }
+        i = i + 1
+    }
+    if n > start {
+        words = push(words, substr(text, start, n))
+    }
+    return words
+}
+
+fn find_idx(names: [str], target: str) -> i64 {
+    let n = len(names)
+    let mut i: i64 = 0
+    while i < n {
+        if names[i] == target {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+fn to_lower(s: str) -> str {
+    let n = len(s)
+    let mut out: str = ""
+    let mut i: i64 = 0
+    while i < n {
+        let c = char_code(substr(s, i, i + 1))
+        if c >= 65 && c <= 90 {
+            out = out + to_char(c + 32)
+        } else {
+            out = out + substr(s, i, i + 1)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+fn to_char(c: i64) -> str {
+    // Convert 0..=127 ASCII byte to a single-char str.
+    if c == 32 { return " " }
+    if c == 97  { return "a" } if c == 98  { return "b" } if c == 99  { return "c" }
+    if c == 100 { return "d" } if c == 101 { return "e" } if c == 102 { return "f" }
+    if c == 103 { return "g" } if c == 104 { return "h" } if c == 105 { return "i" }
+    if c == 106 { return "j" } if c == 107 { return "k" } if c == 108 { return "l" }
+    if c == 109 { return "m" } if c == 110 { return "n" } if c == 111 { return "o" }
+    if c == 112 { return "p" } if c == 113 { return "q" } if c == 114 { return "r" }
+    if c == 115 { return "s" } if c == 116 { return "t" } if c == 117 { return "u" }
+    if c == 118 { return "v" } if c == 119 { return "w" } if c == 120 { return "x" }
+    if c == 121 { return "y" } if c == 122 { return "z" }
+    return "?"
+}

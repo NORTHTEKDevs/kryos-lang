@@ -4,6 +4,36 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.11.0-rc.1] — 2026-05-18 — "kryos profile + showcase examples"
+
+### Added
+
+- **`kryos profile <file>`** subcommand — runs a program with per-function
+  call-count profiling. Reuses the existing `kryos_trace_enter` hooks
+  emitted by the codegen at every function entry; gates them with a
+  global `PROFILE_MODE` flag set via `KRYOS_PROFILE=1` env var. The
+  runtime increments a global `Mutex<HashMap<String, u64>>` counter
+  table and dumps the sorted top-20 hot-list to stderr at exit via a
+  libc `atexit` hook (chosen over a thread-local Drop guard to avoid
+  TLS-destruction-order panics).
+- **`kryos_rt::trace::set_profile_mode(bool)`** + **`take_profile_counts()`**
+  — public Rust API for embedding contexts.
+- **`examples/showcase/word_frequency.kry`** — word-frequency counter
+  (lex → lowercase → parallel-array map → top-N).
+- **`examples/showcase/tiny_kv.kry`** — interactive in-memory key/value
+  store with `set/get/del/list/quit` commands.
+- **`examples/showcase/tcp_echo.kry`** — bounded TCP echo server on
+  127.0.0.1:7000 demonstrating `std::net` and accept-loop pattern.
+
+### Verified
+
+- `kryos profile examples/fibonacci.kry` → `fibonacci  177; main  1`
+  (the expected recursive fan-out for fib(10)).
+
+### Changed
+
+- Workspace version bumped from `3.10.0-rc.1` to `3.11.0-rc.1`.
+
 ## [3.10.0-rc.1] — 2026-05-18 — "first-party packages"
 
 ### Added

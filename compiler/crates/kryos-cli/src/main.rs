@@ -183,6 +183,16 @@ enum Commands {
         args: Vec<String>,
     },
 
+    /// Run a Kryos program with call-count profiling
+    Profile {
+        /// File to execute.
+        file: String,
+
+        /// Optional args passed to the program (after `--`).
+        #[arg(last = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
     /// Generate a new Kryos project from a template
     New {
         /// Project name (also the directory name).
@@ -484,6 +494,8 @@ fn main() {
         }
 
         Commands::Trace { file, args } => commands::trace_cmd::execute(&file, &args),
+
+        Commands::Profile { file, args } => commands::profile_cmd::execute(&file, &args),
 
         Commands::New { name, template, path } => {
             commands::new_cmd::execute(commands::new_cmd::NewOptions {

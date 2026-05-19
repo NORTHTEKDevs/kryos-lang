@@ -8,6 +8,7 @@ pub mod check;
 pub mod clean_cmd;
 pub mod lint_cmd;
 pub mod new_cmd;
+pub mod profile_cmd;
 pub mod trace_cmd;
 pub mod watch_cmd;
 pub mod doc;
