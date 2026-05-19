@@ -47,6 +47,7 @@ pub mod base64;
 pub mod bindings;
 pub mod bloom;
 pub mod bytes;
+pub mod circuit;
 pub mod cmd;
 pub mod collections;
 pub mod datetime;

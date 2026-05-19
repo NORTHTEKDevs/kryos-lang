@@ -4,6 +4,23 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.27.0-rc.1] — 2026-05-18 — "std::circuit breaker"
+
+### Added
+
+- **`std::circuit`** — circuit breaker for downstream-flakiness mitigation.
+  Three states (CLOSED / OPEN / HALF_OPEN), threshold-based transition.
+  - `cb_init(state, threshold, reset_nanos)`
+  - `cb_allow(state, now_nanos)` → 1 (proceed) / 0 (fail-fast)
+  - `cb_record_success(state)` — resets to CLOSED
+  - `cb_record_failure(state)` — increments counter; opens on threshold
+  - `cb_state(state)` — read current state
+- 4 new tests. 86 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.26.0-rc.1` to `4.27.0-rc.1`.
+
 ## [4.26.0-rc.1] — 2026-05-18 — "std::ratelimit (token bucket)"
 
 ### Added
