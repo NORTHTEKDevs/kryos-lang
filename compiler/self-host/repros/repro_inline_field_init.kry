@@ -1,0 +1,11 @@
+// Probe: inline array in struct literal initializer (not StoreField)
+struct R { a: [i32] }
+
+fn make_r(x: i32) -> R {
+    return R { a: [x] }
+}
+
+fn main() {
+    let r = make_r(1)
+    println("len: " + to_string(len(r.a)))
+}
