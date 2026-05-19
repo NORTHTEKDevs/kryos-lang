@@ -60,6 +60,7 @@ pub mod io;
 pub mod iter;
 pub mod json;
 pub mod log;
+pub mod lru;
 pub mod math;
 pub mod net;
 pub mod numfmt;

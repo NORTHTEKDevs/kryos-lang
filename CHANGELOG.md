@@ -4,6 +4,22 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.23.0-rc.1] — 2026-05-18 — "std::lru cache"
+
+### Added
+
+- **`std::lru`** — LRU cache over parallel `keys[cap]`, `vals[cap]`,
+  `recency[cap]` arrays + `(len, cap, next_recency)` state. On
+  insert into a full cache, evicts the least-recently-touched entry.
+  - `lru_init`, `lru_put`, `lru_get`, `lru_len`
+  - O(N) per op; for larger N a hash-backed variant is planned.
+- 2 new tests including LRU eviction order verification. 71 total
+  stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.22.0-rc.1` to `4.23.0-rc.1`.
+
 ## [4.22.0-rc.1] — 2026-05-18 — "std::bloom filter"
 
 ### Added
