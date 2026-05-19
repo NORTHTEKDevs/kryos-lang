@@ -4,6 +4,23 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.32.0-rc.1] — 2026-05-18 — "std::fuzzy (Levenshtein + Jaro–Winkler)"
+
+### Added
+
+- **`std::fuzzy`** — fuzzy string distance helpers:
+  - `fuzzy_levenshtein(a, b)` — classic edit distance (insert/delete/
+    substitute = 1)
+  - `fuzzy_jaro_winkler_x1000(a, b)` — Jaro–Winkler similarity as
+    fixed-point 0..=1000 (1000 = identical), with the standard prefix
+    bonus for prefix matches up to 4 chars
+- 4 new tests including the canonical "MARTHA"/"MARHTA" reference case.
+  102 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.31.0-rc.1` to `4.32.0-rc.1`.
+
 ## [4.31.0-rc.1] — 2026-05-18 — "std::trie (prefix tree)"
 
 ### Added

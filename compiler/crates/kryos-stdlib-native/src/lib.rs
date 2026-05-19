@@ -56,6 +56,7 @@ pub mod duration;
 pub mod env;
 pub mod ffi;
 pub mod fs;
+pub mod fuzzy;
 pub mod hash;
 pub mod heap;
 pub mod histogram;
