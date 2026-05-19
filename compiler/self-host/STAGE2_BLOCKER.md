@@ -88,3 +88,45 @@ when struct values are pushed.
 Path 1 is the cleanest near-term workaround. Path 3 is the proper
 fix for the bigger Cranelift-LLVM parity issue and should be done
 regardless.
+
+## Update 2026-05-19 — narrower repro found
+
+Non-determinism reproduces with just **three struct constructions in
+sequence**, no push needed:
+
+```kryos
+struct Tok { kind: i32, pos: i32 }
+fn make_tok(k: i32, p: i32) -> Tok { return Tok { kind: k, pos: p } }
+fn main() {
+    let t1 = make_tok(1, 10)
+    let t2 = make_tok(2, 20)
+    let t3 = make_tok(3, 30)
+    println("done")
+}
+```
+
+Five-run sample: `0 0 139 139 0` (40% segfault rate).
+
+The bug therefore is not specifically about `push(arr, struct_value)`.
+It's triggered by **repeated struct allocations in the same function**.
+Path 1 (rewrite push sites) would not fix this; path 3 (Cranelift
+codegen / drop or struct-store correctness) is required.
+
+Other experiments tried (none changed determinism):
+- `--no-lto` build of stage-1
+- `-g` debug-info build
+- LLVM `--release` mode rejects compile entirely (see top of file).
+
+The bug survives all toolchain knobs available from `kryos build`,
+so it lives in the Rust-side codegen / runtime — most likely in
+`emit_drop_for_value` or the `RValue::Struct` calloc + field-store
+sequence in `compiler/crates/kryos-codegen-cranelift/src/codegen.rs`.
+
+Next session needs to:
+1. Run stage-1 under `cdb`/`windbg` or `gdb` to get a faulting RIP +
+   stack trace.
+2. Cross-reference against the named `__kryos_drop_*` helpers stage-0
+   emits per @copy struct to find the bad load/store.
+3. Likely need a `--validate-cl-ir` flag on stage-0 that asks
+   Cranelift to verify the function after each `RValue::Struct`
+   emission.
