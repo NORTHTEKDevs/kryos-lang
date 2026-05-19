@@ -4,6 +4,21 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.40.0-rc.1] — 2026-05-18 — "std::interval (sorted interval-set ops)"
+
+### Added
+
+- **`std::interval`** — `[start, end)` interval set over caller-owned
+  flat `[i64]` of length `2 * count`:
+  - `interval_merge(intervals, count)` — collapse overlapping/adjacent
+  - `interval_contains(intervals, count, point)` — binary-search membership
+  - `interval_total_length(intervals, count)` — sum of spans
+- 4 new tests. 123 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.39.0-rc.1` to `4.40.0-rc.1`.
+
 ## [4.39.0-rc.1] — 2026-05-18 — "std::matrix (small dense i64 matrices)"
 
 ### Added

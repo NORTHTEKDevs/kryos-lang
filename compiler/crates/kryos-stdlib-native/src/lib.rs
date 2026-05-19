@@ -61,6 +61,7 @@ pub mod fuzzy;
 pub mod hash;
 pub mod heap;
 pub mod histogram;
+pub mod interval;
 pub mod io;
 pub mod iter;
 pub mod json;
