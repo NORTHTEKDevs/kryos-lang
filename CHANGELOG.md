@@ -4,6 +4,22 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.19.0-rc.1] — 2026-05-18 — "std::duration"
+
+### Added
+
+- **`std::duration`** — duration arithmetic + human formatting.
+  Durations are i64 nanoseconds (same shape as `time_now_nanos`).
+  - `dur_from_millis(ms)`, `dur_from_secs(s)`, `dur_from_mins(m)`,
+    `dur_from_hours(h)` — saturating multiplications
+  - `dur_format(nanos, out, cap)` — auto-selects ns/us/ms/s/min+s/h+m
+    output (e.g. `5ms`, `2min5s`, `2h2min`). Handles negatives.
+- 3 new tests. 63 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.18.0-rc.1` to `4.19.0-rc.1`.
+
 ## [4.18.0-rc.1] — 2026-05-18 — "std::bytes"
 
 ### Added

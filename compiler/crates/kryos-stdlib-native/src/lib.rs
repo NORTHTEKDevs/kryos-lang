@@ -49,6 +49,7 @@ pub mod bytes;
 pub mod cmd;
 pub mod collections;
 pub mod datetime;
+pub mod duration;
 pub mod env;
 pub mod ffi;
 pub mod fs;
