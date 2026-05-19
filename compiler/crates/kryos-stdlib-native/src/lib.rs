@@ -52,6 +52,7 @@ pub mod circuit;
 pub mod cmd;
 pub mod collections;
 pub mod datetime;
+pub mod deque;
 pub mod duration;
 pub mod env;
 pub mod ffi;

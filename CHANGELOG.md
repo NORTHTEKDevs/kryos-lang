@@ -4,6 +4,19 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.33.0-rc.1] — 2026-05-18 — "std::deque (double-ended queue)"
+
+### Added
+
+- **`std::deque`** — ring-buffer double-ended queue, O(1) push/pop both ends:
+  - `deque_init`, `deque_push_back`, `deque_push_front`,
+    `deque_pop_back`, `deque_pop_front`
+- 3 new tests (FIFO/LIFO/front-push). 105 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.32.0-rc.1` to `4.33.0-rc.1`.
+
 ## [4.32.0-rc.1] — 2026-05-18 — "std::fuzzy (Levenshtein + Jaro–Winkler)"
 
 ### Added
