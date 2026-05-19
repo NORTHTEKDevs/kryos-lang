@@ -4,6 +4,24 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.3.0-rc.1] — 2026-05-18 — "stdlib: collections + 3 cookbook recipes"
+
+### Added
+
+- **`std::collections`** — slice-level helpers:
+  - `kryos_reservoir_sample` — reservoir sampling (k of n) with LCG
+  - `kryos_dedup_sorted_i64` — in-place dedup of sorted slice
+  - `kryos_reverse_i64` — in-place reverse
+  - `kryos_sum_i64`, `kryos_min_i64`, `kryos_max_i64` — aggregates
+- **`docs/learn/cookbook/11-sorting-data.md`** — sort + bsearch recipe
+- **`docs/learn/cookbook/12-structured-logging.md`** — std::log recipe
+- **`docs/learn/cookbook/13-hashes-and-checksums.md`** — std::hash recipe
+- 4 new tests. 28 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.2.0-rc.1` to `4.3.0-rc.1`.
+
 ## [4.2.0-rc.1] — 2026-05-18 — "stdlib: hash + strext"
 
 ### Added

@@ -45,6 +45,7 @@
 pub mod crypto;
 pub mod base64;
 pub mod bindings;
+pub mod collections;
 pub mod datetime;
 pub mod env;
 pub mod ffi;
