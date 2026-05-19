@@ -66,9 +66,11 @@ pub mod queue;
 pub mod rand;
 pub mod random;
 pub mod re;
+pub mod set;
 pub mod sort;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
+pub mod stack;
 pub mod strext;
 pub mod string;
 pub mod sync_prims;

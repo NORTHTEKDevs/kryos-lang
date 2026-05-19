@@ -4,6 +4,22 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.17.0-rc.1] — 2026-05-18 — "std::stack + std::set"
+
+### Added
+
+- **`std::stack`** — LIFO over `[i64; cap]` + `(top, cap)` state.
+  init/push/pop/peek/len, all O(1).
+- **`std::set`** — sorted-array set. `set_insert` keeps sorted +
+  dedups; `set_contains` is binary search; `set_remove` shifts down.
+  Use for small N (< 1024); larger sets should wait for the planned
+  `std::map::HashSet`.
+- 2 new stack tests + 3 new set tests. 55 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.16.0-rc.1` to `4.17.0-rc.1`.
+
 ## [4.16.0-rc.1] — 2026-05-18 — "std::queue (ring-buffer FIFO)"
 
 ### Added
