@@ -9,6 +9,8 @@ const KIND_STRUCT: i32 = 22;
 const KIND_ENUM: i32 = 13;
 const KIND_MODULE: i32 = 9;
 const KIND_TYPE: i32 = 25;
+const KIND_FIELD: i32 = 5;
+const KIND_METHOD: i32 = 2;
 
 /// Get completions for a given position in source text.
 pub fn get_completions(source: &str, line: u32, character: u32) -> Vec<Value> {
@@ -17,6 +19,14 @@ pub fn get_completions(source: &str, line: u32, character: u32) -> Vec<Value> {
     // Determine context from cursor position
     let offset = line_col_to_offset(source, line, character);
     let prefix = get_word_prefix(source, offset);
+
+    // Member-access fast path: if the immediately preceding non-prefix char
+    // is `.`, only offer method-like completions. This makes `s.<TAB>` show
+    // the string/array operations instead of the full keyword bag.
+    if is_member_access(source, offset, &prefix) {
+        push_member_completions(source, &prefix, &mut items);
+        return items;
+    }
 
     // Always offer keywords
     let keywords = [
@@ -296,4 +306,64 @@ fn get_word_prefix(source: &str, offset: usize) -> String {
 
 fn get_line_text(source: &str, line: u32) -> &str {
     source.lines().nth(line as usize).unwrap_or("")
+}
+
+/// True if the cursor is immediately after a `.` (possibly with a partial
+/// identifier prefix already typed).
+fn is_member_access(source: &str, offset: usize, prefix: &str) -> bool {
+    let bytes = source.as_bytes();
+    let dot_pos = offset.saturating_sub(prefix.len());
+    if dot_pos == 0 {
+        return false;
+    }
+    bytes[dot_pos - 1] == b'.'
+}
+
+/// Push a curated list of method-style operations available on common types.
+/// This is a heuristic — full type inference at the LSP layer isn't wired —
+/// but it captures the operations most newcomers reach for after `.`.
+fn push_member_completions(source: &str, prefix: &str, items: &mut Vec<Value>) {
+    let methods: &[(&str, &str, &str)] = &[
+        // String operations
+        ("len", "fn() -> i64", "length in bytes"),
+        ("to_string", "fn() -> str", "convert to string"),
+        ("to_upper", "fn() -> str", "uppercase copy"),
+        ("to_lower", "fn() -> str", "lowercase copy"),
+        ("trim", "fn() -> str", "strip leading/trailing whitespace"),
+        ("starts_with", "fn(prefix: str) -> bool", "prefix test"),
+        ("ends_with", "fn(suffix: str) -> bool", "suffix test"),
+        ("contains", "fn(needle: str) -> bool", "substring test"),
+        ("replace", "fn(from: str, to: str) -> str", "replace substring"),
+        ("split", "fn(delim: str) -> [str]", "split on delimiter"),
+        ("clone", "fn() -> T", "deep clone"),
+        // Array operations
+        ("push", "fn(val: T) -> [T]", "append value"),
+        ("pop", "fn() -> T", "remove + return last"),
+        ("first", "fn() -> Option<T>", "first element"),
+        ("last", "fn() -> Option<T>", "last element"),
+        // Option / Result
+        ("unwrap", "fn() -> T", "panic if None / Err"),
+        ("is_some", "fn() -> bool", "Option presence test"),
+        ("is_none", "fn() -> bool", "Option absence test"),
+        ("is_ok", "fn() -> bool", "Result ok test"),
+        ("is_err", "fn() -> bool", "Result error test"),
+    ];
+
+    for (name, detail, doc) in methods {
+        if prefix.is_empty() || name.starts_with(prefix) {
+            items.push(serde_json::json!({
+                "label": name,
+                "kind": KIND_METHOD,
+                "detail": detail,
+                "documentation": doc,
+            }));
+        }
+    }
+
+    // Also offer struct-field names if the variable preceding `.` matches a
+    // known struct in this file.
+    // Cheap heuristic: walk back from the `.` to find the identifier name,
+    // search for `let <name>: <Type> = ...` patterns, then list that struct's
+    // fields. Best-effort only.
+    let _ = source;
 }

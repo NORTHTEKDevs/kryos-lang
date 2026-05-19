@@ -322,6 +322,16 @@ enum Commands {
         html: bool,
     },
 
+    /// Generate docs and serve them over HTTP on 127.0.0.1:8088
+    DocServe {
+        /// Files to document (default: all .kry files in cwd)
+        files: Vec<String>,
+
+        /// Bind address (default 127.0.0.1:8088)
+        #[arg(long, value_name = "ADDR")]
+        address: Option<String>,
+    },
+
     /// Generate Kryos bindings from C header files
     Bindgen {
         /// C header file to process
@@ -603,6 +613,13 @@ fn main() {
             output,
             html,
         } => commands::doc::execute(&files, output.as_deref(), html),
+
+        Commands::DocServe { files, address } => {
+            commands::doc_serve_cmd::execute(commands::doc_serve_cmd::DocServeOptions {
+                files,
+                address,
+            })
+        }
 
         Commands::Bindgen { header, output } => {
             commands::bindgen::execute(&header, output.as_deref())

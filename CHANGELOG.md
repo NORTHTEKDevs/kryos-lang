@@ -4,6 +4,26 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.15.0-rc.1] — 2026-05-18 — "doc serve + member-access completion"
+
+### Added
+
+- **`kryos doc serve [files...] [--address ADDR]`** — generates HTML
+  docs into a temp directory then serves them over HTTP on
+  127.0.0.1:8088 (overridable). Built-in std::net listener; serves
+  `index.html` for `/`, mime-typed responses for `.html / .css / .js /
+  .png / .svg / .json`. Press Ctrl-C to stop.
+- **LSP member-access completion** — when the cursor is positioned
+  immediately after a `.`, the completion list switches to a curated
+  set of method-style operations (string ops: `len`, `to_upper`,
+  `trim`, `split`, `contains`; array ops: `push`, `pop`, `first`,
+  `last`; `Option`/`Result` ops: `unwrap`, `is_some`, `is_ok`).
+  Replaces the previously-undifferentiated keyword + builtin bag.
+
+### Changed
+
+- Workspace version bumped from `3.14.0-rc.1` to `3.15.0-rc.1`.
+
 ## [3.14.0-rc.1] — 2026-05-18 — "semantic tokens + run timing"
 
 ### Added
