@@ -80,6 +80,7 @@ pub mod strext;
 pub mod string;
 pub mod sync_prims;
 pub mod term;
+pub mod utf8;
 pub mod unix_socket;
 pub mod uuid;
 pub mod websocket;

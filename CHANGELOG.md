@@ -4,6 +4,24 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.24.0-rc.1] — 2026-05-18 — "std::utf8 helpers"
+
+### Added
+
+- **`std::utf8`** — UTF-8 codepoint helpers:
+  - `utf8_codepoint_count(buf, len)` — proper char count (not byte len)
+  - `utf8_is_valid(buf, len)` — 1 if valid UTF-8, 0 otherwise
+  - `utf8_byte_len(cp)` — encoded byte length (1..=4)
+  - `utf8_encode(cp, out, cap)` — write the bytes of one codepoint
+  - `utf8_byte_offset(buf, len, idx)` — char-N → byte-offset lookup
+  - Surrogate pairs (0xD800..=0xDFFF) and >0x10FFFF rejected as -1.
+- 5 new tests covering ASCII/Latin-1/CJK/emoji + invalid codepoints.
+  76 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.23.0-rc.1` to `4.24.0-rc.1`.
+
 ## [4.23.0-rc.1] — 2026-05-18 — "std::lru cache"
 
 ### Added
