@@ -185,6 +185,12 @@ enum Commands {
         action: WorkspaceAction,
     },
 
+    /// Manage user-level Kryos configuration
+    Config {
+        #[command(subcommand)]
+        action: ConfigSubcmd,
+    },
+
     /// Diagnose toolchain installation
     Doctor {
         /// Verbose output (show full paths and version banners).
@@ -392,6 +398,20 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+enum ConfigSubcmd {
+    /// Get a single config value.
+    Get { key: String },
+    /// Set a config value.
+    Set { key: String, value: String },
+    /// Unset a config value.
+    Unset { key: String },
+    /// List all set config values.
+    List,
+    /// Print the config file path.
+    Path,
+}
+
+#[derive(Subcommand)]
 enum WorkspaceAction {
     /// List workspace member packages.
     List {
@@ -596,6 +616,18 @@ fn main() {
                 WorkspaceAction::Test { root } => (A::Test, root),
             };
             commands::workspace_cmd::execute(WorkspaceOptions { action: act, root })
+        }
+
+        Commands::Config { action } => {
+            use commands::config_cmd::ConfigAction as A;
+            let a = match action {
+                ConfigSubcmd::Get { key } => A::Get { key },
+                ConfigSubcmd::Set { key, value } => A::Set { key, value },
+                ConfigSubcmd::Unset { key } => A::Unset { key },
+                ConfigSubcmd::List => A::List,
+                ConfigSubcmd::Path => A::Path,
+            };
+            commands::config_cmd::execute(a)
         }
 
         Commands::Doctor { verbose } => {

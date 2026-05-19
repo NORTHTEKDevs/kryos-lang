@@ -4,6 +4,26 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.5.0-rc.1] — 2026-05-18 — "kryos config + deploy recipes"
+
+### Added
+
+- **`kryos config get|set|list|unset|path`** — user-level config at
+  `~/.config/kryos/config.toml` (XDG) or `%APPDATA%\kryos\config.toml`.
+  Known keys: `default_backend`, `default_opt_level`, `color`.
+  Override path via `KRYOS_CONFIG` env var.
+- **`docs/deploy/docker.md`** — multi-stage Dockerfile, distroless
+  runtime, health check, multi-arch buildx.
+- **`docs/deploy/systemd.md`** — hardened service unit template
+  (NoNewPrivileges, ProtectSystem, MemoryDenyWriteExecute, etc.),
+  install procedure, Type=notify integration via sd_notify FFI.
+- **`docs/deploy/README.md`** — overview + build flag tips + cross-
+  compilation guide + musl static linking for portable binaries.
+
+### Changed
+
+- Workspace version bumped from `4.4.0-rc.1` to `4.5.0-rc.1`.
+
 ## [4.4.0-rc.1] — 2026-05-18 — "kryos workspace — multi-package projects"
 
 ### Added
