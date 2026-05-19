@@ -1,0 +1,49 @@
+// ============================================================
+// std.diff_ops -- Longest common subsequence + edit count.
+// Pure Kryos LCS via two-row DP. O(m * n).
+// ============================================================
+
+/// LCS length of two [i64] sequences.
+fn lcs_len(a: [i64], b: [i64]) -> i64 {
+    let m = len(a)
+    let n = len(b)
+    if m == 0 || n == 0 { return 0 }
+    // Initialize prev and cur rows of length n+1.
+    let mut prev: [i64] = []
+    let mut cur:  [i64] = []
+    let mut j: i64 = 0
+    while j <= n {
+        prev = push(prev, 0)
+        cur = push(cur, 0)
+        j = j + 1
+    }
+    let mut i: i64 = 1
+    while i <= m {
+        cur[0] = 0
+        let mut j2: i64 = 1
+        while j2 <= n {
+            if a[i - 1] == b[j2 - 1] {
+                cur[j2] = prev[j2 - 1] + 1
+            } else {
+                let p = prev[j2]
+                let c = cur[j2 - 1]
+                cur[j2] = if p > c { p } else { c }
+            }
+            j2 = j2 + 1
+        }
+        // Swap rows by copying.
+        let mut k: i64 = 0
+        while k <= n {
+            prev[k] = cur[k]
+            k = k + 1
+        }
+        i = i + 1
+    }
+    return prev[n]
+}
+
+/// Edit distance: inserts + deletes to turn a into b.
+fn edit_count(a: [i64], b: [i64]) -> i64 {
+    let lcs = lcs_len(a, b)
+    return len(a) + len(b) - 2 * lcs
+}

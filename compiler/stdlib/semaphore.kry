@@ -1,0 +1,29 @@
+// ============================================================
+// std.semaphore -- Counting semaphore (single-threaded).
+//
+// State: a single-element [i64] array holding the current permit
+// count. For multi-threaded use, pair with std::sync atomics.
+// ============================================================
+
+fn new_sem(permits: i64) -> [i64] {
+    return [permits]
+}
+
+/// Try to acquire one permit. Returns true on success.
+fn try_acquire(sem: [i64]) -> bool {
+    if sem[0] > 0 {
+        sem[0] = sem[0] - 1
+        return true
+    }
+    return false
+}
+
+/// Release one permit. POSIX-style — can exceed initial capacity.
+fn release(sem: [i64]) {
+    sem[0] = sem[0] + 1
+}
+
+/// Current permit count.
+fn permits(sem: [i64]) -> i64 {
+    return sem[0]
+}

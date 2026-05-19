@@ -1,0 +1,78 @@
+// ============================================================
+// std.set -- Sorted-array set of i64 with O(log N) lookup.
+//
+// Backed by a sorted [i64]. Insert + remove are O(N) (shift).
+// Cheap when N is small (< 1024); for larger sets use a hashmap.
+// ============================================================
+
+/// Insert v. Returns new set; if v already present, returns input unchanged.
+fn insert(s: [i64], v: i64) -> [i64] {
+    let pos = lower_bound(s, v)
+    let n = len(s)
+    if pos < n {
+        if s[pos] == v {
+            return s
+        }
+    }
+    let mut out: [i64] = []
+    let mut i: i64 = 0
+    while i < pos {
+        out = push(out, s[i])
+        i = i + 1
+    }
+    out = push(out, v)
+    while i < n {
+        out = push(out, s[i])
+        i = i + 1
+    }
+    return out
+}
+
+/// Returns true if v is in the set.
+fn contains(s: [i64], v: i64) -> bool {
+    let pos = lower_bound(s, v)
+    let n = len(s)
+    if pos >= n {
+        return false
+    }
+    return s[pos] == v
+}
+
+/// Remove v. Returns new set; if absent, returns input unchanged.
+fn remove(s: [i64], v: i64) -> [i64] {
+    let pos = lower_bound(s, v)
+    let n = len(s)
+    if pos >= n {
+        return s
+    }
+    if s[pos] != v {
+        return s
+    }
+    let mut out: [i64] = []
+    let mut i: i64 = 0
+    while i < pos {
+        out = push(out, s[i])
+        i = i + 1
+    }
+    i = pos + 1
+    while i < n {
+        out = push(out, s[i])
+        i = i + 1
+    }
+    return out
+}
+
+/// Internal: index of first element >= v (binary search).
+fn lower_bound(s: [i64], v: i64) -> i64 {
+    let mut lo: i64 = 0
+    let mut hi: i64 = len(s)
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if s[mid] < v {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    return lo
+}

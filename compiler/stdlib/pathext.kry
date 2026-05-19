@@ -1,0 +1,122 @@
+// ============================================================
+// std.pathext -- Pure string-based path manipulation.
+// No filesystem syscalls.
+// ============================================================
+
+/// Is `p` an absolute path on the current platform? POSIX `/` or
+/// Windows-style `C:/`.
+fn is_absolute(p: str) -> bool {
+    let n = len(p)
+    if n == 0 { return false }
+    if substr(p, 0, 1) == "/" { return true }
+    if n >= 3 {
+        let c0 = char_code(substr(p, 0, 1))
+        let is_alpha = (c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122)
+        if is_alpha && substr(p, 1, 2) == ":" {
+            let c2 = substr(p, 2, 3)
+            if c2 == "/" || c2 == "\\" { return true }
+        }
+    }
+    return false
+}
+
+/// Number of non-empty path components (after `\` → `/` normalization).
+fn component_count(p: str) -> i64 {
+    let cleaned = normalize_slashes(p)
+    let n = len(cleaned)
+    let mut count: i64 = 0
+    let mut i: i64 = 0
+    let mut in_seg = false
+    while i < n {
+        let c = substr(cleaned, i, i + 1)
+        if c == "/" {
+            in_seg = false
+        } elif !in_seg {
+            count = count + 1
+            in_seg = true
+        }
+        i = i + 1
+    }
+    return count
+}
+
+/// Replace backslashes with forward slashes.
+fn normalize_slashes(p: str) -> str {
+    let n = len(p)
+    let mut out: str = ""
+    let mut i: i64 = 0
+    while i < n {
+        let c = substr(p, i, i + 1)
+        if c == "\\" {
+            out = out + "/"
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out
+}
+
+/// Lexically normalize: collapse "/./", resolve "/../", coalesce runs of "/".
+fn normalize(p: str) -> str {
+    let cleaned = normalize_slashes(p)
+    let is_abs = is_absolute(cleaned)
+    let parts = split_on_slash(cleaned)
+    let mut stack: [str] = []
+    let mut i: i64 = 0
+    let np = len(parts)
+    while i < np {
+        let seg = parts[i]
+        if len(seg) == 0 || seg == "." {
+            // skip
+        } elif seg == ".." {
+            let sl = len(stack)
+            if sl > 0 && stack[sl - 1] != ".." {
+                stack = pop_last(stack)
+            } elif !is_abs {
+                stack = push(stack, "..")
+            }
+        } else {
+            stack = push(stack, seg)
+        }
+        i = i + 1
+    }
+    let mut out: str = if is_abs { "/" } else { "" }
+    let mut j: i64 = 0
+    let sl = len(stack)
+    while j < sl {
+        if j > 0 { out = out + "/" }
+        out = out + stack[j]
+        j = j + 1
+    }
+    if len(out) == 0 { return "." }
+    return out
+}
+
+fn split_on_slash(p: str) -> [str] {
+    let mut out: [str] = []
+    let n = len(p)
+    let mut start: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        if substr(p, i, i + 1) == "/" {
+            if i > start { out = push(out, substr(p, start, i)) }
+            start = i + 1
+        }
+        i = i + 1
+    }
+    if n > start { out = push(out, substr(p, start, n)) }
+    return out
+}
+
+fn pop_last(arr: [str]) -> [str] {
+    let n = len(arr)
+    if n == 0 { return arr }
+    let mut out: [str] = []
+    let mut i: i64 = 0
+    while i < n - 1 {
+        out = push(out, arr[i])
+        i = i + 1
+    }
+    return out
+}

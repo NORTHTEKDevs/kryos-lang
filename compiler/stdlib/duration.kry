@@ -1,0 +1,52 @@
+// ============================================================
+// std.duration -- Duration arithmetic + human formatting.
+//
+// Durations are i64 nanoseconds (same as time_now_nanos()).
+// ============================================================
+
+/// Convert millis to nanos.
+fn from_millis(ms: i64) -> i64 {
+    return ms * 1000000
+}
+
+/// Convert seconds to nanos.
+fn from_secs(s: i64) -> i64 {
+    return s * 1000000000
+}
+
+/// Convert minutes to nanos.
+fn from_mins(m: i64) -> i64 {
+    return m * 60 * 1000000000
+}
+
+/// Convert hours to nanos.
+fn from_hours(h: i64) -> i64 {
+    return h * 3600 * 1000000000
+}
+
+/// Human-readable string for `nanos`. Picks unit by magnitude:
+/// ns, us, ms, s, min, h.
+fn format(nanos: i64) -> str {
+    let abs = if nanos < 0 { -nanos } else { nanos }
+    let sign = if nanos < 0 { "-" } else { "" }
+    if abs < 1000 {
+        return sign + to_string(abs) + "ns"
+    }
+    if abs < 1000000 {
+        return sign + to_string(abs / 1000) + "us"
+    }
+    if abs < 1000000000 {
+        return sign + to_string(abs / 1000000) + "ms"
+    }
+    if abs < 60000000000 {
+        return sign + to_string(abs / 1000000000) + "s"
+    }
+    if abs < 3600000000000 {
+        let m = abs / 60000000000
+        let rem_s = (abs - m * 60000000000) / 1000000000
+        return sign + to_string(m) + "min" + to_string(rem_s) + "s"
+    }
+    let h = abs / 3600000000000
+    let rem_m = (abs - h * 3600000000000) / 60000000000
+    return sign + to_string(h) + "h" + to_string(rem_m) + "min"
+}

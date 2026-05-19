@@ -1,0 +1,53 @@
+// ============================================================
+// std.queue -- FIFO queue over [i64] arrays.
+//
+// Functional-style: enqueue + dequeue return new arrays.
+// O(1) enqueue, O(N) dequeue (the trade-off for keeping it pure).
+// For O(1) dequeue use the ring-buffer pattern in std::deque.
+//
+// Usage:
+//   use std::queue::{enqueue, dequeue, front, qlen}
+//   let mut q: [i64] = []
+//   q = enqueue(q, 1)
+//   q = enqueue(q, 2)
+//   let v = front(q)   // 1
+//   q = dequeue(q)
+// ============================================================
+
+/// Push a value onto the back of the queue. Returns new queue.
+fn enqueue(q: [i64], v: i64) -> [i64] {
+    return push(q, v)
+}
+
+/// Return the front value. -1 if empty.
+fn front(q: [i64]) -> i64 {
+    if len(q) == 0 {
+        return -1
+    }
+    return q[0]
+}
+
+/// Remove the front value. Returns new queue.
+fn dequeue(q: [i64]) -> [i64] {
+    let n = len(q)
+    if n == 0 {
+        return q
+    }
+    let mut out: [i64] = []
+    let mut i: i64 = 1
+    while i < n {
+        out = push(out, q[i])
+        i = i + 1
+    }
+    return out
+}
+
+/// Number of elements.
+fn qlen(q: [i64]) -> i64 {
+    return len(q)
+}
+
+/// True if empty.
+fn is_empty(q: [i64]) -> bool {
+    return len(q) == 0
+}

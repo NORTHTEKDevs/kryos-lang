@@ -1,0 +1,91 @@
+// ============================================================
+// std.lru -- LRU cache with parallel-array storage.
+//
+// Backed by 3 parallel [i64] arrays: keys, vals, recency.
+// State: [len, cap, next_recency]
+// Lookups are O(N); use std::map for larger N.
+// ============================================================
+
+struct Lru {
+    keys:    [i64],
+    vals:    [i64],
+    recency: [i64],
+    state:   [i64],   // [len, cap, next_recency]
+}
+
+fn new_cache(cap: i64) -> Lru {
+    let mut k: [i64] = []
+    let mut v: [i64] = []
+    let mut r: [i64] = []
+    let mut i: i64 = 0
+    while i < cap {
+        k = push(k, 0)
+        v = push(v, 0)
+        r = push(r, 0)
+        i = i + 1
+    }
+    let mut st: [i64] = []
+    st = push(st, 0)
+    st = push(st, cap)
+    st = push(st, 0)
+    return Lru { keys: k, vals: v, recency: r, state: st }
+}
+
+/// Insert or update. Evicts LRU on full.
+fn put(c: Lru, key: i64, val: i64) {
+    c.state[2] = c.state[2] + 1
+    let touch = c.state[2]
+    let cap = c.state[1]
+    let mut size = c.state[0]
+    // Update existing
+    let mut i: i64 = 0
+    while i < size {
+        if c.keys[i] == key {
+            c.vals[i] = val
+            c.recency[i] = touch
+            return
+        }
+        i = i + 1
+    }
+    // Insert
+    let slot = if size < cap {
+        c.state[0] = size + 1
+        size
+    } else {
+        // Find LRU index.
+        let mut min_idx: i64 = 0
+        let mut min_r = c.recency[0]
+        let mut j: i64 = 1
+        while j < size {
+            if c.recency[j] < min_r {
+                min_r = c.recency[j]
+                min_idx = j
+            }
+            j = j + 1
+        }
+        min_idx
+    }
+    c.keys[slot] = key
+    c.vals[slot] = val
+    c.recency[slot] = touch
+}
+
+/// Look up by key. Returns -1 if missing (use a sentinel that can't be a value).
+fn get(c: Lru, key: i64) -> i64 {
+    c.state[2] = c.state[2] + 1
+    let touch = c.state[2]
+    let size = c.state[0]
+    let mut i: i64 = 0
+    while i < size {
+        if c.keys[i] == key {
+            c.recency[i] = touch
+            return c.vals[i]
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+fn current_len(c: Lru) -> i64 {
+    return c.state[0]
+}

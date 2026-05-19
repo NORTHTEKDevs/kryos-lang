@@ -1,0 +1,69 @@
+// ============================================================
+// std.numfmt -- Number formatting (hex, binary, padded, bytes).
+// Pure Kryos.
+// ============================================================
+
+/// Hex representation of n with "0x" prefix.
+fn hex(n: i64) -> str {
+    let digits = "0123456789abcdef"
+    if n == 0 {
+        return "0x0"
+    }
+    let mut x = n
+    let neg = n < 0
+    if neg { x = -x }
+    let mut out: str = ""
+    while x > 0 {
+        let d = x % 16
+        out = substr(digits, d, d + 1) + out
+        x = x / 16
+    }
+    if neg { return "-0x" + out }
+    return "0x" + out
+}
+
+/// Binary representation with "0b" prefix.
+fn bin(n: i64) -> str {
+    if n == 0 { return "0b0" }
+    let mut x = n
+    let neg = n < 0
+    if neg { x = -x }
+    let mut out: str = ""
+    while x > 0 {
+        let d = x % 2
+        if d == 0 {
+            out = "0" + out
+        } else {
+            out = "1" + out
+        }
+        x = x / 2
+    }
+    if neg { return "-0b" + out }
+    return "0b" + out
+}
+
+/// Zero-pad `n` to `width` decimal digits.
+fn decimal_padded(n: i64, width: i64) -> str {
+    let s = to_string(n)
+    if len(s) >= width { return s }
+    let mut pad: str = ""
+    let mut i: i64 = 0
+    while i < width - len(s) {
+        pad = pad + "0"
+        i = i + 1
+    }
+    return pad + s
+}
+
+/// Human-readable byte size: B / KB / MB / GB / TB (binary units).
+fn bytes(n: i64) -> str {
+    let kb: i64 = 1024
+    let mb = kb * 1024
+    let gb = mb * 1024
+    let tb = gb * 1024
+    if n < kb { return to_string(n) + " B" }
+    if n < mb { return to_string(n / kb) + " KB" }
+    if n < gb { return to_string(n / mb) + " MB" }
+    if n < tb { return to_string(n / gb) + " GB" }
+    return to_string(n / tb) + " TB"
+}

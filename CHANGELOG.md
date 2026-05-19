@@ -4,6 +4,57 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.41.0-rc.1] — 2026-05-18 — "stdlib rewritten in pure Kryos — Rust orphans removed"
+
+### Reality-check correction for v4.1–v4.40
+
+Tags v4.1 through v4.40 added 25+ "stdlib modules" as `#[no_mangle] pub extern "C"`
+Rust functions inside `kryos-stdlib-native`. Those functions had Rust unit tests
+that passed, but **the Kryos `use std::xxx::yyy` resolver did not know about
+them** — they were orphan exports unreachable from `.kry` source. This release
+fixes that retroactively by rewriting every claimed module as a pure-Kryos
+file under `compiler/stdlib/*.kry` and deleting the unreachable Rust files.
+
+See `REALITY-CHECK.md` (committed alongside this release) for the full audit.
+
+### Added — pure-Kryos stdlib (30 new modules under `compiler/stdlib/`)
+
+These are now actually importable via `use std::<name>::{...}`:
+
+- Data structures: `heap`, `queue`, `stack`, `set`, `deque`, `trie`, `lru`, `bloom`, `histogram`, `matrix`, `slice_ops`, `interval`
+- Algorithms: `mathx` (gcd/lcm/isqrt/primes), `fuzzy` (Levenshtein), `diff_ops` (LCS), `stat`, `numfmt`, `semver`, `duration`
+- Production patterns: `ratelimit`, `circuit`, `semaphore`, `backoff`
+- Strings/bytes: `strext`, `bytes`, `utf8`, `pathext`
+- Cross-cutting: `log` (single-line key-value), `random` (xorshift64* PRNG), `hash`
+
+### Removed — Rust orphan modules (32 files in `compiler/crates/kryos-stdlib-native/src/`)
+
+`backoff.rs`, `bloom.rs`, `bytes.rs`, `circuit.rs`, `cmd.rs`, `collections.rs`,
+`deque.rs`, `duration.rs`, `fuzzy.rs`, `hash.rs`, `heap.rs`, `histogram.rs`,
+`interval.rs`, `iter.rs`, `log.rs`, `lru.rs`, `mathx.rs`, `matrix.rs`,
+`numfmt.rs`, `pathext.rs`, `queue.rs`, `random.rs`, `ratelimit.rs`,
+`semaphore.rs`, `semver.rs`, `set.rs`, `slice_ops.rs`, `sort.rs`, `stack.rs`,
+`stat.rs`, `strext.rs`, `trie.rs`, `utf8.rs`, `diff_ops.rs`. The corresponding
+`pub mod` lines in `lib.rs` are also removed.
+
+What stays in `kryos-stdlib-native`: only true syscall shims — `fs`, `net`,
+`env`, `datetime`, `json`, `re`, `math`, `term`, `process`, `crypto`,
+`http2`, `postgres`, `sqlite`, `tls`, `unix_socket`, `uuid`, `websocket`,
+`io`, `base64`, `path`, `string`, `sync_prims`, `ffi`, `bindings`, `rand`.
+These are the modules that genuinely need OS access from Rust.
+
+### Why "stdlib in Kryos" matters
+
+This is the foundation for self-hosting. Every line of pure-Kryos stdlib is a
+line the language can compile against itself once the parser/checker/codegen
+exist in Kryos. The Rust orphans were a dead end on that path. Self-hosting
+remains a multi-stage effort (only Stage 0 lexer + partial Stage 1 parser
+exist today); this release moves the stdlib out of the way.
+
+### Changed
+
+- Workspace version bumped from `4.40.0-rc.1` to `4.41.0-rc.1`.
+
 ## [4.40.0-rc.1] — 2026-05-18 — "std::interval (sorted interval-set ops)"
 
 ### Added

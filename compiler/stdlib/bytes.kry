@@ -1,0 +1,64 @@
+// ============================================================
+// std.bytes -- Byte operations over strings (treating chars as bytes).
+//
+// For raw byte buffers in [i64] form (one byte per element),
+// these are also useful.
+// ============================================================
+
+/// Index of first occurrence of `needle_byte` in string, or -1.
+fn find_byte(s: str, needle_byte: i64) -> i64 {
+    let n = len(s)
+    let mut i: i64 = 0
+    while i < n {
+        if char_code(substr(s, i, i + 1)) == needle_byte {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+/// Index of first occurrence of byte sequence `needle` in `haystack`, or -1.
+fn find_seq(haystack: str, needle: str) -> i64 {
+    let hn = len(haystack)
+    let nn = len(needle)
+    if nn == 0 { return 0 }
+    if nn > hn { return -1 }
+    let mut i: i64 = 0
+    while i + nn <= hn {
+        if substr(haystack, i, i + nn) == needle {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+/// Lex compare: -1 if a < b, 0 if equal, 1 if a > b.
+fn compare(a: str, b: str) -> i64 {
+    let an = len(a)
+    let bn = len(b)
+    let m = if an < bn { an } else { bn }
+    let mut i: i64 = 0
+    while i < m {
+        let ca = char_code(substr(a, i, i + 1))
+        let cb = char_code(substr(b, i, i + 1))
+        if ca < cb { return -1 }
+        if ca > cb { return 1 }
+        i = i + 1
+    }
+    if an < bn { return -1 }
+    if an > bn { return 1 }
+    return 0
+}
+
+/// True if every byte in s has code < 128.
+fn is_ascii(s: str) -> bool {
+    let n = len(s)
+    let mut i: i64 = 0
+    while i < n {
+        if char_code(substr(s, i, i + 1)) >= 128 { return false }
+        i = i + 1
+    }
+    return true
+}

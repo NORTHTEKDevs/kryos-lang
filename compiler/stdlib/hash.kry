@@ -1,0 +1,57 @@
+// ============================================================
+// std.hash -- Non-cryptographic hash functions.
+//
+// FNV-1a 64-bit, DJB2, and CRC32 (IEEE polynomial). All take a
+// string and return a 64-bit hash as i64. For cryptographic
+// hashes (SHA-256, blake3) use std::crypto.
+// ============================================================
+
+/// FNV-1a 64-bit. Fast + reasonable distribution. Default choice.
+fn fnv1a64(s: str) -> i64 {
+    let mut h: i64 = -3750763034362895579   // 0xcbf29ce484222325 as signed
+    let n = len(s)
+    let mut i: i64 = 0
+    while i < n {
+        let c = char_code(substr(s, i, i + 1))
+        h = h ^ c
+        // Multiply by FNV prime 0x100000001b3 = 1099511628211
+        h = h * 1099511628211
+        i = i + 1
+    }
+    return h
+}
+
+/// DJB2 hash. Slower than FNV-1a but well-known.
+fn djb2(s: str) -> i64 {
+    let mut h: i64 = 5381
+    let n = len(s)
+    let mut i: i64 = 0
+    while i < n {
+        let c = char_code(substr(s, i, i + 1))
+        h = h * 33 + c
+        i = i + 1
+    }
+    return h
+}
+
+/// CRC32 IEEE polynomial. Used by zip/png/ethernet.
+fn crc32(s: str) -> i64 {
+    let mut crc: i64 = -1   // 0xffffffff signed
+    let n = len(s)
+    let mut i: i64 = 0
+    while i < n {
+        let c = char_code(substr(s, i, i + 1))
+        crc = crc ^ c
+        let mut j: i64 = 0
+        while j < 8 {
+            let bit = crc & 1
+            crc = crc / 2
+            if bit == 1 {
+                crc = crc ^ 0xedb88320
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return crc ^ -1   // bitwise NOT via xor
+}

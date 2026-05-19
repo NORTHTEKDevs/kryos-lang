@@ -1,0 +1,72 @@
+// ============================================================
+// std.random -- Deterministic, seedable PRNG.
+//
+// Pure Kryos. State lives in a single-element [i64] array so the
+// generator is mutable across calls without globals.
+//
+// NOT cryptographic. For random bytes suitable for keys, use
+// `std::crypto::rand_bytes` (which goes through OS entropy).
+//
+// Algorithm: xorshift64* (Marsaglia). All-zero state would fix
+// the generator, so `new_rng(0)` substitutes a nonzero constant.
+//
+// Usage:
+//   use std::random::{new_rng, next_i64, range_i64, shuffle}
+//   let r = new_rng(42)
+//   let n = next_i64(r)
+//   let bounded = range_i64(r, 10, 20)   // [10, 20)
+// ============================================================
+
+/// Build a new generator seeded with `seed`. Seed 0 is replaced with
+/// a fixed nonzero constant so output is never the all-zero stream.
+fn new_rng(seed: i64) -> [i64] {
+    let mut s: [i64] = []
+    if seed == 0 {
+        s = push(s, 305419896)
+    } else {
+        s = push(s, seed)
+    }
+    return s
+}
+
+/// Advance the state once and return the next i64 value.
+fn next_i64(state: [i64]) -> i64 {
+    let mut x = state[0]
+    x = x ^ (x << 13)
+    x = x ^ (x >> 7)
+    x = x ^ (x << 17)
+    state[0] = x
+    return x * 2685821657736338717
+}
+
+/// Random i64 uniformly in [lo, hi). Returns lo if hi <= lo.
+fn range_i64(state: [i64], lo: i64, hi: i64) -> i64 {
+    if hi <= lo { return lo }
+    let span = hi - lo
+    let v = next_i64(state)
+    let abs_v = if v < 0 { 0 - v } else { v }
+    return lo + (abs_v % span)
+}
+
+/// Random bit (0 or 1).
+fn next_bit(state: [i64]) -> i64 {
+    let v = next_i64(state)
+    if v < 0 { return 1 }
+    return v & 1
+}
+
+/// Fisher-Yates shuffle of an [i64] array in place. Returns the same
+/// array for chaining.
+fn shuffle(state: [i64], arr: [i64]) -> [i64] {
+    let n = len(arr)
+    if n < 2 { return arr }
+    let mut i = n - 1
+    while i > 0 {
+        let j = range_i64(state, 0, i + 1)
+        let t = arr[i]
+        arr[i] = arr[j]
+        arr[j] = t
+        i = i - 1
+    }
+    return arr
+}

@@ -1,0 +1,88 @@
+// ============================================================
+// std.mathx -- Extended integer math beyond std.math.
+//
+// gcd, lcm, integer sqrt, integer log2, primality.
+// Pure Kryos.
+// ============================================================
+
+/// Greatest common divisor (Euclid). Returns |a| if b == 0.
+fn gcd(a: i64, b: i64) -> i64 {
+    let mut x: i64 = a
+    let mut y: i64 = b
+    if x < 0 { x = -x }
+    if y < 0 { y = -y }
+    while y != 0 {
+        let t = y
+        y = x % y
+        x = t
+    }
+    return x
+}
+
+/// Least common multiple. Returns 0 if either is 0.
+fn lcm(a: i64, b: i64) -> i64 {
+    if a == 0 || b == 0 {
+        return 0
+    }
+    let g = gcd(a, b)
+    let absb = if b < 0 { -b } else { b }
+    return (a / g) * absb
+}
+
+/// Integer square root (floor). Returns 0 for negative.
+fn isqrt(n: i64) -> i64 {
+    if n < 0 {
+        return 0
+    }
+    if n < 2 {
+        return n
+    }
+    let mut lo: i64 = 1
+    let mut hi: i64 = n
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2
+        if mid <= n / mid {
+            lo = mid
+        } else {
+            hi = mid - 1
+        }
+    }
+    return lo
+}
+
+/// Floor log2 of a positive integer. Returns -1 for n <= 0.
+fn ilog2(n: i64) -> i64 {
+    if n <= 0 {
+        return -1
+    }
+    let mut x: i64 = n
+    let mut r: i64 = 0
+    while x > 1 {
+        x = x / 2
+        r = r + 1
+    }
+    return r
+}
+
+/// Trial-division primality test. Slow for huge primes; use a
+/// Miller-Rabin variant for n > 10^9.
+fn is_prime(n: i64) -> bool {
+    if n < 2 {
+        return false
+    }
+    if n < 4 {
+        return true
+    }
+    if n % 2 == 0 {
+        return false
+    }
+    let limit = isqrt(n)
+    let mut i: i64 = 3
+    while i <= limit {
+        if n % i == 0 {
+            return false
+        }
+        i = i + 2
+    }
+    return true
+}
