@@ -4,6 +4,21 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.29.0-rc.1] — 2026-05-18 — "std::backoff (exponential + jitter)"
+
+### Added
+
+- **`std::backoff`** — exponential-backoff helpers (pure; caller sleeps):
+  - `backoff_next(prev_ms, base_ms, max_ms, jitter_seed, jitter_frac)`
+    — next delay with optional jitter (`±jitter_frac/1000` of delay)
+  - `backoff_total(base_ms, max_ms, attempts)` — cumulative wait
+- 3 new tests (cap-at-max, total-sum, jitter-in-range). 91 total
+  stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.28.0-rc.1` to `4.29.0-rc.1`.
+
 ## [4.28.0-rc.1] — 2026-05-18 — "std::semaphore (atomic, non-blocking)"
 
 ### Added

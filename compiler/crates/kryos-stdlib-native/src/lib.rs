@@ -43,6 +43,7 @@
 
 #[cfg(feature = "crypto")]
 pub mod crypto;
+pub mod backoff;
 pub mod base64;
 pub mod bindings;
 pub mod bloom;
