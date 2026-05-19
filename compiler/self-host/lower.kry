@@ -1645,7 +1645,17 @@ fn lower_assign_stmt(ctx: LowerCtx, s: Stmt) {
             return
         }
         let obj_op = lower_expr(ctx, target.left[0])
-        let val = lower_expr(ctx, value_expr)
+        let val_raw = lower_expr(ctx, value_expr)
+        // Force the rvalue through an explicit copy-to-temp before the
+        // field-set call. Empirically, leaving `[expr]` (RValue::Array)
+        // operands directly in the call's store_args crashes stage-1's
+        // codegen on mir.kry / parser.kry / etc, while the equivalent
+        // `let tmp = [expr]; field = tmp` lowering succeeds. The
+        // difference is purely a copy-via-rv_use: same MIR shape, but
+        // the temp has a clean SSA boundary the codegen needs.
+        let val_temp = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
+        ctx_emit(ctx, inst_assign(val_temp, rv_use(val_raw)))
+        let val = op_local(val_temp)
 
         if s.assign_op == ASSIGN_EQ {
             // Emit field store as a runtime call
