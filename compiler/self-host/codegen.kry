@@ -588,9 +588,79 @@ fn cg_arg_reg(idx: i32) -> i32 {
     return -1  // stack argument
 }
 
+// Inline-syscall lowering of `kryos_println_str` for Linux. Bypasses
+// the runtime entirely: emits write(2) for the string body + a second
+// write(2) for the trailing newline. The string is expected to be a
+// pointer to null-terminated bytes (the rodata interning format).
+fn cg_emit_println_inline_linux(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue) {
+    let buf = ctx.text_buf
+
+    // Load arg 0 (str ptr) into RDI per sysv calling convention.
+    let arg_r = cg_load_operand(ctx, ra, rv.args[0], REG_RDI)
+    if arg_r != REG_RDI {
+        x86_mov_reg_reg(buf, REG_RDI, arg_r)
+    }
+
+    // strlen via repne scasb:
+    //   mov rsi, rdi        ; save original ptr for the write syscall
+    //   xor rax, rax        ; al = 0 (scasb sentinel)
+    //   mov rcx, -1         ; max count (sign-extended from imm32)
+    //   cld                 ; direction = forward
+    //   repne scasb         ; scan [rdi]++ until [rdi]==al
+    //   not rcx             ; rcx = strlen + 1
+    //   dec rcx             ; rcx = strlen
+    x86_mov_reg_reg(buf, REG_RSI, REG_RDI)
+    x86_xor_reg_reg(buf, REG_RAX, REG_RAX)
+    x86_mov_reg_imm32(buf, REG_RCX, -1)
+    buf_write_byte(buf, 0xFC)               // cld
+    buf_write_byte(buf, 0xF2)               // repne prefix
+    buf_write_byte(buf, 0xAE)               // scasb
+    buf_write_byte(buf, 0x48)               // REX.W
+    buf_write_byte(buf, 0xF7)               // not r/m64
+    buf_write_byte(buf, 0xD1)               // modrm: mod=11, /2, rm=rcx
+    buf_write_byte(buf, 0x48)               // REX.W
+    buf_write_byte(buf, 0xFF)               // dec r/m64
+    buf_write_byte(buf, 0xC9)               // modrm: mod=11, /1, rm=rcx
+
+    // write(1, rsi, rcx):
+    //   mov rdx, rcx
+    //   mov rax, 1
+    //   mov rdi, 1
+    //   syscall
+    x86_mov_reg_reg(buf, REG_RDX, REG_RCX)
+    x86_mov_reg_imm32(buf, REG_RAX, 1)
+    x86_mov_reg_imm32(buf, REG_RDI, 1)
+    x86_syscall(buf)
+
+    // Trailing newline: push 0x0A as imm8, point rsi at rsp, write 1 byte.
+    //   push 0x0A           ; 0x6A 0x0A — pushes sign-extended imm8
+    //   mov rsi, rsp
+    //   mov rdx, 1
+    //   mov rax, 1
+    //   mov rdi, 1
+    //   syscall
+    //   add rsp, 8
+    buf_write_byte(buf, 0x6A)
+    buf_write_byte(buf, 0x0A)
+    x86_mov_reg_reg(buf, REG_RSI, REG_RSP)
+    x86_mov_reg_imm32(buf, REG_RDX, 1)
+    x86_mov_reg_imm32(buf, REG_RAX, 1)
+    x86_mov_reg_imm32(buf, REG_RDI, 1)
+    x86_syscall(buf)
+    x86_add_reg_imm32(buf, REG_RSP, 8)
+}
+
 fn cg_emit_call(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) {
     let buf = ctx.text_buf
     let n_args = len(rv.args)
+
+    // Inline-syscall lowering for known runtime entry points.
+    if ctx.target_os == "linux" {
+        if rv.func_name == "kryos_println_str" {
+            cg_emit_println_inline_linux(ctx, ra, rv)
+            return
+        }
+    }
 
     // Push stack arguments first (right to left) for args > 6
     let mut stack_args = 0
@@ -1104,6 +1174,43 @@ fn cg_emit_function(ctx: CodegenCtx, func: MirFunction, ra: RegAllocResult) {
 // Emit an entire MIR module
 // ===================================================================
 
+// Emit a synthetic `_start` symbol that the kernel jumps to on process
+// launch. It calls `main` and then issues sys_exit so the process does
+// not RET into garbage. Linux-only for now; on Windows the PE loader
+// gives main() a real return address so this is unnecessary.
+fn cg_emit_start_shim_linux(ctx: CodegenCtx) {
+    let buf = ctx.text_buf
+    let start_off = buf_len(buf)
+
+    push(ctx.symbols, LinkerSymbol {
+        name: "_start",
+        offset: start_off,
+        section: LSEC_TEXT,
+        is_global: true,
+        is_func: true,
+        size: 0
+    })
+    let sym_idx = len(ctx.symbols) - 1
+
+    // call main  (rel32, resolved by linker)
+    push(ctx.relocations, LinkerReloc {
+        offset: buf_len(buf) + 1,
+        symbol_name: "main",
+        rel_type: LREL_PC32,
+        addend: -4
+    })
+    x86_call_rel32(buf, 0)
+
+    // mov rax, 60    ; sys_exit
+    x86_mov_reg_imm32(buf, REG_RAX, 60)
+    // xor rdi, rdi   ; exit code 0
+    x86_xor_reg_reg(buf, REG_RDI, REG_RDI)
+    // syscall
+    x86_syscall(buf)
+
+    ctx.symbols[sym_idx].size = buf_len(buf) - start_off
+}
+
 fn cg_emit_module(ctx: CodegenCtx, module: MirModule) {
     // First pass: emit all functions
     let mut i = 0
@@ -1114,6 +1221,11 @@ fn cg_emit_module(ctx: CodegenCtx, module: MirModule) {
         // Emit function code
         cg_emit_function(ctx, func, ra)
         i = i + 1
+    }
+
+    // Append `_start` shim so the kernel has a real entry point.
+    if ctx.target_os == "linux" {
+        cg_emit_start_shim_linux(ctx)
     }
 }
 
@@ -1142,8 +1254,11 @@ fn compile_module(module: MirModule, output_path: str, target_os: str) -> bool {
 
     let inputs = [input]
 
-    // Link
-    let result = link_exe(inputs, "main", output_path, target_os)
+    // Link. Use `_start` on Linux (kernel jumps there directly); the
+    // shim does `call main` then `sys_exit`. On Windows `main` is the
+    // entry the PE loader expects.
+    let entry = if target_os == "linux" { "_start" } else { "main" }
+    let result = link_exe(inputs, entry, output_path, target_os)
     return result.success
 }
 
