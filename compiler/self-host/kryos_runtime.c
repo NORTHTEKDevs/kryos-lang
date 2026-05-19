@@ -342,6 +342,42 @@ long long kryos_array_len(long long arr_handle) {
  * if it looks like an array header (cap > 0 and ref_count > 0), use it
  * as an array. Otherwise fall back to strlen. */
 
+/* ---- Array builtins -------------------------------------------------- */
+
+/* In-place ascending sort of an [i64] array. Stage-1 maps the user-level
+ * `sort(arr)` call to kryos_builtin_sort regardless of whether the user
+ * also defined `fn sort` (lower.kry line 451 routes by name). This is an
+ * insertion sort: O(n^2) but compact and fine for small inputs (the
+ * primary stage-1 use cases). */
+void kryos_builtin_sort(long long arr_handle) {
+    KryosArray *arr = (KryosArray*)arr_handle;
+    if (arr == NULL || arr->len < 2) { return; }
+    long long *a = (long long*)arr->data;
+    long long n = arr->len;
+    for (long long i = 1; i < n; i++) {
+        long long key = a[i];
+        long long j = i - 1;
+        while (j >= 0 && a[j] > key) {
+            a[j + 1] = a[j];
+            j--;
+        }
+        a[j + 1] = key;
+    }
+}
+
+/* In-place reverse of an array. Mirrors kryos_builtin_sort's API. */
+void kryos_builtin_reverse(long long arr_handle) {
+    KryosArray *arr = (KryosArray*)arr_handle;
+    if (arr == NULL || arr->len < 2) { return; }
+    long long *a = (long long*)arr->data;
+    long long n = arr->len;
+    long long lo = 0, hi = n - 1;
+    while (lo < hi) {
+        long long t = a[lo]; a[lo] = a[hi]; a[hi] = t;
+        lo++; hi--;
+    }
+}
+
 /* ---- Entry point ----------------------------------------------------- */
 
 extern void main(void);
