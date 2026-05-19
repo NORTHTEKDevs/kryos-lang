@@ -69,8 +69,38 @@ pub unsafe extern "C" fn kryos_array_push(arr: *mut KryosArray, val: i64) {
         let msg = b"array is null";
         crate::panic::kryos_panic(msg.as_ptr(), msg.len());
     }
-    let len = (*arr).len as usize;
-    let cap = (*arr).cap as usize;
+    // Defensive: if the array header was corrupted (most likely path for
+    // bootstrap-stage segfaults), bail with a diagnostic instead of letting
+    // realloc segfault deep in ntdll. cap should be small positive, len <= cap,
+    // ref_count > 0, elem_size in a sane range.
+    let raw_len = (*arr).len;
+    let raw_cap = (*arr).cap;
+    let raw_rc = (*arr).ref_count;
+    let raw_es = (*arr).elem_size;
+    if raw_cap <= 0
+        || raw_cap > (1 << 30)
+        || raw_len < 0
+        || raw_len > raw_cap
+        || raw_rc <= 0
+        || raw_rc > (1 << 24)
+        || raw_es <= 0
+        || raw_es > 4096
+        || (*arr).data.is_null()
+    {
+        let m = format!(
+            "kryos_array_push: corrupt array header @ {:p} \
+             (len={}, cap={}, elem_size={}, ref_count={}, data={:p})",
+            arr,
+            raw_len,
+            raw_cap,
+            raw_es,
+            raw_rc,
+            (*arr).data
+        );
+        crate::panic::kryos_panic(m.as_ptr(), m.len());
+    }
+    let len = raw_len as usize;
+    let cap = raw_cap as usize;
 
     if len >= cap {
         // Double capacity.

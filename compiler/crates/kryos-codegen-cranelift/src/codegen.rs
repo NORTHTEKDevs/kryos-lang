@@ -250,6 +250,12 @@ pub fn compile_module_with_options(
     flag_builder
         .set("is_pic", "true")
         .map_err(|e| CodegenError::Target(e.to_string()))?;
+    // Enable Cranelift's IR verifier so any malformed function emitted by
+    // the MIR-to-CL translation is caught at compile time rather than
+    // producing silently-wrong machine code. Cheap relative to AOT compile
+    // time and catches the class of bugs that produce nondeterministic
+    // stage-1 segfaults.
+    let _ = flag_builder.set("enable_verifier", "true");
 
     let isa_builder =
         cranelift_native::builder().map_err(|e| CodegenError::Target(e.to_string()))?;
