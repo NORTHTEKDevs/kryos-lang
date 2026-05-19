@@ -4,6 +4,25 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.7.0-rc.1] — 2026-05-18 — "kryos changelog + std::iter"
+
+### Added
+
+- **`kryos changelog [--last N] [--since TAG]`** — auto-generates a
+  markdown changelog from git tags. Walks `git tag -l v*` newest-first,
+  runs `git log <prev>..<tag>` for each, emits Keep-a-Changelog style.
+- **`std::iter`** — slice-level transformations over `[i64]`:
+  - `kryos_iter_range(start, step, len, out)` — fill arithmetic seq
+  - `kryos_iter_filter_i64(..., predicate_kind, threshold, ...)` —
+    6 predicates (positive, negative, even, odd, >=, <=)
+  - `kryos_iter_map_i64(..., kind, c, ...)` — 6 transforms (identity,
+    abs, negate, square, add c, mul c)
+- 4 new iter tests. 32 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.6.0-rc.1` to `4.7.0-rc.1`.
+
 ## [4.6.0-rc.1] — 2026-05-18 — "kryos info + showcase example"
 
 ### Added

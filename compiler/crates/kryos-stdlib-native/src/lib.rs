@@ -52,6 +52,7 @@ pub mod ffi;
 pub mod fs;
 pub mod hash;
 pub mod io;
+pub mod iter;
 pub mod json;
 pub mod log;
 pub mod math;

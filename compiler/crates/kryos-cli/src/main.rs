@@ -198,6 +198,17 @@ enum Commands {
         path: Option<String>,
     },
 
+    /// Auto-generate a markdown changelog from git tags
+    Changelog {
+        /// Limit to the latest N tags. Default: all.
+        #[arg(long, value_name = "N")]
+        last: Option<usize>,
+
+        /// Print only the section for this tag (relative to previous tag).
+        #[arg(long, value_name = "TAG")]
+        since: Option<String>,
+    },
+
     /// Diagnose toolchain installation
     Doctor {
         /// Verbose output (show full paths and version banners).
@@ -639,6 +650,13 @@ fn main() {
 
         Commands::Info { path } => {
             commands::info_cmd::execute(commands::info_cmd::InfoOptions { path })
+        }
+
+        Commands::Changelog { last, since } => {
+            commands::changelog_cmd::execute(commands::changelog_cmd::ChangelogOptions {
+                last,
+                since,
+            })
         }
 
         Commands::Doctor { verbose } => {
