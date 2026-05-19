@@ -1,6 +1,26 @@
 # Kryos Editor Extensions
 
-This directory holds editor integrations for the Kryos language.
+This directory holds editor integrations for the Kryos language. The LSP
+server (`kryos lsp`) provides a comprehensive feature set as of v3.15:
+
+| LSP capability | Method |
+| --- | --- |
+| Diagnostics (on save + on change) | `textDocument/publishDiagnostics` |
+| Hover (symbol info + doc comments) | `textDocument/hover` |
+| Completion (with member access after `.`) | `textDocument/completion` |
+| Go to definition (cross-file) | `textDocument/definition` |
+| Find references | `textDocument/references` |
+| Rename symbol (workspace edit) | `textDocument/rename` |
+| Document outline | `textDocument/documentSymbol` |
+| Workspace symbol search (fuzzy) | `workspace/symbol` |
+| Document highlight (read vs write) | `textDocument/documentHighlight` |
+| Code folding (braces + comments) | `textDocument/foldingRange` |
+| Format on save (delegates to `kryos fmt`) | `textDocument/formatting` |
+| Signature help while typing args | `textDocument/signatureHelp` |
+| Inline type hints + parameter names | `textDocument/inlayHint` |
+| Quick-fix code actions (did-you-mean) | `textDocument/codeAction` |
+| Semantic tokens (accurate highlighting) | `textDocument/semanticTokens/full` |
+
 
 | Editor | Folder | Status | Distribution |
 |---|---|---|---|

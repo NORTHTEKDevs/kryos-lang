@@ -4,6 +4,29 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.17.0-rc.1] — 2026-05-18 — "command reference + polish"
+
+### Added
+
+- **`docs/commands.md`** — single-page reference for every `kryos`
+  subcommand (currently 26+), grouped by purpose: build/run, check/
+  format, test/bench/profile, project lifecycle, editor/docs,
+  diagnostics. Includes a v3.0..v3.17 release timeline.
+- **`editors/README.md` LSP capability matrix** — lists all 15
+  implemented LSP methods so users + editor authors know what to wire.
+
+### Verified at v3.16
+
+- Parity matrix locally: 34/34 (one flake-on-concurrent-sweep
+  test_net, passes in isolation — known race in the test harness,
+  not a code regression).
+- `kryos eval`, `kryos check --watch`, `kryos doc serve` all exercise
+  end-to-end on a scaffolded project.
+
+### Changed
+
+- Workspace version bumped from `3.16.0-rc.1` to `3.17.0-rc.1`.
+
 ## [3.16.0-rc.1] — 2026-05-18 — "kryos check --watch + kryos eval"
 
 ### Added
