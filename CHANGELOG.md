@@ -4,6 +4,24 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.10.0-rc.1] — 2026-05-18 — "cookbook expansion + http client"
+
+### Added
+
+- **4 new cookbook recipes** covering common real-world patterns:
+  - `15-csv-parsing.md` — quote-aware CSV reader
+  - `16-env-config.md` — env-driven config with safe defaults + redaction
+  - `17-retry-with-backoff.md` — exponential-backoff retry helper
+  - `18-input-validation.md` — email + port validators
+- **`examples/showcase/http_client.kry`** — minimal HTTP/1.1 GET client
+  over raw TCP. Demonstrates request framing, response parsing, header
+  walking.
+- `docs/learn/README.md` cookbook table now lists 18 recipes (was 14).
+
+### Changed
+
+- Workspace version bumped from `4.9.0-rc.1` to `4.10.0-rc.1`.
+
 ## [4.9.0-rc.1] — 2026-05-18 — "kryos diff + 3 showcase examples"
 
 ### Added

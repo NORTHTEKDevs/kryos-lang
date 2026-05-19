@@ -68,6 +68,14 @@ Practical, runnable recipes for things people actually build:
 | [08 · Regex everywhere](./cookbook/08-regex.md) | Match, find, capture, replace using `std::re` |
 | [09 · Base64 + UUID](./cookbook/09-encoding.md) | Encode binary payloads, mint v4 UUIDs |
 | [10 · Read structured logs](./cookbook/10-structured-logs.md) | Parse line-delimited JSON, group by field, summarize |
+| [11 · Sorting + binary search](./cookbook/11-sorting-data.md) | std::sort + bsearch in-place ops |
+| [12 · Structured logging](./cookbook/12-structured-logging.md) | std::log structured single-line output |
+| [13 · Hashes + checksums](./cookbook/13-hashes-and-checksums.md) | FNV-1a, DJB2, CRC32 for content IDs |
+| [14 · Deduplicate + aggregate](./cookbook/14-deduplicate.md) | std::collections slice ops |
+| [15 · CSV parsing](./cookbook/15-csv-parsing.md) | Quoted-field-aware CSV reader |
+| [16 · Env config](./cookbook/16-env-config.md) | Read settings from env with safe defaults |
+| [17 · Retry with backoff](./cookbook/17-retry-with-backoff.md) | Exponential-backoff retry pattern |
+| [18 · Validating input](./cookbook/18-input-validation.md) | Email + port validators with std::re |
 
 Each recipe is a complete, working program — copy it, run it, modify it.
 

@@ -1,0 +1,74 @@
+// http_client.kry — minimal HTTP/1.1 GET client over raw TCP.
+//
+// Demonstrates: std::net (tcp_connect, send, recv_str, close), simple
+// HTTP request framing, response parsing.
+//
+// Usage:
+//   kryos run http_client.kry example.com /
+
+use std::net::{tcp_connect, send, recv_str, close}
+
+@capabilities(net, io)
+fn main() {
+    let argv = args()
+    let host: str = if len(argv) >= 2 { argv[1] } else { "example.com" }
+    let path: str = if len(argv) >= 3 { argv[2] } else { "/" }
+    let port: i64 = 80
+
+    let sock = tcp_connect(host, port)
+    if sock < 0 {
+        println("connect failed")
+        return
+    }
+
+    let req = "GET " + path + " HTTP/1.1\r\n" +
+              "Host: " + host + "\r\n" +
+              "User-Agent: kryos-http-client/v4\r\n" +
+              "Accept: */*\r\n" +
+              "Connection: close\r\n" +
+              "\r\n"
+    send(sock, req)
+
+    let mut response: str = ""
+    loop {
+        let chunk = recv_str(sock, 4096)
+        if len(chunk) == 0 { break }
+        response = response + chunk
+    }
+    close(sock)
+
+    // Print status + first few headers + body length.
+    let lines = split_lines(response)
+    if len(lines) > 0 {
+        println(lines[0])  // HTTP/1.1 200 OK
+    }
+    let mut header_count: i64 = 0
+    let mut i: i64 = 1
+    let n = len(lines)
+    while i < n {
+        let l = lines[i]
+        if len(l) == 0 { break }
+        if header_count < 4 {
+            println("  " + l)
+        }
+        header_count = header_count + 1
+        i = i + 1
+    }
+    let body_start = find_body_start(response)
+    let body_len = len(response) - body_start
+    println()
+    println("(" + to_string(header_count) + " headers, body " + to_string(body_len) + " bytes)")
+}
+
+fn find_body_start(resp: str) -> i64 {
+    // Find "\r\n\r\n".
+    let n = len(resp)
+    let mut i: i64 = 0
+    while i + 4 <= n {
+        if substr(resp, i, i + 4) == "\r\n\r\n" {
+            return i + 4
+        }
+        i = i + 1
+    }
+    return n
+}
