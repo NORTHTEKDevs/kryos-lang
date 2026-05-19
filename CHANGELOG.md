@@ -4,6 +4,22 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.18.0-rc.1] — 2026-05-18 — "std::bytes"
+
+### Added
+
+- **`std::bytes`** — raw byte-slice ops:
+  - `bytes_find_byte(buf, len, needle)` — first single-byte match
+  - `bytes_find_seq(haystack, h_len, needle, n_len)` — first sequence match
+  - `bytes_compare(a, a_len, b, b_len)` — lex compare → -1/0/1
+  - `bytes_fill(buf, len, value)` — memset
+  - `bytes_is_ascii(buf, len)` — all bytes < 128 check
+- 5 new tests. 60 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.17.0-rc.1` to `4.18.0-rc.1`.
+
 ## [4.17.0-rc.1] — 2026-05-18 — "std::stack + std::set"
 
 ### Added
