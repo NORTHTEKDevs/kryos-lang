@@ -4,6 +4,110 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.42.0-rc.1] — 2026-05-19 — "self-hosted compiler emits working Windows .exes"
+
+The self-hosted Kryos compiler (`compiler/self-host/`) now produces
+fully linked Windows PE executables for a non-trivial subset of the
+language. See `compiler/self-host/STAGE1_WINDOWS.md` for the full
+spec and `compiler/self-host/examples/` for runnable demos.
+
+### Added
+
+- `obj` subcommand on stage-1 that emits a COFF object file for
+  external linking.
+- `kryos-build.bat` one-shot wrapper: `kryos -> .obj -> link.exe -> .exe`.
+- `kryos_runtime.c` minimal C shim providing `kryos_println_str`,
+  `kryos_i64_to_string`, `kryos_str_concat`, array primitives
+  (`kryos_array_new`, `kryos_builtin_push`, etc.), `kryos_builtin_exit`,
+  and a `mainCRTStartup` entry. Self-contained (built with `/Zl`).
+- Six end-to-end example programs (`stage1_hello.kry`,
+  `demo_calc.kry`, `demo_fizz.kry`, `fibonacci.kry`, `arrays.kry`,
+  `string_format.kry`).
+
+### Fixed (self-host compiler)
+
+- **COFF correctness** (`coff.kry`):
+  - `coff_write_sym_name` long-name encoding lost a zero byte (Stage 0
+    elided `buf_write_i32_le(buf, 0)`), shifting every long-named
+    symbol record. Fixed via 8 explicit `buf_write_byte` calls through
+    a laundered local.
+  - String table size field was patched BEFORE the symbol writer
+    populated long names; size always reflected only the 4-byte
+    placeholder. Moved patch to AFTER `coff_write_symbols`.
+  - Empty sections (`size == 0`) had `PointerToRawData != 0`, causing
+    MSVC `link.exe` / `dumpbin.exe` to crash with `LNK1000`.
+  - `coff_write_u16_le` writes 2 bytes via locals so a u16 = 0 isn't
+    elided by Stage 0's optimizer.
+
+- **MIR / regalloc** (`mir.kry`, `regalloc.kry`):
+  - `MirFunction.next_local_id` / `next_block_id` were scalar fields
+    on `@copy` struct; mutation didn't survive the param. Every
+    `alloc_temp` returned 0 and the regalloc unified all locals.
+    Wrapped both in single-element `[i32]` arrays.
+  - Mutable local lifetimes extended to function end to work around
+    linear-scan's blindness to back-edges. Pessimistic but correct.
+  - Allocatable register order prefers callee-saved so values
+    survive any call by default.
+  - Parameters are always spilled to a fixed stack slot at function
+    entry. Avoids the cross-call clobber problem (e.g. `fib(n-1)
+    + fib(n-2)` where `n` would live in RCX).
+
+- **Codegen** (`codegen.kry`):
+  - Branch patching used inner-`let` shadowing; outer `target_off`
+    stayed 0 so every JMP/Jcc resolved to the start of the function.
+  - Win64 ABI: arg registers are RCX/RDX/R8/R9 (vs SYS V's
+    RDI/RSI/RDX/RCX/R8/R9). Added `cg_arg_reg_for` and
+    `ra_allocate_for` per `target_os`. Caller reserves 32 bytes of
+    shadow space before each call.
+  - Prologue reorders callee-saved pushes before `sub rsp` and pads
+    when the push count is odd to maintain Win64 16-byte stack
+    alignment at call sites.
+  - `cg_stack_offset_ra` accounts for callee-saved bytes between
+    `rbp` and the first local slot; previously the first spill slot
+    aliased the pushed RBX, causing `fib(2)` to return 0.
+  - `cg_emit_string_concat` honors Win64 ABI (RCX/RDX + shadow).
+  - `cg_emit_array_lit` passes real `elem_size` + `cap` args to
+    `kryos_array_new`, honors Win64 ABI.
+  - `cg_emit_index` follows the KryosArray data pointer at offset
+    +32 instead of indexing into the header bytes.
+  - `compile_to_object` builds a name -> COFF symbol-index table and
+    looks up actual symbol indices for each relocation; previously
+    hardcoded `sym_idx = 0`.
+  - `compile_to_object` adds synthetic `__text_base` / `__data_base`
+    / `__rodata_base` static symbols.
+  - `compile_to_object` patches the in-instruction displacement field
+    by `addend + 4` so MSVC `AMD64_REL32` resolves correctly.
+  - PC-relative reloc formula in the in-tree linker: `target - site +
+    addend` (was `target - (site + 4) + addend`, off by 4 because
+    every codegen addend already folded in the "+4 to next inst").
+  - Added inline Linux syscall lowerings for `kryos_println_str`,
+    `kryos_print_str`, `kryos_builtin_exit`, and `syscall1/2/3/6`
+    (used when targeting Linux/ELF; Windows path uses external CALL).
+
+- **Type checker** (`types.kry`):
+  - `push` / `pop` return type changed from `i64` to `any` so
+    `a = push(a, x)` type-checks. (No generic type inference yet.)
+
+- **Main / driver** (`main.kry`):
+  - `detect_target_os()` actually inspects `env_get("WINDIR")`.
+  - New `obj` subcommand wraps the front + middle + codegen passes
+    and writes a COFF or ELF object.
+  - New `mir` subcommand for debugging.
+
+### Known limitations
+
+- Optimizer crashes on functions with 20+ sequential `if-return`
+  branches. Disabled in the obj path for now.
+- Stage-2 bootstrap incomplete: `ast.kry`, `x86.kry`, larger
+  self-host modules still segfault during the lower pass.
+- Type checker error messages don't show identifier names ("undefined
+  variable: <error>").
+- Maps, traits, generics, async, channels not exercised yet.
+
+### Changed
+
+- Workspace version bumped from `4.41.0-rc.1` to `4.42.0-rc.1`.
+
 ## [4.41.0-rc.1] — 2026-05-18 — "stdlib rewritten in pure Kryos — Rust orphans removed"
 
 ### Reality-check correction for v4.1–v4.40
