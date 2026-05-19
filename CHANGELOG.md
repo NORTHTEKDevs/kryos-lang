@@ -4,6 +4,35 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.13.0-rc.1] — 2026-05-18 — "where-clauses + coverage"
+
+### Added
+
+- **`where` clauses on functions** — `fn f<T, U>(...) where T: Bound1
+  + Bound2, U: Other { ... }`. The parser implements `where` as a soft
+  keyword (recognised only when generics exist and the next ident is
+  literally "where"), and merges the clause's bounds into the matching
+  `GenericParam.bounds`. Bounds combine cleanly with the inline
+  `<T: Clone>` form — duplicates are deduplicated.
+- **`kryos coverage [path] [--format=json]`** — function-level coverage
+  report. Walks every `.kry` file in the project to enumerate declared
+  functions, runs `kryos test` with `set_profile_mode(true)`, then
+  cross-references the call-count table against the declared set.
+  Reports `covered / total (percent)`, lists uncovered functions, and
+  shows the top-10 hot list.
+- 5 new tests in `kryos-parser/tests/where_clauses.rs`.
+
+### Verified
+
+- `kryos coverage` on a scaffolded project (e2e_demo, `kryos new
+  --template lib`) reports `1 of 3 functions exercised (33.3%)` —
+  the smoke test runs `smoke_runs`, while `greet` and `main` are
+  uncovered. Correct shape.
+
+### Changed
+
+- Workspace version bumped from `3.12.0-rc.1` to `3.13.0-rc.1`.
+
 ## [3.12.0-rc.1] — 2026-05-18 — "doctor + tree + LSP code actions"
 
 ### Added

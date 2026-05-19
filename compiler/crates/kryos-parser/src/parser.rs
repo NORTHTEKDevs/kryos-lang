@@ -506,6 +506,10 @@ impl Parser {
             None
         };
 
+        // Optional `where` clause — merged into the existing GenericParam bounds.
+        let mut generics = generics;
+        self.parse_where_clause_into(&mut generics);
+
         let body = if self.check(TokenKind::LBrace) {
             Some(self.parse_block())
         } else {
@@ -526,6 +530,52 @@ impl Parser {
             annotations,
             doc_comments,
             span: start.merge(end),
+        }
+    }
+
+    /// Parse `where T: Bound1 + Bound2, U: Other` and merge into the matching
+    /// `GenericParam.bounds`. `where` is a soft keyword — recognised only when
+    /// the next identifier is literally "where" *and* a generics list exists.
+    fn parse_where_clause_into(&mut self, generics: &mut Vec<GenericParam>) {
+        if generics.is_empty() {
+            return;
+        }
+        if self.peek().kind != TokenKind::Ident || self.peek().text != "where" {
+            return;
+        }
+        self.advance(); // consume "where"
+
+        loop {
+            if self.check(TokenKind::LBrace)
+                || self.check(TokenKind::Semicolon)
+                || self.at_end()
+            {
+                break;
+            }
+            let (type_name, _) = self.expect_name();
+            self.expect(TokenKind::Colon);
+            let mut bounds: Vec<String> = Vec::new();
+            let (b, _) = self.expect_name();
+            bounds.push(b);
+            while self.eat(TokenKind::Plus) {
+                let (b, _) = self.expect_name();
+                bounds.push(b);
+            }
+            // Merge into the matching generic param. If the name isn't a
+            // generic param, silently ignore — the checker will diagnose it.
+            for g in generics.iter_mut() {
+                if g.name == type_name {
+                    for b in &bounds {
+                        if !g.bounds.contains(b) {
+                            g.bounds.push(b.clone());
+                        }
+                    }
+                    break;
+                }
+            }
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
         }
     }
 

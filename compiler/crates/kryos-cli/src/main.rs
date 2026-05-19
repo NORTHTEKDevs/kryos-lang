@@ -148,6 +148,17 @@ enum Commands {
         path: Option<String>,
     },
 
+    /// Function-level coverage report (runs `kryos test` with profiling)
+    Coverage {
+        /// Project directory (default: cwd).
+        #[arg(value_name = "PATH")]
+        path: Option<String>,
+
+        /// Output format: pretty (default) or json.
+        #[arg(long, value_name = "FORMAT", default_value = "pretty")]
+        format: String,
+    },
+
     /// Diagnose toolchain installation
     Doctor {
         /// Verbose output (show full paths and version banners).
@@ -494,6 +505,13 @@ fn main() {
                     other
                 )),
             }
+        }
+
+        Commands::Coverage { path, format } => {
+            commands::coverage_cmd::execute(commands::coverage_cmd::CoverageOptions {
+                path,
+                format,
+            })
         }
 
         Commands::Doctor { verbose } => {
