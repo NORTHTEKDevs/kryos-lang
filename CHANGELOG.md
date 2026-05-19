@@ -4,6 +4,23 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.31.0-rc.1] — 2026-05-18 — "std::trie (prefix tree)"
+
+### Added
+
+- **`std::trie`** — ASCII prefix tree with opaque handle:
+  - `trie_new()` → handle
+  - `trie_insert(h, word, len)`
+  - `trie_contains(h, word, len)` → 1/0
+  - `trie_has_prefix(h, prefix, len)` → 1/0
+  - `trie_drop(h)` — free
+  - Useful for autocomplete, dictionary checks, longest-prefix routing.
+- 2 new tests. 98 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.30.0-rc.1` to `4.31.0-rc.1`.
+
 ## [4.30.0-rc.1] — 2026-05-18 — "std::semver"
 
 ### Added
