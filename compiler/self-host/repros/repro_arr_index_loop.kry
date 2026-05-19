@@ -1,0 +1,19 @@
+// Probe: array indexing in a while loop with i64 counter
+
+fn print_arr(arr: [i64]) {
+    let mut i: i64 = 0
+    let n = len(arr)
+    while i < n {
+        println(to_string(arr[i]))
+        i = i + 1
+    }
+}
+
+fn main() {
+    let mut data: [i64] = []
+    data = push(data, 10)
+    data = push(data, 20)
+    data = push(data, 30)
+    print_arr(data)
+    println("done")
+}

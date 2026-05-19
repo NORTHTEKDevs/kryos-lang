@@ -1,0 +1,8 @@
+fn concat_two() -> str {
+    return "a" + "b"
+}
+
+fn main() {
+    let s = concat_two()
+    println(s)
+}

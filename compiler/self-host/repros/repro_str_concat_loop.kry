@@ -1,0 +1,22 @@
+// Probe: string concat in a loop with array index
+
+fn build_str(arr: [i64]) -> str {
+    let mut s: str = "[ "
+    let mut i: i64 = 0
+    let n = len(arr)
+    while i < n {
+        s = s + to_string(arr[i]) + " "
+        i = i + 1
+    }
+    s = s + "]"
+    return s
+}
+
+fn main() {
+    let mut data: [i64] = []
+    data = push(data, 1)
+    data = push(data, 2)
+    data = push(data, 3)
+    let result = build_str(data)
+    println(result)
+}

@@ -1,0 +1,5 @@
+fn main() {
+    let mut s: str = "a"
+    s = s + "b"
+    println(s)
+}
