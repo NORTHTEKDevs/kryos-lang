@@ -1,0 +1,13 @@
+fn main() {
+    let mut a: [i64] = []
+    a = push(a, 10)
+    a = push(a, 20)
+    a = push(a, 30)
+    let mut i: i64 = 0
+    let mut sum: i64 = 0
+    while i < len(a) {
+        sum = sum + a[i]
+        i = i + 1
+    }
+    println(to_string(sum))
+}

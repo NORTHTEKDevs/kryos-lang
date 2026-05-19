@@ -1,0 +1,16 @@
+fn add(a: i64, b: i64) -> i64 { return a + b }
+fn sub(a: i64, b: i64) -> i64 { return a - b }
+fn mul(a: i64, b: i64) -> i64 { return a * b }
+fn div(a: i64, b: i64) -> i64 {
+    if b == 0 { return 0 }
+    return a / b
+}
+
+fn main() {
+    println("Kryos calculator")
+    println("3 + 4 = " + to_string(add(3, 4)))
+    println("10 - 3 = " + to_string(sub(10, 3)))
+    println("6 * 7 = " + to_string(mul(6, 7)))
+    println("100 / 4 = " + to_string(div(100, 4)))
+    println("100 / 0 = " + to_string(div(100, 0)))
+}
