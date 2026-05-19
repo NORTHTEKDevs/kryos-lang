@@ -63,6 +63,7 @@ pub mod path;
 pub mod pathext;
 pub mod process;
 pub mod rand;
+pub mod random;
 pub mod re;
 pub mod sort;
 #[cfg(feature = "sqlite")]

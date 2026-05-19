@@ -4,6 +4,25 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.15.0-rc.1] — 2026-05-18 — "std::random + cookbook 22"
+
+### Added
+
+- **`std::random`** — splitmix64-based PRNG. Functions:
+  - `random_seed(n)` — deterministic seeding (0 = re-time-seed)
+  - `random_i64()` — full-range
+  - `random_range(min, max)` — uniform `[min, max)`
+  - `random_f64()` — uniform `[0.0, 1.0)`
+  - `random_fill(buf, len)` — fill buffer with random bytes
+  - `random_shuffle_i64(arr)` — in-place Fisher–Yates shuffle
+  - **Not cryptographic** — use `std::crypto::rand_bytes` for that.
+- **`docs/learn/cookbook/22-random-numbers.md`** — recipe.
+- 4 new tests. 48 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.14.0-rc.1` to `4.15.0-rc.1`.
+
 ## [4.14.0-rc.1] — 2026-05-18 — "std::pathext + cookbook 21"
 
 ### Added
