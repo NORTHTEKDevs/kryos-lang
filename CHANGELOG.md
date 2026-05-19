@@ -4,6 +4,22 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.28.0-rc.1] — 2026-05-18 — "std::semaphore (atomic, non-blocking)"
+
+### Added
+
+- **`std::semaphore`** — atomic counting semaphore over single-i64 state.
+  CAS-based, non-blocking, multi-thread safe.
+  - `sem_init(state, permits)` — set initial permit count
+  - `sem_try_acquire(state)` → 1 on grant / 0 on no-permits
+  - `sem_release(state)` — increment permits (POSIX-style; no upper cap)
+  - `sem_permits(state)` — read current count (telemetry only)
+- 2 new tests. 88 total stdlib tests pass.
+
+### Changed
+
+- Workspace version bumped from `4.27.0-rc.1` to `4.28.0-rc.1`.
+
 ## [4.27.0-rc.1] — 2026-05-18 — "std::circuit breaker"
 
 ### Added
