@@ -76,6 +76,14 @@ Practical, runnable recipes for things people actually build:
 | [16 · Env config](./cookbook/16-env-config.md) | Read settings from env with safe defaults |
 | [17 · Retry with backoff](./cookbook/17-retry-with-backoff.md) | Exponential-backoff retry pattern |
 | [18 · Validating input](./cookbook/18-input-validation.md) | Email + port validators with std::re |
+| [19 · Running subprocesses](./cookbook/19-running-subprocesses.md) | std::cmd shell-out + bundle parsing |
+| [20 · Formatting numbers](./cookbook/20-formatting-numbers.md) | hex/bin/padded/bytes via std::numfmt |
+| [21 · Path manipulation](./cookbook/21-path-manipulation.md) | normalize / is_abs / component_count |
+| [22 · Random numbers](./cookbook/22-random-numbers.md) | std::random PRNG (seed/range/shuffle) |
+| [23 · Fuzzy search](./cookbook/23-fuzzy-search.md) | Trie + Levenshtein + Jaro-Winkler |
+| [24 · Resilience patterns](./cookbook/24-resilience-patterns.md) | ratelimit + circuit + backoff |
+| [25 · Priority tasks](./cookbook/25-priority-tasks.md) | std::heap binary min-heap |
+| [26 · Cache + dedup](./cookbook/26-cache-and-dedup.md) | std::lru + std::bloom |
 
 Each recipe is a complete, working program — copy it, run it, modify it.
 

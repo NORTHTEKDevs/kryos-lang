@@ -4,6 +4,24 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.34.0-rc.1] — 2026-05-18 — "cookbook batch: 4 new recipes"
+
+### Added
+
+- **`docs/learn/cookbook/23-fuzzy-search.md`** — trie + Levenshtein
+  + Jaro–Winkler for typo correction + autocomplete
+- **`docs/learn/cookbook/24-resilience-patterns.md`** — ratelimit +
+  circuit + backoff for production-grade external calls
+- **`docs/learn/cookbook/25-priority-tasks.md`** — std::heap binary
+  min-heap with priority+id multiplexing
+- **`docs/learn/cookbook/26-cache-and-dedup.md`** — std::lru cache
+  + std::bloom dedup combined
+- `docs/learn/README.md` cookbook table now lists 26 recipes (was 18).
+
+### Changed
+
+- Workspace version bumped from `4.33.0-rc.1` to `4.34.0-rc.1`.
+
 ## [4.33.0-rc.1] — 2026-05-18 — "std::deque (double-ended queue)"
 
 ### Added
