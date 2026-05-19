@@ -486,13 +486,21 @@ fn ra_compute_liveness(func: MirFunction) -> [LiveInterval] {
         bi = bi + 1
     }
 
-    // Build LiveInterval array from the defs/uses maps. To work
-    // around the loop-lifetime problem in this linear-scan
-    // implementation, extend every mutable local's interval to the
-    // last position in the function. Pessimistic for non-loop locals
-    // but correct in the presence of back-edges. A future pass should
-    // compute live-out sets per BB to be more precise.
+    // Build LiveInterval array. Extend each local's interval to
+    // function end when its def is in a different block than its
+    // last use, since the gap may include back-edge traversal that
+    // the linear position numbering cannot see.
     let last_pos = pos - 1
+    // Precompute the [start_pos, end_pos) of each block so we can
+    // map a position back to a block index.
+    let mut block_starts: [i32] = []
+    let mut bs_pos = 0
+    let mut bs_b = 0
+    while bs_b < len(func.blocks) {
+        push(block_starts, bs_pos)
+        bs_pos = bs_pos + len(func.blocks[bs_b].instructions) + 1
+        bs_b = bs_b + 1
+    }
     let mut intervals: [LiveInterval] = []
     let mut lid = 0
     while lid <= max_id {
@@ -501,8 +509,21 @@ fn ra_compute_liveness(func: MirFunction) -> [LiveInterval] {
             if interval_end < lm.defs[lid] {
                 interval_end = lm.defs[lid]
             }
-            // Find the MirLocal flag for this id (if mutable). Locals
-            // are appended in id order; index lookup is safe.
+            // Map def + use positions to their blocks. If a local
+            // crosses block boundaries (its def and last use are in
+            // different blocks), assume it might traverse a back-edge
+            // and extend its lifetime to function end. Also extend
+            // mutable locals unconditionally.
+            let def_pos = lm.defs[lid]
+            let use_pos = interval_end
+            let mut def_blk: i32 = 0
+            let mut use_blk: i32 = 0
+            let mut bb_i = 0
+            while bb_i < len(block_starts) {
+                if block_starts[bb_i] <= def_pos { def_blk = bb_i }
+                if block_starts[bb_i] <= use_pos { use_blk = bb_i }
+                bb_i = bb_i + 1
+            }
             let mut is_mut: bool = false
             let mut li = 0
             while li < len(func.locals) {
@@ -513,7 +534,7 @@ fn ra_compute_liveness(func: MirFunction) -> [LiveInterval] {
                     li = li + 1
                 }
             }
-            if is_mut and interval_end < last_pos {
+            if (is_mut or def_blk != use_blk) and interval_end < last_pos {
                 interval_end = last_pos
             }
             let interval = LiveInterval {
