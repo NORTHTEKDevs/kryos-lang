@@ -369,6 +369,34 @@ fn link_resolve_symbols(inputs: [LinkerInput], merged: LinkerMerged, text_base: 
         i = i + 1
     }
 
+    // Synthetic linker symbols. These are not defined by any input
+    // object; they reflect the layout of the merged image and let
+    // codegen emit PC-relative references to section bases.
+    push(result, ResolvedSymbol {
+        name: "__text_base",
+        address: text_base,
+        section: LSEC_TEXT,
+        is_global: true,
+        is_func: false,
+        size: 0
+    })
+    push(result, ResolvedSymbol {
+        name: "__data_base",
+        address: data_base,
+        section: LSEC_DATA,
+        is_global: true,
+        is_func: false,
+        size: 0
+    })
+    push(result, ResolvedSymbol {
+        name: "__rodata_base",
+        address: rodata_base,
+        section: LSEC_RODATA,
+        is_global: true,
+        is_func: false,
+        size: 0
+    })
+
     // Check for undefined references -- scan all inputs for UNDEF symbols
     // and verify they have a definition in the resolved table
     i = 0
