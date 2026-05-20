@@ -4142,8 +4142,24 @@ fn translate_rvalue<M: Module>(
                                     // 12.6 -> 11.8/16 — picked up some struct that does
                                     // depend on identity-shared semantics. Token alone is
                                     // the safest minimum.
+                                    // H15 (shift step 28): expanded deep-clone whitelist.
+                                    // Step 20 attempted this with shallow-clone fallback and
+                                    // regressed (some types depended on identity-shared
+                                    // semantics). Now the fallback is kryos_array_retain
+                                    // (H8) which IS identity-shared by construction.
+                                    // Deep-cloning more types should now be additive only.
                                     let safe_for_deep_clone = |n: &str| {
-                                        matches!(n, "Token")
+                                        matches!(
+                                            n,
+                                            "Token"
+                                            | "StringPart"
+                                            | "Param"
+                                            | "StructField"
+                                            | "EnumVariant"
+                                            | "Annotation"
+                                            | "GenericParam"
+                                            | "MatchArm"
+                                        )
                                     };
                                     match &**inner_ty {
                                         MirType::Str => emit_array_str_deep_clone(
