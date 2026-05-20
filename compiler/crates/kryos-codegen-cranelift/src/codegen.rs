@@ -1914,9 +1914,17 @@ pub fn compile_module_with_options(
             .map_err(CodegenError::Module)?;
     }
 
-    // ISOLATION-TEST 2: per-field loop body (calloc + load/store each field,
-    // clone Str fields, leave others as raw copy). No Array branch, no
-    // nested Struct clone call. Tests if per-field iteration is correct.
+    // Helper body for __kryos_clone_<Name>: calloc a new struct, then load
+    // each field, clone heap-allocated fields, and store into the new struct.
+    //
+    // STAGE2_BLOCKER step 18 fix (2026-05-20): Array fields previously called
+    // shallow kryos_array_clone, which gave the source struct and the cloned
+    // struct co-ownership of identical element pointers. When both dropped
+    // (each as sole owner of its array header), each iterated and freed the
+    // same element pointers -> double-free. Now Array<Str> / Array<Struct(M)>
+    // route through kryos_array_clone_deep with the appropriate per-element
+    // clone fn pointer. Single-call shape only (no inline loop), so we avoid
+    // the call+store IR materialization bug documented at lines 596-601.
     for (type_name, &clone_id) in &type_clone_ids {
         let call_conv = object_module.isa().default_call_conv();
         let mut sig = Signature::new(call_conv);
@@ -1980,11 +1988,37 @@ pub fn compile_module_with_options(
                         let c = builder.ins().call(fr, &[field_val]);
                         builder.inst_results(c)[0]
                     }
-                    Some(MirType::Array(_, _)) => {
-                        let f = func_ids["kryos_array_clone"];
-                        let fr = object_module.declare_func_in_func(f, builder.func);
-                        let c = builder.ins().call(fr, &[field_val]);
-                        builder.inst_results(c)[0]
+                    Some(MirType::Array(inner, _)) => {
+                        // Pick the per-element clone fn based on inner type.
+                        // None = no helper available, fall back to shallow
+                        // kryos_array_clone (original behavior).
+                        let elem_fn_id: Option<FuncId> = match &**inner {
+                            MirType::Str => func_ids.get("kryos_string_clone").copied(),
+                            MirType::Struct(n) => type_clone_ids.get(n).copied(),
+                            // Array<Array<T>> and Array<Map<K,V>> would also
+                            // need recursion, but kryos_array_clone_deep takes
+                            // a plain fn ptr (no closure), so those need a
+                            // synthesized per-element thunk. Leave shallow
+                            // for now (matches pre-fix behavior, not worse).
+                            _ => None,
+                        };
+                        if let Some(elem_fn_id) = elem_fn_id {
+                            let elem_fn_ref =
+                                object_module.declare_func_in_func(elem_fn_id, builder.func);
+                            let elem_fn_addr =
+                                builder.ins().func_addr(types::I64, elem_fn_ref);
+                            let deep_id = func_ids["kryos_array_clone_deep"];
+                            let deep_ref =
+                                object_module.declare_func_in_func(deep_id, builder.func);
+                            let c =
+                                builder.ins().call(deep_ref, &[field_val, elem_fn_addr]);
+                            builder.inst_results(c)[0]
+                        } else {
+                            let f = func_ids["kryos_array_clone"];
+                            let fr = object_module.declare_func_in_func(f, builder.func);
+                            let c = builder.ins().call(fr, &[field_val]);
+                            builder.inst_results(c)[0]
+                        }
                     }
                     Some(MirType::Map { .. }) => {
                         let f = func_ids["kryos_map_clone"];
@@ -4142,8 +4176,19 @@ fn translate_rvalue<M: Module>(
                                     // 12.6 -> 11.8/16 — picked up some struct that does
                                     // depend on identity-shared semantics. Token alone is
                                     // the safest minimum.
+                                    // BISECT: testing Token + first half of expanded list
                                     let safe_for_deep_clone = |n: &str| {
-                                        matches!(n, "Token")
+                                        matches!(
+                                            n,
+                                            "Token"
+                                            | "StringPart"
+                                            | "Param"
+                                            | "StructField"
+                                            | "EnumVariant"
+                                            | "Annotation"
+                                            | "GenericParam"
+                                            | "MatchArm"
+                                        )
                                     };
                                     match &**inner_ty {
                                         MirType::Str => emit_array_str_deep_clone(
