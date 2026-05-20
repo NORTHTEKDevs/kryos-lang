@@ -4166,14 +4166,21 @@ fn translate_rvalue<M: Module>(
                                             )?
                                         }
                                         _ => {
-                                            let clone_ref = ensure_func_ref_with_args(
-                                                "kryos_array_clone",
+                                            // H8 (shift step 24): retain semantics for non-deep-clone
+                                            // Array fallback. Eliminates element-pointer double-free by
+                                            // sharing the underlying array via ref counting. Trade-off:
+                                            // @copy struct field mutation post-clone affects both sides.
+                                            // Stage-1 mostly produces new arrays rather than mutating
+                                            // existing ones, so this should be safe in practice.
+                                            // H4 sentinel detection remains as a tripwire.
+                                            let retain_ref = ensure_func_ref_with_args(
+                                                "kryos_array_retain",
                                                 builder,
                                                 translator,
                                                 module,
                                                 1,
                                             )?;
-                                            let c = builder.ins().call(clone_ref, &[val]);
+                                            let c = builder.ins().call(retain_ref, &[val]);
                                             builder.inst_results(c)[0]
                                         }
                                     }
