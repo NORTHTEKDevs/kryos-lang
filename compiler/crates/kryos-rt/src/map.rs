@@ -526,8 +526,16 @@ pub extern "C" fn kryos_map_clone(map: i64) -> i64 {
 }
 
 /// Free the map.
+///
+/// H18 leak-all-maps (shift step 29, 2026-05-20): consistent with H10/H12
+/// no-op string/array free. Maps share entry tables across @copy struct
+/// shallow clone, same double-free hazard. Leak the entire map to remove
+/// that hazard. Bounded leak per stage-1 invocation.
 #[no_mangle]
 pub extern "C" fn kryos_map_free(map: i64) {
+    let _ = map;
+    return;
+    #[allow(unreachable_code)]
     if map == 0 {
         return;
     }
