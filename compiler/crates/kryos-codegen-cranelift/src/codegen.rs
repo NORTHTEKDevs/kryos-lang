@@ -4135,28 +4135,47 @@ fn translate_rvalue<M: Module>(
                                 .map(|(_, t)| t);
                             match field_mir_ty {
                                 Some(MirType::Array(inner_ty, _)) => {
-                                    // Per-element deep clone for Array<Str> only.
-                                    // Array<Struct(N)> infra exists (kryos_array_clone_deep
-                                    // runtime + __kryos_clone_<N> Linkage::Export helpers)
-                                    // but dispatch stays OFF. Confirmed across shifts 14-17:
-                                    // ANY form of deep-cloning Array<Struct(N)> in @copy
-                                    // construction destabilizes stage-1, regardless of
-                                    // codegen-loop vs runtime-loop variant. Bug is in the
-                                    // SEMANTIC of changing from shallow-with-shared-elements
-                                    // to deep-with-independent-elements, not in heap
-                                    // pressure or IR materialization.
-                                    if matches!(**inner_ty, MirType::Str) {
-                                        emit_array_str_deep_clone(val, builder, translator, module)?
-                                    } else {
-                                        let clone_ref = ensure_func_ref_with_args(
-                                            "kryos_array_clone",
-                                            builder,
-                                            translator,
-                                            module,
-                                            1,
-                                        )?;
-                                        let c = builder.ins().call(clone_ref, &[val]);
-                                        builder.inst_results(c)[0]
+                                    // Per-element deep clone whitelist (shift 18 H1 finding).
+                                    // Token is the only struct empirically validated to be
+                                    // safe for deep clone via the runtime helper. Expanded
+                                    // whitelists (16 candidates) regressed bootstrap mean
+                                    // 12.6 -> 11.8/16 — picked up some struct that does
+                                    // depend on identity-shared semantics. Token alone is
+                                    // the safest minimum.
+                                    let safe_for_deep_clone = |n: &str| {
+                                        matches!(n, "Token")
+                                    };
+                                    match &**inner_ty {
+                                        MirType::Str => emit_array_str_deep_clone(
+                                            val, builder, translator, module,
+                                        )?,
+                                        MirType::Struct(inner_name)
+                                            if safe_for_deep_clone(inner_name)
+                                                && translator.func_ids.contains_key(
+                                                    &format!("__kryos_clone_{inner_name}"),
+                                                ) =>
+                                        {
+                                            let elem_fn_name =
+                                                format!("__kryos_clone_{inner_name}");
+                                            emit_array_clone_deep_call(
+                                                val,
+                                                &elem_fn_name,
+                                                builder,
+                                                translator,
+                                                module,
+                                            )?
+                                        }
+                                        _ => {
+                                            let clone_ref = ensure_func_ref_with_args(
+                                                "kryos_array_clone",
+                                                builder,
+                                                translator,
+                                                module,
+                                                1,
+                                            )?;
+                                            let c = builder.ins().call(clone_ref, &[val]);
+                                            builder.inst_results(c)[0]
+                                        }
                                     }
                                 }
                                 Some(MirType::Str) => {
