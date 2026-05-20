@@ -3928,16 +3928,27 @@ fn translate_rvalue<M: Module>(
                                 .find(|(n, _)| n == field_name)
                                 .map(|(_, t)| t);
                             match field_mir_ty {
-                                Some(MirType::Array(_, _)) => {
-                                    let clone_ref = ensure_func_ref_with_args(
-                                        "kryos_array_clone",
-                                        builder,
-                                        translator,
-                                        module,
-                                        1,
-                                    )?;
-                                    let c = builder.ins().call(clone_ref, &[val]);
-                                    builder.inst_results(c)[0]
+                                Some(MirType::Array(inner_ty, _)) => {
+                                    // Per-element deep clone for Array<Str>: shallow
+                                    // kryos_array_clone leaves both arrays owning the
+                                    // same str pointers, causing double-free on drop.
+                                    // For other element types (Struct, primitives,
+                                    // nested Array) shallow clone stays — the proper
+                                    // fix for those needs cycle detection (see
+                                    // STAGE2_BLOCKER.md / commit b428325).
+                                    if matches!(**inner_ty, MirType::Str) {
+                                        emit_array_str_deep_clone(val, builder, translator, module)?
+                                    } else {
+                                        let clone_ref = ensure_func_ref_with_args(
+                                            "kryos_array_clone",
+                                            builder,
+                                            translator,
+                                            module,
+                                            1,
+                                        )?;
+                                        let c = builder.ins().call(clone_ref, &[val]);
+                                        builder.inst_results(c)[0]
+                                    }
                                 }
                                 Some(MirType::Str) => {
                                     let clone_ref = ensure_func_ref_with_args(
@@ -5510,6 +5521,100 @@ fn ensure_func_ref_f64<M: Module>(
 // Deep copy for @copy structs
 // ---------------------------------------------------------------------------
 
+/// Emit a deep clone of an Array<Str> value: shallow-clone the header + data
+/// buffer via kryos_array_clone, then iterate the cloned buffer and replace
+/// each element pointer with an independent kryos_string_clone of itself.
+///
+/// Why only Array<Str> and not the general Array<T> case: this helper is
+/// non-recursive by design. The general case (Array<@copy Struct>) would
+/// need to call emit_deep_copy_struct on each element, which recurses
+/// through self-referential types like MirType{element_type:[MirType]}
+/// and overflows stage-0's stack at compile time. Array<Str> is bounded
+/// (kryos_string_clone is a runtime function, no compile-time recursion)
+/// so it's safe.
+///
+/// Use this where the prior code called kryos_array_clone directly on a
+/// @copy struct field of type [Str], to avoid the double-free that
+/// happens when both the source and the clone end up sole-owners of
+/// the same string pointers and both iterate-and-free on drop.
+fn emit_array_str_deep_clone<M: Module>(
+    src_arr: cranelift_codegen::ir::Value,
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    let clone_ref =
+        ensure_func_ref_with_args("kryos_array_clone", builder, translator, module, 1)?;
+    let c = builder.ins().call(clone_ref, &[src_arr]);
+    let cloned = builder.inst_results(c)[0];
+
+    // Guard: skip the loop when cloned is null.
+    let zero_ptr = builder.ins().iconst(types::I64, 0);
+    let is_nonnull = builder.ins().icmp(
+        cranelift_codegen::ir::condcodes::IntCC::NotEqual,
+        cloned,
+        zero_ptr,
+    );
+    let body_block = builder.create_block();
+    let after_block = builder.create_block();
+    builder
+        .ins()
+        .brif(is_nonnull, body_block, &[], after_block, &[]);
+    builder.seal_block(body_block);
+    builder.switch_to_block(body_block);
+
+    // KryosArray { len:i64@0, cap:i64@8, elem_size:i64@16, ref_count:i64@24, data:ptr@32 }
+    let len = builder.ins().load(types::I64, MemFlags::new(), cloned, 0);
+    let data = builder.ins().load(types::I64, MemFlags::new(), cloned, 32);
+
+    let loop_header = builder.create_block();
+    builder.append_block_param(loop_header, types::I64);
+    let loop_body = builder.create_block();
+    let exit_block = builder.create_block();
+
+    let zero = builder.ins().iconst(types::I64, 0);
+    builder.ins().jump(loop_header, &[zero]);
+
+    builder.switch_to_block(loop_header);
+    let i = builder.block_params(loop_header)[0];
+    let done = builder.ins().icmp(
+        cranelift_codegen::ir::condcodes::IntCC::SignedGreaterThanOrEqual,
+        i,
+        len,
+    );
+    builder.ins().brif(done, exit_block, &[], loop_body, &[]);
+    builder.seal_block(loop_body);
+
+    builder.switch_to_block(loop_body);
+    let byte_off = builder.ins().imul_imm(i, 8);
+    let elem_addr = builder.ins().iadd(data, byte_off);
+    let elem = builder
+        .ins()
+        .load(types::I64, MemFlags::new(), elem_addr, 0);
+
+    // Each element is a *KryosString. Clone it.
+    let str_clone_ref =
+        ensure_func_ref_with_args("kryos_string_clone", builder, translator, module, 1)?;
+    let cc = builder.ins().call(str_clone_ref, &[elem]);
+    let cloned_str = builder.inst_results(cc)[0];
+    builder
+        .ins()
+        .store(MemFlags::new(), cloned_str, elem_addr, 0);
+
+    let i_next = builder.ins().iadd_imm(i, 1);
+    builder.ins().jump(loop_header, &[i_next]);
+
+    builder.seal_block(loop_header);
+    builder.seal_block(exit_block);
+    builder.switch_to_block(exit_block);
+    builder.ins().jump(after_block, &[]);
+
+    builder.seal_block(after_block);
+    builder.switch_to_block(after_block);
+
+    Ok(cloned)
+}
+
 /// Emit a deep copy of a @copy struct: malloc a new struct, clone all
 /// heap-allocated fields (arrays, strings, nested @copy structs).
 fn emit_deep_copy_struct<M: Module>(
@@ -5538,16 +5643,24 @@ fn emit_deep_copy_struct<M: Module>(
             .find(|(n, _)| n == field_name)
             .map(|(_, t)| t);
         let stored_val = match field_mir_ty {
-            Some(MirType::Array(_, _)) => {
-                let retain_ref = ensure_func_ref_with_args(
-                    "kryos_array_retain",
-                    builder,
-                    translator,
-                    module,
-                    1,
-                )?;
-                let call = builder.ins().call(retain_ref, &[field_val]);
-                builder.inst_results(call)[0]
+            Some(MirType::Array(inner_ty, _)) => {
+                // Array<Str>: deep-clone elements (avoids double-free of strs).
+                // Other element types: retain (the proper deep-clone for
+                // arrays of @copy structs would need cycle detection through
+                // self-referential types like MirType{element_type:[MirType]}).
+                if matches!(**inner_ty, MirType::Str) {
+                    emit_array_str_deep_clone(field_val, builder, translator, module)?
+                } else {
+                    let retain_ref = ensure_func_ref_with_args(
+                        "kryos_array_retain",
+                        builder,
+                        translator,
+                        module,
+                        1,
+                    )?;
+                    let call = builder.ins().call(retain_ref, &[field_val]);
+                    builder.inst_results(call)[0]
+                }
             }
             Some(MirType::Str) => {
                 let clone_ref = ensure_func_ref_with_args(
