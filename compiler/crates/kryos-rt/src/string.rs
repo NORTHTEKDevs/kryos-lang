@@ -244,13 +244,22 @@ pub unsafe extern "C" fn kryos_string_find(
     -1
 }
 
-/// Clone a KryosString — create a new string with the same content.
+/// Clone a KryosString — share the existing pointer (H19, shift step 30).
+///
+/// Kryos strings are immutable (concat allocates a new string, no in-place
+/// mutation), so sharing the underlying pointer is semantically equivalent
+/// to deep-cloning when paired with H10 (no-op kryos_string_free). Removes
+/// O(N) string clone allocations from every @copy struct construction
+/// involving a Str field. Eliminates the most common heap-pressure source
+/// in stage-1's tokenize/parse path.
+///
+/// Null input still returns a fresh empty string (matches old contract).
 #[no_mangle]
 pub unsafe extern "C" fn kryos_string_clone(s: *const KryosString) -> *mut KryosString {
     if s.is_null() {
         return kryos_string_new(ptr::null(), 0);
     }
-    kryos_string_new((*s).data, (*s).len)
+    s as *mut KryosString
 }
 
 /// Free a KryosString and its data buffer.

@@ -486,43 +486,24 @@ pub unsafe extern "C" fn kryos_map_keys_str(map: i64) -> i64 {
     kryos_map_keys(map) // Same implementation — keys are i64 handles either way.
 }
 
-/// Deep-clone a map: allocate a new header and entry table, copy all entries.
+/// Clone a map — H20 (shift step 30) shares the underlying pointer.
+///
+/// Paired with H18 (no-op kryos_map_free), this makes map operations
+/// arena-like: one allocation per logical map, shared across all
+/// @copy struct clones, never deallocated. Trade-off matches H8/H19:
+/// mutation post-clone is visible across all aliases, but stage-1's
+/// coding style replaces locals via function returns rather than
+/// mutating shared state.
+///
+/// Eliminates the heaviest non-array allocation per clone (map entry
+/// table copy) — significant heap-pressure relief on type-checker
+/// and codegen modules that maintain large symbol/scope maps.
 #[no_mangle]
 pub extern "C" fn kryos_map_clone(map: i64) -> i64 {
     if map == 0 {
         return kryos_map_new();
     }
-    unsafe {
-        let src = map as *const MapHeader;
-        let capacity = (*src).capacity as usize;
-
-        // Allocate new header.
-        let layout = Layout::from_size_align_unchecked(std::mem::size_of::<MapHeader>(), 8);
-        let ptr = alloc_zeroed(layout);
-        if ptr.is_null() {
-            return 0;
-        }
-        let dst = ptr as *mut MapHeader;
-
-        // Allocate new entry table with same capacity.
-        let new_entries = alloc_entries(capacity);
-        if new_entries.is_null() {
-            dealloc(ptr, layout);
-            return 0;
-        }
-
-        // Copy all entries from source to destination.
-        std::ptr::copy_nonoverlapping(
-            (*src).entries as *const u8,
-            new_entries as *mut u8,
-            capacity * std::mem::size_of::<MapEntry>(),
-        );
-
-        (*dst).len = (*src).len;
-        (*dst).capacity = (*src).capacity;
-        (*dst).entries = new_entries;
-        ptr as i64
-    }
+    map
 }
 
 /// Free the map.
