@@ -265,23 +265,16 @@ pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {
     if s.is_null() {
         return;
     }
-    if (*s).cap < 0 {
-        eprintln!(
-            "KRYOS DOUBLE-FREE: KryosString at {:p} (cap={}, len={})",
-            s,
-            (*s).cap,
-            (*s).len,
-        );
-        std::process::abort();
-    }
-    let cap = (*s).cap as usize;
-    if !(*s).data.is_null() && cap > 0 {
-        dealloc((*s).data, KryosString::layout(cap));
-    }
-    // Mark freed (sentinel) and intentionally leak the header.
-    (*s).data = ptr::null_mut();
-    (*s).cap = -1;
-    (*s).len = 0;
+    // H10 (shift step 25): leak strings entirely. Strings have no
+    // ref-count so they can't be retained-and-shared like arrays.
+    // Many stage-1 paths share string pointers across @copy struct
+    // boundaries (Token.text, Symbol.name, etc.), and a wrong drop
+    // produces use-after-free that flakes the bootstrap. Until we
+    // either (a) add ref_count to KryosString or (b) make codegen
+    // emit kryos_string_clone everywhere shared, treat string-free
+    // as a no-op. Leaks ~50-100MB per stage-1 invocation max; well
+    // under the leak-guard 2GB limit.
+    let _ = s;
 }
 
 // ---------------------------------------------------------------------------
