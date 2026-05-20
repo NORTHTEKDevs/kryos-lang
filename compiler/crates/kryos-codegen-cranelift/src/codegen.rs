@@ -3034,22 +3034,9 @@ fn translate_rvalue<M: Module>(
                                         let call = builder.ins().call(clone_ref, &[field_val]);
                                         builder.inst_results(call)[0]
                                     }
-                                    Some(MirType::Struct(inner_name)) => {
-                                        if translator.copy_structs.contains(inner_name) {
-                                            // Recursively deep-copy nested @copy structs.
-                                            if let Some(inner_def) =
-                                                translator.struct_defs.get(inner_name).cloned()
-                                            {
-                                                emit_deep_copy_struct(
-                                                    field_val, &inner_def, builder, translator,
-                                                    module,
-                                                )?
-                                            } else {
-                                                field_val
-                                            }
-                                        } else {
-                                            field_val
-                                        }
+                                    Some(MirType::Struct(_inner_name)) => {
+                                        // H21: share nested @copy struct fields.
+                                        field_val
                                     }
                                     Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                                         let retain_ref = ensure_func_ref_with_args(
@@ -4212,20 +4199,11 @@ fn translate_rvalue<M: Module>(
                                     let c = builder.ins().call(clone_ref, &[val]);
                                     builder.inst_results(c)[0]
                                 }
-                                Some(MirType::Struct(inner_name)) => {
-                                    if translator.copy_structs.contains(inner_name) {
-                                        if let Some(inner_def) =
-                                            translator.struct_defs.get(inner_name).cloned()
-                                        {
-                                            emit_deep_copy_struct(
-                                                val, &inner_def, builder, translator, module,
-                                            )?
-                                        } else {
-                                            val
-                                        }
-                                    } else {
-                                        val
-                                    }
+                                Some(MirType::Struct(_inner_name)) => {
+                                    // H21: share nested @copy struct fields at @copy
+                                    // construction site. Matches emit_deep_copy_struct
+                                    // pattern; eliminates remaining recursive calloc.
+                                    val
                                 }
                                 Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                                     let retain_ref = ensure_func_ref_with_args(
@@ -6060,16 +6038,13 @@ fn emit_deep_copy_struct<M: Module>(
                 let call = builder.ins().call(clone_ref, &[field_val]);
                 builder.inst_results(call)[0]
             }
-            Some(MirType::Struct(inner_name)) => {
-                if translator.copy_structs.contains(inner_name) {
-                    if let Some(inner_def) = translator.struct_defs.get(inner_name).cloned() {
-                        emit_deep_copy_struct(field_val, &inner_def, builder, translator, module)?
-                    } else {
-                        field_val
-                    }
-                } else {
-                    field_val
-                }
+            Some(MirType::Struct(_inner_name)) => {
+                // H21 (shift step 31): share nested @copy struct fields.
+                // Matches the H8/H19/H20 share-semantics pattern that
+                // gave us mean 11.83/16 with 3-stable-failures from 6.
+                // Skips the recursive calloc-and-copy that was the last
+                // big allocation source per @copy struct construction.
+                field_val
             }
             Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                 // ARC-managed: retain to share ownership with the copy.
