@@ -542,6 +542,27 @@ pub fn compile_module_with_options(
                 func_ids.insert(name.to_string(), id);
             }
         }
+        // kryos_array_clone_deep(arr, elem_clone_fn) -> arr
+        // Per-element deep clone moved into the runtime: takes the array
+        // and a (i64) -> i64 clone function pointer (same shape as
+        // kryos_string_clone / __kryos_clone_<N>). Replaces the codegen-
+        // emitted loops in emit_array_str_deep_clone / emit_array_struct_deep_clone
+        // — one call instead of an inline loop, reduces heap pressure.
+        let two_in_one_out = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            sig
+        };
+        if !func_ids.contains_key("kryos_array_clone_deep") {
+            let id = object_module.declare_function(
+                "kryos_array_clone_deep",
+                Linkage::Import,
+                &two_in_one_out,
+            )?;
+            func_ids.insert("kryos_array_clone_deep".to_string(), id);
+        }
     }
 
     // ISOLATION-TEST: declare __kryos_clone_<Name> for @copy structs with heap
@@ -4114,22 +4135,16 @@ fn translate_rvalue<M: Module>(
                                 .map(|(_, t)| t);
                             match field_mir_ty {
                                 Some(MirType::Array(inner_ty, _)) => {
-                                    // Per-element deep clone for Array<Str>. Array<Struct(N)>
-                                    // dispatch infrastructure exists (__kryos_clone_<N>
-                                    // Linkage::Export helpers + emit_array_struct_deep_clone)
-                                    // but gated OFF. Status:
-                                    //   - F4 crash (storing return of Linkage::Local fn call)
-                                    //     -> FIXED via Linkage::Export (shift 14)
-                                    //   - Semantic mismatch with stage-1's TypeChecker
-                                    //     -> NOT FIXED (Path A whitelist attempt: even
-                                    //        Token-only opt-in regressed mean 12.2->10.25/16)
-                                    //
-                                    // The deep-clone semantic itself is what breaks stage-1,
-                                    // not just identity references. May be heap pressure
-                                    // (more allocations) or interaction with the partial
-                                    // drop helpers. Real fix likely needs runtime ABI change
-                                    // (clone_fn ptr in KryosArray header) so kryos_array_clone
-                                    // can dispatch per element WITHOUT codegen-emitted loops.
+                                    // Per-element deep clone for Array<Str> only.
+                                    // Array<Struct(N)> infra exists (kryos_array_clone_deep
+                                    // runtime + __kryos_clone_<N> Linkage::Export helpers)
+                                    // but dispatch stays OFF. Confirmed across shifts 14-17:
+                                    // ANY form of deep-cloning Array<Struct(N)> in @copy
+                                    // construction destabilizes stage-1, regardless of
+                                    // codegen-loop vs runtime-loop variant. Bug is in the
+                                    // SEMANTIC of changing from shallow-with-shared-elements
+                                    // to deep-with-independent-elements, not in heap
+                                    // pressure or IR materialization.
                                     if matches!(**inner_ty, MirType::Str) {
                                         emit_array_str_deep_clone(val, builder, translator, module)?
                                     } else {
@@ -5731,6 +5746,47 @@ fn ensure_func_ref_f64<M: Module>(
 /// @copy struct field of type [Str], to avoid the double-free that
 /// happens when both the source and the clone end up sole-owners of
 /// the same string pointers and both iterate-and-free on drop.
+///
+/// Emit a call to kryos_array_clone_deep(src, elem_clone_fn). The runtime
+/// function does the shallow array clone + per-element deep clone loop
+/// inside itself. This emits ONE call instead of a multi-block inline
+/// loop, dramatically reducing the IR/asm size at every dispatch site
+/// (relevant because stage-1 has hundreds of @copy struct construction
+/// sites that fire these helpers).
+///
+/// `elem_clone_fn_name` is the name of the per-element clone function
+/// (must already be in func_ids): "kryos_string_clone" for Array<Str>,
+/// "__kryos_clone_<N>" for Array<Struct(N)>, etc.
+fn emit_array_clone_deep_call<M: Module>(
+    src_arr: cranelift_codegen::ir::Value,
+    elem_clone_fn_name: &str,
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    // Materialize the address of the elem clone function as an i64.
+    let elem_fn_id = *translator
+        .func_ids
+        .get(elem_clone_fn_name)
+        .ok_or_else(|| CodegenError::UnsupportedOperation(format!(
+            "emit_array_clone_deep_call: {} not in func_ids",
+            elem_clone_fn_name
+        )))?;
+    let elem_fn_ref = module.declare_func_in_func(elem_fn_id, builder.func);
+    let elem_fn_addr = builder.ins().func_addr(types::I64, elem_fn_ref);
+
+    // Call kryos_array_clone_deep(src_arr, elem_fn_addr).
+    let clone_deep_id = *translator
+        .func_ids
+        .get("kryos_array_clone_deep")
+        .ok_or_else(|| CodegenError::UnsupportedOperation(
+            "kryos_array_clone_deep not pre-declared".to_string()
+        ))?;
+    let clone_deep_ref = module.declare_func_in_func(clone_deep_id, builder.func);
+    let call = builder.ins().call(clone_deep_ref, &[src_arr, elem_fn_addr]);
+    Ok(builder.inst_results(call)[0])
+}
+
 fn emit_array_str_deep_clone<M: Module>(
     src_arr: cranelift_codegen::ir::Value,
     builder: &mut FunctionBuilder,

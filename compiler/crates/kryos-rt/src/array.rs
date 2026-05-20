@@ -269,6 +269,48 @@ pub unsafe extern "C" fn kryos_array_clone(arr: *const KryosArray) -> *mut Kryos
     result
 }
 
+/// Clone a KryosArray AND deep-clone each element by applying
+/// `elem_clone_fn` to it. Used by `@copy` struct field semantics for
+/// Array<Str> / Array<@copy-Struct> to avoid the double-free that arises
+/// when shallow clone leaves both arrays owning the same element pointers.
+///
+/// `elem_clone_fn` is invoked as `extern "C" fn(i64) -> i64` -- the same
+/// shape as `kryos_string_clone` and the codegen-emitted `__kryos_clone_<N>`
+/// helpers. Null elements are skipped (the clone fn would either return
+/// null itself or panic on a deref; either way we avoid the call).
+///
+/// This consolidates the per-element loop INSIDE the runtime, eliminating
+/// the codegen-emitted loop allocations (emit_array_str_deep_clone /
+/// emit_array_struct_deep_clone) and reducing the heap pressure that
+/// regressed bootstrap when those helpers were used.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_array_clone_deep(
+    arr: *const KryosArray,
+    elem_clone_fn: extern "C" fn(i64) -> i64,
+) -> *mut KryosArray {
+    let result = kryos_array_clone(arr);
+    if result.is_null() {
+        return result;
+    }
+    let len = (*result).len;
+    if len <= 0 {
+        return result;
+    }
+    let data = (*result).data;
+    if data.is_null() {
+        return result;
+    }
+    // Iterate and replace each element with its deep-cloned independent copy.
+    for i in 0..len as usize {
+        let slot = data.add(i * ELEM_SIZE) as *mut i64;
+        let elem = *slot;
+        if elem != 0 {
+            *slot = elem_clone_fn(elem);
+        }
+    }
+    result
+}
+
 /// Retain a KryosArray — increment its reference count and return the same pointer.
 ///
 /// Used when a non-copy struct literal copies an array field: both the source
