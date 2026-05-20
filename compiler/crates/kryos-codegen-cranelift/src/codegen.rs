@@ -4115,25 +4115,21 @@ fn translate_rvalue<M: Module>(
                             match field_mir_ty {
                                 Some(MirType::Array(inner_ty, _)) => {
                                     // Per-element deep clone for Array<Str>. Array<Struct(N)>
-                                    // deep-clone dispatch INFRASTRUCTURE exists
-                                    // (__kryos_clone_<N> Linkage::Export helpers +
-                                    // emit_array_struct_deep_clone) but is gated OFF.
+                                    // dispatch infrastructure exists (__kryos_clone_<N>
+                                    // Linkage::Export helpers + emit_array_struct_deep_clone)
+                                    // but gated OFF. Status:
+                                    //   - F4 crash (storing return of Linkage::Local fn call)
+                                    //     -> FIXED via Linkage::Export (shift 14)
+                                    //   - Semantic mismatch with stage-1's TypeChecker
+                                    //     -> NOT FIXED (Path A whitelist attempt: even
+                                    //        Token-only opt-in regressed mean 12.2->10.25/16)
                                     //
-                                    // F4 crash class (storing return of Linkage::Local
-                                    // function call) is FIXED via Linkage::Export. But
-                                    // the dispatch itself is semantically wrong for
-                                    // stage-1: stage-1's type checker uses @copy
-                                    // TypeChecker structs whose Array fields appear to
-                                    // hold identity-sensitive references. Deep-cloning
-                                    // those arrays produces a state the type checker
-                                    // misreads, leading to false-positive type errors
-                                    // (bubble_sort fails 8/8 -> 7/8 when dispatch is on).
-                                    //
-                                    // Real fix needs either:
-                                    //   - per-struct opt-in (only deep-clone for SOME @copy
-                                    //     structs, exclude TypeChecker / StructDef family), or
-                                    //   - source-side refactor of stage-1's TypeChecker to
-                                    //     not depend on identity (move to indices everywhere).
+                                    // The deep-clone semantic itself is what breaks stage-1,
+                                    // not just identity references. May be heap pressure
+                                    // (more allocations) or interaction with the partial
+                                    // drop helpers. Real fix likely needs runtime ABI change
+                                    // (clone_fn ptr in KryosArray header) so kryos_array_clone
+                                    // can dispatch per element WITHOUT codegen-emitted loops.
                                     if matches!(**inner_ty, MirType::Str) {
                                         emit_array_str_deep_clone(val, builder, translator, module)?
                                     } else {
