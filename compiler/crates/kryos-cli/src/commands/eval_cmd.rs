@@ -10,8 +10,6 @@
 //! newline-terminated statements first (Kryos uses newlines, not semicolons,
 //! to terminate statements at parse time).
 
-use std::path::PathBuf;
-
 #[derive(Debug, Clone, Default)]
 pub struct EvalOptions {
     /// The expression / statements to evaluate.
@@ -52,8 +50,8 @@ pub fn from_argv(expr: Vec<String>, show_source: bool) -> EvalOptions {
 }
 
 /// For testability we expose the wrap-and-return-source path separately.
+#[allow(dead_code)] // used by #[cfg(test)] mod tests below
 pub fn wrap_body(body: &str) -> String {
-    let _ = PathBuf::new();
     let cleaned = body.replace(';', "\n");
     format!("fn main() {{\n    {cleaned}\n}}\n")
 }

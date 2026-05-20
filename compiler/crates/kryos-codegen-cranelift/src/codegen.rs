@@ -5896,6 +5896,12 @@ fn emit_array_str_deep_clone<M: Module>(
 /// then iterate the cloned buffer and replace each element pointer with an
 /// independent __kryos_clone_<N>(elem) result. Recursion is at the call
 /// boundary at runtime, not at compile time — avoids the b428325 cycle.
+///
+/// Currently superseded by emit_array_clone_deep_call (runtime ABI variant)
+/// for active dispatch paths. Kept as historical reference for the codegen-
+/// emitted-loop variant; may be revived if a non-runtime-ABI deep clone is
+/// needed for a backend without kryos_array_clone_deep.
+#[allow(dead_code)]
 fn emit_array_struct_deep_clone<M: Module>(
     src_arr: cranelift_codegen::ir::Value,
     struct_name: &str,

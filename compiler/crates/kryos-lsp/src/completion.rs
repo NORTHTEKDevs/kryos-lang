@@ -9,6 +9,7 @@ const KIND_STRUCT: i32 = 22;
 const KIND_ENUM: i32 = 13;
 const KIND_MODULE: i32 = 9;
 const KIND_TYPE: i32 = 25;
+#[allow(dead_code)] // LSP protocol constant; reserved for struct-field completions
 const KIND_FIELD: i32 = 5;
 const KIND_METHOD: i32 = 2;
 
