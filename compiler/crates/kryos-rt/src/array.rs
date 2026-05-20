@@ -326,10 +326,28 @@ pub unsafe extern "C" fn kryos_array_retain(arr: *mut KryosArray) -> *mut KryosA
 }
 
 /// Free a KryosArray — decrement reference count and deallocate when it reaches zero.
+///
+/// H4 INSTRUMENTATION (shift kryos-self-compile step 22, 2026-05-20):
+/// Live arrays always have ref_count >= 1. If we observe ref_count <= 0
+/// on entry, that's a double-free of a previously-freed array. Abort
+/// with a diagnostic so we can locate the source. To keep the sentinel
+/// observable on the next free, we skip the header dealloc -- the
+/// header (~40 bytes) leaks intentionally. Revert before production.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
     if arr.is_null() {
         return;
+    }
+    if (*arr).ref_count <= 0 {
+        eprintln!(
+            "KRYOS DOUBLE-FREE: KryosArray at {:p} (ref_count={}, elem_size={}, cap={}, len={})",
+            arr,
+            (*arr).ref_count,
+            (*arr).elem_size,
+            (*arr).cap,
+            (*arr).len,
+        );
+        std::process::abort();
     }
     (*arr).ref_count -= 1;
     if (*arr).ref_count > 0 {
@@ -339,7 +357,12 @@ pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
     if !(*arr).data.is_null() && cap > 0 {
         dealloc((*arr).data, KryosArray::data_layout(cap));
     }
-    dealloc(arr as *mut u8, Layout::new::<KryosArray>());
+    // Mark freed (sentinel) and intentionally leak the header so the
+    // sentinel survives long enough to catch double-frees.
+    (*arr).data = ptr::null_mut();
+    (*arr).cap = 0;
+    (*arr).len = 0;
+    (*arr).ref_count = -1;
 }
 
 // ---------------------------------------------------------------------------

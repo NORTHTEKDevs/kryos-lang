@@ -254,16 +254,34 @@ pub unsafe extern "C" fn kryos_string_clone(s: *const KryosString) -> *mut Kryos
 }
 
 /// Free a KryosString and its data buffer.
+///
+/// H4 INSTRUMENTATION (shift kryos-self-compile step 22, 2026-05-20):
+/// Strings have no ref_count -- they are unique-owner. After freeing,
+/// we set cap = -1 as a sentinel and leak the header (~24 bytes) so
+/// a double-free can be detected by observing cap < 0 on entry.
+/// Revert before production.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {
     if s.is_null() {
         return;
     }
+    if (*s).cap < 0 {
+        eprintln!(
+            "KRYOS DOUBLE-FREE: KryosString at {:p} (cap={}, len={})",
+            s,
+            (*s).cap,
+            (*s).len,
+        );
+        std::process::abort();
+    }
     let cap = (*s).cap as usize;
     if !(*s).data.is_null() && cap > 0 {
         dealloc((*s).data, KryosString::layout(cap));
     }
-    dealloc(s as *mut u8, Layout::new::<KryosString>());
+    // Mark freed (sentinel) and intentionally leak the header.
+    (*s).data = ptr::null_mut();
+    (*s).cap = -1;
+    (*s).len = 0;
 }
 
 // ---------------------------------------------------------------------------
