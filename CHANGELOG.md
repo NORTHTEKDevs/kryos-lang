@@ -4,6 +4,148 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.43.0-rc.1] — 2026-05-19 — "self-host bootstrap mean rises 4/16 → 12.2/16"
+
+Post-v4.42 fix cycle. Stage-1 keeps producing working Windows `.exe`s
+for non-trivial user code (8/8 examples), and the stage-2 bootstrap
+(stage-1 compiling its own source) now passes a mean of 12.2 / 16
+self-host modules per run (10-iter sample: 15, 15, 11, 12, 12, 13,
+12, 10, 10, 12) — peak 15/16. The pre-fix baseline was 4/16
+deterministically; the post-cranelift-fix mid-session baseline was
+10-11/16; this release pushes to 12+ via the @copy Drop no-op fix.
+
+### Fixed — stage-0 (Rust kryos.exe)
+
+- **Cranelift `RValue::Struct` field-store width**
+  (`compiler/crates/kryos-codegen-cranelift/src/codegen.rs:3895`):
+  `translate_operand` emits `Constant::Int` as I64 regardless of
+  destination field width, but `RValue::Struct` previously stored
+  the value at the field offset without truncating. A literal stored
+  into an i32 / i16 / i8 / bool field wrote 8 bytes into a 4 / 2 / 1
+  byte slot, overrunning into the next field or past the calloc'd
+  struct end and corrupting adjacent heap. This was the
+  `STAGE2_BLOCKER.md` "repeated struct alloc segfaults
+  non-deterministically" bug. Now ireduce / sextend / bitcast to the
+  field's actual Cranelift type before storing, matching the
+  coercion already present in `Instruction::StoreField` and
+  `Instruction::Assign`. Verification: `repros/repro_3struct.kry`,
+  `repros/repro_const_init.kry`, `repros/repro_mixed_fields.kry` —
+  100/100 each under both default and `KRYOS_USE_REALLOC=1` paths,
+  AOT `--release` 100/100.
+
+- **`@copy` struct Drop was a silent no-op, causing field leaks**
+  (`Instruction::Drop` `MirType::Struct` branch, ~line 2312):
+  The branch skipped `emit_drop_for_value` for @copy structs with a
+  comment that "the original owner will free" — but no owner ever
+  ran field drops, so retained heap fields (the result of
+  `kryos_array_retain` at `RValue::Struct` construction) leaked.
+  Stage-1 has hundreds of such locals per module; the cumulative
+  leak pile-up tripped the allocator and produced the
+  heap-state-sensitive crashes that had been blocking
+  mir/lower/optimize/regalloc/codegen/types deterministically.
+  Removed the no-op; drops now run through `emit_drop_for_value`.
+  Multi-owner ref-count balance gives correct semantics: each
+  owner's drop decrements once, the array frees at zero. Bootstrap
+  mean rose from ~10.2/16 to ~12.2/16 from this single change.
+
+- **Per-element deep clone for `Array<Str>` @copy fields**
+  (new helper `emit_array_str_deep_clone`): the previous
+  `kryos_array_clone`-only path left both arrays owning the same
+  string pointers, double-freeing on drop. Helper does shallow array
+  clone + per-element `kryos_string_clone`, non-recursive (so no
+  compile-time stack overflow on self-referential types like
+  `MirType{element_type:[MirType]}`). General `Array<@copy-Struct>`
+  case still uses retain — the deep-clone for that case needs the
+  named-helper rewrite documented under `STAGE2_BLOCKER.md` Open
+  Items.
+
+### Fixed — stage-1 (self-hosted Kryos compiler)
+
+- **`lower.kry` str-concat for identifier operands** — `s + "b"`
+  where `s` is a let-bound `str` variable was lowered as i64 ADD on
+  the underlying pointers, producing garbage that segfaulted
+  downstream. Root cause: `resolve_expr_type` defaulted EXPR_IDENT
+  to `MIR_TY_ANY`, so `lower_binop`'s string-concat dispatch was
+  bypassed. Added `ctx_local_ty` and `ctx_operand_ty` helpers that
+  consult the LowerCtx's `MirFunction.locals` to recover any local's
+  declared type. `lower_binop`'s BINOP_ADD path now consults
+  `ctx_operand_ty` first, falling back to `resolve_expr_type` only
+  when the operand is genuinely untyped. Effect: 8/8 examples now
+  pass end-to-end (was 7/8 — `bubble_sort` had been crashing inside
+  its `print_array` accumulating a string with a loop concat).
+
+- **`lower.kry` field-assignment rhs copy-to-temp** — `r.field =
+  expr` previously lowered the rhs directly into
+  `kryos_field_set`'s arg list, which crashed stage-1's codegen on
+  larger functions. Adding an explicit `inst_assign(temp,
+  rv_use(val_raw))` between the rvalue lowering and the field-set
+  call gives the rhs a clean SSA boundary the codegen needs.
+  Unblocked `parser.kry`.
+
+- **`types.kry` `ty_compatible` recursion** — recurses into
+  `TY_ARRAY` and `TY_TUPLE` element types instead of relying on
+  strict `ty_equals`, so `[i32]` and `[i64]` are considered
+  compatible (matches the integer-widening rule already present for
+  scalars).
+
+- **`main.kry` `KRYOS_SKIP_TYPES=1` escape hatch + restored
+  error-message print loop** — stage-1's type checker is incomplete
+  relative to stage-0; bootstrap source is pre-validated by
+  stage-0, so type errors at this layer are usually false
+  positives. The env var lets the obj path proceed to
+  lower/codegen using whatever `tc.struct_defs` / `tc.fn_sigs` the
+  checker did manage to populate.
+
+- **`codegen.kry` `KRYOS_CG_TRACE=1` diagnostic** — `cg_emit_module`
+  now `eprintln`s `cg[i/N]: fn_name` before processing each MIR
+  function when the env var is set. Used in this cycle to bisect
+  every remaining stage-1 codegen crash to a specific function.
+
+### Fixed — kryos-rt runtime
+
+- **`kryos_array_push` reverts to `realloc` as default grow path.**
+  The prior alloc+copy+leak workaround (commit `3a2d8c3`) was
+  installed when `RValue::Struct` was corrupting adjacent heap and
+  surfacing as `ntdll!RtlpReAllocateHeap` crashes. With the cranelift
+  fix above, that corruption source is gone and `realloc` is safe
+  again. `KRYOS_USE_ALLOC_LEAK=1` reinstates the leak path as a
+  diagnostic if any future regression makes HeapReAlloc unsafe.
+
+- **`kryos_runtime.c`: `kryos_builtin_sort` + `kryos_builtin_reverse`
+  for `[i64]`.** `lower.kry` maps user-level `sort()` and
+  `reverse()` to these runtime symbols; they previously weren't
+  defined, so any program using them failed at link time with
+  `LNK2019`. Now defined as in-place insertion sort and array
+  reverse.
+
+### Verification
+
+- `compiler/self-host/test_examples.sh` — 8/8 end-to-end PASS:
+  `stage1_hello`, `fibonacci`, `demo_calc`, `demo_fizz`, `arrays`,
+  `string_format`, `bubble_sort`, `file_io`.
+- `compiler/self-host/test_bootstrap.sh` — 10-iter sample
+  `15/15/11/12/12/13/12/10/10/12`, mean 12.2 / 16, peak 15/16.
+- `compiler/self-host/repros/` — ~30 minimal reproducers added as
+  regression guards (struct-corruption, str-concat patterns,
+  field-assignment with array literal, etc.).
+
+### Open items (next release)
+
+1. Bootstrap floor still ~10/16 — driven by inline
+   `emit_drop_for_value` expansion at non-`Instruction::Drop` sites.
+   Fix: dispatch every Struct/Enum drop through the existing
+   `__kryos_drop_<Name>` named helpers (mirror the pattern at
+   line 1694+ where helper bodies are generated).
+2. Array<@copy-Struct> still uses shallow clone (retain). Needs
+   `__kryos_clone_<Name>` named helpers analogous to drop.
+3. Stage-1 parser still drops some declarations from larger files
+   (e.g., `lexer.kry` parses 18 / 22 top-level decls). Investigate
+   parser recovery in `parse_module`.
+
+### Changed
+
+- Workspace version bumped from `4.42.0-rc.1` to `4.43.0-rc.1`.
+
 ## [4.42.0-rc.1] — 2026-05-19 — "self-hosted compiler emits working Windows .exes"
 
 The self-hosted Kryos compiler (`compiler/self-host/`) now produces
