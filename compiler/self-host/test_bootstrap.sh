@@ -58,6 +58,9 @@ for f in token lexer ast parser types mir lower optimize regalloc x86 codegen el
         printf "%-20s | FAIL (rc=%d)\n" "$f.kry" "$rc"
         fail=$((fail+1))
         failed="$failed $f"
+        # Surface any KRYOS_* diagnostic lines from the swallowed output
+        # (DOUBLE-FREE, PANIC, corrupt array header, etc.). Keep concise.
+        echo "$out" | grep -iE "DOUBLE-FREE|kryos panic|corrupt array|assertion failed" | head -3 | sed 's/^/                       | /'
     fi
 done
 echo ""
