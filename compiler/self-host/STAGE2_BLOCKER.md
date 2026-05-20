@@ -329,3 +329,65 @@ that don't trigger on the smaller bootstrap-OK modules.
    lower to subsequently crash. Symptom of the same regalloc/codegen
    fragility above.
 4. **Stage-3 fixed point** — gated on every module above passing.
+
+## H1 Probe Finding 2026-05-20 (Step 18)
+
+Enabled the Array<Struct(N)> dispatch (via kryos_array_clone_deep) and ran
+`bubble_sort.kry` directly through stage-1. Captured the precise failure:
+
+```
+Type errors: 10
+  undefined variable: data at 822
+  undefined variable: data at 834
+  undefined variable: data at 849
+  ...
+```
+
+All 10 errors are `undefined variable: data at <pos>` — variable scope
+lookup is failing for a perfectly normal local. `tc_lookup` (types.kry:549)
+walks `tc.scopes[i].symbols[j].name == name`, all index-based, no raw
+pointers. So the failure is NOT a stale pointer — it's that the scope's
+Symbol array doesn't contain what it should after deep clone.
+
+Mechanism:
+
+1. `RValue::Struct` for a @copy TypeChecker now dispatches Array<Scope>
+   through `kryos_array_clone_deep`, calling `__kryos_clone_Scope` on each
+   element.
+2. `__kryos_clone_Scope`'s body itself uses the OLD shallow path for its
+   internal `symbols: Array<Symbol>` field (i.e. `kryos_array_clone` shallow,
+   not `kryos_array_clone_deep`).
+3. So the new Scope objects share their Symbol arrays with the original
+   Scopes by pointer. When the SOURCE TypeChecker drops, it iterates its
+   Scopes and frees each Scope's Symbol array. The cloned TC now points at
+   freed Symbol arrays. Subsequent `tc_lookup` calls walk freed memory and
+   see no matches → "undefined variable."
+
+This is exactly the "partial fix one level down" issue documented in step
+14. The new `kryos_array_clone_deep` runtime ABI exists and works; the
+missing piece is that `__kryos_clone_<N>` helper bodies need to call
+`kryos_array_clone_deep` (not `kryos_array_clone`) on their own Array
+fields.
+
+Step 15 attempted recursive deep clone in helper bodies and reported a
+crash. BUT step 15 used the codegen-emitted-loop variant
+(`emit_array_struct_deep_clone`). The runtime-ABI variant
+(`kryos_array_clone_deep`) has NOT been tried inside helper bodies — and
+its single-call shape avoids the call+store IR materialization pattern
+that broke the previous attempt.
+
+### Recommended next attempt
+
+Modify the `__kryos_clone_<N>` helper body emission so that for every
+heap-allocated field:
+  - Str field: call `kryos_string_clone(field)` (already works)
+  - Array<Str> field: call `kryos_array_clone_deep(field, kryos_string_clone)`
+  - Array<Struct(M)> field where M has a helper: call
+    `kryos_array_clone_deep(field, __kryos_clone_<M>)`
+  - Array<other> field: call `kryos_array_clone` (shallow, original
+    behavior)
+  - Nested @copy Struct field: recursive `__kryos_clone_<M>(field)`
+
+This makes the deep clone TRULY recursive without using the
+emit_array_struct_deep_clone codegen loop. Single-call shape only, no
+call+store-cycle issues.
