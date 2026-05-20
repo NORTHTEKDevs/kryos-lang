@@ -4114,11 +4114,26 @@ fn translate_rvalue<M: Module>(
                                 .map(|(_, t)| t);
                             match field_mir_ty {
                                 Some(MirType::Array(inner_ty, _)) => {
-                                    // Per-element deep clone for Array<Str>. Array<Struct>
-                                    // dispatch pending — see STAGE2_BLOCKER step 12 notes:
-                                    // emit_array_struct_deep_clone's per-element store of
-                                    // __kryos_clone_<N>'s return value crashes stage-1 at
-                                    // runtime; storing identity works.
+                                    // Per-element deep clone for Array<Str>. Array<Struct(N)>
+                                    // deep-clone dispatch INFRASTRUCTURE exists
+                                    // (__kryos_clone_<N> Linkage::Export helpers +
+                                    // emit_array_struct_deep_clone) but is gated OFF.
+                                    //
+                                    // F4 crash class (storing return of Linkage::Local
+                                    // function call) is FIXED via Linkage::Export. But
+                                    // the dispatch itself is semantically wrong for
+                                    // stage-1: stage-1's type checker uses @copy
+                                    // TypeChecker structs whose Array fields appear to
+                                    // hold identity-sensitive references. Deep-cloning
+                                    // those arrays produces a state the type checker
+                                    // misreads, leading to false-positive type errors
+                                    // (bubble_sort fails 8/8 -> 7/8 when dispatch is on).
+                                    //
+                                    // Real fix needs either:
+                                    //   - per-struct opt-in (only deep-clone for SOME @copy
+                                    //     structs, exclude TypeChecker / StructDef family), or
+                                    //   - source-side refactor of stage-1's TypeChecker to
+                                    //     not depend on identity (move to indices everywhere).
                                     if matches!(**inner_ty, MirType::Str) {
                                         emit_array_str_deep_clone(val, builder, translator, module)?
                                     } else {
