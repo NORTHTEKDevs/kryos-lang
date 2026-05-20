@@ -197,9 +197,27 @@ OK    runtime.kry    (75 decls,  75 MIR fns)
 OK    main.kry       (18 decls,  10 MIR fns)
 ```
 
-**11/16 modules pass stage-1.** Up from 4/16 prior to the fix
-(token, ast, x86, runtime — the Cranelift-overrun bug was crashing
-the rest non-deterministically).
+**11-15/16 modules pass stage-1** (5-run avg ~12.4, peak 15/16). Up from
+4/16 prior to any fixes. The flakiness band remains because the underlying
+heap pressure isn't fully eliminated.
+
+Breakthrough fix in commit `0cb9089`: `Instruction::Drop`'s
+`MirType::Struct` branch was a no-op for @copy structs (comment said
+"the original owner will free" — but no owner ever ran field drops),
+so every @copy-struct local with retained heap fields leaked its
+field allocations. Stage-1 has hundreds of such locals across each
+module. The leaked allocations piled up across compilation, tripping
+the allocator and producing the heap-state-sensitive crashes that
+had been blocking modules deterministically. Removing the no-op and
+running drops through emit_drop_for_value gives multi-owner ref-count
+balance and frees correctly on the last drop.
+
+Two related sites (emit_drop_for_value's Struct-field iteration at
+line 5776, and the exception-cleanup-locals filter near 6042) were
+patched together with helper-call dispatch but caused a different
+regression and were reverted. The proper fix for those is the
+named-helper approach (`__kryos_drop_<Name>` already exists; needs
+to be the default call mode at every inline site).
 
 | Module     | Before fix | After cranelift + ty_compat | After lower.kry copy-to-temp |
 |------------|------------|------------------------------|------------------------------|
