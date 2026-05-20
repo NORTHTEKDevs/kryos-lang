@@ -572,7 +572,13 @@ pub fn compile_module_with_options(
                 let mut sig = Signature::new(call_conv);
                 sig.params.push(AbiParam::new(types::I64));
                 sig.returns.push(AbiParam::new(types::I64));
-                let id = object_module.declare_function(&clone_name, Linkage::Local, &sig)?;
+                // Linkage::Export, not Local. Linkage::Local on a function whose
+                // return value is immediately stored across the call boundary
+                // triggers a Cranelift IR materialization bug that segfaults
+                // stage-1 at runtime. Diagnosed in shift 2: an identical pattern
+                // calling Linkage::Import kryos_string_clone works fine; only the
+                // Local variant crashes. Export sidesteps the issue.
+                let id = object_module.declare_function(&clone_name, Linkage::Export, &sig)?;
                 type_clone_ids.insert(name.clone(), id);
                 func_ids.insert(clone_name, id);
             }
