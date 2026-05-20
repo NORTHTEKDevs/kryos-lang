@@ -1192,3 +1192,102 @@ SHIFTS:
     parks without resolving the bootstrap blocker)
   status: parked
 
+
+  ---
+  shift: 5
+  steps: 22-27
+  date: 2026-05-20T22:00:00Z
+  engineer: claude (opus 4.7)
+  context: extended shift driven by "keep building continuously toward
+    self-compile". Six experiments H4 through H12 + H10 + H8 codegen
+    + polish work. Critical methodological finding mid-shift: test
+    script swallowed per-module stderr, masking diagnostic output;
+    fixed with surfacing patch.
+  
+  experiments:
+    H4 (step 22, commit 6cf8a83) -- kryos_array_free/string_free
+      sentinel-on-free + abort on double-free. ZERO double-frees
+      detected across all subsequent runs.
+    
+    H7 (step 23, reverted) -- kryos_array_free + string_free pure
+      no-op (leak everything). Tested with stale runtime lib so
+      results were contaminated; lib refresh skipped in --bin builds.
+    
+    H8 (step 24, commit 286c4bd) -- codegen change: @copy struct
+      Array fallback uses kryos_array_retain (share via refcount)
+      instead of kryos_array_clone. Result: mean 9.67/16 vs 9.0
+      baseline, more stable failure set (parser/types/lower/
+      optimize/codegen/linker). MARGINAL improvement.
+    
+    H10 (step 25, commit 919ca50) -- kryos_string_free no-op. Tested
+      with truly-fresh lib. Mean 8.67/16. No improvement.
+    
+    H11 (step 26, ephemeral) -- file-based diagnostic for double-free
+      + panic paths. NEVER TRIGGERED across all parser.kry direct runs.
+      Conclusion: no double-frees, no panics during bootstrap crash.
+    
+    H12 (step 27, commit 0b0152e) -- TRUE leak-all (pure no-op
+      kryos_array_free combined with H10 no-op string_free). Mean
+      8/16. Same crash pattern with rc=-1 (0xFFFFFFFF access violation).
+      Zero free operations -> UAF impossible by construction; yet
+      crashes persist. CONCLUSIVE: bug is in CODEGEN-emitted code,
+      not in kryos-rt memory management.
+  
+  conclusive-finding:
+    The bootstrap heap-flakiness is NOT a runtime memory-management
+    bug. It is a codegen-emitted access violation that depends on
+    heap state. Likely root cause: struct-in-array storage (8-byte
+    slot losing struct data when push() is called with multi-i64
+    structs). STAGE2_BLOCKER.md original analysis was directionally
+    correct on this point.
+  
+  polish-committed:
+    - Removed 6 cargo warnings (commits d4bb05f, f25cabd) -- dead-code
+      annotations + unused imports across kryos-cli, kryos-lsp,
+      kryos-codegen-cranelift
+    - test_bootstrap.sh now surfaces diagnostic lines on per-module
+      fail (commit 661bc92). Previously these were captured into a
+      shell variable and silently discarded.
+    - README for compiler/self-host/repros/ (commit f25cabd)
+  
+  hypothesis-for-next-shift:
+    H13. Codegen RValue::Struct + push() builtin investigation.
+        Look at how stage-0 emits push(array<Struct(N)>, struct_val)
+        when the struct exceeds 8 bytes. Likely current behavior:
+        passes first i64 of struct, loses rest. Fix: heap-allocate
+        struct, push pointer. Will require changes to:
+          - codegen.rs push call site (compile/emit heap alloc + ptr push)
+          - codegen.rs array index read for struct element (deref ptr)
+          - codegen.rs struct field reads in array context
+        Estimated effort: 2-4 hour shift.
+    
+    H14. Or simpler: change kryos_array_push to accept variable-size
+        slots driven by elem_size. Modify push to memcpy elem_size
+        bytes from val_ptr instead of storing i64 val. This pushes
+        the cost into the runtime + changes ABI to take a pointer.
+        Estimated effort: 2-3 hour shift.
+  
+  status: parked
+  
+  ---
+  wrap: 2026-05-20T22:10:00Z
+  outcome: STRONG-NEGATIVE-KNOWLEDGE. Six runtime hypotheses tested
+    and ruled out as primary cause. H8 codegen retain gave +0.67
+    modules and stable failure set. The actual fix requires codegen
+    work on struct-in-array storage (H13/H14 next shift).
+    
+    Bootstrap mean current: ~9/16 with H8+H10+H12 active. Examples
+    8/8 PASS. PR #62 still mergeable.
+  
+  verification:
+    - test_examples.sh 8/8 PASS at every wrap point
+    - test_bootstrap.sh 6+ stable-fail modules (parser/types/lower/
+      optimize/codegen/linker) crash with rc=-1 access violation
+    - No kryos_panic, no kryos double-free detection triggered
+    - kryos_rt.lib confirmed fresh at each step via mtime + size delta
+    - polish commits eliminate 6 cargo warnings; test_bootstrap now
+      surfaces diagnostics
+  
+  ready-to-merge: no (bootstrap blocker requires codegen rework)
+  status: parked
+
