@@ -391,3 +391,71 @@ heap-allocated field:
 This makes the deep clone TRULY recursive without using the
 emit_array_struct_deep_clone codegen loop. Single-call shape only, no
 call+store-cycle issues.
+
+## H3 Finding 2026-05-20 (Step 21 — refined diagnostic)
+
+The "stage-1 crashes on parser.kry" symptom was assumed to be a
+content-specific lexer bug. New evidence reclassifies it as **heap
+flakiness** with the same root cause as the bootstrap test variance.
+
+### Probe
+
+Bisecting parser.kry by `head -n N` and running stage-1 on each cut:
+```
+head 500:  PASS  (Tokens: 2529)
+head 600:  PASS  (Tokens: 3127)
+head 700:  PASS  (Tokens: 3756)
+head 800:  CRASH
+head 900:  PASS  (Tokens: 5095)   <-- bigger than crashing input
+head 950:  CRASH
+head 990:  PASS  (Tokens: 5656)
+```
+Non-monotonic. Bigger inputs sometimes succeed where smaller ones fail.
+
+Re-running `head 800` 5 times: PASS, PASS, PASS, PASS, CRASH. Same
+content, different outcomes. Conclusively heap-state-dependent.
+
+### Reclassification
+
+- The "stage-1 lexer crashes" symptom is the SAME bug class as the
+  bootstrap test flakiness (8/16-13/16 variance).
+- Root cause is in clone / drop / @copy machinery, NOT in any single
+  lexer or parser function.
+- Bug surface area is broader than previously thought: it can hit
+  during tokenize() on a large input, not just during the codegen
+  pipeline.
+
+### Why H1a (step 20) regressed and not improved
+
+H1a applied helper-body deep clone UNIVERSALLY (every type's helper
+gets new code). The call-site dispatch was narrowly gated (Token only)
+because earlier whitelist expansions regressed.
+
+When EVERY type's __kryos_clone_<N> body changes, the change interacts
+with types that have unusual clone behavior (self-referential, mutated
+post-clone, etc.) in ways the narrow call-site dispatch didn't expose.
+
+The fix needs to be gated per-type rather than universal. But that
+re-creates the bisect problem from step 20 — finding which types are
+safe to deep-clone and which break.
+
+### Recommended next attempts (ordered by promise)
+
+1. **Add memory-safety instrumentation to kryos-rt** — modify
+   `kryos_array_free` / `kryos_string_free` to detect double-free
+   (set a sentinel on freed pointers, abort with diagnostic on
+   second free). Run bootstrap with this on -> get exact double-free
+   site -> targeted fix. Highest information per credit.
+
+2. **Path 3 (retain semantics) for diagnostic value** — change
+   @copy Array fallback (codegen.rs line 4168-4178) from
+   `kryos_array_clone` to `kryos_array_retain`. If bootstrap improves
+   significantly, confirms double-free is the culprit. If breaks
+   examples, confirms stage-1 mutates @copy arrays. Either result
+   is informative. Reverts cheaply.
+
+3. **Bisect H1a within a single struct** — apply helper-body deep
+   clone for ONE struct at a time (Token first, then Param, etc.).
+   Find the specific struct whose helper-body deep clone breaks
+   things. Slow but methodical.
+

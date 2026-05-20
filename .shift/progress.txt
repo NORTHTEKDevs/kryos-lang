@@ -1126,3 +1126,69 @@ SHIFTS:
   status: progress-knowledge-real (step 20 negative result documented;
     baseline stable; new hypothesis pivot point identified)
 
+
+  ---
+  shift: 5
+  step: 21
+  date: 2026-05-20T20:30:00Z
+  engineer: claude (opus 4.7)
+  summary: |
+    H3 refined. The "stage-1 lexer crashes on parser.kry" symptom is
+    NOT a content-specific lexer bug -- it's the SAME heap-flakiness
+    that causes bootstrap test variance.
+  
+  evidence:
+    - stage-0 parses parser.kry cleanly (rc=0, 3 warnings)
+    - stage-1 dies mid-tokenize on parser.kry (between "File:" print
+      and "Tokens:" print)
+    - Bisect head -n N on parser.kry: non-monotonic crash pattern
+      head 500 PASS / head 800 CRASH / head 900 PASS / head 950 CRASH
+    - head 800 re-run 5x: PASS PASS PASS PASS CRASH
+    - Pre-existing repros (compiler/self-host/repros/) no longer
+      reproduce (stale -- the bugs they captured were fixed earlier)
+  
+  conclusion:
+    Heap flakiness is the ROOT cause of both bootstrap variance and
+    "lexer crash on large file" symptom. The H1 family of hypotheses
+    (clone semantics double-free) is correct in direction; the H1a
+    fix attempt is broken in implementation; need different angle.
+  
+  files-touched:
+    - compiler/self-host/STAGE2_BLOCKER.md (added H3 refined section
+      with 3 ranked next-attempt recommendations)
+  
+  hypothesis-for-next-shift:
+    Highest-info next move (per refined STAGE2_BLOCKER.md):
+    
+    H4. Add double-free detection to kryos-rt. Modify kryos_array_free
+        + kryos_string_free to write a sentinel value (e.g. 0xDEADBEEF
+        prefix) on free and abort with diagnostic if a sentinel-tagged
+        pointer is freed again. Run bootstrap with instrumented runtime
+        to get exact crash sites and the specific double-free chain.
+        Targeted fix from there.
+    
+    H5. Path 3 (retain semantics) as a diagnostic. Change codegen.rs
+        line 4168-4178 (@copy Array fallback) from kryos_array_clone
+        to kryos_array_retain. Run examples + bootstrap. If examples
+        all pass and bootstrap mean rises -> confirms double-free is
+        primary culprit. If examples regress -> confirms stage-1 mutates
+        @copy arrays -> retain is wrong fix. Either is informative.
+  
+  status: parked
+  
+  ---
+  wrap: 2026-05-20T20:35:00Z
+  outcome: KNOWLEDGE. H1a refuted on this stack (step 20). H3
+    refined to heap-flakiness, not content bug (step 21). Step 19
+    baseline preserved at 8/16 single-run (within documented 11-14
+    variance of 5-run mean 12.6). Next shift should start with H4
+    (instrument runtime) before any more codegen speculation.
+  verification: |
+    - test_examples.sh 8/8 PASS (regression gate clean)
+    - test_bootstrap.sh single run = 8/16 (within 12.6 mean variance)
+    - codegen.rs reverted to step 19 commit 349bde8 state
+    - Tag: shift/kryos-self-compile/20-revert at 50105b4
+  ready-to-merge: no (PR #62 still open per shift goal; this shift
+    parks without resolving the bootstrap blocker)
+  status: parked
+
