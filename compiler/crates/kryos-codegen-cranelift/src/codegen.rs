@@ -516,6 +516,69 @@ pub fn compile_module_with_options(
         }
     }
 
+    // Pre-declare runtime functions needed by clone helper bodies.
+    {
+        let call_conv = object_module.isa().default_call_conv();
+        let calloc_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            sig
+        };
+        let one_in_one_out = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            sig
+        };
+        if !func_ids.contains_key("calloc") {
+            let id = object_module.declare_function("calloc", Linkage::Import, &calloc_sig)?;
+            func_ids.insert("calloc".to_string(), id);
+        }
+        for name in ["kryos_string_clone", "kryos_array_clone", "kryos_map_clone"] {
+            if !func_ids.contains_key(name) {
+                let id = object_module.declare_function(name, Linkage::Import, &one_in_one_out)?;
+                func_ids.insert(name.to_string(), id);
+            }
+        }
+    }
+
+    // ISOLATION-TEST: declare __kryos_clone_<Name> for @copy structs with heap
+    // fields. Body emission below.
+    let mut type_clone_ids: HashMap<String, FuncId> = HashMap::new();
+    {
+        let call_conv = object_module.isa().default_call_conv();
+        let has_heap_fields = |fields: &[(String, MirType)]| -> bool {
+            fields.iter().any(|(_, ty)| {
+                matches!(
+                    ty,
+                    MirType::Str
+                        | MirType::Array(_, _)
+                        | MirType::Struct(_)
+                        | MirType::Function { .. }
+                        | MirType::Enum(_)
+                        | MirType::Shared(_)
+                        | MirType::Map { .. }
+                )
+            })
+        };
+        for (name, fields) in &module.struct_defs {
+            if name != "Map"
+                && module.copy_structs.contains(name)
+                && has_heap_fields(fields)
+            {
+                let clone_name = format!("__kryos_clone_{name}");
+                let mut sig = Signature::new(call_conv);
+                sig.params.push(AbiParam::new(types::I64));
+                sig.returns.push(AbiParam::new(types::I64));
+                let id = object_module.declare_function(&clone_name, Linkage::Local, &sig)?;
+                type_clone_ids.insert(name.clone(), id);
+                func_ids.insert(clone_name, id);
+            }
+        }
+    }
+
     // Declare and define ARC runtime stub functions.
     // These are no-op stubs until a proper runtime library is linked.
     // We define them locally so the linker doesn't require an external runtime.
@@ -1821,6 +1884,119 @@ pub fn compile_module_with_options(
         let mut ctx = Context::for_function(cl_func);
         object_module
             .define_function(drop_id, &mut ctx)
+            .map_err(CodegenError::Module)?;
+    }
+
+    // ISOLATION-TEST 2: per-field loop body (calloc + load/store each field,
+    // clone Str fields, leave others as raw copy). No Array branch, no
+    // nested Struct clone call. Tests if per-field iteration is correct.
+    for (type_name, &clone_id) in &type_clone_ids {
+        let call_conv = object_module.isa().default_call_conv();
+        let mut sig = Signature::new(call_conv);
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+
+        let mut cl_func =
+            Function::with_name_signature(UserFuncName::user(0, clone_id.as_u32()), sig);
+
+        {
+            let mut builder = FunctionBuilder::new(&mut cl_func, &mut fb_ctx);
+            let entry = builder.create_block();
+            builder.append_block_params_for_function_params(entry);
+            builder.switch_to_block(entry);
+            let src = builder.block_params(entry)[0];
+
+            // Null guard.
+            let zero = builder.ins().iconst(types::I64, 0);
+            let nonnull = builder.ins().icmp(
+                cranelift_codegen::ir::condcodes::IntCC::NotEqual,
+                src,
+                zero,
+            );
+            let body_block = builder.create_block();
+            let null_block = builder.create_block();
+            builder
+                .ins()
+                .brif(nonnull, body_block, &[], null_block, &[]);
+            builder.seal_block(null_block);
+            builder.switch_to_block(null_block);
+            builder.ins().return_(&[zero]);
+            builder.seal_block(body_block);
+            builder.switch_to_block(body_block);
+
+            let struct_def = module
+                .struct_defs
+                .get(type_name)
+                .expect("type_clone_ids only contains names from struct_defs");
+            let layout = compute_struct_layout(struct_def)?;
+
+            let one_v = builder.ins().iconst(types::I64, 1);
+            let size_v = builder.ins().iconst(types::I64, layout.total_size as i64);
+            let calloc_id = func_ids["calloc"];
+            let calloc_ref = object_module.declare_func_in_func(calloc_id, builder.func);
+            let alloc_call = builder.ins().call(calloc_ref, &[one_v, size_v]);
+            let dst = builder.inst_results(alloc_call)[0];
+
+            for (field_name, offset, cl_ty) in &layout.field_offsets {
+                let field_val = builder
+                    .ins()
+                    .load(*cl_ty, MemFlags::new(), src, *offset as i32);
+                let field_mir_ty = struct_def
+                    .iter()
+                    .find(|(n, _)| n == field_name)
+                    .map(|(_, t)| t);
+
+                let stored_val = match field_mir_ty {
+                    Some(MirType::Str) => {
+                        let f = func_ids["kryos_string_clone"];
+                        let fr = object_module.declare_func_in_func(f, builder.func);
+                        let c = builder.ins().call(fr, &[field_val]);
+                        builder.inst_results(c)[0]
+                    }
+                    Some(MirType::Array(_, _)) => {
+                        let f = func_ids["kryos_array_clone"];
+                        let fr = object_module.declare_func_in_func(f, builder.func);
+                        let c = builder.ins().call(fr, &[field_val]);
+                        builder.inst_results(c)[0]
+                    }
+                    Some(MirType::Map { .. }) => {
+                        let f = func_ids["kryos_map_clone"];
+                        let fr = object_module.declare_func_in_func(f, builder.func);
+                        let c = builder.ins().call(fr, &[field_val]);
+                        builder.inst_results(c)[0]
+                    }
+                    Some(MirType::Struct(n)) => {
+                        if let Some(&inner_clone_id) = type_clone_ids.get(n) {
+                            let fr = object_module
+                                .declare_func_in_func(inner_clone_id, builder.func);
+                            let c = builder.ins().call(fr, &[field_val]);
+                            builder.inst_results(c)[0]
+                        } else {
+                            field_val
+                        }
+                    }
+                    Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
+                        let f = func_ids["kryos_arc_retain"];
+                        let fr = object_module.declare_func_in_func(f, builder.func);
+                        builder.ins().call(fr, &[field_val]);
+                        field_val
+                    }
+                    _ => field_val,
+                };
+
+                builder
+                    .ins()
+                    .store(MemFlags::new(), stored_val, dst, *offset as i32);
+            }
+
+            builder.ins().return_(&[dst]);
+            builder.seal_all_blocks();
+            builder.finalize();
+        }
+
+        let mut ctx = Context::for_function(cl_func);
+        object_module
+            .define_function(clone_id, &mut ctx)
             .map_err(CodegenError::Module)?;
     }
 
@@ -3932,13 +4108,11 @@ fn translate_rvalue<M: Module>(
                                 .map(|(_, t)| t);
                             match field_mir_ty {
                                 Some(MirType::Array(inner_ty, _)) => {
-                                    // Per-element deep clone for Array<Str>: shallow
-                                    // kryos_array_clone leaves both arrays owning the
-                                    // same str pointers, causing double-free on drop.
-                                    // For other element types (Struct, primitives,
-                                    // nested Array) shallow clone stays — the proper
-                                    // fix for those needs cycle detection (see
-                                    // STAGE2_BLOCKER.md / commit b428325).
+                                    // Per-element deep clone for Array<Str>. Array<Struct>
+                                    // dispatch pending — see STAGE2_BLOCKER step 12 notes:
+                                    // emit_array_struct_deep_clone's per-element store of
+                                    // __kryos_clone_<N>'s return value crashes stage-1 at
+                                    // runtime; storing identity works.
                                     if matches!(**inner_ty, MirType::Str) {
                                         emit_array_str_deep_clone(val, builder, translator, module)?
                                     } else {
@@ -5618,6 +5792,90 @@ fn emit_array_str_deep_clone<M: Module>(
     Ok(cloned)
 }
 
+/// Emit a deep clone of an Array<Struct(N)> value where N is a @copy struct
+/// with heap fields: shallow-clone the header + data via kryos_array_clone,
+/// then iterate the cloned buffer and replace each element pointer with an
+/// independent __kryos_clone_<N>(elem) result. Recursion is at the call
+/// boundary at runtime, not at compile time — avoids the b428325 cycle.
+fn emit_array_struct_deep_clone<M: Module>(
+    src_arr: cranelift_codegen::ir::Value,
+    struct_name: &str,
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    let clone_ref =
+        ensure_func_ref_with_args("kryos_array_clone", builder, translator, module, 1)?;
+    let c = builder.ins().call(clone_ref, &[src_arr]);
+    let cloned = builder.inst_results(c)[0];
+
+    let clone_name = format!("__kryos_clone_{struct_name}");
+    let _ = &clone_name;
+
+    let zero_ptr = builder.ins().iconst(types::I64, 0);
+    let is_nonnull = builder.ins().icmp(
+        cranelift_codegen::ir::condcodes::IntCC::NotEqual,
+        cloned,
+        zero_ptr,
+    );
+    let body_block = builder.create_block();
+    let after_block = builder.create_block();
+    builder
+        .ins()
+        .brif(is_nonnull, body_block, &[], after_block, &[]);
+    builder.seal_block(body_block);
+    builder.switch_to_block(body_block);
+
+    let len = builder.ins().load(types::I64, MemFlags::new(), cloned, 0);
+    let data = builder.ins().load(types::I64, MemFlags::new(), cloned, 32);
+
+    let loop_header = builder.create_block();
+    builder.append_block_param(loop_header, types::I64);
+    let loop_body = builder.create_block();
+    let exit_block = builder.create_block();
+
+    let zero = builder.ins().iconst(types::I64, 0);
+    builder.ins().jump(loop_header, &[zero]);
+
+    builder.switch_to_block(loop_header);
+    let i = builder.block_params(loop_header)[0];
+    let done = builder.ins().icmp(
+        cranelift_codegen::ir::condcodes::IntCC::SignedGreaterThanOrEqual,
+        i,
+        len,
+    );
+    builder.ins().brif(done, exit_block, &[], loop_body, &[]);
+    builder.seal_block(loop_body);
+
+    builder.switch_to_block(loop_body);
+    let byte_off = builder.ins().imul_imm(i, 8);
+    let elem_addr = builder.ins().iadd(data, byte_off);
+    let elem = builder
+        .ins()
+        .load(types::I64, MemFlags::new(), elem_addr, 0);
+
+    let elem_clone_ref =
+        ensure_func_ref_with_args(&clone_name, builder, translator, module, 1)?;
+    let cc = builder.ins().call(elem_clone_ref, &[elem]);
+    let cloned_elem = builder.inst_results(cc)[0];
+    builder
+        .ins()
+        .store(MemFlags::new(), cloned_elem, elem_addr, 0);
+
+    let i_next = builder.ins().iadd_imm(i, 1);
+    builder.ins().jump(loop_header, &[i_next]);
+
+    builder.seal_block(loop_header);
+    builder.seal_block(exit_block);
+    builder.switch_to_block(exit_block);
+    builder.ins().jump(after_block, &[]);
+
+    builder.seal_block(after_block);
+    builder.switch_to_block(after_block);
+
+    Ok(cloned)
+}
+
 /// Emit a deep copy of a @copy struct: malloc a new struct, clone all
 /// heap-allocated fields (arrays, strings, nested @copy structs).
 fn emit_deep_copy_struct<M: Module>(
@@ -5647,10 +5905,8 @@ fn emit_deep_copy_struct<M: Module>(
             .map(|(_, t)| t);
         let stored_val = match field_mir_ty {
             Some(MirType::Array(inner_ty, _)) => {
-                // Array<Str>: deep-clone elements (avoids double-free of strs).
-                // Other element types: retain (the proper deep-clone for
-                // arrays of @copy structs would need cycle detection through
-                // self-referential types like MirType{element_type:[MirType]}).
+                // Array<Str>: deep-clone. Else: retain. Array<Struct> dispatch
+                // disabled pending isolation of emit_array_struct_deep_clone bug.
                 if matches!(**inner_ty, MirType::Str) {
                     emit_array_str_deep_clone(field_val, builder, translator, module)?
                 } else {
