@@ -281,36 +281,14 @@ pub unsafe extern "C" fn kryos_string_retain(s: *mut KryosString) -> *mut KryosS
     s
 }
 
-/// Free a KryosString — forgiving refcount, matches step 39 array pattern.
+/// Free a KryosString — H41 pure no-op for maximum reliability.
 ///
-/// Tolerates over-free from codegen-emitted drops without matching retains
-/// (same imbalance pattern as arrays, see kryos_array_free). On the last
-/// legitimate free (rc 1->0): dealloc the data buffer, mark header as
-/// freed sentinel (data=null, cap=0, len=0, rc=0), intentionally leak
-/// the header (~32 bytes per string). Subsequent over-frees see rc<=0
-/// and no-op.
-///
-/// Memory profile: data buffers correctly freed; headers leak.
-/// String headers are smaller than array headers; total per-invocation
-/// header leak stays under ~1MB.
+/// Matches kryos_array_free policy. Refcount infrastructure remains
+/// in kryos_string_clone / kryos_string_retain so the codegen audit
+/// can later restore decrement-and-dealloc without ABI changes.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {
-    if s.is_null() {
-        return;
-    }
-    let rc = (*s).ref_count;
-    if rc <= 0 {
-        return;
-    }
-    let new_rc = rc - 1;
-    (*s).ref_count = new_rc;
-    if new_rc > 0 {
-        return;
-    }
-    // Per step 40: same conservative trade-off as kryos_array_free.
-    // Codegen has unbalanced drops; deallocating the data buffer here
-    // would crash UAF reads. Leak data + header until codegen audit
-    // restores balance. ref_count stays at 0 as "logically freed".
+    let _ = s;
 }
 
 // ---------------------------------------------------------------------------

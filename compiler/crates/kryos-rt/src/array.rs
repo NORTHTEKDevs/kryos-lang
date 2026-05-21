@@ -363,28 +363,16 @@ pub unsafe extern "C" fn kryos_array_retain(arr: *mut KryosArray) -> *mut KryosA
 /// near-production memory hygiene without the audit.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
-    if arr.is_null() {
-        return;
-    }
-    let rc = (*arr).ref_count;
-    // Already freed (sentinel state) or invalid: do nothing
-    if rc <= 0 {
-        return;
-    }
-    // Decrement and check if more references remain
-    let new_rc = rc - 1;
-    (*arr).ref_count = new_rc;
-    if new_rc > 0 {
-        return;
-    }
-    // ref_count just reached 0. NOTE: deallocating the data buffer here
-    // would crash any subsequent use-after-free read through `data` (these
-    // happen ~20% of bootstrap runs from unbalanced codegen drops). Until
-    // the codegen audit is done and retain emissions are correct, leak
-    // the data buffer too. Keeps everything safe at the cost of ~80MB
-    // per stage-1 invocation. The refcount infrastructure remains so a
-    // future codegen audit can flip dealloc back on without ABI changes.
-    // ref_count stays at 0 — sentinel for "logically freed".
+    // H41 pure no-op for maximum bootstrap reliability. The refcount
+    // dance (read+decrement+check+conditional dealloc) introduces a
+    // small chance of heap-state-sensitive crashes during stage-1's
+    // tokenize hot path. Pure no-op removes those reads entirely.
+    //
+    // Retain still increments ref_count, but since free never reads it,
+    // the counter is purely informational. To restore actual dealloc
+    // after the codegen retain-emission audit, replace this body with
+    // a real refcount-decrement-then-dealloc.
+    let _ = arr;
 }
 
 // ---------------------------------------------------------------------------

@@ -528,31 +528,10 @@ pub extern "C" fn kryos_map_retain(map: i64) -> i64 {
     map
 }
 
-/// Free the map — forgiving refcount, matches step 39 array pattern.
-///
-/// Tolerates over-free from codegen-emitted drops without matching retains.
-/// On last legitimate free: dealloc entries table, mark header as freed
-/// sentinel (entries=null, capacity=0, rc=0), intentionally leak header.
-/// Subsequent over-frees see rc<=0 and no-op.
+/// Free the map — H41 pure no-op. Matches kryos_array_free policy.
 #[no_mangle]
 pub extern "C" fn kryos_map_free(map: i64) {
-    if map == 0 {
-        return;
-    }
-    unsafe {
-        let header = map as *mut MapHeader;
-        let rc = (*header).ref_count;
-        if rc <= 0 {
-            return;
-        }
-        let new_rc = rc - 1;
-        (*header).ref_count = new_rc;
-        if new_rc > 0 {
-            return;
-        }
-        // Per step 40: leak data + header. Codegen audit pending.
-        // ref_count stays at 0 as "logically freed".
-    }
+    let _ = map;
 }
 
 #[cfg(test)]
