@@ -550,12 +550,8 @@ pub extern "C" fn kryos_map_free(map: i64) {
         if new_rc > 0 {
             return;
         }
-        let capacity = (*header).capacity as usize;
-        free_entries((*header).entries, capacity);
-        (*header).entries = std::ptr::null_mut();
-        (*header).capacity = 0;
-        (*header).len = 0;
-        // intentionally leak header to keep sentinel observable
+        // Per step 40: leak data + header. Codegen audit pending.
+        // ref_count stays at 0 as "logically freed".
     }
 }
 

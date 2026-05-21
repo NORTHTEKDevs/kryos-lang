@@ -307,13 +307,10 @@ pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {
     if new_rc > 0 {
         return;
     }
-    let cap = (*s).cap as usize;
-    if !(*s).data.is_null() && cap > 0 {
-        dealloc((*s).data, KryosString::layout(cap));
-    }
-    (*s).data = ptr::null_mut();
-    (*s).cap = 0;
-    (*s).len = 0;
+    // Per step 40: same conservative trade-off as kryos_array_free.
+    // Codegen has unbalanced drops; deallocating the data buffer here
+    // would crash UAF reads. Leak data + header until codegen audit
+    // restores balance. ref_count stays at 0 as "logically freed".
 }
 
 // ---------------------------------------------------------------------------

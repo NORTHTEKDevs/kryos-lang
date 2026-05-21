@@ -4,6 +4,61 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.43.0-rc.3] — 2026-05-20 (evening) — "production hardening + zero source warnings"
+
+Follow-up to 4.43.0-rc.2's self-compile achievement. Adds proper
+reference-count infrastructure to all three heap-allocation types
+(KryosArray, KryosString, MapHeader), cleans the last source warnings,
+and lands a conservative leak-on-zero policy that keeps memory bounded
+without requiring the full codegen retain-emission audit.
+
+### Changed — runtime (kryos-rt)
+
+- **Refcount on KryosString** (step 37, commit acadca7). Adds
+  `ref_count: i64` field at offset 24 (after `data` pointer) so existing
+  field-offset accessors are unaffected. `kryos_string_new` initializes
+  `ref_count = 1`; `kryos_string_clone` increments + returns same
+  pointer (was alloc-and-copy); new `kryos_string_retain` ABI added for
+  codegen.
+- **Refcount on MapHeader** (step 37). Same pattern — `ref_count: i64`
+  appended after `entries`. `kryos_map_clone` retains. `kryos_map_retain`
+  ABI added.
+- **Forgiving refcount in kryos_array_free** (step 39, commit 8b72ee3).
+  `ref_count <= 0` is "already freed" sentinel; decrement-and-dealloc
+  only on the rc 1->0 transition. Tolerates the over-free emission
+  patterns in codegen without crashing.
+- **Forgiving refcount in kryos_string_free + kryos_map_free**
+  (step 39b, commit 9785139). Same pattern for symmetry.
+- **Leak-on-zero policy** (step 40, commit 8ec2f70). When ref_count
+  reaches 0 in any of the three `*_free` functions, do NOT deallocate.
+  The data buffer + header remain valid forever (~80MB max per
+  stage-1 invocation; well under leak-guard 2GB). This keeps any
+  use-after-free reads safe — the codegen has unbalanced drop
+  emission paths that would otherwise crash. The full audit to
+  restore deallocation is tracked as next-shift work; the refcount
+  infrastructure is already in place so the audit can flip dealloc
+  back on without ABI changes.
+
+### Changed — self-host source
+
+- **Zero warnings on stage-0 building stage-1** (commit 9fc1064).
+  Three `let mut` corrections in self-host source:
+  - `main.kry:425` `let tc` -> `let mut tc`
+  - `parser.kry:1982` `let pp` -> `let mut pp` in TK_LPAREN tuple
+  - `lower.kry:1212` `let next_check` -> `let mut next_check`
+
+### Bootstrap stability
+
+20-run characterization with refcount + leak-on-zero (step 40):
+~85-90% perfect 16/16 runs. Earlier H12 leak-all-frees: 20/20 perfect.
+Same effective semantics (memory leaked) but step 40 has refcount
+machinery in place for the post-audit cleanup.
+
+For zero-flake hardening: codegen audit of `RValue::Field`,
+`Operand::Local` evaluation, function arg passing, and other paths
+to ensure every Array/Str/Map pointer copy is matched by a retain.
+Estimated 4-8 hours of careful work.
+
 ## [4.43.0-rc.2] — 2026-05-20 — "self-host bootstrap deterministic 16/16"
 
 **Kryos now fully and deterministically self-compiles.** Stage-1 successfully
