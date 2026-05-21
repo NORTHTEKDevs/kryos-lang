@@ -253,6 +253,13 @@ fn build_msvc_command(cmd: &mut Command, config: &LinkerConfig) {
             //   32 MB:           only parser flakes 1/20  <- sweet spot
             //   64 MB:           regression (3 modules flaky again)
             cmd.arg("/STACK:33554432");
+            // Step 43: disable ASLR. Stage-1's parser/types/lower modules
+            // occasionally flake (~5%) on bootstrap. The flakes appear
+            // heap-state-sensitive. Disabling Address Space Layout
+            // Randomization keeps the VA layout deterministic across
+            // process invocations, which should eliminate ASLR-driven
+            // heap-state variance.
+            cmd.arg("/DYNAMICBASE:NO");
         }
     }
 
