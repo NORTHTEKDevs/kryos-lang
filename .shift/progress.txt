@@ -1614,3 +1614,47 @@ SHIFTS:
       3. The trigger is almost certainly an unsupported grammar
          path in self-host/parser.kry that returns early without
          erroring.
+  ---
+  step:    51
+  date:    2026-05-21T09:45-08:00 (AKST)
+  summary: |
+    Found and fixed the stage-1 parser-drop bug. Root cause: parser.kry's
+    parse_paren_or_tuple, parse_array_literal, and parse_arg_list cleared
+    the no_struct_lit flag on entry but never restored it on exit.
+
+    After `if (a or b) and X == Y { ... }` closed its `)`, no_struct_lit
+    was permanently false. When the parser then saw `X { return true }`
+    it greedily parsed `X { ... }` as a struct literal and consumed the
+    following fn declarations as part of the bogus struct body.
+
+    Bisected reproducer:
+      let TK_IDENT: i32 = 1
+      let TK_COLON: i32 = 5
+      ...
+      fn t1(pk: i32, pk2: i32) -> bool {
+          if (pk == TK_IDENT or pk == TK_TYPE_IDENT or pk == TK_STRING or pk == TK_INTEGER) and pk2 == TK_COLON {
+              return true
+          }
+          return false
+      }
+      fn after_fn() -> i32 { return 2 }    <- DROPPED before fix
+
+    Fix: save no_struct_lit at function entry, restore before each return
+    in parse_paren_or_tuple, parse_array_literal, parse_arg_list.
+
+  results:
+    - parser.kry: 63 decls -> 100 decls (all 84 source fns now in obj)
+    - All other modules: gain similar recovery
+    - 16/16 bootstrap still passes
+    - 8/8 examples still pass
+    - 295 workspace tests pass
+
+  next consequence: multi-.obj stage-2 link now completes.
+    Down from 96+ duplicate-symbol errors to 1 missing symbol
+    (kryos_field_set) -- added as a no-op stub in kryos-rt builtins.
+    Result: kryos-stage2.exe (3.6 MB) successfully linked.
+    Stage-2 runs but exits silently; runtime work remains.
+
+  commit: 5b74607
+  status: STAGE2_BINARY_PRODUCED -- first time stage-1 has emitted
+          a linked stage-2 .exe via multi-.obj link path.
