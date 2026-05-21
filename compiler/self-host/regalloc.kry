@@ -467,6 +467,22 @@ fn ra_compute_liveness(func: MirFunction) -> [LiveInterval] {
         pi = pi + 1
     }
 
+    // Force-define every local declared on the function at position 0.
+    //
+    // Without this, locals whose def is only IMPLICIT (e.g. a temp the
+    // lowerer alloc'd but whose def-instruction's `dest` field doesn't
+    // round-trip through liveness scanning) end up with `lm.defs == -1`,
+    // get NO LiveInterval at all, and then `cg_get_local_reg` falls
+    // through to a hardcoded scratch reg that disagrees between def
+    // site and use site. Recording every declared local guarantees an
+    // interval is built; the linear scan then either assigns it a real
+    // register or a stable spill slot.
+    let mut lcli = 0
+    while lcli < len(func.locals) {
+        ra_record_def(lm, func.locals[lcli].id, 0)
+        lcli = lcli + 1
+    }
+
     // Walk all blocks and instructions
     let mut pos = 0
     let mut bi = 0
