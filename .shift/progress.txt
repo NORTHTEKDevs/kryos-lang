@@ -1784,3 +1784,54 @@ SHIFTS:
     Implement call-clobber-aware allocation. For each interval, walk
     the function and check if any CALL falls within [start, end]. If
     yes, mark it as needing a callee-saved register only.
+  ---
+  step:    55
+  date:    2026-05-21T12:50-08:00 (AKST)
+  summary: |
+    Implemented call-clobber-aware register allocation in regalloc.kry
+    (commit 268a562). Key additions:
+      - `ra_compute_call_positions(func)` -- builds list of CALL positions
+      - `ra_interval_crosses_call(start, end, calls)` -- detects crossings
+      - `reg_pool_alloc_callee_saved(pool)` -- callee-saved-only allocator
+      - `ra_linear_scan_with_calls(intervals, calls)` -- new core loop
+      - `ra_allocate_for` passes call positions through
+
+    This is the canonical fix referenced in regalloc.kry's old comment
+    at lines 187-193: intervals crossing a CALL now get callee-saved
+    registers (RBX, R12-R15) or get spilled.
+
+    Critical: had to use `elif`, not `else if`. The `else if` form
+    triggered a parser-drop bug that dropped 22 functions from the
+    emitted regalloc.obj (ra_allocate, ra_allocate_for, etc.).
+
+  programs now working through stage-1 -> .obj -> link.exe -> .exe:
+    - hello world: prints "hello from stage-2!"
+    - id(42) -> println(to_string(r)): prints "42"
+    - args_test (no args): prints "less than 2 args"
+    - intermediate (multi-fn, multi-println): prints "start" / "from helper" / "end"
+    - usage_test (6 printlns): prints 3 of 6 lines + duplicates
+      (still some register-overlap bugs in long sequences)
+
+  status: STAGE2_PROGRAMS_RUN_BUT_INCOMPLETE -- single/few-fn programs
+          print correctly; multi-fn 16-module stage-2 still segfaults.
+          The remaining bug is RV_USE rename aliasing: `_2 = use _3`
+          assigns both _2 and _3 the same register, then a later
+          `_4 = const_int 2` overwrites it because the regalloc thinks
+          _3's interval ended at the rename.
+
+  next-shift:
+    Fix RV_USE aliasing. Options:
+      A. Coalesce _2 and _3 into single SSA name in lower.kry (RV_USE
+         is a no-op rename; lower.kry could just return the source
+         operand instead of emitting an extra assign).
+      B. In regalloc, extend the source operand's interval to include
+         all uses of the destination (since they're the same value).
+      C. In codegen RV_USE, force an explicit `mov dest_reg, src_reg`
+         even when src == dest (so the regalloc must keep dest in
+         its own register, distinct from src after this point).
+
+    Option A is the cleanest -- it removes the intermediate copy
+    from MIR entirely. See lower_let in lower.kry for where the
+    spurious `_2 = use _3` is emitted.
+
+  commit: 268a562
