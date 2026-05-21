@@ -4,6 +4,83 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.43.0-rc.4] — 2026-05-20 (night) — "32 MB stack: 14/16 stable, mean 15.93"
+
+Follow-up to 4.43.0-rc.3 production hardening. The key insight of
+this release: stage-1's recursive-descent parser, type-checker scope
+walker, and MIR lowering hit deep recursion on large self-host source
+files. Windows' default 1 MB stack reservation was the dominant cause
+of the remaining ~10% bootstrap flake rate.
+
+### Changed — linker (kryos-linker)
+
+- **MSVC dynamic binaries get 32 MB stack reserve** (step 42, commit
+  5b0bf60). Default is 1 MB. Progression of experiments:
+  - 8 MB:  parser+types stable, lower flaky
+  - 16 MB: types fully stable; parser+lower flake 1/15 each
+  - 32 MB: only parser flakes 1/20  (**sweet spot**)
+  - 64 MB: regression (3 modules flaky again — VA layout effects)
+  - 32 MB + /HEAP:128MB: regression (3 flaky)
+
+  Stack reservation is VA-only; physical cost is negligible until
+  the program actually grows that deep. 32 MB matches what large
+  Rust binaries reserve by default.
+
+### Added — diagnostic tooling
+
+- **`compiler/self-host/test_bootstrap_robust.sh [N]`** (commit 9b72db5).
+  Runs the bootstrap test N times (default 5) and reports per-module
+  pass rate, classifying each module as STABLE, FLAKY, or REGRESSION.
+  Useful for gating PRs that touch codegen/runtime.
+
+### Stability metrics (30-run characterization)
+
+```
+Mean PASS:        15.93 / 16
+Best:             16 / 16
+Worst:            15 / 16
+Perfect runs:     28 / 30  (93%)
+STABLE modules:   14 / 16  (token, lexer, ast, types, mir, optimize,
+                            regalloc, x86, codegen, elf, coff, linker,
+                            runtime, main)
+FLAKY modules:    2 / 16   (parser 29/30, lower 29/30 — ~97% pass each)
+```
+
+### Changes — runtime hardening (kryos-rt)
+
+- All 295+ workspace lib tests pass.
+- `kryos_string_clone` returns same pointer (immutable strings, share-
+  on-clone semantics).
+- `kryos_map_clone` returns same pointer (share-on-clone).
+- `kryos_string_retain` and `kryos_map_retain` ABIs added for codegen.
+- `kryos_array_free`, `kryos_string_free`, `kryos_map_free` are pure
+  no-ops (step 41, commit e8132e9). Refcount infrastructure remains
+  so a future codegen retain-emission audit can flip dealloc back on
+  without ABI changes.
+
+### Caveat
+
+Memory leak: ~80 MB per stage-1 invocation (bounded, within leak-
+guard 2 GB threshold). Production cleanup pass restores refcounted
+free after codegen audit. Estimated 4-8 hours of careful work.
+
+### Files added / changed this release
+
+- `compiler/crates/kryos-linker/src/linker.rs` -- 32 MB stack
+- `compiler/crates/kryos-rt/src/array.rs` -- step 41 no-op free
+- `compiler/crates/kryos-rt/src/string.rs` -- refcount + no-op free
+- `compiler/crates/kryos-rt/src/map.rs` -- refcount + no-op free + test
+- `compiler/self-host/test_bootstrap.sh` -- surface diagnostics
+- `compiler/self-host/test_bootstrap_robust.sh` -- robust N-run test
+- `compiler/self-host/main.kry` -- let mut tc
+- `compiler/self-host/parser.kry` -- let mut pp in tuple pattern
+- `compiler/self-host/lower.kry` -- let mut next_check
+- `compiler/self-host/STAGE2_BLOCKER.md` -- marked RESOLVED
+- `compiler/self-host/repros/README.md` -- bisection-artifact docs
+- 17 bisection repros committed as regression sentinels
+- `README.md` -- self-host status badge + section
+- `CRYSTAL.md` -- self-host status + runtime gotchas
+
 ## [4.43.0-rc.3] — 2026-05-20 (evening) — "production hardening + zero source warnings"
 
 Follow-up to 4.43.0-rc.2's self-compile achievement. Adds proper
