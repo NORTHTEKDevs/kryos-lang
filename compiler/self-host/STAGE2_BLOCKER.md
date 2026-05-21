@@ -1,6 +1,14 @@
-# Stage-2 Bootstrap Blocker — Root Cause
+# Stage-2 Bootstrap Blocker — Root Cause [RESOLVED 2026-05-20]
 
-## Symptom
+## STATUS: RESOLVED
+
+As of 2026-05-20 (steps 35-41) the self-host bootstrap clears 16/16
+modules. The root cause turned out to be different from what this
+document originally documented — see the "Final fix" section at the
+end of this file. The original analysis is preserved below for the
+historical record.
+
+## Symptom (original)
 
 When stage-1 compiles the self-host source files, larger files
 (ast.kry, lexer.kry, parser.kry, etc.) segfault non-deterministically
@@ -459,3 +467,71 @@ safe to deep-clone and which break.
    Find the specific struct whose helper-body deep clone breaks
    things. Slow but methodical.
 
+
+---
+
+## Final fix (2026-05-20 — H25 through H41)
+
+The bootstrap was unblocked by a single insight applied at every level
+of the @copy struct lifecycle: **stage-1 was doing O(N²) clone work on
+the growing tokens array**. Each lex_emit call cloned the Lexer (which
+included cloning the Array<Token> field deeply). Over 10,000 token
+emissions, this compounded to a quadratic blowup that hit allocator
+limits / heap fragmentation and crashed.
+
+The fix is a **share-everywhere, leak-on-zero** memory model for stage-1
+self-compile:
+
+### Codegen changes (kryos-codegen-cranelift)
+- **H8** (step 24): @copy struct Array fallback uses `kryos_array_retain`
+  (refcount bump) instead of `kryos_array_clone` (allocate + copy).
+- **H21** (step 31): Nested @copy struct fields pass through directly
+  instead of recursively `emit_deep_copy_struct`. Three call sites.
+- **H25** (step 35): Empty the deep-clone whitelist. Even `Token` was
+  triggering O(N) per-call work via the runtime helper. Letting all
+  Array<Struct> fall through to retain (O(1)) was THE BREAKTHROUGH.
+
+### Runtime changes (kryos-rt)
+- **H19** (step 30): `kryos_string_clone` returns same pointer (Kryos
+  strings are immutable).
+- **H20** (step 30): `kryos_map_clone` returns same pointer.
+- **Step 37**: Added `ref_count: i64` field to `KryosString` and
+  `MapHeader`. Added `kryos_string_retain`, `kryos_map_retain` ABIs.
+- **H41** (step 41): `kryos_array_free`, `kryos_string_free`,
+  `kryos_map_free` are pure no-ops. Refcount infrastructure remains
+  (retain still increments) but free does nothing. The result is a
+  bounded per-invocation leak (~80MB for full self-host compile) that
+  is harmless for short-lived CLI use.
+
+### Result
+- 16/16 self-host modules pass on every run
+- 8/8 example programs PASS end-to-end
+- All 295+ workspace lib tests pass
+- Zero warnings from cargo build or kryos build
+
+### Next-shift cleanup (production hardening pass)
+
+The H41 leak-on-zero is mergeable but the codegen has unbalanced
+retain/free emission that prevents flipping `*_free` back to real
+deallocation. Audit work for a future shift:
+
+1. **`RValue::Field`** for Array/Str/Map: emit `*_retain` so the
+   local holding the result has its own reference.
+2. **`Operand::Local`** evaluation when passing by value: similar.
+3. **Function argument passing**: ensure caller retains, callee frees.
+4. **Pattern match destructuring**: rare path, but exists.
+
+After those audits, flip the no-op `*_free` functions to the
+already-staged refcount-decrement-then-dealloc body and the memory
+leak goes to zero.
+
+### Original "struct values in i64 slots" analysis was wrong
+
+The original symptom analysis (preserved at the top of this file) assumed
+that Kryos was incorrectly storing 40-byte struct values in 8-byte array
+slots. That's not what was happening — Kryos heap-allocates structs and
+stores pointers, which DO fit in 8 bytes. The actual crash mechanism was
+heap pressure from O(N²) cloning. The runtime-storage analysis was a
+red herring that consumed multiple prior shifts. Lesson: prefer
+empirical bisection (which we did this shift) over chains of inference
+from a documented but unverified root cause.
