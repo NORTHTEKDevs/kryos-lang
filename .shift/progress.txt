@@ -1658,3 +1658,34 @@ SHIFTS:
   commit: 5b74607
   status: STAGE2_BINARY_PRODUCED -- first time stage-1 has emitted
           a linked stage-2 .exe via multi-.obj link path.
+  ---
+  step:    52
+  date:    2026-05-21T09:55-08:00 (AKST)
+  summary: |
+    Investigated why stage-2.exe exits silently. Root cause identified
+    but NOT fixed in this step (scope too large for single-step).
+
+    ABI mismatch between stage-0 and stage-1 string-literal emission:
+      Stage-0 (Rust codegen, codegen.rs:5147):
+        - Stores literal bytes in .rodata
+        - Emits `kryos_string_new(ptr, len)` -> KryosString handle
+        - Passes handle to kryos_println_str
+      Stage-1 (Kryos codegen, codegen.kry:331):
+        - Stores literal bytes in .rodata
+        - Loads raw byte pointer via LEA
+        - Passes raw pointer to kryos_println_str (expects KryosString*)
+        - kryos_println_str reads (*ptr).len from first 8 ASCII bytes
+          (garbage), short-circuits to print nothing, returns cleanly.
+
+    That's why stage-2.exe links AND runs (exits cleanly with rc=0)
+    but produces no output. Every println call effectively no-ops.
+
+    Real fix: stage-1's codegen.kry RV_CONST_STRING path needs to
+    emit a kryos_string_new call after the LEA, with proper
+    Windows/SysV calling convention setup (rcx,rdx vs rdi,rsi), save/
+    restore of caller-saved regs, and return-value capture. That's
+    ~40-60 lines of new codegen. Deferred to a future shift.
+
+  status: STAGE2_LINKS_RUNS_NO_OUTPUT -- one ABI mismatch from full
+          stage-2 functionality. Progress is real but next mile is
+          a codegen change, not a one-liner.
