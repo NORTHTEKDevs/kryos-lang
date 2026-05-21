@@ -246,6 +246,14 @@ fn build_msvc_command(cmd: &mut Command, config: &LinkerConfig) {
         LinkType::Dynamic => {
             cmd.arg("/SUBSYSTEM:CONSOLE");
             cmd.arg("/ENTRY:mainCRTStartup");
+            // Step 42: set 16 MB stack reserve (default is 1 MB).
+            // Stage-1's recursive-descent parser, scope walker, and MIR
+            // lowering hit deep recursion on large source files. The 1 MB
+            // default caused intermittent stack-overflow flakes on
+            // parser.kry, types.kry, and lower.kry. 16 MB is generous but
+            // negligible per-process memory cost; matches what big
+            // Rust binaries reserve.
+            cmd.arg("/STACK:16777216");
         }
     }
 
