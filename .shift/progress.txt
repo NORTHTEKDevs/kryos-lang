@@ -1758,3 +1758,29 @@ SHIFTS:
     `if lm.defs[lid] != -1` guard and assign default def_pos=0,
     end=last_pos for every local. Or in cg_get_local_reg, when not
     found, load/store from per-local-id stack slot.
+  ---
+  step:    54
+  date:    2026-05-21T12:00-08:00 (AKST)
+  summary: |
+    Tried force-defining every func.locals at pos 0 in ra_compute_liveness
+    (commit 87d9dde). Hello + id(42) worked. But more complex programs
+    (args_test with multiple non-trivial calls) crashed.
+
+    Disasm of args_test reveals the underlying bug:
+    `cg_emit_call` doesn't model caller-saved-register clobber across
+    calls. When the regalloc places a value in a caller-saved reg
+    (RAX, RCX, RDX, etc.) and an intervening call happens before the
+    use, the value is clobbered. The bug is acknowledged in the
+    existing comment at regalloc.kry line 187-193.
+
+    Reverted 87d9dde (commit 7584435). Without force-def, simpler
+    cases still work via the R12 fallback path.
+
+  commit: 7584435 (revert)
+  status: STAGE2_HELLO_PRINTS but multi-call programs corrupt args
+          due to caller-saved-clobber bug in regalloc.
+
+  next-shift:
+    Implement call-clobber-aware allocation. For each interval, walk
+    the function and check if any CALL falls within [start, end]. If
+    yes, mark it as needing a callee-saved register only.
