@@ -57,3 +57,14 @@
 
 ## Gotchas
 - Debug builds use ~48GB RAM due to monomorphization -- always build with --release -j 4
+- `cargo build --bin kryos` does NOT rebuild `target/release/kryos_rt.lib` (staticlib output skipped for --bin builds). Use `cargo build --release` (no --bin) when modifying runtime sources.
+- `test_bootstrap.sh` historically swallowed per-module stderr via `out=$(...)`. As of 2026-05-20 it surfaces DOUBLE-FREE / panic / corrupt-array diagnostics on failure.
+- Stage-1's runtime uses share-on-clone + no-op free (steps 37-41). Refcount infrastructure in place but `*_free` is no-op for self-compile reliability. Restoring real dealloc requires codegen retain-emission audit (RValue::Field, Operand::Local, function args).
+
+## Self-host bootstrap (2026-05-20)
+- Stage-0: `cargo build --release` produces `target/release/kryos.exe` (Rust).
+- Stage-1: `./target/release/kryos.exe build self-host/main.kry -o target/bootstrap/kryos-stage1 --skip-ownership` produces a Kryos-compiled compiler.
+- Verify: `bash self-host/test_bootstrap.sh` from `compiler/` → 16/16 modules.
+- All 16 self-host modules compile deterministically with stage-1.
+- 8/8 example programs compile + link + run end-to-end.
+- 295+ workspace lib tests pass.
