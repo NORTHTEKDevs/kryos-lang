@@ -6,14 +6,17 @@
 #
 # This is the "stage-1 works for real Kryos code" smoke test, distinct
 # from test_bootstrap.sh which measures whether stage-1 can compile
-# the SELF-HOST source (the harder problem).
+# the SELF-HOST source.
 #
 # Pre-req: stage-1 already built at target/bootstrap/kryos-stage1(.exe).
 
 set -u
 cd "$(dirname "$0")/.."
 
-PS_BASE="Set-Location 'C:\\Users\\Krist\\projects\\active\\kryos-lang\\compiler'"
+# Use the current working directory (compiler/) inside the PowerShell
+# invocation so the script is portable across checkouts.
+COMPILER_DIR=$(pwd -W 2>/dev/null || pwd)
+PS_BASE="Set-Location '${COMPILER_DIR//\//\\}'"
 mkdir -p target/example-bins
 
 echo "Example             | Result"
@@ -44,5 +47,5 @@ echo "End-to-end (compile + link + run): $pass passed, $fail failed"
 echo ""
 echo "What this means:"
 echo "  Stage-1 is a working Kryos -> Windows .exe compiler for non-trivial"
-echo "  user code. The self-bootstrap (stage-1 compiling stage-1) is blocked"
-echo "  by a separate issue (see STAGE2_BLOCKER.md / test_bootstrap.sh)."
+echo "  user code. Self-bootstrap (stage-1 compiling stage-1's own source)"
+echo "  also works -- run test_bootstrap.sh for that."
