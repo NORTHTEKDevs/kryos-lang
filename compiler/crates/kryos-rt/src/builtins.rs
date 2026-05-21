@@ -103,6 +103,24 @@ pub extern "C" fn kryos_fmod(lhs: f64, rhs: f64) -> f64 {
     lhs % rhs
 }
 
+/// `kryos_field_set(obj, field_name, value)` -- runtime field store by name.
+///
+/// Emitted by the self-host (stage-1) lower pass for `obj.field = value`.
+/// The stage-0 (Rust) lower compiles field stores directly to memory writes
+/// at the known field offset, so this entry point never gets called by
+/// stage-0-built binaries; it exists solely so multi-.obj stage-2 link
+/// resolves the symbol.
+///
+/// Real implementation requires runtime type info (per-struct field layout
+/// keyed by name). That metadata does not exist yet at the ABI boundary, so
+/// for now this is a no-op stub. A stage-2 binary that calls this will not
+/// store the field but will not crash either. Replacing the stub with a
+/// proper RTTI-driven implementation is the natural next step.
+#[no_mangle]
+pub extern "C" fn kryos_field_set(_obj: i64, _field_name: i64, _value: i64) -> i64 {
+    0
+}
+
 /// Convert an i64 to a KryosString. Returns an opaque handle (pointer as i64).
 #[no_mangle]
 pub extern "C" fn kryos_i64_to_string(value: i64) -> i64 {
