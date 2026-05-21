@@ -2259,10 +2259,27 @@ pub fn translate_function<M: Module>(
     builder.switch_to_block(entry_block);
 
     // Bind function parameters to their local variables.
+    // Step 45: retain Array / Str / Map parameter values so the function's
+    // own reference (matched by drop at scope exit) is balanced against
+    // the caller's reference. Without this, every function call drops the
+    // arg without a matching retain, leaving rc imbalance.
     for (i, param) in mir_func.params.iter().enumerate() {
         let val = builder.block_params(entry_block)[i];
+        let retain_fn = match &param.ty {
+            MirType::Array(_, _) => Some("kryos_array_retain"),
+            MirType::Str => Some("kryos_string_retain"),
+            MirType::Map { .. } => Some("kryos_map_retain"),
+            _ => None,
+        };
+        let final_val = if let Some(fname) = retain_fn {
+            let f = ensure_func_ref_with_args(fname, builder, &mut translator, module, 1)?;
+            let c = builder.ins().call(f, &[val]);
+            builder.inst_results(c)[0]
+        } else {
+            val
+        };
         let var = translator.variables[&param.local.0];
-        builder.def_var(var, val);
+        builder.def_var(var, final_val);
     }
 
     // Initialize non-parameter locals to zero.
@@ -4330,6 +4347,25 @@ fn translate_rvalue<M: Module>(
                                     return Ok(Some(copied));
                                 }
                             }
+                        }
+                        // Step 44 (post-merge polish): retain Array / Str / Map
+                        // field reads from a struct. The local that holds the
+                        // result has its own logical reference (matched by a
+                        // *_free call at scope exit). Safe with pure-no-op
+                        // *_free in kryos-rt because over-retain just keeps
+                        // bookkeeping accurate; never causes deallocation.
+                        let retain_fn = match field_mir_ty {
+                            Some(MirType::Array(_, _)) => Some("kryos_array_retain"),
+                            Some(MirType::Str) => Some("kryos_string_retain"),
+                            Some(MirType::Map { .. }) => Some("kryos_map_retain"),
+                            _ => None,
+                        };
+                        if let Some(fname) = retain_fn {
+                            let f = ensure_func_ref_with_args(
+                                fname, builder, translator, module, 1,
+                            )?;
+                            let c = builder.ins().call(f, &[val]);
+                            return Ok(Some(builder.inst_results(c)[0]));
                         }
                         return Ok(Some(val));
                     }
