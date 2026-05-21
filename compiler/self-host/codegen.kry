@@ -272,8 +272,20 @@ fn cg_get_local_reg(ctx: CodegenCtx, ra: RegAllocResult, local_id: i32, scratch:
         }
         i = i + 1
     }
-    // Not found — shouldn't happen, use scratch
-    return scratch
+    // Not found.  Originally fell through to `return scratch`, which meant
+    // the SAME local could appear to live in different registers depending
+    // on which scratch reg the call site happened to pass.  Inst-assign
+    // would write the value to RAX (its scratch), cg_store_local would
+    // do nothing, then cg_emit_call's arg-load would treat the value as
+    // already living in the arg-reg's scratch (RCX) -- and `r == target`
+    // would suppress the would-be `mov rcx, rax`.  Result: the value
+    // computed into RAX is never delivered to the call.
+    //
+    // Pin all not-found locals to a single callee-saved register (R12)
+    // so the location is consistent across def and use sites within a
+    // function.  Caller-saved regs would lose the value across any
+    // intervening call; R12 is preserved on both Win64 and SysV.
+    return REG_R12
 }
 
 // ===================================================================
