@@ -422,7 +422,7 @@ fn check_file(filename: str) {
         return
     }
 
-    let tc = tc_new()
+    let mut tc = tc_new()
     tc = tc_register_builtins(tc)
     tc = tc_check_module(tc, module)
     if len(tc.errors) > 0 {

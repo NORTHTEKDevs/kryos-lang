@@ -1209,7 +1209,7 @@ fn lower_match_expr(ctx: LowerCtx, e: Expr) -> Operand {
         let arm = e.match_arms[i]
         ctx_switch_block(ctx, check_bbs[i])
 
-        let next_check = default_bb
+        let mut next_check = default_bb
         if i + 1 < num_arms {
             next_check = check_bbs[i + 1]
         }
