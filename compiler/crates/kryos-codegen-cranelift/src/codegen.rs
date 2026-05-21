@@ -4331,6 +4331,25 @@ fn translate_rvalue<M: Module>(
                                 }
                             }
                         }
+                        // Step 44 (post-merge polish): retain Array / Str / Map
+                        // field reads from a struct. The local that holds the
+                        // result has its own logical reference (matched by a
+                        // *_free call at scope exit). Safe with pure-no-op
+                        // *_free in kryos-rt because over-retain just keeps
+                        // bookkeeping accurate; never causes deallocation.
+                        let retain_fn = match field_mir_ty {
+                            Some(MirType::Array(_, _)) => Some("kryos_array_retain"),
+                            Some(MirType::Str) => Some("kryos_string_retain"),
+                            Some(MirType::Map { .. }) => Some("kryos_map_retain"),
+                            _ => None,
+                        };
+                        if let Some(fname) = retain_fn {
+                            let f = ensure_func_ref_with_args(
+                                fname, builder, translator, module, 1,
+                            )?;
+                            let c = builder.ins().call(f, &[val]);
+                            return Ok(Some(builder.inst_results(c)[0]));
+                        }
                         return Ok(Some(val));
                     }
                 }
