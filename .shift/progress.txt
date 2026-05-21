@@ -1835,3 +1835,54 @@ SHIFTS:
     spurious `_2 = use _3` is emitted.
 
   commit: 268a562
+  ---
+  step:    56
+  date:    2026-05-21T13:30-08:00 (AKST)
+  summary: |
+    BREAKTHROUGH: Stage-2 (16-module link) now correctly prints
+    the Kryos Self-Hosted Compiler usage banner when run with no
+    args. Multiple bugs fixed in concert:
+
+    1. lower.kry deep-clone-on-push: all four push(call_args, arg_op)
+       sites in lower_fn_call (x2), lower_method_call, and the pipe
+       expression now explicitly construct a fresh Operand struct
+       literal before push, breaking the share-on-clone heap aliasing
+       that was corrupting call_args entries.
+
+    2. lower.kry immutable-let alias: `let name = local_expr` for
+       immutable lets binds the name to the existing local instead
+       of emitting a redundant `rv_use` instruction that caused the
+       regalloc to give both names the same register.
+
+    3. codegen.kry cg_emit_binop operand-clobber fix: left operand
+       was loaded into dest_reg, which clobbered the right operand
+       if it lived in the same register. Now load left into R10 and
+       right into R11 (both scratch), then move result to dest_reg.
+       Without this, `let n = 1; if n < 2` evaluated 1 < 2 as false.
+
+    Verified at this commit:
+      - bootstrap: 16 / 16 PASS
+      - examples: 8 / 8 PASS
+      - cmp_test: 1 < 2 -> "yes less" (was "not less")
+      - args_test BOTH branches print correctly
+      - complex_test no args: full usage banner
+      - complex_test with arg: "done"
+      - hello world: prints correctly
+      - intermediate (multi-fn): prints correctly
+      - STAGE-2 NO ARGS: PRINTS FULL USAGE BANNER:
+          Kryos Self-Hosted Compiler
+          Usage:
+            kryos-sh compile <input.kry> [-o output]
+            kryos-sh check <input.kry>
+            kryos-sh ast <input.kry>
+
+  remaining bugs:
+    - Stage-2 with subcommand args (check, mir, ast, obj) doesn't
+      produce output or segfaults. Tokenize/parse/typecheck have
+      their own register-overlap or share-on-clone issues at scale.
+    - "check" command segfaults during type-check
+    - "mir"/"ast"/"obj" silently exit (probably an unprinted error)
+
+  commits:
+    - 31f03f3: lower.kry deep-clone + let alias
+    - 4a3c129: lower.kry remaining clone sites + codegen.kry binop fix
