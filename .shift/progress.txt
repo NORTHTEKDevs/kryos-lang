@@ -1985,3 +1985,71 @@ SHIFTS:
   non-deterministic read. Likely either share-on-clone semantics
   on the RegPool/array, or some interaction between liveness
   scan and allocation order.
+  ---
+  step:    59
+  date:    2026-05-21T14:35-08:00 (AKST)
+  summary: |
+    Discovered concrete stage-1 RUNTIME BUG: bool array push corrupts
+    the KryosArray header. Minimal repro:
+
+      fn main() {
+          let mut a: [bool] = []
+          push(a, false)
+          push(a, false)
+          push(a, false)
+          push(a, false)
+      }
+      # Panics: kryos_array_push: corrupt array header @ <ptr>
+      # with len/cap/data fields containing path-like ASCII bytes
+      # (e.g. data=0x4c5c617461447070 backwards spells "...AppData\L...")
+
+    This was the source of the regalloc's non-determinism. By 4 pushes
+    of `false`, the array header gets corrupted with what looks like
+    path string data from a nearby allocation. Subsequent push panics.
+
+    The bug ONLY affects bool arrays. [i32], [str], [Struct] arrays
+    are fine (verified). The bug is in stage-1's compiled push(arr, bool)
+    code path -- the val argument coming in as `false` somehow writes
+    over the array header.
+
+    Workaround: changed RegPool.used from [bool] to [i32], with 0/1
+    sentinels instead of true/false. Avoids the broken push path
+    entirely. After this:
+
+      Stage-1 output for no_call.kry (simplest possible): 5/5 IDENTICAL
+      Stage-1 output for hello.kry (with call):           2/5 variance
+      Stage-1 output for self-host main.kry (large):      5/5 variance
+
+    So we eliminated SOME non-determinism but not all. The remaining
+    variance is in the large-function path -- likely Operand/RValue/
+    Instruction struct sharing (all @copy structs that have known
+    share-on-clone semantics in stage-1).
+
+  end-of-day commit: b684f7f
+
+  full session accomplishments (steps 49-59, 12 commits):
+    - reproducible stage-1 builds (b529885)
+    - <top-level> static linkage (45c105c)
+    - parser no_struct_lit save/restore (5b74607)
+    - stage-1 string ABI -> kryos_string_new (48e00ad)
+    - cg_get_local_reg R12 fallback (ac55618)
+    - call-clobber regalloc (268a562)
+    - deep-clone Operand on push (31f03f3)
+    - immutable-let alias (31f03f3)
+    - cg_emit_binop scratch-load (4a3c129)
+    - clone all 4 call_args push sites (4a3c129)
+    - RegPool.used [bool] -> [i32] (b684f7f)
+
+  user-visible wins:
+    - Bootstrap 16/16 (rarely flakes to 15/16)
+    - Examples 8/8 stable
+    - 6+ user Kryos programs print correctly via stage-1
+    - Stage-2 binary builds (3.8 MB)
+    - Stage-2 has printed the full Kryos Self-Hosted Compiler
+      usage banner at least once in a session run
+
+  blockers remaining:
+    - Stage-1 output non-determinism on large functions
+    - Underlying: Operand/RValue/Instruction @copy share-on-clone
+      semantics let later allocations corrupt earlier values
+    - Bool array push runtime bug (still unfixed, just worked around)
