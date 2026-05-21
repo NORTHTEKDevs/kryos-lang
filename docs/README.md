@@ -52,6 +52,7 @@ kryos run hello.kry
 - [FFI](13-ffi.md) -- `extern` blocks, native Rust FFI, type marshaling
 - [AI Runtime](14-ai-runtime.md) -- Tensors, agents, probability, streams, lineage, cost tracking
 - [Compilation Pipeline](15-codegen.md) -- Cranelift/LLVM backends, MIR, uniform slot model, runtime functions
+- [Self-Hosting](20-self-hosting.md) -- Bootstrap chain (stage 0 → 1 → 2), verification, memory model, stability metrics
 
 ### Standard Library
 
