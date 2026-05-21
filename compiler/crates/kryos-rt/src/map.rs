@@ -30,11 +30,18 @@ struct MapEntry {
 
 /// Hash map header — stable allocation that serves as the external handle.
 /// Entries are stored in a separate allocation pointed to by `entries`.
+///
+/// Step 37 production hardening: `ref_count` placed AFTER `entries` so the
+/// header stays at the same offset for any consumer that reads `len` /
+/// `capacity` / `entries` at fixed positions. `kryos_map_new` initializes
+/// `ref_count = 1`; `kryos_map_clone` increments + returns same pointer;
+/// `kryos_map_free` decrements and deallocates at 0.
 #[repr(C)]
 struct MapHeader {
     len: i64,
     capacity: i64,
     entries: *mut MapEntry,
+    ref_count: i64,
 }
 
 fn hash_key(key: i64, capacity: usize) -> usize {
@@ -108,6 +115,7 @@ pub extern "C" fn kryos_map_new() -> i64 {
         (*header).len = 0;
         (*header).capacity = INITIAL_CAPACITY as i64;
         (*header).entries = entries;
+        (*header).ref_count = 1;
         ptr as i64
     }
 }
@@ -488,40 +496,54 @@ pub unsafe extern "C" fn kryos_map_keys_str(map: i64) -> i64 {
 
 /// Clone a map — H20 (shift step 30) shares the underlying pointer.
 ///
-/// Paired with H18 (no-op kryos_map_free), this makes map operations
-/// arena-like: one allocation per logical map, shared across all
-/// @copy struct clones, never deallocated. Trade-off matches H8/H19:
-/// mutation post-clone is visible across all aliases, but stage-1's
-/// coding style replaces locals via function returns rather than
-/// mutating shared state.
+/// Clone a map — refcount-based share (step 37 production hardening).
 ///
-/// Eliminates the heaviest non-array allocation per clone (map entry
-/// table copy) — significant heap-pressure relief on type-checker
-/// and codegen modules that maintain large symbol/scope maps.
+/// Maps share entry tables across @copy struct clones via ref_count.
+/// Trade-off: mutation post-clone visible across all aliases. Stage-1
+/// coding style replaces locals via function returns rather than mutating
+/// shared state, so this is safe in practice. With refcounted free,
+/// memory is bounded (no leak).
 #[no_mangle]
 pub extern "C" fn kryos_map_clone(map: i64) -> i64 {
     if map == 0 {
         return kryos_map_new();
     }
+    unsafe {
+        let header = map as *mut MapHeader;
+        (*header).ref_count += 1;
+    }
     map
 }
 
-/// Free the map.
+/// Retain a map — increment ref_count, return same pointer.
+#[no_mangle]
+pub extern "C" fn kryos_map_retain(map: i64) -> i64 {
+    if map == 0 {
+        return kryos_map_new();
+    }
+    unsafe {
+        let header = map as *mut MapHeader;
+        (*header).ref_count += 1;
+    }
+    map
+}
+
+/// Free the map — decrement ref_count and deallocate at 0.
 ///
-/// H18 leak-all-maps (shift step 29, 2026-05-20): consistent with H10/H12
-/// no-op string/array free. Maps share entry tables across @copy struct
-/// shallow clone, same double-free hazard. Leak the entire map to remove
-/// that hazard. Bounded leak per stage-1 invocation.
+/// Step 37: refcounted free replaces the H18 leak-on-free hack.
+/// Paired with `kryos_map_clone` retain, the allocation lives until
+/// the last reference goes away. No leak.
 #[no_mangle]
 pub extern "C" fn kryos_map_free(map: i64) {
-    let _ = map;
-    return;
-    #[allow(unreachable_code)]
     if map == 0 {
         return;
     }
     unsafe {
         let header = map as *mut MapHeader;
+        (*header).ref_count -= 1;
+        if (*header).ref_count > 0 {
+            return;
+        }
         let capacity = (*header).capacity as usize;
         free_entries((*header).entries, capacity);
         let layout = Layout::from_size_align_unchecked(std::mem::size_of::<MapHeader>(), 8);

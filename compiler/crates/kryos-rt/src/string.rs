@@ -20,12 +20,19 @@
 use std::alloc::{alloc, dealloc, Layout};
 use std::ptr;
 
-/// Heap-allocated string with explicit length and capacity.
+/// Heap-allocated string with explicit length, capacity, and reference count.
+///
+/// Layout note: `ref_count` is placed AFTER `data` (offset 24) so that codegen
+/// that accesses `len` / `cap` / `data` at fixed offsets is unaffected.
+/// `kryos_string_new` initializes `ref_count = 1`; `kryos_string_clone`
+/// (H19/step 30 -> production hardening) increments and returns the same
+/// pointer; `kryos_string_free` (step 37) decrements and deallocates at 0.
 #[repr(C)]
 pub struct KryosString {
     pub len: i64,
     pub cap: i64,
     pub data: *mut u8,
+    pub ref_count: i64,
 }
 
 impl KryosString {
@@ -68,6 +75,7 @@ pub unsafe extern "C" fn kryos_string_new(ptr: *const u8, len: i64) -> *mut Kryo
     (*s).len = len_usize as i64;
     (*s).cap = cap as i64;
     (*s).data = data;
+    (*s).ref_count = 1;
     s
 }
 
@@ -244,14 +252,11 @@ pub unsafe extern "C" fn kryos_string_find(
     -1
 }
 
-/// Clone a KryosString — share the existing pointer (H19, shift step 30).
+/// Clone a KryosString — refcount-based share (H19 + step 37 hardening).
 ///
-/// Kryos strings are immutable (concat allocates a new string, no in-place
-/// mutation), so sharing the underlying pointer is semantically equivalent
-/// to deep-cloning when paired with H10 (no-op kryos_string_free). Removes
-/// O(N) string clone allocations from every @copy struct construction
-/// involving a Str field. Eliminates the most common heap-pressure source
-/// in stage-1's tokenize/parse path.
+/// Kryos strings are immutable, so sharing the underlying pointer is
+/// semantically equivalent to deep-cloning. With refcounting, drops
+/// balance retains and the memory eventually deallocates -- no leak.
 ///
 /// Null input still returns a fresh empty string (matches old contract).
 #[no_mangle]
@@ -259,31 +264,44 @@ pub unsafe extern "C" fn kryos_string_clone(s: *const KryosString) -> *mut Kryos
     if s.is_null() {
         return kryos_string_new(ptr::null(), 0);
     }
-    s as *mut KryosString
+    let mut_s = s as *mut KryosString;
+    (*mut_s).ref_count += 1;
+    mut_s
 }
 
-/// Free a KryosString and its data buffer.
+/// Retain a KryosString — increment its reference count and return the
+/// same pointer. Symmetric counterpart to `kryos_string_free` for cases
+/// where codegen wants to express "share this string" explicitly.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_string_retain(s: *mut KryosString) -> *mut KryosString {
+    if s.is_null() {
+        return kryos_string_new(ptr::null(), 0);
+    }
+    (*s).ref_count += 1;
+    s
+}
+
+/// Free a KryosString — decrement reference count and deallocate at 0.
 ///
-/// H4 INSTRUMENTATION (shift kryos-self-compile step 22, 2026-05-20):
-/// Strings have no ref_count -- they are unique-owner. After freeing,
-/// we set cap = -1 as a sentinel and leak the header (~24 bytes) so
-/// a double-free can be detected by observing cap < 0 on entry.
-/// Revert before production.
+/// Step 37 production hardening: replaces the H10 leak-on-free hack
+/// with proper refcount-based free. With H19 share-on-clone, every
+/// @copy struct construction with a Str field increments ref_count;
+/// every drop calls this and decrements. The allocation lives until
+/// the last reference goes away. Memory bounded; no leak.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {
     if s.is_null() {
         return;
     }
-    // H10 (shift step 25): leak strings entirely. Strings have no
-    // ref-count so they can't be retained-and-shared like arrays.
-    // Many stage-1 paths share string pointers across @copy struct
-    // boundaries (Token.text, Symbol.name, etc.), and a wrong drop
-    // produces use-after-free that flakes the bootstrap. Until we
-    // either (a) add ref_count to KryosString or (b) make codegen
-    // emit kryos_string_clone everywhere shared, treat string-free
-    // as a no-op. Leaks ~50-100MB per stage-1 invocation max; well
-    // under the leak-guard 2GB limit.
-    let _ = s;
+    (*s).ref_count -= 1;
+    if (*s).ref_count > 0 {
+        return;
+    }
+    let cap = (*s).cap as usize;
+    if !(*s).data.is_null() && cap > 0 {
+        dealloc((*s).data, KryosString::layout(cap));
+    }
+    dealloc(s as *mut u8, Layout::new::<KryosString>());
 }
 
 // ---------------------------------------------------------------------------

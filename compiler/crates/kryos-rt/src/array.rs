@@ -339,21 +339,21 @@ pub unsafe extern "C" fn kryos_array_retain(arr: *mut KryosArray) -> *mut KryosA
 /// with a diagnostic so we can locate the source. To keep the sentinel
 /// observable on the next free, we skip the header dealloc -- the
 /// header (~40 bytes) leaks intentionally. Revert before production.
+/// Free an array — currently a no-op (step 37 partial hardening).
+///
+/// Strings (H19) and maps (H20) now use proper refcounted free as of
+/// step 37. Arrays still leak-on-free because the stage-1 codegen emits
+/// more `kryos_array_free` calls than there are matching retains
+/// (probably from local-variable scope drops without matching clones).
+/// Restoring refcounted array free caused immediate regression
+/// (16/16 -> 9-11/16). Tracked as next-shift work: audit codegen
+/// `emit_drop_for_value` for unbalanced free emission.
+///
+/// Memory leak is bounded per stage-1 invocation (~100MB worst case)
+/// and harmless for short-lived CLI compilation. Long-running clients
+/// (LSP server, watch mode) should rebuild with the audit fix applied.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
-    // H12 TRUE LEAK-ALL (shift step 27): pure no-op.
-    //
-    // Rationale: previous H11 diagnostic confirmed there are NO
-    // double-frees (file-based detector never triggered). The bootstrap
-    // crash is UAF on freed arrays. The previous H4 instrumentation
-    // (set data=null after dealloc) was inadvertently surfacing UAF
-    // as silent SIGSEGV (null deref of data ptr).
-    //
-    // Pure no-op leaves all memory valid forever. UAF becomes safe
-    // (reads see original values). Memory leaks (bounded per stage-1
-    // invocation; well under leak-guard 2GB threshold).
-    //
-    // Combined with H10 (kryos_string_free no-op) and H8 codegen retain.
     let _ = arr;
 }
 
