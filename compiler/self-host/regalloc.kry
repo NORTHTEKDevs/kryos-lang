@@ -83,7 +83,11 @@ struct LivenessMap {
 
 @copy
 struct RegPool {
-    used: [bool]
+    // i32 not bool: stage-1 has a runtime bug in bool array push
+    // that corrupts the array header (writes path bytes into the
+    // KryosArray's len/cap/data fields). Using i32 with 0/1
+    // sentinels bypasses the broken path.
+    used: [i32]
 }
 
 @copy
@@ -620,10 +624,10 @@ fn ra_active_without(active: [LiveInterval], index: i32) -> [LiveInterval] {
 // ===================================================================
 
 fn reg_pool_new() -> RegPool {
-    let mut used: [bool] = []
+    let mut used: [i32] = []
     let mut i = 0
     while i < REG_COUNT {
-        push(used, false)
+        push(used, 0)
         i = i + 1
     }
     return RegPool { used: used }
@@ -632,7 +636,7 @@ fn reg_pool_new() -> RegPool {
 fn reg_pool_mark_used(pool: RegPool, reg: i32) {
     if reg >= 0 {
         if reg < REG_COUNT {
-            pool.used[reg] = true
+            pool.used[reg] = 1
         }
     }
 }
@@ -640,7 +644,7 @@ fn reg_pool_mark_used(pool: RegPool, reg: i32) {
 fn reg_pool_mark_free(pool: RegPool, reg: i32) {
     if reg >= 0 {
         if reg < REG_COUNT {
-            pool.used[reg] = false
+            pool.used[reg] = 0
         }
     }
 }
@@ -648,7 +652,7 @@ fn reg_pool_mark_free(pool: RegPool, reg: i32) {
 fn reg_pool_is_free(pool: RegPool, reg: i32) -> bool {
     if reg < 0 { return false }
     if reg >= REG_COUNT { return false }
-    if pool.used[reg] {
+    if pool.used[reg] != 0 {
         return false
     }
     return true
@@ -659,8 +663,8 @@ fn reg_pool_alloc(pool: RegPool) -> i32 {
     let mut i = 0
     while i < len(regs) {
         let r = regs[i]
-        if not pool.used[r] {
-            pool.used[r] = true
+        if pool.used[r] == 0 {
+            pool.used[r] = 1
             return r
         }
         i = i + 1
@@ -672,24 +676,24 @@ fn reg_pool_alloc(pool: RegPool) -> i32 {
 // for intervals that cross a CALL. Caller-saved regs would be
 // clobbered by the intervening call.
 fn reg_pool_alloc_callee_saved(pool: RegPool) -> i32 {
-    if not pool.used[REG_RBX] {
-        pool.used[REG_RBX] = true
+    if pool.used[REG_RBX] == 0 {
+        pool.used[REG_RBX] = 1
         return REG_RBX
     }
-    if not pool.used[REG_R12] {
-        pool.used[REG_R12] = true
+    if pool.used[REG_R12] == 0 {
+        pool.used[REG_R12] = 1
         return REG_R12
     }
-    if not pool.used[REG_R13] {
-        pool.used[REG_R13] = true
+    if pool.used[REG_R13] == 0 {
+        pool.used[REG_R13] = 1
         return REG_R13
     }
-    if not pool.used[REG_R14] {
-        pool.used[REG_R14] = true
+    if pool.used[REG_R14] == 0 {
+        pool.used[REG_R14] = 1
         return REG_R14
     }
-    if not pool.used[REG_R15] {
-        pool.used[REG_R15] = true
+    if pool.used[REG_R15] == 0 {
+        pool.used[REG_R15] = 1
         return REG_R15
     }
     return REG_NONE
