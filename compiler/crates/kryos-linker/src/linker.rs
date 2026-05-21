@@ -246,13 +246,12 @@ fn build_msvc_command(cmd: &mut Command, config: &LinkerConfig) {
         LinkType::Dynamic => {
             cmd.arg("/SUBSYSTEM:CONSOLE");
             cmd.arg("/ENTRY:mainCRTStartup");
-            // Step 42b: set 32 MB stack reserve (default is 1 MB).
-            // Stage-1's recursive-descent parser, scope walker, and MIR
-            // lowering hit deep recursion on large source files (parser.kry
-            // at 2867 lines, lower.kry at 2705 lines). 8 MB cleared
-            // parser+types flakes; 16 MB cleared types but parser+lower
-            // still flake 1/15; 32 MB is the safety margin to eliminate
-            // remaining stack-depth flakes.
+            // Step 42 progression on stack-depth flakes:
+            //   default 1 MB:    6+ modules flake (parser, types, lower, ...)
+            //   8 MB:            parser+types stable, lower flaky
+            //   16 MB:           types fully stable, parser+lower flake 1/15
+            //   32 MB:           only parser flakes 1/20  <- sweet spot
+            //   64 MB:           regression (3 modules flaky again)
             cmd.arg("/STACK:33554432");
         }
     }
