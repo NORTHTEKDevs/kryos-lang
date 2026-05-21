@@ -1886,3 +1886,64 @@ SHIFTS:
   commits:
     - 31f03f3: lower.kry deep-clone + let alias
     - 4a3c129: lower.kry remaining clone sites + codegen.kry binop fix
+  ---
+  step:    57
+  date:    2026-05-21T14:00-08:00 (AKST)
+  summary: |
+    Investigated stage-2 silent-exit non-determinism. Root cause:
+    stage-1's OUTPUT (.obj files) is non-deterministic despite the
+    stage-1 binary itself being byte-identical across builds.
+
+    Reproducer: compile the same `t.kry` ("fn main { println(\"hi\") }")
+    twice via the SAME stage-1 binary. The two .obj files differ in 4
+    bytes (out of 429). The bytes are in the .text section: the
+    register-allocator picks RBX for run 1 and R12 for run 2, both
+    valid but different register choices.
+
+    This means `pool.used[REG_RBX]` (or equivalent) reads non-
+    deterministically between runs. Either:
+      (a) the bool array in RegPool has a bug where push(used, false)
+          doesn't actually set the value, leaving uninitialized
+          heap bytes (whatever happens to be there)
+      (b) some other heap state leaks into the allocator's decisions
+
+    For small programs (hello, args_test, etc.) both register choices
+    produce CORRECT semantically-equivalent binaries. For stage-2's
+    main.kry, the variance amplifies and sometimes produces a
+    binary that crashes or silently exits.
+
+    Tried changing ra_allocatable_regs to callee-saved-only -- worked
+    for file_read_test (now prints correctly) but broke stage-2
+    bootstrap (15/16 flake instead of 16/16, stage-2 still silent
+    or segfault). Reverted.
+
+    Net session state (consistently working at HEAD f3fc333):
+      - Bootstrap: 16 / 16
+      - Examples: 8 / 8
+      - Hello world: "hello from stage-2!"
+      - cmp_test (1<2): "yes less"
+      - args_test BOTH branches print correctly
+      - multi_println: "first / second / third"
+      - complex_test: full usage banner with no args
+      - file_read_test: reads file, prints filename and length
+
+    Stage-2 status: builds correctly (3.8 MB exe) but exhibits run-
+    to-run output variance. Sometimes prints the full usage banner,
+    sometimes silently exits, sometimes segfaults. Root cause is the
+    underlying stage-1 output non-determinism.
+
+  next-shift:
+    Fix the stage-1 output non-determinism. Hypothesis: bool array
+    push/init bug. Other Kryos primitive arrays (i32, str) appear
+    fine; bool might be wrong specifically.
+
+    Specific bisect:
+      - reg_pool_new pushes 16 falses into used: [bool]
+      - Print pool.used[0..15] right after reg_pool_new returns;
+        verify all are false
+      - If any are true, that's the bug -- likely in
+        kryos_array_push handling of bool elements
+
+    Once that's fixed, stage-2 should reliably reproduce its first
+    successful run, and stage-3 fixed-point validation becomes
+    possible.
