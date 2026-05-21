@@ -119,19 +119,25 @@ pub unsafe extern "C" fn kryos_array_push(arr: *mut KryosArray, val: i64) {
         // blocks) as a diagnostic for any FUTURE corruption regression — if
         // HeapReAlloc ever crashes again here, flip the env var and you can
         // separate "real codegen bug elsewhere" from "realloc misuse here".
-        let use_leak_path = std::env::var_os("KRYOS_USE_ALLOC_LEAK").is_some();
+        // H26 (shift step 36): default to alloc-copy-leak grow path.
+        // realloc has historical heap-state-sensitive crashes (per
+        // baff370 commit notes). With H10/H12/H18 leak-on-free, the
+        // memory we "leak" by not realloc'ing was going to be leaked
+        // anyway. KRYOS_USE_REALLOC=1 reinstates the realloc path
+        // for benchmarking.
+        let use_realloc = std::env::var_os("KRYOS_USE_REALLOC").is_some();
         let new_cap = cap * 2;
         let new_size = new_cap * ELEM_SIZE;
         let new_layout = KryosArray::data_layout(new_cap);
-        let new_data = if use_leak_path {
+        let new_data = if use_realloc {
+            let old_layout = KryosArray::data_layout(cap);
+            realloc((*arr).data, old_layout, new_size)
+        } else {
             let buf = alloc(new_layout);
             if !buf.is_null() {
                 ptr::copy_nonoverlapping((*arr).data, buf, cap * ELEM_SIZE);
             }
             buf
-        } else {
-            let old_layout = KryosArray::data_layout(cap);
-            realloc((*arr).data, old_layout, new_size)
         };
         if new_data.is_null() {
             let msg = b"array push: allocation failed";
