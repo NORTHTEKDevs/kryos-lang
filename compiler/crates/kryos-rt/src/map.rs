@@ -633,21 +633,28 @@ mod tests {
 
     #[test]
     fn clone_map() {
+        // Step 37+ semantics: kryos_map_clone is a refcount retain, not a
+        // deep copy. The returned handle is the same pointer as the source,
+        // sharing the underlying entry table. Reflects the share-everywhere
+        // model that unblocked stage-1 self-compile.
         let map = kryos_map_new();
         kryos_map_insert(map, 1, 100);
         kryos_map_insert(map, 2, 200);
         kryos_map_insert(map, 3, 300);
 
         let cloned = kryos_map_clone(map);
-        assert_ne!(map, cloned);
+        assert_eq!(map, cloned, "clone returns same pointer (share semantics)");
         assert_eq!(kryos_map_len(cloned), 3);
         assert_eq!(kryos_map_get(cloned, 1), 100);
         assert_eq!(kryos_map_get(cloned, 2), 200);
         assert_eq!(kryos_map_get(cloned, 3), 300);
 
-        // Mutating original doesn't affect clone.
+        // Mutating "original" also mutates "clone" -- they alias the same
+        // entry table. This is the trade-off accepted for stage-1's coding
+        // style (functions return new structs rather than mutating shared
+        // state).
         kryos_map_insert(map, 1, 999);
-        assert_eq!(kryos_map_get(cloned, 1), 100);
+        assert_eq!(kryos_map_get(cloned, 1), 999, "mutation visible across aliases");
 
         kryos_map_free(map);
         kryos_map_free(cloned);
