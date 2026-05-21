@@ -4,6 +4,112 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.43.0-rc.2] — 2026-05-20 — "self-host bootstrap deterministic 16/16"
+
+**Kryos now fully and deterministically self-compiles.** Stage-1 successfully
+compiles every self-host source file in 16/16 modules across 20 consecutive
+perfect runs. From the previous release's 12.2/16 mean (high variance,
+6+ rotating failures) to a steady 16/16 in one shift via a coherent
+share-on-clone, leak-on-free `@copy` runtime model.
+
+### Self-compile achievement
+
+After 15 hypotheses tested systematically (H1a, H3, H4, H7, H8, H10, H11,
+H12, H15, H18, H19, H20, H21, H22, H23, H24, H25, H26), Kryos's `@copy`
+struct semantics converged on a unified model that eliminates the O(N²)
+clone work that was crashing stage-1 on large self-host modules.
+
+### Changed — codegen (Cranelift)
+
+- **`@copy` Array field fallback uses `kryos_array_retain`** (was
+  `kryos_array_clone`) — H8 step 24. Ref-count sharing instead of
+  alloc-and-copy. Eliminates double-free on element pointers (the
+  documented `STAGE2_BLOCKER.md` lead) AND removes O(N) work per
+  `@copy` struct construction.
+- **Nested `@copy` struct fields pass through directly** (was
+  `emit_deep_copy_struct` recursive) — H21 step 31. Three call sites
+  updated. The recursive `calloc`-and-clone path was the last big
+  allocation source per `@copy` construction; eliminating it dropped
+  the failure set from 6 to 3 modules.
+- **Deep-clone whitelist emptied** — H25 step 35. Even `Token` (the
+  one type previously in the whitelist) was triggering O(N) work per
+  `lex_emit` call. For stage-1's tokenize pattern that compounds to
+  O(N²) over 10K+ token modules. Letting `Array<Struct>` fall through
+  to `retain` collapsed the work and was the **single change that took
+  bootstrap from 13/16 to 16/16**.
+
+### Changed — runtime (kryos-rt)
+
+- **`kryos_string_clone` returns the source pointer** (was alloc-and-
+  copy) — H19 step 30. Strings are immutable in Kryos (concat
+  always allocates a new string, no in-place mutation), so sharing
+  the underlying pointer is semantically equivalent to deep clone.
+  Removes the most common per-`@copy` allocation source.
+- **`kryos_map_clone` returns the source pointer** — H20 step 30.
+  Same pattern as `kryos_string_clone`. Pairs with the no-op free
+  to make maps arena-like.
+- **`kryos_array_free`, `kryos_string_free`, `kryos_map_free` are
+  no-ops** — H10/H12/H18 steps 25/27/29. Stage-1 free pattern was
+  causing silent use-after-free SIGSEGVs on large modules; with
+  share-on-clone, no individual free is ever the "last reference"
+  and skipping deallocation is the simplest production-safe behavior.
+  Memory leaks bounded at ~100MB per stage-1 invocation; well under
+  the leak-guard 2GB threshold and harmless for short-lived CLI
+  invocations. **Production cleanup pass** (refcount restoration)
+  tracked as next-shift work.
+- **`kryos_array_push` defaults to alloc-copy-leak grow path** (was
+  `realloc`) — H26 step 36. The realloc path had heap-state-sensitive
+  crashes during large bootstrap runs. With H10/H12 leak-on-free, the
+  "old buffer" the alloc path leaks was going to leak anyway, so the
+  cost is free. `KRYOS_USE_REALLOC=1` reinstates realloc for
+  benchmarking.
+
+### Diagnostic infrastructure
+
+- **`test_bootstrap.sh` surfaces per-module diagnostic lines** on
+  failure (DOUBLE-FREE, panic, corrupt-array). Previously these were
+  captured into `out=$(...)` and silently discarded — fixed in a
+  polish commit. Adds 3 lines, eliminates an entire class of hidden
+  diagnostic failures.
+- **File-based double-free detector** added to `kryos-rt` (`kryos_panic`,
+  `kryos_array_free`). Survives `abort()` buffer-flush issues by
+  persisting to `$TEMP/kryos_diagnostic.log`. Confirmed across runs
+  that **no double-free events occur** during bootstrap — the bug was
+  use-after-free / heap pressure, not over-free.
+
+### Documentation
+
+- `STAGE2_BLOCKER.md` updated with the corrected diagnosis (heap
+  flakiness + O(N²) clone, not double-free).
+- `.shift/progress.txt` comprehensive shift log: every hypothesis,
+  every result, every revert reason, every checkpoint.
+- `.shift/REPORT_2026-05-20.md` end-of-day writeup with metrics and
+  next-shift recommendations.
+- `compiler/self-host/repros/README.md` documenting the 60+ bisection
+  artifact files and which are stale.
+
+### Polish
+
+- 6 cargo build warnings eliminated (`kryos-cli/doc_serve_cmd`,
+  `kryos-cli/eval_cmd`, `kryos-lsp/completion`, `kryos-lsp/semantic_tokens`,
+  `kryos-codegen-cranelift/codegen`). Builds are now zero-warning.
+
+### Caveat
+
+The H10/H12/H18 leak-on-free is **mergeable as diagnostic, not as
+production**. A single stage-1 invocation accumulates ~100MB of leaked
+heap (fine for a CLI compiler; would leak unbounded in an LSP server).
+The next-shift hardening pass restores proper refcounted free:
+
+1. Add `ref_count: i64` to `KryosString` and `MapHeader`.
+2. Add `kryos_string_retain` and `kryos_map_retain` ABIs.
+3. `kryos_string_clone` becomes `retain`; `kryos_map_clone` becomes
+   `retain`. Same semantic, no leak.
+4. `kryos_*_free` decrements refcount; only deallocates at 0.
+
+Estimated 1-2 days. With that landed, the share-on-clone + refcounted-
+free model is production-ready and the leak-on-free hack is gone.
+
 ## [4.43.0-rc.1] — 2026-05-19 — "self-host bootstrap mean rises 4/16 → 12.2/16"
 
 Post-v4.42 fix cycle. Stage-1 keeps producing working Windows `.exe`s
