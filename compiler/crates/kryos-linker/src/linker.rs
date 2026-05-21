@@ -261,6 +261,12 @@ fn build_msvc_command(cmd: &mut Command, config: &LinkerConfig) {
             if std::env::var_os("KRYOS_NO_ASLR").is_some() {
                 cmd.arg("/DYNAMICBASE:NO");
             }
+            // Step 49 (overnight reproducibility): /Brepro zeros the PE
+            // TimeDateStamp and other build-time-varying fields, giving a
+            // deterministic .exe hash across builds with identical inputs.
+            // Costs nothing for end users and is required for stage-1
+            // bootstrap to produce stable artifacts.
+            cmd.arg("/Brepro");
         }
     }
 

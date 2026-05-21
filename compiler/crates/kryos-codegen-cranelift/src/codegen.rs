@@ -1,6 +1,6 @@
 //! AOT compilation: MIR -> Cranelift IR -> object file bytes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
@@ -389,7 +389,10 @@ pub fn compile_module_with_options(
     // capture_types tracks the MIR type of each capture so we can generate
     // a dropper function that frees heap-allocated captures when the closure
     // env's ARC ref count reaches zero.
-    let mut closure_info: HashMap<String, (usize, usize, Vec<Option<MirType>>)> = HashMap::new();
+    // Step 48 (overnight): BTreeMap for deterministic iteration order.
+    // HashMap's randomized hash seed produced non-deterministic emit order
+    // across builds, breaking reproducible-build hygiene for stage-1.
+    let mut closure_info: BTreeMap<String, (usize, usize, Vec<Option<MirType>>)> = BTreeMap::new();
     for mir_func in &module.functions {
         for bb in &mir_func.blocks {
             for inst in &bb.instructions {
@@ -1760,7 +1763,15 @@ pub fn compile_module_with_options(
 
     // Generate type drop helper bodies for struct/enum types with heap fields.
     // These enable array element drop to properly clean up nested struct/enum fields.
-    for (type_name, &drop_id) in &type_drop_ids {
+    //
+    // Step 48 (overnight): iterate in SORTED order. Rust's HashMap uses a
+    // randomized hash seed by default, which makes the iteration order
+    // non-deterministic. That propagated to the emitted .obj file, producing
+    // different binary hashes for stage-1 across builds. Sorting fixes
+    // reproducible-build hygiene and reduces sources of bootstrap variance.
+    let mut sorted_drop_ids: Vec<(&String, &FuncId)> = type_drop_ids.iter().collect();
+    sorted_drop_ids.sort_by_key(|(k, _)| k.as_str());
+    for (type_name, &drop_id) in sorted_drop_ids {
         let call_conv = object_module.isa().default_call_conv();
         let mut sig = Signature::new(call_conv);
         sig.params.push(AbiParam::new(types::I64)); // type ptr
@@ -1928,7 +1939,11 @@ pub fn compile_module_with_options(
     // ISOLATION-TEST 2: per-field loop body (calloc + load/store each field,
     // clone Str fields, leave others as raw copy). No Array branch, no
     // nested Struct clone call. Tests if per-field iteration is correct.
-    for (type_name, &clone_id) in &type_clone_ids {
+    //
+    // Step 48 (overnight): sorted iteration for reproducible builds.
+    let mut sorted_clone_ids: Vec<(&String, &FuncId)> = type_clone_ids.iter().collect();
+    sorted_clone_ids.sort_by_key(|(k, _)| k.as_str());
+    for (type_name, &clone_id) in sorted_clone_ids {
         let call_conv = object_module.isa().default_call_conv();
         let mut sig = Signature::new(call_conv);
         sig.params.push(AbiParam::new(types::I64));
