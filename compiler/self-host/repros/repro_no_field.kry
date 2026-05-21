@@ -1,0 +1,5 @@
+// Probe: just allocate an array literal as a let, no struct.
+fn main() {
+    let a: [i32] = [1, 2, 3]
+    println("len: " + to_string(len(a)))
+}

@@ -92,6 +92,31 @@ fn ctx_alloc_block(ctx: LowerCtx) -> i32 {
     return mir_func_alloc_block(ctx.func)
 }
 
+// Get the MIR type of a local by id. Returns ANY if not found.
+fn ctx_local_ty(ctx: LowerCtx, local_id: i32) -> MirType {
+    let mut i = 0
+    while i < len(ctx.func.locals) {
+        if ctx.func.locals[i].id == local_id {
+            return ctx.func.locals[i].ty
+        }
+        i = i + 1
+    }
+    return mir_ty_simple(MIR_TY_ANY)
+}
+
+// Resolve the MIR type of an Operand by introspecting the lowering ctx.
+// For locals: look up the declared type. For constants: infer from kind.
+fn ctx_operand_ty(ctx: LowerCtx, op: Operand) -> MirType {
+    if op.is_local {
+        return ctx_local_ty(ctx, op.local_id)
+    }
+    if op.const_kind == RV_CONST_INT { return mir_ty_i64() }
+    if op.const_kind == RV_CONST_FLOAT { return mir_ty_f64() }
+    if op.const_kind == RV_CONST_BOOL { return mir_ty_bool() }
+    if op.const_kind == RV_CONST_STRING { return mir_ty_str() }
+    return mir_ty_simple(MIR_TY_ANY)
+}
+
 // ===================================================================
 // Context helpers -- instruction emission
 // ===================================================================
@@ -697,10 +722,21 @@ fn lower_binop(ctx: LowerCtx, e: Expr) -> Operand {
     let left_op = lower_expr(ctx, e.left[0])
     let right_op = lower_expr(ctx, e.right[0])
 
-    // String concatenation with +
+    // String concatenation with +. Use ctx_operand_ty so identifiers
+    // bound to string locals (where resolve_expr_type returns ANY because
+    // it can't see the binding) get classified as strings. Without this,
+    // `let s: str = "a"; let s2 = s + "b"` lowers as i64 ADD on the
+    // string POINTERS, producing garbage that segfaults downstream.
     if e.op == BINOP_ADD {
-        let left_ty = resolve_expr_type(e.left[0])
-        if left_ty.kind == MIR_TY_STR {
+        let mut left_ty = ctx_operand_ty(ctx, left_op)
+        if left_ty.kind == MIR_TY_ANY {
+            left_ty = resolve_expr_type(e.left[0])
+        }
+        let mut right_ty = ctx_operand_ty(ctx, right_op)
+        if right_ty.kind == MIR_TY_ANY {
+            right_ty = resolve_expr_type(e.right[0])
+        }
+        if left_ty.kind == MIR_TY_STR or right_ty.kind == MIR_TY_STR {
             let parts: [Operand] = [left_op, right_op]
             let t = ctx_alloc_temp(ctx, mir_ty_str())
             ctx_emit(ctx, inst_assign(t, rv_string_concat(parts)))
@@ -1173,7 +1209,7 @@ fn lower_match_expr(ctx: LowerCtx, e: Expr) -> Operand {
         let arm = e.match_arms[i]
         ctx_switch_block(ctx, check_bbs[i])
 
-        let next_check = default_bb
+        let mut next_check = default_bb
         if i + 1 < num_arms {
             next_check = check_bbs[i + 1]
         }
@@ -1645,7 +1681,17 @@ fn lower_assign_stmt(ctx: LowerCtx, s: Stmt) {
             return
         }
         let obj_op = lower_expr(ctx, target.left[0])
-        let val = lower_expr(ctx, value_expr)
+        let val_raw = lower_expr(ctx, value_expr)
+        // Force the rvalue through an explicit copy-to-temp before the
+        // field-set call. Empirically, leaving `[expr]` (RValue::Array)
+        // operands directly in the call's store_args crashes stage-1's
+        // codegen on mir.kry / parser.kry / etc, while the equivalent
+        // `let tmp = [expr]; field = tmp` lowering succeeds. The
+        // difference is purely a copy-via-rv_use: same MIR shape, but
+        // the temp has a clean SSA boundary the codegen needs.
+        let val_temp = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
+        ctx_emit(ctx, inst_assign(val_temp, rv_use(val_raw)))
+        let val = op_local(val_temp)
 
         if s.assign_op == ASSIGN_EQ {
             // Emit field store as a runtime call

@@ -1,0 +1,30 @@
+// ============================================================
+// std.backoff -- Exponential backoff for retry loops.
+// Pure: returns the next delay; the caller sleeps.
+// ============================================================
+
+/// Next exponential-backoff delay.
+///   prev_ms = previous delay (0 for first call)
+///   base_ms = base delay when prev_ms = 0
+///   max_ms  = cap
+fn next_delay(prev_ms: i64, base_ms: i64, max_ms: i64) -> i64 {
+    let mut d = if prev_ms <= 0 { base_ms } else { prev_ms * 2 }
+    if d > max_ms {
+        d = max_ms
+    }
+    return d
+}
+
+/// Total cumulative delay over `attempts` retries (no jitter).
+fn total_delay(base_ms: i64, max_ms: i64, attempts: i64) -> i64 {
+    let mut total: i64 = 0
+    let mut d = base_ms
+    let mut i: i64 = 0
+    while i < attempts {
+        total = total + d
+        d = d * 2
+        if d > max_ms { d = max_ms }
+        i = i + 1
+    }
+    return total
+}

@@ -1,0 +1,8 @@
+fn first(arr: [str]) -> str {
+    return arr[0]
+}
+
+fn main() {
+    let a: [str] = ["hello", "world"]
+    println(first(a))
+}

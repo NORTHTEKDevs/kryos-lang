@@ -1,0 +1,5 @@
+fn main() {
+    let n: i64 = 1729
+    let s = "The number is: " + to_string(n)
+    println(s)
+}

@@ -1,0 +1,12 @@
+fn first_fn() { println("a") }
+
+// This comment has an apostrophe ' in it
+fn second_fn() { println("b") }
+
+fn third_fn() { println("c") }
+
+fn main() {
+    first_fn()
+    second_fn()
+    third_fn()
+}

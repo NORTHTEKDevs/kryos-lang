@@ -1,0 +1,10 @@
+// Unrolled string concat — no loop
+
+fn main() {
+    let mut s: str = "[ "
+    s = s + to_string(0) + " "
+    s = s + to_string(1) + " "
+    s = s + to_string(2) + " "
+    s = s + "]"
+    println(s)
+}

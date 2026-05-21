@@ -1,0 +1,13 @@
+fn first() { println("first") }
+
+fn problematic() {
+    let mut text = ""
+    while text == "{" {
+        if text == "{" {
+            continue
+        }
+        text = "y"
+    }
+}
+
+fn last() { println("last") }

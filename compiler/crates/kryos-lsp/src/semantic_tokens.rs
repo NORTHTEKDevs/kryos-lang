@@ -23,6 +23,7 @@ const T_VARIABLE: u32 = 3;
 const T_PARAMETER: u32 = 4;
 const T_STRING: u32 = 5;
 const T_NUMBER: u32 = 6;
+#[allow(dead_code)] // LSP protocol constant; reserved for doc-comment highlighting
 const T_COMMENT: u32 = 7;
 const T_OPERATOR: u32 = 8;
 const T_PROPERTY: u32 = 9;

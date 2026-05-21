@@ -1,0 +1,16 @@
+struct R {
+    a: [i32]
+}
+
+fn make_r(x: i32) -> R {
+    let empty: [i32] = []
+    let mut r = R { a: empty }
+    let tmp: [i32] = [x]
+    r.a = tmp
+    return r
+}
+
+fn main() {
+    let r = make_r(1)
+    println("len a: " + to_string(len(r.a)))
+}

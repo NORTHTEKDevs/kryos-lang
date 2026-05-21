@@ -1,0 +1,105 @@
+// ============================================================
+// std.trie -- ASCII prefix tree.
+//
+// Implementation is a flat parallel-array trie:
+//   nodes: each node is 3 i64s = (is_word, first_child_offset, sibling_offset)
+//   chars: parallel byte per node (-1 for root)
+//
+// Functional API: every op returns a new trie. Convenient for small
+// dictionaries; for huge tries port to a hash-based variant.
+// ============================================================
+
+/// Empty trie. The root is a single node with no character.
+fn new_trie() -> [i64] {
+    // Each node = 4 ints: byte (or -1), is_word (0/1), child_idx, next_sibling_idx.
+    let mut t: [i64] = []
+    t = push(t, -1)   // byte
+    t = push(t, 0)    // is_word
+    t = push(t, -1)   // child_idx
+    t = push(t, -1)   // next_sibling_idx
+    return t
+}
+
+/// Insert `word` into the trie. Returns new trie.
+fn insert(t: [i64], word: str) -> [i64] {
+    let mut out = t
+    let n = len(word)
+    let mut node: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        let c = char_code(substr(word, i, i + 1))
+        // Find existing child matching c.
+        let mut child = out[node * 4 + 2]
+        let mut found: i64 = -1
+        while child != -1 {
+            if out[child * 4] == c {
+                found = child
+                break
+            }
+            child = out[child * 4 + 3]
+        }
+        if found == -1 {
+            // Create new node at end of array.
+            let new_idx = len(out) / 4
+            out = push(out, c)
+            out = push(out, 0)
+            out = push(out, -1)
+            // New node's next_sibling = old first_child of parent.
+            out = push(out, out[node * 4 + 2])
+            // Parent's first_child = new node.
+            out[node * 4 + 2] = new_idx
+            node = new_idx
+        } else {
+            node = found
+        }
+        i = i + 1
+    }
+    out[node * 4 + 1] = 1
+    return out
+}
+
+/// Test whether `word` is a complete entry.
+fn contains(t: [i64], word: str) -> bool {
+    let n = len(word)
+    let mut node: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        let c = char_code(substr(word, i, i + 1))
+        let mut child = t[node * 4 + 2]
+        let mut found: i64 = -1
+        while child != -1 {
+            if t[child * 4] == c {
+                found = child
+                break
+            }
+            child = t[child * 4 + 3]
+        }
+        if found == -1 { return false }
+        node = found
+        i = i + 1
+    }
+    return t[node * 4 + 1] == 1
+}
+
+/// True if any word starts with `prefix`.
+fn has_prefix(t: [i64], prefix: str) -> bool {
+    let n = len(prefix)
+    let mut node: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        let c = char_code(substr(prefix, i, i + 1))
+        let mut child = t[node * 4 + 2]
+        let mut found: i64 = -1
+        while child != -1 {
+            if t[child * 4] == c {
+                found = child
+                break
+            }
+            child = t[child * 4 + 3]
+        }
+        if found == -1 { return false }
+        node = found
+        i = i + 1
+    }
+    return true
+}

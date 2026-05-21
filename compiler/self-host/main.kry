@@ -316,8 +316,11 @@ fn print_decl(d: Decl, depth: i32) {
 // -------------------------------------------------------------------
 
 fn detect_target_os() -> str {
-    // Default to linux for now; will be determined at compile time
-    // once we have conditional compilation
+    // env_get returns "" when the variable is unset. WINDIR is set on
+    // every Windows install ("C:\\Windows" or similar) and on nothing
+    // else. Fall back to "linux" elsewhere.
+    let w = env_get("WINDIR")
+    if len(w) > 0 { return "windows" }
     return "linux"
 }
 
@@ -419,7 +422,7 @@ fn check_file(filename: str) {
         return
     }
 
-    let tc = tc_new()
+    let mut tc = tc_new()
     tc = tc_register_builtins(tc)
     tc = tc_check_module(tc, module)
     if len(tc.errors) > 0 {
@@ -432,6 +435,79 @@ fn check_file(filename: str) {
     }
 
     println("check: " + filename + " OK")
+}
+
+// -------------------------------------------------------------------
+// emit_object -- run the front + middle + codegen passes and write
+// a COFF/ELF object file (no linking). Used on Windows to let an
+// external linker (link.exe) resolve kernel32 + a runtime lib.
+// -------------------------------------------------------------------
+
+fn emit_object(filename: str, output: str) {
+    let source = file_read(filename)
+    if len(source) == 0 {
+        println("error: could not read file: " + filename)
+        exit(1)
+        return
+    }
+
+    println("=== Kryos Self-Hosted Compiler (obj) ===")
+    println("File: " + filename)
+
+    let tokens = tokenize(source)
+    println("Tokens: " + to_string(len(tokens)))
+
+    let p = parser_new(tokens)
+    let module = parse_module(p)
+    println("Declarations: " + to_string(len(module.declarations)))
+    if len(p.errors) > 0 {
+        println("Parse errors: " + to_string(len(p.errors)))
+        exit(1)
+        return
+    }
+
+    let mut tc = tc_new()
+    tc = tc_register_builtins(tc)
+    tc = tc_check_module(tc, module)
+    // Stage-1's type checker is incomplete relative to stage-0's; bootstrap
+    // input is pre-validated by stage-0 so type errors here are usually
+    // missing-feature false positives. Honor a KRYOS_SKIP_TYPES=1 env var
+    // so the obj path can proceed to lower/codegen using whatever
+    // tc.struct_defs / tc.fn_sigs the checker did manage to populate.
+    let skip_types = env_get("KRYOS_SKIP_TYPES")
+    if len(tc.errors) > 0 {
+        if len(skip_types) > 0 {
+            println("Type errors: " + to_string(len(tc.errors)) + " (KRYOS_SKIP_TYPES=1; continuing)")
+        } else {
+            println("Type errors: " + to_string(len(tc.errors)))
+            for i in range(0, len(tc.errors)) {
+                println("  " + tc.errors[i])
+            }
+            exit(1)
+            return
+        }
+    } else {
+        println("Type check: OK")
+    }
+
+    let mir_mod = lower_module(module, tc)
+    println("MIR functions: " + to_string(len(mir_mod.functions)))
+
+    // Optimizer is currently a no-op for stage-1 obj-path. Enabling
+    // even constant_fold causes lower_module to subsequently crash
+    // on token.kry-sized inputs -- the optimizer mutates MIR in
+    // ways the current regalloc/codegen pipeline can't follow.
+    println("Optimization: skipped (obj path)")
+
+    let target = detect_target_os()
+    let success = compile_to_object(mir_mod, output, target)
+    if success {
+        println("Output: " + output)
+        println("=== Object file written ===")
+    } else {
+        println("error: object emission failed")
+        exit(1)
+    }
 }
 
 // -------------------------------------------------------------------
@@ -514,6 +590,34 @@ fn main() {
             output = cli_args[4]
         }
         compile_file(input, output)
+    } elif command == "mir" {
+        if len(cli_args) < 3 {
+            println("error: mir requires an input file")
+            exit(1)
+            return
+        }
+        let input = cli_args[2]
+        let source = file_read(input)
+        let tokens = tokenize(source)
+        let p = parser_new(tokens)
+        let module = parse_module(p)
+        let mut tc = tc_new()
+        tc = tc_register_builtins(tc)
+        tc = tc_check_module(tc, module)
+        let mir_mod = lower_module(module, tc)
+        mir_print_module(mir_mod)
+    } elif command == "obj" {
+        if len(cli_args) < 3 {
+            println("error: obj requires an input file")
+            exit(1)
+            return
+        }
+        let input = cli_args[2]
+        let mut output = "a.obj"
+        if len(cli_args) >= 5 and cli_args[3] == "-o" {
+            output = cli_args[4]
+        }
+        emit_object(input, output)
     } elif command == "check" {
         if len(cli_args) < 3 {
             println("error: check requires an input file")

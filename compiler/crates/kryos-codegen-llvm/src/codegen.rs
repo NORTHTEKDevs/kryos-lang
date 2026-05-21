@@ -3037,7 +3037,11 @@ impl LlvmCodegen {
                         if is_mutable {
                             let tmp = self.next_temp();
                             self.emit_binop_to(&tmp, *op, &left_val, &right_val, &operand_ty_w, is_float)?;
-                            self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
+                            // Bring result to dest_ty before store; widening/narrowing
+                            // mismatch (e.g. i64 -> i32 local) would otherwise emit
+                            // a verifier error.
+                            let coerced = self.coerce_value(&tmp, &operand_ty_w, &dest_ty);
+                            self.emit_line(&format!("  store {dest_ty} {coerced}, ptr %_{}.addr", dest.0));
                         } else {
                             self.emit_binop(dest, *op, &left_val, &right_val, &operand_ty_w, is_float)?;
                         }
@@ -3051,7 +3055,11 @@ impl LlvmCodegen {
                             &operand_ty,
                             is_float,
                         )?;
-                        self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
+                        // Operand-type result may differ from dest_ty (e.g. an i64
+                        // subtraction stored into an i32 local). Coerce before
+                        // storing so the verifier accepts the IR.
+                        let coerced = self.coerce_value(&tmp, &operand_ty, &dest_ty);
+                        self.emit_line(&format!("  store {dest_ty} {coerced}, ptr %_{}.addr", dest.0));
                     } else {
                         self.emit_binop(dest, *op, &left_val, &right_val, &operand_ty, is_float)?;
                     }
@@ -5981,31 +5989,53 @@ impl LlvmCodegen {
                 // single-field passes (e.g. dyn-trait lowering) and is a
                 // conservative fallback for multi-field aggregates.
                 //
-                // If field 0 is a `ptr` (e.g. %Match.text in std::re), the
-                // extractvalue yields a ptr-typed SSA value. Naively claiming
-                // it as i64 then passing it to a function expecting i64
-                // fails ("defined with type 'ptr' but expected 'i64'"). The
-                // fix is to detect the field type via struct_defs and emit
-                // a ptrtoint between the extractvalue and the i64 use site.
-                self.emit_line(&format!(
-                    "  {tmp} = extractvalue {from} {value}, 0"
-                ));
-                let field0_is_ptr = if let Some(name) = from.strip_prefix('%') {
+                // Field 0's actual LLVM type may be ptr (e.g. %Match.text), a
+                // narrow integer (e.g. %Token.kind: i32), or i64. Each requires
+                // a different conversion to land on the expected i64 at the
+                // call site. Without this widening LLVM rejects with
+                // "'i32' but expected 'i64'" and Cranelift silently passes
+                // the narrow value with uninit high bits — the stage-2
+                // non-deterministic segfault root cause.
+                let field0_llvm_ty = if let Some(name) = from.strip_prefix('%') {
                     self.struct_defs
                         .get(name)
                         .and_then(|fields| fields.first())
-                        .map(|(_, t)| mir_type_to_llvm(t) == "ptr")
-                        .unwrap_or(false)
+                        .map(|(_, t)| mir_type_to_llvm(t))
                 } else {
-                    false
+                    None
                 };
-                if field0_is_ptr {
-                    let i = self.next_temp();
-                    self.emit_line(&format!("  {i} = ptrtoint ptr {tmp} to i64"));
-                    self.track_type(&i, "i64");
-                    return i;
+                self.emit_line(&format!(
+                    "  {tmp} = extractvalue {from} {value}, 0"
+                ));
+                match field0_llvm_ty.as_deref() {
+                    Some("ptr") => {
+                        self.track_type(&tmp, "ptr");
+                        let i = self.next_temp();
+                        self.emit_line(&format!("  {i} = ptrtoint ptr {tmp} to i64"));
+                        self.track_type(&i, "i64");
+                        return i;
+                    }
+                    Some(narrow) if narrow == "i8" || narrow == "i16" || narrow == "i32" => {
+                        self.track_type(&tmp, narrow);
+                        let i = self.next_temp();
+                        self.emit_line(&format!("  {i} = sext {narrow} {tmp} to i64"));
+                        self.track_type(&i, "i64");
+                        return i;
+                    }
+                    Some("double") | Some("float") => {
+                        // Float field stored as i64 via bitcast.
+                        let ft = field0_llvm_ty.as_deref().unwrap();
+                        self.track_type(&tmp, ft);
+                        let i = self.next_temp();
+                        self.emit_line(&format!("  {i} = bitcast {ft} {tmp} to i64"));
+                        self.track_type(&i, "i64");
+                        return i;
+                    }
+                    _ => {
+                        // i64 or unknown: track as i64 and pass through.
+                        self.track_type(&tmp, "i64");
+                    }
                 }
-                self.track_type(&tmp, "i64");
             }
             (from, "ptr") if from.starts_with('%') || from.starts_with('{') => {
                 // Struct/aggregate → ptr: extract first field as i64, then inttoptr.

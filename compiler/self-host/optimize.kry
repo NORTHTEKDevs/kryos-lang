@@ -1138,7 +1138,7 @@ fn apply_tail_call_opt(func: MirFunction, block_idx: i32, inst_idx: i32, call_rv
         // Use the arg directly -- if it references a param that
         // will be overwritten, we need a temp.  For simplicity,
         // always use a temp.
-        let temp_id = func.next_local_id
+        let temp_id = func.next_local_id[0]
         let local = MirLocal {
             id: temp_id,
             name: "_tco_" + to_string(temp_id),
@@ -1146,7 +1146,7 @@ fn apply_tail_call_opt(func: MirFunction, block_idx: i32, inst_idx: i32, call_rv
             mutable: true
         }
         push(func.locals, local)
-        func.next_local_id = temp_id + 1
+        func.next_local_id[0] = temp_id + 1
 
         push(new_insts, inst_assign(temp_id, rv_use(arg)))
         push(temp_ops, op_local(temp_id))
@@ -1289,7 +1289,7 @@ fn inline_call(caller: MirFunction, block_idx: i32, inst_idx: i32, callee: MirFu
     let mut param_setup_insts: [Instruction] = []
     for pi in range(0, len(callee.params)) {
         let param_id = callee.params[pi].local_id
-        let new_id = caller.next_local_id
+        let new_id = caller.next_local_id[0]
         let local = MirLocal {
             id: new_id,
             name: "_inline_" + to_string(new_id),
@@ -1297,7 +1297,7 @@ fn inline_call(caller: MirFunction, block_idx: i32, inst_idx: i32, callee: MirFu
             mutable: true
         }
         push(caller.locals, local)
-        caller.next_local_id = new_id + 1
+        caller.next_local_id[0] = new_id + 1
 
         push(callee_to_caller_ids, param_id)
         push(callee_to_caller_vals, new_id)
@@ -1319,7 +1319,7 @@ fn inline_call(caller: MirFunction, block_idx: i32, inst_idx: i32, callee: MirFu
             }
         }
         if not already_mapped {
-            let new_id = caller.next_local_id
+            let new_id = caller.next_local_id[0]
             let local = MirLocal {
                 id: new_id,
                 name: "_inline_" + to_string(new_id),
@@ -1327,7 +1327,7 @@ fn inline_call(caller: MirFunction, block_idx: i32, inst_idx: i32, callee: MirFu
                 mutable: callee_local.mutable
             }
             push(caller.locals, local)
-            caller.next_local_id = new_id + 1
+            caller.next_local_id[0] = new_id + 1
 
             push(callee_to_caller_ids, callee_local.id)
             push(callee_to_caller_vals, new_id)
@@ -1579,21 +1579,7 @@ fn remap_rvalue(rv: RValue, from_ids: [i32], to_ids: [i32]) -> RValue {
 // ===================================================================
 
 fn optimize(module: MirModule) {
-    // Phase 1: per-function local optimizations
     for i in range(0, len(module.functions)) {
         opt_constant_fold(module.functions[i])
-        opt_strength_reduce(module.functions[i])
-        opt_dead_code_elim(module.functions[i])
-        opt_tail_call(module.functions[i])
-    }
-
-    // Phase 2: cross-function inlining
-    opt_inline(module)
-
-    // Phase 3: re-run local optimizations after inlining
-    // to catch new folding / DCE opportunities
-    for i in range(0, len(module.functions)) {
-        opt_constant_fold(module.functions[i])
-        opt_dead_code_elim(module.functions[i])
     }
 }

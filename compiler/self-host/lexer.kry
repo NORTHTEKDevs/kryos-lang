@@ -196,31 +196,38 @@ fn lex_scan_string(lex: Lexer, start: i32) -> Lexer {
     let mut has_interp = false
 
     while not lex_at_end(l) and lex_peek(l) != "\"" {
-        // String interpolation: {expr}
+        // String interpolation: {expr}.
+        // Only enter interpolation mode if the `{` is followed by a non-`"`
+        // and non-`}` char — i.e. there's a real expression to tokenize.
+        // This makes `"{"` and `"}"` work as literal-brace strings (which
+        // stage-1's own source uses for CHR_LBRACE / CHR_RBRACE constants).
         if lex_peek(l) == CHR_LBRACE {
-            // Emit what we have so far as StringPart
-            if len(text) > 0 or not has_interp {
-                l = lex_emit(l, TK_STRING_PART, start, l.pos, text)
-                text = ""
-            }
-            has_interp = true
-            let brace_start = l.pos
-            l = lex_advance(l) // skip {
-            l = lex_emit(l, TK_INTERP_START, brace_start, l.pos, CHR_LBRACE)
-
-            // Tokenize the interpolated expression until we hit }
-            while not lex_at_end(l) and lex_peek(l) != CHR_RBRACE {
-                l = lex_skip_ws(l)
-                if not lex_at_end(l) and lex_peek(l) != CHR_RBRACE {
-                    l = lex_scan_token(l)
+            let next_ch = lex_peek_at(l, 1)
+            if next_ch != "\"" and next_ch != CHR_RBRACE {
+                // Emit what we have so far as StringPart
+                if len(text) > 0 or not has_interp {
+                    l = lex_emit(l, TK_STRING_PART, start, l.pos, text)
+                    text = ""
                 }
+                has_interp = true
+                let brace_start = l.pos
+                l = lex_advance(l) // skip {
+                l = lex_emit(l, TK_INTERP_START, brace_start, l.pos, CHR_LBRACE)
+
+                // Tokenize the interpolated expression until we hit }
+                while not lex_at_end(l) and lex_peek(l) != CHR_RBRACE {
+                    l = lex_skip_ws(l)
+                    if not lex_at_end(l) and lex_peek(l) != CHR_RBRACE {
+                        l = lex_scan_token(l)
+                    }
+                }
+                if not lex_at_end(l) {
+                    let end_start = l.pos
+                    l = lex_advance(l) // skip }
+                    l = lex_emit(l, TK_INTERP_END, end_start, l.pos, CHR_RBRACE)
+                }
+                continue
             }
-            if not lex_at_end(l) {
-                let end_start = l.pos
-                l = lex_advance(l) // skip }
-                l = lex_emit(l, TK_INTERP_END, end_start, l.pos, CHR_RBRACE)
-            }
-            continue
         }
 
         // Escape sequences

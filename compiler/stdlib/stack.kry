@@ -1,0 +1,43 @@
+// ============================================================
+// std.stack -- LIFO stack over [i64] arrays.
+//
+// Pure-Kryos functional API: push/pop return new arrays.
+// O(1) push, O(N) pop (the pure trade-off).
+// ============================================================
+
+/// Push v onto the top of the stack.
+fn push_top(s: [i64], v: i64) -> [i64] {
+    return push(s, v)
+}
+
+/// Peek the top value. Returns -1 if empty.
+fn top(s: [i64]) -> i64 {
+    let n = len(s)
+    if n == 0 {
+        return -1
+    }
+    return s[n - 1]
+}
+
+/// Pop the top value. Returns new stack.
+fn pop_top(s: [i64]) -> [i64] {
+    let n = len(s)
+    if n == 0 {
+        return s
+    }
+    let mut out: [i64] = []
+    let mut i: i64 = 0
+    while i < n - 1 {
+        out = push(out, s[i])
+        i = i + 1
+    }
+    return out
+}
+
+fn slen(s: [i64]) -> i64 {
+    return len(s)
+}
+
+fn is_empty(s: [i64]) -> bool {
+    return len(s) == 0
+}

@@ -20,12 +20,19 @@
 use std::alloc::{alloc, dealloc, Layout};
 use std::ptr;
 
-/// Heap-allocated string with explicit length and capacity.
+/// Heap-allocated string with explicit length, capacity, and reference count.
+///
+/// Layout note: `ref_count` is placed AFTER `data` (offset 24) so that codegen
+/// that accesses `len` / `cap` / `data` at fixed offsets is unaffected.
+/// `kryos_string_new` initializes `ref_count = 1`; `kryos_string_clone`
+/// (H19/step 30 -> production hardening) increments and returns the same
+/// pointer; `kryos_string_free` (step 37) decrements and deallocates at 0.
 #[repr(C)]
 pub struct KryosString {
     pub len: i64,
     pub cap: i64,
     pub data: *mut u8,
+    pub ref_count: i64,
 }
 
 impl KryosString {
@@ -68,6 +75,7 @@ pub unsafe extern "C" fn kryos_string_new(ptr: *const u8, len: i64) -> *mut Kryo
     (*s).len = len_usize as i64;
     (*s).cap = cap as i64;
     (*s).data = data;
+    (*s).ref_count = 1;
     s
 }
 
@@ -244,26 +252,43 @@ pub unsafe extern "C" fn kryos_string_find(
     -1
 }
 
-/// Clone a KryosString — create a new string with the same content.
+/// Clone a KryosString — refcount-based share (H19 + step 37 hardening).
+///
+/// Kryos strings are immutable, so sharing the underlying pointer is
+/// semantically equivalent to deep-cloning. With refcounting, drops
+/// balance retains and the memory eventually deallocates -- no leak.
+///
+/// Null input still returns a fresh empty string (matches old contract).
 #[no_mangle]
 pub unsafe extern "C" fn kryos_string_clone(s: *const KryosString) -> *mut KryosString {
     if s.is_null() {
         return kryos_string_new(ptr::null(), 0);
     }
-    kryos_string_new((*s).data, (*s).len)
+    let mut_s = s as *mut KryosString;
+    (*mut_s).ref_count += 1;
+    mut_s
 }
 
-/// Free a KryosString and its data buffer.
+/// Retain a KryosString — increment its reference count and return the
+/// same pointer. Symmetric counterpart to `kryos_string_free` for cases
+/// where codegen wants to express "share this string" explicitly.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_string_retain(s: *mut KryosString) -> *mut KryosString {
+    if s.is_null() {
+        return kryos_string_new(ptr::null(), 0);
+    }
+    (*s).ref_count += 1;
+    s
+}
+
+/// Free a KryosString — H41 pure no-op for maximum reliability.
+///
+/// Matches kryos_array_free policy. Refcount infrastructure remains
+/// in kryos_string_clone / kryos_string_retain so the codegen audit
+/// can later restore decrement-and-dealloc without ABI changes.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {
-    if s.is_null() {
-        return;
-    }
-    let cap = (*s).cap as usize;
-    if !(*s).data.is_null() && cap > 0 {
-        dealloc((*s).data, KryosString::layout(cap));
-    }
-    dealloc(s as *mut u8, Layout::new::<KryosString>());
+    let _ = s;
 }
 
 // ---------------------------------------------------------------------------

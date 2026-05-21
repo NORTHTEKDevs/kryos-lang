@@ -1,5 +1,11 @@
 # Kryos Self-Hosting Compiler
 
+> **2026-05-19 update:** Stage 1 now produces fully linked Windows `.exe`
+> binaries for a non-trivial subset of the language. See
+> [STAGE1_WINDOWS.md](STAGE1_WINDOWS.md) and the [examples/](examples/)
+> directory for runnable demos. Stage 2 bootstrap is not yet possible
+> (token.kry, ast.kry still segfault during lower/codegen).
+
 ## Status: 16/16 FILES CLEAN, STAGE 1 COMPILES
 
 As of 2026-05-16, the self-hosting compiler **compiles to a working Stage-1 binary**

@@ -37,8 +37,16 @@ pub extern "C" fn kryos_panic(msg_ptr: *const u8, msg_len: usize) -> ! {
         // assertion results; kryos_panic is a last-resort path.
     }
     let stack = crate::trace::format_stack_trace();
+    // H11 robust diagnostic: persist to file to survive buffer-flush issues.
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true).append(true)
+        .open(std::env::temp_dir().join("kryos_diagnostic.log"))
+    {
+        let _ = writeln!(f, "PANIC pid={} {}{}", std::process::id(), formatted, stack);
+    }
     let _ = writeln!(std::io::stderr(), "{}{}", formatted, stack);
-    std::process::abort();
+    let _ = std::io::stderr().flush();
+    std::process::exit(98);
 }
 
 /// Print an error message with source location to stderr and abort.

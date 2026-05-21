@@ -1,0 +1,70 @@
+// ============================================================
+// std.matrix -- Small dense i64 matrices (row-major).
+// Stored as flat [i64] of length rows * cols.
+// ============================================================
+
+/// Element-wise add. Caller provides equal-shape matrices.
+fn add(a: [i64], b: [i64], rows: i64, cols: i64) -> [i64] {
+    let n = rows * cols
+    let mut out: [i64] = []
+    let mut i: i64 = 0
+    while i < n {
+        out = push(out, a[i] + b[i])
+        i = i + 1
+    }
+    return out
+}
+
+/// Multiply (m × k) by (k × n) → (m × n).
+fn mul(a: [i64], b: [i64], m: i64, k: i64, n: i64) -> [i64] {
+    let mut out: [i64] = []
+    let mut i: i64 = 0
+    while i < m {
+        let mut j: i64 = 0
+        while j < n {
+            let mut acc: i64 = 0
+            let mut p: i64 = 0
+            while p < k {
+                acc = acc + a[i * k + p] * b[p * n + j]
+                p = p + 1
+            }
+            out = push(out, acc)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return out
+}
+
+/// Transpose. rows × cols → cols × rows.
+fn transpose(a: [i64], rows: i64, cols: i64) -> [i64] {
+    let n = rows * cols
+    let mut out: [i64] = []
+    let mut i: i64 = 0
+    while i < n {
+        out = push(out, 0)
+        i = i + 1
+    }
+    let mut r: i64 = 0
+    while r < rows {
+        let mut c: i64 = 0
+        while c < cols {
+            out[c * rows + r] = a[r * cols + c]
+            c = c + 1
+        }
+        r = r + 1
+    }
+    return out
+}
+
+/// Scalar multiply.
+fn scale(a: [i64], k: i64) -> [i64] {
+    let n = len(a)
+    let mut out: [i64] = []
+    let mut i: i64 = 0
+    while i < n {
+        out = push(out, a[i] * k)
+        i = i + 1
+    }
+    return out
+}

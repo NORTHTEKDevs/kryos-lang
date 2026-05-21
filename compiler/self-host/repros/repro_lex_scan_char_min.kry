@@ -1,0 +1,22 @@
+// Minimal version of lex_scan_char to find what stage-1 parser chokes on.
+
+fn test() {
+    let esc: str = "x"
+    if esc == "n" {
+        println("n")
+    } elif esc == "t" {
+        println("t")
+    } elif esc == "\\" {
+        println("backslash")
+    } elif esc == "'" {
+        println("apostrophe")
+    } elif esc == "0" {
+        println("\0")
+    } else {
+        println(esc)
+    }
+}
+
+fn main() {
+    test()
+}

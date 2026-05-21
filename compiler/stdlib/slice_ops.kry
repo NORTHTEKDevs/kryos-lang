@@ -1,0 +1,68 @@
+// ============================================================
+// std.slice_ops -- take/drop/partition over [i64].
+// Pure Kryos.
+// ============================================================
+
+/// First N elements (or all if N > len).
+fn take(xs: [i64], n: i64) -> [i64] {
+    let m = len(xs)
+    let upto = if n < m { n } else { m }
+    let mut out: [i64] = []
+    let mut i: i64 = 0
+    while i < upto {
+        out = push(out, xs[i])
+        i = i + 1
+    }
+    return out
+}
+
+/// Skip first N; return the rest.
+fn drop(xs: [i64], n: i64) -> [i64] {
+    let m = len(xs)
+    let mut out: [i64] = []
+    let mut i: i64 = if n < m { n } else { m }
+    while i < m {
+        out = push(out, xs[i])
+        i = i + 1
+    }
+    return out
+}
+
+/// Partition by sign. Returns array of length 2: [positives, negatives]
+/// — actually we return two separate arrays via a struct.
+struct Partition {
+    yes: [i64],
+    no: [i64],
+}
+
+fn partition_positive(xs: [i64]) -> Partition {
+    let mut y: [i64] = []
+    let mut n: [i64] = []
+    let mut i: i64 = 0
+    let m = len(xs)
+    while i < m {
+        if xs[i] > 0 {
+            y = push(y, xs[i])
+        } else {
+            n = push(n, xs[i])
+        }
+        i = i + 1
+    }
+    return Partition { yes: y, no: n }
+}
+
+fn partition_ge(xs: [i64], threshold: i64) -> Partition {
+    let mut y: [i64] = []
+    let mut n: [i64] = []
+    let mut i: i64 = 0
+    let m = len(xs)
+    while i < m {
+        if xs[i] >= threshold {
+            y = push(y, xs[i])
+        } else {
+            n = push(n, xs[i])
+        }
+        i = i + 1
+    }
+    return Partition { yes: y, no: n }
+}

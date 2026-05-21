@@ -1,0 +1,11 @@
+// Test: escaped quote in string condition
+fn first() { println("first") }
+
+fn problematic() {
+    let mut text = ""
+    while text != "\"" {
+        text = "y"
+    }
+}
+
+fn last() { println("last") }

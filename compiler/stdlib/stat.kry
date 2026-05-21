@@ -1,0 +1,68 @@
+// ============================================================
+// std.stat -- Running statistics over [i64] arrays.
+//
+// All inputs are [i64]; no Welford state-vector tracking needed
+// because pure-functional summarize-once is fast enough at the
+// scale where you'd want std::stat anyway.
+// ============================================================
+
+fn count(xs: [i64]) -> i64 {
+    return len(xs)
+}
+
+fn sum(xs: [i64]) -> i64 {
+    let n = len(xs)
+    let mut s: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        s = s + xs[i]
+        i = i + 1
+    }
+    return s
+}
+
+fn mean_x1000(xs: [i64]) -> i64 {
+    let n = len(xs)
+    if n == 0 { return 0 }
+    return (sum(xs) * 1000) / n
+}
+
+fn min(xs: [i64]) -> i64 {
+    let n = len(xs)
+    if n == 0 { return 0 }
+    let mut m = xs[0]
+    let mut i: i64 = 1
+    while i < n {
+        if xs[i] < m { m = xs[i] }
+        i = i + 1
+    }
+    return m
+}
+
+fn max(xs: [i64]) -> i64 {
+    let n = len(xs)
+    if n == 0 { return 0 }
+    let mut m = xs[0]
+    let mut i: i64 = 1
+    while i < n {
+        if xs[i] > m { m = xs[i] }
+        i = i + 1
+    }
+    return m
+}
+
+/// Sample variance (Welford-equivalent reduction). Returns 0 for n < 2.
+/// Reports variance × 1000 to stay in integer math.
+fn variance_x1000(xs: [i64]) -> i64 {
+    let n = len(xs)
+    if n < 2 { return 0 }
+    let mu = mean_x1000(xs)
+    let mut acc: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        let d = xs[i] * 1000 - mu
+        acc = acc + (d / 1000) * (d / 1000)
+        i = i + 1
+    }
+    return (acc * 1000) / (n - 1)
+}

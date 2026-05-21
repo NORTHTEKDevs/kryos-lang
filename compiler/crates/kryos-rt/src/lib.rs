@@ -12,6 +12,31 @@
 //! raw pointers and integer handles because they operate below Rust's safety
 //! model. Pointer validity is guaranteed by the Kryos compiler's ownership
 //! analysis and codegen, not by Rust's borrow checker.
+//!
+//! # Memory model (as of v4.43.0-rc.4)
+//!
+//! All three heap container types — `KryosArray`, `KryosString`,
+//! `MapHeader` — carry a `ref_count: i64` field and follow a
+//! **share-on-clone, leak-on-free** policy:
+//!
+//! * `kryos_array_clone` / `kryos_string_clone` / `kryos_map_clone`:
+//!   increment ref_count and return the same pointer. Trades the original
+//!   independent-deep-copy semantics for O(1) sharing — necessary to
+//!   unblock stage-1's tokenize/parse hot path which calls these
+//!   thousands of times per compilation.
+//! * `kryos_array_retain` / `kryos_string_retain` / `kryos_map_retain`:
+//!   symmetric explicit retain ABI for codegen.
+//! * `kryos_array_free` / `kryos_string_free` / `kryos_map_free`: pure
+//!   no-ops. The refcount infrastructure exists (retain still increments)
+//!   but no deallocation happens until process exit.
+//!
+//! Per-invocation memory leak: ~80 MB worst case (full self-host compile).
+//! Bounded, well under the leak-guard 2 GB threshold, and harmless for
+//! short-lived CLI use. For long-running consumers (LSP server, watch
+//! mode), the codegen retain-emission audit must land first so the
+//! `*_free` functions can switch to real refcount-decrement-and-dealloc.
+//!
+//! See `docs/20-self-hosting.md` for the bigger context.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 #![allow(clippy::missing_safety_doc)]
 

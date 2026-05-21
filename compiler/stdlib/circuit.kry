@@ -1,0 +1,62 @@
+// ============================================================
+// std.circuit -- Circuit breaker (CLOSED / OPEN / HALF_OPEN).
+//
+// State layout (i64 array, length 6):
+//   [0] state: 0=closed, 1=open, 2=half_open
+//   [1] failures: consecutive failures
+//   [2] threshold: failures before open
+//   [3] reset_nanos: cooldown duration
+//   [4] opened_at: timestamp when we entered OPEN
+//   [5] last_now: last observed timestamp
+// ============================================================
+
+let CLOSED:    i64 = 0
+let OPEN:      i64 = 1
+let HALF_OPEN: i64 = 2
+
+fn new_breaker(threshold: i64, reset_nanos: i64) -> [i64] {
+    let mut s: [i64] = []
+    s = push(s, CLOSED)
+    s = push(s, 0)
+    s = push(s, threshold)
+    s = push(s, reset_nanos)
+    s = push(s, 0)
+    s = push(s, 0)
+    return s
+}
+
+/// Should the next call proceed?
+fn allow(state: [i64], now_nanos: i64) -> bool {
+    state[5] = now_nanos
+    if state[0] == CLOSED { return true }
+    if state[0] == OPEN {
+        if now_nanos - state[4] >= state[3] {
+            state[0] = HALF_OPEN
+            return true
+        }
+        return false
+    }
+    return true   // HALF_OPEN
+}
+
+fn record_success(state: [i64]) {
+    state[0] = CLOSED
+    state[1] = 0
+}
+
+fn record_failure(state: [i64]) {
+    if state[0] == HALF_OPEN {
+        state[0] = OPEN
+        state[4] = state[5]
+        return
+    }
+    state[1] = state[1] + 1
+    if state[1] >= state[2] {
+        state[0] = OPEN
+        state[4] = state[5]
+    }
+}
+
+fn current_state(state: [i64]) -> i64 {
+    return state[0]
+}

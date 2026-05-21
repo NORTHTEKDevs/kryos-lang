@@ -1,0 +1,19 @@
+// Repro that mixes narrow + wide fields, including bool and i32 at the
+// tail (so an I64 store overruns past the calloc'd allocation).
+
+struct Mixed {
+    flag: bool,
+    kind: i32,
+    text: str,
+    end: i32,
+}
+
+fn main() {
+    let m1 = Mixed { flag: true, kind: 1, text: "alpha", end: 100 }
+    let m2 = Mixed { flag: false, kind: 2, text: "beta", end: 200 }
+    let m3 = Mixed { flag: true, kind: 3, text: "gamma", end: 300 }
+    println(m1.text)
+    println(m2.text)
+    println(m3.text)
+    println("done")
+}

@@ -1,0 +1,9 @@
+// Use [i32] but only len, no index
+fn count(arr: [i32]) -> i32 {
+    return len(arr) as i32
+}
+
+fn main() {
+    let a: [i32] = [1, 2, 3]
+    println(to_string(count(a)))
+}

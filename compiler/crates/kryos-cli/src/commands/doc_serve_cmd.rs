@@ -6,7 +6,7 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Default)]
@@ -67,7 +67,7 @@ fn handle_connection(mut stream: TcpStream, root: &Path) -> Result<(), String> {
     let response = match std::fs::read(&file_path) {
         Ok(body) => {
             let mime = guess_mime(&file_path);
-            let mut header = format!(
+            let header = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
             );

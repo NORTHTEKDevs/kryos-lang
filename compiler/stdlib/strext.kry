@@ -1,0 +1,84 @@
+// ============================================================
+// std.strext -- Extended string ops beyond builtins.
+// ============================================================
+
+let LOWER_LETTERS = "abcdefghijklmnopqrstuvwxyz"
+let UPPER_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+/// Lowercase ASCII letters; non-ASCII bytes pass through unchanged.
+fn to_lower(s: str) -> str {
+    let n = len(s)
+    let mut out: str = ""
+    let mut i: i64 = 0
+    while i < n {
+        let c = char_code(substr(s, i, i + 1))
+        if c >= 65 && c <= 90 {
+            let idx = c - 65
+            out = out + substr(LOWER_LETTERS, idx, idx + 1)
+        } else {
+            out = out + substr(s, i, i + 1)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+/// Uppercase ASCII letters.
+fn to_upper(s: str) -> str {
+    let n = len(s)
+    let mut out: str = ""
+    let mut i: i64 = 0
+    while i < n {
+        let c = char_code(substr(s, i, i + 1))
+        if c >= 97 && c <= 122 {
+            let idx = c - 97
+            out = out + substr(UPPER_LETTERS, idx, idx + 1)
+        } else {
+            out = out + substr(s, i, i + 1)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+/// Count non-overlapping occurrences of `needle` in `haystack`.
+fn count_occurrences(haystack: str, needle: str) -> i64 {
+    let hn = len(haystack)
+    let nn = len(needle)
+    if nn == 0 || nn > hn { return 0 }
+    let mut count: i64 = 0
+    let mut i: i64 = 0
+    while i + nn <= hn {
+        if substr(haystack, i, i + nn) == needle {
+            count = count + 1
+            i = i + nn
+        } else {
+            i = i + 1
+        }
+    }
+    return count
+}
+
+/// Strip leading + trailing ASCII whitespace.
+fn trim(s: str) -> str {
+    let n = len(s)
+    let mut start: i64 = 0
+    while start < n {
+        let c = char_code(substr(s, start, start + 1))
+        if c == 32 || c == 9 || c == 10 || c == 13 {
+            start = start + 1
+        } else {
+            break
+        }
+    }
+    let mut end: i64 = n
+    while end > start {
+        let c = char_code(substr(s, end - 1, end))
+        if c == 32 || c == 9 || c == 10 || c == 13 {
+            end = end - 1
+        } else {
+            break
+        }
+    }
+    return substr(s, start, end)
+}

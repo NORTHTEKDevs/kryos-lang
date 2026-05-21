@@ -1,0 +1,20 @@
+fn first_marker() { println("first") }
+
+fn problematic() -> bool {
+    let mut text = ""
+    while text != "\"" {
+        if text == "{" {
+            text = "x"
+            continue
+        }
+        text = "y"
+    }
+    return false
+}
+
+fn last_marker() { println("last") }
+
+fn main() {
+    first_marker()
+    last_marker()
+}

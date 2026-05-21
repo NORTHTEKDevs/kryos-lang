@@ -1,0 +1,52 @@
+// Bubble sort over an [i64] array.
+//
+// Demonstrates: arrays, push, indexing, nested while-loops, mutation,
+// function with array parameter, length-based iteration.
+
+fn sort(arr: [i64]) {
+    let n = len(arr)
+    let mut i: i64 = 0
+    while i < n - 1 {
+        let mut j: i64 = 0
+        while j < n - i - 1 {
+            if arr[j] > arr[j + 1] {
+                let tmp = arr[j]
+                arr[j] = arr[j + 1]
+                arr[j + 1] = tmp
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+}
+
+fn print_array(arr: [i64]) {
+    let mut i: i64 = 0
+    let n = len(arr)
+    let mut s: str = "[ "
+    while i < n {
+        s = s + to_string(arr[i]) + " "
+        i = i + 1
+    }
+    s = s + "]"
+    println(s)
+}
+
+fn main() {
+    let mut data: [i64] = []
+    data = push(data, 64)
+    data = push(data, 34)
+    data = push(data, 25)
+    data = push(data, 12)
+    data = push(data, 22)
+    data = push(data, 11)
+    data = push(data, 90)
+
+    print("Before: ")
+    print_array(data)
+
+    sort(data)
+
+    print("After:  ")
+    print_array(data)
+}

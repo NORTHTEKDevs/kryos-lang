@@ -1,0 +1,22 @@
+// Repro from STAGE2_BLOCKER.md: three struct constructions in sequence.
+// Pre-fix: segfaulted 40% of runs (EXIT=139) with default Cranelift backend.
+// Post-fix: should be 100% pass under both default and KRYOS_USE_REALLOC=1.
+//
+// Run loop:
+//   for /L %i in (1,1,100) do @( repro_3struct.exe || echo CRASH %i )
+
+struct Tok {
+    kind: i32,
+    pos: i32,
+}
+
+fn make_tok(k: i32, p: i32) -> Tok {
+    return Tok { kind: k, pos: p }
+}
+
+fn main() {
+    let t1 = make_tok(1, 10)
+    let t2 = make_tok(2, 20)
+    let t3 = make_tok(3, 30)
+    println("done")
+}

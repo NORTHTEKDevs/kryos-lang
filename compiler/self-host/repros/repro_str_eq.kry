@@ -1,0 +1,8 @@
+fn main() {
+    let s: str = "hello"
+    if s == "hello" {
+        println("match")
+    } else {
+        println("no match")
+    }
+}

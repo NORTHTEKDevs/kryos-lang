@@ -1,0 +1,68 @@
+// ============================================================
+// std.interval -- Sorted [start, end) interval-set ops.
+//
+// Intervals stored as a flat [i64] of length 2*count: pairs of
+// (start, end). The caller maintains sortedness.
+// ============================================================
+
+/// Merge overlapping or adjacent intervals. Returns new array.
+fn merge(intervals: [i64]) -> [i64] {
+    let n = len(intervals) / 2
+    if n <= 1 {
+        return intervals
+    }
+    let mut out: [i64] = []
+    out = push(out, intervals[0])
+    out = push(out, intervals[1])
+    let mut w: i64 = 1
+    let mut r: i64 = 1
+    while r < n {
+        let rs = intervals[r * 2]
+        let re = intervals[r * 2 + 1]
+        let prev_end = out[(w - 1) * 2 + 1]
+        if rs <= prev_end {
+            if re > prev_end {
+                out[(w - 1) * 2 + 1] = re
+            }
+        } else {
+            out = push(out, rs)
+            out = push(out, re)
+            w = w + 1
+        }
+        r = r + 1
+    }
+    return out
+}
+
+/// True if `point` lies within any interval (binary search).
+fn contains(intervals: [i64], point: i64) -> bool {
+    let count = len(intervals) / 2
+    let mut lo: i64 = 0
+    let mut hi: i64 = count
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        let start = intervals[mid * 2]
+        let end = intervals[mid * 2 + 1]
+        if point < start {
+            hi = mid
+        } elif point >= end {
+            lo = mid + 1
+        } else {
+            return true
+        }
+    }
+    return false
+}
+
+/// Sum of all interval lengths (assumes non-overlapping).
+fn total_length(intervals: [i64]) -> i64 {
+    let count = len(intervals) / 2
+    let mut total: i64 = 0
+    let mut i: i64 = 0
+    while i < count {
+        let span = intervals[i * 2 + 1] - intervals[i * 2]
+        if span > 0 { total = total + span }
+        i = i + 1
+    }
+    return total
+}

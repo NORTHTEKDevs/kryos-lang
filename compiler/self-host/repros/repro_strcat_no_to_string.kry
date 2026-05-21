@@ -1,0 +1,12 @@
+// Strcat in loop without to_string
+
+fn main() {
+    let mut s: str = "["
+    let mut i: i64 = 0
+    while i < 3 {
+        s = s + "x"
+        i = i + 1
+    }
+    s = s + "]"
+    println(s)
+}

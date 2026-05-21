@@ -1,0 +1,51 @@
+// ============================================================
+// std.ratelimit -- Token bucket rate limiter.
+//
+// State is a [i64; 4]:
+//   [0] capacity
+//   [1] tokens (current count)
+//   [2] refill_per_sec
+//   [3] last_refill_nanos
+//
+// Each call to try_acquire refills based on elapsed time, then
+// decrements if a token is available.
+// ============================================================
+
+/// Initialize. Returns a state array.
+fn new_bucket(capacity: i64, refill_per_sec: i64, now_nanos: i64) -> [i64] {
+    let mut s: [i64] = []
+    s = push(s, capacity)
+    s = push(s, capacity)
+    s = push(s, refill_per_sec)
+    s = push(s, now_nanos)
+    return s
+}
+
+/// Try to consume one token. Returns true if granted, false if rate-limited.
+fn try_acquire(state: [i64], now_nanos: i64) -> bool {
+    refill(state, now_nanos)
+    if state[1] >= 1 {
+        state[1] = state[1] - 1
+        return true
+    }
+    return false
+}
+
+/// Current token count (without refilling).
+fn tokens(state: [i64]) -> i64 {
+    return state[1]
+}
+
+fn refill(state: [i64], now_nanos: i64) {
+    let elapsed = now_nanos - state[3]
+    if elapsed <= 0 { return }
+    // tokens to add = (refill_per_sec * elapsed) / 1_000_000_000
+    let add = (state[2] * elapsed) / 1000000000
+    let new_tokens = state[1] + add
+    if new_tokens > state[0] {
+        state[1] = state[0]
+    } else {
+        state[1] = new_tokens
+    }
+    state[3] = now_nanos
+}

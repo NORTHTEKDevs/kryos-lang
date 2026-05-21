@@ -1,0 +1,8 @@
+// File I/O demo. Writes a file then reads it back.
+
+fn main() {
+    file_write("kryos_test.txt", "Hello from Kryos self-host!")
+    println("wrote file")
+    let c = file_read("kryos_test.txt")
+    println(c)
+}

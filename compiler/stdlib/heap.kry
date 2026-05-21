@@ -1,0 +1,91 @@
+// ============================================================
+// std.heap -- Binary min-heap (priority queue) over i64 arrays.
+//
+// Pure-Kryos implementation. O(log n) push + pop. The heap is
+// stored in the array itself.
+//
+// Usage:
+//   use std::heap::{push_min, pop_min, peek_min}
+//   let mut h: [i64] = []
+//   h = push_min(h, 5)
+//   h = push_min(h, 1)
+//   let m = pop_min(h)   // 1
+// ============================================================
+
+/// Push `v` onto the heap, restoring the min-heap property.
+fn push_min(h: [i64], v: i64) -> [i64] {
+    let mut out = push(h, v)
+    let mut i = len(out) - 1
+    while i > 0 {
+        let parent = (i - 1) / 2
+        if out[parent] <= out[i] {
+            return out
+        }
+        let t = out[parent]
+        out[parent] = out[i]
+        out[i] = t
+        i = parent
+    }
+    return out
+}
+
+/// Pop and return the minimum element. Returns a (new_heap, value)
+/// pair encoded as the new heap; caller reads value separately by
+/// calling peek_min before pop_min.
+fn pop_min(h: [i64]) -> [i64] {
+    let n = len(h)
+    if n == 0 {
+        return h
+    }
+    if n == 1 {
+        return []
+    }
+    let mut out = h
+    out[0] = out[n - 1]
+    // We can't shrink Kryos arrays in-place; build a new one of length n-1.
+    let mut shrunk: [i64] = []
+    let mut i: i64 = 0
+    while i < n - 1 {
+        shrunk = push(shrunk, out[i])
+        i = i + 1
+    }
+    sift_down(shrunk, len(shrunk), 0)
+    return shrunk
+}
+
+/// Peek at the minimum without popping. Returns -1 if empty.
+fn peek_min(h: [i64]) -> i64 {
+    if len(h) == 0 {
+        return -1
+    }
+    return h[0]
+}
+
+/// Internal: sift the element at i_in down to maintain heap order.
+fn sift_down(h: [i64], n: i64, i_in: i64) {
+    let mut i = i_in
+    let mut keep_going = true
+    while keep_going {
+        let l = 2 * i + 1
+        let r = 2 * i + 2
+        let mut smallest = i
+        if l < n {
+            if h[l] < h[smallest] {
+                smallest = l
+            }
+        }
+        if r < n {
+            if h[r] < h[smallest] {
+                smallest = r
+            }
+        }
+        if smallest == i {
+            keep_going = false
+        } else {
+            let t = h[i]
+            h[i] = h[smallest]
+            h[smallest] = t
+            i = smallest
+        }
+    }
+}

@@ -319,8 +319,12 @@ struct MirFunction {
     ret_ty: MirType,
     blocks: [BasicBlock],
     locals: [MirLocal],
-    next_local_id: i32,
-    next_block_id: i32
+    // next_local_id and next_block_id are stored in single-element
+    // arrays so they survive @copy's value-semantics around struct
+    // params. Mutating a scalar field of an @copy struct only updates
+    // the callee's local copy.
+    next_local_id: [i32],
+    next_block_id: [i32]
 }
 
 // ===================================================================
@@ -848,35 +852,39 @@ fn mir_func_new(name: str, ret_ty: MirType) -> MirFunction {
     let empty_locals: [MirLocal] = []
     // Create entry block (bb0) automatically
     let entry = bb_new(0)
+    let mut nlid: [i32] = []
+    nlid = push(nlid, 0)
+    let mut nbid: [i32] = []
+    nbid = push(nbid, 1)
     return MirFunction {
         name: name, params: empty_params,
         ret_ty: ret_ty, blocks: [entry],
         locals: empty_locals,
-        next_local_id: 0, next_block_id: 1
+        next_local_id: nlid, next_block_id: nbid
     }
 }
 
 fn mir_func_alloc_local(func: MirFunction, name: str, ty: MirType, is_mut: bool) -> i32 {
-    let id = func.next_local_id
+    let id = func.next_local_id[0]
     let local = MirLocal { id: id, name: name, ty: ty, mutable: is_mut }
     push(func.locals, local)
-    func.next_local_id = id + 1
+    func.next_local_id[0] = id + 1
     return id
 }
 
 fn mir_func_alloc_temp(func: MirFunction, ty: MirType) -> i32 {
-    let id = func.next_local_id
+    let id = func.next_local_id[0]
     let local = MirLocal { id: id, name: "_" + to_string(id), ty: ty, mutable: false }
     push(func.locals, local)
-    func.next_local_id = id + 1
+    func.next_local_id[0] = id + 1
     return id
 }
 
 fn mir_func_alloc_block(func: MirFunction) -> i32 {
-    let id = func.next_block_id
+    let id = func.next_block_id[0]
     let block = bb_new(id)
     push(func.blocks, block)
-    func.next_block_id = id + 1
+    func.next_block_id[0] = id + 1
     return id
 }
 

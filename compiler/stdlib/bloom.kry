@@ -1,0 +1,80 @@
+// ============================================================
+// std.bloom -- Bloom filter (probabilistic set membership).
+//
+// Backed by a [i64] used as a bit vector. Each i64 holds 64 bits.
+// False positives possible; false negatives never.
+// ============================================================
+
+/// Create an empty filter with `bits` bit capacity. The actual i64
+/// array length is ceil(bits / 64).
+fn new_filter(bits: i64) -> [i64] {
+    let words = (bits + 63) / 64
+    let mut out: [i64] = []
+    let mut i: i64 = 0
+    while i < words {
+        out = push(out, 0)
+        i = i + 1
+    }
+    return out
+}
+
+/// Hash `s` into 7 probe positions modulo `bits`. Uses FNV-1a + a salt
+/// for the second hash (double-hashing).
+fn add(filter: [i64], bits: i64, s: str) {
+    let h1 = hash_fnv(s, 0)
+    let h2 = hash_fnv(s, 0xDEADBEEF)
+    let mut i: i64 = 0
+    while i < 7 {
+        let pos = abs_mod(h1 + i * h2, bits)
+        set_bit(filter, pos)
+        i = i + 1
+    }
+}
+
+/// Returns true if s is *possibly* in the filter, false if definitely not.
+fn contains(filter: [i64], bits: i64, s: str) -> bool {
+    let h1 = hash_fnv(s, 0)
+    let h2 = hash_fnv(s, 0xDEADBEEF)
+    let mut i: i64 = 0
+    while i < 7 {
+        let pos = abs_mod(h1 + i * h2, bits)
+        if !get_bit(filter, pos) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+fn hash_fnv(s: str, salt: i64) -> i64 {
+    let mut h = -3750763034362895579 ^ salt
+    let n = len(s)
+    let mut i: i64 = 0
+    while i < n {
+        let c = char_code(substr(s, i, i + 1))
+        h = h ^ c
+        h = h * 1099511628211
+        i = i + 1
+    }
+    return h
+}
+
+fn abs_mod(x: i64, m: i64) -> i64 {
+    let r = x % m
+    if r < 0 { return r + m }
+    return r
+}
+
+fn set_bit(filter: [i64], pos: i64) {
+    let word = pos / 64
+    let bit = pos % 64
+    let mask = 1 << bit
+    filter[word] = filter[word] | mask
+}
+
+fn get_bit(filter: [i64], pos: i64) -> bool {
+    let word = pos / 64
+    let bit = pos % 64
+    let mask = 1 << bit
+    return (filter[word] & mask) != 0
+}

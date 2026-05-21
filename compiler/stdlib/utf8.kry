@@ -1,0 +1,46 @@
+// ============================================================
+// std.utf8 -- UTF-8 codepoint helpers.
+// ============================================================
+
+/// Byte length of the UTF-8 encoding of `codepoint`. -1 if invalid.
+fn byte_len(codepoint: i64) -> i64 {
+    if codepoint < 0 { return -1 }
+    if codepoint > 1114111 { return -1 }
+    if codepoint >= 55296 && codepoint <= 57343 { return -1 }
+    if codepoint < 128 { return 1 }
+    if codepoint < 2048 { return 2 }
+    if codepoint < 65536 { return 3 }
+    return 4
+}
+
+/// Count Unicode codepoints in a UTF-8 string. -1 if invalid.
+fn codepoint_count(s: str) -> i64 {
+    let n = len(s)
+    let mut count: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        let b = char_code(substr(s, i, i + 1))
+        let mut step: i64 = 0
+        if b < 128 {
+            step = 1
+        } elif b < 192 {
+            return -1
+        } elif b < 224 {
+            step = 2
+        } elif b < 240 {
+            step = 3
+        } elif b < 248 {
+            step = 4
+        } else {
+            return -1
+        }
+        count = count + 1
+        i = i + step
+    }
+    return count
+}
+
+/// True if `s` is valid UTF-8.
+fn is_valid(s: str) -> bool {
+    return codepoint_count(s) >= 0
+}

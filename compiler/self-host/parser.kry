@@ -1979,7 +1979,7 @@ fn parse_pattern(p: Parser) -> ParsePatternResult {
 
     // Tuple pattern: (a, b, c)
     if kind == TK_LPAREN {
-        let pp = p_advance(p)
+        let mut pp = p_advance(p)
         let mut elements: [Pattern] = []
         while not p_check(pp, TK_RPAREN) and not p_at_end(pp) {
             let pr = parse_pattern(pp)

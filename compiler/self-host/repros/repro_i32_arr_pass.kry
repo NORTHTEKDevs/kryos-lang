@@ -1,0 +1,10 @@
+// Use [i32], just pass through
+fn passthrough(arr: [i32]) -> [i32] {
+    return arr
+}
+
+fn main() {
+    let a: [i32] = [1, 2, 3]
+    let b = passthrough(a)
+    println(to_string(len(b)))
+}

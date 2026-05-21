@@ -246,6 +246,21 @@ fn build_msvc_command(cmd: &mut Command, config: &LinkerConfig) {
         LinkType::Dynamic => {
             cmd.arg("/SUBSYSTEM:CONSOLE");
             cmd.arg("/ENTRY:mainCRTStartup");
+            // Step 42 progression on stack-depth flakes:
+            //   default 1 MB:    6+ modules flake (parser, types, lower, ...)
+            //   8 MB:            parser+types stable, lower flaky
+            //   16 MB:           types fully stable, parser+lower flake 1/15
+            //   32 MB:           only parser flakes 1/20  <- sweet spot
+            //   64 MB:           regression (3 modules flaky again)
+            cmd.arg("/STACK:33554432");
+            // KRYOS_NO_ASLR=1 disables ASLR for stage-1 self-host
+            // bootstrap stability (per-process VA randomization
+            // contributes to parser/types/lower flakes). Should only
+            // be set when building stage-1; leaving ASLR enabled is
+            // the right default for production user binaries.
+            if std::env::var_os("KRYOS_NO_ASLR").is_some() {
+                cmd.arg("/DYNAMICBASE:NO");
+            }
         }
     }
 

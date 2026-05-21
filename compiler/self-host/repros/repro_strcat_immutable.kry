@@ -1,0 +1,6 @@
+// Immutable let — no reassignment
+fn main() {
+    let s: str = "a"
+    let s2: str = s + "b"
+    println(s2)
+}

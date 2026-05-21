@@ -1,0 +1,14 @@
+fn first_i64(arr: [i32]) -> i64 {
+    return arr[0]
+}
+
+fn first_any(arr: [i32]) {
+    let x = arr[0]
+    println(to_string(x))
+}
+
+fn main() {
+    let a: [i32] = [1, 2, 3]
+    println(to_string(first_i64(a)))
+    first_any(a)
+}

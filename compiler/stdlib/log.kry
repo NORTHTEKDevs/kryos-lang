@@ -1,0 +1,67 @@
+// ============================================================
+// std.log -- Single-line structured logging.
+//
+// Pure Kryos. Output goes to stdout via `println` (Kryos has no
+// dedicated stderr builtin). Format:
+//
+//   <LEVEL> msg="..."[ kv1=v1 kv2=v2]
+//
+// Level filter is held in a single-element [i64] array so the
+// state is mutable across calls. Default minimum level is INFO.
+// ============================================================
+
+/// Level constants.
+fn TRACE() -> i64 { return 0 }
+fn DEBUG() -> i64 { return 1 }
+fn INFO()  -> i64 { return 2 }
+fn WARN()  -> i64 { return 3 }
+fn ERROR() -> i64 { return 4 }
+fn FATAL() -> i64 { return 5 }
+
+/// Build a fresh level holder. Min-level defaults to INFO (2).
+fn new_level() -> [i64] {
+    let mut s: [i64] = []
+    s = push(s, 2)
+    return s
+}
+
+/// Set the minimum level on a holder. Anything below is dropped by `emit`.
+fn set_level(state: [i64], min: i64) {
+    state[0] = min
+}
+
+/// Map a numeric level to its short name.
+fn level_name(level: i64) -> str {
+    if level <= 0 { return "TRACE" }
+    if level == 1 { return "DEBUG" }
+    if level == 2 { return "INFO" }
+    if level == 3 { return "WARN" }
+    if level == 4 { return "ERROR" }
+    return "FATAL"
+}
+
+/// Emit one record. `kv` is the (already-formatted) key=value tail, or "".
+fn emit(state: [i64], level: i64, msg: str, kv: str) {
+    if level < state[0] { return }
+    let head = level_name(level) + " msg=\"" + msg + "\""
+    if len(kv) > 0 {
+        println(head + " " + kv)
+    } else {
+        println(head)
+    }
+}
+
+/// Convenience: one-shot info-level emit using the default level filter.
+fn info(msg: str) {
+    println("INFO msg=\"" + msg + "\"")
+}
+
+/// Convenience: warn-level emit.
+fn warn(msg: str) {
+    println("WARN msg=\"" + msg + "\"")
+}
+
+/// Convenience: error-level emit.
+fn error(msg: str) {
+    println("ERROR msg=\"" + msg + "\"")
+}

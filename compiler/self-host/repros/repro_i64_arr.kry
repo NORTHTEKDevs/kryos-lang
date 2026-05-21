@@ -1,0 +1,8 @@
+fn first(arr: [i64]) -> i64 {
+    return arr[0]
+}
+
+fn main() {
+    let a: [i64] = [1, 2, 3]
+    println(to_string(first(a)))
+}

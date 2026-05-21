@@ -1,0 +1,49 @@
+// Isolated repro of the function that crashes stage-1's codegen on mir.kry.
+
+struct Operand {
+    is_local: bool,
+    local_id: i32,
+    const_kind: i32,
+    int_val: i32,
+    float_val: f64,
+    bool_val: bool,
+    str_val: str
+}
+
+struct RValue {
+    kind: i32,
+    op: i32,
+    left: [Operand],
+    right: [Operand],
+    func_name: str,
+    args: [Operand],
+    int_val: i32
+}
+
+fn op_empty() -> Operand {
+    return Operand { is_local: false, local_id: 0, const_kind: 0,
+        int_val: 0, float_val: 0.0, bool_val: false, str_val: "" }
+}
+
+fn rv_empty(k: i32) -> RValue {
+    let empty: [Operand] = []
+    return RValue { kind: k, op: 0, left: empty, right: empty,
+        func_name: "", args: empty, int_val: 0 }
+}
+
+fn rv_binop(binop: i32, l: Operand, r: Operand) -> RValue {
+    let mut rv = rv_empty(2)
+    rv.op = binop
+    rv.left = [l]
+    rv.right = [r]
+    return rv
+}
+
+fn main() {
+    let l = op_empty()
+    let r = op_empty()
+    let rv = rv_binop(1, l, r)
+    println("kind=" + to_string(rv.kind))
+    println("op=" + to_string(rv.op))
+    println("done")
+}

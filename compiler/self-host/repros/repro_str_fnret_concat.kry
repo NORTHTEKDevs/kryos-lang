@@ -1,0 +1,9 @@
+fn greet() -> str {
+    return "hello"
+}
+
+fn main() {
+    let s = greet()
+    let s2 = s + ", world"
+    println(s2)
+}

@@ -1,0 +1,17 @@
+// Just string concat in a loop, no array
+
+fn build() -> str {
+    let mut s: str = "[ "
+    let mut i: i64 = 0
+    while i < 3 {
+        s = s + to_string(i) + " "
+        i = i + 1
+    }
+    s = s + "]"
+    return s
+}
+
+fn main() {
+    let result = build()
+    println(result)
+}

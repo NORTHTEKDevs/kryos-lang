@@ -107,6 +107,18 @@ fn ra_arg_reg(index: i32) -> i32 {
     return REG_NONE
 }
 
+// Win64 ABI: RCX, RDX, R8, R9. Only 4 register args; rest on stack.
+fn ra_arg_reg_for(target_os: str, index: i32) -> i32 {
+    if target_os == "windows" {
+        if index == 0 { return REG_RCX }
+        if index == 1 { return REG_RDX }
+        if index == 2 { return REG_R8 }
+        if index == 3 { return REG_R9 }
+        return REG_NONE
+    }
+    return ra_arg_reg(index)
+}
+
 // ===================================================================
 // Register classification helpers
 // ===================================================================
@@ -172,11 +184,18 @@ fn ra_reg_name(reg: i32) -> str {
 // ===================================================================
 
 fn ra_allocatable_regs() -> [i32] {
+    // Callee-saved first so values survive function calls. The
+    // overlap-detection in this linear-scan implementation does not
+    // model call-clobber correctly: when a local interval crosses a
+    // CALL, it should be barred from any caller-saved register.
+    // Until that is fixed, preferring callee-saved registers makes
+    // every interval safe at the cost of a few extra prologue
+    // push/pop pairs.
     return [
+        REG_RBX, REG_R12, REG_R13, REG_R14, REG_R15,
         REG_R10, REG_R11,
         REG_RAX, REG_RCX, REG_RDX, REG_RSI, REG_RDI,
-        REG_R8, REG_R9,
-        REG_RBX, REG_R12, REG_R13, REG_R14, REG_R15
+        REG_R8, REG_R9
     ]
 }
 
@@ -203,6 +222,16 @@ fn liveness_map_new(max_id: i32) -> LivenessMap {
 // ===================================================================
 // Liveness recording helpers
 // ===================================================================
+
+fn ra_record_def_and_use(lm: LivenessMap, local_id: i32, pos: i32) {
+    ra_record_def(lm, local_id, pos)
+    // Extend the live range whenever a local is re-assigned. This is a
+    // crude workaround for the loop-lifetime problem: a variable that
+    // is reassigned in a back-edge body would otherwise have its
+    // interval end at its highest USE position (in the loop body),
+    // freeing the register before the next iteration reads it.
+    ra_record_use(lm, local_id, pos)
+}
 
 fn ra_record_def(lm: LivenessMap, local_id: i32, pos: i32) {
     if local_id < 0 { return }
@@ -371,7 +400,7 @@ fn ra_scan_terminator(lm: LivenessMap, term: Terminator, pos: i32) {
 
 fn ra_scan_instruction(lm: LivenessMap, inst: Instruction, pos: i32) {
     if inst.kind == INST_ASSIGN {
-        ra_record_def(lm, inst.dest, pos)
+        ra_record_def_and_use(lm, inst.dest, pos)
         if len(inst.value) > 0 {
             ra_scan_rvalue(lm, inst.value[0], pos)
         }
@@ -457,7 +486,21 @@ fn ra_compute_liveness(func: MirFunction) -> [LiveInterval] {
         bi = bi + 1
     }
 
-    // Build LiveInterval array from the defs/uses maps
+    // Build LiveInterval array. Extend each local's interval to
+    // function end when its def is in a different block than its
+    // last use, since the gap may include back-edge traversal that
+    // the linear position numbering cannot see.
+    let last_pos = pos - 1
+    // Precompute the [start_pos, end_pos) of each block so we can
+    // map a position back to a block index.
+    let mut block_starts: [i32] = []
+    let mut bs_pos = 0
+    let mut bs_b = 0
+    while bs_b < len(func.blocks) {
+        push(block_starts, bs_pos)
+        bs_pos = bs_pos + len(func.blocks[bs_b].instructions) + 1
+        bs_b = bs_b + 1
+    }
     let mut intervals: [LiveInterval] = []
     let mut lid = 0
     while lid <= max_id {
@@ -465,6 +508,34 @@ fn ra_compute_liveness(func: MirFunction) -> [LiveInterval] {
             let mut interval_end = lm.uses[lid]
             if interval_end < lm.defs[lid] {
                 interval_end = lm.defs[lid]
+            }
+            // Map def + use positions to their blocks. If a local
+            // crosses block boundaries (its def and last use are in
+            // different blocks), assume it might traverse a back-edge
+            // and extend its lifetime to function end. Also extend
+            // mutable locals unconditionally.
+            let def_pos = lm.defs[lid]
+            let use_pos = interval_end
+            let mut def_blk: i32 = 0
+            let mut use_blk: i32 = 0
+            let mut bb_i = 0
+            while bb_i < len(block_starts) {
+                if block_starts[bb_i] <= def_pos { def_blk = bb_i }
+                if block_starts[bb_i] <= use_pos { use_blk = bb_i }
+                bb_i = bb_i + 1
+            }
+            let mut is_mut: bool = false
+            let mut li = 0
+            while li < len(func.locals) {
+                if func.locals[li].id == lid {
+                    is_mut = func.locals[li].mutable
+                    li = len(func.locals)
+                } else {
+                    li = li + 1
+                }
+            }
+            if (is_mut or def_blk != use_blk) and interval_end < last_pos {
+                interval_end = last_pos
             }
             let interval = LiveInterval {
                 local_id: lid,
@@ -601,17 +672,27 @@ fn reg_pool_alloc(pool: RegPool) -> i32 {
 // ra_fix_arg_intervals -- pre-assign ABI argument registers
 // ===================================================================
 
-fn ra_fix_arg_intervals(intervals: [LiveInterval], func: MirFunction) {
+fn ra_fix_arg_intervals(intervals: [LiveInterval], func: MirFunction, target_os: str) {
+    let arg_reg_count: i32 = if target_os == "windows" { 4 } else { ARG_REG_COUNT }
     let mut pi = 0
     while pi < len(func.params) {
-        if pi < ARG_REG_COUNT {
+        if pi < arg_reg_count {
+            // Spill every register-passed parameter to a fixed stack
+            // slot at function entry. This is slower than keeping them
+            // in a register, but it sidesteps the cross-call clobber
+            // problem: `fib(n)` then doing `fib(n-2)` after `fib(n-1)`
+            // would otherwise see RCX clobbered. The prologue emits
+            // the actual store; uses load from [rbp - slot].
+            //
+            // spill_slot is a slot INDEX (cg_stack_offset multiplies
+            // by 8). pi maps to slot pi; linear_scan starts allocating
+            // local spill slots at len(params).
             let param_local = func.params[pi].local_id
-            let arg_reg = ra_arg_reg(pi)
-
             let mut ii = 0
             while ii < len(intervals) {
                 if intervals[ii].local_id == param_local {
-                    intervals[ii].reg = arg_reg
+                    intervals[ii].reg = REG_SPILLED
+                    intervals[ii].spill_slot = pi
                     intervals[ii].is_fixed = true
                     ii = len(intervals)  // break
                 } else {
@@ -619,9 +700,12 @@ fn ra_fix_arg_intervals(intervals: [LiveInterval], func: MirFunction) {
                 }
             }
         } else {
-            // Parameters beyond 6 are passed on the stack
+            // Parameters beyond the register limit come on the stack.
+            // On Win64 the first stack-passed arg sits at rbp+48 (16 +
+            // 32 shadow). On SYS V it sits at rbp+16.
             let param_local = func.params[pi].local_id
-            let stack_offset = (pi - ARG_REG_COUNT) * 8 + 16
+            let base_off: i32 = if target_os == "windows" { 48 } else { 16 }
+            let stack_offset = (pi - arg_reg_count) * 8 + base_off
 
             let mut ii = 0
             while ii < len(intervals) {
@@ -738,7 +822,18 @@ fn ra_linear_scan(intervals: [LiveInterval]) -> RegAllocResult {
 
     let pool = reg_pool_new()
     let mut active: [LiveInterval] = []
+    // Start spill-slot allocation past any slots already used by
+    // fixed-spilled intervals (function parameters).
     let mut next_spill_slot = 0
+    let mut si = 0
+    while si < len(intervals) {
+        if intervals[si].is_fixed and intervals[si].reg == REG_SPILLED {
+            if intervals[si].spill_slot + 1 > next_spill_slot {
+                next_spill_slot = intervals[si].spill_slot + 1
+            }
+        }
+        si = si + 1
+    }
 
     // Reserve registers for fixed intervals (function args)
     let mut fi = 0
@@ -1182,8 +1277,12 @@ fn ra_debug_result(result: RegAllocResult) -> str {
 // ===================================================================
 
 fn ra_allocate(func: MirFunction) -> RegAllocResult {
+    return ra_allocate_for(func, "linux")
+}
+
+fn ra_allocate_for(func: MirFunction, target_os: str) -> RegAllocResult {
     let mut intervals = ra_compute_liveness(func)
-    ra_fix_arg_intervals(intervals, func)
+    ra_fix_arg_intervals(intervals, func, target_os)
     let result = ra_linear_scan(intervals)
     return result
 }
@@ -1194,7 +1293,7 @@ fn ra_allocate(func: MirFunction) -> RegAllocResult {
 
 fn ra_allocate_with_hints(func: MirFunction) -> RegAllocResult {
     let mut intervals = ra_compute_liveness(func)
-    ra_fix_arg_intervals(intervals, func)
+    ra_fix_arg_intervals(intervals, func, "linux")
     ra_hint_return_register(intervals, func)
     let result = ra_linear_scan(intervals)
     return result
