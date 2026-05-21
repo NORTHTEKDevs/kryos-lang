@@ -1,181 +1,215 @@
-# Next-shift handoff prompt (kryos-lang)
+# Next-shift handoff prompt (kryos-lang) — updated 2026-05-21
 
-Copy the **PROMPT** section below into a new Claude Code session opened in
+Copy the **PROMPT** section below into a fresh Claude Code session opened in
 `~/projects/active/kryos-lang`. Everything above PROMPT is for the human.
 
 ---
 
-## State summary (as of 2026-05-21 commit `13e528f`)
+## State summary (as of commit `48e00ad`)
 
 The Kryos self-host bootstrap chain is `stage-0 (Rust) → stage-1 (Kryos)
 → stage-2 (multi-.obj link) → stage-3 (fixed-point)`.
 
-- Bootstrap test passes 16 / 16. Examples pass 8 / 8. 295 workspace
-  unit tests pass.
-- Stage-1 builds are now bit-identical (reproducible). Step 49.
-- Stage-1 emits .obj files with correct linkage (Step 50, `<top-level>`
-  is STATIC) and complete decl coverage (Step 51, parser-drop bug fixed
-  by saving/restoring `no_struct_lit` in `parse_paren_or_tuple`,
-  `parse_array_literal`, `parse_arg_list`).
-- The multi-.obj link **does succeed**. It produces a 3.6 MB
-  `kryos-stage2.exe` from 16 stage-1-emitted .obj files plus
-  `kryos_rt.lib` and `kryos_stdlib_native.lib`. Step 51.
-- The stage-2 binary **runs and exits cleanly with rc=0 but produces no
-  output**. Step 52 diagnosed why: ABI mismatch between stage-0 and
-  stage-1 in how string literals are loaded.
+- Bootstrap test passes 16 / 16. Examples pass 8 / 8.  295 unit tests pass.
+- Stage-1 builds are bit-identical (reproducible). Step 49.
+- `<top-level>` symbols are emitted as STATIC, not EXTERNAL. Step 50.
+- Parser-drop bug fixed (no_struct_lit save/restore). Step 51.
+- String literals now emit `kryos_string_new(rodata_ptr, len)` calls,
+  matching stage-0's ABI. Step 52a (commit `48e00ad`).
+- `kryos-build.bat` switched from the legacy minimal C runtime
+  (`kryos_runtime.lib`) to the full Rust runtime (`kryos_rt.lib` +
+  `kryos_stdlib_native.lib`). Step 52a.
+- The multi-.obj link **succeeds**. Produces a 3.6 MB `kryos-stage2.exe`
+  from 16 stage-1-emitted .obj files plus the Rust runtime libraries.
 
-## The one specific blocker
+## The remaining blocker (NEW root cause as of step 52a)
 
-In `compiler/self-host/codegen.kry` around line 331, the
-`RV_CONST_STRING` branch does:
+The previously-suspected "string ABI mismatch" is now fixed. Stage-1
+emits proper `kryos_string_new` calls. Disasm of any compiled
+`println("hello")` shows the correct sequence:
 
 ```
-LEA target_reg, [rip + rodata_offset]   ; raw byte pointer
+lea rcx, [__rodata_base]   ; arg-0 = rodata ptr
+mov edx, 13h               ; arg-1 = 19 (length)
+sub rsp, 20h               ; Win64 shadow
+call kryos_string_new      ; -> handle in RAX
+add rsp, 20h
 ```
 
-and stops there. It returns the raw byte pointer.
+But the **next** call, `kryos_println_str(handle)`, looks like this:
 
-But every runtime helper that takes a string (`kryos_println_str`,
-`kryos_str_concat`, …) expects a `KryosString` HANDLE — a pointer to a
-32-byte struct `{ len, cap, data, ref_count }` allocated by
-`kryos_string_new(ptr, len)`. Stage-0 does this correctly; see
-`compiler/crates/kryos-codegen-cranelift/src/codegen.rs:5147` for the
-reference pattern.
+```
+sub rsp, 20h
+xor rcx, rcx               ; <-- WRONG. Should be `mov rcx, rax`.
+call kryos_println_str
+```
 
-Net effect: every `println("…")` in stage-2 passes a raw byte pointer
-that the runtime interprets as a `KryosString*`. `(*ptr).len` reads the
-first 8 ASCII bytes, gets a garbage huge length, the runtime
-short-circuits without printing, returns cleanly. Hence "links, runs,
-silent."
+`rcx` is zeroed instead of receiving the handle that just came back
+from `kryos_string_new` in `rax`. So the println receives a null
+handle and prints nothing.
+
+This is **not** specific to strings. The same bug reproduces with
+`let r = id(42); println(to_string(r))`:
+
+```
+mov eax, 2Ah               ; _0 = 42 (regalloc put _0 in RAX)
+sub rsp, 20h
+call id                    ; <-- BUG: no `mov rcx, rax` before this
+```
+
+The MIR is correct (`_0 = const_int 42; _1 = call id(_0)`). The
+codegen.kry source for `cg_emit_call` (line 959-971) is also correct:
+
+```kry
+let mut i = reg_count - 1
+while i >= 0 {
+    let target = cg_arg_reg_for(ctx.target_os, i)
+    let r = cg_load_operand(ctx, ra, rv.args[i], target)
+    if r != target {
+        x86_mov_reg_reg(buf, target, r)
+    }
+    i = i - 1
+}
+```
+
+But the emitted code shows the loop produced no output. Two
+hypotheses, both should be tested:
+
+### Hypothesis A: `cg_get_local_reg` falls through to "not found"
+
+If a temp local has no `LiveInterval` in the regalloc result,
+`cg_get_local_reg` hits the trailing `return scratch` and returns the
+*scratch* register passed in (which is `target` here). So
+`r == target`, the move is skipped, but the actual value is in some
+other register entirely.
+
+This would mean the regalloc (`ra_compute_liveness` in
+`self-host/regalloc.kry:450`) is dropping short-lifetime temps.
+
+### Hypothesis B: The conditional `if r != target` is mis-compiled
+
+Stage-1 itself was built by stage-0. If stage-0 has a compilation bug
+around integer comparison or function-arg passing, the `if r != target`
+might evaluate as the wrong branch consistently. This is unlikely
+(everything else works), but worth ruling out.
 
 ## What the next shift must do
 
-In `compiler/self-host/codegen.kry`, after the LEA at lines ~343-349,
-emit a call to `kryos_string_new(rodata_ptr, len)` and use the return
-value (in RAX) as the operand instead of the raw pointer.
+1. Confirm which hypothesis is right by adding diagnostic prints in
+   `cg_get_local_reg` (`self-host/codegen.kry:259`). For each lookup,
+   print `local_id`, `intervals.len`, whether found, and the returned
+   register. Build a fresh stage-1, compile a 5-line hello world,
+   and inspect.
 
-That call requires:
+2. If hypothesis A: examine `ra_compute_liveness` for the case where
+   a temp is defined by `rv_const_int` and used once in the very next
+   instruction. The fix is probably either:
+     - Extend the def's `lm.uses[lid]` to at least `lm.defs[lid] + 1`
+       in `ra_compute_liveness` (so the interval has nonzero length)
+     - Or in `ra_scan_instruction` make sure the USE side of a call
+       arg properly bumps `lm.uses[lid]`
+     - Or in `cg_get_local_reg` make the "not found" fallback panic
+       with a useful diagnostic so the bug is surface-visible rather
+       than silent
 
-1. Setup Windows or SysV calling convention (RCX, RDX on Windows;
-   RDI, RSI on Linux). Use `target_os` already tracked by `ctx`.
-2. Save caller-saved regs that hold live values across the call.
-3. Move the .rodata pointer (already in target_reg) into the arg-0
-   register, and the literal length into the arg-1 register.
-4. Add `kryos_string_new` as an UNDEF external symbol in the .obj so
-   the link can resolve it against `kryos_rt.lib`.
-5. After CALL, MOV RAX into the original target_reg.
+3. If hypothesis B: look at how the Rust `kryos-codegen-cranelift`
+   lowers `if a != b { ... }` for `i32` types. Likely fine but worth
+   confirming.
 
-The kryos_string_new ABI is in `compiler/crates/kryos-rt/src/string.rs`.
-Signature: `pub extern "C" fn kryos_string_new(data: *const u8, len: i64)
--> *mut KryosString` — returns a pointer that fits in i64.
+## Critical hard rules
 
-Expect this to be 40-60 lines of new code in codegen.kry. There is no
-existing helper for "emit a runtime call" in codegen.kry; you may want
-to add one alongside this change.
-
-Sanity check after each modification:
-
-```
-cd compiler
-rm -f target/bootstrap/kryos-stage1*
-target/release/kryos.exe build self-host/main.kry \
-    -o target/bootstrap/kryos-stage1 --skip-ownership
-cp target/bootstrap/kryos-stage1 target/bootstrap/kryos-stage1.exe
-bash self-host/test_bootstrap.sh    # must still be 16 / 16
-bash self-host/test_examples.sh     # must still be 8 / 8
-```
-
-End-to-end stage-2 check (after the codegen change is in):
-
-```
-mkdir -p /tmp/stage2_link
-for f in token lexer ast parser types mir lower optimize regalloc \
-         x86 codegen elf coff linker runtime main; do
-  KRYOS_NO_ASLR=1 KRYOS_SKIP_TYPES=1 \
-    target/bootstrap/kryos-stage1.exe obj self-host/$f.kry \
-    -o /tmp/stage2_link/${f}.obj
-done
-cmd //c "C:\\Users\\Krist\\AppData\\Local\\Temp\\link_stage2_v2.cmd"
-/c/Users/Krist/AppData/Local/Temp/stage2_link/kryos-stage2.exe
-# Expected: "Kryos Self-Hosted Compiler" usage banner
-```
+- Bootstrap must stay 16 / 16. Revert and bisect any change that drops it.
+- Examples must stay 8 / 8.
+- Do not touch `kryos_string_new`'s ABI in `kryos-rt/src/string.rs`.
+- Do not delete the `kryos_field_set` stub.
+- Preserve build reproducibility.
 
 ## Read-first list
 
-Before changing anything, read:
-
-- `.shift/progress.txt` (last 80 lines — steps 49-52, mine)
-- `compiler/self-host/STAGE2_BLOCKER.md`
-- `compiler/self-host/codegen.kry` lines 320-380 (string const path)
-- `compiler/crates/kryos-codegen-cranelift/src/codegen.rs` lines
-  5147-5174 (reference impl from stage-0)
-- `compiler/crates/kryos-rt/src/string.rs:1-80` (KryosString layout +
-  `kryos_string_new` signature)
-- `compiler/crates/kryos-rt/src/builtins.rs` lines 95-130 (println /
-  field_set context)
-
-## Hard rules
-
-- Do NOT break the 16 / 16 bootstrap. If your change drops the rate,
-  revert and bisect.
-- Do NOT modify the kryos_string_new ABI in the runtime — match it.
-- Do NOT delete the `kryos_field_set` stub in `builtins.rs`; it's
-  load-bearing for multi-.obj link.
-- Stage-1 binaries are now reproducible (sorted-iter + /Brepro);
-  preserve that — sha256 of `target/bootstrap/kryos-stage1` should be
-  identical across consecutive builds.
-- Always emit the runtime call regardless of context (no peephole for
-  "string already a handle" — there isn't one in stage-1 yet).
+- `.shift/progress.txt` (last ~100 lines — steps 49-52a)
+- `compiler/self-host/codegen.kry` lines 259-276 (cg_get_local_reg) and
+  lines 896-985 (cg_emit_call)
+- `compiler/self-host/regalloc.kry` lines 60-90 (LiveInterval) and
+  450-555 (ra_compute_liveness)
+- `compiler/self-host/STAGE2_BLOCKER.md` (historical context)
 
 ---
 
 ## PROMPT
 
 ```
-Continue the Kryos self-host bootstrap work. State as of commit 13e528f
-(branch master, pushed):
+Continue the Kryos self-host bootstrap. State as of commit 48e00ad:
 
 - Bootstrap 16/16, examples 8/8, 295 unit tests pass.
-- Multi-.obj stage-2 link SUCCEEDS, produces 3.6 MB kryos-stage2.exe.
-- Stage-2 runs but exits silently — diagnosed as a string-ABI mismatch.
+- Multi-.obj stage-2 link produces a 3.6 MB kryos-stage2.exe.
+- String-literal ABI in stage-1 is fixed (commits 5b74607 + 48e00ad):
+  every "..." emits kryos_string_new(ptr, len) like stage-0 does.
 
-Specific blocker: in compiler/self-host/codegen.kry around line 331,
-the RV_CONST_STRING branch loads a raw .rodata byte pointer but every
-runtime helper (kryos_println_str, kryos_str_concat, ...) expects a
-KryosString handle. Stage-0's equivalent path in
-compiler/crates/kryos-codegen-cranelift/src/codegen.rs:5147 emits
-`kryos_string_new(ptr, len)` and uses its return value. Stage-1 must do
-the same.
+Remaining blocker: stage-1's cg_emit_call (self-host/codegen.kry
+line 896) does NOT emit the per-arg move-to-arg-reg. Disasm of
+`let r = id(42); println(to_string(r))` shows:
 
-Read these before editing:
-  - .shift/NEXT_SHIFT_PROMPT.md (this prompt's source — full context)
-  - .shift/progress.txt (steps 49-52)
-  - compiler/self-host/codegen.kry lines 320-380
-  - compiler/crates/kryos-codegen-cranelift/src/codegen.rs:5147-5174
-  - compiler/crates/kryos-rt/src/string.rs:1-80
+    mov eax, 2Ah        ; _0 = 42, regalloc put _0 in RAX
+    sub rsp, 20h        ; cg_emit_call shadow space
+    call id             ; <-- no `mov rcx, rax` was emitted
 
-Then in compiler/self-host/codegen.kry, modify the RV_CONST_STRING
-branch to call kryos_string_new(rodata_ptr, len) after the LEA, capture
-the returned handle in target_reg, and add kryos_string_new as an UNDEF
-external. Use target_os from ctx to pick rcx/rdx (Windows) vs rdi/rsi
-(SysV). Save any caller-saved live values; on this code path target_reg
-is the only live value across the call so save/restore is minimal.
+The MIR is correct (_0 = const_int 42; _1 = call id(_0)) and the
+codegen source (lines 959-971) reads correctly:
 
-After each change, verify:
-  bash compiler/self-host/test_bootstrap.sh    (must stay 16/16)
-  bash compiler/self-host/test_examples.sh     (must stay 8/8)
+    let r = cg_load_operand(...)
+    if r != target {
+        x86_mov_reg_reg(buf, target, r)
+    }
 
-Final goal of this shift: stage-2.exe prints its usage banner when run
-with no args (matching what stage-1 prints). That proves the string ABI
-is unified and the bootstrap is one runtime change away from being
-truly self-compiling.
+But the loop produces no output, meaning either:
+  (A) cg_get_local_reg (line 259) hits the trailing "Not found —
+      use scratch" branch and returns target itself, so r==target.
+      That would mean regalloc dropped short-lifetime temp intervals.
+  (B) The conditional `if r != target` is being mis-compiled.
 
-Use shift-engineer skill discipline: checkpoint every ~60 min,
-preserve no_struct_lit semantics, never regress bootstrap.
+Step 1 — confirm root cause. Add diagnostic prints in
+cg_get_local_reg to print local_id, intervals.len, found?, and the
+returned register. Rebuild stage-1, compile a 5-line hello world
+that uses an intermediate let, inspect.
+
+Step 2 — fix:
+  - If hypothesis A is right, the fix is in ra_compute_liveness
+    in self-host/regalloc.kry. Likely missing a `use` recording
+    for call-argument operands, or interval_end being computed
+    too tight (interval_end = def_pos with no extension means the
+    interval covers ZERO instructions including the use).
+  - Make the cg_get_local_reg "Not found" fallback emit a UD2
+    (illegal instruction) or panic so future occurrences surface
+    immediately instead of silently emitting wrong code.
+
+Verify after each change:
+  cd compiler
+  rm -f target/bootstrap/kryos-stage1*
+  target/release/kryos.exe build self-host/main.kry \
+    -o target/bootstrap/kryos-stage1 --skip-ownership
+  cp target/bootstrap/kryos-stage1 target/bootstrap/kryos-stage1.exe
+  bash self-host/test_bootstrap.sh    # must stay 16/16
+  bash self-host/test_examples.sh     # must stay 8/8
+
+End-of-shift goal: rebuilt stage-2.exe prints "Kryos Self-Hosted
+Compiler" usage banner when run with no args. That proves stage-1's
+codegen now correctly passes args to runtime functions and the
+bootstrap chain works end-to-end.
+
+Use shift-engineer discipline: checkpoint every ~60 min, never
+regress bootstrap, restore from a known-good tag if a change breaks
+things.
+
+Read first:
+  .shift/NEXT_SHIFT_PROMPT.md (full context)
+  .shift/progress.txt (steps 49-52a)
+  compiler/self-host/codegen.kry:259-276 (cg_get_local_reg)
+  compiler/self-host/codegen.kry:896-985 (cg_emit_call)
+  compiler/self-host/regalloc.kry:450-555 (ra_compute_liveness)
 
 Hard rules:
-  - Don't break the 16/16 bootstrap. Revert and bisect if you do.
-  - Don't modify the kryos_string_new ABI in kryos-rt; match it.
-  - Don't delete the kryos_field_set stub in builtins.rs.
+  - Don't break 16/16 bootstrap or 8/8 examples.
+  - Don't modify kryos_string_new's ABI.
+  - Don't delete the kryos_field_set stub.
   - Preserve build reproducibility (sorted-iter + /Brepro).
 ```

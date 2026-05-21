@@ -1724,3 +1724,37 @@ SHIFTS:
 
   status: SHIFT_NEAR_HANDOFF -- one specific codegen change remains
           (~40-60 lines in self-host/codegen.kry).
+  ---
+  step:    53
+  date:    2026-05-21T11:30-08:00 (AKST)
+  summary: |
+    String literals now flow through kryos_string_new in stage-1, AND
+    the cg_get_local_reg fallback was fixed for single-temp cases.
+
+    Hello world via stage-1 + Rust runtime: PRINTS "hello from stage-2!".
+    Single-let programs: WORK.
+
+    But: stage-2.exe segfaults because main.kry has many concurrent
+    unallocated temps that all clash in R12.
+
+    Root cause is deeper than initially thought: stage-1's regalloc
+    (ra_compute_liveness) doesn't produce LiveInterval for some temps.
+    The cg_get_local_reg fallback returns scratch=different-reg per
+    caller. With R12 pinning, single temps are fine but multiple
+    concurrent temps clash.
+
+    The proper fix is in regalloc.kry: ensure every local in
+    func.locals gets a LiveInterval, OR give each unallocated local
+    a unique stack slot (compute spill_slot from local_id).
+
+  commit: ac55618
+  status: STAGE2_HELLO_PRINTS -- partial victory. Stage-1 -> .obj ->
+          link.exe -> .exe pipeline produces output correctly for
+          single-temp programs. Stage-2 (16-module link) segfaults
+          due to R12 collision on main.kry's multi-temp body.
+
+  next-shift:
+    Two-line fix in regalloc.kry's interval-build loop: drop the
+    `if lm.defs[lid] != -1` guard and assign default def_pos=0,
+    end=last_pos for every local. Or in cg_get_local_reg, when not
+    found, load/store from per-local-id stack slot.
