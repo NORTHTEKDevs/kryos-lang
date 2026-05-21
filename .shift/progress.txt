@@ -1689,3 +1689,38 @@ SHIFTS:
   status: STAGE2_LINKS_RUNS_NO_OUTPUT -- one ABI mismatch from full
           stage-2 functionality. Progress is real but next mile is
           a codegen change, not a one-liner.
+  ---
+  step:    53
+  date:    2026-05-21T10:00-08:00 (AKST)
+  summary: |
+    Verified parser-drop fix coverage across all 16 self-host modules.
+    Every module now has defined-symbols count >= source fn count
+    (some are higher because of @copy struct clone helpers and
+    `<top-level>` wrappers, but ZERO drops).
+
+    Module      src_fns  defined  status
+    -----------+-------+--------+-------
+    token       8        8        OK
+    lexer       19       19       OK
+    ast         16       16       OK
+    parser      84       84       OK  (was 57 before fix)
+    types       86       95       OK  (extra are sub-fns)
+    mir         73       74       OK
+    lower       74       74       OK
+    optimize    40       40       OK
+    regalloc    52       52       OK
+    x86         71       71       OK
+    codegen     39       39       OK
+    elf         24       24       OK
+    coff        22       22       OK
+    linker      25       27       OK  (extra are sub-fns)
+    runtime     52       55       OK  (extra are sub-fns)
+    main        10       10       OK
+
+    Plus: wrote .shift/NEXT_SHIFT_PROMPT.md -- self-contained handoff
+    prompt for the next session to pick up the stage-2 string-ABI
+    work. Includes exact file:line references, sanity-check commands,
+    and hard rules.
+
+  status: SHIFT_NEAR_HANDOFF -- one specific codegen change remains
+          (~40-60 lines in self-host/codegen.kry).
