@@ -319,7 +319,18 @@ pub fn compile_module_with_options(
             // user-level `bind`, `read`, `write`, `open`, `close` would
             // otherwise be resolved via dlsym to libc's version inside the JIT,
             // which causes silent stack overflows or segfaults).
-            let func_id = object_module.declare_function(&mir_func.name, Linkage::Local, &sig)?;
+            //
+            // KRYOS_EXPORT_USER_FNS=1 overrides this for multi-`.obj` self-host
+            // builds, where cross-module symbol resolution is required (e.g.
+            // building each self-host/*.kry separately and linking them into
+            // a stage-2 binary). Set only when you control the link line and
+            // can avoid libc name collisions.
+            let user_linkage = if std::env::var_os("KRYOS_EXPORT_USER_FNS").is_some() {
+                Linkage::Export
+            } else {
+                Linkage::Local
+            };
+            let func_id = object_module.declare_function(&mir_func.name, user_linkage, &sig)?;
             func_ids.insert(mir_func.name.clone(), func_id);
         }
     }
