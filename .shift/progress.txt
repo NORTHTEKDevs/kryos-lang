@@ -1947,3 +1947,41 @@ SHIFTS:
     Once that's fixed, stage-2 should reliably reproduce its first
     successful run, and stage-3 fixed-point validation becomes
     possible.
+  ---
+  step:    58
+  date:    2026-05-21T14:25-08:00 (AKST)
+  summary: |
+    Investigated stage-1 runtime non-determinism. Tried two approaches:
+
+    1. Apply deep-clone pattern to ra_sort_intervals (the same fix
+       that worked for Operand in lower.kry). Made `let key` a fresh
+       LiveInterval struct literal copy rather than potentially
+       aliasing intervals[i]. Result: REDUCED variance (4/5 runs
+       produced identical hash vs ~5/5 different before), but still
+       not deterministic. Reverted because stage-2 link sometimes
+       failed (parser.obj missing).
+
+    2. Identified that the variance comes from REGISTER CHOICE in
+       reg_pool_alloc_callee_saved. Same logic, picks RBX in one
+       run and R12 in another. Either pool.used[REG_RBX] reads
+       non-deterministically or the call-clobber detection varies.
+
+  end-of-day state at HEAD 54735e5:
+    - Bootstrap 16/16 (stable across 5 runs)
+    - Examples 8/8
+    - 5 user Kryos programs print correctly:
+        hello world, cmp_test, args_test (both branches),
+        multi_println, complex_test, file_read_test
+    - Stage-2 (16-module link) FLAKY -- sometimes prints usage
+      banner, sometimes silent-exits. Underlying cause is
+      stage-1 output non-determinism.
+
+  day total: 12 commits, 9 shift tags. Started morning with
+  stage-2 silently exiting, ended day with stage-2 PRINTING the
+  full Kryos Self-Hosted Compiler usage banner (when the dice fall
+  the right way) and 6+ user programs working consistently.
+
+  remaining gap: trace the source of `pool.used[reg]`'s
+  non-deterministic read. Likely either share-on-clone semantics
+  on the RegPool/array, or some interaction between liveness
+  scan and allocation order.
