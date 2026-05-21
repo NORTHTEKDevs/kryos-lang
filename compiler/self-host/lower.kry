@@ -1082,7 +1082,20 @@ fn lower_array_lit(ctx: LowerCtx, e: Expr) -> Operand {
     let mut elem_ops: [Operand] = []
     for i in range(0, len(e.elements)) {
         let elem_op = lower_expr(ctx, e.elements[i])
-        push(elem_ops, elem_op)
+        // Deep-clone: stage-1's share-on-clone @copy struct semantics
+        // mean the same heap Operand can be referenced by multiple
+        // array entries if we don't reconstruct here. See lower_fn_call
+        // for the original instance of this fix.
+        let cloned = Operand {
+            is_local: elem_op.is_local,
+            local_id: elem_op.local_id,
+            const_kind: elem_op.const_kind,
+            int_val: elem_op.int_val,
+            float_val: elem_op.float_val,
+            bool_val: elem_op.bool_val,
+            str_val: elem_op.str_val
+        }
+        push(elem_ops, cloned)
     }
     let arr_ty = resolve_expr_type(e)
     let t = ctx_alloc_temp(ctx, arr_ty)
@@ -1098,7 +1111,16 @@ fn lower_tuple_lit(ctx: LowerCtx, e: Expr) -> Operand {
     let mut elem_ops: [Operand] = []
     for i in range(0, len(e.elements)) {
         let elem_op = lower_expr(ctx, e.elements[i])
-        push(elem_ops, elem_op)
+        let cloned = Operand {
+            is_local: elem_op.is_local,
+            local_id: elem_op.local_id,
+            const_kind: elem_op.const_kind,
+            int_val: elem_op.int_val,
+            float_val: elem_op.float_val,
+            bool_val: elem_op.bool_val,
+            str_val: elem_op.str_val
+        }
+        push(elem_ops, cloned)
     }
     let t = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_TUPLE))
     ctx_emit(ctx, inst_assign(t, rv_tuple(elem_ops)))
@@ -1115,11 +1137,23 @@ fn lower_map_lit(ctx: LowerCtx, e: Expr) -> Operand {
     // In AST, map keys are in e.left, values in e.right
     for i in range(0, len(e.left)) {
         let k = lower_expr(ctx, e.left[i])
-        push(key_ops, k)
+        let k_clone = Operand {
+            is_local: k.is_local, local_id: k.local_id,
+            const_kind: k.const_kind, int_val: k.int_val,
+            float_val: k.float_val, bool_val: k.bool_val,
+            str_val: k.str_val
+        }
+        push(key_ops, k_clone)
     }
     for i in range(0, len(e.right)) {
         let v = lower_expr(ctx, e.right[i])
-        push(val_ops, v)
+        let v_clone = Operand {
+            is_local: v.is_local, local_id: v.local_id,
+            const_kind: v.const_kind, int_val: v.int_val,
+            float_val: v.float_val, bool_val: v.bool_val,
+            str_val: v.str_val
+        }
+        push(val_ops, v_clone)
     }
     let t = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_MAP))
     ctx_emit(ctx, inst_assign(t, rv_map(key_ops, val_ops)))
