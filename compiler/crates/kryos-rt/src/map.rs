@@ -528,10 +528,31 @@ pub extern "C" fn kryos_map_retain(map: i64) -> i64 {
     map
 }
 
-/// Free the map — H41 pure no-op. Matches kryos_array_free policy.
+/// Step 46c: refcounted free for maps. Retest after string_concat fix
+/// to confirm whether map flakes were similar uninitialized-ref_count
+/// bugs.
 #[no_mangle]
 pub extern "C" fn kryos_map_free(map: i64) {
-    let _ = map;
+    if map == 0 {
+        return;
+    }
+    unsafe {
+        let header = map as *mut MapHeader;
+        let rc = (*header).ref_count;
+        if rc <= 0 {
+            return;
+        }
+        let new_rc = rc - 1;
+        (*header).ref_count = new_rc;
+        if new_rc > 0 {
+            return;
+        }
+        let capacity = (*header).capacity as usize;
+        free_entries((*header).entries, capacity);
+        (*header).entries = std::ptr::null_mut();
+        (*header).capacity = 0;
+        (*header).len = 0;
+    }
 }
 
 #[cfg(test)]
