@@ -867,11 +867,23 @@ fn lower_fn_call(ctx: LowerCtx, e: Expr) -> Operand {
             return lower_range_call(ctx, e)
         }
 
-        // Lower arguments
+        // Lower arguments. Each arg_op is deep-cloned into a freshly
+        // constructed Operand struct literal before push to break the
+        // share-on-clone aliasing that otherwise corrupts call_args[i]
+        // when later operands are constructed on the same heap memory.
         let mut call_args: [Operand] = []
         for i in range(0, len(e.args)) {
             let arg_op = lower_expr(ctx, e.args[i])
-            push(call_args, arg_op)
+            let cloned = Operand {
+                is_local: arg_op.is_local,
+                local_id: arg_op.local_id,
+                const_kind: arg_op.const_kind,
+                int_val: arg_op.int_val,
+                float_val: arg_op.float_val,
+                bool_val: arg_op.bool_val,
+                str_val: arg_op.str_val
+            }
+            push(call_args, cloned)
         }
 
         // Map to runtime name
@@ -888,7 +900,16 @@ fn lower_fn_call(ctx: LowerCtx, e: Expr) -> Operand {
     let mut call_args: [Operand] = []
     for i in range(0, len(e.args)) {
         let arg_op = lower_expr(ctx, e.args[i])
-        push(call_args, arg_op)
+        let cloned = Operand {
+            is_local: arg_op.is_local,
+            local_id: arg_op.local_id,
+            const_kind: arg_op.const_kind,
+            int_val: arg_op.int_val,
+            float_val: arg_op.float_val,
+            bool_val: arg_op.bool_val,
+            str_val: arg_op.str_val
+        }
+        push(call_args, cloned)
     }
     let t = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
     ctx_emit(ctx, inst_assign(t, rv_call_indirect(callee_op, call_args)))
@@ -1633,11 +1654,25 @@ fn lower_let_stmt(ctx: LowerCtx, s: Stmt) {
         local_ty = resolve_expr_type(s.let_value[0])
     }
 
-    let local_id = ctx_alloc_local(ctx, s.name, local_ty, s.mutable)
-
     if len(s.let_value) > 0 {
         let val = lower_expr(ctx, s.let_value[0])
+        // For IMMUTABLE `let name = local_expr`, alias the name to
+        // the existing local rather than emitting a redundant
+        // `name = use src` MIR instruction. The redundant rename
+        // would confuse the register allocator into giving the
+        // same register to both names, then a subsequent local
+        // can reuse the register thinking the source is dead while
+        // the destination is still live.
+        if not s.mutable {
+            if val.is_local {
+                ctx_define_local(ctx, s.name, val.local_id)
+                return
+            }
+        }
+        let local_id = ctx_alloc_local(ctx, s.name, local_ty, s.mutable)
         ctx_emit(ctx, inst_assign(local_id, rv_use(val)))
+    } else {
+        ctx_alloc_local(ctx, s.name, local_ty, s.mutable)
     }
 }
 
