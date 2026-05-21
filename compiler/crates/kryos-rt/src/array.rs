@@ -377,19 +377,14 @@ pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
     if new_rc > 0 {
         return;
     }
-    // ref_count just reached 0 — deallocate the data buffer
-    let cap = (*arr).cap as usize;
-    if !(*arr).data.is_null() && cap > 0 {
-        dealloc((*arr).data, KryosArray::data_layout(cap));
-    }
-    // Mark header as freed (sentinel) and leak it. This keeps the
-    // sentinel observable so a subsequent over-free call sees rc<=0
-    // and no-ops, instead of crashing on a use-after-free or
-    // double-deallocating the header itself.
-    (*arr).data = ptr::null_mut();
-    (*arr).cap = 0;
-    (*arr).len = 0;
-    // ref_count is now 0; intentionally do not dealloc the header.
+    // ref_count just reached 0. NOTE: deallocating the data buffer here
+    // would crash any subsequent use-after-free read through `data` (these
+    // happen ~20% of bootstrap runs from unbalanced codegen drops). Until
+    // the codegen audit is done and retain emissions are correct, leak
+    // the data buffer too. Keeps everything safe at the cost of ~80MB
+    // per stage-1 invocation. The refcount infrastructure remains so a
+    // future codegen audit can flip dealloc back on without ABI changes.
+    // ref_count stays at 0 — sentinel for "logically freed".
 }
 
 // ---------------------------------------------------------------------------
