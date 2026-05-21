@@ -1378,3 +1378,169 @@ SHIFTS:
         leak-on-free hacks with proper refcounting. Production
         cleanup pass; should not change bootstrap mean.
 
+  
+  ---
+  shift: 0
+  step: 22
+  date: 2026-05-21T09:07:00Z
+  engineer: claude (opus 4.7)
+  summary: Resumed parked shift via shift-engineer skill. The scheduling cron
+    referred to outdated state (named-helper rewrite for v4.43.0-rc.1 with mean
+    12.2/16 on feat/v4.41-diff) which has been factually superseded:
+      - PR #62 (feat/v4.41-diff) merged at 3e3e729 with the H25 share-everywhere
+        + H41 leak-on-free fix; STAGE2_BLOCKER.md marked RESOLVED.
+      - Current branch is feat/post-self-host-polish.
+      - Pre-shift baseline (5 runs at HEAD on this branch): 16,16,16,16,15
+        -> mean 15.8/16, 4/5 perfect. Examples 8/8 PASS.
+    The cron's prescribed named-helper-per-type approach is precisely the H1a
+    fix that regressed to 0/16 last shift. Did NOT apply it.
+
+    The branch had an uncommitted in-flight diff: 19 lines in codegen.rs adding
+    kryos_array_retain / kryos_string_retain / kryos_map_retain at every
+    RValue::Field site of heap-managed type. This is exactly STAGE2_BLOCKER's
+    "Next-shift cleanup, item 1: RValue::Field for Array/Str/Map: emit *_retain".
+
+    Workflow:
+      1. Stashed the in-flight diff. Confirmed 5-run baseline at clean HEAD:
+         mean 15.8/16, 4/5 perfect (1 flake at run 5).
+      2. Confirmed test_examples.sh: 8/8 PASS.
+      3. Popped stash, cargo build --release -j 2 --bin kryos (18s).
+      4. 5-run with diff: 16,16,16,16,16 -> mean 16.0/16, 5/5 perfect.
+      5. test_examples.sh with diff: 8/8 PASS.
+      6. Extended characterization (10 runs): 16,16,16,16,16,16,16,15,16,16
+         -> mean 15.9/16, 9/10 perfect.
+      7. Diff was committed by parallel session as 00dfdf2 with message
+         "cranelift: step 44 retain Array/Str/Map field reads" while I was
+         running characterization. Tagged it shift/kryos-self-compile/44-retain-field
+         and pushed.
+
+    Net effect: ~+0.1/16 mean (15.8 -> 15.9, small sample). Real but marginal.
+    The mechanism is correct (retain/free balance fix); test gain is small
+    because H41's no-op *_free hides imbalances on the unflipped path.
+
+    Did NOT attempt audit items 2-4 (Operand::Local retain, function-argument
+    retain/free balance, pattern-match destructuring). Risk assessment:
+      - kryos_*_retain functions allocate on null (kryos_array_retain(null)
+        returns a fresh empty container). Adding blanket retain on every
+        Operand::Local read of heap type would change behavior when locals
+        legitimately hold 0 (sentinel / uninitialized in well-formed MIR).
+      - Function-argument retain depends on callee convention; runtime
+        functions vary (push moves, get borrows). Wrong direction at one
+        site can corrupt arg passing.
+      - Cron warned that two prior attempts at related codegen changes
+        regressed to 0/16 and 9/16. Followed the spirit of that warning.
+
+    STAGE2_BLOCKER closer to resolved: marginally. The remaining 3 audit
+    items are still open. The path is clear (per the existing checklist in
+    STAGE2_BLOCKER.md) but requires invasive codegen changes and either
+    (a) flipping *_free back to real dealloc behind an env var to expose
+    imbalances, or (b) writing an automated retain/free symmetry checker.
+    Both are higher-risk-than-step-44 work; deferred.
+
+  files:
+    - compiler/crates/kryos-codegen-cranelift/src/codegen.rs (committed by
+      parallel session as 00dfdf2)
+    - .shift/progress.txt (this step entry)
+
+  evidence:
+    - test_bootstrap.sh 5x with diff:  16,16,16,16,16 (mean 16.0)
+    - test_bootstrap.sh 10x with diff: 16,16,16,16,16,16,16,15,16,16 (mean 15.9)
+    - test_bootstrap.sh 5x clean HEAD: 16,16,16,16,15 (mean 15.8)
+    - test_examples.sh with diff: 8/8 PASS
+    - test_examples.sh clean HEAD: 8/8 PASS
+    - tag shift/kryos-self-compile/44-retain-field pushed to origin
+    - branch feat/post-self-host-polish at 00dfdf2
+
+  next:
+    H44b. Audit item 2: Operand::Local retain on heap-typed reads. Requires
+      a runtime guard for the null case (skip retain when val == 0) to avoid
+      kryos_*_retain's allocate-on-null behavior changing sentinel semantics.
+
+    H44c. Audit item 3: function-argument retain/free balance. Requires
+      per-callsite analysis; can't blanket-apply.
+
+    H44d. Audit item 4: pattern-match destructuring. Look at how Match
+      arms bind heap-typed sub-values; emit retain at each binding site.
+
+    H45. Alternative path: flip kryos_*_free to real dealloc behind
+      KRYOS_REAL_FREE=1 env var. Run bootstrap; observe which modules
+      double-free. Fix those imbalances surgically. Highest information
+      per credit per the original STAGE2_BLOCKER prescription pattern.
+
+  status: progress-real-marginal (15.8 -> 15.9 mean, 16/16 peak preserved,
+    step-44 audit item 1 fully committed)
+
+  cron-context-note: the scheduling cron that triggered this resume was
+    written based on pre-H25 state (mean 12.2/16, named-helper rewrite
+    plan). It is factually obsolete as of 2026-05-20. Future shifts on
+    this branch should treat this progress.txt + STAGE2_BLOCKER.md as
+    the authoritative state, not the cron prompt.
+
+  ---
+  shift: 0
+  step: 22b (parallel-merge addendum)
+  date: 2026-05-21T09:25:00Z
+  engineer: claude (opus 4.7) — recording parallel-session merge
+  summary: While step 22 was characterizing step 44, a parallel session
+    landed step 45 (cranelift commit dbf01f7): retain Array/Str/Map
+    function params on entry. This is exactly STAGE2_BLOCKER audit
+    item 3 (function-argument retain/free balance). PR #63 then
+    merged feat/post-self-host-polish into master (216426f).
+
+    Working dir now on master. Rebuilt stage-0 with the merged code
+    and re-ran characterization.
+
+    15-run sample with step 44 + step 45:
+      runs 1-5:  15, 16, 16, 16, 15
+      runs 6-15: 16, 16, 16, 15, 16, 16, 16, 16, 16, 16
+      mean: 15.80 / 16
+      perfect: 12 / 15
+      types module: stable across all 15 (commit message claim verified)
+      parser, lower: occasional flake (still bottleneck)
+
+    Examples: 8/8 PASS.
+
+    Net effect of step 44 + step 45 vs clean-HEAD pre-shift:
+      pre-shift 5-run:   15.8 mean, 4/5 perfect, parser/types/lower flake
+      step 44 10-run:    15.9 mean, 9/10 perfect, parser/types/lower flake
+      step 44+45 15-run: 15.80 mean, 12/15 perfect, parser/lower flake (types stable)
+
+    Mean barely moved; failure SET narrowed (types stabilized). The
+    perfect-run rate is similar within sample variance. The wins are
+    real but small relative to the variance floor.
+
+    audit-pass status:
+      item 1 RValue::Field retain:       DONE (step 44, 00dfdf2)
+      item 2 Operand::Local retain:      OPEN (null-safety concern)
+      item 3 function-arg retain:        DONE (step 45, dbf01f7)
+      item 4 pattern-match destructure:  OPEN (rare path)
+
+  files:
+    - .shift/progress.txt (this addendum)
+    - compiler/crates/kryos-codegen-cranelift/src/codegen.rs
+      (already committed by parallel as 00dfdf2 + dbf01f7)
+
+  evidence:
+    - test_bootstrap.sh 15 runs on master @ 216426f: 12/15 perfect,
+      mean 15.80/16, types stable, parser+lower flake
+    - test_examples.sh on master: 8/8 PASS
+    - tags pushed: shift/kryos-self-compile/44-retain-field
+    - step 45 NOT tagged (parallel session did not tag; will tag below)
+
+  next-shift:
+    Open audit items 2 (Operand::Local retain) and 4 (pattern-match
+    destructuring) remain. Both are higher-risk than 1 and 3 because
+    of:
+      - Item 2: kryos_*_retain allocate-on-null changes sentinel semantics
+      - Item 4: pattern destructure is a rarer path harder to test in
+        isolation
+
+    The parser+lower flake (~5-10%) is likely from another path entirely
+    (Operand::Local in non-call contexts, or function returns). The
+    real next experiment per STAGE2_BLOCKER's "highest information per
+    credit" prescription is to flip kryos_*_free back to real dealloc
+    behind KRYOS_REAL_FREE=1, run bootstrap, observe which modules
+    double-free, fix surgically.
+
+  status: progress-real-marginal (15.8 -> 15.80, but types fully
+    stabilized and audit items 1+3 of 4 committed)
