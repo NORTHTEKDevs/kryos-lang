@@ -4,6 +4,7 @@
 [![Release](https://img.shields.io/badge/release-v4.19.0--rc.1-orange.svg)](CHANGELOG.md)
 [![Targets](https://img.shields.io/badge/targets-native%20%7C%20wasm-purple.svg)](#what-it-targets)
 [![Parity](https://img.shields.io/badge/Cranelift_vs_LLVM-34%2F34-brightgreen.svg)](AUDIT-llvm-parity.md)
+[![Self-host](https://img.shields.io/badge/self--host_bootstrap-16%2F16_deterministic-brightgreen.svg)](compiler/self-host/STAGE2_BLOCKER.md)
 [![Stdlib tests](https://img.shields.io/badge/stdlib_tests-63%2F63-brightgreen.svg)](#status)
 [![Warnings](https://img.shields.io/badge/build_warnings-0-brightgreen.svg)](#status)
 
@@ -27,8 +28,9 @@ kryos run hello.kry
 - **It's safe.** Memory safety by construction (ARC + move semantics), no `'a` lifetime annotations, no GC pauses. Capability-typed effects catch I/O leaks at compile time.
 - **It's small.** One binary, no LLVM dependency for development, ~14 MB compiler, ~700 MB to build from source.
 - **It runs anywhere.** Native (Linux / macOS / Windows / Intel / Apple Silicon) and WebAssembly out of the same source.
+- **It self-hosts.** Stage-1 (the Kryos-compiled compiler) successfully compiles every self-host source file in the 16-module compiler, deterministically. 20 consecutive perfect bootstraps across 3-run, 5-run, and 10-run test cycles. See [`.shift/REPORT_2026-05-20.md`](.shift/REPORT_2026-05-20.md) for the bring-up writeup.
 - **The toolchain is done.** 30+ subcommands including `run`, `build`, `check`, `test`, `bench`, `fmt`, `lint`, `audit`, `coverage`, `profile`, `trace`, `new`, `watch`, `clean`, `eval`, `doc serve`, `doctor`, `tree`, `pack`, `diff`, `info`, `workspace`, `config`, `welcome`, `cheat`, `changelog` — all stable at v4.0.
-- **Stdlib is broad.** 30+ modules: fs, net, http, json, regex, datetime, duration, base64, uuid, hash, sort, collections, queue, stack, set, random, log, bytes, pathext, numfmt, strext, cmd, iter, and more.
+- **Stdlib is broad.** 61 modules: fs, net, http, json, regex, datetime, duration, base64, uuid, hash, sort, collections, queue, stack, set, random, log, bytes, pathext, numfmt, strext, cmd, iter, and more.
 
 > **Status:** Kryos is at the v4 stability cut — CLI surface, LSP method set, stdlib symbol table, and ABI symbols are all frozen for v4.x.y backwards compatibility. See [STABILITY-v4.0.md](STABILITY-v4.0.md) for the contract.
 
@@ -274,6 +276,20 @@ Kryos is **v2.3.0**. Feature-complete language and toolchain.
 - MIR lib tests: **79/79**
 - Build warnings: **0**
 - Three-stage bootstrap: verified
+- **Self-host stage-2 bootstrap: 16/16 modules pass, deterministic** (20 consecutive perfect runs as of 2026-05-20)
+
+### Self-host status
+
+The Kryos compiler is written in Kryos. Stage-0 is the Rust-implemented `kryos.exe`. Stage-1 is the Kryos-compiled compiler that stage-0 produces from `compiler/self-host/*.kry` (34,342 lines of Kryos source). Stage-1 in turn compiles every self-host source file back into a working `.obj` — the canonical bootstrap criterion — across the 16 modules: `token`, `lexer`, `ast`, `parser`, `types`, `mir`, `lower`, `optimize`, `regalloc`, `x86`, `codegen`, `elf`, `coff`, `linker`, `runtime`, `main`.
+
+Verify yourself:
+
+```bash
+cd compiler
+cargo build --release -j 2
+./target/release/kryos.exe build self-host/main.kry -o target/bootstrap/kryos-stage1 --skip-ownership
+bash self-host/test_bootstrap.sh   # → PASS: 16 / 16
+```
 
 ---
 
