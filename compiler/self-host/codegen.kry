@@ -604,8 +604,14 @@ fn cg_emit_binop(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32)
     let buf = ctx.text_buf
     let op = rv.op
 
-    // Load left into dest_reg, right into R11
-    let left_reg = dest_reg
+    // Load left into R10 and right into R11 (both scratch). Previously
+    // left went into `dest_reg` directly, which caused a corruption
+    // bug: if another live local (notably the right operand) happened
+    // to be allocated to `dest_reg`, the `mov left_reg, src` for the
+    // left operand would overwrite the right operand BEFORE its load.
+    // Using scratch registers and moving the result to `dest_reg` at
+    // the end keeps the operands independent.
+    let left_reg = REG_R10
     if len(rv.left) > 0 {
         let lr = cg_load_operand(ctx, ra, rv.left[0], left_reg)
         if lr != left_reg {
@@ -620,12 +626,21 @@ fn cg_emit_binop(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32)
         }
     }
 
+    // For arith / bitwise / shift ops the result accumulates in
+    // `left_reg`. Since we now use R10 as the scratch left_reg, we
+    // must MOV the result into `dest_reg` at the end. Comparison and
+    // logical AND/OR write `dest_reg` directly, so no extra move
+    // there. DIV/MOD already MOV explicitly.
+    let mut needs_result_mov: bool = false
     if op == MIR_ADD {
         x86_add_reg_reg(buf, left_reg, right_reg)
+        needs_result_mov = true
     } elif op == MIR_SUB {
         x86_sub_reg_reg(buf, left_reg, right_reg)
+        needs_result_mov = true
     } elif op == MIR_MUL {
         x86_imul_reg_reg(buf, left_reg, right_reg)
+        needs_result_mov = true
     } elif op == MIR_DIV {
         // IDIV: RAX / src -> RAX (quotient), RDX (remainder)
         if left_reg != REG_RAX {
@@ -648,21 +663,26 @@ fn cg_emit_binop(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32)
         }
     } elif op == MIR_BIT_AND {
         x86_and_reg_reg(buf, left_reg, right_reg)
+        needs_result_mov = true
     } elif op == MIR_BIT_OR {
         x86_or_reg_reg(buf, left_reg, right_reg)
+        needs_result_mov = true
     } elif op == MIR_BIT_XOR {
         x86_xor_reg_reg(buf, left_reg, right_reg)
+        needs_result_mov = true
     } elif op == MIR_SHL {
         // SHL needs shift count in CL
         if right_reg != REG_RCX {
             x86_mov_reg_reg(buf, REG_RCX, right_reg)
         }
         x86_shl_reg_cl(buf, left_reg)
+        needs_result_mov = true
     } elif op == MIR_SHR {
         if right_reg != REG_RCX {
             x86_mov_reg_reg(buf, REG_RCX, right_reg)
         }
         x86_sar_reg_cl(buf, left_reg)
+        needs_result_mov = true
     } elif op == MIR_AND {
         // Logical AND: both nonzero -> 1
         x86_test_reg_reg(buf, left_reg, left_reg)
@@ -683,6 +703,12 @@ fn cg_emit_binop(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32)
         let cc = mir_binop_to_cc(op)
         x86_setcc(buf, cc, dest_reg)
         x86_movzx_r64_r8(buf, dest_reg, dest_reg)
+    }
+
+    if needs_result_mov {
+        if dest_reg != left_reg {
+            x86_mov_reg_reg(buf, dest_reg, left_reg)
+        }
     }
 }
 

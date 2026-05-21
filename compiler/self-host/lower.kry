@@ -1014,10 +1014,29 @@ fn lower_method_call(ctx: LowerCtx, e: Expr) -> Operand {
 
     let receiver_op = lower_expr(ctx, e.left[0])
 
-    let mut call_args: [Operand] = [receiver_op]
+    // Deep-clone each operand before push (see lower_fn_call comment).
+    let receiver_clone = Operand {
+        is_local: receiver_op.is_local,
+        local_id: receiver_op.local_id,
+        const_kind: receiver_op.const_kind,
+        int_val: receiver_op.int_val,
+        float_val: receiver_op.float_val,
+        bool_val: receiver_op.bool_val,
+        str_val: receiver_op.str_val
+    }
+    let mut call_args: [Operand] = [receiver_clone]
     for i in range(0, len(e.args)) {
         let arg_op = lower_expr(ctx, e.args[i])
-        push(call_args, arg_op)
+        let cloned = Operand {
+            is_local: arg_op.is_local,
+            local_id: arg_op.local_id,
+            const_kind: arg_op.const_kind,
+            int_val: arg_op.int_val,
+            float_val: arg_op.float_val,
+            bool_val: arg_op.bool_val,
+            str_val: arg_op.str_val
+        }
+        push(call_args, cloned)
     }
 
     let method_name = e.name
@@ -1518,10 +1537,29 @@ fn lower_pipe_expr(ctx: LowerCtx, e: Expr) -> Operand {
         if callee.kind == EXPR_IDENT {
             let fn_name = callee.name
             let runtime_name = builtin_runtime_name(fn_name)
-            let mut call_args: [Operand] = [input]
+            // Deep-clone each operand before push (see lower_fn_call comment).
+            let input_clone = Operand {
+                is_local: input.is_local,
+                local_id: input.local_id,
+                const_kind: input.const_kind,
+                int_val: input.int_val,
+                float_val: input.float_val,
+                bool_val: input.bool_val,
+                str_val: input.str_val
+            }
+            let mut call_args: [Operand] = [input_clone]
             for i in range(0, len(rhs.args)) {
                 let arg_op = lower_expr(ctx, rhs.args[i])
-                push(call_args, arg_op)
+                let cloned = Operand {
+                    is_local: arg_op.is_local,
+                    local_id: arg_op.local_id,
+                    const_kind: arg_op.const_kind,
+                    int_val: arg_op.int_val,
+                    float_val: arg_op.float_val,
+                    bool_val: arg_op.bool_val,
+                    str_val: arg_op.str_val
+                }
+                push(call_args, cloned)
             }
             let t = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
             ctx_emit(ctx, inst_assign(t, rv_call(runtime_name, call_args)))
