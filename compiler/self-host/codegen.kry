@@ -329,24 +329,71 @@ fn cg_load_operand(ctx: CodegenCtx, ra: RegAllocResult, op: Operand, target_reg:
         }
         return target_reg
     } elif op.const_kind == RV_CONST_STRING {
-        // Load address of string in .rodata
+        // Strings are KryosString HANDLES, not raw byte pointers. Stage-0's
+        // codegen.rs:5147 turns `"hello"` into a runtime call
+        //   kryos_string_new(rodata_ptr, len) -> KryosString*
+        // so every str value passed to kryos_println_str / kryos_str_concat
+        // / etc. is a proper handle whose first 8 bytes are the length.
+        //
+        // We do the same here:
+        //   1. LEA arg0_reg, [rodata]   ; arg-0 = rodata pointer
+        //   2. MOV arg1_reg, str_len    ; arg-1 = byte length
+        //   3. SUB rsp, shadow_bytes    ; Win64 shadow space
+        //   4. CALL kryos_string_new    ; with external reloc
+        //   5. ADD rsp, shadow_bytes
+        //   6. MOV target_reg, rax      ; if target != rax
+        //
+        // Without this, every string literal becomes a raw byte pointer
+        // that kryos_println_str misinterprets as a KryosString*, reads
+        // bogus `len` from the first 8 ASCII bytes, and silently no-ops.
+        // That is exactly why stage-2 used to link, run, and print nothing.
         let str_off = cg_intern_string(ctx, op.str_val)
-        // We need a relocation for this — emit a mov with placeholder
-        // For now: lea target_reg, [rip + disp32]  with relocation
-        // We'll use a symbol-based approach
+        let str_len = len(op.str_val)
+
+        let arg0_reg = cg_arg_reg_for(ctx.target_os, 0)
+        let arg1_reg = cg_arg_reg_for(ctx.target_os, 1)
+
+        // 1. LEA arg0_reg, [rip + rodata + str_off]
         push(ctx.relocations, LinkerReloc {
-            offset: buf_len(buf) + 3,  // after REX + opcode + modrm
+            offset: buf_len(buf) + 3,
             symbol_name: "__rodata_base",
             rel_type: LREL_PC32,
             addend: str_off - 4
         })
-        // LEA target_reg, [rip+disp32]
-        // REX.W + 0x8D + ModR/M(0b00, reg, 0b101) + disp32
-        let rex = x86_rex(1, x86_reg_rex_bit(target_reg), 0, 0)
+        let rex = x86_rex(1, x86_reg_rex_bit(arg0_reg), 0, 0)
         buf_write_byte(buf, rex)
         buf_write_byte(buf, 0x8D)
-        buf_write_byte(buf, x86_modrm(0, x86_reg_lo3(target_reg), 5))
-        buf_write_i32_le(buf, 0)  // placeholder, patched by linker
+        buf_write_byte(buf, x86_modrm(0, x86_reg_lo3(arg0_reg), 5))
+        buf_write_i32_le(buf, 0)
+
+        // 2. MOV arg1_reg, str_len  (32-bit immediate, zero-extended)
+        x86_mov_reg_imm32(buf, arg1_reg, str_len)
+
+        // 3. SUB rsp, 32 on Win64 (shadow space)
+        let is_win = ctx.target_os == "windows"
+        let shadow_bytes: i32 = if is_win { 32 } else { 0 }
+        if shadow_bytes > 0 {
+            x86_sub_reg_imm32(buf, REG_RSP, shadow_bytes)
+        }
+
+        // 4. CALL kryos_string_new with external relocation
+        push(ctx.relocations, LinkerReloc {
+            offset: buf_len(buf) + 1,
+            symbol_name: "kryos_string_new",
+            rel_type: LREL_PC32,
+            addend: -4
+        })
+        x86_call_rel32(buf, 0)
+
+        // 5. ADD rsp, shadow_bytes
+        if shadow_bytes > 0 {
+            x86_add_reg_imm32(buf, REG_RSP, shadow_bytes)
+        }
+
+        // 6. MOV target_reg, rax  (handle is in rax; move if different)
+        if target_reg != REG_RAX {
+            x86_mov_reg_reg(buf, target_reg, REG_RAX)
+        }
         return target_reg
     } elif op.const_kind == RV_CONST_FLOAT {
         // Store float in .rodata and load via memory
@@ -413,18 +460,56 @@ fn cg_emit_rvalue(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32
         }
 
     } elif rv.kind == RV_CONST_STRING {
+        // Mirror the string ABI from cg_load_operand's RV_CONST_STRING
+        // branch: emit LEA + kryos_string_new(ptr, len) -> handle. See
+        // the longer comment there for why this is necessary.
         let str_off = cg_intern_string(ctx, rv.str_val)
+        let str_len = len(rv.str_val)
+
+        let arg0_reg = cg_arg_reg_for(ctx.target_os, 0)
+        let arg1_reg = cg_arg_reg_for(ctx.target_os, 1)
+
+        // 1. LEA arg0_reg, [__rodata_base + str_off]
         push(ctx.relocations, LinkerReloc {
             offset: buf_len(buf) + 3,
             symbol_name: "__rodata_base",
             rel_type: LREL_PC32,
             addend: str_off - 4
         })
-        let rex = x86_rex(1, x86_reg_rex_bit(dest_reg), 0, 0)
+        let rex = x86_rex(1, x86_reg_rex_bit(arg0_reg), 0, 0)
         buf_write_byte(buf, rex)
         buf_write_byte(buf, 0x8D)
-        buf_write_byte(buf, x86_modrm(0, x86_reg_lo3(dest_reg), 5))
+        buf_write_byte(buf, x86_modrm(0, x86_reg_lo3(arg0_reg), 5))
         buf_write_i32_le(buf, 0)
+
+        // 2. MOV arg1_reg, str_len
+        x86_mov_reg_imm32(buf, arg1_reg, str_len)
+
+        // 3. SUB rsp, 32 on Win64 (shadow space)
+        let is_win = ctx.target_os == "windows"
+        let shadow_bytes: i32 = if is_win { 32 } else { 0 }
+        if shadow_bytes > 0 {
+            x86_sub_reg_imm32(buf, REG_RSP, shadow_bytes)
+        }
+
+        // 4. CALL kryos_string_new
+        push(ctx.relocations, LinkerReloc {
+            offset: buf_len(buf) + 1,
+            symbol_name: "kryos_string_new",
+            rel_type: LREL_PC32,
+            addend: -4
+        })
+        x86_call_rel32(buf, 0)
+
+        // 5. ADD rsp, shadow_bytes
+        if shadow_bytes > 0 {
+            x86_add_reg_imm32(buf, REG_RSP, shadow_bytes)
+        }
+
+        // 6. MOV dest_reg, rax  (handle is in rax)
+        if dest_reg != REG_RAX {
+            x86_mov_reg_reg(buf, dest_reg, REG_RAX)
+        }
 
     } elif rv.kind == RV_CONST_FLOAT {
         // Float constants — load from .rodata

@@ -5,8 +5,13 @@ REM Usage: kryos-build.bat input.kry [output.exe]
 REM
 REM Requires:
 REM   - kryos-stage1.exe on PATH (or in ..\target\bootstrap\)
-REM   - kryos_runtime.lib in this directory
+REM   - kryos_rt.lib + kryos_stdlib_native.lib in ..\target\release\
 REM   - MSVC Build Tools (vcvars64.bat)
+REM
+REM Stage-1 now uses the same KryosString ABI as stage-0, so we link
+REM against the full Rust runtime (kryos_rt + kryos_stdlib_native) rather
+REM than the legacy minimal C runtime (kryos_runtime.lib). This unifies
+REM stage-0 / stage-1 / stage-2 onto a single runtime.
 
 setlocal enabledelayedexpansion
 
@@ -44,9 +49,12 @@ if errorlevel 1 exit /b 1
 
 echo [2/2] msvc-link: %OBJ% -^> %OUTPUT%
 call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >NUL
-link.exe /NOLOGO /SUBSYSTEM:CONSOLE /ENTRY:mainCRTStartup /OUT:"%OUTPUT%" "%OBJ%" ^
-    "%HERE%kryos_runtime.lib" ^
-    kernel32.lib
+link.exe /NOLOGO /SUBSYSTEM:CONSOLE /ENTRY:mainCRTStartup /OUT:"%OUTPUT%" /Brepro "%OBJ%" ^
+    "%HERE%..\target\release\kryos_rt.lib" ^
+    "%HERE%..\target\release\kryos_stdlib_native.lib" ^
+    /NODEFAULTLIB:libcmt.lib msvcrt.lib vcruntime.lib ucrt.lib ^
+    legacy_stdio_definitions.lib kernel32.lib ws2_32.lib advapi32.lib ^
+    userenv.lib bcrypt.lib ntdll.lib user32.lib
 if errorlevel 1 exit /b 1
 
 echo done: %OUTPUT%
