@@ -1,0 +1,14 @@
+// Test: continue inside if inside while, with brace-in-string
+fn first() { println("first") }
+
+fn problematic() {
+    let mut text = ""
+    while text != "x" {
+        if text == "{" {
+            continue
+        }
+        text = "y"
+    }
+}
+
+fn last() { println("last") }

@@ -1,0 +1,40 @@
+struct Lexer { src: str, pos: i32 }
+fn lex_peek(lex: Lexer) -> str { return "x" }
+fn lex_advance(lex: Lexer) -> Lexer { return lex }
+fn lex_at_end(lex: Lexer) -> bool { return false }
+fn lex_emit(lex: Lexer, kind: i32, start: i32, end: i32, text: str) -> Lexer { return lex }
+let CHR_LBRACE = "{"
+let CHR_RBRACE = "}"
+let TK_STRING = 1
+
+fn first_marker() { println("first") }
+
+fn lex_scan_string(lex: Lexer, start: i32) -> Lexer {
+    let mut l = lex
+    let mut text = ""
+
+    while not lex_at_end(l) and lex_peek(l) != "\"" {
+        // Inner block with closing brace early-exit followed by continue
+        if lex_peek(l) == CHR_LBRACE {
+            l = lex_advance(l)
+            continue
+        }
+        if lex_peek(l) == "\\" {
+            l = lex_advance(l)
+            continue
+        }
+        text = text + lex_peek(l)
+        l = lex_advance(l)
+    }
+
+    return l
+}
+
+fn lex_scan_char(lex: Lexer) -> Lexer { return lex }
+
+fn last_marker() { println("last") }
+
+fn main() {
+    first_marker()
+    last_marker()
+}

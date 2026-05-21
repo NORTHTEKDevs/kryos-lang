@@ -1,0 +1,60 @@
+// Exact copy of lex_scan_char from lexer.kry (with surrounding stub types).
+
+struct Lexer {
+    src: str,
+    pos: i32
+}
+
+fn lex_peek(lex: Lexer) -> str { return "x" }
+fn lex_advance(lex: Lexer) -> Lexer { return lex }
+fn lex_at_end(lex: Lexer) -> bool { return false }
+fn lex_emit(lex: Lexer, kind: i32, start: i32, end: i32, text: str) -> Lexer { return lex }
+let TK_CHAR = 1
+
+fn first_marker() { println("first") }
+
+// -------------------------------------------------------------------
+// Scan character literal
+// -------------------------------------------------------------------
+
+fn lex_scan_char(lex: Lexer, start: i32) -> Lexer {
+    // Called after the opening ' has already been consumed.
+    let mut l = lex
+    let mut ch = ""
+    if lex_peek(l) == "\\" {
+        l = lex_advance(l) // skip backslash
+        let esc = lex_peek(l)
+        l = lex_advance(l)
+        if esc == "n" {
+            ch = "\n"
+        } elif esc == "t" {
+            ch = "\t"
+        } elif esc == "r" {
+            ch = "\r"
+        } elif esc == "\\" {
+            ch = "\\"
+        } elif esc == "'" {
+            ch = "'"
+        } elif esc == "0" {
+            ch = "\0"
+        } else {
+            ch = esc
+        }
+    } else {
+        ch = lex_peek(l)
+        l = lex_advance(l)
+    }
+    // Consume closing '
+    if not lex_at_end(l) and lex_peek(l) == "'" {
+        l = lex_advance(l)
+    }
+    l = lex_emit(l, TK_CHAR, start, l.pos, ch)
+    return l
+}
+
+fn last_marker() { println("last") }
+
+fn main() {
+    first_marker()
+    last_marker()
+}

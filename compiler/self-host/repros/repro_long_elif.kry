@@ -1,0 +1,28 @@
+// Mimics the elif chain in lex_scan_char (lines 281-295 of lexer.kry).
+fn first_fn() { println("a") }
+
+fn check(esc: str) -> str {
+    if esc == "n" {
+        return "\n"
+    } elif esc == "t" {
+        return "\t"
+    } elif esc == "r" {
+        return "\r"
+    } elif esc == "\\" {
+        return "\\"
+    } elif esc == "'" {
+        return "'"
+    } elif esc == "0" {
+        return "\0"
+    } else {
+        return esc
+    }
+}
+
+fn last_fn() { println("z") }
+
+fn main() {
+    first_fn()
+    println(check("n"))
+    last_fn()
+}

@@ -1,0 +1,18 @@
+fn first_fn() {
+    println("a")
+}
+
+fn second_fn() {
+    let x: str = "\0"
+    println(x)
+}
+
+fn third_fn() {
+    println("c")
+}
+
+fn main() {
+    first_fn()
+    second_fn()
+    third_fn()
+}
