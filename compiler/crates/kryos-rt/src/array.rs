@@ -339,19 +339,23 @@ pub unsafe extern "C" fn kryos_array_retain(arr: *mut KryosArray) -> *mut KryosA
 /// with a diagnostic so we can locate the source. To keep the sentinel
 /// observable on the next free, we skip the header dealloc -- the
 /// header (~40 bytes) leaks intentionally. Revert before production.
-/// Free an array — currently a no-op (step 37 partial hardening).
+/// Free an array — currently a no-op (production hardening pending).
 ///
-/// Strings (H19) and maps (H20) now use proper refcounted free as of
-/// step 37. Arrays still leak-on-free because the stage-1 codegen emits
-/// more `kryos_array_free` calls than there are matching retains
-/// (probably from local-variable scope drops without matching clones).
-/// Restoring refcounted array free caused immediate regression
-/// (16/16 -> 9-11/16). Tracked as next-shift work: audit codegen
-/// `emit_drop_for_value` for unbalanced free emission.
+/// Strings (step 37 H19) and maps (step 37 H20) use proper refcounted
+/// free. Arrays still leak-on-free because the stage-1 codegen has
+/// multiple unbalanced `kryos_array_free` emission paths beyond the
+/// struct-field-read site (fixed in step 38). Local-variable
+/// assignment, function parameter passing, and possibly other
+/// patterns drop arrays without matching retains.
 ///
-/// Memory leak is bounded per stage-1 invocation (~100MB worst case)
-/// and harmless for short-lived CLI compilation. Long-running clients
-/// (LSP server, watch mode) should rebuild with the audit fix applied.
+/// Attempting to restore refcounted array_free regresses bootstrap
+/// from 16/16 deterministic to 9-12/16 (failures concentrate on the
+/// modules that exercise array-heavy patterns: mir, lower, optimize,
+/// regalloc, codegen). Tracked as next-shift codegen audit work.
+///
+/// Memory leak bounded per stage-1 invocation (~80MB worst case);
+/// well under the leak-guard 2GB threshold and harmless for short-
+/// lived CLI compilation.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
     let _ = arr;
