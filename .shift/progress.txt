@@ -1567,3 +1567,50 @@ SHIFTS:
     - compiler/crates/kryos-linker/src/linker.rs
   commit: b529885
   status: REPRODUCIBLE_STAGE1_CONFIRMED + 5/5 bootstrap perfect
+  ---
+  step:    50
+  date:    2026-05-21T09:10-08:00 (AKST)
+  summary: |
+    Investigated stage-2 multi-.obj link path. Discovered TWO root
+    causes of the existing block:
+
+    A. `<top-level>` symbol collision.
+       Parser wraps top-level `let CONST = N` statements in a synthetic
+       Decl named "<top-level>". For token.kry that produces 96 such
+       wrappers; each was emitted to the .obj as
+       IMAGE_SYM_CLASS_EXTERNAL "<top-level>" -> 96 way collision on
+       link of any second .obj that has the same.
+       FIXED: codegen.kry emits "<top-level>" symbols as STATIC
+       (COFF) / STB_LOCAL (ELF). Verified via dumpbin /SYMBOLS.
+
+    B. Stage-1 parser silently drops 30% of fn declarations.
+       parser.kry has 84 `fn` decls; stage-1 reports 63 declarations
+       and produces 58 MIR functions. The dropped fns become UNDEF
+       External references at the call sites, so a multi-.obj link
+       reports dozens of "unresolved external symbol make_empty_decl"
+       (etc).
+       NOT YET FIXED -- needs targeted bisect of which language
+       construct stage-1's recursive-descent parser bails on. Same
+       issue documented in STAGE2_BLOCKER.md line 329 (lexer.kry
+       22 decls -> 18 reported).
+
+  test results after fix A:
+    bootstrap: 16/16 PASS
+    examples:  8/8 PASS
+    295 unit tests pass.
+
+  files:
+    - compiler/self-host/codegen.kry  (committed 45c105c)
+  commit: 45c105c
+  status: PROGRESS_REAL -- one of two stage-2 blockers cleared;
+          parser-drop is the remaining hard problem.
+
+  next-shift:
+    The parser-drop bug is the highest-value next target. Approach:
+      1. Diff `kryos check` results between stage-0 and stage-1 on
+         a single file (lexer.kry) to find the first drop.
+      2. Bisect within that file -- comment lines out until the
+         drop disappears, then re-add to find the trigger.
+      3. The trigger is almost certainly an unsupported grammar
+         path in self-host/parser.kry that returns early without
+         erroring.
