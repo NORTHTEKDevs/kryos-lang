@@ -262,11 +262,14 @@ pub unsafe extern "C" fn kryos_pg_close(handle: i64) -> i64 {
 // KryosString-handle wrappers (_ks) used by the JIT / AOT compiler
 // ---------------------------------------------------------------------------
 
+// Layout MUST match kryos_rt::string::KryosString (32 bytes; ref_count
+// added step 37). Local duplicate; consider unifying via shared crate.
 #[repr(C)]
 struct KryosString {
     len: i64,
     cap: i64,
     data: *mut u8,
+    ref_count: i64,
 }
 
 unsafe fn handle_to_bytes(handle: i64) -> (*const u8, usize) {

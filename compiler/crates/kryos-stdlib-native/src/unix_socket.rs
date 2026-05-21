@@ -141,8 +141,10 @@ pub use imp::*;
 
 // ---- KryosString-handle wrappers (the `_ks` ABI used by codegen) -------------
 
+// Layout MUST match kryos_rt::string::KryosString (32 bytes; ref_count
+// added step 37). Local duplicate; consider unifying via shared crate.
 #[repr(C)]
-struct KryosString { len: i64, cap: i64, data: *mut u8 }
+struct KryosString { len: i64, cap: i64, data: *mut u8, ref_count: i64 }
 
 unsafe fn handle_to_bytes(handle: i64) -> (*const u8, usize) {
     if handle == 0 {
@@ -159,6 +161,7 @@ fn vec_to_handle(v: Vec<u8>) -> i64 {
         len,
         cap,
         data: Box::into_raw(v.into_boxed_slice()) as *mut u8,
+        ref_count: 1,
     });
     Box::into_raw(boxed) as i64
 }

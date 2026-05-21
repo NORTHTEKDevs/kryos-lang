@@ -216,11 +216,14 @@ pub extern "C" fn kryos_socket_close(fd: i64) -> i32 {
 // Kryos represents strings as i64 handles pointing to KryosString structs.
 // These wrappers accept i64 handles and delegate to the raw-pointer functions above.
 
+// Layout MUST match kryos_rt::string::KryosString (32 bytes; ref_count
+// added step 37). Local duplicate; consider unifying via shared crate.
 #[repr(C)]
 struct KryosString {
     len: i64,
     cap: i64,
     data: *mut u8,
+    ref_count: i64,
 }
 
 unsafe fn handle_to_bytes(handle: i64) -> (*const u8, usize) {
@@ -279,6 +282,7 @@ pub extern "C" fn kryos_tcp_recv_ks(fd: i64, max_bytes: i64) -> i64 {
         len: n as i64,
         cap: n as i64,
         data: Box::into_raw(data.into_boxed_slice()) as *mut u8,
+        ref_count: 1,
     });
     Box::into_raw(boxed) as i64
 }
@@ -398,6 +402,7 @@ pub extern "C" fn kryos_tcp_try_recv_ks(fd: i64, max_bytes: i64) -> i64 {
         len: n as i64,
         cap: n as i64,
         data: Box::into_raw(data.into_boxed_slice()) as *mut u8,
+        ref_count: 1,
     });
     Box::into_raw(boxed) as i64
 }
@@ -408,6 +413,7 @@ fn empty_string_handle() -> i64 {
         len: 0,
         cap: 0,
         data: Box::into_raw(v.into_boxed_slice()) as *mut u8,
+        ref_count: 1,
     });
     Box::into_raw(boxed) as i64
 }

@@ -256,11 +256,14 @@ pub unsafe extern "C" fn kryos_tls_server_config(
 
 /// Kryos-string-handle wrapper for `tls_server_config`.
 /// Takes string handles for cert_path and key_path.
+// Layout MUST match kryos_rt::string::KryosString (32 bytes; ref_count
+// added step 37). Local duplicate; consider unifying via shared crate.
 #[repr(C)]
 struct KryosString {
     len: i64,
     cap: i64,
     data: *mut u8,
+    ref_count: i64,
 }
 
 unsafe fn handle_to_bytes_tls(handle: i64) -> (*const u8, usize) {
@@ -347,6 +350,7 @@ pub unsafe extern "C" fn kryos_tls_recv_ks(fd: i64, max_bytes: i64) -> i64 {
         len: n as i64,
         cap: n as i64,
         data: Box::into_raw(data.into_boxed_slice()) as *mut u8,
+        ref_count: 1,
     });
     Box::into_raw(boxed) as i64
 }

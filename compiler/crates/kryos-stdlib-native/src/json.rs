@@ -12,11 +12,16 @@ use std::collections::HashMap;
 use std::ptr;
 use std::sync::{atomic::AtomicI64, Mutex};
 
+// Layout MUST match kryos_rt::string::KryosString exactly. The ref_count
+// field was added in shift step 37 production hardening. Keeping these
+// in sync via a local duplicate is fragile; long-term these should be
+// removed in favor of a shared `kryos-runtime-abi` crate.
 #[repr(C)]
 struct KryosString {
     len: i64,
     cap: i64,
     data: *mut u8,
+    ref_count: i64,
 }
 
 #[repr(C)]
@@ -121,6 +126,7 @@ fn string_to_ks(s: &str) -> i64 {
         (*ks).len = len;
         (*ks).cap = cap;
         (*ks).data = data;
+        (*ks).ref_count = 1;
         ks as i64
     }
 }

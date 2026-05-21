@@ -116,6 +116,7 @@ pub unsafe extern "C" fn kryos_string_concat(
     (*s).len = total as i64;
     (*s).cap = total as i64;
     (*s).data = data;
+    (*s).ref_count = 1;
     s
 }
 
@@ -281,15 +282,30 @@ pub unsafe extern "C" fn kryos_string_retain(s: *mut KryosString) -> *mut KryosS
     s
 }
 
-/// `kryos_string_free` is a pure no-op. The codegen has additional
-/// unbalanced `*_free` emission paths for strings beyond the steps
-/// 44 + 45 audit (probably specific to string-concat result handling).
-/// Restoring real dealloc here regresses the bootstrap from 16/16 to
-/// ~15.6/16 with 3+ flaky modules. Leaving as no-op until that
-/// follow-up audit lands. Arrays use real refcounted free (step 46).
+/// Step 46b: refcounted free. Pairs with the ref_count init fix in
+/// kryos_string_concat (constructor wasn't setting ref_count = 1 to
+/// the new struct, leaving garbage that triggered spurious dealloc).
 #[no_mangle]
 pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {
-    let _ = s;
+    if s.is_null() {
+        return;
+    }
+    let rc = (*s).ref_count;
+    if rc <= 0 {
+        return;
+    }
+    let new_rc = rc - 1;
+    (*s).ref_count = new_rc;
+    if new_rc > 0 {
+        return;
+    }
+    let cap = (*s).cap as usize;
+    if !(*s).data.is_null() && cap > 0 {
+        dealloc((*s).data, KryosString::layout(cap));
+    }
+    (*s).data = ptr::null_mut();
+    (*s).cap = 0;
+    (*s).len = 0;
 }
 
 // ---------------------------------------------------------------------------
