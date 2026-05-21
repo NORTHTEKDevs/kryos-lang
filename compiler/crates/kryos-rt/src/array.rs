@@ -361,18 +361,38 @@ pub unsafe extern "C" fn kryos_array_retain(arr: *mut KryosArray) -> *mut KryosA
 /// codegen to emit retain at every array pointer copy. That's tracked
 /// as separate next-shift work; this forgiving model unblocks
 /// near-production memory hygiene without the audit.
+/// Step 46: refcounted free with sentinel-after-free.
+///
+/// Now that the codegen audit has matched retains for every clone /
+/// field-read / param-entry path (steps 44 + 45), the refcount should
+/// balance. Free decrements; at 0 the data is deallocated.
+///
+/// Sentinel safety: after dealloc we mark the header data=null, cap=0,
+/// len=0, ref_count=-1, and leak the header so any over-free call
+/// observes the sentinel and no-ops instead of touching freed memory.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
-    // H41 pure no-op for maximum bootstrap reliability. The refcount
-    // dance (read+decrement+check+conditional dealloc) introduces a
-    // small chance of heap-state-sensitive crashes during stage-1's
-    // tokenize hot path. Pure no-op removes those reads entirely.
-    //
-    // Retain still increments ref_count, but since free never reads it,
-    // the counter is purely informational. To restore actual dealloc
-    // after the codegen retain-emission audit, replace this body with
-    // a real refcount-decrement-then-dealloc.
-    let _ = arr;
+    if arr.is_null() {
+        return;
+    }
+    let rc = (*arr).ref_count;
+    if rc <= 0 {
+        return; // already freed (sentinel)
+    }
+    let new_rc = rc - 1;
+    (*arr).ref_count = new_rc;
+    if new_rc > 0 {
+        return;
+    }
+    // Last reference — deallocate the data buffer; mark header freed.
+    let cap = (*arr).cap as usize;
+    if !(*arr).data.is_null() && cap > 0 {
+        dealloc((*arr).data, KryosArray::data_layout(cap));
+    }
+    (*arr).data = ptr::null_mut();
+    (*arr).cap = 0;
+    (*arr).len = 0;
+    // ref_count is now 0; leak the header so over-free sees sentinel.
 }
 
 // ---------------------------------------------------------------------------

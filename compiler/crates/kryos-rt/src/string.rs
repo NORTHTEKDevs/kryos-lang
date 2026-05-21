@@ -281,11 +281,12 @@ pub unsafe extern "C" fn kryos_string_retain(s: *mut KryosString) -> *mut KryosS
     s
 }
 
-/// Free a KryosString — H41 pure no-op for maximum reliability.
-///
-/// Matches kryos_array_free policy. Refcount infrastructure remains
-/// in kryos_string_clone / kryos_string_retain so the codegen audit
-/// can later restore decrement-and-dealloc without ABI changes.
+/// `kryos_string_free` is a pure no-op. The codegen has additional
+/// unbalanced `*_free` emission paths for strings beyond the steps
+/// 44 + 45 audit (probably specific to string-concat result handling).
+/// Restoring real dealloc here regresses the bootstrap from 16/16 to
+/// ~15.6/16 with 3+ flaky modules. Leaving as no-op until that
+/// follow-up audit lands. Arrays use real refcounted free (step 46).
 #[no_mangle]
 pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {
     let _ = s;
