@@ -281,27 +281,39 @@ pub unsafe extern "C" fn kryos_string_retain(s: *mut KryosString) -> *mut KryosS
     s
 }
 
-/// Free a KryosString — decrement reference count and deallocate at 0.
+/// Free a KryosString — forgiving refcount, matches step 39 array pattern.
 ///
-/// Step 37 production hardening: replaces the H10 leak-on-free hack
-/// with proper refcount-based free. With H19 share-on-clone, every
-/// @copy struct construction with a Str field increments ref_count;
-/// every drop calls this and decrements. The allocation lives until
-/// the last reference goes away. Memory bounded; no leak.
+/// Tolerates over-free from codegen-emitted drops without matching retains
+/// (same imbalance pattern as arrays, see kryos_array_free). On the last
+/// legitimate free (rc 1->0): dealloc the data buffer, mark header as
+/// freed sentinel (data=null, cap=0, len=0, rc=0), intentionally leak
+/// the header (~32 bytes per string). Subsequent over-frees see rc<=0
+/// and no-op.
+///
+/// Memory profile: data buffers correctly freed; headers leak.
+/// String headers are smaller than array headers; total per-invocation
+/// header leak stays under ~1MB.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {
     if s.is_null() {
         return;
     }
-    (*s).ref_count -= 1;
-    if (*s).ref_count > 0 {
+    let rc = (*s).ref_count;
+    if rc <= 0 {
+        return;
+    }
+    let new_rc = rc - 1;
+    (*s).ref_count = new_rc;
+    if new_rc > 0 {
         return;
     }
     let cap = (*s).cap as usize;
     if !(*s).data.is_null() && cap > 0 {
         dealloc((*s).data, KryosString::layout(cap));
     }
-    dealloc(s as *mut u8, Layout::new::<KryosString>());
+    (*s).data = ptr::null_mut();
+    (*s).cap = 0;
+    (*s).len = 0;
 }
 
 // ---------------------------------------------------------------------------

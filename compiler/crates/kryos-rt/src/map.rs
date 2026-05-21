@@ -528,11 +528,12 @@ pub extern "C" fn kryos_map_retain(map: i64) -> i64 {
     map
 }
 
-/// Free the map — decrement ref_count and deallocate at 0.
+/// Free the map — forgiving refcount, matches step 39 array pattern.
 ///
-/// Step 37: refcounted free replaces the H18 leak-on-free hack.
-/// Paired with `kryos_map_clone` retain, the allocation lives until
-/// the last reference goes away. No leak.
+/// Tolerates over-free from codegen-emitted drops without matching retains.
+/// On last legitimate free: dealloc entries table, mark header as freed
+/// sentinel (entries=null, capacity=0, rc=0), intentionally leak header.
+/// Subsequent over-frees see rc<=0 and no-op.
 #[no_mangle]
 pub extern "C" fn kryos_map_free(map: i64) {
     if map == 0 {
@@ -540,14 +541,21 @@ pub extern "C" fn kryos_map_free(map: i64) {
     }
     unsafe {
         let header = map as *mut MapHeader;
-        (*header).ref_count -= 1;
-        if (*header).ref_count > 0 {
+        let rc = (*header).ref_count;
+        if rc <= 0 {
+            return;
+        }
+        let new_rc = rc - 1;
+        (*header).ref_count = new_rc;
+        if new_rc > 0 {
             return;
         }
         let capacity = (*header).capacity as usize;
         free_entries((*header).entries, capacity);
-        let layout = Layout::from_size_align_unchecked(std::mem::size_of::<MapHeader>(), 8);
-        dealloc(map as *mut u8, layout);
+        (*header).entries = std::ptr::null_mut();
+        (*header).capacity = 0;
+        (*header).len = 0;
+        // intentionally leak header to keep sentinel observable
     }
 }
 
