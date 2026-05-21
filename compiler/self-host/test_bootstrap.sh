@@ -32,8 +32,10 @@ STAGE0=target/release/kryos.exe
 [ ! -x "$STAGE0" ] && STAGE0=target/release/kryos
 
 # 2. Build stage-1 from self-host source.
+# KRYOS_NO_ASLR=1 keeps the VA layout deterministic across stage-1
+# invocations, removing one source of bootstrap heap-state flake.
 echo "Building stage-1 from self-host/main.kry ..."
-"$STAGE0" build self-host/main.kry -o target/bootstrap/kryos-stage1 --skip-ownership 2>&1 | grep -iE "^error" | head -3
+KRYOS_NO_ASLR=1 "$STAGE0" build self-host/main.kry -o target/bootstrap/kryos-stage1 --skip-ownership 2>&1 | grep -iE "^error" | head -3
 [ ! -f target/bootstrap/kryos-stage1 ] && { echo "FAIL: stage-1 build failed"; exit 1; }
 cp target/bootstrap/kryos-stage1 target/bootstrap/kryos-stage1.exe 2>/dev/null
 STAGE1=target/bootstrap/kryos-stage1.exe
