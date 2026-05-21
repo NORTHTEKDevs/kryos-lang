@@ -1544,3 +1544,26 @@ SHIFTS:
 
   status: progress-real-marginal (15.8 -> 15.80, but types fully
     stabilized and audit items 1+3 of 4 committed)
+  ---
+  step:    49
+  date:    2026-05-21T04:25-08:00 (AKST)
+  summary: |
+    Stage-1 build was non-deterministic (3 builds = 3 different SHA-256s).
+    Root cause: (a) HashMap iteration order in codegen.rs, (b) PE TimeDateStamp
+    embedded by link.exe.
+
+    Fix:
+      a. closure_info: HashMap -> BTreeMap.
+         type_drop_ids, type_clone_ids: explicit sort_by_key before iteration.
+      b. /Brepro added to MSVC link command (Windows/MSVC only).
+
+    Result: 3 identical SHA-256 builds + 5 consecutive 16/16 bootstrap passes.
+    Likely also explains residual parser+lower flake -- those modules were
+    the ones whose heap layout depended on a slightly different emit order
+    each run, so removing that variance source locked the bootstrap.
+
+  files:
+    - compiler/crates/kryos-codegen-cranelift/src/codegen.rs
+    - compiler/crates/kryos-linker/src/linker.rs
+  commit: b529885
+  status: REPRODUCIBLE_STAGE1_CONFIRMED + 5/5 bootstrap perfect

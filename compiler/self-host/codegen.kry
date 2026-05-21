@@ -1511,12 +1511,20 @@ fn compile_to_object(module: MirModule, output_path: str, target_os: str) -> boo
 
     if target_os == "linux" {
         let obj = elf_new()
-        // Add symbols using convenience functions
+        // Add symbols using convenience functions.
+        //
+        // Parser-synthesized "<top-level>" wrappers must be STB_LOCAL so
+        // multiple .obj files (each with their own per-tu "<top-level>"
+        // wrappers) can be linked together without symbol collisions.
         let mut i = 0
         while i < len(ctx.symbols) {
             let sym = ctx.symbols[i]
             if sym.is_func {
-                elf_add_func(obj, sym.name, sym.offset, sym.size)
+                if sym.name == "<top-level>" {
+                    elf_add_local(obj, sym.name, sym.offset, 1)
+                } else {
+                    elf_add_func(obj, sym.name, sym.offset, sym.size)
+                }
             } else {
                 elf_add_local(obj, sym.name, sym.offset, 1)
             }
@@ -1549,6 +1557,15 @@ fn compile_to_object(module: MirModule, output_path: str, target_os: str) -> boo
 
         // First pass: emit all defined symbols and build a name->index
         // table so relocations can be resolved to real indices.
+        //
+        // Parser wraps top-level `let CONST = N` statements (and similar
+        // bare statements) in a synthetic Decl named "<top-level>".  Each
+        // such wrapper currently lowers to a tiny function.  Emitting them
+        // as IMAGE_SYM_CLASS_EXTERNAL means N wrappers collide on N
+        // identical "<top-level>" symbols at link time, blocking stage-2
+        // multi-.obj linking.  Force STATIC (per-translation-unit) linkage
+        // for them so the obj is well-formed even when many "<top-level>"
+        // wrappers exist.
         let mut sym_names: [str] = []
         let mut sym_indices: [i64] = []
         let mut i = 0
@@ -1556,7 +1573,12 @@ fn compile_to_object(module: MirModule, output_path: str, target_os: str) -> boo
             let sym = ctx.symbols[i]
             let mut idx: i64 = 0
             if sym.is_func {
-                idx = coff_add_func(obj, sym.name, sym.offset)
+                if sym.name == "<top-level>" {
+                    // Per-translation-unit; no external visibility.
+                    idx = coff_add_static(obj, sym.name, sym.offset, 1)
+                } else {
+                    idx = coff_add_func(obj, sym.name, sym.offset)
+                }
             } else {
                 idx = coff_add_static(obj, sym.name, sym.offset, 1)
             }
