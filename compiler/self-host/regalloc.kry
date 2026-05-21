@@ -668,6 +668,80 @@ fn reg_pool_alloc(pool: RegPool) -> i32 {
     return REG_NONE
 }
 
+// Allocate ONLY a callee-saved register (RBX, R12, R13, R14, R15)
+// for intervals that cross a CALL. Caller-saved regs would be
+// clobbered by the intervening call.
+fn reg_pool_alloc_callee_saved(pool: RegPool) -> i32 {
+    if not pool.used[REG_RBX] {
+        pool.used[REG_RBX] = true
+        return REG_RBX
+    }
+    if not pool.used[REG_R12] {
+        pool.used[REG_R12] = true
+        return REG_R12
+    }
+    if not pool.used[REG_R13] {
+        pool.used[REG_R13] = true
+        return REG_R13
+    }
+    if not pool.used[REG_R14] {
+        pool.used[REG_R14] = true
+        return REG_R14
+    }
+    if not pool.used[REG_R15] {
+        pool.used[REG_R15] = true
+        return REG_R15
+    }
+    return REG_NONE
+}
+
+// Build a list of CALL positions while scanning the function. An
+// interval whose [start, end] range contains a call position must be
+// kept in a callee-saved register or spilled to stack.
+fn ra_compute_call_positions(func: MirFunction) -> [i32] {
+    let mut positions: [i32] = []
+    let mut pos = 0
+    let mut bi = 0
+    while bi < len(func.blocks) {
+        let block = func.blocks[bi]
+        let mut ii = 0
+        while ii < len(block.instructions) {
+            let inst = block.instructions[ii]
+            if inst.kind == INST_ASSIGN {
+                if len(inst.value) > 0 {
+                    let rv = inst.value[0]
+                    if rv.kind == RV_CALL {
+                        push(positions, pos)
+                    }
+                    if rv.kind == RV_CALL_INDIRECT {
+                        push(positions, pos)
+                    }
+                }
+            }
+            pos = pos + 1
+            ii = ii + 1
+        }
+        pos = pos + 1
+        bi = bi + 1
+    }
+    return positions
+}
+
+// True if any call_position lies strictly inside (start, end].
+fn ra_interval_crosses_call(start: i32, end: i32, calls: [i32]) -> bool {
+    let mut i = 0
+    while i < len(calls) {
+        let c = calls[i]
+        if c > start {
+            if c <= end {
+                return true
+            }
+        }
+        i = i + 1
+    }
+    return false
+}
+
 // ===================================================================
 // ra_fix_arg_intervals -- pre-assign ABI argument registers
 // ===================================================================
@@ -818,6 +892,11 @@ fn ra_update_interval(intervals: [LiveInterval], local_id: i32, reg: i32, spill_
 // ===================================================================
 
 fn ra_linear_scan(intervals: [LiveInterval]) -> RegAllocResult {
+    let empty_calls: [i32] = []
+    return ra_linear_scan_with_calls(intervals, empty_calls)
+}
+
+fn ra_linear_scan_with_calls(intervals: [LiveInterval], call_positions: [i32]) -> RegAllocResult {
     ra_sort_intervals(intervals)
 
     let pool = reg_pool_new()
@@ -860,8 +939,19 @@ fn ra_linear_scan(intervals: [LiveInterval]) -> RegAllocResult {
         // Expire intervals that ended before this one starts
         active = ra_expire_old(active, pool, current.start)
 
+        // If this interval crosses a CALL position, only callee-saved
+        // registers are safe. Otherwise the call would clobber the
+        // value. If no callee-saved is free, the interval must be
+        // spilled rather than stealing a caller-saved register.
+        let crosses_call = ra_interval_crosses_call(current.start, current.end, call_positions)
+
         // Try to allocate a register
-        let reg = reg_pool_alloc(pool)
+        let mut reg: i32 = REG_NONE
+        if crosses_call {
+            reg = reg_pool_alloc_callee_saved(pool)
+        } else {
+            reg = reg_pool_alloc(pool)
+        }
 
         if reg != REG_NONE {
             intervals[ci].reg = reg
@@ -875,6 +965,12 @@ fn ra_linear_scan(intervals: [LiveInterval]) -> RegAllocResult {
                 is_fixed: false
             }
             ra_active_insert(active, updated)
+        } elif crosses_call {
+            // Call-crossing interval with no callee-saved free: spill.
+            // Stealing a caller-saved would re-introduce the bug.
+            intervals[ci].reg = REG_SPILLED
+            intervals[ci].spill_slot = next_spill_slot * 8
+            next_spill_slot = next_spill_slot + 1
         } else {
             // No free register -- must spill
             let stolen = ra_spill_at(active, current, intervals, next_spill_slot * 8)
@@ -1283,7 +1379,8 @@ fn ra_allocate(func: MirFunction) -> RegAllocResult {
 fn ra_allocate_for(func: MirFunction, target_os: str) -> RegAllocResult {
     let mut intervals = ra_compute_liveness(func)
     ra_fix_arg_intervals(intervals, func, target_os)
-    let result = ra_linear_scan(intervals)
+    let calls = ra_compute_call_positions(func)
+    let result = ra_linear_scan_with_calls(intervals, calls)
     return result
 }
 
