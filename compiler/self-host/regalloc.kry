@@ -490,6 +490,46 @@ fn ra_compute_liveness(func: MirFunction) -> [LiveInterval] {
         bi = bi + 1
     }
 
+    // Second pass: walk instructions again and re-scan ONLY the
+    // operand lists appropriate to each rvalue's kind. The first pass
+    // uses ra_scan_rvalue which iterates rv.left/right/args, but
+    // stage-1's share-on-clone @copy struct semantics sometimes
+    // produce wrong operand list aliases. Re-scanning explicitly
+    // here, kind-by-kind, picks up uses missed in the first pass.
+    let mut pos2 = 0
+    let mut bi2 = 0
+    while bi2 < len(func.blocks) {
+        let block2 = func.blocks[bi2]
+        let mut ii2 = 0
+        while ii2 < len(block2.instructions) {
+            let inst2 = block2.instructions[ii2]
+            if inst2.kind == INST_ASSIGN and len(inst2.value) > 0 {
+                let rv2 = inst2.value[0]
+                // Only re-scan the lists used by this specific rvalue
+                // kind. Scanning unrelated lists would record spurious
+                // uses on garbage operands left from share-on-clone.
+                if rv2.kind == RV_BINOP {
+                    ra_scan_operand_list(lm, rv2.left, pos2)
+                    ra_scan_operand_list(lm, rv2.right, pos2)
+                } elif rv2.kind == RV_UNOP {
+                    ra_scan_operand_list(lm, rv2.left, pos2)
+                } elif rv2.kind == RV_CALL {
+                    ra_scan_operand_list(lm, rv2.args, pos2)
+                } elif rv2.kind == RV_CALL_INDIRECT {
+                    ra_scan_operand_list(lm, rv2.callee, pos2)
+                    ra_scan_operand_list(lm, rv2.args, pos2)
+                } elif rv2.kind == RV_INDEX {
+                    ra_scan_operand_list(lm, rv2.index_obj, pos2)
+                    ra_scan_operand_list(lm, rv2.index_idx, pos2)
+                }
+            }
+            pos2 = pos2 + 1
+            ii2 = ii2 + 1
+        }
+        pos2 = pos2 + 1
+        bi2 = bi2 + 1
+    }
+
     // Build LiveInterval array. Extend each local's interval to
     // function end when its def is in a different block than its
     // last use, since the gap may include back-edge traversal that
@@ -512,6 +552,19 @@ fn ra_compute_liveness(func: MirFunction) -> [LiveInterval] {
             let mut interval_end = lm.uses[lid]
             if interval_end < lm.defs[lid] {
                 interval_end = lm.defs[lid]
+            }
+            // Extend the interval end by 1. The use-tracking
+            // sometimes misses operands that are referenced at later
+            // positions (notably when share-on-clone bugs cause the
+            // wrong local_id to be observed). Padding by 1 gives the
+            // ra_expire_old check (`end < pos`) a one-instruction
+            // safety margin -- a local active at pos N stays
+            // allocated through pos N+1, preventing a different local
+            // declared at pos N+1 from immediately reusing the
+            // register.
+            interval_end = interval_end + 1
+            if interval_end > last_pos {
+                interval_end = last_pos
             }
             // Map def + use positions to their blocks. If a local
             // crosses block boundaries (its def and last use are in
