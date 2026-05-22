@@ -472,13 +472,9 @@ fn ra_compute_liveness(func: MirFunction) -> [LiveInterval] {
     }
 
     // Force-record a def at position 0 for every local declared on
-    // the function. This guarantees every local has a recorded def
-    // so an interval is built for it. Without this, locals whose
-    // def-recording is missed (due to share-on-clone bugs or rvalue
-    // kinds the scanner doesn't handle) fall through to a hardcoded
-    // scratch reg in cg_get_local_reg -- which may collide with a
-    // regalloc-assigned register for ANOTHER local, producing the
-    // R12/R12 same-register bug.
+    // the function. This guarantees an interval is built for every
+    // local, so cg_get_local_reg's "not found" fallback (which would
+    // collide with regalloc-assigned R12) is never hit.
     let mut lci = 0
     while lci < len(func.locals) {
         ra_record_def(lm, func.locals[lci].id, 0)
