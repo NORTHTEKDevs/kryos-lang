@@ -2136,3 +2136,44 @@ SHIFTS:
     OR refactor self-host source to avoid struct-returning
     helpers in favor of multi-return-value patterns that don't
     suffer from share-on-clone.
+  ---
+  step:    62
+  date:    2026-05-21T18:00-08:00 (AKST)
+  summary: |
+    Added second-pass uses scan + force-def for every func.locals to
+    ra_compute_liveness. Combined with R12 fallback in
+    cg_get_local_reg these eliminate most register-collision bugs
+    for simple user programs.
+
+    Final state (3-run stability):
+      Bootstrap: 16/16 PASS (3/3 perfect)
+      Examples: 8/8 PASS
+      Working user programs:
+        - hello.kry -> "hello from stage-2!"
+        - cmp_test (1<2) -> "yes less"
+        - args_test (no args) -> "less than 2 args"
+        - args_test (with arg) -> "got args"
+        - multi_println -> "first / second / third"
+        - complex_test (no args) -> full Kryos usage banner
+
+      binop_dbg2 (`let a = five(); if a < 10`): still WRONG due
+      to R12 fallback colliding with regalloc-assigned R12.
+      Stage-2 (16-module link): 0-1 out of 5 trials prints usage
+      banner; others silent-exit or fail to link.
+
+  fundamental remaining bug:
+    cg_get_local_reg's R12 fallback collides with the regalloc's
+    R12 assignment for ANOTHER local. The fallback was added because
+    some locals are missed by the liveness scan; the force-def
+    workaround should add intervals for them but apparently doesn't
+    take effect for all cases. The proper fix requires either:
+      (a) making the regalloc detect when an interval is colliding
+          with the fallback reg and steer the regalloc allocation
+          to a different reg
+      (b) making the fallback use a stack slot derived from local_id
+          so the fallback is always safe
+      (c) fixing the underlying liveness-scan + share-on-clone
+          interaction so the fallback is never hit
+
+  total day work: 22+ commits, 13+ shift tags, 14+ fixes
+  HEAD at f575196
