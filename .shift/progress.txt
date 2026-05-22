@@ -2094,3 +2094,45 @@ SHIFTS:
     4a3c129, 31f03f3, 268a562, ce2ea14, 0d79b23, 8f9af77,
     45c105c, 5b74607, 13e528f, 5e97654, b529885, 48e00ad, ac55618,
     e2b5852, 21034f7, f3fc333, 73c00d8, 10aa12d (and shift tags)
+  ---
+  step:    61
+  date:    2026-05-21T17:00-08:00 (AKST)
+  summary: |
+    Investigated remaining stage-2 non-determinism. Identified the
+    bug: lower_binop's left_op and right_op end up pointing to the
+    same Operand heap memory under share-on-clone semantics, even
+    after the field-extraction workaround. Tried multiple
+    additional patterns (extract-to-primitives, separate array
+    locals, etc.) -- none fully fixed the issue.
+
+    The fundamental bug appears to be in stage-1's runtime @copy
+    struct construction. When `Operand { ... }` literal is evaluated
+    twice in a function, both allocations may end up at the same
+    heap address despite ref_count tracking. Fixing this requires
+    deeper changes to stage-0's compilation of @copy struct
+    literals, or to kryos-rt's allocator behavior.
+
+  final state at HEAD 8cef79c:
+    - Bootstrap 16/16 (4/5 perfect, occasional 15/16 flake)
+    - Examples 8/8 stable
+    - 5 user Kryos programs print correctly
+    - Stage-1 deterministic for very simple programs (no_call:
+      2 distinct hashes over 10 runs, hello: 3 distinct)
+    - Stage-2 ~20% reliability (1 in 5 prints usage banner)
+
+  day's total work: 17+ commits, 11 shift tags, 12 fixes landed.
+
+  remaining concrete blockers for next shift:
+    1. Stage-1's @copy struct construction non-determinism --
+       root cause of stage-2 unreliability.
+    2. Bool array runtime bug (worked around in RegPool but
+       still triggers for user code).
+    3. Stage-2 subcommand handlers (check/mir/ast/obj) -- may
+       cascade-fix once #1 is fixed.
+
+  the path forward:
+    Either deep-fix the stage-0 codegen for @copy struct literals
+    to ensure each evaluation produces a UNIQUE heap allocation,
+    OR refactor self-host source to avoid struct-returning
+    helpers in favor of multi-return-value patterns that don't
+    suffer from share-on-clone.
