@@ -2053,3 +2053,44 @@ SHIFTS:
     - Underlying: Operand/RValue/Instruction @copy share-on-clone
       semantics let later allocations corrupt earlier values
     - Bool array push runtime bug (still unfixed, just worked around)
+  ---
+  step:    60
+  date:    2026-05-21T16:30-08:00 (AKST)
+  summary: |
+    Extended the share-on-clone Operand workaround to lower_binop,
+    lower_array_lit, lower_tuple_lit, lower_map_lit. Each operand
+    field is now extracted to primitives BEFORE the second
+    lower_expr call, then reconstructed as a fresh Operand struct
+    literal at use time.
+
+    Bootstrap stability improved: 3/3 runs now PASS 16/16
+    consistently (previous: 4/5 with 1 flake).
+
+  end-of-extended-day state:
+    - Bootstrap: 16/16 stable (3/3 perfect)
+    - Examples: 8/8
+    - User Kryos programs (5 verified): all print correctly
+      * hello.kry -> "hello from stage-2!"
+      * cmp_test (1<2) -> "yes less"
+      * args_test (no args) -> "less than 2 args"
+      * multi_println -> "first / second / third"
+      * complex_test (no args) -> full Kryos usage banner
+    - Stage-2 reliability: ~20% (1/5 prints the usage banner)
+
+    Multiple deep-clone-on-push sites fixed today:
+      lower_fn_call (4 sites), lower_method_call, lower_pipe,
+      lower_array_lit, lower_tuple_lit, lower_map_lit,
+      lower_binop, rv_binop.
+
+    Remaining stage-2 unreliability traces to OTHER push sites
+    of @copy structs and/or stage-1's runtime @copy semantics
+    themselves. Specifically the binop arg loading in stage-2's
+    main.obj still shows the R12 collision pattern that the
+    lower_binop fix was meant to eliminate -- something about
+    main.kry's specific shape evades the fix.
+
+  commits this stretch (10):
+    b684f7f, 26aabfa, 5a868fe, 732be65, 54735e5, 046024a, b6ac406,
+    4a3c129, 31f03f3, 268a562, ce2ea14, 0d79b23, 8f9af77,
+    45c105c, 5b74607, 13e528f, 5e97654, b529885, 48e00ad, ac55618,
+    e2b5852, 21034f7, f3fc333, 73c00d8, 10aa12d (and shift tags)
