@@ -471,6 +471,20 @@ fn ra_compute_liveness(func: MirFunction) -> [LiveInterval] {
         pi = pi + 1
     }
 
+    // Force-record a def at position 0 for every local declared on
+    // the function. This guarantees every local has a recorded def
+    // so an interval is built for it. Without this, locals whose
+    // def-recording is missed (due to share-on-clone bugs or rvalue
+    // kinds the scanner doesn't handle) fall through to a hardcoded
+    // scratch reg in cg_get_local_reg -- which may collide with a
+    // regalloc-assigned register for ANOTHER local, producing the
+    // R12/R12 same-register bug.
+    let mut lci = 0
+    while lci < len(func.locals) {
+        ra_record_def(lm, func.locals[lci].id, 0)
+        lci = lci + 1
+    }
+
     // Walk all blocks and instructions
     let mut pos = 0
     let mut bi = 0
@@ -509,12 +523,20 @@ fn ra_compute_liveness(func: MirFunction) -> [LiveInterval] {
                 // kind. Scanning unrelated lists would record spurious
                 // uses on garbage operands left from share-on-clone.
                 if rv2.kind == RV_BINOP {
+                    // Scan left and right. Also scan rv.args as a
+                    // safety net in case stage-1's @copy struct
+                    // sharing leaves the binop's operands in the
+                    // rv.args field instead.
                     ra_scan_operand_list(lm, rv2.left, pos2)
                     ra_scan_operand_list(lm, rv2.right, pos2)
+                    ra_scan_operand_list(lm, rv2.args, pos2)
                 } elif rv2.kind == RV_UNOP {
                     ra_scan_operand_list(lm, rv2.left, pos2)
                 } elif rv2.kind == RV_CALL {
                     ra_scan_operand_list(lm, rv2.args, pos2)
+                    // Safety: also check left/right in case sharing.
+                    ra_scan_operand_list(lm, rv2.left, pos2)
+                    ra_scan_operand_list(lm, rv2.right, pos2)
                 } elif rv2.kind == RV_CALL_INDIRECT {
                     ra_scan_operand_list(lm, rv2.callee, pos2)
                     ra_scan_operand_list(lm, rv2.args, pos2)
