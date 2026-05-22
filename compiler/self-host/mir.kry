@@ -584,8 +584,27 @@ fn rv_const_none() -> RValue {
 fn rv_binop(binop: i32, l: Operand, r: Operand) -> RValue {
     let mut rv = rv_empty(RV_BINOP)
     rv.op = binop
-    rv.left = [l]
-    rv.right = [r]
+    // Deep-clone l and r before storing into rv.left and rv.right.
+    // Stage-1's share-on-clone @copy struct semantics let the heap
+    // Operand for `l` and `r` alias each other if the caller created
+    // them in rapid succession; without the clone here, rv.left[0]
+    // and rv.right[0] both point to the same Operand (typically the
+    // RIGHT-most created), which breaks the liveness scan -- the
+    // LEFT local's use is never recorded.
+    let l_clone = Operand {
+        is_local: l.is_local, local_id: l.local_id,
+        const_kind: l.const_kind, int_val: l.int_val,
+        float_val: l.float_val, bool_val: l.bool_val,
+        str_val: l.str_val
+    }
+    let r_clone = Operand {
+        is_local: r.is_local, local_id: r.local_id,
+        const_kind: r.const_kind, int_val: r.int_val,
+        float_val: r.float_val, bool_val: r.bool_val,
+        str_val: r.str_val
+    }
+    rv.left = [l_clone]
+    rv.right = [r_clone]
     return rv
 }
 

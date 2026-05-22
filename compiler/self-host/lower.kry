@@ -718,9 +718,39 @@ fn lower_binop(ctx: LowerCtx, e: Expr) -> Operand {
         return lower_short_circuit_or(ctx, e)
     }
 
-    // Lower both operands
-    let left_op = lower_expr(ctx, e.left[0])
-    let right_op = lower_expr(ctx, e.right[0])
+    // Lower both operands. Store the EXTRACTED FIELDS (primitives) as
+    // local variables, then reconstruct the operands as separate
+    // Operand allocations just before pushing into the RValue. This
+    // ensures the operands are stable across the second lower_expr
+    // call which may reallocate Operand heap memory.
+    let raw_left_op = lower_expr(ctx, e.left[0])
+    let l_is_local = raw_left_op.is_local
+    let l_local_id = raw_left_op.local_id
+    let l_const_kind = raw_left_op.const_kind
+    let l_int_val = raw_left_op.int_val
+    let l_float_val = raw_left_op.float_val
+    let l_bool_val = raw_left_op.bool_val
+    let l_str_val = raw_left_op.str_val
+    let raw_right_op = lower_expr(ctx, e.right[0])
+    let r_is_local = raw_right_op.is_local
+    let r_local_id = raw_right_op.local_id
+    let r_const_kind = raw_right_op.const_kind
+    let r_int_val = raw_right_op.int_val
+    let r_float_val = raw_right_op.float_val
+    let r_bool_val = raw_right_op.bool_val
+    let r_str_val = raw_right_op.str_val
+    let left_op = Operand {
+        is_local: l_is_local, local_id: l_local_id,
+        const_kind: l_const_kind, int_val: l_int_val,
+        float_val: l_float_val, bool_val: l_bool_val,
+        str_val: l_str_val
+    }
+    let right_op = Operand {
+        is_local: r_is_local, local_id: r_local_id,
+        const_kind: r_const_kind, int_val: r_int_val,
+        float_val: r_float_val, bool_val: r_bool_val,
+        str_val: r_str_val
+    }
 
     // String concatenation with +. Use ctx_operand_ty so identifiers
     // bound to string locals (where resolve_expr_type returns ANY because
