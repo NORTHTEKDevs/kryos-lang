@@ -165,6 +165,20 @@ fn cg_stack_offset_ra(ra: RegAllocResult, spill_slot: i32) -> i32 {
     return base - 8 * (spill_slot + 1)
 }
 
+// Stack offset for the FALLBACK slot of an unallocated local. Each
+// local_id maps to a unique slot above the regalloc-managed spill
+// slots. The frame is reserved with extra fudge bytes by
+// cg_emit_prologue so these slots are within the allocated frame.
+fn cg_fallback_slot_offset(ra: RegAllocResult, local_id: i32) -> i32 {
+    // Place fallback slots AFTER the regalloc-managed spill slots.
+    // Reserved by FALLBACK_SLOT_BASE = 128 * 8 = 1024 bytes of fudge
+    // space below the normal frame.
+    let cs_count = len(ra.callee_saved)
+    let base: i32 = -8 * cs_count
+    let fallback_start: i32 = base - 8 * (ra.stack_size / 8 + 1)
+    return fallback_start - 8 * local_id
+}
+
 // ===================================================================
 // Emit function prologue
 // ===================================================================
@@ -187,7 +201,13 @@ fn cg_emit_prologue(ctx: CodegenCtx, ra: RegAllocResult) {
     // The shadow space (32 bytes) is always 16-aligned so doesn't
     // change parity. The frame is rounded up to 16 too. So if N is
     // odd, add 8 extra bytes of padding to restore alignment.
-    let mut frame = cg_align16(ra.stack_size * 8)
+    //
+    // Reserve an extra 2048 bytes (256 i64 slots) of fudge space
+    // below the regalloc-managed frame for cg_get_local_reg's
+    // fallback per-local-id slots. cg_fallback_slot_offset places
+    // those slots starting at base - 8 * (stack_size/8 + 1), so
+    // they fit within the extended frame.
+    let mut frame = cg_align16(ra.stack_size * 8) + 2048
     if (len(ra.callee_saved) % 2) != 0 {
         frame = frame + 8
     }
@@ -223,8 +243,10 @@ fn cg_emit_epilogue(ctx: CodegenCtx, ra: RegAllocResult) {
     let buf = ctx.text_buf
     // Tear down the local frame first; rsp = rbp - sizeof(saved regs).
     // `mov rsp, rbp` would overshoot the saved registers, so add the
-    // exact local-frame size back instead.
-    let mut frame = cg_align16(ra.stack_size * 8)
+    // exact local-frame size back instead. Must include the 2048-byte
+    // fudge space the prologue reserved for cg_get_local_reg's
+    // fallback slots.
+    let mut frame = cg_align16(ra.stack_size * 8) + 2048
     if (len(ra.callee_saved) % 2) != 0 {
         frame = frame + 8
     }
@@ -272,20 +294,15 @@ fn cg_get_local_reg(ctx: CodegenCtx, ra: RegAllocResult, local_id: i32, scratch:
         }
         i = i + 1
     }
-    // Not found.  Originally fell through to `return scratch`, which meant
-    // the SAME local could appear to live in different registers depending
-    // on which scratch reg the call site happened to pass.  Inst-assign
-    // would write the value to RAX (its scratch), cg_store_local would
-    // do nothing, then cg_emit_call's arg-load would treat the value as
-    // already living in the arg-reg's scratch (RCX) -- and `r == target`
-    // would suppress the would-be `mov rcx, rax`.  Result: the value
-    // computed into RAX is never delivered to the call.
-    //
-    // Pin all not-found locals to a single callee-saved register (R12)
-    // so the location is consistent across def and use sites within a
-    // function.  Caller-saved regs would lose the value across any
-    // intervening call; R12 is preserved on both Win64 and SysV.
-    return REG_R12
+    // Not found — use a stable, unique fallback stack slot keyed by
+    // local_id. Earlier this returned a fixed callee-saved reg (R12),
+    // but that COLLIDED with the regalloc's R12 assignments for
+    // other locals -- the same physical register held two different
+    // logical values. Per-local-id stack slots are collision-free;
+    // the cost is a memory load on every use.
+    let offset = cg_fallback_slot_offset(ra, local_id)
+    x86_mov_reg_mem(ctx.text_buf, scratch, REG_RBP, offset)
+    return scratch
 }
 
 // ===================================================================
@@ -311,6 +328,13 @@ fn cg_store_local(ctx: CodegenCtx, ra: RegAllocResult, local_id: i32, src_reg: i
         }
         i = i + 1
     }
+    // Not found — store to fallback stack slot keyed by local_id.
+    // Matches cg_get_local_reg's fallback to keep def and use sites
+    // consistent. Without this, the def writes to src_reg (typically
+    // RAX from cg_emit_instruction) but the use loads from the
+    // fallback slot which was never written.
+    let offset = cg_fallback_slot_offset(ra, local_id)
+    x86_mov_mem_reg(ctx.text_buf, REG_RBP, offset, src_reg)
 }
 
 // ===================================================================
