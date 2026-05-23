@@ -799,6 +799,63 @@ fn cg_arg_reg_for(target_os: str, idx: i32) -> i32 {
     return cg_arg_reg(idx)
 }
 
+// Emit a call to kryos_string_eq(left, right) and store the result
+// in dest_reg. If `invert` is true, XOR the result with 1 to convert
+// equality to inequality. Used by cg_emit_binop for MIR_EQ/MIR_NEQ
+// when either operand is a string literal.
+fn cg_emit_string_eq(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32, invert: bool) {
+    let buf = ctx.text_buf
+    let arg0_reg = cg_arg_reg_for(ctx.target_os, 0)
+    let arg1_reg = cg_arg_reg_for(ctx.target_os, 1)
+
+    // Load left into arg-0 reg
+    if len(rv.left) > 0 {
+        let lr = cg_load_operand(ctx, ra, rv.left[0], arg0_reg)
+        if lr != arg0_reg {
+            x86_mov_reg_reg(buf, arg0_reg, lr)
+        }
+    }
+    // Load right into arg-1 reg
+    if len(rv.right) > 0 {
+        let rr = cg_load_operand(ctx, ra, rv.right[0], arg1_reg)
+        if rr != arg1_reg {
+            x86_mov_reg_reg(buf, arg1_reg, rr)
+        }
+    }
+
+    // Win64 shadow space.
+    let is_win = ctx.target_os == "windows"
+    let shadow_bytes: i32 = if is_win { 32 } else { 0 }
+    if shadow_bytes > 0 {
+        x86_sub_reg_imm32(buf, REG_RSP, shadow_bytes)
+    }
+
+    // CALL kryos_string_new ... wait, kryos_string_eq.
+    push(ctx.relocations, LinkerReloc {
+        offset: buf_len(buf) + 1,
+        symbol_name: "kryos_string_eq",
+        rel_type: LREL_PC32,
+        addend: -4
+    })
+    x86_call_rel32(buf, 0)
+
+    if shadow_bytes > 0 {
+        x86_add_reg_imm32(buf, REG_RSP, shadow_bytes)
+    }
+
+    // Result is in RAX (bool, low byte).
+    if invert {
+        // Test RAX; SETZ to get !RAX (sets to 1 if RAX was 0).
+        // Then movzx to extend the byte.
+        x86_test_reg_reg(buf, REG_RAX, REG_RAX)
+        x86_setcc(buf, CC_E, REG_RAX)
+        x86_movzx_r64_r8(buf, REG_RAX, REG_RAX)
+    }
+    if dest_reg != REG_RAX {
+        x86_mov_reg_reg(buf, dest_reg, REG_RAX)
+    }
+}
+
 // Emit the strlen-via-`repne scasb` sequence + write(2) for the
 // null-terminated string whose pointer is in RDI. Used by both the
 // `print` and `println` inline lowerings. The RSI register is set to
@@ -1055,6 +1112,16 @@ fn cg_emit_call(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) 
     let total_stack = shadow_bytes + stack_args * 8
     if total_stack > 0 {
         x86_add_reg_imm32(buf, REG_RSP, total_stack)
+    }
+
+    // Mask RAX to AL for known bool-returning runtime functions.
+    // Win64 (and SysV) ABIs only define the low byte of the return
+    // register for i8/bool returns; high bits are undefined. Without
+    // this, a previous register state can leak through and a bool
+    // result of 0 (false) can read as nonzero (true) on `test rax, rax`.
+    let fname = rv.func_name
+    if fname == "kryos_string_eq" or fname == "kryos_string_contains" {
+        x86_movzx_r64_r8(buf, REG_RAX, REG_RAX)
     }
 
     // Move result from RAX to dest
@@ -1604,6 +1671,13 @@ fn cg_emit_module(ctx: CodegenCtx, module: MirModule) {
         }
         // Run register allocation per target ABI
         let ra = ra_allocate_for(func, ctx.target_os)
+        if env_get("KRYOS_RA_DUMP") == "1" {
+            let mut j = 0
+            while j < len(ra.intervals) {
+                eprintln("ra " + func.name + " l" + to_string(ra.intervals[j].local_id) + " r" + to_string(ra.intervals[j].reg) + " s" + to_string(ra.intervals[j].spill_slot))
+                j = j + 1
+            }
+        }
         // Emit function code
         cg_emit_function(ctx, func, ra)
         i = i + 1

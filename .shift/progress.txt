@@ -2177,3 +2177,44 @@ SHIFTS:
 
   total day work: 22+ commits, 13+ shift tags, 14+ fixes
   HEAD at f575196
+  ---
+  step:    63
+  date:    2026-05-23 (12h shift resume)
+  summary: |
+    SAFETY: KryosTwin service was RUNNING (the 35GB self-host-build
+    leak source). Stopped + set Manual. KryosLeakGuard left running.
+    Build policy: --release -j2 only (15GB free at start; debug=48GB).
+
+    ROOT CAUSE of stage-1 non-determinism ISOLATED (was the #1 blocker):
+    Split the bug via KRYOS_RA_DUMP instrumentation (added to
+    cg_emit_module, env-gated). Found TWO independent non-determinism
+    sources, both reducing to ONE root cause:
+      - emit varies with identical regalloc (run1==run2 RA, diff obj)
+      - regalloc itself varies (RA dump shows GARBAGE local_ids like
+        l1830838642, l1331253835 = stale heap/ASCII bytes)
+    => the [LiveInterval] intervals array holds CORRUPTED struct entries.
+
+    MINIMAL REPRO (stage-0 Cranelift, /tmp/min5.kry):
+      @copy struct Iv { id, reg }; fn make(i)->Iv { return Iv{...} }
+      loop { let v = make(i); xs = push(xs, v) }  -> read back
+    run1 correct, run2/run3 GARBAGE. Non-deterministic.
+    Inline struct literal pushed in loop (min3) = CORRECT.
+    Function-RETURNED @copy struct pushed = CORRUPT.
+
+    Conclusion: stage-0 miscompiles "push(array, function-returned
+    @copy struct)". push(arr,val:i64) stores 8 bytes = a POINTER to
+    the struct's (reused) return slot, not a byte-copy of the 16-byte
+    struct. Each make() reuses the slot -> array entries alias/garbage.
+    NOT a heap-free issue: KRYOS_LEAK_ON_ZERO=1 does not fix it.
+    LEAK knob and NO_ASLR both ineffective => stack/return-slot escape.
+
+    This is why stage-1 (LLVM-built from self-host, which pervasively
+    returns @copy structs: op_local, inst_assign, rv_call, make_*) is
+    non-deterministic -> stage-2 unreliable. Fix at stage-0 codegen
+    (struct-by-value copy into array element storage) unlocks the chain.
+  files:   self-host/codegen.kry (KRYOS_RA_DUMP instrumentation only)
+  next:    Locate stage-0 codegen for push-of-struct + struct return
+           ABI. Make push copy elem_size bytes for struct elems (true
+           value semantics) instead of storing a pointer to a reused
+           slot. Verify min5 deterministic, then bootstrap 16/16.
+  ---

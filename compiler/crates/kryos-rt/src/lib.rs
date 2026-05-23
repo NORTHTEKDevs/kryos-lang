@@ -75,6 +75,25 @@ pub fn take_test_failure() -> Option<String> {
     TEST_FAILURE.with(|f| f.borrow_mut().take())
 }
 
+/// When KRYOS_LEAK_ON_ZERO=1, the *_free runtime entry points decrement
+/// refcount but skip the dealloc path when count hits zero. Restores the
+/// H41 bootstrap-reliable model behind an opt-in knob, without requiring
+/// the full codegen retain-emission audit. Probed once on first call.
+#[inline]
+pub fn leak_on_zero() -> bool {
+    use std::sync::atomic::AtomicU8;
+    static PROBED: AtomicU8 = AtomicU8::new(0);
+    static VALUE: AtomicBool = AtomicBool::new(false);
+    if PROBED.load(Ordering::Relaxed) == 0 {
+        let on = std::env::var("KRYOS_LEAK_ON_ZERO")
+            .map(|v| v != "0" && !v.is_empty())
+            .unwrap_or(false);
+        VALUE.store(on, Ordering::Relaxed);
+        PROBED.store(1, Ordering::Relaxed);
+    }
+    VALUE.load(Ordering::Relaxed)
+}
+
 pub mod actor;
 pub mod alloc;
 pub mod arc;

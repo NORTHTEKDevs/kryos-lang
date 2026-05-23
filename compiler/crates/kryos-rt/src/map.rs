@@ -536,6 +536,10 @@ pub extern "C" fn kryos_map_free(map: i64) {
     if map == 0 {
         return;
     }
+    if crate::leak_on_zero() {
+        // H41 pure no-op for bootstrap reliability.
+        return;
+    }
     unsafe {
         let header = map as *mut MapHeader;
         let rc = (*header).ref_count;

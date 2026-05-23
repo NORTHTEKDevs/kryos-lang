@@ -375,6 +375,12 @@ pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
     if arr.is_null() {
         return;
     }
+    if crate::leak_on_zero() {
+        // H41 pure no-op: don't even read ref_count. The dance
+        // (read+decrement+check) touches potentially-aliased headers,
+        // contributing to bootstrap flake. Pure no-op removes those reads.
+        return;
+    }
     let rc = (*arr).ref_count;
     if rc <= 0 {
         return; // already freed (sentinel)

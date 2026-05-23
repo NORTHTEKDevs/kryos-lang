@@ -290,6 +290,10 @@ pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {
     if s.is_null() {
         return;
     }
+    if crate::leak_on_zero() {
+        // H41 pure no-op for bootstrap reliability.
+        return;
+    }
     let rc = (*s).ref_count;
     if rc <= 0 {
         return;

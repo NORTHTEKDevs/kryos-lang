@@ -830,7 +830,14 @@ fn term_goto(block: i32) -> Terminator {
 
 fn term_branch(cond_op: Operand, then_bb: i32, else_bb: i32) -> Terminator {
     let mut t = term_empty(TERM_BRANCH)
-    t.cond = [cond_op]
+    // Deep-clone cond_op to break share-on-clone aliasing
+    let clone = Operand {
+        is_local: cond_op.is_local, local_id: cond_op.local_id,
+        const_kind: cond_op.const_kind, int_val: cond_op.int_val,
+        float_val: cond_op.float_val, bool_val: cond_op.bool_val,
+        str_val: cond_op.str_val
+    }
+    t.cond = [clone]
     t.then_block = then_bb
     t.else_block = else_bb
     return t

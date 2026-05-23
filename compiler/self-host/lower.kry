@@ -774,6 +774,51 @@ fn lower_binop(ctx: LowerCtx, e: Expr) -> Operand {
         }
     }
 
+    // String equality / inequality: dispatch to kryos_string_eq.
+    // Default register CMP would compare pointers, which differ
+    // between any two independently-allocated KryosString handles
+    // even when their contents match. The runtime function compares
+    // byte content. Stage-0's codegen.rs:3228 does the same dispatch.
+    if e.op == BINOP_EQ or e.op == BINOP_NEQ {
+        let mut left_ty_eq = ctx_operand_ty(ctx, left_op)
+        if left_ty_eq.kind == MIR_TY_ANY {
+            left_ty_eq = resolve_expr_type(e.left[0])
+        }
+        let mut right_ty_eq = ctx_operand_ty(ctx, right_op)
+        if right_ty_eq.kind == MIR_TY_ANY {
+            right_ty_eq = resolve_expr_type(e.right[0])
+        }
+        if left_ty_eq.kind == MIR_TY_STR or right_ty_eq.kind == MIR_TY_STR {
+            // Build args via push to avoid @copy struct sharing in
+            // array-literal allocation.
+            let mut eq_args: [Operand] = []
+            let left_arg = Operand {
+                is_local: left_op.is_local, local_id: left_op.local_id,
+                const_kind: left_op.const_kind, int_val: left_op.int_val,
+                float_val: left_op.float_val, bool_val: left_op.bool_val,
+                str_val: left_op.str_val
+            }
+            eq_args = push(eq_args, left_arg)
+            let right_arg = Operand {
+                is_local: right_op.is_local, local_id: right_op.local_id,
+                const_kind: right_op.const_kind, int_val: right_op.int_val,
+                float_val: right_op.float_val, bool_val: right_op.bool_val,
+                str_val: right_op.str_val
+            }
+            eq_args = push(eq_args, right_arg)
+            let eq_t = ctx_alloc_temp(ctx, mir_ty_bool())
+            ctx_emit(ctx, inst_assign(eq_t, rv_call("kryos_string_eq", eq_args)))
+            if e.op == BINOP_NEQ {
+                // Invert: result = (kryos_string_eq(l, r) == 0)
+                let zero_op = op_int(0)
+                let neq_t = ctx_alloc_temp(ctx, mir_ty_bool())
+                ctx_emit(ctx, inst_assign(neq_t, rv_binop(MIR_EQ, op_local(eq_t), zero_op)))
+                return op_local(neq_t)
+            }
+            return op_local(eq_t)
+        }
+    }
+
     // Power operator: emit as runtime call
     if e.op == BINOP_POW {
         let left_ty = resolve_expr_type(e.left[0])
@@ -1899,8 +1944,16 @@ fn lower_if_stmt(ctx: LowerCtx, s: Stmt) {
 
     let merge_bb = ctx_alloc_block(ctx)
 
-    // Lower the main condition
-    let cond_op = lower_expr(ctx, s.condition[0])
+    // Lower the main condition. Deep-clone the operand into a fresh
+    // struct literal to break share-on-clone aliasing -- otherwise
+    // later operand allocations may invalidate this condition.
+    let raw_cond_op = lower_expr(ctx, s.condition[0])
+    let cond_op = Operand {
+        is_local: raw_cond_op.is_local, local_id: raw_cond_op.local_id,
+        const_kind: raw_cond_op.const_kind, int_val: raw_cond_op.int_val,
+        float_val: raw_cond_op.float_val, bool_val: raw_cond_op.bool_val,
+        str_val: raw_cond_op.str_val
+    }
 
     let then_bb = ctx_alloc_block(ctx)
 
@@ -1934,7 +1987,13 @@ fn lower_if_stmt(ctx: LowerCtx, s: Stmt) {
         for i in range(0, num_elifs) {
             ctx_switch_block(ctx, current_elif_check)
 
-            let elif_cond = lower_expr(ctx, s.elif_conditions[i])
+            let raw_elif_cond = lower_expr(ctx, s.elif_conditions[i])
+            let elif_cond = Operand {
+                is_local: raw_elif_cond.is_local, local_id: raw_elif_cond.local_id,
+                const_kind: raw_elif_cond.const_kind, int_val: raw_elif_cond.int_val,
+                float_val: raw_elif_cond.float_val, bool_val: raw_elif_cond.bool_val,
+                str_val: raw_elif_cond.str_val
+            }
             let elif_body_bb = ctx_alloc_block(ctx)
 
             // Determine next false target
