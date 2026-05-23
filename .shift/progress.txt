@@ -2218,3 +2218,42 @@ SHIFTS:
            value semantics) instead of storing a pointer to a reused
            slot. Verify min5 deterministic, then bootstrap 16/16.
   ---
+  ---
+  step:    64
+  date:    2026-05-23 (12h shift)
+  summary: |
+    Fixed the #1 root cause and validated. Two coordinated fixes:
+    1. kryos-ownership/analysis.rs push case: @copy STRUCT args now
+       treated as MOVE (not use) so borrow-check matches reality.
+    2. kryos-mir/lower.rs consume_call_args: now takes func name;
+       for "push", consumes @copy STRUCT args too (not just non-copy).
+       This SUPPRESSES the erroneous drop(_v) that freed the struct
+       body the array still pointed at (use-after-free -> garbage).
+
+    Root mechanism (proven): push(arr, @copy_struct_local) stores a
+    POINTER to the struct body into the array, but scope cleanup then
+    emitted drop(local) which free()'d that body. is_copy_type() treats
+    @copy structs as no-heap-ownership, so consume_call_args skipped
+    them. Confirmed via MIR: drop(_4) present for push-of-named-local,
+    absent for push-of-call-temp (temps never scope-dropped).
+
+    Validation:
+      - All 5 minimal repros (min5/tb/min3/tc/cparr): were
+        non-deterministic garbage, now 1 distinct + CORRECT over 8 runs.
+      - drop(_4) gone from MIR.
+      - stage-1 e0 module: was 5/5-distinct with GARBAGE local_ids
+        (l1830838642), now 3/3 identical + clean RA dump (l0,l1,l2...).
+      - Self-host per-module determinism (3 runs): token/ast/elf now
+        distinct=1 (deterministic). x86/coff distinct=2. Remaining big
+        modules (lexer/parser/types/mir/lower/optimize/regalloc/codegen/
+        linker/runtime/main) still distinct=3 -> MORE sinks remain.
+      - parser.kry rc=127 in bootstrap is a FLAKE (rc0 x5 isolation).
+        Likely AV/file-lock, not a compiler crash.
+  files:   kryos-ownership/src/analysis.rs, kryos-mir/src/lower.rs
+  next:    Find remaining @copy-struct store-by-pointer sinks (not push):
+           array literals of struct vars [a,b], struct field = struct
+           var (StoreField), map insert of struct, struct returned from
+           named local. Same fix pattern: consume/move the source so its
+           drop doesn't dangle the captured pointer. Target: all 16
+           modules distinct=1 -> reliable stage-2.
+  ---

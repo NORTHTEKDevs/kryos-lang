@@ -1645,8 +1645,8 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     }
                 }
                 // If initializer is a call, mark non-copy args consumed.
-                if let RValue::Call { ref args, .. } = rvalue {
-                    consume_call_args(ctx, local, args);
+                if let RValue::Call { ref func, ref args } = rvalue {
+                    consume_call_args(ctx, local, func, args);
                 }
                 ctx.emit(Instruction::Assign {
                     dest: local,
@@ -1777,10 +1777,10 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // doesn't double-free strings/enums the callee took ownership of.
                             // The dest local itself is skipped by consume_call_args even when
                             // it appears as an arg (self-consuming pattern).
-                            if let RValue::Call { ref args, .. } = rvalue {
-                                consume_call_args(ctx, dest, args);
+                            if let RValue::Call { ref func, ref args } = rvalue {
+                                consume_call_args(ctx, dest, func, args);
                             } else if let RValue::CallIndirect { ref args, .. } = rvalue {
-                                consume_call_args(ctx, dest, args);
+                                consume_call_args(ctx, dest, "", args);
                             }
                             ctx.emit(Instruction::Assign {
                                 dest,
@@ -1990,10 +1990,11 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             // like `g()` where g is a void-returning closure local would be
             // silently dropped during stmt lowering.
             match &rvalue {
-                RValue::Call { args, .. } => {
+                RValue::Call { func, args } => {
                     let temp = ctx.alloc_temp(MirType::Void);
                     let args_clone = args.clone();
-                    consume_call_args(ctx, temp, &args_clone);
+                    let func_clone = func.clone();
+                    consume_call_args(ctx, temp, &func_clone, &args_clone);
                     ctx.emit(Instruction::Assign {
                         dest: temp,
                         value: rvalue,
@@ -2002,7 +2003,7 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 RValue::CallIndirect { args, .. } => {
                     let temp = ctx.alloc_temp(MirType::Void);
                     let args_clone = args.clone();
-                    consume_call_args(ctx, temp, &args_clone);
+                    consume_call_args(ctx, temp, "", &args_clone);
                     ctx.emit(Instruction::Assign {
                         dest: temp,
                         value: rvalue,
@@ -3522,7 +3523,15 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
 /// `x = f(x, y)`). In that pattern, the old `x` is moved into the callee,
 /// but `dest` is reassigned with the call's return value, which is a fresh
 /// owned value that still needs to be dropped at scope end.
-fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, args: &[Operand]) {
+fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, func: &str, args: &[Operand]) {
+    // `push` transfers ownership of its value argument into the array: the
+    // array stores the (pointer-sized) value and later drops it when the
+    // array itself is dropped. This includes @copy STRUCTS, which despite
+    // being "copy" still own a heap body — if scope cleanup also drops the
+    // source local, the body the array points at is freed (use-after-free,
+    // observed as non-deterministic garbage in array elements). So for push
+    // we consume @copy struct args too, not just non-copy args.
+    let push_like = func == "push";
     for arg in args {
         if let Operand::Local(local_id) = arg {
             if *local_id == dest {
@@ -3534,7 +3543,14 @@ fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, args: &[Operand])
                 .find(|l| l.id == *local_id)
                 .map(|l| l.ty.clone())
                 .unwrap_or(MirType::I64);
-            if !is_copy_type(ctx, &local_ty) {
+            let is_copy = is_copy_type(ctx, &local_ty);
+            let consume = if push_like {
+                // Consume heap-owning args (non-copy) AND @copy structs.
+                !is_copy || matches!(local_ty, MirType::Struct(_))
+            } else {
+                !is_copy
+            };
+            if consume {
                 ctx.dropped_locals.insert(local_id.0);
             }
         }

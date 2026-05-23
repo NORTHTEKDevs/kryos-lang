@@ -285,6 +285,35 @@ impl OwnershipAnalyzer {
         is_primitive_copy_type(name) || self.copy_structs.contains(name)
     }
 
+    /// Determine if an expression resolves to a `@copy` STRUCT type
+    /// (as opposed to a primitive copy type like i64/bool). @copy structs
+    /// are heap-allocated and passed by pointer in codegen, so when one is
+    /// pushed into an array the array captures that pointer. The source
+    /// local must therefore be treated as MOVED (its drop suppressed),
+    /// otherwise the end-of-scope drop frees the struct body the array
+    /// still points at — a use-after-free that manifests as non-deterministic
+    /// garbage in array elements. Primitives have no heap body, so they stay
+    /// as `use` (copied by value).
+    fn expr_is_copy_struct(&self, expr: &Expr) -> bool {
+        let sname: Option<String> = match expr {
+            Expr::StructLiteral { name, .. } => Some(name.clone()),
+            Expr::Identifier { name, .. } => self.var_struct_names.get(name.as_str()).cloned(),
+            Expr::FnCall { callee, .. } => {
+                if let Expr::Identifier { name: fname, .. } = callee.as_ref() {
+                    self.fn_return_struct_names.get(fname.as_str()).cloned()
+                } else {
+                    None
+                }
+            }
+            Expr::MoveExpr { inner, .. } => return self.expr_is_copy_struct(inner),
+            _ => None,
+        };
+        match sname {
+            Some(ref n) => self.copy_structs.contains(n),
+            None => false,
+        }
+    }
+
     /// Determine if an expression's inferred type is a copy type.
     /// Returns true when the result is provably a primitive copy type
     /// (i64, f64, bool, char, etc.), even through compound expressions
@@ -1094,7 +1123,11 @@ impl OwnershipAnalyzer {
                     // (mutated in-place), not moved. Only the value is moved.
                     if name == "push" && args.len() == 2 {
                         self.analyze_expr_use(&args[0]); // array is used, not moved
-                        if self.expr_is_copy(&args[1]) {
+                        // A @copy struct is heap-allocated and pushed by
+                        // pointer, so the array captures it: MOVE it (suppress
+                        // the source's drop) to avoid a use-after-free. Only
+                        // primitive copy types (no heap body) stay as `use`.
+                        if self.expr_is_copy(&args[1]) && !self.expr_is_copy_struct(&args[1]) {
                             self.analyze_expr_use(&args[1]);
                         } else {
                             self.analyze_expr_move(&args[1]); // value is moved into array
