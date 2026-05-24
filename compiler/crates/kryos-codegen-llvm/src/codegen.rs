@@ -5497,6 +5497,13 @@ impl LlvmCodegen {
             .get(struct_name)
             .map(|fs| fs.iter().map(|(_, t)| mir_type_to_llvm(t)).collect())
             .unwrap_or_default();
+        // MIR field types, to clone heap (array/str/map) fields at construction
+        // (see clone note in the loop below).
+        let field_mir_tys: Vec<MirType> = self
+            .struct_defs
+            .get(struct_name)
+            .map(|fs| fs.iter().map(|(_, t)| t.clone()).collect())
+            .unwrap_or_default();
         // Thread chained insertvalue temps through fresh SSA names from next_temp()
         // instead of dest-indexed names. Dest-indexed names ("%_3_fld_0", ...) collide
         // when the same mutable local is re-assigned in the same function, e.g. an
@@ -5517,7 +5524,25 @@ impl LlvmCodegen {
                 .get(i)
                 .cloned()
                 .unwrap_or_else(|| actual_ty.clone());
-            let coerced_val = self.coerce_value(&val, &actual_ty, &expected_ty);
+            let mut coerced_val = self.coerce_value(&val, &actual_ty, &expected_ty);
+            // Clone heap (array/str/map) field VALUES so each field owns an
+            // independent buffer. Without this, a constructor that assigns the
+            // SAME array handle to two fields (e.g. cg_new's reused `empty_ints`
+            // for func_positions + string_positions + block_offsets) makes those
+            // fields share one buffer -- a push to one grows the others, which
+            // desynced parallel arrays and corrupted function-offset lookups
+            // (every internal call jumped to garbage). The Cranelift backend
+            // clones these on @copy struct construction, which is why stage-0
+            // was immune. Shallow clone (new buffer, shared elements), so no
+            // per-element recursion and no O(N^2) blow-up; big collections live
+            // in module-globals, not struct fields.
+            if let Some(MirType::Array(_, _)) = field_mir_tys.get(i) {
+                if coerced_val != "null" && coerced_val != "zeroinitializer" {
+                    let cl = self.next_temp();
+                    self.emit_line(&format!("  {cl} = call ptr @kryos_array_clone(ptr {coerced_val})"));
+                    coerced_val = cl;
+                }
+            }
             let this = if i + 1 == fields.len() {
                 if is_mutable {
                     // Use a temp name; we will store it to the alloca below.
