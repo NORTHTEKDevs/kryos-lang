@@ -1258,14 +1258,29 @@ fn cg_emit_index(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32)
 
 fn cg_emit_struct_lit(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) {
     let buf = ctx.text_buf
-    // Call runtime allocator for struct
-    // Each field is 8 bytes, total = n_fields * 8
+    // Call runtime allocator for struct. Each field is 8 bytes.
+    // kryos_alloc(size) -> pointer. The size arg must go in the ABI's
+    // first argument register, and Win64 needs 32 bytes of shadow space
+    // reserved before the call. Previously this hardcoded REG_RDI (the
+    // SysV register) and reserved no shadow space, so on Windows EVERY
+    // struct literal passed garbage (whatever was in RCX) as the size and
+    // corrupted the stack across the call -- breaking all struct
+    // construction (e.g. lexer_new's `Lexer { pos: 0 }` never returned).
     let n_fields = len(rv.field_operands)
     let size = n_fields * 8
-    // For now, allocate on stack (sub rsp, size)
-    // Better: call malloc-like runtime function
-    // We'll call kryos_alloc(size) which returns a pointer
-    x86_mov_reg_imm32(buf, REG_RDI, size)
+    let is_win = ctx.target_os == "windows"
+    let r_arg0: i32 = if is_win { REG_RCX } else { REG_RDI }
+    let r_arg1: i32 = if is_win { REG_RDX } else { REG_RSI }
+    let shadow: i32 = if is_win { 32 } else { 0 }
+    // kryos_alloc(size, align): the SECOND arg (align) is required --
+    // Layout::from_size_align rejects a garbage/zero alignment and returns
+    // null, after which the field stores write through a null pointer.
+    // Struct fields are 8-byte slots, so align = 8.
+    x86_mov_reg_imm32(buf, r_arg0, size)
+    x86_mov_reg_imm32(buf, r_arg1, 8)
+    if shadow > 0 {
+        x86_sub_reg_imm32(buf, REG_RSP, shadow)
+    }
     push(ctx.relocations, LinkerReloc {
         offset: buf_len(buf) + 1,
         symbol_name: "kryos_alloc",
@@ -1273,8 +1288,10 @@ fn cg_emit_struct_lit(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg:
         addend: -4
     })
     x86_call_rel32(buf, 0)
-    // RAX = pointer to struct
-    // Fill fields
+    if shadow > 0 {
+        x86_add_reg_imm32(buf, REG_RSP, shadow)
+    }
+    // RAX = pointer to struct. Fill fields.
     let mut i = 0
     while i < n_fields {
         let field_reg = cg_load_operand(ctx, ra, rv.field_operands[i], REG_R10)
