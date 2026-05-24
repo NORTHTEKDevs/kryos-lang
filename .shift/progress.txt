@@ -2257,3 +2257,40 @@ SHIFTS:
            drop doesn't dangle the captured pointer. Target: all 16
            modules distinct=1 -> reliable stage-2.
   ---
+  ---
+  step:    65
+  date:    2026-05-23 (12h shift)
+  summary: |
+    Fixed a SECOND root cause: LLVM backend struct-aggregate boxing.
+    In kryos-codegen-llvm coerce_value, a multi-field struct coerced to
+    i64 (push arg) or ptr did `extractvalue %T v, 0` -- storing only
+    FIELD 0's value where the array/container expects a POINTER. Read
+    side does `inttoptr i64 raw; load %T, ptr` -> load from a tiny int
+    address -> SEGFAULT/garbage. This is THE LLVM array-of-struct bug.
+
+    Fix: box multi-field structs (GEP-sizeof + kryos_arc_alloc_i64 +
+    store + ptrtoint), matching the enum-payload boxing pattern already
+    in the backend. Single-field newtypes keep extractvalue-0 (dyn-trait
+    ABI). Applied to both struct->i64 and struct->ptr coercions.
+
+    Validation:
+      - l1 (push Tok{kind,text}, read xs[0].kind): was len=1 then
+        SEGFAULT under LLVM, now "len=1 k=5 t=hi" correct x3.
+      - r4 (array of str-field @copy structs): was silent under LLVM,
+        now correct x3.
+      - Cranelift repros all still correct (no regression).
+    BUT: stage-1 per-module determinism barely moved (token/ast/elf/coff
+    distinct=1; lexer/types/mir/lower/optimize/regalloc/codegen/linker/
+    runtime/main still distinct=3). e0 stays deterministic + clean RA.
+    => stage-1's remaining non-determinism is NOT the array-of-struct
+    boxing path. lexer two-run diff = 33974/46128 bytes (semantic-scale).
+    Non-determinism SCALES with struct-op count (e0 none=det, lexer
+    many=nondet).
+  files:   kryos-codegen-llvm/src/codegen.rs (coerce_value struct->i64, struct->ptr)
+  next:    Determine if remaining byte non-determinism is COSMETIC
+    (symbol/string/reloc ordering via address-keyed map iteration in
+    stage-1 -> stage-2 still works) or SEMANTIC. Build stage-2 and run
+    it N times. If reliable, non-determinism is cosmetic = goal met.
+    If not, hunt next source: struct passed BY VALUE to functions,
+    struct returned from fn, or HashMap/string-intern iteration order.
+  ---

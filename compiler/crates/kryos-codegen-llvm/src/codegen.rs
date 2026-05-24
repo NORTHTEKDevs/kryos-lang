@@ -5984,18 +5984,49 @@ impl LlvmCodegen {
                 self.track_type(&tmp, "i32");
             }
             (from, "i64") if from.starts_with('%') || from.starts_with('{') => {
-                // Struct/aggregate → i64: extract the first field.
-                // This matches Cranelift's by-value-as-i64 semantics for
-                // single-field passes (e.g. dyn-trait lowering) and is a
-                // conservative fallback for multi-field aggregates.
+                // Struct/aggregate → i64. Two cases:
                 //
-                // Field 0's actual LLVM type may be ptr (e.g. %Match.text), a
-                // narrow integer (e.g. %Token.kind: i32), or i64. Each requires
-                // a different conversion to land on the expected i64 at the
-                // call site. Without this widening LLVM rejects with
-                // "'i32' but expected 'i64'" and Cranelift silently passes
-                // the narrow value with uninit high bits — the stage-2
-                // non-deterministic segfault root cause.
+                // MULTI-FIELD aggregate: this value is being stored into a
+                // pointer-sized slot (array element, map value, etc.). The
+                // read side (RValue::Index/Field on an aggregate dest) does
+                // `inttoptr i64 raw; load %T, ptr` — i.e. it expects the i64
+                // to be a POINTER to a heap copy of the struct. So we must BOX
+                // it: heap-allocate, store the aggregate, return the pointer
+                // as i64. The old code did `extractvalue ..., 0` (field 0
+                // only), which stored a single field's value where a pointer
+                // was expected -> `load` from a tiny integer address ->
+                // segfault. This was THE stage-2 array-of-struct corruption.
+                //
+                // SINGLE-FIELD newtype: keep the by-value `extractvalue 0`
+                // semantics (dyn-trait lowering depends on it).
+                let nfields: Option<usize> = if let Some(name) = from.strip_prefix('%') {
+                    self.struct_defs.get(name).map(|fields| fields.len())
+                } else {
+                    // inline aggregate `{a, b, ...}`: multi-field iff it has a
+                    // top-level comma. Conservative: treat any comma as multi.
+                    Some(if from.contains(',') { 2 } else { 1 })
+                };
+                if nfields.map_or(false, |n| n > 1) {
+                    let size_ptr = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {size_ptr} = getelementptr {from}, ptr null, i64 1"
+                    ));
+                    let size_int = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {size_int} = ptrtoint ptr {size_ptr} to i64"
+                    ));
+                    let heap_i64 = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {heap_i64} = call i64 @kryos_arc_alloc_i64(i64 {size_int})"
+                    ));
+                    let heap_ptr = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {heap_ptr} = inttoptr i64 {heap_i64} to ptr"
+                    ));
+                    self.emit_line(&format!("  store {from} {value}, ptr {heap_ptr}"));
+                    self.track_type(&heap_i64, "i64");
+                    return heap_i64;
+                }
                 let field0_llvm_ty = if let Some(name) = from.strip_prefix('%') {
                     self.struct_defs
                         .get(name)
@@ -6038,7 +6069,35 @@ impl LlvmCodegen {
                 }
             }
             (from, "ptr") if from.starts_with('%') || from.starts_with('{') => {
-                // Struct/aggregate → ptr: extract first field as i64, then inttoptr.
+                // Struct/aggregate → ptr. A MULTI-FIELD aggregate flowing into
+                // a pointer slot must be BOXED (heap copy, pointer returned),
+                // mirroring the struct→i64 case. The old `extractvalue 0 +
+                // inttoptr` produced a pointer out of field 0's value -> wild
+                // pointer -> segfault/garbage. Single-field newtypes keep the
+                // field-0 unwrap.
+                let nfields: Option<usize> = if let Some(name) = from.strip_prefix('%') {
+                    self.struct_defs.get(name).map(|fields| fields.len())
+                } else {
+                    Some(if from.contains(',') { 2 } else { 1 })
+                };
+                if nfields.map_or(false, |n| n > 1) {
+                    let size_ptr = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {size_ptr} = getelementptr {from}, ptr null, i64 1"
+                    ));
+                    let size_int = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {size_int} = ptrtoint ptr {size_ptr} to i64"
+                    ));
+                    let heap_i64 = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {heap_i64} = call i64 @kryos_arc_alloc_i64(i64 {size_int})"
+                    ));
+                    self.emit_line(&format!("  {tmp} = inttoptr i64 {heap_i64} to ptr"));
+                    self.emit_line(&format!("  store {from} {value}, ptr {tmp}"));
+                    self.track_type(&tmp, "ptr");
+                    return tmp;
+                }
                 let f0 = self.next_temp();
                 self.emit_line(&format!(
                     "  {f0} = extractvalue {from} {value}, 0"
