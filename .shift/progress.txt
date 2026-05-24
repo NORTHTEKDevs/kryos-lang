@@ -2607,3 +2607,45 @@ SHIFTS:
     gets a bad regalloc/operand. The minimal binary (frtest) is a known-good
     baseline — bisect by adding pipeline fns until one miscompiles.
   status: blocker-2-localized (large-source codegen)
+  ---
+  step:    77
+  date:    2026-05-24 (continued)
+  summary: |
+    MAJOR FIX this session: string concatenation ABI (step 76, committed
+    4b272a6). self-host codegen emitted kryos_str_concat (stdlib-native,
+    C-STRING ABI via CStr::from_ptr) but passed KryosString HANDLES -> it
+    read the handle's len field as char bytes -> <invalid utf-8>. EVERY
+    string `+` in the language was corrupted. Now emits kryos_string_concat
+    (kryos-rt, handle ABI). VERIFIED impact:
+      - examples that silently produced <invalid utf-8> now CORRECT:
+        demo_calc -> "3 + 4 = 7" / "10 - 3 = 7"; string_format ->
+        "The number is: 1729". (The example harness's lenient check had
+        been masking the corruption all along.)
+      - small shim-linked binaries: "aa"+"bb"->aabb, "N="+to_string(42)->N=42.
+      - bootstrap 16/16, examples 8/8.
+    Also committed: cg_fallback_slot_offset stack_size/8 unit bug (fallback
+    slots landed inside the spill region for large fns).
+
+    BLOCKER #2 still open after concat fix -- it is MULTIPLE bugs:
+    (a) LARGE-FUNCTION codegen: in stage-2, main (107 spilled locals) runs
+        correctly through the CLI dispatch + a println (marker M1 fires) but
+        the NEXT operation fails -- the call dump_ast(cli_args[2]) does not
+        enter dump_ast (D1 literal never fires) and never returns (M2 never
+        fires). Inline ops after that point in main also vanish. DETERMINISTIC
+        (two identical-source builds fail identically; the obj bytes differ
+        =byte-nondeterminism, but the functional failure is stable). Clean RA
+        (no garbage local_ids), MIR deterministic, fn-emit order deterministic
+        -> the corruption is within main's large body after the dispatch.
+        Suspect spill/stack/call-sequence handling at scale (107 spills).
+    (b) file_read returns 0 even for a valid 47-byte literal path in a SMALL
+        shim-linked binary (deterministic, 3/3). mem_copy order correct,
+        SYS_OPEN=2/O_RDONLY=0 correct, file NOT truncated (open is read-only),
+        str_data_ptr/str_byte_len offsets correct (KryosString data@16).
+        So open succeeds but read returns 0, OR open fails -- not yet pinned
+        (next: instrument fd in file_read). NOTE step 75 said file_read worked;
+        may be byte-nondeterminism on file_read's compilation, or a real bug.
+  files: (committed in 76) codegen.kry concat + fallback; main.kry clean
+  next: (a) the large-function main codegen bug is THE gate for `ast`/the
+        pipeline -- needs a debugger-level trace of main's emitted code after
+        the dispatch (spill reload / call sequence). (b) pin file_read fd.
+  status: concat FIXED (major); blocker #2 = large-fn codegen + file_read, open
