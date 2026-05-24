@@ -2649,3 +2649,32 @@ SHIFTS:
         pipeline -- needs a debugger-level trace of main's emitted code after
         the dispatch (spill reload / call sequence). (b) pin file_read fd.
   status: concat FIXED (major); blocker #2 = large-fn codegen + file_read, open
+  ---
+  step:    82-83
+  date:    2026-05-24
+  summary: FIXED field-access offset bug (cg_emit_field_access always read
+           offset 0). Field index now resolved at lowering from struct_defs via
+           receiver operand type, carried in rv.field_idx; codegen emits idx*8.
+           Verified examples 9/9 + new examples/field_offsets.kry (distinct
+           lit/param field values). Committed step 82 (038f841).
+  files:   self-host/{codegen,lower,mir,optimize}.kry, examples/field_offsets.kry,
+           self-host/STAGE2_MEMORY_BLOCKER.md
+  finding: The real stage-2 gate is NOT field access — it is a pre-existing
+           O(n^2) memory blowup. Prior "stage-2" binaries were built from a
+           STALE/TRUNCATED obj (watchdog killed stage-1 mid-emit at the old 3 GB
+           cap; a leftover obj got linked). Clean rebuild: stage-1 cannot produce
+           the full-source obj. sub6 (5151 real lines) = 14.8 GB even with
+           KRYOS_USE_REALLOC=1; full source O(n^2) => >100 GB. realloc is safe
+           through sub6 but CRASHES on full source (residual heap corruption in
+           a post-sub6 file). Root cause: runtime leaks on array-grow + codegen
+           retain/release imbalance (arrays never reach rc=0). Confirmed
+           pre-existing (step-81 stage-1 OOMs identically). NOT my regression.
+  blocked: stage-2 full-source obj blocked by O(n^2) compile memory +residual
+           heap corruption. Deep/delicate (codegen retain audit = the runtime's
+           own deferred "next-shift work"). NOT a safe quick fix; flipping the
+           leak off re-triggers the heap crashes the user must avoid.
+  next:    see self-host/STAGE2_MEMORY_BLOCKER.md candidate fixes 1-3. Start by
+           localizing the residual OOB write to a post-sub6 file (bisect with
+           KRYOS_USE_REALLOC=1), then the retain/release balance audit.
+  safety:  watchdog used throughout (3/8/16/26 GB caps); machine never crashed;
+           37->33 GB free maintained; KryosLeakGuard Running, KryosTwin Stopped.
