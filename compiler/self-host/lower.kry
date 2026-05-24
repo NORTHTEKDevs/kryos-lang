@@ -1206,6 +1206,18 @@ fn lower_index_access(ctx: LowerCtx, e: Expr) -> Operand {
     }
     let obj_op = lower_expr(ctx, e.left[0])
     let idx_op = lower_expr(ctx, e.right[0])
+    // String indexing s[i] returns the 1-char string at byte i. The array
+    // index path (rv_index) reads KryosArray layout (data@offset 32, *8
+    // element stride) which is WRONG for a KryosString (data@16, byte index),
+    // producing a garbage pointer and a crash. Route strings to the runtime
+    // kryos_string_char_at, matching stage-0's codegen.
+    let obj_ty = ctx_operand_ty(ctx, obj_op)
+    if obj_ty.kind == MIR_TY_STR {
+        let sargs: [Operand] = [obj_op, idx_op]
+        let st = ctx_alloc_temp(ctx, mir_ty_str())
+        ctx_emit(ctx, inst_assign(st, rv_call("kryos_string_char_at", sargs)))
+        return op_local(st)
+    }
     let t = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
     ctx_emit(ctx, inst_assign(t, rv_index(obj_op, idx_op)))
     return op_local(t)
