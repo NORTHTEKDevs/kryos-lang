@@ -1,0 +1,29 @@
+// Validates multi-field struct field access at correct offsets.
+// Before the field-index fix, every field read used offset 0, so all
+// reads returned the first field. Correct output requires distinct
+// field offsets (field_index * 8).
+
+struct Box {
+    a: i64,
+    b: i64,
+    c: i64,
+    d: i64,
+}
+
+fn show(x: Box) {
+    // Param receiver -- the lexer/parser hot path.
+    println("param.a=" + to_string(x.a))
+    println("param.b=" + to_string(x.b))
+    println("param.c=" + to_string(x.c))
+    println("param.d=" + to_string(x.d))
+}
+
+fn main() {
+    // Struct-literal local receiver.
+    let bx = Box { a: 11, b: 22, c: 33, d: 44 }
+    println("lit.a=" + to_string(bx.a))
+    println("lit.b=" + to_string(bx.b))
+    println("lit.c=" + to_string(bx.c))
+    println("lit.d=" + to_string(bx.d))
+    show(bx)
+}

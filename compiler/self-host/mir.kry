@@ -629,10 +629,11 @@ fn rv_call_indirect(callee_op: Operand, call_args: [Operand]) -> RValue {
     return rv
 }
 
-fn rv_field(obj: Operand, fname: str) -> RValue {
+fn rv_field(obj: Operand, fname: str, fidx: i32) -> RValue {
     let mut rv = rv_empty(RV_FIELD)
     rv.object = [obj]
     rv.field_name = fname
+    rv.field_idx = fidx
     return rv
 }
 

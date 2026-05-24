@@ -1205,16 +1205,10 @@ fn cg_emit_field_access(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_re
     let buf = ctx.text_buf
     if len(rv.object) > 0 {
         let obj_reg = cg_load_operand(ctx, ra, rv.object[0], REG_R10)
-        // Field offset: each field is 8 bytes (all values are 64-bit in Kryos)
-        // We need to know the field index — for now, use the field_name
-        // In MIR, field access should carry the index
-        // Simple approach: assume field offset is encoded somewhere
-        // For the self-host: fields are sequential 8-byte slots
-        // We'll use a fixed 8-byte stride with the field name as lookup
-        // The code generator needs struct layout info
-        // For now, load at offset 0 as placeholder — the real impl
-        // needs struct def lookup
-        x86_mov_reg_mem(buf, dest_reg, obj_reg, 0)
+        // Struct values are heap pointers; every field is an 8-byte slot.
+        // The field index is resolved at lowering (rv.field_idx) from the
+        // receiver's struct definition, so the offset is field_idx * 8.
+        x86_mov_reg_mem(buf, dest_reg, obj_reg, rv.field_idx * 8)
     }
 }
 

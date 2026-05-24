@@ -1467,7 +1467,7 @@ fn remap_rvalue(rv: RValue, from_ids: [i32], to_ids: [i32]) -> RValue {
     if rv.kind == RV_FIELD {
         let new_obj = remap_operand_list(rv.object, from_ids, to_ids)
         if len(new_obj) > 0 {
-            return rv_field(new_obj[0], rv.field_name)
+            return rv_field(new_obj[0], rv.field_name, rv.field_idx)
         }
         return rv
     }

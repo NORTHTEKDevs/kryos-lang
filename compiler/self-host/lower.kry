@@ -33,14 +33,15 @@ struct LowerCtx {
     loop_continue: i32,
     fn_ret_ty: MirType,
     lambda_counter: i32,
-    lambda_funcs: [MirFunction]
+    lambda_funcs: [MirFunction],
+    struct_defs: [MirStructDef]
 }
 
 // ===================================================================
 // Context constructor
 // ===================================================================
 
-fn ctx_new(func: MirFunction, ret_ty: MirType) -> LowerCtx {
+fn ctx_new(func: MirFunction, ret_ty: MirType, struct_defs: [MirStructDef]) -> LowerCtx {
     let empty_names: [str] = []
     let empty_ids: [i32] = []
     let empty_fns: [MirFunction] = []
@@ -53,7 +54,8 @@ fn ctx_new(func: MirFunction, ret_ty: MirType) -> LowerCtx {
         loop_continue: -1,
         fn_ret_ty: ret_ty,
         lambda_counter: 0,
-        lambda_funcs: empty_fns
+        lambda_funcs: empty_fns,
+        struct_defs: struct_defs
     }
 }
 
@@ -115,6 +117,63 @@ fn ctx_operand_ty(ctx: LowerCtx, op: Operand) -> MirType {
     if op.const_kind == RV_CONST_BOOL { return mir_ty_bool() }
     if op.const_kind == RV_CONST_STRING { return mir_ty_str() }
     return mir_ty_simple(MIR_TY_ANY)
+}
+
+// Struct name of an operand's type ("" if the operand is not a struct).
+fn ctx_struct_name_of(ctx: LowerCtx, op: Operand) -> str {
+    let ty = ctx_operand_ty(ctx, op)
+    if ty.kind == MIR_TY_STRUCT {
+        return ty.name
+    }
+    return ""
+}
+
+// Field index for `sname.fname` from the module struct definitions.
+// Returns 0 when the struct/field is unknown (preserves old behaviour).
+fn ctx_field_index(ctx: LowerCtx, sname: str, fname: str) -> i32 {
+    if len(sname) == 0 {
+        return 0
+    }
+    let mut i = 0
+    while i < len(ctx.struct_defs) {
+        if ctx.struct_defs[i].name == sname {
+            let fnames = ctx.struct_defs[i].field_names
+            let mut j = 0
+            while j < len(fnames) {
+                if fnames[j] == fname {
+                    return j
+                }
+                j = j + 1
+            }
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// Field type for `sname.fname`. Returns ANY when unknown. Used to type
+// the result temp so chained access (a.b.c) resolves at each step.
+fn ctx_field_type(ctx: LowerCtx, sname: str, fname: str) -> MirType {
+    let mut i = 0
+    while i < len(ctx.struct_defs) {
+        if ctx.struct_defs[i].name == sname {
+            let fnames = ctx.struct_defs[i].field_names
+            let mut j = 0
+            while j < len(fnames) {
+                if fnames[j] == fname {
+                    return ctx.struct_defs[i].field_types[j]
+                }
+                j = j + 1
+            }
+        }
+        i = i + 1
+    }
+    return mir_ty_simple(MIR_TY_ANY)
+}
+
+// Operand-based field index (resolves the receiver struct name first).
+fn ctx_field_index_of(ctx: LowerCtx, op: Operand, fname: str) -> i32 {
+    return ctx_field_index(ctx, ctx_struct_name_of(ctx, op), fname)
 }
 
 // ===================================================================
@@ -1129,8 +1188,11 @@ fn lower_field_access(ctx: LowerCtx, e: Expr) -> Operand {
         return op_none()
     }
     let obj_op = lower_expr(ctx, e.left[0])
-    let t = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
-    ctx_emit(ctx, inst_assign(t, rv_field(obj_op, e.name)))
+    let sname = ctx_struct_name_of(ctx, obj_op)
+    let fidx = ctx_field_index(ctx, sname, e.name)
+    let fty = ctx_field_type(ctx, sname, e.name)
+    let t = ctx_alloc_temp(ctx, fty)
+    ctx_emit(ctx, inst_assign(t, rv_field(obj_op, e.name, fidx)))
     return op_local(t)
 }
 
@@ -1494,7 +1556,8 @@ fn lower_pattern_bind(ctx: LowerCtx, subject: Operand, pat: Pattern) {
     if pat.kind == PAT_STRUCT {
         for i in range(0, len(pat.field_names)) {
             let field_val = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
-            ctx_emit(ctx, inst_assign(field_val, rv_field(subject, pat.field_names[i])))
+            let pfidx = ctx_field_index_of(ctx, subject, pat.field_names[i])
+            ctx_emit(ctx, inst_assign(field_val, rv_field(subject, pat.field_names[i], pfidx)))
             if i < len(pat.field_patterns) {
                 lower_pattern_bind(ctx, op_local(field_val), pat.field_patterns[i])
             }
@@ -1543,7 +1606,7 @@ fn lower_lambda(ctx: LowerCtx, e: Expr) -> Operand {
     }
 
     // Create a sub-context for the lambda body
-    let mut lambda_ctx = ctx_new(lambda_func, ret_ty)
+    let mut lambda_ctx = ctx_new(lambda_func, ret_ty, ctx.struct_defs)
 
     // Register params in lambda context
     for i in range(0, len(lambda_func.params)) {
@@ -1882,7 +1945,8 @@ fn lower_assign_stmt(ctx: LowerCtx, s: Stmt) {
         } else {
             // Compound field assignment: read, compute, write back
             let old_val = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
-            ctx_emit(ctx, inst_assign(old_val, rv_field(obj_op, target.name)))
+            let cfidx = ctx_field_index_of(ctx, obj_op, target.name)
+            ctx_emit(ctx, inst_assign(old_val, rv_field(obj_op, target.name, cfidx)))
             let val_rhs = lower_expr(ctx, value_expr)
             let mir_op = compound_assign_to_binop(s.assign_op)
             let new_val = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
@@ -2441,7 +2505,7 @@ fn lower_function(module: MirModule, d: Decl, tc: TypeChecker) {
     }
 
     // Create lowering context
-    let mut ctx = ctx_new(func, ret_ty)
+    let mut ctx = ctx_new(func, ret_ty, module.struct_defs)
 
     // Register parameters in context
     for i in range(0, len(func.params)) {
@@ -2561,7 +2625,7 @@ fn lower_impl(module: MirModule, d: Decl, tc: TypeChecker) {
         }
 
         // Create context and register params
-        let mut ctx = ctx_new(func, ret_ty)
+        let mut ctx = ctx_new(func, ret_ty, module.struct_defs)
         for j in range(0, len(func.params)) {
             ctx_define_local(ctx, func.params[j].name, func.params[j].local_id)
         }
@@ -2683,7 +2747,8 @@ fn lower_single_function(d: Decl, tc: TypeChecker) -> MirFunction {
         mir_func_add_param(func, param.name, param_ty)
     }
 
-    let mut ctx = ctx_new(func, ret_ty)
+    let empty_sd: [MirStructDef] = []
+    let mut ctx = ctx_new(func, ret_ty, empty_sd)
 
     for i in range(0, len(func.params)) {
         ctx_define_local(ctx, func.params[i].name, func.params[i].local_id)
