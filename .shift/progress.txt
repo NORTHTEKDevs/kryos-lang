@@ -2474,3 +2474,44 @@ SHIFTS:
   note: crates/kryos-codegen-llvm/src/codegen.rs has a PRE-EXISTING uncommitted
         change (not from this step) — left unstaged.
   status: progress-diagnosis
+  ---
+  step:    73
+  date:    2026-05-24 (12h shift, resumed)
+  summary: |
+    Deep determinism hunt via KRYOS_OP_DUMP instrumentation. Caught the
+    bug: operands read mid-emit with GARBAGE discriminants (const_kind =
+    heap pointer) -> active memory reuse. SIX fix hypotheses tested:
+      1. push @copy UAF (step 64)       -> HELPED (e0 deterministic)
+      2. LLVM struct boxing (step 65)   -> fixed array-of-struct correctness
+      3. zeroinit struct literals (69)  -> no determinism change
+      4. zero arc_alloc user region(71) -> no determinism change
+      5. KRYOS_LEAK_ON_ZERO in arc_release -> s_arrset 5->3 only, lexer 5
+      6. NO-OP __kryos_drop for @copy structs (step 73) -> no det change
+    Result: large modules STILL distinct=5. Determinism is multi-source
+    and elusive. Confirmed NOT: undef literals, undef boxes, premature
+    ARC release, @copy drop-helper field-frees. The reuse source is still
+    unidentified (likely direct kryos_string_free/array_free on shared
+    @copy fields, or aggregate-value @copy sharing on a non-array path).
+
+    Step 73 no-op @copy drop is KEPT: it matches the existing "@copy
+    shares field pointers; don't free" design (drop_local already no-ops
+    for @copy), removes a real use-after-free + invalid-free (boxes are
+    arc-allocated but were freed via libc free()), and does NOT regress
+    (examples 8/8, bootstrap 16/16, full-source obj still 1590MB).
+
+    HONEST STATUS: stage-3 (fixed point) is NOT reachable without solving
+    determinism, which is a deeper multi-session compiler-internals problem
+    than targeted fixes resolve. The LLVM backend needs @copy value
+    semantics brought to full parity with Cranelift (which deep-copies
+    @copy struct heap fields on RValue::Use, lines 3007-3105 of the
+    cranelift codegen; LLVM does a shallow aggregate copy -> shared field
+    pointers). That parity work + its nested-clone heuristic tuning (the
+    cranelift side went through H21/H25/whitelist iterations) is the real
+    path -- and it must NOT reintroduce the O(N^2) leak (keep lexer/parser
+    big arrays as globals; only small @copy structs get deep-copied).
+  files:   crates/kryos-codegen-llvm/src/codegen.rs (no-op @copy drop helper)
+  next:    Bring LLVM @copy struct RValue::Use to parity with cranelift's
+    deep-copy (clone array/str/map fields into independent copies), being
+    careful with nested @copy struct fields and avoiding the O(N^2) leak.
+    Use KRYOS_OP_DUMP to verify operand discriminants stop flipping.
+  status: paused -- determinism is the gating blocker, deeper than 1 session

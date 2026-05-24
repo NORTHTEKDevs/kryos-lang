@@ -1580,10 +1580,32 @@ impl LlvmCodegen {
 
         // Struct drop helpers.
         for (name, fields) in &struct_defs {
-            if name == "Map" || !has_heap_fields(fields) {
+            if name == "Map" {
                 continue;
             }
             let drop_name = format!("__kryos_drop_{name}");
+            // @copy structs are passed/copied by value with SHALLOW field
+            // sharing (the LLVM aggregate copy duplicates the str/array handle
+            // pointers, not the backing data). Their boxed bodies are also not
+            // owned by any single copy. Freeing the fields OR the body in the
+            // drop helper is therefore a use-after-free / invalid-free that a
+            // sibling copy still references -- the dominant source of stage-1
+            // codegen non-determinism (a freed Operand field is reused, so a
+            // later read sees a garbage heap pointer). Matches the existing
+            // "@copy structs share field pointers; the original owner frees"
+            // design (drop_local for @copy is already a no-op). Emit an empty
+            // helper so array/element drop call sites still link.
+            if self.copy_structs.contains(name) {
+                self.emit_line(&format!("define internal void @{drop_name}(ptr %ptr) {{"));
+                self.emit_line("entry:");
+                self.emit_line("  ret void");
+                self.emit_line("}");
+                self.emit_blank();
+                continue;
+            }
+            if !has_heap_fields(fields) {
+                continue;
+            }
             self.emit_line(&format!("; Type drop helper for struct {name}"));
             self.emit_line(&format!("define internal void @{drop_name}(ptr %ptr) {{"));
             self.emit_line("entry:");
