@@ -116,6 +116,18 @@ pub extern "C" fn kryos_arc_alloc(size: usize, align: usize) -> *mut u8 {
         });
     }
 
+    // Zero the user-data region. Boxed aggregates (e.g. @copy structs
+    // stored into arrays via the LLVM backend's struct->i64 boxing) are
+    // written field-by-field; any byte NOT covered by an explicit store
+    // (struct padding, or a field the producer left undef) would otherwise
+    // hold allocator garbage that reads non-deterministically -> the
+    // self-host emits different object bytes each run. Zeroing here matches
+    // the Cranelift backend's calloc semantics and makes boxed reads
+    // deterministic.
+    unsafe {
+        std::ptr::write_bytes(base.add(offset), 0, size);
+    }
+
     // Return pointer to user data (base + offset).
     unsafe { base.add(offset) }
 }
