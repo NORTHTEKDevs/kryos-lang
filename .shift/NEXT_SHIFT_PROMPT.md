@@ -1,4 +1,22 @@
-# Next-shift handoff (kryos-lang self-host) — updated 2026-05-23, steps 63-68
+# Next-shift handoff (kryos-lang self-host)
+
+## STEP 74 UPDATE (2026-05-24): BLOCKER #1 SOLVED — stage-2 LINKS + RUNS
+
+- `self-host/rt_shim_win.c` provides the 24 Windows intrinsics codegen.kry:1027
+  inlines only on Linux. `self-host/link_stage2.bat` compiles it + links.
+- Build a running stage-2:  `bash self-host/build_stage2_extlink.sh`  then
+  `MSYS_NO_PATHCONV=1 cmd.exe /c <bat> <obj> <exe>` (the .sh emits the obj; relink
+  via link_stage2.bat). NOTE: cmd.exe from git-bash NEEDS `MSYS_NO_PATHCONV=1`.
+- stage-2 VERIFIED: usage banner, CLI dispatch (argv incl argv[0]), string
+  compare, len/println/error/exit all correct.
+- stage-2 BROKEN: the compile pipeline (`ast/check/compile/obj <file>`) silently
+  no-ops — EXIT=0, zero output, not even dump_ast's first println. This is
+  BLOCKER #2 (codegen correctness in LARGE fns), now the SOLE gate. stage-2
+  miscompiles its own pipeline functions (file_read/tokenize/parse/dump_ast).
+- Self-hosting is gated entirely on blocker #2 now. See progress.txt step 74.
+
+---
+# (historical) Next-shift handoff — updated 2026-05-23, steps 63-68
 
 ## TL;DR of this shift (steps 63-68, commits be352d9..HEAD)
 

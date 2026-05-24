@@ -2515,3 +2515,67 @@ SHIFTS:
     careful with nested @copy struct fields and avoiding the O(N^2) leak.
     Use KRYOS_OP_DUMP to verify operand discriminants stop flipping.
   status: paused -- determinism is the gating blocker, deeper than 1 session
+  ---
+  step:    74
+  date:    2026-05-24
+  summary: |
+    BLOCKER #1 RESOLVED (reproducibly): stage-2 LINKS and RUNS.
+    Root cause confirmed: codegen.kry:1027 inlines syscall/io intrinsics
+    ONLY for target_os=="linux"; the Windows/PE path emits external CALLs
+    and NO lib provides them (dumpbin-verified absent from kryos_rt.lib,
+    kryos_stdlib_native.lib, kryos_runtime.lib). Step-56's running stage-2
+    was a transient/unpreserved artifact (runtime.kry+codegen.kry are
+    byte-identical to step 56, so its objs had the same 24 undefs).
+
+    Wrote self-host/rt_shim_win.c (~110 lines): provides all 24 intrinsics
+    on Windows. mem_* = raw ptr ops; str_byte_len/str_data_ptr/str_from_bytes
+    via kryos_string_len/KryosString.data@16/kryos_string_new; __int_to_float
+    = (double)x; __get_process_args builds KryosArray<KryosString> from
+    __argc/__argv (INCLUDES argv[0] — matches main.kry which uses cli_args[1]
+    as the command); __builtin_len/push/pop/range -> kryos_array_*; pop adjusts
+    KryosArray.len@0; __builtin_map_* -> kryos_map_*; syscall1/2/3/6 dispatch
+    Linux-nr -> Win32/CRT (read=_read, write=_write, open=2 translated Linux
+    O_* -> _O_BINARY|_O_WRONLY|_O_CREAT|_O_TRUNC + _open, close=_close,
+    mmap=9 -> VirtualAlloc, munmap=11 -> VirtualFree, exit_group=231 ->
+    ExitProcess). link_stage2.bat compiles the shim (cl /c /O2 /Zl) and links.
+
+    RESULT — stage-2 (kryos-stage2.exe, 4.27MB) VERIFIED WORKING for:
+      - no args -> full usage banner
+      - CLI arg dispatch (argv via shim, incl argv[0])
+      - string comparison (command=="ast"/"check"/... all match)
+      - len(), println, error paths ("error: ast requires an input file")
+    NOT working — the COMPILE PIPELINE silently no-ops:
+      - `ast/check/compile/obj <file>` -> EXIT=0, ZERO output. Not even
+        dump_ast's first println("=== Kryos Self-Hosted Compiler ===") nor
+        its "could not read file" error fires. Execution returns cleanly
+        without doing work. NOT a crash (exit 0). NOT the shim (simple paths
+        all work; arg convention correct). dump_ast/compile_file/check_file
+        all funnel through file_read + tokenize + parse — the larger fns.
+
+    CONCLUSION: blockers #1 and #2 are now decoupled and #1 is solved. The
+    SOLE remaining gate to a self-hosting stage-2 is BLOCKER #2 — the codegen
+    correctness/non-determinism bug in LARGE functions (step 56's "tokenize/
+    parse have register-overlap/share-on-clone issues at scale"; step 70's
+    within-function operand-discriminant flake). stage-2 miscompiles its own
+    pipeline functions so they early-return/no-op. This is the same multi-
+    source @copy/operand bug class chipped at across steps 64-72.
+
+    Self-hosting (stage-2 compiles correctly, then stage2==stage3) is NOT
+    reachable until blocker #2's large-function codegen bug is fixed. That is
+    a deep, multi-source bug, not a one-session fix.
+  files:
+    - compiler/self-host/rt_shim_win.c (NEW)
+    - compiler/self-host/link_stage2.bat (updated: compile+link shim)
+    - compiler/self-host/build_stage2_extlink.sh (from step 73)
+  next:
+    1. BLOCKER #2 is the gate. Instrument stage-2's dump_ast: why does it
+       return before its first println? Likely stage-2's codegen for file_read
+       or the dump_ast prologue. Build a stage-1-compiled MINIMAL program that
+       calls runtime.kry's file_read directly (concat runtime.kry + a tiny
+       main that does `let s=file_read(argv); println(to_string(len(s)))`),
+       link with the shim, run. If THAT works, file_read is fine and the bug
+       is dump_ast-specific (large-fn codegen). If it fails, the shim's
+       file I/O or runtime.kry file_read-on-stage-1 is the issue.
+    2. Then chase the operand-discriminant non-determinism (repro
+       /tmp/s_arrset.kry, step 70) which also blocks stage2==stage3.
+  status: BLOCKER-1-SOLVED / blocker-2-is-the-gate
