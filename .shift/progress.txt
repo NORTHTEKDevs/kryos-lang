@@ -2579,3 +2579,31 @@ SHIFTS:
     2. Then chase the operand-discriminant non-determinism (repro
        /tmp/s_arrset.kry, step 70) which also blocks stage2==stage3.
   status: BLOCKER-1-SOLVED / blocker-2-is-the-gate
+  ---
+  step:    75
+  date:    2026-05-24
+  summary: |
+    ISOLATION TEST — proves shim + file_read are CORRECT; blocker is purely
+    large-source codegen. Built a MINIMAL binary: runtime.kry + a tiny main
+    (args/file_read/len/to_string/println), compiled by stage-1, linked with
+    rt_shim_win.c. Ran it on /tmp/h.kry (45 bytes):
+        got args / read bytes: / 45   (EXIT=0)  -- CORRECT.
+    So shim open/read, file_read, str_from_bytes, len, to_string all work in
+    a small stage-1-compiled binary.
+
+    Therefore stage-2's silent pipeline failure is NOT the shim and NOT
+    file_read. The SAME runtime.kry file_read works in isolation but is
+    miscompiled inside the full 20k-line stage-2 binary. CONCLUSION: blocker
+    #2 is a SCALE-DEPENDENT stage-1 codegen-correctness bug — stage-1 compiles
+    small inputs correctly (examples 8/8, this minimal binary) but miscompiles
+    some functions when compiling the large full self-host source, so stage-2's
+    pipeline functions (dump_ast/compile_file/tokenize/parse) early-return/no-op.
+    Matches step 56 ("register-overlap/share-on-clone at scale") + step 70
+    (within-fn operand-discriminant flake) + step 72 (multi-source).
+  next:
+    Go straight to the large-function codegen bug (do NOT re-investigate file
+    I/O — proven good). Approach: KRYOS_CG_TRACE=1 + KRYOS_RA_DUMP on stage-1
+    while it compiles the full source; find which pipeline fn (dump_ast first)
+    gets a bad regalloc/operand. The minimal binary (frtest) is a known-good
+    baseline — bisect by adding pipeline fns until one miscompiles.
+  status: blocker-2-localized (large-source codegen)
