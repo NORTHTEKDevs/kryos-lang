@@ -59,23 +59,37 @@ struct BranchPatch {
 // ===================================================================
 
 fn cg_new(target_os: str) -> CodegenCtx {
-    let empty_syms: [LinkerSymbol] = []
-    let empty_relocs: [LinkerReloc] = []
-    let empty_strs: [str] = []
-    let empty_ints: [i32] = []
-    let empty_patches: [BranchPatch] = []
+    // CRITICAL: every array field must get its OWN distinct empty array.
+    // Reusing one `empty_strs` / `empty_ints` binding across multiple fields
+    // makes those fields share a single backing buffer (the LLVM backend's
+    // @copy struct construction stores the array HANDLE shallowly; only the
+    // Cranelift backend clones it -- which is why stage-0 was unaffected).
+    // With sharing, e.g. cg_intern_string's push to string_positions also
+    // grew func_positions and block_offsets, desyncing func_offsets from
+    // func_positions, so cg_lookup_func returned a WRONG function offset and
+    // every internal call in stage-2-compiled code jumped to garbage. This
+    // was THE blocker-#2 miscompile (and the bulk of the apparent
+    // "non-determinism": shared-buffer reallocs are heap-address-sensitive).
+    let f_symbols: [LinkerSymbol] = []
+    let f_relocs: [LinkerReloc] = []
+    let f_str_off: [str] = []
+    let f_str_pos: [i32] = []
+    let f_fn_off: [str] = []
+    let f_fn_pos: [i32] = []
+    let f_blk_off: [i32] = []
+    let f_patches: [BranchPatch] = []
     return CodegenCtx {
         text_buf: buf_new(4096),
         data_buf: buf_new(4096),
         rodata_buf: buf_new(4096),
-        symbols: empty_syms,
-        relocations: empty_relocs,
-        string_offsets: empty_strs,
-        string_positions: empty_ints,
-        func_offsets: empty_strs,
-        func_positions: empty_ints,
-        block_offsets: empty_ints,
-        branch_patches: empty_patches,
+        symbols: f_symbols,
+        relocations: f_relocs,
+        string_offsets: f_str_off,
+        string_positions: f_str_pos,
+        func_offsets: f_fn_off,
+        func_positions: f_fn_pos,
+        block_offsets: f_blk_off,
+        branch_patches: f_patches,
         target_os: target_os
     }
 }
