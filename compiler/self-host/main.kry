@@ -367,23 +367,40 @@ fn compile_file(filename: str, output: str) {
     let mut tc = tc_new()
     tc = tc_register_builtins(tc)
     tc = tc_check_module(tc, module)
+    // Honor KRYOS_SKIP_TYPES=1 (same rationale as the obj path): stage-1's
+    // type checker is incomplete relative to stage-0, and bootstrap input
+    // is pre-validated, so type errors here are usually missing-feature
+    // false positives. Continue to codegen using whatever the checker
+    // managed to populate.
+    let skip_types = env_get("KRYOS_SKIP_TYPES")
     if len(tc.errors) > 0 {
-        println("Type errors: " + to_string(len(tc.errors)))
-        for i in range(0, len(tc.errors)) {
-            println("  " + tc.errors[i])
+        if len(skip_types) > 0 {
+            println("Type errors: " + to_string(len(tc.errors)) + " (KRYOS_SKIP_TYPES=1; continuing)")
+        } else {
+            println("Type errors: " + to_string(len(tc.errors)))
+            for i in range(0, len(tc.errors)) {
+                println("  " + tc.errors[i])
+            }
+            exit(1)
+            return
         }
-        exit(1)
-        return
+    } else {
+        println("Type check: OK")
     }
-    println("Type check: OK")
 
     // Phase 4: Lower to MIR
     let mir_mod = lower_module(module, tc)
     println("MIR functions: " + to_string(len(mir_mod.functions)))
 
-    // Phase 5: Optimize
-    optimize(mir_mod)
-    println("Optimization: done")
+    // Phase 5: Optimize. Skipped under SKIP_TYPES to match the obj path --
+    // the optimizer mutates MIR in ways the current regalloc/codegen
+    // pipeline can't follow on large (bootstrap-sized) inputs.
+    if len(skip_types) > 0 {
+        println("Optimization: skipped (skip-types/bootstrap path)")
+    } else {
+        optimize(mir_mod)
+        println("Optimization: done")
+    }
 
     // Phase 6: Compile to executable
     let target = detect_target_os()
