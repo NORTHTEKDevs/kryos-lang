@@ -547,9 +547,33 @@ fn rv_empty(k: i32) -> RValue {
     }
 }
 
+fn clone_operand(operand: Operand) -> Operand {
+    return Operand {
+        is_local: operand.is_local, local_id: operand.local_id,
+        const_kind: operand.const_kind, int_val: operand.int_val,
+        float_val: operand.float_val, bool_val: operand.bool_val,
+        str_val: operand.str_val
+    }
+}
+
+fn clone_operand_list(ops: [Operand]) -> [Operand] {
+    let mut out: [Operand] = []
+    for i in range(0, len(ops)) {
+        let o = ops[i]
+        let c = Operand {
+            is_local: o.is_local, local_id: o.local_id,
+            const_kind: o.const_kind, int_val: o.int_val,
+            float_val: o.float_val, bool_val: o.bool_val,
+            str_val: o.str_val
+        }
+        push(out, c)
+    }
+    return out
+}
+
 fn rv_use(operand: Operand) -> RValue {
     let mut rv = rv_empty(RV_USE)
-    rv.use_operand = [operand]
+    rv.use_operand = [clone_operand(operand)]
     return rv
 }
 
@@ -611,27 +635,27 @@ fn rv_binop(binop: i32, l: Operand, r: Operand) -> RValue {
 fn rv_unop(unop: i32, operand: Operand) -> RValue {
     let mut rv = rv_empty(RV_UNOP)
     rv.op = unop
-    rv.left = [operand]
+    rv.left = [clone_operand(operand)]
     return rv
 }
 
 fn rv_call(name: str, call_args: [Operand]) -> RValue {
     let mut rv = rv_empty(RV_CALL)
     rv.func_name = name
-    rv.args = call_args
+    rv.args = clone_operand_list(call_args)
     return rv
 }
 
 fn rv_call_indirect(callee_op: Operand, call_args: [Operand]) -> RValue {
     let mut rv = rv_empty(RV_CALL_INDIRECT)
-    rv.callee = [callee_op]
-    rv.args = call_args
+    rv.callee = [clone_operand(callee_op)]
+    rv.args = clone_operand_list(call_args)
     return rv
 }
 
 fn rv_field(obj: Operand, fname: str, fidx: i32) -> RValue {
     let mut rv = rv_empty(RV_FIELD)
-    rv.object = [obj]
+    rv.object = [clone_operand(obj)]
     rv.field_name = fname
     rv.field_idx = fidx
     return rv
@@ -639,20 +663,20 @@ fn rv_field(obj: Operand, fname: str, fidx: i32) -> RValue {
 
 fn rv_index(obj: Operand, idx: Operand) -> RValue {
     let mut rv = rv_empty(RV_INDEX)
-    rv.index_obj = [obj]
-    rv.index_idx = [idx]
+    rv.index_obj = [clone_operand(obj)]
+    rv.index_idx = [clone_operand(idx)]
     return rv
 }
 
 fn rv_array(elems: [Operand]) -> RValue {
     let mut rv = rv_empty(RV_ARRAY)
-    rv.elements = elems
+    rv.elements = clone_operand_list(elems)
     return rv
 }
 
 fn rv_tuple(elems: [Operand]) -> RValue {
     let mut rv = rv_empty(RV_TUPLE)
-    rv.elements = elems
+    rv.elements = clone_operand_list(elems)
     return rv
 }
 
@@ -660,13 +684,13 @@ fn rv_struct_lit(sname: str, fnames: [str], fops: [Operand]) -> RValue {
     let mut rv = rv_empty(RV_STRUCT)
     rv.struct_name = sname
     rv.rv_field_names = fnames
-    rv.field_operands = fops
+    rv.field_operands = clone_operand_list(fops)
     return rv
 }
 
 fn rv_cast(operand: Operand, ty: MirType) -> RValue {
     let mut rv = rv_empty(RV_CAST)
-    rv.cast_operand = [operand]
+    rv.cast_operand = [clone_operand(operand)]
     rv.cast_ty = [ty]
     return rv
 }
@@ -675,19 +699,19 @@ fn rv_enum_variant(ename: str, vidx: i32, fields: [Operand]) -> RValue {
     let mut rv = rv_empty(RV_ENUM_VARIANT)
     rv.enum_name = ename
     rv.variant_idx = vidx
-    rv.enum_fields = fields
+    rv.enum_fields = clone_operand_list(fields)
     return rv
 }
 
 fn rv_enum_tag(operand: Operand) -> RValue {
     let mut rv = rv_empty(RV_ENUM_TAG)
-    rv.enum_operand = [operand]
+    rv.enum_operand = [clone_operand(operand)]
     return rv
 }
 
 fn rv_enum_payload(operand: Operand, vidx: i32, fidx: i32) -> RValue {
     let mut rv = rv_empty(RV_ENUM_PAYLOAD)
-    rv.enum_operand = [operand]
+    rv.enum_operand = [clone_operand(operand)]
     rv.variant_idx = vidx
     rv.field_idx = fidx
     return rv
@@ -696,27 +720,27 @@ fn rv_enum_payload(operand: Operand, vidx: i32, fidx: i32) -> RValue {
 fn rv_closure(func_name: str, caps: [Operand]) -> RValue {
     let mut rv = rv_empty(RV_CLOSURE)
     rv.closure_func = func_name
-    rv.captures = caps
+    rv.captures = clone_operand_list(caps)
     return rv
 }
 
 fn rv_string_concat(parts: [Operand]) -> RValue {
     let mut rv = rv_empty(RV_STRING_CONCAT)
-    rv.concat_parts = parts
+    rv.concat_parts = clone_operand_list(parts)
     return rv
 }
 
 fn rv_map(keys: [Operand], values: [Operand]) -> RValue {
     let mut rv = rv_empty(RV_MAP)
-    rv.map_keys = keys
-    rv.map_values = values
+    rv.map_keys = clone_operand_list(keys)
+    rv.map_values = clone_operand_list(values)
     return rv
 }
 
 fn rv_range(start_op: Operand, end_op: Operand, inclusive: bool) -> RValue {
     let mut rv = rv_empty(RV_RANGE)
-    rv.range_start = [start_op]
-    rv.range_end = [end_op]
+    rv.range_start = [clone_operand(start_op)]
+    rv.range_end = [clone_operand(end_op)]
     rv.range_inclusive = inclusive
     return rv
 }
