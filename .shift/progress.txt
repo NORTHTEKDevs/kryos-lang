@@ -2294,3 +2294,50 @@ SHIFTS:
     If not, hunt next source: struct passed BY VALUE to functions,
     struct returned from fn, or HashMap/string-intern iteration order.
   ---
+  ---
+  step:    66
+  date:    2026-05-23 (12h shift)
+  summary: |
+    FIXED THE 42GB MEMORY LEAK (the crash-the-machine blocker).
+
+    Root cause: every compiler PHASE threads a @copy state struct that
+    embeds large collections. @copy struct copy DEEP-CLONES array/string
+    fields (kryos_array_clone = full bulk copy). The state struct is
+    passed/returned/reassigned by value once PER TOKEN (lexer) / PER
+    DECLARATION (parser), so the big collections were cloned O(N) times
+    => O(N^2) memory. Confirmed: leak scales with #functions not #lines;
+    lexer cloned the 682KB src string PER CHARACTER (~465GB if uncrashed).
+
+    Fix (SAFE -- no aliasing risk, collections are read-only/append-only):
+    moved the big fields OUT of the @copy structs into module-globals.
+      - lexer.kry: src + tokens -> globals g_lsrc, g_ltokens; Lexer = {pos}
+      - parser.kry: tokens -> global g_ptokens; Parser = {pos,errors,nsl}
+    (verified mutable global arrays work in both Cranelift + LLVM first.)
+
+    Results (stage-1 compiling the 20,649-line concatenated self-host):
+      - scale_400 ast:     2507MB -> <200MB
+      - full-source check: 4653MB -> 1352MB
+      - full-source obj:   KILLED@42GB -> COMPLETES @1592MB ("written")
+      - stage-2 compile:   KILLED@42GB -> completes @816-927MB
+      - examples: 8/8 (no regression)
+      - bootstrap per-module: 16/16 (was 15/16 w/ flake)
+    Watchdog (scratch/kryos-watchdog.ps1, 1s poll, hard MB cap) protected
+    the desktop throughout; saferun + memwatch also in scratch/.
+
+    Remaining blockers (NOT the leak, separate):
+    1. stage-2 via `compile` aborts on pre-existing TYPE ERRORS in the
+       self-host source (coff_write_sec_hdr expected i64 got void;
+       buf_write_to_file/buf_write_str expected i64 got str). The `obj`
+       path tolerates these (continues); `compile` does not emit a binary.
+       -> build stage-2 via per-module obj + link, OR fix these type
+       mismatches, OR make compile tolerate like obj under SKIP_TYPES.
+    2. Per-module determinism: token/ast/elf/coff = distinct=1;
+       lexer/parser/main still distinct=3 (residual @copy-struct codegen
+       non-determinism in the larger modules -- not the leak).
+  files:   self-host/lexer.kry, self-host/parser.kry
+  next:    (a) unblock stage-2: investigate why compile aborts on type
+           errors vs obj; likely build stage-2 via obj+link of the 16
+           modules (test_bootstrap already compiles them 16/16). (b) Then
+           stage-3 + compare for fixed point. (c) Chase residual
+           determinism in lexer/parser/main if needed for stage2==stage3.
+  ---

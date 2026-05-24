@@ -39,11 +39,19 @@ let CHR_RBRACE = char_from(125)
 // Lexer struct
 // -------------------------------------------------------------------
 
+// Source text and emitted-token list live in module-globals rather than
+// inside the (@copy) Lexer struct. Lexing is single-pass; the source is
+// read-only and the token list is append-only. Keeping them out of the
+// @copy struct avoids the O(N^2) blow-up where every lex_advance (one per
+// character) deep-cloned the entire source string AND token array as part
+// of @copy Lexer-by-value threading -- the dominant source of the stage-1
+// "compile self-host" 40GB memory leak.
+let mut g_lsrc: str = ""
+let mut g_ltokens: [Token] = []
+
 @copy
 struct Lexer {
-    src: str,
-    pos: i32,
-    tokens: [Token]
+    pos: i32
 }
 
 // -------------------------------------------------------------------
@@ -79,8 +87,9 @@ fn is_upper(ch: str) -> bool {
 // -------------------------------------------------------------------
 
 fn lexer_new(src: str) -> Lexer {
-    let tokens: [Token] = []
-    return Lexer { src: src, pos: 0, tokens: tokens }
+    g_lsrc = src
+    g_ltokens = []
+    return Lexer { pos: 0 }
 }
 
 // -------------------------------------------------------------------
@@ -88,26 +97,26 @@ fn lexer_new(src: str) -> Lexer {
 // -------------------------------------------------------------------
 
 fn lex_at_end(lex: Lexer) -> bool {
-    return lex.pos >= len(lex.src)
+    return lex.pos >= len(g_lsrc)
 }
 
 fn lex_peek(lex: Lexer) -> str {
     if lex_at_end(lex) {
         return ""
     }
-    return lex.src[lex.pos]
+    return g_lsrc[lex.pos]
 }
 
 fn lex_peek_at(lex: Lexer, offset: i32) -> str {
     let idx = lex.pos + offset
-    if idx >= len(lex.src) {
+    if idx >= len(g_lsrc) {
         return ""
     }
-    return lex.src[idx]
+    return g_lsrc[idx]
 }
 
 fn lex_advance(lex: Lexer) -> Lexer {
-    return Lexer { src: lex.src, pos: lex.pos + 1, tokens: lex.tokens }
+    return Lexer { pos: lex.pos + 1 }
 }
 
 fn lex_match_char(lex: Lexer, expected: str) -> Lexer {
@@ -116,8 +125,8 @@ fn lex_match_char(lex: Lexer, expected: str) -> Lexer {
     if lex_at_end(lex) {
         return lex
     }
-    if lex.src[lex.pos] == expected {
-        return Lexer { src: lex.src, pos: lex.pos + 1, tokens: lex.tokens }
+    if g_lsrc[lex.pos] == expected {
+        return Lexer { pos: lex.pos + 1 }
     }
     return lex
 }
@@ -128,9 +137,8 @@ fn lex_match_char(lex: Lexer, expected: str) -> Lexer {
 
 fn lex_emit(lex: Lexer, kind: i32, start: i32, end: i32, text: str) -> Lexer {
     let tok = Token { kind: kind, text: text, start: start, end: end }
-    let mut tokens = lex.tokens
-    push(tokens, tok)
-    return Lexer { src: lex.src, pos: lex.pos, tokens: tokens }
+    push(g_ltokens, tok)
+    return Lexer { pos: lex.pos }
 }
 
 // -------------------------------------------------------------------
@@ -320,7 +328,7 @@ fn lex_scan_number(lex: Lexer, start: i32) -> Lexer {
     let mut l = lex
 
     // Check for radix prefixes: 0x, 0b, 0o
-    if l.src[start] == "0" and not lex_at_end(l) {
+    if g_lsrc[start] == "0" and not lex_at_end(l) {
         let next = lex_peek(l)
         // Hexadecimal
         if next == "x" or next == "X" {
@@ -328,7 +336,7 @@ fn lex_scan_number(lex: Lexer, start: i32) -> Lexer {
             while not lex_at_end(l) and (is_hex_digit(lex_peek(l)) or lex_peek(l) == "_") {
                 l = lex_advance(l)
             }
-            let text = substr(l.src, start, l.pos)
+            let text = substr(g_lsrc, start, l.pos)
             l = lex_emit(l, TK_INTEGER, start, l.pos, text)
             return l
         }
@@ -338,7 +346,7 @@ fn lex_scan_number(lex: Lexer, start: i32) -> Lexer {
             while not lex_at_end(l) and (lex_peek(l) == "0" or lex_peek(l) == "1" or lex_peek(l) == "_") {
                 l = lex_advance(l)
             }
-            let text = substr(l.src, start, l.pos)
+            let text = substr(g_lsrc, start, l.pos)
             l = lex_emit(l, TK_INTEGER, start, l.pos, text)
             return l
         }
@@ -354,7 +362,7 @@ fn lex_scan_number(lex: Lexer, start: i32) -> Lexer {
                     break
                 }
             }
-            let text = substr(l.src, start, l.pos)
+            let text = substr(g_lsrc, start, l.pos)
             l = lex_emit(l, TK_INTEGER, start, l.pos, text)
             return l
         }
@@ -390,7 +398,7 @@ fn lex_scan_number(lex: Lexer, start: i32) -> Lexer {
         }
     }
 
-    let text = substr(l.src, start, l.pos)
+    let text = substr(g_lsrc, start, l.pos)
     if is_float {
         l = lex_emit(l, TK_FLOAT, start, l.pos, text)
     } else {
@@ -408,7 +416,7 @@ fn lex_scan_identifier(lex: Lexer, start: i32) -> Lexer {
     while not lex_at_end(l) and is_alnum(lex_peek(l)) {
         l = lex_advance(l)
     }
-    let word = substr(l.src, start, l.pos)
+    let word = substr(g_lsrc, start, l.pos)
 
     // Check if it is a keyword
     let kind = keyword_lookup(word)
@@ -612,5 +620,5 @@ fn tokenize(src: str) -> [Token] {
 
     // Emit the Eof sentinel
     lex = lex_emit(lex, TK_EOF, lex.pos, lex.pos, "")
-    return lex.tokens
+    return g_ltokens
 }
