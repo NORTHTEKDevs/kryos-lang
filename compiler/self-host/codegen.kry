@@ -1285,16 +1285,38 @@ fn cg_emit_struct_lit(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg:
     if shadow > 0 {
         x86_add_reg_imm32(buf, REG_RSP, shadow)
     }
-    // RAX = pointer to struct. Fill fields.
+    // RAX = pointer to struct. Save it on the stack across the field-fill
+    // loop: a field-operand load can CALL the runtime (e.g. a string-literal
+    // field -> kryos_string_new, returning in RAX) and clobber the struct
+    // pointer, which corrupts both the field stores and the returned pointer.
+    // (Symptom: `Lexer { src, pos: 0, tokens }` returned the src string handle,
+    // so lex.pos read the string's cap field instead of 0.) Mirror
+    // cg_emit_array_lit's save/reload-around-call pattern.
+    x86_push_reg(buf, REG_RAX)
     let mut i = 0
     while i < n_fields {
+        // Re-align RSP to 16 across the possible call inside the field load
+        // (the push above moved RSP by 8).
+        if shadow > 0 {
+            x86_sub_reg_imm32(buf, REG_RSP, 8)
+        }
         let field_reg = cg_load_operand(ctx, ra, rv.field_operands[i], REG_R10)
-        x86_mov_mem_reg(buf, REG_RAX, i * 8, field_reg)
+        if field_reg != REG_R10 {
+            x86_mov_reg_reg(buf, REG_R10, field_reg)
+        }
+        if shadow > 0 {
+            x86_add_reg_imm32(buf, REG_RSP, 8)
+        }
+        // Reload the saved struct pointer (now at [rsp]) and store the field.
+        // Use RAX (non-extended) as both the reload dest and store base --
+        // matches cg_emit_array_lit's proven [rsp]-reload encoding; an
+        // extended reg (R11) base/dest with an rsp-base load mis-encodes.
+        x86_mov_reg_mem(buf, REG_RAX, REG_RSP, 0)
+        x86_mov_mem_reg(buf, REG_RAX, i * 8, REG_R10)
         i = i + 1
     }
-    if dest_reg != REG_RAX {
-        x86_mov_reg_reg(buf, dest_reg, REG_RAX)
-    }
+    // Restore the struct pointer into dest_reg.
+    x86_pop_reg(buf, dest_reg)
 }
 
 // ===================================================================

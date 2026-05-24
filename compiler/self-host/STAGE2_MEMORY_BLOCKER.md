@@ -31,7 +31,46 @@ cost off). Shows arr/str/struct new/free counts, per-category bytes, big-array c
 structs) IF the parser doesn't rely on `@copy` value snapshots for backtracking
 (verify first). Would bring full-source compile to ~1-2 GB.
 
-### THE NEW GATE: blocker #2 — stage-1 miscompiles the large self-host source
+### blocker #2 — DISASM EVIDENCE (step 86, 2026-05-24)
+
+Disassembled stage-2's `tokenize` (dumpbin /disasm of kryos-stage2.obj). The
+miscompile is concrete:
+
+```
+  call  lexer_new
+  mov   rbx, rax      ; the lexer_new RESULT is captured in RBX
+  xor   r12, r12      ; but `lex` lives in R12 and is ZEROED, not set from RBX
+  jmp   <loop cond>
+  ...: mov rcx, r12 ; call lex_at_end   ; loop reads lex from R12 (=0/garbage)
+  ...  mov r12, r15                      ; loop body DOES update lex in R12
+  ...  return path: mov rax, [r12]       ; lex.tokens read at WRONG offset (0, not 16)
+```
+
+`lex` is a **mutable, loop-carried local**: its definition (`let mut lex =
+lexer_new(src)`) is assigned register **RBX**, but every USE inside the while
+loop reads **R12**, and the connecting copy (`mov r12, rbx`) was emitted as
+`xor r12, r12` (zero) — so the call result is lost and `lex` is 0/garbage in
+the loop. Reading `lex.<field>` then dereferences garbage / wrong offsets
+(observed: `lex.pos` read 61 = the src string's cap; `lex.tokens` read at
+offset 0).
+
+The lowering (`lower_let_stmt` -> `inst_assign(lex, rv_use(t))`), `cg_emit_call`
+(moves RAX->dest), `cg_emit_instruction`, `cg_get_local_reg`/`cg_store_local`,
+and `x86_emit_memop` (disp8/disp32) all read **correct on paper** — yet the
+emitted code splits `lex` across two registers with a zeroing in between. So the
+root cause is in **regalloc** (`regalloc.kry`): a loop-carried mutable local
+gets inconsistent register assignments at its def vs its loop-body uses (the
+linear-scan "back-edge blindness" the file's own comments mention a partial
+workaround for). NEXT: dump the regalloc intervals for `tokenize` (instrument
+ra to print local_id -> reg/spill_slot), find where `lex`'s def-interval and
+loop-interval diverge, and unify them (or force-spill loop-carried locals so def
+and uses share a stack slot).
+
+NOT yet root-caused to a single line. Examples 9/9 don't exercise this because
+they don't have struct-returning functions captured into loop-carried mutable
+locals.
+
+### (earlier framing) stage-1 miscompiles the large self-host source
 
 `stage-1 ast tiny.kry` works perfectly (Tokens: 19, AST dumped, exit 0). But the
 stage-2 it produces crashes (exit 139): `stage-2 ast/obj/check tiny.kry` prints the
