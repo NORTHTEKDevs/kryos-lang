@@ -2705,3 +2705,24 @@ SHIFTS:
            verify no backtracking reliance first.
   safety:  watchdog throughout (16-18GB caps, 38GB free maintained); no machine crash;
            KryosLeakGuard Running, KryosTwin Stopped.
+  ---
+  step:    84-89
+  date:    2026-05-24 (session 2, long autonomous run)
+  summary: MEMORY WALL BROKEN + 5 self-host codegen bugs fixed. Full-source obj
+           now builds (~10GB) and stage-2 links + runs (banner/file-read/size).
+           Fixes: (82) field-access offset; (84) O(n^2) compile mem = Lexer
+           non-@copy so growing tokens array is shared not deep-copied; (86)
+           cg_emit_struct_lit RAX-clobber across field loads; (87) operand
+           share-on-clone aliasing in rvalue constructors (x=call_result lost);
+           (88) string index s[i] miscompiled as array index -> kryos_string_char_at.
+           examples 9/9 throughout; loop-carried struct-capture repro returns 35.
+  files:   self-host/{lexer,mir,codegen,lower}.kry + kryos-rt memstats (84).
+  blocked: NOT self-compiling yet. stage-2 ast hangs after "Size:" (does not reach
+           Tokens:). NOT regalloc (all-spill experiment did not fix). Tail of
+           self-host codegen bugs in lexer/parser path; in-source instrumentation
+           is unreliable (markers shift/re-trigger codegen bugs; an eprintln in
+           dump_ast made stage-1 crash during codegen). Needs disasm-level work.
+  next:    disasm stage-2's lex_scan_token / dump_ast token-count loop to find the
+           hang; continue codegen hardening bug-by-bug. The hard memory blocker is
+           gone -- remaining is incremental.
+  safety:  watchdog throughout (16-20GB caps), 30+GB free maintained, no crash.

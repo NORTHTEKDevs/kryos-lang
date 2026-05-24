@@ -1,4 +1,51 @@
-# Stage-2 Bootstrap Blocker — Memory O(n^2) [RESOLVED 2026-05-24, step 84]
+# Stage-2 Bootstrap — progress log
+
+## SESSION 2 (2026-05-24 cont., steps 84-88): memory solved + 5 codegen bugs fixed
+
+The full-source obj now builds (~10 GB) and stage-2 links + runs (banner, file
+read, size). Fixes landed this session, each a real self-host codegen/runtime bug
+that stage-0 handled but the self-host codegen did not:
+
+1. step 82 — field-access offset (field_idx*8 from struct_defs).
+2. step 84 — O(n^2) compile memory: Lexer made non-@copy so its growing tokens
+   array is shared (refcount) not deep-copied per token. (kryos_array_clone is a
+   deep copy, not the O(1) rc-bump its doc claims.)
+3. step 86 — cg_emit_struct_lit lost the struct pointer (RAX) across field loads
+   when a field load called the runtime; now saved/reloaded like array_lit.
+4. step 87 — operand share-on-clone aliasing: rvalue constructors (rv_use,
+   rv_field, rv_index, rv_unop, rv_cast, rv_enum_*) stored operands that a later
+   operand could overwrite; now cloned. Fixed `x = call_result` losing its value.
+5. step 88 — string indexing s[i] was miscompiled as ARRAY indexing (KryosArray
+   data@32, *8 stride) instead of string byte access; now routes strings to
+   kryos_string_char_at. The lexer crashed on its first lex.src[lex.pos].
+
+After all 5: examples 9/9; minimal loop-carried struct-capture repro returns 35;
+stage-2 no longer crashes in tokenize.
+
+### REMAINING: stage-2 still does not finish tokenize (not self-compiling yet)
+
+`stage-2 ast tiny.kry` prints the header + "Size:" then hangs (does not reach
+"Tokens:"). Narrowing was inconclusive because the compiler is buggy enough that
+debug instrumentation in the self-host source SHIFTS or re-triggers codegen bugs
+(adding markers changed a crash to a hang; an eprintln in dump_ast made stage-1
+itself crash during codegen of the full source). Findings:
+- NOT register allocation: forcing all-spill (KRYOS_RA_SPILL_ALL experiment) did
+  not fix the hang.
+- lex_advance and lex_at_end disassemble correctly (pos+1, field offsets right).
+- The hang is in the tokenize/lex_scan_token path or dump_ast's token-count loop;
+  guards placed in tokenize's loop and lex_scan_identifier's loop did NOT fire
+  (so either those loops terminate and the hang is elsewhere, or the guards
+  themselves miscompile).
+
+This is a TAIL of self-host codegen bugs that surface sequentially; 5 are fixed,
+more remain in the lexer/parser path. Each needs disassembly-level work because
+in-source instrumentation is unreliable on the buggy compiler. The memory wall
+that made the bootstrap impossible is gone; this is now incremental codegen
+hardening.
+
+---
+
+# (historical) Stage-2 Bootstrap Blocker — Memory O(n^2) [RESOLVED 2026-05-24, step 84]
 
 ## STATUS: MEMORY BLOCKER RESOLVED. Gate is now blocker #2 (codegen miscompile).
 
