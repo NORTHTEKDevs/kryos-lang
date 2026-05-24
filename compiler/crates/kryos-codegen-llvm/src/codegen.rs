@@ -5480,7 +5480,14 @@ impl LlvmCodegen {
         // when the same mutable local is re-assigned in the same function, e.g. an
         // `if`-each-arm sets a Ctx struct: LLVM rejects the second insertvalue chain
         // as "multiple definition of local value named '_3_fld_0'".
-        let mut prev = "undef".to_string();
+        // Start from zeroinitializer (not undef) so any struct field NOT set
+        // by this literal defaults to 0/null -- matching the Cranelift backend,
+        // which calloc's struct bodies. With `undef`, omitted fields held
+        // garbage that read non-deterministically (different bytes each run),
+        // which made the LLVM-built stage-1 emit non-deterministic object code
+        // (e.g. a bool/discriminant field read as 0 -> `xor`, nonzero -> `mov`).
+        // This was the dominant remaining source of stage-1 codegen non-determinism.
+        let mut prev = "zeroinitializer".to_string();
         for (i, (field_name, op)) in fields.iter().enumerate() {
             let val = self.operand_to_llvm(op, func);
             let actual_ty = self.operand_type(op, func);
