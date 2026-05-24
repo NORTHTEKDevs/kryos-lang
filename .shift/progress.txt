@@ -2413,3 +2413,64 @@ SHIFTS:
   files:   crates/kryos-codegen-llvm/src/codegen.rs (zeroinit), self-host/main.kry (step 67)
   verification: examples 8/8, bootstrap 16/16 (no regressions from steps 67/69)
   status: paused
+  ---
+  step:    73
+  date:    2026-05-24 (resume shift; new context)
+  summary: |
+    Resumed to push toward self-hosting. Baseline verified clean:
+    examples 8/8, bootstrap per-module 16/16. Leak fix holds (full-source
+    obj completes, no OOM).
+
+    Attacked BLOCKER #1 (running stage-2 via external link). Concatenated
+    full source (runtime+15 modules, 20,689 lines), emitted single stage-2
+    .obj with stage-1 (KRYOS_SKIP_TYPES=1 KRYOS_NO_ASLR=1) = 1,189,230 bytes.
+    MSVC link via new link_stage2.bat. NOTE: invoking cmd.exe/link.exe from
+    git-bash REQUIRES MSYS_NO_PATHCONV=1 (else `/c` -> `C:\`).
+
+    Link reaches link.exe, fails LNK1120: 24 unresolved externals, ALL from
+    runtime.kry bodies: syscall1/2/3/6, mem_read_i64/write_i64/copy/read_byte/
+    write_byte, str_byte_len/data_ptr/from_bytes, __get_process_args,
+    __int_to_float, __builtin_len/push/pop/range/map_has/map_has_str/
+    map_delete/map_delete_str/map_keys/map_keys_str.
+
+    DIAGNOSIS (high confidence):
+    - The 24 are registered ONLY in kryos-types/src/check.rs (~3480-3635).
+      NOT implemented in any lib (binary-grep confirmed absent from
+      kryos_rt.lib + kryos_stdlib_native.lib). They are meant to be INLINED
+      by codegen. Linux path inlines; Windows/PE path does NOT -> stage-1
+      emits external CALLs nothing resolves.
+    - runtime.kry CANNOT be dropped: x86(110)/elf(70)/coff(46)/linker(45)/
+      codegen(43) all use its buf_* byte-emission API.
+    - Memory model: rt_alloc->syscall6(MMAP=9), rt_free->syscall2(MUNMAP=11),
+      rt_write->syscall3(WRITE=1). Linux nrs baked in; buffers are mmap-backed,
+      so syscall is on the live path.
+
+    FORK for blocker #1:
+    (A) NATIVE SHIM (validates stage-1 codegen; not true self-host): C shim
+        providing 24 syms. syscall* dispatch Linux-nr->Win32 (mmap->VirtualAlloc,
+        munmap->VirtualFree, write->_write, read->_read, exit_group->ExitProcess).
+        mem_* trivial. str_*/__builtin_*/__get_process_args map to kryos_string_*/
+        kryos_array_*/kryos_map_* (ABI confirmed). OPEN: __builtin_len/push take
+        untyped i64 handle; need proof self-host calls them on ARRAYS only
+        (strings use str_byte_len) before mapping len->kryos_array_len etc.
+    (B) TRUE SELF-HOST: inline the 24 in stage-1 codegen.kry on Windows/PE.
+        Bigger; yields self-contained stage-2, no shim, no Rust libs.
+
+    HONEST SCOPE: full self-hosting (stage-2 runs AND stage2==stage3) is NOT
+    one session. Path A => "stage-2 runs" milestone + answers cosmetic-vs-
+    semantic determinism. Path B + determinism (blocker #2, multi-source per
+    step 72) => true self-hosting, multi-session.
+  files:
+    - compiler/self-host/build_stage2_extlink.sh (NEW)
+    - compiler/self-host/link_stage2.bat (NEW)
+  next:
+    1. Confirm self-host calls len()/push() on arrays only. If so write
+       self-host/rt_shim_win.c, compile w/ cl.exe, add to link_stage2.bat,
+       relink, run stage-2 on hello.kry.
+    2. If stage-2 runs: stage-2 compile self-host -> stage-3, compare
+       (answers cosmetic vs semantic determinism).
+    3. Then blocker #2 root cause (within-fn operand-discriminant flake,
+       repro /tmp/s_arrset.kry from step 70).
+  note: crates/kryos-codegen-llvm/src/codegen.rs has a PRE-EXISTING uncommitted
+        change (not from this step) — left unstaged.
+  status: progress-diagnosis
