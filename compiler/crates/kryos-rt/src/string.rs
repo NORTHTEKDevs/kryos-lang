@@ -76,6 +76,7 @@ pub unsafe extern "C" fn kryos_string_new(ptr: *const u8, len: i64) -> *mut Kryo
     (*s).cap = cap as i64;
     (*s).data = data;
     (*s).ref_count = 1;
+    crate::memstats::note_str_new((cap + 1 + 32) as i64);
     s
 }
 
@@ -294,6 +295,7 @@ pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {
         // H41 pure no-op for bootstrap reliability.
         return;
     }
+    crate::memstats::note_str_free_call();
     let rc = (*s).ref_count;
     if rc <= 0 {
         return;
@@ -306,6 +308,7 @@ pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {
     let cap = (*s).cap as usize;
     if !(*s).data.is_null() && cap > 0 {
         dealloc((*s).data, KryosString::layout(cap));
+        crate::memstats::note_str_free((cap + 1) as i64);
     }
     (*s).data = ptr::null_mut();
     (*s).cap = 0;

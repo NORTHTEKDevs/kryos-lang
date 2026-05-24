@@ -37,6 +37,9 @@ impl KryosArray {
 #[no_mangle]
 pub unsafe extern "C" fn kryos_array_new(elem_size: i64, cap: i64) -> *mut KryosArray {
     let cap_usize = (cap.max(4)) as usize;
+    if cap > 1024 {
+        crate::memstats::note_big_array(cap);
+    }
     let layout = KryosArray::data_layout(cap_usize);
     let data = alloc(layout);
     if data.is_null() {
@@ -55,6 +58,7 @@ pub unsafe extern "C" fn kryos_array_new(elem_size: i64, cap: i64) -> *mut Kryos
     (*arr).elem_size = elem_size;
     (*arr).ref_count = 1;
     (*arr).data = data;
+    crate::memstats::note_arr_new((cap_usize * ELEM_SIZE + 40) as i64);
     arr
 }
 
@@ -151,6 +155,12 @@ pub unsafe extern "C" fn kryos_array_push(arr: *mut KryosArray, val: i64) {
         );
         (*arr).data = new_data;
         (*arr).cap = new_cap as i64;
+        let grow_net = if use_realloc {
+            ((new_cap - cap) * ELEM_SIZE) as i64
+        } else {
+            (new_cap * ELEM_SIZE) as i64
+        };
+        crate::memstats::note_arr_grow(grow_net);
     }
 
     let slot = (*arr).data.add(len * ELEM_SIZE) as *mut i64;
@@ -381,6 +391,7 @@ pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
         // contributing to bootstrap flake. Pure no-op removes those reads.
         return;
     }
+    crate::memstats::note_arr_free_call();
     let rc = (*arr).ref_count;
     if rc <= 0 {
         return; // already freed (sentinel)
@@ -394,6 +405,7 @@ pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
     let cap = (*arr).cap as usize;
     if !(*arr).data.is_null() && cap > 0 {
         dealloc((*arr).data, KryosArray::data_layout(cap));
+        crate::memstats::note_arr_free((cap * ELEM_SIZE) as i64);
     }
     (*arr).data = ptr::null_mut();
     (*arr).cap = 0;

@@ -39,7 +39,12 @@ let CHR_RBRACE = char_from(125)
 // Lexer struct
 // -------------------------------------------------------------------
 
-@copy
+// NOT @copy: Lexer holds the growing `tokens` array. As an @copy value
+// type, every functional rebuild (lex_next / lex_emit) deep-copied that
+// array on field-read AND construction -- O(n^2) over the token stream
+// (sub6: ~3.7GB for the token array alone). As a reference type the array
+// field is shared (refcount) and grown in place via push -> O(n). The lexer
+// is used functionally (rebuild + discard old), so sharing is sound.
 struct Lexer {
     src: str,
     pos: i32,

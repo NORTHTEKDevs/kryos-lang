@@ -18,7 +18,11 @@ pub extern "C" fn kryos_alloc(size: usize, align: usize) -> *mut u8 {
         Err(_) => return std::ptr::null_mut(),
     };
     // SAFETY: layout has non-zero size (checked above).
-    unsafe { std::alloc::alloc(layout) }
+    let p = unsafe { std::alloc::alloc(layout) };
+    if !p.is_null() {
+        crate::memstats::note_struct_new(size as i64);
+    }
+    p
 }
 
 /// Deallocate memory previously allocated by kryos_alloc.
@@ -33,6 +37,7 @@ pub extern "C" fn kryos_dealloc(ptr: *mut u8, size: usize, align: usize) {
         Ok(l) => l,
         Err(_) => return,
     };
+    crate::memstats::note_struct_free(size as i64);
     // SAFETY: caller guarantees ptr was allocated with this layout.
     unsafe { std::alloc::dealloc(ptr, layout) }
 }
