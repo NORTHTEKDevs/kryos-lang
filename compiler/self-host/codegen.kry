@@ -342,6 +342,13 @@ fn cg_store_local(ctx: CodegenCtx, ra: RegAllocResult, local_id: i32, src_reg: i
 // ===================================================================
 
 fn cg_load_operand(ctx: CodegenCtx, ra: RegAllocResult, op: Operand, target_reg: i32) -> i32 {
+    if env_get("KRYOS_OP_DUMP") == "1" {
+        let mut il = 0
+        if op.is_local { il = 1 }
+        let mut bv = 0
+        if op.bool_val { bv = 1 }
+        eprintln("OP il=" + to_string(il) + " lid=" + to_string(op.local_id) + " ck=" + to_string(op.const_kind) + " iv=" + to_string(op.int_val) + " bv=" + to_string(bv))
+    }
     if op.is_local {
         return cg_get_local_reg(ctx, ra, op.local_id, target_reg)
     }

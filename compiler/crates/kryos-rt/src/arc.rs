@@ -192,6 +192,12 @@ pub extern "C" fn kryos_arc_release(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
+    // Diagnostic / safety knob: when KRYOS_LEAK_ON_ZERO=1, never free ARC
+    // objects. Used to test whether premature ARC release of boxed @copy
+    // struct elements is the source of stage-1 codegen non-determinism.
+    if crate::leak_on_zero() {
+        return;
+    }
     unsafe {
         if !is_arc_ptr(ptr) {
             return;
