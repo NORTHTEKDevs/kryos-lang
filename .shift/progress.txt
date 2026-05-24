@@ -2678,3 +2678,30 @@ SHIFTS:
            KRYOS_USE_REALLOC=1), then the retain/release balance audit.
   safety:  watchdog used throughout (3/8/16/26 GB caps); machine never crashed;
            37->33 GB free maintained; KryosLeakGuard Running, KryosTwin Stopped.
+  ---
+  step:    84-85
+  date:    2026-05-24
+  summary: SOLVED the O(n^2) compile-memory blocker. Root cause: kryos_array_clone
+           is a deep O(len) copy (not the O(1) rc-bump its doc claims), called on
+           @copy struct construction + array field-read. Self-host kept the growing
+           tokens array in the @copy Lexer and rebuilt it per token -> deep-copied
+           twice/token -> O(n^2). Fix: drop @copy from Lexer (array shared/refcounted,
+           grown in place). sub6 13169MB->756MB; full 20787-line source >18GB-OOM ->
+           ~9.7GB COMPLETES with a valid 1.2MB obj; stage-2.exe links + runs banner.
+           Built memstats tooling (kryos-rt, KRYOS_MEMSTATS gated). Committed 497cd74.
+  files:   self-host/lexer.kry, crates/kryos-rt/src/{memstats.rs,lib,alloc,array,string}.rs,
+           self-host/STAGE2_MEMORY_BLOCKER.md
+  dead-ends(don't repeat): KRYOS_USE_REALLOC (crashes full src); blanket unnamed-temp
+           drops in kryos-mir lower.rs (use-after-free crash, retains unbalanced);
+           clone->retain at @copy construction alone (crash + field-read clone also
+           mattered); no-skip-ownership build (no effect on drops).
+  blocked: NEW GATE = blocker #2 (pre-existing, was masked by OOM). stage-1 ast works
+           (Tokens:19, AST ok); the stage-2 it builds CRASHES exit 139 on ast/obj/check
+           at first op after command header (no-arg usage works). stage-1 miscompiles
+           the large self-host source (scale-dependent; examples 9/9 fine). Long-standing
+           large-main spill/call-at-scale codegen bug, now cleanly reproducible.
+  next:    (a) blocker #2: disasm stage-2's miscompiled command handlers / main; compare
+           to stage-1. (b) optional: drop @copy from Parser (~9GB residual) -> ~1-2GB,
+           verify no backtracking reliance first.
+  safety:  watchdog throughout (16-18GB caps, 38GB free maintained); no machine crash;
+           KryosLeakGuard Running, KryosTwin Stopped.

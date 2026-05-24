@@ -1,6 +1,52 @@
-# Stage-2 Bootstrap Blocker — Memory O(n^2) [OPEN 2026-05-24]
+# Stage-2 Bootstrap Blocker — Memory O(n^2) [RESOLVED 2026-05-24, step 84]
 
-## STATUS: OPEN — this is the current gate to stage-2/stage-3.
+## STATUS: MEMORY BLOCKER RESOLVED. Gate is now blocker #2 (codegen miscompile).
+
+### RESOLUTION (step 84)
+
+Root cause of the O(n^2): `kryos_array_clone` (array.rs) is a **deep O(len) buffer
+copy**, NOT the O(1) refcount-bump its own doc claims. Codegen calls it on `@copy`
+struct construction AND field-read of array fields. The self-host stores the growing
+`tokens` array in the `@copy` `Lexer` struct and rebuilds `Lexer` per token
+(functional update), so each token deep-copied the whole `tokens` array twice
+(field-read + construction) -> sizes 1,2,...,30560 -> O(n^2). (The `cap=1025,1026,...`
+pairs signature; token array alone ~3.7 GB.) The runtime CANNOT use mutable globals
+(no support), so the runtime's "big collections live in module-globals, not struct
+fields" design assumption was violated.
+
+**Fix: drop `@copy` from `Lexer`** (lexer.kry) so its array field is shared (refcount)
+and grown in place via `push` -> O(n). Verified:
+- examples 9/9; field_offsets exact (11/22/33/44).
+- sub6 (5151 lines): **13169 MB -> 756 MB live (17x)**.
+- full source (20787 lines): **>18 GB OOM -> ~9.7 GB, COMPLETES**, valid 1.2 MB obj.
+- stage-2.exe links via `link_stage2.bat` (rt_shim_win.c + kryos_rt.lib) -> 1.22 MB.
+
+Measurement tooling: `crates/kryos-rt/src/memstats.rs`, `KRYOS_MEMSTATS=1` (gated, zero
+cost off). Shows arr/str/struct new/free counts, per-category bytes, big-array caps.
+
+### REMAINING residual memory (not blocking; next optimization)
+
+`Parser` is still `@copy` and holds growing arrays -> ~9 GB residual `arr_new`
+(max_cap 104295). Same fix applies (drop `@copy` from Parser and other growing-array
+structs) IF the parser doesn't rely on `@copy` value snapshots for backtracking
+(verify first). Would bring full-source compile to ~1-2 GB.
+
+### THE NEW GATE: blocker #2 — stage-1 miscompiles the large self-host source
+
+`stage-1 ast tiny.kry` works perfectly (Tokens: 19, AST dumped, exit 0). But the
+stage-2 it produces crashes (exit 139): `stage-2 ast/obj/check tiny.kry` prints the
+command header then segfaults at the first real operation (file_read / tokenize);
+`stage-2` with no args prints usage cleanly (exit 0). So stage-2's `main` dispatch
+works, but the command handlers crash -> **stage-1's codegen miscompiles the large
+self-host source** (scale-dependent: examples 9/9 compile fine via stage-1, but the
+20k-line self-host does not). This is the long-standing "blocker #2" (large-`main`
+spill/call-sequence-at-scale codegen bug), now cleanly reproducible and no longer
+masked by the OOM. Repro: build stage-1, build stage-2 (extlink obj + link_stage2.bat),
+then `kryos-stage2.exe ast tiny.kry` (crashes) vs `kryos-stage1.exe ast tiny.kry` (works).
+
+---
+
+## (historical) original O(n^2) analysis below
 
 Two things happened on 2026-05-24 (shift steps 82-83):
 
