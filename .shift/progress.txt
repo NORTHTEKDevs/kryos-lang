@@ -2341,3 +2341,27 @@ SHIFTS:
            stage-3 + compare for fixed point. (c) Chase residual
            determinism in lexer/parser/main if needed for stage2==stage3.
   ---
+  ---
+  step:    68 (shift wrap / context boundary)
+  date:    2026-05-23 (12h shift)
+  summary: |
+    Shift wrap. Headline: FIXED the 42GB self-host-compile memory leak
+    (steps 63-67). Full self-host obj/compile now completes at ~1.6GB
+    instead of OOMing the machine. Examples 8/8, bootstrap 16/16, no
+    regressions. stage-2 advanced from "OOM at 42GB" to "passes
+    codegen, fails only at link on undefined runtime symbols".
+
+    5 commits / tags this shift: 63 (root cause), 64 (@copy push UAF),
+    65 (LLVM struct boxing), 66 (THE LEAK FIX), 67 (compile skip-types).
+
+    Safety held throughout: KryosTwin stopped+Manual, KryosLeakGuard
+    running, fast watchdog (scratch/kryos-watchdog.ps1) caught every
+    >cap stage process before it endangered the desktop.
+  verification:
+    examples: 8/8 PASS
+    bootstrap (per-module obj): 16/16 PASS
+    full-source obj: completes @1592MB (was 42GB OOM)
+    leak A/B confirmed: fix is in lexer/parser globals, not my codegen changes
+  ready-to-merge: no (stage-2/3 not yet producing a fixed point; on master, ahead 5)
+  next: NEXT_SHIFT_PROMPT.md -- (1) runtime-link stage-2, (2) residual determinism
+  status: paused
