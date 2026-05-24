@@ -28,16 +28,9 @@ use ast
 // Parser struct
 // -------------------------------------------------------------------
 
-// The token array lives in a module-global rather than inside the
-// (@copy) Parser struct. Parsing is single-pass and read-only over the
-// tokens, so a global is safe -- and it avoids the O(N^2) blow-up where
-// every p_advance (one per token) deep-cloned the entire token array as
-// part of @copy Parser-by-value threading. This was the dominant source
-// of the stage-1 "compile self-host" 40GB memory leak.
-let mut g_ptokens: [Token] = []
-
 @copy
 struct Parser {
+    tokens: [Token],
     pos: i32,
     errors: [str],
     no_struct_lit: bool
@@ -101,9 +94,8 @@ let POSTFIX_BP = 28
 // -------------------------------------------------------------------
 
 fn parser_new(tokens: [Token]) -> Parser {
-    g_ptokens = tokens
     let errors: [str] = []
-    return Parser { pos: 0, errors: errors, no_struct_lit: false }
+    return Parser { tokens: tokens, pos: 0, errors: errors, no_struct_lit: false }
 }
 
 // -------------------------------------------------------------------
@@ -112,10 +104,10 @@ fn parser_new(tokens: [Token]) -> Parser {
 
 fn p_peek(p: Parser) -> Token {
     let mut idx = p.pos
-    if idx >= len(g_ptokens) {
-        idx = len(g_ptokens) - 1
+    if idx >= len(p.tokens) {
+        idx = len(p.tokens) - 1
     }
-    return g_ptokens[idx]
+    return p.tokens[idx]
 }
 
 fn p_peek_kind(p: Parser) -> i32 {
@@ -124,10 +116,10 @@ fn p_peek_kind(p: Parser) -> i32 {
 
 fn p_peek_nth(p: Parser, n: i32) -> i32 {
     let mut idx = p.pos + n
-    if idx >= len(g_ptokens) {
-        idx = len(g_ptokens) - 1
+    if idx >= len(p.tokens) {
+        idx = len(p.tokens) - 1
     }
-    return g_ptokens[idx].kind
+    return p.tokens[idx].kind
 }
 
 fn p_at_end(p: Parser) -> bool {
@@ -138,7 +130,7 @@ fn p_advance(p: Parser) -> Parser {
     if p_at_end(p) {
         return p
     }
-    return Parser { pos: p.pos + 1, errors: p.errors, no_struct_lit: p.no_struct_lit }
+    return Parser { tokens: p.tokens, pos: p.pos + 1, errors: p.errors, no_struct_lit: p.no_struct_lit }
 }
 
 fn p_check(p: Parser, kind: i32) -> bool {
@@ -166,13 +158,13 @@ fn p_expect(p: Parser, kind: i32) -> Parser {
     let msg = "expected " + token_kind_name(kind) + ", found " + token_kind_name(tok.kind) + " at " + to_string(tok.start)
     let mut errors = p.errors
     push(errors, msg)
-    return Parser { pos: p.pos, errors: errors }
+    return Parser { tokens: p.tokens, pos: p.pos, errors: errors }
 }
 
 fn p_error(p: Parser, msg: str) -> Parser {
     let mut errors = p.errors
     push(errors, msg)
-    return Parser { pos: p.pos, errors: errors }
+    return Parser { tokens: p.tokens, pos: p.pos, errors: errors }
 }
 
 fn p_expect_name(p: Parser) -> ParseNameResult {
