@@ -175,7 +175,16 @@ fn cg_fallback_slot_offset(ra: RegAllocResult, local_id: i32) -> i32 {
     // space below the normal frame.
     let cs_count = len(ra.callee_saved)
     let base: i32 = -8 * cs_count
-    let fallback_start: i32 = base - 8 * (ra.stack_size / 8 + 1)
+    // Fallback slots must sit BELOW every regalloc spill slot. Spill slot s
+    // lives at base - 8*(s+1), with s in 0..stack_size-1, so the spill region
+    // ends at base - 8*stack_size. The previous formula used stack_size/8,
+    // which (stack_size being a SLOT count, not bytes) placed fallback_start
+    // only stack_size/8 slots below base -- INSIDE the spill region. For large
+    // functions (main/tokenize/parse spill 100+ locals) every fallback write
+    // then clobbered a live spilled local, corrupting the frame and breaking
+    // control flow after the dispatch -- the scale-dependent stage-2 miscompile.
+    // The 2048-byte (256-slot) prologue fudge covers local_id up to 255.
+    let fallback_start: i32 = base - 8 * (ra.stack_size + 1)
     return fallback_start - 8 * local_id
 }
 
@@ -1410,7 +1419,16 @@ fn cg_emit_string_concat(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_r
         }
         push(ctx.relocations, LinkerReloc {
             offset: buf_len(buf) + 1,
-            symbol_name: "kryos_str_concat",
+            // HANDLE-based concat: args are KryosString* handles (RCX/RDX),
+            // result is a KryosString* in RAX. The old target kryos_str_concat
+            // (stdlib-native) is the C-STRING ABI: it does CStr::from_ptr on its
+            // args, so passing a KryosString handle made it read the handle's
+            // length field as char bytes -> garbage / <invalid utf-8>. Every
+            // string `+` in the self-host (all compiler output, errors, the AST
+            // dump) was corrupted, which is why stage-2's pipeline produced no
+            // usable output. kryos_string_concat (kryos-rt) has the matching
+            // handle ABI.
+            symbol_name: "kryos_string_concat",
             rel_type: LREL_PC32,
             addend: -4
         })
