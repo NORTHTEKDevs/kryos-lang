@@ -2365,3 +2365,51 @@ SHIFTS:
   ready-to-merge: no (stage-2/3 not yet producing a fixed point; on master, ahead 5)
   next: NEXT_SHIFT_PROMPT.md -- (1) runtime-link stage-2, (2) residual determinism
   status: paused
+  ---
+  step:    70 (segment wrap)
+  date:    2026-05-23/24 (12h shift, resumed)
+  summary: |
+    Resumed after leak fix. Two remaining blockers investigated deeply:
+
+    (A) STAGE-2 RUNTIME LINK: self-host `compile` now passes typecheck
+    +codegen (honors SKIP_TYPES, step 67) and reaches the linker, which
+    fails on ~55 undefined runtime symbols (kryos_*, __builtin_*,
+    syscall1/2/3/6, mem_*, str_*, kryos_arc_alloc_i64, etc.). The
+    self-host emits the Rust-runtime ABI but linker.kry can't PROVIDE it.
+    runtime.kry self-implements 55 fns but under DIFFERENT names (println
+    vs kryos_println_str) / ABIs, so they don't resolve. Two paths:
+      - external link the stage-1-emitted .obj against target/release/
+        kryos_rt.lib + kryos_stdlib_native.lib + MSVC CRT/SDK (needs
+        MSVC link.exe; /usr/bin/link.exe is the WRONG (MSYS) one; stage-0
+        finds the real one via find_msvc_link_exe). PROVEN path (prior
+        shift printed the banner this way).
+      - bridge runtime in Kryos: define the kryos_*/__builtin_* symbols
+        in runtime.kry as thin wrappers (true self-hosting; bigger).
+
+    (B) CODEGEN DETERMINISM (needed for stage2==stage3): still pervasive
+    in large modules (lexer/parser/types/mir/lower/optimize/regalloc/
+    codegen/linker/runtime/main = distinct=5 over 5 runs; token/ast/elf
+    = distinct=1). CHARACTERIZED precisely this segment:
+      - MIR dump: DETERMINISTIC. RA dump: DETERMINISTIC + clean (no more
+        garbage local_ids). cg function-emit ORDER: DETERMINISTIC
+        (KRYOS_CG_TRACE identical across runs).
+      - => non-determinism is WITHIN-FUNCTION EMIT. Minimal repro
+        /tmp/s_arrset.kry (arr[i]=struct) diverges by just 2 bytes:
+        one run `mov eax,ebx` (89 D8), other `xor eax,eax` (31 C0) at the
+        same offset. = an Operand read by cg_load_operand whose discriminant
+        (is_local/const_kind/bool_val) reads inconsistently -> const-false
+        path (xor) vs local path (mov). In big modules a length-CHANGING
+        variant cascades offsets (size delta 2-4 bytes, ndiff ~30-150k).
+      - NOT undef struct-literal fields: step-69 changed LLVM struct
+        literals from `undef` to `zeroinitializer` (matches Cranelift
+        calloc) -- correct/defensive but did NOT change determinism, so
+        literals already set all fields. The undef/aliasing is on a
+        NON-LITERAL aggregate path (Operand loaded/rebuilt/returned) or a
+        runtime alloc (kryos_arc_alloc_i64 not zeroing + partial store) or
+        residual @copy share-on-clone the step-64/65 fixes didn't cover.
+      - Next probe: instrument stage-1 to dump each Operand's discriminant
+        as cg_load_operand reads it, across 2 runs, to catch the exact
+        operand+field that flips; then trace its construction/storage.
+  files:   crates/kryos-codegen-llvm/src/codegen.rs (zeroinit), self-host/main.kry (step 67)
+  verification: examples 8/8, bootstrap 16/16 (no regressions from steps 67/69)
+  status: paused
