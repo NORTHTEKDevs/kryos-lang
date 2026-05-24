@@ -924,7 +924,11 @@ fn lower_short_circuit_and(ctx: LowerCtx, e: Expr) -> Operand {
     ctx_switch_block(ctx, right_bb)
     let right_op = lower_expr(ctx, e.right[0])
     ctx_emit(ctx, inst_assign(result, rv_use(right_op)))
-    if not block_has_terminator(ctx, right_bb) {
+    // Lowering `right` may have switched blocks (when right is itself an
+    // and/or or other control-flow expr), so terminate the CURRENT block,
+    // not right_bb -- right_bb may already be terminated by the nested expr
+    // while the current block (the right expr's own merge) is left open.
+    if not block_has_terminator(ctx, ctx.current_block) {
         ctx_set_term(ctx, term_goto(merge_bb))
     }
 
@@ -957,7 +961,10 @@ fn lower_short_circuit_or(ctx: LowerCtx, e: Expr) -> Operand {
     ctx_switch_block(ctx, right_bb)
     let right_op = lower_expr(ctx, e.right[0])
     ctx_emit(ctx, inst_assign(result, rv_use(right_op)))
-    if not block_has_terminator(ctx, right_bb) {
+    // See lower_short_circuit_and: terminate the CURRENT block (the right
+    // expr's merge), not right_bb, which a nested and/or may already have
+    // terminated -- leaving the current block to fall through otherwise.
+    if not block_has_terminator(ctx, ctx.current_block) {
         ctx_set_term(ctx, term_goto(merge_bb))
     }
 
