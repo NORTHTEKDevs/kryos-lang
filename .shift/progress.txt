@@ -2860,3 +2860,33 @@ SHIFTS:
   next:  fix #1 (struct-construction field order -- likely the single highest-
          leverage fix; would correct fn name/body AND many other constructions),
          then #2, then stage-2 obj concat -> stage-3.obj and compare to stage-2.obj.
+
+  ---
+  step:    116-122
+  date:    2026-05-24 (session 4 final)
+  KEY:     stage-2 parse + typecheck + lower ALL WORK on a small program (the
+           empty "fn () {0 stmts}" in ast/mir dumps is a COSMETIC dump-misread,
+           NOT a parse bug -- verified: stage-2 obj reaches "MIR functions: 1"
+           then faults in CODEGEN). So the front+middle of the self-host compiler
+           are correct now; only stage-1's CODEGEN of certain patterns is wrong.
+  current frontier (single, well-characterized): INTEGER DIVIDE-BY-ZERO
+           (0xc0000094) in codegen of division/modulo. Repro: coff_write_u16_le
+           `let hi = (val/256) % 256`. MIR is CORRECT (_8 = _6 % _7; _7 =
+           const_int 256). But emitted code does `idiv r11` with r11 = a local
+           holding 0 (= _6 = val/256) instead of _7 = 256. So the two locals _6
+           (dividend src) and _7 (divisor=256), BOTH live at the MOD, share
+           storage -> divisor reads _6 (0) -> divide by zero.
+  root:    regalloc liveness/spill bug surfaced by reserving R10/R11 (fewer regs
+           -> more spilling in division-heavy small fns). Two simultaneously-live
+           locals get aliased reg/slot. Inspect ra_compute_liveness interval ends
+           + reg_pool reuse for _6/_7 in coff_write_u16_le. Likely the interval
+           end of the DIV result is computed too early (freed before the MOD use).
+  also-open (lower priority, all reproduced earlier):
+    - 13 `.text[idx=0]` untyped-Token receivers in link_* / lower_interp_string.
+    - dump_ast / mir_print misread fn name+body (cosmetic; fix for debuggability).
+  diagnosis tools that WORK this session: stage-1 `mir` dump (mir.kry RV_FIELD
+           print now appends [idx=N]); KRYOS_FAULT_TRACE [FAULT] RVA + /MAP; cdb
+           `uf 0xADDR` (NOT `u range`); minimal repro via stage-1 obj -> link-win.ps1.
+  next:    fix the division/modulo regalloc aliasing (coff_write_u16_le is the 1-fn
+           repro -- `fn f(v:i64)->i64{ return (v/256)%256 }` should reproduce),
+           then re-run stage-2 obj concat -> stage-3.obj and diff against stage-2.obj.
