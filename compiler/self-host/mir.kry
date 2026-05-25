@@ -359,7 +359,17 @@ struct MirModule {
     struct_defs: [MirStructDef],
     enum_defs: [MirEnumDef],
     fn_sig_names: [str],
-    fn_sig_rets: [MirType]
+    fn_sig_rets: [MirType],
+    // Top-level `let NAME = <int>` global constants (TK_*, REG_*, COFF_*, ...).
+    // The parser wraps top-level statements in `<top-level>` pseudo-functions,
+    // so without this table their lets are only visible as locals there and a
+    // cross-function reference falls through to the (wrong) name-as-string path.
+    global_names: [str],
+    global_values: [i32],
+    // Top-level `let NAME = char_from(<int>)` string global constants
+    // (CHR_LBRACE, CHR_RBRACE). Same visibility problem as integer globals.
+    global_str_names: [str],
+    global_str_values: [str]
 }
 
 // ===================================================================
@@ -976,12 +986,20 @@ fn mir_module_new() -> MirModule {
     let empty_enums: [MirEnumDef] = []
     let empty_sig_names: [str] = []
     let empty_sig_rets: [MirType] = []
+    let empty_gnames: [str] = []
+    let empty_gvals: [i32] = []
+    let empty_gsn: [str] = []
+    let empty_gsv: [str] = []
     return MirModule {
         functions: empty_funcs,
         struct_defs: empty_structs,
         enum_defs: empty_enums,
         fn_sig_names: empty_sig_names,
-        fn_sig_rets: empty_sig_rets
+        fn_sig_rets: empty_sig_rets,
+        global_names: empty_gnames,
+        global_values: empty_gvals,
+        global_str_names: empty_gsn,
+        global_str_values: empty_gsv
     }
 }
 
@@ -1161,7 +1179,7 @@ fn mir_print_rvalue(rv: RValue) -> str {
         if len(rv.object) > 0 {
             s = s + mir_print_operand(rv.object[0])
         }
-        return s + "." + rv.field_name
+        return s + "." + rv.field_name + "[idx=" + to_string(rv.field_idx) + "]"
     }
     if rv.kind == RV_INDEX {
         let mut s = "index "

@@ -45,7 +45,13 @@ struct LowerCtx {
     // and cheap to carry/clone -- unlike the full per-function table (~1300),
     // which deep-cloned into an O(n^2) memory blowup.
     fn_sig_names: [str],
-    fn_sig_rets: [MirType]
+    fn_sig_rets: [MirType],
+    // Top-level integer global constants (set by lower_function from the module).
+    global_names: [str],
+    global_values: [i32],
+    // Top-level char_from(int) string globals (CHR_LBRACE, CHR_RBRACE).
+    global_str_names: [str],
+    global_str_values: [str]
 }
 
 // ===================================================================
@@ -56,6 +62,10 @@ fn ctx_new(func: MirFunction, ret_ty: MirType, struct_defs: [MirStructDef], fn_s
     let empty_names: [str] = []
     let empty_ids: [i32] = []
     let empty_fns: [MirFunction] = []
+    let empty_gn: [str] = []
+    let empty_gv: [i32] = []
+    let empty_gsn: [str] = []
+    let empty_gsv: [str] = []
     return LowerCtx {
         func: func,
         current_block: 0,
@@ -68,7 +78,11 @@ fn ctx_new(func: MirFunction, ret_ty: MirType, struct_defs: [MirStructDef], fn_s
         lambda_funcs: empty_fns,
         struct_defs: struct_defs,
         fn_sig_names: fn_sig_names,
-        fn_sig_rets: fn_sig_rets
+        fn_sig_rets: fn_sig_rets,
+        global_names: empty_gn,
+        global_values: empty_gv,
+        global_str_names: empty_gsn,
+        global_str_values: empty_gsv
     }
 }
 
@@ -665,8 +679,27 @@ fn lower_expr(ctx: LowerCtx, e: Expr) -> Operand {
         if local_id >= 0 {
             return op_local(local_id)
         }
-        // Could be a global or function reference
-        // Emit a call to a runtime lookup or treat as function pointer
+        // Top-level integer global constant (TK_*, REG_*, ...)? Emit its value.
+        let mut gi = 0
+        while gi < len(ctx.global_names) {
+            if ctx.global_names[gi] == e.name {
+                let gt = ctx_alloc_temp(ctx, mir_ty_i64())
+                ctx_emit(ctx, inst_assign(gt, rv_const_int(ctx.global_values[gi])))
+                return op_local(gt)
+            }
+            gi = gi + 1
+        }
+        // Top-level char_from(int) string global (CHR_LBRACE, CHR_RBRACE)?
+        let mut gsi = 0
+        while gsi < len(ctx.global_str_names) {
+            if ctx.global_str_names[gsi] == e.name {
+                let gst2 = ctx_alloc_temp(ctx, mir_ty_str())
+                ctx_emit(ctx, inst_assign(gst2, rv_const_string(ctx.global_str_values[gsi])))
+                return op_local(gst2)
+            }
+            gsi = gsi + 1
+        }
+        // Otherwise a function reference: keep the name (resolved downstream).
         let t = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
         ctx_emit(ctx, inst_assign(t, rv_const_string(e.name)))
         return op_local(t)
@@ -1926,7 +1959,12 @@ fn lower_let_stmt(ctx: LowerCtx, s: Stmt) {
         // same register to both names, then a subsequent local
         // can reuse the register thinking the source is dead while
         // the destination is still live.
-        if not s.mutable {
+        // Only alias when there is NO explicit annotation. With an annotation
+        // (`let p: Parser = parser_new(...)`), aliasing to the RHS local would
+        // discard the annotated type (the RHS call temp is ANY) and make
+        // `p.field` resolve to index 0. Fall through so p gets the annotated
+        // struct type. (Mutable lets already fell through.)
+        if not s.mutable and len(s.let_type) == 0 {
             if val.is_local {
                 ctx_define_local(ctx, s.name, val.local_id)
                 return
@@ -2571,6 +2609,10 @@ fn lower_function(module: MirModule, d: Decl, tc: TypeChecker) {
 
     // Create lowering context
     let mut ctx: LowerCtx = ctx_new(func, ret_ty, module.struct_defs, module.fn_sig_names, module.fn_sig_rets)
+    ctx.global_names = module.global_names
+    ctx.global_values = module.global_values
+    ctx.global_str_names = module.global_str_names
+    ctx.global_str_values = module.global_str_values
 
     // Register parameters in context
     for i in range(0, len(func.params)) {
@@ -2691,6 +2733,10 @@ fn lower_impl(module: MirModule, d: Decl, tc: TypeChecker) {
 
         // Create context and register params
         let mut ctx: LowerCtx = ctx_new(func, ret_ty, module.struct_defs, module.fn_sig_names, module.fn_sig_rets)
+        ctx.global_names = module.global_names
+        ctx.global_values = module.global_values
+        ctx.global_str_names = module.global_str_names
+        ctx.global_str_values = module.global_str_values
         for j in range(0, len(func.params)) {
             ctx_define_local(ctx, func.params[j].name, func.params[j].local_id)
         }
@@ -2786,6 +2832,38 @@ fn lower_module(mod_ast: Module, tc: TypeChecker) -> MirModule {
             if rty.kind == MIR_TY_STRUCT {
                 push(mir.fn_sig_names, d.name)
                 push(mir.fn_sig_rets, rty)
+            }
+        }
+    }
+
+    // Pass 1.6: collect top-level integer global constants. The parser wraps
+    // top-level statements in `<top-level>` DECL_FUNCTION decls, so a `let
+    // NAME = <int>` there is otherwise only a local in that pseudo-function and
+    // a reference from another function would fall through to the name-as-string
+    // path. Record (name -> int) so EXPR_IDENT can emit the constant value.
+    for i in range(0, len(mod_ast.declarations)) {
+        let gd: Decl = mod_ast.declarations[i]
+        if gd.kind == DECL_FUNCTION and gd.name == "<top-level>" {
+            for j in range(0, len(gd.fn_body)) {
+                let gst: Stmt = gd.fn_body[j]
+                if gst.kind == STMT_LET and len(gst.let_value) > 0 {
+                    let gve: Expr = gst.let_value[0]
+                    if gve.kind == EXPR_INT_LIT {
+                        push(mir.global_names, gst.name)
+                        push(mir.global_values, gve.int_val)
+                    } elif gve.kind == EXPR_FN_CALL {
+                        if len(gve.left) > 0 {
+                            let gcallee: Expr = gve.left[0]
+                            if gcallee.kind == EXPR_IDENT and gcallee.name == "char_from" and len(gve.args) > 0 {
+                                let garg: Expr = gve.args[0]
+                                if garg.kind == EXPR_INT_LIT {
+                                    push(mir.global_str_names, gst.name)
+                                    push(mir.global_str_values, char_from(garg.int_val))
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
