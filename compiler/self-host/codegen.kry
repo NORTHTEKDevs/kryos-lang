@@ -1099,6 +1099,17 @@ fn cg_emit_call(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) 
     let is_win = ctx.target_os == "windows"
     let reg_cutoff: i32 = if is_win { 4 } else { 6 }
 
+    // Maintain 16-byte stack alignment at the call. An odd number of 8-byte
+    // stack args (e.g. any 5-arg Win64 call -> 1 stack arg) leaves rsp 8 mod
+    // 16 at the CALL, violating the ABI. Callee prologues assume aligned
+    // entry, so the skew propagates and ntdll's aligned SSE (movaps in
+    // CreateFileW's path) faults. Pad with 8 bytes when the count is odd.
+    let n_stack: i32 = if n_args > reg_cutoff { n_args - reg_cutoff } else { 0 }
+    let align_pad: i32 = if (n_stack % 2) != 0 { 8 } else { 0 }
+    if align_pad > 0 {
+        x86_sub_reg_imm32(buf, REG_RSP, align_pad)
+    }
+
     // Push stack arguments first (right to left) for args > reg_cutoff.
     let mut stack_args = 0
     if n_args > reg_cutoff {
@@ -1151,8 +1162,8 @@ fn cg_emit_call(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) 
         x86_call_rel32(buf, 0)  // placeholder
     }
 
-    // Reclaim shadow space + stack args together.
-    let total_stack = shadow_bytes + stack_args * 8
+    // Reclaim shadow space + stack args + alignment padding together.
+    let total_stack = shadow_bytes + stack_args * 8 + align_pad
     if total_stack > 0 {
         x86_add_reg_imm32(buf, REG_RSP, total_stack)
     }
