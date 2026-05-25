@@ -2890,3 +2890,23 @@ SHIFTS:
   next:    fix the division/modulo regalloc aliasing (coff_write_u16_le is the 1-fn
            repro -- `fn f(v:i64)->i64{ return (v/256)%256 }` should reproduce),
            then re-run stage-2 obj concat -> stage-3.obj and diff against stage-2.obj.
+
+  ---
+  CORRECTION (same session): coff_write_u16_le is NOT the div-by-zero culprit.
+  The 1-fn repro `(val/256)%256` compiles + runs CORRECTLY through stage-1
+  (hi_byte(300)=45, hi_byte(70)=70). So the crash at RVA 0xe9c31 is a DIFFERENT
+  function placed just after coff_write_u16_le in .text (cdb `uf` ran past the
+  function boundary; the /MAP nearest-symbol is misleading because not every
+  helper is listed). The real culprit divides by a VARIABLE that is 0.
+  Candidates with variable division: elf.kry:363 (val % align), linker.kry:144
+  (val/align in link_align_up) -- but `obj` does COFF emit only (no link/elf),
+  so the actual obj-path divisor is elsewhere (check regalloc stack math, or an
+  unlisted codegen helper). NEXT SESSION: get the true function via the prologue
+  (disasm backward from 0xe9c31 to `push rbp`, or set a bp and inspect), find the
+  align/count variable that is 0, trace why. Alignment globals PE_FILE_ALIGN=512,
+  PE_SECTION_ALIGN=4096, ELF_PAGE_SIZE=4096 ARE collected by Pass 1.6 (verified
+  bare-int defs), so they are not the 0 source.
+  NET SESSION RESULT: stage-1's front+middle (lex/parse/typecheck/lower) compile
+  stage-2 CORRECTLY now (6 systematic fixes). Remaining = a small number of
+  stage-1 CODEGEN bugs (div-by-zero in obj emit; big-concat parse_int_literal;
+  13 .text[idx=0] in link_* ). Each is a focused, reproducible target.
