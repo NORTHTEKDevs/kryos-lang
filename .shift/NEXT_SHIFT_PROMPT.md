@@ -1,5 +1,55 @@
 # Next-shift handoff (kryos-lang self-host)
 
+## SESSION 3 (2026-05-24): "BLOCKER #2" (stage-2 hang) ROOT-CAUSED + FIXED
+
+Commits: b0c8622 (hang fix), 3919065 (field-access), 86eed3e (diagnostics),
+4bc17f7 (docs). Full detail in `self-host/STAGE2_MEMORY_BLOCKER.md` (SESSION 3).
+
+WHAT CHANGED: stage-2 went from "compile pipeline silently no-ops / hangs in
+tokenize" to **tokenizes correctly**, now crashes in the PARSER. Two real bugs:
+- **is_alpha infinite loop** (the actual blocker #2; step-86's regalloc theory
+  was WRONG). `lower_short_circuit_and/or` checked `block_has_terminator(right_bb)`
+  instead of `ctx.current_block`; nested `(A and B) or (C and D) or E` left the
+  merge block unterminated -> fall-through self-loop. Fixed in lower.kry.
+- **field access on let-bound locals read index 0**. `let x = expr` typed x ANY
+  unless RHS was a struct literal -> `x.field` = field 0. Fixed: lower_let_stmt
+  uses the operand's type. LowerCtx de-@copy'd (was O(n^2) per-fn clone).
+
+NEW TOOLS (env-gated, in kryos-rt): `KRYOS_WATCHDOG=1 KRYOS_WATCHDOG_S=N` samples
+the hung thread's RIP (the ONLY way the non-allocating is_alpha loop was found);
+`KRYOS_FAULT_TRACE=1` prints fault RVA; `self-host/linkmap_stage2.bat` -> /MAP for
+RVA->symbol. Differential harness: `stage-1 obj tiny.kry` + link_stage2.bat + run.
+
+### DO THIS NEXT (the tail is now a clear, repeatable pattern)
+1. stage-2 `obj hi.kry` crashes in the PARSER on the same call-init field-access
+   pattern: `let p = parser_new(tokens)` types p ANY -> `p.field` index 0.
+   QUICKEST: annotate parser/typechecker/main call-init sites, e.g.
+   `let mut p: Parser = parser_new(tokens)`. WATCH the immutable-alias shortcut
+   in lower_let_stmt — it ignores annotations; make those `let mut` or fix the
+   alias to honor s.let_type.
+2. BETTER (general, removes need for annotations): re-enable the user-call
+   return-type inference in lower_fn_call (currently DISABLED with a comment).
+   It typing call results as their struct type triggers an un-root-caused
+   downstream lowering CRASH on the full source (isolated repros pass). Bisect
+   which construct crashes (build small .kry that mixes struct-returning calls
+   until it segfaults via stage-1). The fn_sig table is already wired
+   (MirModule/LowerCtx fn_sig_*, pass 1.5) — keep it struct-returning-only and
+   NEVER `let names = ctx.fn_sig_names` (deep-clones -> O(n^2); index directly).
+3. Then march the same fix through parse->typecheck->lower->codegen, retesting
+   `stage-2 obj hi.kry` after each, until it emits a valid obj. Then bootstrap.sh.
+
+### Verify the hang fix / field fix (fast, ~15s)
+  cd compiler
+  KRYOS_NO_ASLR=1 ./target/release/kryos.exe build self-host/main.kry -o target/bootstrap/kryos-stage1 --skip-ownership
+  cp target/bootstrap/kryos-stage1 target/bootstrap/kryos-stage1.exe
+  # is_alpha-pattern repro must print 1,0,1 (was: hang):
+  printf 'fn c(x:i64)->bool{return (x>=65 and x<=90) or (x>=97 and x<=122) or x==95}\nfn main(){println(to_string(c(102)))\nprintln(to_string(c(48)))\nprintln(to_string(c(95)))}\n' > /tmp/b.kry
+  KRYOS_SKIP_TYPES=1 ./target/bootstrap/kryos-stage1.exe obj /tmp/b.kry -o /tmp/b.obj
+  # link via link_stage2.bat (cygpath -w the paths!), run: expect 1 0 1
+  # full obj (bounded ~300MB now, NOT 10GB): KRYOS_SKIP_TYPES=1 stage1 obj kryos-sh-full.kry
+
+---
+
 ## STEP 74 UPDATE (2026-05-24): BLOCKER #1 SOLVED — stage-2 LINKS + RUNS
 
 - `self-host/rt_shim_win.c` provides the 24 Windows intrinsics codegen.kry:1027

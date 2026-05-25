@@ -2726,3 +2726,25 @@ SHIFTS:
            hang; continue codegen hardening bug-by-bug. The hard memory blocker is
            gone -- remaining is incremental.
   safety:  watchdog throughout (16-20GB caps), 30+GB free maintained, no crash.
+
+  ---
+  step:    90-93
+  date:    2026-05-24 (session 3)
+  summary: ROOT-CAUSED + FIXED the stage-2 "hang in tokenize" (long-standing
+           blocker #2, mis-diagnosed as regalloc in step 86). Two real self-host
+           bugs: (A) lower_short_circuit_and/or terminated right_bb instead of
+           ctx.current_block -> nested (A and B) or (C and D) or E (is_alpha)
+           fell through into a self-looping block; (B) let-bound locals were
+           typed ANY unless RHS was a struct literal -> field access read index 0.
+           Built a thread-suspend watchdog (KRYOS_WATCHDOG) that samples a hung
+           RIP -- the only way to find the non-allocating is_alpha loop.
+  commits: b0c8622, 3919065, 86eed3e, 4bc17f7
+  files:   self-host/lower.kry, mir.kry, lexer.kry; kryos-rt/src/fault.rs (+hooks)
+  result:  stage-2 now TOKENIZES correctly (was: immediate hang on any input).
+           Full obj emit bounded ~300MB. examples-equivalent repros 8/8 green.
+  blockers: stage-2 obj now segfaults in the PARSER -- same call-init field-access
+           pattern (let p = parser_new(...) -> p.field index 0). Characterized.
+  next:    annotate parser/typechecker/lower call-init sites (let mut x: T = call())
+           OR root-cause the lower_fn_call user-return-type crash (currently
+           disabled). Then drive bootstrap.sh to stage-2 == stage-3. See
+           self-host/STAGE2_MEMORY_BLOCKER.md SESSION 3 + NEXT_SHIFT_PROMPT.md.
