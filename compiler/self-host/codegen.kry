@@ -252,6 +252,19 @@ fn cg_emit_prologue(ctx: CodegenCtx, ra: RegAllocResult) {
             if arg_reg >= 0 {
                 let offset = cg_stack_offset_ra(ra, iv.spill_slot)
                 x86_mov_mem_reg(buf, REG_RBP, offset, arg_reg)
+            } else {
+                // Stack-passed parameter (Win64 idx>=4 / SysV idx>=6).
+                // ra_fix_arg_intervals encoded the incoming rbp+ offset
+                // directly into spill_slot (+48 on Win64, +16 on SysV).
+                // The body reads the param from its canonical frame slot
+                // cg_stack_offset_ra(spill_slot); without copying the
+                // incoming value there, that slot stays uninitialised
+                // garbage (this nulled lex_emit's `text` arg, crashing
+                // the parser's parse_int_literal on len(text)). R10 is
+                // reserved codegen scratch so it is safe here.
+                let dst_off = cg_stack_offset_ra(ra, iv.spill_slot)
+                x86_mov_reg_mem(buf, REG_R10, REG_RBP, iv.spill_slot)
+                x86_mov_mem_reg(buf, REG_RBP, dst_off, REG_R10)
             }
         }
         pi = pi + 1

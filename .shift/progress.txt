@@ -2910,3 +2910,41 @@ SHIFTS:
   stage-2 CORRECTLY now (6 systematic fixes). Remaining = a small number of
   stage-1 CODEGEN bugs (div-by-zero in obj emit; big-concat parse_int_literal;
   13 .text[idx=0] in link_* ). Each is a focused, reproducible target.
+
+  ---
+  step:    123
+  date:    2026-05-25 (session 5)
+  summary: ROOT-CAUSED + FIXED the stage-2 parser crash. It was NOT a div-by-zero
+           (that was a stale-artifact misread). Fresh rebuild faulted with an
+           ACCESS VIOLATION in kryos_builtin_len (rsi=0xc), called from
+           parse_int_literal -> parse_primary's int branch on `parse_int_literal(tok.text)`.
+           Token layout {kind@0,text@8,start@10,end@18} and field-access offset
+           ([r12+8]) were CORRECT; tok.text held a small int (null/0xb). Lexer
+           builds Token in decl order; substr is fine. TRUE ROOT CAUSE: stack-
+           passed parameters (Win64 idx>=4, e.g. lex_emit's 5th arg `text`) were
+           NEVER loaded from their incoming stack home in cg_emit_prologue --
+           cg_arg_reg_for() returns -1 for idx>=4 and the prologue's `if arg_reg>=0`
+           silently skipped them, leaving the param's frame slot
+           (cg_stack_offset_ra(spill_slot)=[rbp-1B0h]) as uninitialised garbage.
+           Most code tolerates a garbage str (names); parse_int_literal's len(text)
+           dereferenced it and crashed.
+  fix:     codegen.kry cg_emit_prologue -- added else-branch: when arg_reg<0 the
+           param is stack-passed; load [rbp+spill_slot] (incoming, +48 Win64 /
+           +16 SysV, encoded into spill_slot by ra_fix_arg_intervals) into R10
+           (reserved scratch) and store to cg_stack_offset_ra(spill_slot). Verified
+           via x86_emit_memop disp8 positive-offset encoding.
+  files:   compiler/self-host/codegen.kry (cg_emit_prologue +else branch)
+  verified: stage-2 NO LONGER CRASHES. Was: AV at first integer literal. Now:
+           lexes 106646 tokens, parser runs. Examples hello/fibonacci still OK;
+           stage-1 still emits 1209-fn stage-2.obj. This was Win64-specific (SysV
+           keeps 5 args in registers) -- explains why >=5-param fns universally
+           broke on the Windows self-host.
+  blocker: NEW frontier (was masked by the crash): stage-2's parser DESYNCS --
+           "expected ), found + at 2733", parses only 21 decls then ~12.8-12.9k
+           cascading errors. stage-1 parses the SAME concat: 1279 decls, 0 errors.
+           So a 2nd stage-2 codegen miscompile remains, in expression/precedence
+           parsing (parse_expr_bp / parenthesised-expr path). Error count varies
+           run-to-run (12846/12903/12925) -> watch for residual uninit reads.
+  next:    isolate the construct at the first desync (token/pos 2733); diff stage-2
+           vs stage-1 parse of a minimal `(a + b)`-class expression; find the
+           miscompiled parser fn. Then re-run obj concat -> stage-3.obj == stage-2.obj.
