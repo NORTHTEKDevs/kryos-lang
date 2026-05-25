@@ -1292,7 +1292,17 @@ fn lower_index_access(ctx: LowerCtx, e: Expr) -> Operand {
         ctx_emit(ctx, inst_assign(st, rv_call("kryos_string_char_at", sargs)))
         return op_local(st)
     }
-    let t = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
+    // Type the element as the array's declared element type so that
+    // `arr[i].field` (and `let x = arr[i]; x.field`) resolves the right
+    // field index. Without this the result is ANY and field access reads
+    // index 0 -- e.g. `declarations[i].ret_type` read kind (idx 0) instead.
+    let mut elem_ty: MirType = mir_ty_simple(MIR_TY_ANY)
+    if obj_ty.kind == MIR_TY_ARRAY {
+        if len(obj_ty.element_type) > 0 {
+            elem_ty = obj_ty.element_type[0]
+        }
+    }
+    let t = ctx_alloc_temp(ctx, elem_ty)
     ctx_emit(ctx, inst_assign(t, rv_index(obj_op, idx_op)))
     return op_local(t)
 }
