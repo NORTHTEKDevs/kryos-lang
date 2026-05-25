@@ -2808,3 +2808,55 @@ SHIFTS:
               the source. Goal: stage-2 parses, then stage-2==stage-3 fixed point.
   safety:  s1probe/s2probe rename evades KryosLeakGuard (kills kryos-stage* @2GB);
            own backstop @9-16GB; 30GB+ free maintained; no crash.
+
+  ---
+  step:    102-115
+  date:    2026-05-24 (session 4 cont)
+  summary: Drove stage-2 forward through 4 compile phases by fixing 5 systematic
+           stage-1 codegen/lowering bugs (all committed). stage-2 went from
+           "segfault on 11 tokens in parser" to "parses + typechecks + lowers a
+           small program; crashes only on the big concat / on fn bodies".
+  commits: 5a1fef2 (let-annotation + globals), fe02922 (regalloc R10/R11 + call
+           positions), d54d7ac (narrow rv_emits_call), + index-access elem type.
+  fixes (each verified via MIR + minimal repro):
+    A. lower_let_stmt: immutable `let x = rhs` aliased to RHS local, DISCARDING an
+       explicit annotation -> `let p: Parser = parser_new()` became ANY -> field
+       index 0. Fixed: skip alias when annotated. (This silently voided most of
+       the 533 parser annotations until now.)
+    B. EXPR_IDENT: non-local ident emitted rv_const_string(name) -> top-level
+       `let TK_FN=24` globals became the string "TK_FN" -> every token compare
+       false. Fixed: Pass 1.6 collects top-level int globals + EXPR_IDENT emits
+       the value. Same for char_from(int) string globals (CHR_LBRACE/RBRACE).
+    C. regalloc: R10/R11 were allocatable but codegen uses them as scratch ->
+       operand homed in R10/RAX clobbered (cg_emit_struct_lit stored the struct
+       ptr into a field). Fixed: reserve R10/R11; cg_emit_struct_lit uses R11.
+    D. regalloc: codegen-internal calls (kryos_alloc/array_new/string_new/...) for
+       RV_ARRAY/STRUCT/MAP/STRING_CONCAT/ENUM_VARIANT/CLOSURE aren't in the MIR, so
+       crossing values in caller-saved regs were clobbered. Fixed: treat them as
+       call positions (rv_emits_call).
+    E. lower_index_access: typed arr[i] as ANY -> arr[i].field resolved idx 0
+       (declarations[i].ret_type read kind -> len(1) crash). Fixed: use the array
+       element_type. THIS got stage-2 mir/lower working end-to-end on small input.
+  REMAINING (blocker #2 tail, all reproduced):
+    1. parse_fn_decl yields empty fn name + 0-stmt body even for `fn main(){...}`
+       (stage-2 ast: "fn () {0 stmts}", mir: "fn () -> void {<no terminator>}").
+       Real parse bug (lowering gets an empty body; obj emit then fails -> no .obj
+       -> link 1181). Likely a struct-construction field-ORDER issue: lower_struct_lit
+       keeps SOURCE field order and cg_emit_struct_lit stores POSITIONALLY (i*8), so
+       any construction whose field order != struct-decl order miscompiles. CHECK
+       make_fn_decl / make_*_decl field order vs the Decl/Expr/Stmt declarations.
+       FIX CANDIDATE: make lower_struct_lit reorder fops to declaration order (using
+       ctx.struct_defs[name].field_names), OR make cg_emit_struct_lit store by name.
+    2. Big concat: parse_int_literal path crashes (len on a bad text). 13
+       `.text[idx=0]` (wrong) sites remain in link_exe/link_apply_relocations/
+       link_emit_{elf,pe}_exe/lower_interp_string -- untyped Token receivers; need
+       the same typing treatment (annotate `let tok: Token = ...` or fix the
+       receiver-type resolution for those).
+  method: per-bug loop = stage-1 mir dump (mir_print shows `field X.Y[idx=N]`,
+          instrumented in mir.kry) to find wrong field indices, + cdb fault RVA
+          (KRYOS_FAULT_TRACE) resolved via /MAP, + minimal repro built through
+          stage-1 obj -> link-win.ps1 -> run. This loop is reliable; the tail is
+          finite but each link needs a stage-1 rebuild (~5s) + diagnosis.
+  next:  fix #1 (struct-construction field order -- likely the single highest-
+         leverage fix; would correct fn name/body AND many other constructions),
+         then #2, then stage-2 obj concat -> stage-3.obj and compare to stage-2.obj.
