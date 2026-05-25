@@ -1,5 +1,50 @@
 # Next-shift handoff (kryos-lang self-host)
 
+## SESSION 3c (2026-05-24): DEBUGGER WORKING + LINCHPIN root-caused
+
+Commits b0c8622 (hang), 3919065 (field-access fix #1), 86eed3e/e54345d (diagnostics),
+4bc17f7/76f3f08 (docs). Full detail: self-host/STAGE2_MEMORY_BLOCKER.md SESSION 3a/3b/3c.
+
+WINS THIS SESSION:
+- Hang fixed (is_alpha nested short-circuit terminator). stage-2 no longer hangs.
+- Tokenize VERIFIED correct (11 tokens on hi.kry). Earlier "32 tokens" was a STALE
+  kryos-sh-full.kry -- ALWAYS regenerate the concat from current sources.
+- DEBUGGER installed + working: cdbX64.exe (winget Microsoft.WinDbg) at
+  ~/AppData/Local/Microsoft/WindowsApps/cdbX64.exe. Build stage-1 with `-g` for a PDB
+  (cdb symbolizes it). See STAGE2_MEMORY_BLOCKER.md SESSION 3c for cdb recipes
+  (rbp-walk script is essential -- kb fails on no-unwind self-host frames).
+
+THE LINCHPIN (do this first -- unblocks everything):
+~300 call-init field-access sites (`let x = call(); x.field` reads field 0 because x
+is ANY-typed) need the GENERAL type-inference fix. That fix is ALREADY WIRED
+(MirModule/LowerCtx fn_sig_*, pass 1.5 struct-only, ctx_fn_ret_type) -- just re-enable
+the lookup in lower_fn_call (lower.kry, ~line 1061, currently a NOTE). BUT it triggers
+a STAGE-0 codegen bug: cdb rbp-walk (PDB) proves __kryos_clone_Annotation recurses into
+itself ~18x -> stack overflow -> AV in kryos_string_clone. Root: stage-0 generates the
+@copy clone of a struct's array field [str] with the WRONG per-element clone fn (the
+struct's own clone instead of kryos_string_clone). Only manifests on NON-EMPTY args
+(the source's @copy/@test annotations have empty args, so it never showed).
+
+FIX LOCATION: crates/kryos-codegen-llvm/src/codegen.rs (the __kryos_clone_<Name> body /
+@copy struct field clone). Ensure array field [T] uses the T-appropriate element clone
+(string_clone for [str], not the containing struct's clone). cdb-confirm by breaking
+__kryos_clone_Annotation, dumping the element-clone fn ptr it calls. THEN re-enable the
+general fix and the whole pipeline's call-init field access resolves at once.
+
+VERIFY a clean stage-2 tokenize (should print "Tokens: 11"):
+  cd compiler
+  KRYOS_NO_ASLR=1 ./target/release/kryos.exe build self-host/main.kry -o target/bootstrap/kryos-stage1 --skip-ownership
+  cp target/bootstrap/kryos-stage1 target/bootstrap/kryos-stage1.exe
+  # REGENERATE the concat (critical):
+  cd self-host; cat runtime.kry token.kry lexer.kry ast.kry parser.kry types.kry mir.kry lower.kry optimize.kry regalloc.kry x86.kry codegen.kry elf.kry coff.kry linker.kry main.kry > ../target/bootstrap/kryos-sh-full.kry
+  grep -vE '^use (token|lexer|ast|parser|types|mir|lower|optimize|regalloc|x86|codegen|elf|coff|linker|runtime|main)$' ../target/bootstrap/kryos-sh-full.kry > /tmp/f; mv /tmp/f ../target/bootstrap/kryos-sh-full.kry; cd ..
+  KRYOS_SKIP_TYPES=1 KRYOS_NO_ASLR=1 ./target/bootstrap/kryos-stage1.exe obj target/bootstrap/kryos-sh-full.kry -o target/bootstrap/kryos-stage2.obj
+  # link via self-host/link_stage2.bat, then: stage-2 obj hi.kry  (Tokens: 11, then parser crash)
+
+---
+
+# Next-shift handoff (kryos-lang self-host)
+
 ## SESSION 3 (2026-05-24): "BLOCKER #2" (stage-2 hang) ROOT-CAUSED + FIXED
 
 Commits: b0c8622 (hang fix), 3919065 (field-access), 86eed3e (diagnostics),

@@ -1,5 +1,56 @@
 # Stage-2 Bootstrap — progress log
 
+## SESSION 3c (2026-05-24 cont.): DEBUGGER + precise root-causes
+
+Installed WinDbg (`winget install Microsoft.WinDbg`); cdb at
+`~/AppData/Local/Microsoft/WindowsApps/cdbX64.exe`. Build stage-1 with `-g` for a
+PDB (`kryos build ... -g` -> kryos-stage1.pdb); cdb then symbolizes stage-1.
+stage-2 (obj+link, no PDB) still needs the /MAP + manual rbp-walk.
+
+### cdb recipes (proven this session)
+- Catch crash + registers:  `cdbX64.exe -g -G -c "g; r; kb 30; q" <exe> <args>`
+- rbp-chain walk (kb fails on no-unwind-info self-host frames):
+  `-c "g; r $t0=@rbp; .for(r $t1=0;@$t1<25;r $t1=@$t1+1){ln poi(@$t0+8); r $t0=poi(@$t0)}; q"`
+- Break mid-recursion: `-c "r $t0=@rsp-0x800000; ba w8 @$t0; g; ..."`
+- Run WITHOUT KRYOS_FAULT_TRACE so the VEH doesn't pre-empt cdb.
+
+### CORRECTED understanding (supersedes 3b's "stale file / scale-dependent")
+The "32 tokens" WAS partly a stale `kryos-sh-full.kry` (regenerated before the
+lex annotation landed). On a FRESH full source, tokenize is CORRECT (11 tokens on
+hi.kry) -- VERIFIED. So the lexer self-compiles. ALWAYS regenerate the concat.
+
+Two REMAINING crashes, both = the call-init field-access class (a `let x = call()`
+local is ANY-typed, so `x.field` for non-index-0 fields reads field 0):
+1. **stage-2 parser crash on hi.kry** (the live blocker): parse chain
+   parse_module->parse_declaration->parse_statement->parse_expr_or_assign->
+   parse_expr->parse_expr_bp->parse_prefix->parse_primary, then a spurious parse
+   error -> token_kind_name -> kryos_string_concat AV. parse_primary mis-reads a
+   token field (p_peek(pp).text reads .kind etc.) -> errors on valid input.
+2. **the general fix (type call results) crashes STAGE-1**: cdb rbp-walk (PDB)
+   shows `_kryos_clone_Annotation` recursing into itself ~18x -> stack overflow ->
+   AV in kryos_string_clone. Typing call results triggers @copy DEEP-CLONE of a
+   result whose Annotation.args:[str] ends up holding Annotations (type confusion)
+   -> infinite clone recursion. This is a STAGE-0 (Rust kryos-codegen) @copy-clone
+   generation interaction, NOT a self-host edit.
+
+### WHY the clean fix is blocked
+Typing call-init LOCALS via explicit annotation is SAFE (verified: `let mut lex:
+Lexer`, `let mut pp: Parser` both compile). But:
+- IMMUTABLE `let x = call()` ALIASES the ANY call-temp (alias ignores annotation),
+  and skipping the alias to allocate a typed local CRASHES stage-1 the same way.
+- The GENERAL fix (type the call RESULT temp) triggers the _kryos_clone_Annotation
+  recursion above.
+- ~100+ parser call-init sites make per-site `let mut X: T =` annotation impractical.
+So the real fix is in STAGE-0: either fix @copy-clone-gen so a typed call result
+doesn't deep-clone-recurse, OR make AST structs (Annotation, Parse*Result) not
+@copy / clone-by-reference. THEN re-enable the general fix (lower_fn_call +
+ctx_fn_ret_type, already wired) and all call-init field access resolves at once.
+
+NEXT: debug WHY a typed ParseAnnotationResult's clone puts Annotations into
+Annotation.args (cdb: break _kryos_clone_Annotation, dump the args array r15).
+Fix in stage-0 kryos-codegen's @copy clone generation. Then the parser + the rest
+of the pipeline should fall into place.
+
 ## SESSION 3b (2026-05-24 cont.): CORRECTION + scale-dependent wall identified
 
 CORRECTION to 3a below: "stage-2 now tokenizes correctly" was WRONG. stage-2 no
