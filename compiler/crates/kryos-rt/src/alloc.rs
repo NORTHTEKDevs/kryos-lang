@@ -10,6 +10,8 @@ use std::alloc::Layout;
 /// Returns a null pointer if `size` is 0 or alignment is invalid.
 #[no_mangle]
 pub extern "C" fn kryos_alloc(size: usize, align: usize) -> *mut u8 {
+    crate::fault::install();
+    crate::fault::hang_tick();
     if size == 0 {
         return std::ptr::null_mut();
     }

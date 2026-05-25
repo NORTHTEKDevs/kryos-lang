@@ -195,6 +195,7 @@ unsafe fn null_panic() -> ! {
 #[no_mangle]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn kryos_array_get(arr: *const KryosArray, idx: i64) -> i64 {
+    crate::fault::hang_tick();
     if arr.is_null() {
         null_panic();
     }

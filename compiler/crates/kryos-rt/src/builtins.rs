@@ -46,6 +46,7 @@ unsafe fn bytes_to_str<'a>(ptr: *const u8, len: usize) -> &'a str {
 /// as their first field (at offset 0). The argument is an opaque handle (pointer as i64).
 #[no_mangle]
 pub extern "C" fn kryos_builtin_len(collection: i64) -> i64 {
+    crate::fault::hang_tick();
     if collection == 0 {
         return 0;
     }
@@ -124,6 +125,7 @@ pub extern "C" fn kryos_field_set(_obj: i64, _field_name: i64, _value: i64) -> i
 /// Convert an i64 to a KryosString. Returns an opaque handle (pointer as i64).
 #[no_mangle]
 pub extern "C" fn kryos_i64_to_string(value: i64) -> i64 {
+    crate::fault::hang_tick();
     let s = value.to_string();
     let bytes = s.as_bytes();
     unsafe { kryos_string_new(bytes.as_ptr(), bytes.len() as i64) as i64 }
@@ -663,6 +665,7 @@ pub extern "C" fn kryos_builtin_char_from(code: i64) -> i64 {
 /// Delegates to `kryos_string_slice`.
 #[no_mangle]
 pub extern "C" fn kryos_builtin_substr(s_handle: i64, start: i64, end: i64) -> i64 {
+    crate::fault::hang_tick();
     if s_handle == 0 {
         return unsafe { kryos_string_new(std::ptr::null(), 0) as i64 };
     }

@@ -54,6 +54,7 @@ unsafe fn bytes_to_str<'a>(ptr: *const u8, len: usize) -> &'a str {
 /// heap-allocated.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_string_new(ptr: *const u8, len: i64) -> *mut KryosString {
+    crate::fault::hang_tick();
     let len_usize = if len < 0 { 0 } else { len as usize };
     let cap = len_usize;
     let layout = KryosString::layout(cap);
@@ -151,6 +152,7 @@ pub unsafe extern "C" fn kryos_string_hash(s: *const KryosString) -> i64 {
 /// Compare two strings for equality.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_string_eq(a: *const KryosString, b: *const KryosString) -> bool {
+    crate::fault::hang_tick();
     if a.is_null() && b.is_null() {
         return true;
     }
