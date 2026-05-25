@@ -195,9 +195,13 @@ fn ra_allocatable_regs() -> [i32] {
     // Until that is fixed, preferring callee-saved registers makes
     // every interval safe at the cost of a few extra prologue
     // push/pop pairs.
+    // R10 and R11 are RESERVED as codegen scratch (struct/array literal
+    // construction, field access, operand loads use them). If they were
+    // allocatable, an operand homed in R10/R11 would be clobbered by those
+    // scratch uses -- e.g. cg_emit_struct_lit stored the struct pointer into
+    // a field slot when a field operand was homed in the scratch register.
     return [
         REG_RBX, REG_R12, REG_R13, REG_R14, REG_R15,
-        REG_R10, REG_R11,
         REG_RAX, REG_RCX, REG_RDX, REG_RSI, REG_RDI,
         REG_R8, REG_R9
     ]
@@ -785,10 +789,7 @@ fn ra_compute_call_positions(func: MirFunction) -> [i32] {
             if inst.kind == INST_ASSIGN {
                 if len(inst.value) > 0 {
                     let rv = inst.value[0]
-                    if rv.kind == RV_CALL {
-                        push(positions, pos)
-                    }
-                    if rv.kind == RV_CALL_INDIRECT {
+                    if rv_emits_call(rv.kind) {
                         push(positions, pos)
                     }
                 }
@@ -800,6 +801,27 @@ fn ra_compute_call_positions(func: MirFunction) -> [i32] {
         bi = bi + 1
     }
     return positions
+}
+
+// An rvalue whose codegen emits a runtime CALL (clobbering caller-saved
+// registers). These are NOT explicit RV_CALL in the MIR, so without listing
+// them here regalloc would keep a crossing value in a caller-saved register
+// that the internal call (kryos_alloc, kryos_array_new, kryos_string_new,
+// kryos_array_get, kryos_string_concat, kryos_map_*) silently clobbers.
+fn rv_emits_call(k: i32) -> bool {
+    if k == RV_CALL { return true }
+    if k == RV_CALL_INDIRECT { return true }
+    if k == RV_ARRAY { return true }
+    if k == RV_STRUCT { return true }
+    if k == RV_MAP { return true }
+    if k == RV_STRING_CONCAT { return true }
+    if k == RV_CONST_STRING { return true }
+    if k == RV_INDEX { return true }
+    if k == RV_RANGE { return true }
+    if k == RV_TUPLE { return true }
+    if k == RV_ENUM_VARIANT { return true }
+    if k == RV_CLOSURE { return true }
+    return false
 }
 
 // True if any call_position lies strictly inside (start, end].

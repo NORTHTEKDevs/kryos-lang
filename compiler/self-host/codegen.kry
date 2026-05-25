@@ -1307,12 +1307,13 @@ fn cg_emit_struct_lit(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg:
         if shadow > 0 {
             x86_add_reg_imm32(buf, REG_RSP, 8)
         }
-        // Reload the saved struct pointer (now at [rsp]) and store the field.
-        // Use RAX (non-extended) as both the reload dest and store base --
-        // matches cg_emit_array_lit's proven [rsp]-reload encoding; an
-        // extended reg (R11) base/dest with an rsp-base load mis-encodes.
-        x86_mov_reg_mem(buf, REG_RAX, REG_RSP, 0)
-        x86_mov_mem_reg(buf, REG_RAX, i * 8, REG_R10)
+        // Reload the saved struct pointer (now at [rsp]) into R11 and store
+        // the field. R11 is a RESERVED scratch register (never an operand
+        // home), so using it here cannot clobber a field operand -- whereas
+        // RAX could hold a field operand and got overwritten by the reload,
+        // which then stored the struct pointer itself into that field slot.
+        x86_mov_reg_mem(buf, REG_R11, REG_RSP, 0)
+        x86_mov_mem_reg(buf, REG_R11, i * 8, REG_R10)
         i = i + 1
     }
     // Restore the struct pointer into dest_reg.
