@@ -46,6 +46,7 @@ mod imp {
         ) -> i32;
         fn SuspendThread(thread: *mut u8) -> u32;
         fn GetThreadContext(thread: *mut u8, ctx: *mut u8) -> i32;
+        fn ExitProcess(code: u32) -> !;
     }
 
     // x64 CONTEXT: 16-byte aligned, ~1232 bytes. ContextFlags at offset 0x30,
@@ -112,15 +113,36 @@ mod imp {
         unsafe {
             if !info.is_null() {
                 let rec = (*info).record;
-                if !rec.is_null() && (*rec).code == 0xC000_0005 {
-                    let addr = (*rec).address as usize;
-                    let base = GetModuleHandleW(std::ptr::null()) as usize;
-                    let rva = addr.wrapping_sub(base);
-                    eprintln!(
-                        "[FAULT] access violation: VA={:#x} base={:#x} RVA={:#x}",
-                        addr, base, rva
-                    );
-                    std::process::exit(77);
+                if !rec.is_null() {
+                    let code = (*rec).code;
+                    // Stack overflow: the handler runs on the exhausted stack,
+                    // so eprintln (which needs stack to format) would re-fault.
+                    // Exit immediately with a distinctive code (253) to confirm
+                    // the crash type without touching the stack.
+                    if code == 0xC000_00FD {
+                        ExitProcess(253);
+                    }
+                    // Catch all fatal (high-severity, 0xCxxxxxxx) exceptions:
+                    // access violation 0xC0000005, stack overflow 0xC00000FD,
+                    // illegal instruction 0xC000001D, etc. A silent crash with
+                    // no [FAULT] line means we never even reached the handler.
+                    if code & 0xF000_0000 == 0xC000_0000 {
+                        let addr = (*rec).address as usize;
+                        let base = GetModuleHandleW(std::ptr::null()) as usize;
+                        let rva = addr.wrapping_sub(base);
+                        let kind = if code == 0xC000_0005 {
+                            "access violation"
+                        } else if code == 0xC000_00FD {
+                            "stack overflow"
+                        } else {
+                            "fatal exception"
+                        };
+                        eprintln!(
+                            "[FAULT] {} code={:#x} VA={:#x} base={:#x} RVA={:#x}",
+                            kind, code, addr, base, rva
+                        );
+                        std::process::exit(77);
+                    }
                 }
             }
         }

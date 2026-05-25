@@ -1,9 +1,56 @@
 # Stage-2 Bootstrap — progress log
 
-## SESSION 3 (2026-05-24 cont.): HANG ROOT-CAUSED + FIXED; field-access bug fixed
+## SESSION 3b (2026-05-24 cont.): CORRECTION + scale-dependent wall identified
 
+CORRECTION to 3a below: "stage-2 now tokenizes correctly" was WRONG. stage-2 no
+longer HANGS (real win), but its lexer still mis-tokenizes: it emits ~1 token per
+SOURCE BYTE (hi.kry: stage-1=11 tokens, stage-2=32 = byte count). Root: tokenize's
+`return lex.tokens` / `lex.pos` read field OFFSET 0 (= src) instead of 8/16, so
+`len(tokens)` returns len(src) and p_peek then indexes a string as an array ->
+segfault (the "parser crash" at p_peek RVA 0x1d3e2).
+
+BISECTION RESULT (the precise wall): the symptom is `tokenize(source)` returning
+~1 token per SOURCE BYTE (whitespace not skipped) ONLY in certain call contexts.
+Module-by-module + call-context bisection (all via stage-1 obj + link, run):
+- runtime+token+lexer (1594 ln)          -> tokenize correct.
+- runtime..lower (8 mod, 11754 ln)       -> correct.
+- runtime..x86 (11 mod, 15566 ln)        -> correct.
+- ALL 15 modules + a simple test main    -> correct (count=11 on hi.kry).
+- ALL 15 modules + main.kry PRESENT but a simple test main runs -> correct (11).
+- full source, real main -> emit_object -> tokenize -> WRONG (32 = byte count).
+So it is NOT the module count, NOT main.kry's mere presence -- it is the
+emit_object CALL CONTEXT. Same `file_read`+`tokenize`+`len` code gives 11 from a
+low-local-count function and 32 from emit_object (many live locals). Verified the
+not-aliasing-of-call-results change does NOT fix it, and emit_object's disasm
+shows `tokens` correctly stored/read -- so tokenize itself RETURNS 32 elements in
+that context. This is a register-pressure / scale-dependent codegen miscompile
+(the file's own alias comment warns regalloc mishandles this class). Every
+individual function (is_alpha, is_alnum, scan_identifier loop, field offsets) is
+correct in disasm and in small/medium repros; only the high-pressure aggregate
+fails.
+
+NEEDS A DEBUGGER. Reading correct-looking disasm of a register-allocation bug
+without single-stepping is a dead end (tried 6+ hypotheses, all wrong). Next
+session: install windbg/cdb (or x64dbg) and single-step emit_object's tokenize
+call to see which register/slot is clobbered, OR audit regalloc.kry's linear-scan
+interval/liveness handling for functions with many simultaneously-live locals.
+
+BLOCKED ON TOOLING: no working debugger on this host (cdb/gdb absent; lldb fails;
+the fault tracer + watchdog only catch the SYMPTOM site, not the corruption
+source). Cracking this needs either a real debugger (windbg/cdb install) or
+painstaking binary-bisection of the full source (remove modules until tokenize
+works) to find which code's presence triggers the mis-resolution. This is a
+multi-session effort, not a single bug.
+
+The GENERAL user-call return-type fix (lower_fn_call typing call results as their
+struct type) ALSO hits a scale-only crash and is left DISABLED. Annotations don't
+help either because the field-resolution itself fails at scale.
+
+## SESSION 3a (2026-05-24 cont.): HANG ROOT-CAUSED + FIXED; field-access bug fixed
+
+NOTE: the "tokenizes correctly" claim here is corrected in 3b above.
 The stage-2 "hang in tokenize" (Session 2's remaining gate) is SOLVED. Two real
-self-host bugs found and fixed; stage-2 now tokenizes correctly. Commits 3919065
+self-host bugs found and fixed. Commits 3919065
 (self-host) + 86eed3e (diagnostics) + b0c8622 (the hang fix).
 
 ### Tooling built (commit 86eed3e, all env-gated, no-op by default)
