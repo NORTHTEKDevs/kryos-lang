@@ -1087,7 +1087,7 @@ fn link_exe(inputs: [LinkerInput], entry_name: str, output_path: str, target_os:
     println("linker: merging sections from " + to_string(len(inputs)) + " input(s)")
 
     // Step 1: Merge sections
-    let merged = link_merge_sections(inputs)
+    let merged: LinkerMerged = link_merge_sections(inputs)
 
     let text_size = buf_len(merged.text)
     let data_size = buf_len(merged.data)

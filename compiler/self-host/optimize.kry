@@ -1349,7 +1349,7 @@ fn inline_call(caller: MirFunction, block_idx: i32, inst_idx: i32, callee: MirFu
         if cinst.kind == INST_ASSIGN {
             let new_dest = remap_local_id(callee_to_caller_ids, callee_to_caller_vals, cinst.dest)
             if len(cinst.value) > 0 {
-                let new_rv = remap_rvalue(cinst.value[0], callee_to_caller_ids, callee_to_caller_vals)
+                let new_rv: RValue = remap_rvalue(cinst.value[0], callee_to_caller_ids, callee_to_caller_vals)
                 push(inlined_insts, inst_assign(new_dest, new_rv))
             }
         } else {
@@ -1366,7 +1366,7 @@ fn inline_call(caller: MirFunction, block_idx: i32, inst_idx: i32, callee: MirFu
         let term = callee_block.terminator[0]
         if term.kind == TERM_RETURN {
             if len(term.ret_val) > 0 {
-                let ret_op = remap_operand(term.ret_val[0], callee_to_caller_ids, callee_to_caller_vals)
+                let ret_op: Operand = remap_operand(term.ret_val[0], callee_to_caller_ids, callee_to_caller_vals)
                 push(inlined_insts, inst_assign(dest, rv_use(ret_op)))
             }
         }

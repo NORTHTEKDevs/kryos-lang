@@ -114,6 +114,21 @@ fn p_peek_kind(p: Parser) -> i32 {
     return p_peek(p).kind
 }
 
+fn p_peek_start(p: Parser) -> i32 {
+    let t: Token = p_peek(p)
+    return t.start
+}
+
+fn p_peek_end(p: Parser) -> i32 {
+    let t: Token = p_peek(p)
+    return t.end
+}
+
+fn p_peek_text(p: Parser) -> str {
+    let t: Token = p_peek(p)
+    return t.text
+}
+
 fn p_peek_nth(p: Parser, n: i32) -> i32 {
     let mut idx = p.pos + n
     if idx >= len(p.tokens) {
@@ -154,7 +169,7 @@ fn p_expect(p: Parser, kind: i32) -> Parser {
     if p_check(p, kind) {
         return p_advance(p)
     }
-    let tok = p_peek(p)
+    let tok: Token = p_peek(p)
     let msg = "expected " + token_kind_name(kind) + ", found " + token_kind_name(tok.kind) + " at " + to_string(tok.start)
     let mut errors = p.errors
     push(errors, msg)
@@ -168,17 +183,17 @@ fn p_error(p: Parser, msg: str) -> Parser {
 }
 
 fn p_expect_name(p: Parser) -> ParseNameResult {
-    let tok = p_peek(p)
+    let tok: Token = p_peek(p)
     if tok.kind == TK_IDENT or tok.kind == TK_TYPE_IDENT {
-        let np = p_advance(p)
+        let np: Parser = p_advance(p)
         return ParseNameResult { p: np, name: tok.text, start: tok.start, end: tok.end }
     }
     // Allow keywords as names in certain positions
     if is_keyword(tok.kind) {
-        let np = p_advance(p)
+        let np: Parser = p_advance(p)
         return ParseNameResult { p: np, name: tok.text, start: tok.start, end: tok.end }
     }
-    let np = p_error(p, "expected identifier, found " + token_kind_name(tok.kind))
+    let np: Parser = p_error(p, "expected identifier, found " + token_kind_name(tok.kind))
     return ParseNameResult { p: np, name: "<error>", start: tok.start, end: tok.end }
 }
 
@@ -371,10 +386,10 @@ fn looks_like_type_name(name: str) -> bool {
 fn parse_module(p: Parser) -> Module {
     let mut pp = p
     let mut decls: [Decl] = []
-    let start_pos = p_peek(pp).start
+    let start_pos = p_peek_start(pp)
 
     while not p_at_end(pp) {
-        let result = parse_declaration(pp)
+        let result: ParseDeclResult = parse_declaration(pp)
         if result.ok {
             push(decls, result.decl)
             pp = result.p
@@ -388,7 +403,7 @@ fn parse_module(p: Parser) -> Module {
         }
     }
 
-    let end_pos = p_peek(pp).start
+    let end_pos = p_peek_start(pp)
     return Module { name: "", declarations: decls, start: start_pos, end: end_pos }
 }
 
@@ -401,7 +416,7 @@ fn parse_declaration(p: Parser) -> ParseDeclResult {
     // Collect annotations
     let mut annotations: [Annotation] = []
     while p_check(pp, TK_AT) {
-        let ann_result = parse_annotation(pp)
+        let ann_result: ParseAnnotationResult = parse_annotation(pp)
         pp = ann_result.p
         push(annotations, ann_result.decl)
     }
@@ -416,39 +431,39 @@ fn parse_declaration(p: Parser) -> ParseDeclResult {
     let k = p_peek_kind(pp)
 
     if k == TK_FN {
-        let result = parse_fn_decl(pp, public, annotations)
+        let result: ParseDeclResult = parse_fn_decl(pp, public, annotations)
         return ParseDeclResult { p: result.p, decl: result.decl, ok: true }
     }
     if k == TK_STRUCT {
-        let result = parse_struct_decl(pp, public, annotations)
+        let result: ParseDeclResult = parse_struct_decl(pp, public, annotations)
         return ParseDeclResult { p: result.p, decl: result.decl, ok: true }
     }
     if k == TK_ENUM {
-        let result = parse_enum_decl(pp, public, annotations)
+        let result: ParseDeclResult = parse_enum_decl(pp, public, annotations)
         return ParseDeclResult { p: result.p, decl: result.decl, ok: true }
     }
     if k == TK_TRAIT {
-        let result = parse_trait_decl(pp, public)
+        let result: ParseDeclResult = parse_trait_decl(pp, public)
         return ParseDeclResult { p: result.p, decl: result.decl, ok: true }
     }
     if k == TK_IMPL {
-        let result = parse_impl_decl(pp)
+        let result: ParseDeclResult = parse_impl_decl(pp)
         return ParseDeclResult { p: result.p, decl: result.decl, ok: true }
     }
     if k == TK_ACTOR {
-        let result = parse_actor_decl(pp, annotations)
+        let result: ParseDeclResult = parse_actor_decl(pp, annotations)
         return ParseDeclResult { p: result.p, decl: result.decl, ok: true }
     }
     if k == TK_TYPE {
-        let result = parse_type_alias(pp, public)
+        let result: ParseDeclResult = parse_type_alias(pp, public)
         return ParseDeclResult { p: result.p, decl: result.decl, ok: true }
     }
     if k == TK_USE {
-        let result = parse_import(pp)
+        let result: ParseDeclResult = parse_import(pp)
         return ParseDeclResult { p: result.p, decl: result.decl, ok: true }
     }
     if k == TK_EXTERN {
-        let result = parse_extern(pp)
+        let result: ParseDeclResult = parse_extern(pp)
         return ParseDeclResult { p: result.p, decl: result.decl, ok: true }
     }
 
@@ -457,7 +472,7 @@ fn parse_declaration(p: Parser) -> ParseDeclResult {
     // this lets top-level `let`, expressions, etc. work.
     if len(annotations) == 0 and not public {
         // Try as statement -- we'll wrap it in a dummy function decl
-        let stmt_result = parse_statement(pp)
+        let stmt_result: ParseStmtResult = parse_statement(pp)
         if stmt_result.ok {
             let stmts: [Stmt] = [stmt_result.stmt]
             let empty_ann: [Annotation] = []
@@ -485,7 +500,7 @@ fn parse_declaration(p: Parser) -> ParseDeclResult {
     }
 
     // Nothing worked
-    let empty_decl = make_empty_decl(0, 0)
+    let empty_decl: Decl = make_empty_decl(0, 0)
     return ParseDeclResult { p: pp, decl: empty_decl, ok: false }
 }
 
@@ -500,9 +515,9 @@ struct ParseAnnotationResult {
 }
 
 fn parse_annotation(p: Parser) -> ParseAnnotationResult {
-    let mut pp = p_expect(p, TK_AT)
-    let start = p_peek(p).start
-    let nr = p_expect_name(pp)
+    let mut pp: Parser = p_expect(p, TK_AT)
+    let start = p_peek_start(p)
+    let nr: ParseNameResult = p_expect_name(pp)
     pp = nr.p
     let name = nr.name
     let mut args: [str] = []
@@ -511,7 +526,7 @@ fn parse_annotation(p: Parser) -> ParseAnnotationResult {
     if p_check(pp, TK_LPAREN) {
         pp = p_advance(pp)
         while not p_check(pp, TK_RPAREN) and not p_at_end(pp) {
-            let tok = p_peek(pp)
+            let tok: Token = p_peek(pp)
             push(args, tok.text)
             pp = p_advance(pp)
             if not p_check(pp, TK_RPAREN) {
@@ -520,7 +535,7 @@ fn parse_annotation(p: Parser) -> ParseAnnotationResult {
                 }
             }
         }
-        end_pos = p_peek(pp).end
+        end_pos = p_peek_end(pp)
         pp = p_expect(pp, TK_RPAREN)
     }
 
@@ -546,17 +561,17 @@ fn parse_generics(p: Parser) -> ParseGenericsResult {
     }
     pp = p_advance(pp) // eat <
     while not p_check(pp, TK_GT) and not p_at_end(pp) {
-        let nr = p_expect_name(pp)
+        let nr: ParseNameResult = p_expect_name(pp)
         pp = nr.p
         let mut bounds: [str] = []
         if p_check(pp, TK_COLON) {
             pp = p_advance(pp)
-            let br = p_expect_name(pp)
+            let br: ParseNameResult = p_expect_name(pp)
             pp = br.p
             push(bounds, br.name)
             while p_check(pp, TK_PLUS) {
                 pp = p_advance(pp)
-                let br2 = p_expect_name(pp)
+                let br2: ParseNameResult = p_expect_name(pp)
                 pp = br2.p
                 push(bounds, br2.name)
             }
@@ -575,28 +590,28 @@ fn parse_generics(p: Parser) -> ParseGenericsResult {
 // -------------------------------------------------------------------
 
 fn parse_fn_decl(p: Parser, public: bool, annotations: [Annotation]) -> ParseDeclResult {
-    let mut pp = p_expect(p, TK_FN)
-    let start = p_peek(p).start
-    let nr = p_expect_name(pp)
+    let mut pp: Parser = p_expect(p, TK_FN)
+    let start = p_peek_start(p)
+    let nr: ParseNameResult = p_expect_name(pp)
     pp = nr.p
-    let gr = parse_generics(pp)
+    let gr: ParseGenericsResult = parse_generics(pp)
     pp = gr.p
     pp = p_expect(pp, TK_LPAREN)
-    let params_result = parse_param_list(pp)
+    let params_result: ParseParamsResult = parse_param_list(pp)
     pp = params_result.p
     pp = p_expect(pp, TK_RPAREN)
 
     let mut ret_type: [TypeExpr] = []
     if p_check(pp, TK_ARROW) {
         pp = p_advance(pp)
-        let tr = parse_type(pp)
+        let tr: ParseTypeResult = parse_type(pp)
         pp = tr.p
         push(ret_type, tr.ty)
     }
 
     let mut fn_body: [Stmt] = []
     if p_check(pp, TK_LBRACE) {
-        let block_result = parse_block(pp)
+        let block_result: ParseBlockResult = parse_block(pp)
         pp = block_result.p
         fn_body = block_result.stmts
     } else {
@@ -607,7 +622,7 @@ fn parse_fn_decl(p: Parser, public: bool, annotations: [Annotation]) -> ParseDec
     }
 
     let decl = make_fn_decl(nr.name, public, annotations, gr.generics,
-                            params_result.params, ret_type, fn_body, start, p_peek(pp).start)
+                            params_result.params, ret_type, fn_body, start, p_peek_start(pp))
     return ParseDeclResult { p: pp, decl: decl, ok: true }
 }
 
@@ -626,30 +641,30 @@ fn parse_param_list(p: Parser) -> ParseParamsResult {
     let mut params: [Param] = []
     while not p_check(pp, TK_RPAREN) and not p_at_end(pp) {
         let before = pp.pos
-        let tok = p_peek(pp)
+        let tok: Token = p_peek(pp)
         if tok.text == "self" {
             let empty_ty: [TypeExpr] = []
             let empty_def: [Expr] = []
             push(params, Param { name: "self", ty: empty_ty, default_val: empty_def, start: tok.start, end: tok.end })
             pp = p_advance(pp)
         } else {
-            let nr = p_expect_name(pp)
+            let nr: ParseNameResult = p_expect_name(pp)
             pp = nr.p
             let mut ty: [TypeExpr] = []
             if p_check(pp, TK_COLON) {
                 pp = p_advance(pp)
-                let tr = parse_type(pp)
+                let tr: ParseTypeResult = parse_type(pp)
                 pp = tr.p
                 push(ty, tr.ty)
             }
             let mut default_val: [Expr] = []
             if p_check(pp, TK_EQ) {
                 pp = p_advance(pp)
-                let er = parse_expr(pp)
+                let er: ParseExprResult = parse_expr(pp)
                 pp = er.p
                 push(default_val, er.expr)
             }
-            push(params, Param { name: nr.name, ty: ty, default_val: default_val, start: nr.start, end: p_peek(pp).start })
+            push(params, Param { name: nr.name, ty: ty, default_val: default_val, start: nr.start, end: p_peek_start(pp) })
         }
         if not p_check(pp, TK_RPAREN) {
             pp = p_expect(pp, TK_COMMA)
@@ -667,11 +682,11 @@ fn parse_param_list(p: Parser) -> ParseParamsResult {
 // -------------------------------------------------------------------
 
 fn parse_struct_decl(p: Parser, public: bool, annotations: [Annotation]) -> ParseDeclResult {
-    let mut pp = p_expect(p, TK_STRUCT)
-    let start = p_peek(p).start
-    let nr = p_expect_name(pp)
+    let mut pp: Parser = p_expect(p, TK_STRUCT)
+    let start = p_peek_start(p)
+    let nr: ParseNameResult = p_expect_name(pp)
     pp = nr.p
-    let gr = parse_generics(pp)
+    let gr: ParseGenericsResult = parse_generics(pp)
     pp = gr.p
     pp = p_expect(pp, TK_LBRACE)
 
@@ -682,21 +697,21 @@ fn parse_struct_decl(p: Parser, public: bool, annotations: [Annotation]) -> Pars
             field_public = true
             pp = p_advance(pp)
         }
-        let fnr = p_expect_name(pp)
+        let fnr: ParseNameResult = p_expect_name(pp)
         pp = fnr.p
         pp = p_expect(pp, TK_COLON)
-        let tr = parse_type(pp)
+        let tr: ParseTypeResult = parse_type(pp)
         pp = tr.p
         let mut default_val: [Expr] = []
         if p_check(pp, TK_EQ) {
             pp = p_advance(pp)
-            let er = parse_expr(pp)
+            let er: ParseExprResult = parse_expr(pp)
             pp = er.p
             push(default_val, er.expr)
         }
         push(fields, StructField {
             name: fnr.name, ty: tr.ty, public: field_public,
-            default_val: default_val, start: fnr.start, end: p_peek(pp).start
+            default_val: default_val, start: fnr.start, end: p_peek_start(pp)
         })
         if not p_check(pp, TK_RBRACE) {
             if p_check(pp, TK_COMMA) {
@@ -705,7 +720,7 @@ fn parse_struct_decl(p: Parser, public: bool, annotations: [Annotation]) -> Pars
         }
     }
     pp = p_expect(pp, TK_RBRACE)
-    let decl = make_struct_decl(nr.name, public, annotations, gr.generics, fields, start, p_peek(pp).start)
+    let decl: Decl = make_struct_decl(nr.name, public, annotations, gr.generics, fields, start, p_peek_start(pp))
     return ParseDeclResult { p: pp, decl: decl, ok: true }
 }
 
@@ -714,23 +729,23 @@ fn parse_struct_decl(p: Parser, public: bool, annotations: [Annotation]) -> Pars
 // -------------------------------------------------------------------
 
 fn parse_enum_decl(p: Parser, public: bool, annotations: [Annotation]) -> ParseDeclResult {
-    let mut pp = p_expect(p, TK_ENUM)
-    let start = p_peek(p).start
-    let nr = p_expect_name(pp)
+    let mut pp: Parser = p_expect(p, TK_ENUM)
+    let start = p_peek_start(p)
+    let nr: ParseNameResult = p_expect_name(pp)
     pp = nr.p
-    let gr = parse_generics(pp)
+    let gr: ParseGenericsResult = parse_generics(pp)
     pp = gr.p
     pp = p_expect(pp, TK_LBRACE)
 
     let mut variants: [EnumVariant] = []
     while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
-        let vnr = p_expect_name(pp)
+        let vnr: ParseNameResult = p_expect_name(pp)
         pp = vnr.p
         let mut vfields: [TypeExpr] = []
         if p_check(pp, TK_LPAREN) {
             pp = p_advance(pp)
             while not p_check(pp, TK_RPAREN) and not p_at_end(pp) {
-                let tr = parse_type(pp)
+                let tr: ParseTypeResult = parse_type(pp)
                 pp = tr.p
                 push(vfields, tr.ty)
                 if not p_check(pp, TK_RPAREN) {
@@ -739,7 +754,7 @@ fn parse_enum_decl(p: Parser, public: bool, annotations: [Annotation]) -> ParseD
             }
             pp = p_expect(pp, TK_RPAREN)
         }
-        push(variants, EnumVariant { name: vnr.name, fields: vfields, start: vnr.start, end: p_peek(pp).start })
+        push(variants, EnumVariant { name: vnr.name, fields: vfields, start: vnr.start, end: p_peek_start(pp) })
         if not p_check(pp, TK_RBRACE) {
             if p_check(pp, TK_COMMA) {
                 pp = p_advance(pp)
@@ -747,7 +762,7 @@ fn parse_enum_decl(p: Parser, public: bool, annotations: [Annotation]) -> ParseD
         }
     }
     pp = p_expect(pp, TK_RBRACE)
-    let decl = make_enum_decl(nr.name, public, annotations, gr.generics, variants, start, p_peek(pp).start)
+    let decl: Decl = make_enum_decl(nr.name, public, annotations, gr.generics, variants, start, p_peek_start(pp))
     return ParseDeclResult { p: pp, decl: decl, ok: true }
 }
 
@@ -756,23 +771,23 @@ fn parse_enum_decl(p: Parser, public: bool, annotations: [Annotation]) -> ParseD
 // -------------------------------------------------------------------
 
 fn parse_trait_decl(p: Parser, public: bool) -> ParseDeclResult {
-    let mut pp = p_expect(p, TK_TRAIT)
-    let start = p_peek(p).start
-    let nr = p_expect_name(pp)
+    let mut pp: Parser = p_expect(p, TK_TRAIT)
+    let start = p_peek_start(p)
+    let nr: ParseNameResult = p_expect_name(pp)
     pp = nr.p
-    let gr = parse_generics(pp)
+    let gr: ParseGenericsResult = parse_generics(pp)
     pp = gr.p
     pp = p_expect(pp, TK_LBRACE)
 
     let mut methods: [Decl] = []
     let empty_ann: [Annotation] = []
     while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
-        let mr = parse_fn_decl(pp, false, empty_ann)
+        let mr: ParseDeclResult = parse_fn_decl(pp, false, empty_ann)
         pp = mr.p
         push(methods, mr.decl)
     }
     pp = p_expect(pp, TK_RBRACE)
-    let decl = make_trait_decl(nr.name, public, gr.generics, methods, start, p_peek(pp).start)
+    let decl: Decl = make_trait_decl(nr.name, public, gr.generics, methods, start, p_peek_start(pp))
     return ParseDeclResult { p: pp, decl: decl, ok: true }
 }
 
@@ -781,11 +796,11 @@ fn parse_trait_decl(p: Parser, public: bool) -> ParseDeclResult {
 // -------------------------------------------------------------------
 
 fn parse_impl_decl(p: Parser) -> ParseDeclResult {
-    let mut pp = p_expect(p, TK_IMPL)
-    let start = p_peek(p).start
-    let gr = parse_generics(pp)
+    let mut pp: Parser = p_expect(p, TK_IMPL)
+    let start = p_peek_start(p)
+    let gr: ParseGenericsResult = parse_generics(pp)
     pp = gr.p
-    let nr = p_expect_name(pp)
+    let nr: ParseNameResult = p_expect_name(pp)
     pp = nr.p
 
     // Check for `impl Trait for Target`
@@ -793,7 +808,7 @@ fn parse_impl_decl(p: Parser) -> ParseDeclResult {
     let mut trait_name = ""
     if p_check(pp, TK_FOR) {
         pp = p_advance(pp)
-        let tnr = p_expect_name(pp)
+        let tnr: ParseNameResult = p_expect_name(pp)
         pp = tnr.p
         trait_name = target
         target = tnr.name
@@ -808,12 +823,12 @@ fn parse_impl_decl(p: Parser) -> ParseDeclResult {
             method_public = true
             pp = p_advance(pp)
         }
-        let mr = parse_fn_decl(pp, method_public, empty_ann)
+        let mr: ParseDeclResult = parse_fn_decl(pp, method_public, empty_ann)
         pp = mr.p
         push(methods, mr.decl)
     }
     pp = p_expect(pp, TK_RBRACE)
-    let decl = make_impl_decl(target, trait_name, gr.generics, methods, start, p_peek(pp).start)
+    let decl: Decl = make_impl_decl(target, trait_name, gr.generics, methods, start, p_peek_start(pp))
     return ParseDeclResult { p: pp, decl: decl, ok: true }
 }
 
@@ -822,9 +837,9 @@ fn parse_impl_decl(p: Parser) -> ParseDeclResult {
 // -------------------------------------------------------------------
 
 fn parse_actor_decl(p: Parser, annotations: [Annotation]) -> ParseDeclResult {
-    let mut pp = p_expect(p, TK_ACTOR)
-    let start = p_peek(p).start
-    let nr = p_expect_name(pp)
+    let mut pp: Parser = p_expect(p, TK_ACTOR)
+    let start = p_peek_start(p)
+    let nr: ParseNameResult = p_expect_name(pp)
     pp = nr.p
     pp = p_expect(pp, TK_LBRACE)
 
@@ -833,38 +848,38 @@ fn parse_actor_decl(p: Parser, annotations: [Annotation]) -> ParseDeclResult {
 
     while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
         if p_check(pp, TK_FN) {
-            let fn_start = p_peek(pp).start
+            let fn_start = p_peek_start(pp)
             pp = p_expect(pp, TK_FN)
-            let hnr = p_expect_name(pp)
+            let hnr: ParseNameResult = p_expect_name(pp)
             pp = hnr.p
             pp = p_expect(pp, TK_LPAREN)
-            let hpr = parse_param_list(pp)
+            let hpr: ParseParamsResult = parse_param_list(pp)
             pp = hpr.p
             pp = p_expect(pp, TK_RPAREN)
             let mut hret: [TypeExpr] = []
             if p_check(pp, TK_ARROW) {
                 pp = p_advance(pp)
-                let tr = parse_type(pp)
+                let tr: ParseTypeResult = parse_type(pp)
                 pp = tr.p
                 push(hret, tr.ty)
             }
-            let block_result = parse_block(pp)
+            let block_result: ParseBlockResult = parse_block(pp)
             pp = block_result.p
             push(handlers, MessageHandler {
                 name: hnr.name, params: hpr.params, ret_type: hret,
-                body: block_result.stmts, start: fn_start, end: p_peek(pp).start
+                body: block_result.stmts, start: fn_start, end: p_peek_start(pp)
             })
         } else {
             // State field
-            let fnr = p_expect_name(pp)
+            let fnr: ParseNameResult = p_expect_name(pp)
             pp = fnr.p
             pp = p_expect(pp, TK_COLON)
-            let tr = parse_type(pp)
+            let tr: ParseTypeResult = parse_type(pp)
             pp = tr.p
             let empty_def: [Expr] = []
             push(state_fields, StructField {
                 name: fnr.name, ty: tr.ty, public: false,
-                default_val: empty_def, start: fnr.start, end: p_peek(pp).start
+                default_val: empty_def, start: fnr.start, end: p_peek_start(pp)
             })
             if not p_check(pp, TK_RBRACE) and not p_check(pp, TK_FN) {
                 if p_check(pp, TK_COMMA) {
@@ -874,7 +889,7 @@ fn parse_actor_decl(p: Parser, annotations: [Annotation]) -> ParseDeclResult {
         }
     }
     pp = p_expect(pp, TK_RBRACE)
-    let decl = make_actor_decl(nr.name, annotations, state_fields, handlers, start, p_peek(pp).start)
+    let decl: Decl = make_actor_decl(nr.name, annotations, state_fields, handlers, start, p_peek_start(pp))
     return ParseDeclResult { p: pp, decl: decl, ok: true }
 }
 
@@ -883,16 +898,16 @@ fn parse_actor_decl(p: Parser, annotations: [Annotation]) -> ParseDeclResult {
 // -------------------------------------------------------------------
 
 fn parse_type_alias(p: Parser, public: bool) -> ParseDeclResult {
-    let mut pp = p_expect(p, TK_TYPE)
-    let start = p_peek(p).start
-    let nr = p_expect_name(pp)
+    let mut pp: Parser = p_expect(p, TK_TYPE)
+    let start = p_peek_start(p)
+    let nr: ParseNameResult = p_expect_name(pp)
     pp = nr.p
-    let gr = parse_generics(pp)
+    let gr: ParseGenericsResult = parse_generics(pp)
     pp = gr.p
     pp = p_expect(pp, TK_EQ)
-    let tr = parse_type(pp)
+    let tr: ParseTypeResult = parse_type(pp)
     pp = tr.p
-    let decl = make_type_alias_decl(nr.name, public, gr.generics, tr.ty, start, p_peek(pp).start)
+    let decl: Decl = make_type_alias_decl(nr.name, public, gr.generics, tr.ty, start, p_peek_start(pp))
     return ParseDeclResult { p: pp, decl: decl, ok: true }
 }
 
@@ -901,11 +916,11 @@ fn parse_type_alias(p: Parser, public: bool) -> ParseDeclResult {
 // -------------------------------------------------------------------
 
 fn parse_import(p: Parser) -> ParseDeclResult {
-    let mut pp = p_expect(p, TK_USE)
-    let start = p_peek(p).start
+    let mut pp: Parser = p_expect(p, TK_USE)
+    let start = p_peek_start(p)
     let mut segments: [str] = []
 
-    let nr = p_expect_name(pp)
+    let nr: ParseNameResult = p_expect_name(pp)
     pp = nr.p
     push(segments, nr.name)
 
@@ -916,7 +931,7 @@ fn parse_import(p: Parser) -> ParseDeclResult {
             pp = p_advance(pp)
             let mut items: [str] = []
             while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
-                let inr = p_expect_name(pp)
+                let inr: ParseNameResult = p_expect_name(pp)
                 pp = inr.p
                 push(items, inr.name)
                 if not p_check(pp, TK_RBRACE) {
@@ -924,11 +939,11 @@ fn parse_import(p: Parser) -> ParseDeclResult {
                 }
             }
             pp = p_expect(pp, TK_RBRACE)
-            let ip = ImportPath { segments: segments, alias: "", items: items, start: start, end: p_peek(pp).start }
-            let decl = make_import_decl(ip, start, p_peek(pp).start)
+            let ip = ImportPath { segments: segments, alias: "", items: items, start: start, end: p_peek_start(pp) }
+            let decl: Decl = make_import_decl(ip, start, p_peek_start(pp))
             return ParseDeclResult { p: pp, decl: decl, ok: true }
         }
-        let snr = p_expect_name(pp)
+        let snr: ParseNameResult = p_expect_name(pp)
         pp = snr.p
         push(segments, snr.name)
     }
@@ -936,14 +951,14 @@ fn parse_import(p: Parser) -> ParseDeclResult {
     let mut alias = ""
     if p_check(pp, TK_AS) {
         pp = p_advance(pp)
-        let anr = p_expect_name(pp)
+        let anr: ParseNameResult = p_expect_name(pp)
         pp = anr.p
         alias = anr.name
     }
 
     let empty_items: [str] = []
-    let ip = ImportPath { segments: segments, alias: alias, items: empty_items, start: start, end: p_peek(pp).start }
-    let decl = make_import_decl(ip, start, p_peek(pp).start)
+    let ip = ImportPath { segments: segments, alias: alias, items: empty_items, start: start, end: p_peek_start(pp) }
+    let decl: Decl = make_import_decl(ip, start, p_peek_start(pp))
     return ParseDeclResult { p: pp, decl: decl, ok: true }
 }
 
@@ -952,12 +967,12 @@ fn parse_import(p: Parser) -> ParseDeclResult {
 // -------------------------------------------------------------------
 
 fn parse_extern(p: Parser) -> ParseDeclResult {
-    let mut pp = p_expect(p, TK_EXTERN)
-    let start = p_peek(p).start
+    let mut pp: Parser = p_expect(p, TK_EXTERN)
+    let start = p_peek_start(p)
 
     let mut abi = "C"
     if p_check(pp, TK_STRING) {
-        abi = p_peek(pp).text
+        abi = p_peek_text(pp)
         pp = p_advance(pp)
     }
 
@@ -965,12 +980,12 @@ fn parse_extern(p: Parser) -> ParseDeclResult {
     let mut items: [Decl] = []
     let empty_ann: [Annotation] = []
     while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
-        let fr = parse_fn_decl(pp, false, empty_ann)
+        let fr: ParseDeclResult = parse_fn_decl(pp, false, empty_ann)
         pp = fr.p
         push(items, fr.decl)
     }
     pp = p_expect(pp, TK_RBRACE)
-    let decl = make_extern_decl(abi, items, start, p_peek(pp).start)
+    let decl: Decl = make_extern_decl(abi, items, start, p_peek_start(pp))
     return ParseDeclResult { p: pp, decl: decl, ok: true }
 }
 
@@ -985,11 +1000,11 @@ struct ParseBlockResult {
 }
 
 fn parse_block(p: Parser) -> ParseBlockResult {
-    let mut pp = p_expect(p, TK_LBRACE)
+    let mut pp: Parser = p_expect(p, TK_LBRACE)
     let mut stmts: [Stmt] = []
 
     while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
-        let result = parse_statement(pp)
+        let result: ParseStmtResult = parse_statement(pp)
         if result.ok {
             push(stmts, result.stmt)
             pp = result.p
@@ -1016,15 +1031,15 @@ fn parse_statement(p: Parser) -> ParseStmtResult {
     if k == TK_FOR      { return parse_for(p) }
     if k == TK_WHILE    { return parse_while(p) }
     if k == TK_BREAK {
-        let tok = p_peek(p)
-        let pp = p_advance(p)
-        let stmt = make_break_stmt(tok.start, tok.end)
+        let tok: Token = p_peek(p)
+        let pp: Parser = p_advance(p)
+        let stmt: Stmt = make_break_stmt(tok.start, tok.end)
         return ParseStmtResult { p: pp, stmt: stmt, ok: true }
     }
     if k == TK_CONTINUE {
-        let tok = p_peek(p)
-        let pp = p_advance(p)
-        let stmt = make_continue_stmt(tok.start, tok.end)
+        let tok: Token = p_peek(p)
+        let pp: Parser = p_advance(p)
+        let stmt: Stmt = make_continue_stmt(tok.start, tok.end)
         return ParseStmtResult { p: pp, stmt: stmt, ok: true }
     }
     if k == TK_SPAWN    { return parse_spawn(p) }
@@ -1032,15 +1047,15 @@ fn parse_statement(p: Parser) -> ParseStmtResult {
     if k == TK_TRY      { return parse_try_catch(p) }
     if k == TK_THROW    { return parse_throw(p) }
     if k == TK_RBRACE {
-        let empty = make_empty_stmt(0, 0)
+        let empty: Stmt = make_empty_stmt(0, 0)
         return ParseStmtResult { p: p, stmt: empty, ok: false }
     }
     return parse_expr_or_assign(p)
 }
 
 fn parse_let(p: Parser) -> ParseStmtResult {
-    let mut pp = p_expect(p, TK_LET)
-    let start = p_peek(p).start
+    let mut pp: Parser = p_expect(p, TK_LET)
+    let start = p_peek_start(p)
     let mut mutable = false
     if p_check(pp, TK_MUT) {
         mutable = true
@@ -1049,76 +1064,76 @@ fn parse_let(p: Parser) -> ParseStmtResult {
 
     // Destructuring pattern: let (a, b) = ...
     if p_check(pp, TK_LPAREN) {
-        let pr = parse_pattern(pp)
+        let pr: ParsePatternResult = parse_pattern(pp)
         pp = pr.p
         let mut ty: [TypeExpr] = []
         if p_check(pp, TK_COLON) {
             pp = p_advance(pp)
-            let tr = parse_type(pp)
+            let tr: ParseTypeResult = parse_type(pp)
             pp = tr.p
             push(ty, tr.ty)
         }
         let mut value: [Expr] = []
         if p_check(pp, TK_EQ) {
             pp = p_advance(pp)
-            let er = parse_expr(pp)
+            let er: ParseExprResult = parse_expr(pp)
             pp = er.p
             push(value, er.expr)
         }
         let pat: [Pattern] = [pr.pattern]
-        let stmt = make_let_stmt("", mutable, ty, value, pat, start, p_peek(pp).start)
+        let stmt: Stmt = make_let_stmt("", mutable, ty, value, pat, start, p_peek_start(pp))
         return ParseStmtResult { p: pp, stmt: stmt, ok: true }
     }
 
-    let nr = p_expect_name(pp)
+    let nr: ParseNameResult = p_expect_name(pp)
     pp = nr.p
     let mut ty: [TypeExpr] = []
     if p_check(pp, TK_COLON) {
         pp = p_advance(pp)
-        let tr = parse_type(pp)
+        let tr: ParseTypeResult = parse_type(pp)
         pp = tr.p
         push(ty, tr.ty)
     }
     let mut value: [Expr] = []
     if p_check(pp, TK_EQ) {
         pp = p_advance(pp)
-        let er = parse_expr(pp)
+        let er: ParseExprResult = parse_expr(pp)
         pp = er.p
         push(value, er.expr)
     }
     let empty_pat: [Pattern] = []
-    let stmt = make_let_stmt(nr.name, mutable, ty, value, empty_pat, start, p_peek(pp).start)
+    let stmt: Stmt = make_let_stmt(nr.name, mutable, ty, value, empty_pat, start, p_peek_start(pp))
     return ParseStmtResult { p: pp, stmt: stmt, ok: true }
 }
 
 fn parse_return(p: Parser) -> ParseStmtResult {
-    let mut pp = p_expect(p, TK_RETURN)
-    let start = p_peek(p).start
+    let mut pp: Parser = p_expect(p, TK_RETURN)
+    let start = p_peek_start(p)
     let mut value: [Expr] = []
     if not p_check(pp, TK_RBRACE) and not p_at_end(pp) and not p_check(pp, TK_SEMICOLON) {
-        let er = parse_expr(pp)
+        let er: ParseExprResult = parse_expr(pp)
         pp = er.p
         push(value, er.expr)
     }
-    let stmt = make_return_stmt(value, start, p_peek(pp).start)
+    let stmt: Stmt = make_return_stmt(value, start, p_peek_start(pp))
     return ParseStmtResult { p: pp, stmt: stmt, ok: true }
 }
 
 fn parse_if_stmt(p: Parser) -> ParseStmtResult {
-    let mut pp = p_expect(p, TK_IF)
-    let start = p_peek(p).start
-    let cond_result = parse_expr_no_struct_lit(pp)
+    let mut pp: Parser = p_expect(p, TK_IF)
+    let start = p_peek_start(p)
+    let cond_result: ParseExprResult = parse_expr_no_struct_lit(pp)
     pp = cond_result.p
-    let then_result = parse_block(pp)
+    let then_result: ParseBlockResult = parse_block(pp)
     pp = then_result.p
 
     let mut elif_conds: [Expr] = []
     let mut elif_blocks: [[Stmt]] = []
     while p_check(pp, TK_ELIF) {
         pp = p_advance(pp)
-        let ecr = parse_expr_no_struct_lit(pp)
+        let ecr: ParseExprResult = parse_expr_no_struct_lit(pp)
         pp = ecr.p
-        let ebr = parse_block(pp)
+        let ebr: ParseBlockResult = parse_block(pp)
         pp = ebr.p
         push(elif_conds, ecr.expr)
         push(elif_blocks, ebr.stmts)
@@ -1127,112 +1142,112 @@ fn parse_if_stmt(p: Parser) -> ParseStmtResult {
     let mut else_stmts: [Stmt] = []
     if p_check(pp, TK_ELSE) {
         pp = p_advance(pp)
-        let ebr = parse_block(pp)
+        let ebr: ParseBlockResult = parse_block(pp)
         pp = ebr.p
         else_stmts = ebr.stmts
     }
 
-    let stmt = make_if_stmt(cond_result.expr, then_result.stmts, elif_conds, elif_blocks, else_stmts, start, p_peek(pp).start)
+    let stmt: Stmt = make_if_stmt(cond_result.expr, then_result.stmts, elif_conds, elif_blocks, else_stmts, start, p_peek_start(pp))
     return ParseStmtResult { p: pp, stmt: stmt, ok: true }
 }
 
 fn parse_for(p: Parser) -> ParseStmtResult {
-    let mut pp = p_expect(p, TK_FOR)
-    let start = p_peek(p).start
-    let pr = parse_pattern(pp)
+    let mut pp: Parser = p_expect(p, TK_FOR)
+    let start = p_peek_start(p)
+    let pr: ParsePatternResult = parse_pattern(pp)
     pp = pr.p
     pp = p_expect(pp, TK_IN)
-    let er = parse_expr_no_struct_lit(pp)
+    let er: ParseExprResult = parse_expr_no_struct_lit(pp)
     pp = er.p
-    let br = parse_block(pp)
+    let br: ParseBlockResult = parse_block(pp)
     pp = br.p
     let pat: [Pattern] = [pr.pattern]
     let iter: [Expr] = [er.expr]
-    let stmt = make_for_stmt(pat, iter, br.stmts, start, p_peek(pp).start)
+    let stmt: Stmt = make_for_stmt(pat, iter, br.stmts, start, p_peek_start(pp))
     return ParseStmtResult { p: pp, stmt: stmt, ok: true }
 }
 
 fn parse_while(p: Parser) -> ParseStmtResult {
-    let mut pp = p_expect(p, TK_WHILE)
-    let start = p_peek(p).start
-    let er = parse_expr_no_struct_lit(pp)
+    let mut pp: Parser = p_expect(p, TK_WHILE)
+    let start = p_peek_start(p)
+    let er: ParseExprResult = parse_expr_no_struct_lit(pp)
     pp = er.p
-    let br = parse_block(pp)
+    let br: ParseBlockResult = parse_block(pp)
     pp = br.p
     let cond: [Expr] = [er.expr]
-    let stmt = make_while_stmt(cond, br.stmts, start, p_peek(pp).start)
+    let stmt: Stmt = make_while_stmt(cond, br.stmts, start, p_peek_start(pp))
     return ParseStmtResult { p: pp, stmt: stmt, ok: true }
 }
 
 fn parse_spawn(p: Parser) -> ParseStmtResult {
-    let mut pp = p_expect(p, TK_SPAWN)
-    let start = p_peek(p).start
-    let er = parse_expr(pp)
+    let mut pp: Parser = p_expect(p, TK_SPAWN)
+    let start = p_peek_start(p)
+    let er: ParseExprResult = parse_expr(pp)
     pp = er.p
     let spawn_e: [Expr] = [er.expr]
-    let stmt = make_spawn_stmt(spawn_e, start, p_peek(pp).start)
+    let stmt: Stmt = make_spawn_stmt(spawn_e, start, p_peek_start(pp))
     return ParseStmtResult { p: pp, stmt: stmt, ok: true }
 }
 
 fn parse_select(p: Parser) -> ParseStmtResult {
-    let mut pp = p_expect(p, TK_SELECT)
-    let start = p_peek(p).start
+    let mut pp: Parser = p_expect(p, TK_SELECT)
+    let start = p_peek_start(p)
     pp = p_expect(pp, TK_LBRACE)
     let mut branches: [SelectBranch] = []
     while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
-        let tok = p_peek(pp)
+        let tok: Token = p_peek(pp)
         let pattern = tok.text
         pp = p_advance(pp)
-        let er = parse_expr(pp)
+        let er: ParseExprResult = parse_expr(pp)
         pp = er.p
         pp = p_expect(pp, TK_FAT_ARROW)
-        let br = parse_block(pp)
+        let br: ParseBlockResult = parse_block(pp)
         pp = br.p
         let ch: [Expr] = [er.expr]
-        push(branches, SelectBranch { pattern: pattern, channel: ch, body: br.stmts, start: tok.start, end: p_peek(pp).start })
+        push(branches, SelectBranch { pattern: pattern, channel: ch, body: br.stmts, start: tok.start, end: p_peek_start(pp) })
     }
     pp = p_expect(pp, TK_RBRACE)
-    let stmt = make_select_stmt(branches, start, p_peek(pp).start)
+    let stmt: Stmt = make_select_stmt(branches, start, p_peek_start(pp))
     return ParseStmtResult { p: pp, stmt: stmt, ok: true }
 }
 
 fn parse_try_catch(p: Parser) -> ParseStmtResult {
-    let mut pp = p_expect(p, TK_TRY)
-    let start = p_peek(p).start
-    let try_br = parse_block(pp)
+    let mut pp: Parser = p_expect(p, TK_TRY)
+    let start = p_peek_start(p)
+    let try_br: ParseBlockResult = parse_block(pp)
     pp = try_br.p
     pp = p_expect(pp, TK_CATCH)
     // catch (name)
     let mut catch_name = "e"
     if p_check(pp, TK_LPAREN) {
         pp = p_advance(pp)
-        let nr = p_expect_name(pp)
+        let nr: ParseNameResult = p_expect_name(pp)
         pp = nr.p
         catch_name = nr.name
         pp = p_expect(pp, TK_RPAREN)
     } else {
-        let nr = p_expect_name(pp)
+        let nr: ParseNameResult = p_expect_name(pp)
         pp = nr.p
         catch_name = nr.name
     }
-    let catch_br = parse_block(pp)
+    let catch_br: ParseBlockResult = parse_block(pp)
     pp = catch_br.p
-    let stmt = make_try_catch_stmt(try_br.stmts, catch_name, catch_br.stmts, start, p_peek(pp).start)
+    let stmt: Stmt = make_try_catch_stmt(try_br.stmts, catch_name, catch_br.stmts, start, p_peek_start(pp))
     return ParseStmtResult { p: pp, stmt: stmt, ok: true }
 }
 
 fn parse_throw(p: Parser) -> ParseStmtResult {
-    let mut pp = p_expect(p, TK_THROW)
-    let start = p_peek(p).start
-    let er = parse_expr(pp)
+    let mut pp: Parser = p_expect(p, TK_THROW)
+    let start = p_peek_start(p)
+    let er: ParseExprResult = parse_expr(pp)
     pp = er.p
     let throw_e: [Expr] = [er.expr]
-    let stmt = make_throw_stmt(throw_e, start, p_peek(pp).start)
+    let stmt: Stmt = make_throw_stmt(throw_e, start, p_peek_start(pp))
     return ParseStmtResult { p: pp, stmt: stmt, ok: true }
 }
 
 fn parse_expr_or_assign(p: Parser) -> ParseStmtResult {
-    let er = parse_expr(p)
+    let er: ParseExprResult = parse_expr(p)
     let mut pp = er.p
     let start = er.expr.start
 
@@ -1247,16 +1262,16 @@ fn parse_expr_or_assign(p: Parser) -> ParseStmtResult {
 
     if assign_op >= 0 {
         pp = p_advance(pp)
-        let vr = parse_expr(pp)
+        let vr: ParseExprResult = parse_expr(pp)
         pp = vr.p
         let target: [Expr] = [er.expr]
         let value: [Expr] = [vr.expr]
-        let stmt = make_assign_stmt(target, assign_op, value, start, p_peek(pp).start)
+        let stmt: Stmt = make_assign_stmt(target, assign_op, value, start, p_peek_start(pp))
         return ParseStmtResult { p: pp, stmt: stmt, ok: true }
     }
 
     let e: [Expr] = [er.expr]
-    let stmt = make_expr_stmt(e, start, p_peek(pp).start)
+    let stmt: Stmt = make_expr_stmt(e, start, p_peek_start(pp))
     return ParseStmtResult { p: pp, stmt: stmt, ok: true }
 }
 
@@ -1272,14 +1287,14 @@ fn parse_expr(p: Parser) -> ParseExprResult {
 fn parse_expr_no_struct_lit(p: Parser) -> ParseExprResult {
     let mut pp = p
     pp.no_struct_lit = true
-    let result = parse_expr_bp(pp, 0)
+    let result: ParseExprResult = parse_expr_bp(pp, 0)
     let mut rp = result.p
     rp.no_struct_lit = p.no_struct_lit
     return ParseExprResult { p: rp, expr: result.expr }
 }
 
 fn parse_expr_bp(p: Parser, min_bp: i32) -> ParseExprResult {
-    let prefix_result = parse_prefix(p)
+    let prefix_result: ParseExprResult = parse_prefix(p)
     let mut pp = prefix_result.p
     let mut lhs = prefix_result.expr
 
@@ -1293,15 +1308,15 @@ fn parse_expr_bp(p: Parser, min_bp: i32) -> ParseExprResult {
         // -- Postfix: .field, [index], (call) --
         if kind == TK_DOT and POSTFIX_BP >= min_bp {
             pp = p_advance(pp) // eat .
-            let nr = p_expect_name(pp)
+            let nr: ParseNameResult = p_expect_name(pp)
             pp = nr.p
             // Method call: obj.method(args)
             if p_check(pp, TK_LPAREN) {
                 pp = p_advance(pp) // eat (
-                let args_result = parse_arg_list(pp)
+                let args_result: ParseArgsResult = parse_arg_list(pp)
                 pp = args_result.p
                 pp = p_expect(pp, TK_RPAREN)
-                lhs = mk_method_call(lhs, nr.name, args_result.args, lhs.start, p_peek(pp).start)
+                lhs = mk_method_call(lhs, nr.name, args_result.args, lhs.start, p_peek_start(pp))
             } else {
                 lhs = mk_field_access(lhs, nr.name, lhs.start, nr.end)
             }
@@ -1310,19 +1325,19 @@ fn parse_expr_bp(p: Parser, min_bp: i32) -> ParseExprResult {
 
         if kind == TK_LBRACKET and POSTFIX_BP >= min_bp {
             pp = p_advance(pp) // eat [
-            let idx_result = parse_expr(pp)
+            let idx_result: ParseExprResult = parse_expr(pp)
             pp = idx_result.p
             pp = p_expect(pp, TK_RBRACKET)
-            lhs = mk_index_access(lhs, idx_result.expr, lhs.start, p_peek(pp).start)
+            lhs = mk_index_access(lhs, idx_result.expr, lhs.start, p_peek_start(pp))
             continue
         }
 
         if kind == TK_LPAREN and POSTFIX_BP >= min_bp {
             pp = p_advance(pp) // eat (
-            let args_result = parse_arg_list(pp)
+            let args_result: ParseArgsResult = parse_arg_list(pp)
             pp = args_result.p
             pp = p_expect(pp, TK_RPAREN)
-            lhs = mk_fn_call(lhs, args_result.args, lhs.start, p_peek(pp).start)
+            lhs = mk_fn_call(lhs, args_result.args, lhs.start, p_peek_start(pp))
             continue
         }
 
@@ -1335,7 +1350,7 @@ fn parse_expr_bp(p: Parser, min_bp: i32) -> ParseExprResult {
             let mut range_end: [Expr] = []
             if not p_at_end(pp) and rk != TK_RBRACE and rk != TK_RBRACKET and
                rk != TK_RPAREN and rk != TK_COMMA and rk != TK_SEMICOLON and rk != TK_LBRACE {
-                let rr = parse_expr_bp(pp, 2)
+                let rr: ParseExprResult = parse_expr_bp(pp, 2)
                 pp = rr.p
                 push(range_end, rr.expr)
             }
@@ -1349,7 +1364,7 @@ fn parse_expr_bp(p: Parser, min_bp: i32) -> ParseExprResult {
                 then_block: [], else_block: [],
                 match_arms: [], inclusive: incl,
                 cast_type: [], block_stmts: [], string_parts: [],
-                start: lhs.start, end: p_peek(pp).start
+                start: lhs.start, end: p_peek_start(pp)
             }
             continue
         }
@@ -1369,7 +1384,7 @@ fn parse_expr_bp(p: Parser, min_bp: i32) -> ParseExprResult {
         if kind == TK_PIPE and next_kind == TK_GT {
             pp = p_advance(pp) // eat |
             pp = p_advance(pp) // eat >
-            let rr = parse_expr_bp(pp, r_bp)
+            let rr: ParseExprResult = parse_expr_bp(pp, r_bp)
             pp = rr.p
             lhs = Expr {
                 kind: EXPR_PIPE, int_val: 0, float_val: 0.0,
@@ -1388,7 +1403,7 @@ fn parse_expr_bp(p: Parser, min_bp: i32) -> ParseExprResult {
         // Cast: `expr as Type`
         if kind == TK_AS {
             pp = p_advance(pp)
-            let tr = parse_type(pp)
+            let tr: ParseTypeResult = parse_type(pp)
             pp = tr.p
             lhs = Expr {
                 kind: EXPR_CAST, int_val: 0, float_val: 0.0,
@@ -1399,14 +1414,14 @@ fn parse_expr_bp(p: Parser, min_bp: i32) -> ParseExprResult {
                 then_block: [], else_block: [],
                 match_arms: [], inclusive: false,
                 cast_type: [tr.ty], block_stmts: [], string_parts: [],
-                start: lhs.start, end: p_peek(pp).start
+                start: lhs.start, end: p_peek_start(pp)
             }
             continue
         }
 
         // Standard binary operator
         pp = p_advance(pp)
-        let rr = parse_expr_bp(pp, r_bp)
+        let rr: ParseExprResult = parse_expr_bp(pp, r_bp)
         pp = rr.p
         let op = token_to_binop(kind)
         lhs = mk_binary_op(op, lhs, rr.expr, lhs.start, rr.expr.end)
@@ -1424,27 +1439,27 @@ fn parse_prefix(p: Parser) -> ParseExprResult {
     let kind = p_peek_kind(p)
     let bp = prefix_bp(kind)
     if bp >= 0 {
-        let tok = p_peek(p)
-        let pp = p_advance(p)
+        let tok: Token = p_peek(p)
+        let pp: Parser = p_advance(p)
         let start = tok.start
 
         if kind == TK_MINUS {
-            let rr = parse_expr_bp(pp, bp)
-            let expr = mk_unary_op(UNOP_NEG, rr.expr, start, rr.expr.end)
+            let rr: ParseExprResult = parse_expr_bp(pp, bp)
+            let expr: Expr = mk_unary_op(UNOP_NEG, rr.expr, start, rr.expr.end)
             return ParseExprResult { p: rr.p, expr: expr }
         }
         if kind == TK_NOT {
-            let rr = parse_expr_bp(pp, bp)
-            let expr = mk_unary_op(UNOP_NOT, rr.expr, start, rr.expr.end)
+            let rr: ParseExprResult = parse_expr_bp(pp, bp)
+            let expr: Expr = mk_unary_op(UNOP_NOT, rr.expr, start, rr.expr.end)
             return ParseExprResult { p: rr.p, expr: expr }
         }
         if kind == TK_TILDE {
-            let rr = parse_expr_bp(pp, bp)
-            let expr = mk_unary_op(UNOP_BIT_NOT, rr.expr, start, rr.expr.end)
+            let rr: ParseExprResult = parse_expr_bp(pp, bp)
+            let expr: Expr = mk_unary_op(UNOP_BIT_NOT, rr.expr, start, rr.expr.end)
             return ParseExprResult { p: rr.p, expr: expr }
         }
         if kind == TK_SHARED {
-            let rr = parse_expr_bp(pp, bp)
+            let rr: ParseExprResult = parse_expr_bp(pp, bp)
             let inner_e: [Expr] = [rr.expr]
             let expr = Expr {
                 kind: EXPR_SHARED, int_val: 0, float_val: 0.0,
@@ -1460,7 +1475,7 @@ fn parse_prefix(p: Parser) -> ParseExprResult {
             return ParseExprResult { p: rr.p, expr: expr }
         }
         if kind == TK_MOVE {
-            let rr = parse_expr_bp(pp, bp)
+            let rr: ParseExprResult = parse_expr_bp(pp, bp)
             let inner_e: [Expr] = [rr.expr]
             let expr = Expr {
                 kind: EXPR_MOVE, int_val: 0, float_val: 0.0,
@@ -1476,7 +1491,7 @@ fn parse_prefix(p: Parser) -> ParseExprResult {
             return ParseExprResult { p: rr.p, expr: expr }
         }
         if kind == TK_WEAK {
-            let rr = parse_expr_bp(pp, bp)
+            let rr: ParseExprResult = parse_expr_bp(pp, bp)
             let inner_e: [Expr] = [rr.expr]
             let expr = Expr {
                 kind: EXPR_WEAK, int_val: 0, float_val: 0.0,
@@ -1502,20 +1517,20 @@ fn parse_prefix(p: Parser) -> ParseExprResult {
 // -------------------------------------------------------------------
 
 fn parse_primary(p: Parser) -> ParseExprResult {
-    let tok = p_peek(p)
+    let tok: Token = p_peek(p)
     let kind = tok.kind
 
     // Integer literal
     if kind == TK_INTEGER {
-        let pp = p_advance(p)
+        let pp: Parser = p_advance(p)
         let value = parse_int_literal(tok.text)
-        let expr = mk_int_lit(value, tok.start, tok.end)
+        let expr: Expr = mk_int_lit(value, tok.start, tok.end)
         return ParseExprResult { p: pp, expr: expr }
     }
 
     // Float literal
     if kind == TK_FLOAT {
-        let pp = p_advance(p)
+        let pp: Parser = p_advance(p)
         // Simple float parse -- strip underscores and use to_float if available
         let mut clean = ""
         for i in range(0, len(tok.text)) {
@@ -1524,20 +1539,20 @@ fn parse_primary(p: Parser) -> ParseExprResult {
             }
         }
         let value = 0.0 // Placeholder: bootstrap runtime needs to_float()
-        let expr = mk_float_lit(value, tok.start, tok.end)
+        let expr: Expr = mk_float_lit(value, tok.start, tok.end)
         return ParseExprResult { p: pp, expr: expr }
     }
 
     // String literal
     if kind == TK_STRING {
-        let pp = p_advance(p)
-        let expr = mk_string_lit(tok.text, tok.start, tok.end)
+        let pp: Parser = p_advance(p)
+        let expr: Expr = mk_string_lit(tok.text, tok.start, tok.end)
         return ParseExprResult { p: pp, expr: expr }
     }
 
     // Character literal
     if kind == TK_CHAR {
-        let pp = p_advance(p)
+        let pp: Parser = p_advance(p)
         let expr = Expr {
             kind: EXPR_CHAR_LIT, int_val: 0, float_val: 0.0,
             str_val: tok.text, bool_val: false, name: "", op: 0,
@@ -1554,33 +1569,33 @@ fn parse_primary(p: Parser) -> ParseExprResult {
 
     // Boolean literals
     if kind == TK_TRUE {
-        let pp = p_advance(p)
-        let expr = mk_bool_lit(true, tok.start, tok.end)
+        let pp: Parser = p_advance(p)
+        let expr: Expr = mk_bool_lit(true, tok.start, tok.end)
         return ParseExprResult { p: pp, expr: expr }
     }
     if kind == TK_FALSE {
-        let pp = p_advance(p)
-        let expr = mk_bool_lit(false, tok.start, tok.end)
+        let pp: Parser = p_advance(p)
+        let expr: Expr = mk_bool_lit(false, tok.start, tok.end)
         return ParseExprResult { p: pp, expr: expr }
     }
 
     // None literal
     if kind == TK_NONE {
-        let pp = p_advance(p)
-        let expr = mk_none_lit(tok.start, tok.end)
+        let pp: Parser = p_advance(p)
+        let expr: Expr = mk_none_lit(tok.start, tok.end)
         return ParseExprResult { p: pp, expr: expr }
     }
 
     // Identifier -- may be struct literal or plain ident
     if kind == TK_IDENT or kind == TK_TYPE_IDENT {
-        let pp = p_advance(p)
+        let pp: Parser = p_advance(p)
         let name = tok.text
         // Check for struct literal: Name { ... }
         // Skip if no_struct_lit is set (we're in an if/while/for/match condition)
         if p_check(pp, TK_LBRACE) and looks_like_type_name(name) and not p.no_struct_lit {
             return parse_struct_literal(pp, name, tok.start)
         }
-        let expr = mk_ident(name, tok.start, tok.end)
+        let expr: Expr = mk_ident(name, tok.start, tok.end)
         return ParseExprResult { p: pp, expr: expr }
     }
 
@@ -1615,9 +1630,9 @@ fn parse_primary(p: Parser) -> ParseExprResult {
     }
 
     // Error
-    let pp = p_error(p, "expected expression, found " + token_kind_name(kind))
-    let pp2 = p_advance(pp)
-    let expr = mk_ident("<error>", tok.start, tok.end)
+    let pp: Parser = p_error(p, "expected expression, found " + token_kind_name(kind))
+    let pp2: Parser = p_advance(pp)
+    let expr: Expr = mk_ident("<error>", tok.start, tok.end)
     return ParseExprResult { p: pp2, expr: expr }
 }
 
@@ -1626,15 +1641,15 @@ fn parse_primary(p: Parser) -> ParseExprResult {
 // -------------------------------------------------------------------
 
 fn parse_struct_literal(p: Parser, name: str, start: i32) -> ParseExprResult {
-    let mut pp = p_expect(p, TK_LBRACE)
+    let mut pp: Parser = p_expect(p, TK_LBRACE)
     let mut fnames: [str] = []
     let mut fexprs: [Expr] = []
 
     while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
-        let nr = p_expect_name(pp)
+        let nr: ParseNameResult = p_expect_name(pp)
         pp = nr.p
         pp = p_expect(pp, TK_COLON)
-        let vr = parse_expr(pp)
+        let vr: ParseExprResult = parse_expr(pp)
         pp = vr.p
         push(fnames, nr.name)
         push(fexprs, vr.expr)
@@ -1643,7 +1658,7 @@ fn parse_struct_literal(p: Parser, name: str, start: i32) -> ParseExprResult {
         }
     }
     pp = p_expect(pp, TK_RBRACE)
-    let expr = mk_struct_lit(name, fnames, fexprs, start, p_peek(pp).start)
+    let expr: Expr = mk_struct_lit(name, fnames, fexprs, start, p_peek_start(pp))
     return ParseExprResult { p: pp, expr: expr }
 }
 
@@ -1652,22 +1667,22 @@ fn parse_struct_literal(p: Parser, name: str, start: i32) -> ParseExprResult {
 // -------------------------------------------------------------------
 
 fn parse_lambda(p: Parser) -> ParseExprResult {
-    let mut pp = p_expect(p, TK_FN)
-    let start = p_peek(p).start
+    let mut pp: Parser = p_expect(p, TK_FN)
+    let start = p_peek_start(p)
     pp = p_expect(pp, TK_LPAREN)
-    let pr = parse_param_list(pp)
+    let pr: ParseParamsResult = parse_param_list(pp)
     pp = pr.p
     pp = p_expect(pp, TK_RPAREN)
 
     let mut ret_type: [TypeExpr] = []
     if p_check(pp, TK_ARROW) {
         pp = p_advance(pp)
-        let tr = parse_type(pp)
+        let tr: ParseTypeResult = parse_type(pp)
         pp = tr.p
         push(ret_type, tr.ty)
     }
 
-    let block_result = parse_block(pp)
+    let block_result: ParseBlockResult = parse_block(pp)
     pp = block_result.p
     let expr = Expr {
         kind: EXPR_LAMBDA, int_val: 0, float_val: 0.0,
@@ -1678,7 +1693,7 @@ fn parse_lambda(p: Parser) -> ParseExprResult {
         then_block: [], else_block: [],
         match_arms: [], inclusive: false,
         cast_type: [], block_stmts: block_result.stmts, string_parts: [],
-        start: start, end: p_peek(pp).start
+        start: start, end: p_peek_start(pp)
     }
     return ParseExprResult { p: pp, expr: expr }
 }
@@ -1688,16 +1703,16 @@ fn parse_lambda(p: Parser) -> ParseExprResult {
 // -------------------------------------------------------------------
 
 fn parse_if_expr(p: Parser) -> ParseExprResult {
-    let mut pp = p_expect(p, TK_IF)
-    let start = p_peek(p).start
-    let cr = parse_expr_no_struct_lit(pp)
+    let mut pp: Parser = p_expect(p, TK_IF)
+    let start = p_peek_start(p)
+    let cr: ParseExprResult = parse_expr_no_struct_lit(pp)
     pp = cr.p
-    let then_br = parse_block(pp)
+    let then_br: ParseBlockResult = parse_block(pp)
     pp = then_br.p
     let mut else_stmts: [Stmt] = []
     if p_check(pp, TK_ELSE) {
         pp = p_advance(pp)
-        let else_br = parse_block(pp)
+        let else_br: ParseBlockResult = parse_block(pp)
         pp = else_br.p
         else_stmts = else_br.stmts
     }
@@ -1711,7 +1726,7 @@ fn parse_if_expr(p: Parser) -> ParseExprResult {
         then_block: then_br.stmts, else_block: else_stmts,
         match_arms: [], inclusive: false,
         cast_type: [], block_stmts: [], string_parts: [],
-        start: start, end: p_peek(pp).start
+        start: start, end: p_peek_start(pp)
     }
     return ParseExprResult { p: pp, expr: expr }
 }
@@ -1721,25 +1736,25 @@ fn parse_if_expr(p: Parser) -> ParseExprResult {
 // -------------------------------------------------------------------
 
 fn parse_match_expr(p: Parser) -> ParseExprResult {
-    let mut pp = p_expect(p, TK_MATCH)
-    let start = p_peek(p).start
-    let sr = parse_expr_no_struct_lit(pp)
+    let mut pp: Parser = p_expect(p, TK_MATCH)
+    let start = p_peek_start(p)
+    let sr: ParseExprResult = parse_expr_no_struct_lit(pp)
     pp = sr.p
     pp = p_expect(pp, TK_LBRACE)
 
     let mut arms: [MatchArm] = []
     while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
-        let pr = parse_pattern(pp)
+        let pr: ParsePatternResult = parse_pattern(pp)
         pp = pr.p
         let mut guard: [Expr] = []
         if p_check(pp, TK_IF) {
             pp = p_advance(pp)
-            let gr = parse_expr_no_struct_lit(pp)
+            let gr: ParseExprResult = parse_expr_no_struct_lit(pp)
             pp = gr.p
             push(guard, gr.expr)
         }
         pp = p_expect(pp, TK_FAT_ARROW)
-        let br = parse_expr(pp)
+        let br: ParseExprResult = parse_expr(pp)
         pp = br.p
         let body: [Expr] = [br.expr]
         push(arms, MatchArm { pattern: pr.pattern, guard: guard, body: body, start: pr.pattern.start, end: br.expr.end })
@@ -1760,7 +1775,7 @@ fn parse_match_expr(p: Parser) -> ParseExprResult {
         then_block: [], else_block: [],
         match_arms: arms, inclusive: false,
         cast_type: [], block_stmts: [], string_parts: [],
-        start: start, end: p_peek(pp).start
+        start: start, end: p_peek_start(pp)
     }
     return ParseExprResult { p: pp, expr: expr }
 }
@@ -1774,12 +1789,12 @@ fn parse_array_literal(p: Parser) -> ParseExprResult {
     // An array literal inside an if-condition still needs its enclosing
     // condition to block struct literals on `]` close.
     let saved_nsl = p.no_struct_lit
-    let mut pp = p_expect(p, TK_LBRACKET)
+    let mut pp: Parser = p_expect(p, TK_LBRACKET)
     pp.no_struct_lit = false
-    let start = p_peek(p).start
+    let start = p_peek_start(p)
     let mut elements: [Expr] = []
     while not p_check(pp, TK_RBRACKET) and not p_at_end(pp) {
-        let er = parse_expr(pp)
+        let er: ParseExprResult = parse_expr(pp)
         pp = er.p
         push(elements, er.expr)
         if not p_check(pp, TK_RBRACKET) {
@@ -1788,7 +1803,7 @@ fn parse_array_literal(p: Parser) -> ParseExprResult {
     }
     pp = p_expect(pp, TK_RBRACKET)
     pp.no_struct_lit = saved_nsl
-    let expr = mk_array_lit(elements, start, p_peek(pp).start)
+    let expr: Expr = mk_array_lit(elements, start, p_peek_start(pp))
     return ParseExprResult { p: pp, expr: expr }
 }
 
@@ -1805,9 +1820,9 @@ fn parse_paren_or_tuple(p: Parser) -> ParseExprResult {
     // as `Y { ... }` struct literal -- silently eating the then-block
     // and the following `fn` decl. See parser-drop bug analysis 2026-05-21.
     let saved_nsl = p.no_struct_lit
-    let mut pp = p_expect(p, TK_LPAREN)
+    let mut pp: Parser = p_expect(p, TK_LPAREN)
     pp.no_struct_lit = false
-    let start = p_peek(p).start
+    let start = p_peek_start(p)
 
     // Empty tuple
     if p_check(pp, TK_RPAREN) {
@@ -1822,12 +1837,12 @@ fn parse_paren_or_tuple(p: Parser) -> ParseExprResult {
             then_block: [], else_block: [],
             match_arms: [], inclusive: false,
             cast_type: [], block_stmts: [], string_parts: [],
-            start: start, end: p_peek(pp).start
+            start: start, end: p_peek_start(pp)
         }
         return ParseExprResult { p: pp, expr: expr }
     }
 
-    let first = parse_expr(pp)
+    let first: ParseExprResult = parse_expr(pp)
     pp = first.p
 
     if p_check(pp, TK_COMMA) {
@@ -1838,7 +1853,7 @@ fn parse_paren_or_tuple(p: Parser) -> ParseExprResult {
             if p_check(pp, TK_RPAREN) {
                 break
             }
-            let er = parse_expr(pp)
+            let er: ParseExprResult = parse_expr(pp)
             pp = er.p
             push(elements, er.expr)
         }
@@ -1853,7 +1868,7 @@ fn parse_paren_or_tuple(p: Parser) -> ParseExprResult {
             then_block: [], else_block: [],
             match_arms: [], inclusive: false,
             cast_type: [], block_stmts: [], string_parts: [],
-            start: start, end: p_peek(pp).start
+            start: start, end: p_peek_start(pp)
         }
         return ParseExprResult { p: pp, expr: expr }
     }
@@ -1869,13 +1884,13 @@ fn parse_paren_or_tuple(p: Parser) -> ParseExprResult {
 // -------------------------------------------------------------------
 
 fn parse_map_or_block_expr(p: Parser) -> ParseExprResult {
-    let mut pp = p_expect(p, TK_LBRACE)
-    let start = p_peek(p).start
+    let mut pp: Parser = p_expect(p, TK_LBRACE)
+    let start = p_peek_start(p)
 
     // Empty map
     if p_check(pp, TK_RBRACE) {
         pp = p_expect(pp, TK_RBRACE)
-        let expr = mk_map_lit([], [], start, p_peek(pp).start)
+        let expr: Expr = mk_map_lit([], [], start, p_peek_start(pp))
         return ParseExprResult { p: pp, expr: expr }
     }
 
@@ -1887,10 +1902,10 @@ fn parse_map_or_block_expr(p: Parser) -> ParseExprResult {
         let mut keys: [Expr] = []
         let mut vals: [Expr] = []
         while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
-            let kr = parse_expr(pp)
+            let kr: ParseExprResult = parse_expr(pp)
             pp = kr.p
             pp = p_expect(pp, TK_COLON)
-            let vr = parse_expr(pp)
+            let vr: ParseExprResult = parse_expr(pp)
             pp = vr.p
             push(keys, kr.expr)
             push(vals, vr.expr)
@@ -1901,14 +1916,14 @@ fn parse_map_or_block_expr(p: Parser) -> ParseExprResult {
             }
         }
         pp = p_expect(pp, TK_RBRACE)
-        let expr = mk_map_lit(keys, vals, start, p_peek(pp).start)
+        let expr: Expr = mk_map_lit(keys, vals, start, p_peek_start(pp))
         return ParseExprResult { p: pp, expr: expr }
     }
 
     // Block expression
     let mut stmts: [Stmt] = []
     while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
-        let sr = parse_statement(pp)
+        let sr: ParseStmtResult = parse_statement(pp)
         if sr.ok {
             push(stmts, sr.stmt)
             pp = sr.p
@@ -1928,7 +1943,7 @@ fn parse_map_or_block_expr(p: Parser) -> ParseExprResult {
         then_block: [], else_block: [],
         match_arms: [], inclusive: false,
         cast_type: [], block_stmts: stmts, string_parts: [],
-        start: start, end: p_peek(pp).start
+        start: start, end: p_peek_start(pp)
     }
     return ParseExprResult { p: pp, expr: expr }
 }
@@ -1950,7 +1965,7 @@ fn parse_arg_list(p: Parser) -> ParseArgsResult {
     pp.no_struct_lit = false
     let mut args: [Expr] = []
     while not p_check(pp, TK_RPAREN) and not p_at_end(pp) {
-        let er = parse_expr(pp)
+        let er: ParseExprResult = parse_expr(pp)
         pp = er.p
         push(args, er.expr)
         if not p_check(pp, TK_RPAREN) {
@@ -1966,12 +1981,12 @@ fn parse_arg_list(p: Parser) -> ParseArgsResult {
 // ===================================================================
 
 fn parse_pattern(p: Parser) -> ParsePatternResult {
-    let tok = p_peek(p)
+    let tok: Token = p_peek(p)
     let kind = tok.kind
 
     // Wildcard: _
     if kind == TK_IDENT and tok.text == "_" {
-        let pp = p_advance(p)
+        let pp: Parser = p_advance(p)
         let pat = Pattern {
             kind: PAT_WILDCARD, name: "_", mutable: false,
             lit_expr: [], sub_patterns: [],
@@ -1984,8 +1999,8 @@ fn parse_pattern(p: Parser) -> ParsePatternResult {
 
     // `mut name`
     if kind == TK_MUT {
-        let pp = p_advance(p)
-        let nr = p_expect_name(pp)
+        let pp: Parser = p_advance(p)
+        let nr: ParseNameResult = p_expect_name(pp)
         let pat = Pattern {
             kind: PAT_IDENT, name: nr.name, mutable: true,
             lit_expr: [], sub_patterns: [],
@@ -1998,17 +2013,17 @@ fn parse_pattern(p: Parser) -> ParsePatternResult {
 
     // Tuple pattern: (a, b, c)
     if kind == TK_LPAREN {
-        let mut pp = p_advance(p)
+        let mut pp: Parser = p_advance(p)
         let mut elements: [Pattern] = []
         while not p_check(pp, TK_RPAREN) and not p_at_end(pp) {
-            let pr = parse_pattern(pp)
+            let pr: ParsePatternResult = parse_pattern(pp)
             pp = pr.p
             push(elements, pr.pattern)
             if not p_check(pp, TK_RPAREN) {
                 pp = p_expect(pp, TK_COMMA)
             }
         }
-        let end_tok = p_peek(pp)
+        let end_tok: Token = p_peek(pp)
         pp = p_expect(pp, TK_RPAREN)
         let pat = Pattern {
             kind: PAT_TUPLE, name: "", mutable: false,
@@ -2022,9 +2037,9 @@ fn parse_pattern(p: Parser) -> ParsePatternResult {
 
     // Literal patterns: integers, strings, bools
     if kind == TK_INTEGER {
-        let pp = p_advance(p)
+        let pp: Parser = p_advance(p)
         let value = parse_int_literal(tok.text)
-        let expr = mk_int_lit(value, tok.start, tok.end)
+        let expr: Expr = mk_int_lit(value, tok.start, tok.end)
         let pat = Pattern {
             kind: PAT_LITERAL, name: "", mutable: false,
             lit_expr: [expr], sub_patterns: [],
@@ -2035,8 +2050,8 @@ fn parse_pattern(p: Parser) -> ParsePatternResult {
         return ParsePatternResult { p: pp, pattern: pat }
     }
     if kind == TK_STRING {
-        let pp = p_advance(p)
-        let expr = mk_string_lit(tok.text, tok.start, tok.end)
+        let pp: Parser = p_advance(p)
+        let expr: Expr = mk_string_lit(tok.text, tok.start, tok.end)
         let pat = Pattern {
             kind: PAT_LITERAL, name: "", mutable: false,
             lit_expr: [expr], sub_patterns: [],
@@ -2047,8 +2062,8 @@ fn parse_pattern(p: Parser) -> ParsePatternResult {
         return ParsePatternResult { p: pp, pattern: pat }
     }
     if kind == TK_TRUE {
-        let pp = p_advance(p)
-        let expr = mk_bool_lit(true, tok.start, tok.end)
+        let pp: Parser = p_advance(p)
+        let expr: Expr = mk_bool_lit(true, tok.start, tok.end)
         let pat = Pattern {
             kind: PAT_LITERAL, name: "", mutable: false,
             lit_expr: [expr], sub_patterns: [],
@@ -2059,8 +2074,8 @@ fn parse_pattern(p: Parser) -> ParsePatternResult {
         return ParsePatternResult { p: pp, pattern: pat }
     }
     if kind == TK_FALSE {
-        let pp = p_advance(p)
-        let expr = mk_bool_lit(false, tok.start, tok.end)
+        let pp: Parser = p_advance(p)
+        let expr: Expr = mk_bool_lit(false, tok.start, tok.end)
         let pat = Pattern {
             kind: PAT_LITERAL, name: "", mutable: false,
             lit_expr: [expr], sub_patterns: [],
@@ -2073,27 +2088,27 @@ fn parse_pattern(p: Parser) -> ParsePatternResult {
 
     // Identifier, struct pattern, or enum pattern
     if kind == TK_IDENT or kind == TK_TYPE_IDENT {
-        let mut pp = p_advance(p)
+        let mut pp: Parser = p_advance(p)
         let name = tok.text
 
         // Enum pattern: Name::Variant or Name::Variant(fields)
         if p_check(pp, TK_COLON_COLON) {
             pp = p_advance(pp)
-            let vnr = p_expect_name(pp)
+            let vnr: ParseNameResult = p_expect_name(pp)
             pp = vnr.p
             let mut sub_pats: [Pattern] = []
             let mut end_pos = vnr.end
             if p_check(pp, TK_LPAREN) {
                 pp = p_advance(pp)
                 while not p_check(pp, TK_RPAREN) and not p_at_end(pp) {
-                    let pr = parse_pattern(pp)
+                    let pr: ParsePatternResult = parse_pattern(pp)
                     pp = pr.p
                     push(sub_pats, pr.pattern)
                     if not p_check(pp, TK_RPAREN) {
                         pp = p_expect(pp, TK_COMMA)
                     }
                 }
-                end_pos = p_peek(pp).end
+                end_pos = p_peek_end(pp)
                 pp = p_expect(pp, TK_RPAREN)
             }
             let pat = Pattern {
@@ -2112,11 +2127,11 @@ fn parse_pattern(p: Parser) -> ParsePatternResult {
             let mut fnames: [str] = []
             let mut fpats: [Pattern] = []
             while not p_check(pp, TK_RBRACE) and not p_at_end(pp) {
-                let fnr = p_expect_name(pp)
+                let fnr: ParseNameResult = p_expect_name(pp)
                 pp = fnr.p
                 if p_check(pp, TK_COLON) {
                     pp = p_advance(pp)
-                    let fpr = parse_pattern(pp)
+                    let fpr: ParsePatternResult = parse_pattern(pp)
                     pp = fpr.p
                     push(fnames, fnr.name)
                     push(fpats, fpr.pattern)
@@ -2138,7 +2153,7 @@ fn parse_pattern(p: Parser) -> ParsePatternResult {
                     }
                 }
             }
-            let end_pos = p_peek(pp).end
+            let end_pos = p_peek_end(pp)
             pp = p_expect(pp, TK_RBRACE)
             let pat = Pattern {
                 kind: PAT_STRUCT, name: name, mutable: false,
@@ -2162,8 +2177,8 @@ fn parse_pattern(p: Parser) -> ParsePatternResult {
     }
 
     // Error
-    let pp = p_error(p, "expected pattern, found " + token_kind_name(kind))
-    let pp2 = p_advance(pp)
+    let pp: Parser = p_error(p, "expected pattern, found " + token_kind_name(kind))
+    let pp2: Parser = p_advance(pp)
     let pat = Pattern {
         kind: PAT_WILDCARD, name: "_", mutable: false,
         lit_expr: [], sub_patterns: [],
@@ -2179,13 +2194,13 @@ fn parse_pattern(p: Parser) -> ParsePatternResult {
 // ===================================================================
 
 fn parse_type(p: Parser) -> ParseTypeResult {
-    let tok = p_peek(p)
+    let tok: Token = p_peek(p)
     let kind = tok.kind
 
     // Optional: ?T
     if kind == TK_IDENT and tok.text == "?" {
-        let pp = p_advance(p)
-        let ir = parse_type(pp)
+        let pp: Parser = p_advance(p)
+        let ir: ParseTypeResult = parse_type(pp)
         let ty = TypeExpr {
             kind: TYPE_OPTIONAL, name: "", type_args: [],
             element_type: [], array_size: -1, tuple_types: [],
@@ -2198,13 +2213,13 @@ fn parse_type(p: Parser) -> ParseTypeResult {
 
     // Reference: &T or &mut T
     if kind == TK_AMP {
-        let mut pp = p_advance(p)
+        let mut pp: Parser = p_advance(p)
         let mut is_mut = false
         if p_check(pp, TK_MUT) {
             is_mut = true
             pp = p_advance(pp)
         }
-        let ir = parse_type(pp)
+        let ir: ParseTypeResult = parse_type(pp)
         let ty = TypeExpr {
             kind: TYPE_REFERENCE, name: "", type_args: [],
             element_type: [], array_size: -1, tuple_types: [],
@@ -2217,13 +2232,13 @@ fn parse_type(p: Parser) -> ParseTypeResult {
 
     // Pointer: *T or *mut T
     if kind == TK_STAR {
-        let mut pp = p_advance(p)
+        let mut pp: Parser = p_advance(p)
         let mut is_mut = false
         if p_check(pp, TK_MUT) {
             is_mut = true
             pp = p_advance(pp)
         }
-        let ir = parse_type(pp)
+        let ir: ParseTypeResult = parse_type(pp)
         let ty = TypeExpr {
             kind: TYPE_POINTER, name: "", type_args: [],
             element_type: [], array_size: -1, tuple_types: [],
@@ -2236,8 +2251,8 @@ fn parse_type(p: Parser) -> ParseTypeResult {
 
     // Shared type: shared T
     if kind == TK_SHARED {
-        let pp = p_advance(p)
-        let ir = parse_type(pp)
+        let pp: Parser = p_advance(p)
+        let ir: ParseTypeResult = parse_type(pp)
         let ty = TypeExpr {
             kind: TYPE_SHARED, name: "", type_args: [],
             element_type: [], array_size: -1, tuple_types: [],
@@ -2250,8 +2265,8 @@ fn parse_type(p: Parser) -> ParseTypeResult {
 
     // Weak type: weak T
     if kind == TK_WEAK {
-        let pp = p_advance(p)
-        let ir = parse_type(pp)
+        let pp: Parser = p_advance(p)
+        let ir: ParseTypeResult = parse_type(pp)
         let ty = TypeExpr {
             kind: TYPE_WEAK, name: "", type_args: [],
             element_type: [], array_size: -1, tuple_types: [],
@@ -2264,11 +2279,11 @@ fn parse_type(p: Parser) -> ParseTypeResult {
 
     // Function type: fn(i32, i32) -> i32
     if kind == TK_FN {
-        let mut pp = p_advance(p)
+        let mut pp: Parser = p_advance(p)
         pp = p_expect(pp, TK_LPAREN)
         let mut param_types: [TypeExpr] = []
         while not p_check(pp, TK_RPAREN) and not p_at_end(pp) {
-            let tr = parse_type(pp)
+            let tr: ParseTypeResult = parse_type(pp)
             pp = tr.p
             push(param_types, tr.ty)
             if not p_check(pp, TK_RPAREN) {
@@ -2277,7 +2292,7 @@ fn parse_type(p: Parser) -> ParseTypeResult {
         }
         pp = p_expect(pp, TK_RPAREN)
         pp = p_expect(pp, TK_ARROW)
-        let rr = parse_type(pp)
+        let rr: ParseTypeResult = parse_type(pp)
         pp = rr.p
         let ty = TypeExpr {
             kind: TYPE_FUNCTION, name: "", type_args: [],
@@ -2291,13 +2306,13 @@ fn parse_type(p: Parser) -> ParseTypeResult {
 
     // Array type: [T] or [T; N]
     if kind == TK_LBRACKET {
-        let mut pp = p_advance(p)
-        let er = parse_type(pp)
+        let mut pp: Parser = p_advance(p)
+        let er: ParseTypeResult = parse_type(pp)
         pp = er.p
         let mut size = -1
         if p_check(pp, TK_SEMICOLON) {
             pp = p_advance(pp)
-            let size_tok = p_peek(pp)
+            let size_tok: Token = p_peek(pp)
             size = parse_int_literal(size_tok.text)
             pp = p_expect(pp, TK_INTEGER)
         }
@@ -2307,17 +2322,17 @@ fn parse_type(p: Parser) -> ParseTypeResult {
             element_type: [er.ty], array_size: size, tuple_types: [],
             param_types: [], ret_type: [],
             inner_type: [], mutable: false,
-            start: tok.start, end: p_peek(pp).start
+            start: tok.start, end: p_peek_start(pp)
         }
         return ParseTypeResult { p: pp, ty: ty }
     }
 
     // Tuple type: (T, U, V)
     if kind == TK_LPAREN {
-        let mut pp = p_advance(p)
+        let mut pp: Parser = p_advance(p)
         let mut elements: [TypeExpr] = []
         while not p_check(pp, TK_RPAREN) and not p_at_end(pp) {
-            let tr = parse_type(pp)
+            let tr: ParseTypeResult = parse_type(pp)
             pp = tr.p
             push(elements, tr.ty)
             if not p_check(pp, TK_RPAREN) {
@@ -2330,20 +2345,20 @@ fn parse_type(p: Parser) -> ParseTypeResult {
             element_type: [], array_size: -1, tuple_types: elements,
             param_types: [], ret_type: [],
             inner_type: [], mutable: false,
-            start: tok.start, end: p_peek(pp).start
+            start: tok.start, end: p_peek_start(pp)
         }
         return ParseTypeResult { p: pp, ty: ty }
     }
 
     // Simple or generic type: i32, Vec<i32>
     if kind == TK_IDENT or kind == TK_TYPE_IDENT {
-        let mut pp = p_advance(p)
+        let mut pp: Parser = p_advance(p)
         let name = tok.text
         if p_check(pp, TK_LT) {
             pp = p_advance(pp)
             let mut type_args: [TypeExpr] = []
             while not p_check(pp, TK_GT) and not p_at_end(pp) {
-                let tr = parse_type(pp)
+                let tr: ParseTypeResult = parse_type(pp)
                 pp = tr.p
                 push(type_args, tr.ty)
                 if not p_check(pp, TK_GT) {
@@ -2356,7 +2371,7 @@ fn parse_type(p: Parser) -> ParseTypeResult {
                 element_type: [], array_size: -1, tuple_types: [],
                 param_types: [], ret_type: [],
                 inner_type: [], mutable: false,
-                start: tok.start, end: p_peek(pp).start
+                start: tok.start, end: p_peek_start(pp)
             }
             return ParseTypeResult { p: pp, ty: ty }
         }
@@ -2371,8 +2386,8 @@ fn parse_type(p: Parser) -> ParseTypeResult {
     }
 
     // Error -- return inferred type
-    let pp = p_error(p, "expected type, found " + token_kind_name(kind))
-    let pp2 = p_advance(pp)
+    let pp: Parser = p_error(p, "expected type, found " + token_kind_name(kind))
+    let pp2: Parser = p_advance(pp)
     let ty = TypeExpr {
         kind: TYPE_INFERRED, name: "", type_args: [],
         element_type: [], array_size: -1, tuple_types: [],
@@ -2416,7 +2431,7 @@ fn make_fn_decl(name: str, public: bool, annotations: [Annotation],
                 generics: [GenericParam], params: [Param],
                 ret_type: [TypeExpr], fn_body: [Stmt],
                 s: i32, e: i32) -> Decl {
-    let mut d = make_empty_decl(s, e)
+    let mut d: Decl = make_empty_decl(s, e)
     d = Decl {
         kind: DECL_FUNCTION, name: name, public: public,
         annotations: annotations, generics: generics,
@@ -2434,7 +2449,7 @@ fn make_fn_decl(name: str, public: bool, annotations: [Annotation],
 fn make_struct_decl(name: str, public: bool, annotations: [Annotation],
                     generics: [GenericParam], fields: [StructField],
                     s: i32, e: i32) -> Decl {
-    let mut d = make_empty_decl(s, e)
+    let mut d: Decl = make_empty_decl(s, e)
     d = Decl {
         kind: DECL_STRUCT, name: name, public: public,
         annotations: annotations, generics: generics,
@@ -2452,7 +2467,7 @@ fn make_struct_decl(name: str, public: bool, annotations: [Annotation],
 fn make_enum_decl(name: str, public: bool, annotations: [Annotation],
                   generics: [GenericParam], variants: [EnumVariant],
                   s: i32, e: i32) -> Decl {
-    let mut d = make_empty_decl(s, e)
+    let mut d: Decl = make_empty_decl(s, e)
     d = Decl {
         kind: DECL_ENUM, name: name, public: public,
         annotations: annotations, generics: generics,
@@ -2469,7 +2484,7 @@ fn make_enum_decl(name: str, public: bool, annotations: [Annotation],
 
 fn make_trait_decl(name: str, public: bool, generics: [GenericParam],
                    methods: [Decl], s: i32, e: i32) -> Decl {
-    let mut d = make_empty_decl(s, e)
+    let mut d: Decl = make_empty_decl(s, e)
     d = Decl {
         kind: DECL_TRAIT, name: name, public: public,
         annotations: d.annotations, generics: generics,
@@ -2486,7 +2501,7 @@ fn make_trait_decl(name: str, public: bool, generics: [GenericParam],
 
 fn make_impl_decl(target: str, trait_name: str, generics: [GenericParam],
                   methods: [Decl], s: i32, e: i32) -> Decl {
-    let mut d = make_empty_decl(s, e)
+    let mut d: Decl = make_empty_decl(s, e)
     d = Decl {
         kind: DECL_IMPL, name: target, public: false,
         annotations: d.annotations, generics: generics,
@@ -2504,7 +2519,7 @@ fn make_impl_decl(target: str, trait_name: str, generics: [GenericParam],
 fn make_actor_decl(name: str, annotations: [Annotation],
                    state_fields: [StructField], handlers: [MessageHandler],
                    s: i32, e: i32) -> Decl {
-    let mut d = make_empty_decl(s, e)
+    let mut d: Decl = make_empty_decl(s, e)
     d = Decl {
         kind: DECL_ACTOR, name: name, public: false,
         annotations: annotations, generics: d.generics,
@@ -2521,7 +2536,7 @@ fn make_actor_decl(name: str, annotations: [Annotation],
 
 fn make_type_alias_decl(name: str, public: bool, generics: [GenericParam],
                         ty: TypeExpr, s: i32, e: i32) -> Decl {
-    let mut d = make_empty_decl(s, e)
+    let mut d: Decl = make_empty_decl(s, e)
     d = Decl {
         kind: DECL_TYPE_ALIAS, name: name, public: public,
         annotations: d.annotations, generics: generics,
@@ -2537,7 +2552,7 @@ fn make_type_alias_decl(name: str, public: bool, generics: [GenericParam],
 }
 
 fn make_import_decl(ip: ImportPath, s: i32, e: i32) -> Decl {
-    let mut d = make_empty_decl(s, e)
+    let mut d: Decl = make_empty_decl(s, e)
     d = Decl {
         kind: DECL_IMPORT, name: "", public: false,
         annotations: d.annotations, generics: d.generics,
@@ -2553,7 +2568,7 @@ fn make_import_decl(ip: ImportPath, s: i32, e: i32) -> Decl {
 }
 
 fn make_extern_decl(abi: str, items: [Decl], s: i32, e: i32) -> Decl {
-    let mut d = make_empty_decl(s, e)
+    let mut d: Decl = make_empty_decl(s, e)
     d = Decl {
         kind: DECL_EXTERN, name: "", public: false,
         annotations: d.annotations, generics: d.generics,
@@ -2600,7 +2615,7 @@ fn make_empty_stmt(s: i32, e: i32) -> Stmt {
 }
 
 fn make_let_stmt(name: str, mutable: bool, ty: [TypeExpr], value: [Expr], pat: [Pattern], s: i32, e: i32) -> Stmt {
-    let mut st = make_empty_stmt(s, e)
+    let mut st: Stmt = make_empty_stmt(s, e)
     st = Stmt {
         kind: STMT_LET, name: name, mutable: mutable,
         let_type: ty, let_value: value, let_pattern: pat,
@@ -2622,7 +2637,7 @@ fn make_let_stmt(name: str, mutable: bool, ty: [TypeExpr], value: [Expr], pat: [
 }
 
 fn make_assign_stmt(target: [Expr], op: i32, value: [Expr], s: i32, e: i32) -> Stmt {
-    let mut st = make_empty_stmt(s, e)
+    let mut st: Stmt = make_empty_stmt(s, e)
     st = Stmt {
         kind: STMT_ASSIGN, name: "", mutable: false,
         let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
@@ -2644,7 +2659,7 @@ fn make_assign_stmt(target: [Expr], op: i32, value: [Expr], s: i32, e: i32) -> S
 }
 
 fn make_return_stmt(value: [Expr], s: i32, e: i32) -> Stmt {
-    let mut st = make_empty_stmt(s, e)
+    let mut st: Stmt = make_empty_stmt(s, e)
     st = Stmt {
         kind: STMT_RETURN, name: "", mutable: false,
         let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
@@ -2666,7 +2681,7 @@ fn make_return_stmt(value: [Expr], s: i32, e: i32) -> Stmt {
 }
 
 fn make_if_stmt(cond: Expr, then_b: [Stmt], elif_c: [Expr], elif_b: [[Stmt]], else_b: [Stmt], s: i32, e: i32) -> Stmt {
-    let mut st = make_empty_stmt(s, e)
+    let mut st: Stmt = make_empty_stmt(s, e)
     st = Stmt {
         kind: STMT_IF, name: "", mutable: false,
         let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
@@ -2688,7 +2703,7 @@ fn make_if_stmt(cond: Expr, then_b: [Stmt], elif_c: [Expr], elif_b: [[Stmt]], el
 }
 
 fn make_for_stmt(pat: [Pattern], iter: [Expr], body: [Stmt], s: i32, e: i32) -> Stmt {
-    let mut st = make_empty_stmt(s, e)
+    let mut st: Stmt = make_empty_stmt(s, e)
     st = Stmt {
         kind: STMT_FOR, name: "", mutable: false,
         let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
@@ -2710,7 +2725,7 @@ fn make_for_stmt(pat: [Pattern], iter: [Expr], body: [Stmt], s: i32, e: i32) -> 
 }
 
 fn make_while_stmt(cond: [Expr], body: [Stmt], s: i32, e: i32) -> Stmt {
-    let mut st = make_empty_stmt(s, e)
+    let mut st: Stmt = make_empty_stmt(s, e)
     st = Stmt {
         kind: STMT_WHILE, name: "", mutable: false,
         let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
@@ -2732,7 +2747,7 @@ fn make_while_stmt(cond: [Expr], body: [Stmt], s: i32, e: i32) -> Stmt {
 }
 
 fn make_break_stmt(s: i32, e: i32) -> Stmt {
-    let mut st = make_empty_stmt(s, e)
+    let mut st: Stmt = make_empty_stmt(s, e)
     st = Stmt {
         kind: STMT_BREAK, name: "", mutable: false,
         let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
@@ -2754,7 +2769,7 @@ fn make_break_stmt(s: i32, e: i32) -> Stmt {
 }
 
 fn make_continue_stmt(s: i32, e: i32) -> Stmt {
-    let mut st = make_empty_stmt(s, e)
+    let mut st: Stmt = make_empty_stmt(s, e)
     st = Stmt {
         kind: STMT_CONTINUE, name: "", mutable: false,
         let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
@@ -2776,7 +2791,7 @@ fn make_continue_stmt(s: i32, e: i32) -> Stmt {
 }
 
 fn make_expr_stmt(e: [Expr], s: i32, end: i32) -> Stmt {
-    let mut st = make_empty_stmt(s, end)
+    let mut st: Stmt = make_empty_stmt(s, end)
     st = Stmt {
         kind: STMT_EXPR, name: "", mutable: false,
         let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
@@ -2798,7 +2813,7 @@ fn make_expr_stmt(e: [Expr], s: i32, end: i32) -> Stmt {
 }
 
 fn make_spawn_stmt(e: [Expr], s: i32, end: i32) -> Stmt {
-    let mut st = make_empty_stmt(s, end)
+    let mut st: Stmt = make_empty_stmt(s, end)
     st = Stmt {
         kind: STMT_SPAWN, name: "", mutable: false,
         let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
@@ -2820,7 +2835,7 @@ fn make_spawn_stmt(e: [Expr], s: i32, end: i32) -> Stmt {
 }
 
 fn make_select_stmt(branches: [SelectBranch], s: i32, e: i32) -> Stmt {
-    let mut st = make_empty_stmt(s, e)
+    let mut st: Stmt = make_empty_stmt(s, e)
     st = Stmt {
         kind: STMT_SELECT, name: "", mutable: false,
         let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
@@ -2842,7 +2857,7 @@ fn make_select_stmt(branches: [SelectBranch], s: i32, e: i32) -> Stmt {
 }
 
 fn make_try_catch_stmt(try_b: [Stmt], catch_name: str, catch_b: [Stmt], s: i32, e: i32) -> Stmt {
-    let mut st = make_empty_stmt(s, e)
+    let mut st: Stmt = make_empty_stmt(s, e)
     st = Stmt {
         kind: STMT_TRY_CATCH, name: "", mutable: false,
         let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,
@@ -2864,7 +2879,7 @@ fn make_try_catch_stmt(try_b: [Stmt], catch_name: str, catch_b: [Stmt], s: i32, 
 }
 
 fn make_throw_stmt(e: [Expr], s: i32, end: i32) -> Stmt {
-    let mut st = make_empty_stmt(s, end)
+    let mut st: Stmt = make_empty_stmt(s, end)
     st = Stmt {
         kind: STMT_THROW, name: "", mutable: false,
         let_type: st.let_type, let_value: st.let_value, let_pattern: st.let_pattern,

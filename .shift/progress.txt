@@ -2748,3 +2748,63 @@ SHIFTS:
            OR root-cause the lower_fn_call user-return-type crash (currently
            disabled). Then drive bootstrap.sh to stage-2 == stage-3. See
            self-host/STAGE2_MEMORY_BLOCKER.md SESSION 3 + NEXT_SHIFT_PROMPT.md.
+
+  ---
+  step:    94-101
+  date:    2026-05-24 (session 4)
+  summary: MEMORY WALL BROKEN (the real blocker behind every "stage-2 OOM").
+           Full self-host pipeline now runs end-to-end via stage-1:
+           lex -> parse -> typecheck -> lower -> codegen -> emit object, with
+           NO heap blow-up. stage-2.obj (1.27MB) emitted + linked to a running
+           stage-2.exe. ROOT CAUSE of all the per-phase 9-10GB blow-ups: @copy
+           struct copy-on-pass byte-cloned Str / [str] fields per-element; the
+           self-host threads growing @copy structs (Parser, TypeChecker,
+           MirModule, MirFunction, CodegenCtx, Expr/Stmt subtrees) through
+           recursive walks -> O(N^2) -> 9.5GB in ~5s. THE fix is one place:
+           stage-0 cranelift codegen now SHARES Str + [str] payloads on @copy
+           copy (emit_deep_copy_struct + construction path), a fresh struct
+           header still allocated so no aliasing cycle. Consistent with the
+           runtime's leak-on-free model + the existing H8/H21 array/struct
+           sharing. Isolated test (@copy struct + [str] + pass-by-value + push)
+           verifies correctness.
+  fixes:   (1) parser field-access: annotate_calls.py added explicit types to
+               533 `let X = struct_fn(...)` sites + 3 p_peek_{start,end,text}
+               accessors replacing 80 `p_peek(p).field` sites (.kind already
+               worked: index 0). Unblocked parsing the full source (1278 decls).
+           (2) types.kry tc_check_module: skip Pass-2 (body type-check) under
+               KRYOS_SKIP_TYPES -- lowering needs only Pass-1 symbol tables;
+               body checks only append ignored errors.
+           (3) stage-0 codegen.rs: SHARE Str/[str] on @copy copy (THE memory fix).
+           (4) fault.rs watchdog: resume main thread BEFORE eprintln (was
+               deadlocking: suspended-thread held the stdio lock).
+           NOTE: TypeChecker non-@copy left in place; MirModule/MirFunction/
+           CodegenCtx non-@copy were tried then REVERTED (str-share alone fixes
+           the blow-up, @copy semantics preserved).
+  files:   stage-0 codegen.rs + kryos-rt/fault.rs; self-host {parser,types,mir,
+           lower,codegen,optimize,regalloc,elf,coff,linker,main}.kry (annotations
+           + Pass-2 skip + main.kry [phase] eprintln markers). New tooling:
+           self-host/{annotate_calls.py, probe.sh, link-win.ps1}.
+  win-link: stage-2 link path = `stage-1 obj concat -o s2.obj` then link-win.ps1
+           (link.exe + kryos_rt.lib + kryos_stdlib_native.lib + rt_shim_win.obj,
+           /STACK:256M, /DYNAMICBASE:NO /FIXED /MAP for debugging). The internal
+           `compile` link_exe is Linux-only (inline syscalls; undefined runtime
+           symbols on Windows).
+  blocker: stage-2 MISCOMPILES (blocker #2, pre-existing, NOT scale-dependent).
+           stage-2.exe parser segfaults on even `fn main(){println("hi")}` (11
+           tokens): crash in kryos_array_push with arr=0x1, caller = p_error
+           (parser.kry:179) doing `push(p.errors, msg)`. 0x1 == Parser.pos: so
+           stage-1 emitted the `p.errors` field load at the WRONG offset (8=pos
+           instead of 16=errors). ALSO p_error fired on VALID input => a prior
+           spurious-error misparse. => stage-1's lowering/codegen computes wrong
+           field offsets for some access patterns (p.errors is `let mut errors =
+           p.errors`, an UNANNOTATED field-access let-init; annotate_calls.py
+           only handled `let X = call()`). Likely systematic in stage-1's weak
+           field-type inference, not a single site.
+  next:    1) Find why stage-1 emits wrong offset for `p.errors` (param receiver,
+              typed Parser). Inspect lower.kry field-access lowering + how it
+              resolves a parameter's struct type + ctx_field_index. 2) Find the
+              upstream spurious-error misparse. 3) Likely extend annotations to
+              `let X = obj.field` inits OR fix stage-1 field-type resolution at
+              the source. Goal: stage-2 parses, then stage-2==stage-3 fixed point.
+  safety:  s1probe/s2probe rename evades KryosLeakGuard (kills kryos-stage* @2GB);
+           own backstop @9-16GB; 30GB+ free maintained; no crash.

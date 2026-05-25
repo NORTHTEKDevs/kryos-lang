@@ -554,7 +554,7 @@ fn coff_add_addr64_reloc(obj: CoffObject, offset: i64, sym_idx: i64) {
 // ===================================================================
 
 fn coff_write_simple(text_buf: i64, fn_name: str, path: str) {
-    let obj = coff_new()
+    let obj: CoffObject = coff_new()
 
     // Add the function as an external (global) symbol in .text
     push(obj.sym_names, fn_name)

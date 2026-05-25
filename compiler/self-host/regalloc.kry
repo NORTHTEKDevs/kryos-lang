@@ -462,7 +462,7 @@ fn ra_compute_liveness(func: MirFunction) -> [LiveInterval] {
         k = k + 1
     }
 
-    let lm = liveness_map_new(max_id)
+    let lm: LivenessMap = liveness_map_new(max_id)
 
     // Parameters are defined at position 0 (function entry)
     let mut pi = 0
@@ -974,7 +974,7 @@ fn ra_linear_scan(intervals: [LiveInterval]) -> RegAllocResult {
 fn ra_linear_scan_with_calls(intervals: [LiveInterval], call_positions: [i32]) -> RegAllocResult {
     ra_sort_intervals(intervals)
 
-    let pool = reg_pool_new()
+    let pool: RegPool = reg_pool_new()
     let mut active: [LiveInterval] = []
     // Start spill-slot allocation past any slots already used by
     // fixed-spilled intervals (function parameters).
@@ -1154,7 +1154,7 @@ fn ra_find_interval(result: RegAllocResult, local_id: i32) -> LiveInterval {
 }
 
 fn ra_is_spilled(result: RegAllocResult, local_id: i32) -> bool {
-    let interval = ra_find_interval(result, local_id)
+    let interval: LiveInterval = ra_find_interval(result, local_id)
     if interval.reg == REG_SPILLED {
         return true
     }
@@ -1162,12 +1162,12 @@ fn ra_is_spilled(result: RegAllocResult, local_id: i32) -> bool {
 }
 
 fn ra_get_reg(result: RegAllocResult, local_id: i32) -> i32 {
-    let interval = ra_find_interval(result, local_id)
+    let interval: LiveInterval = ra_find_interval(result, local_id)
     return interval.reg
 }
 
 fn ra_get_spill_offset(result: RegAllocResult, local_id: i32) -> i32 {
-    let interval = ra_find_interval(result, local_id)
+    let interval: LiveInterval = ra_find_interval(result, local_id)
     return interval.spill_slot
 }
 
@@ -1353,7 +1353,7 @@ fn ra_prologue_info(result: RegAllocResult) -> PrologueInfo {
 // ===================================================================
 
 fn ra_stack_offset_for_local(result: RegAllocResult, local_id: i32) -> i32 {
-    let interval = ra_find_interval(result, local_id)
+    let interval: LiveInterval = ra_find_interval(result, local_id)
     if interval.reg != REG_SPILLED {
         return 0
     }
@@ -1455,7 +1455,7 @@ fn ra_allocate_for(func: MirFunction, target_os: str) -> RegAllocResult {
     let mut intervals = ra_compute_liveness(func)
     ra_fix_arg_intervals(intervals, func, target_os)
     let calls = ra_compute_call_positions(func)
-    let result = ra_linear_scan_with_calls(intervals, calls)
+    let result: RegAllocResult = ra_linear_scan_with_calls(intervals, calls)
     return result
 }
 
@@ -1467,6 +1467,6 @@ fn ra_allocate_with_hints(func: MirFunction) -> RegAllocResult {
     let mut intervals = ra_compute_liveness(func)
     ra_fix_arg_intervals(intervals, func, "linux")
     ra_hint_return_register(intervals, func)
-    let result = ra_linear_scan(intervals)
+    let result: RegAllocResult = ra_linear_scan(intervals)
     return result
 }

@@ -350,8 +350,8 @@ fn compile_file(filename: str, output: str) {
     println("Tokens: " + to_string(token_count))
 
     // Phase 2: Parse
-    let p = parser_new(tokens)
-    let module = parse_module(p)
+    let p: Parser = parser_new(tokens)
+    let module: Module = parse_module(p)
     println("Declarations: " + to_string(len(module.declarations)))
 
     if len(p.errors) > 0 {
@@ -364,9 +364,11 @@ fn compile_file(filename: str, output: str) {
     }
 
     // Phase 3: Type check
-    let mut tc = tc_new()
+    eprintln("[phase] typecheck-start")
+    let mut tc: TypeChecker = tc_new()
     tc = tc_register_builtins(tc)
     tc = tc_check_module(tc, module)
+    eprintln("[phase] typecheck-done")
     // Honor KRYOS_SKIP_TYPES=1 (same rationale as the obj path): stage-1's
     // type checker is incomplete relative to stage-0, and bootstrap input
     // is pre-validated, so type errors here are usually missing-feature
@@ -389,7 +391,9 @@ fn compile_file(filename: str, output: str) {
     }
 
     // Phase 4: Lower to MIR
-    let mir_mod = lower_module(module, tc)
+    eprintln("[phase] lower-start")
+    let mir_mod: MirModule = lower_module(module, tc)
+    eprintln("[phase] lower-done")
     println("MIR functions: " + to_string(len(mir_mod.functions)))
 
     // Phase 5: Optimize. Skipped under SKIP_TYPES to match the obj path --
@@ -403,8 +407,10 @@ fn compile_file(filename: str, output: str) {
     }
 
     // Phase 6: Compile to executable
+    eprintln("[phase] codegen-start")
     let target = detect_target_os()
     let success = compile_module(mir_mod, output, target)
+    eprintln("[phase] codegen-done")
     if success {
         println("Output: " + output)
         println("=== Compilation successful ===")
@@ -427,8 +433,8 @@ fn check_file(filename: str) {
     }
 
     let tokens = tokenize(source)
-    let p = parser_new(tokens)
-    let module = parse_module(p)
+    let p: Parser = parser_new(tokens)
+    let module: Module = parse_module(p)
 
     if len(p.errors) > 0 {
         println("Parse errors: " + to_string(len(p.errors)))
@@ -439,7 +445,7 @@ fn check_file(filename: str) {
         return
     }
 
-    let mut tc = tc_new()
+    let mut tc: TypeChecker = tc_new()
     tc = tc_register_builtins(tc)
     tc = tc_check_module(tc, module)
     if len(tc.errors) > 0 {
@@ -474,8 +480,8 @@ fn emit_object(filename: str, output: str) {
     let tokens = tokenize(source)
     println("Tokens: " + to_string(len(tokens)))
 
-    let p = parser_new(tokens)
-    let module = parse_module(p)
+    let p: Parser = parser_new(tokens)
+    let module: Module = parse_module(p)
     println("Declarations: " + to_string(len(module.declarations)))
     if len(p.errors) > 0 {
         println("Parse errors: " + to_string(len(p.errors)))
@@ -483,7 +489,7 @@ fn emit_object(filename: str, output: str) {
         return
     }
 
-    let mut tc = tc_new()
+    let mut tc: TypeChecker = tc_new()
     tc = tc_register_builtins(tc)
     tc = tc_check_module(tc, module)
     // Stage-1's type checker is incomplete relative to stage-0's; bootstrap
@@ -507,7 +513,7 @@ fn emit_object(filename: str, output: str) {
         println("Type check: OK")
     }
 
-    let mir_mod = lower_module(module, tc)
+    let mir_mod: MirModule = lower_module(module, tc)
     println("MIR functions: " + to_string(len(mir_mod.functions)))
 
     // Optimizer is currently a no-op for stage-1 obj-path. Enabling
@@ -553,8 +559,8 @@ fn dump_ast(filename: str) {
     println("Tokens: " + to_string(real_count))
     println("")
 
-    let p = parser_new(tokens)
-    let module = parse_module(p)
+    let p: Parser = parser_new(tokens)
+    let module: Module = parse_module(p)
     println("Declarations: " + to_string(len(module.declarations)))
     println("")
 
@@ -616,12 +622,12 @@ fn main() {
         let input = cli_args[2]
         let source = file_read(input)
         let tokens = tokenize(source)
-        let p = parser_new(tokens)
-        let module = parse_module(p)
-        let mut tc = tc_new()
+        let p: Parser = parser_new(tokens)
+        let module: Module = parse_module(p)
+        let mut tc: TypeChecker = tc_new()
         tc = tc_register_builtins(tc)
         tc = tc_check_module(tc, module)
-        let mir_mod = lower_module(module, tc)
+        let mir_mod: MirModule = lower_module(module, tc)
         mir_print_module(mir_mod)
     } elif command == "obj" {
         if len(cli_args) < 3 {

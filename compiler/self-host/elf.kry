@@ -469,7 +469,7 @@ fn elf_build_rela(rel_offsets: [i64], rel_sym_idxs: [i64], rel_types: [i64], rel
 
 fn elf_write(obj: ElfObject, text_buf: i64, data_buf: i64, rodata_buf: i64, bss_size: i64, path: str) {
     // Build the auxiliary tables
-    let shstrtab_result = elf_build_shstrtab()
+    let shstrtab_result: ShstrtabResult = elf_build_shstrtab()
 
     // Build symtab and rela from parallel arrays (avoids double-move of obj)
     let symtab_buf = elf_build_symtab(obj.sym_names, obj.sym_values, obj.sym_sizes, obj.sym_binds, obj.sym_types, obj.sym_sections, obj.strtab)
@@ -599,7 +599,7 @@ fn elf_write(obj: ElfObject, text_buf: i64, data_buf: i64, rodata_buf: i64, bss_
 // ===================================================================
 
 fn elf_write_simple(text_buf: i64, fn_name: str, path: str) {
-    let obj = elf_new()
+    let obj: ElfObject = elf_new()
     let text_size = buf_len(text_buf)
 
     // Add the function as a global symbol in .text

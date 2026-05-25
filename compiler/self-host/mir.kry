@@ -574,31 +574,31 @@ fn clone_operand_list(ops: [Operand]) -> [Operand] {
 }
 
 fn rv_use(operand: Operand) -> RValue {
-    let mut rv = rv_empty(RV_USE)
+    let mut rv: RValue = rv_empty(RV_USE)
     rv.use_operand = [clone_operand(operand)]
     return rv
 }
 
 fn rv_const_int(val: i32) -> RValue {
-    let mut rv = rv_empty(RV_CONST_INT)
+    let mut rv: RValue = rv_empty(RV_CONST_INT)
     rv.int_val = val
     return rv
 }
 
 fn rv_const_float(val: f64) -> RValue {
-    let mut rv = rv_empty(RV_CONST_FLOAT)
+    let mut rv: RValue = rv_empty(RV_CONST_FLOAT)
     rv.float_val = val
     return rv
 }
 
 fn rv_const_bool(val: bool) -> RValue {
-    let mut rv = rv_empty(RV_CONST_BOOL)
+    let mut rv: RValue = rv_empty(RV_CONST_BOOL)
     rv.bool_val = val
     return rv
 }
 
 fn rv_const_string(val: str) -> RValue {
-    let mut rv = rv_empty(RV_CONST_STRING)
+    let mut rv: RValue = rv_empty(RV_CONST_STRING)
     rv.str_val = val
     return rv
 }
@@ -608,7 +608,7 @@ fn rv_const_none() -> RValue {
 }
 
 fn rv_binop(binop: i32, l: Operand, r: Operand) -> RValue {
-    let mut rv = rv_empty(RV_BINOP)
+    let mut rv: RValue = rv_empty(RV_BINOP)
     rv.op = binop
     // Deep-clone l and r before storing into rv.left and rv.right.
     // Stage-1's share-on-clone @copy struct semantics let the heap
@@ -635,28 +635,28 @@ fn rv_binop(binop: i32, l: Operand, r: Operand) -> RValue {
 }
 
 fn rv_unop(unop: i32, operand: Operand) -> RValue {
-    let mut rv = rv_empty(RV_UNOP)
+    let mut rv: RValue = rv_empty(RV_UNOP)
     rv.op = unop
     rv.left = [clone_operand(operand)]
     return rv
 }
 
 fn rv_call(name: str, call_args: [Operand]) -> RValue {
-    let mut rv = rv_empty(RV_CALL)
+    let mut rv: RValue = rv_empty(RV_CALL)
     rv.func_name = name
     rv.args = clone_operand_list(call_args)
     return rv
 }
 
 fn rv_call_indirect(callee_op: Operand, call_args: [Operand]) -> RValue {
-    let mut rv = rv_empty(RV_CALL_INDIRECT)
+    let mut rv: RValue = rv_empty(RV_CALL_INDIRECT)
     rv.callee = [clone_operand(callee_op)]
     rv.args = clone_operand_list(call_args)
     return rv
 }
 
 fn rv_field(obj: Operand, fname: str, fidx: i32) -> RValue {
-    let mut rv = rv_empty(RV_FIELD)
+    let mut rv: RValue = rv_empty(RV_FIELD)
     rv.object = [clone_operand(obj)]
     rv.field_name = fname
     rv.field_idx = fidx
@@ -664,26 +664,26 @@ fn rv_field(obj: Operand, fname: str, fidx: i32) -> RValue {
 }
 
 fn rv_index(obj: Operand, idx: Operand) -> RValue {
-    let mut rv = rv_empty(RV_INDEX)
+    let mut rv: RValue = rv_empty(RV_INDEX)
     rv.index_obj = [clone_operand(obj)]
     rv.index_idx = [clone_operand(idx)]
     return rv
 }
 
 fn rv_array(elems: [Operand]) -> RValue {
-    let mut rv = rv_empty(RV_ARRAY)
+    let mut rv: RValue = rv_empty(RV_ARRAY)
     rv.elements = clone_operand_list(elems)
     return rv
 }
 
 fn rv_tuple(elems: [Operand]) -> RValue {
-    let mut rv = rv_empty(RV_TUPLE)
+    let mut rv: RValue = rv_empty(RV_TUPLE)
     rv.elements = clone_operand_list(elems)
     return rv
 }
 
 fn rv_struct_lit(sname: str, fnames: [str], fops: [Operand]) -> RValue {
-    let mut rv = rv_empty(RV_STRUCT)
+    let mut rv: RValue = rv_empty(RV_STRUCT)
     rv.struct_name = sname
     rv.rv_field_names = fnames
     rv.field_operands = clone_operand_list(fops)
@@ -691,14 +691,14 @@ fn rv_struct_lit(sname: str, fnames: [str], fops: [Operand]) -> RValue {
 }
 
 fn rv_cast(operand: Operand, ty: MirType) -> RValue {
-    let mut rv = rv_empty(RV_CAST)
+    let mut rv: RValue = rv_empty(RV_CAST)
     rv.cast_operand = [clone_operand(operand)]
     rv.cast_ty = [ty]
     return rv
 }
 
 fn rv_enum_variant(ename: str, vidx: i32, fields: [Operand]) -> RValue {
-    let mut rv = rv_empty(RV_ENUM_VARIANT)
+    let mut rv: RValue = rv_empty(RV_ENUM_VARIANT)
     rv.enum_name = ename
     rv.variant_idx = vidx
     rv.enum_fields = clone_operand_list(fields)
@@ -706,13 +706,13 @@ fn rv_enum_variant(ename: str, vidx: i32, fields: [Operand]) -> RValue {
 }
 
 fn rv_enum_tag(operand: Operand) -> RValue {
-    let mut rv = rv_empty(RV_ENUM_TAG)
+    let mut rv: RValue = rv_empty(RV_ENUM_TAG)
     rv.enum_operand = [clone_operand(operand)]
     return rv
 }
 
 fn rv_enum_payload(operand: Operand, vidx: i32, fidx: i32) -> RValue {
-    let mut rv = rv_empty(RV_ENUM_PAYLOAD)
+    let mut rv: RValue = rv_empty(RV_ENUM_PAYLOAD)
     rv.enum_operand = [clone_operand(operand)]
     rv.variant_idx = vidx
     rv.field_idx = fidx
@@ -720,27 +720,27 @@ fn rv_enum_payload(operand: Operand, vidx: i32, fidx: i32) -> RValue {
 }
 
 fn rv_closure(func_name: str, caps: [Operand]) -> RValue {
-    let mut rv = rv_empty(RV_CLOSURE)
+    let mut rv: RValue = rv_empty(RV_CLOSURE)
     rv.closure_func = func_name
     rv.captures = clone_operand_list(caps)
     return rv
 }
 
 fn rv_string_concat(parts: [Operand]) -> RValue {
-    let mut rv = rv_empty(RV_STRING_CONCAT)
+    let mut rv: RValue = rv_empty(RV_STRING_CONCAT)
     rv.concat_parts = clone_operand_list(parts)
     return rv
 }
 
 fn rv_map(keys: [Operand], values: [Operand]) -> RValue {
-    let mut rv = rv_empty(RV_MAP)
+    let mut rv: RValue = rv_empty(RV_MAP)
     rv.map_keys = clone_operand_list(keys)
     rv.map_values = clone_operand_list(values)
     return rv
 }
 
 fn rv_range(start_op: Operand, end_op: Operand, inclusive: bool) -> RValue {
-    let mut rv = rv_empty(RV_RANGE)
+    let mut rv: RValue = rv_empty(RV_RANGE)
     rv.range_start = [clone_operand(start_op)]
     rv.range_end = [clone_operand(end_op)]
     rv.range_inclusive = inclusive
@@ -748,14 +748,14 @@ fn rv_range(start_op: Operand, end_op: Operand, inclusive: bool) -> RValue {
 }
 
 fn rv_addr_of(local_id: i32, is_mut: bool) -> RValue {
-    let mut rv = rv_empty(RV_ADDR_OF)
+    let mut rv: RValue = rv_empty(RV_ADDR_OF)
     rv.addr_local = local_id
     rv.addr_mutable = is_mut
     return rv
 }
 
 fn rv_deref(operand: Operand) -> RValue {
-    let mut rv = rv_empty(RV_DEREF)
+    let mut rv: RValue = rv_empty(RV_DEREF)
     rv.deref_operand = [operand]
     return rv
 }
@@ -778,14 +778,14 @@ fn inst_empty(k: i32) -> Instruction {
 }
 
 fn inst_assign(dest_id: i32, rvalue: RValue) -> Instruction {
-    let mut inst = inst_empty(INST_ASSIGN)
+    let mut inst: Instruction = inst_empty(INST_ASSIGN)
     inst.dest = dest_id
     inst.value = [rvalue]
     return inst
 }
 
 fn inst_drop(local_id: i32) -> Instruction {
-    let mut inst = inst_empty(INST_DROP)
+    let mut inst: Instruction = inst_empty(INST_DROP)
     inst.drop_local = local_id
     return inst
 }
@@ -795,28 +795,28 @@ fn inst_nop() -> Instruction {
 }
 
 fn inst_store_deref(ptr: Operand, val: Operand) -> Instruction {
-    let mut inst = inst_empty(INST_STORE_DEREF)
+    let mut inst: Instruction = inst_empty(INST_STORE_DEREF)
     inst.ptr_operand = [ptr]
     inst.store_value = [val]
     return inst
 }
 
 fn inst_spawn(func_name: str, call_args: [Operand]) -> Instruction {
-    let mut inst = inst_empty(INST_SPAWN)
+    let mut inst: Instruction = inst_empty(INST_SPAWN)
     inst.spawn_func = func_name
     inst.spawn_args = call_args
     return inst
 }
 
 fn inst_send(channel: i32, val: i32) -> Instruction {
-    let mut inst = inst_empty(INST_SEND)
+    let mut inst: Instruction = inst_empty(INST_SEND)
     inst.send_channel = channel
     inst.send_value = val
     return inst
 }
 
 fn inst_receive(dest_id: i32, channel: i32) -> Instruction {
-    let mut inst = inst_empty(INST_RECEIVE)
+    let mut inst: Instruction = inst_empty(INST_RECEIVE)
     inst.recv_dest = dest_id
     inst.recv_channel = channel
     return inst
@@ -840,7 +840,7 @@ fn term_empty(k: i32) -> Terminator {
 }
 
 fn term_return(val: Operand) -> Terminator {
-    let mut t = term_empty(TERM_RETURN)
+    let mut t: Terminator = term_empty(TERM_RETURN)
     t.ret_val = [val]
     return t
 }
@@ -850,13 +850,13 @@ fn term_return_void() -> Terminator {
 }
 
 fn term_goto(block: i32) -> Terminator {
-    let mut t = term_empty(TERM_GOTO)
+    let mut t: Terminator = term_empty(TERM_GOTO)
     t.goto_block = block
     return t
 }
 
 fn term_branch(cond_op: Operand, then_bb: i32, else_bb: i32) -> Terminator {
-    let mut t = term_empty(TERM_BRANCH)
+    let mut t: Terminator = term_empty(TERM_BRANCH)
     // Deep-clone cond_op to break share-on-clone aliasing
     let clone = Operand {
         is_local: cond_op.is_local, local_id: cond_op.local_id,
@@ -871,7 +871,7 @@ fn term_branch(cond_op: Operand, then_bb: i32, else_bb: i32) -> Terminator {
 }
 
 fn term_switch(val: Operand, targets: [i32], blocks: [i32], default_bb: i32) -> Terminator {
-    let mut t = term_empty(TERM_SWITCH)
+    let mut t: Terminator = term_empty(TERM_SWITCH)
     t.switch_val = [val]
     t.switch_targets = targets
     t.switch_blocks = blocks
@@ -904,7 +904,7 @@ fn mir_func_new(name: str, ret_ty: MirType) -> MirFunction {
     let empty_params: [MirParam] = []
     let empty_locals: [MirLocal] = []
     // Create entry block (bb0) automatically
-    let entry = bb_new(0)
+    let entry: BasicBlock = bb_new(0)
     let mut nlid: [i32] = []
     nlid = push(nlid, 0)
     let mut nbid: [i32] = []
@@ -935,7 +935,7 @@ fn mir_func_alloc_temp(func: MirFunction, ty: MirType) -> i32 {
 
 fn mir_func_alloc_block(func: MirFunction) -> i32 {
     let id = func.next_block_id[0]
-    let block = bb_new(id)
+    let block: BasicBlock = bb_new(id)
     push(func.blocks, block)
     func.next_block_id[0] = id + 1
     return id

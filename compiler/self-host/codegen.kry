@@ -1742,7 +1742,7 @@ fn cg_emit_module(ctx: CodegenCtx, module: MirModule) {
             eprintln("cg[" + to_string(i) + "/" + to_string(len(module.functions)) + "]: " + func.name)
         }
         // Run register allocation per target ABI
-        let ra = ra_allocate_for(func, ctx.target_os)
+        let ra: RegAllocResult = ra_allocate_for(func, ctx.target_os)
         if env_get("KRYOS_RA_DUMP") == "1" {
             let mut j = 0
             while j < len(ra.intervals) {
@@ -1768,7 +1768,7 @@ fn cg_emit_module(ctx: CodegenCtx, module: MirModule) {
 // ===================================================================
 
 fn compile_module(module: MirModule, output_path: str, target_os: str) -> bool {
-    let ctx = cg_new(target_os)
+    let ctx: CodegenCtx = cg_new(target_os)
 
     // Emit all code
     cg_emit_module(ctx, module)
@@ -1790,7 +1790,7 @@ fn compile_module(module: MirModule, output_path: str, target_os: str) -> bool {
     // shim does `call main` then `sys_exit`. On Windows `main` is the
     // entry the PE loader expects.
     let entry = if target_os == "linux" { "_start" } else { "main" }
-    let result = link_exe(inputs, entry, output_path, target_os)
+    let result: LinkerResult = link_exe(inputs, entry, output_path, target_os)
     return result.success
 }
 
@@ -1799,11 +1799,11 @@ fn compile_module(module: MirModule, output_path: str, target_os: str) -> bool {
 // ===================================================================
 
 fn compile_to_object(module: MirModule, output_path: str, target_os: str) -> bool {
-    let ctx = cg_new(target_os)
+    let ctx: CodegenCtx = cg_new(target_os)
     cg_emit_module(ctx, module)
 
     if target_os == "linux" {
-        let obj = elf_new()
+        let obj: ElfObject = elf_new()
         // Add symbols using convenience functions.
         //
         // Parser-synthesized "<top-level>" wrappers must be STB_LOCAL so
@@ -1833,7 +1833,7 @@ fn compile_to_object(module: MirModule, output_path: str, target_os: str) -> boo
         elf_write(obj, ctx.text_buf, ctx.data_buf, ctx.rodata_buf, 0, output_path)
         return true
     } elif target_os == "windows" {
-        let obj = coff_new()
+        let obj: CoffObject = coff_new()
 
         // Patch in-instruction displacement fields so the system
         // linker's "target + field - next_inst" formula reduces to

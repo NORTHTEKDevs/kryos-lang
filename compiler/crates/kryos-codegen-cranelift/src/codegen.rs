@@ -4164,71 +4164,26 @@ fn translate_rvalue<M: Module>(
                                 .find(|(n, _)| n == field_name)
                                 .map(|(_, t)| t);
                             match field_mir_ty {
-                                Some(MirType::Array(inner_ty, _)) => {
-                                    // Per-element deep clone whitelist (shift 18 H1 finding).
-                                    // Token is the only struct empirically validated to be
-                                    // safe for deep clone via the runtime helper. Expanded
-                                    // whitelists (16 candidates) regressed bootstrap mean
-                                    // 12.6 -> 11.8/16 — picked up some struct that does
-                                    // depend on identity-shared semantics. Token alone is
-                                    // the safest minimum.
-                                    // H25 (shift step 35): empty whitelist. Even Token
-                                    // through deep-clone-via-runtime-helper does O(N) work
-                                    // per @copy struct construction. For stage-1's tokenize
-                                    // pattern (10K+ lex_emit calls, each cloning the growing
-                                    // tokens array), that's O(N^2) overall. Letting Array<Struct>
-                                    // fall through to H8 retain is O(1) per emit.
-                                    let safe_for_deep_clone = |_n: &str| false;
-                                    match &**inner_ty {
-                                        MirType::Str => emit_array_str_deep_clone(
-                                            val, builder, translator, module,
-                                        )?,
-                                        MirType::Struct(inner_name)
-                                            if safe_for_deep_clone(inner_name)
-                                                && translator.func_ids.contains_key(
-                                                    &format!("__kryos_clone_{inner_name}"),
-                                                ) =>
-                                        {
-                                            let elem_fn_name =
-                                                format!("__kryos_clone_{inner_name}");
-                                            emit_array_clone_deep_call(
-                                                val,
-                                                &elem_fn_name,
-                                                builder,
-                                                translator,
-                                                module,
-                                            )?
-                                        }
-                                        _ => {
-                                            // H8 (shift step 24): retain semantics for non-deep-clone
-                                            // Array fallback. Eliminates element-pointer double-free by
-                                            // sharing the underlying array via ref counting. Trade-off:
-                                            // @copy struct field mutation post-clone affects both sides.
-                                            // Stage-1 mostly produces new arrays rather than mutating
-                                            // existing ones, so this should be safe in practice.
-                                            // H4 sentinel detection remains as a tripwire.
-                                            let retain_ref = ensure_func_ref_with_args(
-                                                "kryos_array_retain",
-                                                builder,
-                                                translator,
-                                                module,
-                                                1,
-                                            )?;
-                                            let c = builder.ins().call(retain_ref, &[val]);
-                                            builder.inst_results(c)[0]
-                                        }
-                                    }
-                                }
-                                Some(MirType::Str) => {
-                                    let clone_ref = ensure_func_ref_with_args(
-                                        "kryos_string_clone",
+                                Some(MirType::Array(_inner_ty, _)) => {
+                                    // SHARE all array fields (retain) at @copy construction.
+                                    // Per-element [str] deep clone here is O(N) per construction
+                                    // and O(N^2) across bootstrap-sized builds (the self-host
+                                    // builds millions of MIR/AST @copy nodes). Array<Struct> is
+                                    // already shared (H8); Array<Str> now matches. Consistent
+                                    // with leak-on-free; a fresh struct header is still allocated.
+                                    let retain_ref = ensure_func_ref_with_args(
+                                        "kryos_array_retain",
                                         builder,
                                         translator,
                                         module,
                                         1,
                                     )?;
-                                    let c = builder.ins().call(clone_ref, &[val]);
+                                    let c = builder.ins().call(retain_ref, &[val]);
                                     builder.inst_results(c)[0]
+                                }
+                                Some(MirType::Str) => {
+                                    // SHARE the string pointer (immutable + leak-on-free).
+                                    val
                                 }
                                 Some(MirType::Struct(_inner_name)) => {
                                     // H21: share nested @copy struct fields at @copy
@@ -6053,33 +6008,29 @@ fn emit_deep_copy_struct<M: Module>(
             .find(|(n, _)| n == field_name)
             .map(|(_, t)| t);
         let stored_val = match field_mir_ty {
-            Some(MirType::Array(inner_ty, _)) => {
-                // Array<Str>: deep-clone. Else: retain. Array<Struct> dispatch
-                // disabled pending isolation of emit_array_struct_deep_clone bug.
-                if matches!(**inner_ty, MirType::Str) {
-                    emit_array_str_deep_clone(field_val, builder, translator, module)?
-                } else {
-                    let retain_ref = ensure_func_ref_with_args(
-                        "kryos_array_retain",
-                        builder,
-                        translator,
-                        module,
-                        1,
-                    )?;
-                    let call = builder.ins().call(retain_ref, &[field_val]);
-                    builder.inst_results(call)[0]
-                }
-            }
-            Some(MirType::Str) => {
-                let clone_ref = ensure_func_ref_with_args(
-                    "kryos_string_clone",
+            Some(MirType::Array(_inner_ty, _)) => {
+                // SHARE all arrays (incl Array<Str>) via retain. Pass-by-value
+                // copy of a @copy struct is the O(N^2) amplifier on bootstrap-
+                // sized input: the self-host threads growing @copy structs
+                // (CodegenCtx, MirModule, Expr/Stmt subtrees) through recursive
+                // walks, and per-element [str] deep-clone on every pass blew the
+                // heap to 9GB+. A fresh struct is still allocated (no aliasing
+                // cycle); only the heap field payloads are shared. Consistent
+                // with the runtime's share-on-clone / leak-on-free model and the
+                // H8/H21 struct-array/nested-struct sharing already in effect.
+                let retain_ref = ensure_func_ref_with_args(
+                    "kryos_array_retain",
                     builder,
                     translator,
                     module,
                     1,
                 )?;
-                let call = builder.ins().call(clone_ref, &[field_val]);
+                let call = builder.ins().call(retain_ref, &[field_val]);
                 builder.inst_results(call)[0]
+            }
+            Some(MirType::Str) => {
+                // SHARE the string pointer (immutable + leak-on-free => safe).
+                field_val
             }
             Some(MirType::Map { .. }) => {
                 // Deep-clone maps via kryos_map_clone.

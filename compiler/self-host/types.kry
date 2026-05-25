@@ -412,7 +412,12 @@ struct TypeAlias {
 // TypeChecker struct
 // ===================================================================
 
-@copy
+// NON-@copy: the checker threads itself through every tc_check_* call
+// (`tc = tc_check_module(tc, module)`). With explicit struct-typed locals,
+// @copy made each threaded result deep-clone the growing checker state
+// (errors/warnings per-element) -> O(N^2) heap blow-up on bootstrap-sized
+// input. Sharing is sound: the checker is used linearly (rebuild + thread,
+// never reuse a stale copy), same fix as the Lexer and LowerCtx structs.
 struct TypeChecker {
     scopes: [Scope],
     current_scope: i32,
@@ -647,7 +652,7 @@ fn resolve_type_expr(tc: TypeChecker, te: TypeExpr) -> TypeInfo {
     }
     if te.kind == TYPE_ARRAY {
         if len(te.element_type) > 0 {
-            let elem = resolve_type_expr(tc, te.element_type[0])
+            let elem: TypeInfo = resolve_type_expr(tc, te.element_type[0])
             return ty_array(elem)
         }
         return ty_array(ty_any())
@@ -655,7 +660,7 @@ fn resolve_type_expr(tc: TypeChecker, te: TypeExpr) -> TypeInfo {
     if te.kind == TYPE_TUPLE {
         let mut types: [TypeInfo] = []
         for i in range(0, len(te.tuple_types)) {
-            let t = resolve_type_expr(tc, te.tuple_types[i])
+            let t: TypeInfo = resolve_type_expr(tc, te.tuple_types[i])
             push(types, t)
         }
         return ty_tuple(types)
@@ -663,10 +668,10 @@ fn resolve_type_expr(tc: TypeChecker, te: TypeExpr) -> TypeInfo {
     if te.kind == TYPE_FUNCTION {
         let mut params: [TypeInfo] = []
         for i in range(0, len(te.param_types)) {
-            let pt = resolve_type_expr(tc, te.param_types[i])
+            let pt: TypeInfo = resolve_type_expr(tc, te.param_types[i])
             push(params, pt)
         }
-        let mut ret = ty_void()
+        let mut ret: TypeInfo = ty_void()
         if len(te.ret_type) > 0 {
             ret = resolve_type_expr(tc, te.ret_type[0])
         }
@@ -681,7 +686,7 @@ fn resolve_type_expr(tc: TypeChecker, te: TypeExpr) -> TypeInfo {
     }
     if te.kind == TYPE_REFERENCE {
         if len(te.inner_type) > 0 {
-            let inner = resolve_type_expr(tc, te.inner_type[0])
+            let inner: TypeInfo = resolve_type_expr(tc, te.inner_type[0])
             return ty_ref(inner, te.mutable)
         }
         return ty_any()
@@ -700,7 +705,7 @@ fn resolve_type_expr(tc: TypeChecker, te: TypeExpr) -> TypeInfo {
     }
     if te.kind == TYPE_POINTER {
         if len(te.inner_type) > 0 {
-            let inner = resolve_type_expr(tc, te.inner_type[0])
+            let inner: TypeInfo = resolve_type_expr(tc, te.inner_type[0])
             return ty_ptr(inner)
         }
         return ty_any()
@@ -862,7 +867,7 @@ fn tc_check_expr(tc: TypeChecker, e: Expr) -> TCExprResult {
 // -------------------------------------------------------------------
 
 fn tc_check_ident(tc: TypeChecker, e: Expr) -> TCExprResult {
-    let result = tc_lookup(tc, e.name)
+    let result: LookupResult = tc_lookup(tc, e.name)
     if result.found {
         return TCExprResult { tc: tc, ty: result.sym.ty }
     }
@@ -870,7 +875,7 @@ fn tc_check_ident(tc: TypeChecker, e: Expr) -> TCExprResult {
     let fn_idx = tc_find_fn(tc, e.name)
     if fn_idx >= 0 {
         let sig = tc.fn_sigs[fn_idx]
-        let ft = ty_function(sig.param_types, sig.ret_type)
+        let ft: TypeInfo = ty_function(sig.param_types, sig.ret_type)
         return TCExprResult { tc: tc, ty: ft }
     }
     // Check if it is a struct name (used as constructor)
@@ -884,7 +889,7 @@ fn tc_check_ident(tc: TypeChecker, e: Expr) -> TCExprResult {
     if enum_idx >= 0 {
         return TCExprResult { tc: tc, ty: ty_enum(e.name) }
     }
-    let tc2 = tc_error(tc, "undefined variable: " + e.name + " at " + to_string(e.start))
+    let tc2: TypeChecker = tc_error(tc, "undefined variable: " + e.name + " at " + to_string(e.start))
     return TCExprResult { tc: tc2, ty: ty_error() }
 }
 
@@ -896,8 +901,8 @@ fn tc_check_binary_op(tc: TypeChecker, e: Expr) -> TCExprResult {
     if len(e.left) == 0 or len(e.right) == 0 {
         return TCExprResult { tc: tc, ty: ty_error() }
     }
-    let lr = tc_check_expr(tc, e.left[0])
-    let rr = tc_check_expr(lr.tc, e.right[0])
+    let lr: TCExprResult = tc_check_expr(tc, e.left[0])
+    let rr: TCExprResult = tc_check_expr(lr.tc, e.right[0])
     let lt = lr.ty
     let rt = rr.ty
     let mut tc2 = rr.tc
@@ -973,7 +978,7 @@ fn tc_check_unary_op(tc: TypeChecker, e: Expr) -> TCExprResult {
     if len(e.left) == 0 {
         return TCExprResult { tc: tc, ty: ty_error() }
     }
-    let r = tc_check_expr(tc, e.left[0])
+    let r: TCExprResult = tc_check_expr(tc, e.left[0])
     let ot = r.ty
     let mut tc2 = r.tc
 
@@ -1012,7 +1017,7 @@ fn tc_check_fn_call(tc: TypeChecker, e: Expr) -> TCExprResult {
     // Check arguments first
     let mut arg_types: [TypeInfo] = []
     for i in range(0, len(e.args)) {
-        let ar = tc_check_expr(tc2, e.args[i])
+        let ar: TCExprResult = tc_check_expr(tc2, e.args[i])
         tc2 = ar.tc
         push(arg_types, ar.ty)
     }
@@ -1058,10 +1063,10 @@ fn tc_check_fn_call(tc: TypeChecker, e: Expr) -> TCExprResult {
             return TCExprResult { tc: tc2, ty: ty_enum(callee.name) }
         }
         // Check if callee is in symbol table as function type
-        let lu = tc_lookup(tc2, callee.name)
+        let lu: LookupResult = tc_lookup(tc2, callee.name)
         if lu.found {
             if lu.sym.ty.kind == TY_FUNCTION {
-                let mut ret = ty_void()
+                let mut ret: TypeInfo = ty_void()
                 if len(lu.sym.ty.ret_type) > 0 {
                     ret = lu.sym.ty.ret_type[0]
                 }
@@ -1075,10 +1080,10 @@ fn tc_check_fn_call(tc: TypeChecker, e: Expr) -> TCExprResult {
     }
 
     // Indirect call: check the callee expression
-    let cr = tc_check_expr(tc2, callee)
+    let cr: TCExprResult = tc_check_expr(tc2, callee)
     tc2 = cr.tc
     if cr.ty.kind == TY_FUNCTION {
-        let mut ret = ty_void()
+        let mut ret: TypeInfo = ty_void()
         if len(cr.ty.ret_type) > 0 {
             ret = cr.ty.ret_type[0]
         }
@@ -1095,13 +1100,13 @@ fn tc_check_method_call(tc: TypeChecker, e: Expr) -> TCExprResult {
     if len(e.left) == 0 {
         return TCExprResult { tc: tc, ty: ty_error() }
     }
-    let rr = tc_check_expr(tc, e.left[0])
+    let rr: TCExprResult = tc_check_expr(tc, e.left[0])
     let mut tc2 = rr.tc
     let recv_ty = rr.ty
 
     // Check arguments
     for i in range(0, len(e.args)) {
-        let ar = tc_check_expr(tc2, e.args[i])
+        let ar: TCExprResult = tc_check_expr(tc2, e.args[i])
         tc2 = ar.tc
     }
 
@@ -1163,7 +1168,7 @@ fn tc_check_field_access(tc: TypeChecker, e: Expr) -> TCExprResult {
     if len(e.left) == 0 {
         return TCExprResult { tc: tc, ty: ty_error() }
     }
-    let rr = tc_check_expr(tc, e.left[0])
+    let rr: TCExprResult = tc_check_expr(tc, e.left[0])
     let mut tc2 = rr.tc
     let recv_ty = rr.ty
 
@@ -1200,13 +1205,13 @@ fn tc_check_index_access(tc: TypeChecker, e: Expr) -> TCExprResult {
     if len(e.left) == 0 {
         return TCExprResult { tc: tc, ty: ty_error() }
     }
-    let rr = tc_check_expr(tc, e.left[0])
+    let rr: TCExprResult = tc_check_expr(tc, e.left[0])
     let mut tc2 = rr.tc
     let recv_ty = rr.ty
 
     // Check the index expression
     if len(e.right) > 0 {
-        let ir = tc_check_expr(tc2, e.right[0])
+        let ir: TCExprResult = tc_check_expr(tc2, e.right[0])
         tc2 = ir.tc
     }
 
@@ -1243,12 +1248,12 @@ fn tc_check_array_lit(tc: TypeChecker, e: Expr) -> TCExprResult {
         return TCExprResult { tc: tc, ty: ty_array(ty_any()) }
     }
     // Check first element to get the element type
-    let first = tc_check_expr(tc, e.elements[0])
+    let first: TCExprResult = tc_check_expr(tc, e.elements[0])
     let mut tc2 = first.tc
     let elem_ty = first.ty
     // Check remaining elements
     for i in range(1, len(e.elements)) {
-        let er = tc_check_expr(tc2, e.elements[i])
+        let er: TCExprResult = tc_check_expr(tc2, e.elements[i])
         tc2 = er.tc
         if not ty_compatible(er.ty, elem_ty) {
             if er.ty.kind != TY_ERROR and elem_ty.kind != TY_ERROR {
@@ -1269,7 +1274,7 @@ fn tc_check_struct_lit(tc: TypeChecker, e: Expr) -> TCExprResult {
     if struct_idx < 0 {
         // Unknown struct -- check field expressions anyway
         for i in range(0, len(e.field_exprs)) {
-            let fr = tc_check_expr(tc2, e.field_exprs[i])
+            let fr: TCExprResult = tc_check_expr(tc2, e.field_exprs[i])
             tc2 = fr.tc
         }
         tc2 = tc_error(tc2, "unknown struct: " + e.name + " at " + to_string(e.start))
@@ -1279,7 +1284,7 @@ fn tc_check_struct_lit(tc: TypeChecker, e: Expr) -> TCExprResult {
 
     // Check each field expression
     for i in range(0, len(e.field_exprs)) {
-        let fr = tc_check_expr(tc2, e.field_exprs[i])
+        let fr: TCExprResult = tc_check_expr(tc2, e.field_exprs[i])
         tc2 = fr.tc
         // Find the matching struct field type and check compatibility
         if i < len(e.field_names) {
@@ -1312,7 +1317,7 @@ fn tc_check_tuple_lit(tc: TypeChecker, e: Expr) -> TCExprResult {
     let mut types: [TypeInfo] = []
     let mut tc2 = tc
     for i in range(0, len(e.elements)) {
-        let er = tc_check_expr(tc2, e.elements[i])
+        let er: TCExprResult = tc_check_expr(tc2, e.elements[i])
         tc2 = er.tc
         push(types, er.ty)
     }
@@ -1327,11 +1332,11 @@ fn tc_check_map_lit(tc: TypeChecker, e: Expr) -> TCExprResult {
     let mut tc2 = tc
     // Check key expressions (left) and value expressions (right)
     for i in range(0, len(e.left)) {
-        let kr = tc_check_expr(tc2, e.left[i])
+        let kr: TCExprResult = tc_check_expr(tc2, e.left[i])
         tc2 = kr.tc
     }
     for i in range(0, len(e.right)) {
-        let vr = tc_check_expr(tc2, e.right[i])
+        let vr: TCExprResult = tc_check_expr(tc2, e.right[i])
         tc2 = vr.tc
     }
     return TCExprResult { tc: tc2, ty: ty_map() }
@@ -1345,14 +1350,14 @@ fn tc_check_if_expr(tc: TypeChecker, e: Expr) -> TCExprResult {
     let mut tc2 = tc
     // Check condition
     if len(e.left) > 0 {
-        let cr = tc_check_expr(tc2, e.left[0])
+        let cr: TCExprResult = tc_check_expr(tc2, e.left[0])
         tc2 = cr.tc
         if cr.ty.kind != TY_BOOL and cr.ty.kind != TY_ANY and cr.ty.kind != TY_ERROR {
             tc2 = tc_error(tc2, "if condition must be bool, got " + ty_name(cr.ty) + " at " + to_string(e.start))
         }
     }
     // Check then block
-    let mut then_ty = ty_void()
+    let mut then_ty: TypeInfo = ty_void()
     tc2 = tc_push_scope(tc2)
     for i in range(0, len(e.then_block)) {
         tc2 = tc_check_stmt(tc2, e.then_block[i])
@@ -1377,11 +1382,11 @@ fn tc_check_match_expr(tc: TypeChecker, e: Expr) -> TCExprResult {
     let mut tc2 = tc
     // Check the subject expression
     if len(e.left) > 0 {
-        let sr = tc_check_expr(tc2, e.left[0])
+        let sr: TCExprResult = tc_check_expr(tc2, e.left[0])
         tc2 = sr.tc
     }
     // Check each arm
-    let mut result_ty = ty_void()
+    let mut result_ty: TypeInfo = ty_void()
     for i in range(0, len(e.match_arms)) {
         let arm = e.match_arms[i]
         tc2 = tc_push_scope(tc2)
@@ -1389,12 +1394,12 @@ fn tc_check_match_expr(tc: TypeChecker, e: Expr) -> TCExprResult {
         tc2 = tc_bind_pattern(tc2, arm.pattern)
         // Check guard
         if len(arm.guard) > 0 {
-            let gr = tc_check_expr(tc2, arm.guard[0])
+            let gr: TCExprResult = tc_check_expr(tc2, arm.guard[0])
             tc2 = gr.tc
         }
         // Check body
         if len(arm.body) > 0 {
-            let br = tc_check_expr(tc2, arm.body[0])
+            let br: TCExprResult = tc_check_expr(tc2, arm.body[0])
             tc2 = br.tc
             if i == 0 {
                 result_ty = br.ty
@@ -1450,10 +1455,10 @@ fn tc_bind_pattern(tc: TypeChecker, pat: Pattern) -> TypeChecker {
 // -------------------------------------------------------------------
 
 fn tc_check_lambda(tc: TypeChecker, e: Expr) -> TCExprResult {
-    let mut tc2 = tc_push_scope(tc)
+    let mut tc2: TypeChecker = tc_push_scope(tc)
     let mut param_types: [TypeInfo] = []
     for i in range(0, len(e.params)) {
-        let mut pt = ty_any()
+        let mut pt: TypeInfo = ty_any()
         if len(e.params[i].ty) > 0 {
             pt = resolve_type_expr(tc2, e.params[i].ty[0])
         }
@@ -1461,17 +1466,17 @@ fn tc_check_lambda(tc: TypeChecker, e: Expr) -> TCExprResult {
         tc2 = tc_define(tc2, e.params[i].name, pt, false)
     }
     // Check body (stored in block_stmts for statement lambdas)
-    let mut body_ty = ty_void()
+    let mut body_ty: TypeInfo = ty_void()
     for i in range(0, len(e.block_stmts)) {
         tc2 = tc_check_stmt(tc2, e.block_stmts[i])
     }
     // If there is a single expression body in left
     if len(e.left) > 0 {
-        let br = tc_check_expr(tc2, e.left[0])
+        let br: TCExprResult = tc_check_expr(tc2, e.left[0])
         tc2 = br.tc
         body_ty = br.ty
     }
-    let mut ret = ty_void()
+    let mut ret: TypeInfo = ty_void()
     if len(e.ret_type) > 0 {
         ret = resolve_type_expr(tc2, e.ret_type[0])
     } else {
@@ -1488,11 +1493,11 @@ fn tc_check_lambda(tc: TypeChecker, e: Expr) -> TCExprResult {
 fn tc_check_cast(tc: TypeChecker, e: Expr) -> TCExprResult {
     let mut tc2 = tc
     if len(e.left) > 0 {
-        let sr = tc_check_expr(tc2, e.left[0])
+        let sr: TCExprResult = tc_check_expr(tc2, e.left[0])
         tc2 = sr.tc
     }
     if len(e.cast_type) > 0 {
-        let target = resolve_type_expr(tc2, e.cast_type[0])
+        let target: TypeInfo = resolve_type_expr(tc2, e.cast_type[0])
         return TCExprResult { tc: tc2, ty: target }
     }
     return TCExprResult { tc: tc2, ty: ty_any() }
@@ -1505,14 +1510,14 @@ fn tc_check_cast(tc: TypeChecker, e: Expr) -> TCExprResult {
 fn tc_check_range(tc: TypeChecker, e: Expr) -> TCExprResult {
     let mut tc2 = tc
     if len(e.left) > 0 {
-        let sr = tc_check_expr(tc2, e.left[0])
+        let sr: TCExprResult = tc_check_expr(tc2, e.left[0])
         tc2 = sr.tc
         if not ty_is_integer(sr.ty) and sr.ty.kind != TY_ANY and sr.ty.kind != TY_ERROR {
             tc2 = tc_error(tc2, "range start must be integer, got " + ty_name(sr.ty) + " at " + to_string(e.start))
         }
     }
     if len(e.right) > 0 {
-        let er = tc_check_expr(tc2, e.right[0])
+        let er: TCExprResult = tc_check_expr(tc2, e.right[0])
         tc2 = er.tc
         if not ty_is_integer(er.ty) and er.ty.kind != TY_ANY and er.ty.kind != TY_ERROR {
             tc2 = tc_error(tc2, "range end must be integer, got " + ty_name(er.ty) + " at " + to_string(e.start))
@@ -1526,7 +1531,7 @@ fn tc_check_range(tc: TypeChecker, e: Expr) -> TCExprResult {
 // -------------------------------------------------------------------
 
 fn tc_check_block_expr(tc: TypeChecker, e: Expr) -> TCExprResult {
-    let mut tc2 = tc_push_scope(tc)
+    let mut tc2: TypeChecker = tc_push_scope(tc)
     for i in range(0, len(e.block_stmts)) {
         tc2 = tc_check_stmt(tc2, e.block_stmts[i])
     }
@@ -1541,11 +1546,11 @@ fn tc_check_block_expr(tc: TypeChecker, e: Expr) -> TCExprResult {
 fn tc_check_pipe(tc: TypeChecker, e: Expr) -> TCExprResult {
     let mut tc2 = tc
     if len(e.left) > 0 {
-        let lr = tc_check_expr(tc2, e.left[0])
+        let lr: TCExprResult = tc_check_expr(tc2, e.left[0])
         tc2 = lr.tc
     }
     if len(e.right) > 0 {
-        let rr = tc_check_expr(tc2, e.right[0])
+        let rr: TCExprResult = tc_check_expr(tc2, e.right[0])
         tc2 = rr.tc
         return TCExprResult { tc: tc2, ty: rr.ty }
     }
@@ -1597,7 +1602,7 @@ fn tc_check_stmt(tc: TypeChecker, s: Stmt) -> TypeChecker {
 
 fn tc_check_let(tc: TypeChecker, s: Stmt) -> TypeChecker {
     let mut tc2 = tc
-    let mut var_type = ty_any()
+    let mut var_type: TypeInfo = ty_any()
 
     // If there is a type annotation, resolve it
     if len(s.let_type) > 0 {
@@ -1606,7 +1611,7 @@ fn tc_check_let(tc: TypeChecker, s: Stmt) -> TypeChecker {
 
     // If there is an initializer, check it
     if len(s.let_value) > 0 {
-        let vr = tc_check_expr(tc2, s.let_value[0])
+        let vr: TCExprResult = tc_check_expr(tc2, s.let_value[0])
         tc2 = vr.tc
         if var_type.kind != TY_ANY {
             // Annotated type: check value matches
@@ -1636,13 +1641,13 @@ fn tc_check_assign(tc: TypeChecker, s: Stmt) -> TypeChecker {
     // Check the target
     if len(s.assign_target) > 0 {
         let target = s.assign_target[0]
-        let tr = tc_check_expr(tc2, target)
+        let tr: TCExprResult = tc_check_expr(tc2, target)
         tc2 = tr.tc
         let target_ty = tr.ty
 
         // Check mutability for simple identifiers
         if target.kind == EXPR_IDENT {
-            let lu = tc_lookup(tc2, target.name)
+            let lu: LookupResult = tc_lookup(tc2, target.name)
             if lu.found {
                 if not lu.sym.mutable {
                     tc2 = tc_error(tc2, "cannot assign to immutable variable: " + target.name + " at " + to_string(s.start))
@@ -1652,7 +1657,7 @@ fn tc_check_assign(tc: TypeChecker, s: Stmt) -> TypeChecker {
 
         // Check the value
         if len(s.assign_value) > 0 {
-            let vr = tc_check_expr(tc2, s.assign_value[0])
+            let vr: TCExprResult = tc_check_expr(tc2, s.assign_value[0])
             tc2 = vr.tc
 
             // For compound assignment (+=, -=, etc.), check arithmetic compat
@@ -1690,10 +1695,10 @@ fn tc_check_assign(tc: TypeChecker, s: Stmt) -> TypeChecker {
 
 fn tc_check_return(tc: TypeChecker, s: Stmt) -> TypeChecker {
     let mut tc2 = tc
-    let mut val_ty = ty_void()
+    let mut val_ty: TypeInfo = ty_void()
 
     if len(s.return_value) > 0 {
-        let vr = tc_check_expr(tc2, s.return_value[0])
+        let vr: TCExprResult = tc_check_expr(tc2, s.return_value[0])
         tc2 = vr.tc
         val_ty = vr.ty
     }
@@ -1720,7 +1725,7 @@ fn tc_check_if_stmt(tc: TypeChecker, s: Stmt) -> TypeChecker {
 
     // Check condition
     if len(s.condition) > 0 {
-        let cr = tc_check_expr(tc2, s.condition[0])
+        let cr: TCExprResult = tc_check_expr(tc2, s.condition[0])
         tc2 = cr.tc
         if cr.ty.kind != TY_BOOL and cr.ty.kind != TY_ANY and cr.ty.kind != TY_ERROR {
             tc2 = tc_error(tc2, "if condition must be bool, got " + ty_name(cr.ty) + " at " + to_string(s.start))
@@ -1736,7 +1741,7 @@ fn tc_check_if_stmt(tc: TypeChecker, s: Stmt) -> TypeChecker {
 
     // Check elif conditions and blocks
     for i in range(0, len(s.elif_conditions)) {
-        let er = tc_check_expr(tc2, s.elif_conditions[i])
+        let er: TCExprResult = tc_check_expr(tc2, s.elif_conditions[i])
         tc2 = er.tc
         if er.ty.kind != TY_BOOL and er.ty.kind != TY_ANY and er.ty.kind != TY_ERROR {
             tc2 = tc_error(tc2, "elif condition must be bool, got " + ty_name(er.ty) + " at " + to_string(s.start))
@@ -1765,9 +1770,9 @@ fn tc_check_for(tc: TypeChecker, s: Stmt) -> TypeChecker {
     let mut tc2 = tc
 
     // Check the iterable
-    let mut elem_ty = ty_any()
+    let mut elem_ty: TypeInfo = ty_any()
     if len(s.iterable) > 0 {
-        let ir = tc_check_expr(tc2, s.iterable[0])
+        let ir: TCExprResult = tc_check_expr(tc2, s.iterable[0])
         tc2 = ir.tc
         if ir.ty.kind == TY_ARRAY {
             if len(ir.ty.element_type) > 0 {
@@ -1809,7 +1814,7 @@ fn tc_check_while(tc: TypeChecker, s: Stmt) -> TypeChecker {
 
     // Check condition
     if len(s.while_cond) > 0 {
-        let cr = tc_check_expr(tc2, s.while_cond[0])
+        let cr: TCExprResult = tc_check_expr(tc2, s.while_cond[0])
         tc2 = cr.tc
         if cr.ty.kind != TY_BOOL and cr.ty.kind != TY_ANY and cr.ty.kind != TY_ERROR {
             tc2 = tc_error(tc2, "while condition must be bool, got " + ty_name(cr.ty) + " at " + to_string(s.start))
@@ -1833,7 +1838,7 @@ fn tc_check_while(tc: TypeChecker, s: Stmt) -> TypeChecker {
 fn tc_check_expr_stmt(tc: TypeChecker, s: Stmt) -> TypeChecker {
     let mut tc2 = tc
     if len(s.expr) > 0 {
-        let er = tc_check_expr(tc2, s.expr[0])
+        let er: TCExprResult = tc_check_expr(tc2, s.expr[0])
         tc2 = er.tc
     }
     return tc2
@@ -1873,7 +1878,7 @@ fn tc_check_try_catch(tc: TypeChecker, s: Stmt) -> TypeChecker {
 fn tc_check_throw(tc: TypeChecker, s: Stmt) -> TypeChecker {
     let mut tc2 = tc
     if len(s.throw_expr) > 0 {
-        let er = tc_check_expr(tc2, s.throw_expr[0])
+        let er: TCExprResult = tc_check_expr(tc2, s.throw_expr[0])
         tc2 = er.tc
     }
     return tc2
@@ -1886,7 +1891,7 @@ fn tc_check_throw(tc: TypeChecker, s: Stmt) -> TypeChecker {
 fn tc_check_spawn(tc: TypeChecker, s: Stmt) -> TypeChecker {
     let mut tc2 = tc
     if len(s.spawn_expr) > 0 {
-        let er = tc_check_expr(tc2, s.spawn_expr[0])
+        let er: TCExprResult = tc_check_expr(tc2, s.spawn_expr[0])
         tc2 = er.tc
     }
     return tc2
@@ -1929,13 +1934,13 @@ fn tc_register_function(tc: TypeChecker, d: Decl) -> TypeChecker {
     }
     let mut param_types: [TypeInfo] = []
     for i in range(0, len(d.params)) {
-        let mut pt = ty_any()
+        let mut pt: TypeInfo = ty_any()
         if len(d.params[i].ty) > 0 {
             pt = resolve_type_expr(tc, d.params[i].ty[0])
         }
         push(param_types, pt)
     }
-    let mut ret = ty_void()
+    let mut ret: TypeInfo = ty_void()
     if len(d.ret_type) > 0 {
         ret = resolve_type_expr(tc, d.ret_type[0])
     }
@@ -1943,7 +1948,7 @@ fn tc_register_function(tc: TypeChecker, d: Decl) -> TypeChecker {
     let mut sigs = tc.fn_sigs
     push(sigs, sig)
     // Also define in symbol table as function type
-    let ft = ty_function(param_types, ret)
+    let ft: TypeInfo = ty_function(param_types, ret)
     let mut tc2 = TypeChecker {
         scopes: tc.scopes, current_scope: tc.current_scope,
         struct_defs: tc.struct_defs, enum_defs: tc.enum_defs,
@@ -1961,7 +1966,7 @@ fn tc_register_struct(tc: TypeChecker, d: Decl) -> TypeChecker {
     let mut ftypes: [TypeInfo] = []
     for i in range(0, len(d.fields)) {
         push(fnames, d.fields[i].name)
-        let ft = resolve_type_expr(tc, d.fields[i].ty)
+        let ft: TypeInfo = resolve_type_expr(tc, d.fields[i].ty)
         push(ftypes, ft)
     }
     let sd = StructDef { name: d.name, field_names: fnames, field_types: ftypes }
@@ -1984,7 +1989,7 @@ fn tc_register_enum(tc: TypeChecker, d: Decl) -> TypeChecker {
         push(vnames, d.variants[i].name)
         let mut fields: [TypeInfo] = []
         for j in range(0, len(d.variants[i].fields)) {
-            let ft = resolve_type_expr(tc, d.variants[i].fields[j])
+            let ft: TypeInfo = resolve_type_expr(tc, d.variants[i].fields[j])
             push(fields, ft)
         }
         push(vtypes, fields)
@@ -2028,13 +2033,13 @@ fn tc_register_impl(tc: TypeChecker, d: Decl) -> TypeChecker {
         let qualified = d.target + "." + m.name
         let mut param_types: [TypeInfo] = []
         for j in range(0, len(m.params)) {
-            let mut pt = ty_any()
+            let mut pt: TypeInfo = ty_any()
             if len(m.params[j].ty) > 0 {
                 pt = resolve_type_expr(tc2, m.params[j].ty[0])
             }
             push(param_types, pt)
         }
-        let mut ret = ty_void()
+        let mut ret: TypeInfo = ty_void()
         if len(m.ret_type) > 0 {
             ret = resolve_type_expr(tc2, m.ret_type[0])
         }
@@ -2054,7 +2059,7 @@ fn tc_register_impl(tc: TypeChecker, d: Decl) -> TypeChecker {
 }
 
 fn tc_register_alias(tc: TypeChecker, d: Decl) -> TypeChecker {
-    let mut target = ty_any()
+    let mut target: TypeInfo = ty_any()
     if len(d.alias_type) > 0 {
         target = resolve_type_expr(tc, d.alias_type[0])
     }
@@ -2108,7 +2113,7 @@ fn tc_check_function(tc: TypeChecker, d: Decl) -> TypeChecker {
     let mut tc2 = tc
 
     // Set the current function return type
-    let mut ret = ty_void()
+    let mut ret: TypeInfo = ty_void()
     if len(d.ret_type) > 0 {
         ret = resolve_type_expr(tc2, d.ret_type[0])
     }
@@ -2117,7 +2122,7 @@ fn tc_check_function(tc: TypeChecker, d: Decl) -> TypeChecker {
     // Push scope, define parameters
     tc2 = tc_push_scope(tc2)
     for i in range(0, len(d.params)) {
-        let mut pt = ty_any()
+        let mut pt: TypeInfo = ty_any()
         if len(d.params[i].ty) > 0 {
             pt = resolve_type_expr(tc2, d.params[i].ty[0])
         }
@@ -2158,7 +2163,7 @@ fn tc_register_builtin(tc: TypeChecker, name: str, params: [TypeInfo], ret: Type
     let sig = FnSig { name: name, param_types: params, ret_type: ret }
     let mut sigs = tc.fn_sigs
     push(sigs, sig)
-    let ft = ty_function(params, ret)
+    let ft: TypeInfo = ty_function(params, ret)
     let mut tc2 = TypeChecker {
         scopes: tc.scopes, current_scope: tc.current_scope,
         struct_defs: tc.struct_defs, enum_defs: tc.enum_defs,
@@ -2250,9 +2255,17 @@ fn tc_check_module(tc: TypeChecker, module: Module) -> TypeChecker {
         tc2 = tc_register_decl(tc2, module.declarations[i])
     }
 
-    // Pass 2: type-check all function bodies
-    for i in range(0, len(module.declarations)) {
-        tc2 = tc_check_decl(tc2, module.declarations[i])
+    // Pass 2: type-check all function bodies. Skipped under KRYOS_SKIP_TYPES:
+    // body checking only appends (ignored) type errors -- lowering consumes
+    // only the Pass-1 symbol tables (struct_defs, fn_sigs, enum_defs). On
+    // bootstrap-sized input the recursive tc_check_expr walk is the dominant
+    // cost and blows the heap, so skipping it is both safe (results discarded)
+    // and necessary.
+    let skip_types = env_get("KRYOS_SKIP_TYPES")
+    if len(skip_types) == 0 {
+        for i in range(0, len(module.declarations)) {
+            tc2 = tc_check_decl(tc2, module.declarations[i])
+        }
     }
 
     return tc2
@@ -2263,7 +2276,7 @@ fn tc_check_module(tc: TypeChecker, module: Module) -> TypeChecker {
 // ===================================================================
 
 fn typecheck_module(module: Module) -> TypeChecker {
-    let mut tc = tc_new()
+    let mut tc: TypeChecker = tc_new()
     tc = tc_register_builtins(tc)
     tc = tc_check_module(tc, module)
     return tc

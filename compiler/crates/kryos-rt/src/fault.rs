@@ -45,6 +45,7 @@ mod imp {
             options: u32,
         ) -> i32;
         fn SuspendThread(thread: *mut u8) -> u32;
+        fn ResumeThread(thread: *mut u8) -> u32;
         fn GetThreadContext(thread: *mut u8, ctx: *mut u8) -> i32;
         fn ExitProcess(code: u32) -> !;
     }
@@ -87,24 +88,31 @@ mod imp {
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(secs));
             let thread = main_thread_usize as *mut u8;
-            unsafe {
-                SuspendThread(thread);
-                let mut ctx = RawContext { buf: [0u8; 1352] };
-                // write ContextFlags at offset 0x30
-                let flags_ptr = ctx.buf.as_mut_ptr().add(0x30) as *mut u32;
-                *flags_ptr = CONTEXT_CONTROL;
-                let ok = GetThreadContext(thread, ctx.buf.as_mut_ptr());
-                let rip = *(ctx.buf.as_ptr().add(0xF8) as *const u64) as usize;
-                let base = GetModuleHandleW(std::ptr::null()) as usize;
-                eprintln!(
-                    "[WATCHDOG] main thread hung {}s; ok={} RIP={:#x} base={:#x} RVA={:#x}",
-                    secs,
-                    ok,
-                    rip,
-                    base,
-                    rip.wrapping_sub(base)
-                );
+            let base = unsafe { GetModuleHandleW(std::ptr::null()) as usize };
+            // Sample the main thread's RIP several times. CRITICAL: resume the
+            // thread BEFORE printing -- a suspended main thread may hold the
+            // stdio lock, so eprintln while suspended deadlocks. Read RIP, resume,
+            // then record. Multiple samples distinguish a tight loop (stable RVA)
+            // from a sprawling allocation path (varying RVA).
+            let mut rvas = [0usize; 5];
+            for slot in rvas.iter_mut() {
+                let rip = unsafe {
+                    SuspendThread(thread);
+                    let mut ctx = RawContext { buf: [0u8; 1352] };
+                    let flags_ptr = ctx.buf.as_mut_ptr().add(0x30) as *mut u32;
+                    *flags_ptr = CONTEXT_CONTROL;
+                    GetThreadContext(thread, ctx.buf.as_mut_ptr());
+                    let r = *(ctx.buf.as_ptr().add(0xF8) as *const u64) as usize;
+                    ResumeThread(thread);
+                    r
+                };
+                *slot = rip.wrapping_sub(base);
+                std::thread::sleep(std::time::Duration::from_millis(150));
             }
+            eprintln!(
+                "[WATCHDOG] {}s base={:#x} RVAs={:#x} {:#x} {:#x} {:#x} {:#x}",
+                secs, base, rvas[0], rvas[1], rvas[2], rvas[3], rvas[4]
+            );
             std::process::exit(78);
         });
     }

@@ -149,7 +149,7 @@ fn ctx_operand_ty(ctx: LowerCtx, op: Operand) -> MirType {
 
 // Struct name of an operand's type ("" if the operand is not a struct).
 fn ctx_struct_name_of(ctx: LowerCtx, op: Operand) -> str {
-    let ty = ctx_operand_ty(ctx, op)
+    let ty: MirType = ctx_operand_ty(ctx, op)
     if ty.kind == MIR_TY_STRUCT {
         return ty.name
     }
@@ -259,7 +259,7 @@ fn type_info_to_mir(ty: TypeInfo) -> MirType {
     if ty.kind == TY_ERROR { return mir_ty_simple(MIR_TY_ANY) }
     if ty.kind == TY_ARRAY {
         if len(ty.element_type) > 0 {
-            let elem = type_info_to_mir(ty.element_type[0])
+            let elem: MirType = type_info_to_mir(ty.element_type[0])
             return mir_ty_array(elem)
         }
         return mir_ty_array(mir_ty_simple(MIR_TY_ANY))
@@ -286,7 +286,7 @@ fn type_info_to_mir(ty: TypeInfo) -> MirType {
         for i in range(0, len(ty.param_types)) {
             push(params, type_info_to_mir(ty.param_types[i]))
         }
-        let mut ret = mir_ty_void()
+        let mut ret: MirType = mir_ty_void()
         if len(ty.ret_type) > 0 {
             ret = type_info_to_mir(ty.ret_type[0])
         }
@@ -308,7 +308,7 @@ fn type_info_to_mir(ty: TypeInfo) -> MirType {
     }
     if ty.kind == TY_REF {
         if len(ty.element_type) > 0 {
-            let inner = type_info_to_mir(ty.element_type[0])
+            let inner: MirType = type_info_to_mir(ty.element_type[0])
             let empty_mt: [MirType] = []
             let empty_s: [str] = []
             return MirType {
@@ -322,7 +322,7 @@ fn type_info_to_mir(ty: TypeInfo) -> MirType {
     }
     if ty.kind == TY_PTR {
         if len(ty.element_type) > 0 {
-            let inner = type_info_to_mir(ty.element_type[0])
+            let inner: MirType = type_info_to_mir(ty.element_type[0])
             let empty_mt: [MirType] = []
             let empty_s: [str] = []
             return MirType {
@@ -366,7 +366,7 @@ fn type_expr_to_mir(te: TypeExpr) -> MirType {
     }
     if te.kind == TYPE_ARRAY {
         if len(te.element_type) > 0 {
-            let elem = type_expr_to_mir(te.element_type[0])
+            let elem: MirType = type_expr_to_mir(te.element_type[0])
             return mir_ty_array(elem)
         }
         return mir_ty_array(mir_ty_simple(MIR_TY_ANY))
@@ -376,7 +376,7 @@ fn type_expr_to_mir(te: TypeExpr) -> MirType {
         for i in range(0, len(te.param_types)) {
             push(params, type_expr_to_mir(te.param_types[i]))
         }
-        let mut ret = mir_ty_void()
+        let mut ret: MirType = mir_ty_void()
         if len(te.ret_type) > 0 {
             ret = type_expr_to_mir(te.ret_type[0])
         }
@@ -404,7 +404,7 @@ fn type_expr_to_mir(te: TypeExpr) -> MirType {
     }
     if te.kind == TYPE_REFERENCE {
         if len(te.inner_type) > 0 {
-            let inner = type_expr_to_mir(te.inner_type[0])
+            let inner: MirType = type_expr_to_mir(te.inner_type[0])
             let empty_mt: [MirType] = []
             let empty_s: [str] = []
             return MirType {
@@ -418,7 +418,7 @@ fn type_expr_to_mir(te: TypeExpr) -> MirType {
     }
     if te.kind == TYPE_POINTER {
         if len(te.inner_type) > 0 {
-            let inner = type_expr_to_mir(te.inner_type[0])
+            let inner: MirType = type_expr_to_mir(te.inner_type[0])
             let empty_mt: [MirType] = []
             let empty_s: [str] = []
             return MirType {
@@ -447,7 +447,7 @@ fn resolve_expr_type(e: Expr) -> MirType {
     if e.kind == EXPR_CHAR_LIT { return mir_ty_simple(MIR_TY_CHAR) }
     if e.kind == EXPR_ARRAY_LIT {
         if len(e.elements) > 0 {
-            let elem_ty = resolve_expr_type(e.elements[0])
+            let elem_ty: MirType = resolve_expr_type(e.elements[0])
             return mir_ty_array(elem_ty)
         }
         return mir_ty_array(mir_ty_simple(MIR_TY_ANY))
@@ -468,7 +468,7 @@ fn resolve_expr_type(e: Expr) -> MirType {
         }
         // String concat returns string
         if e.op == BINOP_ADD and len(e.left) > 0 {
-            let lt = resolve_expr_type(e.left[0])
+            let lt: MirType = resolve_expr_type(e.left[0])
             if lt.kind == MIR_TY_STR {
                 return mir_ty_str()
             }
@@ -772,7 +772,7 @@ fn lower_interp_string(ctx: LowerCtx, e: Expr) -> Operand {
         if sp.is_expr {
             // Expression part: lower it, then convert to string
             if len(sp.expr) > 0 {
-                let val = lower_expr(ctx, sp.expr[0])
+                let val: Operand = lower_expr(ctx, sp.expr[0])
                 let t = ctx_alloc_temp(ctx, mir_ty_str())
                 let mut call_args: [Operand] = [val]
                 ctx_emit(ctx, inst_assign(t, rv_call("kryos_to_string", call_args)))
@@ -810,7 +810,7 @@ fn lower_binop(ctx: LowerCtx, e: Expr) -> Operand {
     // Operand allocations just before pushing into the RValue. This
     // ensures the operands are stable across the second lower_expr
     // call which may reallocate Operand heap memory.
-    let raw_left_op = lower_expr(ctx, e.left[0])
+    let raw_left_op: Operand = lower_expr(ctx, e.left[0])
     let l_is_local = raw_left_op.is_local
     let l_local_id = raw_left_op.local_id
     let l_const_kind = raw_left_op.const_kind
@@ -818,7 +818,7 @@ fn lower_binop(ctx: LowerCtx, e: Expr) -> Operand {
     let l_float_val = raw_left_op.float_val
     let l_bool_val = raw_left_op.bool_val
     let l_str_val = raw_left_op.str_val
-    let raw_right_op = lower_expr(ctx, e.right[0])
+    let raw_right_op: Operand = lower_expr(ctx, e.right[0])
     let r_is_local = raw_right_op.is_local
     let r_local_id = raw_right_op.local_id
     let r_const_kind = raw_right_op.const_kind
@@ -845,11 +845,11 @@ fn lower_binop(ctx: LowerCtx, e: Expr) -> Operand {
     // `let s: str = "a"; let s2 = s + "b"` lowers as i64 ADD on the
     // string POINTERS, producing garbage that segfaults downstream.
     if e.op == BINOP_ADD {
-        let mut left_ty = ctx_operand_ty(ctx, left_op)
+        let mut left_ty: MirType = ctx_operand_ty(ctx, left_op)
         if left_ty.kind == MIR_TY_ANY {
             left_ty = resolve_expr_type(e.left[0])
         }
-        let mut right_ty = ctx_operand_ty(ctx, right_op)
+        let mut right_ty: MirType = ctx_operand_ty(ctx, right_op)
         if right_ty.kind == MIR_TY_ANY {
             right_ty = resolve_expr_type(e.right[0])
         }
@@ -867,11 +867,11 @@ fn lower_binop(ctx: LowerCtx, e: Expr) -> Operand {
     // even when their contents match. The runtime function compares
     // byte content. Stage-0's codegen.rs:3228 does the same dispatch.
     if e.op == BINOP_EQ or e.op == BINOP_NEQ {
-        let mut left_ty_eq = ctx_operand_ty(ctx, left_op)
+        let mut left_ty_eq: MirType = ctx_operand_ty(ctx, left_op)
         if left_ty_eq.kind == MIR_TY_ANY {
             left_ty_eq = resolve_expr_type(e.left[0])
         }
-        let mut right_ty_eq = ctx_operand_ty(ctx, right_op)
+        let mut right_ty_eq: MirType = ctx_operand_ty(ctx, right_op)
         if right_ty_eq.kind == MIR_TY_ANY {
             right_ty_eq = resolve_expr_type(e.right[0])
         }
@@ -897,7 +897,7 @@ fn lower_binop(ctx: LowerCtx, e: Expr) -> Operand {
             ctx_emit(ctx, inst_assign(eq_t, rv_call("kryos_string_eq", eq_args)))
             if e.op == BINOP_NEQ {
                 // Invert: result = (kryos_string_eq(l, r) == 0)
-                let zero_op = op_int(0)
+                let zero_op: Operand = op_int(0)
                 let neq_t = ctx_alloc_temp(ctx, mir_ty_bool())
                 ctx_emit(ctx, inst_assign(neq_t, rv_binop(MIR_EQ, op_local(eq_t), zero_op)))
                 return op_local(neq_t)
@@ -908,7 +908,7 @@ fn lower_binop(ctx: LowerCtx, e: Expr) -> Operand {
 
     // Power operator: emit as runtime call
     if e.op == BINOP_POW {
-        let left_ty = resolve_expr_type(e.left[0])
+        let left_ty: MirType = resolve_expr_type(e.left[0])
         let t = ctx_alloc_temp(ctx, left_ty)
         let pow_args: [Operand] = [left_op, right_op]
         if left_ty.kind == MIR_TY_F64 or left_ty.kind == MIR_TY_F32 {
@@ -921,7 +921,7 @@ fn lower_binop(ctx: LowerCtx, e: Expr) -> Operand {
 
     // Regular binary operation
     let mir_op = binop_to_mir(e.op)
-    let result_ty = resolve_expr_type(e)
+    let result_ty: MirType = resolve_expr_type(e)
     let t = ctx_alloc_temp(ctx, result_ty)
     ctx_emit(ctx, inst_assign(t, rv_binop(mir_op, left_op, right_op)))
     return op_local(t)
@@ -937,7 +937,7 @@ fn lower_short_circuit_and(ctx: LowerCtx, e: Expr) -> Operand {
     let merge_bb = ctx_alloc_block(ctx)
 
     // Evaluate left
-    let left_op = lower_expr(ctx, e.left[0])
+    let left_op: Operand = lower_expr(ctx, e.left[0])
 
     // If left is false, short-circuit to merge with false
     let false_bb = ctx_alloc_block(ctx)
@@ -950,7 +950,7 @@ fn lower_short_circuit_and(ctx: LowerCtx, e: Expr) -> Operand {
 
     // Right path: evaluate right, result = right
     ctx_switch_block(ctx, right_bb)
-    let right_op = lower_expr(ctx, e.right[0])
+    let right_op: Operand = lower_expr(ctx, e.right[0])
     ctx_emit(ctx, inst_assign(result, rv_use(right_op)))
     // Lowering `right` may have switched blocks (when right is itself an
     // and/or or other control-flow expr), so terminate the CURRENT block,
@@ -974,7 +974,7 @@ fn lower_short_circuit_or(ctx: LowerCtx, e: Expr) -> Operand {
     let merge_bb = ctx_alloc_block(ctx)
 
     // Evaluate left
-    let left_op = lower_expr(ctx, e.left[0])
+    let left_op: Operand = lower_expr(ctx, e.left[0])
 
     // If left is true, short-circuit to merge with true
     let true_bb = ctx_alloc_block(ctx)
@@ -987,7 +987,7 @@ fn lower_short_circuit_or(ctx: LowerCtx, e: Expr) -> Operand {
 
     // Right path: evaluate right, result = right
     ctx_switch_block(ctx, right_bb)
-    let right_op = lower_expr(ctx, e.right[0])
+    let right_op: Operand = lower_expr(ctx, e.right[0])
     ctx_emit(ctx, inst_assign(result, rv_use(right_op)))
     // See lower_short_circuit_and: terminate the CURRENT block (the right
     // expr's merge), not right_bb, which a nested and/or may already have
@@ -1008,9 +1008,9 @@ fn lower_unop(ctx: LowerCtx, e: Expr) -> Operand {
     if len(e.left) == 0 {
         return op_none()
     }
-    let operand = lower_expr(ctx, e.left[0])
+    let operand: Operand = lower_expr(ctx, e.left[0])
     let mir_op = unop_to_mir(e.op)
-    let result_ty = resolve_expr_type(e)
+    let result_ty: MirType = resolve_expr_type(e)
     let t = ctx_alloc_temp(ctx, result_ty)
     ctx_emit(ctx, inst_assign(t, rv_unop(mir_op, operand)))
     return op_local(t)
@@ -1042,7 +1042,7 @@ fn lower_fn_call(ctx: LowerCtx, e: Expr) -> Operand {
         // when later operands are constructed on the same heap memory.
         let mut call_args: [Operand] = []
         for i in range(0, len(e.args)) {
-            let arg_op = lower_expr(ctx, e.args[i])
+            let arg_op: Operand = lower_expr(ctx, e.args[i])
             let cloned = Operand {
                 is_local: arg_op.is_local,
                 local_id: arg_op.local_id,
@@ -1064,17 +1064,17 @@ fn lower_fn_call(ctx: LowerCtx, e: Expr) -> Operand {
         // not yet root-caused). For now leave user-call results as ANY and
         // rely on explicit annotations (`let mut lex: Lexer = lexer_new(...)`)
         // at the call-init sites whose fields are accessed.
-        let result_ty = resolve_call_result_type(fn_name, e.args)
+        let result_ty: MirType = resolve_call_result_type(fn_name, e.args)
         let t = ctx_alloc_temp(ctx, result_ty)
         ctx_emit(ctx, inst_assign(t, rv_call(runtime_name, call_args)))
         return op_local(t)
     }
 
     // Indirect call: callee is some expression (closure, field, etc.)
-    let callee_op = lower_expr(ctx, callee)
+    let callee_op: Operand = lower_expr(ctx, callee)
     let mut call_args: [Operand] = []
     for i in range(0, len(e.args)) {
-        let arg_op = lower_expr(ctx, e.args[i])
+        let arg_op: Operand = lower_expr(ctx, e.args[i])
         let cloned = Operand {
             is_local: arg_op.is_local,
             local_id: arg_op.local_id,
@@ -1171,8 +1171,8 @@ fn lower_range_call(ctx: LowerCtx, e: Expr) -> Operand {
     if len(e.args) < 2 {
         return op_none()
     }
-    let start_op = lower_expr(ctx, e.args[0])
-    let end_op = lower_expr(ctx, e.args[1])
+    let start_op: Operand = lower_expr(ctx, e.args[0])
+    let end_op: Operand = lower_expr(ctx, e.args[1])
     let t = ctx_alloc_temp(ctx, mir_ty_array(mir_ty_i64()))
     ctx_emit(ctx, inst_assign(t, rv_range(start_op, end_op, false)))
     return op_local(t)
@@ -1187,7 +1187,7 @@ fn lower_method_call(ctx: LowerCtx, e: Expr) -> Operand {
         return op_none()
     }
 
-    let receiver_op = lower_expr(ctx, e.left[0])
+    let receiver_op: Operand = lower_expr(ctx, e.left[0])
 
     // Deep-clone each operand before push (see lower_fn_call comment).
     let receiver_clone = Operand {
@@ -1201,7 +1201,7 @@ fn lower_method_call(ctx: LowerCtx, e: Expr) -> Operand {
     }
     let mut call_args: [Operand] = [receiver_clone]
     for i in range(0, len(e.args)) {
-        let arg_op = lower_expr(ctx, e.args[i])
+        let arg_op: Operand = lower_expr(ctx, e.args[i])
         let cloned = Operand {
             is_local: arg_op.is_local,
             local_id: arg_op.local_id,
@@ -1228,10 +1228,10 @@ fn lower_field_access(ctx: LowerCtx, e: Expr) -> Operand {
     if len(e.left) == 0 {
         return op_none()
     }
-    let obj_op = lower_expr(ctx, e.left[0])
+    let obj_op: Operand = lower_expr(ctx, e.left[0])
     let sname = ctx_struct_name_of(ctx, obj_op)
     let fidx = ctx_field_index(ctx, sname, e.name)
-    let fty = ctx_field_type(ctx, sname, e.name)
+    let fty: MirType = ctx_field_type(ctx, sname, e.name)
     let t = ctx_alloc_temp(ctx, fty)
     ctx_emit(ctx, inst_assign(t, rv_field(obj_op, e.name, fidx)))
     return op_local(t)
@@ -1245,14 +1245,14 @@ fn lower_index_access(ctx: LowerCtx, e: Expr) -> Operand {
     if len(e.left) == 0 or len(e.right) == 0 {
         return op_none()
     }
-    let obj_op = lower_expr(ctx, e.left[0])
-    let idx_op = lower_expr(ctx, e.right[0])
+    let obj_op: Operand = lower_expr(ctx, e.left[0])
+    let idx_op: Operand = lower_expr(ctx, e.right[0])
     // String indexing s[i] returns the 1-char string at byte i. The array
     // index path (rv_index) reads KryosArray layout (data@offset 32, *8
     // element stride) which is WRONG for a KryosString (data@16, byte index),
     // producing a garbage pointer and a crash. Route strings to the runtime
     // kryos_string_char_at, matching stage-0's codegen.
-    let obj_ty = ctx_operand_ty(ctx, obj_op)
+    let obj_ty: MirType = ctx_operand_ty(ctx, obj_op)
     if obj_ty.kind == MIR_TY_STR {
         let sargs: [Operand] = [obj_op, idx_op]
         let st = ctx_alloc_temp(ctx, mir_ty_str())
@@ -1271,7 +1271,7 @@ fn lower_index_access(ctx: LowerCtx, e: Expr) -> Operand {
 fn lower_array_lit(ctx: LowerCtx, e: Expr) -> Operand {
     let mut elem_ops: [Operand] = []
     for i in range(0, len(e.elements)) {
-        let elem_op = lower_expr(ctx, e.elements[i])
+        let elem_op: Operand = lower_expr(ctx, e.elements[i])
         // Deep-clone: stage-1's share-on-clone @copy struct semantics
         // mean the same heap Operand can be referenced by multiple
         // array entries if we don't reconstruct here. See lower_fn_call
@@ -1287,7 +1287,7 @@ fn lower_array_lit(ctx: LowerCtx, e: Expr) -> Operand {
         }
         push(elem_ops, cloned)
     }
-    let arr_ty = resolve_expr_type(e)
+    let arr_ty: MirType = resolve_expr_type(e)
     let t = ctx_alloc_temp(ctx, arr_ty)
     ctx_emit(ctx, inst_assign(t, rv_array(elem_ops)))
     return op_local(t)
@@ -1300,7 +1300,7 @@ fn lower_array_lit(ctx: LowerCtx, e: Expr) -> Operand {
 fn lower_tuple_lit(ctx: LowerCtx, e: Expr) -> Operand {
     let mut elem_ops: [Operand] = []
     for i in range(0, len(e.elements)) {
-        let elem_op = lower_expr(ctx, e.elements[i])
+        let elem_op: Operand = lower_expr(ctx, e.elements[i])
         let cloned = Operand {
             is_local: elem_op.is_local,
             local_id: elem_op.local_id,
@@ -1326,7 +1326,7 @@ fn lower_map_lit(ctx: LowerCtx, e: Expr) -> Operand {
     let mut val_ops: [Operand] = []
     // In AST, map keys are in e.left, values in e.right
     for i in range(0, len(e.left)) {
-        let k = lower_expr(ctx, e.left[i])
+        let k: Operand = lower_expr(ctx, e.left[i])
         let k_clone = Operand {
             is_local: k.is_local, local_id: k.local_id,
             const_kind: k.const_kind, int_val: k.int_val,
@@ -1336,7 +1336,7 @@ fn lower_map_lit(ctx: LowerCtx, e: Expr) -> Operand {
         push(key_ops, k_clone)
     }
     for i in range(0, len(e.right)) {
-        let v = lower_expr(ctx, e.right[i])
+        let v: Operand = lower_expr(ctx, e.right[i])
         let v_clone = Operand {
             is_local: v.is_local, local_id: v.local_id,
             const_kind: v.const_kind, int_val: v.int_val,
@@ -1361,10 +1361,10 @@ fn lower_struct_lit(ctx: LowerCtx, e: Expr) -> Operand {
         push(fnames, e.field_names[i])
     }
     for i in range(0, len(e.field_exprs)) {
-        let fop = lower_expr(ctx, e.field_exprs[i])
+        let fop: Operand = lower_expr(ctx, e.field_exprs[i])
         push(fops, fop)
     }
-    let sty = resolve_expr_type(e)
+    let sty: MirType = resolve_expr_type(e)
     let t = ctx_alloc_temp(ctx, sty)
     ctx_emit(ctx, inst_assign(t, rv_struct_lit(e.name, fnames, fops)))
     return op_local(t)
@@ -1385,12 +1385,12 @@ fn lower_if_expr(ctx: LowerCtx, e: Expr) -> Operand {
     let merge_bb = ctx_alloc_block(ctx)
 
     // Lower condition (condition is in e.left[0] for if-expressions)
-    let cond_op = lower_expr(ctx, e.left[0])
+    let cond_op: Operand = lower_expr(ctx, e.left[0])
     ctx_set_term(ctx, term_branch(cond_op, then_bb, else_bb))
 
     // Then block
     ctx_switch_block(ctx, then_bb)
-    let mut then_result = op_none()
+    let mut then_result: Operand = op_none()
     for i in range(0, len(e.then_block)) {
         if i == len(e.then_block) - 1 {
             // Last stmt might produce a value
@@ -1411,7 +1411,7 @@ fn lower_if_expr(ctx: LowerCtx, e: Expr) -> Operand {
 
     // Else block
     ctx_switch_block(ctx, else_bb)
-    let mut else_result = op_none()
+    let mut else_result: Operand = op_none()
     for i in range(0, len(e.else_block)) {
         if i == len(e.else_block) - 1 {
             let last = e.else_block[i]
@@ -1446,7 +1446,7 @@ fn lower_match_expr(ctx: LowerCtx, e: Expr) -> Operand {
     let merge_bb = ctx_alloc_block(ctx)
 
     // Lower subject
-    let subject_op = lower_expr(ctx, e.left[0])
+    let subject_op: Operand = lower_expr(ctx, e.left[0])
 
     let num_arms = len(e.match_arms)
     if num_arms == 0 {
@@ -1479,7 +1479,7 @@ fn lower_match_expr(ctx: LowerCtx, e: Expr) -> Operand {
         }
 
         // Lower pattern match
-        let matched = lower_pattern_check(ctx, subject_op, arm.pattern)
+        let matched: Operand = lower_pattern_check(ctx, subject_op, arm.pattern)
         ctx_set_term(ctx, term_branch(matched, body_bbs[i], next_check))
 
         // Body block
@@ -1489,7 +1489,7 @@ fn lower_match_expr(ctx: LowerCtx, e: Expr) -> Operand {
         lower_pattern_bind(ctx, subject_op, arm.pattern)
 
         // Lower arm body
-        let mut arm_result = op_none()
+        let mut arm_result: Operand = op_none()
         for j in range(0, len(arm.body)) {
             arm_result = lower_expr(ctx, arm.body[j])
         }
@@ -1530,7 +1530,7 @@ fn lower_pattern_check(ctx: LowerCtx, subject: Operand, pat: Pattern) -> Operand
     // Literal pattern: compare subject to the literal
     if pat.kind == PAT_LITERAL {
         if len(pat.lit_expr) > 0 {
-            let lit_op = lower_expr(ctx, pat.lit_expr[0])
+            let lit_op: Operand = lower_expr(ctx, pat.lit_expr[0])
             let t = ctx_alloc_temp(ctx, mir_ty_bool())
             ctx_emit(ctx, inst_assign(t, rv_binop(MIR_EQ, subject, lit_op)))
             return op_local(t)
@@ -1545,7 +1545,7 @@ fn lower_pattern_check(ctx: LowerCtx, subject: Operand, pat: Pattern) -> Operand
         let tag_op_t = ctx_alloc_temp(ctx, mir_ty_i64())
         ctx_emit(ctx, inst_assign(tag_op_t, rv_enum_tag(subject)))
         // We need the expected variant index -- for now, use string comparison
-        let variant_name_op = op_str(pat.variant)
+        let variant_name_op: Operand = op_str(pat.variant)
         let t = ctx_alloc_temp(ctx, mir_ty_bool())
         let check_args: [Operand] = [op_local(tag_op_t), variant_name_op]
         ctx_emit(ctx, inst_assign(t, rv_call("kryos_enum_tag_matches", check_args)))
@@ -1557,7 +1557,7 @@ fn lower_pattern_check(ctx: LowerCtx, subject: Operand, pat: Pattern) -> Operand
         let result = ctx_alloc_temp(ctx, mir_ty_bool())
         ctx_emit(ctx, inst_assign(result, rv_const_bool(false)))
         for i in range(0, len(pat.or_patterns)) {
-            let sub_match = lower_pattern_check(ctx, subject, pat.or_patterns[i])
+            let sub_match: Operand = lower_pattern_check(ctx, subject, pat.or_patterns[i])
             // result = result or sub_match
             let combined = ctx_alloc_temp(ctx, mir_ty_bool())
             ctx_emit(ctx, inst_assign(combined, rv_binop(MIR_OR, op_local(result), sub_match)))
@@ -1597,7 +1597,7 @@ fn lower_pattern_bind(ctx: LowerCtx, subject: Operand, pat: Pattern) {
     // Tuple pattern: destructure into sub-patterns
     if pat.kind == PAT_TUPLE {
         for i in range(0, len(pat.sub_patterns)) {
-            let idx_op = op_int(i)
+            let idx_op: Operand = op_int(i)
             let elem = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
             ctx_emit(ctx, inst_assign(elem, rv_index(subject, idx_op)))
             lower_pattern_bind(ctx, op_local(elem), pat.sub_patterns[i])
@@ -1640,18 +1640,18 @@ fn lower_lambda(ctx: LowerCtx, e: Expr) -> Operand {
     ctx.lambda_counter = ctx.lambda_counter + 1
 
     // Determine return type
-    let mut ret_ty = mir_ty_simple(MIR_TY_ANY)
+    let mut ret_ty: MirType = mir_ty_simple(MIR_TY_ANY)
     if len(e.ret_type) > 0 {
         ret_ty = type_expr_to_mir(e.ret_type[0])
     }
 
     // Create MirFunction for the lambda
-    let mut lambda_func = mir_func_new(lambda_name, ret_ty)
+    let mut lambda_func: MirFunction = mir_func_new(lambda_name, ret_ty)
 
     // Add parameters
     for i in range(0, len(e.params)) {
         let param = e.params[i]
-        let mut param_ty = mir_ty_simple(MIR_TY_ANY)
+        let mut param_ty: MirType = mir_ty_simple(MIR_TY_ANY)
         if len(param.ty) > 0 {
             param_ty = type_expr_to_mir(param.ty[0])
         }
@@ -1659,7 +1659,7 @@ fn lower_lambda(ctx: LowerCtx, e: Expr) -> Operand {
     }
 
     // Create a sub-context for the lambda body
-    let mut lambda_ctx = ctx_new(lambda_func, ret_ty, ctx.struct_defs, ctx.fn_sig_names, ctx.fn_sig_rets)
+    let mut lambda_ctx: LowerCtx = ctx_new(lambda_func, ret_ty, ctx.struct_defs, ctx.fn_sig_names, ctx.fn_sig_rets)
 
     // Register params in lambda context
     for i in range(0, len(lambda_func.params)) {
@@ -1694,8 +1694,8 @@ fn lower_cast(ctx: LowerCtx, e: Expr) -> Operand {
     if len(e.left) == 0 {
         return op_none()
     }
-    let operand = lower_expr(ctx, e.left[0])
-    let mut target_ty = mir_ty_simple(MIR_TY_ANY)
+    let operand: Operand = lower_expr(ctx, e.left[0])
+    let mut target_ty: MirType = mir_ty_simple(MIR_TY_ANY)
     if len(e.cast_type) > 0 {
         target_ty = type_expr_to_mir(e.cast_type[0])
     }
@@ -1712,8 +1712,8 @@ fn lower_range_expr(ctx: LowerCtx, e: Expr) -> Operand {
     if len(e.left) == 0 or len(e.right) == 0 {
         return op_none()
     }
-    let start_op = lower_expr(ctx, e.left[0])
-    let end_op = lower_expr(ctx, e.right[0])
+    let start_op: Operand = lower_expr(ctx, e.left[0])
+    let end_op: Operand = lower_expr(ctx, e.right[0])
     let t = ctx_alloc_temp(ctx, mir_ty_array(mir_ty_i64()))
     ctx_emit(ctx, inst_assign(t, rv_range(start_op, end_op, e.inclusive)))
     return op_local(t)
@@ -1753,7 +1753,7 @@ fn lower_pipe_expr(ctx: LowerCtx, e: Expr) -> Operand {
         return op_none()
     }
 
-    let input = lower_expr(ctx, e.left[0])
+    let input: Operand = lower_expr(ctx, e.left[0])
     let rhs = e.right[0]
 
     // If right side is a function call, prepend input as first arg
@@ -1774,7 +1774,7 @@ fn lower_pipe_expr(ctx: LowerCtx, e: Expr) -> Operand {
             }
             let mut call_args: [Operand] = [input_clone]
             for i in range(0, len(rhs.args)) {
-                let arg_op = lower_expr(ctx, rhs.args[i])
+                let arg_op: Operand = lower_expr(ctx, rhs.args[i])
                 let cloned = Operand {
                     is_local: arg_op.is_local,
                     local_id: arg_op.local_id,
@@ -1803,7 +1803,7 @@ fn lower_pipe_expr(ctx: LowerCtx, e: Expr) -> Operand {
     }
 
     // Fallback: lower right as expression and call indirectly
-    let callee_op = lower_expr(ctx, rhs)
+    let callee_op: Operand = lower_expr(ctx, rhs)
     let call_args: [Operand] = [input]
     let t = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
     ctx_emit(ctx, inst_assign(t, rv_call_indirect(callee_op, call_args)))
@@ -1910,7 +1910,7 @@ fn lower_stmt(ctx: LowerCtx, s: Stmt) {
 
 fn lower_let_stmt(ctx: LowerCtx, s: Stmt) {
     // Determine type from annotation or value
-    let mut local_ty = mir_ty_simple(MIR_TY_ANY)
+    let mut local_ty: MirType = mir_ty_simple(MIR_TY_ANY)
     if len(s.let_type) > 0 {
         local_ty = type_expr_to_mir(s.let_type[0])
     } elif len(s.let_value) > 0 {
@@ -1918,7 +1918,7 @@ fn lower_let_stmt(ctx: LowerCtx, s: Stmt) {
     }
 
     if len(s.let_value) > 0 {
-        let val = lower_expr(ctx, s.let_value[0])
+        let val: Operand = lower_expr(ctx, s.let_value[0])
         // For IMMUTABLE `let name = local_expr`, alias the name to
         // the existing local rather than emitting a redundant
         // `name = use src` MIR instruction. The redundant rename
@@ -1939,7 +1939,7 @@ fn lower_let_stmt(ctx: LowerCtx, s: Stmt) {
         // `let mut lex = lexer_new(src)`) carries its struct name onto the
         // new local -- without it, `l.field` resolves to field index 0.
         if len(s.let_type) == 0 {
-            let vty = ctx_operand_ty(ctx, val)
+            let vty: MirType = ctx_operand_ty(ctx, val)
             if vty.kind != MIR_TY_ANY {
                 local_ty = vty
             }
@@ -1972,12 +1972,12 @@ fn lower_assign_stmt(ctx: LowerCtx, s: Stmt) {
 
         if s.assign_op == ASSIGN_EQ {
             // Direct assignment
-            let val = lower_expr(ctx, value_expr)
+            let val: Operand = lower_expr(ctx, value_expr)
             ctx_emit(ctx, inst_assign(local_id, rv_use(val)))
         } else {
             // Compound assignment (+=, -=, *=, /=)
             let mir_op = compound_assign_to_binop(s.assign_op)
-            let val = lower_expr(ctx, value_expr)
+            let val: Operand = lower_expr(ctx, value_expr)
             let t = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
             ctx_emit(ctx, inst_assign(t, rv_binop(mir_op, op_local(local_id), val)))
             ctx_emit(ctx, inst_assign(local_id, rv_use(op_local(t))))
@@ -1990,8 +1990,8 @@ fn lower_assign_stmt(ctx: LowerCtx, s: Stmt) {
         if len(target.left) == 0 {
             return
         }
-        let obj_op = lower_expr(ctx, target.left[0])
-        let val_raw = lower_expr(ctx, value_expr)
+        let obj_op: Operand = lower_expr(ctx, target.left[0])
+        let val_raw: Operand = lower_expr(ctx, value_expr)
         // Force the rvalue through an explicit copy-to-temp before the
         // field-set call. Empirically, leaving `[expr]` (RValue::Array)
         // operands directly in the call's store_args crashes stage-1's
@@ -2001,7 +2001,7 @@ fn lower_assign_stmt(ctx: LowerCtx, s: Stmt) {
         // the temp has a clean SSA boundary the codegen needs.
         let val_temp = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
         ctx_emit(ctx, inst_assign(val_temp, rv_use(val_raw)))
-        let val = op_local(val_temp)
+        let val: Operand = op_local(val_temp)
 
         if s.assign_op == ASSIGN_EQ {
             // Emit field store as a runtime call
@@ -2012,7 +2012,7 @@ fn lower_assign_stmt(ctx: LowerCtx, s: Stmt) {
             let old_val = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
             let cfidx = ctx_field_index_of(ctx, obj_op, target.name)
             ctx_emit(ctx, inst_assign(old_val, rv_field(obj_op, target.name, cfidx)))
-            let val_rhs = lower_expr(ctx, value_expr)
+            let val_rhs: Operand = lower_expr(ctx, value_expr)
             let mir_op = compound_assign_to_binop(s.assign_op)
             let new_val = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
             ctx_emit(ctx, inst_assign(new_val, rv_binop(mir_op, op_local(old_val), val_rhs)))
@@ -2027,9 +2027,9 @@ fn lower_assign_stmt(ctx: LowerCtx, s: Stmt) {
         if len(target.left) == 0 or len(target.right) == 0 {
             return
         }
-        let arr_op = lower_expr(ctx, target.left[0])
-        let idx_op = lower_expr(ctx, target.right[0])
-        let val = lower_expr(ctx, value_expr)
+        let arr_op: Operand = lower_expr(ctx, target.left[0])
+        let idx_op: Operand = lower_expr(ctx, target.right[0])
+        let val: Operand = lower_expr(ctx, value_expr)
 
         if s.assign_op == ASSIGN_EQ {
             let set_args: [Operand] = [arr_op, idx_op, val]
@@ -2038,7 +2038,7 @@ fn lower_assign_stmt(ctx: LowerCtx, s: Stmt) {
             // Compound index assignment: read, compute, write back
             let old_val = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
             ctx_emit(ctx, inst_assign(old_val, rv_index(arr_op, idx_op)))
-            let val_rhs = lower_expr(ctx, value_expr)
+            let val_rhs: Operand = lower_expr(ctx, value_expr)
             let mir_op = compound_assign_to_binop(s.assign_op)
             let new_val = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
             ctx_emit(ctx, inst_assign(new_val, rv_binop(mir_op, op_local(old_val), val_rhs)))
@@ -2055,7 +2055,7 @@ fn lower_assign_stmt(ctx: LowerCtx, s: Stmt) {
 
 fn lower_return_stmt(ctx: LowerCtx, s: Stmt) {
     if len(s.return_value) > 0 {
-        let val = lower_expr(ctx, s.return_value[0])
+        let val: Operand = lower_expr(ctx, s.return_value[0])
         ctx_set_term(ctx, term_return(val))
     } else {
         ctx_set_term(ctx, term_return_void())
@@ -2076,7 +2076,7 @@ fn lower_if_stmt(ctx: LowerCtx, s: Stmt) {
     // Lower the main condition. Deep-clone the operand into a fresh
     // struct literal to break share-on-clone aliasing -- otherwise
     // later operand allocations may invalidate this condition.
-    let raw_cond_op = lower_expr(ctx, s.condition[0])
+    let raw_cond_op: Operand = lower_expr(ctx, s.condition[0])
     let cond_op = Operand {
         is_local: raw_cond_op.is_local, local_id: raw_cond_op.local_id,
         const_kind: raw_cond_op.const_kind, int_val: raw_cond_op.int_val,
@@ -2116,7 +2116,7 @@ fn lower_if_stmt(ctx: LowerCtx, s: Stmt) {
         for i in range(0, num_elifs) {
             ctx_switch_block(ctx, current_elif_check)
 
-            let raw_elif_cond = lower_expr(ctx, s.elif_conditions[i])
+            let raw_elif_cond: Operand = lower_expr(ctx, s.elif_conditions[i])
             let elif_cond = Operand {
                 is_local: raw_elif_cond.is_local, local_id: raw_elif_cond.local_id,
                 const_kind: raw_elif_cond.const_kind, int_val: raw_elif_cond.int_val,
@@ -2191,7 +2191,7 @@ fn lower_while_stmt(ctx: LowerCtx, s: Stmt) {
 
     // Condition block
     ctx_switch_block(ctx, cond_bb)
-    let cond_op = lower_expr(ctx, s.while_cond[0])
+    let cond_op: Operand = lower_expr(ctx, s.while_cond[0])
     ctx_set_term(ctx, term_branch(cond_op, body_bb, exit_bb))
 
     // Body block
@@ -2283,8 +2283,8 @@ fn is_range_call(e: Expr) -> bool {
 
 fn lower_for_range(ctx: LowerCtx, s: Stmt, var_name: str, iterable: Expr) {
     // Extract start and end from range call or range expr
-    let mut start_op = op_int(0)
-    let mut end_op = op_int(0)
+    let mut start_op: Operand = op_int(0)
+    let mut end_op: Operand = op_int(0)
 
     if iterable.kind == EXPR_FN_CALL and len(iterable.args) >= 2 {
         start_op = lower_expr(ctx, iterable.args[0])
@@ -2366,7 +2366,7 @@ fn lower_for_range(ctx: LowerCtx, s: Stmt, var_name: str, iterable: Expr) {
 
 fn lower_for_iter(ctx: LowerCtx, s: Stmt, var_name: str, iterable: Expr) {
     // Lower the iterable
-    let arr_op = lower_expr(ctx, iterable)
+    let arr_op: Operand = lower_expr(ctx, iterable)
 
     // Alloc array, length, and index locals
     let arr_local = ctx_alloc_local(ctx, "_for_arr", mir_ty_simple(MIR_TY_ANY), false)
@@ -2445,7 +2445,7 @@ fn lower_spawn_stmt(ctx: LowerCtx, s: Stmt) {
         if callee.kind == EXPR_IDENT {
             let mut spawn_args: [Operand] = []
             for i in range(0, len(spawn_e.args)) {
-                let arg_op = lower_expr(ctx, spawn_e.args[i])
+                let arg_op: Operand = lower_expr(ctx, spawn_e.args[i])
                 push(spawn_args, arg_op)
             }
             ctx_emit(ctx, inst_spawn(callee.name, spawn_args))
@@ -2504,7 +2504,7 @@ fn lower_try_catch(ctx: LowerCtx, s: Stmt) {
 
 fn lower_throw_stmt(ctx: LowerCtx, s: Stmt) {
     if len(s.throw_expr) > 0 {
-        let msg_op = lower_expr(ctx, s.throw_expr[0])
+        let msg_op: Operand = lower_expr(ctx, s.throw_expr[0])
         let panic_args: [Operand] = [msg_op]
         ctx_emit(ctx, inst_assign(ctx_alloc_temp(ctx, mir_ty_void()), rv_call("kryos_panic", panic_args)))
     }
@@ -2551,18 +2551,18 @@ fn lower_decl(module: MirModule, d: Decl, tc: TypeChecker) {
 
 fn lower_function(module: MirModule, d: Decl, tc: TypeChecker) {
     // Determine return type
-    let mut ret_ty = mir_ty_void()
+    let mut ret_ty: MirType = mir_ty_void()
     if len(d.ret_type) > 0 {
         ret_ty = type_expr_to_mir(d.ret_type[0])
     }
 
     // Create MirFunction
-    let mut func = mir_func_new(d.name, ret_ty)
+    let mut func: MirFunction = mir_func_new(d.name, ret_ty)
 
     // Add parameters
     for i in range(0, len(d.params)) {
         let param = d.params[i]
-        let mut param_ty = mir_ty_simple(MIR_TY_ANY)
+        let mut param_ty: MirType = mir_ty_simple(MIR_TY_ANY)
         if len(param.ty) > 0 {
             param_ty = type_expr_to_mir(param.ty[0])
         }
@@ -2570,7 +2570,7 @@ fn lower_function(module: MirModule, d: Decl, tc: TypeChecker) {
     }
 
     // Create lowering context
-    let mut ctx = ctx_new(func, ret_ty, module.struct_defs, module.fn_sig_names, module.fn_sig_rets)
+    let mut ctx: LowerCtx = ctx_new(func, ret_ty, module.struct_defs, module.fn_sig_names, module.fn_sig_rets)
 
     // Register parameters in context
     for i in range(0, len(func.params)) {
@@ -2611,7 +2611,7 @@ fn lower_struct_def(module: MirModule, d: Decl) {
 
     for i in range(0, len(d.fields)) {
         push(fnames, d.fields[i].name)
-        let fty = type_expr_to_mir(d.fields[i].ty)
+        let fty: MirType = type_expr_to_mir(d.fields[i].ty)
         push(ftypes, fty)
     }
 
@@ -2667,22 +2667,22 @@ fn lower_impl(module: MirModule, d: Decl, tc: TypeChecker) {
         let mangled = target_name + "_" + method.name
 
         // Determine return type
-        let mut ret_ty = mir_ty_void()
+        let mut ret_ty: MirType = mir_ty_void()
         if len(method.ret_type) > 0 {
             ret_ty = type_expr_to_mir(method.ret_type[0])
         }
 
         // Create function
-        let mut func = mir_func_new(mangled, ret_ty)
+        let mut func: MirFunction = mir_func_new(mangled, ret_ty)
 
         // Add self parameter (the receiver)
-        let self_ty = mir_ty_struct(target_name, [], [])
+        let self_ty: MirType = mir_ty_struct(target_name, [], [])
         mir_func_add_param(func, "self", self_ty)
 
         // Add remaining parameters
         for j in range(0, len(method.params)) {
             let param = method.params[j]
-            let mut param_ty = mir_ty_simple(MIR_TY_ANY)
+            let mut param_ty: MirType = mir_ty_simple(MIR_TY_ANY)
             if len(param.ty) > 0 {
                 param_ty = type_expr_to_mir(param.ty[0])
             }
@@ -2690,7 +2690,7 @@ fn lower_impl(module: MirModule, d: Decl, tc: TypeChecker) {
         }
 
         // Create context and register params
-        let mut ctx = ctx_new(func, ret_ty, module.struct_defs, module.fn_sig_names, module.fn_sig_rets)
+        let mut ctx: LowerCtx = ctx_new(func, ret_ty, module.struct_defs, module.fn_sig_names, module.fn_sig_rets)
         for j in range(0, len(func.params)) {
             ctx_define_local(ctx, func.params[j].name, func.params[j].local_id)
         }
@@ -2729,16 +2729,16 @@ fn lower_extern(module: MirModule, d: Decl) {
     for i in range(0, len(d.extern_items)) {
         let item = d.extern_items[i]
         if item.kind == DECL_FUNCTION {
-            let mut ret_ty = mir_ty_void()
+            let mut ret_ty: MirType = mir_ty_void()
             if len(item.ret_type) > 0 {
                 ret_ty = type_expr_to_mir(item.ret_type[0])
             }
 
-            let mut func = mir_func_new(item.name, ret_ty)
+            let mut func: MirFunction = mir_func_new(item.name, ret_ty)
 
             for j in range(0, len(item.params)) {
                 let param = item.params[j]
-                let mut param_ty = mir_ty_simple(MIR_TY_ANY)
+                let mut param_ty: MirType = mir_ty_simple(MIR_TY_ANY)
                 if len(param.ty) > 0 {
                     param_ty = type_expr_to_mir(param.ty[0])
                 }
@@ -2761,7 +2761,7 @@ fn lower_extern(module: MirModule, d: Decl) {
 // ===================================================================
 
 fn lower_module(mod_ast: Module, tc: TypeChecker) -> MirModule {
-    let mut mir = mir_module_new()
+    let mut mir: MirModule = mir_module_new()
 
     // Pass 1: struct and enum definitions
     for i in range(0, len(mod_ast.declarations)) {
@@ -2782,7 +2782,7 @@ fn lower_module(mod_ast: Module, tc: TypeChecker) -> MirModule {
     for i in range(0, len(mod_ast.declarations)) {
         let d = mod_ast.declarations[i]
         if d.kind == DECL_FUNCTION and len(d.ret_type) > 0 {
-            let rty = type_expr_to_mir(d.ret_type[0])
+            let rty: MirType = type_expr_to_mir(d.ret_type[0])
             if rty.kind == MIR_TY_STRUCT {
                 push(mir.fn_sig_names, d.name)
                 push(mir.fn_sig_rets, rty)
@@ -2812,16 +2812,16 @@ fn lower_module(mod_ast: Module, tc: TypeChecker) -> MirModule {
 // ===================================================================
 
 fn lower_single_function(d: Decl, tc: TypeChecker) -> MirFunction {
-    let mut ret_ty = mir_ty_void()
+    let mut ret_ty: MirType = mir_ty_void()
     if len(d.ret_type) > 0 {
         ret_ty = type_expr_to_mir(d.ret_type[0])
     }
 
-    let mut func = mir_func_new(d.name, ret_ty)
+    let mut func: MirFunction = mir_func_new(d.name, ret_ty)
 
     for i in range(0, len(d.params)) {
         let param = d.params[i]
-        let mut param_ty = mir_ty_simple(MIR_TY_ANY)
+        let mut param_ty: MirType = mir_ty_simple(MIR_TY_ANY)
         if len(param.ty) > 0 {
             param_ty = type_expr_to_mir(param.ty[0])
         }
@@ -2831,7 +2831,7 @@ fn lower_single_function(d: Decl, tc: TypeChecker) -> MirFunction {
     let empty_sd: [MirStructDef] = []
     let empty_sig_names: [str] = []
     let empty_sig_rets: [MirType] = []
-    let mut ctx = ctx_new(func, ret_ty, empty_sd, empty_sig_names, empty_sig_rets)
+    let mut ctx: LowerCtx = ctx_new(func, ret_ty, empty_sd, empty_sig_names, empty_sig_rets)
 
     for i in range(0, len(func.params)) {
         ctx_define_local(ctx, func.params[i].name, func.params[i].local_id)
