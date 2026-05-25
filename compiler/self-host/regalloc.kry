@@ -811,14 +811,12 @@ fn ra_compute_call_positions(func: MirFunction) -> [i32] {
 fn rv_emits_call(k: i32) -> bool {
     if k == RV_CALL { return true }
     if k == RV_CALL_INDIRECT { return true }
+    // Heap-allocating constructors: emit kryos_alloc / kryos_array_new /
+    // kryos_map_new / kryos_string_concat, all of which clobber caller-saved.
     if k == RV_ARRAY { return true }
     if k == RV_STRUCT { return true }
     if k == RV_MAP { return true }
     if k == RV_STRING_CONCAT { return true }
-    if k == RV_CONST_STRING { return true }
-    if k == RV_INDEX { return true }
-    if k == RV_RANGE { return true }
-    if k == RV_TUPLE { return true }
     if k == RV_ENUM_VARIANT { return true }
     if k == RV_CLOSURE { return true }
     return false
