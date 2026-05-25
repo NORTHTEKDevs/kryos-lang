@@ -21,9 +21,14 @@ use types
 // Lowering context
 //
 // Tracks state while lowering a single function body.
-// ===================================================================
-
-@copy
+//
+// NOT @copy: as an @copy value type, every `let mut ctx = ctx_new(...)`
+// (once per function, ~1300x) deep-cloned all array fields, including the
+// fn_sig_names/fn_sig_rets signature tables (one entry per function in the
+// module). That is O(functions^2) MirType deep-clones -> multi-GB blowup on
+// the full self-host source. As a reference type the fields are shared and
+// ctx mutation already propagates through the shared MirFunction, so nothing
+// relied on value-copy semantics. (Same fix as the Lexer struct.)
 struct LowerCtx {
     func: MirFunction,
     current_block: i32,
@@ -34,14 +39,20 @@ struct LowerCtx {
     fn_ret_ty: MirType,
     lambda_counter: i32,
     lambda_funcs: [MirFunction],
-    struct_defs: [MirStructDef]
+    struct_defs: [MirStructDef],
+    // Signature table for user-function return-type resolution. Holds ONLY
+    // struct-returning functions (~dozens), so it is as small as struct_defs
+    // and cheap to carry/clone -- unlike the full per-function table (~1300),
+    // which deep-cloned into an O(n^2) memory blowup.
+    fn_sig_names: [str],
+    fn_sig_rets: [MirType]
 }
 
 // ===================================================================
 // Context constructor
 // ===================================================================
 
-fn ctx_new(func: MirFunction, ret_ty: MirType, struct_defs: [MirStructDef]) -> LowerCtx {
+fn ctx_new(func: MirFunction, ret_ty: MirType, struct_defs: [MirStructDef], fn_sig_names: [str], fn_sig_rets: [MirType]) -> LowerCtx {
     let empty_names: [str] = []
     let empty_ids: [i32] = []
     let empty_fns: [MirFunction] = []
@@ -55,8 +66,25 @@ fn ctx_new(func: MirFunction, ret_ty: MirType, struct_defs: [MirStructDef]) -> L
         fn_ret_ty: ret_ty,
         lambda_counter: 0,
         lambda_funcs: empty_fns,
-        struct_defs: struct_defs
+        struct_defs: struct_defs,
+        fn_sig_names: fn_sig_names,
+        fn_sig_rets: fn_sig_rets
     }
+}
+
+// Return type of a user-defined function by name (ANY if unknown). Lets
+// `let x = user_fn(...)` carry the callee's struct return type onto x so
+// field access resolves the correct index. The table holds only
+// struct-returning functions, so it is small and cheap to scan.
+fn ctx_fn_ret_type(ctx: LowerCtx, fn_name: str) -> MirType {
+    let mut i = 0
+    while i < len(ctx.fn_sig_names) {
+        if ctx.fn_sig_names[i] == fn_name {
+            return ctx.fn_sig_rets[i]
+        }
+        i = i + 1
+    }
+    return mir_ty_simple(MIR_TY_ANY)
 }
 
 // ===================================================================
@@ -1030,6 +1058,12 @@ fn lower_fn_call(ctx: LowerCtx, e: Expr) -> Operand {
         // Map to runtime name
         let runtime_name = builtin_runtime_name(fn_name)
 
+        // NOTE: typing user-call results as their (struct) return type here
+        // exposes a downstream lowering crash on the full self-host source
+        // (works for isolated cases, crashes on some construct at scale --
+        // not yet root-caused). For now leave user-call results as ANY and
+        // rely on explicit annotations (`let mut lex: Lexer = lexer_new(...)`)
+        // at the call-init sites whose fields are accessed.
         let result_ty = resolve_call_result_type(fn_name, e.args)
         let t = ctx_alloc_temp(ctx, result_ty)
         ctx_emit(ctx, inst_assign(t, rv_call(runtime_name, call_args)))
@@ -1625,7 +1659,7 @@ fn lower_lambda(ctx: LowerCtx, e: Expr) -> Operand {
     }
 
     // Create a sub-context for the lambda body
-    let mut lambda_ctx = ctx_new(lambda_func, ret_ty, ctx.struct_defs)
+    let mut lambda_ctx = ctx_new(lambda_func, ret_ty, ctx.struct_defs, ctx.fn_sig_names, ctx.fn_sig_rets)
 
     // Register params in lambda context
     for i in range(0, len(lambda_func.params)) {
@@ -1896,6 +1930,18 @@ fn lower_let_stmt(ctx: LowerCtx, s: Stmt) {
             if val.is_local {
                 ctx_define_local(ctx, s.name, val.local_id)
                 return
+            }
+        }
+        // resolve_expr_type is purely syntactic and returns ANY for
+        // identifiers, calls, and field access. When there is no explicit
+        // annotation, prefer the lowered operand's actual type so that a
+        // struct-typed RHS (e.g. `let mut l = lex` where lex: Lexer, or
+        // `let mut lex = lexer_new(src)`) carries its struct name onto the
+        // new local -- without it, `l.field` resolves to field index 0.
+        if len(s.let_type) == 0 {
+            let vty = ctx_operand_ty(ctx, val)
+            if vty.kind != MIR_TY_ANY {
+                local_ty = vty
             }
         }
         let local_id = ctx_alloc_local(ctx, s.name, local_ty, s.mutable)
@@ -2524,7 +2570,7 @@ fn lower_function(module: MirModule, d: Decl, tc: TypeChecker) {
     }
 
     // Create lowering context
-    let mut ctx = ctx_new(func, ret_ty, module.struct_defs)
+    let mut ctx = ctx_new(func, ret_ty, module.struct_defs, module.fn_sig_names, module.fn_sig_rets)
 
     // Register parameters in context
     for i in range(0, len(func.params)) {
@@ -2644,7 +2690,7 @@ fn lower_impl(module: MirModule, d: Decl, tc: TypeChecker) {
         }
 
         // Create context and register params
-        let mut ctx = ctx_new(func, ret_ty, module.struct_defs)
+        let mut ctx = ctx_new(func, ret_ty, module.struct_defs, module.fn_sig_names, module.fn_sig_rets)
         for j in range(0, len(func.params)) {
             ctx_define_local(ctx, func.params[j].name, func.params[j].local_id)
         }
@@ -2728,6 +2774,22 @@ fn lower_module(mod_ast: Module, tc: TypeChecker) -> MirModule {
         }
     }
 
+    // Pass 1.5: collect return-type signatures for STRUCT-returning functions
+    // only, up front, so `let x = f(...)` resolves f's struct return type
+    // (and thus field-access indices) even when f is declared later. Limited
+    // to struct returns to keep this table tiny -- collecting every function
+    // makes it per-source-size and its repeated cloning an O(n^2) blowup.
+    for i in range(0, len(mod_ast.declarations)) {
+        let d = mod_ast.declarations[i]
+        if d.kind == DECL_FUNCTION and len(d.ret_type) > 0 {
+            let rty = type_expr_to_mir(d.ret_type[0])
+            if rty.kind == MIR_TY_STRUCT {
+                push(mir.fn_sig_names, d.name)
+                push(mir.fn_sig_rets, rty)
+            }
+        }
+    }
+
     // Pass 2: functions, impl blocks, and extern blocks
     for i in range(0, len(mod_ast.declarations)) {
         let d = mod_ast.declarations[i]
@@ -2767,7 +2829,9 @@ fn lower_single_function(d: Decl, tc: TypeChecker) -> MirFunction {
     }
 
     let empty_sd: [MirStructDef] = []
-    let mut ctx = ctx_new(func, ret_ty, empty_sd)
+    let empty_sig_names: [str] = []
+    let empty_sig_rets: [MirType] = []
+    let mut ctx = ctx_new(func, ret_ty, empty_sd, empty_sig_names, empty_sig_rets)
 
     for i in range(0, len(func.params)) {
         ctx_define_local(ctx, func.params[i].name, func.params[i].local_id)

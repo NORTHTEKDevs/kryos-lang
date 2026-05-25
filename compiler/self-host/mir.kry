@@ -357,7 +357,9 @@ struct MirEnumDef {
 struct MirModule {
     functions: [MirFunction],
     struct_defs: [MirStructDef],
-    enum_defs: [MirEnumDef]
+    enum_defs: [MirEnumDef],
+    fn_sig_names: [str],
+    fn_sig_rets: [MirType]
 }
 
 // ===================================================================
@@ -972,10 +974,14 @@ fn mir_module_new() -> MirModule {
     let empty_funcs: [MirFunction] = []
     let empty_structs: [MirStructDef] = []
     let empty_enums: [MirEnumDef] = []
+    let empty_sig_names: [str] = []
+    let empty_sig_rets: [MirType] = []
     return MirModule {
         functions: empty_funcs,
         struct_defs: empty_structs,
-        enum_defs: empty_enums
+        enum_defs: empty_enums,
+        fn_sig_names: empty_sig_names,
+        fn_sig_rets: empty_sig_rets
     }
 }
 
