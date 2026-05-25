@@ -29,11 +29,44 @@ individual function (is_alpha, is_alnum, scan_identifier loop, field offsets) is
 correct in disasm and in small/medium repros; only the high-pressure aggregate
 fails.
 
-NEEDS A DEBUGGER. Reading correct-looking disasm of a register-allocation bug
-without single-stepping is a dead end (tried 6+ hypotheses, all wrong). Next
-session: install windbg/cdb (or x64dbg) and single-step emit_object's tokenize
-call to see which register/slot is clobbered, OR audit regalloc.kry's linear-scan
-interval/liveness handling for functions with many simultaneously-live locals.
+PROVEN ROOT (machine-code diff of `tokenize` between a count=11 binary and the
+count=32 stage-2, same lexer.kry source):
+```
+  count=11 (correct)            count=32 (broken)
+  mov rax,[r12+8]   ; lex.pos   mov rax,[r12]     ; offset 0 (= lex.src)
+  mov rax,[r12+10h] ; lex.tokens mov rax,[r12]    ; offset 0
+```
+tokenize's `return lex.tokens` / EOF-emit `lex.pos` resolve to field index 0 in
+the full binary but to the correct 8/16 in a near-identical binary (= full source
++ one extra fn). So `lex`'s LOCAL TYPE comes out ANY (-> field index 0) for the
+SAME annotated line `let mut lex: Lexer = lexer_new(src)` depending on surrounding
+code. fix-#1 (operand type) keeps PARAM-sourced locals correct (scan_identifier's
+`l.pos` IS [rbx+8] in the same broken binary); only tokenize's annotation/call-
+sourced `lex` degrades to index 0.
+
+DETERMINISM REFINED (3 re-emits of the full obj): the .obj HASH differs each time
+(regalloc/temp-order non-determinism -- the known "distinct" gap) BUT tokenize's
+`lex.pos` offset is CONSISTENTLY 0. So the field-offset bug is DETERMINISTIC for a
+given source, and FLIPS to correct (offset 8) only when source content changes
+(adding `kry_bisect_main` -- a fn that calls tokenize -- to the full source makes
+tokenize's OWN field resolution correct). I.e. it is layout/function-set-dependent
+deterministic codegen, NOT heap-random. Adding code that references tokenize/Lexer
+changes tokenize's compiled field offsets. Smells like a global table (struct_defs
+ordering, a type/temp index, or fn-count-sized state) whose state when tokenize is
+lowered depends on the whole program. Two SEPARATE issues remain: (a) this
+deterministic field-offset degradation, (b) the obj-hash non-determinism (blocks
+stage-2==stage-3 even once (a) is fixed).
+
+NEEDS A DEBUGGER or a memory-safety audit. No cdb/windbg/x64dbg on this host
+(checked). Next session options, in order:
+1. Make stage-1's codegen DETERMINISTIC first (self-host/determinism.sh +
+   KRYOS_RA_DUMP). Non-determinism is the umbrella bug; fix it and the
+   field-offset degradation + stage-2!=stage-3 likely both resolve.
+2. Audit @copy-struct handling: Stmt.let_type / Rvalue.field_idx may be corrupted
+   by share-on-clone aliasing (cf. the step-87 operand-aliasing fix) -- the
+   field_idx integer or the let_type array being clobbered fits the symptom.
+3. Install a debugger and single-step lower_let_stmt on tokenize in the full
+   source to watch s.let_type / local_ty for `lex`.
 
 BLOCKED ON TOOLING: no working debugger on this host (cdb/gdb absent; lldb fails;
 the fault tracer + watchdog only catch the SYMPTOM site, not the corruption
