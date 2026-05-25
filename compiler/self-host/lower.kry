@@ -2052,9 +2052,14 @@ fn lower_assign_stmt(ctx: LowerCtx, s: Stmt) {
         let val: Operand = op_local(val_temp)
 
         if s.assign_op == ASSIGN_EQ {
-            // Emit field store as a runtime call
-            let store_args: [Operand] = [obj_op, op_str(target.name), val]
-            ctx_emit(ctx, inst_assign(ctx_alloc_temp(ctx, mir_ty_void()), rv_call("kryos_field_set", store_args)))
+            // Direct field store at the compile-time offset (field_idx*8),
+            // symmetric with rv_field reads. kryos_field_set was a no-op stub
+            // (set-by-name needs RTTI), which silently dropped every field
+            // mutation in stage-2 (e.g. `pp.no_struct_lit = true`).
+            let fidx = ctx_field_index_of(ctx, obj_op, target.name)
+            let ptr_temp = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
+            ctx_emit(ctx, inst_assign(ptr_temp, rv_binop(MIR_ADD, obj_op, op_int(fidx * 8))))
+            ctx_emit(ctx, inst_store_deref(op_local(ptr_temp), val))
         } else {
             // Compound field assignment: read, compute, write back
             let old_val = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
@@ -2064,8 +2069,9 @@ fn lower_assign_stmt(ctx: LowerCtx, s: Stmt) {
             let mir_op = compound_assign_to_binop(s.assign_op)
             let new_val = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
             ctx_emit(ctx, inst_assign(new_val, rv_binop(mir_op, op_local(old_val), val_rhs)))
-            let store_args: [Operand] = [obj_op, op_str(target.name), op_local(new_val)]
-            ctx_emit(ctx, inst_assign(ctx_alloc_temp(ctx, mir_ty_void()), rv_call("kryos_field_set", store_args)))
+            let ptr_temp2 = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
+            ctx_emit(ctx, inst_assign(ptr_temp2, rv_binop(MIR_ADD, obj_op, op_int(cfidx * 8))))
+            ctx_emit(ctx, inst_store_deref(op_local(ptr_temp2), op_local(new_val)))
         }
         return
     }

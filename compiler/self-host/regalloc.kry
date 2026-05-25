@@ -1043,7 +1043,14 @@ fn ra_linear_scan_with_calls(intervals: [LiveInterval], call_positions: [i32]) -
         // Try to allocate a register
         let mut reg: i32 = REG_NONE
         if crosses_call {
-            reg = reg_pool_alloc_callee_saved(pool)
+            // Conservative correctness: force call-crossing intervals to spill
+            // rather than trusting callee-saved preservation. The linear-scan
+            // does not fully model call-clobber (see ra_allocatable_regs), and
+            // values kept in callee-saved regs across calls were observed to be
+            // clobbered at scale (parse_expr_bp `pp` Heisenbug). Spilling every
+            // call-crossing value is slower but always correct; revisit once the
+            // call-clobber liveness is modelled precisely.
+            reg = REG_NONE
         } else {
             reg = reg_pool_alloc(pool)
         }
