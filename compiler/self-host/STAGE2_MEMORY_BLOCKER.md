@@ -1,5 +1,55 @@
 # Stage-2 Bootstrap — progress log
 
+## SESSION 3 (2026-05-24 cont.): HANG ROOT-CAUSED + FIXED; field-access bug fixed
+
+The stage-2 "hang in tokenize" (Session 2's remaining gate) is SOLVED. Two real
+self-host bugs found and fixed; stage-2 now tokenizes correctly. Commits 3919065
+(self-host) + 86eed3e (diagnostics) + b0c8622 (the hang fix).
+
+### Tooling built (commit 86eed3e, all env-gated, no-op by default)
+- `KRYOS_FAULT_TRACE=1` — vectored exception handler prints faulting RVA.
+- `KRYOS_WATCHDOG=1 [KRYOS_WATCHDOG_S=N]` — suspends the main thread after N s and
+  reads RIP via GetThreadContext. THIS is what cracked the hang: it catches a
+  CPU-bound infinite loop that allocates nothing (alloc/len/etc. counters never
+  fire). Map RVA->symbol with `self-host/linkmap_stage2.bat` (/MAP).
+- Differential harness: compile a tiny repro with stage-1 (`obj` + link_stage2.bat)
+  and run it; compare to `kryos.exe run`. Reliable, unlike in-source markers.
+
+### Bug A — is_alpha infinite loop = the real "blocker #2" (FIXED, b0c8622)
+Watchdog pinned the hang to `is_alpha` (RVA mapped via /MAP). Disasm showed a
+self-jump loop. Root cause in `lower.kry`: `lower_short_circuit_and/or` checked
+`block_has_terminator(right_bb)` instead of the CURRENT block. When the right
+operand is itself an and/or (nested `(A and B) or (C and D) or E`, exactly
+is_alpha), lowering it switches blocks; right_bb is terminated by the nested
+expr while the right expr's own merge block is left open -> codegen falls through
+into the false-path block -> infinite loop. Fix: check `ctx.current_block`
+(the idiom used everywhere else). Step-86's "regalloc/xor r12" theory was WRONG.
+
+### Bug B — struct field access on let-bound LOCALS read field index 0 (FIXED, 3919065)
+`let x = <expr>` typed x ANY unless RHS was a struct literal (resolve_expr_type is
+syntactic). So `x.field` resolved to index 0 (read field-0 bytes = a pointer where
+an int belonged -> substr out-of-bounds in scan_identifier). Fix: lower_let_stmt
+takes the lowered operand's type (`ctx_operand_ty`). Handles identifier-init
+(`let mut l = lex`). LowerCtx made non-@copy (per-function deep-clone was O(n^2)).
+
+### REMAINING TAIL (next session)
+1. **General user-call return-type inference is DISABLED** (lower_fn_call). The
+   fn-signature scaffolding exists (MirModule/LowerCtx fn_sig_*, pass 1.5,
+   ctx_fn_ret_type) but typing call results as their struct type triggers an
+   un-root-caused downstream lowering CRASH on the full source (works for
+   isolated `let p = mk()` and reassign-in-loop repros; crashes on some
+   construct at scale). MUST bisect which construct. Memory note: the table
+   MUST stay struct-returning-only and MUST NOT be bound to a local
+   (`let names = ctx.fn_sig_names` deep-clones; index directly) or it's O(n^2).
+2. Meanwhile, **annotate call-init sites**: `let mut lex: Lexer = lexer_new(src)`
+   done in tokenize. Parser/typechecker/lower have many `let p = parser_new(...)`
+   etc. that will read field index 0 until annotated or fix #1's general form lands.
+   NOTE the immutable-alias shortcut in lower_let_stmt ignores annotations — make
+   `let x = call()` sites `let mut` or fix the alias path to honor `let_type`.
+3. Current stage-2 status: `obj hi.kry` prints `Tokens: 32` then segfaults in the
+   PARSER (next call-init field-access). `ast` crashes in dump_ast (debug-only).
+4. After the lexer+parser path is clean, drive bootstrap.sh to stage-2==stage-3.
+
 ## SESSION 2 (2026-05-24 cont., steps 84-88): memory solved + 5 codegen bugs fixed
 
 The full-source obj now builds (~10 GB) and stage-2 links + runs (banner, file
