@@ -1285,11 +1285,18 @@ fn parse_expr(p: Parser) -> ParseExprResult {
 
 // Used in if/while/for/match conditions where { starts a block, not a struct literal.
 fn parse_expr_no_struct_lit(p: Parser) -> ParseExprResult {
+    // Save the caller's flag BEFORE mutating, then restore from the saved
+    // value (the idiom the other save/restore sites already use). Reading
+    // `p.no_struct_lit` AFTER `pp.no_struct_lit = true` was wrong: Parser is
+    // @copy but self-compiled stages alias `let mut pp = p`, so the mutation
+    // corrupts p too, and the restore read back `true` -> no_struct_lit leaked
+    // -> every later `Name { .. }` parsed as a map instead of a struct literal.
+    let saved_nsl = p.no_struct_lit
     let mut pp = p
     pp.no_struct_lit = true
     let result: ParseExprResult = parse_expr_bp(pp, 0)
     let mut rp = result.p
-    rp.no_struct_lit = p.no_struct_lit
+    rp.no_struct_lit = saved_nsl
     return ParseExprResult { p: rp, expr: result.expr }
 }
 
