@@ -2867,6 +2867,17 @@ fn lower_module(mod_ast: Module, tc: TypeChecker) -> MirModule {
                     if gve.kind == EXPR_INT_LIT {
                         push(mir.global_names, gst.name)
                         push(mir.global_values, gve.int_val)
+                    } elif gve.kind == EXPR_UNARY_OP and gve.op == UNOP_NEG and len(gve.left) > 0 {
+                        // Negative int global, e.g. `let REG_NONE = -1`. Parsed
+                        // as unary-neg of an int literal, so the EXPR_INT_LIT arm
+                        // above misses it -> the name fell back to name-as-string,
+                        // resolving REG_NONE/REG_SPILLED to garbage pointers and
+                        // corrupting the register allocator in self-compiled stages.
+                        let gneg: Expr = gve.left[0]
+                        if gneg.kind == EXPR_INT_LIT {
+                            push(mir.global_names, gst.name)
+                            push(mir.global_values, 0 - gneg.int_val)
+                        }
                     } elif gve.kind == EXPR_FN_CALL {
                         if len(gve.left) > 0 {
                             let gcallee: Expr = gve.left[0]

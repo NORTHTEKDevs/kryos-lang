@@ -819,6 +819,11 @@ fn rv_emits_call(k: i32) -> bool {
     if k == RV_STRING_CONCAT { return true }
     if k == RV_ENUM_VARIANT { return true }
     if k == RV_CLOSURE { return true }
+    // A string literal materialises via a kryos_string_new CALL (see
+    // cg_load_operand / RV_CONST_STRING codegen). Values live across it in
+    // caller-saved regs would be clobbered. Backend code is full of string
+    // literals, so omitting this miscompiled stage-2's emit functions.
+    if k == RV_CONST_STRING { return true }
     return false
 }
 

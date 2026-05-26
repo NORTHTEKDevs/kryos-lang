@@ -214,11 +214,16 @@ fn x86_mov_reg_imm64(buf: i64, dst: i32, val: i64) {
 
 // MOV r32, imm32 -- [REX.B if R8-R15] + (0xB8 + rd) + imm32
 fn x86_mov_reg_imm32(buf: i64, dst: i32, val: i32) {
-    if x86_reg_needs_rex(dst) {
-        let rex = x86_rex(0, 0, 0, 1)
-        buf_write_byte(buf, rex)
-    }
-    buf_write_byte(buf, 0xB8 + x86_reg_lo3(dst))
+    // MOV r64, imm32 (sign-extended) -- REX.W + C7 /0 id. The old `mov r32,
+    // imm32` (B8+r) ZERO-extends to 64-bit, so a negative constant like -1
+    // loaded as 0x00000000FFFFFFFF (4294967295). Sign-extending gives the
+    // correct i64 for every i32 value; positive values are unaffected. The
+    // zero-extension corrupted REG_NONE(-1)/REG_SPILLED(-2) and every other
+    // negative constant in self-compiled stages.
+    let rex = x86_rex(1, 0, 0, x86_reg_rex_bit(dst))
+    buf_write_byte(buf, rex)
+    buf_write_byte(buf, 0xC7)
+    buf_write_byte(buf, x86_modrm(3, 0, x86_reg_lo3(dst)))
     buf_write_i32_le(buf, val)
 }
 
