@@ -328,6 +328,12 @@ fn ty_compatible(a: TypeInfo, b: TypeInfo) -> bool {
     // Integer can promote to float
     if ty_is_integer(a) and ty_is_float(b) { return true }
     if ty_is_float(a) and ty_is_integer(b) { return true }
+    // str is an 8-byte pointer at the ABI level and is interchangeable with
+    // i64 in this runtime: many buf_*/str_* helpers declare a string param as
+    // i64 and are called with str (stage-0/Cranelift accepts this). Treat
+    // str <-> integer as compatible so the self-host typechecker agrees.
+    if a.kind == TY_STR and ty_is_integer(b) { return true }
+    if ty_is_integer(a) and b.kind == TY_STR { return true }
     // Array compatibility: recurse into element types so [i32] and [i64]
     // are considered compatible (matches the integer-widening rule above).
     // Without this, `let a: [i32] = [1, 2, 3]` fails because the literal's
@@ -1356,11 +1362,21 @@ fn tc_check_if_expr(tc: TypeChecker, e: Expr) -> TCExprResult {
             tc2 = tc_error(tc2, "if condition must be bool, got " + ty_name(cr.ty) + " at " + to_string(e.start))
         }
     }
-    // Check then block
+    // Check then block. As an EXPRESSION, an if's value is the last
+    // statement of the then-block when it is an expression statement
+    // (mirrors lower_if_expr). Type the if-expr as that, not void, so
+    // `let x = if c { a } else { b }` typechecks.
     let mut then_ty: TypeInfo = ty_void()
     tc2 = tc_push_scope(tc2)
     for i in range(0, len(e.then_block)) {
-        tc2 = tc_check_stmt(tc2, e.then_block[i])
+        let st: Stmt = e.then_block[i]
+        if i == len(e.then_block) - 1 and st.kind == STMT_EXPR and len(st.expr) > 0 {
+            let r: TCExprResult = tc_check_expr(tc2, st.expr[0])
+            tc2 = r.tc
+            then_ty = r.ty
+        } else {
+            tc2 = tc_check_stmt(tc2, st)
+        }
     }
     tc2 = tc_pop_scope(tc2)
     // Check else block
@@ -2253,6 +2269,31 @@ fn tc_check_module(tc: TypeChecker, module: Module) -> TypeChecker {
     // Pass 1: register all types, structs, enums, function signatures
     for i in range(0, len(module.declarations)) {
         tc2 = tc_register_decl(tc2, module.declarations[i])
+    }
+
+    // Pass 1.5: register top-level `let NAME = <const>` constants as globals.
+    // The parser wraps top-level statements in a `<top-level>` pseudo-function,
+    // so without this they are only locals of that function and references from
+    // other functions report "undefined variable" (e.g. LREL_PC32, LSEC_TEXT).
+    for i in range(0, len(module.declarations)) {
+        let d2: Decl = module.declarations[i]
+        if d2.kind == DECL_FUNCTION and d2.name == "<top-level>" {
+            for j in range(0, len(d2.fn_body)) {
+                let gst: Stmt = d2.fn_body[j]
+                if gst.kind == STMT_LET and len(gst.let_value) > 0 {
+                    let gv: Expr = gst.let_value[0]
+                    let mut gt: TypeInfo = ty_any()
+                    if gv.kind == EXPR_INT_LIT {
+                        gt = ty_i64()
+                    } elif gv.kind == EXPR_UNARY_OP {
+                        gt = ty_i64()
+                    } elif gv.kind == EXPR_STRING_LIT {
+                        gt = ty_str()
+                    }
+                    tc2 = tc_define(tc2, gst.name, gt, false)
+                }
+            }
+        }
     }
 
     // Pass 2: type-check all function bodies. Skipped under KRYOS_SKIP_TYPES:
