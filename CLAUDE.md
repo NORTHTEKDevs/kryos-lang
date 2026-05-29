@@ -303,7 +303,7 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `
 3. **Both `elif` and `else if` work** (`else if` is accepted as an alias). The self-host source uses `elif` by convention.
 4. **No `null`.** Use `Option<T>` from `std::option`.
 5. **Tuple destructuring `let (a, b) = ...` works on both backends** (`kryos run` Cranelift JIT and `kryos build --release` LLVM). The earlier Cranelift miscompile (returned 0) was fixed by inferring the tuple element types in MIR lowering.
-6. **Array indexing is `[i]`, but indexes are `i64` only.** Cast `usize`-ish values explicitly if you have them.
+6. **Array indexing `arr[i]` accepts any integer index** (i8..i64, u8..u64) on the native backends — an `i32` index works without an explicit `as i64` cast (the type checker accepts it and both Cranelift and LLVM sign-extend). The experimental `--backend wasm` (v0.1) still assumes i64; use i64 indices there.
 7. **`file_write` doesn't create parent directories.** Call `create_dir(parent)` first.
 8. **Top-level `let mut x = some_call()`** is allowed for pure builtins (`env_get`, `args`) but not for arbitrary user functions — move that into `main`.
 9. **Glob imports `use std::os::*` work** — they import all public symbols of the module (equivalent to a bare `use std::os`).

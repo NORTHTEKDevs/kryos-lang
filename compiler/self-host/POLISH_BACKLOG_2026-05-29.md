@@ -79,7 +79,12 @@ the only one left -- perf-only, non-blocking, needs a cdb runtime trace.
   the resolver already imports-all when items is empty. No AST/resolver change needed.
 - [DONE 2026-05-29 s8] file_write now creates parent dirs (create_dir_all in
   kryos-rt/builtins.rs kryos_builtin_file_write). Verified AOT: nested path -> rc=0.
-- Array index restricted to i64 (explicit casts needed). S/M.
+- [DONE-NATIVE 2026-05-29 s8] Array index with any int already works on Cranelift+LLVM
+  (typechecker is_integer() accepts it; both backends sign-extend). Verified arr[i32]=20
+  on JIT+AOT. CLAUDE.md gotcha #6 corrected. WASM v0.1 backend has type-coercion gaps
+  (i32-index I32WrapI64 misuse AND i64-const->i32-local store) -> DEFERRED to a future
+  WASM-hardening pass; WASM can't compile real programs yet (no to_string). Not worth
+  fixing one symptom of an experimental backend now.
 
 ### Cleanup (low value, identical-MIR)
 - ~37 redundant `let mut X: Struct = user_fn(...)` annotations now inferable.
