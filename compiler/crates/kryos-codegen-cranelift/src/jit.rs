@@ -1184,6 +1184,56 @@ impl JitCompiler {
         jit_builder.symbol("kryos_string_to_upper", kryos_rt::string::kryos_string_to_upper as *const u8);
         jit_builder.symbol("kryos_string_trim", kryos_rt::string::kryos_string_trim as *const u8);
 
+        // Stdlib-native: FFI (dlopen/dlsym/dlcall*, ptr interop, raw read/write).
+        // These extern "C" symbols are implemented in kryos-stdlib-native::ffi and
+        // statically linked on the AOT path, but the JIT must register the function
+        // pointers itself or calls from `kryos run` fail to resolve at link time.
+        use kryos_stdlib_native::ffi as kffi;
+        jit_builder.symbol("kryos_ffi_dlopen", kffi::kryos_ffi_dlopen as *const u8);
+        jit_builder.symbol("kryos_ffi_dlsym", kffi::kryos_ffi_dlsym as *const u8);
+        jit_builder.symbol("kryos_ffi_dlclose", kffi::kryos_ffi_dlclose as *const u8);
+        jit_builder.symbol("kryos_ffi_dlcall0", kffi::kryos_ffi_dlcall0 as *const u8);
+        jit_builder.symbol("kryos_ffi_dlcall1", kffi::kryos_ffi_dlcall1 as *const u8);
+        jit_builder.symbol("kryos_ffi_dlcall2", kffi::kryos_ffi_dlcall2 as *const u8);
+        jit_builder.symbol("kryos_ffi_dlcall3", kffi::kryos_ffi_dlcall3 as *const u8);
+        jit_builder.symbol("kryos_ffi_dlcall4", kffi::kryos_ffi_dlcall4 as *const u8);
+        jit_builder.symbol("kryos_ffi_dlcall5", kffi::kryos_ffi_dlcall5 as *const u8);
+        jit_builder.symbol("kryos_ffi_dlcall6", kffi::kryos_ffi_dlcall6 as *const u8);
+        jit_builder.symbol("kryos_ffi_dlcall7", kffi::kryos_ffi_dlcall7 as *const u8);
+        jit_builder.symbol("kryos_ffi_dlcall8", kffi::kryos_ffi_dlcall8 as *const u8);
+        jit_builder.symbol("kryos_ffi_dlcallv0", kffi::kryos_ffi_dlcallv0 as *const u8);
+        jit_builder.symbol("kryos_ffi_dlcallv1", kffi::kryos_ffi_dlcallv1 as *const u8);
+        jit_builder.symbol("kryos_ffi_dlcallv2", kffi::kryos_ffi_dlcallv2 as *const u8);
+        jit_builder.symbol("kryos_ffi_dlcallv3", kffi::kryos_ffi_dlcallv3 as *const u8);
+        jit_builder.symbol("kryos_ffi_dlcallv4", kffi::kryos_ffi_dlcallv4 as *const u8);
+        jit_builder.symbol("kryos_ffi_dlcallv5", kffi::kryos_ffi_dlcallv5 as *const u8);
+        jit_builder.symbol("kryos_ffi_dlcallv6", kffi::kryos_ffi_dlcallv6 as *const u8);
+        jit_builder.symbol("kryos_ffi_dlcallv7", kffi::kryos_ffi_dlcallv7 as *const u8);
+        jit_builder.symbol("kryos_ffi_dlcallv_4f", kffi::kryos_ffi_dlcallv_4f as *const u8);
+        jit_builder.symbol("kryos_ffi_dlcallv_4f32", kffi::kryos_ffi_dlcallv_4f32 as *const u8);
+        jit_builder.symbol("kryos_ffi_dlcallv_3f32", kffi::kryos_ffi_dlcallv_3f32 as *const u8);
+        jit_builder.symbol("kryos_ffi_cstr", kffi::kryos_ffi_cstr as *const u8);
+        jit_builder.symbol("kryos_ffi_strlen", kffi::kryos_ffi_strlen as *const u8);
+        jit_builder.symbol("kryos_ffi_string_from_ptr", kffi::kryos_ffi_string_from_ptr as *const u8);
+        jit_builder.symbol("kryos_ffi_malloc", kffi::kryos_ffi_malloc as *const u8);
+        jit_builder.symbol("kryos_ffi_free", kffi::kryos_ffi_free as *const u8);
+        jit_builder.symbol("kryos_ffi_read_i8", kffi::kryos_ffi_read_i8 as *const u8);
+        jit_builder.symbol("kryos_ffi_read_i16", kffi::kryos_ffi_read_i16 as *const u8);
+        jit_builder.symbol("kryos_ffi_read_i32", kffi::kryos_ffi_read_i32 as *const u8);
+        jit_builder.symbol("kryos_ffi_read_i64", kffi::kryos_ffi_read_i64 as *const u8);
+        jit_builder.symbol("kryos_ffi_read_f32", kffi::kryos_ffi_read_f32 as *const u8);
+        jit_builder.symbol("kryos_ffi_read_f64", kffi::kryos_ffi_read_f64 as *const u8);
+        jit_builder.symbol("kryos_ffi_read_f32_bits", kffi::kryos_ffi_read_f32_bits as *const u8);
+        jit_builder.symbol("kryos_ffi_read_f64_bits", kffi::kryos_ffi_read_f64_bits as *const u8);
+        jit_builder.symbol("kryos_ffi_write_i8", kffi::kryos_ffi_write_i8 as *const u8);
+        jit_builder.symbol("kryos_ffi_write_i16", kffi::kryos_ffi_write_i16 as *const u8);
+        jit_builder.symbol("kryos_ffi_write_i32", kffi::kryos_ffi_write_i32 as *const u8);
+        jit_builder.symbol("kryos_ffi_write_i64", kffi::kryos_ffi_write_i64 as *const u8);
+        jit_builder.symbol("kryos_ffi_write_f32", kffi::kryos_ffi_write_f32 as *const u8);
+        jit_builder.symbol("kryos_ffi_write_f64", kffi::kryos_ffi_write_f64 as *const u8);
+        jit_builder.symbol("kryos_ffi_write_f32_bits", kffi::kryos_ffi_write_f32_bits as *const u8);
+        jit_builder.symbol("kryos_ffi_write_f64_bits", kffi::kryos_ffi_write_f64_bits as *const u8);
+
         let module = JITModule::new(jit_builder);
 
         Ok(Self {

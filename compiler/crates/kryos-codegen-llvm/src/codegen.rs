@@ -1001,6 +1001,31 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_ffi_dlcallv_3f32(i64, i64, i64, i64)");
         self.emit_line("declare void @kryos_ffi_dlcallv_4f(i64, double, double, double, double)");
         self.emit_line("declare void @kryos_ffi_dlcallv_4f32(i64, i64, i64, i64, i64)");
+        // Fixed-arity i64-returning indirect calls (these were missing, so any
+        // ffi.call0..8 call site emitted `call i64 @kryos_ffi_dlcallN` against an
+        // undeclared symbol -> clang "use of undefined value").
+        self.emit_line("declare i64 @kryos_ffi_dlcall0(i64)");
+        self.emit_line("declare i64 @kryos_ffi_dlcall1(i64, i64)");
+        self.emit_line("declare i64 @kryos_ffi_dlcall2(i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_ffi_dlcall3(i64, i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_ffi_dlcall4(i64, i64, i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_ffi_dlcall5(i64, i64, i64, i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_ffi_dlcall6(i64, i64, i64, i64, i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_ffi_dlcall7(i64, i64, i64, i64, i64, i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_ffi_dlcall8(i64, i64, i64, i64, i64, i64, i64, i64, i64)");
+        // Raw pointer reads/writes (exposed by std::ffi).
+        self.emit_line("declare i64 @kryos_ffi_read_i8(i64)");
+        self.emit_line("declare i64 @kryos_ffi_read_i16(i64)");
+        self.emit_line("declare i64 @kryos_ffi_read_i32(i64)");
+        self.emit_line("declare i64 @kryos_ffi_read_i64(i64)");
+        self.emit_line("declare double @kryos_ffi_read_f32(i64)");
+        self.emit_line("declare double @kryos_ffi_read_f64(i64)");
+        self.emit_line("declare void @kryos_ffi_write_i8(i64, i64)");
+        self.emit_line("declare void @kryos_ffi_write_i16(i64, i64)");
+        self.emit_line("declare void @kryos_ffi_write_i32(i64, i64)");
+        self.emit_line("declare void @kryos_ffi_write_i64(i64, i64)");
+        self.emit_line("declare void @kryos_ffi_write_f32(i64, double)");
+        self.emit_line("declare void @kryos_ffi_write_f64(i64, double)");
         self.emit_line("declare void @kryos_ffi_dlcallv0(i64)");
         self.emit_line("declare void @kryos_ffi_dlcallv1(i64, i64)");
         self.emit_line("declare void @kryos_ffi_dlcallv2(i64, i64, i64)");

@@ -3250,3 +3250,19 @@ SHIFTS:
   NEXT: B3 register kryos_ffi_dlcall0..6 + dlcallv* + read/write/malloc symbols in
     Cranelift JIT builder (jit.rs) -- impls exist in kryos-stdlib-native/ffi.rs, just
     unregistered in JIT. Low risk.
+
+  ---
+  step:    136 (session 8 -- 2026-05-29 "B3: FFI on both backends")
+  date:    2026-05-29
+  DONE (B3): ffi.dlcall*/dlsym/dlopen now work on BOTH backends.
+    - Cranelift JIT (jit.rs): registered all kryos_ffi_* via jit_builder.symbol(); impls
+      existed in kryos-stdlib-native/ffi.rs but were never registered -> unresolved symbol.
+    - LLVM AOT (codegen.rs): recon CLAIMED AOT worked -- it did NOT. emit_extern_declarations
+      had dlcallv0..7 but was missing the i64-returning dlcall0..8 + read_*/write_* ->
+      clang "use of undefined value @kryos_ffi_dlcall1". Added 9 dlcall + 12 read/write declares.
+  VERIFY: msvcrt.dll abs(-42)=42 on BOTH `kryos run` (JIT) and `kryos build --release`->exe.
+    bootstrap fixed point UNCHANGED 989ba174 (jit.rs irrelevant to bootstrap; LLVM declares
+    are unused-in-self-host -> harmless). cargo 17s.
+  CAVEAT: tests/parity/gen_decls.py generates the LLVM declare list and emitted dlcallv but
+    not dlcall -- update generator so regen keeps the manual declares (logged in backlog).
+  NEXT: B4 (E-CAP->E05xx + LSP ownership/capability passes). Then B5 glob+if-let+while-let.

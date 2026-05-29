@@ -36,7 +36,14 @@ the only one left -- perf-only, non-blocking, needs a cdb runtime trace.
   got the wrong type and Cranelift's field guard fell into the unknown-struct->0 fallback.
   Now infers MirType::Tuple element-wise. `kryos run` prints 10/30 (was 0/0); LLVM unchanged;
   fixed point holds 989ba174. Minimal fix; no codegen guard needed.
-- ffi.dlcall0..6 fixed-arity variants appear unbacked in native (only dlcallv*). Verify. M.
+- [DONE 2026-05-29 s8] ffi.dlcall0..8 now work on BOTH backends. (1) Cranelift JIT:
+  registered all kryos_ffi_* symbols in jit.rs JitCompiler::new (impls existed in
+  kryos-stdlib-native/ffi.rs, were unregistered -> unresolved-symbol). (2) LLVM AOT
+  (recon wrongly said it worked): emit_extern_declarations had dlcallv* but NOT the
+  i64-returning dlcall0..8 nor read_*/write_* -> "undefined value @kryos_ffi_dlcall1".
+  Added the declares. Verified both backends: msvcrt abs(-42)=42. Fixed point 989ba174.
+  NOTE: tests/parity/gen_decls.py generates the LLVM declare block; it emitted dlcallv
+  but not dlcall -- update the generator so a regen doesn't drop the manual declares.
 
 ### Perf
 - O(n^2) string building everywhere (`s = s + ch` loops) in string.kry:125-160,
