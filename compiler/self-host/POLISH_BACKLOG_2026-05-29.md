@@ -40,8 +40,14 @@ the only one left -- perf-only, non-blocking, needs a cdb runtime trace.
   Blocked partly by anemic bytes.kry (4 fns -- add slice/extend/to_str/from_str). M.
 
 ### Diagnostics (stage-0 engine is strong; self-host regresses to bare strings)
-- Self-host byte-offset -> line:col: tc_error/p_error print "at 1234" (raw byte).
-  Add byte_to_line_col() in self-host, thread filename. M. Biggest self-host UX hole.
+- [DONE 2026-05-29 session 8] Self-host byte-offset -> line:col. Was: tc_error/p_error
+  printed "at 1234" (raw byte). Now: byte_to_line_col()+format_diag() in main.kry do a
+  PRINT-TIME rewrite of the trailing " at <off>" suffix -> "file:line:col: msg" (1-based,
+  byte columns since source is ASCII). p_error auto-attaches the current-token offset so
+  all 6 previously-unlocated parser sites get a location. No Parser/TypeChecker struct
+  change, no codegen-path change. Wired all 7 print sites. Verified: fixed point
+  sha 989ba174, stage-2 smoke renders line:col on parse+type errors. Caveat: EOF errors
+  point 1 byte past last char; columns are byte (not codepoint) columns.
 - Replace stray E0382/W0383 (kryos-ownership/analysis.rs:586,596) with real codes. S.
 - Fold E-CAP-* into E05xx + explain articles. M.
 - Code the ~12 codeless parser errors + ~32 codeless typecheck errors; replace "here". M.

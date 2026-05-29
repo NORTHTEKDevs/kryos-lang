@@ -3140,3 +3140,69 @@ SHIFTS:
   NEXT SESSION: [b] cdb-trace the parse_expr_bp pp clobber; [c] incrementally
          de-@copy hot structs (extend the Lexer/LowerCtx/TypeChecker/TCExprResult
          pattern) until deep-clone is affordable, then re-apply defect-1 + enable inference.
+
+  ---
+  step:    131 (session 7 — 2026-05-29)
+  date:    2026-05-29
+  WIN: crutch [c] (inference/annotate_calls) REMOVED. Re-enabled lower_fn_call
+       struct-return inference (commit 0b4bd6f) -- works with the existing SHALLOW
+       clone (NO deep-clone/defect-1 needed, so NO 18GB explosion). Verified:
+       fixed point sha 139e1cc1, examples 9/9, bounded mem. Dropped canonical
+       lexer_new annotation (39769e6) as proof. ~24 redundant annotations remain
+       (optional cleanup). Crutches: [a] done, [c] done, [b] force-spill last (perf).
+  NOW: 4-investigator polish swarm running (runs 003154 + 003624): regalloc-clobber
+       -deep (fresh [b] angle), stdlib-audit, diagnostics-audit, ergonomics+annotations.
+       Then implement top items serially under guard. Guard still active (18GB/8GB).
+
+  ---
+  step:    132 (session 7 FINAL — 2026-05-29 "polish")
+  date:    2026-05-29
+  CRUTCHES: [a] KRYOS_SKIP_TYPES + [c] inference/annotate_calls REMOVED. [b] force-spill
+            = last (perf-only, needs cdb; swarm's static fix re-broke parse_expr_bp).
+  POLISH SHIPPED (all pushed, self-host fixed point re-verified after each):
+    421165f CLAUDE.md + cd4aba3 docs/19 -- corrected docs that FALSELY claimed string
+            interpolation / block comments / else-if / tuple-destructuring don't exist
+            (all verified working; tuple is Cranelift-buggy/LLVM-ok). Fixed phantom
+            error codes (E0382->E0300, E0501 doesn't exist).
+    7c27dbd resolver: completed collect_idents_in_expr (was silently skipping match/
+            if-expr/cast/pipe/interp -> broken selective imports / spurious E0102).
+    30d846a wire E0100 onto the type-mismatch diagnostic (most common error was codeless).
+    99e50f2 iter.sort O(n^2) insertion -> O(n log n) merge sort (verified all cases).
+  METHOD: 4 read-only opus swarm investigators (regalloc/stdlib/diagnostics/ergonomics);
+          regalloc instance went off-task (no new [b] fix). Guard active throughout, 0 crashes.
+  BACKLOG: compiler/self-host/POLISH_BACKLOG_2026-05-29.md (StringBuilder perf, self-host
+          line:col diagnostics, if-let, tuple-Cranelift fix, E-CAP codes, 37 annotation strips).
+
+  ---
+  step:    133 (session 8 -- 2026-05-29 "line:col diagnostics")
+  date:    2026-05-29
+  FOCUS:   POLISH_BACKLOG top diagnostics item -- self-host byte-offset -> line:col
+           ("biggest self-host UX hole"). User-selected via resume question.
+  DONE:    Added LineCol struct + byte_to_line_col() + format_diag() (+3 helpers) to
+           main.kry. PRINT-TIME rewrite: parser/tc errors carry trailing " at <byteoff>";
+           format_diag finds the last " at <digits>", converts to 1-based line:col (byte
+           columns; source is ASCII), strips it, prefixes filename -> "file:line:col: msg".
+           NO Parser/TypeChecker struct change, NO codegen-path change (diag code only
+           runs on broken input -> bootstrap clean source never hits it). p_error now
+           auto-appends current-token offset so all 6 previously-unlocated parser sites
+           get a location. Wired all 7 print sites (compile_file x2, check_file x2,
+           emit_object x2 [added the missing parse-error loop], dump_ast x1).
+  METHOD:  4-investigator READ-ONLY recon workflow (offset-semantics / error-format-catalog
+           / parser-subset / fixed-point-verify) + opus synthesis contract. TDD: validated
+           the algorithm standalone via stage-0 `kryos run` (~/scratch/diag_logic_test.kry,
+           13/13 asserts incl overflow-clamp + prose-"at" + no-location edge cases) BEFORE
+           editing any self-host source.
+  VERIFY:  (1) `kryos check self-host/main.kry --skip-ownership` (the bootstrap gate; line
+           30 builds with --skip-ownership) = exit 0, 0 errors. Plain `check` shows 1
+           PRE-EXISTING E0300 "moved value tc2" in UNCHANGED types.kry -- ownership
+           false-pos that bootstrap skips; not mine, not relevant.
+           (2) bootstrap-win.sh PASS: stage-2==3==4 sha 989ba174680c13a6...  (was 812a1746;
+           sha SHOULD change -- the new fns/p_error body are emitted into the .obj; the
+           self-hosting PROPERTY holds). ~20s, 39GB free, KryosLeakGuard never fired.
+           (3) stage-2 smoke: parse err -> "diag_parse.kry:3:1: expected expression,
+           found }"; type err -> "diag_type.kry:2:18: undefined variable: undefined_var".
+  CRUTCHES: unchanged -- [a]+[c] removed (prior sessions), [b] force-spill still deferred
+           (perf-only, needs cdb trace).
+  NEXT:    remaining POLISH_BACKLOG items (StringBuilder + bytes.kry perf, if-let/while-let,
+           tuple Cranelift codegen bug, E-CAP->E05xx codes, ~37 annotation strips, glob
+           use, file_write parent-dir creation, multibyte caret/UTF-8 column).

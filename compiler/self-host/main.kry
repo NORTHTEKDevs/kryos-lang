@@ -25,6 +25,95 @@ use optimize
 use codegen
 
 // -------------------------------------------------------------------
+// Diagnostics: byte-offset -> line:col, and filename-prefixed
+// rendering of accumulated parser/typechecker error strings.
+//
+// Parser and typechecker errors carry their location as a trailing
+// " at <byte-offset>" suffix (byte offset into the source, matching
+// the lexer's byte-indexed positions). At print time we convert that
+// offset to a 1-based line:col and prefix the filename, turning
+//   "expected RBRACE, found IDENT at 1234"
+// into
+//   foo.kry:42:7: expected RBRACE, found IDENT
+// Columns are byte columns (source is ASCII), matching the Rust
+// kryos-errors crate. Messages without a trailing numeric offset are
+// rendered filename-prefixed but without line:col.
+// -------------------------------------------------------------------
+
+@copy
+struct LineCol {
+    line: i32,
+    col: i32
+}
+
+fn byte_to_line_col(source: str, off: i32) -> LineCol {
+    let mut line = 1
+    let mut line_start = 0
+    let mut n = off
+    if n > len(source) {
+        n = len(source)
+    }
+    for i in range(0, n) {
+        if char_code(source[i]) == 10 {
+            line = line + 1
+            line_start = i + 1
+        }
+    }
+    let col = n - line_start + 1
+    return LineCol { line: line, col: col }
+}
+
+fn diag_is_all_digits(s: str, start: i32, end_pos: i32) -> bool {
+    if start >= end_pos {
+        return false
+    }
+    for i in range(start, end_pos) {
+        let c = char_code(s[i])
+        if c < 48 or c > 57 {
+            return false
+        }
+    }
+    return true
+}
+
+fn diag_parse_offset(s: str, start: i32, end_pos: i32) -> i32 {
+    let mut val = 0
+    for i in range(start, end_pos) {
+        val = val * 10 + (char_code(s[i]) - 48)
+    }
+    return val
+}
+
+fn diag_find_last_at(raw: str) -> i32 {
+    // Index of the leading space of the last " at " in raw, or -1.
+    let mut found = -1
+    let mut i = 0
+    while i + 4 <= len(raw) {
+        if substr(raw, i, i + 4) == " at " {
+            found = i
+        }
+        i = i + 1
+    }
+    return found
+}
+
+fn format_diag(filename: str, source: str, raw: str) -> str {
+    let at_pos = diag_find_last_at(raw)
+    if at_pos < 0 {
+        return "  " + filename + ": " + raw
+    }
+    let digits_start = at_pos + 4
+    let n = len(raw)
+    if not diag_is_all_digits(raw, digits_start, n) {
+        return "  " + filename + ": " + raw
+    }
+    let off = diag_parse_offset(raw, digits_start, n)
+    let lc = byte_to_line_col(source, off)
+    let prefix = substr(raw, 0, at_pos)
+    return "  " + filename + ":" + to_string(lc.line) + ":" + to_string(lc.col) + ": " + prefix
+}
+
+// -------------------------------------------------------------------
 // AST printing helpers
 // -------------------------------------------------------------------
 
@@ -357,7 +446,7 @@ fn compile_file(filename: str, output: str) {
     if len(p.errors) > 0 {
         println("Parse errors: " + to_string(len(p.errors)))
         for i in range(0, len(p.errors)) {
-            println("  " + p.errors[i])
+            println(format_diag(filename, source, p.errors[i]))
         }
         exit(1)
         return
@@ -381,7 +470,7 @@ fn compile_file(filename: str, output: str) {
         } else {
             println("Type errors: " + to_string(len(tc.errors)))
             for i in range(0, len(tc.errors)) {
-                println("  " + tc.errors[i])
+                println(format_diag(filename, source, tc.errors[i]))
             }
             exit(1)
             return
@@ -439,7 +528,7 @@ fn check_file(filename: str) {
     if len(p.errors) > 0 {
         println("Parse errors: " + to_string(len(p.errors)))
         for i in range(0, len(p.errors)) {
-            println("  " + p.errors[i])
+            println(format_diag(filename, source, p.errors[i]))
         }
         exit(1)
         return
@@ -451,7 +540,7 @@ fn check_file(filename: str) {
     if len(tc.errors) > 0 {
         println("Type errors: " + to_string(len(tc.errors)))
         for i in range(0, len(tc.errors)) {
-            println("  " + tc.errors[i])
+            println(format_diag(filename, source, tc.errors[i]))
         }
         exit(1)
         return
@@ -485,6 +574,9 @@ fn emit_object(filename: str, output: str) {
     println("Declarations: " + to_string(len(module.declarations)))
     if len(p.errors) > 0 {
         println("Parse errors: " + to_string(len(p.errors)))
+        for i in range(0, len(p.errors)) {
+            println(format_diag(filename, source, p.errors[i]))
+        }
         exit(1)
         return
     }
@@ -504,7 +596,7 @@ fn emit_object(filename: str, output: str) {
         } else {
             println("Type errors: " + to_string(len(tc.errors)))
             for i in range(0, len(tc.errors)) {
-                println("  " + tc.errors[i])
+                println(format_diag(filename, source, tc.errors[i]))
             }
             exit(1)
             return
@@ -573,7 +665,7 @@ fn dump_ast(filename: str) {
     if len(p.errors) > 0 {
         println("--- Errors (" + to_string(len(p.errors)) + ") ---")
         for i in range(0, len(p.errors)) {
-            println("  " + p.errors[i])
+            println(format_diag(filename, source, p.errors[i]))
         }
     } else {
         println("--- No errors ---")

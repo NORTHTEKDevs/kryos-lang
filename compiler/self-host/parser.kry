@@ -177,8 +177,11 @@ fn p_expect(p: Parser, kind: i32) -> Parser {
 }
 
 fn p_error(p: Parser, msg: str) -> Parser {
+    // Attach the current token's byte offset so every parser error gets a
+    // location for line:col rendering. Callers that already embed a specific
+    // " at <off>" (e.g. p_expect) push directly and bypass this helper.
     let mut errors = p.errors
-    push(errors, msg)
+    push(errors, msg + " at " + to_string(p_peek_start(p)))
     return Parser { tokens: p.tokens, pos: p.pos, errors: errors }
 }
 
