@@ -1,0 +1,67 @@
+# Kryos polish backlog (from 4-investigator swarm, 2026-05-29)
+
+Self-hosting is achieved; crutches [a] KRYOS_SKIP_TYPES and [c] inference both
+REMOVED (see CRUTCH_REMOVAL_FINDINGS_2026-05-28.md). Crutch [b] force-spill is
+the only one left -- perf-only, non-blocking, needs a cdb runtime trace.
+
+## DONE this session (commits)
+- 0b4bd6f re-enable call-return struct inference (crutch [c]); 39769e6 drop canonical annotation
+- 421165f CLAUDE.md + cd4aba3 docs/19: corrected FALSE "missing feature" claims
+- 7c27dbd resolver visitor completion (silent broken selective imports)
+- 30d846a wire E0100 onto the type-mismatch diagnostic
+- 99e50f2 iter.sort O(n^2) -> O(n log n) merge sort
+
+## VERIFIED facts (corrected docs)
+- String interpolation `"{name}"` (NOT `${}`), nested block comments `/* */`,
+  `else if` (alias for elif), and tuple destructuring `let (a,b)=...` ALL WORK
+  in the full compiler. Tuple destructuring is MISCOMPILED by Cranelift
+  (`kryos run` -> field-access-on-unknown-struct, returns 0) but correct on LLVM
+  (`build --release`). The self-host parser is a deliberate subset that avoids these.
+- Moved-value code is E0300 (not E0382); E0501 does not exist (caps use E-CAP-*).
+
+## REMAINING -- ranked (highest value first)
+
+### Self-hosting (last crutch)
+- [b] force-spill removal: regalloc.kry:1058 forces call-crossing intervals to
+  spill. Replacing with reg_pool_alloc_callee_saved(pool) (the dead fn at :753)
+  BUILDS but stage-2 then mis-parses (parse_expr_bp `pp` clobber, d2.kry
+  "Parse errors:1") -> a REAL live callee-saved clobber static analysis can't see.
+  NEXT: cdb write-watchpoint on pp's reg inside stage-2 parse_expr_bp; also the
+  spill-slot byte/index inconsistency (regalloc.kry:1079/1083 store bytes vs
+  codegen.kry:179 cg_stack_offset_ra *8 again, masked by the 2048-byte prologue fudge).
+
+### Correctness
+- Tuple destructuring Cranelift codegen bug (works LLVM, fails Cranelift). M.
+- ffi.dlcall0..6 fixed-arity variants appear unbacked in native (only dlcallv*). Verify. M.
+
+### Perf
+- O(n^2) string building everywhere (`s = s + ch` loops) in string.kry:125-160,
+  279-304 / fmt.kry / json.kry serialize. Add a StringBuilder over a grow-buffer.
+  Blocked partly by anemic bytes.kry (4 fns -- add slice/extend/to_str/from_str). M.
+
+### Diagnostics (stage-0 engine is strong; self-host regresses to bare strings)
+- Self-host byte-offset -> line:col: tc_error/p_error print "at 1234" (raw byte).
+  Add byte_to_line_col() in self-host, thread filename. M. Biggest self-host UX hole.
+- Replace stray E0382/W0383 (kryos-ownership/analysis.rs:586,596) with real codes. S.
+- Fold E-CAP-* into E05xx + explain articles. M.
+- Code the ~12 codeless parser errors + ~32 codeless typecheck errors; replace "here". M.
+- LSP runs only lex/parse/typecheck -- add ownership + capability passes
+  (kryos-lsp/src/diagnostics.rs). S.
+- offset_to_line_col returns BYTE columns -> caret misaligns on multibyte UTF-8 lines. Verify+fix.
+
+### Ergonomics gaps (real)
+- No if-let / while-let / let-else -> forces full match for every Option/Result peek. M.
+- No glob `use std::os::*` (must list every symbol). S/M.
+- file_write doesn't create parent dirs (manual create_dir each time). S.
+- Array index restricted to i64 (explicit casts needed). S/M.
+
+### Cleanup (low value, identical-MIR)
+- ~37 redundant `let mut X: Struct = user_fn(...)` annotations now inferable.
+  SAFE (mutable -> identical MIR) in mir/lower/main/types/parser.kry; RISKY for
+  IMMUTABLE `let X: Struct = ...` (alias-shortcut path). Strip only mutable ones, verify fixed point.
+
+## Method note
+All findings from read-only opus swarm investigators (Read/Grep/Glob only, no build).
+Every fix must be verified by the orchestrator under scratch/kryos-session-guard.ps1
+(per-proc 18GB cap + 8GB free-RAM floor) -- this project's self-host builds have
+OOM-crashed the machine; the guard caught 3 leak/explosion events this run.
