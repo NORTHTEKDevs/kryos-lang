@@ -3235,3 +3235,18 @@ SHIFTS:
   NEXT:    B2 tuple-destructuring Cranelift miscompile (lower.rs TupleLiteral infer + codegen
            guard). Then B3 FFI-in-JIT, B4 E-CAP/LSP, B5 glob+if-let+while-let, B6 let-else,
            B7 codeless errors, B8 StringBuilder.
+
+  ---
+  step:    135 (session 8 -- 2026-05-29 "B2: tuple destructure Cranelift fix")
+  date:    2026-05-29
+  DONE (B2): Tuple destructuring miscompile on Cranelift FIXED. infer_expr_type
+    (kryos-mir/lower.rs:3868) returned MirType::I64 for TupleLiteral -> destructure temp
+    mistyped -> Cranelift RValue::Field guard (match l.ty {Tuple=>}) missed -> unknown-struct
+    fallback returned 0. Fix: infer MirType::Tuple element-wise (1 match arm). Belt-and-
+    suspenders codegen guard NOT needed (minimal fix sufficed).
+  VERIFY: kryos run /tmp/tuple_test.kry -> 10,30 (was 0,0). build --release -> 10,30
+    (unchanged). bootstrap-win.sh fixed point UNCHANGED 989ba174. cargo 35s.
+  DOCS: CLAUDE.md gotcha #5 updated (tuple destructure now works on both backends).
+  NEXT: B3 register kryos_ffi_dlcall0..6 + dlcallv* + read/write/malloc symbols in
+    Cranelift JIT builder (jit.rs) -- impls exist in kryos-stdlib-native/ffi.rs, just
+    unregistered in JIT. Low risk.

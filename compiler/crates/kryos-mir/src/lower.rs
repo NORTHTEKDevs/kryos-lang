@@ -3865,7 +3865,14 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                 .unwrap_or(MirType::I64);
             MirType::Array(Box::new(elem_ty), Some(elements.len() as u64))
         }
-        ast::Expr::TupleLiteral { .. } => MirType::I64,
+        ast::Expr::TupleLiteral { elements, .. } => {
+            // Infer the tuple's type element-wise. Returning a scalar here
+            // (the old stub) gave destructure temporaries the wrong type, so
+            // the Cranelift field-access guard (`match l.ty { Tuple(_) => .. }`)
+            // failed into the unknown-struct fallback and `let (a,b) = ..`
+            // miscompiled to 0 on the JIT backend.
+            MirType::Tuple(elements.iter().map(|e| infer_expr_type(ctx, e)).collect())
+        }
 
         ast::Expr::Cast { ty, .. } => ctx.resolve_type(ty),
 

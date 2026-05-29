@@ -302,7 +302,7 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `
 2. **No `if let`.** Use full `match`.
 3. **Both `elif` and `else if` work** (`else if` is accepted as an alias). The self-host source uses `elif` by convention.
 4. **No `null`.** Use `Option<T>` from `std::option`.
-5. **Tuple destructuring `let (a, b) = ...` works on the LLVM backend (`kryos build --release`).** It is currently miscompiled by the Cranelift JIT (`kryos run`) — known bug; use `--release`, or index `.0`/`.1` when running via Cranelift.
+5. **Tuple destructuring `let (a, b) = ...` works on both backends** (`kryos run` Cranelift JIT and `kryos build --release` LLVM). The earlier Cranelift miscompile (returned 0) was fixed by inferring the tuple element types in MIR lowering.
 6. **Array indexing is `[i]`, but indexes are `i64` only.** Cast `usize`-ish values explicitly if you have them.
 7. **`file_write` doesn't create parent directories.** Call `create_dir(parent)` first.
 8. **Top-level `let mut x = some_call()`** is allowed for pure builtins (`env_get`, `args`) but not for arbitrary user functions — move that into `main`.

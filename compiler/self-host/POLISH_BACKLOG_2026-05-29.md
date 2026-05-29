@@ -31,7 +31,11 @@ the only one left -- perf-only, non-blocking, needs a cdb runtime trace.
   codegen.kry:179 cg_stack_offset_ra *8 again, masked by the 2048-byte prologue fudge).
 
 ### Correctness
-- Tuple destructuring Cranelift codegen bug (works LLVM, fails Cranelift). M.
+- [DONE 2026-05-29 s8] Tuple destructuring Cranelift bug FIXED. Root cause: infer_expr_type
+  (kryos-mir/lower.rs:3868) returned MirType::I64 for TupleLiteral, so the destructure temp
+  got the wrong type and Cranelift's field guard fell into the unknown-struct->0 fallback.
+  Now infers MirType::Tuple element-wise. `kryos run` prints 10/30 (was 0/0); LLVM unchanged;
+  fixed point holds 989ba174. Minimal fix; no codegen guard needed.
 - ffi.dlcall0..6 fixed-arity variants appear unbacked in native (only dlcallv*). Verify. M.
 
 ### Perf
