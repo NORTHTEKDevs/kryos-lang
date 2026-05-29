@@ -17,7 +17,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use kryos_ast::{Block, Decl, Expr, ImportPath, Module, Stmt};
+use kryos_ast::{Block, Decl, Expr, ImportPath, Module, Stmt, StringPart};
 use kryos_errors::Diagnostic;
 use kryos_lexer::Lexer;
 use kryos_parser::parse;
@@ -664,11 +664,58 @@ fn collect_idents_in_expr(e: &Expr, out: &mut HashSet<String>) {
             }
         }
         Expr::Lambda { body, .. } => collect_idents_in_expr(body, out),
-        // Other expression variants (literals, control-flow expressions,
-        // closures, etc.) — best-effort coverage; conservative defaults
-        // mean unmatched variants just don't contribute to the closure,
-        // which is harmless: if a name isn't collected the user can
-        // always explicitly list it in the import.
+        // Control-flow / wrapper expressions: recurse into sub-expressions so a
+        // selectively-imported fn that references a module-local helper ONLY
+        // inside (e.g.) a match arm, if-expression, pipe, cast, or interpolation
+        // still drags that helper into the import closure. Previously the
+        // catch-all `_ => {}` skipped these -> silent E0102 on valid selective
+        // imports (match/Result/Option helpers are pervasive in the stdlib).
+        Expr::IfExpr { condition, then_branch, else_branch, .. } => {
+            collect_idents_in_expr(condition, out);
+            collect_idents_in_block(then_branch, out);
+            if let Some(eb) = else_branch {
+                collect_idents_in_block(eb, out);
+            }
+        }
+        Expr::MatchExpr { subject, arms, .. } => {
+            collect_idents_in_expr(subject, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    collect_idents_in_expr(g, out);
+                }
+                collect_idents_in_expr(&arm.body, out);
+            }
+        }
+        Expr::RangeExpr { start, end, .. } => {
+            if let Some(s) = start {
+                collect_idents_in_expr(s, out);
+            }
+            if let Some(en) = end {
+                collect_idents_in_expr(en, out);
+            }
+        }
+        Expr::PipeExpr { left, right, .. } => {
+            collect_idents_in_expr(left, out);
+            collect_idents_in_expr(right, out);
+        }
+        Expr::Borrow { inner, .. }
+        | Expr::Deref { inner, .. }
+        | Expr::SharedExpr { inner, .. }
+        | Expr::MoveExpr { inner, .. }
+        | Expr::WeakExpr { inner, .. } => collect_idents_in_expr(inner, out),
+        Expr::Cast { expr, .. } => collect_idents_in_expr(expr, out),
+        Expr::Await { value, .. } => collect_idents_in_expr(value, out),
+        Expr::Block { block, .. }
+        | Expr::ComptimeBlock { body: block, .. }
+        | Expr::QuantumBlock { body: block, .. } => collect_idents_in_block(block, out),
+        Expr::InterpolatedString { parts, .. } => {
+            for p in parts {
+                if let StringPart::Expr(pe) = p {
+                    collect_idents_in_expr(pe, out);
+                }
+            }
+        }
+        // True leaves (int/float/string/bool literals, etc.) contribute no idents.
         _ => {}
     }
 }
