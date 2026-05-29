@@ -49,9 +49,12 @@ note: Kryos does not use semicolons; line breaks terminate statements
 ```kryos
 // single-line comment
 /// doc comment, attached to the following declaration
+/* block comment */
+/* block comments /* nest */ correctly */
 ```
 
-Block comments are not supported.
+Block comments (`/* ... */`) are supported and nest. (The self-host compiler
+source avoids them by convention, but the language accepts them.)
 
 ### 1.4 Identifiers
 
