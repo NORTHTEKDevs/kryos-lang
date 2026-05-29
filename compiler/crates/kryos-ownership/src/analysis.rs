@@ -583,7 +583,7 @@ impl OwnershipAnalyzer {
             Diagnostic::error(format!(
                 "use of partially moved value: `{name}` (field `{field}` was moved)"
             ))
-            .with_code("E0382")
+            .with_code(kryos_errors::codes::E0303)
             .with_label(use_span, format!("`{name}.{field}` was previously moved")),
         );
     }
@@ -593,7 +593,7 @@ impl OwnershipAnalyzer {
             Diagnostic::warning(format!(
                 "variable `{name}` is moved in one branch but not another"
             ))
-            .with_code("W0383")
+            .with_code(kryos_errors::codes::W0300)
             .with_label(span, "conditional move detected")
             .with_note("consider using `shared` or restructuring to avoid partial ownership"),
         );

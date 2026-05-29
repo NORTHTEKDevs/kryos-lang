@@ -28,3 +28,7 @@ pub const E0109: &str = "E0109"; // Self used outside of impl/trait
 pub const E0300: &str = "E0300"; // use of moved value
 pub const E0301: &str = "E0301"; // use of uninitialized value
 pub const E0302: &str = "E0302"; // assignment to immutable variable
+pub const E0303: &str = "E0303"; // use of partially moved value
+
+// Ownership warnings (W03xx)
+pub const W0300: &str = "W0300"; // conditional move (moved on one branch only)

@@ -415,6 +415,13 @@ pub extern "C" fn kryos_builtin_file_write(path_handle: i64, content_handle: i64
             }
         }
     };
+    // Create parent directories so writing to a nested path succeeds.
+    // No-op when the parent already exists; mirrors create_dir semantics.
+    if let Some(parent) = std::path::Path::new(path_str).parent() {
+        if !parent.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
     match std::fs::write(path_str, content) {
         Ok(()) => 0,
         Err(_) => -1,

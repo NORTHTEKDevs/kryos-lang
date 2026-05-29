@@ -48,7 +48,9 @@ the only one left -- perf-only, non-blocking, needs a cdb runtime trace.
   change, no codegen-path change. Wired all 7 print sites. Verified: fixed point
   sha 989ba174, stage-2 smoke renders line:col on parse+type errors. Caveat: EOF errors
   point 1 byte past last char; columns are byte (not codepoint) columns.
-- Replace stray E0382/W0383 (kryos-ownership/analysis.rs:586,596) with real codes. S.
+- [DONE 2026-05-29 s8] Replace stray E0382/W0383 (kryos-ownership/analysis.rs:586,596).
+  Added E0303 (partial move) + W0300 (conditional move) consts in kryos-errors/codes.rs,
+  wired explain.rs match+list+articles. `kryos explain E0303|W0300` now work.
 - Fold E-CAP-* into E05xx + explain articles. M.
 - Code the ~12 codeless parser errors + ~32 codeless typecheck errors; replace "here". M.
 - LSP runs only lex/parse/typecheck -- add ownership + capability passes
@@ -58,7 +60,8 @@ the only one left -- perf-only, non-blocking, needs a cdb runtime trace.
 ### Ergonomics gaps (real)
 - No if-let / while-let / let-else -> forces full match for every Option/Result peek. M.
 - No glob `use std::os::*` (must list every symbol). S/M.
-- file_write doesn't create parent dirs (manual create_dir each time). S.
+- [DONE 2026-05-29 s8] file_write now creates parent dirs (create_dir_all in
+  kryos-rt/builtins.rs kryos_builtin_file_write). Verified AOT: nested path -> rc=0.
 - Array index restricted to i64 (explicit casts needed). S/M.
 
 ### Cleanup (low value, identical-MIR)

@@ -34,6 +34,8 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "E0300" => Some(E0300),
         "E0301" => Some(E0301),
         "E0302" => Some(E0302),
+        "E0303" => Some(E0303),
+        "W0300" => Some(W0300),
         "E0400" => Some(E0400),
         "E0401" => Some(E0401),
         "E0500" => Some(E0500),
@@ -62,6 +64,8 @@ pub fn list() -> Vec<(&'static str, &'static str)> {
         ("E0300", "use of moved value"),
         ("E0301", "use of uninitialized value"),
         ("E0302", "assignment to immutable variable"),
+        ("E0303", "use of partially moved value"),
+        ("W0300", "conditional move"),
         ("E0400", "integer overflow in checked operation"),
         ("E0401", "stack overflow (recursion too deep)"),
         ("E0500", "unsafe operation outside `unsafe` context"),
@@ -529,6 +533,67 @@ top-to-bottom knowing which bindings can change.
 Note that immutability of the *binding* is independent of mutability of
 the *value*: passing an `&Big` makes the value read-only through that
 reference even if the original owner declared `let mut`.
+"#;
+
+// ----- E0303 ----------------------------------------------------------------
+
+const E0303: &str = r#"E0303: use of partially moved value
+
+A struct had one of its fields moved out, and then the whole value (or the
+moved field) was used again. Once a field is moved, the parent value is
+only partially valid: the moved field can no longer be read.
+
+Erroneous code example:
+
+    struct Pair { a: Big, b: Big }
+
+    fn take(x: Big) { /* ... */ }
+
+    fn main() {
+        let p = Pair { a: Big {}, b: Big {} }
+        take(p.a)               // moves `p.a` out of `p`
+        print(to_string(len(p.a.data)))   // error: `p.a` was moved
+    }
+
+Fixed: don't read the moved field afterwards, or move the whole value, or
+pass the field by reference:
+
+    fn inspect(x: &Big) -> i64 { return len(x.data) }
+
+    fn main() {
+        let p = Pair { a: Big {}, b: Big {} }
+        let n = inspect(&p.a)   // borrow instead of move
+        print(to_string(n))
+    }
+"#;
+
+// ----- W0300 ----------------------------------------------------------------
+
+const W0300: &str = r#"W0300: conditional move
+
+A value is moved on one branch of an `if`/`match` but not on the other, so
+whether the value is still usable after the branch depends on which path
+ran. Kryos conservatively warns because the binding's state is no longer
+statically obvious.
+
+Example that triggers the warning:
+
+    fn main() {
+        let b = Big {}
+        if some_condition() {
+            take(b)             // moved here...
+        }
+        // ...but not on the else path; `b`'s state is now branch-dependent
+    }
+
+Fixes:
+  - Move the value on every path (or none), so its state is unambiguous.
+  - Restructure so the move happens after the branch.
+  - Use `shared` if the value genuinely needs branch-dependent lifetime.
+
+This is a warning, not an error: the program still compiles. It flags code
+that is easy to misread and that will become an E0300 if you later add a
+use after the branch.
 "#;
 
 // ----- E0400 ----------------------------------------------------------------

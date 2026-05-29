@@ -3206,3 +3206,32 @@ SHIFTS:
   NEXT:    remaining POLISH_BACKLOG items (StringBuilder + bytes.kry perf, if-let/while-let,
            tuple Cranelift codegen bug, E-CAP->E05xx codes, ~37 annotation strips, glob
            use, file_write parent-dir creation, multibyte caret/UTF-8 column).
+
+  ---
+  step:    134 (session 8 -- 2026-05-29 "B1: rt + diagnostics fixes")
+  date:    2026-05-29
+  FOCUS:   Language-completeness mandate. Master plan from completeness-recon workflow
+           (18 items, 9 batches). B1 = 2 zero-risk stage-0 Rust fixes.
+  DONE (B1):
+    - file_write now creates parent dirs: create_dir_all(parent) before fs::write in
+      kryos-rt/src/builtins.rs kryos_builtin_file_write. Removes CLAUDE.md gotcha #7.
+    - Stray ownership codes fixed: analysis.rs used FABRICATED E0382/W0383 (Rust borrowck
+      codes, not Kryos). Added E0303 (partial move) + W0300 (conditional move) to
+      kryos-errors/codes.rs, wired explain.rs (match+list+articles). `kryos explain
+      E0303|W0300` work.
+    - WASM array-index I32WrapI64 item from plan B1 DEFERRED into the proper array-index
+      coercion item (typecheck-level, gotcha #6) -- the WASM-only change had silent-wrong-
+      output risk and wasn't clearly the right layer. Not blindly applied.
+  VERIFY:  cargo build -p kryos-cli --release clean (1m16s). REBUILT staticlibs
+           (cargo build -p kryos-rt -p kryos-stdlib-native --release) -- AOT/self-host link
+           target/release/kryos_rt.lib, which was STALE (2026-05-24); file_write fix only
+           took effect after rebuilding it. AOT test: file_write nested path rc=0, dir tree
+           created, readback OK. explain E0303/W0300 print. hello example runs.
+           Regression gate: bootstrap-win.sh PASS, fixed point UNCHANGED at 989ba174
+           (.obj shas exclude runtime lib). 22s.
+  GOTCHA:  runtime changes need `cargo build -p kryos-rt -p kryos-stdlib-native --release`
+           (kryos-cli build leaves the linked staticlib stale). `kryos run` JIT lacks many
+           runtime symbols -- test runtime builtins via `build --release`.
+  NEXT:    B2 tuple-destructuring Cranelift miscompile (lower.rs TupleLiteral infer + codegen
+           guard). Then B3 FFI-in-JIT, B4 E-CAP/LSP, B5 glob+if-let+while-let, B6 let-else,
+           B7 codeless errors, B8 StringBuilder.
