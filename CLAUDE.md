@@ -16,9 +16,9 @@ Targets Linux x86_64, Windows x86_64 MSVC, macOS x86_64/aarch64, and `wasm32-unk
 ## Hard rules (these cause compile errors)
 
 1. **No semicolons.** Line breaks terminate statements. To wrap a long expression, end the line with `(`, `[`, `{`, `,`, or a binary operator.
-2. **No block comments.** Only `//` and `///` (doc).
-3. **No `null` / `nil` / `None` keyword.** Use `Option<T>` from `std::option` for nullable values.
-4. **String concatenation is `+`, not interpolation.** Cast numerics with `to_string(x)` first. There is no `"hello ${name}"`.
+2. **Block comments `/* ... */` work and nest.** Line comments are `//`, doc comments `///`. (The self-host compiler source under `compiler/self-host/` avoids block comments by convention, but the language supports them.)
+3. **No `null` / `nil` keyword.** Use `Option<T>` from `std::option` for nullable values.
+4. **String interpolation works:** `"hello {name}"` (the delimiter is `{ }`, NOT `${ }`). `+` concatenation also works; cast numerics with `to_string(x)` when concatenating.
 5. **`let` is immutable, `let mut` is mutable.** Same as Rust.
 6. **Type annotations on top-level `let` and on function params are required.** Local `let` inside a function can infer.
 7. **Functions return the last expression** only if there's no trailing newline after it. Prefer explicit `return`.
@@ -157,7 +157,7 @@ fn consume(x: str) {
 
 Strings and arrays are owned heap values. Primitives (`i64`, `f64`, `bool`) are `Copy` — they don't move. Structs containing only `Copy` fields are also `Copy`.
 
-If you see `error[E0382]: use of moved value`, you need to either clone (`x.clone()` where available), pass by reference, or restructure to consume the value once.
+If you see `error[E0300]: use of moved value`, you need to either clone (`x.clone()` where available), pass by reference, or restructure to consume the value once.
 
 ## Error handling
 
@@ -283,25 +283,26 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `
 | `kryos doc`                   | Generate HTML from `///` doc comments.                         |
 | `kryos pkg add <name>`        | Resolve and install a registry package.                        |
 | `kryos lsp`                   | Language server (stdio).                                       |
-| `kryos explain <code>`        | rustc-style long-form error explanation. e.g. `kryos explain E0382`. |
+| `kryos explain <code>`        | rustc-style long-form error explanation. e.g. `kryos explain E0300`. |
 | `kryos bindgen <header.h>`    | Generate Kryos `extern` declarations from a C header.          |
 
 ## Common error codes
 
 - `E0101` — unknown type. Did you misspell `i64` / `str` / etc.?
 - `E0102` — undefined variable. Likely typo or missing `use` import.
-- `E0382` — use of moved value. Clone, restructure, or return ownership.
-- `E0501` — capability violation. The function calls a builtin requiring a capability not granted at the entry point.
+- `E0300` — use of moved value. Clone, restructure, or return ownership.
+- `E0100` — type mismatch. Expected one type, found another.
+- Capability violations currently use `E-CAP-*` codes (e.g. `E-CAP-IMPORT`); unsafe-block misuse is `E0500`. (There is no `E0382`/`E0501` despite older docs.)
 
 `kryos explain <code>` gives the full version with examples.
 
 ## Gotchas Claude needs to know
 
-1. **No string interpolation.** Always `"hello " + name + "!"`. Numbers need `to_string()`.
+1. **String interpolation works:** `"hello {name}"` (braces, not `${}`). `+` concatenation also works; numbers need `to_string()` when concatenated.
 2. **No `if let`.** Use full `match`.
-3. **`elif`, not `else if`.** This will bite you.
+3. **Both `elif` and `else if` work** (`else if` is accepted as an alias). The self-host source uses `elif` by convention.
 4. **No `null`.** Use `Option<T>` from `std::option`.
-5. **No tuple destructuring in `let`** in most positions yet — index with `.0`, `.1`.
+5. **Tuple destructuring `let (a, b) = ...` works on the LLVM backend (`kryos build --release`).** It is currently miscompiled by the Cranelift JIT (`kryos run`) — known bug; use `--release`, or index `.0`/`.1` when running via Cranelift.
 6. **Array indexing is `[i]`, but indexes are `i64` only.** Cast `usize`-ish values explicitly if you have them.
 7. **`file_write` doesn't create parent directories.** Call `create_dir(parent)` first.
 8. **Top-level `let mut x = some_call()`** is allowed for pure builtins (`env_get`, `args`) but not for arbitrary user functions — move that into `main`.
