@@ -3266,3 +3266,24 @@ SHIFTS:
   CAVEAT: tests/parity/gen_decls.py generates the LLVM declare list and emitted dlcallv but
     not dlcall -- update generator so regen keeps the manual declares (logged in backlog).
   NEXT: B4 (E-CAP->E05xx + LSP ownership/capability passes). Then B5 glob+if-let+while-let.
+
+  ---
+  step:    137 (session 8 -- 2026-05-29 "B5: glob + if-let + while-let")
+  date:    2026-05-29
+  DONE (B5): three core ergonomics features, all parse-time desugars (parser.rs only).
+    - glob `use a::b::*`: parse_import accepts Star -> empty items; resolver already
+      imports-all on empty items. No AST/resolver change.
+    - if-let: refactored parse_if_stmt -> parse_if_rest (regular logic verbatim) +
+      parse_if_let + parse_if_let_else. `if let PAT = E {T} else {E}` desugars to
+      match E { PAT => {T}, _ => {E} }. Handles else/else-if/elif continuations.
+    - while-let: parse_while_let. `while let PAT = E {B}` -> while true { match E {
+      PAT => {B}, _ => break } }.
+  VERIFY: glob->4; if-let JIT+AOT->42/was nothing; while-let->3 2 1 done (local enum).
+    bootstrap fixed point UNCHANGED 989ba174 (refactor preserved regular if/while across
+    20k self-host lines). cargo 34s.
+  DOCS: CLAUDE.md gotchas #2 (if-let now works) + #9 (glob now works) updated.
+  NOTE: constructing STDLIB Option in user code (Option.Some / use std::option) hits a
+    SEPARATE pre-existing resolver quirk -- not my feature, orthogonal. if-let/while-let
+    work fine with local enums and any in-scope enum.
+  NEXT: B6 let-else (AST else_block field on Stmt::Let, ~74 match sites + lower + types),
+    then B7 codeless errors, B4 E-CAP/LSP, B8 StringBuilder.

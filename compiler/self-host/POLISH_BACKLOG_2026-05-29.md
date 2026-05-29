@@ -69,8 +69,11 @@ the only one left -- perf-only, non-blocking, needs a cdb runtime trace.
 - offset_to_line_col returns BYTE columns -> caret misaligns on multibyte UTF-8 lines. Verify+fix.
 
 ### Ergonomics gaps (real)
-- No if-let / while-let / let-else -> forces full match for every Option/Result peek. M.
-- No glob `use std::os::*` (must list every symbol). S/M.
+- [if-let + while-let DONE 2026-05-29 s8] parse-time desugar to match in parser.rs
+  (parse_if_rest/parse_if_let/parse_if_let_else + parse_while_let). Verified JIT+AOT with
+  local enum; fixed point 989ba174. let-else STILL PENDING (B6, needs AST/scope work).
+- [DONE 2026-05-29 s8] glob `use a::b::*` works -- parser accepts `*` (parse_import) and
+  the resolver already imports-all when items is empty. No AST/resolver change needed.
 - [DONE 2026-05-29 s8] file_write now creates parent dirs (create_dir_all in
   kryos-rt/builtins.rs kryos_builtin_file_write). Verified AOT: nested path -> rc=0.
 - Array index restricted to i64 (explicit casts needed). S/M.

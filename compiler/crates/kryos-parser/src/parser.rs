@@ -904,6 +904,13 @@ impl Parser {
         segments.push(first);
 
         while self.eat(TokenKind::ColonColon) {
+            // Glob import `use a::b::*`: bring in all public symbols. The
+            // resolver imports everything when `items` is empty (the bare
+            // `use a::b` case), so a glob is just the explicit spelling of that.
+            if self.check(TokenKind::Star) {
+                self.advance();
+                break;
+            }
             // Check for grouped imports: `{Item1, Item2}`
             if self.check(TokenKind::LBrace) {
                 self.advance();
@@ -1134,7 +1141,16 @@ impl Parser {
 
     fn parse_if_stmt(&mut self) -> Stmt {
         let kw = self.expect(TokenKind::If);
-        let start = kw.span;
+        self.parse_if_rest(kw.span)
+    }
+
+    /// Parse the remainder of an `if` after the leading `if`/`elif`/`else if`
+    /// keyword has been consumed. Dispatches to the `if let` desugar or a
+    /// regular `if/elif/else` chain. `start` is the span of that keyword.
+    fn parse_if_rest(&mut self, start: Span) -> Stmt {
+        if self.check(TokenKind::Let) {
+            return self.parse_if_let(start);
+        }
         let condition = self.parse_expr_no_struct_lit();
         let then_block = self.parse_block();
 
@@ -1171,6 +1187,93 @@ impl Parser {
             else_block,
             span: start.merge(end),
         }
+    }
+
+    /// Desugar `if let PAT = EXPR { THEN } [else ...]` into
+    ///   match EXPR { PAT => { THEN }, _ => { ELSE } }
+    /// `let` has not yet been consumed; `start` is the `if`/`elif` span.
+    fn parse_if_let(&mut self, start: Span) -> Stmt {
+        self.expect(TokenKind::Let);
+        let pattern = self.parse_pattern();
+        self.expect(TokenKind::Eq);
+        let subject = self.parse_expr_no_struct_lit();
+        let then_block = self.parse_block();
+        let then_span = then_block.span;
+        let else_body = self.parse_if_let_else(start);
+        let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
+        let span = start.merge(end);
+        let match_expr = Expr::MatchExpr {
+            subject: Box::new(subject),
+            arms: vec![
+                MatchArm {
+                    pattern,
+                    guard: None,
+                    body: Box::new(Expr::Block {
+                        block: then_block,
+                        span: then_span,
+                    }),
+                    span,
+                },
+                MatchArm {
+                    pattern: Pattern::Wildcard { span },
+                    guard: None,
+                    body: else_body,
+                    span,
+                },
+            ],
+            span,
+        };
+        Stmt::Expr {
+            expr: match_expr,
+            span,
+        }
+    }
+
+    /// Parse the else-continuation of an `if let` into the wildcard arm body.
+    /// Supports `else { B }`, `else if .. / elif ..` (nested if), or nothing.
+    fn parse_if_let_else(&mut self, span: Span) -> Box<Expr> {
+        // `elif ...` acts as `else if ...`; parse the rest as a nested if.
+        if self.check(TokenKind::Elif) {
+            let kw = self.advance().span;
+            let nested = self.parse_if_rest(kw);
+            return Box::new(Expr::Block {
+                block: Block {
+                    stmts: vec![nested],
+                    span,
+                },
+                span,
+            });
+        }
+        // `else if ...` (two tokens).
+        if self.peek_kind() == TokenKind::Else
+            && self.pos + 1 < self.tokens.len()
+            && self.tokens[self.pos + 1].kind == TokenKind::If
+        {
+            self.advance(); // else
+            let kw = self.advance().span; // if
+            let nested = self.parse_if_rest(kw);
+            return Box::new(Expr::Block {
+                block: Block {
+                    stmts: vec![nested],
+                    span,
+                },
+                span,
+            });
+        }
+        // `else { B }`
+        if self.eat(TokenKind::Else) {
+            let b = self.parse_block();
+            let bs = b.span;
+            return Box::new(Expr::Block { block: b, span: bs });
+        }
+        // No else: empty block (unit value).
+        Box::new(Expr::Block {
+            block: Block {
+                stmts: Vec::new(),
+                span,
+            },
+            span,
+        })
     }
 
     fn parse_for(&mut self) -> Stmt {
@@ -1211,6 +1314,9 @@ impl Parser {
     fn parse_while(&mut self) -> Stmt {
         let kw = self.expect(TokenKind::While);
         let start = kw.span;
+        if self.check(TokenKind::Let) {
+            return self.parse_while_let(start);
+        }
         let condition = self.parse_expr_no_struct_lit();
         let body = self.parse_block();
         let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
@@ -1218,6 +1324,60 @@ impl Parser {
             condition,
             body,
             span: start.merge(end),
+        }
+    }
+
+    /// Desugar `while let PAT = EXPR { BODY }` into
+    ///   while true { match EXPR { PAT => { BODY }, _ => { break } } }
+    /// `let` has not yet been consumed; `start` is the `while` span.
+    fn parse_while_let(&mut self, start: Span) -> Stmt {
+        self.expect(TokenKind::Let);
+        let pattern = self.parse_pattern();
+        self.expect(TokenKind::Eq);
+        let subject = self.parse_expr_no_struct_lit();
+        let body = self.parse_block();
+        let body_span = body.span;
+        let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
+        let span = start.merge(end);
+        let break_block = Block {
+            stmts: vec![Stmt::Break { span }],
+            span,
+        };
+        let match_expr = Expr::MatchExpr {
+            subject: Box::new(subject),
+            arms: vec![
+                MatchArm {
+                    pattern,
+                    guard: None,
+                    body: Box::new(Expr::Block {
+                        block: body,
+                        span: body_span,
+                    }),
+                    span,
+                },
+                MatchArm {
+                    pattern: Pattern::Wildcard { span },
+                    guard: None,
+                    body: Box::new(Expr::Block {
+                        block: break_block,
+                        span,
+                    }),
+                    span,
+                },
+            ],
+            span,
+        };
+        let loop_body = Block {
+            stmts: vec![Stmt::Expr {
+                expr: match_expr,
+                span,
+            }],
+            span,
+        };
+        Stmt::While {
+            condition: Expr::BoolLiteral { value: true, span: start },
+            body: loop_body,
+            span,
         }
     }
 
