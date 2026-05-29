@@ -98,3 +98,26 @@ sha 812a1746...(types.kry source changed -> obj legitimately changed).
   whitelist (kryos-stage*/kryos/cargo/rustc/link/cl/ld). Caught all 3 leaks.
 - Build discipline: --release -j2 only; never two builds at once; swarm members
   were Read/Grep/Glob only (provably cannot build).
+
+---
+
+## SESSION 7 UPDATE (2026-05-29): crutch [c] inference RE-ENABLED (no deep clone needed)
+
+Reversed the session-6 [c] deferral. The swarm had SPECULATED that re-enabling
+inference (defect 2) requires the cranelift deep-clone (defect 1), which explodes
+to 18GB. That was wrong: defect 2 ALONE, using the existing SHALLOW clone, works.
+
+- Re-enabled user-call struct return-type inference in lower_fn_call (commit
+  0b4bd6f): ctx_fn_ret_type override when result is ANY, struct-only.
+- VERIFIED: bootstrap fixed point stage-2==3==4 (sha 139e1cc1...), examples 9/9,
+  memory bounded (no explosion -- shallow clone is cheap). The theoretical
+  double-free the deep clone guards does NOT manifest on the self-host.
+- The self-host typechecker already inferred user-call returns (tc_check_let
+  infers from value; tc_check_fn_call returns sig.ret_type), so manual call-init
+  annotations are redundant for BOTH passes. PROVEN by dropping the canonical
+  `let mut lex: Lexer = lexer_new(src)` -> `let mut lex` (commit 39769e6):
+  still self-hosts + examples 9/9. annotate_calls.py is obsolete.
+
+CRUTCH STATUS: [a] KRYOS_SKIP_TYPES REMOVED; [c] inference/annotate_calls REMOVED
+(inference live; ~24 redundant annotations remain as optional cleanup);
+[b] force-spill = LAST crutch, perf-only, deferred (real call-clobber needs cdb).
