@@ -62,10 +62,13 @@ the only one left -- perf-only, non-blocking, needs a cdb runtime trace.
 - [DONE 2026-05-29 s8] Replace stray E0382/W0383 (kryos-ownership/analysis.rs:586,596).
   Added E0303 (partial move) + W0300 (conditional move) consts in kryos-errors/codes.rs,
   wired explain.rs match+list+articles. `kryos explain E0303|W0300` now work.
-- Fold E-CAP-* into E05xx + explain articles. M.
+- [DONE 2026-05-29 s8] Folded E-CAP-* into E0501..E0507 (codes.rs consts, 9 checker.rs
+  sites, 7 explain articles + list/match, ~13 test assertions updated). `kryos explain
+  E0501..E0507` work. 75 capability tests green. Fixed point 989ba174.
 - Code the ~12 codeless parser errors + ~32 codeless typecheck errors; replace "here". M.
-- LSP runs only lex/parse/typecheck -- add ownership + capability passes
-  (kryos-lsp/src/diagnostics.rs). S.
+- [DONE 2026-05-29 s8] LSP now runs ownership + capability passes too (kryos-lsp
+  check_source extends type_diags with analyze_ownership().errors + check_capabilities()).
+  Added the two crate deps. LSP surfaces E0300/E05xx, not just type errors.
 - offset_to_line_col returns BYTE columns -> caret misaligns on multibyte UTF-8 lines. Verify+fix.
 
 ### Ergonomics gaps (real)

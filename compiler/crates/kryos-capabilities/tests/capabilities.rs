@@ -139,7 +139,7 @@ fn function_using_net_without_capability_produces_error() {
     let errs = errors_only(&diags);
     assert_eq!(errs.len(), 1);
     assert!(errs[0].message.contains("requires `net` capability"));
-    assert_eq!(errs[0].code.as_deref(), Some("E-CAP-MISSING"));
+    assert_eq!(errs[0].code.as_deref(), Some("E0502"));
 }
 
 #[test]
@@ -312,7 +312,7 @@ fn self_heal_escalation_method_call_detected() {
     let diags = check_capabilities(&module);
     assert!(diags
         .iter()
-        .any(|d| d.code.as_deref() == Some("E-CAP-ESCALATION")));
+        .any(|d| d.code.as_deref() == Some("E0504")));
 }
 
 #[test]
@@ -339,7 +339,7 @@ fn self_heal_escalation_fn_call_detected() {
     assert!(
         diags
             .iter()
-            .any(|d| d.code.as_deref() == Some("E-CAP-ESCALATION")),
+            .any(|d| d.code.as_deref() == Some("E0504")),
         "expected escalation error, got: {diags:?}"
     );
 }
@@ -593,10 +593,10 @@ fn escalation_combined_with_capability_violation() {
     assert!(errs.len() >= 2, "should have both violations: {errs:?}");
     assert!(errs
         .iter()
-        .any(|d| d.code.as_deref() == Some("E-CAP-MISSING")));
+        .any(|d| d.code.as_deref() == Some("E0502")));
     assert!(errs
         .iter()
-        .any(|d| d.code.as_deref() == Some("E-CAP-ESCALATION")));
+        .any(|d| d.code.as_deref() == Some("E0504")));
 }
 
 // ── Builtin function capability enforcement ─────────────────────────────────
@@ -663,7 +663,7 @@ fn builtin_file_write_with_wrong_capability_fails() {
     );
     assert!(errs[0].message.contains("file_write"));
     assert!(errs[0].message.contains("io"));
-    assert_eq!(errs[0].code.as_deref(), Some("E-CAP-BUILTIN"));
+    assert_eq!(errs[0].code.as_deref(), Some("E0505"));
 }
 
 #[test]
@@ -718,7 +718,7 @@ fn builtin_http_get_with_io_capability_fails() {
     assert_eq!(errs.len(), 1);
     assert!(errs[0].message.contains("http_get"));
     assert!(errs[0].message.contains("net"));
-    assert_eq!(errs[0].code.as_deref(), Some("E-CAP-BUILTIN"));
+    assert_eq!(errs[0].code.as_deref(), Some("E0505"));
 }
 
 #[test]
@@ -882,7 +882,7 @@ fn multiple_builtin_violations_reported() {
     assert_eq!(errs.len(), 3, "should have 3 builtin violations: {errs:?}");
     assert!(errs
         .iter()
-        .all(|e| e.code.as_deref() == Some("E-CAP-BUILTIN")));
+        .all(|e| e.code.as_deref() == Some("E0505")));
 }
 
 // ── Cross-function propagation ──────────────────────────────────────────────
@@ -937,7 +937,7 @@ fn cross_function_call_with_insufficient_caps_fails() {
     let errs = errors_only(&diags);
     assert_eq!(errs.len(), 1, "a lacks net for calling b: {errs:?}");
     assert!(errs[0].message.contains("net"));
-    assert_eq!(errs[0].code.as_deref(), Some("E-CAP-PROPAGATION"));
+    assert_eq!(errs[0].code.as_deref(), Some("E0507"));
 }
 
 #[test]
@@ -1042,8 +1042,8 @@ fn builtin_and_stdlib_violations_combined() {
     );
     assert!(errs
         .iter()
-        .any(|e| e.code.as_deref() == Some("E-CAP-BUILTIN")));
+        .any(|e| e.code.as_deref() == Some("E0505")));
     assert!(errs
         .iter()
-        .any(|e| e.code.as_deref() == Some("E-CAP-MISSING")));
+        .any(|e| e.code.as_deref() == Some("E0502")));
 }

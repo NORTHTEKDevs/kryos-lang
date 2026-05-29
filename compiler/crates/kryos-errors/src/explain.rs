@@ -39,6 +39,13 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "E0400" => Some(E0400),
         "E0401" => Some(E0401),
         "E0500" => Some(E0500),
+        "E0501" => Some(E0501),
+        "E0502" => Some(E0502),
+        "E0503" => Some(E0503),
+        "E0504" => Some(E0504),
+        "E0505" => Some(E0505),
+        "E0506" => Some(E0506),
+        "E0507" => Some(E0507),
         _ => None,
     }
 }
@@ -69,6 +76,13 @@ pub fn list() -> Vec<(&'static str, &'static str)> {
         ("E0400", "integer overflow in checked operation"),
         ("E0401", "stack overflow (recursion too deep)"),
         ("E0500", "unsafe operation outside `unsafe` context"),
+        ("E0501", "capability import violation"),
+        ("E0502", "missing required capability"),
+        ("E0503", "capability attenuation violation"),
+        ("E0504", "capability escalation"),
+        ("E0505", "builtin capability violation"),
+        ("E0506", "FFI capability violation"),
+        ("E0507", "capability propagation violation"),
     ]
 }
 
@@ -679,4 +693,76 @@ verified the invariants of the operation (see `docs/17-unsafe-audit.md`
 for the runtime's catalog of patterns). It does not turn off any checks
 the compiler already does — it just enables operations that the compiler
 cannot verify on its own.
+"#;
+
+// ----- E0501..E0507: capability system ---------------------------------------
+//
+// Every function carries a capability set inferred from the builtins it calls
+// (io, net, process, ...). These errors fire when the declared/granted set is
+// violated. See docs/10-capabilities.md.
+
+const E0501: &str = r#"E0501: capability import violation
+
+An `import`/`use` brings in a function whose capability requirements exceed
+what the importing scope is allowed to grant. Importing a capability you may
+not hold is rejected at the import site rather than at the call site.
+
+Fix: grant the capability on the entry point (e.g. `// capabilities: io`),
+or import a more attenuated API that does not require it.
+"#;
+
+const E0502: &str = r#"E0502: missing required capability
+
+A function calls an operation that needs a capability (e.g. `file_write`
+needs `io`, `spawn` needs `process`) that the function's inferred or declared
+capability set does not include.
+
+Fix: add the capability to the function/entry-point capability annotation, or
+stop calling the privileged operation on this path.
+"#;
+
+const E0503: &str = r#"E0503: capability attenuation violation
+
+Attenuation may only narrow a capability set, never widen it. A child scope
+tried to claim a capability broader than the one it was handed.
+
+Fix: request only a subset of the parent's capabilities.
+"#;
+
+const E0504: &str = r#"E0504: capability escalation
+
+Code attempted to acquire a capability it was not granted — a privilege
+escalation. Capabilities flow downward through the call graph and cannot be
+conjured locally.
+
+Fix: thread the capability in from a caller that legitimately holds it.
+"#;
+
+const E0505: &str = r#"E0505: builtin capability violation
+
+A builtin was called in a context lacking the capability that builtin
+requires. Builtins like `file_read`/`file_write` (io), `spawn` (process),
+and network operations (net) are capability-gated.
+
+Fix: grant the required capability, or avoid the builtin on this path.
+"#;
+
+const E0506: &str = r#"E0506: FFI capability violation
+
+A foreign (FFI / `extern`) call requires the `ffi` capability (FFI is
+unverifiable, so it is treated as maximally privileged). The current scope
+does not hold it.
+
+Fix: grant `ffi` on the entry point, and prefer wrapping FFI behind a small,
+audited, capability-attenuated module.
+"#;
+
+const E0507: &str = r#"E0507: capability propagation violation
+
+A capability required by a callee was not propagated through an intermediate
+function's signature. Capabilities must be visible along the whole call chain,
+not silently swallowed.
+
+Fix: declare the capability on the intermediate function so it propagates to
+its callers.
 "#;

@@ -152,7 +152,7 @@ impl CapabilityChecker {
                                     path.segments.join("::")
                                 ))
                                 .with_label(path.span, format!("requires `{required_cap}`"))
-                                .with_code("E-CAP-IMPORT"),
+                                .with_code(kryos_errors::codes::E0501),
                             );
                         }
                     }
@@ -193,7 +193,7 @@ impl CapabilityChecker {
                     .with_note(
                         "child scope cannot add capabilities not granted by parent".to_string(),
                     )
-                    .with_code("E-CAP-ATTENUATION"),
+                    .with_code(kryos_errors::codes::E0503),
                 );
             }
         }
@@ -236,7 +236,7 @@ impl CapabilityChecker {
                         "declared here",
                     )
                     .with_note("spawned actor capabilities must be a subset of the spawner's")
-                    .with_code("E-CAP-ATTENUATION"),
+                    .with_code(kryos_errors::codes::E0503),
                 );
             }
         }
@@ -260,7 +260,7 @@ impl CapabilityChecker {
                 self.diagnostics.push(
                     Diagnostic::error("extern block requires `ffi` capability")
                         .with_label(span, "extern block here")
-                        .with_code("E-CAP-FFI"),
+                        .with_code(kryos_errors::codes::E0506),
                 );
             }
         } else {
@@ -384,7 +384,7 @@ impl CapabilityChecker {
                             "capabilities are immutable at compile time; \
                              self-heal actions cannot escalate privileges",
                         )
-                        .with_code("E-CAP-ESCALATION"),
+                        .with_code(kryos_errors::codes::E0504),
                     );
                 }
 
@@ -524,7 +524,7 @@ impl CapabilityChecker {
                         .with_note(format!(
                             "add `@capabilities({required_cap})` to the enclosing function or actor"
                         ))
-                        .with_code("E-CAP-MISSING"),
+                        .with_code(kryos_errors::codes::E0502),
                     );
                 }
             }
@@ -549,7 +549,7 @@ impl CapabilityChecker {
                                 .with_note(format!(
                                     "add `@capabilities({required_cap})` to the enclosing function or actor"
                                 ))
-                                .with_code("E-CAP-BUILTIN"),
+                                .with_code(kryos_errors::codes::E0505),
                             );
                         }
                     }
@@ -584,7 +584,7 @@ impl CapabilityChecker {
                                         .join(", "),
                                     excess_names.join(", ")
                                 ))
-                                .with_code("E-CAP-PROPAGATION"),
+                                .with_code(kryos_errors::codes::E0507),
                             );
                         }
                     }
@@ -607,7 +607,7 @@ impl CapabilityChecker {
                         "capabilities are immutable at compile time; \
                          self-heal actions cannot escalate privileges",
                     )
-                    .with_code("E-CAP-ESCALATION"),
+                    .with_code(kryos_errors::codes::E0504),
                 );
             }
         }
@@ -783,7 +783,7 @@ mod tests {
         let diags = check_capabilities(&module);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("requires `net` capability"));
-        assert_eq!(diags[0].code.as_deref(), Some("E-CAP-MISSING"));
+        assert_eq!(diags[0].code.as_deref(), Some("E0502"));
     }
 
     #[test]
@@ -848,7 +848,7 @@ mod tests {
         assert!(!diags.is_empty());
         assert!(diags
             .iter()
-            .any(|d| d.code.as_deref() == Some("E-CAP-ESCALATION")));
+            .any(|d| d.code.as_deref() == Some("E0504")));
     }
 
     #[test]
@@ -878,7 +878,7 @@ mod tests {
         assert!(!diags.is_empty());
         assert!(diags
             .iter()
-            .any(|d| d.code.as_deref() == Some("E-CAP-ESCALATION")));
+            .any(|d| d.code.as_deref() == Some("E0504")));
     }
 
     #[test]

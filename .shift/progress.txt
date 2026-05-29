@@ -3287,3 +3287,20 @@ SHIFTS:
     work fine with local enums and any in-scope enum.
   NEXT: B6 let-else (AST else_block field on Stmt::Let, ~74 match sites + lower + types),
     then B7 codeless errors, B4 E-CAP/LSP, B8 StringBuilder.
+
+  ---
+  step:    138 (session 8 -- 2026-05-29 "B4: E-CAP->E05xx + LSP passes")
+  date:    2026-05-29
+  DONE (B4):
+    - Capability codes E-CAP-* renumbered to E0501..E0507 (IMPORT/MISSING/ATTENUATION/
+      ESCALATION/BUILTIN/FFI/PROPAGATION). codes.rs consts + 9 checker.rs .with_code sites +
+      7 concise explain articles + list/match arms + ~13 test assertions. kryos explain now
+      covers all capability codes.
+    - LSP check_source (kryos-lsp/diagnostics.rs) now runs ownership + capability analysis
+      after type_check (was type-only). Added kryos-ownership + kryos-capabilities deps. IDE
+      now surfaces moved-value (E0300) + capability (E05xx) errors.
+  VERIFY: cargo build cli+lsp clean (54s). cargo test -p kryos-capabilities = 75 passed/0
+    failed. kryos explain E0501/E0506 print. bootstrap fixed point UNCHANGED 989ba174
+    (capability codes don't affect codegen; LSP is a separate binary).
+  DOCS: CLAUDE.md error-codes section updated (E05xx capability codes, E0303/W0300 ownership).
+  NEXT: B7 codeless errors (44 sites -> error_with_code), then B6 let-else, B8 StringBuilder.

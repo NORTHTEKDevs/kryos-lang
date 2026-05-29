@@ -32,3 +32,12 @@ pub const E0303: &str = "E0303"; // use of partially moved value
 
 // Ownership warnings (W03xx)
 pub const W0300: &str = "W0300"; // conditional move (moved on one branch only)
+
+// Capability errors (E05xx)
+pub const E0501: &str = "E0501"; // capability import violation
+pub const E0502: &str = "E0502"; // missing required capability
+pub const E0503: &str = "E0503"; // capability attenuation violation
+pub const E0504: &str = "E0504"; // capability escalation
+pub const E0505: &str = "E0505"; // builtin capability violation
+pub const E0506: &str = "E0506"; // FFI capability violation
+pub const E0507: &str = "E0507"; // capability propagation violation

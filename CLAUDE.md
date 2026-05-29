@@ -292,7 +292,7 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `
 - `E0102` — undefined variable. Likely typo or missing `use` import.
 - `E0300` — use of moved value. Clone, restructure, or return ownership.
 - `E0100` — type mismatch. Expected one type, found another.
-- Capability violations currently use `E-CAP-*` codes (e.g. `E-CAP-IMPORT`); unsafe-block misuse is `E0500`. (There is no `E0382`/`E0501` despite older docs.)
+- Capability violations use `E0501`-`E0507` (import/missing/attenuation/escalation/builtin/FFI/propagation); unsafe-block misuse is `E0500`. Ownership: moved value `E0300`, uninitialized `E0301`, immutable assign `E0302`, partial move `E0303`, conditional-move warning `W0300`. (`E0382` is a Rust code, not Kryos.) All are explainable via `kryos explain <code>`.
 
 `kryos explain <code>` gives the full version with examples.
 

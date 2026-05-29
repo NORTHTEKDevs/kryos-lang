@@ -90,10 +90,14 @@ pub fn check_source(source: &str, file_uri: &str) -> (Vec<Value>, kryos_errors::
         }
     };
 
-    // Run type checker
-    let type_diags = kryos_types::type_check(&module);
+    // Run type checking, then ownership and capability analysis, so the LSP
+    // surfaces the same diagnostics as the full driver pipeline (previously it
+    // reported only type errors, hiding moved-value and capability problems).
+    let mut all_diags = kryos_types::type_check(&module);
+    all_diags.extend(kryos_ownership::analyze_ownership(&module).errors);
+    all_diags.extend(kryos_capabilities::check_capabilities(&module));
 
-    let lsp_diags: Vec<Value> = type_diags
+    let lsp_diags: Vec<Value> = all_diags
         .iter()
         .filter_map(|d| to_lsp_diagnostic(d, &source_map))
         .collect();
