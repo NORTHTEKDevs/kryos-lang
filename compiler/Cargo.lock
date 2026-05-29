@@ -1358,9 +1358,11 @@ name = "kryos-lsp"
 version = "4.43.0-rc.4"
 dependencies = [
  "kryos-ast",
+ "kryos-capabilities",
  "kryos-errors",
  "kryos-fmt",
  "kryos-lexer",
+ "kryos-ownership",
  "kryos-parser",
  "kryos-types",
  "serde_json",
