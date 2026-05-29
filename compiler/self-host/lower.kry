@@ -1091,13 +1091,20 @@ fn lower_fn_call(ctx: LowerCtx, e: Expr) -> Operand {
         // Map to runtime name
         let runtime_name = builtin_runtime_name(fn_name)
 
-        // NOTE: typing user-call results as their (struct) return type here
-        // exposes a downstream lowering crash on the full self-host source
-        // (works for isolated cases, crashes on some construct at scale --
-        // not yet root-caused). For now leave user-call results as ANY and
-        // rely on explicit annotations (`let mut lex: Lexer = lexer_new(...)`)
-        // at the call-init sites whose fields are accessed.
-        let result_ty: MirType = resolve_call_result_type(fn_name, e.args)
+        // Carry a user function's STRUCT return type onto the call result so
+        // `x.field` resolves the right field index WITHOUT manual call-init
+        // annotations. Struct-only (the fn_sig table holds only struct-returning
+        // fns); ctx_fn_ret_type indexes fn_sig directly (no O(n^2) copy). Only
+        // override when the builtin heuristic left the result ANY, and only
+        // adopt struct return types -- keeps the change to shallow @copy clones
+        // (no deep-clone memory blow-up).
+        let mut result_ty: MirType = resolve_call_result_type(fn_name, e.args)
+        if result_ty.kind == MIR_TY_ANY {
+            let user_ty: MirType = ctx_fn_ret_type(ctx, fn_name)
+            if user_ty.kind == MIR_TY_STRUCT {
+                result_ty = user_ty
+            }
+        }
         let t = ctx_alloc_temp(ctx, result_ty)
         ctx_emit(ctx, inst_assign(t, rv_call(runtime_name, call_args)))
         return op_local(t)
