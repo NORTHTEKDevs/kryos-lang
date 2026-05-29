@@ -605,10 +605,10 @@ fn lex_scan_token(lex: Lexer) -> Lexer {
 // -------------------------------------------------------------------
 
 fn tokenize(src: str) -> [Token] {
-    // Explicit type: lexer_new is a user function whose return type the
-    // self-host lowering does not yet infer onto the local, so `lex.tokens`
-    // / `lex.pos` would otherwise resolve to field index 0.
-    let mut lex: Lexer = lexer_new(src)
+    // lex: Lexer is now INFERRED from lexer_new's struct return type
+    // (typecheck via fn_sigs ret_type; lowering via ctx_fn_ret_type), so
+    // `lex.tokens` / `lex.pos` resolve correctly with no annotation.
+    let mut lex = lexer_new(src)
 
     while not lex_at_end(lex) {
         lex = lex_skip_ws(lex)
