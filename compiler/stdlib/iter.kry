@@ -385,52 +385,100 @@ fn rev(arr: [any]) -> [any] {
     return result
 }
 
-/// Sort an array in ascending order (insertion sort).
+/// Sort an array in ascending order. Stable, iterative bottom-up merge sort
+/// (O(n log n) -- was O(n^2) insertion sort).
 fn sort(arr: [any]) -> [any] {
-    let alen = len(arr)
-    let mut result = []
+    let n = len(arr)
+    let mut src = []
+    let mut buf = []
     let mut i = 0
-    while i < alen {
-        push(result, arr[i])
+    while i < n {
+        push(src, arr[i])
+        push(buf, arr[i])
         i = i + 1
     }
-    // Insertion sort
-    i = 1
-    while i < alen {
-        let key = result[i]
-        let mut j = i - 1
-        while j >= 0 and result[j] > key {
-            result[j + 1] = result[j]
-            j = j - 1
+    if n < 2 {
+        return src
+    }
+    let mut width = 1
+    while width < n {
+        let mut lo = 0
+        while lo < n {
+            let mut mid = lo + width
+            if mid > n { mid = n }
+            let mut hi = mid + width
+            if hi > n { hi = n }
+            let mut a = lo
+            let mut b = mid
+            let mut k = lo
+            while k < hi {
+                if a < mid and (b >= hi or src[a] <= src[b]) {
+                    buf[k] = src[a]
+                    a = a + 1
+                } else {
+                    buf[k] = src[b]
+                    b = b + 1
+                }
+                k = k + 1
+            }
+            lo = lo + width + width
         }
-        result[j + 1] = key
-        i = i + 1
+        i = 0
+        while i < n {
+            src[i] = buf[i]
+            i = i + 1
+        }
+        width = width + width
     }
-    return result
+    return src
 }
 
-/// Sort by a custom comparator. cmp(a, b) should return negative/zero/positive.
+/// Sort by a custom comparator. cmp(a, b) returns negative/zero/positive.
+/// Stable, iterative bottom-up merge sort (O(n log n)).
 fn sort_by(arr: [any], cmp: fn) -> [any] {
-    let alen = len(arr)
-    let mut result = []
+    let n = len(arr)
+    let mut src = []
+    let mut buf = []
     let mut i = 0
-    while i < alen {
-        push(result, arr[i])
+    while i < n {
+        push(src, arr[i])
+        push(buf, arr[i])
         i = i + 1
     }
-    // Insertion sort with comparator
-    i = 1
-    while i < alen {
-        let key = result[i]
-        let mut j = i - 1
-        while j >= 0 and cmp(result[j], key) > 0 {
-            result[j + 1] = result[j]
-            j = j - 1
+    if n < 2 {
+        return src
+    }
+    let mut width = 1
+    while width < n {
+        let mut lo = 0
+        while lo < n {
+            let mut mid = lo + width
+            if mid > n { mid = n }
+            let mut hi = mid + width
+            if hi > n { hi = n }
+            let mut a = lo
+            let mut b = mid
+            let mut k = lo
+            while k < hi {
+                if a < mid and (b >= hi or cmp(src[a], src[b]) <= 0) {
+                    buf[k] = src[a]
+                    a = a + 1
+                } else {
+                    buf[k] = src[b]
+                    b = b + 1
+                }
+                k = k + 1
+            }
+            lo = lo + width + width
         }
-        result[j + 1] = key
-        i = i + 1
+        i = 0
+        while i < n {
+            src[i] = buf[i]
+            i = i + 1
+        }
+        width = width + width
     }
-    return result
+    return src
 }
 
 /// Sort by a key function: sort_by_key(users, fn(u) { return u.age }).
