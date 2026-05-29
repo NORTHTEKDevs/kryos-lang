@@ -2271,39 +2271,47 @@ fn tc_check_module(tc: TypeChecker, module: Module) -> TypeChecker {
         tc2 = tc_register_decl(tc2, module.declarations[i])
     }
 
-    // Pass 1.5: register top-level `let NAME = <const>` constants as globals.
-    // The parser wraps top-level statements in a `<top-level>` pseudo-function,
-    // so without this they are only locals of that function and references from
-    // other functions report "undefined variable" (e.g. LREL_PC32, LSEC_TEXT).
-    for i in range(0, len(module.declarations)) {
-        let d2: Decl = module.declarations[i]
-        if d2.kind == DECL_FUNCTION and d2.name == "<top-level>" {
-            for j in range(0, len(d2.fn_body)) {
-                let gst: Stmt = d2.fn_body[j]
-                if gst.kind == STMT_LET and len(gst.let_value) > 0 {
-                    let gv: Expr = gst.let_value[0]
-                    let mut gt: TypeInfo = ty_any()
-                    if gv.kind == EXPR_INT_LIT {
-                        gt = ty_i64()
-                    } elif gv.kind == EXPR_UNARY_OP {
-                        gt = ty_i64()
-                    } elif gv.kind == EXPR_STRING_LIT {
-                        gt = ty_str()
+    // KRYOS_SKIP_TYPES gates BOTH Pass 1.5 and Pass 2. Pass 1.5 threads the
+    // growing TypeChecker through tc_define per top-level let; at bootstrap
+    // concat size (hundreds of top-level consts across 16 modules) that is
+    // O(N^2) and blows the heap (~10GB). Its output (top-level variable
+    // symbols) only suppresses typecheck false positives -- lowering consumes
+    // only the Pass-1 symbol tables (struct_defs, fn_sigs, enum_defs) -- so
+    // under SKIP_TYPES skipping it is safe and restores the ~1.6GB self-host
+    // build. (When SKIP_TYPES is removed, Pass 1.5's tc_define threading must
+    // be made non-O(N^2) -- e.g. a mutable global symbol table.)
+    let skip_types = env_get("KRYOS_SKIP_TYPES")
+    if len(skip_types) == 0 {
+        // Pass 1.5: register top-level `let NAME = <const>` constants as
+        // globals. The parser wraps top-level statements in a `<top-level>`
+        // pseudo-function, so without this they are only locals of that
+        // function and references from other functions report "undefined
+        // variable" (e.g. LREL_PC32, LSEC_TEXT).
+        for i in range(0, len(module.declarations)) {
+            let d2: Decl = module.declarations[i]
+            if d2.kind == DECL_FUNCTION and d2.name == "<top-level>" {
+                for j in range(0, len(d2.fn_body)) {
+                    let gst: Stmt = d2.fn_body[j]
+                    if gst.kind == STMT_LET and len(gst.let_value) > 0 {
+                        let gv: Expr = gst.let_value[0]
+                        let mut gt: TypeInfo = ty_any()
+                        if gv.kind == EXPR_INT_LIT {
+                            gt = ty_i64()
+                        } elif gv.kind == EXPR_UNARY_OP {
+                            gt = ty_i64()
+                        } elif gv.kind == EXPR_STRING_LIT {
+                            gt = ty_str()
+                        }
+                        tc2 = tc_define(tc2, gst.name, gt, false)
                     }
-                    tc2 = tc_define(tc2, gst.name, gt, false)
                 }
             }
         }
-    }
 
-    // Pass 2: type-check all function bodies. Skipped under KRYOS_SKIP_TYPES:
-    // body checking only appends (ignored) type errors -- lowering consumes
-    // only the Pass-1 symbol tables (struct_defs, fn_sigs, enum_defs). On
-    // bootstrap-sized input the recursive tc_check_expr walk is the dominant
-    // cost and blows the heap, so skipping it is both safe (results discarded)
-    // and necessary.
-    let skip_types = env_get("KRYOS_SKIP_TYPES")
-    if len(skip_types) == 0 {
+        // Pass 2: type-check all function bodies. body checking only appends
+        // (ignored) type errors; the recursive tc_check_expr walk dominates
+        // cost and blows the heap on bootstrap input, so skipping it under
+        // SKIP_TYPES is both safe (results discarded) and necessary.
         for i in range(0, len(module.declarations)) {
             tc2 = tc_check_decl(tc2, module.declarations[i])
         }
