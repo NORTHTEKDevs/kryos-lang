@@ -360,7 +360,8 @@ impl InferenceEngine {
             _ => {
                 let mut diag =
                     Diagnostic::error(format!("type mismatch: expected `{a}`, found `{b}`"))
-                        .with_label(span, format!("expected type `{a}`, found `{b}`"));
+                        .with_label(span, format!("expected type `{a}`, found `{b}`"))
+                        .with_code(kryos_errors::codes::E0100);
 
                 // Add helpful notes for common mismatches.
                 if (a == Type::Str && b.is_numeric()) || (b == Type::Str && a.is_numeric()) {
