@@ -768,8 +768,13 @@ fn resolve_simple_type(tc: TypeChecker, name: str) -> TypeInfo {
 // Expression type checking
 // ===================================================================
 
-// Result wrapper for expression checking
-@copy
+// Result wrapper for expression checking.
+// NON-@copy: it embeds the (non-@copy) TypeChecker, which threads the growing
+// scopes/fn_sigs/struct_defs/errors arrays. @copy here deep-cloned the whole
+// checker on EVERY expression node (tc_check_expr builds one per node,
+// recursively) -> O(N^2) heap that OOMed the bootstrap typecheck (same class
+// as the step-84 Lexer fix). Usage is strictly linear: construct, destructure
+// .tc/.ty at the call site, discard -- so move semantics are correct.
 struct TCExprResult {
     tc: TypeChecker,
     ty: TypeInfo

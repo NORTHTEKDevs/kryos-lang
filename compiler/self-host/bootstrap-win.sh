@@ -11,16 +11,16 @@
 # the compiler reproduces itself: SELF-HOSTING.
 #
 # Windows links externally (link-win.ps1: link.exe + kryos_rt.lib +
-# kryos_stdlib_native.lib + rt_shim_win.obj). The self-host typechecker is
-# still incomplete vs stage-0, so KRYOS_SKIP_TYPES=1 bypasses its
-# false-positive ownership/type errors (codegen self-hosting is the goal here).
+# kryos_stdlib_native.lib + rt_shim_win.obj). The self-host typechecker now
+# runs CLEAN on its own source (0 errors) within bounded memory, so
+# KRYOS_SKIP_TYPES is no longer set -- the obj path type-checks itself.
 set -euo pipefail
 cd "$(dirname "$0")/.."          # compiler/
 K=target/release/kryos.exe
 SD=self-host
 BT=target/bootstrap
 MODS="runtime token lexer ast parser types mir lower optimize regalloc x86 codegen elf coff linker main"
-export KRYOS_NO_ASLR=1 KRYOS_SKIP_TYPES=1
+export KRYOS_NO_ASLR=1
 
 link() { powershell -NoProfile -ExecutionPolicy Bypass -File "$SD/link-win.ps1" "$(cygpath -w "$1")" "$(cygpath -w "$2")" >/dev/null 2>&1; }
 regen() { : > "$BT/kryos-sh-full.kry"; for m in $MODS; do cat "$SD/$m.kry" >> "$BT/kryos-sh-full.kry"; done
