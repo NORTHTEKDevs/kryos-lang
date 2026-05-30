@@ -3457,3 +3457,18 @@ SHIFTS:
   NEW BUG (JIT ok, AOT fails): sweep2 AOT -> LLVM "%t51 i64 but expected ptr" (ptrtoint).
     Likely my map fix EXPOSED a latent map-on-AOT codegen gap (map never typechecked before
     -> AOT codegen never ran). Investigating next.
+
+  ---
+  step:    151 (session 8 -- 2026-05-29 "map AOT codegen diagnosis")
+  date:    2026-05-29
+  DIAGNOSED (not fixed): maps work on JIT but FAIL on LLVM AOT. My map-type fix (149) exposed
+    it. MIR DOES lower map index -> kryos_map_get[_str] (lower.rs:4634). Bug = LLVM call-arg
+    coercion emits `ptrtoint ptr %t7 to i64` to pass the string key to kryos_map_get_str(i64,
+    i64), but %t7 is already i64 (string-rep inconsistency: strings sometimes ptr, sometimes
+    i64-handle in LLVM). Fix = guard that ptrtoint on the key operand's real LLVM type. Fiddly
+    string-rep work (many ptrtoint sites), not a one-liner -> deferred to a focused session.
+    Maps work on JIT today; documented precisely in backlog.
+  SWEEP SCORECARD this session (correctness bugs found+fixed via feature sweeps): any-type AOT
+    (147), bare variant patterns (148), map<K,V> annotation mismatch (149), Result<T,E>/
+    Option<T> unify (150). Plus diagnosed: map-AOT-codegen, contains(map), format {0}, any
+    to_string runtime tag.
