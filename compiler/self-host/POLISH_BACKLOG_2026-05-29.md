@@ -52,10 +52,22 @@ the only one left -- perf-only, non-blocking, needs a cdb runtime trace.
   Verified byte-identical on JIT+AOT (HELLO/hello/fedcba/empty/[Z]); fixed point 989ba174.
   These are global builtins (no import needed). pad_left/pad_right ALSO done (output size =
   width, known): verified [00042]/[42...]/[hello]/[   x] on JIT+AOT. So to_upper/to_lower/
-  reverse/pad_left/pad_right (the 5 common ops) are all O(n) now. REMAINING (unknown output
-  size -> need a grow-buffer, not fixed alloc): fmt.kry (_replace_all/center/_escape_string),
-  json.kry serialize. NOTE: do NOT touch self-host lower.kry/codegen.kry concat (bootstrap
-  critical path).
+  reverse/pad_left/pad_right (the 5 common ops) are all O(n) now. fmt.kry _replace_all
+  (TWO-PASS alloc: count matches -> fill exact size; written bytes provably == out_len) +
+  fmt pad_left/pad_right ALSO done; verified JIT+AOT (hell0 w0rld, bbbbbb, ba, a-b-c-d,
+  [00042], [42...]). REMAINING string perf: fmt center/_escape_string + json.kry serialize
+  (unknown size; the grow-buffer buf_new family is UNUSED by any .kry and may have JIT-
+  registration / handle-vs-ptr gaps -> use two-pass alloc, NOT buf_new). NOTE: do NOT touch
+  self-host lower.kry/codegen.kry concat (bootstrap critical path).
+
+### Pre-existing bugs surfaced 2026-05-29 s8 (NOT regressions; found while testing)
+- `fmt.format("...{0}...", args)`: the `{0}` placeholder collides with Kryos STRING
+  INTERPOLATION -- a literal `"{0}"` is interpolated at compile time, so format() gets a
+  mangled template ("Hello, {0}!" -> "Hello, 0!"). Fix = change format's placeholder syntax
+  or escape. M.
+- `any`-typed values miscompile on LLVM AOT: passing `[any]` to a fn emits `load %any` ->
+  clang "load operand must be a pointer to a first class type" (`any` isn't first-class LLVM).
+  JIT path differs. Needs `any` to lower to a boxed-pointer rep on LLVM. M/L.
 
 ### Diagnostics (stage-0 engine is strong; self-host regresses to bare strings)
 - [DONE 2026-05-29 session 8] Self-host byte-offset -> line:col. Was: tc_error/p_error

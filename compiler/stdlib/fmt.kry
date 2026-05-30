@@ -34,7 +34,10 @@ fn _replace_all(s: str, old: str, new: str) -> str {
     if olen == 0 {
         return s
     }
-    let mut result = ""
+    // Two-pass O(n): count non-overlapping matches, then fill a buffer of the
+    // exact output size, instead of repeated `result + ...` (O(n^2)). The
+    // written byte count provably equals out_len = slen + count*(nlen-olen).
+    let mut count = 0
     let mut i = 0
     while i < slen {
         let mut matched = true
@@ -51,14 +54,48 @@ fn _replace_all(s: str, old: str, new: str) -> str {
             }
         }
         if matched {
-            result = result + new
+            count = count + 1
             i = i + olen
         } else {
-            result = result + s[i]
             i = i + 1
         }
     }
-    return result
+    let out_len = slen + count * (nlen - olen)
+    if out_len == 0 {
+        return ""
+    }
+    let buf = alloc(out_len)
+    let mut w = 0
+    i = 0
+    while i < slen {
+        let mut matched = true
+        if i + olen > slen {
+            matched = false
+        } else {
+            let mut j = 0
+            while j < olen {
+                if s[i + j] != old[j] {
+                    matched = false
+                    j = olen
+                }
+                j = j + 1
+            }
+        }
+        if matched {
+            let mut k = 0
+            while k < nlen {
+                ptr_set_byte(buf, w, char_code(new[k]))
+                w = w + 1
+                k = k + 1
+            }
+            i = i + olen
+        } else {
+            ptr_set_byte(buf, w, char_code(s[i]))
+            w = w + 1
+            i = i + 1
+        }
+    }
+    return buf_to_str(buf, out_len)
 }
 
 // --- Padding and alignment ---------------------------------------------------
@@ -69,15 +106,20 @@ fn pad_left(s: str, width: i64, ch: str) -> str {
     if slen >= width {
         return s
     }
-    let fill = if len(ch) > 0 { ch[0] } else { " " }
-    let mut padding = ""
-    let mut i = 0
+    let fill = if len(ch) > 0 { char_code(ch[0]) } else { 32 }
     let pad_count = width - slen
+    let buf = alloc(width)
+    let mut i = 0
     while i < pad_count {
-        padding = padding + fill
+        ptr_set_byte(buf, i, fill)
         i = i + 1
     }
-    return padding + s
+    let mut j = 0
+    while j < slen {
+        ptr_set_byte(buf, pad_count + j, char_code(s[j]))
+        j = j + 1
+    }
+    return buf_to_str(buf, width)
 }
 
 /// Pad a string on the right to reach target width.
@@ -86,15 +128,20 @@ fn pad_right(s: str, width: i64, ch: str) -> str {
     if slen >= width {
         return s
     }
-    let fill = if len(ch) > 0 { ch[0] } else { " " }
-    let mut result = s
-    let mut i = 0
+    let fill = if len(ch) > 0 { char_code(ch[0]) } else { 32 }
     let pad_count = width - slen
+    let buf = alloc(width)
+    let mut j = 0
+    while j < slen {
+        ptr_set_byte(buf, j, char_code(s[j]))
+        j = j + 1
+    }
+    let mut i = 0
     while i < pad_count {
-        result = result + fill
+        ptr_set_byte(buf, slen + i, fill)
         i = i + 1
     }
-    return result
+    return buf_to_str(buf, width)
 }
 
 /// Center a string within the given width.

@@ -3383,3 +3383,17 @@ SHIFTS:
     unaffected (stdlib not on self-host path).
   STRING PERF NOW: to_upper/to_lower/reverse/pad_left/pad_right all O(n). Remaining string
     perf = fmt.kry/json.kry (unknown output size -> grow-buffer; lower priority).
+
+  ---
+  step:    145 (session 8 -- 2026-05-29 "B8 cont: fmt.kry _replace_all + pad O(n)")
+  date:    2026-05-29
+  DONE: stdlib/fmt.kry _replace_all O(n^2) -> O(n) via TWO-PASS alloc (count matches, then
+    fill a buffer of exactly slen + count*(nlen-olen) bytes -- written count provably ==
+    out_len). Also fmt pad_left/pad_right (duplicates of string.kry's) -> O(n).
+  VERIFY (isolated, no any/format): JIT+AOT _replace_all hell0 w0rld / bbbbbb / ba / abc /
+    [] / a-b-c-d / a-b-c-d; pad [00042]/[42...]/[hi]. All byte-correct.
+  SURFACED 2 PRE-EXISTING bugs (NOT mine, logged in backlog): (1) fmt.format {0} placeholder
+    collides with string interpolation -> mangled template. (2) `any`-typed values miscompile
+    on LLVM AOT (`load %any` clang error); JIT differs. Both predate this session.
+  NOTE: grow-buffer buf_new family is UNUSED by any .kry (untested, possible JIT/handle gaps)
+    -> used two-pass alloc instead. Remaining string perf (fmt center/_escape, json) = low pri.
