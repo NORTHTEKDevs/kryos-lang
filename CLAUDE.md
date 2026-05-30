@@ -312,6 +312,9 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `
 11. **Closures use bar syntax, not arrows.** `|x| x + 1`, `|x: i64| x + 1`, or `fn(x: i64) -> i64 { ... }`. There is **no** `(x) => expr` form (`=>` is match-arm-only). Closures capture surrounding variables by value (`let n = 10; let f = |x| x + n`), can be passed as `fn(i64) -> i64` params, returned from **named** functions (`fn mk(n: i64) -> fn(i64) -> i64 { return |x| x + n }`), and stored in variables — all on both backends. **Limitation:** a lambda whose body is *itself a lambda literal* (`|n| |x| x + n`, direct currying) is not yet supported — wrap the outer in a named function instead.
 12. **`?` operator works on both backends** (Cranelift JIT and LLVM AOT). `let v = parse(s)?` returns early with the `Err` on failure. Use `Result<T, E>` (e.g. `Result<i64, str>`) return types.
 13. **`Result`/`Option` payloads carry their real types when written with explicit args.** `Result<i64, str>` binds `Err(e)` as `str`, so `println(e)` prints the string directly. With a *bare* `Result` (no `<...>`) the payload erases to `i64`, so a `str` payload used directly prints as a number — always annotate `Result<T, E>` / `Option<T>` on signatures.
+14. **Or-patterns work in match arms:** `match n { 1 | 2 | 3 => "low", _ => "high" }` and `match c { Red | Green => "warm", Blue => "cool" }`. Alternatives must be non-binding (literals or bare enum variants).
+15. **Matching directly on a tuple *value* is not yet supported.** `match p { (0, 0) => ..., _ => ... }` silently takes the wildcard arm — it does not compare the tuple. Destructure first (`let (a, b) = p`) or compare fields (`if p.0 == 0 && p.1 == 0 { ... }`), both of which work on both backends. (Tuple patterns in `let`/function params are fine; only `match` on a tuple is unsupported.)
+16. **Struct-style enum variants are not supported.** `enum E { A { x: i64 } }` is rejected with a clear error — use a tuple variant `A(i64)` and match `A(x)`.
 
 ## When in doubt
 
@@ -326,6 +329,8 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `
 - **Don't use `else if`.** Use `elif`.
 - **Closures are `|x|` / `|x: i64|`, never `(x) => ...`.** Don't directly nest lambda literals (`|n| |x| ...`); use a named outer function.
 - **Annotate `Result<T, E>` and `Option<T>` on function signatures** so non-`i64` payloads keep their type when used directly.
+- **Don't `match` on a tuple value** (`match p { (0,0) => ... }` silently mismatches). Destructure (`let (a,b) = p`) or compare fields. Or-patterns (`A | B =>`) and enum/int/string/bool matches are fine.
+- **Don't use struct-style enum variants** (`A { x: i64 }`); use tuple variants (`A(i64)`).
 - **Don't fabricate stdlib functions.** If you're not sure a function exists, write a thin wrapper around the builtins in the table above.
 - **Don't claim async/await works without checking.** It exists in the grammar but has caveats — read `docs/09-concurrency.md` first.
 - **Test what you wrote.** `kryos run` is fast; use it. If the user has the toolchain installed, run the file before claiming it works.

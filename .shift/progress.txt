@@ -3725,3 +3725,19 @@ SHIFTS:
   REMAINING battery-4: match on tuple LITERAL `(0,0)` still silently falls through to wildcard
     (correctness footgun; full impl = a 3rd terminator chain + element binding, higher risk --
     documenting as known limitation, workaround = `let (a,b) =` destructure or nested if).
+
+  ---
+  step:    166 (session 8 -- 2026-05-30 "doc tuple-match limitation + struct-variant; doc-only")
+  date:    2026-05-30
+  Tuple-literal match `(0,0) =>` decision: NOT implemented this session. Full impl = a 3rd
+    terminator chain (element-extract + AND-compare) + a tuple-binding path in arm emission,
+    the riskiest change to the bootstrap-critical match lowering after 3 prior modifications.
+    Clean workarounds now exist + VERIFIED both backends: `let (a,b)=p` destructure, or
+    `if p.0==0 && p.1==0` (tuple field access, fixed step 159). Documented as known limitation
+    (gotcha #15 + "When generating Kryos code"). Also documented #14 or-patterns WORK, #16
+    struct-variant enums rejected with clear error.
+  Battery 4 fully triaged. Session 8 net: 8 commits (159-166). 159 tuple-field-access,
+    160 ?-operator/diverging-match AOT (exhaustive-enum default->Unreachable), 161 generic
+    Result/Option payload typing, 162 closure/?/Result docs, 163 FIX COMPILER HANG on
+    struct-variant enums, 164 split_lines impl+docs, 165 or-patterns, 166 docs. Bootstrap
+    byte-identical 989ba174 throughout.
