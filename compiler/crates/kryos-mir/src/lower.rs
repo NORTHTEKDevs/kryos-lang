@@ -4239,6 +4239,40 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 };
             }
 
+            // Map builtins: when the first arg is a map, dispatch to the
+            // kryos_map_* runtime by the map's KEY type. Otherwise these names
+            // fall through to an undefined symbol (`keys`, `map_has`) or the
+            // string `contains`. The str-key variants are already covered by
+            // runtime_param_types so the key is coerced to an i64 handle.
+            if matches!(
+                func_name.as_str(),
+                "contains" | "map_has" | "keys" | "map_keys" | "map_delete"
+            ) && !args.is_empty()
+            {
+                let obj_ty = infer_expr_type(ctx, &args[0]);
+                if let MirType::Map { key, .. } = &obj_ty {
+                    let key_is_str = matches!(key.as_ref(), MirType::Str);
+                    let rt = match func_name.as_str() {
+                        "contains" | "map_has" => {
+                            if key_is_str { "kryos_map_has_str" } else { "kryos_map_has" }
+                        }
+                        "keys" | "map_keys" => {
+                            if key_is_str { "kryos_map_keys_str" } else { "kryos_map_keys" }
+                        }
+                        "map_delete" => {
+                            if key_is_str { "kryos_map_delete_str" } else { "kryos_map_delete" }
+                        }
+                        _ => unreachable!(),
+                    };
+                    let mir_args: Vec<Operand> =
+                        args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
+                    return RValue::Call {
+                        func: rt.to_string(),
+                        args: mir_args,
+                    };
+                }
+            }
+
             // Check if this is a call to a generic function — monomorphize.
             if ctx.generic_templates.contains_key(&func_name) {
                 let arg_types: Vec<MirType> =

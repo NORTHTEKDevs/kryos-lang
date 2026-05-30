@@ -3509,3 +3509,18 @@ SHIFTS:
   NEW (found while confirming): sync.kry AOT -> "multiple definition of local value '_0'"
     (SSA-naming dup, separate); `usize` fails at TYPECHECK (USize != I64 mismatch, needs
     unification -- more than the auditor's codegen fix).
+
+  ---
+  step:    154 (session 8 -- 2026-05-30 "Batch B: map builtins map_has/keys/contains")
+  date:    2026-05-30
+  DONE: map_has(m,k) / keys(m) / map_delete(m,k) / contains(m,k) for maps. lower.rs FnCall
+    arm: when arg0 is MirType::Map, dispatch to kryos_map_has[_str]/keys[_str]/delete[_str]
+    by the map KEY type (mirrors the IndexAccess->map_get dispatch). check.rs: made `contains`
+    haystack lenient (Type::Error, like map_has) so contains works on str AND str-keyed map;
+    lowering routes by type. (_str param types already added in step 152.)
+  VERIFY: JIT+AOT: map_has=true, keys len=2, contains(map)=found, contains(str,str)=yes
+    (regression OK). bootstrap 989ba174. cargo 50s.
+  NOTE: discovered the LOWERING already does bare enum construction (find_enum_variant at
+    lower.rs:4232) -- so bare `Some(42)` construction is broken at TYPECHECK ONLY (next batch).
+  REMAINING from wave: ARC/drop LLVM bugs (ranks 7,8,9,15), Cranelift map drop (12,13,14),
+    values(m) full-stack (17), sync _0 SSA dup, usize typecheck.

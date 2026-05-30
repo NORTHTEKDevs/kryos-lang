@@ -3657,8 +3657,12 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
         name: "contains".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        // haystack is lenient (Type::Error) so `contains` works on both a str
+        // (substring search) and a str-keyed map (key membership). MIR lowering
+        // dispatches to kryos_map_has[_str] vs kryos_builtin_contains by the
+        // first arg's type. Mirrors map_has.
         params: vec![
-            ("haystack".to_string(), Type::Str),
+            ("haystack".to_string(), Type::Error),
             ("needle".to_string(), Type::Str),
         ],
         ret: Type::Bool,
