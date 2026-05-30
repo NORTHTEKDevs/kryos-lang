@@ -3833,3 +3833,24 @@ SHIFTS:
   Workflow verdict on the other 3 deferred items: tuple-literal-match = implement (5 corrections);
     generic-struct-impl = partial (deep, AST change); hof-closure-inference = DEFER (Part A would
     trade the clean error for a silent miscompile on non-i64 via Type::Error->I64 fallback).
+
+  ---
+  step:    173 (session 8 -- 2026-05-30 "FEATURE: tuple-literal match (silent footgun fixed)")
+  date:    2026-05-30
+  Deferred item #2 of 4 (workflow-investigated + adversarially verified; the verifier caught 5
+    bugs in the first design, all applied). Footgun: `match p { (0,0) => ... }` SILENTLY took
+    the wildcard arm (Pattern::Tuple fell through to the `_ => default_arm` catch-all).
+  IMPLEMENTED in lower_match (crates/kryos-mir/src/lower.rs): TupleBinding struct; arm_blocks
+    widened to a 4-tuple (Option<TupleBinding> slot) -- updated all 6 push sites + 2
+    read-destructure sites + the per-arm destructure (the verifier flagged the 2 read sites &
+    the wrong push count); new tuple_targets vec + Pattern::Tuple collection arm; a tuple
+    comparison-chain terminator emission (else-if between the string chain and the Switch)
+    that extracts each element via RValue::Field, compares literal elements (int/bool/float/
+    STRING -- verifier caught the missing string case) with BinOp::Eq AND'd together, and
+    branches; ident elements bound in the per-arm loop via RValue::Field. Borrow fix:
+    `let subj_ty = infer_expr_type(...); if let MirType::Tuple(elems) = subj_ty` (not a
+    temporary). Cursor: last Branch passes first arm block as the loop cursor.
+  VERIFY both backends (9 tests): (0,0)->origin, (1,2)->other, ident-bind (x,7)->x=3,
+    wildcard (5,_), mixed str (1,s)->s, string-literal ("ok",n)->n, 3-tuple (1,2,3), plus
+    int-match + enum-match regressions. bootstrap BYTE-IDENTICAL 989ba174. cargo 38s.
+  CLAUDE.md gotcha #15 updated: tuple match now WORKS (was "unsupported").

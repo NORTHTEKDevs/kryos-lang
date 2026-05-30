@@ -3264,6 +3264,12 @@ struct EnumBinding {
     field_patterns: Vec<ast::Pattern>,
 }
 
+/// Per-arm tuple binding: the element patterns of a `(a, b, ..)` match arm,
+/// used to bind ident elements after the arm's comparison succeeds.
+struct TupleBinding {
+    element_patterns: Vec<ast::Pattern>,
+}
+
 fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::MatchArm]) -> Operand {
     let subj_op = lower_expr_to_operand(ctx, subject);
     // Infer the result type from the first arm's body expression.
@@ -3341,7 +3347,9 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
     // Collect arms into switch targets.
     let mut targets: Vec<(i64, BlockId)> = Vec::new();
     let mut string_targets: Vec<(String, BlockId)> = Vec::new();
-    let mut arm_blocks: Vec<(BlockId, &ast::Expr, Option<EnumBinding>)> = Vec::new();
+    let mut tuple_targets: Vec<(Vec<ast::Pattern>, BlockId)> = Vec::new();
+    let mut arm_blocks: Vec<(BlockId, &ast::Expr, Option<EnumBinding>, Option<TupleBinding>)> =
+        Vec::new();
     let mut default_arm: Option<(BlockId, &ast::Expr)> = None;
     // Enum being matched, used to decide exhaustiveness for the switch default.
     let mut enum_for_exhaustiveness: Option<String> = subj_enum_name.clone();
@@ -3374,6 +3382,7 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                                 variant_idx: idx as u32,
                                 field_patterns: fields.clone(),
                             }),
+                            None,
                         ));
                     } else {
                         default_arm = Some((arm_bb, &arm.body));
@@ -3385,16 +3394,16 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
             ast::Pattern::Literal { expr, .. } => {
                 if let ast::Expr::IntLiteral { value, .. } = expr.as_ref() {
                     targets.push((*value, arm_bb));
-                    arm_blocks.push((arm_bb, &arm.body, None));
+                    arm_blocks.push((arm_bb, &arm.body, None, None));
                 } else if let ast::Expr::StringLiteral { value, .. } = expr.as_ref() {
                     string_targets.push((value.clone(), arm_bb));
-                    arm_blocks.push((arm_bb, &arm.body, None));
+                    arm_blocks.push((arm_bb, &arm.body, None, None));
                 } else if let ast::Expr::BoolLiteral { value, .. } = expr.as_ref() {
                     // Bool patterns: compile as integer switch where true=1, false=0.
                     // The subject is already i8 (Cranelift's bool repr); the codegen's
                     // Switch terminator sizes the case constants to the subject's type.
                     targets.push((if *value { 1 } else { 0 }, arm_bb));
-                    arm_blocks.push((arm_bb, &arm.body, None));
+                    arm_blocks.push((arm_bb, &arm.body, None, None));
                 } else {
                     default_arm = Some((arm_bb, &arm.body));
                 }
@@ -3406,7 +3415,7 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                     if let Some(variants) = ctx.enum_defs.get(enum_name.as_str()) {
                         if let Some(idx) = variants.iter().position(|v| v.name == *name) {
                             targets.push((idx as i64, arm_bb));
-                            arm_blocks.push((arm_bb, &arm.body, None));
+                            arm_blocks.push((arm_bb, &arm.body, None, None));
                             matched = true;
                         }
                     }
@@ -3472,10 +3481,24 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                     }
                 }
                 if handled {
-                    arm_blocks.push((arm_bb, &arm.body, None));
+                    arm_blocks.push((arm_bb, &arm.body, None, None));
                 } else {
                     default_arm = Some((arm_bb, &arm.body));
                 }
+            }
+            ast::Pattern::Tuple { elements, .. } => {
+                // Tuple-literal match arm `(a, b, ..) => ...`. The terminator
+                // emission builds a comparison chain over the literal elements;
+                // ident elements are bound in the per-arm emission loop.
+                tuple_targets.push((elements.clone(), arm_bb));
+                arm_blocks.push((
+                    arm_bb,
+                    &arm.body,
+                    None,
+                    Some(TupleBinding {
+                        element_patterns: elements.clone(),
+                    }),
+                ));
             }
             ast::Pattern::Wildcard { .. } => {
                 default_arm = Some((arm_bb, &arm.body));
@@ -3538,11 +3561,106 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                 // Last string pattern — fall through to default on mismatch.
                 let first_arm = arm_blocks
                     .first()
-                    .map(|(bb, _, _)| *bb)
+                    .map(|(bb, _, _, _)| *bb)
                     .unwrap_or(default_bb);
                 ctx.finish_block(
                     Terminator::Branch {
                         cond: Operand::Local(cmp_local),
+                        then_block: *arm_bb,
+                        else_block: default_bb,
+                    },
+                    first_arm,
+                );
+            }
+        }
+    } else if !tuple_targets.is_empty() {
+        // Tuple-literal patterns: extract each element of the subject tuple and
+        // compare the literal elements (ident/wildcard elements impose no test).
+        // Each arm ANDs its element equalities and branches to the arm on a full
+        // match, else to the next arm's test (or the default). Modeled on the
+        // string-equality chain above.
+        let subj_ty = infer_expr_type(ctx, subject);
+        let elem_tys = if let MirType::Tuple(elems) = subj_ty {
+            elems
+        } else {
+            Vec::new()
+        };
+        let n = tuple_targets.len();
+        for (i, (elem_pats, arm_bb)) in tuple_targets.iter().enumerate() {
+            let mut cond: Option<LocalId> = None;
+            for (idx, pat) in elem_pats.iter().enumerate() {
+                let lit = if let ast::Pattern::Literal { expr, .. } = pat {
+                    match expr.as_ref() {
+                        ast::Expr::IntLiteral { value, .. } => Some(Constant::Int(*value)),
+                        ast::Expr::BoolLiteral { value, .. } => Some(Constant::Bool(*value)),
+                        ast::Expr::FloatLiteral { value, .. } => Some(Constant::Float(*value)),
+                        ast::Expr::StringLiteral { value, .. } => {
+                            Some(Constant::Str(value.clone()))
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                if let Some(lit_const) = lit {
+                    let elem_ty = elem_tys.get(idx).cloned().unwrap_or(MirType::I64);
+                    let field_local = ctx.alloc_temp(elem_ty);
+                    ctx.emit(Instruction::Assign {
+                        dest: field_local,
+                        value: RValue::Field {
+                            object: subj_op.clone(),
+                            field: idx.to_string(),
+                        },
+                    });
+                    let cmp_local = ctx.alloc_temp(MirType::Bool);
+                    ctx.emit(Instruction::Assign {
+                        dest: cmp_local,
+                        value: RValue::BinOp {
+                            op: MirBinOp::Eq,
+                            left: Operand::Local(field_local),
+                            right: Operand::Constant(lit_const),
+                        },
+                    });
+                    cond = Some(match cond {
+                        None => cmp_local,
+                        Some(prev) => {
+                            let anded = ctx.alloc_temp(MirType::Bool);
+                            ctx.emit(Instruction::Assign {
+                                dest: anded,
+                                value: RValue::BinOp {
+                                    op: MirBinOp::And,
+                                    left: Operand::Local(prev),
+                                    right: Operand::Local(cmp_local),
+                                },
+                            });
+                            anded
+                        }
+                    });
+                }
+            }
+            // No literal elements (all idents/wildcards) -> matches unconditionally.
+            let cond_op = match cond {
+                Some(c) => Operand::Local(c),
+                None => Operand::Constant(Constant::Bool(true)),
+            };
+            if i + 1 < n {
+                let nb = ctx.alloc_block();
+                ctx.finish_block(
+                    Terminator::Branch {
+                        cond: cond_op,
+                        then_block: *arm_bb,
+                        else_block: nb,
+                    },
+                    nb,
+                );
+            } else {
+                let first_arm = arm_blocks
+                    .first()
+                    .map(|(bb, _, _, _)| *bb)
+                    .unwrap_or(default_bb);
+                ctx.finish_block(
+                    Terminator::Branch {
+                        cond: cond_op,
                         then_block: *arm_bb,
                         else_block: default_bb,
                     },
@@ -3557,7 +3675,7 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                 targets,
                 default: default_bb,
             },
-            if let Some((bb, _, _)) = arm_blocks.first() {
+            if let Some((bb, _, _, _)) = arm_blocks.first() {
                 *bb
             } else {
                 default_bb
@@ -3566,9 +3684,36 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
     }
 
     // Emit each arm block.
-    for (i, (arm_bb, body, enum_binding)) in arm_blocks.iter().enumerate() {
+    for (i, (arm_bb, body, enum_binding, tuple_binding)) in arm_blocks.iter().enumerate() {
         if i > 0 {
             ctx.current_block = *arm_bb;
+        }
+
+        // For tuple arms, bind ident elements to the corresponding tuple fields.
+        if let Some(binding) = tuple_binding {
+            let subj_ty = infer_expr_type(ctx, subject);
+            let elem_tys = if let MirType::Tuple(elems) = subj_ty {
+                elems
+            } else {
+                Vec::new()
+            };
+            for (elem_idx, pat) in binding.element_patterns.iter().enumerate() {
+                if let ast::Pattern::Ident { name, .. } = pat {
+                    let elem_ty = elem_tys.get(elem_idx).cloned().unwrap_or(MirType::I64);
+                    let local = ctx.alloc_local(Some(name.clone()), elem_ty.clone(), false);
+                    if !is_copy_type(ctx, &elem_ty) {
+                        ctx.dropped_locals.insert(local.0);
+                    }
+                    ctx.emit(Instruction::Assign {
+                        dest: local,
+                        value: RValue::Field {
+                            object: subj_op.clone(),
+                            field: elem_idx.to_string(),
+                        },
+                    });
+                }
+                // Literal/wildcard elements: no binding needed.
+            }
         }
 
         // For enum arms, extract payload fields and bind to locals.
