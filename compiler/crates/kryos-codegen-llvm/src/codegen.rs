@@ -1629,6 +1629,16 @@ impl LlvmCodegen {
                 continue;
             }
             if !has_heap_fields(fields) {
+                // A struct with no heap fields needs no per-field drop work, but
+                // it may still be used as an array/collection element whose drop
+                // path calls `@__kryos_drop_<name>`. Emit an empty helper so that
+                // reference links (the array buffer free reclaims the inline
+                // element storage; matching the @copy no-op above).
+                self.emit_line(&format!("define internal void @{drop_name}(ptr %ptr) {{"));
+                self.emit_line("entry:");
+                self.emit_line("  ret void");
+                self.emit_line("}");
+                self.emit_blank();
                 continue;
             }
             self.emit_line(&format!("; Type drop helper for struct {name}"));

@@ -3542,3 +3542,19 @@ SHIFTS:
     bootstrap 989ba174. cargo 42s. (Found+fixed the dead-path lowering bug via --emit-llvm.)
   WAVE SCORECARD (this run): Never+ptr (153), map builtins map_has/keys/contains (154), bare
     construction (155). Plus earlier: any, bare patterns, map-types, Result/Option, maps-AOT.
+
+  ---
+  step:    156 (session 8 -- 2026-05-30 "rank9: array-of-structs drop helper")
+  date:    2026-05-30
+  DONE: array-of-struct on AOT failed "use of undefined value @__kryos_drop_Foo". A struct with
+    NO heap fields (Foo{x:i64,y:i64}) skipped emitting its __kryos_drop_<name> helper (line 1631
+    `if !has_heap_fields continue`), but the array-element drop path references it -> undefined.
+    Fix: emit an EMPTY helper (ret void) for no-heap-field structs, matching the @copy case right
+    above ("so array/element drop call sites still link"). Safest (no double-free; array buffer
+    free reclaims inline element storage).
+  VERIFY: array-of-Foo push+read AOT: arr[0].x=1; 2-elem arr[0].x+arr[1].y=5. JIT unaffected.
+    bootstrap 989ba174 (stage-2.obj is self-host codegen output, not stage-0 LLVM). cargo 22s.
+  CONFIRMED FALSE/LATENT this round: rank7 (str struct-field clone) + rank8 (param retain) WORK
+    in simple cases (latent double-free, not observable) -> deprioritized. rank11 buf_write_str
+    is a NAME-translation bug (called @buf_write_str but declared @kryos_buf_write_str), not the
+    runtime_param_types issue the auditor guessed -> deferred (niche, more involved).
