@@ -50,10 +50,12 @@ the only one left -- perf-only, non-blocking, needs a cdb runtime trace.
   to_upper/to_lower/reverse converted to O(n) via the buffer builtins
   (alloc(slen) + ptr_set_byte + buf_to_str; output size is known = input byte length).
   Verified byte-identical on JIT+AOT (HELLO/hello/fedcba/empty/[Z]); fixed point 989ba174.
-  These are global builtins (no import needed). REMAINING (unknown output size -> need a
-  grow-buffer, not fixed alloc): pad_left/pad_right (known size, easy follow-up),
-  fmt.kry (_replace_all/center/_escape_string), json.kry serialize. NOTE: do NOT touch
-  self-host lower.kry/codegen.kry concat (bootstrap critical path).
+  These are global builtins (no import needed). pad_left/pad_right ALSO done (output size =
+  width, known): verified [00042]/[42...]/[hello]/[   x] on JIT+AOT. So to_upper/to_lower/
+  reverse/pad_left/pad_right (the 5 common ops) are all O(n) now. REMAINING (unknown output
+  size -> need a grow-buffer, not fixed alloc): fmt.kry (_replace_all/center/_escape_string),
+  json.kry serialize. NOTE: do NOT touch self-host lower.kry/codegen.kry concat (bootstrap
+  critical path).
 
 ### Diagnostics (stage-0 engine is strong; self-host regresses to bare strings)
 - [DONE 2026-05-29 session 8] Self-host byte-offset -> line:col. Was: tc_error/p_error

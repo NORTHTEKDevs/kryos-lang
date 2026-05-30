@@ -362,14 +362,19 @@ fn pad_left(s: str, width: i64, fill: str) -> str {
         return s
     }
     let pad_amount = width - slen
-    let fill_char = if len(fill) > 0 { fill[0] } else { " " }
-    let mut padding = ""
+    let fill_byte = if len(fill) > 0 { char_code(fill[0]) } else { 32 }
+    let buf = alloc(width)
     let mut i = 0
     while i < pad_amount {
-        padding = padding + fill_char
+        ptr_set_byte(buf, i, fill_byte)
         i = i + 1
     }
-    return padding + s
+    let mut j = 0
+    while j < slen {
+        ptr_set_byte(buf, pad_amount + j, char_code(s[j]))
+        j = j + 1
+    }
+    return buf_to_str(buf, width)
 }
 
 /// Pad a string on the right to reach the target width.
@@ -379,14 +384,19 @@ fn pad_right(s: str, width: i64, fill: str) -> str {
         return s
     }
     let pad_amount = width - slen
-    let fill_char = if len(fill) > 0 { fill[0] } else { " " }
-    let mut result = s
+    let fill_byte = if len(fill) > 0 { char_code(fill[0]) } else { 32 }
+    let buf = alloc(width)
+    let mut j = 0
+    while j < slen {
+        ptr_set_byte(buf, j, char_code(s[j]))
+        j = j + 1
+    }
     let mut i = 0
     while i < pad_amount {
-        result = result + fill_char
+        ptr_set_byte(buf, slen + i, fill_byte)
         i = i + 1
     }
-    return result
+    return buf_to_str(buf, width)
 }
 
 // --- Formatting --------------------------------------------------------------

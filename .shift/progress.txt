@@ -3373,3 +3373,13 @@ SHIFTS:
   STATUS: language is FEATURE-COMPLETE. Shifts 133-143 this session, all green, fixed point
     held at 989ba174 throughout. Remaining = perf polish (pad/fmt/json string, force-spill)
     + experimental WASM backend.
+
+  ---
+  step:    144 (session 8 -- 2026-05-29 "B8 cont: pad_left/pad_right O(n)")
+  date:    2026-05-29
+  DONE: stdlib/string.kry pad_left/pad_right O(pad^2) -> O(n). Fixed buffer alloc(width) +
+    ptr_set_byte + buf_to_str (output = width, known). fill default = byte 32 (space).
+  VERIFY: JIT+AOT [00042] / [42...] / [hello] (>=width) / [   x] (default fill). Bootstrap
+    unaffected (stdlib not on self-host path).
+  STRING PERF NOW: to_upper/to_lower/reverse/pad_left/pad_right all O(n). Remaining string
+    perf = fmt.kry/json.kry (unknown output size -> grow-buffer; lower priority).
