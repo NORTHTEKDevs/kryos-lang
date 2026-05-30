@@ -780,16 +780,35 @@ impl Parser {
         }
     }
 
+    /// Consume an optional `<T, U, ..>` type-argument list following an impl
+    /// target (e.g. `impl Wrap<i64>` or `impl Trait for Wrap<i64>`). The args
+    /// are discarded: the impl is associated with the base type name and its
+    /// methods are resolved per concrete struct instantiation at the call site.
+    fn skip_impl_target_type_args(&mut self) {
+        if self.check(TokenKind::Lt) {
+            self.advance(); // `<`
+            while !self.check(TokenKind::Gt) && !self.at_end() {
+                self.parse_type();
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::Gt);
+        }
+    }
+
     fn parse_impl_decl(&mut self, doc_comments: Vec<String>) -> Decl {
         let kw = self.expect(TokenKind::Impl);
         let start = kw.span;
 
         let generics = self.parse_generics();
         let (first_name, _) = self.expect_name();
+        self.skip_impl_target_type_args();
 
         // Check for `impl Trait for Target`
         let (target, trait_name) = if self.eat(TokenKind::For) {
             let (tgt, _) = self.expect_name();
+            self.skip_impl_target_type_args();
             (tgt, Some(first_name))
         } else {
             (first_name, None)

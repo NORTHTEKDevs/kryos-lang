@@ -4132,6 +4132,18 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                 if let Some(ret_ty) = ctx.func_ret_types.get(&mangled) {
                     return ret_ty.clone();
                 }
+                // Generic-struct instance: `type_name` is a monomorphized name
+                // (`Cell___i64`), but the method's return type is registered
+                // under the base struct name (`Cell__read`). Fall back to it so
+                // the call result is typed correctly (the LLVM backend is strict;
+                // a Void result mis-types the value).
+                let base = type_name.split("___").next().unwrap_or(type_name.as_str());
+                if base != type_name {
+                    let base_mangled = format!("{base}__{method}");
+                    if let Some(ret_ty) = ctx.func_ret_types.get(&base_mangled) {
+                        return ret_ty.clone();
+                    }
+                }
             }
             if let Some(ret_ty) = ctx.func_ret_types.get(method.as_str()) {
                 return ret_ty.clone();
@@ -4808,6 +4820,22 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 ctx.method_owners
                     .get(&(tn.clone(), method.clone()))
                     .cloned()
+                    .or_else(|| {
+                        // Generic-struct instance: `tn` is a monomorphized name
+                        // like `Wrap___i64` (mono_mangled_name uses `___`), but
+                        // impl methods are lowered once under the base struct
+                        // name (`Wrap__get`) with the uniform i64-slot `self`
+                        // layout. Fall back to the base name so methods on
+                        // generic structs link and dispatch correctly.
+                        let base = tn.split("___").next().unwrap_or(tn.as_str());
+                        if base != tn {
+                            ctx.method_owners
+                                .get(&(base.to_string(), method.clone()))
+                                .cloned()
+                        } else {
+                            None
+                        }
+                    })
                     .unwrap_or_else(|| method.clone())
             } else {
                 method.clone()

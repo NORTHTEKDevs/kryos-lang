@@ -3854,3 +3854,30 @@ SHIFTS:
     wildcard (5,_), mixed str (1,s)->s, string-literal ("ok",n)->n, 3-tuple (1,2,3), plus
     int-match + enum-match regressions. bootstrap BYTE-IDENTICAL 989ba174. cargo 38s.
   CLAUDE.md gotcha #15 updated: tuple match now WORKS (was "unsupported").
+
+  ---
+  step:    174 (session 8 -- 2026-05-30 "FEATURE: impl methods on generic structs")
+  date:    2026-05-30
+  Deferred item #3 of 4. The workflow design proposed a deep full monomorphization (new
+    GenericImplTemplate + demand-driven method lowering + AST change to Decl::Impl + ordering),
+    which the verifier rated "partial" with multiple errors. INVESTIGATION found a far smaller
+    correct fix: the second-pass impl handler ALREADY lowers every method as `Type__method`
+    (e.g. Wrap__get) with an i64-stub self, and struct layout is uniform i64-slots -- so the
+    base-name method already works for any instantiation. The bug was purely RESOLUTION: an
+    instance call on a Wrap<i64> infers the monomorphized type name "Wrap___i64", and both the
+    symbol lookup AND the return-type inference key on that mangled name, miss, and fall back
+    to the bare method name (undefined symbol) / Void (mis-typed result on strict LLVM).
+  FIX (3 small edits, NO AST change, NO new monomorphization):
+    (1) lower.rs MethodCall symbol resolution: on miss, fall back to base struct name
+        (split off the `___i64` mono suffix; mono_mangled_name uses `___`).
+    (2) lower.rs infer_expr_type MethodCall: same base-name fallback for the return type
+        (fixes the LLVM Void/void-add and the AOT=0).
+    (3) parser parse_impl_decl: skip an optional `<...>` after the impl target so
+        `impl Wrap<i64>` / `impl Trait for Wrap<i64>` parse (args discarded -> base name).
+  VERIFY both backends: basic w.get()=42, impl Wrap<i64> double()=14, multi-instantiation
+    a.read()+b.read()=30, method-with-arg add(5)=15, non-generic Point.sum()=7 regression.
+    bootstrap BYTE-IDENTICAL 989ba174 (fallbacks only fire on the generic miss; self-host
+    impls are non-generic). cargo 41s. CLAUDE.md gotcha #17 updated (was "don't link").
+  Caveat: i64-slot uniformity means a method returning the payload of a non-i64 instantiation
+    sees the raw slot -- same as existing generic-struct field access; concrete-typed methods
+    (the documented case) are correct.
