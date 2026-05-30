@@ -299,7 +299,7 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `
 ## Gotchas Claude needs to know
 
 1. **String interpolation works:** `"hello {name}"` (braces, not `${}`). `+` concatenation also works; numbers need `to_string()` when concatenated.
-2. **`if let` and `while let` work.** e.g. `if let Foo.Bar(x) = v { ... } else { ... }` and `while let Foo.Bar(v) = next() { ... }`; they desugar to `match`. (`let ... else` is not yet supported — use `match` or `if let` + early return.)
+2. **`if let`, `while let`, and `let ... else` all work.** e.g. `if let Foo.Bar(x) = v { ... } else { ... }`, `while let Foo.Bar(v) = next() { ... }`, and `let Foo.Bar(x) = v else { return }`. They desugar to `match`. For `let ... else`, the binding pattern must be a refutable enum pattern (`Enum.Variant(..)`); the `else` block runs on a non-match and its bindings are in scope for the rest of the enclosing block.
 3. **Both `elif` and `else if` work** (`else if` is accepted as an alias). The self-host source uses `elif` by convention.
 4. **No `null`.** Use `Option<T>` from `std::option`.
 5. **Tuple destructuring `let (a, b) = ...` works on both backends** (`kryos run` Cranelift JIT and `kryos build --release` LLVM). The earlier Cranelift miscompile (returned 0) was fixed by inferring the tuple element types in MIR lowering.

@@ -3322,3 +3322,22 @@ SHIFTS:
     step 138 so no bootstrap re-run needed.
   REMAINING: B6 let-else (heaviest: AST field + MIR lower + 74 sites), B7 codeless errors
     (44 sites), B8 StringBuilder (self-host perf, bootstrap-sensitive). [b] force-spill deferred.
+
+  ---
+  step:    141 (session 8 -- 2026-05-29 "B6: let-else") [user: work 7h, keep going]
+  date:    2026-05-29
+  DONE (B6/let-else): `let Enum.Variant(x) = EXPR else { D }`. Completes the
+    if-let/while-let/let-else trio. Implemented INLINE in parse_block_stmts -- NO AST
+    change, NO MIR/typecheck change (avoided the 74-Stmt::Let-site blast radius):
+    - is_let_else_ahead(): lookahead for `let [mut] (Ident|TypeIdent) (. | ::)`. User enum
+      types lex as Ident, NOT TypeIdent (only builtin types are TypeIdent) -- first attempt
+      checked TypeIdent only and failed; fixed to accept both.
+    - parse_let_else_desugar(): parses pattern/=/value/else, then the REST of the block
+      becomes the match success arm -> `match EXPR { PAT => { rest }, _ => { D } }`. Bindings
+      in scope for the rest; D runs on non-match. parse_block refactored to parse_block_stmts.
+    - Refutable enum `let` without else -> clear "requires else" error.
+  VERIFY: JIT+AOT 51/-1; multi-field Pair.Both(a,c) 7/0 with a+c used in later stmt.
+    bootstrap fixed point UNCHANGED 989ba174 (parse_block refactor preserved regular block
+    parsing across 20k self-host lines). cargo 33s. (Initial AST-field approach reverted in
+    favor of the zero-blast-radius inline desugar.)
+  NEXT: B7 codeless errors (~44 self.error -> error_with_code), B8 StringBuilder.

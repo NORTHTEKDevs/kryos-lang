@@ -74,7 +74,13 @@ the only one left -- perf-only, non-blocking, needs a cdb runtime trace.
 ### Ergonomics gaps (real)
 - [if-let + while-let DONE 2026-05-29 s8] parse-time desugar to match in parser.rs
   (parse_if_rest/parse_if_let/parse_if_let_else + parse_while_let). Verified JIT+AOT with
-  local enum; fixed point 989ba174. let-else STILL PENDING (B6, needs AST/scope work).
+  local enum; fixed point 989ba174.
+- [let-else DONE 2026-05-29 s8] `let Enum.Variant(x) = e else { D }`. Handled INLINE in
+  parse_block_stmts (is_let_else_ahead lookahead + parse_let_else_desugar) -> NO AST field,
+  NO MIR/typecheck change: rest-of-block becomes the match success arm, else-arm = D.
+  GOTCHA: user enum types lex as Ident (not TypeIdent) -- detection accepts both. Verified
+  JIT+AOT (51/-1; multi-field 7/0; bindings flow to later stmts); fixed point 989ba174.
+  if-let / while-let / let-else trio COMPLETE.
 - [DONE 2026-05-29 s8] glob `use a::b::*` works -- parser accepts `*` (parse_import) and
   the resolver already imports-all when items is empty. No AST/resolver change needed.
 - [DONE 2026-05-29 s8] file_write now creates parent dirs (create_dir_all in

@@ -990,9 +990,26 @@ impl Parser {
     fn parse_block(&mut self) -> Block {
         let lbrace = self.expect(TokenKind::LBrace);
         let start = lbrace.span;
-        let mut stmts = Vec::new();
+        let stmts = self.parse_block_stmts();
+        let rbrace = self.expect(TokenKind::RBrace);
+        Block {
+            stmts,
+            span: start.merge(rbrace.span),
+        }
+    }
 
+    /// Collect statements up to the closing `}` (not consumed here). Handles the
+    /// let-else desugar inline: `let PAT = EXPR else { D }` followed by the rest
+    /// of the block becomes `match EXPR { PAT => { rest }, _ => { D } }`, so PAT's
+    /// bindings are in scope for the remainder of the block and `D` runs on a
+    /// non-match. The match is emitted as the final statement of this block.
+    fn parse_block_stmts(&mut self) -> Vec<Stmt> {
+        let mut stmts = Vec::new();
         while !self.check(TokenKind::RBrace) && !self.at_end() {
+            if self.is_let_else_ahead() {
+                stmts.push(self.parse_let_else_desugar());
+                break; // the rest of the block was consumed into the success arm
+            }
             match self.parse_statement() {
                 Some(stmt) => stmts.push(stmt),
                 None => {
@@ -1010,10 +1027,91 @@ impl Parser {
                 }
             }
         }
-        let rbrace = self.expect(TokenKind::RBrace);
-        Block {
-            stmts,
-            span: start.merge(rbrace.span),
+        stmts
+    }
+
+    /// True if the upcoming tokens are `let [mut] TypeIdent (. | ::) ...`, i.e. a
+    /// `let` whose binding is a refutable enum pattern. Such a `let` is only
+    /// meaningful as a let-else, so it is parsed by parse_let_else_desugar rather
+    /// than the simple-binding parse_let.
+    fn is_let_else_ahead(&self) -> bool {
+        if self.peek_kind() != TokenKind::Let {
+            return false;
+        }
+        let mut i = self.pos + 1;
+        if self.tokens.get(i).map(|t| t.kind) == Some(TokenKind::Mut) {
+            i += 1;
+        }
+        // User enum types lex as Ident (only builtin types are TypeIdent). A
+        // `name . / ::` immediately after `let` is never a simple binding, so it
+        // unambiguously begins a refutable enum pattern.
+        let is_name = matches!(
+            self.tokens.get(i).map(|t| t.kind),
+            Some(TokenKind::Ident) | Some(TokenKind::TypeIdent)
+        );
+        let next = self.tokens.get(i + 1).map(|t| t.kind);
+        is_name && matches!(next, Some(TokenKind::Dot) | Some(TokenKind::ColonColon))
+    }
+
+    /// Parse `let [mut] PAT = EXPR else { DIVERGE }` and the rest of the enclosing
+    /// block, returning a single `match` statement (see parse_block_stmts).
+    fn parse_let_else_desugar(&mut self) -> Stmt {
+        let kw = self.expect(TokenKind::Let);
+        let span = kw.span;
+        let _mutable = self.eat(TokenKind::Mut);
+        let pattern = self.parse_pattern();
+        if self.eat(TokenKind::Colon) {
+            let _ = self.parse_type(); // optional annotation, unused in the desugar
+        }
+        self.expect(TokenKind::Eq);
+        let value = self.parse_expr();
+        let diverge = if self.eat(TokenKind::Else) {
+            self.parse_block()
+        } else {
+            self.error(
+                "refutable pattern in `let` requires an `else { ... }` block (let-else)"
+                    .to_string(),
+                span,
+            );
+            Block {
+                stmts: Vec::new(),
+                span,
+            }
+        };
+        // The remainder of the block becomes the success-arm body, so the
+        // pattern's bindings are in scope for it.
+        let rest = self.parse_block_stmts();
+        let rest_block = Block {
+            stmts: rest,
+            span,
+        };
+        let match_expr = Expr::MatchExpr {
+            subject: Box::new(value),
+            arms: vec![
+                MatchArm {
+                    pattern,
+                    guard: None,
+                    body: Box::new(Expr::Block {
+                        block: rest_block,
+                        span,
+                    }),
+                    span,
+                },
+                MatchArm {
+                    pattern: Pattern::Wildcard { span },
+                    guard: None,
+                    body: Box::new(Expr::Block {
+                        block: diverge,
+                        span,
+                    }),
+                    span,
+                },
+            ],
+            span,
+        };
+        Stmt::Expr {
+            expr: match_expr,
+            span,
         }
     }
 
