@@ -3782,3 +3782,19 @@ SHIFTS:
     BYTE-IDENTICAL 989ba174. cargo 44s.
   OPEN (battery-6, separate): float->int cast of out-of-range (1e300 as i64) -- JIT saturates
     to i64::MAX, AOT gives 1 (fptosi UB). Same class as the div-zero UB; lower priority.
+
+  ---
+  step:    170 (session 8 -- 2026-05-30 "doc float->int cast UB limitation; doc-only")
+  date:    2026-05-30
+  Battery-6 float->int out-of-range cast (1e300 as i64: JIT saturates, AOT fptosi UB) NOT
+    fixed this session: the fix needs restructuring the LLVM cast emission from the simple
+    `{op} {src} to {dst}` form to a `call @llvm.fptosi.sat...` intrinsic across 2 sites --
+    moderate risk for a niche out-of-range case after 10 commits. Documented as gotcha #18
+    (guard the range before casting). Candidate for a focused follow-up.
+  SESSION 8 SCORECARD (commits 159-170, bootstrap byte-identical 989ba174 throughout):
+    159 tuple field access t.0/t.1; 160 ? operator + diverging-match-enum on AOT
+    (exhaustive-enum switch default -> Unreachable); 161 generic Result/Option payload typing;
+    162 docs; 163 *FIX COMPILER HANG* struct-variant enum infinite loop; 164 split_lines;
+    165 or-patterns; 166 docs; 167 docs (math builtins); 168 *FIX SAFETY* LLVM div-by-zero UB;
+    169 *FIX MISCOMPILE* signed div/mod-by-2^n strength reduction (JIT/AOT divergence);
+    170 docs. Three high-severity fixes (hang, div-zero UB, signed-div miscompile).

@@ -319,6 +319,7 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `
 15. **Matching directly on a tuple *value* is not yet supported.** `match p { (0, 0) => ..., _ => ... }` silently takes the wildcard arm — it does not compare the tuple. Destructure first (`let (a, b) = p`) or compare fields (`if p.0 == 0 && p.1 == 0 { ... }`), both of which work on both backends. (Tuple patterns in `let`/function params are fine; only `match` on a tuple is unsupported.)
 16. **Struct-style enum variants are not supported.** `enum E { A { x: i64 } }` is rejected with a clear error — use a tuple variant `A(i64)` and match `A(x)`.
 17. **`impl` methods on a *generic* struct don't link yet.** `struct Wrap<T> {..}` with `impl Wrap { fn get(self: Wrap<i64>) -> .. }` fails to link, and `impl Wrap<i64> {..}` (impl on a concrete instantiation) doesn't parse. Use free functions over generic structs (`fn get(w: Wrap<i64>) -> i64 { return w.val }`) — field access on generic structs works. Methods on non-generic structs work normally.
+18. **Integer division/modulo and bounds are checked; out-of-range float→int casts are not.** Integer `a / 0` / `a % 0` panic ("integer division by zero"), array/string out-of-bounds panic, and signed division truncates toward zero (`-7 / 2 == -3`) consistently on both backends. But casting an out-of-range `f64` to an integer (e.g. `1.0e300 as i64`) is undefined on the AOT backend (the JIT saturates) — guard the range yourself before casting if the value can exceed the target type.
 
 ## When in doubt
 
