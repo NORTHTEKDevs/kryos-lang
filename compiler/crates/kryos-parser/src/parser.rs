@@ -1724,6 +1724,20 @@ impl Parser {
             // Postfix operators: `.field`, `[index]`, `(call)`
             if kind == TokenKind::Dot && POSTFIX_BP >= min_bp {
                 self.advance(); // eat `.`
+                // Tuple field access: `t.0`, `t.1`. The field is an integer
+                // literal, not a name. Downstream (type check + codegen) already
+                // treat a numeric field name as a tuple index.
+                if self.check(TokenKind::Integer) {
+                    let tok = self.peek().clone();
+                    self.advance();
+                    let start = lhs.span();
+                    lhs = Expr::FieldAccess {
+                        object: Box::new(lhs),
+                        field: tok.text.clone(),
+                        span: start.merge(tok.span),
+                    };
+                    continue;
+                }
                 let (field, field_span) = self.expect_name();
                 let start = lhs.span();
 

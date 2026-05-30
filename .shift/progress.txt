@@ -3589,3 +3589,18 @@ SHIFTS:
   REMAINING wave items (all deeper/lower-value): buf runtime (above), values(m) full-stack
     (needs kryos_map_values runtime fn), Cranelift map-drop leaks (latent, ranks 12-14), Range
     stack-alloc (rank10, high-risk), sync _0 SSA dup, networking _ks str builtins.
+
+  ---
+  step:    159 (session 8 -- 2026-05-30 "tuple field access t.0/t.1")
+  date:    2026-05-30
+  FOUND via feature-battery sweep (11/12 features passed -- strong validation): tuple field
+    access `t.0`/`t.1` (CLAUDE.md-documented) didn't PARSE ("unexpected token '0', expected
+    name"). 2 fixes: (1) parser postfix `.` accepts an Integer (tuple index) -> FieldAccess
+    with numeric field; downstream typecheck (check.rs:1327) + codegen already handle numeric
+    fields. (2) lower.rs infer_expr_type FieldAccess: added MirType::Tuple case (t.idx -> the
+    element type) -- without it a non-i64 field (str at .1) defaulted to I64 so to_string
+    printed the string handle as an int (JIT) and LLVM hit ptr-vs-i64. The infer fix alone
+    fixed BOTH backends.
+  VERIFY: JIT+AOT i64 tuple t.0+t.1=7; mixed (i64,str,bool) tr.0=42 tr.1="hi". bootstrap
+    989ba174. cargo 41s. (battery: ternary/closure-capture/casts/range/nested-array/generic-fn/
+    interp/while-break-continue/neg-mod/bool-logic ALL already worked -- language is solid.)

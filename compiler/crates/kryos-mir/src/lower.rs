@@ -3678,6 +3678,17 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                     }
                 }
             }
+            // Tuple field access: `t.0`, `t.1` -> the element's type. Without
+            // this a non-i64 tuple field (e.g. a str at .1) defaulted to I64,
+            // so to_string printed the string handle as an int (JIT) and the
+            // LLVM backend hit a ptr-vs-i64 mismatch.
+            if let MirType::Tuple(elems) = &resolved_ty {
+                if let Ok(idx) = field.parse::<usize>() {
+                    if let Some(field_ty) = elems.get(idx) {
+                        return field_ty.clone();
+                    }
+                }
+            }
             // Enum variant access: Color.Red → Enum("Color")
             if let MirType::Enum(name) = &resolved_ty {
                 if ctx
