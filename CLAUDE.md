@@ -221,13 +221,16 @@ Imported with `use std::<module>::{symbol1, symbol2}`. Available modules:
 Line splitting is `use std::string::{split_lines}` (`split_lines(s) -> [str]`, handles `\n` and `\r\n`) — it is a `std::string` function, not a global builtin, so it needs the import.
 
 ```kryos
-use std::math::{abs, min, max}
 use std::json::{json_stringify, json_object, json_string}
 
 fn main() {
-    println(to_string(abs(-42)))
+    // abs / min / max are polymorphic builtins — call them WITHOUT importing.
+    println(to_string(abs(-42)))     // works on i64 and f64
+    println(to_string(min(3, 8)))
 }
 ```
+
+> Note: `abs`, `min`, and `max` are polymorphic builtins (i64 or f64) available without any import. `use std::math::{abs, min, max}` imports **f64-only** versions that shadow the builtins, so `abs(-42)` would then fail to type-check — don't import them unless you specifically want the f64 form. `sqrt`, `pow`, `sin`, `cos` are likewise builtins.
 
 ### Known limitation in the module resolver
 
@@ -315,6 +318,7 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `
 14. **Or-patterns work in match arms:** `match n { 1 | 2 | 3 => "low", _ => "high" }` and `match c { Red | Green => "warm", Blue => "cool" }`. Alternatives must be non-binding (literals or bare enum variants).
 15. **Matching directly on a tuple *value* is not yet supported.** `match p { (0, 0) => ..., _ => ... }` silently takes the wildcard arm — it does not compare the tuple. Destructure first (`let (a, b) = p`) or compare fields (`if p.0 == 0 && p.1 == 0 { ... }`), both of which work on both backends. (Tuple patterns in `let`/function params are fine; only `match` on a tuple is unsupported.)
 16. **Struct-style enum variants are not supported.** `enum E { A { x: i64 } }` is rejected with a clear error — use a tuple variant `A(i64)` and match `A(x)`.
+17. **`impl` methods on a *generic* struct don't link yet.** `struct Wrap<T> {..}` with `impl Wrap { fn get(self: Wrap<i64>) -> .. }` fails to link, and `impl Wrap<i64> {..}` (impl on a concrete instantiation) doesn't parse. Use free functions over generic structs (`fn get(w: Wrap<i64>) -> i64 { return w.val }`) — field access on generic structs works. Methods on non-generic structs work normally.
 
 ## When in doubt
 
