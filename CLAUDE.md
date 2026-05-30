@@ -302,12 +302,15 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `
 2. **`if let`, `while let`, and `let ... else` all work.** e.g. `if let Foo.Bar(x) = v { ... } else { ... }`, `while let Foo.Bar(v) = next() { ... }`, and `let Foo.Bar(x) = v else { return }`. They desugar to `match`. For `let ... else`, the binding pattern must be a refutable enum pattern (`Enum.Variant(..)`); the `else` block runs on a non-match and its bindings are in scope for the rest of the enclosing block.
 3. **Both `elif` and `else if` work** (`else if` is accepted as an alias). The self-host source uses `elif` by convention.
 4. **No `null`.** Use `Option<T>` from `std::option`.
-5. **Tuple destructuring `let (a, b) = ...` works on both backends** (`kryos run` Cranelift JIT and `kryos build --release` LLVM). The earlier Cranelift miscompile (returned 0) was fixed by inferring the tuple element types in MIR lowering.
+5. **Tuple destructuring `let (a, b) = ...` AND tuple field access `t.0` / `t.1` work on both backends** (`kryos run` Cranelift JIT and `kryos build --release` LLVM), for mixed element types too (e.g. `(i64, str, bool)`). The earlier Cranelift destructure miscompile (returned 0) was fixed by inferring tuple element types in MIR lowering.
 6. **Array indexing `arr[i]` accepts any integer index** (i8..i64, u8..u64) on the native backends — an `i32` index works without an explicit `as i64` cast (the type checker accepts it and both Cranelift and LLVM sign-extend). The experimental `--backend wasm` (v0.1) still assumes i64; use i64 indices there.
 7. **`file_write` doesn't create parent directories.** Call `create_dir(parent)` first.
 8. **Top-level `let mut x = some_call()`** is allowed for pure builtins (`env_get`, `args`) but not for arbitrary user functions — move that into `main`.
 9. **Glob imports `use std::os::*` work** — they import all public symbols of the module (equivalent to a bare `use std::os`).
 10. **The default `kryos run` uses Cranelift, which does not support every codegen path the LLVM backend does** — if `run` fails but `build --release` works, that's the gap. Prefer `build --release` when you hit one.
+11. **Closures use bar syntax, not arrows.** `|x| x + 1`, `|x: i64| x + 1`, or `fn(x: i64) -> i64 { ... }`. There is **no** `(x) => expr` form (`=>` is match-arm-only). Closures capture surrounding variables by value (`let n = 10; let f = |x| x + n`), can be passed as `fn(i64) -> i64` params, returned from **named** functions (`fn mk(n: i64) -> fn(i64) -> i64 { return |x| x + n }`), and stored in variables — all on both backends. **Limitation:** a lambda whose body is *itself a lambda literal* (`|n| |x| x + n`, direct currying) is not yet supported — wrap the outer in a named function instead.
+12. **`?` operator works on both backends** (Cranelift JIT and LLVM AOT). `let v = parse(s)?` returns early with the `Err` on failure. Use `Result<T, E>` (e.g. `Result<i64, str>`) return types.
+13. **`Result`/`Option` payloads carry their real types when written with explicit args.** `Result<i64, str>` binds `Err(e)` as `str`, so `println(e)` prints the string directly. With a *bare* `Result` (no `<...>`) the payload erases to `i64`, so a `str` payload used directly prints as a number — always annotate `Result<T, E>` / `Option<T>` on signatures.
 
 ## When in doubt
 
@@ -320,6 +323,8 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `
 
 - **Don't use semicolons.** This is the #1 mistake.
 - **Don't use `else if`.** Use `elif`.
+- **Closures are `|x|` / `|x: i64|`, never `(x) => ...`.** Don't directly nest lambda literals (`|n| |x| ...`); use a named outer function.
+- **Annotate `Result<T, E>` and `Option<T>` on function signatures** so non-`i64` payloads keep their type when used directly.
 - **Don't fabricate stdlib functions.** If you're not sure a function exists, write a thin wrapper around the builtins in the table above.
 - **Don't claim async/await works without checking.** It exists in the grammar but has caveats — read `docs/09-concurrency.md` first.
 - **Test what you wrote.** `kryos run` is fast; use it. If the user has the toolchain installed, run the file before claiming it works.
