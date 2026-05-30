@@ -3472,3 +3472,19 @@ SHIFTS:
     (147), bare variant patterns (148), map<K,V> annotation mismatch (149), Result<T,E>/
     Option<T> unify (150). Plus diagnosed: map-AOT-codegen, contains(map), format {0}, any
     to_string runtime tag.
+
+  ---
+  step:    152 (session 8 -- 2026-05-29 "maps on LLVM AOT FIXED")
+  date:    2026-05-29
+  DONE: maps now work on BOTH backends (JIT from 149, AOT now). Used `kryos build --backend
+    llvm --emit-llvm` to read the IR and pinpoint 2 contained LLVM-codegen bugs:
+    (a) runtime_param_types (codegen.rs ~6815) lacked kryos_map_*_str variants -> the string
+        key was emitted as `ptr %k` (uncoerced) against the i64 declare. Added insert_str/
+        get_str/delete_str/has_str/keys_str param types -> key now coerced to i64.
+    (b) map LOCAL drop (codegen.rs:2512) did `ptrtoint ptr {val} to i64` before map_free, but a
+        map local is already i64 -> clang "i64 but expected ptr". Removed the ptrtoint.
+  VERIFY: t_map1/t_map2/t_mapu read/write/update on AOT (1, 5, 99/20); FULL sweep2 (closures/
+    Result/map/struct/for) passes on JIT AND AOT (42,20,ok 5,7,3,6). bootstrap 989ba174.
+    cargo 19s. (Earlier "fiddly/deferred" assessment was wrong -- 2 contained fixes.)
+  SWEEP SCORECARD: any-AOT(147), bare-patterns(148), map-types(149), Result/Option(150),
+    maps-on-AOT(152). 5 real correctness bugs fixed via feature-sweep testing on both backends.

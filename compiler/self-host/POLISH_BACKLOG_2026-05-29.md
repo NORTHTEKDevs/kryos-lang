@@ -88,14 +88,13 @@ the only one left -- perf-only, non-blocking, needs a cdb runtime trace.
   so inner T/E carry no constraint). Verified JIT+AOT (ok 5 / got 10); types tests green;
   fixed point 989ba174.
 - [REMAINING] `contains(m, key)` builtin only does substring search (expects str, not map).
-- [PARTIAL — JIT only] Maps now typecheck + work on Cranelift JIT (`kryos run`), but FAIL on
-  LLVM AOT (`kryos build --release`). The map-type fix exposed this (maps never reached LLVM
-  codegen before). PRECISE DIAGNOSIS: MIR lowering DOES emit kryos_map_get[_str] (lower.rs:
-  4634) -- not a missing feature. The bug is LLVM call-arg coercion: it emits
-  `%t8 = ptrtoint ptr %t7 to i64` to pass the STRING KEY to kryos_map_get_str(i64,i64), but
-  %t7 is already i64 (string-rep inconsistency: strings are sometimes ptr, sometimes i64-handle
-  in the LLVM backend). Fix = guard that ptrtoint on the key operand's actual LLVM type. Fiddly
-  (string-rep), not a one-liner. Maps work on JIT today.
+- [DONE — both backends] Maps now work on JIT AND LLVM AOT. After the JIT type fix (149), AOT
+  had 2 contained LLVM-codegen bugs (found via --emit-llvm): (a) runtime_param_types lacked the
+  kryos_map_*_str variants, so the string key was passed as `ptr` not coerced to i64 ->
+  mismatched the i64 declares; added them. (b) the map LOCAL drop (codegen.rs:2512) emitted
+  `ptrtoint ptr {val} to i64` before kryos_map_free, but a map local is already an i64 handle ->
+  removed the ptrtoint (matches the struct-field + array-element drop paths). Verified read/
+  write/update + full feature sweep on JIT+AOT; bootstrap 989ba174.
 
 ### Pre-existing bugs surfaced 2026-05-29 s8 (NOT regressions; found while testing)
 - `fmt.format("...{0}...", args)`: the `{0}` placeholder collides with Kryos STRING

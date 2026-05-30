@@ -2510,10 +2510,10 @@ impl LlvmCodegen {
                         self.emit_line(&format!("  call void @kryos_arc_release(ptr {val})"));
                     }
                     Some(MirType::Map { .. }) => {
-                        // Map uses i64 handle, coerce ptr to i64 for the call.
-                        let i64_val = self.next_temp();
-                        self.emit_line(&format!("  {i64_val} = ptrtoint ptr {val} to i64"));
-                        self.emit_line(&format!("  call void @kryos_map_free(i64 {i64_val})"));
+                        // A map local is already an i64 handle (MirType::Map -> i64),
+                        // so pass it straight to free; ptrtoint-ing it would treat an
+                        // i64 as a ptr and fail LLVM verification.
+                        self.emit_line(&format!("  call void @kryos_map_free(i64 {val})"));
                     }
                     Some(MirType::Struct(name)) => {
                         // @copy structs are passed by value and share field pointers;
@@ -6813,6 +6813,14 @@ fn runtime_param_types(fname: &str) -> Option<Vec<String>> {
         "kryos_map_insert" => Some(vec!["i64".into(), "i64".into(), "i64".into()]),
         // kryos_map_get(i64 map, i64 key) -> i64
         "kryos_map_get" => Some(vec!["i64".into(), "i64".into()]),
+        // str-key map variants: the string key is coerced to an i64 handle. Without
+        // these the string key was passed as `ptr`, mismatching the i64 declares.
+        "kryos_map_insert_str" => Some(vec!["i64".into(), "i64".into(), "i64".into()]),
+        "kryos_map_get_str" => Some(vec!["i64".into(), "i64".into()]),
+        "kryos_map_delete_str" | "kryos_map_has_str" => {
+            Some(vec!["i64".into(), "i64".into()])
+        }
+        "kryos_map_keys_str" => Some(vec!["i64".into()]),
         // C math functions — single double argument
         "sqrt" | "floor" | "ceil" | "round" | "sin" | "cos" | "tan"
         | "log" | "log2" | "log10" | "fabs" => Some(vec!["double".into()]),
