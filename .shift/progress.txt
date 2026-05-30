@@ -3442,3 +3442,18 @@ SHIFTS:
     fixed point UNCHANGED 989ba174. cargo 43s.
   REMAINING related (separate, deeper): contains(map,key) builtin only does substring (expects
     str); generic-enum construction Result.Ok(x) -> bare Result (no inferred args). Both logged.
+
+  ---
+  step:    150 (session 8 -- 2026-05-29 "Result<T,E>/Option<T> annotation unify")
+  date:    2026-05-29
+  FOUND via sweep: `fn f() -> Result<i64,str> { return Result.Ok(x) }` -> "found Result".
+    Root cause: stdlib defines NON-generic `enum Result { Ok(any), Err(any) }` (Type::Enum)
+    but `Result<i64,str>` annotation = builtin Type::Result -> no unify. (Bare `Result` works.)
+  DONE: unifier (infer.rs) bridges Type::Result<->Type::Enum("Result") + Type::Option<->
+    Type::Enum("Option"); stdlib enums are any-typed so inner carries no constraint -> accept.
+  VERIFY: Result<i64,str>+Result.Ok -> "ok 5" JIT+AOT; Option<i64>+Option.Some -> "got 10".
+    types tests 42 green. bootstrap fixed point 989ba174. Full sweep2 (closures/Result/map/
+    struct/for) all pass on JIT (42,20,ok 5,7,3,6).
+  NEW BUG (JIT ok, AOT fails): sweep2 AOT -> LLVM "%t51 i64 but expected ptr" (ptrtoint).
+    Likely my map fix EXPOSED a latent map-on-AOT codegen gap (map never typechecked before
+    -> AOT codegen never ran). Investigating next.

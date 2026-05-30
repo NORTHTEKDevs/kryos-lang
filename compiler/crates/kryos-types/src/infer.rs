@@ -235,6 +235,24 @@ impl InferenceEngine {
                 self.unify(e1, e2, span)
             }
 
+            // Bridge the builtin generic `Result<T, E>` (used by annotations) and
+            // the stdlib `enum Result { Ok(any), Err(any) }` (produced by
+            // `Result.Ok(..)` construction). The stdlib enum is `any`-typed, so
+            // the inner T/E carry no constraint and the two are interchangeable.
+            (Type::Result { .. }, Type::Enum { name, .. })
+            | (Type::Enum { name, .. }, Type::Result { .. })
+                if name == "Result" =>
+            {
+                Ok(())
+            }
+            // Same bridge for `Option<T>` and `enum Option { Some(any), None }`.
+            (Type::Option { .. }, Type::Enum { name, .. })
+            | (Type::Enum { name, .. }, Type::Option { .. })
+                if name == "Option" =>
+            {
+                Ok(())
+            }
+
             // Struct: same name, pairwise generic unification.
             (
                 Type::Struct {

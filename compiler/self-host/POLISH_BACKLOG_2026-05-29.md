@@ -80,10 +80,14 @@ the only one left -- perf-only, non-blocking, needs a cdb runtime trace.
   Type::Map -> mismatch -> map unusable. Fix: accept `Map|map` + `Set|set` in both the
   typechecker and MIR lowering; display Type::Map/Set lowercase (matches the written form).
   Verified read/write/update on JIT (1, 5, 99/20); types tests green; fixed point 989ba174.
-- [REMAINING related] `contains(m, key)` builtin only does substring search (expects str,
-  not map) though CLAUDE.md says `contains(m, k)`. And generic-enum construction
-  `Result.Ok(x)` yields bare `Result` (no inferred type args) -> mismatch with
-  `Result<i64,str>`. Both separate, deeper (builtin overloading / generic inference).
+- [DONE] generic `Result<T,E>` / `Option<T>` annotations now unify with stdlib `Result.Ok(x)`
+  / `Option.Some(x)` construction. Root cause: stdlib defines NON-generic `enum Result {
+  Ok(any), Err(any) }` (-> Type::Enum) but the annotation `Result<i64,str>` is the builtin
+  Type::Result -> didn't unify -> "found Result". Fix: unifier (infer.rs) bridges
+  Type::Result<->Enum("Result") + Type::Option<->Enum("Option") (stdlib enums are any-typed,
+  so inner T/E carry no constraint). Verified JIT+AOT (ok 5 / got 10); types tests green;
+  fixed point 989ba174.
+- [REMAINING] `contains(m, key)` builtin only does substring search (expects str, not map).
 
 ### Pre-existing bugs surfaced 2026-05-29 s8 (NOT regressions; found while testing)
 - `fmt.format("...{0}...", args)`: the `{0}` placeholder collides with Kryos STRING
