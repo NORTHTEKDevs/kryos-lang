@@ -320,6 +320,7 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `
 16. **Struct-style enum variants are not supported.** `enum E { A { x: i64 } }` is rejected with a clear error — use a tuple variant `A(i64)` and match `A(x)`.
 17. **`impl` methods on a *generic* struct don't link yet.** `struct Wrap<T> {..}` with `impl Wrap { fn get(self: Wrap<i64>) -> .. }` fails to link, and `impl Wrap<i64> {..}` (impl on a concrete instantiation) doesn't parse. Use free functions over generic structs (`fn get(w: Wrap<i64>) -> i64 { return w.val }`) — field access on generic structs works. Methods on non-generic structs work normally.
 18. **Integer division/modulo and bounds are checked; out-of-range float→int casts are not.** Integer `a / 0` / `a % 0` panic ("integer division by zero"), array/string out-of-bounds panic, and signed division truncates toward zero (`-7 / 2 == -3`) consistently on both backends. But casting an out-of-range `f64` to an integer (e.g. `1.0e300 as i64`) is undefined on the AOT backend (the JIT saturates) — guard the range yourself before casting if the value can exceed the target type.
+19. **Annotate multi-parameter closures passed to generic higher-order functions.** `fold(xs, 0, |acc, x| acc + x)` fails to infer `acc`/`x` (the seed/element types don't flow into the closure params); write `fold(xs, 0, |acc: i64, x: i64| acc + x)`. Single-parameter closures (`filter(xs, |x| x % 2 == 0)`) infer fine. Substring search is `use std::string::{find}` (`find(haystack, needle) -> i64`), not `index_of`.
 
 ## When in doubt
 

@@ -3798,3 +3798,17 @@ SHIFTS:
     165 or-patterns; 166 docs; 167 docs (math builtins); 168 *FIX SAFETY* LLVM div-by-zero UB;
     169 *FIX MISCOMPILE* signed div/mod-by-2^n strength reduction (JIT/AOT divergence);
     170 docs. Three high-severity fixes (hang, div-zero UB, signed-div miscompile).
+
+  ---
+  step:    171 (session 8 -- 2026-05-30 "doc HOF closure-param inference + find(); doc-only")
+  date:    2026-05-30
+  Battery 7 (stdlib breadth + concurrency): 7/10 real-passes. spawn{}, fs read/write, string
+    replace/starts_with/ends_with/to_upper/to_lower/join, iter::filter all OK both backends.
+    Findings: (1) multi-param closure in a generic HOF -- `fold(xs,0,|acc,x| acc+x)` -- can't
+    infer acc/x (?T4); seed/element types don't flow into closure params. Annotating
+    (`|acc: i64, x: i64|`) works. Single-param closures (filter) infer fine. Pure inference
+    limitation, clean workaround -> gotcha #19. (2) `index_of` is actually `find` in
+    std::string (my wrong API, not a bug). (3) json API takes different arg shapes (my misuse).
+  Doc-only. Sweep has moved past high-severity bugs into minor inference/API limitations ->
+    natural consolidation point. Session 8: 12 commits, 3 high-sev fixes, bootstrap 989ba174
+    throughout.
