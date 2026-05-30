@@ -3665,3 +3665,25 @@ SHIFTS:
     (bar syntax, capture, named-fn currying ok, nested-lambda-literal unsupported); +#12 ?
     operator both backends; +#13 annotate Result<T,E>/Option<T> for correct payload typing.
     Plus two "When generating Kryos code" bullets. Doc-only, no code, no bootstrap needed.
+
+  ---
+  step:    163 (session 8 -- 2026-05-30 "FIX COMPILER HANG: struct-variant enum infinite loop")
+  date:    2026-05-30
+  FOUND via battery 4 (the test that silently stalled the whole batch): declaring an enum
+    with a struct-style variant -- `enum E { A { v: i64 }, B }` -- HUNG the compiler (even
+    `kryos check` never returned; SIGTERM only). High severity: a compiler infinite-loop /
+    DoS on a single malformed/unsupported declaration. Bisected: decl-only hangs; tuple
+    variants fine.
+  ROOT (parser.rs parse_enum_decl variant loop): handled `(` tuple variants but not `{`.
+    On `A {`, neither `eat(Comma)` nor the next `expect_name()` consumed `{`, so self.pos
+    never advanced -> infinite loop.
+  FIX: (1) explicit `{`-branch: emit a clear E0009 "struct-style enum variants not supported;
+    use a tuple variant" and consume the balanced `{ name: Type, ... }` body (capturing field
+    types positionally) so the loop makes progress. (2) defense-in-depth progress guard: if
+    self.pos == loop_start at the end of an iteration, force-advance -- no malformed variant
+    can ever hang the loop again.
+  VERIFY: struct-variant decl now ERRORS cleanly + fast (no hang); tuple-variant enum still
+    runs (area=12); bootstrap BYTE-IDENTICAL 989ba174. cargo 50s.
+  Battery-4 other finds (separate, logged for next): or-patterns `1 | 2 | 3 =>` don't parse;
+    match on a tuple literal `(0,0)` falls through to wildcard; `split_lines` reported
+    undefined-variable (CLAUDE.md lists it as a builtin -- verify).

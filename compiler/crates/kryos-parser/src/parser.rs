@@ -696,6 +696,7 @@ impl Parser {
 
         let mut variants = Vec::new();
         while !self.check(TokenKind::RBrace) && !self.at_end() {
+            let loop_start = self.pos;
             let (vname, vspan) = self.expect_name();
             let mut variant_fields = Vec::new();
             if self.eat(TokenKind::LParen) {
@@ -706,6 +707,28 @@ impl Parser {
                     }
                 }
                 self.expect(TokenKind::RParen);
+            } else if self.check(TokenKind::LBrace) {
+                // Struct-style variant body `Variant { field: Type, ... }`.
+                // Not yet supported as a distinct shape, but parse the field
+                // TYPES positionally so the variant still has a usable arity,
+                // and emit a clear diagnostic. Consuming the braces here is
+                // also what stops this loop from spinning forever on `{` (the
+                // earlier parser neither consumed it nor advanced -> hang).
+                let lb = self.peek().span;
+                self.error(
+                    "struct-style enum variants (`Variant { field: Type }`) are not supported; use a tuple variant like `Variant(Type, ...)`".to_string(),
+                    lb,
+                );
+                self.eat(TokenKind::LBrace);
+                while !self.check(TokenKind::RBrace) && !self.at_end() {
+                    self.expect_name();
+                    self.expect(TokenKind::Colon);
+                    variant_fields.push(self.parse_type());
+                    if !self.check(TokenKind::RBrace) {
+                        self.eat(TokenKind::Comma);
+                    }
+                }
+                self.expect(TokenKind::RBrace);
             }
             let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
             variants.push(EnumVariant {
@@ -715,6 +738,11 @@ impl Parser {
             });
             if !self.check(TokenKind::RBrace) {
                 self.eat(TokenKind::Comma);
+            }
+            // Progress guard: never let the variant loop spin without consuming
+            // a token. Any malformed variant would otherwise hang the parser.
+            if self.pos == loop_start && !self.at_end() {
+                self.advance();
             }
         }
         let rbrace = self.expect(TokenKind::RBrace);
