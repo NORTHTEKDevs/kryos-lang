@@ -65,9 +65,14 @@ the only one left -- perf-only, non-blocking, needs a cdb runtime trace.
   INTERPOLATION -- a literal `"{0}"` is interpolated at compile time, so format() gets a
   mangled template ("Hello, {0}!" -> "Hello, 0!"). Fix = change format's placeholder syntax
   or escape. M.
-- `any`-typed values miscompile on LLVM AOT: passing `[any]` to a fn emits `load %any` ->
-  clang "load operand must be a pointer to a first class type" (`any` isn't first-class LLVM).
-  JIT path differs. Needs `any` to lower to a boxed-pointer rep on LLVM. M/L.
+- [DONE 2026-05-29 s8] `any`-typed values miscompiled on LLVM AOT (`load %any`). Root cause:
+  lower_type_expr fell `any` through to MirType::Struct("any"); Cranelift maps all aggregates
+  to i64 handles (worked) but LLVM emitted an undefined `%any` named type (AOT compile fail).
+  Fix: lower_type_expr maps `any`/`Any` -> MirType::I64 (matching the typechecker's
+  Type::Error->I64 fallback + Cranelift). NOT deep -- 1 match arm. Verified `any` pass-through
+  + `[any]` arrays compile+run on JIT+AOT (42, 10/30). Bootstrap 989ba174 (self-host has no
+  `any` uses). REMAINING (deeper, separate): to_string(any) on a STRING/BOOL-valued any is
+  still int-interpreted -- `any` carries no runtime type tag. int-valued any works.
 
 ### Diagnostics (stage-0 engine is strong; self-host regresses to bare strings)
 - [DONE 2026-05-29 session 8] Self-host byte-offset -> line:col. Was: tc_error/p_error

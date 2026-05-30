@@ -5146,6 +5146,13 @@ pub fn lower_type_expr(ty: &ast::TypeExpr) -> MirType {
             // normally (it diverges via exit/throw/loop). At the MIR level
             // we represent it as Void so the ABI matches `() -> ()`.
             "never" => MirType::Void,
+            // `any` is the dynamic top type. It is carried as an i64 handle
+            // (matching the typechecker's Type::Error -> I64 fallback and the
+            // Cranelift backend, which treats all aggregates as i64 handles).
+            // Without this it fell through to Struct("any"), which the LLVM
+            // backend emitted as an undefined `%any` named type — first-class
+            // load failure on AOT (e.g. passing `[any]` to a function).
+            "any" | "Any" => MirType::I64,
             other => MirType::Struct(other.to_string()),
         },
         ast::TypeExpr::Array { element, size, .. } => {

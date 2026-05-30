@@ -3397,3 +3397,17 @@ SHIFTS:
     on LLVM AOT (`load %any` clang error); JIT differs. Both predate this session.
   NOTE: grow-buffer buf_new family is UNUSED by any .kry (untested, possible JIT/handle gaps)
     -> used two-pass alloc instead. Remaining string perf (fmt center/_escape, json) = low pri.
+
+  ---
+  step:    147 (session 8 -- 2026-05-29 "any-type AOT fix")
+  date:    2026-05-29
+  DONE: `any`-typed values miscompiled on LLVM AOT (load %any). The "deep" assessment was
+    WRONG -- key signal: JIT worked, only LLVM failed. Root cause: lower_type_expr fell `any`
+    through `other => MirType::Struct("any")`; Cranelift treats aggregates as i64 handles
+    (worked) but LLVM emitted an undefined `%any` named type. Fix = 1 match arm:
+    `"any" | "Any" => MirType::I64` (matches typechecker Type::Error->I64 fallback).
+  VERIFY: `any` pass-through (42) + `[any]` arrays (10/30) compile+run on JIT AND AOT (was
+    clang "load operand must be pointer to first class type"). bootstrap fixed point UNCHANGED
+    989ba174 (self-host has no `any` type uses -- grep confirmed). cargo 34s.
+  REMAINING (deeper, separate): to_string(any) on a string/bool-valued any still int-interprets
+    (any carries no runtime type tag); int-valued any works.
