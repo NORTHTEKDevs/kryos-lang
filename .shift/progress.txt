@@ -3524,3 +3524,21 @@ SHIFTS:
     lower.rs:4232) -- so bare `Some(42)` construction is broken at TYPECHECK ONLY (next batch).
   REMAINING from wave: ARC/drop LLVM bugs (ranks 7,8,9,15), Cranelift map drop (12,13,14),
     values(m) full-stack (17), sync _0 SSA dup, usize typecheck.
+
+  ---
+  step:    155 (session 8 -- 2026-05-30 "Batch C: bare variant CONSTRUCTION")
+  date:    2026-05-30
+  DONE: bare (unqualified) enum-variant construction `Some(42)`/`Circle(2)`/`Ok(v)`. Completes
+    the bare-variant story (patterns done in 148). The MIR LOWERING already did it
+    (find_enum_variant -> RValue::EnumVariant, previously DEAD code since typecheck rejected
+    bare construction). 3 fixes: (1) env.rs find_enum_by_variant(variant)->EnumDef (searches all
+    enums); (2) check.rs FnCall typecheck: bare ident callee that's not a var/fn but IS an enum
+    variant -> typecheck as construction (instantiate generics, unify args, return Type::Enum)
+    -- mirrors qualified path; (3) lower.rs infer_expr_type FnCall arm: find_enum_variant ->
+    MirType::Enum (so the temp holding the constructed value is correctly typed -- without this
+    it was Void/I64 and LLVM passed `0` for it as a call arg -> "integer constant must have
+    integer type"; JIT tolerated it, AOT-as-direct-arg did not).
+  VERIFY: JIT+AOT: area(Circle(2))=12, area(Rect(3,5))=15, Some/None match got 10/none.
+    bootstrap 989ba174. cargo 42s. (Found+fixed the dead-path lowering bug via --emit-llvm.)
+  WAVE SCORECARD (this run): Never+ptr (153), map builtins map_has/keys/contains (154), bare
+    construction (155). Plus earlier: any, bare patterns, map-types, Result/Option, maps-AOT.

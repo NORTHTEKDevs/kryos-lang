@@ -3736,6 +3736,14 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
         ast::Expr::FnCall { callee, args, .. } => {
             // If the callee is a simple identifier, look up the return type.
             if let ast::Expr::Identifier { name, .. } = callee.as_ref() {
+                // Bare (unqualified) enum-variant construction: `Circle(2)` /
+                // `Some(x)` types as the variant's enum. Must agree with the
+                // lowering (find_enum_variant -> RValue::EnumVariant), else the
+                // temp holding the constructed value gets the wrong MIR type and
+                // is mis-passed (LLVM emitted `0` for it as a call argument).
+                if let Some((enum_name, _)) = find_enum_variant(ctx, name) {
+                    return MirType::Enum(enum_name);
+                }
                 // Actor construction returns a handle typed as the actor struct.
                 if ctx.actor_defs.contains_key(name.as_str()) {
                     return MirType::Struct(name.clone());

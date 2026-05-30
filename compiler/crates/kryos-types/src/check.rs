@@ -1555,6 +1555,52 @@ impl TypeChecker {
                     }
                 }
 
+                // Bare (unqualified) enum-variant constructor: `Some(42)`,
+                // `Ok(v)`, `Rect(3, 5)`. If the callee is a plain identifier
+                // that is not a value/function in scope but IS an enum variant,
+                // type the call as enum construction (mirrors the qualified
+                // `Enum.Variant(..)` path; the MIR lowering already handles bare
+                // construction via find_enum_variant).
+                if let Some(ref cname) = callee_name_str {
+                    if self.env.lookup_var(cname).is_none()
+                        && self.env.lookup_function(cname).is_none()
+                    {
+                        if let Some(edef) = self.env.find_enum_by_variant(cname).cloned() {
+                            if let Some((_, field_types)) =
+                                edef.variants.iter().find(|(v, _)| v == cname)
+                            {
+                                let mut var_map = std::collections::HashMap::new();
+                                let mut fresh_generics =
+                                    Vec::with_capacity(edef.generic_var_ids.len());
+                                for &old_id in &edef.generic_var_ids {
+                                    let fresh = self.engine.fresh_var();
+                                    if let Type::Var(new_id) = &fresh {
+                                        var_map.insert(old_id, *new_id);
+                                    }
+                                    fresh_generics.push(fresh);
+                                }
+                                for (arg, expected_ty) in args.iter().zip(field_types.iter()) {
+                                    let arg_ty = self.infer_expr(arg);
+                                    let expected_instantiated = if var_map.is_empty() {
+                                        expected_ty.clone()
+                                    } else {
+                                        self.engine.instantiate(expected_ty, &var_map)
+                                    };
+                                    if let Err(diag) =
+                                        self.engine.unify(&expected_instantiated, &arg_ty, *span)
+                                    {
+                                        self.diagnostics.push(diag);
+                                    }
+                                }
+                                return Type::Enum {
+                                    name: edef.name.clone(),
+                                    generics: fresh_generics,
+                                };
+                            }
+                        }
+                    }
+                }
+
                 let callee_ty = self.infer_expr(callee);
                 let callee_ty = self.engine.resolve(&callee_ty);
 

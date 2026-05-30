@@ -206,6 +206,21 @@ impl TypeEnv {
         None
     }
 
+    /// Find the enum that declares a variant with the given name (searching all
+    /// scopes). Resolves bare/unqualified variant constructors like `Some(x)`
+    /// (-> Option) and `Ok(v)` (-> Result). Returns the first match; the
+    /// qualified `Enum.Variant` form disambiguates name collisions.
+    pub fn find_enum_by_variant(&self, variant: &str) -> Option<&EnumDef> {
+        for scope in self.scopes.iter().rev() {
+            for def in scope.enums.values() {
+                if def.variants.iter().any(|(v, _)| v == variant) {
+                    return Some(def);
+                }
+            }
+        }
+        None
+    }
+
     // ── Traits ────────────────────────────────────────────────────────
 
     /// Define a trait in the current scope.
