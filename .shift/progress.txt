@@ -3627,3 +3627,25 @@ SHIFTS:
   NOTE (separate pre-existing, NOT this change): qualified `Result.Err("s")` + direct
     `println(e)` prints the str handle as an int; documented bare `Err(...)` + `"x"+e` works.
     Isolating next. Bootstrap byte-identical rules out regression.
+
+  ---
+  step:    161 (session 8 -- 2026-05-30 "Result/Option generic payload typing")
+  date:    2026-05-30
+  FOUND via battery-2 follow-up: a non-i64 payload bound from a builtin Result/Option and
+    used DIRECTLY (`match r { Err(e) => println(e) }`) printed the str handle as an int on
+    BOTH backends. Masked by concat (`"x"+e`) and by f64 operators (they reinterpret bits per
+    operator), which is why the documented `println("error: "+e)` idiom and the self-host
+    (bare Result) never tripped it. USER generic enums (`Box2<str>`) already worked.
+  ROOT: builtin Option/Result were registered ONLY as i64-erased enum_defs stubs (payload
+    fields hardcoded MirType::I64). User generic enums additionally register a
+    generic_enum_templates entry that resolve_type monomorphizes per explicit `<...>` use.
+    Result/Option had no template -> `Result<i64,str>` never monomorphized -> Err payload
+    typed i64.
+  FIX (lower.rs lower_module): also register Option<T> and Result<T,E> as
+    generic_enum_templates (synthetic EnumVariant AST, Span::DUMMY). resolve_type now
+    monomorphizes explicit `Option<..>` / `Result<..>` to correctly-typed payloads via the
+    existing machinery. Bare `Result`/`Option` (TypeExpr::Simple, no args) still hit the i64
+    stubs -> self-host (bare Result) unaffected.
+  VERIFY: 4 prev-garbage cases (result-str/option-str/result-ok-str/bare-Err direct) ok on
+    JIT+AOT; regressions (concat, option-i64, ? operator) ok; 3 core examples ok; bootstrap
+    BYTE-IDENTICAL 989ba174. cargo 42s.

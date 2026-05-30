@@ -415,6 +415,57 @@ pub fn lower_module(module: &ast::Module) -> MirModule {
         ],
     );
 
+    // Also register Option/Result as generic templates so an explicit
+    // `Option<str>` / `Result<i64, str>` monomorphizes its payload field types
+    // (the bare-name stubs above erase payloads to i64, which is correct for
+    // the runtime [tag, slot..] layout but mis-types a directly-used non-i64
+    // payload binding -- e.g. `match r { Err(e) => println(e) }` printed the
+    // str handle as an int). Bare `Result`/`Option` (no type args) still
+    // resolve to the i64 stubs; only `TypeExpr::Generic` uses monomorphize.
+    {
+        let sp = kryos_errors::Span::DUMMY;
+        let simple = |n: &str| ast::TypeExpr::Simple {
+            name: n.to_string(),
+            span: sp,
+        };
+        ctx.generic_enum_templates.insert(
+            "Option".to_string(),
+            GenericEnumTemplate {
+                generic_params: vec!["T".to_string()],
+                variants: vec![
+                    ast::decl::EnumVariant {
+                        name: "Some".to_string(),
+                        fields: vec![simple("T")],
+                        span: sp,
+                    },
+                    ast::decl::EnumVariant {
+                        name: "None".to_string(),
+                        fields: vec![],
+                        span: sp,
+                    },
+                ],
+            },
+        );
+        ctx.generic_enum_templates.insert(
+            "Result".to_string(),
+            GenericEnumTemplate {
+                generic_params: vec!["T".to_string(), "E".to_string()],
+                variants: vec![
+                    ast::decl::EnumVariant {
+                        name: "Ok".to_string(),
+                        fields: vec![simple("T")],
+                        span: sp,
+                    },
+                    ast::decl::EnumVariant {
+                        name: "Err".to_string(),
+                        fields: vec![simple("E")],
+                        span: sp,
+                    },
+                ],
+            },
+        );
+    }
+
     // Register built-in function return types so infer_expr_type can resolve
     // temps correctly (e.g. `to_string()` returns Str, not I64).
     for (name, ret_ty) in [
