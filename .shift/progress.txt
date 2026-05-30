@@ -3706,3 +3706,22 @@ SHIFTS:
   REMAINING battery-4 (advanced patterns, separate): or-patterns `a | b =>` (parse error, no
     footgun); match on tuple literal `(0,0)` SILENTLY falls through to wildcard (correctness
     footgun -- next priority to fix or hard-error).
+
+  ---
+  step:    165 (session 8 -- 2026-05-30 "or-patterns in match arms")
+  date:    2026-05-30
+  FOUND via battery 4: or-patterns `A | B | C => ...` did not parse ("unexpected '|', expected
+    '=>'"). The AST already had Pattern::Or and the typechecker (check.rs:1225) already handled
+    it -- only the parser never produced it and lower_match never routed it.
+  FIX: (1) parser parse_match_expr: after the arm pattern, if `|` follows, parse the
+    `pat (| pat)*` chain into Pattern::Or. (2) AST: add Pattern::span() accessor (needed for
+    the Or span; was Expr-only). (3) lower_match: Pattern::Or arm routes each non-binding
+    alternative (int/bool/string literal, bare enum variant) to the SAME arm block (one
+    arm_blocks entry, multiple Switch/string targets). Binding or unresolvable alternatives
+    fall to default.
+  VERIFY both backends: or-int (1|2|3), or-enum (Red|Green), or-string ("a"|"b"), or mixed
+    with single-value arms, and plain match (regression) all correct. bootstrap BYTE-IDENTICAL
+    989ba174. cargo 53s.
+  REMAINING battery-4: match on tuple LITERAL `(0,0)` still silently falls through to wildcard
+    (correctness footgun; full impl = a 3rd terminator chain + element binding, higher risk --
+    documenting as known limitation, workaround = `let (a,b) =` destructure or nested if).

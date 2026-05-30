@@ -2591,7 +2591,20 @@ impl Parser {
 
         let mut arms = Vec::new();
         while !self.check(TokenKind::RBrace) && !self.at_end() {
-            let pattern = self.parse_pattern();
+            let mut pattern = self.parse_pattern();
+            // Or-pattern: `A | B | C => ...` matches if any alternative does.
+            if self.check(TokenKind::Pipe) {
+                let pstart = pattern.span();
+                let mut alts = vec![pattern];
+                while self.eat(TokenKind::Pipe) {
+                    alts.push(self.parse_pattern());
+                }
+                let pend = alts.last().map(|p| p.span()).unwrap_or(pstart);
+                pattern = Pattern::Or {
+                    patterns: alts,
+                    span: pstart.merge(pend),
+                };
+            }
             let guard = if self.eat(TokenKind::If) {
                 Some(Box::new(self.parse_expr()))
             } else {

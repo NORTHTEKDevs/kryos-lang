@@ -3415,6 +3415,68 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                     default_arm = Some((arm_bb, &arm.body));
                 }
             }
+            ast::Pattern::Or { patterns, .. } => {
+                // Or-pattern: every alternative routes to the same arm block.
+                // Only non-binding alternatives (int/bool/string literals and
+                // bare enum variants) are supported; anything that binds, or an
+                // unresolvable alternative, makes the whole arm a default.
+                let mut handled = !patterns.is_empty();
+                for sub in patterns {
+                    match sub {
+                        ast::Pattern::Literal { expr, .. } => match expr.as_ref() {
+                            ast::Expr::IntLiteral { value, .. } => {
+                                targets.push((*value, arm_bb))
+                            }
+                            ast::Expr::BoolLiteral { value, .. } => {
+                                targets.push((if *value { 1 } else { 0 }, arm_bb))
+                            }
+                            ast::Expr::StringLiteral { value, .. } => {
+                                string_targets.push((value.clone(), arm_bb))
+                            }
+                            _ => handled = false,
+                        },
+                        ast::Pattern::Enum {
+                            name,
+                            variant,
+                            fields,
+                            ..
+                        } if fields.is_empty() => {
+                            let resolved = if name.is_empty() {
+                                subj_enum_name.clone().unwrap_or_default()
+                            } else {
+                                name.clone()
+                            };
+                            match ctx
+                                .enum_defs
+                                .get(resolved.as_str())
+                                .and_then(|vs| vs.iter().position(|v| v.name == *variant))
+                            {
+                                Some(idx) => {
+                                    targets.push((idx as i64, arm_bb));
+                                    enum_for_exhaustiveness = Some(resolved.clone());
+                                }
+                                None => handled = false,
+                            }
+                        }
+                        ast::Pattern::Ident { name, .. } => {
+                            match subj_enum_name
+                                .as_deref()
+                                .and_then(|en| ctx.enum_defs.get(en))
+                                .and_then(|vs| vs.iter().position(|v| v.name == *name))
+                            {
+                                Some(idx) => targets.push((idx as i64, arm_bb)),
+                                None => handled = false,
+                            }
+                        }
+                        _ => handled = false,
+                    }
+                }
+                if handled {
+                    arm_blocks.push((arm_bb, &arm.body, None));
+                } else {
+                    default_arm = Some((arm_bb, &arm.body));
+                }
+            }
             ast::Pattern::Wildcard { .. } => {
                 default_arm = Some((arm_bb, &arm.body));
             }

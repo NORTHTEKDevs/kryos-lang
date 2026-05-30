@@ -85,6 +85,21 @@ pub enum Pattern {
     },
 }
 
+impl Pattern {
+    /// The source span covering this pattern.
+    pub fn span(&self) -> Span {
+        match self {
+            Pattern::Wildcard { span }
+            | Pattern::Ident { span, .. }
+            | Pattern::Literal { span, .. }
+            | Pattern::Tuple { span, .. }
+            | Pattern::Struct { span, .. }
+            | Pattern::Enum { span, .. }
+            | Pattern::Or { span, .. } => *span,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum StringPart {
     Literal(String),
