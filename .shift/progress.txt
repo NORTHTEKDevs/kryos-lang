@@ -3411,3 +3411,20 @@ SHIFTS:
     989ba174 (self-host has no `any` type uses -- grep confirmed). cargo 34s.
   REMAINING (deeper, separate): to_string(any) on a string/bool-valued any still int-interprets
     (any carries no runtime type tag); int-valued any works.
+
+  ---
+  step:    148 (session 8 -- 2026-05-29 "bare variant patterns")
+  date:    2026-05-29
+  FOUND via correctness sweep: bare (unqualified) enum-variant PATTERNS didn't parse --
+    `match s { Circle(r) => .. }` failed; only `Shape.Circle(r)` worked. CLAUDE.md documents
+    bare `Some(x)`, so a real gap.
+  DONE (3 sites): (1) parser.rs parse_pattern: `Name(fields)` -> Pattern::Enum{name:"",
+    variant, fields}. (2) types/check.rs bind_pattern_with_mut: resolve empty name from
+    subject Type::Enum{name} so field vars bind (this was the missing piece -- parse+lower
+    alone left fields unbound -> "undefined variable w"). (3) mir/lower.rs match lowering:
+    resolve empty name from subj_enum_name for tag-switch + EnumBinding.
+  VERIFY: JIT+AOT Circle(r)/Rect(w,h) 12/15; Some(x)/Nothing 99/-1. bootstrap fixed point
+    UNCHANGED 989ba174 (self-host uses qualified patterns; bare handling is additive). cargo 43s.
+  REMAINING: bare variant CONSTRUCTION (`Rect(3,5)`/`Some(42)` without Enum.) -- separate
+    expression-resolution path, still errors. (Plus the 2 pre-existing bugs: format {0}, any
+    to_string runtime tag.)

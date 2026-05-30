@@ -1191,8 +1191,19 @@ impl TypeChecker {
                 fields,
                 ..
             } => {
+                // Bare (unqualified) variant patterns carry an empty enum name;
+                // resolve it from the matched subject type when it is an enum.
+                let resolved_name = if name.is_empty() {
+                    match subject_ty {
+                        Type::Enum { name: n, .. } => n.clone(),
+                        _ => name.clone(),
+                    }
+                } else {
+                    name.clone()
+                };
                 // Look up the enum variant's field types by variant name.
-                let field_types: Vec<Type> = if let Some(edef) = self.env.lookup_enum(name).cloned()
+                let field_types: Vec<Type> = if let Some(edef) =
+                    self.env.lookup_enum(&resolved_name).cloned()
                 {
                     edef.variants
                         .iter()

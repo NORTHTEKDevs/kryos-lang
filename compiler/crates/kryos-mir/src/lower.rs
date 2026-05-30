@@ -3302,14 +3302,21 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                 fields,
                 ..
             } => {
-                if let Some(variants) = ctx.enum_defs.get(name.as_str()) {
+                // Bare (unqualified) variant patterns carry an empty enum name;
+                // resolve it from the subject's enum type.
+                let resolved_name = if name.is_empty() {
+                    subj_enum_name.clone().unwrap_or_else(|| name.clone())
+                } else {
+                    name.clone()
+                };
+                if let Some(variants) = ctx.enum_defs.get(resolved_name.as_str()) {
                     if let Some(idx) = variants.iter().position(|v| v.name == *variant) {
                         targets.push((idx as i64, arm_bb));
                         arm_blocks.push((
                             arm_bb,
                             &arm.body,
                             Some(EnumBinding {
-                                enum_name: name.clone(),
+                                enum_name: resolved_name.clone(),
                                 variant_idx: idx as u32,
                                 field_patterns: fields.clone(),
                             }),

@@ -60,6 +60,18 @@ the only one left -- perf-only, non-blocking, needs a cdb runtime trace.
   registration / handle-vs-ptr gaps -> use two-pass alloc, NOT buf_new). NOTE: do NOT touch
   self-host lower.kry/codegen.kry concat (bootstrap critical path).
 
+### Bare variant patterns (found + fixed 2026-05-29 s8 via correctness sweep)
+- [DONE] Bare (unqualified) enum-variant PATTERNS now parse + bind: `match s { Circle(r)
+  => .., Some(x) => .. }` without the `Enum.` prefix (CLAUDE.md documents `Some(x)` but only
+  qualified `Option.Some(x)` parsed before). Fix across 3 sites: (1) parse_pattern emits
+  `Pattern::Enum { name:"", variant, fields }` for `Name(fields)`; (2) types/check.rs
+  bind_pattern resolves the empty name from the subject's `Type::Enum{name}` to bind field
+  vars; (3) mir/lower.rs match lowering resolves it from subj_enum_name for tag+field
+  extraction. Verified JIT+AOT (Circle/Rect 12/15, Some/Nothing 99/-1); fixed point 989ba174
+  (self-host uses qualified patterns -> additive). 
+- [REMAINING] Bare variant CONSTRUCTION (`Rect(3,5)` / `Some(42)` without `Enum.`) still
+  errors "undefined variable Rect" -- separate expression/FnCall-resolution path. M.
+
 ### Pre-existing bugs surfaced 2026-05-29 s8 (NOT regressions; found while testing)
 - `fmt.format("...{0}...", args)`: the `{0}` placeholder collides with Kryos STRING
   INTERPOLATION -- a literal `"{0}"` is interpolated at compile time, so format() gets a

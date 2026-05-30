@@ -2980,6 +2980,29 @@ impl Parser {
                     };
                 }
 
+                // Bare (unqualified) tuple-variant pattern: `Variant(fields)`,
+                // e.g. `Some(x)` / `Ok(v)` / `Circle(r)` without the `Enum.`
+                // prefix. The enum is left empty and resolved from the matched
+                // value's type during lowering. (Qualified `Enum.Variant(..)`
+                // is handled above via the `.`/`::` branch.)
+                if self.check(TokenKind::LParen) {
+                    self.advance();
+                    let mut fields = Vec::new();
+                    while !self.check(TokenKind::RParen) && !self.at_end() {
+                        fields.push(self.parse_pattern());
+                        if !self.check(TokenKind::RParen) {
+                            self.expect(TokenKind::Comma);
+                        }
+                    }
+                    let rparen = self.expect(TokenKind::RParen);
+                    return Pattern::Enum {
+                        name: String::new(),
+                        variant: name,
+                        fields,
+                        span: tok.span.merge(rparen.span),
+                    };
+                }
+
                 // Simple identifier pattern
                 Pattern::Ident {
                     name,
