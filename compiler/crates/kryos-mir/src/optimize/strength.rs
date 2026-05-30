@@ -3,8 +3,6 @@
 //! Replaces expensive arithmetic operations with cheaper equivalents:
 //!
 //! - `x * 2^n`  ->  `x << n`
-//! - `x / 2^n`  ->  `x >> n`  (for positive divisors)
-//! - `x % 2^n`  ->  `x & (2^n - 1)`
 //! - `x * 0`    ->  `0`
 //! - `x * 1`    ->  `x`
 //! - `x + 0`    ->  `x`
@@ -88,14 +86,12 @@ fn try_reduce_binop(op: MirBinOp, left: &Operand, right: &Operand) -> Option<RVa
             if is_int_const(right, 1) {
                 return Some(RValue::Use(left.clone()));
             }
-            // x / 2^n -> x >> n
-            if let Some(n) = power_of_two_const(right) {
-                return Some(RValue::BinOp {
-                    op: MirBinOp::Shr,
-                    left: left.clone(),
-                    right: Operand::Constant(Constant::Int(n as i64)),
-                });
-            }
+            // NOTE: `x / 2^n -> x >> n` is intentionally NOT done here. Kryos
+            // integers are signed and division truncates toward zero, but an
+            // arithmetic shift floors toward negative infinity, so the two
+            // disagree for negative dividends (e.g. -7 / 2 = -3 but -7 >> 1 =
+            // -4). The LLVM/Cranelift backends emit sdiv and strength-reduce it
+            // correctly (with the sign bias) themselves.
             None
         }
 
@@ -105,15 +101,10 @@ fn try_reduce_binop(op: MirBinOp, left: &Operand, right: &Operand) -> Option<RVa
             if is_int_const(right, 1) {
                 return Some(RValue::ConstInt(0));
             }
-            // x % 2^n -> x & (2^n - 1)
-            if let Some(n) = power_of_two_const(right) {
-                let mask = (1i64 << n) - 1;
-                return Some(RValue::BinOp {
-                    op: MirBinOp::BitAnd,
-                    left: left.clone(),
-                    right: Operand::Constant(Constant::Int(mask)),
-                });
-            }
+            // NOTE: `x % 2^n -> x & (2^n - 1)` is intentionally NOT done here.
+            // Signed remainder takes the sign of the dividend, but a bitmask is
+            // always non-negative (e.g. -7 % 4 = -3 but -7 & 3 = 1). Leave it
+            // as srem for the backend to handle correctly.
             None
         }
 
@@ -270,39 +261,41 @@ mod tests {
     }
 
     #[test]
-    fn div_by_power_of_two() {
+    fn div_by_power_of_two_is_not_reduced() {
+        // Signed division truncates toward zero; an arithmetic shift floors, so
+        // `x / 2^n` must NOT be reduced to `x >> n` (wrong for negative x).
         let mut m = module_with_assign(RValue::BinOp {
             op: MirBinOp::Div,
             left: Operand::Local(LocalId(0)),
             right: Operand::Constant(Constant::Int(4)),
         });
         reduce_strength(&mut m);
-        match get_value(&m) {
+        assert!(matches!(
+            get_value(&m),
             RValue::BinOp {
-                op: MirBinOp::Shr,
-                right: Operand::Constant(Constant::Int(2)),
+                op: MirBinOp::Div,
                 ..
-            } => {}
-            other => panic!("expected x >> 2, got {other:?}"),
-        }
+            }
+        ));
     }
 
     #[test]
-    fn mod_by_power_of_two() {
+    fn mod_by_power_of_two_is_not_reduced() {
+        // Signed remainder takes the dividend's sign; a bitmask is always
+        // non-negative, so `x % 2^n` must NOT be reduced to `x & (2^n - 1)`.
         let mut m = module_with_assign(RValue::BinOp {
             op: MirBinOp::Mod,
             left: Operand::Local(LocalId(0)),
             right: Operand::Constant(Constant::Int(16)),
         });
         reduce_strength(&mut m);
-        match get_value(&m) {
+        assert!(matches!(
+            get_value(&m),
             RValue::BinOp {
-                op: MirBinOp::BitAnd,
-                right: Operand::Constant(Constant::Int(15)),
+                op: MirBinOp::Mod,
                 ..
-            } => {}
-            other => panic!("expected x & 15, got {other:?}"),
-        }
+            }
+        ));
     }
 
     #[test]

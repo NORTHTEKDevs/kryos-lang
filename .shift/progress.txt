@@ -3760,3 +3760,25 @@ SHIFTS:
   VERIFY: a/0 and a%0 now panic "integer division by zero" on AOT; 10/2=5, 17%7=3 unaffected
     both backends; bootstrap BYTE-IDENTICAL 989ba174 (self-host codegen is Kryos, not the Rust
     LLVM backend, so stage objs unchanged). cargo 20s incremental.
+
+  ---
+  step:    169 (session 8 -- 2026-05-30 "FIX MISCOMPILE: signed div/mod-by-power-of-2 strength reduction")
+  date:    2026-05-30
+  FOUND via battery-6 runtime safety: `-7 / 2` gave JIT=-3 but AOT=-4 -- a BACKEND DIVERGENCE
+    (worst kind: same op, different result), and AOT was wrong. Only literal/foldable operands
+    tripped it (`-7/2`->-4 but the unary-neg `7/-2`->-3). Isolated via --emit-llvm: `-7/2`
+    compiled to `ashr i64 -7, 1` (= -4) instead of sdiv (= -3).
+  ROOT: crates/kryos-mir/src/optimize/strength.rs reduced `x / 2^n -> x >> n` and
+    `x % 2^n -> x & (2^n-1)`. Arithmetic shift FLOORS toward -inf and a bitmask is always
+    non-negative, but Kryos ints are SIGNED -- sdiv/srem TRUNCATE toward zero and srem takes
+    the dividend's sign. So both reductions are invalid for negative dividends (-7/2: -3 vs -4;
+    -7%4: -3 vs 1). The Cranelift JIT doesn't run this pass, hence the divergence. The pass
+    even hedged "for positive divisors" -- but the DIVIDEND sign is the real problem.
+  FIX: removed both Div->Shr and Mod->BitAnd reductions (kept x/1->x, x%1->0, and the valid
+    Mul->Shl). LLVM/Cranelift emit sdiv/srem and strength-reduce them correctly (with the sign
+    bias) themselves. Updated the 2 tests that asserted the buggy output to assert no reduction.
+  VERIFY: -7/2, 7/-2, -7%4, -15/4 all match Rust truncation on BOTH backends now; 15/4=3,
+    100/8=12 (positive power-of-2 div still correct); strength.rs 13 tests pass; bootstrap
+    BYTE-IDENTICAL 989ba174. cargo 44s.
+  OPEN (battery-6, separate): float->int cast of out-of-range (1e300 as i64) -- JIT saturates
+    to i64::MAX, AOT gives 1 (fptosi UB). Same class as the div-zero UB; lower priority.
