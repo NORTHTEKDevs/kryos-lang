@@ -3687,3 +3687,22 @@ SHIFTS:
   Battery-4 other finds (separate, logged for next): or-patterns `1 | 2 | 3 =>` don't parse;
     match on a tuple literal `(0,0)` falls through to wildcard; `split_lines` reported
     undefined-variable (CLAUDE.md lists it as a builtin -- verify).
+
+  ---
+  step:    164 (session 8 -- 2026-05-30 "split_lines: real stdlib impl + honest docs")
+  date:    2026-05-30
+  FOUND via battery 4: `split_lines` was documented in CLAUDE.md as a global builtin but did
+    NOT exist anywhere (only referenced in LSP highlighting). Calling it = E0102 undefined.
+  INVESTIGATION: no-import string fns (split/substring/join) link via a PREBUILT stdlib
+    snapshot; with-import fns parse string.kry fresh. A bare check.rs builtin registration
+    typechecks but has no linkable body in the snapshot -> LNK1120 / `@split_lines undefined`.
+  FIX (honest, complete): implemented split_lines in stdlib/string.kry (wraps split on "\n",
+    strips trailing "\r", no extra empty line on trailing newline). Removed the bad check.rs
+    no-import registration so a missing import yields a clean E0102 instead of a link error.
+    Corrected CLAUDE.md: split_lines is a `use std::string::{split_lines}` function, not a
+    global builtin.
+  VERIFY: split_lines WITH import -> 3 / "b" on JIT+AOT; WITHOUT import -> clean E0102 (no
+    link error); bootstrap BYTE-IDENTICAL 989ba174. cargo 46s.
+  REMAINING battery-4 (advanced patterns, separate): or-patterns `a | b =>` (parse error, no
+    footgun); match on tuple literal `(0,0)` SILENTLY falls through to wildcard (correctness
+    footgun -- next priority to fix or hard-error).

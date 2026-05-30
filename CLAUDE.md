@@ -208,7 +208,6 @@ You do not need to `use` these — they're in the global namespace:
 | `create_dir(path)`                  | Create directory (idempotent).                 |
 | `push(arr, item) -> [T]`            | Return new array with item appended.           |
 | `substr(s, start, end) -> str`      | Byte-indexed substring.                        |
-| `split_lines(s) -> [str]`           | Split on `\n` or `\r\n`.                       |
 | `char_code(s) -> i64`               | First byte of `s` as integer.                  |
 | `contains(haystack, needle)`        | Substring search.                              |
 | `sqrt`, `pow`, `sin`, `cos`         | Math (also in `std::math`).                    |
@@ -218,6 +217,8 @@ You do not need to `use` these — they're in the global namespace:
 Imported with `use std::<module>::{symbol1, symbol2}`. Available modules:
 
 `agent`, `chan`, `collections`, `cost`, `crypto`, `datetime`, `db`, `ffi`, `fmt`, `fs`, `http`, `io`, `iter`, `json`, `math`, `net`, `option`, `os`, `path`, `probable`, `process`, `re`, `result`, `stream`, `string`, `sync`, `tensor`, `term`, `test`, `tracked`, `wasm`.
+
+Line splitting is `use std::string::{split_lines}` (`split_lines(s) -> [str]`, handles `\n` and `\r\n`) — it is a `std::string` function, not a global builtin, so it needs the import.
 
 ```kryos
 use std::math::{abs, min, max}

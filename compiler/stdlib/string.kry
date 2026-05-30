@@ -256,6 +256,31 @@ fn split(s: str, delimiter: str) -> [str] {
     return result
 }
 
+/// Split s into lines on "\n", dropping a trailing "\r" so "\r\n" endings
+/// produce clean lines. A trailing newline does not yield an extra empty line.
+fn split_lines(s: str) -> [str] {
+    let raw = split(s, "\n")
+    let mut result = []
+    let n = len(raw)
+    let mut i = 0
+    while i < n {
+        let line = raw[i]
+        let ll = len(line)
+        if ll > 0 && char_code(substr(line, ll - 1, ll)) == 13 {
+            push(result, substring(line, 0, ll - 1))
+        } else {
+            // Drop a final empty segment produced by a trailing "\n".
+            if i + 1 < n {
+                push(result, line)
+            } elif ll > 0 {
+                push(result, line)
+            }
+        }
+        i = i + 1
+    }
+    return result
+}
+
 /// Join an array of strings with a separator.
 fn join(parts: [str], separator: str) -> str {
     let plen = len(parts)
