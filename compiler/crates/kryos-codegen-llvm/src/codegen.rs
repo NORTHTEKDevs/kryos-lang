@@ -5218,6 +5218,26 @@ impl LlvmCodegen {
         ty: &str,
         is_float: bool,
     ) -> Result<(), CodegenError> {
+        // Runtime div-by-zero guard for integer division/modulo. A bare
+        // sdiv/srem is undefined behaviour on a zero divisor under LLVM (it
+        // silently produced garbage in release builds), whereas the Cranelift
+        // JIT already panics. Call the same runtime check the JIT uses, which
+        // panics with "integer division by zero" when the divisor is 0.
+        if !is_float && matches!(op, MirBinOp::Div | MirBinOp::Mod) {
+            let divisor = match ty {
+                "i64" => Some(right.to_string()),
+                "i8" | "i16" | "i32" => {
+                    let w = self.next_temp();
+                    self.emit_line(&format!("  {w} = sext {ty} {right} to i64"));
+                    Some(w)
+                }
+                // i128 / other widths are rare; skip rather than emit invalid IR.
+                _ => None,
+            };
+            if let Some(d) = divisor {
+                self.emit_line(&format!("  call void @kryos_check_div_zero_i64(i64 {d})"));
+            }
+        }
         let line = match op {
             MirBinOp::Add if is_float => format!("  {target} = fadd {ty} {left}, {right}"),
             MirBinOp::Add => format!("  {target} = add {ty} {left}, {right}"),

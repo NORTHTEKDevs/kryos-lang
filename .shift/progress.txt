@@ -3741,3 +3741,22 @@ SHIFTS:
     Result/Option payload typing, 162 closure/?/Result docs, 163 FIX COMPILER HANG on
     struct-variant enums, 164 split_lines impl+docs, 165 or-patterns, 166 docs. Bootstrap
     byte-identical 989ba174 throughout.
+
+  ---
+  step:    168 (session 8 -- 2026-05-30 "FIX SAFETY: LLVM div-by-zero UB")
+  date:    2026-05-30
+  FOUND via battery-5 runtime-safety chunk: integer `a / 0` and `a % 0` on the AOT/LLVM
+    backend printed GARBAGE (e.g. 1) instead of panicking -- the bare `sdiv`/`srem` is
+    undefined behaviour on a zero divisor. The Cranelift JIT already panics cleanly
+    ("integer division by zero"). Array/string OOB already panic on both backends; only int
+    div/mod was unguarded on AOT. (Float div-by-zero is well-defined IEEE inf/nan, not checked
+    -- matches Cranelift's `if !is_float` guard.)
+  ROOT: emit_binop_to emitted bare sdiv/srem; the runtime check fn kryos_check_div_zero_i64
+    was even already DECLARED in the LLVM module (lines 976-977) but never CALLED -- a
+    half-finished guard.
+  FIX (kryos-codegen-llvm emit_binop_to): for integer Div/Mod, emit `call void
+    @kryos_check_div_zero_i64(i64 <divisor>)` before the sdiv/srem (sext i8/i16/i32 -> i64;
+    i64 passthrough; skip i128/other to avoid invalid widening). Same runtime fn the JIT uses.
+  VERIFY: a/0 and a%0 now panic "integer division by zero" on AOT; 10/2=5, 17%7=3 unaffected
+    both backends; bootstrap BYTE-IDENTICAL 989ba174 (self-host codegen is Kryos, not the Rust
+    LLVM backend, so stage objs unchanged). cargo 20s incremental.
