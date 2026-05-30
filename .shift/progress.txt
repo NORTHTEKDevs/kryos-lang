@@ -3356,3 +3356,20 @@ SHIFTS:
   NOTE: per-site specific upgrades of the generic codes = future nicety, not blocking.
   NEXT: B8 StringBuilder (self-host string.kry/fmt.kry O(n^2) -> grow-buffer; bootstrap-
     sensitive, do NOT touch lower.kry/codegen.kry concat). Then WASM hardening / [b].
+
+  ---
+  step:    143 (session 8 -- 2026-05-29 "B8: O(n) string ops")
+  date:    2026-05-29
+  DONE (B8 partial): stdlib/string.kry to_upper/to_lower/reverse O(n^2) -> O(n). Replaced
+    `result = result + ch` loops with fixed buffer (alloc(slen) + ptr_set_byte(buf,i,byte) +
+    buf_to_str(buf,slen)) -- output size = input byte length is known, so no grow-buffer
+    needed. alloc/ptr_set_byte/buf_to_str are global builtins (registered in check.rs;
+    crypto.kry uses them; no import needed in string.kry). Empty-string guard added.
+  VERIFY: byte-identical output JIT+AOT (HELLO, WORLD! 123 / hello, world! 123 / fedcba /
+    "" / [Z]) vs pre-patch baseline. bootstrap fixed point UNCHANGED 989ba174 (stdlib not on
+    self-host path; no Rust rebuild). No cargo build needed (stdlib .kry recompiled on use).
+  REMAINING perf: pad_left/pad_right (known size, easy), fmt.kry/json.kry (unknown size ->
+    grow-buffer). WASM v0.1 hardening + [b] force-spill still deferred.
+  STATUS: language is FEATURE-COMPLETE. Shifts 133-143 this session, all green, fixed point
+    held at 989ba174 throughout. Remaining = perf polish (pad/fmt/json string, force-spill)
+    + experimental WASM backend.

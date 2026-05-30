@@ -123,40 +123,46 @@ fn rfind(haystack: str, needle: str) -> i64 {
 
 /// Convert every character to uppercase (ASCII).
 fn to_upper(s: str) -> str {
-    let mut result = ""
+    // O(n): write transformed bytes into a fixed buffer of the known output
+    // size (= input byte length) instead of repeated `result + ch` (O(n^2)).
     let slen = len(s)
+    if slen == 0 {
+        return ""
+    }
+    let buf = alloc(slen)
     let mut i = 0
     while i < slen {
-        let ch = s[i]
-        let code = char_code(ch)
+        let code = char_code(s[i])
         // a-z => A-Z
         if code >= 97 and code <= 122 {
-            result = result + char_from(code - 32)
+            ptr_set_byte(buf, i, code - 32)
         } else {
-            result = result + ch
+            ptr_set_byte(buf, i, code)
         }
         i = i + 1
     }
-    return result
+    return buf_to_str(buf, slen)
 }
 
 /// Convert every character to lowercase (ASCII).
 fn to_lower(s: str) -> str {
-    let mut result = ""
     let slen = len(s)
+    if slen == 0 {
+        return ""
+    }
+    let buf = alloc(slen)
     let mut i = 0
     while i < slen {
-        let ch = s[i]
-        let code = char_code(ch)
+        let code = char_code(s[i])
         // A-Z => a-z
         if code >= 65 and code <= 90 {
-            result = result + char_from(code + 32)
+            ptr_set_byte(buf, i, code + 32)
         } else {
-            result = result + ch
+            ptr_set_byte(buf, i, code)
         }
         i = i + 1
     }
-    return result
+    return buf_to_str(buf, slen)
 }
 
 // --- Whitespace helpers ------------------------------------------------------
@@ -293,14 +299,19 @@ fn repeat(s: str, n: i64) -> str {
 
 /// Reverse a string character by character.
 fn reverse(s: str) -> str {
+    // O(n): byte-reverse into a fixed buffer (matches the previous byte-level
+    // reversal; multibyte sequences are reversed byte-wise as before).
     let slen = len(s)
-    let mut result = ""
-    let mut i = slen - 1
-    while i >= 0 {
-        result = result + s[i]
-        i = i - 1
+    if slen == 0 {
+        return ""
     }
-    return result
+    let buf = alloc(slen)
+    let mut i = 0
+    while i < slen {
+        ptr_set_byte(buf, slen - 1 - i, char_code(s[i]))
+        i = i + 1
+    }
+    return buf_to_str(buf, slen)
 }
 
 // --- Character access --------------------------------------------------------

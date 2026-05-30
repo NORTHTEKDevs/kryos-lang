@@ -46,9 +46,14 @@ the only one left -- perf-only, non-blocking, needs a cdb runtime trace.
   but not dlcall -- update the generator so a regen doesn't drop the manual declares.
 
 ### Perf
-- O(n^2) string building everywhere (`s = s + ch` loops) in string.kry:125-160,
-  279-304 / fmt.kry / json.kry serialize. Add a StringBuilder over a grow-buffer.
-  Blocked partly by anemic bytes.kry (4 fns -- add slice/extend/to_str/from_str). M.
+- [PARTIAL DONE 2026-05-29 s8] O(n^2) `s = s + ch` string building. stdlib/string.kry
+  to_upper/to_lower/reverse converted to O(n) via the buffer builtins
+  (alloc(slen) + ptr_set_byte + buf_to_str; output size is known = input byte length).
+  Verified byte-identical on JIT+AOT (HELLO/hello/fedcba/empty/[Z]); fixed point 989ba174.
+  These are global builtins (no import needed). REMAINING (unknown output size -> need a
+  grow-buffer, not fixed alloc): pad_left/pad_right (known size, easy follow-up),
+  fmt.kry (_replace_all/center/_escape_string), json.kry serialize. NOTE: do NOT touch
+  self-host lower.kry/codegen.kry concat (bootstrap critical path).
 
 ### Diagnostics (stage-0 engine is strong; self-host regresses to bare strings)
 - [DONE 2026-05-29 session 8] Self-host byte-offset -> line:col. Was: tc_error/p_error
