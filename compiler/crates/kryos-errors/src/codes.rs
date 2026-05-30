@@ -11,6 +11,7 @@ pub const E0001: &str = "E0001"; // unexpected token
 pub const E0002: &str = "E0002"; // expected identifier
 pub const E0003: &str = "E0003"; // expected expression
 pub const E0004: &str = "E0004"; // expected type
+pub const E0009: &str = "E0009"; // syntax error (general / uncategorized)
 
 // Type errors (E01xx)
 pub const E0100: &str = "E0100"; // type mismatch
@@ -23,6 +24,7 @@ pub const E0106: &str = "E0106"; // no such field
 pub const E0107: &str = "E0107"; // no such method
 pub const E0108: &str = "E0108"; // missing fields in struct literal
 pub const E0109: &str = "E0109"; // Self used outside of impl/trait
+pub const E0110: &str = "E0110"; // type error (general / uncategorized)
 
 // Ownership errors (E03xx)
 pub const E0300: &str = "E0300"; // use of moved value

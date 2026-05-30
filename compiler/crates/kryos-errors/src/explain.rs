@@ -21,6 +21,8 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "E0002" => Some(E0002),
         "E0003" => Some(E0003),
         "E0004" => Some(E0004),
+        "E0009" => Some(E0009),
+        "E0110" => Some(E0110),
         "E0100" => Some(E0100),
         "E0101" => Some(E0101),
         "E0102" => Some(E0102),
@@ -58,6 +60,8 @@ pub fn list() -> Vec<(&'static str, &'static str)> {
         ("E0002", "expected identifier"),
         ("E0003", "expected expression"),
         ("E0004", "expected type"),
+        ("E0009", "syntax error"),
+        ("E0110", "type error"),
         ("E0100", "type mismatch"),
         ("E0101", "unknown type"),
         ("E0102", "undefined variable"),
@@ -182,6 +186,24 @@ Built-in types include: `i8`, `i16`, `i32`, `i64`, `u8`..`u64`, `f32`,
 `f64`, `bool`, `str`, `chan`, plus arrays (`[T]`), maps (`map<K, V>`),
 options (`Option<T>`), and results (`Result<T, E>`). User-defined types
 must be in scope (imported or defined in the same module).
+"#;
+
+// ----- E0009 ----------------------------------------------------------------
+
+const E0009: &str = r#"E0009: syntax error
+
+A general syntax error the parser could not place in a more specific
+category (E0001 unexpected token, E0002 expected identifier, E0003 expected
+expression, E0004 expected type). The diagnostic message describes what was
+expected at that position.
+
+Common causes:
+  - A misplaced or missing keyword (`fn`, `let`, `else`, ...).
+  - A modifier (`pub`, `async`) with nothing valid following it.
+  - A construct used where the grammar does not allow it.
+
+Read the message and the underlined span, then compare against the grammar
+in docs/19-language-reference.md.
 "#;
 
 // ----- E0100 ----------------------------------------------------------------
@@ -450,6 +472,21 @@ Fixed: put the function inside an `impl`:
 
 Inside an impl, `Self` means the type being implemented; `self` is the
 receiver if the method takes one.
+"#;
+
+// ----- E0110 ----------------------------------------------------------------
+
+const E0110: &str = r#"E0110: type error
+
+A general type-checking error that does not fall under a more specific code
+(E0100 mismatch, E0101 unknown type, E0102 undefined variable, E0103-E0109,
+capability E05xx, ownership E03xx). The diagnostic message describes the
+specific problem — for example a generic type given the wrong number of
+arguments, a field/variant access on the wrong type, or an operation applied
+to an incompatible type.
+
+Read the message and the underlined span; the fix is usually to correct the
+type annotation, the number of generic arguments, or the operation.
 "#;
 
 // ----- E0300 ----------------------------------------------------------------

@@ -234,8 +234,13 @@ impl Parser {
     }
 
     fn error(&mut self, message: String, span: Span) {
-        self.diagnostics
-            .push(Diagnostic::error(message).with_label(span, "here"));
+        // Uncategorized syntax errors still get a code so every diagnostic is
+        // explainable via `kryos explain`. Specific cases use error_with_code.
+        self.diagnostics.push(
+            Diagnostic::error(message)
+                .with_code(kryos_errors::codes::E0009)
+                .with_label(span, "here"),
+        );
     }
 
     fn error_with_code(&mut self, message: String, span: Span, code: &str) {

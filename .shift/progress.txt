@@ -3341,3 +3341,18 @@ SHIFTS:
     parsing across 20k self-host lines). cargo 33s. (Initial AST-field approach reverted in
     favor of the zero-blast-radius inline desugar.)
   NEXT: B7 codeless errors (~44 self.error -> error_with_code), B8 StringBuilder.
+
+  ---
+  step:    142 (session 8 -- 2026-05-29 "B7: every error coded")
+  date:    2026-05-29
+  DONE (B7): all 45 codeless error sites (13 parser + 32 typecheck) now carry a code.
+    Efficient generic-fallback instead of 45 per-site judgment edits: base parser fn error
+    -> E0009 (general syntax error), base check fn error -> E0110 (general type error). Both
+    new codes added to codes.rs + explain.rs (match/list/article). Specific error_with_code
+    sites keep their precise codes. Every diagnostic is now `kryos explain`-able.
+  VERIFY: 110 parser+types unit tests green (none asserted code==None). explain E0009/E0110
+    print. let-else-without-else now error[E0009]. bootstrap fixed point UNCHANGED 989ba174
+    (codes don't affect codegen). cargo 54s.
+  NOTE: per-site specific upgrades of the generic codes = future nicety, not blocking.
+  NEXT: B8 StringBuilder (self-host string.kry/fmt.kry O(n^2) -> grow-buffer; bootstrap-
+    sensitive, do NOT touch lower.kry/codegen.kry concat). Then WASM hardening / [b].

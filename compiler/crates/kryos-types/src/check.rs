@@ -67,8 +67,13 @@ impl TypeChecker {
 
     /// Report an error diagnostic.
     fn error(&mut self, msg: impl Into<String>, span: Span) {
-        self.diagnostics
-            .push(Diagnostic::error(msg).with_label(span, "here"));
+        // Uncategorized type errors still get a code so every diagnostic is
+        // explainable via `kryos explain`. Specific cases use error_with_code.
+        self.diagnostics.push(
+            Diagnostic::error(msg)
+                .with_label(span, "here")
+                .with_code(kryos_errors::codes::E0110),
+        );
     }
 
     /// Report an error diagnostic with an error code.

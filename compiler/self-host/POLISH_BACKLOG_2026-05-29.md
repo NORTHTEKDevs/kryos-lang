@@ -65,7 +65,12 @@ the only one left -- perf-only, non-blocking, needs a cdb runtime trace.
 - [DONE 2026-05-29 s8] Folded E-CAP-* into E0501..E0507 (codes.rs consts, 9 checker.rs
   sites, 7 explain articles + list/match, ~13 test assertions updated). `kryos explain
   E0501..E0507` work. 75 capability tests green. Fixed point 989ba174.
-- Code the ~12 codeless parser errors + ~32 codeless typecheck errors; replace "here". M.
+- [DONE 2026-05-29 s8] Every error now carries a code. The base parser `fn error` defaults
+  to E0009 (general syntax error) and the typechecker `fn error` to E0110 (general type
+  error); both added to codes.rs + explain.rs with articles. Specific sites keep their
+  precise error_with_code codes. 13 codeless parser + 32 codeless type sites are now coded
+  + explainable via `kryos explain`. (Per-site SPECIFIC upgrades of the generics = future
+  nicety.) 110 parser+types tests green; fixed point 989ba174.
 - [DONE 2026-05-29 s8] LSP now runs ownership + capability passes too (kryos-lsp
   check_source extends type_diags with analyze_ownership().errors + check_capabilities()).
   Added the two crate deps. LSP surfaces E0300/E05xx, not just type errors.
