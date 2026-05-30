@@ -3649,3 +3649,19 @@ SHIFTS:
   VERIFY: 4 prev-garbage cases (result-str/option-str/result-ok-str/bare-Err direct) ok on
     JIT+AOT; regressions (concat, option-i64, ? operator) ok; 3 core examples ok; bootstrap
     BYTE-IDENTICAL 989ba174. cargo 42s.
+
+  ---
+  step:    162 (session 8 -- 2026-05-30 "CLAUDE.md: closures, ? op, Result payloads; doc-only")
+  date:    2026-05-30
+  Battery 3 (12 features) -> all SUPPORTED syntax passes. Two apparent failures were my
+    invalid syntax: closures are `|x|`/`|x: i64|`/`fn(x){}`, NOT `(x) => expr` (=> is
+    match-arm-only). Verified working both backends: closure capture-by-value, closure as
+    `fn(i64)->i64` arg, iter::map(xs, |x| ...), closure returned from a NAMED fn with capture,
+    closure in struct. ONE narrow gap: a lambda whose body is a lambda literal (`|n| |x| x+n`,
+    direct currying) fails (unannotated=inference ?T3; annotated=LNK1120 unresolved symbol).
+    Clean workaround: wrap outer in a named fn (that form works perfectly). Low priority, deep
+    (heap nested-closure env) -> documented as known limitation, not fixed.
+  CLAUDE.md gotchas: #5 now notes tuple field access t.0/t.1 (mixed types); +#11 closures
+    (bar syntax, capture, named-fn currying ok, nested-lambda-literal unsupported); +#12 ?
+    operator both backends; +#13 annotate Result<T,E>/Option<T> for correct payload typing.
+    Plus two "When generating Kryos code" bullets. Doc-only, no code, no bootstrap needed.
