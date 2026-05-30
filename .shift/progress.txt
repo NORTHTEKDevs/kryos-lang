@@ -3881,3 +3881,25 @@ SHIFTS:
   Caveat: i64-slot uniformity means a method returning the payload of a non-i64 instantiation
     sees the raw slot -- same as existing generic-struct field access; concrete-typed methods
     (the documented case) are correct.
+
+  ---
+  step:    175 (session 8 -- 2026-05-30 "FEATURE: HOF closure-param inference (all 4 deferred items done)")
+  date:    2026-05-30
+  Deferred item #4 of 4. The workflow's Part A (`f: fn` -> `f: fn(any,any)->any`) was REJECTED
+    by the verifier: `any`=Type::Error which MIR defaults to I64 -> SILENT MISCOMPILE on non-i64
+    folds (worse than the current clean error). INVESTIGATION found the SAFE fix: a user-defined
+    generic HOF `fn myfold<T>(arr:[T], init:T, f:fn(T,T)->T)` ALREADY infers unannotated closure
+    params -- the bidirectional inference works through generic instantiation. The stdlib HOFs
+    just used the opaque `f: fn` (1-param `any`) instead of real generic signatures.
+  FIX (stdlib/iter.kry only, NO Rust change -- 0.38s "build"): rewrote the 2-param HOFs to proper
+    generics: reduce/fold/scan -> `<T,U>(arr:[T], init:U, f:fn(U,T)->U)`; fold_right -> f:fn(T,U)->U;
+    map_indexed -> `<T,U>(arr:[T], f:fn(i64,T)->U)->[U]`. Real type vars flow concrete types into
+    the closure params -> NO Type::Error/I64 miscompile (the [str]-elem/i64-acc case proves it).
+  VERIFY both backends: fold|reduce|scan|map_indexed unannotated all correct; fold over [str]
+    with i64 acc = 6 (real types); annotated closures still work; filter/map single-param
+    regressions ok. bootstrap BYTE-IDENTICAL 989ba174. CLAUDE.md gotcha #19 updated.
+  === ALL 4 WORKFLOW-INVESTIGATED DEFERRED ITEMS COMPLETE (steps 172-175) ===
+    172 float->int saturation; 173 tuple-literal match; 174 generic-struct impl methods;
+    175 HOF closure inference. Each adversarially-verified, then implemented far more simply
+    than the initial designs (items 174 & 175 needed no Rust-compiler change beyond the small
+    resolution fallbacks). Bootstrap byte-identical 989ba174 across all. Session 8: 17 commits.
