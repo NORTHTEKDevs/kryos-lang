@@ -3558,3 +3558,18 @@ SHIFTS:
     in simple cases (latent double-free, not observable) -> deprioritized. rank11 buf_write_str
     is a NAME-translation bug (called @buf_write_str but declared @kryos_buf_write_str), not the
     runtime_param_types issue the auditor guessed -> deferred (niche, more involved).
+
+  ---
+  step:    157 (session 8 -- 2026-05-30 "usize/isize types")
+  date:    2026-05-30
+  DONE: `let x: usize = 42` was double-broken: (1) typecheck "expected usize found i64" (USize
+    is unsigned rank2, i64 signed rank3 -> not int-widening); (2) lower_type_expr fell usize to
+    Struct("usize") -> undefined %usize on AOT. Fix: (a) infer.rs unifier -- usize/isize unify
+    with any integer (they're pointer-sized = i64 in MIR; lowering sign/zero-extends); (b)
+    lower_type_expr usize/isize -> MirType::I64.
+  VERIFY: JIT+AOT usize=42, isize=-5, usize arith=50. bootstrap 989ba174. cargo 50s.
+  SESSION TALLY (this wave loop, steps 153-157): Never/ptr, map builtins(map_has/keys/contains),
+    bare construction, array-of-structs drop, usize/isize = 5 batches/9 bugs. Plus earlier sweep
+    (147-152): any-AOT, bare patterns, map-types, Result/Option, maps-AOT = 5 more. ~14 real
+    correctness bugs fixed this session via sweep + orchestrated bug-hunt-wave. Fixed point held
+    989ba174 across ALL 25 shifts (133-157).

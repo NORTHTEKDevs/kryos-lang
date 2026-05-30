@@ -5185,6 +5185,9 @@ pub fn lower_type_expr(ty: &ast::TypeExpr) -> MirType {
             "u32" => MirType::U32,
             "u64" => MirType::U64,
             "u128" => MirType::U128,
+            // Pointer-sized integers are i64 in Kryos's MIR. Without these they
+            // fell to Struct("usize")/Struct("isize") -> undefined %usize on AOT.
+            "usize" | "isize" => MirType::I64,
             "f32" => MirType::F32,
             "f64" => MirType::F64,
             "bool" => MirType::Bool,

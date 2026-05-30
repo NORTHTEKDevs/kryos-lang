@@ -374,6 +374,17 @@ impl InferenceEngine {
             // This allows integer literals (default i32) to be used where i64 is expected.
             _ if is_int_widening(&a, &b) || is_int_widening(&b, &a) => Ok(()),
 
+            // usize/isize are pointer-sized integers that lower to i64 in MIR
+            // (lower_resolved_type maps both to MirType::I64). Treat them as
+            // unifiable with any integer type -- the lowering sign/zero-extends.
+            // Without this, `let n: usize = 42` failed (42 is i64, n is USize:
+            // different signedness -> not int-widening -> mismatch).
+            (Type::USize | Type::ISize, other) | (other, Type::USize | Type::ISize)
+                if other.is_integer() =>
+            {
+                Ok(())
+            }
+
             // Everything else is a mismatch.
             _ => {
                 let mut diag =
