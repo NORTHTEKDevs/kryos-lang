@@ -110,8 +110,8 @@ impl TypeChecker {
                         Type::Error
                     };
                 }
-                if name == "Map" {
-                    // Bare `Map` or `{}` syntax: create a map with fresh type variables
+                if name == "Map" || name == "map" {
+                    // Bare `map`/`Map`: create a map with fresh type variables
                     Type::Map {
                         key: Box::new(self.engine.fresh_var()),
                         value: Box::new(self.engine.fresh_var()),
@@ -178,26 +178,26 @@ impl TypeChecker {
                             Type::Error
                         }
                     }
-                    "Map" => {
+                    "Map" | "map" => {
                         if resolved_args.len() == 2 {
                             Type::Map {
                                 key: Box::new(resolved_args[0].clone()),
                                 value: Box::new(resolved_args[1].clone()),
                             }
                         } else {
-                            self.error("Map expects exactly 2 type arguments", *span);
+                            self.error("map expects exactly 2 type arguments", *span);
                             Type::Error
                         }
                     }
                     // chan<T> — channels are opaque i64 handles at runtime.
                     "chan" => Type::I64,
-                    "Set" => {
+                    "Set" | "set" => {
                         if resolved_args.len() == 1 {
                             Type::Set {
                                 element: Box::new(resolved_args[0].clone()),
                             }
                         } else {
-                            self.error("Set expects exactly 1 type argument", *span);
+                            self.error("set expects exactly 1 type argument", *span);
                             Type::Error
                         }
                     }

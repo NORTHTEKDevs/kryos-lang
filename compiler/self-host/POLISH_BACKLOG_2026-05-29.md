@@ -72,6 +72,19 @@ the only one left -- perf-only, non-blocking, needs a cdb runtime trace.
 - [REMAINING] Bare variant CONSTRUCTION (`Rect(3,5)` / `Some(42)` without `Enum.`) still
   errors "undefined variable Rect" -- separate expression/FnCall-resolution path. M.
 
+### map<K,V> annotation vs literal mismatch (found + fixed 2026-05-29 s8 via sweep)
+- [DONE] `let m: map<str,i64> = #{...}` failed: "type mismatch expected map<str,i64> found
+  Map<str,i64>", then "not indexable". Root cause: the type resolvers only matched CAPITAL
+  `Map`/`Set` (check.rs:113/181/194 + mir/lower.rs:5178) but CLAUDE.md documents lowercase
+  `map<K,V>`, so the annotation fell through to Struct("map") while the `#{}` literal was
+  Type::Map -> mismatch -> map unusable. Fix: accept `Map|map` + `Set|set` in both the
+  typechecker and MIR lowering; display Type::Map/Set lowercase (matches the written form).
+  Verified read/write/update on JIT (1, 5, 99/20); types tests green; fixed point 989ba174.
+- [REMAINING related] `contains(m, key)` builtin only does substring search (expects str,
+  not map) though CLAUDE.md says `contains(m, k)`. And generic-enum construction
+  `Result.Ok(x)` yields bare `Result` (no inferred type args) -> mismatch with
+  `Result<i64,str>`. Both separate, deeper (builtin overloading / generic inference).
+
 ### Pre-existing bugs surfaced 2026-05-29 s8 (NOT regressions; found while testing)
 - `fmt.format("...{0}...", args)`: the `{0}` placeholder collides with Kryos STRING
   INTERPOLATION -- a literal `"{0}"` is interpolated at compile time, so format() gets a

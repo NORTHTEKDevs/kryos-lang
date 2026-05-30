@@ -3428,3 +3428,17 @@ SHIFTS:
   REMAINING: bare variant CONSTRUCTION (`Rect(3,5)`/`Some(42)` without Enum.) -- separate
     expression-resolution path, still errors. (Plus the 2 pre-existing bugs: format {0}, any
     to_string runtime tag.)
+
+  ---
+  step:    149 (session 8 -- 2026-05-29 "map<K,V> annotation/literal mismatch")
+  date:    2026-05-29
+  FOUND via sweep: `let m: map<str,i64> = #{}` -> "expected map<str,i64> found Map<str,i64>"
+    then "not indexable" -> maps unusable. Root cause: type resolvers matched only CAPITAL
+    Map/Set (check.rs:113/181/194 + mir/lower.rs:5178) but CLAUDE.md uses lowercase map<K,V>;
+    annotation fell to Struct("map") while #{} literal is Type::Map -> mismatch.
+  DONE: accept `Map|map` + `Set|set` in typechecker + MIR lowering; Type::Map/Set display
+    lowercase to match the written/documented form.
+  VERIFY: map read/write/update JIT (1; 5; 99/20). types unit tests 42+4 green. bootstrap
+    fixed point UNCHANGED 989ba174. cargo 43s.
+  REMAINING related (separate, deeper): contains(map,key) builtin only does substring (expects
+    str); generic-enum construction Result.Ok(x) -> bare Result (no inferred args). Both logged.

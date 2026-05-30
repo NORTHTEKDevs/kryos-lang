@@ -5175,7 +5175,7 @@ pub fn lower_type_expr(ty: &ast::TypeExpr) -> MirType {
         ast::TypeExpr::Shared { inner, .. } => MirType::Shared(Box::new(lower_type_expr(inner))),
         ast::TypeExpr::Pointer { inner, .. } => MirType::Ptr(Box::new(lower_type_expr(inner))),
         ast::TypeExpr::Generic { name, args, .. } => {
-            if name == "Map" && args.len() == 2 {
+            if (name == "Map" || name == "map") && args.len() == 2 {
                 MirType::Map {
                     key: Box::new(lower_type_expr(&args[0])),
                     value: Box::new(lower_type_expr(&args[1])),

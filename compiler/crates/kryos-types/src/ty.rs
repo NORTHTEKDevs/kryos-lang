@@ -240,8 +240,8 @@ impl fmt::Display for Type {
                 }
                 write!(f, ")")
             }
-            Type::Map { key, value } => write!(f, "Map<{key}, {value}>"),
-            Type::Set { element } => write!(f, "Set<{element}>"),
+            Type::Map { key, value } => write!(f, "map<{key}, {value}>"),
+            Type::Set { element } => write!(f, "set<{element}>"),
             Type::Option { inner } => write!(f, "Option<{inner}>"),
             Type::Result { ok, err } => write!(f, "Result<{ok}, {err}>"),
             Type::Struct { name, generics } | Type::Enum { name, generics } => {
