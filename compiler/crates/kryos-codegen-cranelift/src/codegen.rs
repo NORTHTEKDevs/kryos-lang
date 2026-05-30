@@ -3495,8 +3495,10 @@ fn translate_rvalue<M: Module>(
                 let val = translate_operand(&args[0], builder, translator, module)?;
                 let val_ty = builder.func.dfg.value_type(val);
                 if is_float_type(val_ty) {
-                    // f64 → i64: truncate
-                    let result = builder.ins().fcvt_to_sint(types::I64, val);
+                    // f64 → i64: truncate toward zero, saturating on out-of-range
+                    // (bare fcvt_to_sint traps; _sat matches the cast path and the
+                    // LLVM saturating intrinsic).
+                    let result = builder.ins().fcvt_to_sint_sat(types::I64, val);
                     return Ok(Some(result));
                 }
                 // Already an integer — identity.

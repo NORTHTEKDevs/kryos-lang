@@ -3812,3 +3812,24 @@ SHIFTS:
   Doc-only. Sweep has moved past high-severity bugs into minor inference/API limitations ->
     natural consolidation point. Session 8: 12 commits, 3 high-sev fixes, bootstrap 989ba174
     throughout.
+
+  ---
+  step:    172 (session 8 -- 2026-05-30 "FIX: float->int saturation on AOT (as-cast + int() builtin)")
+  date:    2026-05-30
+  Deferred item #1 of 4 (workflow-investigated + adversarially verified). Battery-6 finding:
+    out-of-range f64->int cast was UB on AOT (bare LLVM fptosi -> poison/garbage); JIT saturated.
+  FIX (3 sites, all float->int):
+    (1) kryos-codegen-llvm emit_cast: float->int now emits `@llvm.fptosi.sat.<dst>.<f64|f32>`
+        (saturating intrinsic, no declare needed) instead of bare fptosi. NOTE the verifier
+        caught that the intrinsic SUFFIX must be f64/f32, not the IR names double/float.
+    (2) coerce_value double->i32 arm: same intrinsic.
+    (3) Cranelift int() builtin: fcvt_to_sint -> fcvt_to_sint_sat (was trapping/inconsistent).
+    PLUS a site the verifier missed (found via testing): the LLVM `int()` BUILTIN routed
+    `int`->kryos_builtin_int(i64), passing float BITS as i64 -> garbage for ALL floats on AOT
+    (int(42.7)=1). Added an int(float) special-case before the generic name-map emitting the
+    sat intrinsic (mirrors Cranelift line 3494).
+  VERIFY both backends: 1e300 as i64 / int(1e300) -> i64::MAX; -1e300 -> i64::MIN; NaN -> 0;
+    42.7 -> 42; -5.9 -> -5; int(7) on int still 7. bootstrap BYTE-IDENTICAL 989ba174. cargo 18s.
+  Workflow verdict on the other 3 deferred items: tuple-literal-match = implement (5 corrections);
+    generic-struct-impl = partial (deep, AST change); hof-closure-inference = DEFER (Part A would
+    trade the clean error for a silent miscompile on non-i64 via Type::Error->I64 fallback).

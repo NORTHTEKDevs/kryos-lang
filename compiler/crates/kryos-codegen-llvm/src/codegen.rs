@@ -3721,6 +3721,36 @@ impl LlvmCodegen {
                             }
                         }
                         _ => {
+                            // `int(x)` on a float: the generic name-map routes
+                            // `int` -> kryos_builtin_int(i64), which would pass the
+                            // float's bit pattern as i64 (garbage). Convert with the
+                            // saturating intrinsic instead, mirroring the Cranelift
+                            // int() special-case (its codegen.rs ~line 3494).
+                            if fname == "int"
+                                && args.len() == 1
+                                && !self.func_param_types.contains_key("int")
+                                && self.operand_is_float(&args[0], func)
+                            {
+                                let v = self.operand_to_llvm(&args[0], func);
+                                let vt = self.operand_type(&args[0], func);
+                                let vd = self.coerce_value(&v, &vt, "double");
+                                if is_mutable {
+                                    let tmp = self.next_temp();
+                                    self.emit_line(&format!(
+                                        "  {tmp} = call i64 @llvm.fptosi.sat.i64.f64(double {vd})"
+                                    ));
+                                    self.emit_line(&format!(
+                                        "  store i64 {tmp}, ptr %_{}.addr",
+                                        dest.0
+                                    ));
+                                } else {
+                                    self.emit_line(&format!(
+                                        "  %_{} = call i64 @llvm.fptosi.sat.i64.f64(double {vd})",
+                                        dest.0
+                                    ));
+                                }
+                                return Ok(());
+                            }
                             // User-defined functions shadow same-named builtins
                             // (matches Cranelift's user_shadows_builtin behavior).
                             // Without this guard, `fn contains(arr, target) -> bool`
@@ -5691,6 +5721,34 @@ impl LlvmCodegen {
         let src_is_ptr = src_ty == "ptr";
         let dst_is_ptr = dst_ty == "ptr";
 
+        // float -> int: use the saturating intrinsic instead of bare `fptosi`.
+        // `fptosi` is undefined (poison) for out-of-range / NaN inputs, which
+        // silently produced garbage in release; `@llvm.fptosi.sat` saturates to
+        // the target's min/max (and yields 0 for NaN), matching the Cranelift
+        // JIT's `fcvt_to_sint_sat`. The intrinsic suffix uses `f64`/`f32`, not
+        // the IR type names `double`/`float`.
+        if src_is_float && !dst_is_float {
+            let src_suffix = match src_ty.as_str() {
+                "double" => "f64",
+                "float" => "f32",
+                other => other,
+            };
+            let intrinsic = format!("@llvm.fptosi.sat.{dst_ty}.{src_suffix}");
+            if is_mutable {
+                let tmp = self.next_temp();
+                self.emit_line(&format!(
+                    "  {tmp} = call {dst_ty} {intrinsic}({src_ty} {src_val})"
+                ));
+                self.emit_line(&format!("  store {dst_ty} {tmp}, ptr %_{}.addr", dest.0));
+            } else {
+                self.emit_line(&format!(
+                    "  %_{} = call {dst_ty} {intrinsic}({src_ty} {src_val})",
+                    dest.0
+                ));
+            }
+            return Ok(());
+        }
+
         let inst = if src_is_float && dst_is_float {
             // float -> float: fpext or fptrunc.
             if llvm_type_width(&dst_ty) > llvm_type_width(&src_ty) {
@@ -5699,7 +5757,7 @@ impl LlvmCodegen {
                 "fptrunc"
             }
         } else if src_is_float && !dst_is_float {
-            "fptosi"
+            unreachable!("float->int is handled by the saturating intrinsic above")
         } else if !src_is_float && dst_is_float {
             "sitofp"
         } else if src_is_ptr && !dst_is_ptr {
@@ -6089,7 +6147,9 @@ impl LlvmCodegen {
                 self.track_type(&tmp, "double");
             }
             ("double", "i32") => {
-                self.emit_line(&format!("  {tmp} = fptosi double {value} to i32"));
+                self.emit_line(&format!(
+                    "  {tmp} = call i32 @llvm.fptosi.sat.i32.f64(double {value})"
+                ));
                 self.track_type(&tmp, "i32");
             }
             (from, "i64") if from.starts_with('%') || from.starts_with('{') => {
