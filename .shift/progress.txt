@@ -3573,3 +3573,19 @@ SHIFTS:
     (147-152): any-AOT, bare patterns, map-types, Result/Option, maps-AOT = 5 more. ~14 real
     correctness bugs fixed this session via sweep + orchestrated bug-hunt-wave. Fixed point held
     989ba174 across ALL 25 shifts (133-157).
+
+  ---
+  step:    158 (session 8 -- 2026-05-30 "buf builtins: name-map insufficient, reverted")
+  date:    2026-05-30
+  INVESTIGATED + REVERTED: buf_* builtins (buf_new/write_str/write_byte/to_str/len/free) are
+    called under bare names but declared kryos_buf_* (only buf_to_str was mapped) -> undefined
+    symbols on AOT. Added the full name-map + buf_write_str param coercion -> SYMBOLS RESOLVED
+    but output is GARBAGE (invalid-utf8/binary) on BOTH backends, even with buf_write_byte. So
+    the buf API has DEEPER RUNTIME issues (buf_to_str/buf_len/buf_new semantics -- likely
+    buf_len returns capacity not written-length, or buf_to_str reads uninitialized bytes), not
+    just the codegen name-map. Reverted: turning a loud compile-error into silent garbage is
+    worse. buf needs a dedicated runtime-level fix (kryos-rt builtins.rs:1130 kryos_buf_write_str
+    + the buf grow-buffer state). DEFERRED. Bootstrap stays 989ba174 (revert = no net change).
+  REMAINING wave items (all deeper/lower-value): buf runtime (above), values(m) full-stack
+    (needs kryos_map_values runtime fn), Cranelift map-drop leaks (latent, ranks 12-14), Range
+    stack-alloc (rank10, high-risk), sync _0 SSA dup, networking _ks str builtins.
