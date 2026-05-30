@@ -5152,7 +5152,15 @@ pub fn lower_type_expr(ty: &ast::TypeExpr) -> MirType {
             // The `!` (never) type denotes a function that never returns
             // normally (it diverges via exit/throw/loop). At the MIR level
             // we represent it as Void so the ABI matches `() -> ()`.
-            "never" => MirType::Void,
+            // Both `never` and `Never` are accepted by the type checker, so
+            // both must lower here (else `Never` fell through to Struct("Never")
+            // -> undefined `%Never` LLVM type).
+            "never" | "Never" => MirType::Void,
+            // A bare `ptr` annotation is a raw opaque pointer (used by extern
+            // FFI decls + std::sync). Without this it fell through to
+            // Struct("ptr") -> LLVM `%ptr` (undefined, clashes with the opaque
+            // pointer keyword).
+            "ptr" => MirType::Ptr(Box::new(MirType::Void)),
             // `any` is the dynamic top type. It is carried as an i64 handle
             // (matching the typechecker's Type::Error -> I64 fallback and the
             // Cranelift backend, which treats all aggregates as i64 handles).

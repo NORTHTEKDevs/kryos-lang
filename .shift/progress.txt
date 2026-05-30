@@ -3488,3 +3488,24 @@ SHIFTS:
     cargo 19s. (Earlier "fiddly/deferred" assessment was wrong -- 2 contained fixes.)
   SWEEP SCORECARD: any-AOT(147), bare-patterns(148), map-types(149), Result/Option(150),
     maps-on-AOT(152). 5 real correctness bugs fixed via feature-sweep testing on both backends.
+
+  ---
+  step:    153 (session 8 -- 2026-05-30 "bughunt wave + Batch A: Never/ptr type-rep")
+  date:    2026-05-30
+  ORCHESTRATION: launched kryos-bughunt-wave Workflow (5 read-only auditors: type-rep
+    consistency, JIT-vs-LLVM asymmetry, builtin/symbol coverage, drop-codegen, doc-features
+    + triage). 743k tokens, 648 tool-uses. Produced a 20-item prioritized fix queue. CONFIRMED
+    each before fixing (essential -- ~50% were false positives: chan/fib/sort actually work).
+  DONE (Batch A, lower.rs lower_type_expr -- same `any`/`map` class): `Never` (capital) and
+    bare `ptr` fell through to Struct(name) -> undefined %Never/%ptr on LLVM AOT. Added
+    `"never"|"Never" => Void` and `"ptr" => Ptr(Void)`. Verified: Never compiles+diverges;
+    `extern { fn malloc(n:i64)->ptr }` compiles+runs on AOT. bootstrap 989ba174. cargo 48s.
+  CONFIRMED-PENDING (real bugs from the wave, queued for next batches):
+    - map_has / keys / contains(map) / values(m) builtins broken (LLVM codegen / dispatch).
+    - ARC/drop LLVM bugs (struct/enum drop calls free() not arc_release; str/map struct-field
+      not cloned; params not retained-on-entry; range alloca'd on stack).
+    - Cranelift Drop missing Map arm (map locals leak on JIT).
+    - runtime_param_types missing many str-arg builtins (buf_write_str, tcp/tls/pg/...).
+  NEW (found while confirming): sync.kry AOT -> "multiple definition of local value '_0'"
+    (SSA-naming dup, separate); `usize` fails at TYPECHECK (USize != I64 mismatch, needs
+    unification -- more than the auditor's codegen fix).
