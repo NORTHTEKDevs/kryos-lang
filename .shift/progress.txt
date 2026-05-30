@@ -3604,3 +3604,26 @@ SHIFTS:
   VERIFY: JIT+AOT i64 tuple t.0+t.1=7; mixed (i64,str,bool) tr.0=42 tr.1="hi". bootstrap
     989ba174. cargo 41s. (battery: ternary/closure-capture/casts/range/nested-array/generic-fn/
     interp/while-break-continue/neg-mod/bool-logic ALL already worked -- language is solid.)
+
+  ---
+  step:    160 (session 8 -- 2026-05-30 "exhaustive-enum match switch default -> Unreachable")
+  date:    2026-05-30
+  FOUND via feature-battery 2 (10/12 passed): `?` operator and a fn whose body is a
+    fully-diverging enum match BOTH failed AOT-only (JIT ok). `?`: "Instruction does not
+    dominate all uses". enum-method: "void type ... insertvalue void into {i64}".
+  ROOT (one cause, via --emit-llvm dump of use_it): lower_match set the Switch `default`
+    to `merge_bb` when the match had no wildcard/default arm. For an EXHAUSTIVE enum match
+    (all variants covered) that default edge is dead, but it makes merge_bb a successor of
+    the switch block -> any value an arm binds and merge reads no longer dominates its use
+    under LLVM strict SSA. Cranelift (block-param SSA) tolerated it; LLVM rejected it.
+  FIX (lower.rs lower_match): track the matched enum; when default_arm is None AND the enum
+    is exhaustively covered (targets.len() >= variant count), route the Switch default to a
+    fresh `Terminator::Unreachable` block instead of merge_bb. Non-enum / non-exhaustive /
+    wildcard matches keep merge_bb (unchanged).
+  VERIFY: `?` op JIT+AOT=6; diverging-match-returning-enum JIT+AOT="S". Match regression
+    battery (result/option/payload/wildcard/int-noW/bool/match-as-value) all ok. bootstrap
+    BYTE-IDENTICAL 989ba174 (self-host is Result/Option-str-match-heavy -> strong no-regress
+    signal). cargo 42s.
+  NOTE (separate pre-existing, NOT this change): qualified `Result.Err("s")` + direct
+    `println(e)` prints the str handle as an int; documented bare `Err(...)` + `"x"+e` works.
+    Isolating next. Bootstrap byte-identical rules out regression.

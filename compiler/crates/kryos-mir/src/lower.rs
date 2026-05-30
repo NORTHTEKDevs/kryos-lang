@@ -3292,6 +3292,8 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
     let mut string_targets: Vec<(String, BlockId)> = Vec::new();
     let mut arm_blocks: Vec<(BlockId, &ast::Expr, Option<EnumBinding>)> = Vec::new();
     let mut default_arm: Option<(BlockId, &ast::Expr)> = None;
+    // Enum being matched, used to decide exhaustiveness for the switch default.
+    let mut enum_for_exhaustiveness: Option<String> = subj_enum_name.clone();
 
     for arm in arms {
         let arm_bb = ctx.alloc_block();
@@ -3312,6 +3314,7 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                 if let Some(variants) = ctx.enum_defs.get(resolved_name.as_str()) {
                     if let Some(idx) = variants.iter().position(|v| v.name == *variant) {
                         targets.push((idx as i64, arm_bb));
+                        enum_for_exhaustiveness = Some(resolved_name.clone());
                         arm_blocks.push((
                             arm_bb,
                             &arm.body,
@@ -3370,7 +3373,28 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
         }
     }
 
-    let default_bb = default_arm.map(|(bb, _)| bb).unwrap_or(merge_bb);
+    // When the match has no explicit default/wildcard arm AND it exhaustively
+    // covers an enum's variants, the switch's default case is unreachable.
+    // Routing it to `merge_bb` (the old behaviour) makes merge a successor of
+    // the switch block, so any value an arm binds and merge reads no longer
+    // dominates its use under LLVM's strict SSA (e.g. the `?`-operator desugar,
+    // or a function whose body is a fully-diverging match returning an enum).
+    // Send it to a dedicated `Unreachable` block instead.
+    let is_exhaustive_enum = default_arm.is_none()
+        && enum_for_exhaustiveness
+            .as_deref()
+            .and_then(|n| ctx.enum_defs.get(n))
+            .map(|vs| targets.len() >= vs.len())
+            .unwrap_or(false);
+    let unreachable_default = if is_exhaustive_enum {
+        Some(ctx.alloc_block())
+    } else {
+        None
+    };
+    let default_bb = default_arm
+        .map(|(bb, _)| bb)
+        .or(unreachable_default)
+        .unwrap_or(merge_bb);
 
     // Emit terminator: string patterns use an equality-comparison chain
     // (strings can't go through integer Switch), integer patterns use Switch.
@@ -3514,6 +3538,13 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
             value: arm_rvalue,
         });
         ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
+    }
+
+    // Seal the unreachable default block (exhaustive enum match), restoring the
+    // cursor to merge_bb so subsequent lowering continues from the join.
+    if let Some(unreach_bb) = unreachable_default {
+        ctx.current_block = unreach_bb;
+        ctx.finish_block(Terminator::Unreachable, merge_bb);
     }
 
     Operand::Local(result_local)
