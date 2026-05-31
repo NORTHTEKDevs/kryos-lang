@@ -3903,3 +3903,23 @@ SHIFTS:
     175 HOF closure inference. Each adversarially-verified, then implemented far more simply
     than the initial designs (items 174 & 175 needed no Rust-compiler change beyond the small
     resolution fallbacks). Bootstrap byte-identical 989ba174 across all. Session 8: 17 commits.
+
+  ---
+  step:    176 (session 8 -- 2026-05-31 "A: str/pointer-returning closures typed correctly")
+  date:    2026-05-31
+  Found while chasing the str-in-fold bug: closures use a uniform i64 ABI, so a closure
+    RETURNING a non-i64 value was mis-typed. infer_expr_type's Lambda arm (lower.rs ~4206)
+    hardcoded `ret: I64` when there was no annotation, so a closure VARIABLE `f = |a:str,b:str|
+    a+b` was typed Function{ret=I64} and `println(f("x","y"))` printed the string handle as an
+    int. The FnCall arm already returns a Function-typed local's `ret`, so the only fix needed
+    was to infer the body's return type.
+  FIX (A, low-risk, pointer types only): infer the lambda body's type (register params on top
+    of the current scope without a reset so captures stay visible, truncate after) and ADOPT it
+    only for POINTER-sized results (Str/Ptr/Ref/Shared/Array/Tuple/Struct/Enum/DynTrait/Map --
+    i64-register-compatible, no calling-convention change). Floats stay i64 here (their closure
+    param/return ABI needs xmm -- deferred to B); i64/bool already worked.
+  VERIFY both backends: `|a:str,b:str| a+b` -> "xy"; `|s:str| s` -> "hello". i64/bool closures
+    (105, filter=3) unregressed. bootstrap BYTE-IDENTICAL 989ba174. cargo 38s.
+  STILL OPEN (-> B): closures passed THROUGH a function boundary (a `fn(T,T)->T` param of a
+    generic HOF: map/fold/user-HOF over [str]) lose their str type inside the callee; and f64
+    closures hit a Cranelift verifier error (arg f64 into i64 call sig) -- the param-side ABI.

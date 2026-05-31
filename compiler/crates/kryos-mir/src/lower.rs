@@ -4203,14 +4203,58 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
 
         ast::Expr::Cast { ty, .. } => ctx.resolve_type(ty),
 
-        ast::Expr::Lambda { ret_ty, .. } => {
-            // A lambda expression's type is Function.
+        ast::Expr::Lambda {
+            params,
+            body,
+            ret_ty,
+            ..
+        } => {
+            // A lambda expression's type is Function. Its return type drives how
+            // a call to the closure variable is typed (the FnCall arm above reads
+            // `Function { ret }`). Infer the body's return type for POINTER-sized
+            // results (str / struct / array / map / enum / tuple / ptr) so a
+            // closure like `|a: str, b: str| a + b` is not mis-typed as i64 --
+            // which printed the returned string handle as an int. Pointer types
+            // are i64-register-compatible, so no calling-convention change is
+            // needed. Floats keep i64 here (their closure ABI is handled
+            // separately); i64/bool/etc. already work.
+            let ret = match ret_ty {
+                Some(ty) => ctx.resolve_type(ty),
+                None => {
+                    // Register the lambda's params on top of the current scope
+                    // (captures stay visible) so the body type resolves, then
+                    // remove exactly those params again.
+                    let saved_len = ctx.locals.len();
+                    let saved_next = ctx.next_local;
+                    for p in params {
+                        let pty = p
+                            .ty
+                            .as_ref()
+                            .map(|t| ctx.resolve_type(t))
+                            .unwrap_or(MirType::I64);
+                        ctx.alloc_local(Some(p.name.clone()), pty, false);
+                    }
+                    let inferred = infer_expr_type(ctx, body);
+                    ctx.locals.truncate(saved_len);
+                    ctx.next_local = saved_next;
+                    match inferred {
+                        MirType::Str
+                        | MirType::Ptr(_)
+                        | MirType::Ref { .. }
+                        | MirType::Shared(_)
+                        | MirType::Array(..)
+                        | MirType::Tuple(_)
+                        | MirType::Struct(_)
+                        | MirType::Enum(_)
+                        | MirType::DynTrait(_)
+                        | MirType::Map { .. } => inferred,
+                        _ => MirType::I64,
+                    }
+                }
+            };
             MirType::Function {
                 params: vec![MirType::I64], // simplified
-                ret: Box::new(match ret_ty {
-                    Some(ty) => ctx.resolve_type(ty),
-                    None => MirType::I64,
-                }),
+                ret: Box::new(ret),
             }
         }
 
