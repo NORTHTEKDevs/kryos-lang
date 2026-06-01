@@ -3701,6 +3701,90 @@ impl LlvmCodegen {
                                 }
                             }
                         }
+                        "abs_f" if args.len() == 1 && !self.func_param_types.contains_key("abs_f") => {
+                            // Float-specific abs builtin. Without this arm the call
+                            // emitted a bare `@abs_f` (undefined). Mirrors the float
+                            // branch of polymorphic `abs` (llvm.fabs.f64).
+                            let arg_ty = self.operand_type(&args[0], func);
+                            let arg_val = self.operand_to_llvm(&args[0], func);
+                            let v = self.coerce_value(&arg_val, &arg_ty, "double");
+                            if is_mutable {
+                                let tmp = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {tmp} = call double @llvm.fabs.f64(double {v})"
+                                ));
+                                self.emit_line(&format!(
+                                    "  store double {tmp}, ptr %_{}.addr",
+                                    dest.0
+                                ));
+                            } else {
+                                self.emit_line(&format!(
+                                    "  %_{} = call double @llvm.fabs.f64(double {v})",
+                                    dest.0
+                                ));
+                            }
+                        }
+                        "min_f" | "max_f"
+                            if args.len() == 2
+                                && !self.func_param_types.contains_key(fname.as_str()) =>
+                        {
+                            // Float-specific min/max builtins (mirror the float branch
+                            // of polymorphic min/max). Were emitting bare `@min_f`/
+                            // `@max_f` (undefined).
+                            let a_ty = self.operand_type(&args[0], func);
+                            let a_val = self.operand_to_llvm(&args[0], func);
+                            let b_ty = self.operand_type(&args[1], func);
+                            let b_val = self.operand_to_llvm(&args[1], func);
+                            let a = self.coerce_value(&a_val, &a_ty, "double");
+                            let b = self.coerce_value(&b_val, &b_ty, "double");
+                            let intrin = if fname.as_str() == "min_f" {
+                                "llvm.minnum.f64"
+                            } else {
+                                "llvm.maxnum.f64"
+                            };
+                            if is_mutable {
+                                let tmp = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {tmp} = call double @{intrin}(double {a}, double {b})"
+                                ));
+                                self.emit_line(&format!(
+                                    "  store double {tmp}, ptr %_{}.addr",
+                                    dest.0
+                                ));
+                            } else {
+                                self.emit_line(&format!(
+                                    "  %_{} = call double @{intrin}(double {a}, double {b})",
+                                    dest.0
+                                ));
+                            }
+                        }
+                        "pow" if args.len() == 2 && !self.func_param_types.contains_key("pow") => {
+                            // Float power builtin -> @kryos_fpow (declared; same
+                            // runtime the `**` operator uses). Was emitting a bare
+                            // `@pow` (undefined; no libm pow declared). Args are
+                            // coerced to double (pow is registered F64).
+                            let a_ty = self.operand_type(&args[0], func);
+                            let a_val = self.operand_to_llvm(&args[0], func);
+                            let b_ty = self.operand_type(&args[1], func);
+                            let b_val = self.operand_to_llvm(&args[1], func);
+                            let a = self.coerce_value(&a_val, &a_ty, "double");
+                            let b = self.coerce_value(&b_val, &b_ty, "double");
+                            if is_mutable {
+                                let tmp = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {tmp} = call double @kryos_fpow(double {a}, double {b})"
+                                ));
+                                self.emit_line(&format!(
+                                    "  store double {tmp}, ptr %_{}.addr",
+                                    dest.0
+                                ));
+                            } else {
+                                self.emit_line(&format!(
+                                    "  %_{} = call double @kryos_fpow(double {a}, double {b})",
+                                    dest.0
+                                ));
+                            }
+                        }
                         "min" | "max" if args.len() == 2 && !self.func_param_types.contains_key(fname.as_str()) => {
                             // Polymorphic min/max: dispatch by operand type.
                             // Skipped when the user has defined their own min/max.
