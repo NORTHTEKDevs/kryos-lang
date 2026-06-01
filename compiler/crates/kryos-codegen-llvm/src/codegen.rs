@@ -2901,11 +2901,48 @@ impl LlvmCodegen {
                         }
                     }
                 };
+                // Address the field. When we know the struct type, use a
+                // struct-INDEXED GEP (`getelementptr %S, ptr, i32 0, i32 idx`)
+                // so the byte offset honours the real field layout. The old
+                // i64-stride GEP (`getelementptr i64, ptr, i32 idx`) assumed
+                // every field is 8 bytes and silently mis-addressed any field
+                // declared AFTER a >8-byte aggregate field (tuple/nested struct)
+                // -- a real AOT miscompile. For all-8-byte structs the two GEPs
+                // yield identical offsets, so this is a no-op there.
+                let struct_name = self.resolve_struct_name(object, func);
+                let field_llvm_ty: Option<String> = struct_name
+                    .as_ref()
+                    .and_then(|n| self.struct_defs.get(n))
+                    .and_then(|fs| fs.get(field_idx))
+                    .map(|(_, t)| t.clone())
+                    .map(|t| self.sig_ty_to_llvm(&t));
                 let field_ptr = self.next_temp();
-                self.emit_line(&format!(
-                    "  {field_ptr} = getelementptr i64, ptr {ptr_tmp}, i32 {field_idx}"
-                ));
-                self.emit_line(&format!("  store i64 {val}, ptr {field_ptr}"));
+                match (&struct_name, &field_llvm_ty) {
+                    (Some(sn), Some(fty)) => {
+                        self.emit_line(&format!(
+                            "  {field_ptr} = getelementptr %{sn}, ptr {ptr_tmp}, i32 0, i32 {field_idx}"
+                        ));
+                        // Aggregate fields ({..}/%Name/[..]) are wider than 8 bytes,
+                        // so store the full value with its real type. Scalar 8-byte
+                        // fields (i64/ptr/double/...) keep the opaque `store i64`
+                        // (same 8 bytes; avoids re-typing proven scalar stores).
+                        if fty.starts_with('{') || fty.starts_with('%') || fty.starts_with('[') {
+                            let val_ty = self.operand_type(value, func);
+                            let coerced = self.coerce_value(&val, &val_ty, fty);
+                            self.emit_line(&format!("  store {fty} {coerced}, ptr {field_ptr}"));
+                        } else {
+                            self.emit_line(&format!("  store i64 {val}, ptr {field_ptr}"));
+                        }
+                    }
+                    _ => {
+                        // Unknown struct (heap handle without a resolvable type):
+                        // fall back to the legacy i64-stride store.
+                        self.emit_line(&format!(
+                            "  {field_ptr} = getelementptr i64, ptr {ptr_tmp}, i32 {field_idx}"
+                        ));
+                        self.emit_line(&format!("  store i64 {val}, ptr {field_ptr}"));
+                    }
+                }
             }
         }
         Ok(())
@@ -5290,6 +5327,18 @@ impl LlvmCodegen {
     /// Falls back to index 0 with a warning if the struct or field cannot be
     /// resolved — this indicates a gap in the type checker or MIR lowering that
     /// should be investigated.
+    /// The struct type name backing `object`, if it is a struct-typed local.
+    fn resolve_struct_name(&self, object: &Operand, func: &MirFunction) -> Option<String> {
+        if let Operand::Local(id) = object {
+            func.locals.iter().find(|l| l.id == *id).and_then(|l| match &l.ty {
+                MirType::Struct(name) => Some(name.clone()),
+                _ => None,
+            })
+        } else {
+            None
+        }
+    }
+
     fn resolve_field_index(&self, object: &Operand, field: &str, func: &MirFunction) -> usize {
         // Numeric field names are tuple element indices (from tuple destructuring).
         if let Ok(idx) = field.parse::<usize>() {
