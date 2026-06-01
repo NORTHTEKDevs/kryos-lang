@@ -7004,6 +7004,14 @@ fn default_value_for_type(ty: &str) -> &str {
         "float" | "double" => "0.0",
         "ptr" => "null",
         "void" => "void",
+        // Aggregate types (struct %Name, tuple/struct {..}, array [..]) cannot
+        // use the integer literal `0` — `ret {i64,i64,i64} 0` is malformed IR.
+        // This fires on the implicit fallthrough return of an aggregate-returning
+        // function (e.g. every std::json `-> JsonValue` helper's dead default
+        // block emitted `ret {i64,i64,i64} 0`).
+        _ if ty.starts_with('{') || ty.starts_with('%') || ty.starts_with('[') => {
+            "zeroinitializer"
+        }
         _ => "0", // i1, i8, i16, i32, i64, i128
     }
 }
