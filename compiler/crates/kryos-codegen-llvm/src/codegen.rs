@@ -535,13 +535,25 @@ impl LlvmCodegen {
         if self.struct_defs.is_empty() {
             return;
         }
-        let mut decls: Vec<(String, String)> = self
+        // Clone so we can call the &self helper sig_ty_to_llvm while mapping.
+        let defs: Vec<(String, Vec<(String, MirType)>)> = self
             .struct_defs
             .iter()
             .filter(|(n, _)| n.as_str() != "Map")
+            .map(|(n, fields)| (n.clone(), fields.clone()))
+            .collect();
+        let mut decls: Vec<(String, String)> = defs
+            .iter()
             .map(|(n, fields)| {
+                // sig_ty_to_llvm (not the free mir_type_to_llvm) so an ENUM-typed
+                // field gets its real aggregate type `{ i64, <payloads> }` rather
+                // than the bare-i64 tag fallback. With bare i64, extracting the
+                // field yielded an i64 that mismatched the enum aggregate it is
+                // used as (the json/mcp AOT errors). Safe now that StoreField uses
+                // a struct-indexed GEP (step 184) -- field offsets honour the real
+                // (variable-size) layout.
                 let parts: Vec<String> =
-                    fields.iter().map(|(_, ty)| mir_type_to_llvm(ty)).collect();
+                    fields.iter().map(|(_, ty)| self.sig_ty_to_llvm(ty)).collect();
                 let body = if parts.is_empty() {
                     "{ i8 }".to_string()
                 } else {
@@ -5742,11 +5754,6 @@ impl LlvmCodegen {
         // Look up the declared struct field types so we can coerce the
         // initializer value to match (e.g. literal `10: i64` into an `i32` field).
         let struct_name = dest_ty.strip_prefix('%').unwrap_or(dest_ty);
-        let declared_field_tys: Vec<String> = self
-            .struct_defs
-            .get(struct_name)
-            .map(|fs| fs.iter().map(|(_, t)| mir_type_to_llvm(t)).collect())
-            .unwrap_or_default();
         // MIR field types, to clone heap (array/str/map) fields at construction
         // (see clone note in the loop below).
         let field_mir_tys: Vec<MirType> = self
@@ -5754,6 +5761,11 @@ impl LlvmCodegen {
             .get(struct_name)
             .map(|fs| fs.iter().map(|(_, t)| t.clone()).collect())
             .unwrap_or_default();
+        // Declared LLVM field types via sig_ty_to_llvm (enum-aware), matching
+        // emit_struct_type_decls — so an enum field's initializer is inserted as
+        // the `{ i64, <payloads> }` aggregate, not coerced to a bare i64.
+        let declared_field_tys: Vec<String> =
+            field_mir_tys.iter().map(|t| self.sig_ty_to_llvm(t)).collect();
         // Thread chained insertvalue temps through fresh SSA names from next_temp()
         // instead of dest-indexed names. Dest-indexed names ("%_3_fld_0", ...) collide
         // when the same mutable local is re-assigned in the same function, e.g. an
