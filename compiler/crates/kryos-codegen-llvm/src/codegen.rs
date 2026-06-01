@@ -4329,7 +4329,11 @@ impl LlvmCodegen {
                             self.emit_line(&format!("  {v} = load {dest_ty}, ptr {p}"));
                             v
                         } else {
-                            raw
+                            // Integer element: the slot is i64; truncate to a narrow
+                            // element type (i8/i16/i32/i1) so `store {dest_ty}` gets a
+                            // value of the right width (a `[i32]` element was stored
+                            // as the raw i64, which clang rejects). i64 is a no-op.
+                            self.coerce_value(&raw, "i64", &dest_ty)
                         };
                         self.emit_line(&format!(
                             "  store {dest_ty} {coerced}, ptr %_{}.addr",
@@ -4348,8 +4352,12 @@ impl LlvmCodegen {
                             dest.0
                         ));
                     } else {
-                        // Identity: use add 0 for integer types.
-                        self.emit_line(&format!("  %_{} = add {dest_ty} {raw}, 0", dest.0));
+                        // Integer element: truncate the i64 slot to a narrow element
+                        // type (i8/i16/i32/i1) before the identity `add` — otherwise
+                        // `add i32 <i64>` is emitted and clang rejects it. i64 is a
+                        // no-op (coerce_value returns the value unchanged).
+                        let coerced = self.coerce_value(&raw, "i64", &dest_ty);
+                        self.emit_line(&format!("  %_{} = add {dest_ty} {coerced}, 0", dest.0));
                     }
                 } else {
                     // Fixed-size array or tuple aggregate — direct GEP + load.
