@@ -463,8 +463,10 @@ fn compile_module_impl(
     );
     kryos_ast::strip_cfg(&mut module, &cfg_ctx);
 
-    // 5. Type check
-    let type_diags = type_check(&module);
+    // 5. Type check (also collect resolved types for un-annotated lambda params
+    //    so MIR can type closure params instead of defaulting them to i64).
+    let (type_diags, lambda_param_types) =
+        kryos_types::type_check_with_lambda_params(&module);
     let has_type_errors = type_diags.iter().any(|d| d.is_error());
     diagnostics.extend(type_diags);
 
@@ -507,7 +509,7 @@ fn compile_module_impl(
     }
 
     // 9. MIR lowering
-    let mut mir = kryos_mir::lower_module(&module);
+    let mut mir = kryos_mir::lower_module_with_lambda_params(&module, &lambda_param_types);
 
     // 9a. Populate source_file / source_line on each MIR function from AST spans.
     //     This is what drives accurate panic traces ("file.kry:42" instead of

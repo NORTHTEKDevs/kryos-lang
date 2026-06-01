@@ -13,7 +13,7 @@ pub mod infer;
 pub mod suggest;
 pub mod ty;
 
-pub use check::{type_check, TypeChecker};
+pub use check::{type_check, type_check_with_lambda_params, TypeChecker};
 pub use env::TypeEnv;
 pub use infer::InferenceEngine;
 pub use ty::Type;

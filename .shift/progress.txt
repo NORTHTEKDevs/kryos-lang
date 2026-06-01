@@ -3923,3 +3923,42 @@ SHIFTS:
   STILL OPEN (-> B): closures passed THROUGH a function boundary (a `fn(T,T)->T` param of a
     generic HOF: map/fold/user-HOF over [str]) lose their str type inside the callee; and f64
     closures hit a Cranelift verifier error (arg f64 into i64 call sig) -- the param-side ABI.
+
+  ---
+  step:    177 (session 9 -- 2026-05-31 "B: closure types flow through HOF boundary (str + f64 param ABI)")
+  date:    2026-05-31
+  Resumed: found step-B work uncommitted in the tree (str/pointer-through-boundary +
+    a half-wired f64 codegen change). The Cranelift call-site bitcast (f64 arg -> i64) had
+    been added, but the type checker's predicate (`is_pointer_param_type`) EXCLUDED floats,
+    so the closure body still typed the param i64 and miscompiled `x*2.0` to an integer `imul`
+    (JIT verifier error) / a bad `bitcast double` (LLVM). The thunk infra was already complete
+    on BOTH backends -- the env-thunk coerces each i64 slot to the closure fn's real signature
+    (i64<->f64 bitcast in, float->i64 bitcast out). The ONLY missing piece was typing the param.
+  FIX (1-line semantic change): renamed is_pointer_param_type -> is_flowable_param_type and
+    added Type::F32 | Type::F64. Now an un-annotated float closure param flows its real type
+    into MIR; both thunks already handle the float ABI. (The str/pointer half of B -- recording
+    resolved un-annotated param types in check.rs `resolved_lambda_params`, threading them via
+    type_check_with_lambda_params -> lower_module_with_lambda_params -> the two Lambda arms in
+    lower.rs -- was the uncommitted work; kept as-is, it verified clean.) iter.kry: map/filter
+    given real generic sigs `<T,U>`/`<T>` (was bare `f: fn`) so element types reach the closure.
+  VERIFY both backends (JIT `kryos run` + AOT `build --release`, identical output):
+    str-through-map `map(["a","b","c"], |s| s+"!")` -> a!b!c!; str fold -> xyz; str map dup ->
+    hihi yoyo; f64 fold `fold([1.,2.,3.], 0., |a,x| a+x)` -> 6; regressions i64 fold=10,
+    filter len=3, mixed str-elem/i64-acc fold=6, i64 map sum=120. ALL pass on both.
+  BOOTSTRAP: fixed point HELD. New stage-1 (built by the modified stage-0) has different bytes
+    (e4c07630->64de38be, expected -- stage-0 codegen changed) but emits stage2.obj ==
+    989ba174680c13a603ead0, BYTE-IDENTICAL to canonical (1257503 bytes). Self-compilation output
+    unchanged: the self-host source uses no un-annotated str/float closures through HOFs, and
+    iter.kry is stdlib (not in the self-host concatenation), so neither change perturbs the obj.
+    test_examples.sh 9/9 compile+link+run. cargo build clean (2 pre-existing dead-code warns).
+  KNOWN LIMITATION (documented CLAUDE.md gotcha #20, NOT a regression -- pre-existing class):
+    a generic HOF RETURNING `[U]` with a float element (e.g. `map(floats, |x| x*2.)`) reads the
+    result elements as raw i64 slots; workaround = annotate the binding `let m: [f64] = map(...)`
+    (proven: prints 2 correctly). Scalar generic returns (fold/reduce/scan) are fine. Same
+    i64-slot-erasure class as gotcha #17 (generic-struct payload); deferred -- off the
+    self-compile critical path (the compiler maps over tokens/strings, never floats).
+  next:    B is complete as scoped. Candidate next (-> C, optional polish, off critical path):
+    fix generic `[U]` float-array result element typing at the read site (gotcha #20) so
+    `map` over floats needs no binding annotation -- requires propagating the monomorphized
+    U=f64 into the caller's inferred array type. Otherwise the self-compile DONE-WHEN set is
+    unaffected; resume normal self-host hardening.

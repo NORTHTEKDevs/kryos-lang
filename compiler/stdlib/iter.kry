@@ -97,7 +97,7 @@ fn unzip(pairs: [any]) -> [any] {
 // --- Transforming ------------------------------------------------------------
 
 /// Apply f to each element, returning a new array.
-fn map(arr: [any], f: fn) -> [any] {
+fn map<T, U>(arr: [T], f: fn(T) -> U) -> [U] {
     let mut result = []
     let alen = len(arr)
     let mut i = 0
@@ -121,7 +121,7 @@ fn map_indexed<T, U>(arr: [T], f: fn(i64, T) -> U) -> [U] {
 }
 
 /// Keep only elements where pred returns true.
-fn filter(arr: [any], pred: fn) -> [any] {
+fn filter<T>(arr: [T], pred: fn(T) -> bool) -> [T] {
     let mut result = []
     let alen = len(arr)
     let mut i = 0

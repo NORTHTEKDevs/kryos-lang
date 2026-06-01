@@ -4047,11 +4047,17 @@ fn translate_rvalue<M: Module>(
                 arg_vals.push(val);
             }
 
-            // Widen all arguments to i64.
+            // Coerce all arguments to i64 for the uniform closure ABI: widen
+            // small ints, and bit-cast floats (f64/f32) to integer bits. The
+            // env-thunk bit-casts them back to the real param type. Without the
+            // float case, passing an f64 arg into the all-i64 indirect-call
+            // signature failed the Cranelift verifier.
             for arg in arg_vals.iter_mut() {
                 let ty = builder.func.dfg.value_type(*arg);
                 if ty.is_int() && ty.bits() < 64 {
                     *arg = builder.ins().sextend(types::I64, *arg);
+                } else if is_float_type(ty) {
+                    *arg = builder.ins().bitcast(types::I64, MemFlags::new(), *arg);
                 }
             }
 

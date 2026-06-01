@@ -40,6 +40,13 @@ pub struct TypeChecker {
     /// a Lambda arg whose corresponding param is a Function type; consumed
     /// by `Expr::Lambda` to pre-unify un-annotated params and return.
     lambda_expected_types: std::collections::HashMap<Span, (Vec<Type>, Type)>,
+    /// Resolved concrete types for each lambda's UN-annotated parameters,
+    /// keyed by the lambda's span. Recorded after a lambda is checked so the
+    /// MIR lowering can type the closure's params (otherwise it defaults them
+    /// to i64, miscompiling e.g. a `str` closure passed to a higher-order fn).
+    /// Per param: Some(TypeExpr) for an inferred un-annotated param, None when
+    /// the param was annotated or its type stayed unresolved.
+    resolved_lambda_params: std::collections::HashMap<Span, Vec<Option<TypeExpr>>>,
 }
 
 impl Default for TypeChecker {
@@ -62,6 +69,7 @@ impl TypeChecker {
             current_self_type: None,
             generic_var_bounds: std::collections::HashMap::new(),
             lambda_expected_types: std::collections::HashMap::new(),
+            resolved_lambda_params: std::collections::HashMap::new(),
         }
     }
 
@@ -2178,6 +2186,36 @@ impl TypeChecker {
 
                 self.current_return_type = prev_ret;
 
+                // Record resolved types for UN-annotated params (str/struct/
+                // enum/array/... AND floats) so MIR can type the closure's
+                // params instead of defaulting them to i64 -- the cause of a
+                // `str` closure passed to a HOF (`fold(xs, "", |acc, x| acc+x)`)
+                // miscompiling its concatenation, and of an f64 closure
+                // (`map(xs, |x| x*2.0)`) lowering `*` to an integer `imul`.
+                // Floats are i64-slot-passed through the uniform closure ABI;
+                // both backends' env-thunks already bit-cast the i64 slot to/from
+                // the real float param/return type, so typing the param is enough.
+                {
+                    let resolved: Vec<Option<TypeExpr>> = params
+                        .iter()
+                        .zip(param_types.iter())
+                        .map(|(p, pt)| {
+                            if p.ty.is_some() {
+                                return None;
+                            }
+                            let r = self.engine.resolve(pt);
+                            if is_flowable_param_type(&r) {
+                                concrete_type_to_type_expr(&r)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if resolved.iter().any(|x| x.is_some()) {
+                        self.resolved_lambda_params.insert(*lambda_span, resolved);
+                    }
+                }
+
                 // If the body evaluates to Void (e.g. block ending with `return`),
                 // the return statements already validated against `ret`.
                 // Only unify when body produces a non-void expression result.
@@ -2555,7 +2593,114 @@ impl TypeChecker {
 // ── Public API ───────────────────────────────────────────────────────
 
 /// Type-check a module, returning all diagnostics found.
+/// True when `ty` is a type whose un-annotated closure param we want to flow
+/// into MIR rather than defaulting to i64: pointer/heap-represented types
+/// (i64-register-sized, no ABI change) plus floats (passed in an i64 slot
+/// through the uniform closure ABI; the env-thunk bit-casts the slot to/from
+/// the real float type on both backends). Plain integers/bool already work as
+/// i64 and are excluded.
+fn is_flowable_param_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Str
+            | Type::Struct { .. }
+            | Type::Enum { .. }
+            | Type::Array { .. }
+            | Type::Tuple { .. }
+            | Type::Map { .. }
+            | Type::Option { .. }
+            | Type::Result { .. }
+            | Type::Reference { .. }
+            | Type::Shared { .. }
+            | Type::Pointer { .. }
+            | Type::F32
+            | Type::F64
+    )
+}
+
+/// Convert a resolved concrete `Type` to an AST `TypeExpr` for annotating a
+/// lambda param. Returns None for unresolved vars or shapes we can't represent.
+fn concrete_type_to_type_expr(ty: &Type) -> Option<TypeExpr> {
+    let sp = Span::DUMMY;
+    let simple = |n: &str| TypeExpr::Simple {
+        name: n.to_string(),
+        span: sp,
+    };
+    let generic = |n: &str, args: Vec<TypeExpr>| TypeExpr::Generic {
+        name: n.to_string(),
+        args,
+        span: sp,
+    };
+    Some(match ty {
+        Type::I8 => simple("i8"),
+        Type::I16 => simple("i16"),
+        Type::I32 => simple("i32"),
+        Type::I64 => simple("i64"),
+        Type::I128 => simple("i128"),
+        Type::U8 => simple("u8"),
+        Type::U16 => simple("u16"),
+        Type::U32 => simple("u32"),
+        Type::U64 => simple("u64"),
+        Type::U128 => simple("u128"),
+        Type::F32 => simple("f32"),
+        Type::F64 => simple("f64"),
+        Type::Bool => simple("bool"),
+        Type::Char => simple("char"),
+        Type::Str => simple("str"),
+        Type::USize => simple("usize"),
+        Type::ISize => simple("isize"),
+        Type::Struct { name, generics } if generics.is_empty() => simple(name),
+        Type::Enum { name, generics } if generics.is_empty() => simple(name),
+        Type::Struct { name, generics } | Type::Enum { name, generics } => generic(
+            name,
+            generics
+                .iter()
+                .map(concrete_type_to_type_expr)
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        Type::Array { element, size } => TypeExpr::Array {
+            element: Box::new(concrete_type_to_type_expr(element)?),
+            size: *size,
+            span: sp,
+        },
+        Type::Tuple { elements } => TypeExpr::Tuple {
+            elements: elements
+                .iter()
+                .map(concrete_type_to_type_expr)
+                .collect::<Option<Vec<_>>>()?,
+            span: sp,
+        },
+        Type::Map { key, value } => generic(
+            "map",
+            vec![
+                concrete_type_to_type_expr(key)?,
+                concrete_type_to_type_expr(value)?,
+            ],
+        ),
+        Type::Option { inner } => generic("Option", vec![concrete_type_to_type_expr(inner)?]),
+        Type::Result { ok, err } => generic(
+            "Result",
+            vec![
+                concrete_type_to_type_expr(ok)?,
+                concrete_type_to_type_expr(err)?,
+            ],
+        ),
+        _ => return None,
+    })
+}
+
 pub fn type_check(module: &Module) -> Vec<Diagnostic> {
+    type_check_with_lambda_params(module).0
+}
+
+/// Type-check a module and also return the resolved types of un-annotated
+/// lambda parameters (keyed by lambda span), for the MIR lowering to consume.
+pub fn type_check_with_lambda_params(
+    module: &Module,
+) -> (
+    Vec<Diagnostic>,
+    std::collections::HashMap<Span, Vec<Option<TypeExpr>>>,
+) {
     let mut checker = TypeChecker::new();
 
     // Register built-in functions that are always available.
@@ -4447,7 +4592,10 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
     checker.env.define_var("null".to_string(), Type::I64);
 
     checker.check_module(module);
-    checker.diagnostics
+    (
+        std::mem::take(&mut checker.diagnostics),
+        std::mem::take(&mut checker.resolved_lambda_params),
+    )
 }
 
 // ── Missing return analysis ─────────────────────────────────────────

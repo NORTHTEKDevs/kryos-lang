@@ -60,6 +60,10 @@ pub struct LoweringContext {
     monomorphized_functions: Vec<MirFunction>,
     /// Counter for anonymous lambda function names.
     lambda_counter: u32,
+    /// Resolved types for un-annotated lambda params, from the type checker
+    /// (keyed by the lambda's span). Used to type closure params that would
+    /// otherwise default to i64 (e.g. a `str` closure passed to a HOF).
+    lambda_param_types: HashMap<kryos_errors::Span, Vec<Option<ast::TypeExpr>>>,
     /// Counter for spawn wrapper function names.
     spawn_counter: u32,
     /// Type alias map: alias_name -> resolved MirType.
@@ -174,6 +178,7 @@ impl LoweringContext {
             monomorphized: HashMap::new(),
             monomorphized_functions: Vec::new(),
             lambda_counter: 0,
+            lambda_param_types: HashMap::new(),
             spawn_counter: 0,
             type_aliases: HashMap::new(),
             try_catch_target: None,
@@ -384,7 +389,17 @@ fn annotations_to_mir_attributes(annotations: &[ast::Annotation]) -> MirAttribut
 
 /// Lower an entire AST module to MIR.
 pub fn lower_module(module: &ast::Module) -> MirModule {
+    lower_module_with_lambda_params(module, &HashMap::new())
+}
+
+/// Lower a module to MIR, using the type checker's resolved lambda param types
+/// (keyed by lambda span) to type closure params that the AST left un-annotated.
+pub fn lower_module_with_lambda_params(
+    module: &ast::Module,
+    lambda_param_types: &HashMap<kryos_errors::Span, Vec<Option<ast::TypeExpr>>>,
+) -> MirModule {
     let mut ctx = LoweringContext::new();
+    ctx.lambda_param_types = lambda_param_types.clone();
 
     // Register built-in prelude enums (Option, Result) so they're available
     // to all programs without explicit import.
@@ -4207,7 +4222,7 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             params,
             body,
             ret_ty,
-            ..
+            span: lambda_span,
         } => {
             // A lambda expression's type is Function. Its return type drives how
             // a call to the closure variable is typed (the FnCall arm above reads
@@ -4218,21 +4233,34 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             // are i64-register-compatible, so no calling-convention change is
             // needed. Floats keep i64 here (their closure ABI is handled
             // separately); i64/bool/etc. already work.
+            let resolved_params = ctx.lambda_param_types.get(lambda_span).cloned();
+            // Resolve each param's type: explicit annotation, else the type
+            // checker's resolved type (so e.g. a `str` closure param isn't faked
+            // as i64), else i64. Used both for body inference and for the
+            // Function type's params -- the latter lets a generic HOF bind its
+            // type vars correctly (e.g. `map`'s element type T from the closure).
+            let param_tys: Vec<MirType> = params
+                .iter()
+                .enumerate()
+                .map(|(i, p)| match p.ty.as_ref() {
+                    Some(t) => ctx.resolve_type(t),
+                    None => resolved_params
+                        .as_ref()
+                        .and_then(|rp| rp.get(i))
+                        .and_then(|o| o.as_ref())
+                        .map(|te| ctx.resolve_type(te))
+                        .unwrap_or(MirType::I64),
+                })
+                .collect();
             let ret = match ret_ty {
                 Some(ty) => ctx.resolve_type(ty),
                 None => {
-                    // Register the lambda's params on top of the current scope
-                    // (captures stay visible) so the body type resolves, then
-                    // remove exactly those params again.
+                    // Register params on top of the current scope (captures stay
+                    // visible) so the body type resolves, then truncate.
                     let saved_len = ctx.locals.len();
                     let saved_next = ctx.next_local;
-                    for p in params {
-                        let pty = p
-                            .ty
-                            .as_ref()
-                            .map(|t| ctx.resolve_type(t))
-                            .unwrap_or(MirType::I64);
-                        ctx.alloc_local(Some(p.name.clone()), pty, false);
+                    for (p, pty) in params.iter().zip(param_tys.iter()) {
+                        ctx.alloc_local(Some(p.name.clone()), pty.clone(), false);
                     }
                     let inferred = infer_expr_type(ctx, body);
                     ctx.locals.truncate(saved_len);
@@ -4253,7 +4281,7 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                 }
             };
             MirType::Function {
-                params: vec![MirType::I64], // simplified
+                params: param_tys,
                 ret: Box::new(ret),
             }
         }
@@ -5188,11 +5216,15 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             params,
             ret_ty,
             body,
-            ..
+            span: lambda_span,
         } => {
             // Create an anonymous function name.
             let lambda_name = format!("__lambda_{}", ctx.lambda_counter);
             ctx.lambda_counter += 1;
+
+            // Type-checker-resolved types for this lambda's un-annotated params
+            // (so a `str`/struct/array closure param isn't defaulted to i64).
+            let resolved_params = ctx.lambda_param_types.get(lambda_span).cloned();
 
             // Analyze free variables in the lambda body (captures from enclosing scope).
             let captures = find_free_variables(ctx, body, params);
@@ -5260,7 +5292,22 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     }
                 })
                 .collect();
-            all_params.extend_from_slice(params);
+            // Append the lambda's own params, filling in the type checker's
+            // resolved type for any param the source left un-annotated.
+            for (i, p) in params.iter().enumerate() {
+                if p.ty.is_none() {
+                    if let Some(Some(te)) = resolved_params.as_ref().and_then(|rp| rp.get(i)) {
+                        all_params.push(ast::Param {
+                            name: p.name.clone(),
+                            ty: Some(te.clone()),
+                            default: p.default.clone(),
+                            span: p.span,
+                        });
+                        continue;
+                    }
+                }
+                all_params.push(p.clone());
+            }
 
             // Detect whether the body is a void-returning expression (e.g.
             // `println(...)`, a method call to a void method, or a Block

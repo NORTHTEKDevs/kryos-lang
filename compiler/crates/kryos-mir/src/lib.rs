@@ -25,4 +25,7 @@ pub mod optimize;
 
 // Re-export key types for convenience.
 pub use ir::*;
-pub use lower::{lower_function, lower_module, lower_resolved_type, lower_type_expr};
+pub use lower::{
+    lower_function, lower_module, lower_module_with_lambda_params, lower_resolved_type,
+    lower_type_expr,
+};
