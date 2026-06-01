@@ -711,18 +711,21 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_ipow(i64, i64)");
         self.emit_line("declare double @kryos_fpow(double, double)");
         self.emit_line("declare double @kryos_fmod(double, double)");
-        // C math functions (used by sqrt, floor, ceil, sin, cos, etc. builtins)
-        self.emit_line("declare double @sqrt(double)");
-        self.emit_line("declare double @floor(double)");
-        self.emit_line("declare double @ceil(double)");
-        self.emit_line("declare double @round(double)");
-        self.emit_line("declare double @sin(double)");
-        self.emit_line("declare double @cos(double)");
-        self.emit_line("declare double @tan(double)");
-        self.emit_line("declare double @log(double)");
-        self.emit_line("declare double @log2(double)");
-        self.emit_line("declare double @log10(double)");
-        self.emit_line("declare double @fabs(double)");
+        // C math functions (used by sqrt, floor, ceil, sin, cos, etc. builtins).
+        // Suppressed per-name when the program DEFINES a function of that name —
+        // std::math provides pure-Kryos `floor`/`ceil`/`round`/`sqrt`/`sin`/...
+        // and a `declare double @floor` (external) clashes with the user's
+        // `define internal double @floor` ("invalid redefinition"). Same pattern
+        // as the libc `exit` declaration above. The std::math implementations are
+        // self-contained (Newton/Taylor), so they never need the libm symbol.
+        for libm in [
+            "sqrt", "floor", "ceil", "round", "sin", "cos", "tan", "log", "log2", "log10",
+            "fabs",
+        ] {
+            if !self.func_param_types.contains_key(libm) {
+                self.emit_line(&format!("declare double @{libm}(double)"));
+            }
+        }
         self.emit_line("declare i64 @kryos_i64_to_string(i64)");
         self.emit_line("declare i64 @kryos_f64_to_string(double)");
         self.emit_line("declare i64 @kryos_bool_to_string(i64)");
@@ -2863,19 +2866,40 @@ impl LlvmCodegen {
                 // Store a value into a struct field at its computed offset.
                 // The object is a pointer to the struct; we GEP to the field
                 // index and store the value.
-                let obj_val = self.operand_to_llvm(object, func);
-                let obj_ty = self.operand_type(object, func);
                 let val = self.operand_to_llvm(value, func);
                 let field_idx = self.resolve_field_index(object, field, func);
 
-                // Coerce object to ptr if not already. Treat void-typed values
-                // as already-ptr (they originate from runtime calls returning ptr).
-                let ptr_tmp = if obj_ty == "ptr" || obj_ty == "void" {
-                    obj_val
-                } else {
-                    let tmp = self.next_temp();
-                    self.emit_line(&format!("  {tmp} = inttoptr {obj_ty} {obj_val} to ptr"));
-                    tmp
+                // Compute the base pointer of the struct. A by-value aggregate
+                // (struct/tuple) local lives in its own `%_N.addr` alloca; GEP
+                // into that directly. `operand_to_llvm` would instead LOAD the
+                // aggregate VALUE, which then cannot be inttoptr'd (it is not an
+                // integer) — the cause of invalid `inttoptr %Struct ... to ptr`
+                // IR that clang rejects. Heap structs (i64 handle) and ptr-typed
+                // objects still go through the load + inttoptr path.
+                let ptr_tmp = match object {
+                    Operand::Local(id)
+                        if self.mutable_locals.contains(&id.0) && {
+                            let lt = self.local_type(*id);
+                            lt.starts_with('%') || lt.starts_with('{')
+                        } =>
+                    {
+                        format!("%_{}.addr", id.0)
+                    }
+                    _ => {
+                        let obj_val = self.operand_to_llvm(object, func);
+                        let obj_ty = self.operand_type(object, func);
+                        // Coerce object to ptr if not already. Treat void-typed
+                        // values as already-ptr (from runtime calls returning ptr).
+                        if obj_ty == "ptr" || obj_ty == "void" {
+                            obj_val
+                        } else {
+                            let tmp = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {tmp} = inttoptr {obj_ty} {obj_val} to ptr"
+                            ));
+                            tmp
+                        }
+                    }
                 };
                 let field_ptr = self.next_temp();
                 self.emit_line(&format!(
@@ -6273,6 +6297,29 @@ impl LlvmCodegen {
                 ));
                 self.emit_line(&format!("  {tmp} = inttoptr i64 {f0} to ptr"));
                 self.track_type(&tmp, "ptr");
+            }
+            // General integer width change between LLVM iN types not covered by
+            // the explicit arms above (e.g. i16<->i64, i128<->i64, i16->i32).
+            // Without this, a narrow int (e.g. `x as i16`) passed where i64 is
+            // expected — like `to_string(x as i16)` — was emitted unchanged,
+            // producing `call ...(i64 %v)` with %v actually i16, which clang
+            // rejects. Signedness is not tracked at the LLVM type level, so
+            // widen with sext (matching the existing i8/i32 arms); narrow with
+            // trunc. i1 (bool) is handled by the explicit arms above.
+            (a, b)
+                if a != "i1"
+                    && b != "i1"
+                    && a.strip_prefix('i').and_then(|n| n.parse::<u32>().ok()).is_some()
+                    && b.strip_prefix('i').and_then(|n| n.parse::<u32>().ok()).is_some() =>
+            {
+                let aw = a[1..].parse::<u32>().unwrap_or(64);
+                let bw = b[1..].parse::<u32>().unwrap_or(64);
+                if aw < bw {
+                    self.emit_line(&format!("  {tmp} = sext {a} {value} to {b}"));
+                } else {
+                    self.emit_line(&format!("  {tmp} = trunc {a} {value} to {b}"));
+                }
+                self.track_type(&tmp, b);
             }
             _ => return value.to_string(), // no conversion needed/possible
         }
