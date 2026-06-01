@@ -2217,6 +2217,16 @@ impl LlvmCodegen {
                     let max = self.enum_max_fields(name);
                     self.enum_llvm_type(name, max)
                 }
+                // A `Struct(name)` that actually names an ENUM (array-element and
+                // some inferred locals carry an enum value as Struct) must render
+                // as the enum aggregate `{ i64, <payloads> }`, not the bare named
+                // `%name` -- which is never declared, so `load %E` / `extractvalue
+                // %E` fail ("not a first class type"). enum_tag/enum_payload and
+                // the array-element unbox all read this via operand_type.
+                MirType::Struct(name) if self.enum_defs.contains_key(name) => {
+                    let max = self.enum_max_fields(name);
+                    self.enum_llvm_type(name, max)
+                }
                 other => mir_type_to_llvm(other),
             };
             self.local_types.insert(local.id.0, llvm_ty);
