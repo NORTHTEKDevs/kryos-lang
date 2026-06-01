@@ -4275,7 +4275,16 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                         | MirType::Struct(_)
                         | MirType::Enum(_)
                         | MirType::DynTrait(_)
-                        | MirType::Map { .. } => inferred,
+                        | MirType::Map { .. }
+                        // Floats too: a float-returning closure (`|x| x*2.0`)
+                        // must report ret=f64 so a generic HOF that derives its
+                        // result type var from the closure's return (e.g. `map`
+                        // -> [U]) binds U=f64, giving the caller a `[f64]` whose
+                        // elements read as floats rather than raw i64 slots. The
+                        // closure fn still returns its value in the uniform i64
+                        // slot (bits preserved); only the static type changes.
+                        | MirType::F32
+                        | MirType::F64 => inferred,
                         _ => MirType::I64,
                     }
                 }
