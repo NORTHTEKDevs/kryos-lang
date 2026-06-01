@@ -3563,6 +3563,33 @@ impl LlvmCodegen {
                                     let tmp = self.next_temp();
                                     self.emit_line(&format!("  {tmp} = ptrtoint ptr {v} to i64"));
                                     tmp
+                                } else if actual.starts_with('{')
+                                    || actual.starts_with('%')
+                                    || actual.starts_with('[')
+                                {
+                                    // Aggregate element (enum/tuple/struct): box on the
+                                    // heap and push the pointer as i64, mirroring the
+                                    // array-literal element path. The matching `a[i]`
+                                    // index unboxes (inttoptr + load aggregate). Without
+                                    // this, push emitted `kryos_array_push(ptr, i64
+                                    // <aggregate>)` -- a type mismatch (e.g. pushing a
+                                    // JsonValue {i64,i64,i64} into a [JsonValue]).
+                                    let size_ptr = self.next_temp();
+                                    self.emit_line(&format!(
+                                        "  {size_ptr} = getelementptr {actual}, ptr null, i32 1"
+                                    ));
+                                    let size_i64 = self.next_temp();
+                                    self.emit_line(&format!(
+                                        "  {size_i64} = ptrtoint ptr {size_ptr} to i64"
+                                    ));
+                                    let buf = self.next_temp();
+                                    self.emit_line(&format!(
+                                        "  {buf} = call ptr @kryos_arc_alloc(i64 {size_i64}, i64 8)"
+                                    ));
+                                    self.emit_line(&format!("  store {actual} {v}, ptr {buf}"));
+                                    let t = self.next_temp();
+                                    self.emit_line(&format!("  {t} = ptrtoint ptr {buf} to i64"));
+                                    t
                                 } else {
                                     self.coerce_value(&v, &actual, "i64")
                                 }
