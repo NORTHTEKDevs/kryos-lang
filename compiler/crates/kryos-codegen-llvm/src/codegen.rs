@@ -5744,10 +5744,27 @@ impl LlvmCodegen {
             dest_ty.to_string()
         };
 
+        // The destination tuple type may disagree with an element's value type
+        // (the MIR can leave a tuple element as an unresolved var -> i64 while the
+        // value is a ptr/aggregate, e.g. a recursive-enum array). Coerce each
+        // element to its declared SLOT type so the insertvalue is well-typed --
+        // matching how the JIT treats all slots uniformly. Codegen-only.
+        let slot_tys: Vec<String> = if agg_ty.starts_with('{') {
+            split_aggregate_fields(&agg_ty)
+        } else {
+            Vec::new()
+        };
         let mut prev = "undef".to_string();
         for (i, elem) in elems.iter().enumerate() {
             let elem_val = self.operand_to_llvm(elem, func);
-            let elem_ty = &elem_tys[i];
+            let elem_ty = elem_tys[i].clone();
+            let slot_ty = slot_tys.get(i).cloned().unwrap_or_else(|| elem_ty.clone());
+            let elem_val = if slot_ty != elem_ty {
+                self.coerce_value(&elem_val, &elem_ty, &slot_ty)
+            } else {
+                elem_val
+            };
+            let elem_ty = &slot_ty;
             let this = if i + 1 == elems.len() {
                 if is_mutable {
                     self.next_temp()
@@ -7112,6 +7129,41 @@ fn float_to_llvm_hex(v: f64) -> String {
 }
 
 /// Return a suitable zero/default value for an LLVM type string.
+/// Split a top-level LLVM aggregate type string `{ T1, T2, ... }` into its
+/// field type strings, respecting nesting (`{`/`[`/`(`). Returns empty for
+/// non-aggregate inputs.
+fn split_aggregate_fields(agg: &str) -> Vec<String> {
+    let t = agg.trim();
+    let inner = match t.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+        Some(i) => i,
+        None => return Vec::new(),
+    };
+    let mut fields = Vec::new();
+    let mut depth = 0i32;
+    let mut cur = String::new();
+    for c in inner.chars() {
+        match c {
+            '{' | '[' | '(' => {
+                depth += 1;
+                cur.push(c);
+            }
+            '}' | ']' | ')' => {
+                depth -= 1;
+                cur.push(c);
+            }
+            ',' if depth == 0 => {
+                fields.push(cur.trim().to_string());
+                cur.clear();
+            }
+            _ => cur.push(c),
+        }
+    }
+    if !cur.trim().is_empty() {
+        fields.push(cur.trim().to_string());
+    }
+    fields
+}
+
 fn default_value_for_type(ty: &str) -> &str {
     match ty {
         "float" | "double" => "0.0",
