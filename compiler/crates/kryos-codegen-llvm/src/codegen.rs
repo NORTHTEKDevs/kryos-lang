@@ -1426,6 +1426,19 @@ impl LlvmCodegen {
                         "  {p} = inttoptr i64 {raw} to ptr"
                     ));
                     call_args.push(format!("ptr {p}"));
+                } else if expected_ty.starts_with('{')
+                    || expected_ty.starts_with('%')
+                    || expected_ty.starts_with('[')
+                {
+                    // Aggregate param (e.g. a closure `fn(Request) -> ...`): the
+                    // caller boxed it into the i64 slot; unbox (inttoptr + load)
+                    // and pass by value. Without this `call @fn(%Request <i64>)`
+                    // mismatched.
+                    let p = self.next_temp();
+                    self.emit_line(&format!("  {p} = inttoptr i64 {raw} to ptr"));
+                    let v = self.next_temp();
+                    self.emit_line(&format!("  {v} = load {expected_ty}, ptr {p}"));
+                    call_args.push(format!("{expected_ty} {v}"));
                 } else {
                     let coerced = self.coerce_value(&raw, "i64", &expected_ty);
                     call_args.push(format!("{expected_ty} {coerced}"));
@@ -1454,6 +1467,28 @@ impl LlvmCodegen {
                 } else if underlying_ret == "ptr" {
                     let i = self.next_temp();
                     self.emit_line(&format!("  {i} = ptrtoint ptr {r} to i64"));
+                    self.emit_line(&format!("  ret i64 {i}"));
+                } else if underlying_ret.starts_with('{')
+                    || underlying_ret.starts_with('%')
+                    || underlying_ret.starts_with('[')
+                {
+                    // Aggregate return (e.g. a closure `fn(Request) -> Response`):
+                    // box on the heap and return the pointer as i64 through the
+                    // uniform thunk ABI; the CallIndirect unboxes it. Without this
+                    // `ret i64 %Response` mismatched the i64 thunk signature.
+                    let size_ptr = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {size_ptr} = getelementptr {underlying_ret}, ptr null, i32 1"
+                    ));
+                    let size_i64 = self.next_temp();
+                    self.emit_line(&format!("  {size_i64} = ptrtoint ptr {size_ptr} to i64"));
+                    let buf = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {buf} = call ptr @kryos_arc_alloc(i64 {size_i64}, i64 8)"
+                    ));
+                    self.emit_line(&format!("  store {underlying_ret} {r}, ptr {buf}"));
+                    let i = self.next_temp();
+                    self.emit_line(&format!("  {i} = ptrtoint ptr {buf} to i64"));
                     self.emit_line(&format!("  ret i64 {i}"));
                 } else {
                     let coerced = self.coerce_value(&r, &underlying_ret, "i64");
@@ -2682,6 +2717,30 @@ impl LlvmCodegen {
                                 ));
                                 val
                             }
+                            Some(t @ (MirType::Struct(_) | MirType::Tuple(_) | MirType::Enum(_))) => {
+                                // Box an aggregate capture: heap-copy the struct/
+                                // tuple/enum and store the pointer as i64 in the
+                                // spawn env. The wrapper unboxes it (inttoptr+load).
+                                // Without this, `store i64 %Router` mismatched the
+                                // %Router aggregate value.
+                                let agg = self.sig_ty_to_llvm(t);
+                                let size_ptr = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {size_ptr} = getelementptr {agg}, ptr null, i32 1"
+                                ));
+                                let size_i64 = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {size_i64} = ptrtoint ptr {size_ptr} to i64"
+                                ));
+                                let buf = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {buf} = call ptr @kryos_arc_alloc(i64 {size_i64}, i64 8)"
+                                ));
+                                self.emit_line(&format!("  store {agg} {val}, ptr {buf}"));
+                                let t2 = self.next_temp();
+                                self.emit_line(&format!("  {t2} = ptrtoint ptr {buf} to i64"));
+                                t2
+                            }
                             _ => val,
                         };
                         self.emit_line(&format!("  store i64 {store_val}, ptr {gep}"));
@@ -3004,10 +3063,27 @@ impl LlvmCodegen {
             let val = self.operand_to_llvm(a, func);
             let agg = param_aggs.get(i).cloned().flatten();
             if let Some(agg_ty) = agg {
-                let buf = self.next_temp();
-                self.emit_line(&format!("  {buf} = alloca {agg_ty}"));
-                self.emit_line(&format!("  store {agg_ty} {val}, ptr {buf}"));
-                arg_parts.push(format!("ptr byval({agg_ty}) {buf}"));
+                if actual_ty == agg_ty {
+                    // Value is the aggregate by value: spill to a byval buffer.
+                    let buf = self.next_temp();
+                    self.emit_line(&format!("  {buf} = alloca {agg_ty}"));
+                    self.emit_line(&format!("  store {agg_ty} {val}, ptr {buf}"));
+                    arg_parts.push(format!("ptr byval({agg_ty}) {buf}"));
+                } else {
+                    // Value is a boxed handle (i64/ptr) -- e.g. a struct captured
+                    // into a spawn env i64 slot. The box IS a pointer to the
+                    // aggregate; pass it directly as byval (the callee copies).
+                    // Without this, `store %Agg <i64>` mismatched (`i64 but
+                    // expected %Router`).
+                    let p = if actual_ty == "ptr" {
+                        val
+                    } else {
+                        let t = self.next_temp();
+                        self.emit_line(&format!("  {t} = inttoptr {actual_ty} {val} to ptr"));
+                        t
+                    };
+                    arg_parts.push(format!("ptr byval({agg_ty}) {p}"));
+                }
             } else {
                 let expected_ty = callee_param_types
                     .as_ref()
@@ -4196,7 +4272,30 @@ impl LlvmCodegen {
                 for a in args {
                     let val = self.operand_to_llvm(a, func);
                     let val_ty = self.operand_type(a, func);
-                    let coerced = self.coerce_value(&val, &val_ty, "i64");
+                    let coerced = if val_ty.starts_with('{')
+                        || val_ty.starts_with('%')
+                        || val_ty.starts_with('[')
+                    {
+                        // Aggregate arg into the uniform i64 closure ABI: box on
+                        // the heap and pass the pointer as i64; the thunk unboxes
+                        // it (inttoptr + load). Mirrors the aggregate-return path.
+                        let size_ptr = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {size_ptr} = getelementptr {val_ty}, ptr null, i32 1"
+                        ));
+                        let size_i64 = self.next_temp();
+                        self.emit_line(&format!("  {size_i64} = ptrtoint ptr {size_ptr} to i64"));
+                        let buf = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {buf} = call ptr @kryos_arc_alloc(i64 {size_i64}, i64 8)"
+                        ));
+                        self.emit_line(&format!("  store {val_ty} {val}, ptr {buf}"));
+                        let t = self.next_temp();
+                        self.emit_line(&format!("  {t} = ptrtoint ptr {buf} to i64"));
+                        t
+                    } else {
+                        self.coerce_value(&val, &val_ty, "i64")
+                    };
                     arg_parts.push(format!("i64 {coerced}"));
                 }
                 let arg_list = arg_parts.join(", ");
@@ -4222,6 +4321,28 @@ impl LlvmCodegen {
                             "  %_{} = call i64 {thunk_ptr}({arg_list})",
                             dest.0
                         ));
+                    }
+                } else if dest_ty.starts_with('{')
+                    || dest_ty.starts_with('%')
+                    || dest_ty.starts_with('[')
+                {
+                    // Aggregate return (e.g. closure `fn(Request) -> Response`):
+                    // the thunk boxed it and returned an i64 pointer; unbox via
+                    // inttoptr + load. Without this `add %Response <i64>` was
+                    // emitted (i64 used where the aggregate was expected).
+                    let raw = self.next_temp();
+                    self.emit_line(&format!("  {raw} = call i64 {thunk_ptr}({arg_list})"));
+                    let p = self.next_temp();
+                    self.emit_line(&format!("  {p} = inttoptr i64 {raw} to ptr"));
+                    if is_mutable {
+                        let v = self.next_temp();
+                        self.emit_line(&format!("  {v} = load {dest_ty}, ptr {p}"));
+                        self.emit_line(&format!(
+                            "  store {dest_ty} {v}, ptr %_{}.addr",
+                            dest.0
+                        ));
+                    } else {
+                        self.emit_line(&format!("  %_{} = load {dest_ty}, ptr {p}", dest.0));
                     }
                 } else {
                     let raw = self.next_temp();
