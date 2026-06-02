@@ -3733,13 +3733,24 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
 
         // For enum arms, extract payload fields and bind to locals.
         if let Some(binding) = enum_binding {
+            // Prefer the SUBJECT's (possibly monomorphized) enum type for payload
+            // field types. `binding.enum_name` is the bare generic name ("Result")
+            // whose def erases payloads to i64, but the monomorphized def
+            // ("Result___i64_str") carries the real types (Err: str). Without this,
+            // a directly-used payload binding mis-typed to i64 -> e.g.
+            // `match r { Err(e) => println(e) }` printed the str handle as a number.
+            let subj_enum_name = match infer_expr_type(ctx, subject) {
+                MirType::Enum(n) => n,
+                _ => binding.enum_name.clone(),
+            };
             for (field_idx, pat) in binding.field_patterns.iter().enumerate() {
                 if let ast::Pattern::Ident { name, .. } = pat {
                     // Look up the actual field type from enum_defs so
                     // the local has the correct type (e.g. f64 not i64).
                     let field_type = ctx
                         .enum_defs
-                        .get(binding.enum_name.as_str())
+                        .get(subj_enum_name.as_str())
+                        .or_else(|| ctx.enum_defs.get(binding.enum_name.as_str()))
                         .and_then(|variants| variants.get(binding.variant_idx as usize))
                         .and_then(|variant| variant.fields.get(field_idx))
                         .cloned()
