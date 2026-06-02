@@ -4360,11 +4360,19 @@ impl LlvmCodegen {
                     .strip_prefix('%')
                     .or_else(|| if obj_ty.starts_with('{') { None } else { Some(obj_ty.as_str()) })
                 {
-                    if let Some(fields) = self.struct_defs.get(struct_name) {
-                        if let Some((_, field_mir_ty)) = fields.get(field_idx) {
-                            let field_llvm_ty = mir_type_to_llvm(field_mir_ty);
-                            self.track_type(&target_name, &field_llvm_ty);
-                        }
+                    let field_mir = self
+                        .struct_defs
+                        .get(struct_name)
+                        .and_then(|fs| fs.get(field_idx))
+                        .map(|(_, t)| t.clone());
+                    if let Some(fmt) = field_mir {
+                        // sig_ty_to_llvm (enum-aware): an ENUM field's extractvalue
+                        // result IS the `{i64,<payloads>}` aggregate, so track it as
+                        // that -- not the bare-i64 mir_type_to_llvm fallback. Else
+                        // downstream (push/concat/enum-construct) sees "i64" for an
+                        // enum field and skips aggregate boxing.
+                        let field_llvm_ty = self.sig_ty_to_llvm(&fmt);
+                        self.track_type(&target_name, &field_llvm_ty);
                     }
                 }
                 if is_mutable {
@@ -4576,7 +4584,14 @@ impl LlvmCodegen {
 
                     for (i, field_op) in fields.iter().enumerate() {
                         let mut val = self.operand_to_llvm(field_op, func);
-                        let val_ty = self.operand_type(field_op, func);
+                        // Prefer the SSA value's tracked actual type over the MIR-
+                        // declared type: an extractvalue/field result can be a ptr
+                        // (e.g. a `[JsonValue]` array payload) while operand_type
+                        // still says i64, leaving the ptr uncoerced -> `insertvalue
+                        // ptr instead of i64`.
+                        let val_ty = self
+                            .actual_type(&val)
+                            .unwrap_or_else(|| self.operand_type(field_op, func));
                         // Payload slot is i64; cast non-i64 values (e.g. ptr) first.
                         // void-typed operands (rare — result of a void-returning
                         // call cached into a local before the throw/catch
