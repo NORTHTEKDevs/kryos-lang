@@ -2267,20 +2267,44 @@ impl LlvmCodegen {
             self.local_types.insert(local.id.0, llvm_ty);
         }
 
-        // Detect which locals need alloca/store/load (mutable or assigned >1 time).
+        // Detect which locals need alloca/store/load: mutable, assigned >1 time,
+        // OR used in a block other than the one they are defined in. The last
+        // case is required for SSA validity -- a directly-named `%_N` value
+        // defined in block A but used in block B that A does not dominate fails
+        // LLVM's "instruction does not dominate all uses" (e.g. a value produced
+        // in one match arm and consumed after the merge). Spilling it to an
+        // `%_N.addr` alloca (store at def, load at each use) sidesteps dominance.
         self.mutable_locals.clear();
         let mut assign_counts: HashMap<u32, u32> = HashMap::new();
-        for block in &func.blocks {
+        let mut def_block: HashMap<u32, usize> = HashMap::new();
+        let mut use_blocks: HashMap<u32, HashSet<usize>> = HashMap::new();
+        for (bi, block) in func.blocks.iter().enumerate() {
             for inst in &block.instructions {
                 if let Instruction::Assign { dest, .. } = inst {
                     *assign_counts.entry(dest.0).or_insert(0) += 1;
+                    def_block.entry(dest.0).or_insert(bi);
                 }
+                let mut used = HashSet::new();
+                Self::collect_operand_locals(inst, &mut used);
+                for u in used {
+                    use_blocks.entry(u).or_default().insert(bi);
+                }
+            }
+            let mut tused = HashSet::new();
+            Self::collect_terminator_locals(&block.terminator, &mut tused);
+            for u in tused {
+                use_blocks.entry(u).or_default().insert(bi);
             }
         }
         for local in &func.locals {
-            let count = assign_counts.get(&local.id.0).copied().unwrap_or(0);
-            if local.mutable || count > 1 {
-                self.mutable_locals.insert(local.id.0);
+            let id = local.id.0;
+            let count = assign_counts.get(&id).copied().unwrap_or(0);
+            let cross_block = match (def_block.get(&id), use_blocks.get(&id)) {
+                (Some(&db), Some(ubs)) => ubs.iter().any(|&ub| ub != db),
+                _ => false,
+            };
+            if local.mutable || count > 1 || cross_block {
+                self.mutable_locals.insert(id);
             }
         }
 
