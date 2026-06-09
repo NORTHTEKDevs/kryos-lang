@@ -94,7 +94,7 @@ for x in arr {        // iterates over [T]
     println(to_string(x))
 }
 
-loop {                // infinite, break to exit
+while true {          // infinite, break to exit (there is NO `loop` keyword)
     if done() { break }
 }
 

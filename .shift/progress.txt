@@ -4577,3 +4577,26 @@ SHIFTS:
   next:    feature-battery sweep on fresh ground (maps, traits, concurrency) for new
     divergences, OR ship-prep (version bump + release notes), OR the deferred LLVM-AOT-only
     multi-session items (spawn struct-capture ai_agent/http_api ticket).
+
+  ---
+  step:    200 (session 10 -- 2026-06-09 "fresh-ground battery + doc fix; session wrap")
+  date:    2026-06-09
+  Fresh-ground battery (maps/contains, for-in over struct arrays, split/substr, spawn+chan
+  send/recv, closures through fn-typed params, while-true+break, bitwise shl/and): ALL MATCH
+  on both backends (b1a/b2/b3/b4a). One DOC BUG found+fixed: CLAUDE.md documented a `loop { }`
+  keyword that does NOT exist in the grammar (E0102 undefined variable) -- corrected to the
+  `while true` idiom. (Implementing `loop` = trivial parser desugar but a new keyword is a
+  minor breaking change -- left as a candidate feature ticket.)
+  SESSION 10 TOTALS: steps 196-200. ALL FOUR gotcha-#22 bug-tail items RESOLVED (untyped-array
+  inference incl. pop element typing; nested struct field mutation + str-slot-store; narrow-int
+  literals + unsigned to_string; Option/Result struct payloads). Crashed prior session's
+  uncommitted work recovered, completed, verified, landed. Bootstrap fixed point 989ba174
+  byte-identical at EVERY step (5 full chain runs). GitHub == local at every checkpoint.
+  Crash root cause: debug builds ~48GB (LiveKernel 0x141) -- .cargo/config.toml guard already
+  committed (jobs=4, line-tables-only); this session used --release builds exclusively, peak
+  well under limits, zero crashes.
+  next:    candidates for session 11: (a) `loop` keyword feature ticket (parser desugar to
+  while-true; check self-host for `loop` identifiers first); (b) tuple-payload Option<(i64,str)>
+  (mangled tuple def loses element types at codegen boundary); (c) struct-typed fn-param field
+  mutation (params are immutable locals); (d) spawn struct-capture multi-session ticket
+  (ai_agent/http_api LLVM-AOT); (e) feature-battery into traits/generics-bounds/iterators.
