@@ -3531,7 +3531,30 @@ impl LlvmCodegen {
                                 return Ok(());
                             } else {
                                 // Integer types: coerce to i64 if needed.
-                                let coerced = self.coerce_value(&val, &arg_ty, "i64");
+                                // Unsigned narrow ints ZERO-extend — the
+                                // coerce_value sext arm would print u8 200
+                                // as -56. (U8/U16/U32 all render as iN type
+                                // strings, so signedness must come from the
+                                // MIR local type, not the LLVM type string.)
+                                let is_unsigned_narrow = matches!(&args[0], Operand::Local(id)
+                                    if func.locals.iter().find(|l| l.id == *id).is_some_and(|l| {
+                                        matches!(
+                                            l.ty,
+                                            MirType::U8 | MirType::U16 | MirType::U32
+                                        )
+                                    }));
+                                let coerced = if is_unsigned_narrow
+                                    && matches!(arg_ty.as_str(), "i8" | "i16" | "i32")
+                                {
+                                    let tmp = self.next_temp();
+                                    self.emit_line(&format!(
+                                        "  {tmp} = zext {arg_ty} {val} to i64"
+                                    ));
+                                    self.track_type(&tmp, "i64");
+                                    tmp
+                                } else {
+                                    self.coerce_value(&val, &arg_ty, "i64")
+                                };
                                 ("kryos_builtin_to_string", format!("i64 {coerced}"))
                             };
                             // The runtime returns i64 (a handle). If dest expects ptr, convert.

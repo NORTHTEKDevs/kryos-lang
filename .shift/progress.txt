@@ -4509,3 +4509,32 @@ SHIFTS:
     Option/Result struct payload (check.rs bind_pattern fix verified correct as written; the MIR
     payload-typing layer at lower.rs ~3758 is the real second blocker -- needs monomorphized
     Option___User-style def, NOT the codegen-level fix the first design proposed).
+
+  ---
+  step:    198 (session 10 -- 2026-06-09 "FIX: narrow-int literals (gotcha #22 item 3) + unsigned to_string sign-extension bug")
+  date:    2026-06-09
+  Workflow-investigated design + adversarial adjustments, implemented + verified.
+  FIX 1 (kryos-types/src/infer.rs is_int_widening): new unsigned<->I64 arm -- int literals
+    infer I64 and neither rank table spans the signed/unsigned divide, so `let x: u8 = 200`
+    could never unify. Covers let/arg/return/array-literal/struct-field sites at once. Mirrors
+    the existing loose signed semantics (i8<->i64 already unifies both ways; range unchecked).
+  FIX 2 (BONUS BUG the investigation found -- unsigned values printed sign-extended, u8 200 ->
+    "-56" on BOTH backends, even via the documented `as u8` workaround):
+    - Cranelift: is_unsigned_operand helper; uextend instead of sextend at coerce_to_string,
+      the println integer arm, AND the to_string Call arm (3rd site found by testing -- the
+      integer case fell through to the generic call path whose arg-widening loop sextends).
+    - LLVM: to_string integer arm zero-extends when the MIR local type is U8/U16/U32 (the LLVM
+      type string "i8" cannot carry signedness -- the verifier killed the type-alias approach).
+  VERIFY: u1.kry (9 cases: let u8, u64, [u8] index, struct field u8, fn-return u8, fn-param u8,
+    as-cast, NEGATIVE CONTROLS i8 -5 + i32 -1234) -> IDENTICAL correct output JIT + AOT
+    (200 100 255 128 200 199 200 -5 -1234). examples 23/23 AOT; n1/d2/d4 regression repros
+    unchanged; test_examples 9/9; unit tests 9 suites ok; **bootstrap PASS 989ba174
+    byte-identical** (self-host uses unsigned types only as name strings; signed i32 lets
+    untouched). CLAUDE.md gotcha #22 item 3 RESOLVED.
+  next:    bug-tail item 4 (last): Option/Result >8-byte struct payload. Verified plan:
+    (a) check.rs bind_pattern_with_mut Pattern::Enum arm -- handle Type::Option/Type::Result
+    subjects (currently fall to lookup_enum("") -> payload bound to ?Tn; blocks BOTH backends
+    at type-check now -- the "JIT works" memory note is stale); (b) the REAL second blocker is
+    MIR payload-binding at lower.rs ~3758: erased stdlib Option def types payload I64 -- needs
+    the monomorphized-def path (cf. step 194) not the codegen-level EnumPayload fix; (c) keep
+    the EnumPayload struct-name resolution hardening as optional.

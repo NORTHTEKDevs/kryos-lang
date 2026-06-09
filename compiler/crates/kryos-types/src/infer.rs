@@ -36,6 +36,19 @@ fn is_int_widening(from: &Type, to: &Type) -> bool {
         }
     };
 
+    // Unsigned ↔ i64: i64 is the default type produced by int literals, so
+    // without this arm `let x: u8 = 200` can never unify (neither rank table
+    // spans the signed/unsigned divide). unify() tests both directions, so
+    // this also lets unsigned values flow into i64 contexts — mirroring the
+    // existing loose signed behavior (i8 ↔ i64 already unifies both ways).
+    if matches!(to, Type::I64)
+        && matches!(
+            from,
+            Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::USize
+        )
+    {
+        return true;
+    }
     // Signed → signed widening.
     if let (Some(from_r), Some(to_r)) = (signed_rank(from), signed_rank(to)) {
         return from_r < to_r;

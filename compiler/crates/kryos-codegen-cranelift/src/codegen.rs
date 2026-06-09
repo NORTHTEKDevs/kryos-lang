@@ -140,6 +140,23 @@ fn is_float_operand(operand: &Operand, locals: &[kryos_mir::ir::MirLocal]) -> bo
     }
 }
 
+/// True when the operand is an unsigned-integer-typed local. Used to choose
+/// zero- vs sign-extension when widening narrow ints to i64.
+fn is_unsigned_operand(operand: &Operand, locals: &[kryos_mir::ir::MirLocal]) -> bool {
+    match operand {
+        Operand::Local(id) => locals.iter().find(|l| l.id == *id).is_some_and(|l| {
+            matches!(
+                l.ty,
+                kryos_mir::ir::MirType::U8
+                    | kryos_mir::ir::MirType::U16
+                    | kryos_mir::ir::MirType::U32
+                    | kryos_mir::ir::MirType::U64
+            )
+        }),
+        _ => false,
+    }
+}
+
 /// Returns the type name string for a MIR operand, used by `type_of()`.
 /// Covers all MIR types so that `type_of` can be fully resolved at compile time.
 fn mir_type_name_of_operand(operand: &Operand, locals: &[kryos_mir::ir::MirLocal]) -> &'static str {
@@ -2980,7 +2997,13 @@ fn coerce_to_string<M: Module>(
     } else {
         let val_ty = builder.func.dfg.value_type(val);
         if val_ty.is_int() && val_ty.bits() < 64 {
-            val = builder.ins().sextend(types::I64, val);
+            // Unsigned narrow ints must ZERO-extend (sextend would print
+            // u8 200 as -56).
+            val = if is_unsigned_operand(operand, &translator.mir_func.locals) {
+                builder.ins().uextend(types::I64, val)
+            } else {
+                builder.ins().sextend(types::I64, val)
+            };
         }
         "kryos_builtin_to_string"
     };
@@ -3379,8 +3402,14 @@ fn translate_rvalue<M: Module>(
                         "kryos_f64_to_string"
                     } else {
                         // Integer: widen to i64 for kryos_builtin_to_string.
+                        // Unsigned narrow ints zero-extend (sextend would
+                        // print u8 200 as -56).
                         if val_ty.is_int() && val_ty.bits() < 64 {
-                            val = builder.ins().sextend(types::I64, val);
+                            val = if is_unsigned_operand(&args[0], &translator.mir_func.locals) {
+                                builder.ins().uextend(types::I64, val)
+                            } else {
+                                builder.ins().sextend(types::I64, val)
+                            };
                         }
                         "kryos_builtin_to_string"
                     };
@@ -3568,6 +3597,24 @@ fn translate_rvalue<M: Module>(
                         1,
                     )?;
                     let call = builder.ins().call(bool_ref, &[v]);
+                    return Ok(Some(builder.inst_results(call)[0]));
+                } else if is_unsigned_operand(&args[0], &translator.mir_func.locals) {
+                    // Unsigned narrow ints ZERO-extend here — the generic
+                    // fall-through widens call args with sextend, which
+                    // would print u8 200 as -56.
+                    let mut v = val;
+                    let val_ty = builder.func.dfg.value_type(v);
+                    if val_ty.is_int() && val_ty.bits() < 64 {
+                        v = builder.ins().uextend(types::I64, v);
+                    }
+                    let int_ref = ensure_func_ref_with_args(
+                        "kryos_builtin_to_string",
+                        builder,
+                        translator,
+                        module,
+                        1,
+                    )?;
+                    let call = builder.ins().call(int_ref, &[v]);
                     return Ok(Some(builder.inst_results(call)[0]));
                 }
                 // Fall through to generic int to_string below.
