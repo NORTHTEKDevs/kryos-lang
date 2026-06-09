@@ -25,11 +25,14 @@ struct Parser {
     kinds: [i64]
     nums:  [i64]
     poss:  [i64]
-    pos:   i64
+    // Cursor lives in a 1-elem array: arrays are shared heap values on
+    // both backends, so advance(p) is visible to the caller (see gotcha #23
+    // -- bare i64 fields on a by-value param are NOT portable to mutate).
+    pos:   [i64]
 }
 
 fn new_parser() -> Parser {
-    return Parser { kinds: [], nums: [], poss: [], pos: 0 }
+    return Parser { kinds: [], nums: [], poss: [], pos: [0] }
 }
 
 fn is_digit(ch: str) -> bool {
@@ -104,15 +107,15 @@ fn tokenize(p: Parser, src: str) {
 }
 
 fn peek_kind(p: Parser) -> i64 {
-    return p.kinds[p.pos]
+    return p.kinds[p.pos[0]]
 }
 
 fn current_pos(p: Parser) -> i64 {
-    return p.poss[p.pos]
+    return p.poss[p.pos[0]]
 }
 
 fn advance(p: Parser) {
-    p.pos = p.pos + 1
+    p.pos[0] = p.pos[0] + 1
 }
 
 // --- Recursive-descent parser + evaluator ---------------------
@@ -124,7 +127,7 @@ fn parse_expr(p: Parser) -> i64 {
 fn parse_primary(p: Parser) -> i64 {
     let k = peek_kind(p)
     if k == 1 {
-        let v = p.nums[p.pos]
+        let v = p.nums[p.pos[0]]
         advance(p)
         return v
     }

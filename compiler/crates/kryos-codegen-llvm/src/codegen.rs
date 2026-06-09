@@ -706,6 +706,7 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_builtin_args()");
         self.emit_line("declare i64 @kryos_builtin_read_line()");
         self.emit_line("declare i64 @kryos_builtin_http_get(i64)");
+        self.emit_line("declare i64 @kryos_http_request_ks(i64, i64, i64, i64, i64)");
         self.emit_line("declare i64 @kryos_builtin_parse_int(i64)");
         self.emit_line("declare i64 @kryos_builtin_parse_float(i64)");
         self.emit_line("declare i64 @kryos_builtin_type_of(i64)");
@@ -2318,6 +2319,28 @@ impl LlvmCodegen {
                 self.mutable_locals.insert(p.local.0);
             }
         }
+        // Same for ANY aggregate-typed local that is the object of a
+        // StoreField — e.g. the MIR inliner turns a callee's mutated param
+        // into a single-assign temp copy, which the count-based rule above
+        // leaves immutable; the store path then emits `inttoptr %AggType`.
+        for block in &func.blocks {
+            for inst in &block.instructions {
+                if let Instruction::StoreField {
+                    object: Operand::Local(id),
+                    ..
+                } = inst
+                {
+                    let is_agg = func
+                        .locals
+                        .iter()
+                        .find(|l| l.id == *id)
+                        .is_some_and(|l| self.aggregate_llvm_ty(&l.ty).is_some());
+                    if is_agg {
+                        self.mutable_locals.insert(id.0);
+                    }
+                }
+            }
+        }
 
         let ret_agg = self.aggregate_llvm_ty(&func.ret_ty);
         let ret = if ret_agg.is_some() {
@@ -3122,6 +3145,19 @@ impl LlvmCodegen {
                     let buf = self.next_temp();
                     self.emit_line(&format!("  {buf} = alloca {agg_ty}"));
                     self.emit_line(&format!("  store {agg_ty} {val}, ptr {buf}"));
+                    arg_parts.push(format!("ptr byval({agg_ty}) {buf}"));
+                } else if actual_ty.starts_with('%')
+                    || actual_ty.starts_with('{')
+                    || actual_ty.starts_with('[')
+                {
+                    // Aggregate VALUE under a different type spelling (named
+                    // %Parser vs the literal body — layouts identical): spill
+                    // with the value's own type; the byval annotation keeps
+                    // the callee-declared type. The boxed-handle branch below
+                    // would emit `inttoptr %Agg` (invalid IR).
+                    let buf = self.next_temp();
+                    self.emit_line(&format!("  {buf} = alloca {actual_ty}"));
+                    self.emit_line(&format!("  store {actual_ty} {val}, ptr {buf}"));
                     arg_parts.push(format!("ptr byval({agg_ty}) {buf}"));
                 } else {
                     // Value is a boxed handle (i64/ptr) -- e.g. a struct captured
@@ -4180,10 +4216,12 @@ impl LlvmCodegen {
                                 "write_file" => "kryos_builtin_file_write",
                                 "append_file" => "kryos_builtin_file_append",
                                 "file_exists" => "kryos_builtin_file_exists",
+                                "create_dir" => "kryos_builtin_create_dir",
                                 "env_get" => "kryos_builtin_env_get",
                                 "args" => "kryos_builtin_args",
                                 "read_line" => "kryos_builtin_read_line",
                                 "http_get" => "kryos_builtin_http_get",
+                                "http_request" => "kryos_http_request_ks",
                                 "parse_int" => "kryos_builtin_parse_int",
                                 "parse_float" => "kryos_builtin_parse_float",
                                 // int() / float() coercion builtins. Cranelift
@@ -7476,6 +7514,15 @@ fn runtime_param_types(fname: &str) -> Option<Vec<String>> {
         // str-key map variants: the string key is coerced to an i64 handle. Without
         // these the string key was passed as `ptr`, mismatching the i64 declares.
         "kryos_map_insert_str" => Some(vec!["i64".into(), "i64".into(), "i64".into()]),
+        // http_request(method, url, headers, body, timeout_ms) — all str
+        // handles + i64, passed as i64 slots to kryos_http_request_ks.
+        "http_request" => Some(vec![
+            "i64".into(),
+            "i64".into(),
+            "i64".into(),
+            "i64".into(),
+            "i64".into(),
+        ]),
         "kryos_map_get_str" => Some(vec!["i64".into(), "i64".into()]),
         "kryos_map_delete_str" | "kryos_map_has_str" => {
             Some(vec!["i64".into(), "i64".into()])

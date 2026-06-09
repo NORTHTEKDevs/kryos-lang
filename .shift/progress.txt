@@ -4735,3 +4735,27 @@ SHIFTS:
     (2) agent + mcp_server: `@http_request` undefined -- stdlib/extern fn not emitted on LLVM path
     (3) parser: `inttoptr %Parser to ptr` -- an aggregate-to-handle cast site not covered by 197/205
   next:    fix the 3 AOT gaps.
+
+  ---
+  step:    207 (session 10 -- 2026-06-09 "FIX: 3 LLVM-AOT gaps -> showcase 21/21 AOT-compiles; parser runs identically")
+  date:    2026-06-09
+  (1) create_dir + http_request had NO LLVM dispatch mapping (step-180 abs_f class): added
+      "create_dir"->kryos_builtin_create_dir and "http_request"->kryos_http_request_ks to the
+      name table, + the extern declare (i64 x5) + runtime_param_types entry so str-handle args
+      coerce ptr->i64. Runtime fns existed all along (Cranelift already mapped them).
+  (2) aggregate call-arg under a different type SPELLING: emit_aggregate_call only spilled to a
+      byval buffer when actual_ty == agg_ty STRING-equal; a named %Parser value meeting a
+      literal-body expectation fell to the boxed-handle branch -> `inttoptr %Parser` invalid IR.
+      Added a structural-aggregate arm (spill with the value's own type, byval keeps the
+      callee-declared type).
+  (3) generalized step 205: ANY aggregate-typed local that is the OBJECT of a StoreField now
+      gets an alloca (mutable_locals) -- the MIR INLINER turns a callee's mutated param into a
+      single-assign temp copy which the count-based rule left immutable (advance(p) inlined into
+      parse_primary emitted `inttoptr %Parser <temp>`).
+  ALSO: parser.kry showcase relied on JIT param-aliasing (gotcha #23) -- output diverged
+      (JIT computed, AOT "trailing tokens"). Made it PORTABLE: cursor moved into a 1-elem [i64]
+      (arrays are shared heap values on both backends) -- demonstrates the documented pattern.
+  VERIFY: showcase 21/21 AOT-COMPILE (was 17); parser FULL output byte-identical JIT vs AOT
+      (incl. all 3 error paths); examples 23/23; repros 19/19 MATCH; test_examples 9/9;
+      **bootstrap PASS 989ba174 byte-identical**.
+  next:    `>>` nested-generics lexing; generic-fn tuple-arg monomorphization; version bump.
