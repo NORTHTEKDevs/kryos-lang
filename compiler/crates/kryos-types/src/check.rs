@@ -1216,27 +1216,41 @@ impl TypeChecker {
                 fields,
                 ..
             } => {
-                // Bare (unqualified) variant patterns carry an empty enum name;
-                // resolve it from the matched subject type when it is an enum.
-                let resolved_name = if name.is_empty() {
-                    match subject_ty {
-                        Type::Enum { name: n, .. } => n.clone(),
-                        _ => name.clone(),
+                // Resolve the subject first so type variables don't slip through.
+                let resolved_subject = self.engine.resolve(subject_ty);
+                // Option<T> / Result<T,E> are DISTINCT Type variants from
+                // Type::Enum — derive their payload types directly from the
+                // generic arguments. Without this they fall to the enum-name
+                // lookup below with name "", binding the payload to a fresh
+                // ?Tn (so `Some(u) => u.field` failed to type-check).
+                let field_types: Vec<Type> = match (&resolved_subject, variant.as_str()) {
+                    (Type::Option { inner }, "Some") => vec![(**inner).clone()],
+                    (Type::Option { .. }, "None") => vec![],
+                    (Type::Result { ok, .. }, "Ok") => vec![(**ok).clone()],
+                    (Type::Result { err, .. }, "Err") => vec![(**err).clone()],
+                    _ => {
+                        // Bare (unqualified) variant patterns carry an empty
+                        // enum name; resolve it from the matched subject type
+                        // when it is an enum.
+                        let resolved_name = if name.is_empty() {
+                            match &resolved_subject {
+                                Type::Enum { name: n, .. } => n.clone(),
+                                _ => name.clone(),
+                            }
+                        } else {
+                            name.clone()
+                        };
+                        // Look up the enum variant's field types by variant name.
+                        if let Some(edef) = self.env.lookup_enum(&resolved_name).cloned() {
+                            edef.variants
+                                .iter()
+                                .find(|(v, _)| v == variant)
+                                .map(|(_, tys)| tys.clone())
+                                .unwrap_or_default()
+                        } else {
+                            vec![]
+                        }
                     }
-                } else {
-                    name.clone()
-                };
-                // Look up the enum variant's field types by variant name.
-                let field_types: Vec<Type> = if let Some(edef) =
-                    self.env.lookup_enum(&resolved_name).cloned()
-                {
-                    edef.variants
-                        .iter()
-                        .find(|(v, _)| v == variant)
-                        .map(|(_, tys)| tys.clone())
-                        .unwrap_or_default()
-                } else {
-                    vec![]
                 };
 
                 for (i, pat) in fields.iter().enumerate() {

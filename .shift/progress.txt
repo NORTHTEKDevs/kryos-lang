@@ -4538,3 +4538,42 @@ SHIFTS:
     MIR payload-binding at lower.rs ~3758: erased stdlib Option def types payload I64 -- needs
     the monomorphized-def path (cf. step 194) not the codegen-level EnumPayload fix; (c) keep
     the EnumPayload struct-name resolution hardening as optional.
+
+  ---
+  step:    199 (session 10 -- 2026-06-09 "FIX: Option/Result multi-field struct payloads (gotcha #22 item 4 -- LAST bug-tail item)")
+  date:    2026-06-09
+  The "JIT works, AOT box/unbox edge" note from step 195 was STALE -- as found by the workflow
+  investigation, BOTH backends failed at type-check (`cannot access field on ?T5`).
+  FIX 1 (check.rs bind_pattern_with_mut Pattern::Enum arm, ~1213): Type::Option/Type::Result are
+    DISTINCT Type variants from Type::Enum, so an Option<User> subject fell to lookup_enum("")
+    and the payload bound to a fresh type var. Now: resolve the subject through the engine first
+    (mirrors the Tuple arm), then derive payload types directly from the generic args for
+    Some/None/Ok/Err; everything else takes the original enum-name path. (Design verified
+    correct as written by the adversarial pass.)
+  FIX 2 (codegen-llvm RValue::EnumPayload, ~4953): after fix 1, AOT failed with `%_3 { i64 } but
+    expected %User` -- the named-type resolve called enum_max_fields("User") (=0 for a non-enum)
+    -> "{ i64 }" -> 8-byte load truncating the 16-byte struct. ACTUAL fix SIMPLER than the
+    investigated design (build struct body from struct_defs): %User is a DEFINED named struct
+    type (the literal-body resolve exists only for opaque enum forward-decls), so just load
+    with dest_ty directly. (Recurring lesson confirmed again: real fix 3-5x simpler.)
+  NOTE: the verifier predicted MIR would type the payload i64 (lower.rs ~3758 erased-def path)
+    -- WRONG for annotated returns: resolve_type monomorphizes Option<User> -> Option___User
+    (step-161/194 machinery), so the binding was already correctly typed once the type checker
+    passed. No MIR change needed.
+  VERIFY: o1 Option<User> match (1 kris), o2 Result<User,str> Ok+Err paths, o4 if-let + None +
+    payload arithmetic, o5 regression battery (step-194 Result<i64,str> Err payload, 4-field
+    mixed i64/str/f64 struct payload, bare enum w/ payload) -- ALL MATCH JIT vs AOT. Full
+    JIT-vs-AOT diff of all 12 session repros (d1-d4, n1-n3, u1, o1/o2/o4/o5): 12/12 MATCH.
+    examples 23/23 AOT; test_examples 9/9; unit tests clean; **bootstrap PASS 989ba174
+    byte-identical** (self-host uses no generic Option/Result -- verified by grep + gate).
+  REMAINING EDGE (documented, scoped out per no-open-ended-cascade rule): tuple payload
+    Option<(i64,str)> mis-types element access on both backends (mangled tuple def loses
+    element types at a codegen boundary; JIT warns "field access on unknown struct"). Trivial
+    workaround: wrap the tuple in a named struct. CLAUDE.md gotcha #22 item 4 RESOLVED w/ edge.
+  STATUS: ALL FOUR gotcha-#22 bug-tail items now resolved (196 untyped arrays, 197 nested
+    mutation, 198 narrow-int literals, 199 Option/Result struct payloads). The bug tail that
+    step 195 mapped is CLOSED. Remaining known edges: tuple-in-Option payload, struct-typed
+    fn-param field mutation, top-level const range check -- all documented w/ workarounds.
+  next:    feature-battery sweep on fresh ground (maps, traits, concurrency) for new
+    divergences, OR ship-prep (version bump + release notes), OR the deferred LLVM-AOT-only
+    multi-session items (spawn struct-capture ai_agent/http_api ticket).

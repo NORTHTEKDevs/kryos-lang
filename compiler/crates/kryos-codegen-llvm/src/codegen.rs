@@ -4951,8 +4951,19 @@ impl LlvmCodegen {
                         // ("load operand must be a pointer to a first class type")
                         // because %Expr was only forward-declared.
                         let resolved_ty = if let Some(name) = dest_ty.strip_prefix('%') {
-                            let max = self.enum_max_fields(name);
-                            self.enum_llvm_type(name, max)
+                            if self.struct_defs.contains_key(name) {
+                                // A defined STRUCT type (e.g. Option<User>
+                                // payload): load with the named type directly.
+                                // The literal-body resolve below is only for
+                                // enums (emitted as opaque forward decls);
+                                // enum_max_fields on a struct name returns 0,
+                                // producing "{ i64 }" which truncates a
+                                // multi-field struct payload on load.
+                                dest_ty.clone()
+                            } else {
+                                let max = self.enum_max_fields(name);
+                                self.enum_llvm_type(name, max)
+                            }
                         } else {
                             dest_ty.clone()
                         };
