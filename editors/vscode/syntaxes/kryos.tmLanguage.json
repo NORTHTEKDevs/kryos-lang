@@ -64,7 +64,7 @@
       "patterns": [
         {
           "name": "keyword.control.kryos",
-          "match": "\\b(if|elif|else|match|while|for|in|break|continue|return|try|catch|throw|select)\\b"
+          "match": "\\b(if|elif|else|match|while|loop|for|in|break|continue|return|try|catch|throw|select)\\b"
         },
         {
           "name": "keyword.declaration.kryos",

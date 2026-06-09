@@ -1180,6 +1180,7 @@ impl Parser {
             }
             TokenKind::For => Some(self.parse_for()),
             TokenKind::While => Some(self.parse_while()),
+            TokenKind::Loop => Some(self.parse_loop()),
             TokenKind::Break => {
                 let tok = self.advance().clone();
                 Some(Stmt::Break { span: tok.span })
@@ -1456,6 +1457,20 @@ impl Parser {
             parallel: true,
             pattern,
             iterable,
+            body,
+            span: start.merge(end),
+        }
+    }
+
+    /// `loop { BODY }` — unconditional infinite loop (spec §4.4), exited via
+    /// `break`. Desugars to `while true { BODY }`, mirroring `while let`.
+    fn parse_loop(&mut self) -> Stmt {
+        let kw = self.expect(TokenKind::Loop);
+        let start = kw.span;
+        let body = self.parse_block();
+        let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
+        Stmt::While {
+            condition: Expr::BoolLiteral { value: true, span: start },
             body,
             span: start.merge(end),
         }

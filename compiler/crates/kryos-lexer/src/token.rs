@@ -31,6 +31,7 @@ pub enum TokenKind {
     Elif,
     For,
     While,
+    Loop,
     In,
     Break,
     Continue,
@@ -138,6 +139,7 @@ impl TokenKind {
                 | Self::Elif
                 | Self::For
                 | Self::While
+                | Self::Loop
                 | Self::In
                 | Self::Break
                 | Self::Continue
@@ -210,6 +212,7 @@ impl fmt::Display for TokenKind {
             Self::Elif => "'elif'",
             Self::For => "'for'",
             Self::While => "'while'",
+            Self::Loop => "'loop'",
             Self::In => "'in'",
             Self::Break => "'break'",
             Self::Continue => "'continue'",
@@ -344,6 +347,7 @@ pub fn keyword_lookup(word: &str) -> Option<TokenKind> {
         "elif" => TokenKind::Elif,
         "for" => TokenKind::For,
         "while" => TokenKind::While,
+        "loop" => TokenKind::Loop,
         "in" => TokenKind::In,
         "break" => TokenKind::Break,
         "continue" => TokenKind::Continue,

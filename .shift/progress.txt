@@ -4600,3 +4600,23 @@ SHIFTS:
   (mangled tuple def loses element types at codegen boundary); (c) struct-typed fn-param field
   mutation (params are immutable locals); (d) spawn struct-capture multi-session ticket
   (ai_agent/http_api LLVM-AOT); (e) feature-battery into traits/generics-bounds/iterators.
+
+  ---
+  step:    201 (session 10 -- 2026-06-09 "FEATURE: `loop` keyword (spec section 4.4)")
+  date:    2026-06-09
+  The spec (docs/19-language-reference.md) lists `loop` as a keyword and defines it in section 4.4,
+  but the grammar never implemented it (E0102 undefined variable) -- and 3 showcase examples
+  (rpn_calc, tiny_kv, http_client) USE it, so they could never compile. Verified zero `loop`
+  identifier collisions across all .kry in the repo (comments/strings only).
+  IMPL: lexer TokenKind::Loop (+keyword_lookup, classification, Display); parser parse_loop()
+  desugars to While(BoolLiteral(true)) -- the exact shape parse_while_let already constructs, so
+  ZERO AST/MIR/codegen changes. Also added `loop` to LSP keyword completions (references.rs
+  already had it) and the VS Code tmLanguage keyword regex.
+  VERIFY: l1.kry (loop+break, loop+continue+break) -> 10 5 IDENTICAL both backends; examples
+  23/23 AOT; test_examples 9/9; lexer+parser unit suites ok; **bootstrap PASS 989ba174
+  byte-identical** (self-host tokenization unchanged). CLAUDE.md control-flow re-documents loop.
+  NOTE: rpn_calc/tiny_kv showcase now get PAST the loop error but hit `stdin_line` -- they were
+  written against a builtin that does not exist (read_line is the real one). Separate ticket:
+  either add a stdin_line alias/builtin or fix the showcase files.
+  next:    tuple payloads in Option/Result (verified design: substitute_type_expr_to_mir in
+  monomorphize_enum/struct + mangled-name sanitization, all lower.rs).

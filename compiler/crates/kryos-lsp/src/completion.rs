@@ -31,7 +31,7 @@ pub fn get_completions(source: &str, line: u32, character: u32) -> Vec<Value> {
 
     // Always offer keywords
     let keywords = [
-        "let", "mut", "fn", "return", "if", "else", "elif", "for", "while", "in", "break",
+        "let", "mut", "fn", "return", "if", "else", "elif", "for", "while", "loop", "in", "break",
         "continue", "struct", "enum", "impl", "trait", "pub", "use", "extern", "as", "mod", "type",
         "actor", "spawn", "select", "match", "try", "catch", "throw", "shared", "weak", "move",
         "true", "false", "none",
