@@ -6887,16 +6887,46 @@ fn monomorphize(ctx: &mut LoweringContext, func_name: &str, arg_types: &[MirType
 }
 
 /// Substitute generic type parameters in a TypeExpr based on a type map.
+/// Convert a concrete MirType back into a TypeExpr. Compound types
+/// (Tuple/Array/Function) get REAL compound TypeExprs — `mir_type_to_name`
+/// collapses them to "i64" via its catch-all, which mistyped generic
+/// instantiations with tuple/array/function type args (step 202/209).
+fn mir_type_to_type_expr_spanned(ty: &MirType, span: kryos_errors::Span) -> ast::TypeExpr {
+    match ty {
+        MirType::Tuple(elems) => ast::TypeExpr::Tuple {
+            elements: elems
+                .iter()
+                .map(|e| mir_type_to_type_expr_spanned(e, span))
+                .collect(),
+            span,
+        },
+        MirType::Array(elem, size) => ast::TypeExpr::Array {
+            element: Box::new(mir_type_to_type_expr_spanned(elem, span)),
+            size: *size,
+            span,
+        },
+        MirType::Function { params, ret } => ast::TypeExpr::Function {
+            params: params
+                .iter()
+                .map(|p| mir_type_to_type_expr_spanned(p, span))
+                .collect(),
+            ret: Box::new(mir_type_to_type_expr_spanned(ret, span)),
+            span,
+        },
+        other => ast::TypeExpr::Simple {
+            name: mir_type_to_name(other),
+            span,
+        },
+    }
+}
+
 fn substitute_type_expr(ty: &ast::TypeExpr, type_map: &HashMap<String, MirType>) -> ast::TypeExpr {
     match ty {
         ast::TypeExpr::Simple { name, span } => {
             if let Some(concrete) = type_map.get(name) {
-                // Convert MirType back to a Simple TypeExpr name.
-                let concrete_name = mir_type_to_name(concrete);
-                ast::TypeExpr::Simple {
-                    name: concrete_name,
-                    span: *span,
-                }
+                // Convert the concrete MirType back to a TypeExpr, keeping
+                // compound shapes intact.
+                mir_type_to_type_expr_spanned(concrete, *span)
             } else {
                 ty.clone()
             }

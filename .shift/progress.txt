@@ -4775,3 +4775,19 @@ SHIFTS:
   byte-identical** (self-host uses no nested generics; Shr-in-type was previously a parse
   error so no legal program changes meaning).
   next:    generic-fn tuple-arg monomorphization; version bump + release notes consideration.
+
+  ---
+  step:    209 (session 10 -- 2026-06-09 "FIX: generic-fn monomorphization with tuple/array/function type args")
+  date:    2026-06-09
+  The step-202 leftover (workflow-flagged): generic FUNCTION monomorphization (lower.rs
+  monomorphize ~6850) substitutes type params into the specialized fn's TypeExprs via
+  substitute_type_expr, whose Simple arm collapsed compound concrete types through
+  mir_type_to_name's `_ => "i64"` -- `pick<T>((1,"x"),(2,"y"),flag)` ran on JIT but failed
+  AOT codegen. FIX: new mir_type_to_type_expr_spanned (MirType -> REAL compound TypeExpr,
+  recursive for Tuple/Array/Function; scalars/named keep the name path) used by
+  substitute_type_expr's Simple arm. (A different Option-returning mir_type_to_type_expr
+  already existed at ~5861 -- name collision found by the compiler, renamed mine.)
+  VERIFY: gt1.kry (generic pick<T> with tuple args + tuple-field reads, array args + index,
+  scalar control) -> "1 x 3 10" IDENTICAL both backends; examples 23/23; showcase 21/21;
+  spot repros 13/13 MATCH; test_examples 9/9; **bootstrap PASS 989ba174 byte-identical**.
+  next:    version bump + release notes; or further battery sweeps (traits, iterators, maps).
