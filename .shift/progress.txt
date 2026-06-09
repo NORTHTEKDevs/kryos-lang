@@ -4670,3 +4670,24 @@ SHIFTS:
     byte-identical**. CLAUDE.md gotcha #11 limitation REMOVED.
   next:    top-level const type checking (verified design + forward-ref guard adjustment), then
     param-field-mutation AOT fix + gotcha #23.
+
+  ---
+  step:    204 (session 10 -- 2026-06-09 "FIX: top-level const declarations now type-check their value")
+  date:    2026-06-09
+  ROOT CAUSE (workflow-verified): check.rs Decl::Const arm resolved the annotation OR inferred
+  the value but never both+unify -- `let X: str = 42` / `let X: i64 = "hi"` passed `kryos check`
+  silently and produced garbage values at runtime (value inlined at use sites with the wrong
+  static type). Local lets inside fns always checked correctly.
+  FIX (check.rs ~687): annotated consts now infer_expr(value) + unify with the annotation,
+  mirroring the Stmt::Let path, WITH the verifier's forward-ref guard: if the inference
+  resolves Error (e.g. value calls a function declared later -- registration is sequential),
+  suppress the spurious diagnostics and skip the unify, preserving the previously-valid
+  pattern (c4 forward-ref repro still compiles+runs).
+  VERIFY: c1 valid u8/i64 consts OK+run; c2 str=42 -> E0100; c3 i64="hi" -> E0100; c4
+  forward-ref const-from-later-fn still OK (no regression); spot repros d2/n3/u1/o5/nl1/g1
+  MATCH; examples 23/23 AOT; test_examples 9/9; **bootstrap PASS 989ba174 byte-identical**
+  (self-host's 3 annotated consts are i64=int-literal, unify trivially).
+  KNOWN (consistent with locals, out of scope): u8=999 out-of-RANGE literal still passes
+  (range unchecked language-wide); MIR const-inlining skips the u8 truncation locals get.
+  next:    param-field-mutation AOT fix (mutable_locals for aggregate byval params) +
+  gotcha #23 documenting the JIT-aliasing divergence.

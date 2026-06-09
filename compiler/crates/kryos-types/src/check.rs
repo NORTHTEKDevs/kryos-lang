@@ -689,10 +689,28 @@ impl TypeChecker {
                 ty,
                 value,
                 mutable,
+                span,
                 ..
             } => {
                 let resolved_ty = if let Some(t) = ty {
-                    self.resolve_type_expr(t)
+                    let decl_ty = self.resolve_type_expr(t);
+                    // Check the value against the annotation (mirrors the
+                    // local Stmt::Let path). Previously skipped entirely, so
+                    // `let X: str = 42` passed the checker and produced a
+                    // garbage value at runtime. Forward-ref guard: a value
+                    // calling a function declared LATER in the file infers
+                    // Error (with a spurious E0102) because registration is
+                    // sequential — suppress those diagnostics and skip the
+                    // unify, preserving the previously-accepted pattern (the
+                    // unannotated branch has the same limitation).
+                    let diags_before = self.diagnostics.len();
+                    let inferred_ty = self.infer_expr(value);
+                    if matches!(self.engine.resolve(&inferred_ty), Type::Error) {
+                        self.diagnostics.truncate(diags_before);
+                    } else if let Err(diag) = self.engine.unify(&decl_ty, &inferred_ty, *span) {
+                        self.diagnostics.push(diag);
+                    }
+                    decl_ty
                 } else {
                     self.infer_expr(value)
                 };
