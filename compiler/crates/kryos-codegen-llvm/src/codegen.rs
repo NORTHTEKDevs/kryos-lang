@@ -2307,6 +2307,17 @@ impl LlvmCodegen {
                 self.mutable_locals.insert(id);
             }
         }
+        // Aggregate (byval) parameters always get an alloca: params have no
+        // body Assign so they never qualify above, and StoreField on a
+        // non-mutable aggregate falls to the invalid `inttoptr %AggType`
+        // path (param field mutation failed to compile). The alloca also
+        // prevents an SSA double-definition when the body reassigns the
+        // whole param (`p = S{..}` after the byval entry load).
+        for p in &func.params {
+            if self.aggregate_llvm_ty(&p.ty).is_some() {
+                self.mutable_locals.insert(p.local.0);
+            }
+        }
 
         let ret_agg = self.aggregate_llvm_ty(&func.ret_ty);
         let ret = if ret_agg.is_some() {

@@ -4691,3 +4691,30 @@ SHIFTS:
   (range unchecked language-wide); MIR const-inlining skips the u8 truncation locals get.
   next:    param-field-mutation AOT fix (mutable_locals for aggregate byval params) +
   gotcha #23 documenting the JIT-aliasing divergence.
+
+  ---
+  step:    205 (session 10 -- 2026-06-09 "FIX: struct-param field mutation compiles on AOT + gotcha #23 (backend aliasing divergence)")
+  date:    2026-06-09
+  Workflow-verified (verifier holds=true). ROOT CAUSE: aggregate byval params never enter
+  mutable_locals (params have no body Assign; allocated mutable=false), so StoreField fell to
+  the invalid `inttoptr %AggType` path -> AOT compile error on `fn f(o: Outer) { o.a.v = 5 }`.
+  FIX (codegen-llvm ~2310): insert aggregate byval params into mutable_locals right after the
+  population loop -> they get the alloca + byval entry load, and StoreField uses %_N.addr. Also
+  fixes the verifier-discovered ADV2 bug: whole-param reassignment (`p = S{..}`) emitted an SSA
+  DOUBLE-DEFINITION of %_N (byval load + body assign) -> now both go through the alloca.
+  POLICY (workflow analysis): the type-checker-error option (Rust-like "cannot assign to field
+  of immutable parameter") is BLOCKED -- the self-host (lower.kry ~7 fns, codegen.kry, elf.kry,
+  stdlib chan.kry) mutates ctx-param fields relying on JIT heap-pointer aliasing. So: land the
+  AOT compile fix + DOCUMENT the semantic divergence as CLAUDE.md gotcha #23 (JIT aliases the
+  caller, AOT mutates the byval copy; unobservable for non-Copy structs under move rules;
+  portable pattern = copy to let mut). Principled future fix = JIT copies Copy-struct params
+  (blocked on self-host rewrite) -- multi-session ticket if ever prioritized.
+  VERIFY: p1 (nested param-field mutation + whole-param reassign+mutate) -> "5 43" IDENTICAL
+  both backends; FULL repro suite 19/19 MATCH; examples 23/23 AOT; test_examples 9/9;
+  **bootstrap PASS 989ba174 byte-identical** (self-host param structs are i64 heap handles on
+  this path, untouched).
+  STATUS: ALL FOUR workflow items from this round are now LANDED (202 tuple payloads, 203
+  nested lambdas + generic-+, 204 const checking, 205 param mutation) on top of 201 (loop).
+  next:    candidates: stdin_line showcase API mismatch; `>>` nested-generics lexing
+  (Option<Option<T>>); generic-fn tuple-arg monomorphization (same mir_type_to_name collapse,
+  flagged step 202); traits/iterator battery; version bump + release notes.
