@@ -50,3 +50,7 @@ editors/zed/Cargo.lock
 *.log
 .DS_Store
 Thumbs.db
+
+# Linker map files + local agent session dirs
+*.map
+.claude/

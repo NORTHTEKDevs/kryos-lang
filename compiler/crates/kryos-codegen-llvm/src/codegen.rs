@@ -3622,7 +3622,56 @@ impl LlvmCodegen {
                             } else {
                                 "0".to_string()
                             };
-                            if is_mutable {
+                            let dest_ty = self.local_type(dest);
+                            if dest_ty.starts_with('{')
+                                || dest_ty.starts_with('%')
+                                || dest_ty.starts_with('[')
+                            {
+                                // Aggregate element: the array slot holds a boxed
+                                // pointer (push boxes aggregates); unbox via
+                                // inttoptr + load, mirroring the index path.
+                                let raw = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {raw} = call i64 @kryos_builtin_pop(i64 {arr_val})"
+                                ));
+                                let p = self.next_temp();
+                                self.emit_line(&format!("  {p} = inttoptr i64 {raw} to ptr"));
+                                if is_mutable {
+                                    let v = self.next_temp();
+                                    self.emit_line(&format!("  {v} = load {dest_ty}, ptr {p}"));
+                                    self.emit_line(&format!(
+                                        "  store {dest_ty} {v}, ptr %_{}.addr",
+                                        dest.0
+                                    ));
+                                } else {
+                                    self.emit_line(&format!(
+                                        "  %_{} = load {dest_ty}, ptr {p}",
+                                        dest.0
+                                    ));
+                                }
+                            } else if dest_ty == "double" || dest_ty == "ptr" {
+                                // Scalar non-i64 element: the slot carries raw
+                                // bits; reinterpret (bitcast / inttoptr).
+                                let raw = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {raw} = call i64 @kryos_builtin_pop(i64 {arr_val})"
+                                ));
+                                let conv = if dest_ty == "double" {
+                                    format!("bitcast i64 {raw} to double")
+                                } else {
+                                    format!("inttoptr i64 {raw} to ptr")
+                                };
+                                if is_mutable {
+                                    let v = self.next_temp();
+                                    self.emit_line(&format!("  {v} = {conv}"));
+                                    self.emit_line(&format!(
+                                        "  store {dest_ty} {v}, ptr %_{}.addr",
+                                        dest.0
+                                    ));
+                                } else {
+                                    self.emit_line(&format!("  %_{} = {conv}", dest.0));
+                                }
+                            } else if is_mutable {
                                 let tmp = self.next_temp();
                                 self.emit_line(&format!(
                                     "  {tmp} = call i64 @kryos_builtin_pop(i64 {arr_val})"
