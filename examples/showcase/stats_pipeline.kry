@@ -1,12 +1,11 @@
 // stats_pipeline.kry — read CSV-style numbers and summarize.
 //
-// Demonstrates: file_read, split_lines, parse_int, std::sort,
+// Demonstrates: file_read, split_lines, parse_int, the sort builtin,
 // std::collections aggregates. Outputs min/median/max/sum/count.
 //
 // Usage: kryos run stats_pipeline.kry numbers.csv
 
-use std::sort::sort_i64
-use std::collections::{sum_i64, min_i64, max_i64}
+use std::string::{split_lines}
 
 @capabilities(io)
 fn main() {
@@ -30,7 +29,7 @@ fn main() {
         return
     }
 
-    sort_i64(nums)
+    sort(nums)
     let median = nums[len(nums) / 2]
 
     println("count:  " + to_string(len(nums)))
@@ -61,4 +60,22 @@ fn strip(s: str) -> str {
         }
     }
     return substr(s, start, end)
+}
+
+fn sum_i64(xs: [i64]) -> i64 {
+    let mut total = 0
+    for x in xs { total = total + x }
+    return total
+}
+
+fn min_i64(xs: [i64]) -> i64 {
+    let mut m = xs[0]
+    for x in xs { if x < m { m = x } }
+    return m
+}
+
+fn max_i64(xs: [i64]) -> i64 {
+    let mut m = xs[0]
+    for x in xs { if x > m { m = x } }
+    return m
 }

@@ -4718,3 +4718,20 @@ SHIFTS:
   next:    candidates: stdin_line showcase API mismatch; `>>` nested-generics lexing
   (Option<Option<T>>); generic-fn tuple-arg monomorphization (same mir_type_to_name collapse,
   flagged step 202); traits/iterator battery; version bump + release notes.
+
+  ---
+  step:    206 (session 10 -- 2026-06-09 "showcase examples: 21/21 type-check (was ~14); 3 LLVM-AOT compiler gaps exposed")
+  date:    2026-06-09
+  The examples/showcase/ suite had rotted against the real language/stdlib API: rpn_calc +
+  tiny_kv used nonexistent `stdin_line` (real: read_line builtin); http_client + tcp_echo were
+  written against a fictional flat std::net API (`use std::net::{tcp_connect, send, recv_str,
+  close}` -- send is a reserved keyword and none of those exist; real: tcp_* BUILTINS or the
+  TcpStream method API); dir_walker used no-arg println(); todo_app/dir_walker/stats_pipeline
+  missing `use std::string::{split_lines}`; stats_pipeline imported nonexistent
+  std::collections::{sum_i64,min_i64,max_i64} (replaced w/ local helpers + global sort builtin).
+  ALL 21 showcase files now `kryos check` clean. 17/21 AOT-compile.
+  EXPOSED 3 REAL LLVM-AOT GAPS (type-check OK, AOT codegen fails -- next up):
+    (1) ssg: `@create_dir` undefined -- builtin missing an LLVM dispatch arm (step-180 abs_f class)
+    (2) agent + mcp_server: `@http_request` undefined -- stdlib/extern fn not emitted on LLVM path
+    (3) parser: `inttoptr %Parser to ptr` -- an aggregate-to-handle cast site not covered by 197/205
+  next:    fix the 3 AOT gaps.

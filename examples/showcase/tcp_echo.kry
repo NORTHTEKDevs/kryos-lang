@@ -7,10 +7,10 @@
 //   nc 127.0.0.1 7000
 //   <type a line, see it echoed back>
 //
-// Demonstrates: std::net (tcp_listen, accept, recv_str, send, close),
+// Demonstrates: the tcp_* builtins (tcp_listen, tcp_accept, tcp_recv,
+// tcp_send, tcp_close),
 // bounded loop control, basic protocol framing.
 
-use std::net::{tcp_listen, accept, send, recv_str, close}
 
 @capabilities(net, io)
 fn main() {
@@ -19,7 +19,7 @@ fn main() {
     let max_clients: i64 = 100
     let mut served: i64 = 0
     while served < max_clients {
-        let conn = accept(listener)
+        let conn = tcp_accept(listener)
         if conn < 0 {
             println("tcp_echo: accept failed, retrying")
             continue
@@ -29,13 +29,13 @@ fn main() {
 
         // Read up to 4 KB then echo back. Production code would buffer
         // until newline, but this demo round-trips one read per client.
-        let msg = recv_str(conn, 4096)
+        let msg = tcp_recv(conn, 4096)
         if len(msg) == 0 {
-            close(conn)
+            tcp_close(conn)
             continue
         }
-        send(conn, msg)
-        close(conn)
+        tcp_send(conn, msg)
+        tcp_close(conn)
     }
     println("tcp_echo: served " + to_string(max_clients) + " clients, exiting")
 }

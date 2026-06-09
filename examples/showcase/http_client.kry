@@ -1,12 +1,13 @@
 // http_client.kry — minimal HTTP/1.1 GET client over raw TCP.
 //
-// Demonstrates: std::net (tcp_connect, send, recv_str, close), simple
+// Demonstrates: the tcp_* builtins (tcp_connect, tcp_send, tcp_recv,
+// tcp_close), simple
 // HTTP request framing, response parsing.
 //
 // Usage:
 //   kryos run http_client.kry example.com /
 
-use std::net::{tcp_connect, send, recv_str, close}
+use std::string::{split_lines}
 
 @capabilities(net, io)
 fn main() {
@@ -27,15 +28,15 @@ fn main() {
               "Accept: */*\r\n" +
               "Connection: close\r\n" +
               "\r\n"
-    send(sock, req)
+    tcp_send(sock, req)
 
     let mut response: str = ""
     loop {
-        let chunk = recv_str(sock, 4096)
+        let chunk = tcp_recv(sock, 4096)
         if len(chunk) == 0 { break }
         response = response + chunk
     }
-    close(sock)
+    tcp_close(sock)
 
     // Print status + first few headers + body length.
     let lines = split_lines(response)
@@ -56,7 +57,7 @@ fn main() {
     }
     let body_start = find_body_start(response)
     let body_len = len(response) - body_start
-    println()
+    println("")
     println("(" + to_string(header_count) + " headers, body " + to_string(body_len) + " bytes)")
 }
 

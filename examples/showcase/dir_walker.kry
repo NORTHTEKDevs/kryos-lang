@@ -5,13 +5,15 @@
 // platform-specific shell-out pattern. Replace with std::fs::read_dir
 // when that lands (planned post-v4.0).
 
+use std::string::{split_lines}
+
 @capabilities(io)
 fn main() {
     let argv = args()
     let root: str = if len(argv) >= 2 { argv[1] } else { "." }
 
     println("scanning " + root + " ...")
-    println()
+    println("")
 
     // Naive depth-limited walk via shell. Bounded to 4 levels deep.
     let listing = file_read(".kry_walker_listing.txt")

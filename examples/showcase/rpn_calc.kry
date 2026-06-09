@@ -16,7 +16,7 @@ fn main() {
 
     loop {
         print("> ")
-        let line = stdin_line()
+        let line = read_line()
         if len(line) == 0 { break }
         let toks = tokenize(line)
         let mut i: i64 = 0

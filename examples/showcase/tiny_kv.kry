@@ -90,7 +90,7 @@ fn main() {
 
 fn read_line() -> str {
     // Read one line from stdin via the runtime helper.
-    let line = stdin_line()
+    let line = read_line()
     return rstrip(line)
 }
 

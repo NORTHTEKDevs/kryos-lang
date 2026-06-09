@@ -9,6 +9,8 @@
 //   kryos run todo_app.kry done 1
 //   kryos run todo_app.kry clear
 
+use std::string::{split_lines}
+
 @capabilities(io)
 fn main() {
     let argv = args()
