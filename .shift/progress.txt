@@ -4620,3 +4620,28 @@ SHIFTS:
   either add a stdin_line alias/builtin or fix the showcase files.
   next:    tuple payloads in Option/Result (verified design: substitute_type_expr_to_mir in
   monomorphize_enum/struct + mangled-name sanitization, all lower.rs).
+
+  ---
+  step:    202 (session 10 -- 2026-06-09 "FIX: tuple payloads in Option/Result (the step-199 leftover edge)")
+  date:    2026-06-09
+  ROOT CAUSE (workflow-verified): monomorphize_enum/monomorphize_struct substituted type params
+  via the AST round-trip substitute_type_expr + resolve_type; mir_type_to_name's catch-all
+  `_ => "i64"` collapses compound concrete types (Tuple/Array/Function) -> Option<(i64,str)>'s
+  Some payload registered as i64 -> binding typed i64 -> Cranelift "unknown struct" fallback
+  (printed zeros), LLVM `extractvalue i64` (build error).
+  FIX (all lower.rs): (1)+(2) both monomorphizers now use substitute_type_expr_to_mir (already
+  existed, handles all compound types, already used at the call-arm site); (3) mono_mangled_name
+  sanitizes non-identifier chars (Tuple displays "(i64, str)" -> parens/commas leaked into LLVM
+  drop-helper symbol names). Existing mangled keys (Result___i64_str etc.) byte-identical -- the
+  sanitize is a no-op for alphanumeric names.
+  VERIFY: o3 Option<(i64,str)> -> "5 pos none" both backends; o6 Result<(i64,str),str> Ok+Err ->
+  "42 hello empty" both; o1/o2/o4/o5 regressions unchanged; examples 23/23 AOT; test_examples
+  9/9; kryos-mir suite ok; **bootstrap PASS 989ba174 byte-identical** (zero generic Option/
+  Result in self-host). CLAUDE.md gotcha updated (tuple-payload edge REMOVED).
+  KNOWN (workflow-flagged, pre-existing, out of scope): generic FUNCTION monomorphization
+  (lower.rs ~6829/6841) still uses the old AST round-trip -- fn identity<T>(x:T)->T with a
+  tuple arg would collapse the same way; nested generics `Option<Option<i64>>` blocked by the
+  `>>` right-shift lex (classic parser limitation); Cranelift EnumPayload has no tuple retain
+  arm (double-match already rejected by ownership E0300).
+  next:    nested lambda literals (gotcha #11) -- verified 2-spot fix (check.rs Var-default in
+  arithmetic binop + lower.rs Lambda-arm Function return adoption).

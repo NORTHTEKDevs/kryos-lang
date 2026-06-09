@@ -6600,7 +6600,18 @@ fn substitute_type_expr_to_mir(
 /// Produce a mangled name for a monomorphized specialization.
 /// e.g., `id` with `[I64]` → `id___i64`.
 fn mono_mangled_name(base: &str, concrete_types: &[MirType]) -> String {
-    let suffix: Vec<String> = concrete_types.iter().map(|t| format!("{t}")).collect();
+    // Sanitize to identifier-safe chars: a Tuple displays as "(i64, str)",
+    // and parens/commas/spaces leak into LLVM symbol names (e.g. the
+    // generated drop helper), which clang then mis-parses as a param list.
+    let suffix: Vec<String> = concrete_types
+        .iter()
+        .map(|t| {
+            format!("{t}")
+                .chars()
+                .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+                .collect::<String>()
+        })
+        .collect();
     format!("{base}___{}", suffix.join("_"))
 }
 
@@ -6708,8 +6719,14 @@ fn monomorphize_struct(
     let field_list: Vec<(String, MirType)> = fields
         .iter()
         .map(|f| {
-            let substituted = substitute_type_expr(&f.ty, &type_map);
-            (f.name.clone(), ctx.resolve_type(&substituted))
+            // Substitute straight to MirType — the AST round-trip
+            // (substitute_type_expr + resolve_type) collapses compound
+            // concrete types (Tuple/Array/Function) to "i64" via
+            // mir_type_to_name's catch-all, mistyping e.g. Wrap<(i64, str)>.
+            (
+                f.name.clone(),
+                substitute_type_expr_to_mir(ctx, &f.ty, &type_map),
+            )
         })
         .collect();
 
@@ -6762,8 +6779,10 @@ fn monomorphize_enum(ctx: &mut LoweringContext, enum_name: &str, type_args: &[Mi
                 .fields
                 .iter()
                 .map(|f| {
-                    let substituted = substitute_type_expr(f, &type_map);
-                    ctx.resolve_type(&substituted)
+                    // Straight to MirType — see monomorphize_struct: the AST
+                    // round-trip collapses Tuple/Array/Function payloads to
+                    // i64 (Option<(i64, str)> bound its payload as i64).
+                    substitute_type_expr_to_mir(ctx, f, &type_map)
                 })
                 .collect(),
         })
