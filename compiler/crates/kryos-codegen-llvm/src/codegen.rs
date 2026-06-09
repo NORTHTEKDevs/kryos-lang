@@ -3036,7 +3036,18 @@ impl LlvmCodegen {
                             let coerced = self.coerce_value(&val, &val_ty, fty);
                             self.emit_line(&format!("  store {fty} {coerced}, ptr {field_ptr}"));
                         } else {
-                            self.emit_line(&format!("  store i64 {val}, ptr {field_ptr}"));
+                            // The slot is stored as i64 but the value's SSA type
+                            // may be ptr (str constant), double, or i1 — coerce
+                            // to the slot first (`store i64 <ptr>` is invalid IR).
+                            let val_ty = self
+                                .actual_type(&val)
+                                .unwrap_or_else(|| self.operand_type(value, func));
+                            let val_i64 = if val_ty == "i64" {
+                                val.clone()
+                            } else {
+                                self.coerce_value(&val, &val_ty, "i64")
+                            };
+                            self.emit_line(&format!("  store i64 {val_i64}, ptr {field_ptr}"));
                         }
                     }
                     _ => {
@@ -3045,7 +3056,15 @@ impl LlvmCodegen {
                         self.emit_line(&format!(
                             "  {field_ptr} = getelementptr i64, ptr {ptr_tmp}, i32 {field_idx}"
                         ));
-                        self.emit_line(&format!("  store i64 {val}, ptr {field_ptr}"));
+                        let val_ty = self
+                            .actual_type(&val)
+                            .unwrap_or_else(|| self.operand_type(value, func));
+                        let val_i64 = if val_ty == "i64" {
+                            val.clone()
+                        } else {
+                            self.coerce_value(&val, &val_ty, "i64")
+                        };
+                        self.emit_line(&format!("  store i64 {val_i64}, ptr {field_ptr}"));
                     }
                 }
             }

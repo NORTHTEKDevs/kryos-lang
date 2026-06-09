@@ -1909,15 +1909,13 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 value: val_op,
                             });
                         } else if let ast::Expr::FieldAccess { object, field, .. } = target {
-                            // Field assignment on a struct: store value at the
-                            // field's offset within the struct pointer.
-                            let obj_op = lower_expr_to_operand(ctx, object);
+                            // Field assignment. Nested paths (o.a.v = 99) need
+                            // read-modify-writeback — a plain StoreField on the
+                            // lowered object would mutate an immutable temp COPY
+                            // of the inner struct (JIT only worked by pointer
+                            // aliasing; AOT emitted invalid `inttoptr %Agg`).
                             let val_op = lower_expr_to_operand(ctx, value);
-                            ctx.emit(Instruction::StoreField {
-                                object: obj_op,
-                                field: field.clone(),
-                                value: val_op,
-                            });
+                            lower_nested_field_assign(ctx, object, field, val_op);
                         } else {
                             // Fallback: evaluate RHS into a temp (may have side effects).
                             let temp = ctx.alloc_temp(MirType::I64);
@@ -4412,6 +4410,73 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
 // ---------------------------------------------------------------------------
 // Expression lowering
 // ---------------------------------------------------------------------------
+
+/// Lower `object.field = value` using read-modify-writeback when `object` is
+/// itself a FieldAccess (nested mutation like `o.a.v = 99`). Direct local
+/// targets (base case) emit a plain StoreField exactly as before.
+fn lower_nested_field_assign(
+    ctx: &mut LoweringContext,
+    object: &ast::Expr,
+    field: &str,
+    value: Operand,
+) {
+    match object {
+        // Base case: `local_var.field = value`. Locals store through directly;
+        // anything else (mutable module-level global, const) falls back to the
+        // operand lowering this arm always used.
+        ast::Expr::Identifier { name, .. } => {
+            if let Some(obj_local) = find_local_by_name(ctx, name) {
+                ctx.emit(Instruction::StoreField {
+                    object: Operand::Local(obj_local),
+                    field: field.to_string(),
+                    value,
+                });
+            } else {
+                let obj_op = lower_expr_to_operand(ctx, object);
+                ctx.emit(Instruction::StoreField {
+                    object: obj_op,
+                    field: field.to_string(),
+                    value,
+                });
+            }
+        }
+        // Recursive case: `(parent.mid).field = value`.
+        //   (1) load a MUTABLE copy of the intermediate struct,
+        //   (2) mutate the target field on the copy,
+        //   (3) write the copy back into the parent field (recurse).
+        // mutable=true gives the temp an alloca (%_N.addr) on LLVM so the
+        // StoreField mutable-aggregate path applies instead of `inttoptr %Agg`.
+        ast::Expr::FieldAccess {
+            object: parent,
+            field: mid_field,
+            ..
+        } => {
+            let mid_ty = infer_expr_type(ctx, object);
+            let tmp = ctx.alloc_local(None, mid_ty, true);
+            let load_rvalue = lower_expr_to_rvalue(ctx, object);
+            ctx.emit(Instruction::Assign {
+                dest: tmp,
+                value: load_rvalue,
+            });
+            ctx.emit(Instruction::StoreField {
+                object: Operand::Local(tmp),
+                field: field.to_string(),
+                value,
+            });
+            lower_nested_field_assign(ctx, parent, mid_field, Operand::Local(tmp));
+        }
+        // Fallback for exotic object expressions (index access etc.):
+        // unchanged pre-existing behavior.
+        _ => {
+            let obj_op = lower_expr_to_operand(ctx, object);
+            ctx.emit(Instruction::StoreField {
+                object: obj_op,
+                field: field.to_string(),
+                value,
+            });
+        }
+    }
+}
 
 fn lower_expr_to_operand(ctx: &mut LoweringContext, expr: &ast::Expr) -> Operand {
     match expr {

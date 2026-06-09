@@ -4478,3 +4478,34 @@ SHIFTS:
   next:    bug tail continues: (2) nested struct field mutation o.a.v=99 (MIR load-copy-mutate),
     (3) int-literal polymorphism (let x: u8 = 200), (4) Option/Result >8-byte struct payload
     AOT box/unbox. Each bootstrap-gated.
+
+  ---
+  step:    197 (session 10 -- 2026-06-09 "FIX: nested struct field mutation (gotcha #22 item 2) + str-into-field slot store")
+  date:    2026-06-09
+  Workflow-investigated (parallel root-cause + adversarial verify), then implemented serially.
+  ROOT CAUSE (verified): lower.rs FieldAccess-assign arm lowered `o.a.v = 99` via
+    lower_expr_to_operand(object) -> IMMUTABLE temp COPY of the inner struct; StoreField mutated
+    the copy. JIT only "worked" by heap-pointer aliasing; AOT emitted invalid `inttoptr %Inner`.
+  FIX 1 (lower.rs ~1911 + new fn lower_nested_field_assign): recursive read-modify-writeback --
+    load MUTABLE copy of intermediate (alloc_local mutable=true -> %_N.addr on LLVM), mutate the
+    field, write the copy back into the parent (recurse). Identifier base case = identical
+    instruction stream to before (locals direct, globals/consts via the old operand path -- the
+    adversarial verifier caught that find_local_by_name().expect() would PANIC on module-level
+    mutable globals; fallback added). Exotic objects unchanged fallback.
+  FIX 2 (codegen-llvm StoreField, both scalar store sites): `store i64 {val}` was emitted even
+    when the value's SSA type is ptr (str constant via kryos_string_new), double, or i1 ->
+    invalid IR. PRE-EXISTING (single-level `p.w = "hello"` failed AOT before this session --
+    proven: my change does not alter single-level lowering). Now coerces (actual_type-first,
+    operand_type fallback) to the i64 slot.
+  VERIFY: n1 (2-level), n2 (3-level + sibling-field preservation + re-mutation), n3 (str field +
+    loop mutation), n3a/n3b (single/nested str store) ALL match on JIT + AOT; step-196 repros
+    d1-d4 unchanged; examples 23/23 AOT; test_examples 9/9; unit tests green; **bootstrap-win.sh
+    PASS, fixed point 989ba174 byte-identical (verifier + my scan: construct absent from
+    self-host source)**. CLAUDE.md gotcha #22 item 2 RESOLVED (param-field-mutation edge noted).
+  KNOWN EDGE (pre-existing, documented, NOT fixed): struct-typed fn params are immutable locals
+    -> `fn f(o: Outer) { o.a.v = 5 }` still fails AOT; workaround copy to let mut.
+  next:    bug-tail item 3: narrow-int literals (verified design: unsigned->I64 arm in
+    is_int_widening, ~5 lines + to_string zext fix on both backends ~20 lines). Then item 4:
+    Option/Result struct payload (check.rs bind_pattern fix verified correct as written; the MIR
+    payload-typing layer at lower.rs ~3758 is the real second blocker -- needs monomorphized
+    Option___User-style def, NOT the codegen-level fix the first design proposed).
