@@ -4759,3 +4759,19 @@ SHIFTS:
       (incl. all 3 error paths); examples 23/23; repros 19/19 MATCH; test_examples 9/9;
       **bootstrap PASS 989ba174 byte-identical**.
   next:    `>>` nested-generics lexing; generic-fn tuple-arg monomorphization; version bump.
+
+  ---
+  step:    208 (session 10 -- 2026-06-09 "FEATURE: nested generics parse -- `>>` split in generic-close position")
+  date:    2026-06-09
+  `Option<Option<i64>>` / `Result<Option<User>, str>` failed to parse: the lexer emits `>>` as
+  one Shr token, and parse_type's generic-arg loop only closes on Gt. Classic fix: new
+  expect_generic_gt() helper -- when the closer is Shr, REWRITE the in-place token to a single
+  Gt (not consumed) so it closes the enclosing list, and return a synthetic Gt for the inner.
+  Applied to the Ident/TypeIdent generic-arg loop (+ Shr added to its terminator checks) and
+  the chan<T> close. Expression-position `>>` (right shift) untouched (1024>>2 == 256 verified).
+  VERIFY: ng1.kry (nested Option, Result<Option<User>,str> w/ struct payload through 2 layers,
+  shift regression) -> "10 inner none kris 256" IDENTICAL both backends; examples 23/23;
+  showcase 21/21 AOT; test_examples 9/9; parser suite 59 ok; **bootstrap PASS 989ba174
+  byte-identical** (self-host uses no nested generics; Shr-in-type was previously a parse
+  error so no legal program changes meaning).
+  next:    generic-fn tuple-arg monomorphization; version bump + release notes consideration.

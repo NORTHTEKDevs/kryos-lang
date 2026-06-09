@@ -3120,6 +3120,22 @@ impl Parser {
     // Types
     // -----------------------------------------------------------------------
 
+    /// Consume the `>` closing a generic argument list. A `>>` token (lexed
+    /// as right-shift) is SPLIT: the in-place token is rewritten to a single
+    /// `>` (not consumed) so it can close the enclosing list — this is what
+    /// makes nested generics (`Option<Option<i64>>`) parse.
+    fn expect_generic_gt(&mut self) -> Token {
+        if self.check(TokenKind::Shr) {
+            let mut t = self.tokens[self.pos].clone();
+            self.tokens[self.pos].kind = TokenKind::Gt;
+            self.tokens[self.pos].text = ">".to_string();
+            t.kind = TokenKind::Gt;
+            t.text = ">".to_string();
+            return t;
+        }
+        self.expect(TokenKind::Gt)
+    }
+
     pub fn parse_type(&mut self) -> TypeExpr {
         let tok = self.peek().clone();
         match tok.kind {
@@ -3280,7 +3296,7 @@ impl Parser {
                 self.advance();
                 if self.eat(TokenKind::Lt) {
                     let inner = self.parse_type();
-                    let gt = self.expect(TokenKind::Gt);
+                    let gt = self.expect_generic_gt();
                     TypeExpr::Generic {
                         name: "chan".to_string(),
                         args: vec![inner],
@@ -3324,13 +3340,16 @@ impl Parser {
                 let name = tok.text.clone();
                 if self.eat(TokenKind::Lt) {
                     let mut args = Vec::new();
-                    while !self.check(TokenKind::Gt) && !self.at_end() {
+                    while !self.check(TokenKind::Gt)
+                        && !self.check(TokenKind::Shr)
+                        && !self.at_end()
+                    {
                         args.push(self.parse_type());
-                        if !self.check(TokenKind::Gt) {
+                        if !self.check(TokenKind::Gt) && !self.check(TokenKind::Shr) {
                             self.expect(TokenKind::Comma);
                         }
                     }
-                    let gt = self.expect(TokenKind::Gt);
+                    let gt = self.expect_generic_gt();
                     TypeExpr::Generic {
                         name,
                         args,
