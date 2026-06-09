@@ -2535,6 +2535,14 @@ impl TypeChecker {
                     return Type::Error;
                 }
                 let resolved = self.engine.resolve(&left_ty);
+                // Deferred numeric context: both operands are unconstrained
+                // type vars (e.g. `|n| |x| x + n` — neither annotation nor
+                // literal pins a type). Default to i64; the operands were
+                // unified above so one binding fixes both.
+                if let Type::Var(_) = resolved {
+                    let _ = self.engine.unify(&resolved, &Type::I64, span);
+                    return Type::I64;
+                }
                 if !resolved.is_numeric() && !resolved.is_error() {
                     // Special case: string concatenation with +.
                     if op == BinOp::Add && resolved == Type::Str {
@@ -2586,6 +2594,12 @@ impl TypeChecker {
                     return Type::Error;
                 }
                 let resolved = self.engine.resolve(&left_ty);
+                // Deferred integer context — same Var-defaulting as the
+                // arithmetic branch (`|n| |x| x & n`).
+                if let Type::Var(_) = resolved {
+                    let _ = self.engine.unify(&resolved, &Type::I64, span);
+                    return Type::I64;
+                }
                 if !resolved.is_integer() && !resolved.is_error() {
                     let op_sym = match op {
                         BinOp::BitAnd => "&",

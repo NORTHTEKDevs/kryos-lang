@@ -4645,3 +4645,28 @@ SHIFTS:
   arm (double-match already rejected by ownership E0300).
   next:    nested lambda literals (gotcha #11) -- verified 2-spot fix (check.rs Var-default in
   arithmetic binop + lower.rs Lambda-arm Function return adoption).
+
+  ---
+  step:    203 (session 10 -- 2026-06-09 "FEATURE: nested lambda literals (gotcha #11) + BONUS: generic `+` on unbounded T now works")
+  date:    2026-06-09
+  Workflow-verified 2-spot fix, both landed:
+  FIX 1 (check.rs check_binary_op, arithmetic AND bitwise branches): when both operands resolve
+    to an unconstrained type Var (`|n| |x| x + n` -- no annotation, no literal), default to I64
+    (operands already unified, one binding fixes both). Previously E0110 "cannot apply + to ?T5".
+  FIX 2 (lower.rs infer_expr_type Lambda arm ~4324): add MirType::Function to the return-type
+    adoption pattern -- a lambda returning a lambda reported ret=i64, so the call result wasn't
+    function-typed and the call site emitted a DIRECT call to a symbol named after the variable
+    (LNK2001 unresolved external). Now CallIndirect. (Verifier corrected the design's claim that
+    the mistype was I64 -- it was actually Void via the fn-typed-local path; fix identical.)
+  BONUS (discovered by adversarial self-test): FIX 1 also closes the b2_generics gap from step
+    195 -- `fn add<T>(a:T,b:T)->T { a+b }` now compiles and runs CORRECTLY for i64/f64/str on
+    both backends (template check pins the var, but MIR monomorphization is per-call-site from
+    actual arg types, so add(1.5,2.25)=3.75 and add("a","b")="ab" are right). Mixed-type calls
+    still error via unify.
+  VERIFY: nl1 (curry + bitwise-curry + closure-taking-closure-returning) -> 15 15 2 both
+    backends; g1 generic-+ i64/f64/str both; hof1 closure-inference regression probe (fold str
+    concat "abbccc", mixed-type fold 6, float map sum 12) both; FULL repro suite 18/18 MATCH;
+    examples 23/23 AOT; test_examples 9/9; kryos-types suites ok; **bootstrap PASS 989ba174
+    byte-identical**. CLAUDE.md gotcha #11 limitation REMOVED.
+  next:    top-level const type checking (verified design + forward-ref guard adjustment), then
+    param-field-mutation AOT fix + gotcha #23.

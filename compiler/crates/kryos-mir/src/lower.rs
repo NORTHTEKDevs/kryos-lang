@@ -4321,7 +4321,13 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                         // closure fn still returns its value in the uniform i64
                         // slot (bits preserved); only the static type changes.
                         | MirType::F32
-                        | MirType::F64 => inferred,
+                        | MirType::F64
+                        // A lambda RETURNING a lambda (`|n| |x| x + n`): the
+                        // outer's ret must be Function so the call result is
+                        // function-typed and the call site emits CallIndirect
+                        // (an i64-typed result emitted a direct call to a
+                        // symbol named after the variable -> link error).
+                        | MirType::Function { .. } => inferred,
                         _ => MirType::I64,
                     }
                 }
