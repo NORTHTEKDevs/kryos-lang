@@ -130,7 +130,7 @@ fn test_server_initializes_with_capabilities() {
 
     // Server info
     assert_eq!(result["serverInfo"]["name"], json!("kryos-lsp"));
-    assert_eq!(result["serverInfo"]["version"], json!("0.1.0"));
+    assert_eq!(result["serverInfo"]["version"], json!("0.2.0"));
 }
 
 #[test]

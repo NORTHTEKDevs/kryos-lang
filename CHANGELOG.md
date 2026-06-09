@@ -4,6 +4,82 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.43.0] — 2026-06-09 — "Language completion: the bug tail is closed"
+
+Final release of the 4.43 line. Since rc.4, three hardening campaigns
+(steps 159–209) closed every documented language limitation, finished
+the LLVM-AOT aggregate ABI migration, and brought the two backends into
+agreement across the entire test surface. The self-hosting bootstrap
+fixed point (stage-2 == stage-3 == stage-4, byte-identical at
+989ba174…) held through every change.
+
+### Added — language
+
+- **`loop` keyword** (spec §4.4) — was specified and used by examples
+  but never implemented; desugars to `while true`.
+- **Nested generics parse**: `Option<Option<i64>>`,
+  `Result<Option<User>, str>` — `>>` is split at the generic-close
+  position; the shift operator is unaffected.
+- **Nested lambda literals / currying**: `|n| |x| x + n` works on both
+  backends, including bitwise bodies and closures taking/returning
+  closures.
+- **Generic arithmetic on unbounded `T`**: `fn add<T>(a: T, b: T) -> T
+  { a + b }` instantiates correctly for i64 / f64 / str.
+- **Narrow-int literals**: `let x: u8 = 200` accepted at every literal
+  site (let / arg / return / array / struct-field); unsigned values
+  print correctly (u8 200 printed `-56` before — both backends).
+- **Untyped arrays of aggregates**: `let mut a = []` followed by
+  `push(a, Struct{..})` infers `a: [Struct]`; `pop` is element-typed.
+- **Tuple payloads in Option/Result** and **generic functions with
+  tuple/array/function type arguments** monomorphize correctly
+  (compound concrete types no longer collapse to `i64`).
+
+### Fixed — correctness (both backends agree)
+
+- **Nested struct field mutation** `o.a.v = 99` (any depth) lowers as
+  read-modify-writeback; previously mutated an immutable temp copy
+  (JIT only worked by accidental aliasing; AOT emitted invalid IR).
+- **`Option`/`Result` with multi-field struct payloads** type-check and
+  run (`match`, `if let`, all variant paths, direct field access).
+- **Top-level consts type-check their value** — `let X: str = 42`
+  passed the checker and produced garbage at runtime; now E0100.
+  Consts initialized from later-declared functions keep compiling.
+- **Struct-typed parameter field mutation compiles on AOT** (aggregate
+  byval params get an alloca); whole-param reassignment no longer
+  emits an SSA double-definition. The JIT-aliases / AOT-copies
+  semantic divergence is documented (CLAUDE.md gotcha #23) with the
+  portable pattern.
+- **LLVM-AOT gaps**: `create_dir` and `http_request` had no LLVM
+  dispatch mapping (undefined symbols); aggregate call args under a
+  different type spelling (named `%S` vs literal body) fell into an
+  invalid `inttoptr`; MIR-inliner temp copies of mutated callee params
+  now get allocas; str/float/bool values stored into struct-field
+  slots are coerced.
+- **`to_string`/`println` of unsigned ints zero-extends** on both
+  backends (three Cranelift sites + the LLVM integer arm).
+
+### Fixed — examples & docs
+
+- **Showcase suite repaired and fully green: 21/21 compile on both
+  backends** (was ~14 type-checking) — examples had rotted against a
+  fictional flat `std::net` API, a nonexistent `stdin_line` builtin,
+  and missing imports; `parser.kry` made backend-portable.
+- CLAUDE.md gotchas updated throughout: #11 (nested lambdas) and the
+  entire #22 bug-tail marked RESOLVED; #23 added (param aliasing).
+
+### Self-hosting
+
+- Bootstrap fixed point byte-identical through 9+ full stage-2/3/4
+  chain runs across the campaign; 23/23 examples + 9/9 self-host
+  example programs + all workspace unit suites green at every step.
+- rc.5/rc.6 interim work (sessions 8–9, steps 159–195): three
+  high-severity fixes (struct-variant-enum parser hang, integer
+  div-by-zero UB on AOT, signed div/mod strength-reduction
+  miscompile), the closure-type-flow gap closed end-to-end, the
+  uniform-i64-slot aggregate ABI migration (box/unbox + real typing at
+  every value boundary), and all four long-AOT-blocked examples
+  (json_nested_bug, mcp_server, http_api, ai_agent) unblocked.
+
 ## [4.43.0-rc.4] — 2026-05-20 (night) — "32 MB stack: 14/16 stable, mean 15.93"
 
 Follow-up to 4.43.0-rc.3 production hardening. The key insight of

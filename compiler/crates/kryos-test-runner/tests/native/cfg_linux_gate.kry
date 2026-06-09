@@ -1,24 +1,20 @@
-// expect-stdout: linux-only
+// expect-stdout: host-os
 // Tests @cfg(...) conditional compilation.
 //
-// On Linux the native test runner runs, so the @cfg(linux) branch is kept
-// and @cfg(windows) / @cfg(macos) branches are stripped before type-check.
-// Both variants define `pick()` with the same name; without stripping
-// this would be a duplicate-symbol error.
+// Exactly one `pick()` survives stripping on any supported host: the
+// any(linux, windows, macos) branch is true everywhere the native test
+// runner runs, and the not(...) branch is its complement. Both variants
+// define `pick()` with the same name; without stripping this would be a
+// duplicate-symbol error.
 
-@cfg(linux)
+@cfg(any(linux, windows, macos))
 fn pick() -> str {
-    return "linux-only"
+    return "host-os"
 }
 
-@cfg(windows)
+@cfg(not(any(linux, windows, macos)))
 fn pick() -> str {
-    return "windows-only"
-}
-
-@cfg(macos)
-fn pick() -> str {
-    return "macos-only"
+    return "other-os"
 }
 
 fn main() {

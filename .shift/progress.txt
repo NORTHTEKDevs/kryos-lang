@@ -4791,3 +4791,21 @@ SHIFTS:
   scalar control) -> "1 x 3 10" IDENTICAL both backends; examples 23/23; showcase 21/21;
   spot repros 13/13 MATCH; test_examples 9/9; **bootstrap PASS 989ba174 byte-identical**.
   next:    version bump + release notes; or further battery sweeps (traits, iterators, maps).
+
+  ---
+  step:    210 (session 10 -- 2026-06-09 "RELEASE: v4.43.0 final")
+  date:    2026-06-09
+  Version 4.43.0-rc.4 -> 4.43.0 (compiler/Cargo.toml); CHANGELOG entry "Language completion:
+  the bug tail is closed" covering steps 159-209; README version refs + status updated.
+  PRE-RELEASE TEST SWEEP fixed 3 stale/host-dependent test issues (all PRE-EXISTING, none from
+  this session's changes -- the full workspace suite had been aborting at the first failure
+  alphabetically so later suites never ran):
+    - kryos-lsp test asserted serverInfo version "0.1.0"; server intentionally reports "0.2.0".
+    - 3 @cfg fixtures were Linux-host-only by construction (expected the linux branch while
+      running on Windows); rewrote host-agnostic preserving intent (one-branch selection,
+      strip-before-typecheck via all(windows,linux)=false-everywhere, nested combinators).
+    - uds_bind_close asserted bind SUCCESS, but Windows UDS is a DOCUMENTED -1 stub
+      (unix_socket.rs header); rewrote as the linkage test it claims to be + unique socket path.
+  RELEASE GATES (all fresh): kryos --version = 4.43.0; **workspace tests 965 passed / 0 failed
+  (67 suites)**; examples 23/23 AOT; showcase 21/21 AOT; repro suite 21/21 JIT==AOT;
+  test_examples 9/9; **bootstrap PASS 989ba174 byte-identical**.

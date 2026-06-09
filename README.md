@@ -198,7 +198,7 @@ Where Kryos shines: simple loops, recursion, and floating-point arithmetic — c
 
 ---
 
-## What ships in v4.43.0-rc.4
+## What ships in v4.43.0
 
 The full toolchain. Not a roadmap — actually built and tested:
 
@@ -249,7 +249,7 @@ kryos lsp                     Language server (used by VS Code / Zed extensions)
 
 ## Status
 
-Kryos is **v4.43.0-rc.4**. Feature-complete language and toolchain + self-hosting compiler.
+Kryos is **v4.43.0**. Feature-complete language and toolchain + self-hosting compiler (bootstrap fixed point: stage-2 == stage-3 == stage-4, byte-identical).
 
 | Feature | Status |
 |---|---|

@@ -1,15 +1,15 @@
-// Validates uds_bind/uds_close link through LLVM --release.
-// Uses a unique path to avoid collision with other test runs.
-// expect-stdout: bound
-// expect-stdout: closed
+// Validates uds_bind/uds_close LINK through LLVM --release.
+// On Unix uds_bind returns a real fd; on Windows the runtime exposes
+// documented -1 stubs (see kryos-stdlib-native/src/unix_socket.rs).
+// This test validates symbol linkage + call/return on every host, so it
+// does not assert bind success. Unique path avoids stale-socket clashes.
+// expect-stdout: done
 fn main() {
-    let path = "/tmp/kryos_release_uds_test.sock"
-    // best-effort cleanup is impossible without an fs_remove builtin;
-    // the runtime should overwrite a stale socket via SO_REUSEADDR-equivalent
+    let mut dir = env_get("TEMP")
+    if len(dir) == 0 { dir = env_get("TMPDIR") }
+    if len(dir) == 0 { dir = "/tmp" }
+    let path = dir + "/kryos_uds_" + to_string(time_now()) + ".sock"
     let fd = uds_bind(path)
-    if fd > 0 {
-        println("bound")
-    }
     uds_close(fd)
-    println("closed")
+    println("done")
 }
