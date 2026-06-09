@@ -3962,3 +3962,519 @@ SHIFTS:
     `map` over floats needs no binding annotation -- requires propagating the monomorphized
     U=f64 into the caller's inferred array type. Otherwise the self-compile DONE-WHEN set is
     unaffected; resume normal self-host hardening.
+
+  ---
+  step:    178 (session 9 -- 2026-05-31 "C: float closure RETURN type flows through generic HOF -> [U]")
+  date:    2026-05-31
+  Step C (the gotcha-#20 candidate from 177). Used systematic-debugging-bshr. Root cause via a
+    discriminating test: scan/reduce over [f64] (U pinned by `init`=f64) read correctly, but
+    `map([1.,2.,3.], |x| x*2.0)` (U derived ONLY from the closure return) read raw f64 bits;
+    str-returning closures through `map` worked. => the closure's float RETURN type was not
+    adopted. lower.rs infer_expr_type Lambda arm (step-176 "fix A") adopted the inferred body
+    type only for POINTER-sized results (Str/Ptr/Array/Struct/Enum/Map/...), defaulting floats
+    to I64. A generic HOF that binds its result type var U from the closure return (map -> [U])
+    then bound U=i64, so the caller's `m` was typed [i64] and `m[i]` loaded the raw slot. str
+    worked because str-return IS pointer-sized (adopted) and is an i64 handle anyway; fold/
+    reduce/scan worked because U comes from their `init` arg, not the closure return.
+  FIX (1 spot, lower.rs ~4278): add MirType::F32 | F64 to the return-adoption match -- the
+    symmetric completion of step 177's float PARAM fix. The closure FUNCTION still returns its
+    value in the uniform i64 slot (bits preserved end-to-end through map's i64-slot body, as the
+    pre-fix raw-bits output proved); ONLY the static type flows, so the [f64] element read at the
+    call site reinterprets the slot bytes as f64. No codegen/ABI change, no spot-B/C edit needed
+    (verified: no gpr/xmm mismatch inside map on either backend).
+  VERIFY both backends (identical): test_stepb case 3 `map([1.,2.,3.], |x| x*2.0)` sum -> 12;
+    probe_scan map -> 1.5, scan -> 3, reduce -> 6; probe_farr map -> 2; all str+i64 regressions
+    unchanged. examples 9/9 compile+link+run. cargo build clean.
+  BOOTSTRAP: fixed point HELD -- stage2.obj == 989ba174680c13a603ead0 byte-identical (self-host
+    source has no un-annotated float-returning closures through HOFs, so stage-1 self-compilation
+    output is unchanged).
+  DOC: CLAUDE.md gotcha #20 rewritten -- the step-B limitation is RESOLVED; float closures now
+    work through HOF boundaries in both param and return, including generic [U] array results,
+    with no binding annotation. BSHR entry written (kryos stack, 1 cycle, 0 misfires).
+  next:    Steps B+C close the closure-type-flow gap end to end (params + returns, str + float,
+    scalar + generic-array). Resume normal self-host hardening / feature-battery sweeps; no open
+    closure-typing items. DONE-WHEN set unaffected (fixed point intact).
+
+  ---
+  step:    179 (session 9 -- 2026-05-31 "HARDENING: feature-battery sweep -> 3 LLVM AOT bugs fixed")
+  date:    2026-05-31
+  Resumed normal self-host hardening via a feature-battery sweep: 10 diverse programs (int/
+  bitwise, strings, structs, enums+Option/Result, recursion, arrays, floats, control flow,
+  casts, sieve+bsearch) run on BOTH backends. 7/10 matched immediately; 3 showed the high-value
+  JIT-correct / AOT-fails divergence. All 3 root-caused (systematic-debugging-bshr) + fixed, all
+  in kryos-codegen-llvm (LLVM AOT only -- Cranelift/MIR/self-host untouched):
+    BUG1 struct field STORE: `let mut p = P{..}; p.x = v` emitted `inttoptr %P .. to ptr` on the
+      struct aggregate (operand_to_llvm LOADs the mutable aggregate VALUE; field READ correctly
+      used extractvalue, only WRITE was broken). FIX: StoreField GEPs on the local's %_N.addr
+      alloca when the object is a mutable aggregate local; heap/ptr objects keep load+inttoptr.
+    BUG2 libm name clash: `declare double @floor` (external) emitted unconditionally clashed with
+      std::math's pure-Kryos `define internal double @floor` -> clang "invalid redefinition". FIX:
+      guard each libm declare (sqrt/floor/ceil/round/sin/cos/tan/log/log2/log10/fabs) with
+      `!func_param_types.contains_key(name)` -- same pattern as the existing `exit` guard. (Tried
+      -fno-builtin first; it did NOT fix it -- the clash is IR declare/define linkage, not clang
+      builtin recognition. Reverted.)
+    BUG3 narrow-int coercion: coerce_value had explicit i8/i32<->i64 arms but not i16/i128, so
+      `to_string(x as i16)` passed an i16 into an i64 builtin arg unchanged. FIX: general iN<->iN
+      arm (sext widen / trunc narrow; i1 still special) before the catch-all.
+  VERIFY: feature battery 10/10 MATCH on both backends. cargo clean (15s). BOOTSTRAP fixed point
+    HELD: stage2.obj == 989ba174680c13a603ead0 (LLVM-backend changes don't touch the Cranelift
+    bootstrap). REGRESSION CHECK: stashed the fixes, rebuilt baseline d9a2879, AOT-built all 24
+    examples -> the SAME 7 fail identically WITHOUT my changes => 0 regressions introduced.
+  KNOWN PRE-EXISTING AOT BUGS (found while sweeping, NOT caused here -- candidate next work):
+    - ai_agent, http_api: `%_1 type %Router{ptr} but expected i64` (single-field struct -> i64 ABI
+      coercion at a call/return boundary).
+    - json_nested_bug, mcp_server: `%_3 i64 but expected { i64, i64, i64 }` (tuple/aggregate slot
+      coercion).
+    - stdlib_complete, stdlib_math: `use of undefined value '@abs_f'` (a float-abs helper referenced
+      but never emitted -- likely an abs() monomorphization/naming gap).
+    - struct_test: `%t10 i64 but expected i32` (i32 field/value slot mismatch).
+    All 7 are LLVM-AOT only (JIT/Cranelift compiles them) and independent of the self-host path.
+  next:    Tackle the pre-existing AOT cluster above, most likely first = the struct/tuple -> i64
+    ABI coercion (ai_agent/http_api/json_nested_bug/mcp_server share a slot-coercion root) since it
+    blocks 4 examples; then @abs_f (abs float helper) and the i32 slot mismatch. Or continue the
+    feature-battery sweep into untested areas (maps/dict, traits/generics, string edge cases,
+    concurrency) for more JIT/AOT divergences. DONE-WHEN set intact (bootstrap 989ba174).
+
+  ---
+  step:    180 (session 9 -- 2026-05-31 "HARDENING: float math builtins abs_f/min_f/max_f/pow AOT mapping")
+  date:    2026-05-31
+  Continued the pre-existing AOT cluster from step 179. Tackled the `@abs_f` failures
+  (stdlib_math, stdlib_complete). Root cause (systematic-debugging-bshr): the float-specific math
+  builtins abs_f/min_f/max_f/pow are REGISTERED in MIR (lower.rs ~500) but the LLVM builtin
+  dispatch had arms only for the polymorphic abs/min/max -- the _f variants and pow fell through
+  to a generic path that emitted a bare `@abs_f`/`@min_f`/`@max_f`/`@pow` call with no
+  declare/define ("use of undefined value"). JIT/Cranelift mapped them fine.
+  FIX (kryos-codegen-llvm builtin dispatch, 4 new arms): abs_f -> @llvm.fabs.f64; min_f/max_f ->
+  @llvm.minnum/maxnum.f64 (mirror the float branch of polymorphic abs/min/max; LLVM intrinsics
+  need no declare -- proven by the working polymorphic-abs float path); pow -> @kryos_fpow (already
+  declared; the runtime the `**` operator uses), args coerced to double (pow registered F64).
+  VERIFY: stdlib_math + stdlib_complete now MATCH JIT==AOT with correct output (1024 from pow,
+  etc.). AOT examples 16->18 ok. Feature battery 10/10. Additive change (new match arms only) ->
+  no other path affected; bootstrap 989ba174 unaffected (LLVM-only; Cranelift bootstrap untouched).
+  REMAINING pre-existing AOT failures (5 -> 3 clusters, all deeper aggregate/narrow-type ABI):
+    - ai_agent, http_api: struct->i64 SPAWN CAPTURE. ROOT-CAUSED: a struct capture crossing the
+      i64 spawn-env boundary lacks box/unbox coercion on BOTH the Spawn store side (`store i64
+      %Router`) and the wrapper-param/byval-arg side (`store %Router <i64>`). This is a cross-thread
+      aggregate-capture ABI gap -- needs symmetric box-on-store + unbox-on-use with correct
+      cross-thread ownership. DEFERRED: riskier (memory safety across threads) than a one-liner;
+      current behavior is a clean compile error, not a miscompile. Off the self-compile path.
+    - json_nested_bug, mcp_server: tuple `{i64,i64,i64}` slot coercion (i64 where tuple expected) --
+      aggregate ABI, same family.
+    - struct_test: `[i32]` array element ABI (i64-stride GEP vs i32 elements / i64<->i32 slot
+      mismatch) -- narrow-int aggregate storage.
+  next:    The 3 remaining clusters are all aggregate/narrow-type ABI (struct/tuple/i32-array across
+    value boundaries). Recommend tackling as a focused ABI pass (define one canonical i64-slot
+    representation + box/unbox helpers used at every boundary: spawn capture, byval arg, array elem)
+    rather than piecemeal -- they share a root. The spawn one additionally needs cross-thread
+    ownership care. Or continue feature-battery sweeps into maps/traits/generics for more
+    divergences. DONE-WHEN set intact (bootstrap 989ba174).
+
+  ---
+  step:    181 (session 9 -- 2026-05-31 "HARDENING: [i32]/narrow-int array element AOT trunc")
+  date:    2026-05-31
+  Tackled the struct_test `[i32]` failure from the AOT cluster. Root cause: RValue::Index for a
+  dynamic array calls `kryos_array_get -> i64` (uniform slot), then for an integer dest emitted
+  `%_N = add {dest_ty} {raw}, 0` (non-mutable) / `store {dest_ty} {raw}` (mutable) using the i64
+  result DIRECTLY as a narrow element type (i32/i16/i8) -- `add i32 <i64>` which clang rejects.
+  FIX (kryos-codegen-llvm RValue::Index, both branches): coerce the i64 array-get result to the
+  element type via coerce_value (trunc for narrow ints, no-op for i64) before the identity add /
+  store. Reuses the iN<->iN coercion completed in step 179.
+  VERIFY: i1 `let a:[i32]=[10,20,30]; a[1]` -> 20; i2 [i32] struct field -> 6; struct_test MATCH
+  JIT==AOT. Feature battery 10/10. AOT examples 18->19. Bootstrap unaffected (LLVM-only; Cranelift
+  bootstrap path untouched -- final bootstrap re-verify after the cluster).
+  REMAINING AOT failures (4 -> 2 clusters): ai_agent/http_api (struct->i64 SPAWN CAPTURE, deferred
+  cross-thread); json_nested_bug/mcp_server (tuple {i64,i64,i64} slot coercion -- next).
+  next:    tuple {i64,i64,i64} coercion (json_nested_bug/mcp_server); then bootstrap re-verify;
+    spawn-capture aggregate ABI still deferred (cross-thread ownership).
+
+  ---
+  step:    182 (session 9 -- 2026-05-31 "HARDENING: aggregate fallthrough return uses zeroinitializer")
+  date:    2026-05-31
+  Investigated the tuple cluster (json_nested_bug/mcp_server). Found TWO bugs in the std::json
+  `-> JsonValue` (3-tuple {i64,i64,i64}) helpers:
+    BUG A (fixed here): default_value_for_type returned the int literal `0` for aggregate types,
+      so every aggregate-returning fn's implicit fallthrough/dead block emitted `ret {i64,i64,i64}
+      0` -- malformed IR (0 is not a valid aggregate constant). FIX: return `zeroinitializer` for
+      types starting with {, %, or [.
+    BUG B (NOT fixed -- the deep ABI gap): a tuple-typed struct FIELD (ParseResult.value : JsonValue)
+      is stored in an i64 slot, so `extractvalue %ParseResult, 0` yields i64 and `ret {tuple} %_3`
+      mismatches. This is the SAME nested-aggregate-in-i64-slot problem as the deferred spawn
+      capture (struct in i64 env slot). All 4 remaining AOT failures (ai_agent, http_api,
+      json_nested_bug, mcp_server) reduce to Bug B.
+  VERIFY: agg1 (aggregate-returning fn with branch+fallthrough) -> 5 on both backends; feature
+  battery 10/10; AOT examples 19 ok (bug A alone doesn't clear json/mcp -- bug B still blocks them);
+  no regressions.
+  REMAINING (Bug B, the ABI pass proper): aggregates (struct/tuple) stored in i64 slots lose their
+  type. Sites: struct field of aggregate type (insertvalue/extractvalue), spawn env capture, and
+  likely array elements of aggregate type. A correct fix needs ONE canonical i64-slot repr (box =
+  heap ptr) with box-on-store + unbox-on-read at every boundary, plus cross-thread ownership care
+  for the spawn case. This is a design-level change, deferred for deliberate design (3 clean
+  sub-fixes shipped this session: 180 math builtins, 181 i32 arrays, 182 aggregate default return).
+  next:    Bug B aggregate-in-i64-slot ABI (design + implement box/unbox), starting with the
+    struct-field case (unblocks json/mcp) which is single-threaded and lower-risk than spawn.
+
+  ---
+  step:    183 (session 9 -- 2026-06-01 "Bug B investigation: aggregate-in-i64-slot is an ABI design choice; attempted fix REVERTED")
+  date:    2026-06-01
+  Attempted the struct-field case of Bug B (unblock json/mcp). Precisely root-caused the whole
+  aggregate-struct-field area and found it is a DELIBERATE ABI design, not a localized bug:
+    - Struct fields are uniform 8-byte slots; field memory access uses an i64-stride GEP
+      (`getelementptr i64, ptr base, i32 field_idx`). To keep that valid, ENUM-typed fields are
+      flattened to a bare `i64` in the struct def (e.g. `%ParseResult = type { i64, %Parser }`
+      where `.value : JsonValue` is really `{i64,i64,i64}`). COST: `extractvalue` yields i64,
+      mismatching the enum aggregate it's used as -> the json/mcp AOT compile errors.
+    - ATTEMPTED FIX: make enum fields use their real aggregate type (sig_ty_to_llvm) in both the
+      struct decl AND the insertvalue construction. Made the SSA path correct (ef: enum struct
+      field -> 8 on both backends) BUT introduced a SILENT MISCOMPILE: a field declared AFTER a
+      now->24-byte enum field is mis-addressed by the i64-stride GEP (efm: mutate trailing i64
+      field -> AOT 15 vs JIT 17). 
+    - PROOF it's fundamental: the SAME miscompile ALREADY exists for TUPLE fields on baseline
+      (tfm: `struct{v:(i64,i64,i64), n:i64}; r.n=10` -> AOT 6 vs JIT 11) -- tuple fields aren't
+      flattened, so the i64-stride GEP is already wrong for them. The enum i64-flattening was
+      HIDING this for enums by keeping fields 8 bytes.
+    - VERIFIED WORKAROUND: aggregate field LAST is correct (tfl -> 11 both backends) -- no trailing
+      field to mis-offset. Documented as CLAUDE.md gotcha #21 (silent AOT miscompile warning).
+  DECISION: REVERTED the attempted fix (git checkout codegen.rs) -- shipping a silent miscompile is
+  worse than the current clean compile error. Working tree back at 3c048d5. Battery 10/10, examples
+  19/23 (the 4 Bug-B cases remain clean COMPILE ERRORS, not miscompiles). Only doc commit this step
+  (gotcha #21).
+  THE REAL FIX (deliberate, deferred -- needs its own focused effort + design doc): pick ONE --
+    (A) box/unbox aggregates in i64 field slots: keep 8-byte i64 fields, box an aggregate field to
+        a heap ptr on store, unbox (load) on read. Adds heap alloc + ownership per aggregate field;
+        also covers the spawn i64-env case (with cross-thread ownership). OR
+    (B) migrate ALL struct field memory access from i64-stride GEP to struct-type-indexed GEP
+        (`getelementptr %Struct, ptr, i32 0, i32 field_idx`) + typed per-field load/store, and let
+        fields hold real aggregate types. Abandons the uniform-8-byte model; also fixes the
+        pre-existing tuple-field-mutation miscompile (tfm).
+    Option B is cleaner long-term (fixes tfm too) but touches every field access site; Option A is
+    more localized but adds boxing/ownership. Either is a design-level change -- do NOT attempt
+    piecemeal (this step proved piecemeal trades one bug for a worse one).
+  KNOWN PRE-EXISTING MISCOMPILE (newly characterized, NOT introduced here): tuple/enum field
+    followed by a mutated field -> wrong AOT offset (tfm). Gotcha #21 warns; real fix = option B.
+  next:    Either (a) commit to the option-B ABI migration as a focused sub-project (recommended;
+    fixes json/mcp/spawn/tfm together), or (b) continue feature-battery sweeps in other areas
+    (maps, traits, generics, strings) for more independent JIT/AOT divergences. DONE-WHEN intact
+    (bootstrap 989ba174; no new miscompiles).
+
+  ---
+  step:    184 (session 9 -- 2026-06-01 "Option B increment 1: StoreField struct-indexed GEP (fixes tfm miscompile)")
+  date:    2026-06-01
+  Battery sweep batch 2 first (traits/generics/patterns/strings/@copy/ops/range/HOF/Option-Result/
+  tuples, 10 progs): 9/10 clean on both backends; the 1 DIFFER (generic `+` on unbounded T) is a
+  CONSISTENT compile error both backends (feature gap, not an AOT bug). No new divergences -- those
+  areas are robust.
+  Then started Option B. INCREMENT 1: StoreField now addresses fields with a struct-INDEXED GEP
+  (`getelementptr %S, ptr, i32 0, i32 idx`) instead of the i64-stride GEP that assumed 8-byte
+  fields. The field READ already used extractvalue (layout-correct), so writes now agree with reads.
+  Aggregate fields store their full real-typed value; scalar 8-byte fields keep the opaque `store
+  i64`. Falls back to legacy i64-stride only when the struct type can't be resolved (heap handle).
+  Added resolve_struct_name helper.
+  FIXED: the pre-existing tuple-field-mutation miscompile -- tfm `struct{v:(i64,i64,i64),n:i64};
+  r.n=10` now AOT=11 (was 6) == JIT. VERIFY: tfm/tfl/agg2 correct both backends; battery 10/10;
+  examples 19/23 (unchanged -- the 4 Bug-B examples need increments 2-3). efm still a clean compile
+  error (enum field still i64-flattened -> increment 2). For all-8-byte structs struct-indexed GEP
+  == i64-stride, so no change to the common case (verified: no regressions).
+  next:    increment 2 -- make ENUM struct fields use their real aggregate type (now safe: StoreField
+    GEP is layout-correct), unblocking the struct-field part of json/mcp; then increment 3 --
+    aggregate<->i64 box/unbox at array-element / arg boundaries (json's [JsonValue] / `%_8` error).
+
+  ---
+  step:    185 (session 9 -- 2026-06-01 "Option B increment 2: enum struct fields use real aggregate type")
+  date:    2026-06-01
+  Re-applied the step-183 field-type change (emit_struct_type_decls + struct construction both use
+  sig_ty_to_llvm so an ENUM field is `{i64,<payloads>}` not bare i64) -- now SAFE because StoreField
+  uses a struct-indexed GEP (step 184), so a field after a now-wider enum field is correctly offset.
+  FIXED: efm `enum E{A,B(i64)}; struct R{e:E,n:i64}; r.n=10` -> AOT 17 == JIT (was a clean compile
+  error; step-183's attempt without inc-1 had MISCOMPILED this to 15). ef (enum struct field read)
+  -> 8 both backends. VERIFY: battery 10/10; examples 19/23 (unchanged); BOOTSTRAP 989ba174 HELD
+  (LLVM-only). json/mcp now advance to the NEXT boundary: `%_8 {i64,i64,i64} expected i64` -- the
+  enum aggregate flowing into an i64 slot at an ARRAY-element / arg boundary ([JsonValue]).
+  next:    increment 3 -- aggregate<->i64 box/unbox at the array-element / arg boundaries so a
+    JsonValue (enum) can live in a `[JsonValue]` i64 slot and be read back. This unblocks json/mcp.
+
+  ---
+  step:    186 (session 9 -- 2026-06-01 "Option B increment 3 INVESTIGATION: enum-through-boundary is multi-site; checkpoint")
+  date:    2026-06-01
+  Investigated increment 3 (enums crossing array/arg i64-slot boundaries -- needed to unblock
+  json/mcp). Found it is NOT one fix but THREE distinct sub-bugs, each its own regression-risky site:
+    (a) UNTYPED array `let mut a = []; push(a, E.B(5))`: array element type stays i64 (not inferred
+        as the enum), so `a[i]` index result is `add i64 <box-ptr>, 0` (NOT unboxed) and the match
+        does `extractvalue i64` -> "extractvalue operand must be aggregate type". Needs array-element
+        type inference to track the enum (a MIR/type-inference fix), OR a box/unbox keyed on the
+        push'd value type.
+    (b) TYPED `[E]` array (json's pattern): the index DOES unbox correctly (`inttoptr` + `load %E`),
+        but the load/extractvalue use a NAMED `%E` enum type that is never emitted as an LLVM type
+        decl (enums are otherwise rendered inline as `{i64,<payloads>}` via enum_llvm_type) ->
+        "load operand must be a pointer to a first class type". Fix candidate: either emit named
+        `%E = type {...}` decls for enums (additive) OR find where the index-result dest_ty leaks
+        "%E" instead of the inline form and render it inline. (local_types DOES render enum locals
+        inline at codegen.rs:2216 -- so the "%E" leak is a separate dest_ty path in RValue::Index.)
+    (c) json `%_8 {i64,i64,i64} expected i64` (inc.ll:2045): an enum aggregate flowing INTO an i64
+        slot (opposite direction) -- a box-on-store site not yet covered.
+  Each needs box/unbox + correct typing at its boundary; (a) also needs element-type inference.
+  This is the deep part of the ABI redesign -- multi-site, do one-at-a-time with full regression
+  gating (battery + examples + bootstrap), NOT in a single pass.
+  STATE: Option B increments 1+2 DONE + committed (struct-field ABI: tfm/efm/ef fixed, 0
+  regressions, bootstrap 989ba174 held, examples 19/23). The 4 Bug-B examples (ai_agent, http_api,
+  json_nested_bug, mcp_server) still need increment 3 (a-c above). Repo clean at aa0016a.
+  next:    increment 3 sub-fix (b) first (typed-[E] enum named-type / inline-render -- json's
+    pattern, likely most localized), then (a) untyped-array element inference, then (c) json's
+    box-on-store site. Gate each on battery+examples+bootstrap. Then ai_agent/http_api still need
+    the SPAWN struct-capture (cross-thread, separate).
+
+  ---
+  step:    187 (session 9 -- 2026-06-01 "Option B inc 3(b): enum-as-Struct local renders inline aggregate")
+  date:    2026-06-01
+  Sub-bug (b): a `[E]` (enum) element / inferred local carries the enum as MirType::Struct("E"),
+  and mir_type_to_llvm(Struct) -> bare `%E` (never declared) -> `load %E` / `extractvalue %E` =
+  "not a first class type". FIX (local_types population, codegen.rs ~2216): when a local's type is
+  Struct(name) AND name is in enum_defs, render it as the enum aggregate {i64,<payloads>} (same as
+  Enum(name)). enum_tag/enum_payload and the array-element unbox all read this via operand_type, so
+  one spot fixes the load + both extractvalues.
+  VERIFY: typed `let mut a:[E]=[]; push(a,E.C(3,4)); match a[1]{...}` -> 7 both backends (was AOT
+  "load %E not first class"). battery 10/10; examples 19/23 (unchanged -- json/mcp need sub-bug c).
+  next:    sub-bug (c) json `%_8 {i64,i64,i64} expected i64` (enum aggregate INTO an i64 slot --
+    box-on-store/arg site); then (a) untyped-[] element inference.
+
+  ---
+  step:    188 (session 9 -- 2026-06-01 "Option B inc 3(c-part): push() builtin boxes aggregate elements")
+  date:    2026-06-01
+  Sub-bug (c) part 1: the `push(arr, x)` builtin coerced x to i64 and emitted `kryos_array_push(
+  ptr, i64 <x>)`; for an aggregate x (tuple/enum/struct) that's a type mismatch ("{i64,i64,i64}
+  but expected i64") -- the array-LITERAL path boxes aggregates but push() didn't. FIX: push()
+  now boxes an aggregate element on the heap (arc_alloc + store {ty} + ptrtoint) and pushes the
+  ptr as i64, mirroring the literal path; the matching `a[i]` index unboxes (already works).
+  VERIFY: `let mut a:[(i64,i64)]=[]; push(a,(1,2)); push(a,(3,4)); a[1].0+.1` -> 7 both backends
+  (was AOT mismatch). battery 10/10; examples 19/23.
+  REMAINING for json/mcp: the pushed value there is `extractvalue %ParseResult, 0` (a JsonValue
+  enum field) but its SSA result is TRACKED as i64 (RValue::Field doesn't track an enum-field
+  result as the aggregate), so push sees "i64" and skips boxing -> still `%_8 {i64,i64,i64}
+  expected i64`. Needs RValue::Field to track enum-field results as the aggregate type (next).
+  next:    RValue::Field enum-field result type tracking -> then push boxes json's JsonValue ->
+    unblock json/mcp; then sub-bug (a) untyped-[] element inference; then spawn-capture (ai_agent/
+    http_api).
+
+  ---
+  step:    189 (session 9 -- 2026-06-01 "Option B inc 3: json cascade mapped; CHECKPOINT at step 188")
+  date:    2026-06-01
+  Pushed deeper on inc 3 to unblock json/mcp. It is a CASCADE -- each fix advances json exactly one
+  boundary and reveals the next enum-aggregate-at-i64 site. Mapped so far (in order json hits them):
+    1. struct field real type (DONE step 185) -- ParseResult.value extractvalue.
+    2. enum-as-Struct local renders inline (DONE step 187).
+    3. push() boxes aggregate elements (DONE step 188).
+    4. RValue::Field must TRACK an enum-field result as the aggregate (attempted: change
+       mir_type_to_llvm->sig_ty_to_llvm at the field-result track_type, codegen.rs ~4365). This
+       ADVANCES json past the push but has NO standalone verifiable win and surfaces site 5 ->
+       REVERTED (don't stack no-win changes into a half-migrated enum ABI).
+    5. EnumVariant CONSTRUCTION (codegen.rs ~4588) coerces payloads using operand_type (MIR-declared)
+       not actual_type, so a ptr-valued payload mistyped i64 isn't ptrtoint'd -> `insertvalue ptr
+       instead of i64`. (And likely more sites after.)
+  CONCLUSION: fully unblocking json/mcp requires sites 4+5(+...) landed TOGETHER (each alone has no
+  verifiable win and leaves the enum ABI mid-migration). This is the long tail of enums-as-aggregates
+  -everywhere -- best done as one focused sub-session that lands 4+5+remaining and verifies json
+  compiles+runs as the single acceptance test, then re-runs battery/examples/bootstrap.
+  CHECKPOINTED at step 188 (1dfdded): increments 1,2,3b,3c committed = struct-field ABI + typed-enum
+  arrays + push-boxing, all with verifiable wins (tfm/efm/ef/eat/pt) + 0 regressions + BOOTSTRAP
+  989ba174 HELD (re-verified). examples 19/23. The 4 (ai_agent/http_api/json/mcp) still blocked:
+  json/mcp on the inc-3 cascade (sites 4-5+), ai_agent/http_api on spawn struct-capture (separate).
+  next:    one focused pass landing field-result tracking (4) + EnumVariant payload actual-type
+    coercion (5) + any further sites, gated on `json_nested_bug` compiling+running; then spawn.
+
+  ---
+  step:    190 (session 9 -- 2026-06-01 "Option B inc 3: json cascade is a multi-LAYER rewrite; honest stop")
+  date:    2026-06-01
+  Pushed the json/mcp cascade to SIX traced sites. Committed sites 1-5 (all regression-free,
+  battery 10/10, examples 19/23, bootstrap 989ba174 held):
+    1 struct field real type (185) | 2 enum-as-Struct local inline (187) | 3 push boxing (188) |
+    4 RValue::Field tracks enum-field result as aggregate (189) | 5 EnumVariant payload actual-type
+    coercion (189).
+  Site 6 (NOT a codegen-only fix): matching `JsonValue.Object(keys, values)` builds a `{ptr, i64}`
+  holder where the 2nd binding `values: [JsonValue]` (an ARRAY -> should be ptr) renders as i64 ->
+  `insertvalue ptr %_4, 1` into an i64 slot. Root: the payload BINDING is typed as the enum
+  `JsonValue` (->i64) instead of the array `[JsonValue]` (->ptr) -- a MIR/type layer mis-binding,
+  not a codegen coercion. Fixing it is in MIR lowering / type inference (different layer, higher risk).
+  CONCLUSION (evidence-based): json/mcp AOT unblock is a DEEP, OPEN-ENDED, MULTI-LAYER rewrite. The
+  recursive `enum JsonValue` carrying `[JsonValue]`/`[str]` arrays hits the i64-uniform-slot model at
+  every value boundary (struct field, push, field-read, enum construct, payload bind, tuple pack,
+  ...), spanning BOTH codegen AND MIR. 6 sites traced, no convergence bound. This is not a "focused
+  single pass" -- it is a multi-session ABI redesign. Stopping here is the responsible call (per the
+  "question the architecture after repeated attempts" rule); continuing to patch site-by-site risks
+  an ever-larger half-migrated state with no completion guarantee.
+  STATE: steps 184-189 committed (HEAD 2a63647). Struct-field ABI + typed-enum-arrays + push-boxing
+  + enum-field tracking + payload coercion all DONE with verifiable wins (tfm/efm/ef/eat/pt) + 0
+  regressions + bootstrap held. The 4 examples remain AOT-blocked: json/mcp on site 6+ (MIR payload
+  binding type + further), ai_agent/http_api on spawn struct-capture (separate cross-thread work).
+  All 4 compile+run on JIT (Cranelift); this is an LLVM-AOT-only gap, off the self-compile path.
+  RECOMMENDATION: treat the enum-aggregate AOT ABI as its own dedicated multi-session ticket with a
+  design doc (pick: box/unbox-everywhere vs real-types-everywhere, and fix the MIR payload-binding
+  types), OR accept json/mcp/ai_agent/http_api as a documented AOT limitation (gotcha) since they
+  run on JIT and are off the self-compile critical path.
+
+  ---
+  step:    190 (session 9 -- 2026-06-01 "Option B inc 3 DONE for json/mcp: tuple element slot-coercion -- UNBLOCKED 2 of 4")
+  date:    2026-06-01
+  Root of the json cascade tail: a tuple whose element type the MIR left as an unresolved type var
+  (recursive-enum-array case) lowers to i64 via `Type::Var|Error => MirType::I64` (lower_resolved_
+  type), so the tuple type is e.g. {ptr, i64} while the values are (ptr, ptr) -- JIT tolerates it
+  (uniform slots), LLVM rejects `insertvalue ptr into i64`. FIX (codegen-only, JIT/bootstrap-safe):
+  emit_aggregate_tuple now coerces each element to its declared SLOT type (parsed from the dest
+  aggregate type via new split_aggregate_fields helper) before insertvalue -- ptr->i64 ptrtoint
+  etc., matching how the JIT treats slots uniformly. Combined with steps 189 (enum-field tracking +
+  EnumVariant payload coercion).
+  RESULT: **json_nested_bug AOT compiles + runs + MATCHES JIT (10 lines); mcp_server AOT compiles**
+  (its `kryos run` JIT path has an unrelated file-lock/link quirk -- it's a stdin server). AOT
+  examples 19 -> 21. Battery 10/10. All repros (eat/pt/efm/tfm/ef/agg2/tfl/i1) + previously-working
+  examples (calculator/word_count/shapes/fibonacci/struct_test) RUN + MATCH -- 0 regressions.
+  BOOTSTRAP 989ba174 HELD (codegen-only; Cranelift bootstrap untouched).
+  NOTE: synthetic minimal `rec.kry` (recursive enum, destructured tuple) compiles but segfaults --
+  the tuple-field READ/destructure side doesn't unbox the i64-slot ptr; json doesn't hit that path
+  (its output matches). Pre-existing-class (rec never AOT-compiled before), NOT a regression; a
+  read-side unbox is the follow-up for full robustness.
+  REMAINING: ai_agent + http_api -- spawn struct-capture (cross-thread aggregate ABI, separate).
+  next:    spawn struct-capture for ai_agent/http_api (the last 2), then read-side tuple unbox.
+
+  ---
+  step:    191 (session 9 -- 2026-06-01 "Option B inc 3: spawn + closure aggregate ABI (box/unbox)")
+  date:    2026-06-01
+  Extended the uniform-i64-slot box/unbox to the spawn-env and closure-thunk boundaries (for
+  ai_agent/http_api -- HTTP servers that spawn struct captures and use closures passing/returning
+  aggregate Request/Response):
+    - Spawn instruction: box an aggregate capture (Struct/Tuple/Enum) -> heap ptr as i64 in the env.
+    - emit_aggregate_call byval setup: when the arg is a boxed i64 handle (not the aggregate by
+      value), inttoptr and pass the box directly as byval (the spawn wrapper's captured struct).
+    - Closure thunk RETURN: box an aggregate closure-return -> i64 (was `ret i64 %Response`).
+    - CallIndirect RESULT: unbox i64 -> aggregate when the closure returns an aggregate.
+    - Closure thunk USER-ARG: unbox i64 -> aggregate when the closure param is an aggregate.
+    - CallIndirect ARG: box an aggregate arg -> i64 before the uniform-slot call.
+  VERIFY: `apply(|n| P{x:n,y:n*2}, 5)` (closure returning a struct through a HOF) -> 15 both
+  backends (was AOT-broken). battery 10/10; examples 21/23; closure/HOF + json all run + MATCH;
+  0 regressions. Codegen-only (bootstrap unaffected).
+  REMAINING: ai_agent/http_api now advance past ALL the aggregate-ABI boundaries to an SSA
+  `Instruction does not dominate all uses` error in the spawn-wrapper's match arms (%_27
+  serialize_response result + %_16 Route load used across blocks they don't dominate) -- a
+  control-flow/SSA issue in the spawn-block-with-match lowering, distinct from the type-coercion
+  cascade.
+  next:    diagnose the spawn-wrapper match-arm SSA dominance (likely a value materialized in one
+    match block and used in another) for ai_agent/http_api.
+
+  ---
+  step:    192 (session 9 -- 2026-06-01 "Option B inc 3 COMPLETE: dominance-safe alloca promotion -> ALL 4 examples unblocked")
+  date:    2026-06-01
+  Final piece for ai_agent/http_api: a PRE-EXISTING SSA bug (latent until the aggregate errors
+  cleared) -- the LLVM backend alloca-promoted a local only if `mutable || assigned>1`, so a local
+  defined in one block but USED in a block that doesn't dominate it (a value produced in a match
+  arm / spawn-wrapper branch and consumed after the merge) was emitted as a direct `%_N` SSA value
+  -> "instruction does not dominate all uses". FIX (emit_function_as alloca detection): also promote
+  any local used in a block other than its def block (store at def / load at use sidesteps
+  dominance). Uses the existing collect_operand_locals + collect_terminator_locals to compute
+  def/use blocks.
+  RESULT: **ALL 23/23 examples compile on AOT (was 19).** The 4 long-blocked examples build+link:
+  json_nested_bug + mcp_server (run + MATCH JIT), http_api (3.3MB exe) + ai_agent (3.3MB exe) --
+  HTTP servers, build+link clean. test_examples.sh 9/9; battery 10/10; all real examples run+MATCH;
+  BOOTSTRAP 989ba174 HELD; 0 regressions. Codegen-only (Cranelift bootstrap untouched).
+  === OPTION B (struct/aggregate ABI migration) COMPLETE for all 4 targets ===
+  Steps 184-192: struct-field struct-indexed GEP (184), enum struct fields real type (185), enum-
+  as-Struct local inline (187), push aggregate boxing (188), enum-field tracking + EnumVariant
+  payload coercion (189), tuple element slot-coercion (190), spawn + closure aggregate box/unbox
+  (191), dominance-safe alloca promotion (192). Each codegen-only, regression-free, bootstrap held.
+  next:    Option B done. Resume normal self-host hardening / feature-battery, or the read-side
+    tuple-destructure unbox (the synthetic rec.kry segfault edge -- robustness, not a target).
+
+  ---
+  step:    193 (session 9 -- 2026-06-01 "Hardening batch 3: 8/10 clean; corrected gotcha #13 (Result-err bare-print)")
+  date:    2026-06-01
+  Post-Option-B hardening: feature-battery batch 3 (recursive enum list, array-of-structs, struct-
+  of-arrays, ?-chains, string edges, aggregate-capturing closures, if-let, tuple multi-return,
+  tuple-of-arrays, deep recursion). 8/10 clean on both backends. 2 findings:
+    - c2_aos: `it.qty` on an untyped `[]` -> E0110 BOTH backends (known untyped-array element
+      inference limitation; `let items: [Item] = []` annotation fixes it -> 60). Not an AOT bug.
+    - c4_qchain: REAL bug, isolated to q5: `match r { Result.Err(e) => println(e) }` prints the str
+      err payload as a garbage NUMBER on BOTH backends. Root: MIR erases enum payloads to i64 for
+      the uniform-slot ABI (lower.rs ~3746 + the "erase to i64" notes ~726/762), so the binding is
+      typed i64 and bare `println(e)` dispatches to the i64 overload (prints the pointer). The VALUE
+      is the right str pointer -- `"x"+e` / `to_string(e)` / `len(e)` all work (reinterpret). NOT
+      AOT-specific. Tried a type-checker bind_pattern fix (Result/Option payload -> real type) but
+      the MIR's own i64-erasure overrides codegen dispatch -> REVERTED (no observable win, would
+      leave a type-checker/MIR divergence). A proper fix = thread monomorphized payload types
+      through MIR enum lowering (same intricate i64-slot-erasure class as the json cascade; broad,
+      both-backends, regression-risky) -- deferred. Corrected CLAUDE.md gotcha #13 (which wrongly
+      claimed bare `println(e)` works) with the accurate behavior + workaround.
+  VERIFY: examples still 23/23 compile after revert; repo clean at 548add6 + this doc commit.
+  next:    normal hardening / feature-battery, or (scoped ticket) thread monomorphized enum-payload
+    types through MIR so bare-print of Result/Option payloads dispatches correctly.
+
+  ---
+  step:    194 (session 9 -- 2026-06-01 "FIX: Result/Option match-payload binding uses monomorphized type")
+  date:    2026-06-01
+  Fixed the q5/c4_qchain bug from step 193. lower_match bound enum-match payloads using
+  `binding.enum_name` (the bare generic "Result"/"Option", whose def erases payloads to i64), so a
+  directly-used payload (bare `println(e)`) dispatched to the i64 overload -> garbage. FIX (lower.rs
+  ~3735): use the SUBJECT's possibly-monomorphized enum name (infer_expr_type(subject) -> e.g.
+  `Result___i64_str`, whose monomorphize_enum-registered def carries the real payload types Err:str)
+  for the field-type lookup, falling back to binding.enum_name when the monomorphized def is absent.
+  VERIFY: q5 `match r {Err(e)=>println(e)}` -> "neg"; q6/c4_qchain -> "neg at a" (was garbage) both
+  backends. **BOOTSTRAP 989ba174 HELD** (MIR change, but self-host non-generic enums look up the same
+  def -> identical codegen; only generic Result/Option payloads change). test_examples 9/9; examples
+  23/23; fb/fb2/fb3 batteries clean (b2_generics = generic-`+` feature gap, c2_aos = untyped-array
+  inference -- both pre-existing, not regressions; transient loop "DIFFER"s were file-lock races,
+  confirmed MATCH on direct run). gotcha #13 updated (bug RESOLVED). MIR change verified safe on both
+  backends + bootstrap.
+  next:    normal hardening / feature-battery sweeps.
+
+  ---
+  step:    195 (session 9 -- 2026-06-01 "Hardening batch 4: mapped the remaining bug tail; push-generic attempt reverted")
+  date:    2026-06-01
+  Adversarial battery batch 4 (10 interaction/edge programs: untyped AoS, generic struct+methods,
+  returning closures, recursive tree, nested struct mutation, string-build, numeric edge, Option<
+  struct>, jagged arrays, struct accumulator). 6/10 clean both backends. 4 findings (the remaining
+  bug tail) -- ALL deeper multi-layer items touching the type-checker/MIR/ABI (so all carry
+  bootstrap risk; none is a safe 1-spot fix):
+    - d1/d9 untyped-array-of-aggregates: element type unresolved -> `a[i].field` fails. Tried a
+      type-checker fix (push<T>(arr:[T],val:T)->[T] generic) -- it made the TYPE CHECKER infer [P]
+      (JIT then ran d1 correctly) and BOOTSTRAP HELD, but the MIR re-infers `ps:[i64]`/`p:i64`
+      independently so AOT extractvalue-on-i64 failed -> a JIT-works/AOT-fails SPLIT. REVERTED to
+      keep both backends consistent (clean type error). Full fix = push-generic + MIR element
+      inference + AOT aggregate-element codegen (3 layers). Workaround: annotate `[T]`.
+    - d5 nested struct field mutation `o.a.v=99`: MIR lowers it as load-copy-mutate (`_2=_1.a;
+      store_field(_2.v)`) -> mutates a COPY; JIT aliases (works), AOT copies+inttoptr-fails. MIR
+      nested-lvalue semantic fix needed. Workaround: rebuild `o.a = Inner{..}`.
+    - d7 `let x: u8 = 200`: int literals are hardcoded i64 -> no coerce to u8. Needs int-literal
+      polymorphism (broad, bootstrap-risky). Workaround: `200 as u8`.
+    - d8 Option<User> (multi-field struct payload): AOT box/unbox edge for >8-byte struct payloads
+      in Option/Result slots; JIT works. Codegen, intricate. Workaround: newtype/handle payload.
+  Documented all 4 in CLAUDE.md gotcha #22 (with workarounds); updated #21 (trailing-field-mutation
+  miscompile FIXED by step 184). examples 23/23, bootstrap 989ba174 intact (revert restored clean
+  state at 057aef5 + this doc).
+  HONEST STATUS: language is a working self-hosting 2-backend compiler; remaining bug tail =
+  deeper type-system/ABI items (untyped-array inference, int-literal poly, nested-lvalue MIR,
+  Option/Result large-struct payload) -- each a focused, bootstrap-gated effort, not a quick win.
+  next:    pick ONE bug-tail item as a focused ticket (recommend: untyped-array inference -- highest
+    ergonomic value -- as a coordinated type-checker+MIR+codegen change with bootstrap gating).
+
+  ---
+  step:    196 (session 10 -- 2026-06-09 "FIX: untyped-array element inference end-to-end (gotcha #22 item 1)")
+  date:    2026-06-09
+  Session 10 opened on a crashed prior session: working tree held an UNCOMMITTED, coherent
+  3-layer implementation of the recommended untyped-array-inference ticket (check.rs push/pop
+  generic sigs + resolved_let_types recorded for unannotated `let x = []` and resolved at
+  end-of-check; pipeline.rs threads let_types; lower.rs Let consults let_types before its own
+  inference). Verified it compiles (cargo check clean), then completed + verified it:
+    - REPROS: d1 (in-place push of structs + a[i].field) PASS both backends; d2a (a = push(a, S)
+      reassignment) PASS; d3 (str/float/tuple untyped arrays) PASS.
+    - FOUND remaining gap: pop() -- MIR's builtin table types pop result i64 even on [Item]
+      (d2b: `let last = pop(items); last.qty` -> AOT extractvalue-on-i64 error; JIT worked).
+    - FIX 1 (lower.rs infer_expr_type Call arm ~4128): pop(arr: [T]) -> T special case, mirrors
+      the min/max/abs polymorphic pattern. Gated on arg0 statically inferring as Array, so the
+      self-host's own `fn pop(arr: i64) -> i64` falls through to the table -- no bootstrap risk.
+    - FIX 2 (codegen-llvm pop arm ~3615): dest-typed result -- aggregate dest unboxes
+      (inttoptr + load, mirroring the index/CallIndirect paths); double/ptr dest reinterprets
+      the slot (bitcast/inttoptr); i64 dest unchanged.
+  VERIFY (all fresh this session): d1/d2/d2a/d2b/d3/d4 (pop of struct/float/str/tuple) identical
+    on JIT + AOT; examples 23/23 AOT-compile; JIT spot-check 6 examples OK; test_examples.sh 9/9;
+    **bootstrap-win.sh full chain PASS -- stage2==stage3==stage4 == 989ba174680c13a603ead0...
+    byte-identical (fixed point HELD)**. CLAUDE.md gotcha #22 item 1 marked RESOLVED.
+  ALSO: this commit lands the progress.txt entries for steps 178-195 that the crashed session
+    left uncommitted (code for those steps was already committed at 7cfe9b1).
+  next:    bug tail continues: (2) nested struct field mutation o.a.v=99 (MIR load-copy-mutate),
+    (3) int-literal polymorphism (let x: u8 = 200), (4) Option/Result >8-byte struct payload
+    AOT box/unbox. Each bootstrap-gated.

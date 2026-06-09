@@ -47,6 +47,12 @@ pub struct TypeChecker {
     /// Per param: Some(TypeExpr) for an inferred un-annotated param, None when
     /// the param was annotated or its type stayed unresolved.
     resolved_lambda_params: std::collections::HashMap<Span, Vec<Option<TypeExpr>>>,
+    /// Resolved type of an unannotated `let X = []` (empty-array) binding, keyed
+    /// by the Let span. The element type is only known after later `push(X, v)`
+    /// unification, so this is resolved at end-of-check. The MIR consumes it to
+    /// type the local (its own inference defaults an empty array's element to
+    /// i64, which mis-types `X[i].field` / aggregate elements on AOT).
+    resolved_let_types: std::collections::HashMap<Span, Type>,
 }
 
 impl Default for TypeChecker {
@@ -70,6 +76,7 @@ impl TypeChecker {
             generic_var_bounds: std::collections::HashMap::new(),
             lambda_expected_types: std::collections::HashMap::new(),
             resolved_lambda_params: std::collections::HashMap::new(),
+            resolved_let_types: std::collections::HashMap::new(),
         }
     }
 
@@ -986,6 +993,16 @@ impl TypeChecker {
                         self.engine.fresh_var()
                     }
                 };
+
+                // Record unannotated empty-array bindings so the MIR can type
+                // them from the element type unified by later `push` calls.
+                if ty.is_none() {
+                    if let Some(Expr::ArrayLiteral { elements, .. }) = value.as_ref() {
+                        if elements.is_empty() {
+                            self.resolved_let_types.insert(*span, final_ty.clone());
+                        }
+                    }
+                }
 
                 if let Some(pat) = pattern {
                     // Tuple / struct destructuring: bind each variable in the pattern.
@@ -2700,6 +2717,7 @@ pub fn type_check_with_lambda_params(
 ) -> (
     Vec<Diagnostic>,
     std::collections::HashMap<Span, Vec<Option<TypeExpr>>>,
+    std::collections::HashMap<Span, TypeExpr>,
 ) {
     let mut checker = TypeChecker::new();
 
@@ -3197,25 +3215,40 @@ pub fn type_check_with_lambda_params(
         ret: Type::Str,
     });
 
-    // push(arr: any, val: any) -> any — append value to array
+    // push<T>(arr: [T], val: T) -> [T] — generic so the element type flows:
+    // `let mut a = []; a = push(a, X)` infers `a: [X]`.
+    let push_t = {
+        let v = checker.engine.fresh_var();
+        if let Type::Var(id) = v { id } else { unreachable!() }
+    };
     checker.env.define_function(FunctionSig {
         name: "push".to_string(),
-        generic_params: vec![],
-        generic_var_ids: vec![],
+        generic_params: vec!["T".to_string()],
+        generic_var_ids: vec![push_t],
         params: vec![
-            ("arr".to_string(), Type::Error),
-            ("val".to_string(), Type::Error),
+            (
+                "arr".to_string(),
+                Type::Array { element: Box::new(Type::Var(push_t)), size: None },
+            ),
+            ("val".to_string(), Type::Var(push_t)),
         ],
-        ret: Type::Error,
+        ret: Type::Array { element: Box::new(Type::Var(push_t)), size: None },
     });
 
-    // pop(arr: any) -> any — remove and return last element
+    // pop<T>(arr: [T]) -> T — remove and return last element
+    let pop_t = {
+        let v = checker.engine.fresh_var();
+        if let Type::Var(id) = v { id } else { unreachable!() }
+    };
     checker.env.define_function(FunctionSig {
         name: "pop".to_string(),
-        generic_params: vec![],
-        generic_var_ids: vec![],
-        params: vec![("arr".to_string(), Type::Error)],
-        ret: Type::Error,
+        generic_params: vec!["T".to_string()],
+        generic_var_ids: vec![pop_t],
+        params: vec![(
+            "arr".to_string(),
+            Type::Array { element: Box::new(Type::Var(pop_t)), size: None },
+        )],
+        ret: Type::Var(pop_t),
     });
 
     // sort(arr: any) -> any — in-place ascending sort
@@ -4592,9 +4625,21 @@ pub fn type_check_with_lambda_params(
     checker.env.define_var("null".to_string(), Type::I64);
 
     checker.check_module(module);
+    // Resolve recorded empty-array let bindings through the (now fully unified)
+    // engine and convert to TypeExpr for the MIR. Only keep those whose element
+    // resolved to a concrete (non-var) type.
+    let let_types: std::collections::HashMap<Span, TypeExpr> = checker
+        .resolved_let_types
+        .iter()
+        .filter_map(|(span, ty)| {
+            let resolved = checker.engine.resolve(ty);
+            concrete_type_to_type_expr(&resolved).map(|te| (*span, te))
+        })
+        .collect();
     (
         std::mem::take(&mut checker.diagnostics),
         std::mem::take(&mut checker.resolved_lambda_params),
+        let_types,
     )
 }
 

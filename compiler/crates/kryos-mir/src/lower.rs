@@ -64,6 +64,10 @@ pub struct LoweringContext {
     /// (keyed by the lambda's span). Used to type closure params that would
     /// otherwise default to i64 (e.g. a `str` closure passed to a HOF).
     lambda_param_types: HashMap<kryos_errors::Span, Vec<Option<ast::TypeExpr>>>,
+    /// Resolved types for unannotated empty-array `let` bindings (keyed by Let
+    /// span), from the type checker. Used so `let x = []; push(x, S{..})` types
+    /// x as `[S]` instead of the MIR's default `[i64]`.
+    let_types: HashMap<kryos_errors::Span, ast::TypeExpr>,
     /// Counter for spawn wrapper function names.
     spawn_counter: u32,
     /// Type alias map: alias_name -> resolved MirType.
@@ -179,6 +183,7 @@ impl LoweringContext {
             monomorphized_functions: Vec::new(),
             lambda_counter: 0,
             lambda_param_types: HashMap::new(),
+            let_types: HashMap::new(),
             spawn_counter: 0,
             type_aliases: HashMap::new(),
             try_catch_target: None,
@@ -389,17 +394,21 @@ fn annotations_to_mir_attributes(annotations: &[ast::Annotation]) -> MirAttribut
 
 /// Lower an entire AST module to MIR.
 pub fn lower_module(module: &ast::Module) -> MirModule {
-    lower_module_with_lambda_params(module, &HashMap::new())
+    lower_module_with_lambda_params(module, &HashMap::new(), &HashMap::new())
 }
 
 /// Lower a module to MIR, using the type checker's resolved lambda param types
-/// (keyed by lambda span) to type closure params that the AST left un-annotated.
+/// (keyed by lambda span) to type closure params that the AST left un-annotated,
+/// and resolved empty-array `let` types (keyed by Let span) so untyped arrays
+/// built via `push` get their real element type.
 pub fn lower_module_with_lambda_params(
     module: &ast::Module,
     lambda_param_types: &HashMap<kryos_errors::Span, Vec<Option<ast::TypeExpr>>>,
+    let_types: &HashMap<kryos_errors::Span, ast::TypeExpr>,
 ) -> MirModule {
     let mut ctx = LoweringContext::new();
     ctx.lambda_param_types = lambda_param_types.clone();
+    ctx.let_types = let_types.clone();
 
     // Register built-in prelude enums (Option, Result) so they're available
     // to all programs without explicit import.
@@ -1578,10 +1587,17 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             ty,
             value,
             pattern,
+            span: let_span,
             ..
         } => {
             let mir_ty = if let Some(t) = ty {
                 ctx.resolve_type(t)
+            } else if let Some(te) = ctx.let_types.get(let_span).cloned() {
+                // Type-checker-resolved type for an unannotated empty-array `let`
+                // (element type came from later `push`). Without this the MIR's
+                // own inference defaults the empty array's element to i64, which
+                // mis-types `X[i].field` / aggregate elements on AOT.
+                ctx.resolve_type(&te)
             } else if let Some(expr) = value {
                 // No explicit type annotation — infer from the initializer.
                 infer_expr_type(ctx, expr)
@@ -4106,6 +4122,18 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                             let arg_ty = infer_expr_type(ctx, first_arg);
                             if arg_ty == MirType::F64 {
                                 return MirType::F64;
+                            }
+                        }
+                    }
+                    // pop(arr: [T]) -> T — element-typed result so aggregate/
+                    // float elements keep their real type (the i64 table entry
+                    // mis-typed `let last = pop(items); last.field` on AOT).
+                    // Only fires when the argument is statically an array; the
+                    // self-host's own `fn pop(arr: i64) -> i64` falls through.
+                    if name.as_str() == "pop" {
+                        if let Some(first_arg) = args.first() {
+                            if let MirType::Array(elem, _) = infer_expr_type(ctx, first_arg) {
+                                return *elem;
                             }
                         }
                     }
