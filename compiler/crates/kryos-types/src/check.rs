@@ -4425,6 +4425,62 @@ pub fn type_check_with_lambda_params(
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
+        name: "hmac_sha256".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("key".to_string(), Type::Str), ("data".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "ed25519_generate".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "ed25519_public".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("pkcs8_hex".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "ed25519_sign".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("pkcs8_hex".to_string(), Type::Str), ("msg".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "ed25519_verify".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![
+            ("pub_hex".to_string(), Type::Str),
+            ("msg".to_string(), Type::Str),
+            ("sig_hex".to_string(), Type::Str),
+        ],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "hex_to_base64url".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("hex".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "base64url_to_hex".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![("b64url".to_string(), Type::Str)],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "pbkdf2_sha256".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![
+            ("password".to_string(), Type::Str),
+            ("salt_hex".to_string(), Type::Str),
+            ("iters".to_string(), Type::I64),
+        ],
+        ret: Type::Str,
+    });
+    checker.env.define_function(FunctionSig {
         name: "random_bytes".to_string(),
         generic_params: vec![], generic_var_ids: vec![],
         params: vec![("n".to_string(), Type::I64)],

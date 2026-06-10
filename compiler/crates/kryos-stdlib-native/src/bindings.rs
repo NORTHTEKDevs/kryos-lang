@@ -727,3 +727,185 @@ pub extern "C" fn kryos_http2_request_ks(
     let result = crate::http2::http2_request(method, url, headers, body);
     str_to_handle(&result)
 }
+
+// ---------------------------------------------------------------------------
+// Crypto: HMAC / Ed25519 / PBKDF2 — handle-based wrappers (ring-backed)
+// ---------------------------------------------------------------------------
+
+/// Decode a hex string into bytes. Returns None on odd length / bad digit.
+#[cfg(feature = "crypto")]
+fn hex_decode(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(s.len() / 2);
+    let nib = |c: u8| -> Option<u8> {
+        match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            b'A'..=b'F' => Some(c - b'A' + 10),
+            _ => None,
+        }
+    };
+    for pair in bytes.chunks(2) {
+        out.push((nib(pair[0])? << 4) | nib(pair[1])?);
+    }
+    Some(out)
+}
+
+/// `hmac_sha256(key: str, data: str) -> str` — hex-encoded HMAC-SHA256 tag.
+#[cfg(feature = "crypto")]
+#[no_mangle]
+pub extern "C" fn kryos_hmac_sha256_ks(key_handle: i64, data_handle: i64) -> i64 {
+    let key = unsafe { handle_to_str(key_handle) };
+    let data = unsafe { handle_to_str(data_handle) };
+    let k = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key.as_bytes());
+    let tag = ring::hmac::sign(&k, data.as_bytes());
+    str_to_handle(&hex_encode(tag.as_ref()))
+}
+
+/// `ed25519_generate() -> str` — hex-encoded PKCS#8 v2 keypair document.
+/// Empty string on RNG failure.
+#[cfg(feature = "crypto")]
+#[no_mangle]
+pub extern "C" fn kryos_ed25519_generate_ks() -> i64 {
+    let rng = ring::rand::SystemRandom::new();
+    match ring::signature::Ed25519KeyPair::generate_pkcs8(&rng) {
+        Ok(doc) => str_to_handle(&hex_encode(doc.as_ref())),
+        Err(_) => str_to_handle(""),
+    }
+}
+
+/// `ed25519_public(pkcs8_hex: str) -> str` — hex of the 32-byte public key.
+#[cfg(feature = "crypto")]
+#[no_mangle]
+pub extern "C" fn kryos_ed25519_public_ks(pkcs8_handle: i64) -> i64 {
+    use ring::signature::KeyPair;
+    let pkcs8_hex = unsafe { handle_to_str(pkcs8_handle) };
+    let Some(pkcs8) = hex_decode(pkcs8_hex) else {
+        return str_to_handle("");
+    };
+    match ring::signature::Ed25519KeyPair::from_pkcs8(&pkcs8) {
+        Ok(kp) => str_to_handle(&hex_encode(kp.public_key().as_ref())),
+        Err(_) => str_to_handle(""),
+    }
+}
+
+/// `ed25519_sign(pkcs8_hex: str, msg: str) -> str` — hex of the 64-byte signature.
+#[cfg(feature = "crypto")]
+#[no_mangle]
+pub extern "C" fn kryos_ed25519_sign_ks(pkcs8_handle: i64, msg_handle: i64) -> i64 {
+    let pkcs8_hex = unsafe { handle_to_str(pkcs8_handle) };
+    let msg = unsafe { handle_to_str(msg_handle) };
+    let Some(pkcs8) = hex_decode(pkcs8_hex) else {
+        return str_to_handle("");
+    };
+    match ring::signature::Ed25519KeyPair::from_pkcs8(&pkcs8) {
+        Ok(kp) => str_to_handle(&hex_encode(kp.sign(msg.as_bytes()).as_ref())),
+        Err(_) => str_to_handle(""),
+    }
+}
+
+/// `ed25519_verify(pub_hex: str, msg: str, sig_hex: str) -> i64` — 1 valid, 0 not.
+#[cfg(feature = "crypto")]
+#[no_mangle]
+pub extern "C" fn kryos_ed25519_verify_ks(pub_handle: i64, msg_handle: i64, sig_handle: i64) -> i64 {
+    let pub_hex = unsafe { handle_to_str(pub_handle) };
+    let msg = unsafe { handle_to_str(msg_handle) };
+    let sig_hex = unsafe { handle_to_str(sig_handle) };
+    let (Some(pubkey), Some(sig)) = (hex_decode(pub_hex), hex_decode(sig_hex)) else {
+        return 0;
+    };
+    let key = ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, pubkey);
+    match key.verify(msg.as_bytes(), &sig) {
+        Ok(()) => 1,
+        Err(_) => 0,
+    }
+}
+
+/// `pbkdf2_sha256(password: str, salt_hex: str, iters: i64) -> str` — hex of
+/// the 32-byte derived key. Iterations clamped to [1_000, 10_000_000].
+#[cfg(feature = "crypto")]
+#[no_mangle]
+pub extern "C" fn kryos_pbkdf2_sha256_ks(pw_handle: i64, salt_handle: i64, iters: i64) -> i64 {
+    let pw = unsafe { handle_to_str(pw_handle) };
+    let salt_hex = unsafe { handle_to_str(salt_handle) };
+    let Some(salt) = hex_decode(salt_hex) else {
+        return str_to_handle("");
+    };
+    let iters = iters.clamp(1_000, 10_000_000) as u32;
+    let Some(n) = std::num::NonZeroU32::new(iters) else {
+        return str_to_handle("");
+    };
+    let mut out = [0u8; 32];
+    ring::pbkdf2::derive(
+        ring::pbkdf2::PBKDF2_HMAC_SHA256,
+        n,
+        &salt,
+        pw.as_bytes(),
+        &mut out,
+    );
+    str_to_handle(&hex_encode(&out))
+}
+
+/// `hex_to_base64url(hex: str) -> str` — re-encode hex-encoded bytes as
+/// unpadded base64url (RFC 4648 §5). Empty string on malformed hex.
+/// Binary-safe bridge for JWT/DKIM signatures (Kryos strings are UTF-8, so
+/// raw signature bytes travel as hex and re-encode here).
+#[cfg(feature = "crypto")]
+#[no_mangle]
+pub extern "C" fn kryos_hex_to_b64url_ks(hex_handle: i64) -> i64 {
+    const ALPHA: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let hex = unsafe { handle_to_str(hex_handle) };
+    let Some(bytes) = hex_decode(hex) else {
+        return str_to_handle("");
+    };
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        out.push(ALPHA[(b[0] >> 2) as usize] as char);
+        out.push(ALPHA[(((b[0] & 0x03) << 4) | (b[1] >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(ALPHA[(((b[1] & 0x0f) << 2) | (b[2] >> 6)) as usize] as char);
+        }
+        if chunk.len() > 2 {
+            out.push(ALPHA[(b[2] & 0x3f) as usize] as char);
+        }
+    }
+    str_to_handle(&out)
+}
+
+/// `base64url_to_hex(b64url: str) -> str` — decode unpadded base64url to
+/// hex-encoded bytes. Empty string on malformed input.
+#[cfg(feature = "crypto")]
+#[no_mangle]
+pub extern "C" fn kryos_b64url_to_hex_ks(b64_handle: i64) -> i64 {
+    let s = unsafe { handle_to_str(b64_handle) };
+    let val = |c: u8| -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'-' => Some(62),
+            b'_' => Some(63),
+            _ => None,
+        }
+    };
+    let raw: &[u8] = s.as_bytes();
+    let mut bytes = Vec::with_capacity(raw.len() * 3 / 4);
+    let mut buf: u32 = 0;
+    let mut bits = 0u32;
+    for &c in raw {
+        let Some(v) = val(c) else {
+            return str_to_handle("");
+        };
+        buf = (buf << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push((buf >> bits) as u8);
+        }
+    }
+    str_to_handle(&hex_encode(&bytes))
+}

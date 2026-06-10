@@ -877,6 +877,14 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_json_array(i64)");
         self.emit_line("declare i64 @kryos_sha256_ks(i64)");
         self.emit_line("declare i64 @kryos_sha512_ks(i64)");
+        self.emit_line("declare i64 @kryos_hmac_sha256_ks(i64, i64)");
+        self.emit_line("declare i64 @kryos_ed25519_generate_ks()");
+        self.emit_line("declare i64 @kryos_ed25519_public_ks(i64)");
+        self.emit_line("declare i64 @kryos_ed25519_sign_ks(i64, i64)");
+        self.emit_line("declare i64 @kryos_ed25519_verify_ks(i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_pbkdf2_sha256_ks(i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_hex_to_b64url_ks(i64)");
+        self.emit_line("declare i64 @kryos_b64url_to_hex_ks(i64)");
         self.emit_line("declare i64 @kryos_sha1_hex_ks(i64)");
         self.emit_line("declare i64 @kryos_sha1_base64_ks(i64)");
         self.emit_line("declare i64 @kryos_base64_encode_ks(i64)");
@@ -4291,6 +4299,14 @@ impl LlvmCodegen {
                                 "json_array" => "kryos_json_array",
                                 // Crypto
                                 "sha256" => "kryos_sha256_ks",
+                                "hmac_sha256" => "kryos_hmac_sha256_ks",
+                                "ed25519_generate" => "kryos_ed25519_generate_ks",
+                                "ed25519_public" => "kryos_ed25519_public_ks",
+                                "ed25519_sign" => "kryos_ed25519_sign_ks",
+                                "ed25519_verify" => "kryos_ed25519_verify_ks",
+                                "pbkdf2_sha256" => "kryos_pbkdf2_sha256_ks",
+                                "hex_to_base64url" => "kryos_hex_to_b64url_ks",
+                                "base64url_to_hex" => "kryos_b64url_to_hex_ks",
                                 "sha512" => "kryos_sha512_ks",
                                 "sha1_hex" => "kryos_sha1_hex_ks",
                                 "sha1_base64" => "kryos_sha1_base64_ks",

@@ -859,6 +859,38 @@ impl JitCompiler {
             kryos_stdlib_native::bindings::kryos_sha512_ks as *const u8,
         );
         jit_builder.symbol(
+            "kryos_hmac_sha256_ks",
+            kryos_stdlib_native::bindings::kryos_hmac_sha256_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_ed25519_generate_ks",
+            kryos_stdlib_native::bindings::kryos_ed25519_generate_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_ed25519_public_ks",
+            kryos_stdlib_native::bindings::kryos_ed25519_public_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_ed25519_sign_ks",
+            kryos_stdlib_native::bindings::kryos_ed25519_sign_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_ed25519_verify_ks",
+            kryos_stdlib_native::bindings::kryos_ed25519_verify_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_pbkdf2_sha256_ks",
+            kryos_stdlib_native::bindings::kryos_pbkdf2_sha256_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_hex_to_b64url_ks",
+            kryos_stdlib_native::bindings::kryos_hex_to_b64url_ks as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_b64url_to_hex_ks",
+            kryos_stdlib_native::bindings::kryos_b64url_to_hex_ks as *const u8,
+        );
+        jit_builder.symbol(
             "kryos_random_bytes_ks",
             kryos_stdlib_native::bindings::kryos_random_bytes_ks as *const u8,
         );
@@ -1876,6 +1908,14 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_chr_ks", "kryos_chr_ks", sig(1));
     decl!("kryos_byte_at_ks", "kryos_byte_at_ks", sig(2));
     decl!("kryos_sha512_ks", "kryos_sha512_ks", sig(1));
+    decl!("kryos_hmac_sha256_ks", "kryos_hmac_sha256_ks", sig(2));
+    decl!("kryos_ed25519_generate_ks", "kryos_ed25519_generate_ks", sig(0));
+    decl!("kryos_ed25519_public_ks", "kryos_ed25519_public_ks", sig(1));
+    decl!("kryos_ed25519_sign_ks", "kryos_ed25519_sign_ks", sig(2));
+    decl!("kryos_ed25519_verify_ks", "kryos_ed25519_verify_ks", sig(3));
+    decl!("kryos_pbkdf2_sha256_ks", "kryos_pbkdf2_sha256_ks", sig(3));
+    decl!("kryos_hex_to_b64url_ks", "kryos_hex_to_b64url_ks", sig(1));
+    decl!("kryos_b64url_to_hex_ks", "kryos_b64url_to_hex_ks", sig(1));
     decl!("kryos_random_bytes_ks", "kryos_random_bytes_ks", sig(1));
     decl!("kryos_regex_new_ks", "kryos_regex_new_ks", sig(1));
     decl!("kryos_regex_is_match_ks", "kryos_regex_is_match_ks", sig(2));

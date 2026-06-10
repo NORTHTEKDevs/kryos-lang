@@ -4881,3 +4881,28 @@ SHIFTS:
   attestations + free runner minutes + is the prerequisite for any public launch; (b) the
   Darwin stdlib-native port ticket (12 tests, link errors, needs macOS hardware or CI
   iteration); (c) cross.yml workflow not yet examined.
+
+  ---
+  step:    215 (session 11 -- 2026-06-09 "FEATURE: asymmetric crypto + signing + JWT (limitation #2/#1)")
+  date:    2026-06-09
+  Closing the "missing crypto domains" + "empty ecosystem" limitations, batch 1.
+  RUNTIME (kryos-stdlib-native/src/bindings.rs, ring-backed, crypto feature): hmac_sha256,
+  ed25519_generate/public/sign/verify, pbkdf2_sha256 (password hashing), + a hex<->base64url
+  bridge (hex_to_base64url / base64url_to_hex) so raw signature bytes survive Kryos's UTF-8
+  string model. All wired through MIR builtin table + Cranelift codegen + JIT symbols/decls +
+  LLVM name-map/declares + type-checker FunctionSigs (6 wiring sites each, the established
+  pattern).
+  STDLIB (NEW stdlib/jwt.kry, pure Kryos): std::jwt with sign_hs256/verify_hs256,
+  sign_eddsa/verify_eddsa, decode_payload -- canonical 3-part base64url tokens. Verified
+  INTEROPERABLE: header segment decodes to {"alg":"HS256","typ":"JWT"} (standard).
+  VERIFY: cr1.kry (HMAC RFC test vector, ed25519 sign+verify+tamper-reject, pbkdf2 determinism)
+  IDENTICAL both backends; jwt1.kry (HS256 sign/verify/wrong-secret/tamper, EdDSA verify/
+  wrong-key, payload decode) IDENTICAL both backends. Workspace tests 968/0; examples 23/23;
+  **bootstrap 989ba174 byte-identical** (additive builtins, self-host unaffected).
+  LESSON: after editing kryos-stdlib-native, must run FULL `cargo build --release` (not
+  `-p kryos-cli`) so the STATICLIB artifact the AOT linker consumes is refreshed -- `-p kryos-cli`
+  only rebuilds the rlib for the CLI's own link.
+  GOTCHA surfaced (not new): literal `{`/`}` in string literals trigger interpolation; embedded
+  JSON needs `\{`/`\}` (or build via std::json). Hit it in jwt.kry headers; documented in #1.
+  next:    std::smtp (TCP+TLS email send) + Darwin link flags (investigation done: add
+  -framework Security/CoreFoundation + -liconv/-lz/-lresolv, drop the bogus -lssl/-lcrypto).

@@ -1,0 +1,143 @@
+// ============================================================
+// std.jwt -- JSON Web Tokens (RFC 7519): HS256 + EdDSA.
+//
+// Built on the crypto builtins (hmac_sha256, ed25519_*, the
+// hex<->base64url bridge). Tokens are the canonical three-part
+// `header.payload.signature` with unpadded base64url segments.
+//
+// The signing input bytes are produced as a UTF-8 string (header
+// and payload are JSON text), so base64url-encoding them goes
+// through base64_encode; signatures are raw bytes, so they travel
+// as hex from the crypto builtins and convert via hex_to_base64url.
+// ============================================================
+
+use std::string::{find}
+
+// --- base64url of a (UTF-8 text) string -------------------------------------
+// base64_encode yields standard base64 (with +/ and = padding); convert to
+// the URL alphabet and strip padding for JWT.
+fn _b64url_text(s: str) -> str {
+    let std_b64 = base64_encode(s)
+    let mut out = ""
+    let mut i = 0
+    let n = len(std_b64)
+    while i < n {
+        let c = std_b64[i]
+        if c == "+" {
+            out = out + "-"
+        } elif c == "/" {
+            out = out + "_"
+        } elif c == "=" {
+            // drop padding
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out
+}
+
+fn _b64url_decode_text(s: str) -> str {
+    // Re-pad and translate back to standard base64, then decode.
+    let mut std_b64 = ""
+    let mut i = 0
+    let n = len(s)
+    while i < n {
+        let c = s[i]
+        if c == "-" {
+            std_b64 = std_b64 + "+"
+        } elif c == "_" {
+            std_b64 = std_b64 + "/"
+        } else {
+            std_b64 = std_b64 + c
+        }
+        i = i + 1
+    }
+    let rem = len(std_b64) % 4
+    if rem == 2 {
+        std_b64 = std_b64 + "=="
+    } elif rem == 3 {
+        std_b64 = std_b64 + "="
+    }
+    return base64_decode(std_b64)
+}
+
+// --- HS256 ------------------------------------------------------------------
+
+// Sign `payload_json` (a JSON object string) with HMAC-SHA256 and `secret`.
+fn sign_hs256(payload_json: str, secret: str) -> str {
+    let header = "\{\"alg\":\"HS256\",\"typ\":\"JWT\"\}"
+    let signing_input = _b64url_text(header) + "." + _b64url_text(payload_json)
+    let sig_hex = hmac_sha256(secret, signing_input)
+    let sig_b64 = hex_to_base64url(sig_hex)
+    return signing_input + "." + sig_b64
+}
+
+// Verify an HS256 token against `secret`. Returns true only if the
+// recomputed tag matches the token's signature segment.
+fn verify_hs256(token: str, secret: str) -> bool {
+    let dot1 = find(token, ".")
+    if dot1 < 0 {
+        return false
+    }
+    let rest = substr(token, dot1 + 1, len(token))
+    let dot2 = find(rest, ".")
+    if dot2 < 0 {
+        return false
+    }
+    let sig_start = dot1 + 1 + dot2 + 1
+    let signing_input = substr(token, 0, sig_start - 1)
+    let provided_sig = substr(token, sig_start, len(token))
+    let expected_hex = hmac_sha256(secret, signing_input)
+    let expected_sig = hex_to_base64url(expected_hex)
+    return provided_sig == expected_sig
+}
+
+// --- EdDSA (Ed25519) --------------------------------------------------------
+
+// Sign `payload_json` with an Ed25519 PKCS#8 keypair (hex, from
+// ed25519_generate()).
+fn sign_eddsa(payload_json: str, pkcs8_hex: str) -> str {
+    let header = "\{\"alg\":\"EdDSA\",\"typ\":\"JWT\"\}"
+    let signing_input = _b64url_text(header) + "." + _b64url_text(payload_json)
+    let sig_hex = ed25519_sign(pkcs8_hex, signing_input)
+    let sig_b64 = hex_to_base64url(sig_hex)
+    return signing_input + "." + sig_b64
+}
+
+// Verify an EdDSA token against a hex-encoded Ed25519 public key.
+fn verify_eddsa(token: str, pub_hex: str) -> bool {
+    let dot1 = find(token, ".")
+    if dot1 < 0 {
+        return false
+    }
+    let rest = substr(token, dot1 + 1, len(token))
+    let dot2 = find(rest, ".")
+    if dot2 < 0 {
+        return false
+    }
+    let sig_start = dot1 + 1 + dot2 + 1
+    let signing_input = substr(token, 0, sig_start - 1)
+    let provided_sig = substr(token, sig_start, len(token))
+    let sig_hex = base64url_to_hex(provided_sig)
+    let ok = ed25519_verify(pub_hex, signing_input, sig_hex)
+    return ok == 1
+}
+
+// --- Decoding ---------------------------------------------------------------
+
+// Extract the decoded payload JSON from a token WITHOUT verifying.
+// Always verify separately before trusting the contents.
+fn decode_payload(token: str) -> str {
+    let dot1 = find(token, ".")
+    if dot1 < 0 {
+        return ""
+    }
+    let rest = substr(token, dot1 + 1, len(token))
+    let dot2 = find(rest, ".")
+    if dot2 < 0 {
+        return ""
+    }
+    let payload_b64 = substr(rest, 0, dot2)
+    return _b64url_decode_text(payload_b64)
+}
