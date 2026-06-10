@@ -5881,6 +5881,20 @@ impl LlvmCodegen {
         };
 
         self.emit_line(&line);
+        // Comparisons produce i1, not the operand type. Track it so later
+        // reads of the value (stored bool locals used with `not`/`or`)
+        // coerce correctly instead of emitting `icmp ne i64` on an i1.
+        if matches!(
+            op,
+            MirBinOp::Eq
+                | MirBinOp::Neq
+                | MirBinOp::Lt
+                | MirBinOp::Gt
+                | MirBinOp::LtEq
+                | MirBinOp::GtEq
+        ) {
+            self.track_type(target, "i1");
+        }
         Ok(())
     }
 
@@ -6662,6 +6676,19 @@ impl LlvmCodegen {
     /// Coerce a value from one LLVM type to another, emitting the necessary
     /// conversion instruction. Returns the (possibly new) value name.
     fn coerce_value(&mut self, value: &str, from_type: &str, to_type: &str) -> String {
+        // The caller's from_type comes from MIR, which carries booleans as
+        // i64; the SSA value may really be an i1 (a stored comparison read
+        // back from a bool local). Trust the tracked type across the
+        // i1/i64 divide, or `not b` / `b or c` on a bool VARIABLE emits
+        // `icmp ne i64 %v, 0` on an i1 and clang rejects the module.
+        let mut from_type = from_type;
+        if from_type == "i64" {
+            if let Some(real) = self.actual_type(value) {
+                if real == "i1" {
+                    from_type = "i1";
+                }
+            }
+        }
         if from_type == to_type {
             return value.to_string();
         }

@@ -12,6 +12,8 @@
 //   std.http.http_serve(8080, router)
 // ============================================================
 
+use std::net::{connect_tls, TlsStream}
+
 // --- URL parsing -------------------------------------------------------------
 
 struct Url {
@@ -284,7 +286,7 @@ fn parse_response(raw: str) -> Response {
         let second_space = _find(after_version, " ")
         if second_space >= 0 {
             let status_str = _substring(after_version, 0, second_space)
-            status = int(status_str)
+            status = parse_int(status_str)
             status_text = _substring(after_version, second_space + 1, len(after_version))
         } else {
             status = int(after_version)
@@ -310,7 +312,18 @@ fn http_send(req: Request) -> Response {
     let u = req.url
     let raw_request = serialize_request(req)
 
-    // Connect, send, receive via std.net builtins
+    if u.scheme == "https" {
+        // TLS path: std::net's TlsStream (rustls under the hood). Before
+        // this branch existed, https URLs were sent as PLAINTEXT to port
+        // 443 and hung or failed against every real server.
+        let stream = connect_tls(u.host, (u.port as i32))
+        stream.write_all(raw_request)
+        let response_data = stream.read_all()
+        stream.close()
+        return parse_response(response_data)
+    }
+
+    // Plain-HTTP path via the TCP builtins.
     let conn = tcp_connect(u.host, u.port)
     tcp_send(conn, raw_request)
 

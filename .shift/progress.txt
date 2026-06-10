@@ -5332,3 +5332,25 @@ SHIFTS:
   repo flips public.
   Session totals (steps 219-233): parity suite 35->42 tests; 2 releases cut (4.44.0,
   4.45.0); docs gate 54/54; every step bootstrap-verified at 989ba174.
+
+  ---
+  step:    234 (session 11 -- 2026-06-10 "FIX: std::http speaks https + LLVM stored-bool miscompile")
+  date:    2026-06-10
+  (a) std::http TLS branch: http_send now routes https URLs through std::net's TlsStream
+      (write_all/read_all/close). Before, https went as PLAINTEXT to port 443 -- the
+      pure-Kryos client could never reach a real TLS server (std::llm had to use the native
+      transport; now both paths work). PLUS pre-existing bug found by the live test:
+      parse_response used int(status_str) -- the `int` builtin is a bitcast, so resp.status
+      was the STRING HANDLE on every path since forever; fixed to parse_int.
+      VERIFIED LIVE: https://example.com via std::http::get -> status 200, real body, BOTH
+      backends. (Live test kept out of the suite -- network-dependent.)
+  (b) LLVM emitter bug (pre-existing, surfaced by the live test program): a comparison
+      result STORED in a bool variable then used with not/or/and emitted `icmp ne i64` on
+      an i1 -> clang rejected the module. Two-part fix: emit_binop_to now track_type's
+      comparison results as i1; coerce_value trusts the tracked type across the i1/i64
+      divide. Regression test tests/smoke/test_bool_var_logic.kry (not/or/and on stored
+      bools + bool-var while condition).
+  NOTE: kryos.exe got Defender-locked mid-testing ("Permission denied" on a fresh binary);
+  relink (touch + rebuild) clears it -- the parity FAIL_RUN it caused was environmental.
+  GATES: parity 43/43; examples-gate PASS; docs-examples 54/54; bootstrap 989ba174;
+  native_runner 2/2; workspace 912/0.

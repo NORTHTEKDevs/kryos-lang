@@ -1,0 +1,32 @@
+// Regression (step 234): a comparison result STORED in a bool variable and
+// then used with `not` / `or` / `and` emitted `icmp ne i64` on an i1 on the
+// LLVM backend (clang rejected the module). The emitter now tracks
+// comparison results as i1. Self-checking.
+
+fn check(cond: bool, what: str) {
+    if not cond {
+        println("FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    let x = 5
+    let b = x > 3
+    let c = x < 3
+
+    check(b, "stored comparison true")
+    check(not c, "not on stored bool")
+    check(b or c, "or on stored bools")
+    check(not (b and c), "and on stored bools")
+
+    let mut flips = 0
+    let mut state = false
+    while not state {
+        flips = flips + 1
+        state = flips >= 3
+    }
+    check(flips == 3, "bool var loop condition (flips = {flips})")
+
+    println("bool variable logic: PASS")
+}
