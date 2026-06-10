@@ -2248,6 +2248,78 @@ struct FuncTranslator<'a> {
     user_func_names: &'a HashSet<String>,
 }
 
+/// Deep-copy an `@copy` struct value `val` into a freshly calloc'd block,
+/// cloning heap-backed fields (arrays/strings/maps) so the copy owns its own
+/// data and retaining ref-counted fields. Returns the new pointer. Caller
+/// must have verified `sname` is in `struct_defs`.
+fn emit_struct_deep_copy<M: Module>(
+    sname: &str,
+    val: cranelift_codegen::ir::Value,
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    let struct_def = translator
+        .struct_defs
+        .get(sname)
+        .cloned()
+        .expect("emit_struct_deep_copy: caller verified struct_defs membership");
+    let layout = compute_struct_layout(&struct_def)?;
+    let one_val = builder.ins().iconst(types::I64, 1);
+    let size_val = builder.ins().iconst(types::I64, layout.total_size as i64);
+    let calloc_ref = ensure_func_ref_with_args("calloc", builder, translator, module, 2)?;
+    let alloc_call = builder.ins().call(calloc_ref, &[one_val, size_val]);
+    let new_ptr = builder.inst_results(alloc_call)[0];
+
+    for (field_name, offset, cl_ty) in &layout.field_offsets {
+        let field_val = builder
+            .ins()
+            .load(*cl_ty, MemFlags::new(), val, *offset as i32);
+        let field_mir_ty = struct_def
+            .iter()
+            .find(|(n, _)| n == field_name)
+            .map(|(_, t)| t);
+        let stored_val = match field_mir_ty {
+            Some(MirType::Array(_, _)) => {
+                let clone_ref =
+                    ensure_func_ref_with_args("kryos_array_clone", builder, translator, module, 1)?;
+                let call = builder.ins().call(clone_ref, &[field_val]);
+                builder.inst_results(call)[0]
+            }
+            Some(MirType::Str) => {
+                let clone_ref = ensure_func_ref_with_args(
+                    "kryos_string_clone",
+                    builder,
+                    translator,
+                    module,
+                    1,
+                )?;
+                let call = builder.ins().call(clone_ref, &[field_val]);
+                builder.inst_results(call)[0]
+            }
+            Some(MirType::Map { .. }) => {
+                let clone_ref =
+                    ensure_func_ref_with_args("kryos_map_clone", builder, translator, module, 1)?;
+                let call = builder.ins().call(clone_ref, &[field_val]);
+                builder.inst_results(call)[0]
+            }
+            // H21: share nested @copy struct fields.
+            Some(MirType::Struct(_)) => field_val,
+            Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
+                let retain_ref =
+                    ensure_func_ref_with_args("kryos_arc_retain", builder, translator, module, 1)?;
+                builder.ins().call(retain_ref, &[field_val]);
+                field_val
+            }
+            _ => field_val,
+        };
+        builder
+            .ins()
+            .store(MemFlags::new(), stored_val, new_ptr, *offset as i32);
+    }
+    Ok(new_ptr)
+}
+
 /// Translate a MIR function body into Cranelift IR instructions.
 pub fn translate_function<M: Module>(
     mir_func: &MirFunction,
@@ -2326,6 +2398,38 @@ pub fn translate_function<M: Module>(
             let f = ensure_func_ref_with_args(fname, builder, &mut translator, module, 1)?;
             let c = builder.ins().call(f, &[val]);
             builder.inst_results(c)[0]
+        } else if let MirType::Struct(sname) = &param.ty {
+            // All-scalar @copy struct params: the JIT passes the caller's
+            // heap pointer, so a field mutation inside the callee would alias
+            // the caller's value (pass-by-reference) — while the LLVM AOT
+            // backend passes byval (a copy). Copy at entry so both backends
+            // agree on pass-by-value semantics (gotcha #23).
+            //
+            // Restricted to structs with no heap-backed fields: heap-bearing
+            // @copy structs keep the share-on-clone model (and the self-host
+            // parser threads `Parser { tokens: [Token], .. }` through every
+            // p_* call — copying it at entry clones the token array millions
+            // of times and OOMs stage-1). Non-@copy structs (e.g. the
+            // self-host LowerCtx) intentionally keep aliasing.
+            let all_scalar = translator.struct_defs.get(sname).is_some_and(|def| {
+                def.iter().all(|(_, t)| {
+                    !matches!(
+                        t,
+                        MirType::Array(_, _)
+                            | MirType::Str
+                            | MirType::Map { .. }
+                            | MirType::Struct(_)
+                            | MirType::Enum(_)
+                            | MirType::Function { .. }
+                            | MirType::Shared(_)
+                    )
+                })
+            });
+            if all_scalar && translator.copy_structs.contains(sname) {
+                emit_struct_deep_copy(sname, val, builder, &mut translator, module)?
+            } else {
+                val
+            }
         } else {
             val
         };
@@ -3047,94 +3151,12 @@ fn translate_rvalue<M: Module>(
                         _ => None,
                     });
                 if let Some(ref sname) = struct_name {
-                    if translator.copy_structs.contains(sname) {
-                        if let Some(struct_def) = translator.struct_defs.get(sname).cloned() {
-                            let layout = compute_struct_layout(&struct_def)?;
-                            let one_val = builder.ins().iconst(types::I64, 1);
-                            let size_val =
-                                builder.ins().iconst(types::I64, layout.total_size as i64);
-                            let calloc_ref = ensure_func_ref_with_args(
-                                "calloc", builder, translator, module, 2,
-                            )?;
-                            let alloc_call = builder.ins().call(calloc_ref, &[one_val, size_val]);
-                            let new_ptr = builder.inst_results(alloc_call)[0];
-
-                            // Deep-copy each field: clone heap-allocated fields
-                            // (arrays, strings) so each copy owns its own data.
-                            for (field_name, offset, cl_ty) in &layout.field_offsets {
-                                let field_val = builder.ins().load(
-                                    *cl_ty,
-                                    MemFlags::new(),
-                                    val,
-                                    *offset as i32,
-                                );
-                                // Look up the MIR type for this field.
-                                let field_mir_ty = struct_def
-                                    .iter()
-                                    .find(|(n, _)| n == field_name)
-                                    .map(|(_, t)| t);
-                                let stored_val = match field_mir_ty {
-                                    Some(MirType::Array(_, _)) => {
-                                        let clone_ref = ensure_func_ref_with_args(
-                                            "kryos_array_clone",
-                                            builder,
-                                            translator,
-                                            module,
-                                            1,
-                                        )?;
-                                        let call = builder.ins().call(clone_ref, &[field_val]);
-                                        builder.inst_results(call)[0]
-                                    }
-                                    Some(MirType::Str) => {
-                                        let clone_ref = ensure_func_ref_with_args(
-                                            "kryos_string_clone",
-                                            builder,
-                                            translator,
-                                            module,
-                                            1,
-                                        )?;
-                                        let call = builder.ins().call(clone_ref, &[field_val]);
-                                        builder.inst_results(call)[0]
-                                    }
-                                    Some(MirType::Map { .. }) => {
-                                        // Deep-clone maps via kryos_map_clone.
-                                        let clone_ref = ensure_func_ref_with_args(
-                                            "kryos_map_clone",
-                                            builder,
-                                            translator,
-                                            module,
-                                            1,
-                                        )?;
-                                        let call = builder.ins().call(clone_ref, &[field_val]);
-                                        builder.inst_results(call)[0]
-                                    }
-                                    Some(MirType::Struct(_inner_name)) => {
-                                        // H21: share nested @copy struct fields.
-                                        field_val
-                                    }
-                                    Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
-                                        let retain_ref = ensure_func_ref_with_args(
-                                            "kryos_arc_retain",
-                                            builder,
-                                            translator,
-                                            module,
-                                            1,
-                                        )?;
-                                        builder.ins().call(retain_ref, &[field_val]);
-                                        field_val
-                                    }
-                                    _ => field_val,
-                                };
-                                builder.ins().store(
-                                    MemFlags::new(),
-                                    stored_val,
-                                    new_ptr,
-                                    *offset as i32,
-                                );
-                            }
-
-                            return Ok(Some(new_ptr));
-                        }
+                    if translator.copy_structs.contains(sname)
+                        && translator.struct_defs.contains_key(sname)
+                    {
+                        let new_ptr =
+                            emit_struct_deep_copy(sname, val, builder, translator, module)?;
+                        return Ok(Some(new_ptr));
                     }
                 }
             }

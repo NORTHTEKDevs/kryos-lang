@@ -4967,3 +4967,41 @@ SHIFTS:
   VERSION DRIFT: README badge + "From source" still said 4.43.0-rc.4 -> 4.43.0 (we released it).
   Docs-only; kryos still runs. next: gotcha-23 Copy-param JIT fix (code, ~25 lines, verified
   zero self-host impact) + perf O2->O3 (gated on bootstrap).
+
+  ---
+  step:    219 (session 11 -- 2026-06-09/10 "FIX gotcha-23: all-scalar @copy params copy at entry on JIT (deep-copy direction REVERSED by bootstrap evidence)")
+  date:    2026-06-10
+  Resumed with an UNCOMMITTED diff from the crashed prior window: emit_struct_deep_copy
+  extracted from the @copy assignment arm + deep copy of ALL @copy struct params at JIT
+  function entry. Red-green held (pre-fix JIT aliases: p.x=99; post-fix value semantics)
+  BUT the bootstrap gate KILLED the broad version: stage-1 crashed compiling self-host
+  ("index -1 but length is 0" in p_peek) -- the self-host parser is FUNCTIONAL and threads
+  @copy Parser{tokens:[Token],..} through every p_* call; deep copy at entry clones the
+  token array per call under leak-on-free => allocator exhaustion. The prior window's
+  "verified zero self-host impact" claim was WRONG (never ran bootstrap). First failure
+  also masqueraded as env (ran concurrent w/ workspace debug build, os error 1455
+  paging-file); SERIAL re-run proved it real. LESSON x2: (1) a subagent/prior-session
+  "verified" claim is not evidence -- the bootstrap gate is; (2) never run bootstrap
+  concurrent with cargo debug builds -- false environmental failures.
+  LANDED (scoped): entry copy ONLY for @copy structs whose fields are all scalar
+  (no Array/Str/Map/Struct/Enum/Function/Shared) -- exactly the observable gotcha-23 case
+  (plain-data structs seeing different VALUES per backend). Heap-bearing @copy params keep
+  JIT aliasing (share-on-clone model; self-host depends on it). Self-host structs affected:
+  LineCol/BranchPatch/LiveInterval/LookupResult only (cold paths).
+  DISCOVERED + DOCUMENTED (not fixed): @copy ASSIGNMENT heap-field semantics already
+  diverge -- JIT deep-clones (kryos_*_clone, "each copy owns its data") vs AOT shallow
+  byval handle-sharing (proven: push on copy's array field => caller len 1 on JIT, 2 on
+  AOT). Unification = teach one backend the other's ownership model + re-prove bootstrap;
+  tracked in gotcha #23 rewrite (CLAUDE.md) + WHY_KRYOS "deep-copy" claim qualified.
+  files:   compiler/crates/kryos-codegen-cranelift/src/codegen.rs (helper extraction +
+           scoped entry copy), tests/smoke/test_copy_param_value_semantics.kry (NEW,
+           self-checking -- parity runner only compares exit codes),
+           CLAUDE.md (gotcha #23 rewrite), docs/WHY_KRYOS.md (honesty)
+  gates:   parity 35/35 both backends; bootstrap PASS 989ba174 byte-identical (stage2==3==4);
+           test_examples 9/9; examples 23/23 AOT-compile; JIT spot-run 9/9;
+           workspace run_tests.sh 910 passed / 0 failed (64 suites; cranelift crate has 0
+           unit tests -- covered by parity+bootstrap); native_runner 2/2 on serial re-run
+           (first run's failure was os error 1455 from concurrent load, not code).
+  next:    perf O2->O3 (gated on bootstrap) + WASI scoping (investigation results in hand);
+           maturity tickets: JIT uncaught-throw exits 0 silently (step 217),
+           @copy deep-vs-shallow assignment unification (this step).

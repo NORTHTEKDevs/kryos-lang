@@ -1,0 +1,85 @@
+// Regression test for gotcha #23: all-scalar @copy struct params must have
+// pass-by-value semantics on BOTH backends.
+//
+// Before the fix, the Cranelift JIT passed the caller's heap pointer, so a
+// field mutation inside the callee wrote through to the CALLER's struct
+// (pass-by-reference aliasing), while the LLVM AOT backend passed a byval
+// copy. A caller reading its all-scalar @copy struct after the call saw
+// different VALUES per backend. The fix copies all-scalar @copy struct
+// params at function entry on the JIT.
+//
+// Scope: the entry copy applies ONLY to @copy structs with no heap-backed
+// fields. Heap-bearing @copy structs (str/array/map/struct fields) keep the
+// share-on-clone model on the JIT — the self-host parser threads
+// `Parser { tokens: [Token], .. }` through every call and an entry copy
+// there clones the token array per call (OOMs stage-1). That residual
+// param divergence stays documented under gotcha #23; the portable pattern
+// is `let mut local = o` before mutating.
+//
+// NOTE: the parity runner only checks exit codes, so this test self-checks
+// and exits nonzero on aliasing. Don't rely on uncaught throw (the JIT
+// swallows it -- see the maturity ticket from step 217).
+
+@copy
+struct Point {
+    x: i64,
+    y: i64,
+}
+
+@copy
+struct Mixed {
+    a: i64,
+    b: f64,
+    c: bool,
+    d: u8,
+}
+
+fn mutate_point(p: Point) {
+    p.x = 99
+    p.y = 99
+}
+
+fn mutate_mixed(m: Mixed) {
+    m.a = 7
+    m.b = 7.5
+    m.c = true
+    m.d = 7
+}
+
+fn sum_after_mutate(p: Point) -> i64 {
+    p.x = p.x + 100
+    return p.x + p.y
+}
+
+fn main() {
+    let p = Point { x: 1, y: 2 }
+    mutate_point(p)
+    if p.x != 1 or p.y != 2 {
+        println("FAIL: @copy scalar fields aliased caller (p = {p.x},{p.y})")
+        exit(1)
+    }
+
+    // The callee still sees and uses its own mutated copy.
+    let s = sum_after_mutate(p)
+    if s != 103 {
+        println("FAIL: callee copy wrong (sum = {s})")
+        exit(1)
+    }
+    if p.x != 1 {
+        println("FAIL: callee mutation leaked to caller (p.x = {p.x})")
+        exit(1)
+    }
+
+    let m = Mixed { a: 1, b: 1.5, c: false, d: 200 }
+    mutate_mixed(m)
+    if m.a != 1 {
+        println("FAIL: mixed i64 field aliased caller (m.a = {m.a})")
+        exit(1)
+    }
+    if m.c {
+        println("FAIL: mixed bool field aliased caller")
+        exit(1)
+    }
+
+    println("copy param value semantics ok")
+}
