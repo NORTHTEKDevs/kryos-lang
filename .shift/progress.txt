@@ -5354,3 +5354,26 @@ SHIFTS:
   relink (touch + rebuild) clears it -- the parity FAIL_RUN it caused was environmental.
   GATES: parity 43/43; examples-gate PASS; docs-examples 54/54; bootstrap 989ba174;
   native_runner 2/2; workspace 912/0.
+
+  ---
+  step:    235 (session 11 -- 2026-06-10 "FIX: kryos new templates -- 2 of 4 shipped broken; agent template is now an LLM agent")
+  date:    2026-06-10
+  Compile-tested all four `kryos new` templates for the first time: cli OK, lib OK,
+  http BROKEN (use std::net::{send,...} -- `send` is a reserved keyword; the TCP fns are
+  builtins anyway), agent BROKEN (use std::chan -- `chan` reserved keyword; same class as
+  the docs bugs). FIXED: http template now uses the tcp_* builtins directly with a
+  Connection: close response; AGENT TEMPLATE UPGRADED from a channel-doubling demo to a
+  real budget-enforced std::llm agent -- ANTHROPIC_API_KEY -> Claude, {NAME}_BASE_URL ->
+  any OpenAI-compatible local server (Ollama/vLLM), offline-safe (prints setup + exits 0
+  when unconfigured), hard token/call ceilings via std::cost, usage report to stderr.
+  Both also fixed for capability checking (env_get/exit need `process` -- the checker
+  caught it, working as designed).
+  VERIFY: all 4 templates `kryos check` clean from fresh generation; agent runs offline
+  (rc 0, instructions); cli runs ("hello, world!"). "Agent in 60 seconds" is now real:
+  kryos new mybot --template agent && set key && kryos run src/main.kry "question".
+  NOTE: live Anthropic call untested (no key in env); the std::llm mock e2e covers the
+  wire format. Defender locked kryos.exe twice this session mid-test -- relink clears it.
+  QUEUE (documented, not built -- design-gated or deeper surgery): @budget compiler
+  attribute semantics (Kristian input wanted), generic Probable<T>/Tracked<T>, async
+  executor, E0111 on fn-call arg literals, cross-module method-dependency import quirk
+  (Budget.charge->cost_add), wedge benchmarks A-E, registry/playground/site hosting.

@@ -103,11 +103,85 @@ fn render_main(name: &str, template: &str) -> Result<String, String> {
 
 const CLI_MAIN: &str = "// {{NAME}} — Kryos CLI scaffold.\n\nfn main() {\n    let argv = args()\n    if len(argv) < 2 {\n        println(\"usage: {{NAME}} <name>\")\n        return\n    }\n    let who: str = argv[1]\n    println(\"hello, \" + who + \"!\")\n}\n";
 
-const HTTP_MAIN: &str = "// {{NAME}} — Kryos HTTP service scaffold.\n//\n// Listens on 127.0.0.1:8080 and responds 200 to every GET /.\n// Replace the route handler with your own logic.\n\nuse std::net::{tcp_listen, accept, send, recv_str, close}\n\n@capabilities(net, io)\nfn main() {\n    let listener = tcp_listen(\"127.0.0.1\", 8080)\n    println(\"{{NAME}}: listening on http://127.0.0.1:8080\")\n    loop {\n        let conn = accept(listener)\n        if conn < 0 { continue }\n        let _req = recv_str(conn, 4096)\n        let body = \"hello from {{NAME}}\\n\"\n        let resp = \"HTTP/1.1 200 OK\\r\\nContent-Length: \" + to_string(len(body)) + \"\\r\\n\\r\\n\" + body\n        send(conn, resp)\n        close(conn)\n    }\n}\n";
+const HTTP_MAIN: &str = "// {{NAME}} — Kryos HTTP service scaffold.
+//
+// Listens on 127.0.0.1:8080 and responds 200 to every request.
+// Replace the handler with your own logic. The TCP functions used
+// here (tcp_listen / tcp_accept / tcp_recv / tcp_send / tcp_close)
+// are always-available builtins.
+
+@capabilities(net, io, process)
+fn main() {
+    let listener = tcp_listen(\"127.0.0.1\", 8080)
+    if listener < 0 {
+        eprintln(\"{{NAME}}: could not bind 127.0.0.1:8080\")
+        exit(1)
+    }
+    println(\"{{NAME}}: listening on http://127.0.0.1:8080\")
+    loop {
+        let conn = tcp_accept(listener)
+        if conn < 0 { continue }
+        let _req = tcp_recv(conn, 8192)
+        let body = \"hello from {{NAME}}\n\"
+        let resp = \"HTTP/1.1 200 OK\r\nContent-Length: \" + to_string(len(body)) + \"\r\nConnection: close\r\n\r\n\" + body
+        tcp_send(conn, resp)
+        tcp_close(conn)
+    }
+}
+";
 
 const LIB_MAIN: &str = "// {{NAME}} — Kryos library scaffold.\n//\n// Library crates expose public functions for consumers. Top-level\n// `main()` is optional but useful for ad-hoc testing.\n\npub fn greet(who: str) -> str {\n    return \"hello, \" + who\n}\n\nfn main() {\n    println(greet(\"world\"))\n}\n";
 
-const AGENT_MAIN: &str = "// {{NAME}} — Kryos actor / agent scaffold.\n//\n// Demonstrates an actor that receives messages and replies with a\n// computed answer. The runtime spawns the actor; the main thread\n// sends N requests and reads responses.\n\nuse std::chan::{chan_new, chan_send, chan_recv}\n\nfn main() {\n    let ch = chan_new()\n    spawn(fn () {\n        let n = chan_recv(ch)\n        chan_send(ch, n * 2)\n    })\n    chan_send(ch, 21)\n    let answer = chan_recv(ch)\n    println(\"doubled: \" + to_string(answer))\n}\n";
+const AGENT_MAIN: &str = "// {{NAME}} — Kryos LLM agent scaffold.
+//
+// A budget-enforced agent on std::llm. Works against Anthropic when
+// ANTHROPIC_API_KEY is set, or any OpenAI-compatible local server
+// (Ollama, vLLM, LM Studio) when {{NAME}}_BASE_URL is set, e.g.:
+//
+//   set ANTHROPIC_API_KEY=sk-ant-...        # Claude
+//   set {{NAME}}_BASE_URL=http://127.0.0.1:11434/v1   # local Ollama
+//
+// Run: kryos run src/main.kry \"What is the capital of Alaska?\"
+
+use std::llm::{anthropic_config, openai_config, with_base_url, with_max_tokens, user, system, chat_within}
+use std::cost::{Budget, ComputeCost, cost_add}
+
+@capabilities(net, io, process)
+fn main() {
+    let argv = args()
+    let mut prompt = \"Introduce yourself in one sentence.\"
+    if len(argv) > 1 {
+        prompt = argv[1]
+    }
+
+    let anthropic_key = env_get(\"ANTHROPIC_API_KEY\")
+    let local_base = env_get(\"{{NAME}}_BASE_URL\")
+
+    if anthropic_key == \"\" and local_base == \"\" {
+        println(\"{{NAME}}: no provider configured (offline mode).\")
+        println(\"  set ANTHROPIC_API_KEY for Claude, or\")
+        println(\"  set {{NAME}}_BASE_URL for a local OpenAI-compatible server\")
+        return
+    }
+
+    let mut cfg = anthropic_config(anthropic_key, \"claude-sonnet-4-6\")
+    if anthropic_key == \"\" {
+        cfg = with_base_url(openai_config(\"\", \"llama3\"), local_base)
+    }
+    cfg = with_max_tokens(cfg, 512)
+
+    // Hard ceilings: the agent refuses to call once the budget is spent.
+    let budget = Budget { max_usd: 1.0, max_tokens: 100000, max_api_calls: 20, spent_usd: 0.0, spent_tokens: 0, spent_api_calls: 0 }
+
+    let out = chat_within(cfg, [
+        system(\"You are {{NAME}}, a concise assistant.\"),
+        user(prompt)
+    ], budget)
+
+    println(out.response.text)
+    eprintln(\"[{{NAME}}] {out.response.input_tokens} tokens in / {out.response.output_tokens} out; budget: {out.budget.spent_tokens}/{out.budget.max_tokens} tokens, {out.budget.spent_api_calls}/{out.budget.max_api_calls} calls\")
+}
+";
 
 const SMOKE_TEST: &str = "// Smoke test — exercised by `kryos test`.\n\n@test\nfn smoke_runs() {\n    let n: i64 = 2 + 2\n    assert(n == 4)\n}\n";
 
