@@ -37,7 +37,7 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -130,7 +130,7 @@ jobs:
           subject-path: ${{ matrix.artifact }}.*
 
       - name: Upload artifact + checksum
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: |
@@ -142,9 +142,9 @@ jobs:
     # to the marketplace. The artifact gets attached to the release.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "20"
 
@@ -156,7 +156,7 @@ jobs:
           npx --yes @vscode/vsce package -o kryos-vscode.vsix
 
       - name: Upload .vsix
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kryos-vscode-vsix
           path: editors/vscode/kryos-vscode.vsix
@@ -166,7 +166,7 @@ jobs:
     # Artifact attached to the release alongside the .vsix.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -181,7 +181,7 @@ jobs:
         run: cargo build --release --target wasm32-wasip1
 
       - name: Upload .wasm
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kryos-zed-extension
           path: editors/zed/target/wasm32-wasip1/release/*.wasm
@@ -190,9 +190,9 @@ jobs:
     needs: [build-release, package-vscode, package-zed]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
 
