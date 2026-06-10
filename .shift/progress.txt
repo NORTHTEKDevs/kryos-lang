@@ -4923,3 +4923,26 @@ SHIFTS:
   direct LinkerConfig test constructors with the new field.
   next: push, watch CI macos job (core sweep must stay green; advisory Darwin-port sweep should
   flip 12/12). Then std::smtp.
+
+  ---
+  step:    217 (session 11 -- 2026-06-09 "FEATURE: std::smtp (SMTPS email send) + TlsStream.read_chunk")
+  date:    2026-06-09
+  Closing the SMTP half of limitation #2. net.kry: added TlsStream.read_chunk(max) -- a
+  single non-looping read for request/response line protocols (read_all loops to EOF, wrong
+  for SMTP's open-connection dialogue). NEW stdlib/smtp.kry (pure Kryos on std::net):
+  send_mail(host,port,user,password,from,to,subject,body) over implicit TLS (SMTPS/465) with
+  AUTH LOGIN + base64 creds + DATA terminator; _reply_code parses the final-line status of
+  single AND multiline (NNN-/NNN ) replies.
+  VERIFY: smtp_parse.kry (reply-code parser vs real reply shapes: 220/250-multiline/235/535/354/
+  empty) -> 220 250 235 535 354 -1 IDENTICAL both backends; full module compiles+links+runs both
+  backends; net.kry consumers (web_server/rest_api/http_client/tcp_echo) still check; bootstrap
+  989ba174 byte-identical (net/smtp not in self-host). NOT verified: live delivery (needs a real
+  account) -- honest limitation.
+  DISCOVERED (pre-existing, NOT from this work -- logged as a maturity ticket): an uncaught
+  `throw` on the Cranelift JIT exits 0 SILENTLY (no message, no nonzero rc); connect_tls to a
+  dead port throws on JIT (silent exit 0) but on AOT returns a usable fd (port-9 TCP accept +
+  permissive TLS fd). Backend-divergent net error handling + JIT throw-swallow. Affects all net
+  code, not SMTP. Ticket: "JIT uncaught-throw should abort nonzero w/ message; unify connect_tls
+  failure semantics across backends."
+  next: gotcha-23 Copy-param fix + perf flags + WASI scoping (investigation results in hand);
+  watch CI for the real macOS Darwin-port ld error.

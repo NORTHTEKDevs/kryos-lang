@@ -242,6 +242,22 @@ impl TlsStream {
         return result
     }
 
+    // Read up to `max_bytes` once and return what arrived (does NOT loop to
+    // EOF). Needed for request/response line protocols (SMTP, IMAP, POP3)
+    // where the peer keeps the connection open between exchanges.
+    @capabilities(net)
+    fn read_chunk(self: TlsStream, max_bytes: i64) -> str {
+        if self.closed {
+            throw "net error: read_chunk on closed TLS stream"
+        }
+        let buf = alloc(max_bytes)
+        let n = kryos_tls_recv(self.fd, buf, max_bytes)
+        if n <= 0 {
+            return ""
+        }
+        return buf_to_str(buf, n)
+    }
+
     @capabilities(net)
     fn close(self: TlsStream) -> TlsStream {
         if not self.closed {
