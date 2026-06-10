@@ -100,21 +100,26 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# Step 4: WASM smoke — `kryos build --backend wasm` then wasmtime
+# Step 4: WASM smoke — `kryos build --backend wasm` then the Node env host.
+# Kryos wasm modules import their runtime from the `env` host module (the
+# JS-host contract; see tools/wasm-host/run.mjs) — they are not WASI
+# modules, so wasmtime cannot instantiate them. WASI support is future work.
 # -----------------------------------------------------------------------------
-step "Step 4 — WebAssembly (WASI)"
+step "Step 4 — WebAssembly (Node env host)"
 
-if ! command -v wasmtime >/dev/null 2>&1; then
-    skip "WASM via wasmtime" "wasmtime not on PATH (install via 'curl https://wasmtime.dev/install.sh -sSf | bash')"
+if ! command -v node >/dev/null 2>&1; then
+    skip "WASM via Node host" "node not on PATH"
 else
     HELLO_WASM="$(mktemp -u).wasm"
     "$KRYOS_BIN" build examples/wasm_hello.kry --release --backend wasm -o "$HELLO_WASM" \
         > /tmp/kryos_quickstart_wasm.log 2>&1 \
         || fail "kryos build --backend wasm" "$(cat /tmp/kryos_quickstart_wasm.log)"
-    actual=$(wasmtime "$HELLO_WASM" 2>&1) \
-        || fail "wasmtime execute" "$actual"
+    actual=$(node tools/wasm-host/run.mjs "$HELLO_WASM" 2>&1) \
+        || fail "wasm host execute" "$actual"
+    echo "$actual" | grep -q "hello from wasm" \
+        || fail "wasm output" "expected 'hello from wasm', got: $actual"
     rm -f "$HELLO_WASM"
-    ok "kryos build --backend wasm + wasmtime → ran cleanly"
+    ok "kryos build --backend wasm + Node host → 'hello from wasm'"
 fi
 
 # -----------------------------------------------------------------------------

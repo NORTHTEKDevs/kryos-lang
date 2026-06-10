@@ -719,3 +719,31 @@ fn string_literal_with_ascii_still_works() {
     let s = &toks.iter().find(|t| t.kind == TokenKind::String).unwrap().text;
     assert_eq!(s, "hello world");
 }
+
+// ==========================================================================
+// Fuzz regressions — malformed input must never panic
+// ==========================================================================
+
+#[test]
+fn fuzz_regression_lone_quote_at_eof_does_not_panic() {
+    // fuzz_lexer finding: scan_char called advance_utf8 with pos == len.
+    let _ = lex("'");
+    let _ = lex("'\\");
+    let _ = lex("\"");
+    let _ = lex("'a");
+    let _ = lex("\"abc");
+}
+
+#[test]
+fn fuzz_regression_truncated_utf8_at_eof_does_not_panic() {
+    // Truncated multi-byte sequences inside char/string literals at EOF.
+    for src in ["'\u{FFFD}", "'\t", "' ", "''"] {
+        let _ = lex(src);
+    }
+    // Raw byte-level truncations (lexer takes &str, so build via lossy).
+    let bytes: &[&[u8]] = &[b"'\xC2", b"\"\xE0\xA0", b"'\xF0\x90\x80"];
+    for b in bytes {
+        let s = String::from_utf8_lossy(b).into_owned();
+        let _ = lex(&s);
+    }
+}

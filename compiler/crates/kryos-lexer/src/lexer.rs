@@ -76,6 +76,12 @@ impl<'src> Lexer<'src> {
     }
 
     fn advance(&mut self) -> u8 {
+        // EOF-safe: scan_char (and escape handling) can reach here at end of
+        // input on malformed literals like a lone `'` -- return NUL instead
+        // of panicking; callers emit unterminated-literal diagnostics.
+        if self.at_end() {
+            return 0;
+        }
         let ch = self.bytes[self.pos];
         self.pos += 1;
         ch
@@ -86,6 +92,12 @@ impl<'src> Lexer<'src> {
     /// byte is consumed and U+FFFD is returned so we never silently re-encode
     /// raw UTF-8 bytes as Latin-1 codepoints (which would double-encode).
     fn advance_utf8(&mut self) -> char {
+        // EOF-safe: a lone `'` at end of input reaches here with pos == len
+        // (fuzz_lexer finding). Return the replacement char; the caller's
+        // at_end() check then emits the unterminated-literal diagnostic.
+        if self.at_end() {
+            return '\u{FFFD}';
+        }
         let b0 = self.bytes[self.pos];
         if b0 < 0x80 {
             self.pos += 1;

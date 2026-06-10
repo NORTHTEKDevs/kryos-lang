@@ -4809,3 +4809,32 @@ SHIFTS:
   RELEASE GATES (all fresh): kryos --version = 4.43.0; **workspace tests 965 passed / 0 failed
   (67 suites)**; examples 23/23 AOT; showcase 21/21 AOT; repro suite 21/21 JIT==AOT;
   test_examples 9/9; **bootstrap PASS 989ba174 byte-identical**.
+
+  ---
+  step:    211 (session 10 -- 2026-06-09 "CI: fix all 5 failing jobs (pre-existing since at least 06-01)")
+  date:    2026-06-09
+  DISCOVERY: repo CI exists (ci/cross/release workflows) and has been RED on every push since
+  at least June 1 -- including the v4.43.0 release push (Release workflow died on macos ->
+  binaries never attached). Linux + Windows core jobs were already GREEN. Also: repo is
+  PRIVATE (memory said public -- stale). Five failing jobs, ALL pre-existing:
+  (1) selfhost-stage1: REAL E0300 in self-host types.kry:1166 -- `TCExprResult { tc: tc2,
+      ty: tc2.fn_sigs[..] }` reads tc2 after the first field moves it (bootstrap never caught
+      it: builds with --skip-ownership). Hoisted the read. All 18 self-host files now check
+      clean + mini-parser ok. Bootstrap fixed point UNCHANGED at 989ba174 (hoisted temp lowers
+      to the same code the field-init already produced).
+  (2) fuzz: lexer panic (fuzz_lexer finding) -- advance/advance_utf8 indexed past EOF on
+      malformed literals (lone `'` at end of input). EOF guards added (NUL / U+FFFD sentinels;
+      all lexer loops verified at_end()-guarded); 2 fuzz-regression tests added (suite 39/39).
+  (3)+(4) wasm-smoke + quickstart-e2e: SAME ROOT -- kryos wasm modules import their runtime
+      from the `env` host module (JS-host contract); the `wasi` option in kryos-codegen-wasm
+      is unimplemented scaffolding (`if wasi { "env" } else { "env" }`), so wasmtime can NEVER
+      instantiate them. Honest fix: new Node host harness tools/wasm-host/run.mjs implementing
+      the full 31-import env surface (ported from examples/wasm_web_runner.html conventions;
+      DOM/canvas/alert no-ops, http/fetch return ""). All 7 WASI-runnable wasm examples build
+      + run locally (7/7); quickstart Step 4 switched to the Node host w/ output assertion
+      (full script PASS locally, 3s). Real WASI (fd_write) support = future feature ticket.
+  (5) build-and-test-macos: `ld: library 'ssl' not found` -- Homebrew OpenSSL is keg-only;
+      added LIBRARY_PATH step to the macos job. (Only CI can verify this one -- macOS not
+      available locally.)
+  LOCAL GATES: workspace tests 967/0; bootstrap 989ba174 HELD; examples 23/23.
+  next:    push, watch the CI run; if green, re-run the Release workflow for binaries.

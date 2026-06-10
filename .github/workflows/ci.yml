@@ -108,9 +108,11 @@ jobs:
 
   wasm-smoke:
     # WebAssembly backend coverage. Builds every `examples/wasm_*.kry`
-    # under `--backend wasm` and executes the result through wasmtime
-    # (WASI). Catches regressions in the WASM emitter that the
-    # native-only smoke battery misses.
+    # under `--backend wasm` and executes the result through the Node env
+    # host (tools/wasm-host/run.mjs) -- Kryos wasm modules import their
+    # runtime from the `env` host module (JS-host contract), they are not
+    # WASI modules; wasmtime cannot instantiate them. Catches regressions
+    # in the WASM emitter that the native-only smoke battery misses.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -121,12 +123,10 @@ jobs:
         with:
           workspaces: "compiler"
 
-      - name: Install native deps + wasmtime
+      - name: Install native deps
         run: |
           sudo apt-get update -q
           sudo apt-get install -y libsqlite3-dev libssl-dev pkg-config
-          curl https://wasmtime.dev/install.sh -sSf | bash
-          echo "$HOME/.wasmtime/bin" >> $GITHUB_PATH
 
       - name: Build (release)
         working-directory: compiler
@@ -160,8 +160,8 @@ jobs:
               continue
             fi
             built=$((built+1))
-            if ! wasmtime "$out" > /tmp/run.log 2>&1; then
-              echo "  FAIL  $name (wasmtime run)"
+            if ! node tools/wasm-host/run.mjs "$out" > /tmp/run.log 2>&1; then
+              echo "  FAIL  $name (node host run)"
               cat /tmp/run.log
               fail=$((fail+1))
               rm -f "$out"
@@ -345,6 +345,14 @@ jobs:
           # also works but Homebrew LLVM matches the Linux job's version.
           brew install llvm
           echo "$(brew --prefix llvm)/bin" >> $GITHUB_PATH
+
+      - name: Add Homebrew OpenSSL to the linker path
+        run: |
+          # The kryos runtime links -lssl/-lcrypto; Homebrew keeps OpenSSL
+          # keg-only, so /usr/bin/cc can't find it without LIBRARY_PATH
+          # (cause of "ld: library 'ssl' not found" on the smoke test).
+          brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
+          echo "LIBRARY_PATH=$(brew --prefix openssl@3)/lib${LIBRARY_PATH:+:$LIBRARY_PATH}" >> $GITHUB_ENV
 
       - name: Build (release)
         working-directory: compiler

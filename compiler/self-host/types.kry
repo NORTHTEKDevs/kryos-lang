@@ -1163,7 +1163,10 @@ fn tc_check_method_call(tc: TypeChecker, e: Expr) -> TCExprResult {
         let qualified = recv_ty.name + "." + e.name
         let fn_idx = tc_find_fn(tc2, qualified)
         if fn_idx >= 0 {
-            return TCExprResult { tc: tc2, ty: tc2.fn_sigs[fn_idx].ret_type }
+            // Hoist the read: `tc: tc2` moves tc2, so reading
+            // tc2.fn_sigs[..] in the same literal is use-after-move (E0300).
+            let method_ret = tc2.fn_sigs[fn_idx].ret_type
+            return TCExprResult { tc: tc2, ty: method_ret }
         }
     }
 
