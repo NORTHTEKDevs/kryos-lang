@@ -5005,3 +5005,23 @@ SHIFTS:
   next:    perf O2->O3 (gated on bootstrap) + WASI scoping (investigation results in hand);
            maturity tickets: JIT uncaught-throw exits 0 silently (step 217),
            @copy deep-vs-shallow assignment unification (this step).
+
+  ---
+  step:    220 (session 11 -- 2026-06-10 "MEASURED: perf O2->O3 = no win, REVERTED (negative result)")
+  date:    2026-06-10
+  The lost investigation's "perf O2->O3" recommendation does NOT survive measurement.
+  Flipped both OptLevel::O2 sites in kryos-cli build.rs to O3, rebuilt, ran the 6-bench
+  suite (fib/mandelbrot/nbody/binary_trees/fannkuch/matmul), best-of-3 each:
+    fib 78->82ms, mandelbrot 60->62ms, nbody 99->96ms, binary_trees 50->49ms,
+    fannkuch 383->384ms, matmul 198->196ms  -- all within noise, fib slightly WORSE.
+  Release builds already run LTO (which captures the cross-fn inlining O3 chases).
+  REVERTED to O2; working tree clean. Do not re-propose O3 without a workload where
+  it measurably wins.
+  CI: run 27254960488 on step-219 commit = ALL 8 JOBS GREEN (selfhost-stage1 validates
+  the changed stage-1 codegen; macOS required tier green).
+  NOTED (maintenance, not done): GitHub deprecation -- actions/checkout@v4 et al run
+  Node 20, forced to Node 24 on 2026-06-16; bump to @v5 across workflows. Also 1 moderate
+  Dependabot alert (#2) on the repo.
+  next:    WASI scoping decision (real fd_write support vs removing the scaffolding flag);
+           maturity tickets: JIT uncaught-throw silent exit (step 217), @copy deep-vs-shallow
+           assignment unification (step 219), gotcha-23 residuals.
