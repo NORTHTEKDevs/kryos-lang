@@ -407,7 +407,9 @@ jobs:
             if out=$(./compiler/target/release/kryos run "$f" 2>&1); then
               echo "  OK    $name"
             else
-              sed -n '1,8p' <<< "$out"
+              # Drop ld 'warning:' noise so the real Undefined-symbols / ld
+              # error survives -- that's the diagnostic the port ticket needs.
+              grep -vE "ld: warning" <<< "$out" | tail -20
               echo "  FAIL  $name"
               fail=$((fail+1))
             fi
