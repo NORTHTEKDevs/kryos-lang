@@ -1,9 +1,16 @@
-# Kryos Example Programs
+# Compiler regression fixtures
 
-Example programs demonstrating Kryos language features. Each can be run with:
+Historic example programs kept as compiler regression inputs — several of
+them captured real codegen bugs (json_nested_bug, enum_two_field_bug,
+string_array_safety, struct_vs_enum_pass). They are exercised by the
+examples gate (`tests/run_examples_gate.sh`): every fixture must JIT-run
+and AOT-compile on each release.
+
+User-facing examples live at the repo root in `examples/`. Run a fixture
+with:
 
 ```
-cargo run --release -- run examples/<name>.kry
+compiler/target/release/kryos run compiler/tests/fixtures/<name>.kry
 ```
 
 ## Examples

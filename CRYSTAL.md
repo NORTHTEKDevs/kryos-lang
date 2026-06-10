@@ -15,7 +15,7 @@
 - docs/WHY_KRYOS.md - Reasoning behind using Kryos.
 - compiler/Cargo.toml - Build configuration for the Kryos compiler.
 - compiler/crates/kryos-types/src/check.rs - Type checking logic.
-- compiler/examples/hello.kry - Example program in Kryos.
+- examples/hello.kry - Example program in Kryos.
 - CONTINUE.md (deleted) - Old file.
 - docs/stdlib/agent.md - Documentation for the agent module.
 - docs/stdlib/chan.md - Documentation for the channel module.

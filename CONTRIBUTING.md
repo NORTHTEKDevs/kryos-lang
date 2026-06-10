@@ -16,7 +16,7 @@ If this is your first time touching the repo, here is the recommended path:
 Areas where help is always welcome, in rough order of accessibility:
 
 - **Cookbook recipes.** New programs under `docs/learn/cookbook/` that show one concrete task end-to-end. Keep them short and runnable.
-- **Example programs.** New `.kry` files in `compiler/examples/` demonstrating real features.
+- **Example programs.** New `.kry` files in `examples/` demonstrating real features.
 - **Stdlib functions.** Add a new function to an existing module under `compiler/stdlib/` with `@test` coverage.
 - **Diagnostics.** Improve error messages in `kryos-errors`, `kryos-parser`, or `kryos-types` — even one clearer message helps every user.
 - **Editor tooling.** The VS Code extension in `editors/vscode/` and the Zed extension scaffold in `editors/zed/` both have room for polish.
@@ -206,7 +206,7 @@ Every feature must be handled in all 10 locations. Missing any one causes a comp
 2. Adding the expected output to `tests/my_feature.expected`
 3. The test harness picks it up automatically
 
-**Example programs** in `compiler/examples/` are run as part of CI. Add a new example if you're demonstrating a major feature.
+**Example programs** in `examples/` are exercised by CI; compiler regression fixtures live in `compiler/tests/fixtures/`. Add a new example if you're demonstrating a major feature.
 
 ---
 

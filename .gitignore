@@ -33,7 +33,9 @@ __pycache__/
 docs/plans/
 
 # Shift-engineer state (per-clone, not shared)
-.shift/
+.shift/*
+!.shift/progress.txt
+!.shift/init.sh
 
 # Parity matrix results (per-run artifacts)
 tests/parity/results/

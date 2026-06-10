@@ -58,7 +58,7 @@ the `good first issue` label and link the relevant task number below.
 
 ## Examples
 
-7. **Add an example program.** `compiler/examples/` showcases concrete
+7. **Add an example program.** `examples/` showcases concrete
    capabilities. Good additions:
    - **Markdown to HTML converter.** ~150 lines. Show string handling.
    - **JSON-to-CSV converter.** ~100 lines. Show JSON + file I/O.

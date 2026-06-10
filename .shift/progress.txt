@@ -5202,3 +5202,25 @@ SHIFTS:
   manual = CI-tested contract (227). Remaining OPEN (Kristian's calls / future): flip repo
   public; stdlib gap list from step 227; real WASI; non-@copy param aliasing (self-host
   rewrite); cross.yml still unexamined.
+
+  ---
+  step:    229 (session 11 -- 2026-06-10 "ORG: fixtures out of examples, stale docs archived, examples gate codified")
+  date:    2026-06-10
+  Directive: "fix the way it's organized + production hardened". Findings + fixes:
+  (a) compiler/examples was a LEGACY fixture set: 8 of its 23 files duplicated root
+      examples/ NAMES with diverged v0.3.x-era content (hello.kry taught different code in
+      two places; release zips ship root, CI gates ran the stale copies). Stale dupes
+      DELETED (root canonical); the 15 real regression fixtures (json_nested_bug,
+      enum_two_field_bug, ...) moved to compiler/tests/fixtures/ with an honest README.
+      No scripts/CI referenced the old path (verified); CONTRIBUTING/STARTER_TASKS/CRYSTAL
+      updated.
+  (b) Root .md clutter archived to docs/archive/: AUDIT-0.3.6, AUDIT-v2.8.0,
+      AUDIT-llvm-parity, STABILITY-v3.0 (superseded by STABILITY-v4.0 which README cites),
+      REALITY-CHECK (2026-05-18 course-correction, long since actioned).
+  (c) .gitignore: .shift/ -> .shift/* with !progress.txt !init.sh -- removes the git add -f
+      footgun that silently ATE two commits this session (steps 220+226 first attempts).
+  (d) NEW tests/run_examples_gate.sh codifies the ad-hoc examples battery: check ALL root
+      examples + AOT+JIT all fixtures + AOT all showcase. First run: 41/41 + 15/15 + 21/21
+      PASS. The "23/23 examples" gate of steps 159-228 is superseded by this script.
+  next:    language correctness (230): narrow-int literal range checks, const truncation,
+           stdlib gap fills (random_f64, bsearch/is_sorted, jaro_winkler, uuid_parse).
