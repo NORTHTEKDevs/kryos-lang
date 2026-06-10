@@ -346,14 +346,6 @@ jobs:
           brew install llvm
           echo "$(brew --prefix llvm)/bin" >> $GITHUB_PATH
 
-      - name: Add Homebrew OpenSSL to the linker path
-        run: |
-          # The kryos runtime links -lssl/-lcrypto; Homebrew keeps OpenSSL
-          # keg-only, so /usr/bin/cc can't find it without LIBRARY_PATH
-          # (cause of "ld: library 'ssl' not found" on the smoke test).
-          brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
-          echo "LIBRARY_PATH=$(brew --prefix openssl@3)/lib${LIBRARY_PATH:+:$LIBRARY_PATH}" >> $GITHUB_ENV
-
       - name: Build (release)
         working-directory: compiler
         run: cargo build --release -j 2
@@ -369,9 +361,8 @@ jobs:
       - name: Smoke sweep — core language (required)
         shell: bash
         # The stdlib-native surface (net/db/crypto/fs/io/os/process/re/term/
-        # async-http) is a tracked Darwin-port ticket; those 12 run in the
-        # advisory step below WITH output so each run carries diagnostics.
-        # Everything else must pass.
+        # async-http) runs in the dedicated required step below; this step
+        # covers everything else. Both must pass.
         run: |
           set -e
           DARWIN_PORT="test_async_http_roundtrip test_crypto test_db test_db2 test_fs test_io test_net test_net2 test_os test_process test_re test_term"
@@ -391,12 +382,11 @@ jobs:
           echo "smoke-sweep (macos core): $((total - fail))/$total pass"
           [ "$fail" -eq 0 ]
 
-      - name: Smoke sweep — stdlib-native (Darwin port, advisory)
+      - name: Smoke sweep — stdlib-native (required)
         shell: bash
-        continue-on-error: true
-        # Known-failing on macOS; kept running WITH output so the Darwin
-        # port ticket has fresh diagnostics every run. Flip this step to
-        # required when the port lands.
+        # The Darwin native-stdlib port landed (the macOS link now passes
+        # -framework Security/CoreFoundation/SystemConfiguration). These
+        # net/db/crypto/fs/io/os/process/re/term tests must pass on macOS.
         run: |
           DARWIN_PORT="test_async_http_roundtrip test_crypto test_db test_db2 test_fs test_io test_net test_net2 test_os test_process test_re test_term"
           fail=0
@@ -414,7 +404,7 @@ jobs:
               fail=$((fail+1))
             fi
           done
-          echo "darwin-port advisory: $((12 - fail))/12 pass"
+          echo "darwin-port (stdlib-native): $((12 - fail))/12 pass"
           exit $fail
 
       - name: Example smoke tests
@@ -437,13 +427,10 @@ jobs:
           printf "Hello, Kryos!\n" > hello_expected.txt
           diff hello_expected.txt hello_output.txt
 
-      - name: Backend parity matrix (advisory until Darwin port lands)
+      - name: Backend parity matrix
         shell: bash
-        # Parity re-runs ALL smoke tests under both backends, including the
-        # 12 stdlib-native tests tracked by the Darwin-port ticket, so it
-        # cannot be green on macOS yet. Report still uploads as artifact.
-        # Flip to required together with the advisory sweep above.
-        continue-on-error: true
+        # Re-runs all smoke tests under both backends; the Darwin port
+        # landed so this is required on macOS too.
         run: bash tests/parity/run_parity.sh
 
       - name: Upload parity report
