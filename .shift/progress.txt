@@ -5185,3 +5185,20 @@ SHIFTS:
   (harness-level, not cargo) -- foreground chunked run was the workaround.
   next:    tag v4.44.0 -> Release workflow (4-platform binaries) -> verify assets ->
            fresh install.ps1 end-to-end on the new release = final adoption proof.
+
+  ---
+  step:    228b (session 11 -- 2026-06-10 "v4.44.0 SHIPPED + end-to-end adoption proof")
+  date:    2026-06-10
+  Release workflow GREEN: 4-platform binaries (linux-x86_64, macos-x86_64, macos-aarch64,
+  windows-x86_64) + sha256s + kryos-vscode.vsix + zed_kryos.wasm ALL attached to v4.44.0.
+  CI on the release commit also green (9 jobs incl. docs-examples).
+  FINAL ACCEPTANCE (the "anyone can use it today" proof, executed for real):
+    fresh install.ps1 -> resolved latest = v4.44.0 -> downloaded via API asset endpoint ->
+    installed -> from a NEUTRAL directory with stdlib env vars STRIPPED:
+    `kryos run app.kry` (uses std::string) -> "hello from a standalone KRYOS install" rc=0.
+  The chain a stranger would walk (install script -> binary -> stdlib -> run) works with
+  zero configuration for the first time.
+  Directive complete: list items 221-226 done, ecosystem adoption layer done (225+228),
+  manual = CI-tested contract (227). Remaining OPEN (Kristian's calls / future): flip repo
+  public; stdlib gap list from step 227; real WASI; non-@copy param aliasing (self-host
+  rewrite); cross.yml still unexamined.
