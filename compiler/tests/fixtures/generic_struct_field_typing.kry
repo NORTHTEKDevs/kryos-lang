@@ -1,0 +1,15 @@
+struct Boxed<T> {
+    value: T,
+    label: str,
+}
+
+fn wrap<T>(v: T, label: str) -> Boxed<T> {
+    return Boxed { value: v, label: label }
+}
+
+fn main() {
+    let a = wrap(42, "int")
+    let b = wrap("hello", "str")
+    let c = wrap(2.5, "float")
+    println("{a.label}={a.value} {b.label}={b.value} {c.label}={c.value}")
+}

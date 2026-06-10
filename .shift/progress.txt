@@ -5437,3 +5437,17 @@ SHIFTS:
       dispatch (Cranelift had it since v1).
   GATES (all fresh): parity 45/45; conformance 5/5; examples-gate PASS; docs 54/54;
   bootstrap 989ba174 byte-identical; workspace 916/0; native 2/2.
+
+  ---
+  step:    239 (session 11 -- 2026-06-11 "SIZED, NOT BUILT: generic Probable/Tracked blocked on generic-struct field typing")
+  date:    2026-06-11
+  Probe (compiler/tests/fixtures/generic_struct_field_typing.kry): user-defined generic
+  structs PARSE, monomorphize, and RUN -- but per-instantiation FIELD TYPES are not plumbed
+  into interpolation/to_string: Boxed<str>.value prints the handle (2933137...), Boxed<f64>
+  prints raw bits. i64 instantiations are correct. Converting Probable<T>/Tracked<T> onto
+  this foundation would ship broken non-i64 behavior, so the prerequisite is the struct
+  analogue of the enum Option___User monomorphization plumbing (typed field maps per
+  instantiation through MIR + both backends). Filed with repro; NOT a quick fix.
+  Remaining queue after this session: generic-struct field typing -> Probable<T>/Tracked<T>;
+  async executor (epic); wedge benchmarks A-E (measurement programs; B now unblocked by
+  std::llm). Session deliverables 237-238 complete and pushed.
