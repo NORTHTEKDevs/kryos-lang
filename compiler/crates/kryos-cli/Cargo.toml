@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 kryos-driver.workspace = true
+kryos-linker.workspace = true
 kryos-errors.workspace = true
 kryos-bindgen.workspace = true
 kryos-doc.workspace = true

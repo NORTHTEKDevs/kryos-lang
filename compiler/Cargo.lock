@@ -1252,6 +1252,7 @@ dependencies = [
  "kryos-errors",
  "kryos-fmt",
  "kryos-lexer",
+ "kryos-linker",
  "kryos-lsp",
  "kryos-package",
  "kryos-parser",

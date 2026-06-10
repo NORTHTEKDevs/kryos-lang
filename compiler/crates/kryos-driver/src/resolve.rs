@@ -26,8 +26,15 @@ use kryos_parser::parse;
 ///
 /// Search order:
 /// 1. `KRYOS_STDLIB_DIR` environment variable (for testing and overrides).
-/// 2. Walk up from `CARGO_MANIFEST_DIR` (compile-time) to find `stdlib/`.
-/// 3. Walk up from `importing_file` to find `stdlib/`.
+/// 2. `<exe_dir>/stdlib` or `<exe_dir>/../stdlib` (distribution layouts).
+/// 3. Walk up from `CARGO_MANIFEST_DIR` (compile-time) to find `stdlib/`.
+/// 4. Walk up from `importing_file` to find `stdlib/`.
+/// Diagnostics helper (`kryos doctor`): where the stdlib would resolve for a
+/// file in the current working directory. Same order as real imports.
+pub fn resolve_stdlib_dir_for_diagnostics() -> Option<PathBuf> {
+    find_stdlib_dir(Path::new("."))
+}
+
 fn find_stdlib_dir(importing_file: &Path) -> Option<PathBuf> {
     // 1. Env var override
     if let Ok(dir) = env::var("KRYOS_STDLIB_DIR") {
@@ -37,7 +44,23 @@ fn find_stdlib_dir(importing_file: &Path) -> Option<PathBuf> {
         }
     }
 
-    // 2. Walk up from CARGO_MANIFEST_DIR (compile-time constant)
+    // 2. Relative to the running executable (distribution layouts).
+    //    Release archives ship `stdlib/` next to the binary (`kryos.exe` at
+    //    the root) or one level up (`bin/kryos.exe`). Without this, a
+    //    downloaded release can only find its own stdlib via the env var --
+    //    the compile-time CARGO_MANIFEST_DIR below points at the build
+    //    machine's checkout, which does not exist on user machines.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            for candidate in [exe_dir.join("stdlib"), exe_dir.join("..").join("stdlib")] {
+                if candidate.is_dir() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+
+    // 3. Walk up from CARGO_MANIFEST_DIR (compile-time constant)
     let manifest_dir = option_env!("CARGO_MANIFEST_DIR");
     if let Some(dir) = manifest_dir {
         let mut ancestor = PathBuf::from(dir);
@@ -52,7 +75,7 @@ fn find_stdlib_dir(importing_file: &Path) -> Option<PathBuf> {
         }
     }
 
-    // 3. Walk up from the importing file
+    // 4. Walk up from the importing file
     if let Some(parent) = importing_file.parent() {
         let mut ancestor = parent.to_path_buf();
         loop {

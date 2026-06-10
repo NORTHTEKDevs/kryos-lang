@@ -56,6 +56,17 @@ if ($env:KRYOS_VERSION) {
 
 $platform = "windows-$arch"
 $download_url = "https://github.com/$REPO/releases/download/$TAG/kryos-$platform.zip"
+# Private repos reject the browser URL for API tokens; resolve the API asset
+# endpoint (releases/assets/<id>) instead.
+if ($AUTH) {
+    try {
+        $relInfo = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/releases/tags/$TAG" -Headers $AUTH -UseBasicParsing
+        $asset = $relInfo.assets | Where-Object { $_.name -eq "kryos-$platform.zip" } | Select-Object -First 1
+        if ($asset) { $download_url = $asset.url }
+    } catch {
+        Write-Host "warn: could not resolve API asset URL; trying browser URL"
+    }
+}
 
 Write-Host "Kryos Language Installer $TAG"
 Write-Host "----------------------------------------"

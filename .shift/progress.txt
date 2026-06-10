@@ -5103,3 +5103,30 @@ SHIFTS:
   the let-mut-local portable pattern).
   next:    adoption layer (step 225): exe-relative stdlib resolution fix, install scripts,
            README quickstart; then manual audit (226+).
+
+  ---
+  step:    225 (session 11 -- 2026-06-10 "ADOPTION: standalone installs actually work -- exe-relative stdlib, doctor upgrades, installer asset-API fix, README truth pass")
+  date:    2026-06-10
+  (a) RESOLVE FIX: find_stdlib_dir now checks <exe_dir>/stdlib + <exe_dir>/../stdlib before
+      the compile-time CARGO_MANIFEST_DIR walk -- a downloaded release zip was UNUSABLE
+      standalone (its own shipped stdlib/ was invisible; repro'd on v4.43.0). PROOF: dist
+      layout in scratch, neutral cwd, env vars stripped -> `kryos run` AND
+      `kryos build --release --backend llvm` both work, zero configuration.
+  (b) DOCTOR: now reports the stdlib (std::*) source dir (the thing that breaks) and falls
+      back to the REAL linker discovery (kryos_linker::find_system_linker / vswhere) when
+      PATH probing misses MSVC -- was WARN "no C linker" on a machine where builds work.
+      Doctor on the dist layout: all green, 0 warnings. (kryos-cli now deps kryos-linker.)
+  (c) INSTALLERS (pre-existing install.sh/install.ps1): private-repo download was BROKEN --
+      browser_download_url rejects API tokens; both now resolve the API asset endpoint
+      (releases/assets/<id>, Accept: octet-stream) when authed. PROOF: install.ps1 ran
+      end-to-end against the real v4.43.0 release (download->extract->PATH). Cleaned the
+      test PATH entry afterward.
+  (d) README truth pass: parity badge 34->37; bootstrap badge -> byte-identical wording;
+      v4.19 prose -> v4.43; REMOVED dead-domain links (play.kryos.dev 000 / kryos.dev 530 /
+      packages.kryos.dev 000) from "Start here" -- now leads with QUICKSTART + docs/learn;
+      added private-repo GITHUB_TOKEN note + doctor/welcome/new verification flow.
+      VERIFIED: `kryos new hello && kryos run src/main.kry` works exactly as written.
+  NOTE for release cut: next release should be built from this commit so the shipped binary
+  carries the resolve fix -- v4.43.0 zips remain env-var-only standalone.
+  next:    manual audit (step 226) -- docs/learn/ exists (tour/cheatsheet/cookbook/
+           common-errors/tutorial); verify every example compiles, fill gaps, link from README.

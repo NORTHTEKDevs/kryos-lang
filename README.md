@@ -3,12 +3,12 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/badge/release-v4.43.0-blue.svg)](CHANGELOG.md)
 [![Targets](https://img.shields.io/badge/targets-native%20%7C%20wasm-purple.svg)](#what-it-targets)
-[![Parity](https://img.shields.io/badge/Cranelift_vs_LLVM-34%2F34-brightgreen.svg)](AUDIT-llvm-parity.md)
-[![Self-host](https://img.shields.io/badge/self--host_bootstrap-16%2F16_deterministic-brightgreen.svg)](compiler/self-host/STAGE2_BLOCKER.md)
+[![Parity](https://img.shields.io/badge/Cranelift_vs_LLVM-37%2F37-brightgreen.svg)](tests/parity/run_parity.sh)
+[![Self-host](https://img.shields.io/badge/bootstrap-stage2%3D%3D3%3D%3D4_byte--identical-brightgreen.svg)](compiler/self-host/bootstrap-win.sh)
 [![Stdlib tests](https://img.shields.io/badge/stdlib_tests-63%2F63-brightgreen.svg)](#status)
 [![Warnings](https://img.shields.io/badge/build_warnings-0-brightgreen.svg)](#status)
 
-**Kryos is a compiled, general-purpose programming language with the safety of Rust, the speed of C, and the clarity of Go — without lifetime annotations.** It ships a complete toolchain: compiler, formatter, LSP, package manager, debug info, and editor extensions. v4.19 ships 30+ subcommands, 15 LSP capabilities, 30+ stdlib modules, and 22 cookbook recipes.
+**Kryos is a compiled, general-purpose programming language with the safety of Rust, the speed of C, and the clarity of Go — without lifetime annotations.** It ships a complete toolchain: compiler, formatter, LSP, package manager, debug info, and editor extensions. v4.43 ships 30+ subcommands, 15 LSP capabilities, 30+ stdlib modules, and a cookbook of recipes.
 
 ```kryos
 fn main() {
@@ -40,14 +40,11 @@ kryos run hello.kry
 
 | If you want to… | Go to |
 |---|---|
-| Try Kryos in your browser | [play.kryos.dev](https://play.kryos.dev) |
-| Browse the docs | [kryos.dev](https://kryos.dev) |
-| Find a package | [packages.kryos.dev](https://packages.kryos.dev) |
+| Install and verify in 5 minutes | [QUICKSTART.md](QUICKSTART.md) |
+| Learn the language (the manual) | [docs/learn/](docs/learn/README.md) |
+| Browse the full docs | [docs/README.md](docs/README.md) |
 | Build an MCP server in 60 seconds | [kryos-mcp-template](https://github.com/NORTHTEKDevs/kryos-mcp-template) |
-| Install and run code in 5 minutes | [QUICKSTART.md](QUICKSTART.md) |
-| Learn the language properly | [docs/learn/](docs/learn/README.md) |
 | See real benchmark numbers | [BENCHMARKS.md](BENCHMARKS.md) |
-| Read the full manual | [docs/README.md](docs/README.md) |
 | Contribute | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Understand the design philosophy | [docs/WHY_KRYOS.md](docs/WHY_KRYOS.md) |
 
@@ -65,6 +62,18 @@ curl -fsSL https://raw.githubusercontent.com/NORTHTEKDevs/kryos-lang/master/inst
 
 ```powershell
 irm https://raw.githubusercontent.com/NORTHTEKDevs/kryos-lang/master/install.ps1 | iex
+```
+
+> While this repository is private, release downloads need a GitHub token:
+> set `GITHUB_TOKEN` (or `GH_TOKEN`) to a PAT with repo read access before
+> running either installer. This note disappears when the repo goes public.
+
+After installing, verify the toolchain and take the tour:
+
+```bash
+kryos doctor    # checks linker, stdlib, runtime libs
+kryos welcome   # first-run banner with an example workflow
+kryos new hello && cd hello && kryos run src/main.kry
 ```
 
 ### From source

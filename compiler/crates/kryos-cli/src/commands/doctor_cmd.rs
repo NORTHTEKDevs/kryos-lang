@@ -52,6 +52,17 @@ pub fn execute(opts: DoctorOptions) -> Result<(), String> {
         }
     }
     if !have_cc {
+        // PATH probing missed everything; ask the actual linker discovery
+        // (vswhere/registry on Windows, which is what `kryos build` uses).
+        match kryos_linker::find_system_linker(&kryos_linker::Target::host()) {
+            Ok(path) => {
+                ok("system linker", &path.display().to_string());
+                have_cc = true;
+            }
+            Err(_) => {}
+        }
+    }
+    if !have_cc {
         warn("no C linker found — `kryos build --release` will fail");
         warnings += 1;
     }
@@ -62,6 +73,15 @@ pub fn execute(opts: DoctorOptions) -> Result<(), String> {
         Some(p) => ok("kryos_rt", &p.display().to_string()),
         None => {
             err("kryos_rt static lib not found in any known location");
+            errors += 1;
+        }
+    }
+    // The stdlib SOURCE directory (std::* modules). This is what a
+    // standalone install most commonly gets wrong (see resolve.rs order).
+    match kryos_driver::resolve::resolve_stdlib_dir_for_diagnostics() {
+        Some(p) => ok("stdlib (std::*)", &p.display().to_string()),
+        None => {
+            err("stdlib directory not found — `use std::...` will fail; set KRYOS_STDLIB_DIR or keep stdlib/ next to the kryos binary");
             errors += 1;
         }
     }

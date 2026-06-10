@@ -70,14 +70,26 @@ else
     echo "Latest release: $TAG"
 fi
 
-# Download release asset. For private repos GitHub requires the
-# Accept header on the asset URL itself.
-URL="https://github.com/$REPO/releases/download/$TAG/${ARTIFACT}.tar.gz"
-echo "Downloading $URL..."
+# Download release asset. Private repos reject the browser download URL for
+# API tokens -- the asset must be fetched through the API asset endpoint
+# (api.github.com/.../releases/assets/<id>) with Accept: octet-stream.
 TMPDIR=$(mktemp -d)
 if [ -n "$AUTH_HEADER" ]; then
-    curl -fsSL -H "$AUTH_HEADER" -H "Accept: application/octet-stream" "$URL" -o "$TMPDIR/kryos.tar.gz"
+    ASSET_URL=$(curl_auth "https://api.github.com/repos/$REPO/releases/tags/$TAG"         | tr ',' '
+'         | grep -B0 -A0 '"url"\|"name"'         | paste - -         | grep "\"name\": *\"${ARTIFACT}.tar.gz\""         | grep -o 'https://api.github.com/repos/[^"]*/assets/[0-9]*'         | head -1)
+    if [ -z "$ASSET_URL" ]; then
+        # Fallback: scan the raw JSON for the asset id adjacent to the name.
+        ASSET_URL=$(curl_auth "https://api.github.com/repos/$REPO/releases/tags/$TAG"             | python3 -c "import sys, json; r = json.load(sys.stdin); print(next((a['url'] for a in r.get('assets', []) if a['name'] == '${ARTIFACT}.tar.gz'), ''))" 2>/dev/null || true)
+    fi
+    if [ -z "$ASSET_URL" ]; then
+        echo "Error: release $TAG has no asset ${ARTIFACT}.tar.gz"
+        exit 1
+    fi
+    echo "Downloading ${ARTIFACT}.tar.gz (API asset endpoint)..."
+    curl -fsSL -H "$AUTH_HEADER" -H "Accept: application/octet-stream" "$ASSET_URL" -o "$TMPDIR/kryos.tar.gz"
 else
+    URL="https://github.com/$REPO/releases/download/$TAG/${ARTIFACT}.tar.gz"
+    echo "Downloading $URL..."
     curl -fsSL "$URL" -o "$TMPDIR/kryos.tar.gz"
 fi
 
