@@ -1,0 +1,89 @@
+// std::llm end-to-end against an in-process mock server (step 232).
+// A spawned TCP server answers two requests with canned OpenAI-style and
+// Anthropic-style chat-completion responses; main drives std::llm::chat
+// against both wire formats and asserts text + token accounting + the
+// std::cost budget path. Self-checking: exits nonzero on any mismatch.
+
+use std::llm::{openai_config, anthropic_config, with_base_url, with_timeout_ms, system, user, chat, chat_within}
+use std::cost::{Budget, ComputeCost, cost_add}
+
+let PORT = 18923
+
+fn http_response(body: str) -> str {
+    return "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + to_string(len(body)) + "\r\nConnection: close\r\n\r\n" + body
+}
+
+fn read_request(fd: i64) -> str {
+    // The mock only needs to consume the request before answering; these
+    // payloads are far below one recv buffer.
+    return tcp_recv(fd, 65536)
+}
+
+fn serve_two(listen_fd: i64) {
+    // Request 1: OpenAI-style answer.
+    let c1 = tcp_accept(listen_fd)
+    read_request(c1)
+    let openai_body = "\{\"model\": \"mock-gpt\", \"choices\": [\{\"message\": \{\"role\": \"assistant\", \"content\": \"four\"\}\}], \"usage\": \{\"prompt_tokens\": 12, \"completion_tokens\": 3\}\}"
+    tcp_send(c1, http_response(openai_body))
+    tcp_close(c1)
+
+    // Request 2: Anthropic-style answer.
+    let c2 = tcp_accept(listen_fd)
+    read_request(c2)
+    let anthropic_body = "\{\"model\": \"mock-claude\", \"content\": [\{\"type\": \"text\", \"text\": \"hello there\"\}], \"usage\": \{\"input_tokens\": 21, \"output_tokens\": 5\}\}"
+    tcp_send(c2, http_response(anthropic_body))
+    tcp_close(c2)
+}
+
+fn main() {
+    let listen_fd = tcp_listen("127.0.0.1", PORT)
+    if listen_fd < 0 {
+        println("SKIP: could not bind 127.0.0.1:{PORT}")
+        exit(1)
+    }
+    spawn {
+        serve_two(listen_fd)
+    }
+    sleep_ms(100)
+
+    let base = "http://127.0.0.1:" + to_string(PORT)
+
+    // --- OpenAI-compatible wire format ---
+    let cfg = with_timeout_ms(with_base_url(openai_config("test-key", "mock-gpt"), base), 5000)
+    let r = chat(cfg, [system("Be terse."), user("2+2?")])
+    if r.text != "four" {
+        println("FAIL: openai text = '{r.text}'")
+        exit(1)
+    }
+    if r.input_tokens != 12 or r.output_tokens != 3 {
+        println("FAIL: openai usage = {r.input_tokens}/{r.output_tokens}")
+        exit(1)
+    }
+    println("openai wire ok: '{r.text}' ({r.input_tokens} in / {r.output_tokens} out, model {r.model})")
+
+    // --- Anthropic wire format + budget enforcement ---
+    let cfg2 = with_timeout_ms(with_base_url(anthropic_config("test-key", "mock-claude"), base), 5000)
+    let budget = Budget { max_usd: 1.0, max_tokens: 1000, max_api_calls: 10, spent_usd: 0.0, spent_tokens: 0, spent_api_calls: 0 }
+    let out = chat_within(cfg2, [user("say hello")], budget)
+    if out.response.text != "hello there" {
+        println("FAIL: anthropic text = '{out.response.text}'")
+        exit(1)
+    }
+    if out.budget.spent_tokens != 26 or out.budget.spent_api_calls != 1 {
+        println("FAIL: budget spent = {out.budget.spent_tokens} tokens / {out.budget.spent_api_calls} calls")
+        exit(1)
+    }
+    println("anthropic wire ok: '{out.response.text}' (budget: {out.budget.spent_tokens} tokens spent)")
+
+    // --- Exhausted budget refuses before calling ---
+    let empty = Budget { max_usd: 1.0, max_tokens: 1, max_api_calls: 1, spent_usd: 0.0, spent_tokens: 5, spent_api_calls: 1 }
+    try {
+        chat_within(cfg2, [user("again")], empty)
+        println("FAIL: exhausted budget did not throw")
+        exit(1)
+    } catch e {
+        println("budget guard ok: {e}")
+    }
+
+    println("std::llm mock e2e: PASS")
+}

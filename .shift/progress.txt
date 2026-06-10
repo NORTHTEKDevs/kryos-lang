@@ -5279,3 +5279,30 @@ SHIFTS:
   (rust-compiler/codegen, first entry).
   next:    none queued -- session directive complete. Open items remain Kristian's calls:
            flip public, std::llm/@budget wedge work, real WASI, deny-by-default caps.
+
+  ---
+  step:    232 (session 11 -- 2026-06-10 "ECOSYSTEM: std::llm -- the #1 wedge gap, closed")
+  date:    2026-06-10
+  NEW stdlib/llm.kry (pure Kryos on the native http_request builtin -- which already does
+  HTTPS+TLS+timeouts -- plus native json_* builtins so request bodies are properly escaped):
+  - openai_config / anthropic_config + with_base_url/max_tokens/temperature/timeout_ms
+    (OpenAI-compatible covers OpenRouter/Ollama/vLLM/LM Studio via base_url)
+  - system/user/assistant message helpers; chat(cfg, messages) -> LlmResponse
+    {text, input_tokens, output_tokens, model, status, raw}; complete(cfg, prompt) one-shot
+    (`ask` is a RESERVED KEYWORD -- discovered by the checker)
+  - chat_within(cfg, messages, Budget) -> BudgetedChat: std::cost integration -- throws
+    BEFORE the call when exhausted, charges actual tokens + 1 api_call after. USD stays 0.0
+    by design (pricing varies; users charge() their own rates).
+  - errors throw "llm error: ..." (transport/HTTP-status/malformed-response all distinct).
+  VERIFY: tests/smoke/test_llm_mock.kry -- in-process spawned TCP mock serves canned
+  OpenAI-style + Anthropic-style responses; chat() driven against BOTH wire formats over
+  real HTTP; asserts text, token accounting (12/3 and 21+5), budget charge (26 spent/1 call)
+  and exhausted-budget refusal. PASS both backends via parity runner.
+  DOCS: STDLIB.md row; cookbook 27-llm-chat.md (both blocks type-check in the docs gate,
+  now 54/54). Discovered along the way: std::http's pure-Kryos http_send is plain-TCP only
+  (https URLs would hit port 443 without TLS) -- std::llm uses the native transport instead;
+  http.kry TLS branch = follow-up ticket.
+  NOTE: live-API verification not run (no key burned); the mock e2e covers the full wire
+  format + transport path. The cross-module import quirk (Budget.charge needing cost_add
+  imported by the CONSUMER) is real -- documented in the recipe imports; checker-side fix =
+  follow-up ticket.

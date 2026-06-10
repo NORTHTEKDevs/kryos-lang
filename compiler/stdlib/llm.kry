@@ -1,0 +1,292 @@
+// ============================================================
+// std.llm -- Chat-completion clients for LLM APIs.
+//
+// Pure Kryos on the native `http_request` builtin (HTTPS + timeouts)
+// and the native json_* builtins. Two wire formats:
+//
+//   - "openai"    : POST {base_url}/chat/completions  (OpenAI, OpenRouter,
+//                   Ollama, vLLM, LM Studio -- anything OpenAI-compatible;
+//                   point base_url at the server)
+//   - "anthropic" : POST {base_url}/v1/messages       (Claude)
+//
+// Usage:
+//   use std::llm::{openai_config, anthropic_config, with_base_url, user, system, chat, complete}
+//
+//   let cfg = anthropic_config(env_get("ANTHROPIC_API_KEY"), "claude-sonnet-4-6")
+//   let reply = complete(cfg, "Say hello in five words.")
+//
+//   let cfg2 = with_base_url(openai_config("", "llama3"), "http://127.0.0.1:11434/v1")
+//   let r = chat(cfg2, [system("Be terse."), user("2+2?")])
+//   println("{r.text} ({r.input_tokens} in / {r.output_tokens} out)")
+//
+// Errors throw with a "llm error: ..." message (catchable; uncaught
+// exits 101 with the message). Budget enforcement: see chat_within.
+// ============================================================
+
+use std::cost::{Budget, ComputeCost, cost_add}
+
+@copy
+struct LlmConfig {
+    provider: str,
+    base_url: str,
+    api_key: str,
+    model: str,
+    max_tokens: i64,
+    temperature: f64,
+    timeout_ms: i64
+}
+
+@copy
+struct Message {
+    role: str,
+    content: str
+}
+
+@copy
+struct LlmResponse {
+    text: str,
+    input_tokens: i64,
+    output_tokens: i64,
+    model: str,
+    status: i64,
+    raw: str
+}
+
+// --- Config builders ---------------------------------------------------------
+
+/// Config for the OpenAI API (or any OpenAI-compatible server -- override
+/// the endpoint with `with_base_url` for Ollama, OpenRouter, vLLM, ...).
+fn openai_config(api_key: str, model: str) -> LlmConfig {
+    return LlmConfig {
+        provider: "openai",
+        base_url: "https://api.openai.com/v1",
+        api_key: api_key,
+        model: model,
+        max_tokens: 1024,
+        temperature: 1.0,
+        timeout_ms: 60000
+    }
+}
+
+/// Config for the Anthropic Messages API.
+fn anthropic_config(api_key: str, model: str) -> LlmConfig {
+    return LlmConfig {
+        provider: "anthropic",
+        base_url: "https://api.anthropic.com",
+        api_key: api_key,
+        model: model,
+        max_tokens: 1024,
+        temperature: 1.0,
+        timeout_ms: 60000
+    }
+}
+
+fn with_base_url(cfg: LlmConfig, url: str) -> LlmConfig {
+    return LlmConfig { provider: cfg.provider, base_url: url, api_key: cfg.api_key, model: cfg.model, max_tokens: cfg.max_tokens, temperature: cfg.temperature, timeout_ms: cfg.timeout_ms }
+}
+
+fn with_max_tokens(cfg: LlmConfig, n: i64) -> LlmConfig {
+    return LlmConfig { provider: cfg.provider, base_url: cfg.base_url, api_key: cfg.api_key, model: cfg.model, max_tokens: n, temperature: cfg.temperature, timeout_ms: cfg.timeout_ms }
+}
+
+fn with_temperature(cfg: LlmConfig, t: f64) -> LlmConfig {
+    return LlmConfig { provider: cfg.provider, base_url: cfg.base_url, api_key: cfg.api_key, model: cfg.model, max_tokens: cfg.max_tokens, temperature: t, timeout_ms: cfg.timeout_ms }
+}
+
+fn with_timeout_ms(cfg: LlmConfig, ms: i64) -> LlmConfig {
+    return LlmConfig { provider: cfg.provider, base_url: cfg.base_url, api_key: cfg.api_key, model: cfg.model, max_tokens: cfg.max_tokens, temperature: cfg.temperature, timeout_ms: ms }
+}
+
+// --- Message helpers ---------------------------------------------------------
+
+fn system(content: str) -> Message {
+    return Message { role: "system", content: content }
+}
+
+fn user(content: str) -> Message {
+    return Message { role: "user", content: content }
+}
+
+fn assistant(content: str) -> Message {
+    return Message { role: "assistant", content: content }
+}
+
+// --- Request building (native json_* builtins handle escaping) ---------------
+
+fn _openai_body(cfg: LlmConfig, messages: [Message]) -> str {
+    let mut msg_nodes: [i64] = []
+    for m in messages {
+        let keys = ["role", "content"]
+        let vals = [json_string(m.role), json_string(m.content)]
+        msg_nodes = push(msg_nodes, json_object(keys, vals))
+    }
+    let root_keys = ["model", "max_tokens", "temperature", "messages"]
+    let root_vals = [
+        json_string(cfg.model),
+        json_number(cfg.max_tokens as f64),
+        json_number(cfg.temperature),
+        json_array(msg_nodes)
+    ]
+    return json_stringify(json_object(root_keys, root_vals))
+}
+
+fn _anthropic_body(cfg: LlmConfig, messages: [Message]) -> str {
+    // Anthropic carries the system prompt in a top-level field, not the
+    // messages array.
+    let mut sys = ""
+    let mut msg_nodes: [i64] = []
+    for m in messages {
+        if m.role == "system" {
+            if sys == "" {
+                sys = m.content
+            } else {
+                sys = sys + "\n" + m.content
+            }
+        } else {
+            let keys = ["role", "content"]
+            let vals = [json_string(m.role), json_string(m.content)]
+            msg_nodes = push(msg_nodes, json_object(keys, vals))
+        }
+    }
+    let mut root_keys = ["model", "max_tokens", "temperature", "messages"]
+    let mut root_vals = [
+        json_string(cfg.model),
+        json_number(cfg.max_tokens as f64),
+        json_number(cfg.temperature),
+        json_array(msg_nodes)
+    ]
+    if sys != "" {
+        root_keys = push(root_keys, "system")
+        root_vals = push(root_vals, json_string(sys))
+    }
+    return json_stringify(json_object(root_keys, root_vals))
+}
+
+// --- Response parsing --------------------------------------------------------
+
+fn _require(node: i64, what: str) -> i64 {
+    if json_is_null(node) {
+        throw "llm error: malformed response: missing " + what
+    }
+    return node
+}
+
+fn _parse_openai(body: str, status: i64, raw: str) -> LlmResponse {
+    let root = json_parse(body)
+    let choices = _require(json_get(root, "choices"), "choices")
+    let first = _require(json_get_index(choices, 0), "choices[0]")
+    let message = _require(json_get(first, "message"), "choices[0].message")
+    let text = json_to_str(_require(json_get(message, "content"), "message.content"))
+    let mut in_tok = 0
+    let mut out_tok = 0
+    let usage = json_get(root, "usage")
+    if not json_is_null(usage) {
+        in_tok = json_to_int(json_get(usage, "prompt_tokens"))
+        out_tok = json_to_int(json_get(usage, "completion_tokens"))
+    }
+    let mut model = ""
+    let model_node = json_get(root, "model")
+    if not json_is_null(model_node) {
+        model = json_to_str(model_node)
+    }
+    return LlmResponse { text: text, input_tokens: in_tok, output_tokens: out_tok, model: model, status: status, raw: raw }
+}
+
+fn _parse_anthropic(body: str, status: i64, raw: str) -> LlmResponse {
+    let root = json_parse(body)
+    let content = _require(json_get(root, "content"), "content")
+    let first = _require(json_get_index(content, 0), "content[0]")
+    let text = json_to_str(_require(json_get(first, "text"), "content[0].text"))
+    let mut in_tok = 0
+    let mut out_tok = 0
+    let usage = json_get(root, "usage")
+    if not json_is_null(usage) {
+        in_tok = json_to_int(json_get(usage, "input_tokens"))
+        out_tok = json_to_int(json_get(usage, "output_tokens"))
+    }
+    let mut model = ""
+    let model_node = json_get(root, "model")
+    if not json_is_null(model_node) {
+        model = json_to_str(model_node)
+    }
+    return LlmResponse { text: text, input_tokens: in_tok, output_tokens: out_tok, model: model, status: status, raw: raw }
+}
+
+// --- Core call ---------------------------------------------------------------
+
+/// Send a chat-completion request and return the parsed response.
+/// Throws "llm error: ..." on transport failure, non-200 status, or a
+/// response missing the expected fields.
+@capabilities(net)
+fn chat(cfg: LlmConfig, messages: [Message]) -> LlmResponse {
+    let mut url = ""
+    let mut headers = "Content-Type: application/json"
+    let mut body = ""
+    if cfg.provider == "anthropic" {
+        url = cfg.base_url + "/v1/messages"
+        headers = headers + "\nx-api-key: " + cfg.api_key + "\nanthropic-version: 2023-06-01"
+        body = _anthropic_body(cfg, messages)
+    } else {
+        url = cfg.base_url + "/chat/completions"
+        if cfg.api_key != "" {
+            headers = headers + "\nAuthorization: Bearer " + cfg.api_key
+        }
+        body = _openai_body(cfg, messages)
+    }
+
+    let resp = http_request("POST", url, headers, body, cfg.timeout_ms)
+    if json_is_null(resp) {
+        throw "llm error: transport failure reaching " + url + " (network down, TLS failure, or timeout after " + to_string(cfg.timeout_ms) + "ms)"
+    }
+    let status = json_to_int(json_get(resp, "status"))
+    let resp_body = json_to_str(json_get(resp, "body"))
+    if status != 200 {
+        let mut excerpt = resp_body
+        if len(excerpt) > 300 {
+            excerpt = substr(excerpt, 0, 300)
+        }
+        throw "llm error: HTTP " + to_string(status) + " from " + url + ": " + excerpt
+    }
+    if cfg.provider == "anthropic" {
+        return _parse_anthropic(resp_body, status, resp_body)
+    }
+    return _parse_openai(resp_body, status, resp_body)
+}
+
+/// One-shot convenience: single user prompt in, reply text out.
+/// (Named `complete` because `ask` is a reserved keyword.)
+@capabilities(net)
+fn complete(cfg: LlmConfig, prompt: str) -> str {
+    let r = chat(cfg, [user(prompt)])
+    return r.text
+}
+
+// --- Budget enforcement (std::cost) -------------------------------------------
+
+@copy
+struct BudgetedChat {
+    response: LlmResponse,
+    budget: Budget
+}
+
+/// chat() guarded by a std::cost Budget. Throws BEFORE the call when the
+/// budget is already exhausted; charges actual usage (input+output tokens,
+/// 1 API call) afterward and returns the updated budget. USD accounting is
+/// intentionally 0.0 here -- per-token pricing varies by provider/model;
+/// charge() a ComputeCost with your own rates if you track dollars.
+@capabilities(net)
+fn chat_within(cfg: LlmConfig, messages: [Message], budget: Budget) -> BudgetedChat {
+    if budget.is_exhausted() {
+        throw "llm error: budget exhausted before call (remaining tokens: " + to_string(budget.remaining_tokens()) + ", api calls: " + to_string(budget.remaining_api_calls()) + ")"
+    }
+    let r = chat(cfg, messages)
+    let used = ComputeCost {
+        wall_time_ms: 0.0,
+        tokens_used: r.input_tokens + r.output_tokens,
+        api_calls: 1,
+        money_usd: 0.0,
+        energy_kwh: 0.0
+    }
+    let charged = budget.charge(used)
+    return BudgetedChat { response: r, budget: charged }
+}

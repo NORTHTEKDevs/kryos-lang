@@ -174,6 +174,7 @@ module under [`docs/stdlib/`](stdlib/). Brief index:
 | `std::tensor`          | N-d tensors (FFI-backed).                           |
 | `std::probable`        | Confidence-tagged values.                           |
 | `std::agent`           | Agent runtime with memory + tools + alignment.      |
+| `std::llm`             | Chat-completion clients: OpenAI-compatible + Anthropic, budget-aware (`chat`, `complete`, `chat_within`). |
 | `std::tracked`         | Lineage tracking.                                   |
 | `std::cost`            | AI compute budget enforcement.                      |
 | `std::result`          | `Result<T, E>` helpers.                             |
