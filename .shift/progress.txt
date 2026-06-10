@@ -5451,3 +5451,31 @@ SHIFTS:
   Remaining queue after this session: generic-struct field typing -> Probable<T>/Tracked<T>;
   async executor (epic); wedge benchmarks A-E (measurement programs; B now unblocked by
   std::llm). Session deliverables 237-238 complete and pushed.
+
+  ---
+  step:    240 (session 11 -- 2026-06-11 "GENERIC STRUCTS FIXED end-to-end -- the Probable<T> prerequisite")
+  date:    2026-06-11
+  Four coordinated fixes, found by driving the conf_generics conformance file to green on
+  both backends (each fix exposed the next):
+  (1) MIR: substitute_type_expr_to_mir had NO Generic arm -- `Boxed<T>` in a generic fn's
+      return fell to raw resolve where T->i64 (Boxed<str>.value printed its handle). Arm
+      added: substitute args THEN monomorphize (structs + enums).
+  (2) CHECKER: FieldAccess ignored Type::Struct.generics -- field types came back as the
+      registration-time vars/i64. NEW substitute_struct_generics: StructDef.generic_var_ids
+      zipped with instance generics, recursive walk (exactly the substitution the StructDef
+      doc comment promised "per-use"). Both direct and auto-deref arms.
+  (3) MIR: extract_type_bindings couldn't match `Boxed<T>` against an already-mangled
+      concrete name ("Boxed___str") -> T unbound -> instantiated fns got bogus Boxed___T
+      param types (invalid IR). NEW ctx.mono_instance_args registry (mangled -> concrete
+      args) + a Generic-vs-mangled extraction arm that recurses positionally.
+  (4) MIR: TEMPLATE fns' param/ret registration resolved `Boxed<T>` with no map at decl
+      time, registering Boxed___T={%T,..} whose LLVM emission is invalid -- templates now
+      register i64 placeholders (real types register per instantiation).
+  NEW tests/conformance/conf_generics.kry: generic-fn returns (the original bug), direct
+  annotation, generic-struct-as-generic-param, compound args, interpolation. Residual
+  documented in-file: direct INDEXING of a generic compound field (arr.value[2]) is a
+  checker gap -- copy out first.
+  GATES: conformance 6/6; parity 45/45; examples PASS; docs 54/54; bootstrap 989ba174
+  byte-identical; workspace 916/0; native 2/2.
+  next:    Probable<T>/Tracked<T> stdlib conversion (foundation now solid); benchmarks A-E;
+           async executor (epic).

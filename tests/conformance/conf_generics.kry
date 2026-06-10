@@ -1,0 +1,50 @@
+// Conformance: generic structs and enums through every instantiation path —
+// direct annotation, generic-fn returns, generic-fn params, compound args.
+// (Reference chapter 8; regression for the step-240 field-typing fix.)
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+struct Boxed<T> {
+    value: T,
+    label: str,
+}
+
+fn wrap<T>(v: T, label: str) -> Boxed<T> {
+    return Boxed { value: v, label: label }
+}
+
+fn unwrap_label<T>(b: Boxed<T>) -> str {
+    return b.label
+}
+
+fn main() {
+    // Through generic-fn returns (the path that mistyped fields as i64:
+    // Boxed<str>.value printed its handle before the fix).
+    let a = wrap(42, "int")
+    let b = wrap("hello", "str")
+    let c = wrap(2.5, "float")
+    expect(a.value == 42, "Boxed<i64> via generic fn")
+    expect(b.value == "hello", "Boxed<str> via generic fn")
+    expect(c.value == 2.5, "Boxed<f64> via generic fn")
+    expect("{b.value}" == "hello", "interpolation of generic str field")
+
+    // Direct annotated instantiation.
+    let d: Boxed<str> = Boxed { value: "direct", label: "d" }
+    expect(d.value == "direct", "direct Boxed<str>")
+
+    // Generic struct in generic-fn param position.
+    expect(unwrap_label(b) == "str", "generic struct as generic-fn param")
+
+    // Compound type args. (Direct indexing of a generic compound field —
+    // arr.value[2] — is a residual checker gap; copy out first.)
+    let arr = wrap([1, 2, 3], "array")
+    let items = arr.value
+    expect(len(items) == 3 and items[2] == 3, "Boxed<[i64]>")
+
+    println("conformance generics: PASS")
+}

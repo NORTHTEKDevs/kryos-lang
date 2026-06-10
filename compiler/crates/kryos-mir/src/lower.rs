@@ -52,6 +52,11 @@ pub struct LoweringContext {
     generic_templates: HashMap<String, GenericTemplate>,
     /// Generic struct templates: struct_name -> (generic_params, AST struct decl fields).
     generic_struct_templates: HashMap<String, GenericStructTemplate>,
+    /// Mangled monomorphized name -> the concrete type args it was built
+    /// with (e.g. "Boxed___str" -> [Str]). Lets generic-arg extraction match
+    /// a generic param TypeExpr (`Boxed<T>`) against an already-mangled
+    /// concrete struct/enum name.
+    mono_instance_args: HashMap<String, Vec<MirType>>,
     /// Generic enum templates: enum_name -> (generic_params, AST enum variants).
     generic_enum_templates: HashMap<String, GenericEnumTemplate>,
     /// Already-monomorphized specializations, to avoid duplicate lowering.
@@ -178,6 +183,7 @@ impl LoweringContext {
             impl_map: HashMap::new(),
             generic_templates: HashMap::new(),
             generic_struct_templates: HashMap::new(),
+            mono_instance_args: HashMap::new(),
             generic_enum_templates: HashMap::new(),
             monomorphized: HashMap::new(),
             monomorphized_functions: Vec::new(),
@@ -870,19 +876,35 @@ pub fn lower_module_with_lambda_params(
                 body,
                 ..
             } => {
-                let mir_ret = match ret_ty {
-                    Some(ty) => ctx.resolve_type(ty),
-                    None => MirType::Void,
+                // Generic templates must not resolve their return type here:
+                // `Boxed<T>` with no substitution map monomorphizes a bogus
+                // `Boxed___T = { %T, .. }` whose emission is invalid IR. The
+                // real return type registers per-instantiation when the
+                // function monomorphizes.
+                let mir_ret = if !generics.is_empty() {
+                    MirType::I64
+                } else {
+                    match ret_ty {
+                        Some(ty) => ctx.resolve_type(ty),
+                        None => MirType::Void,
+                    }
                 };
                 ctx.func_ret_types.insert(name.clone(), mir_ret);
 
-                // Store parameter types for dyn Trait coercion.
+                // Store parameter types for dyn Trait coercion. Generic
+                // templates must not resolve here (same reason as the return
+                // type above: `Boxed<T>` with no map registers a bogus
+                // `Boxed___T` type whose emission is invalid IR).
                 let param_types: Vec<MirType> = params
                     .iter()
                     .map(|p| {
-                        p.ty.as_ref()
-                            .map(|t| ctx.resolve_type(t))
-                            .unwrap_or(MirType::I64)
+                        if !generics.is_empty() {
+                            MirType::I64
+                        } else {
+                            p.ty.as_ref()
+                                .map(|t| ctx.resolve_type(t))
+                                .unwrap_or(MirType::I64)
+                        }
                     })
                     .collect();
                 ctx.func_param_types.insert(name.clone(), param_types);
@@ -4331,6 +4353,7 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                         if let (Some(param_ty), Some(arg)) = (&param.ty, args.get(i)) {
                             let arg_ty = infer_expr_type(ctx, arg);
                             extract_type_bindings(
+                                ctx,
                                 param_ty,
                                 &arg_ty,
                                 &generic_params,
@@ -6789,23 +6812,39 @@ fn find_free_variables_block(ctx: &LoweringContext, stmts: &[ast::Stmt]) -> Vec<
 /// Tuple, Function, and Reference shapes so `[T]`, `(A, B)`, `fn(T) -> U`,
 /// and `&T` all contribute bindings.
 fn extract_type_bindings(
+    ctx: &LoweringContext,
     param_ty: &ast::TypeExpr,
     concrete: &MirType,
     generic_params: &[String],
     out: &mut HashMap<String, MirType>,
 ) {
     match (param_ty, concrete) {
+        // `Boxed<T>` matched against an already-monomorphized instance name
+        // ("Boxed___str"): recover the concrete args from the instance
+        // registry and recurse positionally. Without this, T stayed unbound
+        // and the instantiated function's params resolved to bogus
+        // `Boxed___T` types (invalid IR on AOT).
+        (ast::TypeExpr::Generic { name, args, .. }, MirType::Struct(mangled))
+        | (ast::TypeExpr::Generic { name, args, .. }, MirType::Enum(mangled)) => {
+            if let Some(inst_args) = ctx.mono_instance_args.get(mangled) {
+                if mangled.starts_with(name.as_str()) {
+                    for (pe, ce) in args.iter().zip(inst_args.iter()) {
+                        extract_type_bindings(ctx, pe, ce, generic_params, out);
+                    }
+                }
+            }
+        }
         (ast::TypeExpr::Simple { name, .. }, c) => {
             if generic_params.iter().any(|gp| gp == name) {
                 out.entry(name.clone()).or_insert_with(|| c.clone());
             }
         }
         (ast::TypeExpr::Array { element, .. }, MirType::Array(elem_ty, _)) => {
-            extract_type_bindings(element, elem_ty, generic_params, out);
+            extract_type_bindings(ctx, element, elem_ty, generic_params, out);
         }
         (ast::TypeExpr::Tuple { elements, .. }, MirType::Tuple(c_elems)) => {
             for (pe, ce) in elements.iter().zip(c_elems.iter()) {
-                extract_type_bindings(pe, ce, generic_params, out);
+                extract_type_bindings(ctx, pe, ce, generic_params, out);
             }
         }
         (
@@ -6816,18 +6855,18 @@ fn extract_type_bindings(
             },
         ) => {
             for (pe, ce) in params.iter().zip(c_params.iter()) {
-                extract_type_bindings(pe, ce, generic_params, out);
+                extract_type_bindings(ctx, pe, ce, generic_params, out);
             }
-            extract_type_bindings(ret, c_ret, generic_params, out);
+            extract_type_bindings(ctx, ret, c_ret, generic_params, out);
         }
         (ast::TypeExpr::Reference { inner, .. }, MirType::Ref { inner: c_inner, .. }) => {
-            extract_type_bindings(inner, c_inner, generic_params, out);
+            extract_type_bindings(ctx, inner, c_inner, generic_params, out);
         }
         (ast::TypeExpr::Pointer { inner, .. }, MirType::Ptr(c_inner)) => {
-            extract_type_bindings(inner, c_inner, generic_params, out);
+            extract_type_bindings(ctx, inner, c_inner, generic_params, out);
         }
         (ast::TypeExpr::Shared { inner, .. }, MirType::Shared(c_inner)) => {
-            extract_type_bindings(inner, c_inner, generic_params, out);
+            extract_type_bindings(ctx, inner, c_inner, generic_params, out);
         }
         // Optional<T> lowers to Struct("Option") -- we can't recover T from it,
         // so just skip. Generic structs / enums likewise can't be recovered
@@ -6880,6 +6919,23 @@ fn substitute_type_expr_to_mir(
         ast::TypeExpr::Shared { inner, .. } => MirType::Shared(Box::new(
             substitute_type_expr_to_mir(ctx, inner, type_map),
         )),
+        ast::TypeExpr::Generic { name, args, .. } => {
+            // Substitute the generic ARGS through the map first: a generic
+            // fn returning `Boxed<T>` with T=str must monomorphize
+            // Boxed<str>, not resolve the raw template (where `T` fell back
+            // to i64 — Boxed<str>.value then printed as a handle).
+            let concrete: Vec<MirType> = args
+                .iter()
+                .map(|a| substitute_type_expr_to_mir(ctx, a, type_map))
+                .collect();
+            if ctx.generic_struct_templates.contains_key(name) {
+                return MirType::Struct(monomorphize_struct(ctx, name, &concrete));
+            }
+            if ctx.generic_enum_templates.contains_key(name) {
+                return MirType::Enum(monomorphize_enum(ctx, name, &concrete));
+            }
+            ctx.resolve_type(ty)
+        }
         _ => ctx.resolve_type(ty),
     }
 }
@@ -6996,6 +7052,9 @@ fn monomorphize_struct(
         .map(|gp| type_map.get(gp).cloned().unwrap_or(MirType::I64))
         .collect();
     let mangled = mono_mangled_name(struct_name, &concrete_ordered);
+    ctx.mono_instance_args
+        .entry(mangled.clone())
+        .or_insert_with(|| concrete_ordered.clone());
 
     // If already monomorphized, just return the name.
     if ctx.struct_defs.contains_key(&mangled) {
@@ -7100,7 +7159,7 @@ fn monomorphize(ctx: &mut LoweringContext, func_name: &str, arg_types: &[MirType
     let mut type_map: HashMap<String, MirType> = HashMap::new();
     for (i, param) in template_params.iter().enumerate() {
         if let (Some(param_ty), Some(concrete)) = (&param.ty, arg_types.get(i)) {
-            extract_type_bindings(param_ty, concrete, &generic_params, &mut type_map);
+            extract_type_bindings(ctx, param_ty, concrete, &generic_params, &mut type_map);
         }
     }
 

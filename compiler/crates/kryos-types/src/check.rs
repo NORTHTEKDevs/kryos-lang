@@ -1340,6 +1340,72 @@ impl TypeChecker {
         }
     }
 
+    /// Substitute generic-param type variables in a struct field's type with
+    /// the instance's concrete generics (StructDef.generic_var_ids are 1:1
+    /// with the decl's generic params; instance generics are positional).
+    /// `Boxed<str>.value` resolves to `str`, not the registration-time var.
+    fn substitute_struct_generics(&mut self, name: &str, instance_generics: &[Type], fty: &Type) -> Type {
+        if instance_generics.is_empty() {
+            return fty.clone();
+        }
+        let Some(def) = self.env.lookup_struct(name) else {
+            return fty.clone();
+        };
+        if def.generic_var_ids.is_empty() {
+            return fty.clone();
+        }
+        let map: std::collections::HashMap<u32, Type> = def
+            .generic_var_ids
+            .iter()
+            .copied()
+            .zip(instance_generics.iter().cloned())
+            .collect();
+        fn walk(t: &Type, map: &std::collections::HashMap<u32, Type>) -> Type {
+            match t {
+                Type::Var(id) => map.get(id).cloned().unwrap_or_else(|| t.clone()),
+                Type::Array { element, size } => Type::Array {
+                    element: Box::new(walk(element, map)),
+                    size: *size,
+                },
+                Type::Tuple { elements } => Type::Tuple {
+                    elements: elements.iter().map(|e| walk(e, map)).collect(),
+                },
+                Type::Map { key, value } => Type::Map {
+                    key: Box::new(walk(key, map)),
+                    value: Box::new(walk(value, map)),
+                },
+                Type::Option { inner } => Type::Option {
+                    inner: Box::new(walk(inner, map)),
+                },
+                Type::Result { ok, err } => Type::Result {
+                    ok: Box::new(walk(ok, map)),
+                    err: Box::new(walk(err, map)),
+                },
+                Type::Struct { name, generics } => Type::Struct {
+                    name: name.clone(),
+                    generics: generics.iter().map(|g| walk(g, map)).collect(),
+                },
+                Type::Enum { name, generics } => Type::Enum {
+                    name: name.clone(),
+                    generics: generics.iter().map(|g| walk(g, map)).collect(),
+                },
+                Type::Function { params, ret } => Type::Function {
+                    params: params.iter().map(|p| walk(p, map)).collect(),
+                    ret: Box::new(walk(ret, map)),
+                },
+                Type::Reference { inner, mutable } => Type::Reference {
+                    inner: Box::new(walk(inner, map)),
+                    mutable: *mutable,
+                },
+                Type::Shared { inner } => Type::Shared {
+                    inner: Box::new(walk(inner, map)),
+                },
+                other => other.clone(),
+            }
+        }
+        walk(fty, &map)
+    }
+
     pub fn infer_expr(&mut self, expr: &Expr) -> Type {
         match expr {
             // Literals.
@@ -1405,9 +1471,10 @@ impl TypeChecker {
                 let obj_ty = self.infer_expr(object);
                 let obj_ty = self.engine.resolve(&obj_ty);
                 match &obj_ty {
-                    Type::Struct { name, .. } => {
+                    Type::Struct { name, generics } => {
                         if let Some(fty) = self.env.lookup_field(name, field) {
-                            fty.clone()
+                            let fty = fty.clone();
+                            self.substitute_struct_generics(name, generics, &fty)
                         } else {
                             self.error_with_code(
                                 format!("no field `{field}` on type `{name}`"),
@@ -1452,9 +1519,10 @@ impl TypeChecker {
                     }
                     // Auto-deref: access fields through references.
                     Type::Reference { inner, .. } => {
-                        if let Type::Struct { name, .. } = inner.as_ref() {
+                        if let Type::Struct { name, generics } = inner.as_ref() {
                             if let Some(fty) = self.env.lookup_field(name, field) {
-                                fty.clone()
+                                let fty = fty.clone();
+                                self.substitute_struct_generics(name, generics, &fty)
                             } else {
                                 self.error(format!("no field `{field}` on type `{name}`"), *span);
                                 Type::Error
