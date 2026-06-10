@@ -5,7 +5,7 @@ Don't trust input. Whether it comes from CLI args, env vars, files, or HTTP, val
 ## The program
 
 ```kryos
-use std::re::{regex_new, regex_is_match, regex_drop}
+use std::re::{is_match, is_email}
 
 @capabilities(io)
 fn main() {
@@ -17,40 +17,36 @@ fn main() {
     let email = argv[1]
     let port_str = argv[2]
 
-    match validate_email(email) {
-        true => println("✓ email ok"),
-        false => println("✗ email invalid: " + email),
+    if validate_email(email) {
+        println("email ok")
+    } else {
+        println("email invalid: " + email)
     }
 
     let port = validate_port(port_str)
     if port < 0 {
-        println("✗ port invalid: " + port_str)
+        println("port invalid: " + port_str)
     } else {
-        println("✓ port ok: " + to_string(port))
+        println("port ok: " + to_string(port))
     }
 }
 
 fn validate_email(s: str) -> bool {
-    // Conservative regex — won't catch every weird-but-valid RFC 5322
-    // address, but rejects obvious garbage.
-    let re = regex_new("^[a-zA-Z0-9._+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$")
-    let ok = regex_is_match(re, s) == 1
-    regex_drop(re)
-    return ok
+    return is_email(s)
 }
 
 fn validate_port(s: str) -> i64 {
     // Must be 1-65535. parse_int panics on non-numeric, so pre-check.
     let n = len(s)
-    if n == 0 || n > 5 { return -1 }
+    if n == 0 or n > 5 { return -1 }
     let mut i: i64 = 0
     while i < n {
         let c = char_code(substr(s, i, i + 1))
-        if c < 48 || c > 57 { return -1 }
+        if c < 48 or c > 57 { return -1 }
         i = i + 1
     }
     let v = parse_int(s)
-    if v < 1 || v > 65535 { return -1 }
+    if v < 1 or v > 65535 { return -1 }
     return v
 }
 ```

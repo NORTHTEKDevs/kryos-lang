@@ -5149,3 +5149,24 @@ SHIFTS:
   native_runner 2/2.
   next:    docs-examples pass to zero failures (agent running) + CI docs-examples job +
            manual index refresh = step 227.
+
+  ---
+  step:    227 (session 11 -- 2026-06-10 "MANUAL: every docs code block now type-checks; docs-examples CI gate")
+  date:    2026-06-10
+  NEW tools/docs-examples/check.py: extracts every fenced ```kryos block from docs/learn/**,
+  numbered chapters, QUICKSTART.md, repo CLAUDE.md; auto-skips placeholders/deliberate-error/
+  mixed teaching fragments; explicit <!-- docs-example: skip --> opt-out. First run: 22/70
+  pass. Senior Developer agent repaired 31 files (verified independently: re-ran checker
+  myself = 52/52 pass/0 fail/39 skipped; spot-RAN 4 cookbook programs -- correct output).
+  Big classes fixed: stale stdlib names (split_lines/hash/fmt_*/path_* prefixes dropped),
+  wrong imports (std::chan -> builtins; std::json/re/hash paths), evolved syntax (elif,
+  and/or, char_code, brace escaping), API rewrites vs reality (http router, re, random,
+  heap, LRU/bloom, datetime helpers inlined). Cookbook recipes remain FULL programs (only
+  multi-file/async-gap blocks skip-marked). CI: new docs-examples job (ubuntu, builds
+  release kryos, runs the checker) -- the manual is now a tested contract.
+  LANGUAGE GAPS catalogued by the repair (docs no longer pretend; candidates for stdlib):
+  uuid_parse, uuid_v4_bytes, bsearch/is_sorted (std), jaro-winkler in std::fuzzy,
+  async_spawn/async_join as callable builtins, random_f64. Plus learn/README version
+  3.3.0-rc.1 -> 4.43.0.
+  next:    release cut v4.44.0 so installers' `latest` ships the standalone-install fix +
+           today's semantics fixes (step 228).

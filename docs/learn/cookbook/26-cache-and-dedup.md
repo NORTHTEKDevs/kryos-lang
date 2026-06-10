@@ -7,7 +7,7 @@ bloom filter is the right shape.
 ## LRU cache
 
 ```kryos
-use std::lru::{lru_init, lru_put, lru_get}
+use std::lru::{new_cache, put, get}
 
 fn expensive(key: i64) -> i64 {
     // Pretend this takes 100ms.
@@ -15,20 +15,16 @@ fn expensive(key: i64) -> i64 {
 }
 
 fn main() {
-    let mut keys: [i64] = [0, 0, 0, 0, 0, 0, 0, 0]
-    let mut vals: [i64] = [0, 0, 0, 0, 0, 0, 0, 0]
-    let mut rec:  [i64] = [0, 0, 0, 0, 0, 0, 0, 0]
-    let mut state: [i64] = [0, 0, 0]
-    lru_init(state, 8)
+    let cache = new_cache(8)
 
-    let mut out: i64 = 0
     let queries: [i64] = [3, 5, 3, 7, 5, 3, 9, 11, 3]
     for q in queries {
-        if lru_get(keys, vals, rec, state, q, out) == 1 {
-            println("cache hit: " + to_string(q) + " = " + to_string(out))
+        let cached = get(cache, q)
+        if cached != -1 {
+            println("cache hit: " + to_string(q) + " = " + to_string(cached))
         } else {
             let v = expensive(q)
-            lru_put(keys, vals, rec, state, q, v)
+            put(cache, q, v)
             println("computed:  " + to_string(q) + " = " + to_string(v))
         }
     }
@@ -38,15 +34,20 @@ fn main() {
 ## Bloom filter for billion-scale dedup
 
 ```kryos
-use std::bloom::{bloom_add, bloom_contains}
+use std::bloom::{new_filter, add, contains}
 
 fn main() {
-    // 1 MB filter = ~8 million bits, ~800k items at 1% FPR.
-    let mut bits: [i64] = []  // would actually be 131072 bytes (let mut bits = bytes(131072))
-    let _ = bits
+    // 8192-bit filter — tune the bit count for your expected item count / FPR.
+    let bits: i64 = 8192
+    let filter = new_filter(bits)
 
-    // Scratch: just demonstrate the API on a small filter.
-    // For real code, allocate a real byte buffer.
+    let items = ["alice", "bob", "carol"]
+    for item in items {
+        add(filter, bits, item)
+    }
+
+    println(to_string(contains(filter, bits, "alice")))  // true
+    println(to_string(contains(filter, bits, "dave")))   // false (probably)
 }
 ```
 

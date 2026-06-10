@@ -7,25 +7,24 @@ All ops are pure string manipulation — no syscalls.
 ## Examples
 
 ```kryos
-use std::pathext::{path_is_absolute, path_normalize, path_component_count}
+use std::pathext::{is_absolute, normalize, component_count}
 
 @capabilities(io)
 fn main() {
     // Detect absolute paths
-    println(to_string(path_is_absolute("/etc/hosts")))    // 1
-    println(to_string(path_is_absolute("relative/path"))) // 0
+    println(to_string(is_absolute("/etc/hosts")))    // true
+    println(to_string(is_absolute("relative/path"))) // false
 
     // Normalize
-    println(path_normalize("a/b/../c"))     // → a/c
-    println(path_normalize("a//b/./c"))     // → a/b/c
-    println(path_normalize("/a/b/../../c")) // → /c
-    println(path_normalize("./foo/bar"))    // → foo/bar
-    println(path_normalize("a\\b\\c"))      // → a/b/c (Windows ⇒ POSIX)
+    println(normalize("a/b/../c"))     // → a/c
+    println(normalize("a//b/./c"))     // → a/b/c
+    println(normalize("/a/b/../../c")) // → /c
+    println(normalize("./foo/bar"))    // → foo/bar
 
     // Component count
-    println(to_string(path_component_count("a/b/c")))     // 3
-    println(to_string(path_component_count("/a/b")))      // 2
-    println(to_string(path_component_count("")))          // 0
+    println(to_string(component_count("a/b/c")))     // 3
+    println(to_string(component_count("/a/b")))      // 2
+    println(to_string(component_count("")))          // 0
 }
 ```
 

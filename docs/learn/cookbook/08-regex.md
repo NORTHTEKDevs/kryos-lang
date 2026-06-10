@@ -5,15 +5,7 @@
 ## The program
 
 ```kryos
-use std::re::{
-    regex_new,
-    regex_is_match,
-    regex_find,
-    regex_replace_all,
-    regex_capture,
-    regex_capture_count,
-    regex_drop,
-}
+use std::re::{compile, is_match, find, find_all, replace_all}
 
 @capabilities(io)
 fn main() {
@@ -22,39 +14,27 @@ fn main() {
               "2026-05-18 12:35:00 ERROR Out of space"
 
     // 1. Is there at least one ERROR line?
-    let err_re = regex_new("\\bERROR\\b")
-    if regex_is_match(err_re, log) == 1 {
+    if is_match("\\bERROR\\b", log) {
         println("found at least one ERROR")
     }
 
     // 2. Replace all whitespace runs with a single space.
-    let ws = regex_new("\\s+")
-    let normalized = regex_replace_all(ws, log, " ")
+    let normalized = replace_all("\\s+", log, " ")
     println("normalized: " + normalized)
 
-    // 3. Extract every (date, time, level) tuple.
-    let entry = regex_new("(\\d{4}-\\d{2}-\\d{2}) (\\d{2}:\\d{2}:\\d{2}) (INFO|WARN|ERROR)")
-    let mut cursor = 0
-    while cursor < len(log) {
-        let rest = substr(log, cursor, len(log))
-        let date_span = regex_capture(entry, rest, 1)
-        if date_span.start < 0 { break }
-        let time_span = regex_capture(entry, rest, 2)
-        let lvl_span  = regex_capture(entry, rest, 3)
-
-        let date = substr(rest, date_span.start, date_span.start + date_span.len)
-        let tm   = substr(rest, time_span.start, time_span.start + time_span.len)
-        let lvl  = substr(rest, lvl_span.start, lvl_span.start + lvl_span.len)
-        println(date + " " + tm + " — " + lvl)
-
-        // Advance past the whole-match end.
-        let whole = regex_find(entry, rest)
-        cursor = cursor + whole.start + whole.len
+    // 3. Extract every log-level keyword from the log.
+    let matches = find_all("INFO|WARN|ERROR", log)
+    for m in matches {
+        println("level: " + m.text + " at byte " + to_string(m.start))
     }
 
-    regex_drop(err_re)
-    regex_drop(ws)
-    regex_drop(entry)
+    // 4. Compile-and-reuse for repeated matching.
+    let re = compile("\\d{4}-\\d{2}-\\d{2}")
+    let dates = re.find_all(log)
+    for d in dates {
+        println("date: " + d.text)
+    }
+    let _ = re.drop()
 }
 ```
 

@@ -18,6 +18,7 @@ Kryos uses **newlines, not semicolons** to terminate statements. If you must fit
 
 ### "expected `}` to close block"
 
+<!-- docs-example: skip -->
 ```kryos
 if x > 0 {
     println("yes")
@@ -96,6 +97,7 @@ fn consume(x: str) { println(x) }
 
 Either restructure to consume the value once, or clone before moving:
 
+<!-- docs-example: skip -->
 ```kryos
 consume(s.clone())     //  s still owned afterward
 ```
@@ -138,12 +140,14 @@ let c = char_code(substr(s, 5, 6))   //  ERROR at runtime — substr out of rang
 
 ### `panic: division by zero`
 
+<!-- docs-example: skip -->
 ```kryos
 let n = total / count
 ```
 
 Wrap in a guard:
 
+<!-- docs-example: skip -->
 ```kryos
 if count == 0 {
     println("no records")

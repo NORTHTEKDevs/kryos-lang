@@ -7,9 +7,11 @@ Fetch a list of URLs concurrently using async/await, without spawning a thread p
 Save as `fetch_many.kry`:
 
 ```kryos
+use std::net::{http_get}
+
 async fn fetch_size(url: str) -> i64 {
-    let body = await http_get(url)
-    len(body)
+    let resp = await http_get(url)
+    return len(resp.body)
 }
 
 async fn main() {
@@ -22,7 +24,7 @@ async fn main() {
     let mut total = 0
     for url in urls {
         let bytes = await fetch_size(url)
-        println(url + " → " + to_string(bytes) + " bytes")
+        println(url + " -> " + to_string(bytes) + " bytes")
         total = total + bytes
     }
     println("total: " + to_string(total) + " bytes")
@@ -49,12 +51,15 @@ kryos run fetch_many.kry
 
 The example above is *sequential* — each `await` blocks the next. To fetch concurrently, spawn each one and await the join:
 
+<!-- docs-example: skip -->
 ```kryos
+use std::net::{http_get}
+
 async fn main() {
     let urls = ["https://example.com", "https://example.org"]
-    let mut handles = []
+    let mut handles: [i64] = []
     for url in urls {
-        handles = array_push(handles, async_spawn(fetch_size(url)))
+        handles = push(handles, async_spawn(fetch_size(url)))
     }
     let mut total = 0
     for h in handles {

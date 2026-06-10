@@ -77,6 +77,7 @@ fn no_return() {       // unit return is implicit
 
 ## Control flow
 
+<!-- docs-example: skip -->
 ```kryos
 if x > 0 {
     println("positive")

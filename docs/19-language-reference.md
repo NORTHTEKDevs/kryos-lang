@@ -46,6 +46,7 @@ note: Kryos does not use semicolons; line breaks terminate statements
 
 ### 1.3 Comments
 
+<!-- docs-example: skip -->
 ```kryos
 // single-line comment
 /// doc comment, attached to the following declaration
@@ -271,8 +272,8 @@ value via `return`.
 struct Point { x: i64, y: i64 }
 
 impl Point {
-    fn new(x: i64, y: i64) -> Self { return Self { x: x, y: y } }
-    fn shift(self, dx: i64) -> Self { return Point { x: self.x + dx, y: self.y } }
+    fn new(x: i64, y: i64) -> Point { return Point { x: x, y: y } }
+    fn shift(self: Point, dx: i64) -> Point { return Point { x: self.x + dx, y: self.y } }
 }
 ```
 
@@ -314,7 +315,7 @@ type Matrix = [[f64]]
 
 ```kryos
 extern "C" {
-    fn write(fd: i32, buf: *const u8, len: u64) -> i64
+    fn write(fd: i32, buf: i64, len: i64) -> i64
 }
 ```
 
@@ -326,11 +327,13 @@ an `unsafe` block.
 ## 6. Pattern matching
 
 ```kryos
-match value {
-    0           => "zero",
-    1 | 2 | 3   => "small",
-    n if n < 10 => "single-digit",
-    _           => "other",
+fn classify(value: i64) -> str {
+    match value {
+        0           => "zero",
+        1 | 2 | 3   => "small",
+        n if n < 10 => "single-digit",
+        _           => "other",
+    }
 }
 ```
 
@@ -509,8 +512,9 @@ runtime's own unsafe code is catalogued in
 ### 11.1 Module structure
 
 Each `.kry` file is a module. A directory containing `mod.kry` is also a
-module. Submodules are accessed with `.`:
+module. Submodules are accessed with `::`:
 
+<!-- docs-example: skip -->
 ```kryos
 use net.http { HttpClient }
 use math.linalg.Matrix
@@ -528,6 +532,7 @@ A `pub` item is reachable from any module that `use`s the containing module.
 
 ### 11.3 `use`
 
+<!-- docs-example: skip -->
 ```kryos
 use std.io                  // import the module
 use net.http { HttpClient, get }   // selective import

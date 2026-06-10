@@ -21,7 +21,7 @@ fn is_prime(n: i64) -> bool {
     true
 }
 
-fn worker(id: i64, jobs: Channel, results: Channel) {
+fn worker(id: i64, jobs: i64, results: i64) {
     loop {
         let n = recv(jobs)
         if n < 0 { return }                 // -1 = shutdown signal

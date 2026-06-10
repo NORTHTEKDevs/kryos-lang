@@ -1,36 +1,27 @@
 # Cookbook 19 · Running subprocesses
 
-`std::cmd::cmd_run` shells out to a command, captures stdout, stderr, and exit code, and returns the bundle as a single string for easy parsing.
+`std::process::command` shells out to a command, captures stdout, stderr, and exit code, and returns a `CommandResult` struct.
 
 ## The program
 
 ```kryos
-use std::cmd::cmd_run
+use std::process::{command}
+use std::string::{split_lines}
 
 @capabilities(io, process)
 fn main() {
     // Quick git status check.
-    let bundle = cmd_run("git status --short")
-    let lines = split_lines(bundle)
-    if len(lines) < 2 {
-        println("(unexpected bundle format)")
-        return
-    }
-    let exit_code = parse_int(lines[0])
-    let stderr_len = parse_int(lines[1])
+    let result = command("git").arg("status").arg("--short").run()
 
-    if exit_code != 0 {
-        println("git failed with exit " + to_string(exit_code))
-        // stderr is in the next `stderr_len` bytes after the second \n.
+    if !result.success {
+        println("git failed with exit " + to_string(result.exit_code))
+        if len(result.stderr) > 0 {
+            println("stderr: " + result.stderr)
+        }
         return
     }
 
-    // stdout starts after the header + stderr_len bytes.
-    let header_len = len(lines[0]) + 1 + len(lines[1]) + 1
-    let body_start = header_len + stderr_len
-    let stdout_str = substr(bundle, body_start, len(bundle))
-
-    let changed = split_lines(stdout_str)
+    let changed = split_lines(result.stdout)
     let mut count: i64 = 0
     for line in changed {
         if len(line) > 0 { count = count + 1 }
@@ -39,22 +30,16 @@ fn main() {
 }
 ```
 
-## Bundle format
+## CommandResult fields
 
-`cmd_run` returns a single string:
-
-```
-<exit_code>\n<stderr_byte_count>\n<stderr_bytes><stdout_bytes>
-```
-
-- `exit_code` — decimal, `-1` if the process couldn't be waited on
-- `stderr_byte_count` — decimal, the length of the stderr block
-- stderr — the captured stderr (may be empty)
-- stdout — the captured stdout (may be empty)
+- `exit_code: i64` — the process exit code; `0` on success
+- `success: bool` — `true` when `exit_code == 0`
+- `stdout: str` — captured stdout
+- `stderr: str` — captured stderr
 
 ## Things to know
 
-- Argument splitting is shellword-style: respects `"..."` and `'...'` but no escape sequences. For complex commands write your own `Command` via FFI.
-- The subprocess inherits no stdin (closed via `Stdio::null`). For piping-in, use the lower-level `std::process` module.
-- Captures are unbounded — don't `cmd_run` something that outputs gigabytes. For streaming, use `std::process::Command` directly.
+- Chain `.arg("...")` calls to add arguments; never join args with spaces into a single string (no shell expansion).
+- The subprocess inherits no stdin. For piping-in, pass stdin via `.stdin_input("data")` before `.run()`.
+- Captures are unbounded — don't run commands that output gigabytes.
 - Capability required: `@capabilities(process)`.

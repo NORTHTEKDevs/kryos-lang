@@ -103,14 +103,14 @@ fn main() {
     for x in xs { total = total + x }
     println("sum = " + to_string(total))
 
-    let m = map_new()
-    map_set(m, "alice", 1)
-    map_set(m, "bob", 2)
-    println("alice = " + to_string(map_get(m, "alice")))
+    let mut m: map<str, i64> = {}
+    m["alice"] = 1
+    m["bob"] = 2
+    println("alice = " + to_string(m["alice"]))
 }
 ```
 
-Arrays are `[T]`. Maps are `map_*` stdlib functions. Both are heap-allocated and ARC-managed.
+Arrays are `[T]`. Maps are `map<K, V>` with literal `{}` syntax. Both are heap-allocated and ARC-managed.
 
 ---
 
@@ -165,7 +165,7 @@ fn area(s: Shape) -> f64 {
 }
 
 fn main() {
-    let shapes = [Shape::Circle(2.0), Shape::Rectangle(3.0, 4.0), Shape::Point]
+    let shapes = [Shape.Circle(2.0), Shape.Rectangle(3.0, 4.0), Shape.Point]
     for s in shapes {
         println("area = " + to_string(area(s)))
     }
@@ -256,9 +256,11 @@ fn main() {
 ## 11 · Async / await
 
 ```kryos
+use std::net::{http_get}
+
 async fn fetch_size(url: str) -> i64 {
-    let body = await http_get(url)
-    len(body)
+    let resp = await http_get(url)
+    len(resp.body)
 }
 
 async fn main() {
@@ -322,6 +324,7 @@ fn main() {
 
 ## 14 · Modules
 
+<!-- docs-example: skip -->
 ```kryos
 // in math/geometry.kry
 pub fn circle_area(r: f64) -> f64 {
@@ -329,6 +332,7 @@ pub fn circle_area(r: f64) -> f64 {
 }
 ```
 
+<!-- docs-example: skip -->
 ```kryos
 // in main.kry
 use math::geometry::circle_area

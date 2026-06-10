@@ -5,6 +5,8 @@ CSV is the most common interop format you'll touch. Kryos doesn't ship a CSV cra
 ## The program
 
 ```kryos
+use std::string::{split_lines}
+
 @capabilities(io)
 fn main() {
     let raw = file_read("data.csv")
@@ -34,7 +36,7 @@ fn parse_csv_line(line: str) -> [str] {
         let c = char_code(substr(line, i, i + 1))
         if c == 34 {  // " — quote
             in_quote = !in_quote
-        } elif c == 44 && !in_quote {  // ,
+        } elif c == 44 and !in_quote {  // ,
             out = push(out, field)
             field = ""
         } else {
@@ -49,14 +51,15 @@ fn parse_csv_line(line: str) -> [str] {
 fn print_row(header: [str], row: [str]) {
     let n = len(row)
     let mut i: i64 = 0
-    let mut line: str = "{ "
+    let mut line: str = "{{ "
     while i < n {
-        let key = if i < len(header) { header[i] } else { "field_" + to_string(i) }
+        let mut key: str = "field_" + to_string(i)
+        if i < len(header) { key = header[i] }
         if i > 0 { line = line + ", " }
         line = line + key + ": " + row[i]
         i = i + 1
     }
-    line = line + " }"
+    line = line + " }}"
     println(line)
 }
 ```

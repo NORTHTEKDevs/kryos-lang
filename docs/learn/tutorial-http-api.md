@@ -28,8 +28,9 @@ This creates `kryos.toml`, `src/main.kry` (with a basic TCP accept loop), `tests
 Replace `src/main.kry` with a request-handling skeleton:
 
 ```kryos
-use std::net::{tcp_listen, accept, send, recv_str, close}
-use std::log::{log_emit, log_set_level}
+use std::net::{net_listen, http_get}
+use std::string::{split_lines}
+use std::log::{info, warn}
 
 struct Request {
     method: str,
@@ -39,18 +40,16 @@ struct Request {
 
 @capabilities(net, io)
 fn main() {
-    log_set_level(2)  // INFO
-    let listener = tcp_listen("127.0.0.1", 8080)
-    log_emit(2, "listening", "addr=127.0.0.1:8080")
+    info("listening on 127.0.0.1:8080")
+    let listener = net_listen("127.0.0.1", 8080)
 
     loop {
-        let conn = accept(listener)
-        if conn < 0 { continue }
-        let raw = recv_str(conn, 8192)
+        let conn = listener.accept()
+        let raw = conn.read_all()
         let req = parse_request(raw)
         let resp = route(req)
-        send(conn, resp)
-        close(conn)
+        conn.write_all(resp)
+        conn.close()
     }
 }
 
@@ -66,37 +65,34 @@ fn parse_request(raw: str) -> Request {
     let method = substr(first, 0, method_end)
     let path = substr(first, path_start, path_end)
 
-    // Body comes after the empty line.
     let mut body: str = ""
     let mut in_body: bool = false
     let mut i: i64 = 1
     while i < len(lines) {
         if in_body { body = body + lines[i] }
-        if len(lines[i]) == 0 && !in_body { in_body = true }
+        if len(lines[i]) == 0 and !in_body { in_body = true }
         i = i + 1
     }
     return Request { method: method, path: path, body: body }
 }
 
 fn route(req: Request) -> str {
-    if req.path == "/" && req.method == "GET" {
+    if req.path == "/" and req.method == "GET" {
         return http_ok("text/plain", "todos here")
     }
     return http_404()
 }
 
 fn http_ok(content_type: str, body: str) -> str {
-    return "HTTP/1.1 200 OK\r\n" +
-           "Content-Type: " + content_type + "\r\n" +
-           "Content-Length: " + to_string(len(body)) + "\r\n" +
-           "Connection: close\r\n\r\n" + body
+    return "HTTP/1.1 200 OK\r\nContent-Type: " + content_type +
+           "\r\nContent-Length: " + to_string(len(body)) +
+           "\r\nConnection: close\r\n\r\n" + body
 }
 
 fn http_404() -> str {
     let body = "404 not found\n"
-    return "HTTP/1.1 404 Not Found\r\n" +
-           "Content-Length: " + to_string(len(body)) + "\r\n" +
-           "Connection: close\r\n\r\n" + body
+    return "HTTP/1.1 404 Not Found\r\nContent-Length: " +
+           to_string(len(body)) + "\r\nConnection: close\r\n\r\n" + body
 }
 
 fn index_of_char(s: str, c: str) -> i64 {
@@ -115,11 +111,11 @@ fn index_of_char(s: str, c: str) -> i64 {
 For `POST /todos` we'll accept `{"title": "..."}` and store it. We won't fully implement state mutation in this snippet (Kryos's mutex story is the next add) — for now show the JSON parse path:
 
 ```kryos
-use std::json::{json_parse, json_string_field}
+use std::json::{parse, get, to_str}
 
 fn handle_create(req: Request) -> str {
-    let obj = json_parse(req.body)
-    let title = json_string_field(obj, "title")
+    let obj = parse(req.body)
+    let title = to_str(get(obj, "title"))
     if len(title) == 0 {
         return http_400("title required")
     }
@@ -141,17 +137,18 @@ fn http_400(msg: str) -> str {
 
 Add a token bucket via `std::ratelimit`. Refuse 429s when the bucket is empty.
 
+<!-- docs-example: skip -->
 ```kryos
-use std::ratelimit::{ratelimit_init, ratelimit_try_acquire}
-use std::datetime::time_now_nanos
+use std::ratelimit::{new_bucket, try_acquire}
 
-let mut bucket: [i64] = [0, 0, 0, 0]
-ratelimit_init(bucket, 100, 50, time_now_nanos())  // 100 tokens cap, 50/sec refill
+// Before the accept loop (in main):
+let now_ns = time_now_secs() * 1000000000
+let mut bucket = new_bucket(100, 50, now_ns)  // 100 tokens cap, 50/sec refill
 
-// In the accept loop:
-if ratelimit_try_acquire(bucket, time_now_nanos()) == 0 {
-    send(conn, http_429())
-    close(conn)
+// Inside the accept loop:
+if !try_acquire(bucket, time_now_secs() * 1000000000) {
+    conn.write_all(http_429())
+    conn.close()
     continue
 }
 ```
@@ -160,6 +157,7 @@ if ratelimit_try_acquire(bucket, time_now_nanos()) == 0 {
 
 In `tests/api.kry`:
 
+<!-- docs-example: skip -->
 ```kryos
 @test
 fn parses_simple_request() {

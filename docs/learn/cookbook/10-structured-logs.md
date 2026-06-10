@@ -17,7 +17,8 @@ You're staring at a million-line `app.log` of JSONL records. You want to group b
 ## The program
 
 ```kryos
-use std::json::{json_parse, json_string_field, json_int_field}
+use std::json::{parse, get, to_str, to_int}
+use std::string::{split_lines}
 
 @capabilities(io)
 fn main() {
@@ -35,9 +36,9 @@ fn main() {
 
     for line in lines {
         if len(line) == 0 { continue }
-        let rec = json_parse(line)
-        let level = json_string_field(rec, "level")
-        let ts = json_int_field(rec, "ts")
+        let rec = parse(line)
+        let level = to_str(get(rec, "level"))
+        let ts = to_int(get(rec, "ts"))
 
         if first {
             earliest = ts

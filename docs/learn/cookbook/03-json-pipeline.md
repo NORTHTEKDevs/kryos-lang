@@ -17,23 +17,25 @@ Input file `users.json`:
 Save as `pipeline.kry`:
 
 ```kryos
+use std::json::{parse, get, get_index, to_str, to_int, length}
+
 @capabilities(io)
 fn main() {
     let body = file_read("users.json")
-    let users = json_parse(body)            // a JSON handle
+    let users = parse(body)
 
-    let total = json_array_len(users)
-    let mut admins_kept = []
+    let total = length(users)
+    let mut admins_kept: [str] = []
 
     let mut i = 0
     while i < total {
-        let user = json_array_get(users, i)
-        let role = json_string_field(user, "role")
+        let user = get_index(users, i)
+        let role = to_str(get(user, "role"))
         if role == "admin" {
-            let name = json_string_field(user, "name")
-            let age  = json_int_field(user, "age")
-            let entry = "{\"name\":\"" + name + "\",\"age\":" + to_string(age) + "}"
-            admins_kept = array_push(admins_kept, entry)
+            let name = to_str(get(user, "name"))
+            let age  = to_int(get(user, "age"))
+            let entry = "name=" + name + " age=" + to_string(age)
+            admins_kept = push(admins_kept, entry)
         }
         i = i + 1
     }

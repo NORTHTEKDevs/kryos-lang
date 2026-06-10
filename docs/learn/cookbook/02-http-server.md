@@ -7,32 +7,16 @@ Build a tiny JSON API. Two endpoints: `GET /health` and `POST /echo`. Handles co
 Save as `server.kry`:
 
 ```kryos
-@capabilities(net, io)
-fn handle(conn: TcpConn) {
-    let req = http_read_request(conn)
-
-    if req.method == "GET" and req.path == "/health" {
-        http_write_response(conn, 200, "application/json", "{\"ok\":true}")
-    } else if req.method == "POST" and req.path == "/echo" {
-        let body = req.body
-        let resp = "{\"echoed\":\"" + json_escape(body) + "\"}"
-        http_write_response(conn, 200, "application/json", resp)
-    } else {
-        http_write_response(conn, 404, "application/json", "{\"error\":\"not found\"}")
-    }
-
-    conn_close(conn)
-}
+use std::http::{new_router, route_get, route_post, http_serve, json_response, text_response}
 
 @capabilities(net, io)
 fn main() {
-    let listener = tcp_listen("127.0.0.1:8080")
+    let router = new_router()
+    let router = route_get(router, "/health", |req| json_response(200, "{{\"ok\":true}}"))
+    let router = route_post(router, "/echo", |req|
+        json_response(200, "{{\"echoed\":\"" + req.body + "\"}}"))
     println("listening on http://127.0.0.1:8080")
-
-    loop {
-        let conn = tcp_accept(listener)
-        spawn { handle(conn) }
-    }
+    http_serve(8080, router)
 }
 ```
 

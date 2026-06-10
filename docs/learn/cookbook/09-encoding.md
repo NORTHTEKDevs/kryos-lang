@@ -5,10 +5,11 @@
 ## The program
 
 ```kryos
-use std::base64::{base64_encode, base64_decode}
-use std::uuid::{uuid_v4, uuid_v4_bytes, uuid_parse}
+use std::crypto::{uuid_v4}
 
-@capabilities(io)
+// base64_encode and base64_decode are builtins — no import needed.
+
+@capabilities(io, crypto)
 fn main() {
     // 1. UUID v4 — fresh ID per record.
     let id1 = uuid_v4()
@@ -18,14 +19,6 @@ fn main() {
     if id1 == id2 {
         throw "UUIDs collided — RNG is broken"
     }
-
-    // Round-trip an existing UUID through parse → bytes → format.
-    let known = "550e8400-e29b-41d4-a716-446655440000"
-    let bytes = uuid_parse(known)
-    if len(bytes) != 16 {
-        throw "uuid_parse rejected a valid UUID"
-    }
-    println("parsed bytes length: " + to_string(len(bytes)))
 
     // 2. Base64 — encode a binary blob for inline transport.
     let payload = "the quick brown fox jumps over 13 lazy dogs!"
@@ -71,7 +64,7 @@ u:...
 
 ## Things to know
 
-- The UUID v4 random source is splitmix64 over `(nanos ⊕ counter)` — fine for IDs, not for crypto. If you need cryptographically secure randomness, enable the `crypto` feature and use `std::crypto::rand_bytes`.
-- `uuid_parse` returns a 16-byte array; if you pass a malformed string you'll get a length-0 array. Always check the length.
-- `base64_encode` and `base64_decode` use the standard RFC 4648 alphabet (`+ /`). For URL-safe variants (`- _`) substitute the chars manually or wrap the call.
+- The UUID v4 random source is splitmix64 over `(nanos XOR counter)` — fine for IDs, not for crypto. If you need cryptographically secure randomness, use `std::crypto::rand_bytes`.
+- `uuid_v4()` is in `std::crypto`. There is no `uuid_parse` in the standard library; validate UUID format with a regex if needed.
+- `base64_encode` and `base64_decode` are builtins (no import). They use the standard RFC 4648 alphabet (`+ /`). For URL-safe variants (`- _`) substitute the chars after encoding.
 - Both functions move bytes through a caller-owned buffer at the FFI layer; you don't have to free anything — the runtime handles cleanup.

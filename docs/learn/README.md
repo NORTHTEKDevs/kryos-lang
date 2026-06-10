@@ -17,7 +17,7 @@ Pick the route that matches your system. The full guide is [QUICKSTART.md](../..
 Sanity check:
 
 ```bash
-kryos --version   # → kryos 3.3.0-rc.1 (or newer)
+kryos --version   # → kryos 4.43.0 (or newer)
 ```
 
 ---

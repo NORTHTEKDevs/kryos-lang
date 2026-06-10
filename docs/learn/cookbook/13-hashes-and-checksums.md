@@ -5,18 +5,18 @@
 ## The program
 
 ```kryos
-use std::hash::{hash_fnv1a64, hash_djb2, hash_crc32}
+use std::hash::{fnv1a64, djb2, crc32}
 
 @capabilities(io)
 fn main() {
     let input = "the quick brown fox"
 
-    println("FNV-1a 64: " + to_string(hash_fnv1a64(input)))
-    println("DJB2:      " + to_string(hash_djb2(input)))
-    println("CRC32:     " + to_hex(hash_crc32(input)))
+    println("FNV-1a 64: " + to_string(fnv1a64(input)))
+    println("DJB2:      " + to_string(djb2(input)))
+    println("CRC32:     " + to_hex(crc32(input)))
 
     // Content-id pattern: derive a short stable ID from a value.
-    let id = "doc-" + to_hex(hash_fnv1a64(input))
+    let id = "doc-" + to_hex(fnv1a64(input))
     println("doc id:    " + id)
 }
 

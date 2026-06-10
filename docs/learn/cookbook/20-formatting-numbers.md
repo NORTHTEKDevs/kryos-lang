@@ -5,18 +5,18 @@
 ## The program
 
 ```kryos
-use std::numfmt::{fmt_hex, fmt_bin, fmt_decimal_padded, fmt_bytes}
+use std::numfmt::{hex, bin, decimal_padded, bytes}
 
 @capabilities(io)
 fn main() {
-    println("hex:   " + fmt_hex(255))               // → 0xff
-    println("bin:   " + fmt_bin(5))                 // → 0b101
-    println("pad:   " + fmt_decimal_padded(42, 5))  // → 00042
+    println("hex:   " + hex(255))               // → 0xff
+    println("bin:   " + bin(5))                 // → 0b101
+    println("pad:   " + decimal_padded(42, 5))  // → 00042
 
-    println("100 B size:    " + fmt_bytes(100))
-    println("1500 B size:   " + fmt_bytes(1500))
-    println("1.5 MB size:   " + fmt_bytes(1572864))
-    println("1 GB size:     " + fmt_bytes(1073741824))
+    println("100 B size:    " + bytes(100))
+    println("1500 B size:   " + bytes(1500))
+    println("1.5 MB size:   " + bytes(1572864))
+    println("1 GB size:     " + bytes(1073741824))
 }
 ```
 

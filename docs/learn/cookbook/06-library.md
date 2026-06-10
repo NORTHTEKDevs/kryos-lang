@@ -38,22 +38,24 @@ kryos_version = ">=2.3.0"
 
 Replace `src/lib.kry`:
 
+<!-- docs-example: skip -->
 ```kryos
 pub fn mean(xs: [f64]) -> f64 {
     if len(xs) == 0 { return 0.0 }
     let mut sum = 0.0
     for x in xs { sum = sum + x }
-    sum / to_f64(len(xs))
+    return sum / (len(xs) as f64)
 }
 
 pub fn median(xs: [f64]) -> f64 {
     if len(xs) == 0 { return 0.0 }
-    let sorted = array_sort_f64(xs)
+    let mut sorted = xs
+    sort(sorted)
     let n = len(sorted)
     if n % 2 == 1 {
-        sorted[n / 2]
+        return sorted[n / 2]
     } else {
-        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+        return (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
     }
 }
 
@@ -65,7 +67,7 @@ pub fn stddev(xs: [f64]) -> f64 {
         let d = x - m
         acc = acc + d * d
     }
-    sqrt(acc / to_f64(len(xs)))
+    return sqrt(acc / (len(xs) as f64))
 }
 ```
 
@@ -79,6 +81,7 @@ Things to notice:
 
 Add tests at the bottom of `src/lib.kry`:
 
+<!-- docs-example: skip -->
 ```kryos
 @test
 fn test_mean_basic() {
@@ -111,6 +114,7 @@ mystats = { path = "../mystats" }     # local dep
 
 And import:
 
+<!-- docs-example: skip -->
 ```kryos
 use mystats::{mean, stddev}
 

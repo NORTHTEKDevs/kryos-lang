@@ -232,6 +232,34 @@ jobs:
           echo "$out" | grep -q "stage 1 mini-parser: ok" \
             || { echo "expected 'stage 1 mini-parser: ok' marker in stdout"; exit 1; }
 
+  docs-examples:
+    # The manual's code blocks are part of the contract: every self-contained
+    # ```kryos block in docs/learn/**, the numbered chapters, QUICKSTART.md,
+    # and CLAUDE.md must type-check against the current compiler. Three real
+    # compiler bugs were found in one day by running examples the docs
+    # promised worked (see shift step 222).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "compiler"
+
+      - name: Install native deps
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y libsqlite3-dev libssl-dev pkg-config
+
+      - name: Build (release)
+        working-directory: compiler
+        run: cargo build --release -j 2
+
+      - name: Check every docs kryos block
+        run: python3 tools/docs-examples/check.py
+
   registry-smoke:
     # Real HTTP roundtrip against an ephemeral registry server. Proves
     # the protocol path (/v1/health, /v1/packages/<name>, /v1/packages/

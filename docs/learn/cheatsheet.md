@@ -78,10 +78,10 @@ enum Shape {
 ## Strings
 
 ```kryos
+use std::string::{split_lines}
 let n = 42
 let msg = "n = " + to_string(n)             // no interpolation; use +
 let parts = split_lines(file_read("x.txt"))
-let upper = "hi".to_uppercase()
 let has_e = contains("hello", "e")
 ```
 
@@ -112,9 +112,9 @@ match divide(10, 2) {
 ## Imports
 
 ```kryos
-use std::json::{json_parse, json_string_field}
-use std::math::{abs, min, max, sqrt}
-use std::datetime::{time_now_secs}
+use std::json::{parse, get, to_str}
+use std::re::{is_match, find, replace_all}
+use std::hash::{fnv1a64}
 ```
 
 ## Capabilities
@@ -133,14 +133,10 @@ fn fetch_and_log(url: str) { ... }
 ## Concurrency
 
 ```kryos
-use std::chan::{chan_new, chan_send, chan_recv}
-
 fn main() {
-    let ch = chan_new()
-    spawn(fn () {
-        chan_send(ch, 42)
-    })
-    let v = chan_recv(ch)
+    let ch = chan()
+    spawn { send(ch, 42) }
+    let v = recv(ch)
     println(to_string(v))
 }
 ```
@@ -148,8 +144,11 @@ fn main() {
 ## Async
 
 ```kryos
+use std::net::{http_get}
+
 async fn fetch(url: str) -> str {
-    return http_get(url)
+    let resp = await http_get(url)
+    return resp.body
 }
 
 @capabilities(net)

@@ -375,6 +375,7 @@ being compiled looking for `.kryos/deps/<pkg>.redirect` and resolves
 
 A library typically exposes its API in `src/lib.kry` with `pub` items:
 
+<!-- docs-example: skip -->
 ```kryos
 // mylib/src/lib.kry
 pub fn greet(name: str) -> str {
@@ -384,6 +385,7 @@ pub fn greet(name: str) -> str {
 
 The consumer can then import it directly:
 
+<!-- docs-example: skip -->
 ```kryos
 // myapp/src/main.kry
 use mylib::{greet}

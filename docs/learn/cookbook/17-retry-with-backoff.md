@@ -5,7 +5,7 @@ Network calls fail. The pattern is: try once, on failure wait Nms, retry, double
 ## The program
 
 ```kryos
-use std::datetime::time_sleep_millis
+// sleep_ms(ms) is a builtin — no import needed.
 
 @capabilities(io, net)
 fn main() {
@@ -29,7 +29,7 @@ fn with_retry(max_attempts: i64, base_ms: i64, op: fn() -> bool) -> bool {
         attempt = attempt + 1
         if attempt >= max_attempts { break }
         println("attempt " + to_string(attempt) + " failed, waiting " + to_string(delay) + "ms")
-        time_sleep_millis(delay)
+        sleep_ms(delay)
         delay = delay * 2
         // Cap at 30 seconds
         if delay > 30000 { delay = 30000 }
@@ -48,10 +48,10 @@ fn attempt_request() -> bool {
 
 ## Things to know
 
-- `time_sleep_millis(N)` is in `std::datetime`. It blocks the current thread.
+- `sleep_ms(N)` is a builtin. It blocks the current thread.
 - Cap the maximum delay (30s in this recipe). Unbounded growth = bad UX.
-- Add jitter for thundering-herd scenarios: `delay + (epoch_secs % 50)`.
-- For async contexts, use `await time_sleep_millis(...)` — it yields to
+- Add jitter for thundering-herd scenarios: `delay + (time_now_millis() % 50)`.
+- For async contexts, use `await sleep_ms(...)` — it yields to
   the scheduler instead of blocking the OS thread.
 - Distinguish retriable errors (5xx, timeouts, connection refused) from
   non-retriable (4xx) — don't burn retries on permanent failures.
