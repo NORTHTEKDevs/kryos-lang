@@ -929,6 +929,7 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_budget_charge_tokens(i64)");
         self.emit_line("declare i64 @kryos_budget_remaining_tokens()");
         self.emit_line("declare i64 @kryos_budget_remaining_calls()");
+        self.emit_line("declare i64 @kryos_string_compare(ptr, ptr)");
         // ---------------------------------------------------------------
         // Auto-generated runtime symbol declarations (Class A' fix).
         //
@@ -3339,6 +3340,43 @@ impl LlvmCodegen {
                             dest.0
                         ));
                     }
+                } else if is_string
+                    && matches!(
+                        op,
+                        MirBinOp::Lt | MirBinOp::Gt | MirBinOp::LtEq | MirBinOp::GtEq
+                    )
+                {
+                    // String ordering: kryos_string_compare(a, b) -> -1/0/+1,
+                    // then an integer compare against 0. Without this arm the
+                    // generic path compared the HANDLE POINTERS ("a" < "b"
+                    // was whichever allocated lower — Cranelift has had the
+                    // dispatch since v1).
+                    let left_val = self.operand_to_llvm(left, func);
+                    let left_ty = self.operand_type(left, func);
+                    let right_val = self.operand_to_llvm(right, func);
+                    let right_ty = self.operand_type(right, func);
+                    let left_ptr = self.coerce_value(&left_val, &left_ty, "ptr");
+                    let right_ptr = self.coerce_value(&right_val, &right_ty, "ptr");
+                    let cmp = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {cmp} = call i64 @kryos_string_compare(ptr {left_ptr}, ptr {right_ptr})"
+                    ));
+                    let pred = match op {
+                        MirBinOp::Lt => "slt",
+                        MirBinOp::Gt => "sgt",
+                        MirBinOp::LtEq => "sle",
+                        _ => "sge",
+                    };
+                    let res = if is_mutable {
+                        self.next_temp()
+                    } else {
+                        format!("%_{}", dest.0)
+                    };
+                    self.emit_line(&format!("  {res} = icmp {pred} i64 {cmp}, 0"));
+                    self.track_type(&res, "i1");
+                    if is_mutable {
+                        self.emit_line(&format!("  store i1 {res}, ptr %_{}.addr", dest.0));
+                    }
                 } else if is_string && (*op == MirBinOp::Eq || *op == MirBinOp::Neq) {
                     let left_val = self.operand_to_llvm(left, func);
                     let left_ty = self.operand_type(left, func);
@@ -3371,8 +3409,36 @@ impl LlvmCodegen {
                     let mut left_val = self.operand_to_llvm(left, func);
                     let mut right_val = self.operand_to_llvm(right, func);
                     let is_float = self.operand_is_float(left, func);
-                    let operand_ty = self.operand_type(left, func);
-                    let right_ty = self.operand_type(right, func);
+                    let mut operand_ty = self.operand_type(left, func);
+                    let mut right_ty = self.operand_type(right, func);
+                    // Mixed integer widths widen to the WIDEST side (never
+                    // truncate): coercing an i64 mask constant down to the
+                    // i8 of a u8 operand made `x & 255` a no-op and defined
+                    // the dest at the wrong width vs its declared i64 local.
+                    let int_w = |t: &str| -> Option<u8> {
+                        match t {
+                            "i8" => Some(1),
+                            "i16" => Some(2),
+                            "i32" => Some(3),
+                            "i64" => Some(4),
+                            _ => None,
+                        }
+                    };
+                    if !is_float {
+                        if let (Some(lw), Some(rw)) = (int_w(&operand_ty), int_w(&right_ty)) {
+                            if lw != rw {
+                                let wide = if lw > rw { operand_ty.clone() } else { right_ty.clone() };
+                                if operand_ty != wide {
+                                    left_val = self.coerce_value(&left_val, &operand_ty, &wide);
+                                    operand_ty = wide.clone();
+                                }
+                                if right_ty != wide {
+                                    right_val = self.coerce_value(&right_val, &right_ty, &wide);
+                                    right_ty = wide;
+                                }
+                            }
+                        }
+                    }
                     // Both operands must share LLVM type for `add`/`sub`/etc.
                     // The left operand defines the canonical type; coerce
                     // right to match. This catches the common case of mixing
@@ -3417,7 +3483,30 @@ impl LlvmCodegen {
                         let coerced = self.coerce_value(&tmp, &operand_ty, &dest_ty);
                         self.emit_line(&format!("  store {dest_ty} {coerced}, ptr %_{}.addr", dest.0));
                     } else {
-                        self.emit_binop(dest, *op, &left_val, &right_val, &operand_ty, is_float)?;
+                        // Immutable dest: when the (possibly widened) op type
+                        // differs from the declared local type, compute into a
+                        // temp and define %_N at dest_ty — otherwise call
+                        // sites that pass %_N at its declared width emit
+                        // mismatched IR. Comparisons always produce i1 and
+                        // match a bool dest.
+                        let is_cmp = matches!(
+                            op,
+                            MirBinOp::Eq
+                                | MirBinOp::Neq
+                                | MirBinOp::Lt
+                                | MirBinOp::Gt
+                                | MirBinOp::LtEq
+                                | MirBinOp::GtEq
+                        );
+                        if !is_cmp && operand_ty != dest_ty {
+                            let tmp = self.next_temp();
+                            self.emit_binop_to(&tmp, *op, &left_val, &right_val, &operand_ty, is_float)?;
+                            let coerced = self.coerce_value(&tmp, &operand_ty, &dest_ty);
+                            let name = format!("%_{}", dest.0);
+                            self.emit_identity_copy(&name, &dest_ty, &coerced);
+                        } else {
+                            self.emit_binop(dest, *op, &left_val, &right_val, &operand_ty, is_float)?;
+                        }
                     }
                 }
             }
@@ -5831,6 +5920,27 @@ impl LlvmCodegen {
         ty: &str,
         is_float: bool,
     ) -> Result<(), CodegenError> {
+        // Operands whose tracked SSA type differs from the op's chosen type
+        // (e.g. an i16 local compared against an i64 literal — the emitter
+        // picks i64 but the load produced i16) must be coerced first or
+        // clang rejects the module. coerce_value no-ops when types agree;
+        // signed narrows sign-extend, matching Cranelift's i64 slots.
+        let left_owned;
+        let mut left = left;
+        if let Some(actual) = self.actual_type(left) {
+            if actual != ty && !is_float {
+                left_owned = self.coerce_value(left, &actual, ty);
+                left = &left_owned;
+            }
+        }
+        let right_owned;
+        let mut right = right;
+        if let Some(actual) = self.actual_type(right) {
+            if actual != ty && !is_float {
+                right_owned = self.coerce_value(right, &actual, ty);
+                right = &right_owned;
+            }
+        }
         // Runtime div-by-zero guard for integer division/modulo. A bare
         // sdiv/srem is undefined behaviour on a zero divisor under LLVM (it
         // silently produced garbage in release builds), whereas the Cranelift
@@ -6379,9 +6489,14 @@ impl LlvmCodegen {
         } else if !src_is_ptr && dst_is_ptr {
             "inttoptr"
         } else {
-            // int -> int: sext or trunc.
+            // int -> int: sext or trunc. Booleans widen with ZERO extension —
+            // `true as i64` must be 1, not -1 (sext i1 1 = -1).
             if llvm_type_width(&dst_ty) > llvm_type_width(&src_ty) {
-                "sext"
+                if src_ty == "i1" {
+                    "zext"
+                } else {
+                    "sext"
+                }
             } else if llvm_type_width(&dst_ty) < llvm_type_width(&src_ty) {
                 "trunc"
             } else {
@@ -6709,6 +6824,28 @@ impl LlvmCodegen {
                 "double" | "float" => "0.0".to_string(),
                 _ => "0".to_string(),
             };
+        }
+        // Generic integer width conversion: the pair table below misses some
+        // combinations (i16<->i64 had none at all). Route every intN->intM
+        // through sext/trunc here; i1 stays with its dedicated arms.
+        let int_rank = |t: &str| -> Option<u8> {
+            match t {
+                "i8" => Some(1),
+                "i16" => Some(2),
+                "i32" => Some(3),
+                "i64" => Some(4),
+                _ => None,
+            }
+        };
+        if let (Some(rf), Some(rt)) = (int_rank(from_type), int_rank(to_type)) {
+            let tmp = self.next_temp();
+            if rf < rt {
+                self.emit_line(&format!("  {tmp} = sext {from_type} {value} to {to_type}"));
+            } else {
+                self.emit_line(&format!("  {tmp} = trunc {from_type} {value} to {to_type}"));
+            }
+            self.track_type(&tmp, to_type);
+            return tmp;
         }
         let tmp = self.next_temp();
         match (from_type, to_type) {

@@ -1,0 +1,61 @@
+// Conformance: ownership, moves, Copy primitives, @copy struct semantics.
+// (Reference chapters 6 + gotcha #23 guarantees.)
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+@copy
+struct Pair {
+    a: i64,
+    b: i64,
+}
+
+@copy
+struct Bag {
+    name: str,
+    items: [i64],
+}
+
+fn mutate_pair(p: Pair) {
+    p.a = 999
+}
+
+fn consume(s: str) -> i64 {
+    return len(s)
+}
+
+fn main() {
+    // Primitives are Copy: usable after passing.
+    let n = 5
+    let n2 = n
+    expect(n + n2 == 10, "i64 copy on assignment")
+    let got = consume("hello")
+    expect(got == 5, "str moves into consume")
+
+    // All-scalar @copy struct: assignment copies, mutation does not alias.
+    let p = Pair { a: 1, b: 2 }
+    let mut q = p
+    q.a = 100
+    expect(p.a == 1 and q.a == 100, "@copy scalar assignment decouples")
+
+    // All-scalar @copy param: pass-by-value on both backends (gotcha #23).
+    mutate_pair(p)
+    expect(p.a == 1, "@copy scalar param does not alias caller")
+
+    // Heap-bearing @copy assignment: deep copy on both backends (step 224).
+    let start: [i64] = []
+    let mut b1 = Bag { name: "orig", items: start }
+    b1.items = push(b1.items, 7)
+    let mut b2 = b1
+    b2.items = push(b2.items, 8)
+    b2.name = "copy"
+    expect(len(b1.items) == 1, "@copy deep: source array unaffected")
+    expect(len(b2.items) == 2, "@copy deep: copy keeps its push")
+    expect(b1.name == "orig" and b2.name == "copy", "@copy deep: str slots decouple")
+
+    println("conformance ownership: PASS")
+}

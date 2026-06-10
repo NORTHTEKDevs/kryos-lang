@@ -3391,6 +3391,120 @@ struct TupleBinding {
     element_patterns: Vec<ast::Pattern>,
 }
 
+
+/// Sequential lowering for scalar matches with guards and/or binding arms:
+/// each arm becomes test -> (guard ->) body, falling through to the next
+/// arm's test. Non-exhaustive matches fall through to a zero result, the
+/// same default the switch path uses.
+fn lower_match_sequential(
+    ctx: &mut LoweringContext,
+    subj_op: Operand,
+    subj_ty: MirType,
+    arms: &[ast::MatchArm],
+    result_local: LocalId,
+    merge_bb: BlockId,
+) -> Operand {
+    // Pin the subject so every test reads the same value.
+    let subj_local = ctx.alloc_temp(subj_ty);
+    ctx.emit(Instruction::Assign {
+        dest: subj_local,
+        value: RValue::Use(subj_op),
+    });
+
+    for arm in arms {
+        let body_bb = ctx.alloc_block();
+        let next_bb = ctx.alloc_block();
+
+        // 1. Pattern test / binding in the current block.
+        let matched: Option<Operand> = match &arm.pattern {
+            ast::Pattern::Literal { expr, .. } => {
+                let lit_op = lower_expr_to_operand(ctx, expr);
+                let cmp = ctx.alloc_temp(MirType::Bool);
+                ctx.emit(Instruction::Assign {
+                    dest: cmp,
+                    value: RValue::BinOp {
+                        op: MirBinOp::Eq,
+                        left: Operand::Local(subj_local),
+                        right: lit_op,
+                    },
+                });
+                Some(Operand::Local(cmp))
+            }
+            ast::Pattern::Ident { name, mutable, .. } => {
+                let bound = ctx.alloc_local(
+                    Some(name.clone()),
+                    ctx.locals
+                        .iter()
+                        .find(|l| l.id == subj_local)
+                        .map(|l| l.ty.clone())
+                        .unwrap_or(MirType::I64),
+                    *mutable,
+                );
+                ctx.emit(Instruction::Assign {
+                    dest: bound,
+                    value: RValue::Use(Operand::Local(subj_local)),
+                });
+                None // always matches
+            }
+            // Wildcard and anything else: always matches, binds nothing.
+            _ => None,
+        };
+
+        // 2. Combine with the guard.
+        let cond: Option<Operand> = match (&matched, &arm.guard) {
+            (Some(m), None) => Some(m.clone()),
+            (None, None) => None,
+            (None, Some(g)) => Some(lower_expr_to_operand(ctx, g)),
+            (Some(m), Some(g)) => {
+                // Pattern test first, then the guard in its own block so the
+                // guard only evaluates when the pattern matched.
+                let guard_bb = ctx.alloc_block();
+                ctx.finish_block(
+                    Terminator::Branch {
+                        cond: m.clone(),
+                        then_block: guard_bb,
+                        else_block: next_bb,
+                    },
+                    guard_bb,
+                );
+                Some(lower_expr_to_operand(ctx, g))
+            }
+        };
+
+        match cond {
+            Some(c) => {
+                ctx.finish_block(
+                    Terminator::Branch {
+                        cond: c,
+                        then_block: body_bb,
+                        else_block: next_bb,
+                    },
+                    body_bb,
+                );
+            }
+            None => {
+                ctx.finish_block(Terminator::Goto(body_bb), body_bb);
+            }
+        }
+
+        // 3. Arm body.
+        let body_val = lower_expr_to_operand(ctx, &arm.body);
+        ctx.emit(Instruction::Assign {
+            dest: result_local,
+            value: RValue::Use(body_val),
+        });
+        ctx.finish_block(Terminator::Goto(merge_bb), next_bb);
+    }
+
+    // Fallthrough: nothing matched.
+    ctx.emit(Instruction::Assign {
+        dest: result_local,
+        value: RValue::Use(Operand::Constant(Constant::Int(0))),
+    });
+    ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
+    Operand::Local(result_local)
+}
+
 fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::MatchArm]) -> Operand {
     let subj_op = lower_expr_to_operand(ctx, subject);
     // Infer the result type from the first arm's body expression.
@@ -3435,6 +3549,30 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
         .unwrap_or(MirType::I64);
     let result_local = ctx.alloc_temp(result_ty);
     let merge_bb = ctx.alloc_block();
+
+    // Scalar matches containing guards or binding arms cannot go through the
+    // switch-table path below: it silently turned binding arms into a
+    // "default" that a later wildcard OVERWROTE, and it never lowered guards
+    // at all (`x if x % 5 == 0` fell to the wildcard). Lower those as a
+    // sequential test chain instead. Enum/struct/tuple matches keep the
+    // switch path (guards there are still unsupported and now rejected by
+    // exhaustiveness of this gate going first).
+    {
+        let subj_ty_early = infer_expr_type(ctx, subject);
+        let structured = matches!(subj_ty_early, MirType::Enum(_))
+            || arms.iter().any(|a| {
+                matches!(
+                    &a.pattern,
+                    ast::Pattern::Enum { .. } | ast::Pattern::Struct { .. } | ast::Pattern::Tuple { .. }
+                )
+            });
+        let needs_sequential = arms.iter().any(|a| {
+            a.guard.is_some() || matches!(&a.pattern, ast::Pattern::Ident { .. })
+        });
+        if needs_sequential && !structured {
+            return lower_match_sequential(ctx, subj_op, subj_ty_early, arms, result_local, merge_bb);
+        }
+    }
 
     // Detect enum match: either explicit Pattern::Enum, or bare ident patterns
     // where the subject type is an enum (e.g., `match c { Red => ... }`).
@@ -4759,8 +4897,59 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 }
             }
 
-            let lhs = lower_expr_to_operand(ctx, left);
-            let rhs = lower_expr_to_operand(ctx, right);
+            let mut lhs = lower_expr_to_operand(ctx, left);
+            let mut rhs = lower_expr_to_operand(ctx, right);
+            // Narrow UNSIGNED operands in comparisons: values are stored in
+            // sign-extended i64 slots, so `let b: u8 = 255; b == 255` compared
+            // -1 to 255 and was false (printing was fixed in step 198, the
+            // compare path was not). Mask each unsigned-narrow side back to
+            // its value range before the compare; the masked values are
+            // nonnegative, so the signed compare is then correct for every
+            // operator including < and >.
+            if matches!(
+                op,
+                ast::BinOp::Eq
+                    | ast::BinOp::Neq
+                    | ast::BinOp::Lt
+                    | ast::BinOp::Gt
+                    | ast::BinOp::LtEq
+                    | ast::BinOp::GtEq
+            ) {
+                let unsigned_mask = |t: &MirType| -> Option<i64> {
+                    match t {
+                        MirType::U8 => Some(0xFF),
+                        MirType::U16 => Some(0xFFFF),
+                        MirType::U32 => Some(0xFFFF_FFFF),
+                        _ => None,
+                    }
+                };
+                let lty = infer_expr_type(ctx, left);
+                let rty = infer_expr_type(ctx, right);
+                if let Some(m) = unsigned_mask(&lty) {
+                    let t = ctx.alloc_temp(MirType::I64);
+                    ctx.emit(Instruction::Assign {
+                        dest: t,
+                        value: RValue::BinOp {
+                            op: MirBinOp::BitAnd,
+                            left: lhs,
+                            right: Operand::Constant(Constant::Int(m)),
+                        },
+                    });
+                    lhs = Operand::Local(t);
+                }
+                if let Some(m) = unsigned_mask(&rty) {
+                    let t = ctx.alloc_temp(MirType::I64);
+                    ctx.emit(Instruction::Assign {
+                        dest: t,
+                        value: RValue::BinOp {
+                            op: MirBinOp::BitAnd,
+                            left: rhs,
+                            right: Operand::Constant(Constant::Int(m)),
+                        },
+                    });
+                    rhs = Operand::Local(t);
+                }
+            }
             RValue::BinOp {
                 op: lower_binop(*op),
                 left: lhs,

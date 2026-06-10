@@ -1,0 +1,82 @@
+// Conformance: try/catch/throw semantics + spawn/channels. (Reference
+// chapters 7 (errors), 9 (concurrency).)
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn boom(n: i64) -> i64 {
+    if n > 0 {
+        throw "level {n}"
+    }
+    return 0
+}
+
+fn worker(ch: i64, n: i64) {
+    let mut total = 0
+    let mut i = 1
+    while i <= n {
+        total = total + i
+        i = i + 1
+    }
+    send(ch, total)
+}
+
+fn main() {
+    // Catch binds the stringified thrown value.
+    try {
+        throw 42
+    } catch e {
+        expect(e == "42", "int throw stringifies")
+    }
+
+    // Cross-function throw with interpolation.
+    try {
+        boom(7)
+        expect(false, "throw must unwind")
+    } catch e {
+        expect(e == "level 7", "cross-fn throw message")
+    }
+
+    // Execution continues after try/catch; rethrow reaches outer.
+    let mut path = ""
+    try {
+        try {
+            throw "inner"
+        } catch e {
+            path = path + "i(" + e + ")"
+            throw "outer"
+        }
+    } catch e2 {
+        path = path + "o(" + e2 + ")"
+    }
+    path = path + "done"
+    expect(path == "i(inner)o(outer)done", "nested rethrow order")
+
+    // No throw -> catch skipped.
+    let mut ran = false
+    try {
+        ran = true
+    } catch e {
+        expect(false, "catch must not run")
+    }
+    expect(ran, "try body runs")
+
+    // spawn + channels: three workers, deterministic totals.
+    let ch = chan()
+    spawn { worker(ch, 10) }
+    spawn { worker(ch, 100) }
+    spawn { worker(ch, 1000) }
+    let mut grand = 0
+    let mut got = 0
+    while got < 3 {
+        grand = grand + recv(ch)
+        got = got + 1
+    }
+    expect(grand == 55 + 5050 + 500500, "spawn + channel totals")
+
+    println("conformance errors+concurrency: PASS")
+}

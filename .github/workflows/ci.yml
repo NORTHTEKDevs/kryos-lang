@@ -91,6 +91,13 @@ jobs:
         run: |
           sudo apt-get install -y clang
 
+      - name: Spec conformance suite (both backends)
+        # Self-checking programs organized by reference-manual chapter; the
+        # suite found 5 real codegen bugs on its first run (silent match-guard
+        # drops, u8 compare sign-extension, narrow-int IR mismatches, bool
+        # cast sext, string ordering by pointer).
+        run: bash tests/conformance/run_conformance.sh
+
       - name: Backend parity matrix (Cranelift vs LLVM)
         shell: bash
         # Runs every tests/smoke/*.kry under both backends; classifies LLVM

@@ -1,0 +1,131 @@
+// std::llm tool calling end-to-end (step 237). The mock serves a tool_use
+// turn, the program "executes" the tool, sends the result back, and gets
+// the final answer — on BOTH wire formats. Canned responses are built with
+// the json_* builtins (hand-escaping JSON-in-JSON is how bugs happen).
+// Serves exactly 4 requests; refusals never reach the wire (step-236
+// orphan lesson). Self-checking.
+
+use std::llm::{openai_config, anthropic_config, with_base_url, with_timeout_ms, user, tool, tool_result, chat_tools, continue_with_tool_results}
+
+let PORT = 18937
+
+fn http_response(body: str) -> str {
+    return "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + to_string(len(body)) + "\r\nConnection: close\r\n\r\n" + body
+}
+
+fn usage_node(input: i64, output: i64, openai_style: bool) -> i64 {
+    if openai_style {
+        return json_object(["prompt_tokens", "completion_tokens"], [json_number(input as f64), json_number(output as f64)])
+    }
+    return json_object(["input_tokens", "output_tokens"], [json_number(input as f64), json_number(output as f64)])
+}
+
+fn openai_tool_turn() -> str {
+    let args = json_stringify(json_object(["city"], [json_string("Anchorage")]))
+    let func = json_object(["name", "arguments"], [json_string("get_weather"), json_string(args)])
+    let call = json_object(["id", "type", "function"], [json_string("call_1"), json_string("function"), func])
+    let message = json_object(["role", "tool_calls"], [json_string("assistant"), json_array([call])])
+    let choice = json_object(["message"], [message])
+    return json_stringify(json_object(["choices", "usage"], [json_array([choice]), usage_node(20, 8, true)]))
+}
+
+fn openai_final_turn() -> str {
+    let message = json_object(["role", "content"], [json_string("assistant"), json_string("Anchorage: -2C and snowing")])
+    let choice = json_object(["message"], [message])
+    return json_stringify(json_object(["choices", "usage"], [json_array([choice]), usage_node(35, 9, true)]))
+}
+
+fn anthropic_tool_turn() -> str {
+    let text_block = json_object(["type", "text"], [json_string("text"), json_string("Checking.")])
+    let input_obj = json_object(["city"], [json_string("Anchorage")])
+    let use_block = json_object(["type", "id", "name", "input"], [json_string("tool_use"), json_string("toolu_1"), json_string("get_weather"), input_obj])
+    return json_stringify(json_object(["content", "usage"], [json_array([text_block, use_block]), usage_node(22, 11, false)]))
+}
+
+fn anthropic_final_turn() -> str {
+    let text_block = json_object(["type", "text"], [json_string("text"), json_string("It is -2C and snowing in Anchorage.")])
+    return json_stringify(json_object(["content", "usage"], [json_array([text_block]), usage_node(40, 12, false)]))
+}
+
+fn serve_one(listen_fd: i64, body: str) {
+    let c = tcp_accept(listen_fd)
+    tcp_recv(c, 65536)
+    tcp_send(c, http_response(body))
+    tcp_close(c)
+}
+
+fn serve(listen_fd: i64) {
+    serve_one(listen_fd, openai_tool_turn())
+    serve_one(listen_fd, openai_final_turn())
+    serve_one(listen_fd, anthropic_tool_turn())
+    serve_one(listen_fd, anthropic_final_turn())
+}
+
+fn fake_weather(args_json: str) -> str {
+    let node = json_parse(args_json)
+    let city = json_to_str(json_get(node, "city"))
+    return "weather(" + city + ") = -2C snowing"
+}
+
+fn main() {
+    let listen_fd = tcp_listen("127.0.0.1", PORT)
+    if listen_fd < 0 {
+        println("SKIP: bind failed")
+        exit(1)
+    }
+    spawn {
+        serve(listen_fd)
+    }
+    sleep_ms(100)
+    let base = "http://127.0.0.1:" + to_string(PORT)
+
+    let schema = json_stringify(json_object(["type"], [json_string("object")]))
+    let tools = [tool("get_weather", "Current weather for a city", schema)]
+    let msgs = [user("What is the weather in Anchorage?")]
+
+    // --- OpenAI wire format ---
+    let cfg = with_timeout_ms(with_base_url(openai_config("k", "mock"), base), 5000)
+    let t1 = chat_tools(cfg, msgs, tools)
+    if t1.done or len(t1.tool_calls) != 1 {
+        println("FAIL: openai turn1 expected 1 tool call (done={t1.done})")
+        exit(1)
+    }
+    let call = t1.tool_calls[0]
+    if call.name != "get_weather" or call.id != "call_1" {
+        println("FAIL: openai call = {call.name}/{call.id}")
+        exit(1)
+    }
+    let result = fake_weather(call.arguments_json)
+    if result != "weather(Anchorage) = -2C snowing" {
+        println("FAIL: arguments did not round-trip: {result}")
+        exit(1)
+    }
+    let t2 = continue_with_tool_results(cfg, msgs, tools, t1.assistant_raw, [tool_result(call.id, result)])
+    if not t2.done or t2.text != "Anchorage: -2C and snowing" {
+        println("FAIL: openai final = '{t2.text}'")
+        exit(1)
+    }
+    println("openai tools ok: {call.name} -> '{t2.text}'")
+
+    // --- Anthropic wire format ---
+    let cfg2 = with_timeout_ms(with_base_url(anthropic_config("k", "mock"), base), 5000)
+    let a1 = chat_tools(cfg2, msgs, tools)
+    if a1.done or len(a1.tool_calls) != 1 {
+        println("FAIL: anthropic turn1 expected 1 tool call")
+        exit(1)
+    }
+    let acall = a1.tool_calls[0]
+    if acall.name != "get_weather" or acall.id != "toolu_1" {
+        println("FAIL: anthropic call = {acall.name}/{acall.id}")
+        exit(1)
+    }
+    let aresult = fake_weather(acall.arguments_json)
+    let a2 = continue_with_tool_results(cfg2, msgs, tools, a1.assistant_raw, [tool_result(acall.id, aresult)])
+    if not a2.done or a2.text != "It is -2C and snowing in Anchorage." {
+        println("FAIL: anthropic final = '{a2.text}'")
+        exit(1)
+    }
+    println("anthropic tools ok: partial '{a1.text}', final '{a2.text}'")
+
+    println("std::llm tool calling: PASS")
+}

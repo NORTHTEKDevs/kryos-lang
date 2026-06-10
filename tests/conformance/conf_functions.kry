@@ -1,0 +1,74 @@
+// Conformance: functions, recursion, closures, fn-typed params, generics,
+// traits. (Reference chapters 3, 8.)
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn fib(n: i64) -> i64 {
+    if n < 2 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn apply_twice(f: fn(i64) -> i64, x: i64) -> i64 {
+    return f(f(x))
+}
+
+fn add<T>(a: T, b: T) -> T {
+    return a + b
+}
+
+trait Describable {
+    fn describe(self) -> str
+}
+
+struct Dog {
+    name: str,
+}
+
+impl Describable for Dog {
+    fn describe(self: Dog) -> str {
+        return "dog:" + self.name
+    }
+}
+
+fn main() {
+    // Recursion.
+    expect(fib(10) == 55, "recursion")
+
+    // Lambdas and closures over locals.
+    let double = fn (x: i64) -> i64 { return x * 2 }
+    expect(double(21) == 42, "lambda")
+    let base = 100
+    let offset = fn (x: i64) -> i64 { return base + x }
+    expect(offset(5) == 105, "closure capture")
+
+    // Functions as parameters.
+    expect(apply_twice(double, 3) == 12, "fn-typed param")
+    expect(apply_twice(fn (x: i64) -> i64 { return x + 1 }, 0) == 2, "inline lambda arg")
+
+    // Generic function monomorphized per call site.
+    expect(add(2, 3) == 5, "generic i64")
+    expect(add(2.5, 0.5) == 3.0, "generic f64")
+    expect(add("ab", "cd") == "abcd", "generic str")
+
+    // Trait method through impl.
+    let d = Dog { name: "rex" }
+    expect(d.describe() == "dog:rex", "trait impl method")
+
+    // Multiple returns and early return.
+    let pick = fn (flag: bool) -> i64 {
+        if flag {
+            return 1
+        }
+        return 2
+    }
+    expect(pick(true) == 1 and pick(false) == 2, "early return")
+
+    println("conformance functions: PASS")
+}

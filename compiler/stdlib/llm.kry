@@ -319,3 +319,300 @@ fn chat_within(cfg: LlmConfig, messages: [Message], budget: Budget) -> BudgetedC
     let charged = budget.charge(used)
     return BudgetedChat { response: r, budget: charged }
 }
+
+// --- Tool calling --------------------------------------------------------------
+//
+// Declare tools, detect tool calls in the model's reply, execute them in
+// Kryos, and continue the conversation with the results. Both wire formats
+// are supported; the assistant's tool-use turn is carried between rounds as
+// raw provider JSON (ToolTurn.assistant_raw).
+
+@copy
+struct ToolDef {
+    name: str,
+    description: str,
+    schema_json: str
+}
+
+@copy
+struct ToolCall {
+    id: str,
+    name: str,
+    arguments_json: str
+}
+
+@copy
+struct ToolResult {
+    id: str,
+    content: str
+}
+
+@copy
+struct ToolTurn {
+    text: str,
+    tool_calls: [ToolCall],
+    done: bool,
+    assistant_raw: str,
+    input_tokens: i64,
+    output_tokens: i64
+}
+
+/// Declare a tool. `schema_json` is a JSON-Schema object describing the
+/// arguments (build it with the json_* builtins + json_stringify, or write
+/// it as a literal with brace escapes).
+fn tool(name: str, description: str, schema_json: str) -> ToolDef {
+    return ToolDef { name: name, description: description, schema_json: schema_json }
+}
+
+fn tool_result(id: str, content: str) -> ToolResult {
+    return ToolResult { id: id, content: content }
+}
+
+fn _openai_tools_node(tools: [ToolDef]) -> i64 {
+    let mut nodes: [i64] = []
+    for t in tools {
+        let fn_keys = ["name", "description", "parameters"]
+        let fn_vals = [json_string(t.name), json_string(t.description), json_parse(t.schema_json)]
+        let outer_keys = ["type", "function"]
+        let outer_vals = [json_string("function"), json_object(fn_keys, fn_vals)]
+        nodes = push(nodes, json_object(outer_keys, outer_vals))
+    }
+    return json_array(nodes)
+}
+
+fn _anthropic_tools_node(tools: [ToolDef]) -> i64 {
+    let mut nodes: [i64] = []
+    for t in tools {
+        let keys = ["name", "description", "input_schema"]
+        let vals = [json_string(t.name), json_string(t.description), json_parse(t.schema_json)]
+        nodes = push(nodes, json_object(keys, vals))
+    }
+    return json_array(nodes)
+}
+
+/// Internal: POST a raw request body, return the response body. Shares the
+/// budget hooks with chat().
+fn _post(cfg: LlmConfig, body: str) -> str {
+    let mut url = ""
+    let mut headers = "Content-Type: application/json"
+    if cfg.provider == "anthropic" {
+        url = cfg.base_url + "/v1/messages"
+        headers = headers + "\nx-api-key: " + cfg.api_key + "\nanthropic-version: 2023-06-01"
+    } else {
+        url = cfg.base_url + "/chat/completions"
+        if cfg.api_key != "" {
+            headers = headers + "\nAuthorization: Bearer " + cfg.api_key
+        }
+    }
+    if kryos_budget_active() == 1 {
+        if kryos_budget_try_call() == 1 {
+            throw "llm error: @budget exhausted: no model calls left"
+        }
+    }
+    let resp = http_request("POST", url, headers, body, cfg.timeout_ms)
+    if json_is_null(resp) {
+        throw "llm error: transport failure reaching " + url
+    }
+    let status = json_to_int(json_get(resp, "status"))
+    let resp_body = json_to_str(json_get(resp, "body"))
+    if status != 200 {
+        let mut excerpt = resp_body
+        if len(excerpt) > 300 {
+            excerpt = substr(excerpt, 0, 300)
+        }
+        throw "llm error: HTTP " + to_string(status) + " from " + url + ": " + excerpt
+    }
+    return resp_body
+}
+
+fn _charge_turn(turn_in: i64, turn_out: i64) {
+    if kryos_budget_active() == 1 {
+        let exceeded = kryos_budget_charge_tokens(turn_in + turn_out)
+        if exceeded == 1 {
+            throw "llm error: @budget exceeded: token limit crossed by this call"
+        }
+    }
+}
+
+fn _parse_openai_turn(body: str) -> ToolTurn {
+    let root = json_parse(body)
+    let choices = _require(json_get(root, "choices"), "choices")
+    let first = _require(json_get_index(choices, 0), "choices[0]")
+    let message = _require(json_get(first, "message"), "choices[0].message")
+    let mut text = ""
+    let content_node = json_get(message, "content")
+    if not json_is_null(content_node) {
+        text = json_to_str(content_node)
+    }
+    let mut calls: [ToolCall] = []
+    let tc = json_get(message, "tool_calls")
+    if not json_is_null(tc) {
+        let n = json_length(tc)
+        let mut i = 0
+        while i < n {
+            let item = json_get_index(tc, i)
+            let f = _require(json_get(item, "function"), "tool_calls[].function")
+            calls = push(calls, ToolCall {
+                id: json_to_str(_require(json_get(item, "id"), "tool_calls[].id")),
+                name: json_to_str(_require(json_get(f, "name"), "function.name")),
+                arguments_json: json_to_str(_require(json_get(f, "arguments"), "function.arguments"))
+            })
+            i = i + 1
+        }
+    }
+    let mut in_tok = 0
+    let mut out_tok = 0
+    let usage = json_get(root, "usage")
+    if not json_is_null(usage) {
+        in_tok = json_to_int(json_get(usage, "prompt_tokens"))
+        out_tok = json_to_int(json_get(usage, "completion_tokens"))
+    }
+    _charge_turn(in_tok, out_tok)
+    return ToolTurn {
+        text: text,
+        tool_calls: calls,
+        done: len(calls) == 0,
+        assistant_raw: json_stringify(message),
+        input_tokens: in_tok,
+        output_tokens: out_tok
+    }
+}
+
+fn _parse_anthropic_turn(body: str) -> ToolTurn {
+    let root = json_parse(body)
+    let content = _require(json_get(root, "content"), "content")
+    let n = json_length(content)
+    let mut text = ""
+    let mut calls: [ToolCall] = []
+    let mut i = 0
+    while i < n {
+        let block = json_get_index(content, i)
+        let ty = json_to_str(_require(json_get(block, "type"), "content[].type"))
+        if ty == "text" {
+            text = text + json_to_str(_require(json_get(block, "text"), "text block"))
+        }
+        if ty == "tool_use" {
+            calls = push(calls, ToolCall {
+                id: json_to_str(_require(json_get(block, "id"), "tool_use.id")),
+                name: json_to_str(_require(json_get(block, "name"), "tool_use.name")),
+                arguments_json: json_stringify(_require(json_get(block, "input"), "tool_use.input"))
+            })
+        }
+        i = i + 1
+    }
+    let mut in_tok = 0
+    let mut out_tok = 0
+    let usage = json_get(root, "usage")
+    if not json_is_null(usage) {
+        in_tok = json_to_int(json_get(usage, "input_tokens"))
+        out_tok = json_to_int(json_get(usage, "output_tokens"))
+    }
+    _charge_turn(in_tok, out_tok)
+    let asst_keys = ["role", "content"]
+    let asst_vals = [json_string("assistant"), content]
+    return ToolTurn {
+        text: text,
+        tool_calls: calls,
+        done: len(calls) == 0,
+        assistant_raw: json_stringify(json_object(asst_keys, asst_vals)),
+        input_tokens: in_tok,
+        output_tokens: out_tok
+    }
+}
+
+fn _message_nodes(cfg: LlmConfig, messages: [Message]) -> [i64] {
+    let mut nodes: [i64] = []
+    for m in messages {
+        if cfg.provider == "anthropic" and m.role == "system" {
+            // carried in the top-level "system" field instead
+        } else {
+            let keys = ["role", "content"]
+            let vals = [json_string(m.role), json_string(m.content)]
+            nodes = push(nodes, json_object(keys, vals))
+        }
+    }
+    return nodes
+}
+
+fn _anthropic_system_of(messages: [Message]) -> str {
+    let mut sys = ""
+    for m in messages {
+        if m.role == "system" {
+            if sys == "" {
+                sys = m.content
+            } else {
+                sys = sys + "\n" + m.content
+            }
+        }
+    }
+    return sys
+}
+
+fn _tools_body(cfg: LlmConfig, msg_nodes: [i64], tools: [ToolDef], sys: str) -> str {
+    let mut keys = ["model", "max_tokens", "temperature", "messages"]
+    let mut vals = [
+        json_string(cfg.model),
+        json_number(cfg.max_tokens as f64),
+        json_number(cfg.temperature),
+        json_array(msg_nodes)
+    ]
+    if len(tools) > 0 {
+        keys = push(keys, "tools")
+        if cfg.provider == "anthropic" {
+            vals = push(vals, _anthropic_tools_node(tools))
+        } else {
+            vals = push(vals, _openai_tools_node(tools))
+        }
+    }
+    if cfg.provider == "anthropic" and sys != "" {
+        keys = push(keys, "system")
+        vals = push(vals, json_string(sys))
+    }
+    return json_stringify(json_object(keys, vals))
+}
+
+/// Chat with tool definitions. When the model wants tools, `done` is false
+/// and `tool_calls` lists what to run; answer with
+/// `continue_with_tool_results`.
+@capabilities(net)
+fn chat_tools(cfg: LlmConfig, messages: [Message], tools: [ToolDef]) -> ToolTurn {
+    let sys = _anthropic_system_of(messages)
+    let body = _tools_body(cfg, _message_nodes(cfg, messages), tools, sys)
+    let resp = _post(cfg, body)
+    if cfg.provider == "anthropic" {
+        return _parse_anthropic_turn(resp)
+    }
+    return _parse_openai_turn(resp)
+}
+
+/// Send tool results back and get the model's next turn. `assistant_raw`
+/// is ToolTurn.assistant_raw from the turn that requested the tools.
+@capabilities(net)
+fn continue_with_tool_results(cfg: LlmConfig, messages: [Message], tools: [ToolDef], assistant_raw: str, results: [ToolResult]) -> ToolTurn {
+    let sys = _anthropic_system_of(messages)
+    let mut nodes = _message_nodes(cfg, messages)
+    nodes = push(nodes, json_parse(assistant_raw))
+    if cfg.provider == "anthropic" {
+        let mut blocks: [i64] = []
+        for r in results {
+            let keys = ["type", "tool_use_id", "content"]
+            let vals = [json_string("tool_result"), json_string(r.id), json_string(r.content)]
+            blocks = push(blocks, json_object(keys, vals))
+        }
+        let keys = ["role", "content"]
+        let vals = [json_string("user"), json_array(blocks)]
+        nodes = push(nodes, json_object(keys, vals))
+    } else {
+        for r in results {
+            let keys = ["role", "tool_call_id", "content"]
+            let vals = [json_string("tool"), json_string(r.id), json_string(r.content)]
+            nodes = push(nodes, json_object(keys, vals))
+        }
+    }
+    let body = _tools_body(cfg, nodes, tools, sys)
+    let resp = _post(cfg, body)
+    if cfg.provider == "anthropic" {
+        return _parse_anthropic_turn(resp)
+    }
+    return _parse_openai_turn(resp)
+}

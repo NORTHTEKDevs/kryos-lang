@@ -5408,3 +5408,32 @@ SHIFTS:
   native 2/2; kryos-rt budget tests 4/4. v4.46.0 cut.
   STILL OPEN (next session): llm tool-calling, formal spec-conformance suite, generic
   Probable/Tracked, async executor, wedge benchmarks A-E.
+
+  ---
+  step:    237-238 (session 11 -- 2026-06-10/11 "llm tool calling + conformance suite -> 5 compiler bugs found+fixed")
+  date:    2026-06-11
+  237 TOOL CALLING (stdlib/llm.kry): ToolDef/ToolCall/ToolResult/ToolTurn; chat_tools +
+  continue_with_tool_results for BOTH wire formats (OpenAI tools/function blocks; Anthropic
+  tool_use/tool_result content blocks); assistant turn carried between rounds as raw
+  provider JSON; budget hooks shared via _post/_charge_turn. Mock e2e
+  (tests/smoke/test_llm_tools.kry): full round-trip both formats -- model asks for
+  get_weather, Kryos executes, result returned, final answer parsed; args round-trip
+  verified. Canned responses BUILT WITH json_* builtins (hand-escaping JSON-in-JSON was
+  the first attempt's bug). PASS both backends.
+  238 CONFORMANCE SUITE (tests/conformance/, run_conformance.sh, wired into CI): 5
+  self-checking chapter files (core, data, functions, errors+concurrency, ownership),
+  each must run clean on BOTH backends. First run found FIVE REAL COMPILER BUGS, all fixed:
+  (1) match guards + binding arms in scalar matches were SILENTLY DROPPED (binding arm
+      became a "default" the wildcard overwrote; guards never lowered at all) -> NEW
+      sequential test-chain lowering in MIR (switch path kept for all-literal matches);
+  (2) u8 compares sign-extended (let b: u8 = 255; b == 255 was FALSE while printing was
+      right since 198) -> MIR masks unsigned-narrow comparison operands;
+  (3) narrow-int compares emitted invalid IR on LLVM (i16 vs i64 literal; i8 ops truncated
+      the mask constant making it a no-op) -> generic intN<->intM arm in coerce_value +
+      widen-to-widest in the binop arm + immutable-dest result coercion (the last fixed a
+      regression my own widening introduced -- caught by parity in the same battery);
+  (4) `true as i64` was -1 on AOT (sext i1) -> bools zext in casts;
+  (5) string ordering (<,>,<=,>=) compared HANDLE POINTERS on AOT -> kryos_string_compare
+      dispatch (Cranelift had it since v1).
+  GATES (all fresh): parity 45/45; conformance 5/5; examples-gate PASS; docs 54/54;
+  bootstrap 989ba174 byte-identical; workspace 916/0; native 2/2.

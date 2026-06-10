@@ -1,0 +1,109 @@
+// Conformance: lexical structure, scalar types, operators, control flow.
+// (Reference chapters 2-4.) Self-checking; exits nonzero on any mismatch.
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    // Integer literals and arithmetic.
+    expect(1 + 2 * 3 == 7, "precedence")
+    expect((1 + 2) * 3 == 9, "parens")
+    expect(7 / 2 == 3, "integer division truncates")
+    expect(7 % 3 == 1, "modulo")
+    expect(2 - 5 == 0 - 3, "negative results")
+
+    // Floats.
+    let f = 0.1 + 0.2
+    expect(f > 0.299 and f < 0.301, "float arithmetic")
+    expect(10.0 / 4.0 == 2.5, "float division")
+
+    // Bools, logical ops, short-circuit.
+    expect(true and not false, "and/not")
+    expect(false or true, "or")
+    let t = true
+    let u = false
+    expect(t or u, "stored bool or")
+    expect(not (t and u), "stored bool and")
+
+    // Bitwise and shifts.
+    expect((6 & 3) == 2, "bitand")
+    expect((6 | 3) == 7, "bitor")
+    expect((6 ^ 3) == 5, "bitxor")
+    expect((1 << 10) == 1024, "shl")
+    expect((1024 >> 3) == 128, "shr")
+
+    // Casts.
+    expect((3.9 as i64) == 3, "f64->i64 truncates")
+    expect((3 as f64) == 3.0, "i64->f64")
+    expect((true as i64) == 1, "bool->i64")
+    expect((999 as u8) == (231 as u8), "explicit narrowing cast wraps")
+
+    // Narrow ints in range.
+    let b: u8 = 255
+    let s: i16 = 0 - 32768
+    expect(b == 255 and s == 0 - 32768, "narrow int bounds")
+
+    // Strings and interpolation.
+    let name = "Kryos"
+    expect("hi " + name == "hi Kryos", "concat")
+    expect("v{1 + 1}" == "v2", "interpolation evaluates")
+    expect(len("abc") == 3, "len")
+    expect(len("") == 0, "empty len")
+    expect("a" < "b", "string compare")
+    expect("x\ty" != "x y", "tab escape distinct")
+
+    // if / elif / else.
+    let mut grade = ""
+    let score = 85
+    if score >= 90 {
+        grade = "A"
+    } elif score >= 80 {
+        grade = "B"
+    } else {
+        grade = "C"
+    }
+    expect(grade == "B", "elif chain")
+
+    // while + break + continue.
+    let mut total = 0
+    let mut i = 0
+    while true {
+        i = i + 1
+        if i > 10 {
+            break
+        }
+        if i % 2 == 0 {
+            continue
+        }
+        total = total + i
+    }
+    expect(total == 25, "while/break/continue (1+3+5+7+9)")
+
+    // loop desugars to while true.
+    let mut spins = 0
+    loop {
+        spins = spins + 1
+        if spins == 3 {
+            break
+        }
+    }
+    expect(spins == 3, "loop keyword")
+
+    // for-in over array and range.
+    let mut sum = 0
+    for x in [10, 20, 30] {
+        sum = sum + x
+    }
+    expect(sum == 60, "for-in array")
+    let mut rsum = 0
+    for k in range(0, 5) {
+        rsum = rsum + k
+    }
+    expect(rsum == 10, "for-in range")
+
+    println("conformance core: PASS")
+}
