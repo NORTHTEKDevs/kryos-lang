@@ -6214,6 +6214,24 @@ fn emit_drop_for_value<M: Module>(
             builder.ins().call(free_ref, &[val]);
         }
         MirType::Struct(ref name) => {
+            // Guard: a struct local can legitimately hold null — a callee that
+            // throws returns a scalar default 0 before the exception check
+            // routes to catch, so the binding's drop at scope exit sees a null
+            // pointer (same guard the Array arm has had all along). Loading
+            // fields from it was a segfault-after-main (shift step 226 repro:
+            // `let s = make_holder(..)` across a module boundary inside try).
+            let zero_ptr = builder.ins().iconst(types::I64, 0);
+            let is_nonnull = builder.ins().icmp(
+                cranelift_codegen::ir::condcodes::IntCC::NotEqual,
+                val,
+                zero_ptr,
+            );
+            let drop_block = builder.create_block();
+            let after_block = builder.create_block();
+            builder.ins().brif(is_nonnull, drop_block, &[], after_block, &[]);
+            builder.seal_block(drop_block);
+            builder.switch_to_block(drop_block);
+
             // Recursively free heap-allocated fields, then free the struct.
             if let Some(struct_def) = translator.struct_defs.get(name).cloned() {
                 if let Ok(layout) = compute_struct_layout(&struct_def) {
@@ -6264,6 +6282,9 @@ fn emit_drop_for_value<M: Module>(
             }
             let free_ref = ensure_func_ref_with_args("free", builder, translator, module, 1)?;
             builder.ins().call(free_ref, &[val]);
+            builder.ins().jump(after_block, &[]);
+            builder.seal_block(after_block);
+            builder.switch_to_block(after_block);
         }
         MirType::Array(ref elem_ty, _) => {
             // Determine the per-element drop function for heap element types.

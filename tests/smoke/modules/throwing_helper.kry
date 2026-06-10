@@ -1,0 +1,18 @@
+// Support module for test_throw_null_struct_drop.kry — must live in a
+// separate module: the cross-module call defeats the inliner, which is what
+// leaves the binding null on the exception path.
+
+struct Holder {
+    fd: i64,
+    name: str,
+    port: i32,
+    closed: bool
+}
+
+fn make_holder(name: str, port: i32) -> Holder {
+    let fd = 0 - 5
+    if fd < 0 {
+        throw "could not reach " + name + ":" + to_string(port)
+    }
+    return Holder { fd: fd, name: name, port: port, closed: false }
+}

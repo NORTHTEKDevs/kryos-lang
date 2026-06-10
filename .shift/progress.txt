@@ -5130,3 +5130,22 @@ SHIFTS:
   carries the resolve fix -- v4.43.0 zips remain env-var-only standalone.
   next:    manual audit (step 226) -- docs/learn/ exists (tour/cheatsheet/cookbook/
            common-errors/tutorial); verify every example compiles, fill gaps, link from README.
+
+  ---
+  step:    226 (session 11 -- 2026-06-10 "FIX: null-struct-drop segfault (pre-existing, repro'd on v4.43.0)")
+  date:    2026-06-10
+  Root cause via MIR dump: when a NON-INLINED callee returning a struct throws, the
+  exception early-return leaves the binding = scalar default 0; at scope exit MIR emits
+  drop(_1) unconditionally -> Cranelift struct-drop loaded fields from NULL -> segfault
+  AFTER main printed its last line. Same-file repros never triggered it (inliner routes the
+  throw same-frame). LLVM was immune (struct locals are aggregate VALUES; field-free of 0
+  hits null-tolerant runtime fns). The Array drop arm has had a null guard all along -- the
+  Struct arm just never got one. FIX: same nonnull branch around the Struct field-drop+free.
+  VERIFY: cross-module repro rc 139 -> 0; original connect_tls repro rc 139 -> 0. New
+  regression test tests/smoke/test_throw_null_struct_drop.kry (+ modules/throwing_helper.kry
+  support module -- cross-module call REQUIRED to defeat the inliner; parity glob is
+  maxdepth-1 so the module dir is not collected as a test).
+  GATES: parity 38/38; bootstrap 989ba174 byte-identical; examples 23/23 AOT; JIT spot 9/9;
+  native_runner 2/2.
+  next:    docs-examples pass to zero failures (agent running) + CI docs-examples job +
+           manual index refresh = step 227.

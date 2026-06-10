@@ -1,0 +1,18 @@
+// Regression (shift step 226): when a non-inlined callee that returns a
+// struct throws, the binding holds the scalar default 0; dropping that null
+// struct local at scope exit segfaulted AFTER main completed on Cranelift
+// (the drop helper loaded fields from null — the Array drop arm had a null
+// guard, the Struct arm did not). Reproduced on v4.43.0 with
+// `let s = connect_tls(<dead port>)`.
+
+use modules::throwing_helper::{make_holder, Holder}
+
+fn main() {
+    try {
+        let s = make_holder("example.com", 9)
+        println("got {s.name}")
+    } catch e {
+        println("caught: {e}")
+    }
+    println("done")
+}
