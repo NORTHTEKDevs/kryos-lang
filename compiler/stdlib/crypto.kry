@@ -272,3 +272,42 @@ fn constant_time_eq(a: str, b: str) -> bool {
 
     return diff == 0
 }
+
+/// Parse and normalize a UUID string. Accepts the canonical hyphenated
+/// 8-4-4-4-12 hex form in any letter case and returns it normalized to
+/// lowercase. Throws on malformed input.
+fn uuid_parse(s: str) -> str {
+    if len(s) != 36 {
+        throw "crypto error: invalid UUID: expected 36 characters, got " + to_string(len(s))
+    }
+    let lower = "0123456789abcdef"
+    let upper = "0123456789ABCDEF"
+    let mut out = ""
+    let mut i = 0
+    while i < 36 {
+        let c = substr(s, i, i + 1)
+        if i == 8 or i == 13 or i == 18 or i == 23 {
+            if c != "-" {
+                throw "crypto error: invalid UUID: expected '-' at position " + to_string(i)
+            }
+            out = out + "-"
+        } else {
+            let mut matched = ""
+            let mut k = 0
+            while k < 16 {
+                if c == substr(lower, k, k + 1) or c == substr(upper, k, k + 1) {
+                    matched = substr(lower, k, k + 1)
+                    k = 16
+                } else {
+                    k = k + 1
+                }
+            }
+            if matched == "" {
+                throw "crypto error: invalid UUID: non-hex character at position " + to_string(i)
+            }
+            out = out + matched
+        }
+        i = i + 1
+    }
+    return out
+}

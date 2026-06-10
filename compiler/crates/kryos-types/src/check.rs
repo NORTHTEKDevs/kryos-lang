@@ -710,6 +710,7 @@ impl TypeChecker {
                     } else if let Err(diag) = self.engine.unify(&decl_ty, &inferred_ty, *span) {
                         self.diagnostics.push(diag);
                     }
+                    self.check_int_literal_range(&decl_ty, value, *span);
                     decl_ty
                 } else {
                     self.infer_expr(value)
@@ -1002,6 +1003,9 @@ impl TypeChecker {
                         if let Err(diag) = self.engine.unify(&decl, &inferred, *span) {
                             self.diagnostics.push(diag);
                         }
+                        if let Some(v) = value.as_ref() {
+                            self.check_int_literal_range(&decl, v, *span);
+                        }
                         decl
                     }
                     (Some(decl), None) => decl,
@@ -1043,6 +1047,7 @@ impl TypeChecker {
             } => {
                 let target_ty = self.infer_expr(target);
                 let value_ty = self.infer_expr(value);
+                self.check_int_literal_range(&target_ty, value, *span);
                 if let Err(diag) = self.engine.unify(&target_ty, &value_ty, *span) {
                     self.diagnostics.push(diag);
                 }
@@ -1290,6 +1295,51 @@ impl TypeChecker {
     // ── Expression type inference ────────────────────────────────────
 
     /// Infer the type of an expression.
+    /// If `expr` is an integer literal (or negated literal) and `declared`
+    /// resolves to a narrow integer type, reject values outside the type's
+    /// range. Without this, `let x: u8 = 999` silently truncated to 231 —
+    /// silent data corruption at the source level. Explicit casts
+    /// (`999 as u8`) keep their documented truncation semantics.
+    fn check_int_literal_range(&mut self, declared: &Type, expr: &Expr, span: Span) {
+        let (min, max): (i128, i128) = match self.engine.resolve(declared) {
+            Type::I8 => (i8::MIN as i128, i8::MAX as i128),
+            Type::I16 => (i16::MIN as i128, i16::MAX as i128),
+            Type::I32 => (i32::MIN as i128, i32::MAX as i128),
+            Type::U8 => (0, u8::MAX as i128),
+            Type::U16 => (0, u16::MAX as i128),
+            Type::U32 => (0, u32::MAX as i128),
+            Type::U64 => (0, u64::MAX as i128),
+            _ => return,
+        };
+        let value: Option<i128> = match expr {
+            Expr::IntLiteral { value, .. } => Some(*value as i128),
+            Expr::UnaryOp {
+                op: UnOp::Neg,
+                operand,
+                ..
+            } => match operand.as_ref() {
+                Expr::IntLiteral { value, .. } => Some(-(*value as i128)),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(v) = value {
+            if v < min || v > max {
+                let ty_name = format!("{:?}", self.engine.resolve(declared)).to_lowercase();
+                self.diagnostics.push(
+                    Diagnostic::error(format!(
+                        "integer literal `{v}` is out of range for `{ty_name}` (valid range: {min}..={max})"
+                    ))
+                    .with_label(span, "out-of-range literal")
+                    .with_note(format!(
+                        "use a wider type, or `as {ty_name}` if truncation is intended"
+                    ))
+                    .with_code(kryos_errors::codes::E0111),
+                );
+            }
+        }
+    }
+
     pub fn infer_expr(&mut self, expr: &Expr) -> Type {
         match expr {
             // Literals.

@@ -160,7 +160,10 @@ module under [`docs/stdlib/`](stdlib/). Brief index:
 | `std::net`             | HTTP/HTTPS client, TCP/UDS wrappers.                |
 | `std::http`            | Higher-level HTTP request / response.               |
 | `std::re`              | Regular expressions.                                |
-| `std::crypto`          | Hashing and random bytes.                           |
+| `std::crypto`          | Hashing, random bytes, `uuid_v4` / `uuid_parse`.    |
+| `std::random`          | Seedable PRNG (`new_rng`, `next_i64`, `random_f64`, `shuffle`). |
+| `std::slice_ops`       | Array utilities (`take`, `drop`, `is_sorted`, `bsearch`). |
+| `std::fuzzy`           | Fuzzy matching (`levenshtein`, `jaro_winkler`, `closest`). |
 | `std::datetime`        | Calendar dates, formatting, durations.              |
 | `std::term`            | Terminal control (raw mode, color, dimensions).     |
 | `std::db`              | Database client (currently SQLite-flavoured).       |

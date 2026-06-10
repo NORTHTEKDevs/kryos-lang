@@ -5224,3 +5224,30 @@ SHIFTS:
       PASS. The "23/23 examples" gate of steps 159-228 is superseded by this script.
   next:    language correctness (230): narrow-int literal range checks, const truncation,
            stdlib gap fills (random_f64, bsearch/is_sorted, jaro_winkler, uuid_parse).
+
+  ---
+  step:    230 (session 11 -- 2026-06-10 "LANGUAGE: E0111 narrow-int range checks + 4 stdlib gap fills")
+  date:    2026-06-10
+  (a) NEW E0111: integer literal out of range for declared type. `let x: u8 = 999` printed
+      231 (silent source-level data corruption); now a compile error with range + fix note,
+      on all three paths: local let, module-level let (Decl::Const), assignment. Explicit
+      `as` casts keep truncation semantics; binop expressions (0-129) remain unchecked
+      (value analysis, out of scope). check_int_literal_range in check.rs; new error code
+      + `kryos explain E0111` entry. Driver tests: 4 error cases + 4 ok cases. ZERO blast
+      radius: parity 39/39, examples-gate PASS, docs-examples 52/52, bootstrap 989ba174.
+      NOTE: fn-call arg literals (f(999) to fn f(x: u8)) not yet covered -- needs the
+      value-aware check inside call-site unification; residual ticket.
+  (b) Stdlib gap fills (the step-227 catalogue, all pure Kryos, verified both backends +
+      parity test tests/smoke/test_stdlib_gap_fills.kry):
+      - std::random::random_f64 -- top-53-bits xorshift64* mapping to [0,1)
+      - std::slice_ops::{is_sorted, bsearch} -- binary search returns idx or -1
+      - std::fuzzy::{jaro, jaro_winkler} -- martha/marhta = 0.9611... (textbook value)
+      - std::crypto::uuid_parse -- validates 8-4-4-4-12 hex, normalizes lowercase,
+        throws on malformed; round-trips uuid_v4
+      Remaining catalogued gaps (bigger design): async_spawn/join builtins, uuid bytes form.
+      STDLIB.md module table updated (also added missing random/slice_ops/fuzzy rows).
+  (c) Investigated: top-level `const` keyword does NOT exist (module constants are `let`)
+      -- docs already corrected in 227; no parser change needed. Top-level-const truncation
+      gap is closed by (a) since the const path is range-checked.
+  next:    production hardening (231): bounded fuzz, code-reviewer over the session diff,
+           production-certifier.

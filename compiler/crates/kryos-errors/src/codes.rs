@@ -25,6 +25,7 @@ pub const E0107: &str = "E0107"; // no such method
 pub const E0108: &str = "E0108"; // missing fields in struct literal
 pub const E0109: &str = "E0109"; // Self used outside of impl/trait
 pub const E0110: &str = "E0110"; // type error (general / uncategorized)
+pub const E0111: &str = "E0111"; // integer literal out of range for declared type
 
 // Ownership errors (E03xx)
 pub const E0300: &str = "E0300"; // use of moved value

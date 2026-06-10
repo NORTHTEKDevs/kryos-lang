@@ -196,6 +196,44 @@ fn check_type_error_returns_diagnostics() {
     assert!(!errors.is_empty(), "expected errors for type error source");
 }
 
+#[test]
+fn check_narrow_int_literal_out_of_range_is_error() {
+    // E0111: silent truncation (`let x: u8 = 999` -> 231) was a source-level
+    // data-corruption hole. Annotated literals must fit the declared type.
+    for (src, what) in [
+        ("fn main() { let a: u8 = 999 }", "u8 let"),
+        ("fn main() { let b: i8 = 200 }", "i8 let"),
+        ("fn main() { let mut d: u16 = 1
+    d = 70000 }", "u16 assign"),
+        ("let G: u8 = 300
+fn main() { println(\"{G}\") }", "u8 module const"),
+    ] {
+        let (diags, _) = check_source(src, "range.kry");
+        assert!(
+            diags.iter().any(|d| d.is_error() && d.message.contains("out of range")),
+            "expected E0111 for {what}: {src}"
+        );
+    }
+}
+
+#[test]
+fn check_narrow_int_literal_in_range_is_ok() {
+    for src in [
+        "fn main() { let a: u8 = 255 }",
+        "fn main() { let b: i8 = 127 }",
+        "fn main() { let c: u16 = 65535 }",
+        // Explicit cast keeps truncation semantics.
+        "fn main() { let e: u8 = (999 as u8) }",
+    ] {
+        let (diags, _) = check_source(src, "range_ok.kry");
+        let errs: Vec<_> = diags
+            .iter()
+            .filter(|d| d.is_error() && d.message.contains("out of range"))
+            .collect();
+        assert!(errs.is_empty(), "unexpected E0111 for: {src}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // compile_source tests (string API, no file I/O)
 // ---------------------------------------------------------------------------

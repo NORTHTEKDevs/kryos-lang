@@ -1,2 +1,6 @@
 Function 1: append_file
 All 11 stdlib functions working!
+Function 1: append_file
+All 11 stdlib functions working!
+Function 1: append_file
+All 11 stdlib functions working!

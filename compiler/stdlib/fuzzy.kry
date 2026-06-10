@@ -68,3 +68,94 @@ fn closest(query: str, candidates: [str], max_dist: i64) -> i64 {
     if best_d > max_dist { return -1 }
     return best
 }
+
+/// Jaro similarity in [0.0, 1.0]: 1.0 = identical, 0.0 = no match.
+fn jaro(a: str, b: str) -> f64 {
+    let la = len(a)
+    let lb = len(b)
+    if la == 0 and lb == 0 { return 1.0 }
+    if la == 0 or lb == 0 { return 0.0 }
+
+    let mut window = la
+    if lb > la { window = lb }
+    window = window / 2 - 1
+    if window < 0 { window = 0 }
+
+    let mut a_match: [i64] = []
+    let mut i = 0
+    while i < la {
+        a_match = push(a_match, 0)
+        i = i + 1
+    }
+    let mut b_match: [i64] = []
+    i = 0
+    while i < lb {
+        b_match = push(b_match, 0)
+        i = i + 1
+    }
+
+    let mut matches = 0
+    i = 0
+    while i < la {
+        let mut lo = i - window
+        if lo < 0 { lo = 0 }
+        let mut hi = i + window + 1
+        if hi > lb { hi = lb }
+        let mut j = lo
+        while j < hi {
+            if b_match[j] == 0 and substr(a, i, i + 1) == substr(b, j, j + 1) {
+                a_match[i] = 1
+                b_match[j] = 1
+                matches = matches + 1
+                j = hi
+            } else {
+                j = j + 1
+            }
+        }
+        i = i + 1
+    }
+    if matches == 0 { return 0.0 }
+
+    // Count transpositions between matched characters.
+    let mut transpositions = 0
+    let mut k = 0
+    i = 0
+    while i < la {
+        if a_match[i] == 1 {
+            while b_match[k] == 0 {
+                k = k + 1
+            }
+            if substr(a, i, i + 1) != substr(b, k, k + 1) {
+                transpositions = transpositions + 1
+            }
+            k = k + 1
+        }
+        i = i + 1
+    }
+
+    let m = matches as f64
+    let t = (transpositions / 2) as f64
+    return ((m / (la as f64)) + (m / (lb as f64)) + ((m - t) / m)) / 3.0
+}
+
+/// Jaro-Winkler similarity in [0.0, 1.0]. Boosts the Jaro score for
+/// strings sharing a common prefix (up to 4 chars), scaling factor 0.1.
+fn jaro_winkler(a: str, b: str) -> f64 {
+    let j = jaro(a, b)
+    let mut prefix = 0
+    let la = len(a)
+    let lb = len(b)
+    let mut max_prefix = 4
+    if la < max_prefix { max_prefix = la }
+    if lb < max_prefix { max_prefix = lb }
+    let mut i = 0
+    while i < max_prefix {
+        if substr(a, i, i + 1) == substr(b, i, i + 1) {
+            prefix = prefix + 1
+            i = i + 1
+        } else {
+            i = max_prefix
+        }
+    }
+    return j + (prefix as f64) * 0.1 * (1.0 - j)
+}

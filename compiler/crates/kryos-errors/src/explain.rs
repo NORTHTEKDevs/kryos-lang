@@ -23,6 +23,7 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "E0004" => Some(E0004),
         "E0009" => Some(E0009),
         "E0110" => Some(E0110),
+        "E0111" => Some(E0111),
         "E0100" => Some(E0100),
         "E0101" => Some(E0101),
         "E0102" => Some(E0102),
@@ -62,6 +63,7 @@ pub fn list() -> Vec<(&'static str, &'static str)> {
         ("E0004", "expected type"),
         ("E0009", "syntax error"),
         ("E0110", "type error"),
+        ("E0111", "integer literal out of range for declared type"),
         ("E0100", "type mismatch"),
         ("E0101", "unknown type"),
         ("E0102", "undefined variable"),
@@ -487,6 +489,26 @@ to an incompatible type.
 
 Read the message and the underlined span; the fix is usually to correct the
 type annotation, the number of generic arguments, or the operation.
+"#;
+
+const E0111: &str = r#"E0111: integer literal out of range for declared type
+
+An integer literal does not fit the narrow integer type it is annotated or
+assigned with, for example:
+
+    let small: u8 = 999        // u8 holds 0..=255
+    let temp: i8 = 200         // i8 holds -128..=127
+
+Before this check existed the literal was silently truncated (999 became
+231), which is data corruption at the source level.
+
+Fixes:
+  - use a wider type:        let small: u16 = 999
+  - or, if truncation is genuinely intended, say so with an explicit cast:
+                             let small: u8 = (999 as u8)
+
+Explicit `as` casts keep their documented truncation semantics; only
+implicit literal coercion is range-checked.
 "#;
 
 // ----- E0300 ----------------------------------------------------------------

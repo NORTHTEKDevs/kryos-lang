@@ -48,6 +48,14 @@ fn range_i64(state: [i64], lo: i64, hi: i64) -> i64 {
     return lo + (abs_v % span)
 }
 
+/// Random f64 uniformly in [0.0, 1.0). Uses the top 53 bits of the
+/// generator output (the full precision of an f64 mantissa).
+fn random_f64(state: [i64]) -> f64 {
+    let x = next_i64(state)
+    let mantissa = (x >> 11) & 9007199254740991
+    return (mantissa as f64) / 9007199254740992.0
+}
+
 /// Random bit (0 or 1).
 fn next_bit(state: [i64]) -> i64 {
     let v = next_i64(state)
