@@ -224,6 +224,10 @@ impl JitCompiler {
             "kryos_exception_take",
             kryos_rt::exception::kryos_exception_take as *const u8,
         );
+        jit_builder.symbol(
+            "kryos_exception_report_uncaught_if_pending",
+            kryos_rt::exception::kryos_exception_report_uncaught_if_pending as *const u8,
+        );
 
         // ARC drop function registration
         jit_builder.symbol(
@@ -1841,6 +1845,11 @@ fn declare_runtime_builtins<M: Module>(
 
     // --- Exception check ---
     decl!("kryos_exception_check", "kryos_exception_check", sig(0));
+    decl!(
+        "kryos_exception_report_uncaught_if_pending",
+        "kryos_exception_report_uncaught_if_pending",
+        sig(0)
+    );
 
     // --- Networking (Kryos-string-handle wrappers) ---
     decl!("kryos_tcp_connect_ks", "kryos_tcp_connect_ks", sig(2));

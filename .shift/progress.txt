@@ -5025,3 +5025,45 @@ SHIFTS:
   next:    WASI scoping decision (real fd_write support vs removing the scaffolding flag);
            maturity tickets: JIT uncaught-throw silent exit (step 217), @copy deep-vs-shallow
            assignment unification (step 219), gotcha-23 residuals.
+
+  ---
+  step:    221 (session 11 -- 2026-06-10 "MAINT: CI actions Node-24 majors + openssl 0.10.80 (Dependabot #2)")
+  date:    2026-06-10
+  actions/checkout v4->v6, upload-artifact v4->v7, download-artifact v4->v8, setup-node
+  v4->v6 across ci/cross/release (versions verified via gh api, not memory). cargo update
+  openssl 0.10.79->0.10.80 (rust-openssl OOB-write advisory, lockfile-only). Commit 96833dd.
+
+  ---
+  step:    222 (session 11 -- 2026-06-10 "FIX: exception semantics -- uncaught reports+exits 101, AOT propagates, catch binds str")
+  date:    2026-06-10
+  Three defects found by running the doc's own examples (docs/07 promised println(e) prints
+  the thrown string -- it printed a raw pointer):
+  (1) UNCAUGHT THROW: silent exit 0 on Cranelift; on LLVM execution CONTINUED past the
+      throwing call ("after boom" printed) -- AOT had NO out-of-try propagation at all.
+  (2) CATCH VALUE: bound as I64 in MIR -> println(e) printed pointer/garbage on every form.
+  (3) connect_tls divergence (step-217 ticket): JIT threw/AOT returned usable fd -- the AOT
+      half was the missing propagation in (1).
+  FIX: (a) MIR lower stringifies thrown values at the throw site via single-operand
+  StringConcat (reuses backends' type-aware to_string; str passes through); catch local now
+  MirType::Str matching check.rs's existing Type::Str. (b) kryos-rt: new
+  kryos_exception_report_uncaught_if_pending (prints "kryos: uncaught exception: <msg>" to
+  stderr, exit 101) + JIT symbol/decl registration + LLVM declare. (c) Cranelift: report
+  call before every return in main + in main's post-call exc path. (d) LLVM: post-call
+  pending-exception checks (same filter list as Cranelift, gated off in functions containing
+  MIR-level try/catch checks) + report-before-ret in main.
+  VERIFY: throw/catch/rethrow/int-throw/interp-throw IDENTICAL both backends; uncaught ->
+  "kryos: uncaught exception: kaboom" rc=101 BOTH backends; connect_tls dead-port now caught
+  with proper message on BOTH backends. New tests: tests/smoke/test_throw_catch_str.kry
+  (parity) + test-runner native fixture uncaught_throw_exits_nonzero.kry (expect-exit: 101,
+  runs in both debug-CL and release-LLVM sweeps). docs/07 updated (catch-is-str, exit 101).
+  GATES: parity 36/36; bootstrap 989ba174 byte-identical; examples 23/23 AOT; JIT spot 9/9;
+  test_examples 9/9; workspace 910/0 (64 suites); kryos-mir suites green; native_runner 2/2.
+  DISCOVERED (pre-existing, repro'd on v4.43.0 binary -- NOT from this step):
+  (i) `let s = connect_tls(<dead>)` in try + catch -> segfault AFTER main completes (CL only,
+      rc 139). Minimal same-file repros don't trigger (inliner). Ticket filed.
+  (ii) RELEASE ZIP UNUSABLE STANDALONE: find_stdlib_dir checks env var, COMPILE-TIME
+      CARGO_MANIFEST_DIR (nonexistent on user machines), and importing-file ancestors --
+      never exe-relative. The shipped ./stdlib is invisible to the shipped binary. Fix
+      queued in the adoption step. LESSON: docs' own examples are a test suite -- run them.
+  next:    WASI scoping (step 223), then @copy unification investigation (224), then
+           adoption layer (incl. exe-relative stdlib fix) + manual.

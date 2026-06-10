@@ -48,3 +48,42 @@ pub extern "C" fn kryos_exception_take() -> i64 {
     HAS_EXCEPTION.with(|h| h.set(false));
     EXCEPTION_VALUE.with(|v| v.get())
 }
+
+/// Exit code used when a thrown exception reaches the end of `main`
+/// without being caught.
+pub const UNCAUGHT_EXCEPTION_EXIT_CODE: i32 = 101;
+
+/// If an exception is pending, print it to stderr and exit nonzero.
+///
+/// Compiled code inserts a call to this before every `return` in `main`,
+/// so a `throw` that unwinds all the way out of the program reports
+/// itself instead of silently exiting 0. The exception value is always a
+/// KryosString pointer (the MIR lowering stringifies thrown values at the
+/// throw site), but a null/garbage-tolerant read keeps this safe against
+/// hand-rolled callers.
+#[no_mangle]
+pub extern "C" fn kryos_exception_report_uncaught_if_pending() {
+    if !HAS_EXCEPTION.with(|h| h.get()) {
+        return;
+    }
+    let value = kryos_exception_take();
+    let mut printed = false;
+    if value != 0 {
+        let s = value as *const crate::string::KryosString;
+        unsafe {
+            let len = (*s).len as usize;
+            let data = (*s).data;
+            if !data.is_null() {
+                let slice = std::slice::from_raw_parts(data, len);
+                if let Ok(text) = std::str::from_utf8(slice) {
+                    eprintln!("kryos: uncaught exception: {text}");
+                    printed = true;
+                }
+            }
+        }
+    }
+    if !printed {
+        eprintln!("kryos: uncaught exception (value: {value})");
+    }
+    std::process::exit(UNCAUGHT_EXCEPTION_EXIT_CODE);
+}

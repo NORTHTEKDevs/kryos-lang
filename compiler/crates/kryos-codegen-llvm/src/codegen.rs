@@ -62,6 +62,11 @@ pub struct LlvmCodegen {
     value_types: HashMap<String, String>,
     /// Structs annotated with `@copy` — assignment deep-copies the struct.
     copy_structs: HashSet<String>,
+    /// Whether the function currently being emitted contains MIR-level
+    /// exception checks (try/catch). When it does, the MIR already routes
+    /// pending exceptions and the auto post-call checks must stay out of
+    /// the way (mirrors the Cranelift backend's gating).
+    cur_fn_has_mir_exception_checks: bool,
     /// Closure capture types: func_name -> Vec of capture MIR types.
     /// Used to generate per-closure dropper functions that free heap captures.
     closure_cap_types: HashMap<String, Vec<Option<MirType>>>,
@@ -106,6 +111,7 @@ impl LlvmCodegen {
             mutable_locals: HashSet::new(),
             value_types: HashMap::new(),
             copy_structs: HashSet::new(),
+            cur_fn_has_mir_exception_checks: false,
             closure_cap_types: HashMap::new(),
             closure_user_sig: HashMap::new(),
             trait_vtables: HashMap::new(),
@@ -915,6 +921,7 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_exception_throw(i64)");
         self.emit_line("declare i64 @kryos_exception_check()");
         self.emit_line("declare i64 @kryos_exception_take()");
+        self.emit_line("declare void @kryos_exception_report_uncaught_if_pending()");
         // ---------------------------------------------------------------
         // Auto-generated runtime symbol declarations (Class A' fix).
         //
@@ -2252,6 +2259,12 @@ impl LlvmCodegen {
     }
 
     fn emit_function_as(&mut self, func: &MirFunction, name: &str) -> Result<(), CodegenError> {
+        self.cur_fn_has_mir_exception_checks = func.blocks.iter().any(|bb| {
+            bb.instructions.iter().any(|inst| {
+                matches!(inst, Instruction::Assign { value: RValue::Call { func, .. }, .. }
+                    if func == "kryos_exception_check")
+            })
+        });
         // Build the local type map for this function.
         self.local_types.clear();
         self.value_types.clear();
@@ -2606,6 +2619,17 @@ impl LlvmCodegen {
         match inst {
             Instruction::Assign { dest, value } => {
                 self.emit_assign(*dest, value, func)?;
+                // For functions WITHOUT MIR-level exception handling, check
+                // the thread-local exception state after every user function
+                // call and return early to propagate the unwind toward the
+                // nearest try/catch up the call stack (mirrors the Cranelift
+                // backend; without this an out-of-try `throw` in a callee is
+                // silently ignored and execution continues).
+                if !self.cur_fn_has_mir_exception_checks
+                    && post_call_exception_check_applies(value)
+                {
+                    self.emit_post_call_exception_check(func);
+                }
             }
             Instruction::ArcRetain { ptr } => {
                 self.emit_line(&format!("  call void @kryos_arc_retain(ptr %_{})", ptr.0));
@@ -6358,6 +6382,11 @@ impl LlvmCodegen {
     ) -> Result<(), CodegenError> {
         match term {
             Terminator::Return(None) => {
+                if func.name == "main" {
+                    self.emit_line(
+                        "  call void @kryos_exception_report_uncaught_if_pending()",
+                    );
+                }
                 if self.aggregate_llvm_ty(&func.ret_ty).is_some() {
                     // sret return — nothing to store, just exit.
                     self.emit_line("  ret void");
@@ -6372,6 +6401,11 @@ impl LlvmCodegen {
                 }
             }
             Terminator::Return(Some(op)) => {
+                if func.name == "main" {
+                    self.emit_line(
+                        "  call void @kryos_exception_report_uncaught_if_pending()",
+                    );
+                }
                 if let Some(agg) = self.aggregate_llvm_ty(&func.ret_ty) {
                     let from_ty = self.operand_type(op, func);
                     let val = self.operand_to_llvm(op, func);
@@ -6900,6 +6934,39 @@ impl LlvmCodegen {
         let t = format!("%t{}", self.temp_counter);
         self.temp_counter += 1;
         t
+    }
+
+    /// Emit a pending-exception check after a user-function call: if the
+    /// thread-local exception flag is set, return a default value so the
+    /// exception keeps unwinding; `main`'s returns report it (see
+    /// emit_terminator). Labels are derived from the temp counter so they
+    /// are unique within the function.
+    fn emit_post_call_exception_check(&mut self, func: &MirFunction) {
+        let chk = self.next_temp();
+        let pend = self.next_temp();
+        let id = chk.trim_start_matches('%').to_string();
+        let exc_lbl = format!("exc.ret.{id}");
+        let cont_lbl = format!("exc.cont.{id}");
+        self.emit_line(&format!("  {chk} = call i64 @kryos_exception_check()"));
+        self.emit_line(&format!("  {pend} = icmp ne i64 {chk}, 0"));
+        self.emit_line(&format!("  br i1 {pend}, label %{exc_lbl}, label %{cont_lbl}"));
+        self.emit_line(&format!("{exc_lbl}:"));
+        if func.name == "main" {
+            self.emit_line("  call void @kryos_exception_report_uncaught_if_pending()");
+        }
+        if self.aggregate_llvm_ty(&func.ret_ty).is_some() {
+            // sret aggregate: leave the out-param untouched (dead value) and exit.
+            self.emit_line("  ret void");
+        } else {
+            let ret_ty = self.sig_ty_to_llvm(&func.ret_ty);
+            if ret_ty == "void" {
+                self.emit_line("  ret void");
+            } else {
+                let zero = default_value_for_type(&ret_ty);
+                self.emit_line(&format!("  ret {ret_ty} {zero}"));
+            }
+        }
+        self.emit_line(&format!("{cont_lbl}:"));
     }
 
     // -----------------------------------------------------------------------
@@ -7474,6 +7541,42 @@ fn split_aggregate_fields(agg: &str) -> Vec<String> {
         fields.push(cur.trim().to_string());
     }
     fields
+}
+
+
+/// Mirror of the Cranelift backend's post-call exception-check filter:
+/// check after user-function and indirect/vtable calls; skip the runtime's
+/// own kryos_* helpers and pure builtins that can never throw.
+fn post_call_exception_check_applies(value: &RValue) -> bool {
+    match value {
+        RValue::Call { func, .. } => {
+            !func.starts_with("kryos_")
+                && !matches!(
+                    func.as_str(),
+                    "println"
+                        | "print"
+                        | "eprintln"
+                        | "sleep"
+                        | "sleep_ms"
+                        | "sqrt"
+                        | "floor"
+                        | "ceil"
+                        | "round"
+                        | "abs"
+                        | "min"
+                        | "max"
+                        | "assert"
+                        | "assert_eq"
+                        | "panic"
+                        | "len"
+                        | "range"
+                        | "to_string"
+                        | "exit"
+                )
+        }
+        RValue::CallIndirect { .. } | RValue::VtableCall { .. } => true,
+        _ => false,
+    }
 }
 
 fn default_value_for_type(ty: &str) -> &str {

@@ -54,6 +54,38 @@ try {
 println("after try/catch")  // this runs
 ```
 
+### The catch variable is a string
+
+Whatever you `throw` is converted to its string representation at the throw
+site -- the same conversion `"{x}"` interpolation uses. The catch variable
+is therefore always a `str`:
+
+```
+try {
+    throw 42
+} catch e {
+    println(e)          // 42
+    println("got {e}")  // got 42
+}
+```
+
+Strings pass through unchanged; ints, floats, and bools become their printed
+form. Throw strings (or build one with interpolation) when you want
+structured messages: `throw "connect failed: {host}:{port}"`.
+
+### Uncaught exceptions
+
+If a thrown value unwinds all the way out of `main` without hitting a
+`catch`, the program prints the exception to stderr and exits with code
+**101** on both backends:
+
+```
+$ kryos run boom.kry
+kryos: uncaught exception: kaboom
+$ echo $?
+101
+```
+
 ### Nested try/catch
 
 Try/catch blocks can nest. An inner catch can throw a new error that gets caught by an outer catch:

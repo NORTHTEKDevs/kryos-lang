@@ -2114,7 +2114,22 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
         }
 
         ast::Stmt::Throw { expr, .. } => {
-            let val = lower_expr_to_operand(ctx, expr);
+            // The catch binding is statically typed `str` (check.rs), so the
+            // thrown value is converted to its string representation at the
+            // throw site. A single-operand StringConcat reuses the backends'
+            // type-aware to_string dispatch (the same path as `"{x}"`).
+            let throw_ty = infer_expr_type(ctx, expr);
+            let raw = lower_expr_to_operand(ctx, expr);
+            let val = if throw_ty == MirType::Str {
+                raw
+            } else {
+                let s = ctx.alloc_temp(MirType::Str);
+                ctx.emit(Instruction::Assign {
+                    dest: s,
+                    value: RValue::StringConcat(vec![raw]),
+                });
+                Operand::Local(s)
+            };
             if let Some(ref target) = ctx.try_catch_target {
                 // Inside a try block: store Result::Err into the try/catch
                 // result local and jump to the tag-check block.
@@ -3272,7 +3287,9 @@ fn lower_try_catch(
     ctx.finish_block(Terminator::Goto(merge_bb), err_bb);
 
     // Err path: bind error value to catch_name, execute handler.
-    let err_payload = ctx.alloc_local(Some(catch_name.to_string()), MirType::I64, false);
+    // The thrown value is stringified at the throw site (see Stmt::Throw),
+    // so the catch binding is a str — matching its static type in check.rs.
+    let err_payload = ctx.alloc_local(Some(catch_name.to_string()), MirType::Str, false);
     ctx.emit(Instruction::Assign {
         dest: err_payload,
         value: RValue::EnumPayload {

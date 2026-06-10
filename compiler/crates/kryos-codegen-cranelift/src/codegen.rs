@@ -2617,9 +2617,11 @@ fn translate_instruction<M: Module>(
 
                     // Early-return block: drop live locals, emit trace_exit,
                     // and return a default value to propagate the exception
-                    // up the call stack.
+                    // up the call stack. In `main` there is nowhere left to
+                    // unwind to — report the uncaught exception instead.
                     builder.switch_to_block(exc_return_block);
                     builder.seal_block(exc_return_block);
+                    emit_report_uncaught_if_main(builder, translator, module)?;
                     emit_exception_cleanup_drops(builder, translator, module)?;
                     emit_trace_exit(builder, translator, module)?;
                     if builder.func.signature.returns.is_empty() {
@@ -5432,6 +5434,27 @@ fn translate_cast(
 // Terminator translation
 // ---------------------------------------------------------------------------
 
+/// In `main`, report a pending uncaught exception (message to stderr +
+/// nonzero exit) before returning. No-op in every other function — there
+/// the pending exception keeps unwinding toward a try/catch.
+fn emit_report_uncaught_if_main<M: Module>(
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+) -> Result<(), CodegenError> {
+    if translator.mir_func.name == "main" {
+        let f = ensure_func_ref_with_args(
+            "kryos_exception_report_uncaught_if_pending",
+            builder,
+            translator,
+            module,
+            0,
+        )?;
+        builder.ins().call(f, &[]);
+    }
+    Ok(())
+}
+
 fn translate_terminator<M: Module>(
     term: &Terminator,
     builder: &mut FunctionBuilder,
@@ -5441,6 +5464,7 @@ fn translate_terminator<M: Module>(
     match term {
         Terminator::Return(None) => {
             if builder.func.signature.returns.is_empty() {
+                emit_report_uncaught_if_main(builder, translator, module)?;
                 emit_trace_exit(builder, translator, module)?;
                 builder.ins().return_(&[]);
             } else {
@@ -5479,6 +5503,7 @@ fn translate_terminator<M: Module>(
             } else {
                 val
             };
+            emit_report_uncaught_if_main(builder, translator, module)?;
             emit_trace_exit(builder, translator, module)?;
             builder.ins().return_(&[ret_val]);
         }

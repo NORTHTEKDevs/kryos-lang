@@ -1,0 +1,13 @@
+// Regression: an uncaught `throw` must NOT exit 0 silently. The runtime
+// prints "kryos: uncaught exception: <msg>" to stderr and exits 101
+// (kryos-rt::exception::UNCAUGHT_EXCEPTION_EXIT_CODE) on both backends.
+// expect-exit: 101
+
+fn boom() {
+    throw "kaboom"
+}
+
+fn main() {
+    boom()
+    println("after boom -- must not print")
+}

@@ -1,0 +1,39 @@
+fn get_value(n: i64) -> i64 {
+    if n < 0 {
+        throw "negative input: {n}"
+    }
+    return n * 2
+}
+
+fn throws_int() -> i64 {
+    throw 42
+    return 0
+}
+
+fn main() {
+    // int throw stringifies
+    try {
+        throws_int()
+    } catch e {
+        println("int caught: {e}")
+    }
+    // non-void chain propagates + interpolated throw message
+    try {
+        let v = get_value(-5)
+        println("unreachable {v}")
+    } catch e {
+        println("chain caught: {e}")
+    }
+    // nested try: inner catches, outer continues
+    try {
+        try {
+            throw "inner"
+        } catch e {
+            println("inner caught: {e}")
+            throw "rethrown from inner catch"
+        }
+    } catch e2 {
+        println("outer caught: {e2}")
+    }
+    println("done")
+}
