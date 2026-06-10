@@ -153,6 +153,7 @@ module under [`docs/stdlib/`](stdlib/). Brief index:
 | `std::string`          | Higher-level string utilities beyond core builtins. |
 | `std::math`            | Extended math (`pi`, `e`, `random`).                |
 | `std::json`            | Ergonomic wrappers around `json_*` builtins.        |
+| `std::csv`             | RFC-4180 CSV: `parse`, `parse_line`, `to_line`, `serialize`. |
 | `std::fs`              | File-system helpers built on `file_*` builtins.     |
 | `std::os`              | Platform detection (`name`, `arch`, `is_linux`).    |
 | `std::process`         | Process spawn / pipe wrappers.                      |

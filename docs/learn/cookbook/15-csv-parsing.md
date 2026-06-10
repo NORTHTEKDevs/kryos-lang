@@ -1,5 +1,9 @@
 # Cookbook 15 · CSV parsing
 
+> The hand-rolled parser below teaches the technique. For production use
+> there is now `std::csv` — `use std::csv::{parse, to_line}` handles quoted
+> fields, embedded commas/newlines, and doubled-quote escapes (RFC 4180).
+
 CSV is the most common interop format you'll touch. Kryos doesn't ship a CSV crate; you don't need one for ~95% of real CSVs.
 
 ## The program

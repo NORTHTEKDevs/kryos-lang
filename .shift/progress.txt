@@ -5306,3 +5306,16 @@ SHIFTS:
   format + transport path. The cross-module import quirk (Budget.charge needing cost_add
   imported by the CONSUMER) is real -- documented in the recipe imports; checker-side fix =
   follow-up ticket.
+
+  ---
+  step:    233 (session 11 -- 2026-06-10 "ECOSYSTEM: std::csv + v4.45.0 RELEASE")
+  date:    2026-06-10
+  NEW stdlib/csv.kry (pure Kryos, RFC-4180): parse/parse_line/to_line/serialize -- quoted
+  fields, embedded commas + newlines inside quotes, doubled-quote escapes, \r\n records,
+  trailing-newline handling. tests/smoke/test_csv.kry: 8 edge-case assertions + line and
+  document round-trips, PASS both backends. Cookbook 15 points at the module (hand-rolled
+  version kept as the teaching artifact). STDLIB.md rows for csv + llm.
+  RELEASE v4.45.0 "Ecosystem": llm + csv + E0111 + spawn-throw + gap fills + reorg.
+  GATES on the 4.45.0 binary: parity 42/42; examples-gate PASS; docs-examples 54/54;
+  bootstrap 989ba174 byte-identical; workspace 912/0.
+  next:    tag v4.45.0 -> release workflow -> verify assets.

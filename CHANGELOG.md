@@ -4,6 +4,36 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.45.0] — 2026-06-10 — "Ecosystem: std::llm, budget-enforced AI calls, std::csv, E0111"
+
+### Added
+- **`std::llm`** — chat-completion clients for the OpenAI-compatible wire format
+  (OpenAI, OpenRouter, Ollama, vLLM, LM Studio via `with_base_url`) and the
+  Anthropic Messages API, over the native HTTPS transport with timeouts.
+  `chat`, `complete`, message helpers, and **`chat_within`** — budget-enforced
+  calls wired into `std::cost` (refuses before the request when exhausted,
+  charges actual token usage after). Verified end-to-end against a mock server
+  speaking both wire formats, on both backends.
+- **`std::csv`** — RFC-4180 parsing and serialization: quoted fields, embedded
+  commas/newlines, doubled-quote escapes, `
+` records, round-trip tested.
+- **E0111** — integer literals out of range for their declared narrow type are
+  now compile errors (`let x: u8 = 999` used to silently truncate to 231).
+  Explicit `as` casts keep truncation semantics. `kryos explain E0111`.
+- Stdlib gap fills: `std::random::random_f64`, `std::slice_ops::{is_sorted,
+  bsearch}`, `std::fuzzy::jaro_winkler`, `std::crypto::uuid_parse`.
+
+### Fixed
+- A `throw` unwinding out of a **spawned thread** was silently swallowed; it is
+  now reported to stderr (`kryos: uncaught exception in spawned thread: <msg>`)
+  with Rust-thread-panic semantics — the thread dies, the process continues.
+
+### Changed
+- Repo reorganization: compiler regression fixtures moved to
+  `compiler/tests/fixtures/` (stale duplicates of root examples removed),
+  historical audit docs archived, the examples battery codified as
+  `tests/run_examples_gate.sh`.
+
 ## [4.44.0] — 2026-06-10 — "Usable by anyone: honest semantics, working installs, tested docs"
 
 ### Fixed

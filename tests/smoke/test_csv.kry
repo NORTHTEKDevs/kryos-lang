@@ -1,0 +1,46 @@
+// std::csv round-trip + RFC-4180 edge cases (step 233). Self-checking.
+
+use std::csv::{CsvRow, parse, parse_line, to_line, serialize}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    // Plain fields.
+    let f1 = parse_line("a,b,c")
+    expect(len(f1) == 3 and f1[0] == "a" and f1[2] == "c", "plain fields")
+
+    // Quoted comma + doubled-quote escape.
+    let f2 = parse_line("\"Doe, Jane\",44,\"say \"\"hi\"\"\"")
+    expect(len(f2) == 3, "quoted count")
+    expect(f2[0] == "Doe, Jane", "embedded comma")
+    expect(f2[2] == "say \"hi\"", "doubled quotes")
+
+    // Empty fields.
+    let f3 = parse_line("x,,z,")
+    expect(len(f3) == 4 and f3[1] == "" and f3[3] == "", "empty fields")
+
+    // Multi-row document, \r\n separators, trailing newline, quoted newline.
+    let doc = "name,note\r\n\"A\",\"line1\nline2\"\r\nB,plain\r\n"
+    let rows = parse(doc)
+    expect(len(rows) == 3, "row count (got {len(rows)})")
+    expect(rows[1].fields[1] == "line1\nline2", "quoted embedded newline")
+    expect(rows[2].fields[0] == "B", "last row")
+
+    // Serialization round-trip.
+    let line = to_line(["plain", "with,comma", "with \"q\"", ""])
+    expect(line == "plain,\"with,comma\",\"with \"\"q\"\"\",", "to_line output: {line}")
+    let back = parse_line(line)
+    expect(len(back) == 4 and back[1] == "with,comma" and back[2] == "with \"q\"", "round trip")
+
+    // Document round-trip.
+    let out = serialize(rows)
+    let again = parse(out)
+    expect(len(again) == 3 and again[1].fields[1] == "line1\nline2", "doc round trip")
+
+    println("std::csv: PASS")
+}

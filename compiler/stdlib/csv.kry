@@ -1,0 +1,154 @@
+// ============================================================
+// std.csv -- RFC-4180-style CSV parsing and serialization.
+//
+// Pure Kryos. Handles quoted fields, embedded commas, embedded
+// newlines inside quoted fields, and doubled-quote escapes ("").
+//
+// Usage:
+//   use std::csv::{parse, parse_line, to_line}
+//
+//   let rows = parse("name,age\n\"Doe, Jane\",44\n")
+//   for row in rows { println(row.fields[0]) }
+//
+//   let line = to_line(["a", "with,comma", "with \"quote\""])
+//   // a,"with,comma","with ""quote"""
+// ============================================================
+
+@copy
+struct CsvRow {
+    fields: [str]
+}
+
+/// Parse one CSV line (no trailing newline) into fields.
+/// For data containing quoted embedded newlines, use `parse` on the whole
+/// document instead -- a single "line" of text is not a full record then.
+fn parse_line(line: str) -> [str] {
+    let rows = parse(line)
+    if len(rows) == 0 {
+        let empty: [str] = []
+        return empty
+    }
+    return rows[0].fields
+}
+
+/// Parse a CSV document into rows. Recognizes \n and \r\n record
+/// separators; a quoted field may contain commas, newlines, and doubled
+/// quotes (""). A trailing newline does not produce an empty final row.
+fn parse(input: str) -> [CsvRow] {
+    let mut rows: [CsvRow] = []
+    let mut fields: [str] = []
+    let mut cur = ""
+    let mut in_quotes = false
+    let n = len(input)
+    let mut i = 0
+    let mut row_has_content = false
+
+    while i < n {
+        let c = substr(input, i, i + 1)
+        if in_quotes {
+            if c == "\"" {
+                if i + 1 < n and substr(input, i + 1, i + 2) == "\"" {
+                    cur = cur + "\""
+                    i = i + 2
+                } else {
+                    in_quotes = false
+                    i = i + 1
+                }
+            } else {
+                cur = cur + c
+                i = i + 1
+            }
+        } else {
+            if c == "\"" {
+                in_quotes = true
+                row_has_content = true
+                i = i + 1
+            } elif c == "," {
+                fields = push(fields, cur)
+                cur = ""
+                row_has_content = true
+                i = i + 1
+            } elif c == "\n" or c == "\r" {
+                if c == "\r" and i + 1 < n and substr(input, i + 1, i + 2) == "\n" {
+                    i = i + 2
+                } else {
+                    i = i + 1
+                }
+                if row_has_content or len(cur) > 0 or len(fields) > 0 {
+                    fields = push(fields, cur)
+                    rows = push(rows, CsvRow { fields: fields })
+                    let fresh: [str] = []
+                    fields = fresh
+                    cur = ""
+                    row_has_content = false
+                }
+            } else {
+                cur = cur + c
+                row_has_content = true
+                i = i + 1
+            }
+        }
+    }
+    if row_has_content or len(cur) > 0 or len(fields) > 0 {
+        fields = push(fields, cur)
+        rows = push(rows, CsvRow { fields: fields })
+    }
+    return rows
+}
+
+/// True when the field needs quoting (contains comma, quote, or newline).
+fn _needs_quoting(field: str) -> bool {
+    let n = len(field)
+    let mut i = 0
+    while i < n {
+        let c = substr(field, i, i + 1)
+        if c == "," or c == "\"" or c == "\n" or c == "\r" {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+/// Serialize fields into one CSV line (no trailing newline). Quotes are
+/// added only where required; embedded quotes are doubled.
+fn to_line(fields: [str]) -> str {
+    let mut out = ""
+    let count = len(fields)
+    let mut idx = 0
+    while idx < count {
+        let f = fields[idx]
+        if idx > 0 {
+            out = out + ","
+        }
+        if _needs_quoting(f) {
+            let mut quoted = "\""
+            let n = len(f)
+            let mut i = 0
+            while i < n {
+                let c = substr(f, i, i + 1)
+                if c == "\"" {
+                    quoted = quoted + "\"\""
+                } else {
+                    quoted = quoted + c
+                }
+                i = i + 1
+            }
+            out = out + quoted + "\""
+        } else {
+            out = out + f
+        }
+        idx = idx + 1
+    }
+    return out
+}
+
+/// Serialize rows into a CSV document with \n separators and a trailing
+/// newline.
+fn serialize(rows: [CsvRow]) -> str {
+    let mut out = ""
+    for row in rows {
+        out = out + to_line(row.fields) + "\n"
+    }
+    return out
+}

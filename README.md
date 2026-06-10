@@ -1,7 +1,7 @@
 # Kryos
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v4.44.0-blue.svg)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-v4.45.0-blue.svg)](CHANGELOG.md)
 [![Targets](https://img.shields.io/badge/targets-native%20%7C%20wasm-purple.svg)](#what-it-targets)
 [![Parity](https://img.shields.io/badge/Cranelift_vs_LLVM-37%2F37-brightgreen.svg)](tests/parity/run_parity.sh)
 [![Self-host](https://img.shields.io/badge/bootstrap-stage2%3D%3D3%3D%3D4_byte--identical-brightgreen.svg)](compiler/self-host/bootstrap-win.sh)
@@ -82,7 +82,7 @@ kryos new hello && cd hello && kryos run src/main.kry
 git clone https://github.com/NORTHTEKDevs/kryos-lang.git
 cd kryos-lang/compiler
 cargo build --release -j 2
-./target/release/kryos --version   # → kryos 4.44.0
+./target/release/kryos --version   # → kryos 4.45.0
 ```
 
 Requirements: Rust 1.75+, a C compiler (`cc`/`clang`/MSVC) for linking. **LLVM is not required for development** — the LLVM backend emits IR as text. You only need `clang` or `llc` on PATH if you want optimized release binaries.
@@ -212,7 +212,7 @@ Where Kryos shines: simple loops, recursion, and floating-point arithmetic — c
 
 ---
 
-## What ships in v4.44.0
+## What ships in v4.45.0
 
 The full toolchain. Not a roadmap — actually built and tested:
 
@@ -263,7 +263,7 @@ kryos lsp                     Language server (used by VS Code / Zed extensions)
 
 ## Status
 
-Kryos is **v4.44.0**. Feature-complete language and toolchain + self-hosting compiler (bootstrap fixed point: stage-2 == stage-3 == stage-4, byte-identical).
+Kryos is **v4.45.0**. Feature-complete language and toolchain + self-hosting compiler (bootstrap fixed point: stage-2 == stage-3 == stage-4, byte-identical).
 
 | Feature | Status |
 |---|---|
