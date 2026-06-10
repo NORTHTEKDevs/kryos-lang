@@ -37,6 +37,10 @@ pub struct LinkerConfig {
     pub extra_libs: Vec<String>,
     /// Extra library search directories (-L flags).
     pub extra_lib_dirs: Vec<PathBuf>,
+    /// macOS frameworks to link (`-framework X`, two tokens each). Empty on
+    /// other platforms. Needed because native-tls (postgres feature) pulls
+    /// in Security.framework + CoreFoundation on Darwin.
+    pub extra_frameworks: Vec<String>,
     /// Enable Link-Time Optimization. Passes `-flto=thin` to the link
     /// driver so cross-module inlining of runtime helpers takes effect.
     /// Default: false.
@@ -59,6 +63,7 @@ impl Default for LinkerConfig {
             link_type: LinkType::Dynamic,
             extra_libs: Vec::new(),
             extra_lib_dirs: Vec::new(),
+            extra_frameworks: Vec::new(),
             lto: false,
             debug_info: false,
         }
@@ -214,6 +219,11 @@ fn build_unix_command(cmd: &mut Command, config: &LinkerConfig) {
     // Extra libraries
     for lib in &config.extra_libs {
         cmd.arg(format!("-l{lib}"));
+    }
+
+    // macOS frameworks (-framework is two tokens; the -l loop can't emit it).
+    for fw in &config.extra_frameworks {
+        cmd.arg("-framework").arg(fw);
     }
 
     // LTO: pass through to link driver so the linker invokes LLVM's

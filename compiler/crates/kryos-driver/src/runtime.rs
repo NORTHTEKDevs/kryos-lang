@@ -114,33 +114,54 @@ pub fn find_stdlib_native_lib() -> Option<PathBuf> {
 ///
 /// Rust's standard library (embedded in the staticlib) depends on OS-specific
 /// system libraries. These must be passed to the linker as `-l` flags.
-pub fn system_libs(target: &kryos_linker::Target) -> Vec<String> {
+pub fn system_libs(target: &kryos_linker::Target) -> (Vec<String>, Vec<String>) {
     use kryos_linker::{Env, Os};
 
     match (target.os, target.env) {
-        (Os::Windows, Env::Msvc) => vec![
-            "ntdll".into(),
-            "userenv".into(),
-            "ws2_32".into(),
-            "dbghelp".into(),
-            "user32".into(),
-            "bcrypt".into(),
-            "advapi32".into(),
-        ],
-        (Os::Windows, _) => vec![
-            // MinGW / GNU
-            "ntdll".into(),
-            "userenv".into(),
-            "ws2_32".into(),
-            "dbghelp".into(),
-            "user32".into(),
-            "bcrypt".into(),
-            "advapi32".into(),
-            "gcc".into(),
-            "pthread".into(),
-        ],
-        (Os::Linux, _) => vec!["pthread".into(), "dl".into(), "m".into(), "ssl".into(), "crypto".into()],
-        (Os::MacOS, _) => vec!["System".into(), "pthread".into(), "ssl".into(), "crypto".into()],
-        _ => vec![],
+        (Os::Windows, Env::Msvc) => (
+            vec![
+                "ntdll".into(),
+                "userenv".into(),
+                "ws2_32".into(),
+                "dbghelp".into(),
+                "user32".into(),
+                "bcrypt".into(),
+                "advapi32".into(),
+            ],
+            vec![],
+        ),
+        (Os::Windows, _) => (
+            vec![
+                // MinGW / GNU
+                "ntdll".into(),
+                "userenv".into(),
+                "ws2_32".into(),
+                "dbghelp".into(),
+                "user32".into(),
+                "bcrypt".into(),
+                "advapi32".into(),
+                "gcc".into(),
+                "pthread".into(),
+            ],
+            vec![],
+        ),
+        (Os::Linux, _) => (
+            vec!["pthread".into(), "dl".into(), "m".into(), "ssl".into(), "crypto".into()],
+            vec![],
+        ),
+        // ring/rustls are self-contained; the OpenSSL libs macOS lacked were
+        // never needed here. native-tls (postgres) needs the two frameworks;
+        // Rust std needs iconv/z/resolv on Darwin.
+        (Os::MacOS, _) => (
+            vec![
+                "System".into(),
+                "pthread".into(),
+                "iconv".into(),
+                "z".into(),
+                "resolv".into(),
+            ],
+            vec!["Security".into(), "CoreFoundation".into()],
+        ),
+        _ => (vec![], vec![]),
     }
 }

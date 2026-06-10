@@ -4906,3 +4906,20 @@ SHIFTS:
   JSON needs `\{`/`\}` (or build via std::json). Hit it in jwt.kry headers; documented in #1.
   next:    std::smtp (TCP+TLS email send) + Darwin link flags (investigation done: add
   -framework Security/CoreFoundation + -liconv/-lz/-lresolv, drop the bogus -lssl/-lcrypto).
+
+  ---
+  step:    216 (session 11 -- 2026-06-09 "FIX: Darwin link flags (limitation #3, macOS native stdlib)")
+  date:    2026-06-09
+  Investigation (workflow w84cz9ey8) root-caused the 12 macOS smoke failures: native-tls
+  (postgres feature) needs Security.framework + CoreFoundation on Darwin (baked into the
+  staticlib symbol table, MUST be satisfied at final link), and Rust std needs
+  -liconv/-lz/-lresolv; the existing -lssl/-lcrypto were WRONG (ring is self-contained; macOS
+  ships neither). FIX: added extra_frameworks: Vec<String> to LinkerConfig (+Default +emit
+  `-framework X` after the -l loop in build_unix_command); system_libs now returns
+  (libs, frameworks); macOS arm = System/pthread/iconv/z/resolv + [Security, CoreFoundation],
+  ssl/crypto dropped. Linux + Windows arms UNCHANGED (both green -- don't touch).
+  CONSTRAINT: macOS not available locally -- only CI can verify the link. Windows AOT still
+  links locally (jwt1 runs); linker tests 9/9 + driver 32/32 + workspace 968/0; updated 2
+  direct LinkerConfig test constructors with the new field.
+  next: push, watch CI macos job (core sweep must stay green; advisory Darwin-port sweep should
+  flip 12/12). Then std::smtp.

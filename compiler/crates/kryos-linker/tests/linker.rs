@@ -166,6 +166,7 @@ fn make_test_config(target: Target, link_type: LinkType) -> LinkerConfig {
         link_type,
         extra_libs: vec!["m".to_string(), "pthread".to_string()],
         extra_lib_dirs: vec![PathBuf::from("/usr/local/lib")],
+        extra_frameworks: vec![],
         lto: false,
         debug_info: false,
     }
@@ -337,6 +338,7 @@ fn command_without_optional_libs() {
         link_type: LinkType::Dynamic,
         extra_libs: vec![],
         extra_lib_dirs: vec![],
+        extra_frameworks: vec![],
         lto: false,
         debug_info: false,
     };

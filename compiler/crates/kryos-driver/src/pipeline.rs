@@ -921,7 +921,7 @@ fn codegen_and_link(
                             }
 
                             // System libraries required by the Rust-based runtime staticlib.
-                            let extra_libs = crate::runtime::system_libs(&target);
+                            let (extra_libs, extra_frameworks) = crate::runtime::system_libs(&target);
 
                             // The LLVM backend suppresses `-flto=thin` when
                             // targeting Windows/MSVC because link.exe can't
@@ -946,6 +946,7 @@ fn codegen_and_link(
                                 },
                                 extra_libs,
                                 extra_lib_dirs: vec![],
+                                extra_frameworks,
                                 lto: effective_lto,
                                 debug_info: config.debug_info,
                             };
