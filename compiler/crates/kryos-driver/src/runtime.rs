@@ -160,7 +160,13 @@ pub fn system_libs(target: &kryos_linker::Target) -> (Vec<String>, Vec<String>) 
                 "z".into(),
                 "resolv".into(),
             ],
-            vec!["Security".into(), "CoreFoundation".into()],
+            vec![
+                "Security".into(),
+                "CoreFoundation".into(),
+                // whoami (pulled in transitively) calls
+                // SCDynamicStoreCopyComputerName -> SystemConfiguration.
+                "SystemConfiguration".into(),
+            ],
         ),
         _ => (vec![], vec![]),
     }
