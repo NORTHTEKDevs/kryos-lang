@@ -440,6 +440,24 @@ pub fn resolve_imports(
             // the type-checker will resolve / diagnose them later.
             let mut needed: HashSet<String> = selected.clone();
             let mut worklist: Vec<String> = selected.into_iter().collect();
+            // Impl blocks (and actors/consts) are ALWAYS included below, so
+            // every module-local function their bodies reference must come
+            // along too. Without this, `use m::{SomeStruct}` imported the
+            // struct's methods but not the helper fns they call -- consumers
+            // got "undefined variable `cost_add`" from inside Budget.charge
+            // unless they imported the helper themselves.
+            for decl in imported_module.declarations.iter() {
+                if !matches!(decl, Decl::Function { .. } | Decl::Import { .. }) {
+                    let mut refs: HashSet<String> = HashSet::new();
+                    collect_idents_in_decl(decl, &mut refs);
+                    for r in refs {
+                        if !needed.contains(&r) {
+                            needed.insert(r.clone());
+                            worklist.push(r);
+                        }
+                    }
+                }
+            }
             while let Some(name) = worklist.pop() {
                 if let Some(&idx) = fn_by_name.get(&name) {
                     let mut refs: HashSet<String> = HashSet::new();

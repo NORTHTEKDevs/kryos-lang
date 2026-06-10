@@ -25,6 +25,18 @@
 
 use std::cost::{Budget, ComputeCost, cost_add}
 
+// Runtime hooks for the `@budget(tokens = N, calls = M)` function
+// attribute. When any budget frame is active on this thread, every chat()
+// pre-charges one call and post-charges actual token usage; exceeding the
+// frame throws, which is what halts a runaway agent loop.
+extern {
+    fn kryos_budget_active() -> i64
+    fn kryos_budget_try_call() -> i64
+    fn kryos_budget_charge_tokens(tokens: i64) -> i64
+    fn kryos_budget_remaining_tokens() -> i64
+    fn kryos_budget_remaining_calls() -> i64
+}
+
 @copy
 struct LlmConfig {
     provider: str,
@@ -171,8 +183,9 @@ fn _require(node: i64, what: str) -> i64 {
     return node
 }
 
-fn _parse_openai(body: str, status: i64, raw: str) -> LlmResponse {
-    let root = json_parse(body)
+fn _parse_openai(body: str, status: i64) -> LlmResponse {
+    let raw = body
+    let root = json_parse(raw)
     let choices = _require(json_get(root, "choices"), "choices")
     let first = _require(json_get_index(choices, 0), "choices[0]")
     let message = _require(json_get(first, "message"), "choices[0].message")
@@ -192,8 +205,9 @@ fn _parse_openai(body: str, status: i64, raw: str) -> LlmResponse {
     return LlmResponse { text: text, input_tokens: in_tok, output_tokens: out_tok, model: model, status: status, raw: raw }
 }
 
-fn _parse_anthropic(body: str, status: i64, raw: str) -> LlmResponse {
-    let root = json_parse(body)
+fn _parse_anthropic(body: str, status: i64) -> LlmResponse {
+    let raw = body
+    let root = json_parse(raw)
     let content = _require(json_get(root, "content"), "content")
     let first = _require(json_get_index(content, 0), "content[0]")
     let text = json_to_str(_require(json_get(first, "text"), "content[0].text"))
@@ -234,6 +248,12 @@ fn chat(cfg: LlmConfig, messages: [Message]) -> LlmResponse {
         body = _openai_body(cfg, messages)
     }
 
+    if kryos_budget_active() == 1 {
+        if kryos_budget_try_call() == 1 {
+            throw "llm error: @budget exhausted: no model calls left (remaining tokens: " + to_string(kryos_budget_remaining_tokens()) + ")"
+        }
+    }
+
     let resp = http_request("POST", url, headers, body, cfg.timeout_ms)
     if json_is_null(resp) {
         throw "llm error: transport failure reaching " + url + " (network down, TLS failure, or timeout after " + to_string(cfg.timeout_ms) + "ms)"
@@ -247,10 +267,19 @@ fn chat(cfg: LlmConfig, messages: [Message]) -> LlmResponse {
         }
         throw "llm error: HTTP " + to_string(status) + " from " + url + ": " + excerpt
     }
+    let mut parsed = LlmResponse { text: "", input_tokens: 0, output_tokens: 0, model: "", status: 0, raw: "" }
     if cfg.provider == "anthropic" {
-        return _parse_anthropic(resp_body, status, resp_body)
+        parsed = _parse_anthropic(resp_body, status)
+    } else {
+        parsed = _parse_openai(resp_body, status)
     }
-    return _parse_openai(resp_body, status, resp_body)
+    if kryos_budget_active() == 1 {
+        let exceeded = kryos_budget_charge_tokens(parsed.input_tokens + parsed.output_tokens)
+        if exceeded == 1 {
+            throw "llm error: @budget exceeded: token limit crossed by this call (used " + to_string(parsed.input_tokens + parsed.output_tokens) + " tokens)"
+        }
+    }
+    return parsed
 }
 
 /// One-shot convenience: single user prompt in, reply text out.

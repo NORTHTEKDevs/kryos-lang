@@ -1779,6 +1779,7 @@ impl TypeChecker {
                                 {
                                     self.diagnostics.push(diag);
                                 }
+                                self.check_int_literal_range(param_ty, arg, arg.span());
                             }
                         }
                         *ret.clone()
@@ -1900,6 +1901,7 @@ impl TypeChecker {
                                     {
                                         self.diagnostics.push(diag);
                                     }
+                                    self.check_int_literal_range(param_ty, arg, arg.span());
                                 }
                             }
                             return sig.ret.clone();

@@ -100,6 +100,7 @@ pub mod arc;
 pub mod array;
 pub mod builtins;
 pub mod channel;
+pub mod budget;
 pub mod exception;
 pub mod fs;
 pub mod future;

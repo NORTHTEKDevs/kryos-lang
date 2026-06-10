@@ -35,7 +35,7 @@ plus one API call afterward.
 
 ```kryos
 use std::llm::{anthropic_config, user, chat_within}
-use std::cost::{Budget, ComputeCost, cost_add}
+use std::cost::{Budget, ComputeCost}
 
 fn main() {
     let cfg = anthropic_config(env_get("ANTHROPIC_API_KEY"), "claude-sonnet-4-6")
@@ -51,3 +51,36 @@ fn main() {
 Dollar accounting is left at 0.0 by design — per-token pricing varies by
 provider and model; `charge()` a `ComputeCost` with your own rates if you
 track spend in USD.
+
+## The `@budget` attribute — hard ceilings, enforced by the compiler
+
+For agent loops, prefer the function attribute: it pushes a thread-local
+budget frame on entry, pops it on every return, and every `std::llm` call
+inside (at any depth) charges against it automatically. Exceeding the
+ceiling throws, which is what halts a runaway loop. Nested `@budget`
+functions stack — an outer budget constrains everything inside it.
+
+```kryos
+use std::llm::{anthropic_config, user, chat}
+
+@budget(tokens = 50000, calls = 25)
+fn research_agent(question: str) -> str {
+    let cfg = anthropic_config(env_get("ANTHROPIC_API_KEY"), "claude-sonnet-4-6")
+    let mut notes = ""
+    let mut round = 0
+    while round < 100 {
+        // The 26th call throws "llm error: @budget exhausted" no matter
+        // what the loop condition says.
+        let r = chat(cfg, [user(question + "
+Notes so far: " + notes)])
+        notes = notes + "
+" + r.text
+        round = round + 1
+    }
+    return notes
+}
+```
+
+Omit an axis for no limit on it: `@budget(calls = 10)` caps calls only.
+The token ceiling is charged after each response (real usage), so the call
+that crosses the line completes but the next loop iteration never starts.

@@ -922,6 +922,13 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_exception_check()");
         self.emit_line("declare i64 @kryos_exception_take()");
         self.emit_line("declare void @kryos_exception_report_uncaught_if_pending()");
+        self.emit_line("declare i64 @kryos_budget_push(i64, i64)");
+        self.emit_line("declare void @kryos_budget_pop_to(i64)");
+        self.emit_line("declare i64 @kryos_budget_active()");
+        self.emit_line("declare i64 @kryos_budget_try_call()");
+        self.emit_line("declare i64 @kryos_budget_charge_tokens(i64)");
+        self.emit_line("declare i64 @kryos_budget_remaining_tokens()");
+        self.emit_line("declare i64 @kryos_budget_remaining_calls()");
         // ---------------------------------------------------------------
         // Auto-generated runtime symbol declarations (Class A' fix).
         //

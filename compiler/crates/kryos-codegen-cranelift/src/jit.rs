@@ -228,6 +228,34 @@ impl JitCompiler {
             "kryos_exception_report_uncaught_if_pending",
             kryos_rt::exception::kryos_exception_report_uncaught_if_pending as *const u8,
         );
+        jit_builder.symbol(
+            "kryos_budget_push",
+            kryos_rt::budget::kryos_budget_push as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_budget_pop_to",
+            kryos_rt::budget::kryos_budget_pop_to as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_budget_active",
+            kryos_rt::budget::kryos_budget_active as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_budget_try_call",
+            kryos_rt::budget::kryos_budget_try_call as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_budget_charge_tokens",
+            kryos_rt::budget::kryos_budget_charge_tokens as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_budget_remaining_tokens",
+            kryos_rt::budget::kryos_budget_remaining_tokens as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_budget_remaining_calls",
+            kryos_rt::budget::kryos_budget_remaining_calls as *const u8,
+        );
 
         // ARC drop function registration
         jit_builder.symbol(
@@ -1850,6 +1878,13 @@ fn declare_runtime_builtins<M: Module>(
         "kryos_exception_report_uncaught_if_pending",
         sig(0)
     );
+    decl!("kryos_budget_push", "kryos_budget_push", sig(2));
+    decl!("kryos_budget_pop_to", "kryos_budget_pop_to", sig(1));
+    decl!("kryos_budget_active", "kryos_budget_active", sig(0));
+    decl!("kryos_budget_try_call", "kryos_budget_try_call", sig(0));
+    decl!("kryos_budget_charge_tokens", "kryos_budget_charge_tokens", sig(1));
+    decl!("kryos_budget_remaining_tokens", "kryos_budget_remaining_tokens", sig(0));
+    decl!("kryos_budget_remaining_calls", "kryos_budget_remaining_calls", sig(0));
 
     // --- Networking (Kryos-string-handle wrappers) ---
     decl!("kryos_tcp_connect_ks", "kryos_tcp_connect_ks", sig(2));

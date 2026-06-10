@@ -4,6 +4,28 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.46.0] — 2026-06-10 — "@budget: compiler-enforced AI spending ceilings"
+
+### Added
+- **`@budget(tokens = N, calls = M)` function attribute** — the wedge feature.
+  Entering the function pushes a thread-local budget frame; every `std::llm`
+  call inside it (at any depth) pre-charges one model call and post-charges
+  actual token usage. Exceeding a ceiling throws `llm error: @budget ...`,
+  halting runaway agent loops no matter what their conditions say. Frames pop
+  on every return and self-heal across exception unwinds; nested budgets
+  stack (an outer frame constrains everything inside). Omitted axes are
+  unlimited. Implemented as MIR injection — identical on both backends.
+- **E0111 now covers call arguments** — `f(999)` into `fn f(x: u8)` is a
+  compile error, completing the literal range-check story (let, const,
+  assignment, and now arguments).
+
+### Fixed
+- **Selective imports carry method dependencies.** `use m::{SomeStruct}`
+  imported the struct's impl methods but not the module-local helpers they
+  call — consumers got "undefined variable" from inside library methods
+  unless they imported the helpers themselves. The transitive-closure pass
+  now walks impl/actor/const bodies too.
+
 ## [4.45.0] — 2026-06-10 — "Ecosystem: std::llm, budget-enforced AI calls, std::csv, E0111"
 
 ### Added

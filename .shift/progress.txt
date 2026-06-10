@@ -5377,3 +5377,34 @@ SHIFTS:
   attribute semantics (Kristian input wanted), generic Probable<T>/Tracked<T>, async
   executor, E0111 on fn-call arg literals, cross-module method-dependency import quirk
   (Budget.charge->cost_add), wedge benchmarks A-E, registry/playground/site hosting.
+
+  ---
+  step:    236 (session 11 -- 2026-06-10 "@budget attribute + E0111 call-args + import-closure fix; v4.46.0")
+  date:    2026-06-10
+  THE WEDGE FEATURE LANDS: @budget(tokens = N, calls = M) function attribute.
+  - kryos-rt/budget.rs: thread-local frame stack; push -> depth, pop_to(depth)
+    (by-depth pops SELF-HEAL across exception unwinds -- outer pop truncates leaked
+    frames); try_call pre-charges 1 call across ALL frames; charge_tokens post-charges
+    actual usage; 4 unit tests incl. nesting + unwind-heal + unlimited axes.
+  - MIR injection (inject_budget_frames in lower.rs): entry push + pop_to before every
+    Return -- one implementation, both backends. Annotation args parsed from the free-form
+    strings ("tokens = 100000"); missing axis = unlimited.
+  - std::llm hooks via extern block: chat() pre-charges a call (throws "@budget exhausted"
+    BEFORE the request) and post-charges parsed usage (throws "@budget exceeded" after --
+    the crossing call completes, the loop halts).
+  - VERIFY: tests/smoke/test_budget_attr.kry (mock server): call ceiling refuses 2nd call;
+    frames pop on return (fresh budget per invocation, remaining=985 both runs); token
+    ceiling trips post-charge. PASS both backends. Test-harness lesson: a spawned acceptor
+    waiting for requests that never arrive (refused calls don't reach the wire) hangs
+    spawn_wait_all and ORPHANS the exe holding its port + file -> count served = count sent.
+  ALSO: E0111 extended to fn-call arguments (f(999) into u8 param = compile error; both
+  call paths) and the selective-import transitive closure now walks impl/actor/const bodies
+  (use m::{Struct} carries the helpers its methods call -- the cost_add quirk is FIXED;
+  workaround imports removed from docs).
+  Ownership-analyzer wart hit (documented, not fixed): a struct-literal field init from an
+  i64 local (`status: status`) MOVES the primitive (spec says primitives are Copy) --
+  worked around in llm.kry; checker ticket.
+  GATES: parity 44/44; examples PASS; docs 54/54; bootstrap 989ba174; workspace 916/0;
+  native 2/2; kryos-rt budget tests 4/4. v4.46.0 cut.
+  STILL OPEN (next session): llm tool-calling, formal spec-conformance suite, generic
+  Probable/Tracked, async executor, wedge benchmarks A-E.

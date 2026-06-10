@@ -1,0 +1,86 @@
+// @budget(tokens = N, calls = M) end-to-end (step 236). A mock LLM server
+// + an @budget-annotated agent function: the first call succeeds, the
+// second is refused by the call ceiling, and frames pop on return so a
+// second invocation gets a fresh budget. Self-checking.
+
+use std::llm::{openai_config, with_base_url, with_timeout_ms, user, chat}
+
+let PORT = 18931
+
+fn http_response(body: str) -> str {
+    return "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + to_string(len(body)) + "\r\nConnection: close\r\n\r\n" + body
+}
+
+fn serve_n(listen_fd: i64, n: i64) {
+    let mut i = 0
+    while i < n {
+        let c = tcp_accept(listen_fd)
+        tcp_recv(c, 65536)
+        let body = "\{\"model\": \"mock\", \"choices\": [\{\"message\": \{\"content\": \"ok\"\}\}], \"usage\": \{\"prompt_tokens\": 10, \"completion_tokens\": 5\}\}"
+        tcp_send(c, http_response(body))
+        tcp_close(c)
+        i = i + 1
+    }
+}
+
+@budget(tokens = 1000, calls = 1)
+fn one_shot_agent(base: str) -> str {
+    let cfg = with_timeout_ms(with_base_url(openai_config("", "mock"), base), 5000)
+    let r1 = chat(cfg, [user("first")])
+    // Second call must be refused by the call ceiling.
+    try {
+        chat(cfg, [user("second")])
+        return "FAIL: second call was not refused"
+    } catch e {
+        return r1.text + " / refused: " + e
+    }
+}
+
+@budget(tokens = 12, calls = 5)
+fn tiny_token_agent(base: str) -> str {
+    let cfg = with_timeout_ms(with_base_url(openai_config("", "mock"), base), 5000)
+    // Uses 15 tokens > 12 budget: response is consumed but the call throws
+    // afterward so a loop would halt.
+    try {
+        chat(cfg, [user("hi")])
+        return "FAIL: token ceiling did not trip"
+    } catch e {
+        return "tripped: " + e
+    }
+}
+
+fn main() {
+    let listen_fd = tcp_listen("127.0.0.1", PORT)
+    if listen_fd < 0 {
+        println("SKIP: bind failed")
+        exit(1)
+    }
+    // Exactly 3 requests reach the wire: refused calls never send.
+    spawn {
+        serve_n(listen_fd, 3)
+    }
+    sleep_ms(100)
+    let base = "http://127.0.0.1:" + to_string(PORT)
+
+    let out1 = one_shot_agent(base)
+    println("agent run 1: {out1}")
+    if len(out1) < 10 or substr(out1, 0, 4) == "FAIL" {
+        exit(1)
+    }
+
+    // Frames popped on return: a fresh invocation gets a fresh budget and
+    // its first call succeeds again.
+    let out2 = one_shot_agent(base)
+    println("agent run 2: {out2}")
+    if substr(out2, 0, 4) == "FAIL" {
+        exit(1)
+    }
+
+    let out3 = tiny_token_agent(base)
+    println("token agent: {out3}")
+    if substr(out3, 0, 4) == "FAIL" {
+        exit(1)
+    }
+
+    println("@budget attribute: PASS")
+}

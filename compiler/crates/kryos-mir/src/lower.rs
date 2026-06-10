@@ -372,6 +372,72 @@ struct FunctionState {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// `@budget(tokens = N, calls = M)`: wrap the function body in a runtime
+/// budget frame. Entry gets `depth = kryos_budget_push(N, M)`; every return
+/// is preceded by `kryos_budget_pop_to(depth)`. `std::llm` charges the
+/// active frames around each model call. Pops are by-depth, so an exception
+/// unwinding past a pop self-heals at the next outer pop. Missing axes are
+/// unlimited (-1).
+fn inject_budget_frames(func: &mut MirFunction, annotations: &[ast::Annotation]) {
+    let Some(ann) = annotations.iter().find(|a| a.name == "budget") else {
+        return;
+    };
+    let mut tokens: i64 = -1;
+    let mut calls: i64 = -1;
+    for arg in &ann.args {
+        let cleaned: String = arg.chars().filter(|c| !c.is_whitespace()).collect();
+        if let Some(v) = cleaned.strip_prefix("tokens=") {
+            tokens = v.parse().unwrap_or(-1);
+        } else if let Some(v) = cleaned.strip_prefix("calls=") {
+            calls = v.parse().unwrap_or(-1);
+        }
+    }
+    if func.blocks.is_empty() {
+        return;
+    }
+
+    let next_id = func.locals.iter().map(|l| l.id.0 + 1).max().unwrap_or(0);
+    let depth = LocalId(next_id);
+    let scratch = LocalId(next_id + 1);
+    func.locals.push(MirLocal {
+        id: depth,
+        name: Some("__budget_depth".into()),
+        ty: MirType::I64,
+        mutable: false,
+    });
+    func.locals.push(MirLocal {
+        id: scratch,
+        name: Some("__budget_scratch".into()),
+        ty: MirType::I64,
+        mutable: true,
+    });
+
+    func.blocks[0].instructions.insert(
+        0,
+        Instruction::Assign {
+            dest: depth,
+            value: RValue::Call {
+                func: "kryos_budget_push".into(),
+                args: vec![
+                    Operand::Constant(Constant::Int(tokens)),
+                    Operand::Constant(Constant::Int(calls)),
+                ],
+            },
+        },
+    );
+    for block in func.blocks.iter_mut() {
+        if matches!(block.terminator, Terminator::Return(_)) {
+            block.instructions.push(Instruction::Assign {
+                dest: scratch,
+                value: RValue::Call {
+                    func: "kryos_budget_pop_to".into(),
+                    args: vec![Operand::Local(depth)],
+                },
+            });
+        }
+    }
+}
+
 /// Convert AST annotations to MIR attribute metadata.
 fn annotations_to_mir_attributes(annotations: &[ast::Annotation]) -> MirAttributes {
     let mut attrs = MirAttributes::default();
@@ -1062,6 +1128,7 @@ pub fn lower_module_with_lambda_params(
                 let mut func = lower_function(&mut ctx, name, params, ret_ty, body);
                 func.attributes = annotations_to_mir_attributes(annotations);
                 func.attributes.is_async = *is_async;
+                inject_budget_frames(&mut func, annotations);
                 functions.push(func);
             }
             ast::Decl::Impl {
