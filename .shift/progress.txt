@@ -4838,3 +4838,25 @@ SHIFTS:
       available locally.)
   LOCAL GATES: workspace tests 967/0; bootstrap 989ba174 HELD; examples 23/23.
   next:    push, watch the CI run; if green, re-run the Release workflow for binaries.
+
+  ---
+  step:    212 (session 10 -- 2026-06-09 "CI round 2: parser OOM (fuzz) + Darwin stderr symbol")
+  date:    2026-06-09
+  Round-1 results (run 27243891287): selfhost-stage1 GREEN, wasm-smoke GREEN, quickstart-e2e
+  GREEN (3 of 5 fixed). fuzz moved past the lexer (fix held) to a NEW fuzz_parser finding;
+  macos moved past ssl (LIBRARY_PATH held) to a REAL Darwin port bug.
+  (1) fuzz_parser OOM, 2-byte input "}:": parse_module's recovery calls synchronize(), which
+      stops AT `}` (and statement keywords) WITHOUT consuming -- at top level that token can't
+      start a decl, so the loop re-errored on the same token forever (1 diagnostic per spin ->
+      OOM). REPRODUCED LOCALLY (kryos check hung, timeout 124). Fix: force one-token progress
+      when synchronize() doesn't move. Now a clean E0001 + exit 1. Regression test added
+      (7 malformed inputs; parser suite 60/60).
+  (2) macos: `_stderr` undefined, referenced from _kryos_eprintln -- Darwin exports the FILE*
+      as `__stderrp` (`stderr` is a macro), glibc as `stderr`. Cranelift kryos_eprintln emission
+      now picks the symbol by target_os. (LLVM backend's `@stderr` extern declare is unused --
+      eprintln routes through kryos_stderr_write -- harmless, left alone.)
+  ALSO: Release-workflow root cause found -- macos build SUCCEEDED; the SLSA attestation step
+      hard-fails on PRIVATE repos ("make this repository public to enable"), cancelling the
+      other 3 builds -> v4.43.0 has no binaries. Repo is PRIVATE (memory said public -- stale).
+      Attestation gating fix queued; repo visibility = Kristian's call.
+  LOCAL GATES: tests 968/0; bootstrap 989ba174 HELD; examples 23/23.

@@ -770,9 +770,17 @@ pub fn compile_module_with_options(
                 let call = builder.ins().call(iob_ref, &[two]);
                 builder.inst_results(call)[0]
             } else {
-                // Unix: load from extern FILE *stderr global.
+                // Unix: load from the extern FILE* global. Darwin exports it
+                // as `__stderrp` (`stderr` is a macro there); glibc exports
+                // `stderr` directly. Referencing "stderr" on macOS fails to
+                // link: "_stderr undefined, referenced from _kryos_eprintln".
+                let stderr_sym = if cfg!(target_os = "macos") {
+                    "__stderrp"
+                } else {
+                    "stderr"
+                };
                 let stderr_data_id =
-                    object_module.declare_data("stderr", Linkage::Import, false, false)?;
+                    object_module.declare_data(stderr_sym, Linkage::Import, false, false)?;
                 let stderr_gv = object_module.declare_data_in_func(stderr_data_id, builder.func);
                 let addr = builder.ins().global_value(types::I64, stderr_gv);
                 builder.ins().load(types::I64, MemFlags::trusted(), addr, 0)

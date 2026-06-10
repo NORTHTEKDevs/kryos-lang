@@ -305,7 +305,17 @@ impl Parser {
                             span,
                             kryos_errors::codes::E0001,
                         );
+                        let before = self.pos;
                         self.synchronize();
+                        // synchronize() stops AT recovery tokens (incl. `}`
+                        // and statement keywords) without consuming them. At
+                        // top level such a token can't start a declaration,
+                        // so zero progress here loops forever, pushing one
+                        // diagnostic per iteration until OOM (fuzz_parser
+                        // finding: the 2-byte input "}:").
+                        if self.pos == before && !self.at_end() {
+                            self.advance();
+                        }
                     }
                 }
             }

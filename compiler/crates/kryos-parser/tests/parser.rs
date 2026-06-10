@@ -1157,3 +1157,17 @@ fn test_generic_with_bound() {
         other => panic!("expected Function, got {:?}", other),
     }
 }
+
+// ==========================================================================
+// Fuzz regressions — malformed top-level input must terminate
+// ==========================================================================
+
+#[test]
+fn fuzz_regression_stray_rbrace_at_top_level_terminates() {
+    // fuzz_parser OOM finding: "}:" — synchronize() stops AT `}` without
+    // consuming it, so the module loop re-errored on the same token forever.
+    for src in ["}:", "}", "}}}}", ":", "return", "break continue", "} fn f() {}"] {
+        let tokens = Lexer::new(src, 0).tokenize();
+        let _ = parse(tokens); // must terminate (errors are fine)
+    }
+}
