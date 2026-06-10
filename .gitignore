@@ -56,3 +56,4 @@ Thumbs.db
 # Linker map files + local agent session dirs
 *.map
 .claude/
+test_stdlib.txt

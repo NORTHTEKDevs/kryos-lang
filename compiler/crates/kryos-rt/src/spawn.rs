@@ -90,6 +90,10 @@ pub extern "C" fn kryos_spawn(fn_ptr: i64, args_ptr: *const i64, arg_count: i64)
                 );
             }
         }
+        // A `throw` that unwound out of the thread's entry function would
+        // otherwise vanish with the thread-local state. Report it like a
+        // Rust thread panic: message to stderr, thread dies, process lives.
+        crate::exception::kryos_exception_report_thread_if_pending();
     });
 
     let mut handles = match get_handles().lock() {

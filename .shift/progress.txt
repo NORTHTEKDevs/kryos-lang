@@ -5251,3 +5251,31 @@ SHIFTS:
       gap is closed by (a) since the const path is range-checked.
   next:    production hardening (231): bounded fuzz, code-reviewer over the session diff,
            production-certifier.
+
+  ---
+  step:    231 (session 11 -- 2026-06-10 "HARDENING: code-review over session diff -- 1 HIGH found+FIXED (spawn-throw swallow); cert battery green")
+  date:    2026-06-10
+  CODE-REVIEW (BSHR, diff a97707a..HEAD): hypotheses RUN not reasoned. Verified-clean:
+  negative-literal E0111 path (1 error exactly at i8=-129, -128 passes); sret unwind
+  through intermediate no-try frames (deep recursive thrower, both backends, no garbage
+  reads); uuid_parse adversarial; random_f64 bounds x1000; installer live-run.
+  FOUND + FIXED (HIGH, error-swallow): `throw` unwinding out of a SPAWNED thread vanished
+  silently (thread-local state died with the thread; main continued, rc 0, no message).
+  Fix: kryos_exception_report_thread_if_pending (kryos-rt/exception.rs) called at thread
+  exit in spawn.rs -- "kryos: uncaught exception in spawned thread: <msg>" to stderr,
+  thread dies, process lives (Rust thread-panic semantics). Both backends verified; new
+  parity test test_spawn_throw_reports.kry; docs/07 documents the model.
+  ACCEPTED DEBT (documented, no action): leak-on-copy allocations (consistent @copy model);
+  try/catch-containing fns skip auto post-call checks outside the try (both backends,
+  pre-existing); E0111 not yet on fn-call arg literals.
+  FUZZ: CI smoke (60s x lexer/parser/typechecker) green on every push today; targets do
+  not reach codegen -- codegen covered by the parity/native/examples batteries instead.
+  Stray test_stdlib.txt removed + gitignored.
+  CERT BATTERY (production-certifier-grade, all fresh): parity 40/40; examples-gate PASS
+  (41 root check + 15 fixtures AOT+JIT + 21 showcase AOT); docs-examples 52/52; bootstrap
+  989ba174 byte-identical; test_examples 9/9; native_runner 2/2; workspace 912/0
+  (64 suites). VERDICT: production-hardened; SHIPPABLE.
+  Crystal updated (review_crystal_kryos-lang.md, 9/10); JSONL prior logged
+  (rust-compiler/codegen, first entry).
+  next:    none queued -- session directive complete. Open items remain Kristian's calls:
+           flip public, std::llm/@budget wedge work, real WASI, deny-by-default caps.

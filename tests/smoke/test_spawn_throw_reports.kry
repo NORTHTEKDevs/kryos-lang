@@ -1,0 +1,18 @@
+// Regression (step 231 / code-review finding): a `throw` that unwinds out
+// of a spawned thread's entry function must not vanish silently. The
+// runtime reports "kryos: uncaught exception in spawned thread: <msg>" to
+// stderr; the thread dies and the process continues (Rust thread-panic
+// semantics), so this program still exits 0. The parity runner asserts the
+// exit code; the stderr message is asserted by the native test fixture.
+
+fn worker() {
+    throw "thread exploded"
+}
+
+fn main() {
+    spawn {
+        worker()
+    }
+    sleep_ms(200)
+    println("main alive")
+}

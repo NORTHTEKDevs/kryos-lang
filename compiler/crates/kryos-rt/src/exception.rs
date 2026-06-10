@@ -53,6 +53,36 @@ pub extern "C" fn kryos_exception_take() -> i64 {
 /// without being caught.
 pub const UNCAUGHT_EXCEPTION_EXIT_CODE: i32 = 101;
 
+/// If an exception is pending in THIS thread, print it to stderr and clear
+/// it — used at spawned-thread exit, where the thread dies but the process
+/// continues (Rust thread-panic semantics). Returns 1 if one was reported.
+#[no_mangle]
+pub extern "C" fn kryos_exception_report_thread_if_pending() -> i64 {
+    if !HAS_EXCEPTION.with(|h| h.get()) {
+        return 0;
+    }
+    let value = kryos_exception_take();
+    let mut printed = false;
+    if value != 0 {
+        let s = value as *const crate::string::KryosString;
+        unsafe {
+            let len = (*s).len as usize;
+            let data = (*s).data;
+            if !data.is_null() {
+                let slice = std::slice::from_raw_parts(data, len);
+                if let Ok(text) = std::str::from_utf8(slice) {
+                    eprintln!("kryos: uncaught exception in spawned thread: {text}");
+                    printed = true;
+                }
+            }
+        }
+    }
+    if !printed {
+        eprintln!("kryos: uncaught exception in spawned thread (value: {value})");
+    }
+    1
+}
+
 /// If an exception is pending, print it to stderr and exit nonzero.
 ///
 /// Compiled code inserts a call to this before every `return` in `main`,

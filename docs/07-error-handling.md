@@ -86,6 +86,13 @@ $ echo $?
 101
 ```
 
+### Exceptions in spawned threads
+
+A `throw` that unwinds out of a spawned thread's entry function is reported
+to stderr (`kryos: uncaught exception in spawned thread: <msg>`); the thread
+dies and the process keeps running — the same model as a Rust thread panic.
+Catch inside the thread if you need to react to the failure.
+
 ### Nested try/catch
 
 Try/catch blocks can nest. An inner catch can throw a new error that gets caught by an outer catch:
