@@ -4,6 +4,50 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.44.0] — 2026-06-10 — "Usable by anyone: honest semantics, working installs, tested docs"
+
+### Fixed
+- **Uncaught exceptions report and exit nonzero.** A `throw` that unwinds out of
+  `main` now prints `kryos: uncaught exception: <msg>` to stderr and exits 101 on
+  BOTH backends (was: silent exit 0 on Cranelift; LLVM kept executing past the
+  throwing call — out-of-try propagation did not exist on AOT).
+- **`catch` binds a real string.** Thrown values are stringified at the throw site
+  (the same conversion as `"{x}"`), so `println(e)` prints the message instead of a
+  raw pointer — the docs' own examples now work as written.
+- **`connect_tls` failure semantics unified** — a failed TLS connect throws (and is
+  catchable) on both backends; AOT no longer returns a dead handle.
+- **Null-struct-drop segfault** (pre-existing since at least v4.43.0): when a
+  non-inlined callee returning a struct threw, dropping the never-assigned binding
+  segfaulted after main completed on Cranelift. The struct drop now null-guards,
+  matching the array drop.
+- **`@copy` assignment is deep on both backends.** `let c = b` clones str/array/map
+  fields on LLVM AOT exactly like the Cranelift backend — "each copy owns its data";
+  in-place mutation of a copy is no longer visible to the source on AOT. All-scalar
+  `@copy` struct params are also copied at function entry on the JIT (gotcha #23).
+- **Standalone installs work with zero configuration.** The compiler now resolves
+  `stdlib/` relative to its own executable (release-archive layouts); previously a
+  downloaded release could not find its own shipped stdlib without KRYOS_STDLIB_DIR.
+- **`kryos doctor`** reports the stdlib source directory and finds MSVC via the same
+  vswhere discovery the linker uses (no more false "no C linker" warnings).
+- **install.sh / install.ps1** download release assets through the GitHub API asset
+  endpoint, so they work against private repos with a token.
+
+### Changed
+- **WASI honesty:** the unimplemented `wasi` emission option and the advertised
+  `wasm32-wasi` target are removed. Kryos wasm modules use the JS-host `env`
+  contract (browser or `node tools/wasm-host/run.mjs`); real WASI is a future
+  feature, not an option toggle.
+- CI actions bumped to Node-24 majors (checkout v6, artifacts v7/v8, setup-node v6);
+  openssl 0.10.80 (Dependabot).
+
+### Docs
+- **Every code block in the manual now type-checks** and is enforced by a new CI
+  job (`docs-examples`, tools/docs-examples/check.py). 31 files repaired across the
+  cookbook, tour, cheatsheet, tutorial, and reference; genuine stdlib gaps are
+  catalogued instead of papered over.
+- Error-handling chapter documents catch-is-str and exit-code 101; wasm docs name
+  the canonical Node host; README leads with working links only.
+
 ## [4.43.0] — 2026-06-09 — "Language completion: the bug tail is closed"
 
 Final release of the 4.43 line. Since rc.4, three hardening campaigns

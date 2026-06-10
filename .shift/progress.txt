@@ -5170,3 +5170,18 @@ SHIFTS:
   3.3.0-rc.1 -> 4.43.0.
   next:    release cut v4.44.0 so installers' `latest` ships the standalone-install fix +
            today's semantics fixes (step 228).
+
+  ---
+  step:    228 (session 11 -- 2026-06-10 "RELEASE: v4.44.0 cut")
+  date:    2026-06-10
+  Version 4.43.0 -> 4.44.0 (workspace Cargo.toml), CHANGELOG entry "Usable by anyone:
+  honest semantics, working installs, tested docs" covering steps 221-227, README version
+  refs updated. Required because installers pull `latest` and v4.43.0 binaries lack the
+  exe-relative stdlib fix -- standalone installs only become real with this release.
+  RELEASE GATES (all fresh on the 4.44.0 binary): kryos --version 4.44.0; parity 38/38;
+  docs-examples 52/52; bootstrap 989ba174 byte-identical; examples 23/23 AOT; showcase
+  21/21 AOT; wasm 9/9 builds; test_examples 9/9; native_runner 2/2; workspace 910/0
+  (64 suites). NOTE: background-bash tasks wedged for ~50min during the workspace run
+  (harness-level, not cargo) -- foreground chunked run was the workaround.
+  next:    tag v4.44.0 -> Release workflow (4-platform binaries) -> verify assets ->
+           fresh install.ps1 end-to-end on the new release = final adoption proof.
