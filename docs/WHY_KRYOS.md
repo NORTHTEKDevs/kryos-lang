@@ -148,7 +148,7 @@ Kryos v2.3.0 is a complete, production-capable compiler with:
 - Dual backends: Cranelift (fast dev, ~500ms) and LLVM (optimized release, Rust parity)
 - 925+ tests, all passing, 0 clippy warnings
 - Self type in traits, associated function syntax (`Type::method()`)
-- @pure CSE/dead-call optimization, @test runner, @copy struct value semantics (deep-copy on the Cranelift JIT; shallow byval sharing on LLVM AOT — see gotcha #23)
+- @pure CSE/dead-call optimization, @test runner, @copy struct deep-copy on assignment (both backends; param passing documented in gotcha #23)
 - 847 functions across 28 standard library modules (0 stubs)
 - Full toolchain: LSP, formatter, doc generator, package manager, test runner, REPL with persistent state
 - Self-hosting compiler: 19K lines of Kryos implementing the full pipeline, stage-1 verified

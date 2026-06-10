@@ -1,0 +1,40 @@
+// Regression for gotcha #23 unification (step 224): @copy ASSIGNMENT
+// deep-copies heap fields on BOTH backends — "each copy owns its data".
+// Before, the LLVM AOT aggregate copy shared the array handle, so a push
+// on the copy was visible to the source (len 2 vs the JIT's len 1).
+
+@copy
+struct Bag {
+    name: str,
+    items: [i64],
+}
+
+fn main() {
+    let start: [i64] = []
+    let mut b = Bag { name: "orig", items: start }
+    push(b.items, 7)
+
+    let mut c = b
+    push(c.items, 99)
+    c.name = "changed"
+
+    if len(b.items) != 1 {
+        let n = len(b.items)
+        println("FAIL: copy shared array with source (b len = {n})")
+        exit(1)
+    }
+    if b.name != "orig" {
+        println("FAIL: copy shared/clobbered source name (b.name = {b.name})")
+        exit(1)
+    }
+    if len(c.items) != 2 {
+        let m = len(c.items)
+        println("FAIL: copy lost its own push (c len = {m})")
+        exit(1)
+    }
+    if c.name != "changed" {
+        println("FAIL: copy lost its own name (c.name = {c.name})")
+        exit(1)
+    }
+    println("copy assignment deep semantics ok")
+}

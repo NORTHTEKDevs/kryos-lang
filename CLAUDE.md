@@ -11,7 +11,7 @@ A capability-safe, ownership-aware systems language with two backends:
 - **Cranelift** (`kryos run`) — debug JIT, fast compile, no external linker
 - **LLVM** (`kryos build --release`) — release AOT, full optimization, links via `cc`/`clang`/`link.exe`
 
-Targets Linux x86_64, Windows x86_64 MSVC, macOS x86_64/aarch64, and `wasm32-unknown-unknown` / `wasm32-wasi`. The same `.kry` source runs on every target — the only platform-conditional code you should write is filesystem-path handling.
+Targets Linux x86_64, Windows x86_64 MSVC, macOS x86_64/aarch64, and `wasm32-unknown-unknown` (JS host contract — browser or `node tools/wasm-host/run.mjs`; WASI is not supported). The same `.kry` source runs on every target — the only platform-conditional code you should write is filesystem-path handling.
 
 ## Hard rules (these cause compile errors)
 
@@ -181,7 +181,7 @@ fn main() {
 }
 ```
 
-`throw "message"` aborts with a panic. Use it only for invariant violations the caller can't reasonably recover from.
+`throw "message"` raises an exception that unwinds to the nearest enclosing `try`/`catch`. The thrown value is stringified at the throw site, so the catch variable is always a `str`. If nothing catches it, the program prints `kryos: uncaught exception: <msg>` to stderr and exits with code 101 (both backends).
 
 ## Capabilities (Kryos's defining feature)
 
@@ -331,7 +331,7 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `
 23. **Struct param/copy semantics across backends (PARTIALLY RESOLVED).** **All-scalar `@copy` struct params** (no str/array/map/struct/fn fields) are now copied at function entry on the JIT, so a field mutation inside the callee no longer aliases the caller's value — both backends agree on pass-by-value for plain-data structs (regression test: `tests/smoke/test_copy_param_value_semantics.kry`). Residual divergences:
     - **Heap-bearing `@copy` structs as params:** the JIT still passes the caller's pointer (aliasing) while AOT passes a shallow byval copy. The entry copy is deliberately NOT applied here: the self-host parser threads `Parser { tokens: [Token], .. }` through every `p_*` call under the share-on-clone model, and copying it at entry clones the token array per call (deep copy OOMs stage-1; even a shallow copy is an allocation on the hottest path).
     - **Non-`@copy` structs:** JIT aliases, AOT copies. The ownership move rules make this unobservable in legal programs, and the self-host compiler relies on the JIT aliasing internally (lower.kry ctx fns), so this stays until those call sites are rewritten.
-    - **Heap-field content on copies (deep vs shallow):** on `@copy` ASSIGNMENT the JIT deep-clones array/str/map fields ("each copy owns its data") while AOT shares the handle pointers (shallow; the original owner frees). In-place mutation of a shared heap value — e.g. `push` on an array field of a copy — is visible to the caller on AOT but not on the JIT. Unifying this means teaching one backend the other's ownership model and re-proving the bootstrap fixed point; tracked maturity ticket, not a quick fix.
+    - **Heap-field content on copies: UNIFIED (step 224).** `@copy` ASSIGNMENT (`let c = b`) deep-clones array/str/map fields on BOTH backends now — "each copy owns its data" (regression test: `tests/smoke/test_copy_assign_deep.kry`). The LLVM backend gained the same per-field clone the Cranelift backend always had; clones leak under the no-op `@copy` drop model on both backends (leak-on-copy, consistent).
 
     **Portable pattern (unchanged): copy the param into a `let mut` local before mutating** (`let mut local = o`), or return the modified struct; never rely on cross-call visibility of heap-field mutations.
 

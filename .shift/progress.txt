@@ -5079,3 +5079,27 @@ SHIFTS:
   wasmtime/wasmer cannot run kryos modules. VERIFY: all wasm_*.kry build; node host runs
   wasm_hello ("hello from wasm"); kryos-codegen-wasm tests green.
   next:    @copy unification investigation (step 224).
+
+  ---
+  step:    224 (session 11 -- 2026-06-10 "UNIFY: @copy assignment deep-copies heap fields on BOTH backends")
+  date:    2026-06-10
+  Direction analysis: teach LLVM deep copy (not JIT shallow) -- bootstrap never touches the
+  LLVM backend (stage1=cranelift-obj, stage2+=self-host codegen), it matches the documented
+  "each copy owns its data" promise, and JIT-shallow risked the stage-1 heap-corruption
+  class the deep copy originally fixed. IMPL: maybe_deep_copy_struct_fields in the LLVM
+  emitter -- on RValue::Use of an @copy struct local (same trigger as Cranelift), rebuild
+  the aggregate with extractvalue -> kryos_{string,array,map}_clone -> insertvalue per heap
+  field; fn/shared fields retained; nested struct fields stay shared (H21). Clones leak
+  under the no-op @copy drop model on both backends (leak-on-copy, consistent).
+  VERIFY: assign_copy A/B now "b.len = 1" BOTH backends (AOT was 2 -- shared handle). New
+  parity test tests/smoke/test_copy_assign_deep.kry (self-checking source+copy independence
+  both directions).
+  GATES: parity 37/37; examples 23/23 AOT; showcase 21/21 AOT; native_runner 2/2 (incl.
+  LLVM release sweep); bootstrap 989ba174 byte-identical; workspace 910/0 (64 suites).
+  DOCS: gotcha #23 heap-field bullet -> UNIFIED; WHY_KRYOS claim now true; repo CLAUDE.md
+  stale lines fixed (wasm32-wasi ad removed; throw description updated to catch-str + 101).
+  Gotcha #23 residual is now ONLY param passing (all-scalar copies entry-copied; heap-
+  bearing JIT-aliases vs AOT-shallow-byval; non-@copy aliases -- all documented, all with
+  the let-mut-local portable pattern).
+  next:    adoption layer (step 225): exe-relative stdlib resolution fix, install scripts,
+           README quickstart; then manual audit (226+).

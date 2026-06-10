@@ -3280,7 +3280,18 @@ impl LlvmCodegen {
                     dest_ty.clone()
                 };
                 // Coerce value to the destination type if they differ.
-                let coerced = self.coerce_value(&val, &val_ty, &effective_dest_ty);
+                let mut coerced = self.coerce_value(&val, &val_ty, &effective_dest_ty);
+                // @copy struct with heap fields: clone the heap fields so each
+                // copy owns its own data — same semantics as the Cranelift
+                // backend's deep copy on `let c = b` (gotcha #23 unification).
+                if let Operand::Local(src_id) = op {
+                    coerced = self.maybe_deep_copy_struct_fields(
+                        &coerced,
+                        *src_id,
+                        func,
+                        &effective_dest_ty,
+                    );
+                }
                 if is_mutable {
                     // For mutable locals: compute value, store to alloca.
                     let tmp = self.next_temp();
@@ -6934,6 +6945,100 @@ impl LlvmCodegen {
         let t = format!("%t{}", self.temp_counter);
         self.temp_counter += 1;
         t
+    }
+
+    /// If `src` is an `@copy` struct local with heap-backed fields, rebuild
+    /// the aggregate value with cloned str/array/map fields (and retained
+    /// fn/shared fields) so the copy owns its own data. Mirrors the Cranelift
+    /// backend's `emit_struct_deep_copy` on assignment; nested struct fields
+    /// stay shared (H21). Returns the (possibly new) SSA value name.
+    fn maybe_deep_copy_struct_fields(
+        &mut self,
+        val: &str,
+        src: LocalId,
+        func: &MirFunction,
+        dest_ty: &str,
+    ) -> String {
+        // Only aggregate-valued destinations (`%Name`) carry fields here.
+        if !dest_ty.starts_with('%') {
+            return val.to_string();
+        }
+        let Some(sname) = func.locals.iter().find(|l| l.id == src).and_then(|l| match &l.ty {
+            MirType::Struct(n) => Some(n.clone()),
+            _ => None,
+        }) else {
+            return val.to_string();
+        };
+        if !self.copy_structs.contains(&sname) {
+            return val.to_string();
+        }
+        let Some(fields) = self.struct_defs.get(&sname).cloned() else {
+            return val.to_string();
+        };
+        let needs_work = fields.iter().any(|(_, t)| {
+            matches!(
+                t,
+                MirType::Str
+                    | MirType::Array(_, _)
+                    | MirType::Map { .. }
+                    | MirType::Function { .. }
+                    | MirType::Shared(_)
+            )
+        });
+        if !needs_work {
+            return val.to_string();
+        }
+        let mut cur = val.to_string();
+        for (idx, (_, fty)) in fields.iter().enumerate() {
+            let fty_ll = self.sig_ty_to_llvm(fty);
+            match fty {
+                MirType::Str | MirType::Array(_, _) => {
+                    let clone_fn = if matches!(fty, MirType::Str) {
+                        "kryos_string_clone"
+                    } else {
+                        "kryos_array_clone"
+                    };
+                    let fv = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {fv} = extractvalue {dest_ty} {cur}, {idx}"
+                    ));
+                    let fp = self.coerce_value(&fv, &fty_ll, "ptr");
+                    let cl = self.next_temp();
+                    self.emit_line(&format!("  {cl} = call ptr @{clone_fn}(ptr {fp})"));
+                    let back = self.coerce_value(&cl, "ptr", &fty_ll);
+                    let nv = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {nv} = insertvalue {dest_ty} {cur}, {fty_ll} {back}, {idx}"
+                    ));
+                    cur = nv;
+                }
+                MirType::Map { .. } => {
+                    let fv = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {fv} = extractvalue {dest_ty} {cur}, {idx}"
+                    ));
+                    let fh = self.coerce_value(&fv, &fty_ll, "i64");
+                    let cl = self.next_temp();
+                    self.emit_line(&format!("  {cl} = call i64 @kryos_map_clone(i64 {fh})"));
+                    let back = self.coerce_value(&cl, "i64", &fty_ll);
+                    let nv = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {nv} = insertvalue {dest_ty} {cur}, {fty_ll} {back}, {idx}"
+                    ));
+                    cur = nv;
+                }
+                MirType::Function { .. } | MirType::Shared(_) => {
+                    let fv = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {fv} = extractvalue {dest_ty} {cur}, {idx}"
+                    ));
+                    let fp = self.coerce_value(&fv, &fty_ll, "ptr");
+                    self.emit_line(&format!("  call void @kryos_arc_retain(ptr {fp})"));
+                }
+                _ => {}
+            }
+        }
+        cur
     }
 
     /// Emit a pending-exception check after a user-function call: if the
