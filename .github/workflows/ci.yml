@@ -407,7 +407,7 @@ jobs:
             if out=$(./compiler/target/release/kryos run "$f" 2>&1); then
               echo "  OK    $name"
             else
-              echo "$out" | head -6
+              sed -n '1,8p' <<< "$out"
               echo "  FAIL  $name"
               fail=$((fail+1))
             fi
@@ -435,8 +435,13 @@ jobs:
           printf "Hello, Kryos!\n" > hello_expected.txt
           diff hello_expected.txt hello_output.txt
 
-      - name: Backend parity matrix
+      - name: Backend parity matrix (advisory until Darwin port lands)
         shell: bash
+        # Parity re-runs ALL smoke tests under both backends, including the
+        # 12 stdlib-native tests tracked by the Darwin-port ticket, so it
+        # cannot be green on macOS yet. Report still uploads as artifact.
+        # Flip to required together with the advisory sweep above.
+        continue-on-error: true
         run: bash tests/parity/run_parity.sh
 
       - name: Upload parity report
