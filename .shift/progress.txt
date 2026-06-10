@@ -4946,3 +4946,24 @@ SHIFTS:
   failure semantics across backends."
   next: gotcha-23 Copy-param fix + perf flags + WASI scoping (investigation results in hand);
   watch CI for the real macOS Darwin-port ld error.
+
+  ---
+  step:    218 (session 11 -- 2026-06-09 "HONESTY: async/await is grammar-only (limitation #4) + Darwin port DONE + version drift")
+  date:    2026-06-09
+  DARWIN PORT COMPLETE: the real macOS ld error (from the CI diagnostic step) was
+  `_SCDynamicStoreCopyComputerName` from the `whoami` crate -> needs -framework
+  SystemConfiguration. Added it (alongside Security/CoreFoundation). **CI macOS Darwin-port
+  sweep: 12/12 pass** (net/db/crypto/fs/io/os/process/re/term). Promoted the macОС stdlib sweep
+  + parity from advisory to REQUIRED; dropped the now-redundant OpenSSL LIBRARY_PATH hack.
+  macOS is now a fully-required CI tier. Disciplined loop paid off: diagnostic CI run -> exact
+  symbol -> one-framework fix -> verified, instead of guessing.
+  ASYNC HONESTY (investigation w84cz9ey8 found the README/spec OVERCLAIMED): lower.rs:5662 lowers
+  `await expr` to `expr` (synchronous, no executor) -- yet README said "Async substrate wired
+  end-to-end / no eager-DONE bugs" + status "Complete", ref manual said "runs on the current
+  thread's executor / Implemented". ALL corrected to the truth: async/await parse + type-check
+  but lower synchronously; real concurrency = spawn/channels/actors. (README async section,
+  feature list, status table; docs/19 section 9.3 + status table.) A non-blocking executor is a
+  separate future epic, not claimed as done.
+  VERSION DRIFT: README badge + "From source" still said 4.43.0-rc.4 -> 4.43.0 (we released it).
+  Docs-only; kryos still runs. next: gotcha-23 Copy-param JIT fix (code, ~25 lines, verified
+  zero self-host impact) + perf O2->O3 (gated on bootstrap).

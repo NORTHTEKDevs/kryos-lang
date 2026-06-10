@@ -1,7 +1,7 @@
 # Kryos
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v4.43.0--rc.4-orange.svg)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-v4.43.0-blue.svg)](CHANGELOG.md)
 [![Targets](https://img.shields.io/badge/targets-native%20%7C%20wasm-purple.svg)](#what-it-targets)
 [![Parity](https://img.shields.io/badge/Cranelift_vs_LLVM-34%2F34-brightgreen.svg)](AUDIT-llvm-parity.md)
 [![Self-host](https://img.shields.io/badge/self--host_bootstrap-16%2F16_deterministic-brightgreen.svg)](compiler/self-host/STAGE2_BLOCKER.md)
@@ -73,7 +73,7 @@ irm https://raw.githubusercontent.com/NORTHTEKDevs/kryos-lang/master/install.ps1
 git clone https://github.com/NORTHTEKDevs/kryos-lang.git
 cd kryos-lang/compiler
 cargo build --release -j 2
-./target/release/kryos --version   # → kryos 4.43.0-rc.4
+./target/release/kryos --version   # → kryos 4.43.0
 ```
 
 Requirements: Rust 1.75+, a C compiler (`cc`/`clang`/MSVC) for linking. **LLVM is not required for development** — the LLVM backend emits IR as text. You only need `clang` or `llc` on PATH if you want optimized release binaries.
@@ -131,18 +131,23 @@ fn main() {
 }
 ```
 
-### Async/await
+### Async/await (grammar only)
 
 ```kryos
 async fn fetch_and_sum(urls: [str]) -> i64 {
     let mut total = 0
     for url in urls {
-        let body = await http_get(url)
+        let body = await http_get(url)   // runs synchronously today
         total = total + len(body)
     }
     total
 }
 ```
+
+> **Status:** `async`/`await` are parsed and type-checked, but `await expr`
+> currently lowers to a direct synchronous call — there is no non-blocking
+> executor behind it yet. For real concurrency today, use `spawn` + channels
+> (above) or actors. A non-blocking I/O runtime is planned, not shipped.
 
 ### Capability-typed effects (compile-time enforcement)
 
@@ -204,10 +209,10 @@ The full toolchain. Not a roadmap — actually built and tested:
 
 - **Compiler** — three backends (Cranelift / LLVM / WASM), zero cargo warnings, 295+ workspace tests passing
 - **Self-host** — 16/16 self-host modules compile through stage-1 (Kryos-compiled compiler). See [docs/20-self-hosting.md](docs/20-self-hosting.md)
-- **Language** — ownership, traits with `Self`, generics, pattern matching, closures, async/await, capabilities, comptime, FFI
+- **Language** — ownership, traits with `Self`, generics, pattern matching, closures, capabilities, comptime, FFI (async/await parse but lower synchronously — see Status)
 - **Standard library** — 61 modules covering strings, math, collections, JSON, HTTP, regex, datetime, crypto, files, processes, channels, tensors, AI primitives
 - **Debug info** — LLVM DWARF emission; `addr2line` resolves Kryos source lines in optimized binaries
-- **Async substrate** — state-machine lowering wired end-to-end; no eager-DONE bugs on multi-await functions
+- **Concurrency** — `spawn` + channels + actors, all working today (async/await are grammar-only; no executor yet)
 - **WASM stdlib parity** — strings, arrays, JSON, regex, HTTP all callable from Kryos compiled to WebAssembly
 - **Package manager** — `kryos pkg init / add / remove / install / publish / search / outdated`. Lockfile, semver resolution, content-addressed checksums
 - **Editor extensions** — VS Code (marketplace-ready) and Zed (dev-extension)
@@ -222,7 +227,7 @@ Detailed release notes: [CHANGELOG.md](CHANGELOG.md).
 
 Kryos is built on a thesis: **memory safety without lifetime annotations is achievable**, and the "complexity tax" Rust imposes for safety is mostly avoidable if you accept ARC + move-semantics over borrow-checking. The trade is small: a tiny ARC overhead in exchange for code that looks closer to Go or Python than to Rust.
 
-Kryos also takes seriously the idea that **a language should ship with everything needed to finish a project**. Stdlib, async runtime, HTTP, JSON, regex, crypto, package manager — all in the box. You should be able to write a real program without picking 14 third-party crates and praying their version ranges align.
+Kryos also takes seriously the idea that **a language should ship with everything needed to finish a project**. Stdlib, concurrency (spawn/channels/actors), HTTP, JSON, regex, crypto, package manager — all in the box. You should be able to write a real program without picking 14 third-party crates and praying their version ranges align.
 
 The third thesis is **capability typing as a first-class compile-time check**. `@pure` and `@capabilities(io, net)` aren't lint hints — they're enforced. A function annotated `@pure` that secretly calls `file_read` is a compile error, not a runtime surprise. This is the foundation for trustworthy plugin systems, sandboxed execution, and auditability.
 
@@ -260,7 +265,8 @@ Kryos is **v4.43.0**. Feature-complete language and toolchain + self-hosting com
 | Pattern matching + enums | Complete |
 | Closures (ARC-captured) | Complete |
 | Channels + `spawn` | Complete |
-| Async / await + state machines | Complete |
+| `spawn` / channels / actors | Complete |
+| Async / await (non-blocking executor) | Grammar only — lowers synchronously |
 | Capability enforcement (`@pure`, `@capabilities`) | Complete |
 | `@test` runner, `@copy`, `@pure` CSE | Complete |
 | Cranelift backend | Complete |

@@ -462,8 +462,11 @@ fn main() {
 }
 ```
 
-`async` functions return a `Future<T>`; `await` runs them on the current
-thread's executor.
+`async`/`await` are parsed and type-checked, but **not yet backed by a
+non-blocking executor**: `await expr` currently lowers to a direct
+synchronous call (it runs `expr` immediately on the calling thread).
+Use `spawn` + channels or actors for real concurrency today; a
+non-blocking I/O runtime is planned.
 
 ### 9.4 Actors
 
@@ -567,7 +570,7 @@ What "implemented" means in v2.3.0:
 | Stack overflow detection    | Implemented (SIGSEGV) |
 | Channels (unbounded MPMC)   | Implemented         |
 | `spawn` (OS threads)        | Implemented         |
-| `async` / `await`           | Implemented         |
+| `async` / `await`           | Grammar only (sync) |
 | Actors                      | Implemented         |
 | `unsafe` blocks             | Implemented         |
 | FFI (extern "C")            | Implemented         |
