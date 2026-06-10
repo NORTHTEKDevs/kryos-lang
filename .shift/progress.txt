@@ -5319,3 +5319,16 @@ SHIFTS:
   GATES on the 4.45.0 binary: parity 42/42; examples-gate PASS; docs-examples 54/54;
   bootstrap 989ba174 byte-identical; workspace 912/0.
   next:    tag v4.45.0 -> release workflow -> verify assets.
+
+  ---
+  step:    233b (session 11 -- 2026-06-10 "v4.45.0 SHIPPED + ecosystem acceptance proof")
+  date:    2026-06-10
+  Release workflow: create-release failed once with a TRANSIENT GitHub 401 (all 4 platform
+  builds green; identical workflow succeeded at v4.44.0 six hours earlier); gh run rerun
+  --failed -> success. All 10 assets attached.
+  ACCEPTANCE (executed): fresh install.ps1 -> latest = v4.45.0 -> neutral dir, env stripped
+  -> program importing std::csv AND std::llm runs: parses quoted CSV, builds an
+  Ollama-pointed LLM config. The new capabilities are in strangers' hands the moment the
+  repo flips public.
+  Session totals (steps 219-233): parity suite 35->42 tests; 2 releases cut (4.44.0,
+  4.45.0); docs gate 54/54; every step bootstrap-verified at 989ba174.
