@@ -37,7 +37,6 @@ the corresponding **linker + sysroot** to be installed on your host.
 | `x86_64-apple-darwin` | macOS Intel | `cctools` + macOS SDK |
 | `aarch64-apple-darwin` | macOS Apple Silicon | `cctools` + macOS SDK |
 | `wasm32-unknown-unknown` | Standalone WebAssembly | `wasm-ld` (bundled with `lld`) |
-| `wasm32-wasi` | WASI WebAssembly | WASI SDK |
 
 You can also pass any arbitrary LLVM triple — it'll be forwarded as-is.
 This is useful for embedded targets like `riscv64gc-unknown-linux-gnu`.

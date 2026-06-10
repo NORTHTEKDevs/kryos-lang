@@ -86,12 +86,14 @@ impl std::fmt::Display for WasmCodegenError {
 impl std::error::Error for WasmCodegenError {}
 
 /// Options for WASM module emission.
+///
+/// Kryos wasm modules import their runtime from the `env` host module (the
+/// JS-host contract -- see docs/wasm-stdlib.md and tools/wasm-host/run.mjs).
+/// WASI is NOT supported: there is no wasi_snapshot_preview1 emission, and
+/// wasmtime cannot run kryos modules. A real WASI target is a future
+/// feature, not an option toggle.
 #[derive(Debug, Clone, Default)]
-pub struct WasmOptions {
-    /// If true, emit a WASI-compatible module (uses `wasi_snapshot_preview1`
-    /// imports for I/O instead of `env`).
-    pub wasi: bool,
-}
+pub struct WasmOptions {}
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -387,7 +389,7 @@ impl WasmCodegen {
     /// Register the three host print imports. They get function indices
     /// 0, 1, 2 (imports come before user-defined functions in WASM).
     fn register_host_imports(&mut self) {
-        let env_module = if self.options.wasi { "env" } else { "env" };
+        let env_module = "env";
 
         // sig 0: (i64) -> ()
         self.types.ty().function(vec![ValType::I64], vec![]);

@@ -5067,3 +5067,15 @@ SHIFTS:
       queued in the adoption step. LESSON: docs' own examples are a test suite -- run them.
   next:    WASI scoping (step 223), then @copy unification investigation (224), then
            adoption layer (incl. exe-relative stdlib fix) + manual.
+
+  ---
+  step:    223 (session 11 -- 2026-06-10 "SCOPE: WASI -- removed unimplemented scaffolding, documented JS-host contract as THE wasm story")
+  date:    2026-06-10
+  Decision: real WASI (wasi_snapshot_preview1 emission) is a future feature, NOT pretend-
+  supported. Removed WasmOptions.wasi (the `if wasi { "env" } else { "env" }` no-op),
+  removed the advertised-but-broken wasm32-wasi KNOWN_TARGET (--target help), and the WASI
+  row in docs/18. docs/wasm-stdlib.md now names tools/wasm-host/run.mjs as the canonical
+  host (31 env imports, CI wasm-smoke) with build+run commands, and states plainly that
+  wasmtime/wasmer cannot run kryos modules. VERIFY: all wasm_*.kry build; node host runs
+  wasm_hello ("hello from wasm"); kryos-codegen-wasm tests green.
+  next:    @copy unification investigation (step 224).

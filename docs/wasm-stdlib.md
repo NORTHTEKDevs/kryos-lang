@@ -12,7 +12,18 @@ where `offset` is a byte position inside the module's exported linear
 `memory` and `length` is the byte count.
 
 The reference host runner is `examples/wasm_runner.js` (Node) and
-`examples/wasm_web_runner.html` (browser).
+`examples/wasm_web_runner.html` (browser). The canonical full-surface Node
+host (all 31 env imports, used by CI's wasm-smoke job) is
+`tools/wasm-host/run.mjs`:
+
+```
+kryos build app.kry --backend wasm -o app.wasm
+node tools/wasm-host/run.mjs app.wasm
+```
+
+**WASI is not supported.** Kryos modules import from `env`, not
+`wasi_snapshot_preview1`, so wasmtime/wasmer cannot run them. A real WASI
+target is tracked as a future feature.
 
 ## Basic I/O (v0.2)
 

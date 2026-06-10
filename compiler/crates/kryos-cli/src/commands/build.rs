@@ -210,8 +210,10 @@ const KNOWN_TARGETS: &[(&str, &str)] = &[
     ("aarch64-pc-windows-msvc", "Windows on ARM64 (MSVC)"),
     ("x86_64-apple-darwin", "macOS on x86_64"),
     ("aarch64-apple-darwin", "macOS on ARM64 (Apple Silicon)"),
-    ("wasm32-unknown-unknown", "WebAssembly (browser)"),
-    ("wasm32-wasi", "WebAssembly (WASI)"),
+    (
+        "wasm32-unknown-unknown",
+        "WebAssembly (JS host: browser or node tools/wasm-host/run.mjs; WASI not supported)",
+    ),
 ];
 
 /// Resolve a target triple. `None` means use the host. `Some("help")` prints
