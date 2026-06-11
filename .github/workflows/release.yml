@@ -202,4 +202,5 @@ jobs:
           files: artifacts/**/*
           generate_release_notes: true
           draft: false
-          prerelease: false
+          # -beta. / -rc. tags publish as prereleases automatically.
+          prerelease: ${{ contains(github.ref_name, '-beta.') || contains(github.ref_name, '-rc.') }}
