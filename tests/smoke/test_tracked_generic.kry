@@ -1,0 +1,34 @@
+// Generic Tracked<T> (step 241): f64 lineage chain, explain, escaped
+// to_json round-trip with hostile content. Self-checking.
+
+use std::tracked::{Tracked, tracked_source, transform, inference, annotate, explain, to_json}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    // --- Tracked<f64> lineage ---
+    let mut t = tracked_source(98.6, "sensor-7", "raw reading")
+    t = transform(t, 37.0, "convert", "F to C")
+    t = inference(t, "anomaly-v2", 37.0, 0.93)
+    t = annotate(t, "review", "checked by operator")
+    expect(t.value == 37.0, "tracked value")
+    expect(len(t.lineage) == 4, "lineage length")
+    expect(t.source == "sensor-7", "source preserved")
+    let report = explain(t)
+    expect(len(report) > 50, "explain renders")
+
+    // --- to_json escapes hostile content ---
+    let hostile = tracked_source("x\",\"pwned\":\"y", "input", "untrusted")
+    let j = to_json(hostile)
+    let parsed = json_parse(j)
+    expect(not json_is_null(parsed), "to_json parses back")
+    let v = json_to_str(json_get(parsed, "value"))
+    expect(v == "x\",\"pwned\":\"y", "hostile value round-trips escaped")
+
+    println("generic Probable<T> + Tracked<T>: PASS")
+}

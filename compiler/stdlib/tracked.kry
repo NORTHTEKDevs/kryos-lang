@@ -1,9 +1,13 @@
 // ============================================================
-// std.tracked -- Data lineage for AI safety and compliance
+// std.tracked -- Data lineage for AI safety and compliance.
 //
-// Every piece of data carries its provenance: where it came
-// from, what transformed it, and why. Critical for audits,
-// debugging, and explainability.
+// Every piece of data carries its provenance: where it came from, what
+// transformed it, and why. Tracked<T> is generic since v4.47 (was
+// str-only); operations are free generic functions -- generic `impl`
+// blocks are not yet supported. `explain`/`to_json` stringify the value
+// with "{...}" interpolation, and to_json escapes via the native json
+// builtins (the old hand-built JSON did not escape -- unsafe for
+// untrusted payloads).
 // ============================================================
 
 struct LineageEntry {
@@ -13,15 +17,15 @@ struct LineageEntry {
     metadata: str
 }
 
-struct Tracked {
-    value: str,
+struct Tracked<T> {
+    value: T,
     lineage: [LineageEntry],
     source: str,
     source_description: str
 }
 
-// Create a tracked value from an original source.
-fn tracked_source(value: str, source: str, description: str) -> Tracked {
+/// Create a tracked value from an original source.
+fn tracked_source<T>(value: T, source: str, description: str) -> Tracked<T> {
     let entry = LineageEntry {
         operation: "source",
         description: description,
@@ -36,93 +40,78 @@ fn tracked_source(value: str, source: str, description: str) -> Tracked {
     }
 }
 
-impl Tracked {
-    // Record a transformation step in the lineage.
-    fn transform(self: Tracked, new_value: str, operation: str, description: str) -> Tracked {
-        let entry = LineageEntry {
-            operation: operation,
-            description: description,
-            timestamp: time_now(),
-            metadata: ""
-        }
-        let mut new_lineage = self.lineage
-        new_lineage = push(new_lineage, entry)
-        return Tracked {
-            value: new_value,
-            lineage: new_lineage,
-            source: self.source,
-            source_description: self.source_description
-        }
+fn _append<T>(t: Tracked<T>, new_value: T, entry: LineageEntry) -> Tracked<T> {
+    let mut new_lineage = t.lineage
+    new_lineage = push(new_lineage, entry)
+    return Tracked {
+        value: new_value,
+        lineage: new_lineage,
+        source: t.source,
+        source_description: t.source_description
     }
+}
 
-    // Record an AI inference step.
-    fn inference(self: Tracked, model: str, result: str, confidence: f64) -> Tracked {
-        let entry = LineageEntry {
-            operation: "inference",
-            description: "Model: " + model,
-            timestamp: time_now(),
-            metadata: "confidence=" + to_string(confidence)
-        }
-        let mut new_lineage = self.lineage
-        new_lineage = push(new_lineage, entry)
-        return Tracked {
-            value: result,
-            lineage: new_lineage,
-            source: self.source,
-            source_description: self.source_description
-        }
+/// Record a transformation step in the lineage.
+fn transform<T>(t: Tracked<T>, new_value: T, operation: str, description: str) -> Tracked<T> {
+    let entry = LineageEntry {
+        operation: operation,
+        description: description,
+        timestamp: time_now(),
+        metadata: ""
     }
+    return _append(t, new_value, entry)
+}
 
-    // Add an annotation (human review, note, etc.).
-    fn annotate(self: Tracked, operation: str, description: str) -> Tracked {
-        let entry = LineageEntry {
-            operation: operation,
-            description: description,
-            timestamp: time_now(),
-            metadata: ""
-        }
-        let mut new_lineage = self.lineage
-        new_lineage = push(new_lineage, entry)
-        return Tracked {
-            value: self.value,
-            lineage: new_lineage,
-            source: self.source,
-            source_description: self.source_description
-        }
+/// Record an AI inference step.
+fn inference<T>(t: Tracked<T>, model: str, result: T, confidence: f64) -> Tracked<T> {
+    let entry = LineageEntry {
+        operation: "inference",
+        description: "Model: " + model,
+        timestamp: time_now(),
+        metadata: "confidence=" + to_string(confidence)
     }
+    return _append(t, result, entry)
+}
 
-    // Human-readable lineage explanation.
-    fn explain(self: Tracked) -> str {
-        let mut result = "Value: " + self.value + "\n\nLineage:"
-        let mut i = 0
-        while i < len(self.lineage) {
-            let entry = self.lineage[i]
-            result = result + "\n  " + to_string(i + 1) + ". [" + entry.operation + "] " + entry.description
-            if len(entry.metadata) > 0 {
-                result = result + "\n     " + entry.metadata
-            }
-            i = i + 1
-        }
-        return result
+/// Add an annotation (human review, note, ...) without changing the value.
+fn annotate<T>(t: Tracked<T>, operation: str, description: str) -> Tracked<T> {
+    let entry = LineageEntry {
+        operation: operation,
+        description: description,
+        timestamp: time_now(),
+        metadata: ""
     }
+    return _append(t, t.value, entry)
+}
 
-    // Export lineage as a JSON-like string for compliance.
-    fn to_json(self: Tracked) -> str {
-        let mut result = "\{\"value\":" + "\"" + self.value + "\","
-        result = result + "\"source\":\"" + self.source + "\","
-        result = result + "\"lineage\":["
-        let mut i = 0
-        while i < len(self.lineage) {
-            if i > 0 {
-                result = result + ","
-            }
-            let entry = self.lineage[i]
-            result = result + "\{\"op\":\"" + entry.operation + "\","
-            result = result + "\"desc\":\"" + entry.description + "\","
-            result = result + "\"ts\":" + to_string(entry.timestamp) + "\}"
-            i = i + 1
+/// Human-readable lineage explanation.
+fn explain<T>(t: Tracked<T>) -> str {
+    let mut result = "Value: {t.value}
+
+Lineage:"
+    let mut i = 0
+    while i < len(t.lineage) {
+        let entry = t.lineage[i]
+        result = result + "
+  " + to_string(i + 1) + ". [" + entry.operation + "] " + entry.description
+        if len(entry.metadata) > 0 {
+            result = result + "
+     " + entry.metadata
         }
-        result = result + "]\}"
-        return result
+        i = i + 1
     }
+    return result
+}
+
+/// Export the lineage as JSON (properly escaped via the json builtins).
+fn to_json<T>(t: Tracked<T>) -> str {
+    let mut entries: [i64] = []
+    for entry in t.lineage {
+        let keys = ["op", "desc", "ts"]
+        let vals = [json_string(entry.operation), json_string(entry.description), json_number(entry.timestamp as f64)]
+        entries = push(entries, json_object(keys, vals))
+    }
+    let root_keys = ["value", "source", "lineage"]
+    let root_vals = [json_string("{t.value}"), json_string(t.source), json_array(entries)]
+    return json_stringify(json_object(root_keys, root_vals))
 }

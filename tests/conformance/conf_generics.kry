@@ -40,11 +40,11 @@ fn main() {
     // Generic struct in generic-fn param position.
     expect(unwrap_label(b) == "str", "generic struct as generic-fn param")
 
-    // Compound type args. (Direct indexing of a generic compound field —
-    // arr.value[2] — is a residual checker gap; copy out first.)
+    // Compound type args, including direct indexing of the generic field.
     let arr = wrap([1, 2, 3], "array")
+    expect(len(arr.value) == 3 and arr.value[2] == 3, "Boxed<[i64]> direct index")
     let items = arr.value
-    expect(len(items) == 3 and items[2] == 3, "Boxed<[i64]>")
+    expect(items[0] == 1, "copied-out generic array field")
 
     println("conformance generics: PASS")
 }

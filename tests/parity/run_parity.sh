@@ -118,9 +118,24 @@ run_one() {
             > "$tmp_out" 2> "$tmp_err"; then
         llvm_status="FAIL_BUILD"
         llvm_err="$(head -c 4000 "$tmp_err")"
-    elif ! "$exe_path" > "$exe_out" 2>> "$tmp_err"; then
-        llvm_status="FAIL_RUN"
-        llvm_err="$(head -c 4000 "$tmp_err")"
+    else
+      "$exe_path" > "$exe_out" 2>> "$tmp_err"
+      rc=$?
+      if [[ $rc -ne 0 ]]; then
+        if [[ $rc -eq 126 || $rc -eq 127 ]]; then
+            # Freshly-written exe blocked by the AV on-first-exec scan
+            # (Windows Defender holds new binaries briefly; rc 127 "not
+            # found" despite the file existing). One retry after settling.
+            sleep 2
+            if ! "$exe_path" > "$exe_out" 2>> "$tmp_err"; then
+                llvm_status="FAIL_RUN"
+                llvm_err="$(head -c 4000 "$tmp_err")"
+            fi
+        else
+            llvm_status="FAIL_RUN"
+            llvm_err="$(head -c 4000 "$tmp_err")"
+        fi
+      fi
     fi
 
     # Classify failure (only meaningful when LLVM != Cranelift).

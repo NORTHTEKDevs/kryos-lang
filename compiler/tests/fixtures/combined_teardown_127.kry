@@ -1,0 +1,66 @@
+// KNOWN BUG repro (step 241): this program runs to completion and prints
+// PASS on both backends, but on LLVM AOT the process EXIT CODE is 127
+// (teardown corruption after main returns). Triggers only when the
+// Probable<str/i64/f64> sections AND a Tracked<f64> instantiation share
+// one main; either half alone is clean, as is a minimal pairing.
+// Suspect: drop-helper interaction across the two monomorphized struct
+// families at CRT teardown. JIT-runs clean -- the examples gate exercises
+// that path; the AOT exit code is the open investigation.
+
+// Generic Probable<T> + Tracked<T> (step 241) — the v4.47 conversion from
+// str-only to generic, exercising i64/f64/str instantiations, ensembles,
+// budget-of-confidence math, and escaped lineage JSON. Self-checking.
+
+use std::probable::{Probable, probable, certain, with_source, map_value, is_confident, require_confidence, or_else, combine, entropy, best_of, majority_vote}
+use std::tracked::{Tracked, tracked_source, transform, inference, annotate, explain, to_json}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    // --- Probable<f64> ---
+    let guess = probable(0.82, 0.65)
+    expect(guess.value == 0.82 and guess.confidence == 0.65, "probable f64 fields")
+    expect(or_else(guess, 0.0) == 0.82, "or_else above 0.5")
+    let shaky = probable(9.9, 0.2)
+    expect(or_else(shaky, 0.0) == 0.0, "or_else below 0.5")
+
+    // --- Probable<i64> with map/combine ---
+    let a = probable(10, 0.9)
+    let doubled = map_value(a, fn (x: i64) -> i64 { return x * 2 })
+    expect(doubled.value == 20 and doubled.confidence == 0.9, "map preserves confidence")
+    let b = probable(5, 0.8)
+    let sum = combine(a, b, fn (x: i64, y: i64) -> i64 { return x + y })
+    expect(sum.value == 15, "combine value")
+    expect(sum.confidence > 0.71 and sum.confidence < 0.73, "combine confidence product")
+
+    // --- Probable<str>: thresholds, sources, throw path ---
+    let s = with_source(probable("anchorage", 0.7), "geo-model")
+    expect(is_confident(s, 0.6) and not is_confident(s, 0.8), "is_confident")
+    expect(require_confidence(s, 0.6) == "anchorage", "require ok")
+    try {
+        require_confidence(s, 0.9)
+        expect(false, "require must throw")
+    } catch e {
+        expect(true, "threw")
+    }
+    let cert = certain("sure")
+    expect(entropy(cert) == 0.0, "certain entropy 0")
+    let coin = probable("heads", 0.5)
+    expect(entropy(coin) > 0.99 and entropy(coin) < 1.01, "coin entropy 1 bit")
+
+    // --- Ensembles ---
+    let votes = [probable("cat", 0.6), probable("dog", 0.9), probable("cat", 0.7)]
+    expect(best_of(votes).value == "dog", "best_of")
+    let winner = majority_vote(votes)
+    expect(winner.value == "cat", "majority value (0.6+0.7 beats 0.9)")
+    expect(winner.confidence > 0.59 and winner.confidence < 0.60, "majority share 1.3/2.2")
+
+    let t = tracked_source(98.6, "sensor-7", "raw reading")
+    expect(t.value == 98.6, "tracked value")
+    println("PASS")
+}

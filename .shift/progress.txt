@@ -5479,3 +5479,31 @@ SHIFTS:
   byte-identical; workspace 916/0; native 2/2.
   next:    Probable<T>/Tracked<T> stdlib conversion (foundation now solid); benchmarks A-E;
            async executor (epic).
+
+  ---
+  step:    241 (session 11 -- 2026-06-11 "Probable<T> + Tracked<T> GENERIC + resolve_type recursion fix; one teardown bug filed")
+  date:    2026-06-11
+  THE FLAGSHIP AI TYPES ARE GENERIC (were str-only since April; the #2 wedge gap):
+  - stdlib/probable.kry rewritten: Probable<T> {value, confidence, source} + free generic
+    fns (generic impl blocks NOT supported -- checker E0101 on `impl Holder<T>`; gap filed):
+    probable/certain/with_source/map_value/is_confident/require_confidence(throws)/or_else/
+    combine(confidence product)/entropy(Shannon)/best_of/majority_vote(confidence-share).
+  - stdlib/tracked.kry rewritten: Tracked<T> + free fns (tracked_source/transform/
+    inference/annotate/explain/to_json); to_json now ESCAPES via json builtins (old
+    hand-built JSON was injectable -- April crystal flagged it; hostile round-trip tested).
+  COMPILER FIX under it: resolve_type only special-cased Generic at TOP level -- nested
+  `[P<str>]` fell to ctx-less lower_type_expr which erased to the bare all-i64 stub, so
+  monomorphized fns loaded f64 fields as i64 (Cranelift verifier reject). resolve_type now
+  recurses Array/Tuple/Function/Shared. ALSO: chained indexed-field access on generic
+  struct arrays (predictions[j].confidence) mistypes f64 loads -- worked around with
+  element-to-local copies in majority_vote; the conf_generics arr.value[2] DIRECT index
+  was re-verified WORKING (the gap closed by the 240 fixes; conformance updated).
+  KNOWN BUG FILED (timeboxed after 6 bisect probes): Probable sections + Tracked<f64> in
+  ONE main -> AOT process exits 127 AFTER printing PASS (teardown corruption; either half
+  alone clean; minimal pairing clean). Fixture compiler/tests/fixtures/
+  combined_teardown_127.kry; parity test split into test_probable_generic +
+  test_tracked_generic (both green both backends).
+  ALSO: parity runner retries rc 126/127 once after sleep (Defender first-exec scan lock;
+  previous `! cmd` form ATE the real exit code -- $? after ! is the negation, never 127).
+  GATES: parity 47/47; conformance 6/6; examples PASS; docs 54/54; bootstrap 989ba174;
+  workspace 916/0.

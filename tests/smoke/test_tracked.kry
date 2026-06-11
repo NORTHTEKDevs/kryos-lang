@@ -1,9 +1,11 @@
-use std::tracked::{tracked_source, Tracked}
+use std::tracked::{tracked_source, transform, Tracked}
 
 @capabilities(time)
 fn main() {
     let t = tracked_source("hello world", "user_input", "raw text from user")
-    let t2 = t.transform("HELLO WORLD", "uppercase", "to upper")
+    // v4.47: Tracked<T> is generic; operations are free fns (generic impl
+    // blocks are not yet supported by the checker).
+    let t2 = transform(t, "HELLO WORLD", "uppercase", "to upper")
     println("value=" + t2.value)
     println("source=" + t2.source)
     println("lineage_size=" + to_string(len(t2.lineage)))

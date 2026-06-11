@@ -1,160 +1,144 @@
 // ============================================================
-// std.probable -- Confidence-aware values for AI predictions
+// std.probable -- Confidence-aware values for AI predictions.
 //
-// Probable<T> makes uncertainty a first-class concept.
-// Values carry confidence scores that propagate through computation.
+// Probable<T> makes uncertainty a first-class concept: values carry
+// confidence scores that propagate through computation. Generic since
+// v4.47 (was str-only). Operations are free generic functions -- generic
+// `impl` blocks are not yet supported by the checker.
+//
+//   use std::probable::{Probable, probable, certain, or_else}
+//
+//   let guess: Probable<f64> = probable(0.82, 0.65)
+//   let safe = or_else(guess, 0.0)
 // ============================================================
 
-struct Probable {
-    value: str,
+use std::math::{log2}
+
+struct Probable<T> {
+    value: T,
     confidence: f64,
-    alternatives: [str],
-    alt_scores: [f64],
-    source: str
+    source: str,
 }
 
-// Create a Probable value with confidence and alternatives.
-fn probable(value: str, confidence: f64) -> Probable {
+/// Wrap a value with a confidence score in [0.0, 1.0].
+fn probable<T>(value: T, confidence: f64) -> Probable<T> {
+    let mut c = confidence
+    if c < 0.0 { c = 0.0 }
+    if c > 1.0 { c = 1.0 }
+    return Probable { value: value, confidence: c, source: "" }
+}
+
+/// A 100% certain value.
+fn certain<T>(value: T) -> Probable<T> {
+    return Probable { value: value, confidence: 1.0, source: "" }
+}
+
+/// Tag where the value came from (model name, sensor id, ...).
+fn with_source<T>(p: Probable<T>, source: str) -> Probable<T> {
+    return Probable { value: p.value, confidence: p.confidence, source: source }
+}
+
+/// Transform the value; confidence is preserved (a deterministic
+/// transformation adds no new uncertainty).
+fn map_value<T>(p: Probable<T>, transform_fn: fn(T) -> T) -> Probable<T> {
+    return Probable { value: transform_fn(p.value), confidence: p.confidence, source: p.source }
+}
+
+/// True when confidence meets the threshold.
+fn is_confident<T>(p: Probable<T>, threshold: f64) -> bool {
+    return p.confidence >= threshold
+}
+
+/// Unwrap the value, throwing when confidence is below the threshold.
+fn require_confidence<T>(p: Probable<T>, threshold: f64) -> T {
+    if p.confidence < threshold {
+        throw "probable error: confidence " + to_string(p.confidence) + " below required " + to_string(threshold)
+    }
+    return p.value
+}
+
+/// Unwrap the value, or the fallback when confidence is below 0.5.
+fn or_else<T>(p: Probable<T>, fallback: T) -> T {
+    if p.confidence >= 0.5 {
+        return p.value
+    }
+    return fallback
+}
+
+/// Combine two probable values; the result confidence is the product
+/// (both must hold for the combination to hold).
+fn combine<T>(a: Probable<T>, b: Probable<T>, combine_fn: fn(T, T) -> T) -> Probable<T> {
     return Probable {
-        value: value,
-        confidence: confidence,
-        alternatives: [],
-        alt_scores: [],
-        source: ""
+        value: combine_fn(a.value, b.value),
+        confidence: a.confidence * b.confidence,
+        source: a.source
     }
 }
 
-// Create a 100% certain value.
-fn probable_certain(value: str) -> Probable {
-    return Probable {
-        value: value,
-        confidence: 1.0,
-        alternatives: [],
-        alt_scores: [],
-        source: "certain"
+/// Shannon entropy of the binary outcome (certain either way = 0 bits,
+/// coin flip = 1 bit).
+fn entropy<T>(p: Probable<T>) -> f64 {
+    let c = p.confidence
+    if c <= 0.0 or c >= 1.0 {
+        return 0.0
     }
+    let q = 1.0 - c
+    return 0.0 - (c * log2(c) + q * log2(q))
 }
 
-impl Probable {
-    // Transform the value, preserving confidence.
-    fn map(self: Probable, transform_fn: fn(str) -> str) -> Probable {
-        return Probable {
-            value: transform_fn(self.value),
-            confidence: self.confidence,
-            alternatives: self.alternatives,
-            alt_scores: self.alt_scores,
-            source: self.source
-        }
-    }
-
-    // Check if confidence meets a threshold.
-    fn is_confident(self: Probable, threshold: f64) -> bool {
-        return self.confidence >= threshold
-    }
-
-    // Require minimum confidence, throw if below threshold.
-    fn require_confidence(self: Probable, threshold: f64) -> str {
-        if self.confidence < threshold {
-            throw "probable error: confidence " + to_string(self.confidence) + " below threshold " + to_string(threshold)
-        }
-        return self.value
-    }
-
-    // Return value or fallback if zero confidence.
-    fn or_else(self: Probable, fallback: str) -> str {
-        if self.confidence <= 0.0 {
-            return fallback
-        }
-        return self.value
-    }
-
-    // Combine two Probable values. Confidence multiplies.
-    fn combine(self: Probable, other: Probable, combine_fn: fn(str, str) -> str) -> Probable {
-        return Probable {
-            value: combine_fn(self.value, other.value),
-            confidence: self.confidence * other.confidence,
-            alternatives: [],
-            alt_scores: [],
-            source: self.source
-        }
-    }
-
-    // Shannon entropy of the distribution.
-    fn entropy(self: Probable) -> f64 {
-        let mut h = 0.0
-        if self.confidence > 0.0 {
-            h = h - self.confidence * log(self.confidence)
-        }
-        let mut i = 0
-        while i < len(self.alt_scores) {
-            let p = self.alt_scores[i]
-            if p > 0.0 {
-                h = h - p * log(p)
-            }
-            i = i + 1
-        }
-        return h
-    }
-
-    // Human-readable explanation.
-    fn explain(self: Probable) -> str {
-        let mut result = "Value: " + self.value + " (confidence: " + to_string(self.confidence * 100.0) + "%)"
-        if len(self.alternatives) > 0 {
-            result = result + "\nAlternatives:"
-            let mut i = 0
-            while i < len(self.alternatives) {
-                result = result + "\n  " + self.alternatives[i] + ": " + to_string(self.alt_scores[i] * 100.0) + "%"
-                i = i + 1
-            }
-        }
-        if len(self.source) > 0 {
-            result = result + "\nSource: " + self.source
-        }
-        return result
-    }
-}
-
-// --- Ensemble ---------------------------------------------------------------
-
-// Majority vote: pick the most common value.
-fn ensemble_majority_vote(predictions: [Probable]) -> Probable {
+/// Pick the highest-confidence prediction from an ensemble.
+fn best_of<T>(predictions: [Probable<T>]) -> Probable<T> {
     if len(predictions) == 0 {
-        throw "probable error: empty ensemble"
+        throw "probable error: best_of on empty ensemble"
     }
-    // Count occurrences of each value.
-    let mut best_value = predictions[0].value
-    let mut best_count = 1
+    let mut best = predictions[0]
+    for p in predictions {
+        if p.confidence > best.confidence {
+            best = p
+        }
+    }
+    return best
+}
+
+/// Majority vote over an ensemble: the value backed by the largest summed
+/// confidence wins; the result confidence is its share of the total.
+fn majority_vote<T>(predictions: [Probable<T>]) -> Probable<T> {
+    if len(predictions) == 0 {
+        throw "probable error: majority_vote on empty ensemble"
+    }
+    let n = len(predictions)
+    let mut total = 0.0
+    for p in predictions {
+        total = total + p.confidence
+    }
+    let mut best_idx = 0
+    let mut best_sum = 0.0
     let mut i = 0
-    while i < len(predictions) {
-        let mut count = 0
+    while i < n {
+        // Copy elements to locals before field access: chained
+        // indexed-field access on a generic struct array
+        // (predictions[j].confidence) mistypes f64 loads in monomorphized
+        // code -- compiler gap, fixture filed.
+        let pi = predictions[i]
+        let mut sum = 0.0
         let mut j = 0
-        while j < len(predictions) {
-            if predictions[j].value == predictions[i].value {
-                count = count + 1
+        while j < n {
+            let pj = predictions[j]
+            if pj.value == pi.value {
+                sum = sum + pj.confidence
             }
             j = j + 1
         }
-        if count > best_count {
-            best_count = count
-            best_value = predictions[i].value
+        if sum > best_sum {
+            best_sum = sum
+            best_idx = i
         }
         i = i + 1
     }
-    return probable(best_value, float(best_count) / float(len(predictions)))
-}
-
-// Best confidence: pick the prediction with highest confidence.
-fn ensemble_best_confidence(predictions: [Probable]) -> Probable {
-    if len(predictions) == 0 {
-        throw "probable error: empty ensemble"
+    let winner = predictions[best_idx]
+    let mut conf = 0.0
+    if total > 0.0 {
+        conf = best_sum / total
     }
-    let mut best = predictions[0]
-    let mut i = 1
-    while i < len(predictions) {
-        if predictions[i].confidence > best.confidence {
-            best = predictions[i]
-        }
-        i = i + 1
-    }
-    return best
+    return Probable { value: winner.value, confidence: conf, source: winner.source }
 }

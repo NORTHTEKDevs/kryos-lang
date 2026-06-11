@@ -236,6 +236,30 @@ impl LoweringContext {
             }
         }
 
+        // Compound types must recurse through resolve_type, not fall to the
+        // ctx-less lower_type_expr: `[P<str>]` went through lower_type_expr
+        // wholesale, whose Generic handling erases to the bare stub `P`
+        // (all-i64 fields) — monomorphized fns then loaded f64 fields as
+        // i64 slots (Cranelift verifier rejected the fadd).
+        match ty {
+            ast::TypeExpr::Array { element, size, .. } => {
+                return MirType::Array(Box::new(self.resolve_type(element)), *size);
+            }
+            ast::TypeExpr::Tuple { elements, .. } => {
+                return MirType::Tuple(elements.iter().map(|e| self.resolve_type(e)).collect());
+            }
+            ast::TypeExpr::Function { params, ret, .. } => {
+                return MirType::Function {
+                    params: params.iter().map(|p| self.resolve_type(p)).collect(),
+                    ret: Box::new(self.resolve_type(ret)),
+                };
+            }
+            ast::TypeExpr::Shared { inner, .. } => {
+                return MirType::Shared(Box::new(self.resolve_type(inner)));
+            }
+            _ => {}
+        }
+
         let mir_ty = lower_type_expr(ty);
         if let MirType::Struct(ref name) = mir_ty {
             // Resolve `Self` to the current impl/trait target type.
