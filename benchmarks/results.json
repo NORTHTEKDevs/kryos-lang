@@ -1,8 +1,8 @@
 {
   "floors": {
-    "kryos (native exe)": 0.006192699991515838,
-    "rust (native exe)": 0.00685910000174772,
-    "python interpreter": 0.04634950000036042
+    "kryos (native exe)": 0.00756210001418367,
+    "rust (native exe)": 0.0062300999998115,
+    "python interpreter": 0.050364700000500306
   },
   "runs": 5,
   "timeout_s": 300,
@@ -162,33 +162,39 @@
     "fannkuch": {
       "kryos-llvm": {
         "status": "ok",
-        "median_s": 0.3575,
-        "min_s": 0.3513,
-        "max_s": 0.3608
+        "median_s": 1.3411,
+        "min_s": 1.2933,
+        "max_s": 1.384
       },
       "kryos-cranelift": {
         "status": "ok",
-        "median_s": 0.373,
-        "min_s": 0.3699,
-        "max_s": 0.4133
+        "median_s": 1.4165,
+        "min_s": 1.38,
+        "max_s": 1.4771
       },
       "rust -O": {
         "status": "ok",
-        "median_s": 0.027,
-        "min_s": 0.0252,
-        "max_s": 0.0274
+        "median_s": 0.1978,
+        "min_s": 0.1951,
+        "max_s": 0.2053
+      },
+      "clang -O2": {
+        "status": "ok",
+        "median_s": 0.1943,
+        "min_s": 0.193,
+        "max_s": 0.1961
       },
       "go": {
         "status": "ok",
-        "median_s": 0.0138,
-        "min_s": 0.0134,
-        "max_s": 0.0248
+        "median_s": 0.2053,
+        "min_s": 0.2049,
+        "max_s": 0.2137
       },
       "python": {
         "status": "ok",
-        "median_s": 0.5876,
-        "min_s": 0.5662,
-        "max_s": 0.5953
+        "median_s": 6.1447,
+        "min_s": 6.0057,
+        "max_s": 6.2901
       }
     },
     "matmul": {

@@ -5622,3 +5622,19 @@ SHIFTS:
       arena/slab fix. fannkuch-redux canonical port still queued.
   GATES: examples-gate PASS (22/22 showcase); docs 54/54. CI still billing-blocked
   (local gates only).
+
+  ---
+  step:    245 (session 11 -- 2026-06-11 "canonical fannkuch-redux replaces perm-flips")
+  date:    2026-06-11
+  Canonical Benchmarks-Game fannkuch-redux ported to all 5 languages; old simplified
+  perm-flips kernel (mislabeled "fannkuch", broken C port) RETIRED. All 5 ports verified
+  output-identical (73196 / Pfannkuchen(10) = 38) before timing. MEASURED (median of 5):
+  kryos-llvm 1.341 / cranelift 1.416 / rust 0.198 / clang 0.194 / go 0.205 / python 6.145.
+  Ratio IMPROVED vs the old kernel: 6.8x Rust (was 13.2x) -- old number overweighted
+  bounds-check overhead on a tiny workload. 4.6x faster than Python. BENCHMARKS.md TL;DR
+  + table + footnotes updated; "13-47x faster than Python" corrected to "4.6-53x except
+  binary_trees where Python wins".
+  GOTCHA fixed en route: stale Defender-locked bin/fannkuch_c.exe made measure.py's
+  clang build fail SILENTLY (LNK1104) -> clang column showed "--". rm the stale exe.
+  measure.py improvement queued: print build stderr instead of silently dropping a lang.
+  next: allocation fast path for binary_trees gap (step 246).

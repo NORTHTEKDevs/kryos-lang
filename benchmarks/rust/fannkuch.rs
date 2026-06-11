@@ -1,42 +1,48 @@
-// rustc -O fannkuch.rs -o fannkuch_rs
-
-fn count_flips(perm: &mut [i64], _n: usize) -> i64 {
-    let mut flips = 0;
-    let mut p0 = perm[0];
-    while p0 != 0 {
-        let mut a = 0_usize;
-        let mut b = p0 as usize;
-        while a < b {
-            perm.swap(a, b);
-            a += 1;
-            b -= 1;
-        }
-        flips += 1;
-        p0 = perm[0];
-    }
-    flips
-}
-
-fn rotate_left(perm: &mut [i64], n: usize) {
-    let first = perm[0];
-    for i in 0..n - 1 {
-        perm[i] = perm[i + 1];
-    }
-    perm[n - 1] = first;
-}
-
+// rustc -O fannkuch.rs -o fannkuch_rust
+// Canonical fannkuch-redux (Benchmarks Game shape), single-threaded.
 fn main() {
     let n: usize = 10;
-    let mut perm: Vec<i64> = (0..n as i64).collect();
+    let mut perm1: Vec<i64> = (0..n as i64).collect();
+    let mut count = vec![0i64; n];
+    let mut perm = vec![0i64; n];
     let mut max_flips: i64 = 0;
-    let total = 362880;
-    for _ in 0..total {
-        let mut work = perm.clone();
-        let f = count_flips(&mut work, n);
-        if f > max_flips {
-            max_flips = f;
+    let mut checksum: i64 = 0;
+    let mut perm_count: i64 = 0;
+    let mut r = n;
+    loop {
+        while r != 1 {
+            count[r - 1] = r as i64;
+            r -= 1;
         }
-        rotate_left(&mut perm, n);
+        perm.copy_from_slice(&perm1);
+        let mut flips: i64 = 0;
+        let mut k = perm[0];
+        while k != 0 {
+            perm[..(k as usize + 1)].reverse();
+            flips += 1;
+            k = perm[0];
+        }
+        if flips > max_flips {
+            max_flips = flips;
+        }
+        checksum += if perm_count % 2 == 0 { flips } else { -flips };
+        loop {
+            if r == n {
+                println!("{}", checksum);
+                println!("Pfannkuchen({}) = {}", n, max_flips);
+                return;
+            }
+            let perm0 = perm1[0];
+            for i in 0..r {
+                perm1[i] = perm1[i + 1];
+            }
+            perm1[r] = perm0;
+            count[r] -= 1;
+            if count[r] > 0 {
+                break;
+            }
+            r += 1;
+        }
+        perm_count += 1;
     }
-    println!("fannkuch(10) = {}", max_flips);
 }

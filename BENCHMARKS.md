@@ -12,8 +12,10 @@ Last refresh: **1.0.0-beta.1, 2026-06-11**, Windows 11 x64
   Kryos's worst case today: every element access goes through ARC-managed
   heap arrays with bounds checks; Rust/clang vectorize a stack-resident
   struct array. This is the honest cost of the current array model.
-- **fannkuch (permutation flips): ~13x slower than Rust** — same array-access
-  story on hot integer loops.
+- **fannkuch-redux (canonical, n=10): 6.8x slower than Rust** — array-access
+  cost on hot integer loops; 4.6x faster than CPython.
+- **binary_trees (allocation stress): 11.6x slower than Rust, and behind
+  CPython** — the worst case; see its section below.
 - **fib: 3.0x slower than Rust** — pure recursion; closer, still behind on
   call overhead.
 - **matmul: 1.9x slower than Rust** — dense float loops, gap narrows when
@@ -21,7 +23,8 @@ Last refresh: **1.0.0-beta.1, 2026-06-11**, Windows 11 x64
 - **mandelbrot: parity (1.00x)** — scalar float arithmetic in registers is
   the case where the LLVM backend matches Rust/C, because there is nothing
   for Kryos's array model to pay for.
-- **vs Python: 13–47x faster** on every compute benchmark.
+- **vs Python: 4.6–53x faster on compute benchmarks — except binary_trees,
+  where Python wins** (allocation stress; see below).
 - **Cranelift (the `kryos run` dev backend) is 1.1–4.7x slower than the LLVM
   backend** — it optimizes compile speed, not runtime.
 
@@ -56,19 +59,18 @@ table is retracted. Current methodology:
 | mandelbrot 1000² ×1000 | 0.365 | 0.409 | 0.364 | 0.359 | 0.371 | 19.44 | **1.0x** |
 | nbody 2M steps | 1.852 | 1.865 | 0.110 | 0.151 | 0.250 | 45.13 | **16.8x** |
 | matmul 512² | 1.205 | 1.244 | 0.644 | 0.641 | 0.563 | 34.48 | **1.9x** |
-| perm-flips(10)¹ | 0.357 | 0.373 | 0.027 | broken² | 0.014 | 0.588 | **13.2x** |
+| fannkuch-redux(10)¹ | 1.341 | 1.416 | 0.198 | 0.194 | 0.205 | 6.145 | **6.8x** |
 
 All rows verified output-identical across languages before timing.
 
-¹ *perm-flips* was previously labeled "fannkuch"; the ported algorithm is a
-simplified permutation-flip kernel, not the canonical fannkuch-redux
-(canonical fannkuch(10) = 38 flips; this kernel reports 9). All language
-ports implement the same kernel, so the *ratios* are valid — the label was
-not. A canonical fannkuch-redux port is queued.
-
-² The C port of perm-flips diverges (it does not terminate at n=10 where
-every other port finishes in under a second). Bug in the port; excluded
-rather than reported.
+¹ Canonical fannkuch-redux (Benchmarks Game shape, added 2026-06-11): all
+five ports generate all 10! permutations via the counting algorithm and
+print the reference output `73196 / Pfannkuchen(10) = 38`, verified
+identical before timing. This replaces the earlier *perm-flips* row, which
+was a simplified kernel mislabeled "fannkuch" (and whose C port was broken
+and excluded). The canonical workload is ~13x more work and Kryos's ratio
+is **better** on it (6.8x vs the old kernel's 13.2x) — the old number
+overweighted per-iteration array-bounds overhead on a tiny workload.
 
 ### binary_trees (canonical allocation-stress, depth 16) — added 2026-06-11
 

@@ -1,50 +1,62 @@
-// Benchmark: Fannkuch-redux — mirrors c/fannkuch.c exactly.
-// Build: go build -o bin/fannkuch_go go/fannkuch.go
+// go build -o fannkuch_go fannkuch.go
+// Canonical fannkuch-redux (Benchmarks Game shape), single-threaded.
 package main
 
 import "fmt"
 
-func countFlips(perm []int64) int64 {
-	var flips int64
-	p0 := perm[0]
-	for p0 != 0 {
-		a, b := 0, int(p0)
-		for a < b {
-			perm[a], perm[b] = perm[b], perm[a]
-			a++
-			b--
-		}
-		flips++
-		p0 = perm[0]
-	}
-	return flips
-}
-
-func rotateLeft(perm []int64) {
-	n := len(perm)
-	first := perm[0]
-	for i := 0; i < n-1; i++ {
-		perm[i] = perm[i+1]
-	}
-	perm[n-1] = first
-}
-
 func main() {
 	const n = 10
+	perm1 := make([]int64, n)
+	count := make([]int64, n)
 	perm := make([]int64, n)
-	for i := range perm {
-		perm[i] = int64(i)
+	for i := 0; i < n; i++ {
+		perm1[i] = int64(i)
 	}
-	var maxFlips int64
-	const total = 362880 // 9!
-	work := make([]int64, n)
-	for iter := 0; iter < total; iter++ {
-		copy(work, perm)
-		f := countFlips(work)
-		if f > maxFlips {
-			maxFlips = f
+	var maxFlips, checksum, permCount int64
+	r := n
+	for {
+		for r != 1 {
+			count[r-1] = int64(r)
+			r--
 		}
-		rotateLeft(perm)
+		copy(perm, perm1)
+		var flips int64
+		k := perm[0]
+		for k != 0 {
+			a, b := 0, int(k)
+			for a < b {
+				perm[a], perm[b] = perm[b], perm[a]
+				a++
+				b--
+			}
+			flips++
+			k = perm[0]
+		}
+		if flips > maxFlips {
+			maxFlips = flips
+		}
+		if permCount%2 == 0 {
+			checksum += flips
+		} else {
+			checksum -= flips
+		}
+		for {
+			if r == n {
+				fmt.Println(checksum)
+				fmt.Printf("Pfannkuchen(%d) = %d\n", n, maxFlips)
+				return
+			}
+			perm0 := perm1[0]
+			for i := 0; i < r; i++ {
+				perm1[i] = perm1[i+1]
+			}
+			perm1[r] = perm0
+			count[r]--
+			if count[r] > 0 {
+				break
+			}
+			r++
+		}
+		permCount++
 	}
-	fmt.Printf("fannkuch(10) = %d\n", maxFlips)
 }
