@@ -5601,3 +5601,24 @@ SHIFTS:
   but the repo stays private per directive). Until then: LOCAL gates are the verification
   (all green for 243b: parity 48/48, conformance 6/6, examples PASS, bootstrap 989ba174,
   workspace 916/0, ASAN clean).
+
+  ---
+  step:    244 (session 11 -- 2026-06-11 "FLAGSHIP SHOWCASE + canonical binary_trees with brutal-honest numbers")
+  date:    2026-06-11
+  (a) examples/showcase/budget_analyst.kry -- THE flagship: one agent demonstrating the
+      whole wedge: @budget(tokens=60000, calls=25) compiler-enforced ceilings, std::llm
+      TOOL CALLING (real Kryos calc + fact_store functions the model invokes),
+      Tracked<str> audit trail on the answer, Probable<str> confidence tag. Works against
+      Anthropic or local Ollama; OFFLINE walkthrough mode (always demonstrable). Verified
+      both backends; showcase gate now 22/22.
+  (b) Canonical binary_trees REPLACES the constant-foldable port: Benchmarks-Game shape
+      (many trees + checksums), all 5 language ports verified output-identical
+      (checksum 14723759, depth 16). MEASURED (median of 5): kryos-llvm 9.03s /
+      cranelift 5.20s / rust 0.78s / clang 0.70s / go 0.50s / python 1.88s.
+      HONEST HEADLINE: 11.6x slower than Rust AND ~4.8x slower than CPython on pure
+      allocation stress -- per-node calloc boxes + refcount teardown + the no-null-pointer
+      array-children handicap. Go wins outright (GC built for this). Cranelift BEATS
+      LLVM here (allocation calls dominate). BENCHMARKS.md states all of it + queues the
+      arena/slab fix. fannkuch-redux canonical port still queued.
+  GATES: examples-gate PASS (22/22 showcase); docs 54/54. CI still billing-blocked
+  (local gates only).

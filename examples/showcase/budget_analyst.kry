@@ -1,0 +1,165 @@
+// budget_analyst — the flagship Kryos agent showcase.
+//
+// One program demonstrating what Kryos was built for: an AI analyst with
+//   - @budget          : compiler-enforced spending ceilings — the agent
+//                        CANNOT exceed 25 model calls / 60k tokens, no
+//                        matter what its loop logic says
+//   - std::llm tools   : the model calls real Kryos functions (a
+//                        calculator and a fact store) and gets results back
+//   - Tracked<T>       : the final answer carries a full audit trail of
+//                        every step that produced it (compliance-ready)
+//   - Probable<T>      : the answer is confidence-tagged, not bare
+//
+// Works against Anthropic (set ANTHROPIC_API_KEY) or any local
+// OpenAI-compatible server (set ANALYST_BASE_URL, e.g. Ollama at
+// http://127.0.0.1:11434/v1). With neither, it runs a built-in offline
+// walkthrough so the program is always demonstrable.
+//
+//   kryos run examples/showcase/budget_analyst.kry "What is 17% of 2,340?"
+
+use std::llm::{LlmConfig, anthropic_config, openai_config, with_base_url, with_max_tokens, system, user, tool, tool_result, chat_tools, continue_with_tool_results, ToolTurn, ToolDef}
+use std::tracked::{Tracked, tracked_source, transform, inference, annotate, explain}
+use std::probable::{Probable, probable, is_confident}
+
+// --- The agent's tools (real Kryos functions the model can call) -------------
+
+fn calc(args_json: str) -> str {
+    let node = json_parse(args_json)
+    let a = json_to_float(json_get(node, "a"))
+    let b = json_to_float(json_get(node, "b"))
+    let op = json_to_str(json_get(node, "op"))
+    if op == "add" { return to_string(a + b) }
+    if op == "sub" { return to_string(a - b) }
+    if op == "mul" { return to_string(a * b) }
+    if op == "div" {
+        if b == 0.0 { return "error: division by zero" }
+        return to_string(a / b)
+    }
+    return "error: unknown op " + op
+}
+
+fn fact_store(args_json: str) -> str {
+    // A tiny built-in knowledge base the model can query.
+    let node = json_parse(args_json)
+    let key = json_to_str(json_get(node, "key"))
+    if key == "alaska_population" { return "approximately 740,000 (2025 estimate)" }
+    if key == "anchorage_population" { return "approximately 290,000" }
+    return "no fact stored for: " + key
+}
+
+fn run_tool(name: str, args_json: str) -> str {
+    if name == "calc" { return calc(args_json) }
+    if name == "fact_store" { return fact_store(args_json) }
+    return "error: unknown tool " + name
+}
+
+fn tool_defs() -> [ToolDef] {
+    let calc_schema = json_stringify(json_object(
+        ["type", "properties", "required"],
+        [json_string("object"),
+         json_object(["a", "b", "op"], [
+             json_object(["type"], [json_string("number")]),
+             json_object(["type"], [json_string("number")]),
+             json_object(["type", "description"], [json_string("string"), json_string("add, sub, mul, or div")])
+         ]),
+         json_array([json_string("a"), json_string("b"), json_string("op")])]))
+    let fact_schema = json_stringify(json_object(
+        ["type", "properties", "required"],
+        [json_string("object"),
+         json_object(["key"], [json_object(["type"], [json_string("string")])]),
+         json_array([json_string("key")])]))
+    return [
+        tool("calc", "Exact arithmetic: add/sub/mul/div two numbers. Use for ALL math.", calc_schema),
+        tool("fact_store", "Look up a stored fact by key (alaska_population, anchorage_population).", fact_schema)
+    ]
+}
+
+// --- The budget-capped agent loop ---------------------------------------------
+// The @budget attribute is the headline: these ceilings are enforced by
+// the COMPILER+RUNTIME around every model call inside this function, at
+// any depth. A bug that made this loop infinite would throw on call 26.
+
+@budget(tokens = 60000, calls = 25)
+fn analyze(cfg: LlmConfig, question: str) -> Tracked<str> {
+    let mut audit = tracked_source(question, "user", "question as asked")
+    let tools = tool_defs()
+    let msgs = [
+        system("You are a precise analyst. Use the calc tool for ALL arithmetic. Cite tool results."),
+        user(question)
+    ]
+
+    let mut turn = chat_tools(cfg, msgs, tools)
+    audit = annotate(audit, "model_turn", "initial response, " + to_string(turn.output_tokens) + " tokens")
+
+    let mut rounds = 0
+    while not turn.done and rounds < 8 {
+        let mut results = []
+        for call in turn.tool_calls {
+            let output = run_tool(call.name, call.arguments_json)
+            audit = annotate(audit, "tool:" + call.name, call.arguments_json + " -> " + output)
+            results = push(results, tool_result(call.id, output))
+        }
+        turn = continue_with_tool_results(cfg, msgs, tools, turn.assistant_raw, results)
+        audit = annotate(audit, "model_turn", "after tools, " + to_string(turn.output_tokens) + " tokens")
+        rounds = rounds + 1
+    }
+
+    audit = inference(audit, cfg.model, turn.text, 0.9)
+    return audit
+}
+
+// --- Offline walkthrough (no provider configured) ------------------------------
+
+fn offline_demo(question: str) {
+    println("[offline mode -- no ANTHROPIC_API_KEY or ANALYST_BASE_URL set]")
+    println("")
+    println("This agent, when connected, will:")
+    println("  1. Send your question to the model under a @budget(tokens=60000, calls=25)")
+    println("     ceiling the compiler enforces around every call")
+    println("  2. Let the model call REAL Kryos tools -- watch:")
+    let demo_calc = calc("\{\"a\": 2340, \"b\": 0.17, \"op\": \"mul\"\}")
+    println("       calc(2340 * 0.17) = " + demo_calc)
+    let demo_fact = fact_store("\{\"key\": \"alaska_population\"\}")
+    println("       fact_store(alaska_population) = " + demo_fact)
+    println("  3. Return the answer with a full Tracked audit trail:")
+    let mut audit = tracked_source(question, "user", "question as asked")
+    audit = annotate(audit, "tool:calc", "2340 * 0.17 -> " + demo_calc)
+    audit = inference(audit, "offline-walkthrough", "17% of 2,340 is " + demo_calc, 1.0)
+    println("")
+    println(explain(audit))
+}
+
+fn main() {
+    let argv = args()
+    let mut question = "What is 17% of 2,340? Use the calc tool."
+    if len(argv) > 1 {
+        question = argv[1]
+    }
+
+    let key = env_get("ANTHROPIC_API_KEY")
+    let local = env_get("ANALYST_BASE_URL")
+    if key == "" and local == "" {
+        offline_demo(question)
+        return
+    }
+
+    let mut cfg = anthropic_config(key, "claude-sonnet-4-6")
+    if key == "" {
+        cfg = with_base_url(openai_config("", "llama3"), local)
+    }
+    cfg = with_max_tokens(cfg, 1024)
+
+    let audit = analyze(cfg, question)
+
+    // The answer, its confidence, and its complete provenance.
+    let answer: Probable<str> = probable(audit.value, 0.9)
+    println("ANSWER: " + answer.value)
+    if is_confident(answer, 0.8) {
+        println("(confidence: high)")
+    } else {
+        println("(confidence: LOW -- verify before acting)")
+    }
+    println("")
+    println("=== AUDIT TRAIL ===")
+    println(explain(audit))
+}

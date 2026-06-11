@@ -70,11 +70,27 @@ not. A canonical fannkuch-redux port is queued.
 every other port finishes in under a second). Bug in the port; excluded
 rather than reported.
 
-**binary_trees is excluded entirely:** the current single-tree port gets
-constant-folded by optimizing compilers (clang finishes "depth 21" in 6ms —
-it computed the checksum at compile time). It measures nothing. A canonical
-allocation-stress port (many trees, checksummed, like the Benchmarks Game
-version) is queued.
+### binary_trees (canonical allocation-stress, depth 16) — added 2026-06-11
+
+The earlier single-tree port was constant-folded by optimizing compilers and
+has been replaced with the canonical many-trees-checksummed form (all five
+ports verified output-identical: checksum 14723759).
+
+| | kryos LLVM | kryos Cranelift | rust -O | clang -O2 | go | python |
+|---|---|---|---|---|---|---|
+| binary_trees d16 | 9.030 | 5.201 | 0.778 | 0.699 | 0.495 | 1.876 |
+
+This is Kryos's **worst benchmark, stated plainly: 11.6x slower than Rust
+and ~4.8x slower than CPython** on pure allocation stress. Two compounding
+causes: (1) every tree node is a calloc'd box with refcounted teardown, and
+(2) Kryos has no null/Option-pointer representation for child links, so the
+port stores children in single-element arrays — an extra allocation per
+child that the C/Rust/Go ports don't pay. Go wins outright here (bump
+allocator + GC is built for exactly this). Allocation-heavy workloads are
+the language's weakest case today; an arena/slab story is the queued fix.
+Interesting honest wrinkle: the Cranelift dev backend beats the LLVM
+release backend on this one (allocation calls dominate; LLVM's optimizer
+cannot help).
 
 ## Reading the numbers
 

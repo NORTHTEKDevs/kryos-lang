@@ -1,14 +1,44 @@
-// cc -O2 binary_trees.c -o binary_trees_c
+// Canonical allocation-stress binary trees (same algorithm as kryos port).
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdint.h>
 
-int64_t tree_sum(int64_t depth, int64_t value) {
-    if (depth == 0) return value;
-    return tree_sum(depth - 1, value * 2) + tree_sum(depth - 1, value * 2 + 1);
+typedef struct Tree { struct Tree *left, *right; } Tree;
+
+static Tree *make(int64_t depth) {
+    Tree *t = malloc(sizeof(Tree));
+    if (depth == 0) { t->left = t->right = NULL; return t; }
+    t->left = make(depth - 1);
+    t->right = make(depth - 1);
+    return t;
+}
+
+static int64_t check(Tree *t) {
+    if (!t->left) return 1;
+    return 1 + check(t->left) + check(t->right);
+}
+
+static void freet(Tree *t) {
+    if (t->left) { freet(t->left); freet(t->right); }
+    free(t);
 }
 
 int main(void) {
-    int64_t s = tree_sum(18, 1);
-    printf("binary_trees(depth=21) = %lld\n", (long long)s);
+    int64_t max_depth = 16;
+    Tree *long_lived = make(max_depth);
+    int64_t total = 0;
+    for (int64_t depth = 4; depth <= max_depth; depth += 2) {
+        int64_t iterations = 1LL << (max_depth - depth + 4);
+        int64_t sum = 0;
+        for (int64_t i = 0; i < iterations; i++) {
+            Tree *t = make(depth);
+            sum += check(t);
+            freet(t);
+        }
+        total += sum;
+    }
+    total += check(long_lived);
+    freet(long_lived);
+    printf("binary_trees(canonical, depth=16) checksum = %lld\n", (long long)total);
     return 0;
 }

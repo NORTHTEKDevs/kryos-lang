@@ -1,34 +1,45 @@
-// Benchmark: binary trees — allocation, traversal, recursion.
-// Builds and walks a balanced binary tree of depth N.
-// Stresses the allocator and recursion.
+// Benchmark: binary trees (canonical allocation-stress shape).
+// Builds and checksums many short-lived trees plus one long-lived tree --
+// the Benchmarks Game form that optimizing compilers cannot constant-fold.
 
 struct Tree {
-    left: i64,
-    right: i64,
-    value: i64,
+    left: [Tree],
+    right: [Tree],
 }
 
-fn make_tree(depth: i64, value: i64) -> Tree {
+fn make(depth: i64) -> Tree {
     if depth == 0 {
-        return Tree { left: 0, right: 0, value: value }
+        let l: [Tree] = []
+        let r: [Tree] = []
+        return Tree { left: l, right: r }
     }
-    let l = make_tree(depth - 1, value * 2)
-    let r = make_tree(depth - 1, value * 2 + 1)
-    // We can't store Tree inside Tree in this simple bench, so use
-    // value-only depth check: return a Tree whose 'value' encodes the
-    // subtree sum.
-    return Tree { left: 0, right: 0, value: l.value + r.value }
+    return Tree { left: [make(depth - 1)], right: [make(depth - 1)] }
 }
 
-fn tree_sum(depth: i64, value: i64) -> i64 {
-    if depth == 0 {
-        return value
+fn check(t: Tree) -> i64 {
+    if len(t.left) == 0 {
+        return 1
     }
-    return tree_sum(depth - 1, value * 2) + tree_sum(depth - 1, value * 2 + 1)
+    return 1 + check(t.left[0]) + check(t.right[0])
 }
 
 fn main() {
-    let depth: i64 = 21
-    let s = tree_sum(depth, 1)
-    println("binary_trees(depth=21) = " + to_string(s))
+    let max_depth = 16
+    let long_lived = make(max_depth)
+    let mut total = 0
+    let mut depth = 4
+    while depth <= max_depth {
+        let iterations = 1 << (max_depth - depth + 4)
+        let mut i = 0
+        let mut sum = 0
+        while i < iterations {
+            let t = make(depth)
+            sum = sum + check(t)
+            i = i + 1
+        }
+        total = total + sum
+        depth = depth + 2
+    }
+    total = total + check(long_lived)
+    println("binary_trees(canonical, depth=16) checksum = " + to_string(total))
 }

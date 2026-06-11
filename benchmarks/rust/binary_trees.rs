@@ -1,14 +1,30 @@
-// rustc -O binary_trees.rs -o binary_trees_rs
+// Canonical allocation-stress binary trees (same algorithm as kryos port).
+struct Tree { left: Option<Box<Tree>>, right: Option<Box<Tree>> }
 
-fn tree_sum(depth: i64, value: i64) -> i64 {
-    if depth == 0 {
-        return value;
+fn make(depth: i64) -> Tree {
+    if depth == 0 { return Tree { left: None, right: None }; }
+    Tree { left: Some(Box::new(make(depth - 1))), right: Some(Box::new(make(depth - 1))) }
+}
+
+fn check(t: &Tree) -> i64 {
+    match &t.left {
+        None => 1,
+        Some(l) => 1 + check(l) + check(t.right.as_ref().unwrap()),
     }
-    tree_sum(depth - 1, value * 2) + tree_sum(depth - 1, value * 2 + 1)
 }
 
 fn main() {
-    let depth: i64 = 21;
-    let s = tree_sum(depth, 1);
-    println!("binary_trees(depth=21) = {}", s);
+    let max_depth: i64 = 16;
+    let long_lived = make(max_depth);
+    let mut total: i64 = 0;
+    let mut depth: i64 = 4;
+    while depth <= max_depth {
+        let iterations: i64 = 1 << (max_depth - depth + 4);
+        let mut sum: i64 = 0;
+        for _ in 0..iterations { sum += check(&make(depth)); }
+        total += sum;
+        depth += 2;
+    }
+    total += check(&long_lived);
+    println!("binary_trees(canonical, depth=16) checksum = {}", total);
 }
