@@ -5638,3 +5638,34 @@ SHIFTS:
   clang build fail SILENTLY (LNK1104) -> clang column showed "--". rm the stale exe.
   measure.py improvement queued: print build stderr instead of silently dropping a lang.
   next: allocation fast path for binary_trees gap (step 246).
+
+  ---
+  step:    246 (session 11 -- 2026-06-11 "allocation fast path + alloca-hoist codegen fix")
+  date:    2026-06-11
+  (a) kryos-rt POOLED BOX ALLOCATOR (alloc.rs): per-thread size-class freelists over
+      64KB slabs. kryos_calloc/kryos_free (16-byte class-tag header) replace libc
+      calloc/free at ALL 12 LLVM codegen box sites (2 alloc + 10 free). Headerless
+      pool_alloc/pool_free serve KryosArray data buffers + headers (array.rs); grow
+      path now RECYCLES old buffers (safe: grow only at rc==1/COW). KRYOS_PLAIN_ALLOC=1
+      bypasses everything to ucrt -- keeps the ASAN method intact. 5 new unit tests.
+      NOTE: tried mimalloc first -- its C objects reference __imp_ CRT symbols and made
+      the staticlib UNLINKABLE by bare clang (breaks the documented ASAN/manual-link
+      path); dropped for the zero-dep pure-Rust pool.
+  (b) ALLOCA-HOIST PASS (kryos-codegen-llvm): LLVM treats only ENTRY-BLOCK allocas as
+      static frame slots; codegen emitted allocas in LOOP BODIES (aggregate spills for
+      struct drops) -> stack grew per iteration; ~250k-iteration loops would overflow
+      8MB stack in PRODUCTION (latent crash bug, found via ASAN stack-overflow on
+      binary_trees). hoist_static_allocas() moves them to the entry block at function
+      finalization (dynamic allocas stay put; label-first functions handled).
+  VERIFIED: kryos-rt 85/85 tests; parity 48/48; conformance 6/6; examples 22/22;
+  bootstrap fixed point HOLDS at same sha 989ba174; ASAN clean BOTH alloc modes at
+  full depth-16; binary_trees 9.03s -> 5.49s (1.64x).
+  LEFT BEFORE THIS STEP IS FULLY GATED:
+    1. Full workspace suite (compiler/run_tests.sh, 916 tests) -- two attempts wedged
+       in the harness background-task queue; one was stopped MID-BUILD so next run
+       rebuilds debug artifacts (long). Check for orphaned cargo.exe first.
+    2. Re-run benchmarks/measure.py (all benches) -- allocator+hoist may shift several
+       rows -- then update BENCHMARKS.md (binary_trees row + TL;DR ratios).
+    3. CI still billing-blocked (Kristian: github.com/settings/billing).
+  QUEUE AFTER THAT: nbody gap (bounds-check elision), generic impl blocks (E0101),
+  deny-by-default capabilities, async executor, more showcase programs.

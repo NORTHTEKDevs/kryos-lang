@@ -625,6 +625,8 @@ impl LlvmCodegen {
         self.emit_line("; ARC runtime");
         self.emit_line("declare ptr @kryos_arc_alloc(i64, i64)");
         self.emit_line("declare ptr @calloc(i64, i64)");
+        self.emit_line("declare ptr @kryos_calloc(i64, i64)");
+        self.emit_line("declare void @kryos_free(ptr)");
         self.emit_line("declare void @kryos_arc_retain(ptr)");
         self.emit_line("declare void @kryos_arc_release(ptr)");
         self.emit_line("declare void @kryos_arc_set_drop(ptr, ptr)");
@@ -1325,7 +1327,7 @@ impl LlvmCodegen {
                     }
                     Some(MirType::Struct(_)) | Some(MirType::Enum(_)) => {
                         self.emit_line(&format!("  {cap_val} = load ptr, ptr {cap_ptr}"));
-                        self.emit_line(&format!("  call void @free(ptr {cap_val})"));
+                        self.emit_line(&format!("  call void @kryos_free(ptr {cap_val})"));
                     }
                     _ => {}
                 }
@@ -1770,7 +1772,7 @@ impl LlvmCodegen {
                         if has_nested {
                             self.emit_line(&format!("  call void @{nested_drop}(ptr {fv})"));
                         } else {
-                            self.emit_line(&format!("  call void @free(ptr {fv})"));
+                            self.emit_line(&format!("  call void @kryos_free(ptr {fv})"));
                         }
                     }
                     MirType::Enum(n) => {
@@ -1796,14 +1798,14 @@ impl LlvmCodegen {
                         if has_nested {
                             self.emit_line(&format!("  call void @{nested_drop}(ptr {fv})"));
                         } else {
-                            self.emit_line(&format!("  call void @free(ptr {fv})"));
+                            self.emit_line(&format!("  call void @kryos_free(ptr {fv})"));
                         }
                     }
                     _ => {}
                 }
             }
 
-            self.emit_line("  call void @free(ptr %ptr)");
+            self.emit_line("  call void @kryos_free(ptr %ptr)");
             self.emit_line("  ret void");
             self.emit_line("}");
             self.emit_blank();
@@ -1938,7 +1940,7 @@ impl LlvmCodegen {
 
             self.emit_line(&format!("  br label %{merge_label}"));
             self.emit_line(&format!("{merge_label}:"));
-            self.emit_line("  call void @free(ptr %ptr)");
+            self.emit_line("  call void @kryos_free(ptr %ptr)");
             self.emit_line("  ret void");
             self.emit_line("}");
             self.emit_blank();
@@ -2270,6 +2272,7 @@ impl LlvmCodegen {
     }
 
     fn emit_function_as(&mut self, func: &MirFunction, name: &str) -> Result<(), CodegenError> {
+        let fn_text_start = self.output.len();
         self.cur_fn_has_mir_exception_checks = func.blocks.iter().any(|bb| {
             bb.instructions.iter().any(|inst| {
                 matches!(inst, Instruction::Assign { value: RValue::Call { func, .. }, .. }
@@ -2599,7 +2602,105 @@ impl LlvmCodegen {
         self.current_fn_dbg_md = None;
         self.current_fn_loc_md = None;
 
+        // LLVM only treats ENTRY-BLOCK allocas as static frame slots; an
+        // alloca in a loop body bumps the stack pointer on every iteration
+        // and releases only at function return, so a hot loop that spills an
+        // aggregate (e.g. for a struct drop) grows the stack unboundedly --
+        // a 65k-iteration loop was measured eating megabytes, and ~250k
+        // iterations would overflow the 8 MB Windows stack outright. Hoist
+        // every static alloca in this function's body into the entry block
+        // (the slot is then reused per iteration; every spill stores before
+        // it reads, so reuse is safe). Dynamically-sized allocas reference
+        // SSA operands and cannot move.
+        let hoisted = Self::hoist_static_allocas(&self.output[fn_text_start..]);
+        self.output.truncate(fn_text_start);
+        self.output.push_str(&hoisted);
+
         Ok(())
+    }
+
+    /// Move static `alloca`s that appear after the first basic-block label
+    /// up into the function's entry block. `text` must contain exactly one
+    /// `define ... {` function.
+    fn hoist_static_allocas(text: &str) -> String {
+        let mut entry: Vec<&str> = Vec::new();
+        let mut body: Vec<&str> = Vec::new();
+        let mut hoist: Vec<&str> = Vec::new();
+        let mut seen_define = false;
+        let mut seen_label = false;
+        for line in text.lines() {
+            if !seen_define {
+                entry.push(line);
+                if line.starts_with("define ") {
+                    seen_define = true;
+                }
+                continue;
+            }
+            if !seen_label && !line.starts_with(' ') && line.trim_end().ends_with(':') {
+                seen_label = true;
+            }
+            if seen_label {
+                let trimmed = line.trim_start();
+                if let Some(rest) = trimmed
+                    .split_once(" = alloca ")
+                    .map(|(_, r)| r)
+                    .filter(|_| trimmed.starts_with('%'))
+                {
+                    // Static allocas only: a dynamic count (`alloca i8, i64 %n`)
+                    // references an SSA value and must stay put.
+                    let dynamic = rest
+                        .rsplit_once(',')
+                        .map(|(_, tail)| tail.contains('%'))
+                        .unwrap_or(false)
+                        && !rest.trim_start().starts_with('%');
+                    // (`alloca %Struct` has '%' as the TYPE; only a trailing
+                    // `, <ty> %reg` operand makes it dynamic.)
+                    if !dynamic {
+                        hoist.push(line);
+                        continue;
+                    }
+                }
+                body.push(line);
+            } else {
+                entry.push(line);
+            }
+        }
+        // Place the hoisted allocas at the TOP of the entry block. When the
+        // body opens with instructions (implicit entry block), that is right
+        // after the `define` line. When it opens with a label (`bb0:` IS the
+        // entry block), allocas must go after that label -- emitting them
+        // between `define` and the label would create an implicit entry
+        // block with no terminator, which the IR parser rejects.
+        let entry_has_insts = entry
+            .iter()
+            .skip_while(|l| !l.starts_with("define "))
+            .skip(1)
+            .any(|l| !l.trim().is_empty());
+        let mut out = String::with_capacity(text.len());
+        let mut pending = !hoist.is_empty();
+        for line in &entry {
+            out.push_str(line);
+            out.push('\n');
+            if pending && entry_has_insts && line.starts_with("define ") {
+                for h in &hoist {
+                    out.push_str(h);
+                    out.push('\n');
+                }
+                pending = false;
+            }
+        }
+        for line in &body {
+            out.push_str(line);
+            out.push('\n');
+            if pending && !line.starts_with(' ') && line.trim_end().ends_with(':') {
+                for h in &hoist {
+                    out.push_str(h);
+                    out.push('\n');
+                }
+                pending = false;
+            }
+        }
+        out
     }
 
     // -----------------------------------------------------------------------
@@ -2701,7 +2802,7 @@ impl LlvmCodegen {
                                 self.emit_struct_drop(&buf, name, func);
                             } else {
                                 self.emit_struct_drop(&val, name, func);
-                                self.emit_line(&format!("  call void @free(ptr {val})"));
+                                self.emit_line(&format!("  call void @kryos_free(ptr {val})"));
                             }
                         }
                     }
@@ -3964,7 +4065,7 @@ impl LlvmCodegen {
                                     ));
                                     let buf = self.next_temp();
                                     self.emit_line(&format!(
-                                        "  {buf} = call ptr @calloc(i64 1, i64 {size_i64})"
+                                        "  {buf} = call ptr @kryos_calloc(i64 1, i64 {size_i64})"
                                     ));
                                     self.emit_line(&format!("  store {actual} {v}, ptr {buf}"));
                                     let t = self.next_temp();
@@ -6100,7 +6201,7 @@ impl LlvmCodegen {
                     ));
                     let buf = self.next_temp();
                     self.emit_line(&format!(
-                        "  {buf} = call ptr @calloc(i64 1, i64 {size_i64})"
+                        "  {buf} = call ptr @kryos_calloc(i64 1, i64 {size_i64})"
                     ));
                     self.emit_line(&format!(
                         "  store {elem_ty} {elem_val}, ptr {buf}"
@@ -7355,7 +7456,7 @@ impl LlvmCodegen {
                         self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                         let inner = inner_name.clone();
                         self.emit_struct_drop(&fv, &inner, _func);
-                        self.emit_line(&format!("  call void @free(ptr {fv})"));
+                        self.emit_line(&format!("  call void @kryos_free(ptr {fv})"));
                     }
                 }
                 MirType::Enum(inner_name) => {
@@ -7544,7 +7645,7 @@ impl LlvmCodegen {
             None => {
                 // Unknown enum — free the pointer if requested.
                 if free_buf {
-                    self.emit_line(&format!("  call void @free(ptr {val})"));
+                    self.emit_line(&format!("  call void @kryos_free(ptr {val})"));
                 }
                 return;
             }
@@ -7637,7 +7738,7 @@ impl LlvmCodegen {
                             self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                             let inner = name.clone();
                             self.emit_struct_drop(&fv, &inner, func);
-                            self.emit_line(&format!("  call void @free(ptr {fv})"));
+                            self.emit_line(&format!("  call void @kryos_free(ptr {fv})"));
                         }
                         MirType::Enum(name) => {
                             self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
@@ -7663,7 +7764,7 @@ impl LlvmCodegen {
 
         // Free the heap-allocated enum itself (only when free_buf is true).
         if free_buf {
-            self.emit_line(&format!("  call void @free(ptr {val})"));
+            self.emit_line(&format!("  call void @kryos_free(ptr {val})"));
         }
     }
 }

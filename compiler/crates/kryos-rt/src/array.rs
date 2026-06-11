@@ -10,7 +10,7 @@
 //! reaches zero. `kryos_array_push` performs copy-on-write when `ref_count > 1`
 //! so mutation never affects aliased owners.
 
-use std::alloc::{alloc, dealloc, realloc, Layout};
+use std::alloc::{realloc, Layout};
 use std::ptr;
 
 /// Heap-allocated dynamic array with explicit length and capacity.
@@ -40,17 +40,18 @@ pub unsafe extern "C" fn kryos_array_new(elem_size: i64, cap: i64) -> *mut Kryos
     if cap > 1024 {
         crate::memstats::note_big_array(cap);
     }
-    let layout = KryosArray::data_layout(cap_usize);
-    let data = alloc(layout);
+    let data = crate::alloc::pool_alloc(cap_usize * ELEM_SIZE);
     if data.is_null() {
         return ptr::null_mut();
     }
     // Zero-initialize.
     ptr::write_bytes(data, 0, cap_usize * ELEM_SIZE);
 
-    let arr = alloc(Layout::new::<KryosArray>()) as *mut KryosArray;
+    // Headers are leaked by design (over-free sentinel), so pool blocks for
+    // them never return; the pool still beats a system alloc per header.
+    let arr = crate::alloc::pool_alloc(std::mem::size_of::<KryosArray>()) as *mut KryosArray;
     if arr.is_null() {
-        dealloc(data, layout);
+        crate::alloc::pool_free(data, cap_usize * ELEM_SIZE);
         return ptr::null_mut();
     }
     (*arr).len = 0;
@@ -132,14 +133,19 @@ pub unsafe extern "C" fn kryos_array_push(arr: *mut KryosArray, val: i64) {
         let use_realloc = std::env::var_os("KRYOS_USE_REALLOC").is_some();
         let new_cap = cap * 2;
         let new_size = new_cap * ELEM_SIZE;
-        let new_layout = KryosArray::data_layout(new_cap);
-        let new_data = if use_realloc {
+        let new_data = if use_realloc && crate::alloc::kryos_plain_alloc_mode() {
+            // System realloc is only legal on a system-allocated buffer, so
+            // the env escape hatch applies in plain-alloc mode only.
             let old_layout = KryosArray::data_layout(cap);
             realloc((*arr).data, old_layout, new_size)
         } else {
-            let buf = alloc(new_layout);
+            let buf = crate::alloc::pool_alloc(new_size);
             if !buf.is_null() {
                 ptr::copy_nonoverlapping((*arr).data, buf, cap * ELEM_SIZE);
+                // Growth only happens at ref_count == 1 (push is COW above
+                // that), so no alias can still point at the old buffer:
+                // recycle it instead of the historical leak.
+                crate::alloc::pool_free((*arr).data, cap * ELEM_SIZE);
             }
             buf
         };
@@ -405,7 +411,7 @@ pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
     // Last reference — deallocate the data buffer; mark header freed.
     let cap = (*arr).cap as usize;
     if !(*arr).data.is_null() && cap > 0 {
-        dealloc((*arr).data, KryosArray::data_layout(cap));
+        crate::alloc::pool_free((*arr).data, cap * ELEM_SIZE);
         crate::memstats::note_arr_free((cap * ELEM_SIZE) as i64);
     }
     (*arr).data = ptr::null_mut();
