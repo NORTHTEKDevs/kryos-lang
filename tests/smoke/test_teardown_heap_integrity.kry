@@ -1,15 +1,12 @@
-// KNOWN BUG repro (step 241): this program runs to completion and prints
-// PASS on both backends, but on LLVM AOT the process EXIT CODE is 127
-// (teardown corruption after main returns). Triggers only when the
-// Probable<str/i64/f64> sections AND a Tracked<f64> instantiation share
-// one main; either half alone is clean, as is a minimal pairing.
-// Suspect: drop-helper interaction across the two monomorphized struct
-// families at CRT teardown. JIT-runs clean -- the examples gate exercises
-// that path; the AOT exit code is the open investigation.
-
-// Generic Probable<T> + Tracked<T> (step 241) — the v4.47 conversion from
-// str-only to generic, exercising i64/f64/str instantiations, ensembles,
-// budget-of-confidence math, and escaped lineage JSON. Self-checking.
+// Regression (step 243): Probable ensembles + Tracked in one main used to
+// die with STATUS_HEAP_CORRUPTION (0xC0000374) at teardown on LLVM AOT.
+// Root cause (found via AddressSanitizer): array elements were boxed with
+// kryos_arc_alloc (interior pointer past an ArcHeader) while struct drop
+// helpers freed with libc free() -- an allocator mismatch. Element boxing
+// now uses calloc, matching the free() convention everywhere. Also fixed
+// en route: scope cleanup no longer drops struct locals whose box moved
+// into an array literal, and struct literals retain refcounted fields
+// read from other structs (two owners, two counts).
 
 use std::probable::{Probable, probable, certain, with_source, map_value, is_confident, require_confidence, or_else, combine, entropy, best_of, majority_vote}
 use std::tracked::{Tracked, tracked_source, transform, inference, annotate, explain, to_json}

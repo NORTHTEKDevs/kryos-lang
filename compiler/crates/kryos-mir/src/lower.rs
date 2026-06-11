@@ -5398,7 +5398,27 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
         ast::Expr::ArrayLiteral { elements, .. } => {
             let ops: Vec<Operand> = elements
                 .iter()
-                .map(|e| lower_expr_to_operand(ctx, e))
+                .map(|e| {
+                    let op = lower_expr_to_operand(ctx, e);
+                    // A struct LOCAL placed in an array literal hands its box
+                    // to the array: `let e = Entry {..}; let a = [e]` stores
+                    // e's box pointer as the element. Scope cleanup must not
+                    // drop `e` afterward -- that freed the box the array
+                    // still references (STATUS_HEAP_CORRUPTION at teardown;
+                    // tracked_source's lineage was the repro).
+                    if let (ast::Expr::Identifier { .. }, Operand::Local(id)) = (e, &op) {
+                        let is_struct = ctx
+                            .locals
+                            .iter()
+                            .find(|l| l.id == *id)
+                            .map(|l| matches!(l.ty, MirType::Struct(_) | MirType::Enum(_)))
+                            .unwrap_or(false);
+                        if is_struct {
+                            ctx.partial_moved_locals.insert(id.0);
+                        }
+                    }
+                    op
+                })
                 .collect();
             RValue::Array(ops)
         }

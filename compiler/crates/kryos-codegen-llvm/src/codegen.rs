@@ -624,6 +624,7 @@ impl LlvmCodegen {
     fn emit_arc_declarations(&mut self) {
         self.emit_line("; ARC runtime");
         self.emit_line("declare ptr @kryos_arc_alloc(i64, i64)");
+        self.emit_line("declare ptr @calloc(i64, i64)");
         self.emit_line("declare void @kryos_arc_retain(ptr)");
         self.emit_line("declare void @kryos_arc_release(ptr)");
         self.emit_line("declare void @kryos_arc_set_drop(ptr, ptr)");
@@ -3963,7 +3964,7 @@ impl LlvmCodegen {
                                     ));
                                     let buf = self.next_temp();
                                     self.emit_line(&format!(
-                                        "  {buf} = call ptr @kryos_arc_alloc(i64 {size_i64}, i64 8)"
+                                        "  {buf} = call ptr @calloc(i64 1, i64 {size_i64})"
                                     ));
                                     self.emit_line(&format!("  store {actual} {v}, ptr {buf}"));
                                     let t = self.next_temp();
@@ -6099,7 +6100,7 @@ impl LlvmCodegen {
                     ));
                     let buf = self.next_temp();
                     self.emit_line(&format!(
-                        "  {buf} = call ptr @kryos_arc_alloc(i64 {size_i64}, i64 8)"
+                        "  {buf} = call ptr @calloc(i64 1, i64 {size_i64})"
                     ));
                     self.emit_line(&format!(
                         "  store {elem_ty} {elem_val}, ptr {buf}"

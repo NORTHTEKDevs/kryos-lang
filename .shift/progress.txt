@@ -5566,3 +5566,28 @@ SHIFTS:
   - std::probable best_of returns a rebuilt literal, not the element alias.
   GATES: parity 47/47; conformance 6/6; bootstrap 989ba174 byte-identical.
   Fixture combined_teardown_127.kry still reproduces (expected -- root cause not yet fixed).
+
+  ---
+  step:    243-FINAL (session 11 -- 2026-06-11 "TEARDOWN HEAP CORRUPTION ROOT-CAUSED + FIXED via AddressSanitizer")
+  date:    2026-06-11
+  ROOT CAUSE (ASAN on the emitted .ll nailed it in one run after static analysis circled):
+  "attempting free on address which was not malloc()-ed" -- the LLVM backend boxed
+  array-of-struct ELEMENTS with kryos_arc_alloc (returns an interior pointer past an
+  ArcHeader inside a combined allocation) while __kryos_drop_<Struct> helpers freed
+  element boxes with libc free(). Allocator mismatch -> heap-validator abort at teardown
+  (0xC0000374), order-dependent because validation only trips when later allocations
+  exercise the damaged region. Cranelift was immune: its struct values are calloc'd
+  pointers already (no re-boxing). FIX: the two ARRAY-element boxing sites in the LLVM
+  emitter (array literals via emit_aggregate_array + aggregate push) now calloc; closure
+  thunk-ABI boxing sites keep arc_alloc (they unbox+discard, never free()).
+  ALSO LANDED EN ROUTE (each a real bug): scope cleanup no longer drops struct locals
+  whose box moved into an array literal (tracked_source's `[entry]` freed the box the
+  lineage still referenced); struct literals retain refcounted fields read via
+  FieldAccess/IndexAccess; best_of returns a rebuilt literal.
+  VERIFY: all repros + the full fixture exit 0x0; ASAN clean end-to-end. Fixture promoted
+  to tests/smoke/test_teardown_heap_integrity.kry (parity suite, both backends).
+  METHOD NOTE for the crystal: ASAN on the emitted .ll + the staticlib
+  (clang -fsanitize=address foo.ll kryos_stdlib_native.lib + system libs, copy
+  clang_rt.asan_dynamic DLL next to the exe) is THE tool for codegen memory bugs --
+  static analysis circled for an hour; ASAN named the exact free in one run.
+  GATES: parity 48/48; conformance 6/6; examples PASS; bootstrap 989ba174; workspace 916/0.
