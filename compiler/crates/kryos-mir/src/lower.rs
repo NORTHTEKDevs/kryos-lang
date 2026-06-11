@@ -5415,7 +5415,42 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             let effective_name = resolve_struct_literal_name(ctx, name, fields);
             let mir_fields: Vec<(String, Operand)> = fields
                 .iter()
-                .map(|(n, e)| (n.clone(), lower_expr_to_operand(ctx, e)))
+                .map(|(n, e)| {
+                    let op = lower_expr_to_operand(ctx, e);
+                    // A refcounted value (str/array/map) read out of ANOTHER
+                    // struct's field and stored into this literal creates a
+                    // second independent owner: both drops decrement a count
+                    // only one of them holds. Retain at construction.
+                    // Repro: majority_vote's `Probable { value: winner.value }`
+                    // -- the array element drop AND the result drop freed the
+                    // same string (STATUS_HEAP_CORRUPTION at exit). Fresh
+                    // temps (literals, calls, concats) are NOT retained --
+                    // they hand over their own +1.
+                    let aliases = matches!(
+                        e,
+                        ast::Expr::FieldAccess { .. } | ast::Expr::IndexAccess { .. }
+                    );
+                    if aliases {
+                        let ty = infer_expr_type(ctx, e);
+                        let retain_fn = match ty {
+                            MirType::Str => Some("kryos_string_retain"),
+                            MirType::Array(_, _) => Some("kryos_array_retain"),
+                            MirType::Map { .. } => Some("kryos_map_retain"),
+                            _ => None,
+                        };
+                        if let Some(f) = retain_fn {
+                            let scratch = ctx.alloc_temp(MirType::I64);
+                            ctx.emit(Instruction::Assign {
+                                dest: scratch,
+                                value: RValue::Call {
+                                    func: f.into(),
+                                    args: vec![op.clone()],
+                                },
+                            });
+                        }
+                    }
+                    (n.clone(), op)
+                })
                 .collect();
             RValue::Struct {
                 name: effective_name,

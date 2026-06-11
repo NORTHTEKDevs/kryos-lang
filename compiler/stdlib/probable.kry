@@ -97,7 +97,12 @@ fn best_of<T>(predictions: [Probable<T>]) -> Probable<T> {
             best = p
         }
     }
-    return best
+    // Rebuild rather than returning the element alias: a struct literal
+    // retains refcounted fields read from another struct, so the result
+    // owns its own +1 (returning `best` directly shares the array
+    // element's string -- double free at teardown; see
+    // compiler/tests/fixtures/combined_teardown_127.kry).
+    return Probable { value: best.value, confidence: best.confidence, source: best.source }
 }
 
 /// Majority vote over an ensemble: the value backed by the largest summed

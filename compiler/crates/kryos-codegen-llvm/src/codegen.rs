@@ -955,6 +955,8 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_arc_retain_i64(i64)");
         self.emit_line("declare void @kryos_arc_set_drop_i64(i64, i64)");
         self.emit_line("declare ptr @kryos_array_retain(ptr)");
+        self.emit_line("declare ptr @kryos_string_retain(ptr)");
+        self.emit_line("declare i64 @kryos_map_retain(i64)");
         self.emit_line("declare i64 @kryos_async_current_task()");
         self.emit_line("declare i64 @kryos_async_park_current()");
         self.emit_line("declare void @kryos_async_run()");

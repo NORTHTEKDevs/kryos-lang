@@ -5535,3 +5535,34 @@ SHIFTS:
       ratios with losses first; "Rust parity" backend note -> pointer to BENCHMARKS.md.
   GATES: docs-examples 54/54; driver suite green (version asserts are dynamic);
   kryos --version = 1.0.0-beta.1.
+
+  ---
+  step:    243 (session 11 -- 2026-06-11 "teardown-0xC0000374 RCA IN PROGRESS -- partial fixes landed, exact suspect identified")
+  date:    2026-06-11
+  REAL STATUS CODE: the "exit 127" teardown bug is STATUS_HEAP_CORRUPTION (0xC0000374),
+  confirmed via PowerShell $LASTEXITCODE (bash maps it to 127).
+  BISECTION (all on LLVM AOT; CL never trips the validator):
+  - majority_vote alone: CLEAN. + tracked_source AFTER it: CORRUPT (any T; str + f64 both).
+  - tracked_source BEFORE majority_vote: CLEAN (ORDER-DEPENDENT).
+  - majority_vote + 50 unrelated string allocations: CLEAN (not generic reuse-exposure;
+    specifically the Tracked construction = array-of-struct LineageEntry allocation).
+  RULED OUT by reading kryos-rt: string/array double-frees are SAFE (refcounted, free
+  deallocs DATA only + nulls ptr; headers leak by design; rc<=0 returns). Scalar drops
+  no-op. MIR of majority_vote drops only scalars; field-alias str temps correctly
+  un-dropped.
+  PRIME SUSPECT (next session, start HERE): STRUCT BOXES are calloc'd and freed with raw
+  libc free(ptr) -- the only corruptible free. Hypothesis: the LLVM array-of-struct drop
+  path frees element boxes TWICE (the __kryos_drop_Probable___str helper may free(ptr) at
+  its end AND the array element loop frees the box again -- or m's returned box aliases an
+  element). NEXT PROBES: (1) read LLVM emit_array_drop element loop + the emitted
+  __kryos_drop_X tail for double free(ptr); (2) single-element repro: [probable("x",1.0)]
+  + index-read + tracked_source; (3) compare CL emit_drop_for_value Struct arm (frees box
+  after fields) vs its array elem_free_fn path for the same double-free shape (CL may be
+  equally wrong but Windows heap validation only catches the LLVM allocation pattern).
+  LANDED MEANWHILE (sound regardless, all gates green):
+  - MIR struct-literal lowering RETAINS refcounted fields read via FieldAccess/IndexAccess
+    (two independent owners need two counts; fixes the winner.value class).
+  - kryos_string_retain/kryos_map_retain LLVM declares added.
+  - std::probable best_of returns a rebuilt literal, not the element alias.
+  GATES: parity 47/47; conformance 6/6; bootstrap 989ba174 byte-identical.
+  Fixture combined_teardown_127.kry still reproduces (expected -- root cause not yet fixed).
