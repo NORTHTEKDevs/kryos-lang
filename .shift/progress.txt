@@ -5591,3 +5591,13 @@ SHIFTS:
   clang_rt.asan_dynamic DLL next to the exe) is THE tool for codegen memory bugs --
   static analysis circled for an hour; ASAN named the exact free in one run.
   GATES: parity 48/48; conformance 6/6; examples PASS; bootstrap 989ba174; workspace 916/0.
+
+  ---
+  step:    243-NOTE (2026-06-11): CI run 27333922614 failed in 2s on ALL jobs -- "Actions
+  budget is preventing further use" = the GitHub Actions SPENDING LIMIT on the private
+  repo is exhausted (macOS jobs bill 10x on private repos; this week's ~30 runs consumed
+  it). NOT a code failure. KRISTIAN ACTION: raise the Actions spending limit in
+  github.com/settings/billing, or wait for monthly reset (public repos get free minutes
+  but the repo stays private per directive). Until then: LOCAL gates are the verification
+  (all green for 243b: parity 48/48, conformance 6/6, examples PASS, bootstrap 989ba174,
+  workspace 916/0, ASAN clean).
