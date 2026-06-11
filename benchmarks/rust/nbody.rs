@@ -2,7 +2,7 @@
 
 fn main() {
     let n = 5_usize;
-    let steps: i64 = 50000;
+    let steps: i64 = 2000000;
     let dt = 0.01_f64;
 
     let mut x: [f64; 5] = [0.0, 1.0, 2.0, 3.0, 4.0];

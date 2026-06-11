@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# DEPRECATED: superseded by measure.py (medians, output cross-checks,
+# startup-floor reporting, results.json provenance). Kept for reference.
 # Benchmark runner: builds and times Kryos (LLVM + Cranelift) vs Rust, gcc, clang, Go, Python.
 # Writes results to RESULTS.md.
 #

@@ -12,7 +12,7 @@ func fib(n int64) int64 {
 }
 
 func main() {
-	n := int64(35)
+	n := int64(40)
 	r := fib(n)
-	fmt.Printf("fib(35) = %d\n", r)
+	fmt.Printf("fib(40) = %d\n", r)
 }

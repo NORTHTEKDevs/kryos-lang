@@ -1,5 +1,5 @@
 // Benchmark: recursive Fibonacci (function-call overhead + branching)
-// fib(35) is the standard threshold; large enough to dwarf startup time.
+// fib(40) is the standard threshold; large enough to dwarf startup time.
 
 fn fib(n: i64) -> i64 {
     if n < 2 {
@@ -9,7 +9,7 @@ fn fib(n: i64) -> i64 {
 }
 
 fn main() {
-    let n: i64 = 35
+    let n: i64 = 40
     let r = fib(n)
-    println("fib(35) = " + to_string(r))
+    println("fib(40) = " + to_string(r))
 }

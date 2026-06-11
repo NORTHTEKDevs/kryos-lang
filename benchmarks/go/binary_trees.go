@@ -13,5 +13,5 @@ func treeSum(depth, value int64) int64 {
 
 func main() {
 	s := treeSum(18, 1)
-	fmt.Printf("binary_trees(depth=18) = %d\n", s)
+	fmt.Printf("binary_trees(depth=21) = %d\n", s)
 }

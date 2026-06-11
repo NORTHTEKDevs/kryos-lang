@@ -18,7 +18,7 @@ def rotate_left(perm, n):
         perm[i] = perm[i + 1]
     perm[n - 1] = first
 
-n = 9
+n = 10
 perm = list(range(n))
 max_flips = 0
 total = 362880  # 9!
@@ -29,4 +29,4 @@ for _ in range(total):
         max_flips = f
     rotate_left(perm, n)
 
-print(f"fannkuch(9) = {max_flips}")
+print(f"fannkuch(10) = {max_flips}")

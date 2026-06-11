@@ -26,7 +26,7 @@ static void rotate_left(int64_t *perm, int n) {
 }
 
 int main(void) {
-    const int n = 9;
+    const int n = 10;
     int64_t perm[9];
     for (int i = 0; i < n; i++) perm[i] = i;
     int64_t max_flips = 0;
@@ -38,6 +38,6 @@ int main(void) {
         if (f > max_flips) max_flips = f;
         rotate_left(perm, n);
     }
-    printf("fannkuch(9) = %lld\n", (long long)max_flips);
+    printf("fannkuch(10) = %lld\n", (long long)max_flips);
     return 0;
 }

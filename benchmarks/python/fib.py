@@ -7,5 +7,5 @@ def fib(n):
         return n
     return fib(n - 1) + fib(n - 2)
 
-r = fib(35)
-print(f"fib(35) = {r}")
+r = fib(40)
+print(f"fib(40) = {r}")

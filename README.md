@@ -1,14 +1,14 @@
 # Kryos
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v4.46.0-blue.svg)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-v1.0.0--beta.1-blue.svg)](CHANGELOG.md)
 [![Targets](https://img.shields.io/badge/targets-native%20%7C%20wasm-purple.svg)](#what-it-targets)
 [![Parity](https://img.shields.io/badge/Cranelift_vs_LLVM-37%2F37-brightgreen.svg)](tests/parity/run_parity.sh)
 [![Self-host](https://img.shields.io/badge/bootstrap-stage2%3D%3D3%3D%3D4_byte--identical-brightgreen.svg)](compiler/self-host/bootstrap-win.sh)
 [![Stdlib tests](https://img.shields.io/badge/stdlib_tests-63%2F63-brightgreen.svg)](#status)
 [![Warnings](https://img.shields.io/badge/build_warnings-0-brightgreen.svg)](#status)
 
-**Kryos is a compiled, general-purpose programming language with the safety of Rust, the speed of C, and the clarity of Go — without lifetime annotations.** It ships a complete toolchain: compiler, formatter, LSP, package manager, debug info, and editor extensions. v4.43 ships 30+ subcommands, 15 LSP capabilities, 30+ stdlib modules, and a cookbook of recipes.
+**Kryos is a compiled, general-purpose programming language: memory-safe without lifetime annotations (ARC + move semantics — a Swift-like trade-off, not Rust's borrow checker), with native binaries and the clarity of Go.** It ships a complete toolchain: compiler, formatter, LSP, package manager, debug info, and editor extensions — 30+ subcommands, 15 LSP capabilities, 60+ stdlib modules, and a cookbook of recipes.
 
 ```kryos
 fn main() {
@@ -24,12 +24,12 @@ kryos run hello.kry
 
 ## In one minute
 
-- **It's fast.** Native binaries via LLVM. Matches or beats Rust and Go on most workloads. 10–90× faster than Python. See [BENCHMARKS.md](BENCHMARKS.md) for honest head-to-head numbers.
-- **It's safe.** Memory safety by construction (ARC + move semantics), no `'a` lifetime annotations, no GC pauses. Capability-typed effects catch I/O leaks at compile time.
+- **It's fast.** Native binaries via LLVM — typically within a small factor of Rust/C on compute-heavy work, faster than Python by orders of magnitude, with honest losses listed first. Measured medians, methodology, and where Kryos loses (and why) in [BENCHMARKS.md](BENCHMARKS.md).
+- **It's safe.** Memory safety by construction (ARC + move semantics), no `'a` lifetime annotations, no GC pauses. This is a Swift-like ownership model — simpler than Rust's borrow checker, and not equivalent to its compile-time guarantees (no data-race freedom proofs). Capability-typed effects catch I/O leaks at compile time.
 - **It's small.** One binary, no LLVM dependency for development, ~14 MB compiler, ~700 MB to build from source.
 - **It runs anywhere.** Native (Linux / macOS / Windows / Intel / Apple Silicon) and WebAssembly out of the same source.
 - **It self-hosts.** Stage-1 (the Kryos-compiled compiler) successfully compiles every self-host source file in the 16-module compiler, deterministically. 20 consecutive perfect bootstraps across 3-run, 5-run, and 10-run test cycles. See [`.shift/REPORT_2026-05-20.md`](.shift/REPORT_2026-05-20.md) for the bring-up writeup.
-- **The toolchain is done.** 30+ subcommands including `run`, `build`, `check`, `test`, `bench`, `fmt`, `lint`, `audit`, `coverage`, `profile`, `trace`, `new`, `watch`, `clean`, `eval`, `doc serve`, `doctor`, `tree`, `pack`, `diff`, `info`, `workspace`, `config`, `welcome`, `cheat`, `changelog` — all stable at v4.0.
+- **The toolchain is done.** 30+ subcommands including `run`, `build`, `check`, `test`, `bench`, `fmt`, `lint`, `audit`, `coverage`, `profile`, `trace`, `new`, `watch`, `clean`, `eval`, `doc serve`, `doctor`, `tree`, `pack`, `diff`, `info`, `workspace`, `config`, `welcome`, `cheat`, `changelog` — the CLI surface is frozen for 1.x (see VERSIONING.md).
 - **Stdlib is broad.** 61 modules: fs, net, http, json, regex, datetime, duration, base64, uuid, hash, sort, collections, queue, stack, set, random, log, bytes, pathext, numfmt, strext, cmd, iter, and more.
 
 > **Status:** Kryos is at the v4 stability cut — CLI surface, LSP method set, stdlib symbol table, and ABI symbols are all frozen for v4.x.y backwards compatibility. See [STABILITY-v4.0.md](STABILITY-v4.0.md) for the contract.
@@ -82,7 +82,7 @@ kryos new hello && cd hello && kryos run src/main.kry
 git clone https://github.com/NORTHTEKDevs/kryos-lang.git
 cd kryos-lang/compiler
 cargo build --release -j 2
-./target/release/kryos --version   # → kryos 4.46.0
+./target/release/kryos --version   # → kryos 1.0.0-beta.1
 ```
 
 Requirements: Rust 1.75+, a C compiler (`cc`/`clang`/MSVC) for linking. **LLVM is not required for development** — the LLVM backend emits IR as text. You only need `clang` or `llc` on PATH if you want optimized release binaries.
@@ -212,7 +212,7 @@ Where Kryos shines: simple loops, recursion, and floating-point arithmetic — c
 
 ---
 
-## What ships in v4.46.0
+## What ships in v1.0.0-beta
 
 The full toolchain. Not a roadmap — actually built and tested:
 
@@ -263,7 +263,16 @@ kryos lsp                     Language server (used by VS Code / Zed extensions)
 
 ## Status
 
-Kryos is **v4.46.0**. Feature-complete language and toolchain + self-hosting compiler (bootstrap fixed point: stage-2 == stage-3 == stage-4, byte-identical).
+Kryos is **v1.0.0-beta.1**. Feature-complete language and toolchain + self-hosting compiler (bootstrap fixed point: stage-2 == stage-3 == stage-4, byte-identical).
+
+> **Why "beta", and what happened to v4?** During the project's bring-up,
+> version numbers tracked development sprints, not conventional semver
+> maturity — the repo reached an internal "v4.46" within months, which would
+> mislead newcomers about field maturity. Before public release the scheme
+> was recalibrated: this is a **feature-complete beta with one user**.
+> Historical tags (v0.x–v4.46) are preserved; the mapping is in
+> [VERSIONING.md](VERSIONING.md). 1.0.0 final lands when external users have
+> stress-tested it.
 
 | Feature | Status |
 |---|---|
@@ -286,7 +295,7 @@ Kryos is **v4.46.0**. Feature-complete language and toolchain + self-hosting com
 | Editor extensions (VS Code, Zed) | Complete |
 | Package registry (spec + reference server) | Complete |
 
-**Quality bar maintained through v4.43:**
+**Quality bar (every release):**
 
 - Workspace lib tests: **295+ passing**
 - MIR lib tests: **79/79**

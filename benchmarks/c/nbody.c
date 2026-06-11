@@ -5,7 +5,7 @@
 
 int main(void) {
     const int n = 5;
-    const int64_t steps = 50000;
+    const int64_t steps = 2000000;
     const double dt = 0.01;
 
     double x[5]  = {0.0, 1.0, 2.0, 3.0, 4.0};

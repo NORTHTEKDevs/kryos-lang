@@ -21,8 +21,8 @@ fn mandel_iter(cr: f64, ci: f64, max_iter: i64) -> i64 {
 }
 
 fn main() {
-    let width: i64 = 200
-    let height: i64 = 200
+    let width: i64 = 1000
+    let height: i64 = 1000
     let max_iter: i64 = 1000
     let mut checksum: i64 = 0
     let mut y: i64 = 0

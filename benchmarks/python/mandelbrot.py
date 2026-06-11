@@ -1,4 +1,4 @@
-# Benchmark: Mandelbrot set — mirrors c/mandelbrot.c exactly (200x200, fp).
+# Benchmark: Mandelbrot set — mirrors c/mandelbrot.c exactly (1000x1000, fp).
 def mandel_iter(cr, ci, max_iter):
     zr = 0.0
     zi = 0.0
@@ -13,7 +13,7 @@ def mandel_iter(cr, ci, max_iter):
         zi = new_zi
     return max_iter
 
-width, height, max_iter = 200, 200, 1000
+width, height, max_iter = 1000, 1000, 1000
 checksum = 0
 for y in range(height):
     for x in range(width):

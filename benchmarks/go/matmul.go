@@ -1,11 +1,11 @@
-// Benchmark: integer matrix multiplication 256×256 — mirrors c/matmul.c exactly.
+// Benchmark: integer matrix multiplication 512×512 — mirrors c/matmul.c exactly.
 // Build: go build -o bin/matmul_go go/matmul.go
 package main
 
 import "fmt"
 
 func main() {
-	const n = 256
+	const n = 512
 	a := make([]int64, n*n)
 	b := make([]int64, n*n)
 	c := make([]int64, n*n)
@@ -26,5 +26,5 @@ func main() {
 	for i := 0; i < n*n; i++ {
 		checksum += c[i]
 	}
-	fmt.Printf("matmul(256) checksum = %d\n", checksum)
+	fmt.Printf("matmul(512) checksum = %d\n", checksum)
 }

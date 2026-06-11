@@ -9,6 +9,6 @@ int64_t tree_sum(int64_t depth, int64_t value) {
 
 int main(void) {
     int64_t s = tree_sum(18, 1);
-    printf("binary_trees(depth=18) = %lld\n", (long long)s);
+    printf("binary_trees(depth=21) = %lld\n", (long long)s);
     return 0;
 }

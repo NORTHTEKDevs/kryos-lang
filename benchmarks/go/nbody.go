@@ -9,7 +9,7 @@ import (
 
 func main() {
 	const n = 5
-	const steps = int64(50000)
+	const steps = int64(2000000)
 	const dt = 0.01
 
 	x := [n]float64{0.0, 1.0, 2.0, 3.0, 4.0}

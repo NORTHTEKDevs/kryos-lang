@@ -17,7 +17,7 @@ static int64_t mandel_iter(double cr, double ci, int64_t max_iter) {
 }
 
 int main(void) {
-    int64_t width = 200, height = 200, max_iter = 1000;
+    int64_t width = 1000, height = 1000, max_iter = 1000;
     int64_t checksum = 0;
     for (int64_t y = 0; y < height; y++) {
         for (int64_t x = 0; x < width; x++) {

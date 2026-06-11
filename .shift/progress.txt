@@ -5507,3 +5507,31 @@ SHIFTS:
   previous `! cmd` form ATE the real exit code -- $? after ! is the negation, never 127).
   GATES: parity 47/47; conformance 6/6; examples PASS; docs 54/54; bootstrap 989ba174;
   workspace 916/0.
+
+  ---
+  step:    242 (session 11 -- 2026-06-11 "REPO HONESTY PASS: Perplexity critique -> benchmarks redone, version recalibrated, claims rewritten")
+  date:    2026-06-11
+  Input: external Perplexity review flagged (1) benchmark subprocess-floor masking,
+  (2) v4.46-in-5-months version inflation, (3) "safety of Rust" overclaim. ALL FIXED:
+  (1) BENCHMARKS REDONE from scratch. New benchmarks/measure.py: workloads rescaled
+      (fib 35->40, mandelbrot 200->1000^2, nbody 50k->2M steps, matmul 256->512,
+      fannkuch 9->10), median-of-5 + spreads, per-runtime startup floors measured
+      separately (kryos exe 5.5ms / rust 5.8ms / python 44ms), OUTPUT CROSS-CHECKS
+      required before timing counts, tables generated from results.json (no hand edits).
+      AUDIT of our own ports found TWO FAKE BENCHMARKS: "fannkuch" is a simplified
+      perm-flips kernel (reports 9, canonical = 38 -- relabeled, ratios still valid,
+      C port diverges/excluded as broken) and binary_trees gets CONSTANT-FOLDED by -O
+      (clang "depth 21" in 6ms) -- excluded entirely. Honest headline numbers, losses
+      FIRST: nbody 16.8x slower than Rust (ARC array model), perm-flips 13.2x, fib 3.0x,
+      matmul 1.9x, mandelbrot 1.0x parity; 13-47x faster than Python. Old table retracted
+      in-file with explanation. WHY_KRYOS table replaced with measured numbers.
+  (2) VERSION RECALIBRATED: 4.46.0 -> 1.0.0-beta.1. New VERSIONING.md (sprint-tracking
+      history, old-tag mapping, "1.0.0 only after external users", beta = exposure not
+      completeness). README explains "what happened to v4". CHANGELOG entry documents the
+      renumber. Historical tags preserved.
+  (3) CLAIMS REWRITTEN: "safety of Rust" -> "memory-safe without lifetime annotations
+      (ARC + move semantics -- a Swift-like trade-off, not Rust's borrow checker, no
+      data-race-freedom proofs)"; "matches or beats Rust on most workloads" -> measured
+      ratios with losses first; "Rust parity" backend note -> pointer to BENCHMARKS.md.
+  GATES: docs-examples 54/54; driver suite green (version asserts are dynamic);
+  kryos --version = 1.0.0-beta.1.

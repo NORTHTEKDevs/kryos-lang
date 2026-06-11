@@ -26,7 +26,7 @@ fn rotate_left(perm: &mut [i64], n: usize) {
 }
 
 fn main() {
-    let n: usize = 9;
+    let n: usize = 10;
     let mut perm: Vec<i64> = (0..n as i64).collect();
     let mut max_flips: i64 = 0;
     let total = 362880;
@@ -38,5 +38,5 @@ fn main() {
         }
         rotate_left(&mut perm, n);
     }
-    println!("fannkuch(9) = {}", max_flips);
+    println!("fannkuch(10) = {}", max_flips);
 }

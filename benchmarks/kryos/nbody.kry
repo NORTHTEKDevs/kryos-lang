@@ -1,9 +1,9 @@
-// Benchmark: N-body simulation (5 bodies, 50000 steps).
+// Benchmark: N-body simulation (5 bodies, 2000000 steps).
 // Tests: arrays, indexed mutation, float arithmetic in tight loops.
 
 fn main() {
     let n: i64 = 5
-    let steps: i64 = 50000
+    let steps: i64 = 2000000
     let dt: f64 = 0.01
 
     // x, y, z, vx, vy, vz, mass

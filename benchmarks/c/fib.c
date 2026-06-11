@@ -8,8 +8,8 @@ int64_t fib(int64_t n) {
 }
 
 int main(void) {
-    int64_t n = 35;
+    int64_t n = 40;
     int64_t r = fib(n);
-    printf("fib(35) = %lld\n", (long long)r);
+    printf("fib(40) = %lld\n", (long long)r);
     return 0;
 }

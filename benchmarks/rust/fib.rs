@@ -8,7 +8,7 @@ fn fib(n: i64) -> i64 {
 }
 
 fn main() {
-    let n: i64 = 35;
+    let n: i64 = 40;
     let r = fib(n);
-    println!("fib(35) = {}", r);
+    println!("fib(40) = {}", r);
 }

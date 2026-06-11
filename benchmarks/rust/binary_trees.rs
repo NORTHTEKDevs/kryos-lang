@@ -8,7 +8,7 @@ fn tree_sum(depth: i64, value: i64) -> i64 {
 }
 
 fn main() {
-    let depth: i64 = 18;
+    let depth: i64 = 21;
     let s = tree_sum(depth, 1);
-    println!("binary_trees(depth=18) = {}", s);
+    println!("binary_trees(depth=21) = {}", s);
 }

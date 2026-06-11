@@ -1,4 +1,4 @@
-// Benchmark: Mandelbrot set — mirrors c/mandelbrot.c exactly (200x200, fp).
+// Benchmark: Mandelbrot set — mirrors c/mandelbrot.c exactly (1000x1000, fp).
 // Build: go build -o bin/mandelbrot_go go/mandelbrot.go
 package main
 
@@ -21,7 +21,7 @@ func mandelIter(cr, ci float64, maxIter int64) int64 {
 }
 
 func main() {
-	width, height, maxIter := int64(200), int64(200), int64(1000)
+	width, height, maxIter := int64(1000), int64(1000), int64(1000)
 	var checksum int64
 	for y := int64(0); y < height; y++ {
 		for x := int64(0); x < width; x++ {

@@ -1,6 +1,6 @@
 # Why Kryos?
 
-Kryos is a compiled systems language that combines the safety of Rust with the simplicity of Go and AI-native capabilities that neither offers.
+Kryos is a compiled systems language: memory-safe without lifetime annotations (ARC + move semantics, a Swift-like trade-off), with the simplicity of Go and AI-native capabilities neither offers. It is NOT equivalent to Rust's borrow-checker guarantees — see "What Kryos Is Not".
 
 ## The Problem
 
@@ -121,14 +121,17 @@ fn main() {
 
 ## Performance
 
-| Benchmark | Kryos (Cranelift) | Kryos (LLVM) | Rust (release) | Go |
-|-----------|-------------------|--------------|----------------|----|
-| fib(42) | 1190ms | 594ms | 594ms | 1094ms |
-| Sum 100M | 46ms | ~5ms | 5ms | 27ms |
-| Nested 1Kx1K | 5ms | 5ms | 5ms | 6ms |
-| Compilation (hello) | ~500ms | -- | ~600ms | ~720ms |
+| Benchmark (medians of 5) | Kryos LLVM | Rust -O | clang -O2 | Go | ratio vs Rust |
+|---|---|---|---|---|---|
+| mandelbrot 1000²×1000 | 0.365s | 0.364s | 0.359s | 0.371s | 1.0x |
+| matmul 512² | 1.205s | 0.644s | 0.641s | 0.563s | 1.9x |
+| fib(40) | 1.043s | 0.344s | 0.342s | 0.699s | 3.0x |
+| nbody 2M steps | 1.852s | 0.110s | 0.151s | 0.250s | 16.8x |
 
-Kryos LLVM release builds match Rust. Cranelift debug builds prioritize compilation speed over runtime speed.
+Scalar/register-bound code reaches Rust/C parity; hot loops over arrays pay
+the ARC + bounds-check model today (nbody is the honest worst case). Full
+methodology, spreads, and the retraction of the earlier startup-floor
+tables: [BENCHMARKS.md](../BENCHMARKS.md).
 
 The compiler applies five MIR-level optimization passes before handing off to the backend:
 
@@ -145,7 +148,7 @@ These optimizations improve debug build performance significantly. Release build
 Kryos v2.3.0 is a complete, production-capable compiler with:
 
 - 21-crate Rust implementation (~50,000 lines)
-- Dual backends: Cranelift (fast dev, ~500ms) and LLVM (optimized release, Rust parity)
+- Dual backends: Cranelift (fast dev, ~500ms) and LLVM (optimized release; see BENCHMARKS.md for measured ratios vs Rust/C)
 - 925+ tests, all passing, 0 clippy warnings
 - Self type in traits, associated function syntax (`Type::method()`)
 - @pure CSE/dead-call optimization, @test runner, @copy struct deep-copy on assignment (both backends; param passing documented in gotcha #23)
@@ -157,7 +160,7 @@ Kryos v2.3.0 is a complete, production-capable compiler with:
 ## Who Is Kryos For?
 
 - **AI/ML engineers** who want native tensor operations without Python overhead
-- **Systems programmers** who want Rust's safety without the learning cliff
+- **Systems programmers** who want memory safety without the borrow-checker learning cliff (accepting ARC's trade-offs)
 - **Security-conscious teams** who need compile-time capability enforcement
 - **Startups** that need fast iteration (fast compilation) AND production performance (LLVM release)
 

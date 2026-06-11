@@ -1,7 +1,7 @@
 // rustc -O matmul.rs -o matmul_rs
 
 fn main() {
-    let n: usize = 256;
+    let n: usize = 512;
     let mut a = vec![0_i64; n * n];
     let mut b = vec![0_i64; n * n];
     let mut c = vec![0_i64; n * n];
@@ -19,5 +19,5 @@ fn main() {
         }
     }
     let checksum: i64 = c.iter().sum();
-    println!("matmul(256) checksum = {}", checksum);
+    println!("matmul(512) checksum = {}", checksum);
 }

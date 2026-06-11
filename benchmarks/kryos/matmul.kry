@@ -1,8 +1,8 @@
-// Benchmark: integer matrix multiplication 256x256.
+// Benchmark: integer matrix multiplication 512x512.
 // Tests: nested loops, indexed array access, multiply-add throughput.
 
 fn main() {
-    let n: i64 = 256
+    let n: i64 = 512
     let mut a: [i64] = []
     let mut b: [i64] = []
     let mut c: [i64] = []
@@ -36,5 +36,5 @@ fn main() {
         checksum = checksum + c[j]
         j = j + 1
     }
-    println("matmul(256) checksum = " + to_string(checksum))
+    println("matmul(512) checksum = " + to_string(checksum))
 }

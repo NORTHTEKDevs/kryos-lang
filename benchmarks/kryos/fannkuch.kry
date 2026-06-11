@@ -32,7 +32,7 @@ fn rotate_left(perm: [i64], n: i64) {
 }
 
 fn main() {
-    let n: i64 = 9
+    let n: i64 = 10
     let mut perm: [i64] = []
     let mut i: i64 = 0
     while i < n {
@@ -58,5 +58,5 @@ fn main() {
         rotate_left(perm, n)
         iter = iter + 1
     }
-    println("fannkuch(9) = " + to_string(max_flips))
+    println("fannkuch(10) = " + to_string(max_flips))
 }

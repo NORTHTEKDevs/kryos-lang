@@ -4,6 +4,29 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.0-beta.1] — 2026-06-11 — "Honest renumber + honest benchmarks"
+
+### Changed
+- **Version scheme recalibrated.** Internal versions (through v4.46.0) tracked
+  development sprints during the AI-assisted bring-up — roughly one minor
+  version per working session — which a newcomer would reasonably misread as
+  years of field maturity. Renumbered to **1.0.0-beta.1**: feature-complete,
+  self-hosting, one user, not yet stress-tested externally. Historical tags
+  are preserved; see VERSIONING.md.
+- **Benchmarks redone with honest methodology.** Previous tables compared
+  numbers at the ~30ms process-launch floor (fib(35), 200px mandelbrot), which
+  measures startup, not the language. Workloads are rescaled so the fastest
+  competitor needs >= ~0.5s, results are medians of 5 runs with spreads, the
+  per-runtime startup floor is reported separately, and the analysis leads
+  with where Kryos LOSES. Tables are generated from results.json by
+  benchmarks/measure.py — no hand-edited numbers.
+- **Headline claims rewritten**: "safety of Rust" -> "memory-safe without
+  lifetime annotations (ARC + move semantics — a Swift-like trade-off, not
+  Rust's borrow checker)"; "matches or beats Rust" -> measured ratios with
+  losses listed first.
+- Generic `Probable<T>` / `Tracked<T>` (previously str-only; to_json now
+  escapes properly), plus the resolve_type nested-generics fix underneath.
+
 ## [4.46.0] — 2026-06-10 — "@budget: compiler-enforced AI spending ceilings"
 
 ### Added

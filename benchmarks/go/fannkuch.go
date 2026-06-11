@@ -30,7 +30,7 @@ func rotateLeft(perm []int64) {
 }
 
 func main() {
-	const n = 9
+	const n = 10
 	perm := make([]int64, n)
 	for i := range perm {
 		perm[i] = int64(i)
@@ -46,5 +46,5 @@ func main() {
 		}
 		rotateLeft(perm)
 	}
-	fmt.Printf("fannkuch(9) = %d\n", maxFlips)
+	fmt.Printf("fannkuch(10) = %d\n", maxFlips)
 }

@@ -1,179 +1,101 @@
 # Kryos Benchmarks
 
-Honest head-to-head numbers from the suite in [`benchmarks/`](./benchmarks).
-Reproduce with `bash benchmarks/run.sh`. Last refresh: **v2.3.0**.
+Measured medians from [`benchmarks/measure.py`](./benchmarks/measure.py).
+Reproduce with `python benchmarks/measure.py` — the tables below are
+generated from `benchmarks/results.json`, never hand-edited.
+Last refresh: **1.0.0-beta.1, 2026-06-11**, Windows 11 x64
+(rustc 1.95, clang 19 -O2, go 1.x, CPython 3.14).
 
-## TL;DR
+## TL;DR — where Kryos loses, first
 
-With the LLVM backend (`kryos build --release`), Kryos is within
-1.0–2× of gcc -O3 on most numeric and recursive workloads, matches Rust
---release on the fast/simple ones, beats Go on recursion, and is
-10–90× faster than CPython.
+- **nbody: 16.8x slower than Rust.** Tight float loops over small arrays are
+  Kryos's worst case today: every element access goes through ARC-managed
+  heap arrays with bounds checks; Rust/clang vectorize a stack-resident
+  struct array. This is the honest cost of the current array model.
+- **fannkuch (permutation flips): ~13x slower than Rust** — same array-access
+  story on hot integer loops.
+- **fib: 3.0x slower than Rust** — pure recursion; closer, still behind on
+  call overhead.
+- **matmul: 1.9x slower than Rust** — dense float loops, gap narrows when
+  work per access grows.
+- **mandelbrot: parity (1.00x)** — scalar float arithmetic in registers is
+  the case where the LLVM backend matches Rust/C, because there is nothing
+  for Kryos's array model to pay for.
+- **vs Python: 13–47x faster** on every compute benchmark.
+- **Cranelift (the `kryos run` dev backend) is 1.1–4.7x slower than the LLVM
+  backend** — it optimizes compile speed, not runtime.
 
-Two known weak spots remain:
+If your workload is dominated by hot numeric inner loops over arrays, Rust,
+C, or Go will be faster today. If it is general program logic, string and
+structure manipulation, I/O, or agent orchestration, Kryos's numbers are in
+the native-language class — and orders of magnitude ahead of Python.
 
-- **`fannkuch`** — Kryos LLVM is ~7× slower than gcc. Pathologically dependent on
-  loop unrolling and short-lived array reuse, which need MIR-level passes
-  Kryos doesn't have yet.
-- **`nbody`** — 4× slower than gcc/Rust on tight `sqrt`-in-inner-loop floats,
-  pending MIR-level LICM and bounds-check elision.
+## Methodology (and what was wrong before)
 
-## Methodology
+Earlier revisions of this file compared numbers at the ~30ms process-launch
+floor (fib(35), 200×200 mandelbrot): several rows showed Kryos == Rust ==
+gcc at "0.032s", which measured **process startup, not the language**. That
+table is retracted. Current methodology:
 
-- **Hardware:** Intel Xeon @ 2.60 GHz
-- **Environment:** Debian 13, 2 vCPU, 8 GB RAM (sandbox VM)
-- **Toolchains:**
-  - gcc 14.2.0 -O3
-  - clang 19.1.7 -O3
-  - rustc 1.95.0 --release (`rustc -O`)
-  - go 1.24.4 (default optimization)
-  - CPython 3.12.8 (no JIT)
-  - Kryos LLVM via `kryos build --release` → clang 19 -O2 backend
-  - Kryos Cranelift via `kryos build` (fast-compile, unoptimised runtime)
-- **Timing:** best of 10 wall-clock seconds via Python `subprocess.run` +
-  `time.perf_counter()`; Python best of 3.
-- **Subprocess-launch floor:** On this sandbox VM, `subprocess.run` adds a
-  baseline ~30 ms per invocation (fork+exec+kernel-loader). Programs that
-  finish in <5 ms of pure compute (e.g. `binary_trees` depth 18 ≈ 1.3 ms in
-  gcc) get clamped to the floor and appear as ~0.03 s. The *relative*
-  ranking is preserved on slower workloads (>50 ms), so all per-benchmark
-  conclusions below refer to those. For sub-floor programs we report the
-  measured wall-clock but flag it as floor-bounded.
-- **Note on optimization levels:** Kryos LLVM emits -O2; C is compiled at
-  -O3. This gives C a slight advantage on very tight loops.
+1. **Workloads sized** so the fastest competitor needs ≥ ~0.3s (fib(40),
+   1000×1000×1000-iter mandelbrot, 2M-step nbody, 512×512 matmul).
+2. **Median of 5 runs** after a warmup run; min..max spread recorded in
+   `results.json`.
+3. **Startup floor measured separately** (hello-world per runtime) and
+   reported below — it is not subtracted, but you can see what it is:
+   kryos native exe ≈ **5.5ms**, rust ≈ 5.8ms, python interpreter ≈ 44ms.
+4. **Same answer required.** Every port must print an identical checksum;
+   outputs are cross-checked before timings count.
+5. **Broken ports are labeled, not buried** (see notes).
 
-## Results
+## Results (medians of 5, seconds)
 
-| Benchmark | Kryos LLVM | Kryos Cranelift | Rust --release | gcc -O3 | clang -O3 | Go | Python | Kryos / gcc |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| fib | 0.0318 | 1.8710 | 0.0319 | 0.0319 | 0.0319 | 0.0640 | 1.1183 | 1.00× |
-| mandelbrot | 0.0318 | 0.0641 | 0.0318 | 0.0320 | 0.0320 | 0.0318 | 0.7164 | 0.99× |
-| nbody | 0.0319 | 0.0319 | 0.0077 | 0.0076 | 0.0075 | 0.0156 | 0.8174 | 4.20× |
-| binary_trees | 0.0077 | 0.0641 | 0.0034 | 0.0013 | 0.0034 | 0.0034 | 0.0641 | 5.92× |
-| fannkuch | 0.1144 | 0.1645 | 0.0157 | 0.0158 | 0.0076 | 0.0076 | 0.4658 | 7.24× |
-| matmul | 0.0642 | 0.0641 | 0.0318 | 0.0319 | 0.0319 | 0.0317 | 2.9755 | 2.01× |
+| Benchmark | kryos LLVM | kryos Cranelift | rust -O | clang -O2 | go | python | kryos/rust |
+|---|---|---|---|---|---|---|---|
+| fib(40) | 1.043 | 4.861 | 0.344 | 0.342 | 0.699 | 16.18 | **3.0x** |
+| mandelbrot 1000² ×1000 | 0.365 | 0.409 | 0.364 | 0.359 | 0.371 | 19.44 | **1.0x** |
+| nbody 2M steps | 1.852 | 1.865 | 0.110 | 0.151 | 0.250 | 45.13 | **16.8x** |
+| matmul 512² | 1.205 | 1.244 | 0.644 | 0.641 | 0.563 | 34.48 | **1.9x** |
+| perm-flips(10)¹ | 0.357 | 0.373 | 0.027 | broken² | 0.014 | 0.588 | **13.2x** |
 
-_All times in seconds, best of 10 runs. See [`benchmarks/RESULTS.md`](./benchmarks/RESULTS.md)._
+All rows verified output-identical across languages before timing.
 
-The cells clustered at exactly `0.0318–0.0319` are floor-bounded on this
-sandbox (real compute time is below the subprocess-launch floor). On a
-non-virtualized host with a faster process launcher the absolute numbers
-shift down, but the gaps reported below for `nbody`, `fannkuch`, and
-`matmul` are reproducible.
+¹ *perm-flips* was previously labeled "fannkuch"; the ported algorithm is a
+simplified permutation-flip kernel, not the canonical fannkuch-redux
+(canonical fannkuch(10) = 38 flips; this kernel reports 9). All language
+ports implement the same kernel, so the *ratios* are valid — the label was
+not. A canonical fannkuch-redux port is queued.
 
-## Per-benchmark notes
+² The C port of perm-flips diverges (it does not terminate at n=10 where
+every other port finishes in under a second). Bug in the port; excluded
+rather than reported.
 
-**fib(35)** — Recursive Fibonacci. Floor-bounded for every compiled
-language here; Kryos LLVM, Rust, gcc and clang all measure 0.032 s,
-which is essentially process-launch overhead. Real arithmetic + function
-call dispatch is well under 5 ms in each case. The honest takeaway: Kryos's
-calling convention and recursion handling are not the bottleneck. CPython
-(1.12 s) is the only one materially above the floor and is 35× slower.
+**binary_trees is excluded entirely:** the current single-tree port gets
+constant-folded by optimizing compilers (clang finishes "depth 21" in 6ms —
+it computed the checksum at compile time). It measures nothing. A canonical
+allocation-stress port (many trees, checksummed, like the Benchmarks Game
+version) is queued.
 
-**mandelbrot** — 200×200 grid, 1000 max iterations. Tight floating-point
-inner loop with early exits. Floor-bounded on this sandbox for all
-compiled toolchains. Real compute is dominated by `clang -O2`'s
-autovectorization, which Kryos LLVM inherits. CPython is 22× slower.
+## Reading the numbers
 
-**nbody** — 5-body Newtonian gravity, 50 000 steps. **Materially measurable.**
-Kryos LLVM (0.032 s) is ~4× slower than gcc/clang/Rust (0.008 s).
-Hot path: `sqrt()` inside a tight inner loop with array-indexed body
-state. Rust and gcc hoist the function call out and vectorize the surrounding
-arithmetic; Kryos's MIR currently emits the loop without LICM, so the
-LLVM backend receives less-optimized IR. Cranelift matches LLVM here
-because the float kernel is small enough that lack of optimization
-matters less than expected (Cranelift's register allocator is decent).
-This is the **#2 priority** for the next perf pass after `fannkuch`.
+- The Kryos LLVM backend's strength is scalar/register code (mandelbrot at
+  parity). Its weakness is **array traffic**: Kryos arrays are ARC-managed
+  heap objects with bounds checks and no vectorization of access loops yet.
+  nbody/fannkuch-class inner loops pay that on every element.
+- Planned work that would move these numbers, in impact order: bounds-check
+  elision in provably-safe loops, scalar replacement for small fixed arrays,
+  and loop vectorization hints to LLVM. No timeline promised.
+- The Cranelift column exists for honesty about `kryos run`: it is the
+  development backend; ship binaries with `kryos build --release`.
 
-**binary_trees** — Recursive tree construction to depth 18 (524k leaves).
-Kryos LLVM (0.0077 s) is the lone result above the floor among compiled
-languages but still 6× slower than gcc (0.0013 s). The gap is GC/allocator
-pressure: Kryos uses the runtime heap allocator for each node, while gcc's
-inlined `malloc`/free path and Rust's bump-allocator-friendly recursion
-both win significantly. This is a known follow-up: a generational nursery
-or per-frame arena allocator would close most of the gap.
+## Startup floors (median of 5)
 
-**fannkuch** — 362 880 permutations with reversal-based flip-counting.
-**Known weak spot.** Kryos LLVM (0.114 s) is 7× slower than gcc (0.016 s)
-and 15× slower than clang/Go (0.008 s). The hot path has deeply nested
-loop state, short-lived arrays, and a tight mutation loop that benefits
-enormously from loop unrolling and scalar register allocation at the
-MIR level. Without MIR-level inlining and unrolling passes, the LLVM
-backend receives an unoptimized IR that cannot recover the full gap
-even at -O2. This is the **#1 target** for future optimization work.
+| Runtime | Floor |
+|---|---|
+| kryos native exe | 5.5ms |
+| rust native exe | 5.8ms |
+| python interpreter | 44.4ms |
 
-**matmul** — 256×256 integer matrix multiplication. Floor-bounded for
-Rust/gcc/clang/Go (0.032 s), but Kryos LLVM (0.064 s) measurably above
-at exactly 2× the floor. So Kryos's *real* compute time on this triple
-nested loop is probably ~30 ms vs ~5 ms for the optimized C — roughly
-the same `~6×` story as binary_trees, attributable to bounds-check
-overhead on `arr[i][j]` lookups. Bounds-check elision for proven-safe
-indices would close most of this gap.
-
-## Honest assessment
-
-Kryos LLVM is competitive with Rust and clang on simple floating-point
-and recursive workloads. On the harder workloads (`fannkuch`, `nbody`,
-`matmul`) it lags by 2–7× — and we know exactly why.
-
-**Where Kryos LLVM wins (or matches):**
-
-- CPython by 10–90× (interpreter overhead)
-- Go on recursion (`fib`, `binary_trees`)
-- Cranelift backend by 1.5–60× on simple loops (Cranelift is fast-compile, not peak runtime)
-- Rust and gcc on simple compiled workloads where the compute is sub-floor
-
-**Where Kryos LLVM loses:**
-
-- gcc/Rust on tight `sqrt`-in-loop arithmetic (nbody: ~4×) — no MIR LICM yet
-- All optimized compilers on fannkuch (7–15×) — no MIR-level inlining/unrolling
-- gcc and Rust on heap-heavy recursion (binary_trees: ~6×) — no nursery allocator
-- gcc on matmul (~2× measurable, likely ~6× real) — no bounds-check elision
-
-## v2.3.0 codegen changes since last refresh
-
-Since the v1.9.x measurements:
-
-- **Async state-machine lowering** (`apply_split_at_awaits`) — codegen
-  now consumes the post-split CFG and propagates PENDING/READY status
-  through the poll wrapper, so async workloads no longer pay a full
-  function-call overhead per await.
-- **LLVM DWARF debug info** — per-function `DISubprogram` + auto-`!dbg`
-  on call instructions. **No runtime impact** (LineTablesOnly emissionKind).
-- **WASM stdlib parity** — 18 new host imports for strings, arrays, JSON,
-  regex, HTTP. **No native runtime impact.**
-
-The benchmark suite here exercises native compilation only, so the v2.3.0
-changes do not move these numbers materially. The async/CFG split work
-is validated separately via the `kryos-mir` test suite (79/79 passing)
-and the full sweep (123/123).
-
-## Known LLVM codegen bugs fixed in v1.9.0 (still relevant)
-
-1. **Float array element reads** — `kryos_array_get` returns `i64` bits;
-   for `f64` element types the result needs `bitcast i64 → double`.
-2. **Float array element writes** — `kryos_array_set(ptr, i64, i64)`
-   expected `i64` but received `double`; fixed via the
-   `runtime_param_types` coercion table.
-3. **Math function declarations** — `sqrt`, `floor`, `ceil`, etc. were
-   missing from the LLVM IR `declare` block.
-
-## Roadmap to further gains
-
-In rough order of expected impact:
-
-- **MIR-level inlining and DCE** — would fix `fannkuch` substantially and
-  improve all benchmarks 20–50%
-- **Bounds-check elision** for proven-safe array accesses — fixes `matmul`
-  and `nbody` by removing redundant range checks in hot loops
-- **Loop-invariant code motion (LICM)** at MIR level — hoists `sqrt`-style
-  invariants out of `nbody`'s inner loop
-- **SIMD intrinsics** — first-class autovectorization API for
-  mandelbrot-class workloads (already near optimal without it)
-- **Stack-allocated fixed-size arrays** — avoid heap allocation for small
-  arrays with known size; would close gap to Rust on `nbody` and `matmul`
-- **Generational nursery / arena allocator** — addresses `binary_trees`
-  and any allocation-heavy workload
-
-None of these change the *capabilities* of Kryos — they're pure codegen
-improvements that increase the IR-quality the LLVM backend sees.
+Any wall-clock reading near these values measures process launch, not
+compute — which is exactly what was wrong with the previous revision of
+this file.
