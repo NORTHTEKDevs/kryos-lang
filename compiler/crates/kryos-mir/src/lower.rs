@@ -4243,6 +4243,12 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
         ast::Expr::CharLiteral { .. } => MirType::Char,
         ast::Expr::NoneLiteral { .. } => MirType::I64,
 
+        // `await e` has the type of `e` (the awaited async call's return
+        // type). Without this arm the binding `let r = await foo()` fell to
+        // the default and was typed Void, so the LLVM backend emitted
+        // `call void @foo` and discarded the result (r read back as 0).
+        ast::Expr::Await { value, .. } => infer_expr_type(ctx, value),
+
         ast::Expr::Identifier { name, .. } => {
             // Check if it's an enum variant first.
             if let Some((enum_name, _)) = find_enum_variant(ctx, name) {

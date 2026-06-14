@@ -1,0 +1,37 @@
+// Smoke (async build, Unit 1): `let r = await foo()` returns foo()'s real
+// value on BOTH backends. Previously the await-result local was typed Void
+// in MIR (infer_expr_type had no Await arm), so the LLVM backend emitted
+// `call void @foo` and discarded the i64 -> r read back as 0 on AOT while
+// the JIT happened to capture it. Now await is typed as its inner
+// expression's type and the result flows through on both backends.
+
+async fn compute(id: i64) -> i64 {
+    return id * 10 + 7
+}
+
+async fn pick(flag: bool) -> str {
+    if flag {
+        return "yes"
+    }
+    return "no"
+}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    let a = await compute(4)
+    expect(a == 47, "await i64 result")
+
+    let b = await compute(0)
+    expect(b == 7, "await i64 result 2")
+
+    let s = await pick(true)
+    expect(s == "yes", "await str result")
+
+    println("async await result OK")
+}

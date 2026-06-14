@@ -5797,3 +5797,20 @@ SHIFTS:
   GATES: type_alias smoke both backends; e2e suite 1/1 (all files still compile clean).
   (Another verify-before-acting win: the audit's "10 skipped tests" were not skipped.)
   next: #7 capability module-scope codes; async honest-doc (#10).
+
+  ---
+  step:    253 (session 11 -- 2026-06-14 "ASYNC build Unit 1: await returns correct value both backends")
+  date:    2026-06-14
+  User chose "full async now". Decomposed into units; this is Unit 1 (foundational
+  correctness). BUG: `let r = await foo()` gave the right value on JIT but 0 on AOT.
+  Diagnosed via emitted IR: _kryos_main emitted `call void @compute` (result discarded)
+  then `to_string(i64 0)` -- the await-result local was typed Void. ROOT: infer_expr_type
+  (lower.rs, used by lower_stmt Let to type the binding) had NO Await arm -> fell to
+  default Void. FIX: `Await { value } => infer_expr_type(value)` -- await has its inner
+  expr's type. Now AOT returns 40 like JIT. Proven NOT the split transform (disabling
+  KRYOS_DISABLE_AWAIT_SPLIT still gave 0 pre-fix).
+  GATES: parity 53/53, bootstrap HELD 989ba174 (self-host has no async exprs -> arm never
+  hit -> output unchanged), new test_async_await_result smoke both backends.
+  REMAINING async units: U2 LLVM poll-fn codegen parity (Cranelift has ~1000 lines, LLVM
+  none); U3 spawn-async surface + executor run; U4 true await suspension/interleaving
+  (the deep cooperative-scheduler part: await currently = direct synchronous call).
