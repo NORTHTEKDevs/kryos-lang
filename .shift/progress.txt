@@ -5755,3 +5755,29 @@ SHIFTS:
   GATE: docs-examples 54/54 (docs-only; no rebuild/bootstrap needed).
   next: generic impl blocks (#6, type checker + MIR + monomorphization, careful,
   bootstrap-sensitive); capability checker module-scope codes (#7).
+
+  ---
+  step:    250 (session 11 -- 2026-06-13 "MARQUEE: parametric generic impl blocks impl<T> Box<T>")
+  date:    2026-06-13
+  Closed finish-plan #6 (the named queue blocker). `impl<T> Box<T> { fn get(self: Box<T>)
+  -> T }` previously failed E0101 "unknown type T". Two-layer fix:
+  (1) TYPE CHECKER (check.rs, both Impl arms register_decl + check_decl): scope the impl's
+      generic params as fresh type vars (define_var) around method-sig resolution + body
+      checking, mirroring the free-generic-fn pattern. KEY BUG found while fixing: I first
+      popped the generic scope AFTER define_impl -> the method registered into the temp
+      scope and was discarded ("no method get found"). Fix: pop BEFORE define_impl (sigs'
+      Var ids persist in the engine). Concrete impls have empty generics -> unaffected.
+  (2) MIR (lower.rs): new ctx.current_impl_generics; resolve_type erases an impl-generic
+      param name to MirType::I64 (same slot-erasure generic STRUCTS use). Without it, the
+      LLVM backend emitted `sret(%T)` with %T an unsized opaque type -> "Cannot allocate
+      unsized type". JIT tolerated it; AOT didn't. Erasure gated on current_impl_generics
+      non-empty -> only generic impls trigger it -> self-host compiler (no generic impls)
+      unaffected. Set/restored in BOTH lower.rs Impl arms (metadata + body).
+  WORKS both backends: Box<i64>.get()=42, replace(99).get()=99, Pair<A,B>.tag()=7.
+  CAVEAT (same as generic structs, gotcha #17): non-i64 payload returned bare (Box<str>.get()
+  typed str) still sees the i64 slot -> annotate for the concrete instantiation. Documented.
+  GATES ALL GREEN: parity 51->52/52 (new test_generic_impl), conf 6/6, examples PASS,
+  **BOOTSTRAP HELD at sha 989ba174** (erasure gating confirmed), kryos-mir 79 + kryos-types
+  97 suites green. CLAUDE.md #17 updated.
+  next: #7 capability module-scope codes (small/safe); #9 type aliases in params; #3 WASM
+  neg/to_string; #10 async (XL, document).

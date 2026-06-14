@@ -1,0 +1,59 @@
+// Smoke (finish step): parametric impl blocks `impl<T> Box<T>` previously
+// failed E0101 ("unknown type T") because the impl's type parameters were
+// not in scope while checking method signatures, and even once accepted the
+// LLVM backend emitted an unsized `%T` type. Now the impl's params are
+// scoped in the checker and erased to i64 slots in MIR (the same model
+// generic structs use), so generic impl methods type-check and run on both
+// backends. Exercises: single param returning T, a method taking a generic
+// arg and returning Self, and a multi-parameter impl (Pair<A, B>).
+//
+// CAVEAT (same as generic structs, CLAUDE.md gotcha #17): the payload slot
+// is i64-erased, so a method that returns the bare type parameter on a
+// NON-i64 instantiation (e.g. Box<str>.get() typed as str) sees the raw
+// i64 slot and needs the method annotated for that concrete instantiation.
+// The i64-shaped cases below are the common path and work without
+// annotation on both backends.
+
+struct Box<T> {
+    value: T
+}
+
+impl<T> Box<T> {
+    fn get(self: Box<T>) -> T {
+        return self.value
+    }
+    fn replace(self: Box<T>, v: T) -> Box<T> {
+        return Box { value: v }
+    }
+}
+
+struct Pair<A, B> {
+    first: A,
+    second: B
+}
+
+impl<A, B> Pair<A, B> {
+    fn tag(self: Pair<A, B>) -> i64 {
+        return 7
+    }
+}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    let bi = Box { value: 42 }
+    expect(bi.get() == 42, "Box<i64> get")
+
+    let bi2 = bi.replace(99)
+    expect(bi2.get() == 99, "Box<i64> replace+get")
+
+    let p = Pair { first: 1, second: 314 }
+    expect(p.tag() == 7, "Pair<A,B> method")
+
+    println("generic impl OK")
+}

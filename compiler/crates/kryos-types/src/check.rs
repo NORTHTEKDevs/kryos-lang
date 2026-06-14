@@ -495,10 +495,30 @@ impl TypeChecker {
                 target,
                 trait_name,
                 methods,
+                generics: impl_generics,
                 ..
             } => {
                 // Set Self type for the duration of this impl block registration.
                 let prev_self = self.current_self_type.take();
+
+                // Bring the impl's own type parameters (`impl<T> Box<T>`) into
+                // scope as fresh type vars so method signatures that mention
+                // them (`self: Box<T>`, `-> T`) resolve instead of raising
+                // E0101. Concrete impls (`impl Box<i64>`) have no generics, so
+                // this is a no-op for them.
+                let scoped_impl_generics = !impl_generics.is_empty();
+                if scoped_impl_generics {
+                    self.env.push_scope();
+                    for gp in impl_generics {
+                        let tv = self.engine.fresh_var();
+                        if let Type::Var(id) = &tv {
+                            if !gp.bounds.is_empty() {
+                                self.generic_var_bounds.insert(*id, gp.bounds.clone());
+                            }
+                        }
+                        self.env.define_var(gp.name.clone(), tv);
+                    }
+                }
 
                 // Resolve the impl target type once for binding `self` params.
                 let impl_target_ty = if self.env.lookup_struct(target).is_some() {
@@ -573,6 +593,16 @@ impl TypeChecker {
                 // sibling impl method bodies.
                 let _ = &method_sigs;
 
+                // Pop the impl-generic scope NOW: the method signatures are
+                // fully resolved (their Var ids persist in the type engine),
+                // and `define_impl` below registers into the *current* scope.
+                // If we popped after define_impl, the registration would land
+                // in this temporary scope and be discarded -- the method would
+                // then be "not found" at every call site.
+                if scoped_impl_generics {
+                    self.env.pop_scope();
+                }
+
                 // If this is a trait impl, inherit default methods from the
                 // trait that are not explicitly overridden in this impl block.
                 let mut all_method_sigs = method_sigs.clone();
@@ -619,6 +649,7 @@ impl TypeChecker {
                 self.env
                     .define_impl(target.clone(), trait_name.clone(), all_method_sigs);
 
+                // (impl-generic scope already popped above, before define_impl)
                 self.current_self_type = prev_self;
             }
             Decl::Trait {
@@ -817,10 +848,25 @@ impl TypeChecker {
                 let _ = span; // suppress unused warning
             }
             Decl::Impl {
-                target, methods, ..
+                target,
+                methods,
+                generics: impl_generics,
+                ..
             } => {
                 // Set Self type for the duration of this impl block.
                 let prev_self = self.current_self_type.take();
+
+                // Scope the impl's type parameters so method bodies that
+                // mention them (`let x: T = ...`, `-> T` in the fallback
+                // path) resolve. No-op for concrete impls.
+                let scoped_impl_generics = !impl_generics.is_empty();
+                if scoped_impl_generics {
+                    self.env.push_scope();
+                    for gp in impl_generics {
+                        let tv = self.engine.fresh_var();
+                        self.env.define_var(gp.name.clone(), tv);
+                    }
+                }
 
                 // Resolve the target type so we can bind `self` in methods.
                 let target_ty = if self.env.lookup_struct(target).is_some() {
@@ -912,6 +958,9 @@ impl TypeChecker {
                     }
                 }
 
+                if scoped_impl_generics {
+                    self.env.pop_scope();
+                }
                 self.current_self_type = prev_self;
             }
             _ => {}

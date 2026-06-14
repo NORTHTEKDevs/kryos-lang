@@ -92,6 +92,13 @@ pub struct LoweringContext {
     actor_defs: HashMap<String, Vec<(String, usize)>>,
     /// The current `Self` type name — set when lowering trait/impl blocks.
     current_self_type: Option<String>,
+    /// Type-parameter names of the `impl<...>` block currently being lowered
+    /// (e.g. `["T"]` for `impl<T> Box<T>`). While set, `resolve_type` erases
+    /// these names to `i64` -- the same slot-erasure generic structs use --
+    /// so a generic impl method lowers to a single concrete-sized function
+    /// instead of referencing an unsized `%T` LLVM type. Empty for concrete
+    /// impls, so the self-host compiler (which has none) is unaffected.
+    current_impl_generics: Vec<String>,
     /// Actor state field layouts: actor_name -> ordered list of (field_name, field_index).
     /// Each field occupies one i64 slot at offset field_index * 8.
     actor_state_fields: HashMap<String, Vec<(String, u32)>>,
@@ -206,6 +213,7 @@ impl LoweringContext {
             borrowed_locals: HashSet::new(),
             current_ret_ty: MirType::Void,
             current_self_type: None,
+            current_impl_generics: Vec::new(),
             copy_structs: HashSet::new(),
             hidden_locals: HashSet::new(),
             partial_moved_locals: HashSet::new(),
@@ -221,6 +229,16 @@ impl LoweringContext {
     /// enum definition, it produces `Enum(name)` instead; if it matches a
     /// type alias, it resolves to the aliased type.
     fn resolve_type(&mut self, ty: &ast::TypeExpr) -> MirType {
+        // An impl's own type parameter (`impl<T> Box<T>`) erases to an i64
+        // slot, matching the generic-struct payload model. This keeps a
+        // generic impl method as one concrete-sized function rather than
+        // referencing an unsized `%T` type on the LLVM backend.
+        if let ast::TypeExpr::Simple { name, .. } = ty {
+            if self.current_impl_generics.iter().any(|g| g == name) {
+                return MirType::I64;
+            }
+        }
+
         // Handle generic struct/enum instantiation before calling lower_type_expr.
         if let ast::TypeExpr::Generic { name, args, .. } = ty {
             let type_args: Vec<MirType> = args.iter().map(|a| self.resolve_type(a)).collect();
@@ -999,10 +1017,15 @@ pub fn lower_module_with_lambda_params(
                 target,
                 trait_name,
                 methods,
+                generics: impl_generics,
                 ..
             } => {
                 let prev_self = ctx.current_self_type.take();
                 ctx.current_self_type = Some(target.clone());
+                let prev_impl_generics = std::mem::replace(
+                    &mut ctx.current_impl_generics,
+                    impl_generics.iter().map(|g| g.name.clone()).collect(),
+                );
 
                 // Register mangled method names in func_ret_types.
                 for method in methods {
@@ -1077,6 +1100,7 @@ pub fn lower_module_with_lambda_params(
                 }
 
                 ctx.current_self_type = prev_self;
+                ctx.current_impl_generics = prev_impl_generics;
             }
             ast::Decl::TypeAlias { name, ty, .. } => {
                 let mir_ty = ctx.resolve_type(ty);
@@ -1181,10 +1205,15 @@ pub fn lower_module_with_lambda_params(
                 target,
                 trait_name,
                 methods,
+                generics: impl_generics,
                 ..
             } => {
                 let prev_self = ctx.current_self_type.take();
                 ctx.current_self_type = Some(target.clone());
+                let prev_impl_generics = std::mem::replace(
+                    &mut ctx.current_impl_generics,
+                    impl_generics.iter().map(|g| g.name.clone()).collect(),
+                );
 
                 // Lower each method as a free function with mangled name.
                 let mut impl_method_names = Vec::new();
@@ -1311,6 +1340,7 @@ pub fn lower_module_with_lambda_params(
                 }
 
                 ctx.current_self_type = prev_self;
+                ctx.current_impl_generics = prev_impl_generics;
             }
             ast::Decl::Actor { name, handlers, .. } => {
                 // Lower each message handler as a free function: ActorName__handler_name.
