@@ -48,24 +48,49 @@ extern {
     fn kryos_tensor_mse_loss(a: i64, b: i64) -> i64
     fn kryos_tensor_to_string(handle: i64) -> i64
     fn kryos_tensor_free(handle: i64)
+    // i64-bits -> f64 transport (f64 RETURN values work across the FFI).
+    fn kryos_f64_from_bits(bits: i64) -> f64
+}
+
+// --- Array element-buffer pointer -------------------------------------------
+//
+// The native tensor FFI wants a pointer to an array's ELEMENT buffer, not
+// the KryosArray header. Casting an array to i64 yields the header pointer;
+// the data-buffer pointer lives in the header's `data` field. KryosArray
+// layout is the frozen v4 ABI { len, cap, elem_size, ref_count, data }, so
+// `data` is at i64 index 4. Centralized here so the layout dependency lives
+// in exactly one place.
+fn arr_data_ptr(header: i64) -> i64 {
+    return ptr_read_i64(header, 4)
+}
+
+// Reinterpret an f64 as its raw i64 bits. The native runtime exposes a
+// kryos_f64_to_bits, but passing an f64 *as an argument* across the current
+// extern ABI does not work (f64 returns do; f64 args land in the wrong
+// register). So we transport the value through a one-element [f64] array,
+// whose element slot holds the raw f64 bits, and read those bits back as
+// i64. (kryos_f64_from_bits, an i64-arg/f64-return extern, works directly.)
+fn f64_to_bits(v: f64) -> i64 {
+    let slot = [v]
+    return ptr_read_i64(arr_data_ptr(slot as i64), 0)
 }
 
 // --- Creation functions -----------------------------------------------------
 
 fn tensor_zeros(shape: [i64]) -> i64 {
-    return kryos_tensor_zeros(shape as i64, len(shape))
+    return kryos_tensor_zeros(arr_data_ptr(shape as i64), len(shape))
 }
 
 fn tensor_ones(shape: [i64]) -> i64 {
-    return kryos_tensor_ones(shape as i64, len(shape))
+    return kryos_tensor_ones(arr_data_ptr(shape as i64), len(shape))
 }
 
 fn tensor_rand(shape: [i64]) -> i64 {
-    return kryos_tensor_rand(shape as i64, len(shape))
+    return kryos_tensor_rand(arr_data_ptr(shape as i64), len(shape))
 }
 
 fn tensor_randn(shape: [i64]) -> i64 {
-    return kryos_tensor_randn(shape as i64, len(shape))
+    return kryos_tensor_randn(arr_data_ptr(shape as i64), len(shape))
 }
 
 fn tensor_eye(n: i64) -> i64 {
@@ -92,4 +117,146 @@ fn tensor_relu(t: i64) -> i64 {
 
 fn tensor_sigmoid(t: i64) -> i64 {
     return kryos_tensor_sigmoid(t)
+}
+
+// --- Creation from data -----------------------------------------------------
+
+// Build a tensor from a flat [f64] buffer and an explicit shape.
+fn tensor_from_data(data: [f64], shape: [i64]) -> i64 {
+    return kryos_tensor_from_data(arr_data_ptr(data as i64), len(data), arr_data_ptr(shape as i64), len(shape))
+}
+
+// --- Introspection ----------------------------------------------------------
+
+fn tensor_ndim(t: i64) -> i64 {
+    return kryos_tensor_ndim(t)
+}
+
+fn tensor_numel(t: i64) -> i64 {
+    return kryos_tensor_numel(t)
+}
+
+fn tensor_shape_dim(t: i64, dim: i64) -> i64 {
+    return kryos_tensor_shape_dim(t, dim)
+}
+
+// --- Element access (scalars carried as f64) --------------------------------
+
+fn tensor_get(t: i64, idx: i64) -> f64 {
+    return kryos_f64_from_bits(kryos_tensor_get(t, idx))
+}
+
+fn tensor_set(t: i64, idx: i64, val: f64) {
+    kryos_tensor_set(t, idx, f64_to_bits(val))
+}
+
+// --- Element-wise binary ops ------------------------------------------------
+
+fn tensor_add(a: i64, b: i64) -> i64 {
+    return kryos_tensor_add(a, b)
+}
+
+fn tensor_sub(a: i64, b: i64) -> i64 {
+    return kryos_tensor_sub(a, b)
+}
+
+fn tensor_mul(a: i64, b: i64) -> i64 {
+    return kryos_tensor_mul(a, b)
+}
+
+fn tensor_div(a: i64, b: i64) -> i64 {
+    return kryos_tensor_div(a, b)
+}
+
+fn tensor_pow(a: i64, b: i64) -> i64 {
+    return kryos_tensor_pow(a, b)
+}
+
+// Scale every element by a scalar.
+fn tensor_scale(t: i64, scalar: f64) -> i64 {
+    return kryos_tensor_scale(t, f64_to_bits(scalar))
+}
+
+// --- Element-wise unary ops -------------------------------------------------
+
+fn tensor_exp(t: i64) -> i64 {
+    return kryos_tensor_exp(t)
+}
+
+fn tensor_log(t: i64) -> i64 {
+    return kryos_tensor_log(t)
+}
+
+fn tensor_sqrt(t: i64) -> i64 {
+    return kryos_tensor_sqrt(t)
+}
+
+fn tensor_tanh(t: i64) -> i64 {
+    return kryos_tensor_tanh(t)
+}
+
+fn tensor_neg(t: i64) -> i64 {
+    return kryos_tensor_neg(t)
+}
+
+// --- Reductions (scalar results as f64; arg* return indices as i64) ---------
+
+fn tensor_sum(t: i64) -> f64 {
+    return kryos_f64_from_bits(kryos_tensor_sum(t))
+}
+
+fn tensor_mean(t: i64) -> f64 {
+    return kryos_f64_from_bits(kryos_tensor_mean(t))
+}
+
+fn tensor_max(t: i64) -> f64 {
+    return kryos_f64_from_bits(kryos_tensor_max(t))
+}
+
+fn tensor_min(t: i64) -> f64 {
+    return kryos_f64_from_bits(kryos_tensor_min(t))
+}
+
+fn tensor_argmax(t: i64) -> i64 {
+    return kryos_tensor_argmax(t)
+}
+
+fn tensor_argmin(t: i64) -> i64 {
+    return kryos_tensor_argmin(t)
+}
+
+// --- Shape transforms -------------------------------------------------------
+
+fn tensor_transpose(t: i64) -> i64 {
+    return kryos_tensor_transpose(t)
+}
+
+fn tensor_reshape(t: i64, shape: [i64]) -> i64 {
+    return kryos_tensor_reshape(t, arr_data_ptr(shape as i64), len(shape))
+}
+
+fn tensor_flatten(t: i64) -> i64 {
+    return kryos_tensor_flatten(t)
+}
+
+// --- Losses -----------------------------------------------------------------
+
+fn tensor_cross_entropy(logits: i64, targets: i64) -> i64 {
+    return kryos_tensor_cross_entropy(logits, targets)
+}
+
+fn tensor_mse_loss(a: i64, b: i64) -> i64 {
+    return kryos_tensor_mse_loss(a, b)
+}
+
+// --- Display and cleanup ----------------------------------------------------
+
+// Render a tensor to a human-readable string.
+fn tensor_to_string(t: i64) -> str {
+    return handle_to_str(kryos_tensor_to_string(t))
+}
+
+// Free a tensor's backing memory. The handle must not be used afterward.
+fn tensor_free(t: i64) {
+    kryos_tensor_free(t)
 }

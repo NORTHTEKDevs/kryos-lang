@@ -1,0 +1,41 @@
+// Smoke (finish step): fs.rename() previously did copy + remove (a window
+// where a crash loses the file). It now does a single atomic native
+// std::fs::rename, falling back to copy+remove only across filesystems.
+// Verifies the moved file's contents survive and the source is gone.
+
+use std::fs::{exists, remove_file, read_file, write_file, rename}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn tmpdir() -> str {
+    let t = env_get("TEMP")
+    if len(t) > 0 { return t }
+    let t2 = env_get("TMPDIR")
+    if len(t2) > 0 { return t2 }
+    return "/tmp"
+}
+
+fn main() {
+    let dir = tmpdir()
+    let src = dir + "/kryos_rename_smoke_src.txt"
+    let dst = dir + "/kryos_rename_smoke_dst.txt"
+
+    if exists(src) { remove_file(src) }
+    if exists(dst) { remove_file(dst) }
+
+    write_file(src, "atomic-move-payload")
+    expect(exists(src), "source written")
+
+    rename(src, dst)
+    expect(not exists(src), "source removed after rename")
+    expect(exists(dst), "destination present after rename")
+    expect(read_file(dst) == "atomic-move-payload", "contents preserved")
+
+    remove_file(dst)
+    println("fs rename OK")
+}

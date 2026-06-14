@@ -1,0 +1,24 @@
+// Smoke (finish step): datetime.sleep() previously busy-waited (pinned a
+// CPU core) because the wrapper claimed "the native layer lacks a sleep
+// syscall" -- but kryos_time_sleep_millis (std::thread::sleep) existed and
+// is now wired in. We can't observe CPU usage from Kryos, but we can
+// confirm the sleep elapses the requested duration (and doesn't hang).
+
+use std::datetime::{now, sleep_millis}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    let start = now()
+    sleep_millis(120)
+    let elapsed = start.elapsed()
+    // Allow generous scheduling slack on both ends.
+    expect(elapsed.millis >= 90, "slept at least ~90ms")
+    expect(elapsed.millis < 5000, "did not hang")
+    println("sleep OK")
+}

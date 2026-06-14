@@ -1036,6 +1036,25 @@ impl JitCompiler {
             "kryos_time_now_millis",
             kryos_stdlib_native::datetime::kryos_time_now_millis as *const u8,
         );
+        jit_builder.symbol(
+            "kryos_time_sleep_millis",
+            kryos_stdlib_native::datetime::kryos_time_sleep_millis as *const u8,
+        );
+
+        // Runtime: f64<->i64 bit reinterpretation (stdlib value transport)
+        jit_builder.symbol(
+            "kryos_f64_from_bits",
+            kryos_rt::floatbits::kryos_f64_from_bits as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_f64_to_bits",
+            kryos_rt::floatbits::kryos_f64_to_bits as *const u8,
+        );
+        // Stdlib-native: filesystem rename (atomic move)
+        jit_builder.symbol(
+            "kryos_fs_rename",
+            kryos_stdlib_native::fs::kryos_fs_rename as *const u8,
+        );
 
         // Stdlib-native: crypto
         jit_builder.symbol(

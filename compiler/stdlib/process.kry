@@ -288,9 +288,17 @@ impl Command {
 
     // Execute the command and capture stdout/stderr.
     fn run(self: Command) -> CommandResult {
+        // self.arguments is a [str]; the native exec wants (args_ptr,
+        // args_count) where args_ptr is the ELEMENT buffer of i64
+        // KryosString handles. Casting the array to i64 yields the
+        // KryosArray header, not the buffer; the buffer lives in the
+        // header's `data` field (frozen v4 ABI { len, cap, elem_size,
+        // ref_count, data } -> i64 index 4). (`null, 0` previously dropped
+        // every argument silently; passing the header crashes the native.)
+        let args_buf = ptr_read_i64(self.arguments as i64, 4)
         let result_ptr = kryos_process_exec(
             str_to_ptr(self.program), len(self.program),
-            null, 0
+            args_buf, len(self.arguments)
         )
         if result_ptr == -1 {
             throw "process error: failed to execute command: " + self.program

@@ -824,6 +824,7 @@ impl LlvmCodegen {
         self.emit_line("declare i32 @kryos_path_exists(ptr, i64)");
         self.emit_line("declare i32 @kryos_dir_create(ptr, i64)");
         self.emit_line("declare i32 @kryos_file_remove(ptr, i64)");
+        self.emit_line("declare i32 @kryos_fs_rename(ptr, i64, ptr, i64)");
         self.emit_line("declare i64 @kryos_dir_list(ptr, i64, ptr, i64)");
         self.emit_line("declare i64 @kryos_dir_walk(ptr, i64, ptr, i64)");
         // File I/O (stdlib-native)
@@ -903,7 +904,12 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_byte_at_ks(i64, i64)");
         self.emit_line("declare i64 @kryos_time_now_secs()");
         self.emit_line("declare i64 @kryos_time_now_millis()");
+        self.emit_line("declare void @kryos_time_sleep_millis(i64)");
         self.emit_line("declare void @kryos_sleep_ms(i64)");
+        // f64<->i64 bit reinterpret (i64-arg / f64-return form; the f64-arg
+        // form is unused from Kryos because f64 args across the extern ABI
+        // land in the wrong register -- stdlib does f64->bits array-side).
+        self.emit_line("declare double @kryos_f64_from_bits(i64)");
         self.emit_line("declare i64 @kryos_regex_new_ks(i64)");
         self.emit_line("declare i64 @kryos_regex_is_match_ks(i64, i64)");
         self.emit_line("declare i64 @kryos_mutex_new()");

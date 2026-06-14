@@ -10,6 +10,7 @@
 extern {
     fn kryos_time_now_secs() -> i64
     fn kryos_time_now_millis() -> i64
+    fn kryos_time_sleep_millis(millis: i64)
 }
 
 // --- Duration type ----------------------------------------------------------
@@ -199,25 +200,31 @@ fn measure(callback: fn() -> str) -> Duration {
 
 // --- Sleep ------------------------------------------------------------------
 
-// Sleep for the given duration.
-// Implemented as a busy-wait since the native layer lacks a sleep syscall.
-// For real applications, a native kryos_sleep binding is preferred.
-fn sleep(dur: Duration) -> bool {
-    let target = kryos_time_now_millis() + dur.millis
-    while kryos_time_now_millis() < target {
-        // busy wait
+// Sleep for the given number of milliseconds. Yields the CPU via a real
+// native sleep (std::thread::sleep), not a busy-wait.
+//
+// NOTE: these call kryos_time_sleep_millis DIRECTLY rather than going
+// through `sleep(Duration)` below, because the bare name `sleep` collides
+// with a global `sleep` builtin and the user-vs-builtin shadowing resolves
+// differently on the JIT vs AOT backends. `sleep_millis` / `sleep_secs`
+// have unique names and resolve consistently on both.
+fn sleep_millis(ms: i64) -> bool {
+    if ms > 0 {
+        kryos_time_sleep_millis(ms)
     }
     return true
 }
 
-// Sleep for the given number of milliseconds.
-fn sleep_millis(ms: i64) -> bool {
-    return sleep(from_millis(ms))
-}
-
 // Sleep for the given number of seconds.
 fn sleep_secs(secs: i64) -> bool {
-    return sleep(from_secs(secs))
+    return sleep_millis(secs * 1000)
+}
+
+// Sleep for the given duration. Prefer sleep_millis / sleep_secs: the bare
+// name `sleep` shadows a global builtin and only resolves to this function
+// reliably on the AOT backend (see note above).
+fn sleep(dur: Duration) -> bool {
+    return sleep_millis(dur.millis)
 }
 
 // --- Date/time formatting ---------------------------------------------------

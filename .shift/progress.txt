@@ -5691,3 +5691,43 @@ SHIFTS:
   GATES (this step): workspace 900/0; benchmarks output-verified. (parity/conf/examples/
   bootstrap/ASAN were green at step 246.)
   next: act on kryos-finish-map investigation -> finish-the-language execution plan.
+
+  ---
+  step:    248 (session 11 -- 2026-06-13 "finish-plan batch 1: make advertised stdlib features actually work")
+  date:    2026-06-13
+  Acted on the kryos-finish-map investigation (verdict: language ~65-70% finished;
+  several DEFINING/advertised features silently broken). VERIFIED each agent claim
+  against code before fixing. Closed 4 blockers/majors, all zero-bootstrap-risk:
+  (#1 tensor) std::tensor declared 39 externs but wrapped only ~10 -> any tensor
+     arithmetic = name-resolution error. Added 22 wrappers. ALSO found the pre-existing
+     tensor_zeros/ones/etc. NEVER WORKED: `[T] as i64` yields the KryosArray HEADER, not
+     the element buffer; native read header fields as dims (numel came back 1). Fixed via
+     arr_data_ptr() reading the frozen-v4 `data` field (i64 idx 4). Scalar f64 values
+     transported via kryos_f64_from_bits (i64-arg/f64-ret extern, works) for reads and a
+     pure-Kryos [f64]-slot trick for writes.
+  (#2 process) Command.run() passed `null,0` for args -> every .arg() silently dropped;
+     passing the array header instead CRASHES the native. Fixed: pass the `data` field
+     buffer of KryosString handles (the ABI the native already supports).
+  (#4 datetime/fs) datetime.sleep() busy-waited (pinned a core) on a stale "no native
+     sleep" comment -- kryos_time_sleep_millis already existed; wired it (+JIT reg).
+     fs.rename() did copy+remove (data-loss window) -> new native kryos_fs_rename (atomic
+     std::fs::rename, copy+remove fallback cross-device).
+  NEW NATIVE (one rebuild, none called by self-host compiler => zero bootstrap-output risk):
+     kryos-rt::floatbits (f64<->i64 bit reinterpret, 3 unit tests), stdlib-native
+     kryos_fs_rename (3 unit tests), 4 JIT symbol regs, 3 LLVM hardcoded declares.
+  THREE REAL BUGS DISCOVERED (documented, not yet fixed -- candidates for later):
+     (a) f64 ARGUMENTS to extern fns land in the wrong register (f64 returns are fine) --
+         codegen FFI gap; worked around stdlib-side.
+     (b) global builtin `sleep(ms:i64)` (checker) maps to kryos_sleep which expects
+         f64 SECONDS-as-bits -> the builtin sleep is BROKEN; and its bare name collides
+         with datetime's sleep(Duration), resolving differently JIT vs AOT. Worked around:
+         sleep_millis/sleep_secs (unique names) call the extern directly.
+     (c) `[T] as i64` = header ptr, not data buffer; no array_data_ptr builtin exists.
+  GATES (ALL GREEN): parity 48->51/51 both backends (new: test_tensor_ops, test_fs_rename,
+     test_sleep_real); conformance 6/6; examples PASS; BOOTSTRAP FIXED POINT HELD at SAME
+     sha 989ba174 (unused declares optimized out); kryos-rt 63 + stdlib-native suites green;
+     6 new native unit tests. Process-args verified via Windows scratch (cmd /c echo, both
+     backends ARGS_OK) -- not gated (subprocess cmds aren't cross-platform).
+  next: honesty doc batch (WASM experimental, capability deny-by-default retraction,
+     CLAUDE.md gotcha #18, README module count, chan/sync caveats), then generic impl
+     blocks (#6), then capability checker module-scope codes (#7).

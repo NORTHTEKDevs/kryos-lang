@@ -13,6 +13,7 @@ extern {
     fn kryos_path_exists(path_ptr: i64, path_len: i64) -> i32
     fn kryos_dir_create(path_ptr: i64, path_len: i64) -> i32
     fn kryos_file_remove(path_ptr: i64, path_len: i64) -> i32
+    fn kryos_fs_rename(from_ptr: i64, from_len: i64, to_ptr: i64, to_len: i64) -> i32
     fn kryos_file_open(path_ptr: i64, path_len: i64, mode: i32) -> i64
     fn kryos_file_read(fd: i64, buf: i64, buf_len: i64) -> i64
     fn kryos_file_write(fd: i64, data: i64, data_len: i64) -> i64
@@ -176,9 +177,20 @@ fn copy(src: str, dst: str) -> i64 {
     return write_file(dst, contents)
 }
 
-// Rename (move) a file from old_path to new_path.
-// Implemented as copy + remove since the native layer lacks a rename syscall.
+// Rename (move) a file from old_path to new_path. Uses a single atomic
+// native rename (std::fs::rename), so there is no window where the data
+// exists in neither location (the old copy+remove could lose data on a
+// crash between the two steps). Falls back to copy+remove only if the
+// atomic rename fails (e.g. across filesystems).
 fn rename(old_path: str, new_path: str) -> bool {
+    let rc = kryos_fs_rename(
+        str_to_ptr(old_path), len(old_path),
+        str_to_ptr(new_path), len(new_path)
+    )
+    if rc == 0 {
+        return true
+    }
+    // Cross-device or other failure: fall back to copy + remove.
     copy(old_path, new_path)
     remove_file(old_path)
     return true

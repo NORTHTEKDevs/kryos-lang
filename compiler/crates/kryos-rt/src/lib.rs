@@ -102,6 +102,7 @@ pub mod builtins;
 pub mod channel;
 pub mod budget;
 pub mod exception;
+pub mod floatbits;
 pub mod fs;
 pub mod future;
 pub mod globals;

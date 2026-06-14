@@ -1,0 +1,59 @@
+// Smoke (finish step): std::tensor was 39 declared externs but only ~10
+// Kryos wrappers, so any tensor arithmetic was a name-resolution error.
+// All 22 missing wrappers are now exposed; the f64-valued ops route scalar
+// results through kryos_f64_from_bits / kryos_f64_to_bits. Exercises
+// creation-from-data, element-wise ops, scaling, reductions, element
+// access, argmax, and free on both backends.
+
+use std::tensor::{tensor_from_data, tensor_add, tensor_mul, tensor_sub, tensor_scale, tensor_sum, tensor_mean, tensor_get, tensor_set, tensor_argmax, tensor_numel, tensor_ndim, tensor_free}
+
+fn approx(a: f64, b: f64) -> bool {
+    let d = a - b
+    if d < 0.0 {
+        return (0.0 - d) < 0.0001
+    }
+    return d < 0.0001
+}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    let a = tensor_from_data([1.0, 2.0, 3.0, 4.0], [4])
+    let b = tensor_from_data([10.0, 20.0, 30.0, 40.0], [4])
+
+    expect(tensor_numel(a) == 4, "numel")
+    expect(tensor_ndim(a) == 1, "ndim")
+
+    let c = tensor_add(a, b)
+    expect(approx(tensor_sum(c), 110.0), "add+sum")    // 11+22+33+44
+    expect(approx(tensor_get(c, 0), 11.0), "get[0]")
+    expect(approx(tensor_get(c, 3), 44.0), "get[3]")
+    expect(tensor_argmax(c) == 3, "argmax")
+    expect(approx(tensor_mean(c), 27.5), "mean")
+
+    let d = tensor_mul(a, b)                            // [10,40,90,160]
+    expect(approx(tensor_sum(d), 300.0), "mul+sum")
+
+    let e = tensor_sub(b, a)                            // [9,18,27,36]
+    expect(approx(tensor_sum(e), 90.0), "sub+sum")
+
+    let scaled = tensor_scale(a, 2.5)                   // [2.5,5,7.5,10]
+    expect(approx(tensor_sum(scaled), 25.0), "scale+sum")
+
+    // Mutate an element and confirm the read-back round-trips through bits.
+    tensor_set(a, 0, 99.5)
+    expect(approx(tensor_get(a, 0), 99.5), "set/get roundtrip")
+
+    tensor_free(a)
+    tensor_free(b)
+    tensor_free(c)
+    tensor_free(d)
+    tensor_free(e)
+    tensor_free(scaled)
+    println("tensor ops OK")
+}
