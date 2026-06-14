@@ -6,24 +6,25 @@ generated from `benchmarks/results.json`, never hand-edited.
 Last refresh: **1.0.0-beta.1, 2026-06-14**, Windows 11 x64
 (rustc 1.95, clang 19 -O2, go 1.x, CPython 3.14).
 
-> **2026-06-14 refresh (three steps):** (1) removed the per-element hang-trap
-> atomic load from `kryos_array_get`; (2) inlined `arr[i]` **reads** in
-> codegen; (3) inlined `arr[i] = v` **writes** in codegen. Array access used
-> to emit a runtime `call @kryos_array_{get,set}` per element, so the hottest
-> loops paid call overhead and the optimizer could neither hoist the length
-> load nor elide redundant bounds checks. `alwaysinline` read/write helpers
-> now open-code the (null + unsigned-bounds + load/store) sequence, which LLVM
-> inlines and optimizes. **Cumulative since 2026-06-11: nbody 16.8x→1.8x,
-> fannkuch 6.8x→1.1x (near parity), matmul 1.9x→0.93x (beats Rust),
-> binary_trees 11.6x→6.3x.** Four of six benchmarks are now at or within 1.1x
-> of Rust; fib (recursion) and binary_trees (allocation) are the outliers.
-> The inline changes are LLVM-backend only; the Cranelift-based bootstrap is
-> unaffected (fixed point held at 989ba174).
+> **2026-06-14 refresh (four steps):** (1) removed the per-element hang-trap
+> atomic load from `kryos_array_get`; (2) inlined `arr[i]` **reads** and
+> (3) `arr[i] = v` **writes** in codegen (an `alwaysinline` helper LLVM
+> inlines and optimizes — hoisting the length load and eliding redundant
+> bounds checks); (4) **elided the dead post-call exception check** when the
+> module contains no `throw` (the check was a runtime call + branch after
+> *every* call — pure overhead for throw-free code like recursion).
+> **Cumulative since 2026-06-11: fib 3.0x→1.01x (parity), nbody 16.8x→1.9x,
+> fannkuch 6.8x→1.10x (near parity), matmul 1.9x→0.95x (beats Rust),
+> mandelbrot parity, binary_trees 11.6x→6.5x.** **Five of six benchmarks are
+> now at or within 1.1x of Rust**; binary_trees (allocation) is the lone
+> outlier. All four changes are LLVM-backend only; the Cranelift-based
+> bootstrap is unaffected (fixed point held at 989ba174), and exception
+> propagation is preserved (the check stays whenever any `throw` exists).
 
 ## TL;DR
 
-- **matmul: 0.93x of Rust — Kryos is FASTER than Rust** on dense 512² float
-  matmul (0.617s vs 0.660s), matching clang/Go. Dense register-resident
+- **matmul: 0.95x of Rust — Kryos is FASTER than Rust** on dense 512² float
+  matmul (0.612s vs 0.643s), matching clang/Go. Dense register-resident
   float loops are a case the LLVM backend optimizes as well as any.
 - **mandelbrot: parity (1.00x)** — scalar float arithmetic in registers
   matches Rust/C exactly.
@@ -35,8 +36,9 @@ Last refresh: **1.0.0-beta.1, 2026-06-14**, Windows 11 x64
   arrays; inlining both array reads and writes closed most of the gap. The
   residual is the ARC heap-array model vs Rust's stack-resident struct array
   (vectorization is the last lever).
-- **fib: 2.9x slower than Rust** — pure recursion; no arrays, so untouched by
-  the array-access work. Call overhead is the remaining gap.
+- **fib: 1.01x of Rust — parity** (was 3.0x). Pure recursion: the per-call
+  exception check (a runtime call + branch after every call) dominated;
+  eliding it for this throw-free program closed the gap entirely.
 - **binary_trees (allocation stress): 6.3x slower than Rust** (was 11.6x),
   and still ~2.7x behind CPython — the worst benchmark; allocation-bound, not
   access-bound (so the inline read didn't help it). A null/Option-pointer rep
@@ -79,11 +81,11 @@ hang-trap removal), so each improvement is auditable.
 
 | Benchmark | kryos LLVM | kryos Cranelift | rust -O | clang -O2 | go | python | kryos/rust | Δ since 06-11 |
 |---|---|---|---|---|---|---|---|---|
-| fib(40) | 1.027 | 4.894 | 0.349 | 0.345 | 0.714 | 16.81 | **2.9x** | — (no alloc) |
-| mandelbrot 1000² ×1000 | 0.366 | 0.419 | 0.368 | 0.368 | 0.385 | 19.89 | **1.00x** | — (scalar) |
-| nbody 2M steps | 0.205 | 0.951 | 0.112 | 0.147 | 0.245 | 46.77 | **1.8x** | 16.8x → 1.8x |
-| matmul 512² | 0.621 | 0.650 | 0.668 | 0.657 | 0.565 | 34.09 | **0.93x** | 1.9x → **0.93x (beats Rust)** |
-| fannkuch-redux(10)¹ | 0.221 | 0.930 | 0.202 | 0.196 | 0.199 | 5.938 | **1.09x** | 6.8x → **1.09x (near parity)** |
+| fib(40) | 0.349 | 4.972 | 0.346 | 0.344 | 0.700 | 17.01 | **1.01x (parity)** | 3.0x → 1.01x |
+| mandelbrot 1000² ×1000 | 0.377 | 0.417 | 0.364 | 0.363 | 0.387 | 19.66 | **1.04x** | — (scalar) |
+| nbody 2M steps | 0.208 | 0.927 | 0.107 | 0.150 | 0.244 | 46.98 | **1.9x** | 16.8x → 1.9x |
+| matmul 512² | 0.612 | 0.656 | 0.643 | 0.653 | 0.567 | 34.95 | **0.95x** | 1.9x → **0.95x (beats Rust)** |
+| fannkuch-redux(10)¹ | 0.219 | 0.904 | 0.199 | 0.200 | 0.205 | 5.937 | **1.10x** | 6.8x → **1.10x (near parity)** |
 
 All rows verified output-identical across languages before timing.
 
@@ -104,7 +106,7 @@ ports verified output-identical: checksum 14723759).
 
 | | kryos LLVM | kryos Cranelift | rust -O | clang -O2 | go | python | Δ since 06-11 |
 |---|---|---|---|---|---|---|---|
-| binary_trees d16 | 4.933 | 3.606 | 0.785 | 0.725 | 0.493 | 1.788 | 9.03s → 4.93s |
+| binary_trees d16 | 4.954 | 3.781 | 0.762 | 0.702 | 0.498 | 1.804 | 9.03s → 4.95s |
 
 This remains Kryos's **worst benchmark, stated plainly: 6.3x slower than
 Rust and still ~2.8x slower than CPython** on pure allocation stress — even
@@ -131,11 +133,12 @@ cannot help).
   (per-thread size-class freelists); (2) a codegen pass hoisting loop-body
   `alloca`s to the entry block; (3) removal of the per-element-access
   hang-trap atomic load from `kryos_array_get`; (4) inlining the `arr[i]`
-  read AND write in codegen (`alwaysinline` helpers LLVM hoists/optimizes).
-  Cumulatively these moved nbody 16.8x→1.8x, binary_trees 11.6x→6.3x,
-  matmul 1.9x→**0.93x (beats Rust)**, and fannkuch 6.8x→**1.09x (near
-  parity)** vs Rust. The inline read/write is LLVM-backend only; the
-  Cranelift bootstrap held at 989ba174.
+  read AND write in codegen (`alwaysinline` helpers LLVM hoists/optimizes);
+  (5) eliding the dead post-call exception check in throw-free modules.
+  Cumulatively these moved fib 3.0x→**1.01x (parity)**, nbody 16.8x→1.9x,
+  fannkuch 6.8x→**1.10x**, matmul 1.9x→**0.95x (beats Rust)** vs Rust —
+  **5 of 6 benchmarks now at/within 1.1x of Rust**. All LLVM-backend only;
+  the Cranelift bootstrap held at 989ba174; exception propagation preserved.
 - **Still planned**, in impact order: bounds-check elision in provably-safe
   loops, scalar replacement for small fixed arrays, loop-vectorization hints
   to LLVM, and a null/Option-pointer representation to remove the

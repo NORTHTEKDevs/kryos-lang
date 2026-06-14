@@ -5904,3 +5904,26 @@ SHIFTS:
   Cranelift bootstrap unaffected -- zero realized risk again). codegen-llvm tests green.
   REMAINING smaller levers: nbody vectorization (the ARC-heap-array vs stack-struct gap);
   fib call overhead; binary_trees null/Option-ptr rep (drop array-children alloc).
+
+  ---
+  step:    259 (session 11 -- 2026-06-14 "SPEED #4: elide dead exception checks -> fib at PARITY")
+  date:    2026-06-14
+  Found via fib IR: EVERY function call emitted a post-call `call @kryos_exception_check`
+  + cmp + branch to propagate thrown exceptions -- pure overhead for call-heavy throw-free
+  code (fib does 2 calls/invocation x ~2^40). FIX: new module_can_throw flag (true unless a
+  full scan finds NO `kryos_exception_throw` call -- the only thing that sets the catchable
+  flag; native panics abort instead). When false, the auto post-call check is provably dead
+  and elided. CONSERVATIVE: default true; CallIndirect/VtableCall force true. Gate added at
+  the emission site; computed in both emit_module + prescan_all over all module functions.
+  MEASURED: **fib 1.027->0.349s (2.9x->1.01x = PARITY with Rust!)**. Throw/catch still works
+  (try{risky(-1)}catch e -> "caught: negative input" both backends) because that module HAS
+  a throw -> checks kept.
+  **FINAL SESSION SPEED STANDING vs Rust: matmul 0.95x(beats), fib 1.01x(parity), mandelbrot
+  1.04x(parity), fannkuch 1.10x(near parity), nbody 1.9x, binary_trees 6.5x(alloc outlier).
+  5 OF 6 AT/WITHIN 1.1x OF RUST; 13-87x faster than CPython.** From session start: fib
+  3.0x->1.01x, nbody 16.8x->1.9x, fannkuch 6.8x->1.10x, matmul 1.9x->0.95x, binary_trees
+  11.6x->6.5x.
+  GATES: parity 55/55, conf 6/6 (incl exception tests), examples PASS, **BOOTSTRAP HELD
+  989ba174** (LLVM-only; self-host module HAS throws so its checks stay; + Cranelift bootstrap
+  anyway). codegen-llvm green. BENCHMARKS.md = 06-14 (4 perf steps).
+  Remaining outlier: binary_trees (allocation-bound) -- needs null/Option-ptr child rep.

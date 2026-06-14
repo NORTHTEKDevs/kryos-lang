@@ -67,6 +67,13 @@ pub struct LlvmCodegen {
     /// pending exceptions and the auto post-call checks must stay out of
     /// the way (mirrors the Cranelift backend's gating).
     cur_fn_has_mir_exception_checks: bool,
+    /// True if ANY function in the module calls `kryos_exception_throw` (the
+    /// only thing that sets the catchable-exception flag; native panics abort
+    /// instead). When false, no `throw` can ever fire, so the auto post-call
+    /// exception check after every call is dead overhead and is elided —
+    /// a large win for call-heavy throw-free code (e.g. recursion). Default
+    /// true (conservative); set false only when a full module scan proves it.
+    module_can_throw: bool,
     /// Closure capture types: func_name -> Vec of capture MIR types.
     /// Used to generate per-closure dropper functions that free heap captures.
     closure_cap_types: HashMap<String, Vec<Option<MirType>>>,
@@ -112,6 +119,7 @@ impl LlvmCodegen {
             value_types: HashMap::new(),
             copy_structs: HashSet::new(),
             cur_fn_has_mir_exception_checks: false,
+            module_can_throw: true,
             closure_cap_types: HashMap::new(),
             closure_user_sig: HashMap::new(),
             trait_vtables: HashMap::new(),
@@ -176,6 +184,7 @@ impl LlvmCodegen {
         // function signatures, and collect closure capture types.
         self.closure_cap_types.clear();
         self.closure_user_sig.clear();
+        self.module_can_throw = module_has_throw(&module.functions);
         for func in &module.functions {
             self.prescan_function(func);
             let param_types: Vec<String> = func
@@ -329,6 +338,7 @@ impl LlvmCodegen {
         self.trait_vtables = header.trait_vtables.clone();
         self.closure_cap_types.clear();
         self.closure_user_sig.clear();
+        self.module_can_throw = module_has_throw(functions);
 
         for func in functions {
             self.prescan_function(func);
@@ -2807,7 +2817,8 @@ impl LlvmCodegen {
                 // nearest try/catch up the call stack (mirrors the Cranelift
                 // backend; without this an out-of-try `throw` in a callee is
                 // silently ignored and execution continues).
-                if !self.cur_fn_has_mir_exception_checks
+                if self.module_can_throw
+                    && !self.cur_fn_has_mir_exception_checks
                     && post_call_exception_check_applies(value)
                 {
                     self.emit_post_call_exception_check(func);
@@ -8035,6 +8046,30 @@ fn post_call_exception_check_applies(value: &RValue) -> bool {
         RValue::CallIndirect { .. } | RValue::VtableCall { .. } => true,
         _ => false,
     }
+}
+
+/// True if any function in the module calls `kryos_exception_throw` (what
+/// `throw` lowers to, and the only thing that sets the catchable-exception
+/// flag — native panics abort the process instead). When this is false the
+/// auto post-call exception check is provably dead and can be elided.
+/// Conservative: a CallIndirect/VtableCall to an unknown target could in
+/// principle reach a throw, so their presence also forces `true`.
+fn module_has_throw(functions: &[MirFunction]) -> bool {
+    functions.iter().any(|f| {
+        f.blocks.iter().any(|bb| {
+            bb.instructions.iter().any(|inst| {
+                if let Instruction::Assign { value, .. } = inst {
+                    match value {
+                        RValue::Call { func, .. } => func == "kryos_exception_throw",
+                        RValue::CallIndirect { .. } | RValue::VtableCall { .. } => true,
+                        _ => false,
+                    }
+                } else {
+                    false
+                }
+            })
+        })
+    })
 }
 
 fn default_value_for_type(ty: &str) -> &str {
