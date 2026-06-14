@@ -5857,3 +5857,29 @@ SHIFTS:
   GATES: parity 55/55, bootstrap HELD 989ba174 (runtime change; emitted codegen unchanged).
   NEXT speed levers: bounds-check elision in provably-safe loops; inline array_get via LTO
   (#17 MSVC /LTCG); scalar-replace small fixed arrays; fib call overhead.
+
+  ---
+  step:    257 (session 11 -- 2026-06-14 "SPEED #2: inline arr[i] read in codegen -- the big lever")
+  date:    2026-06-14
+  User: "make it faster or do the risky thing; save a revert point first." Saved
+  safepoint tag `safepoint/pre-inline-array-access` @ d269213 (pushed). Then did the
+  inline-array-read change. `arr[i]` used to emit `call i64 @kryos_array_get` per access
+  (call overhead; optimizer couldn't hoist the len load or elide bounds checks). Now:
+    - kryos-rt: exported cold panic helpers kryos_array_oob_panic(i64,i64) +
+      kryos_array_null_panic() (wrap the internal oob/null panics).
+    - LLVM codegen: emit a preamble `define internal i64 @__kryos_array_get_inline(ptr,i64)
+      alwaysinline` doing null-check -> bounds-check(uge) -> load (KryosArray len@0,
+      data@i64-idx4, elem 8B); RValue::Index read calls it instead of kryos_array_get.
+      LLVM inlines + hoists len + elides redundant checks.
+  MEASURED (medians of 5): nbody 0.921->0.302 (8.3x->2.8x Rust), fannkuch 0.872->0.479
+  (4.4x->2.3x), matmul 0.617 (0.93x BEATS RUST), binary_trees 4.84 (6.4x, alloc-bound,
+  little change -- not access-bound), fib/mandelbrot unchanged.
+  CUMULATIVE this session vs Rust: nbody 16.8x->2.8x, fannkuch 6.8x->2.3x, matmul
+  1.9x->0.93x(beats), binary_trees 11.6x->6.4x. Compute benches now WITHIN 1-3x of Rust
+  (2 beat/match it); binary_trees (allocation) the lone outlier.
+  CORRECTNESS: array sum=100 both backends; OOB still panics ("index 3 but length is 3").
+  GATES: parity 55/55, conf 6/6, examples PASS, codegen-llvm 43 tests, **BOOTSTRAP HELD
+  989ba174** -- the change is LLVM-backend-only and the bootstrap compiles via Cranelift,
+  so ZERO realized bootstrap risk (the sha didn't even move). BENCHMARKS.md = 06-14 (2 steps).
+  NEXT speed levers (smaller): inline arr[i] WRITE (array_set) too; vectorization hints for
+  nbody; fib call overhead; binary_trees null/Option-ptr rep (drops array-children alloc).

@@ -674,6 +674,9 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_array_push(ptr, i64)");
         self.emit_line("declare i64 @kryos_builtin_pop(i64)");
         self.emit_line("declare i64 @kryos_array_get(ptr, i64)");
+        // Cold panic helpers for the inlined array-read fast path.
+        self.emit_line("declare void @kryos_array_oob_panic(i64, i64)");
+        self.emit_line("declare void @kryos_array_null_panic()");
         self.emit_line("declare void @kryos_array_set(ptr, i64, i64)");
         self.emit_line("declare i64 @kryos_array_len(ptr)");
         self.emit_line("declare void @kryos_array_free(ptr)");
@@ -1214,6 +1217,39 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_async_spawn_task(i64, i64)");
         self.emit_line("declare i64 @kryos_async_block_on(i64)");
         self.emit_line("declare void @kryos_panic_with_location(ptr, i64, ptr, i64, i64, i64)");
+
+        // Inlined array-read fast path. `arr[i]` used to emit a runtime
+        // `call @kryos_array_get`, so the hottest loops paid call overhead
+        // and the optimizer could not hoist the bounds check or vectorize.
+        // This `alwaysinline` helper open-codes the exact semantics (null
+        // check, unsigned bounds check, load) so LLVM inlines it into the
+        // loop, hoists the loop-invariant length load, and can elide
+        // redundant checks. The cold panic branches call out-of-line runtime
+        // helpers. KryosArray layout (frozen v4 ABI): { len@0, cap@8,
+        // elem_size@16, ref_count@24, data@32 }, elements 8 bytes each.
+        self.emit_line(
+            "define internal i64 @__kryos_array_get_inline(ptr %a, i64 %i) alwaysinline {",
+        );
+        self.emit_line("entry:");
+        self.emit_line("  %isnull = icmp eq ptr %a, null");
+        self.emit_line("  br i1 %isnull, label %nullp, label %chk");
+        self.emit_line("nullp:");
+        self.emit_line("  call void @kryos_array_null_panic()");
+        self.emit_line("  unreachable");
+        self.emit_line("chk:");
+        self.emit_line("  %len = load i64, ptr %a");
+        self.emit_line("  %oob = icmp uge i64 %i, %len");
+        self.emit_line("  br i1 %oob, label %oobp, label %ld");
+        self.emit_line("oobp:");
+        self.emit_line("  call void @kryos_array_oob_panic(i64 %i, i64 %len)");
+        self.emit_line("  unreachable");
+        self.emit_line("ld:");
+        self.emit_line("  %dptr = getelementptr i64, ptr %a, i64 4");
+        self.emit_line("  %data = load ptr, ptr %dptr");
+        self.emit_line("  %elemp = getelementptr i64, ptr %data, i64 %i");
+        self.emit_line("  %v = load i64, ptr %elemp");
+        self.emit_line("  ret i64 %v");
+        self.emit_line("}");
         self.emit_blank();
     }
 
@@ -4942,7 +4978,7 @@ impl LlvmCodegen {
                     };
                     let raw = self.next_temp();
                     self.emit_line(&format!(
-                        "  {raw} = call i64 @kryos_array_get(ptr {obj_val}, i64 {idx_i64})"
+                        "  {raw} = call i64 @__kryos_array_get_inline(ptr {obj_val}, i64 {idx_i64})"
                     ));
                     // Convert i64 -> dest_ty, naming the result %_N for non-mutable.
                     let is_aggregate = dest_ty.starts_with('{')

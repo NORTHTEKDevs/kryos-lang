@@ -193,6 +193,20 @@ unsafe fn null_panic() -> ! {
     crate::panic::kryos_panic(msg.as_ptr(), msg.len());
 }
 
+/// Exported cold panic helpers for the inline array-access codegen path.
+/// The LLVM backend emits the null/bounds check inline (so the hot read is a
+/// load, not a call) and branches to one of these on failure. Both diverge.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_array_oob_panic(idx: i64, len: i64) -> ! {
+    oob_panic(idx, len)
+}
+
+#[no_mangle]
+pub extern "C" fn kryos_array_null_panic() -> ! {
+    // SAFETY: null_panic only formats a static message and diverges.
+    unsafe { null_panic() }
+}
+
 /// Get the element at `idx`. Bounds-checked: panics on out-of-bounds access.
 ///
 /// Marked `#[inline]` so LLVM (with LTO enabled in the AOT link) can inline
