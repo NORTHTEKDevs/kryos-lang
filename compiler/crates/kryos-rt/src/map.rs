@@ -44,9 +44,13 @@ struct MapHeader {
     ref_count: i64,
 }
 
+// `capacity` is ALWAYS a power of two (INITIAL_CAPACITY = 16, resize doubles),
+// so `x % capacity` is equivalent to `x & (capacity - 1)` and compiles to a
+// single AND instead of going through the division unit. Applied to hash_key
+// and every linear-probe step below.
 fn hash_key(key: i64, capacity: usize) -> usize {
     let h = (key as u64).wrapping_mul(0x9E3779B97F4A7C15);
-    (h as usize) % capacity
+    (h as usize) & (capacity - 1)
 }
 
 unsafe fn alloc_entries(capacity: usize) -> *mut MapEntry {
@@ -87,7 +91,7 @@ unsafe fn resize(header: *mut MapHeader) {
                     slot.occupied = true;
                     break;
                 }
-                idx = (idx + 1) % new_cap;
+                idx = (idx + 1) & (new_cap - 1);
             }
         }
     }
@@ -149,7 +153,7 @@ pub extern "C" fn kryos_map_insert(map: i64, key: i64, value: i64) {
                 }
                 return;
             }
-            idx = (idx + 1) % capacity;
+            idx = (idx + 1) & (capacity - 1);
         }
     }
 }
@@ -174,7 +178,7 @@ pub extern "C" fn kryos_map_get(map: i64, key: i64) -> i64 {
             if entry.key == key {
                 return entry.value;
             }
-            idx = (idx + 1) % capacity;
+            idx = (idx + 1) & (capacity - 1);
         }
         0
     }
@@ -217,7 +221,7 @@ pub extern "C" fn kryos_map_insert_str(map: i64, key: i64, value: i64) {
                 entry.value = value;
                 return;
             }
-            idx = (idx + 1) % capacity;
+            idx = (idx + 1) & (capacity - 1);
         }
     }
 }
@@ -247,7 +251,7 @@ pub extern "C" fn kryos_map_get_str(map: i64, key: i64) -> i64 {
             ) {
                 return entry.value;
             }
-            idx = (idx + 1) % capacity;
+            idx = (idx + 1) & (capacity - 1);
         }
         0
     }
@@ -278,7 +282,7 @@ unsafe fn resize_str(header: *mut MapHeader) {
                     slot.occupied = true;
                     break;
                 }
-                idx = (idx + 1) % new_cap;
+                idx = (idx + 1) & (new_cap - 1);
             }
         }
     }
@@ -320,7 +324,7 @@ pub extern "C" fn kryos_map_has(map: i64, key: i64) -> i64 {
             if entry.key == key {
                 return 1;
             }
-            idx = (idx + 1) % capacity;
+            idx = (idx + 1) & (capacity - 1);
         }
         0
     }
@@ -350,7 +354,7 @@ pub extern "C" fn kryos_map_has_str(map: i64, key: i64) -> i64 {
             ) {
                 return 1;
             }
-            idx = (idx + 1) % capacity;
+            idx = (idx + 1) & (capacity - 1);
         }
         0
     }
@@ -380,7 +384,7 @@ pub extern "C" fn kryos_map_delete(map: i64, key: i64) -> i64 {
                 (*entries.add(idx)).occupied = false;
                 (*header).len -= 1;
                 // Shift entries that may have been displaced by this slot.
-                let mut j = (idx + 1) % capacity;
+                let mut j = (idx + 1) & (capacity - 1);
                 for _ in 0..capacity {
                     let next = &*entries.add(j);
                     if !next.occupied {
@@ -399,11 +403,11 @@ pub extern "C" fn kryos_map_delete(map: i64, key: i64) -> i64 {
                         (*entries.add(idx)).occupied = true;
                         idx = j;
                     }
-                    j = (j + 1) % capacity;
+                    j = (j + 1) & (capacity - 1);
                 }
                 return old_value;
             }
-            idx = (idx + 1) % capacity;
+            idx = (idx + 1) & (capacity - 1);
         }
         0
     }
@@ -435,7 +439,7 @@ pub extern "C" fn kryos_map_delete_str(map: i64, key: i64) -> i64 {
                 (*entries.add(idx)).occupied = false;
                 (*header).len -= 1;
                 // Backward-shift for string-keyed entries.
-                let mut j = (idx + 1) % capacity;
+                let mut j = (idx + 1) & (capacity - 1);
                 for _ in 0..capacity {
                     let next = &*entries.add(j);
                     if !next.occupied {
@@ -456,11 +460,11 @@ pub extern "C" fn kryos_map_delete_str(map: i64, key: i64) -> i64 {
                         (*entries.add(idx)).occupied = true;
                         idx = j;
                     }
-                    j = (j + 1) % capacity;
+                    j = (j + 1) & (capacity - 1);
                 }
                 return old_value;
             }
-            idx = (idx + 1) % capacity;
+            idx = (idx + 1) & (capacity - 1);
         }
         0
     }

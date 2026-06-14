@@ -1,0 +1,19 @@
+fn main() {
+    let n: i64 = 100000
+    let token: str = "ab"
+    let mut s: str = ""
+    let mut i: i64 = 0
+    while i < n {
+        s = s + token
+        i = i + 1
+    }
+    let slen: i64 = len(s)
+    let mut checksum: i64 = 0
+    let mut j: i64 = 0
+    while j < slen {
+        checksum = checksum + char_code(substr(s, j, j + 1))
+        j = j + 1
+    }
+    println(to_string(slen))
+    println(to_string(checksum))
+}

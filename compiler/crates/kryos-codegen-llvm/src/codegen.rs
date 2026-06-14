@@ -1247,7 +1247,7 @@ impl LlvmCodegen {
         self.emit_line("  call void @kryos_array_null_panic()");
         self.emit_line("  unreachable");
         self.emit_line("chk:");
-        self.emit_line("  %len = load i64, ptr %a");
+        self.emit_line("  %len = load i64, ptr %a, !tbaa !103");
         self.emit_line("  %oob = icmp uge i64 %i, %len");
         self.emit_line("  br i1 %oob, label %oobp, label %ld");
         self.emit_line("oobp:");
@@ -1255,9 +1255,9 @@ impl LlvmCodegen {
         self.emit_line("  unreachable");
         self.emit_line("ld:");
         self.emit_line("  %dptr = getelementptr i64, ptr %a, i64 4");
-        self.emit_line("  %data = load ptr, ptr %dptr");
+        self.emit_line("  %data = load ptr, ptr %dptr, !tbaa !103");
         self.emit_line("  %elemp = getelementptr i64, ptr %data, i64 %i");
-        self.emit_line("  %v = load i64, ptr %elemp");
+        self.emit_line("  %v = load i64, ptr %elemp, !tbaa !104");
         self.emit_line("  ret i64 %v");
         self.emit_line("}");
 
@@ -1275,7 +1275,7 @@ impl LlvmCodegen {
         self.emit_line("  call void @kryos_array_null_panic()");
         self.emit_line("  unreachable");
         self.emit_line("chk:");
-        self.emit_line("  %len = load i64, ptr %a");
+        self.emit_line("  %len = load i64, ptr %a, !tbaa !103");
         self.emit_line("  %oob = icmp uge i64 %i, %len");
         self.emit_line("  br i1 %oob, label %oobp, label %st");
         self.emit_line("oobp:");
@@ -1283,11 +1283,25 @@ impl LlvmCodegen {
         self.emit_line("  unreachable");
         self.emit_line("st:");
         self.emit_line("  %dptr = getelementptr i64, ptr %a, i64 4");
-        self.emit_line("  %data = load ptr, ptr %dptr");
+        self.emit_line("  %data = load ptr, ptr %dptr, !tbaa !103");
         self.emit_line("  %elemp = getelementptr i64, ptr %data, i64 %i");
-        self.emit_line("  store i64 %v, ptr %elemp");
+        self.emit_line("  store i64 %v, ptr %elemp, !tbaa !104");
         self.emit_line("  ret void");
         self.emit_line("}");
+        self.emit_blank();
+
+        // TBAA metadata for array accesses. The element data buffer is ALWAYS a
+        // separate allocation from the KryosArray header (header.data@32 points
+        // outside the header), so a `!elem` store can never clobber a `!hdr`
+        // load. Tagging them as sibling scalar types (neither an ancestor of the
+        // other) lets LLVM prove no-alias and hoist the loop-invariant `len` and
+        // `data` loads out of hot loops where an element store sits between them.
+        // Fixed ids !100-!104 do not collide with the debug-info nodes (!0-!8).
+        self.emit_line("!100 = !{!\"kryos_tbaa_root\"}");
+        self.emit_line("!101 = !{!\"kryos_array_hdr\", !100, i64 0}");
+        self.emit_line("!102 = !{!\"kryos_array_elem\", !100, i64 0}");
+        self.emit_line("!103 = !{!101, !101, i64 0}");
+        self.emit_line("!104 = !{!102, !102, i64 0}");
         self.emit_blank();
     }
 

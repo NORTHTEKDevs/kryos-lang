@@ -101,6 +101,17 @@ pub unsafe extern "C" fn kryos_string_concat(
     let b_len = (*b).len as usize;
     let total = a_len + b_len;
 
+    // NOTE: an in-place "append into a's buffer when ref_count == 1" fast path
+    // was tried and REVERTED (2026-06-14). It is unsound under the current
+    // compiler: codegen never emits kryos_string_clone when a str is copied,
+    // passed to a function, or stored in a container, and kryos_string_free is
+    // a no-op (leak-on-zero), so ref_count is effectively always 1 even when
+    // multiple live references alias the same KryosString. Mutating `a` in place
+    // therefore corrupts every aliased reference (interpolation, `let y = a + b`,
+    // fn args, array/map stores) on BOTH backends, plus a non-deterministic UAF
+    // in self-concat (`s = s + s`). A sound version requires a liveness-gated
+    // consuming-append intrinsic emitted only where the left operand is provably
+    // dead. Until then, concat always allocates a fresh string.
     let layout = KryosString::layout(total);
     let data = alloc(layout);
     if data.is_null() {

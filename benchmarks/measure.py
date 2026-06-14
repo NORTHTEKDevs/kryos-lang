@@ -33,7 +33,13 @@ REPO = HERE.parent
 BIN = HERE / "bin"
 BIN.mkdir(exist_ok=True)
 
-BENCHES = ["fib", "mandelbrot", "nbody", "binary_trees", "fannkuch", "matmul"]
+# Canonical compute benchmarks + hashmap (general-program / map throughput).
+# "strings" is intentionally excluded: the Kryos port builds with the naive
+# `s = s + token` loop which is O(n^2) (concat allocates a fresh string each
+# step), so it is not a like-for-like comparison against Rust's String::push_str
+# / Go's strings.Builder. The files exist for the future liveness-gated
+# consuming-append intrinsic; until then, measuring it would mislead.
+BENCHES = ["fib", "mandelbrot", "nbody", "binary_trees", "fannkuch", "matmul", "hashmap"]
 
 KRYOS = REPO / "compiler" / "target" / "release" / ("kryos.exe" if sys.platform == "win32" else "kryos")
 EXE = ".exe" if sys.platform == "win32" else ""
@@ -188,14 +194,14 @@ def main():
     langs_order = ["kryos-llvm", "kryos-cranelift", "rust -O", "clang -O2", "go", "python"]
     lines.append("| Benchmark | " + " | ".join(langs_order) + " | kryos-llvm / rust |")
     lines.append("|---" * (len(langs_order) + 2) + "|")
-    for b in ["fib", "mandelbrot", "nbody", "binary_trees", "fannkuch", "matmul"]:
+    for b in BENCHES:
         if b not in results["benches"]:
             continue
         row = [b]
         for l in langs_order:
             e = results["benches"][b].get(l)
             if not e:
-                row.append("—")
+                row.append("n/a")
             elif e["status"] == "ok":
                 row.append(f"{e['median_s']:.3f}s")
             elif e["status"] == "timeout":
@@ -207,7 +213,7 @@ def main():
         if k.get("status") == "ok" and r.get("status") == "ok" and r["median_s"] > 0:
             row.append(f"{k['median_s'] / r['median_s']:.2f}x")
         else:
-            row.append("—")
+            row.append("n/a")
         lines.append("| " + " | ".join(row) + " |")
     (HERE / "results_table.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"wrote {HERE / 'results_table.md'}")
