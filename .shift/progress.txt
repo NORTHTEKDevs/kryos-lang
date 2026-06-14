@@ -5669,3 +5669,25 @@ SHIFTS:
     3. CI still billing-blocked (Kristian: github.com/settings/billing).
   QUEUE AFTER THAT: nbody gap (bounds-check elision), generic impl blocks (E0101),
   deny-by-default capabilities, async executor, more showcase programs.
+
+  ---
+  step:    247 (session 11 -- 2026-06-13 "step-246 verification + honest benchmark refresh")
+  date:    2026-06-13
+  Cleared the two pending items from step 246:
+  (1) FULL WORKSPACE SUITE GREEN: cargo test --workspace --exclude kryos-codegen-cranelift
+      -> EXIT 0, every crate, ~900 tests, 0 failures (2 doc-test ignores are normal).
+      Confirms the pooled allocator + alloca-hoist are safe across the whole compiler.
+  (2) FULL BENCHMARK RE-MEASURE (medians of 5, all output-verified): the allocator+hoist
+      improved EVERY allocation/loop-heavy bench 27-39%, while fib+mandelbrot (no alloc,
+      no hot-loop spill) are unchanged -- the expected signature:
+        nbody        1.852 -> 1.199  (16.8x -> 10.7x Rust)
+        binary_trees 9.030 -> 5.532  (11.6x -> 7.0x Rust; still behind CPython 1.89)
+        fannkuch     1.341 -> 0.977  (6.8x -> 4.8x Rust)
+        matmul       1.205 -> 0.825  (1.9x -> 1.25x Rust)
+        fib          1.043 -> 1.049  (2.9x, unchanged)
+        mandelbrot   0.365 -> 0.390  (1.03x, unchanged)
+      BENCHMARKS.md rewritten with new numbers + auditable "Delta vs prev" columns +
+      landed-vs-planned perf section. results.json/results_table.md regenerated.
+  GATES (this step): workspace 900/0; benchmarks output-verified. (parity/conf/examples/
+  bootstrap/ASAN were green at step 246.)
+  next: act on kryos-finish-map investigation -> finish-the-language execution plan.
