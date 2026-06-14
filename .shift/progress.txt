@@ -5839,3 +5839,21 @@ SHIFTS:
   (`let x = { ...; tail }`) fails AOT codegen (emits `getelementptr ptr <i64>`); was
   already broken before my change (`let x = {5+1}` fails AOT too); infer_expr_type has no
   MIR Block arm. Out of async scope; logged for a future fix.
+
+  ---
+  step:    256 (session 11 -- 2026-06-14 "SPEED #1: remove per-access atomic from array hot path")
+  date:    2026-06-14
+  Speed phase (user: "compete on latency across the board"). First win, highest-leverage +
+  zero codegen risk: kryos_array_get paid a relaxed atomic load + branch on EVERY element
+  read (the hang-trap debug watchdog, env KRYOS_HANG_TRAP). Gated behind a default-off
+  cargo feature `hang-trap` -> release array reads pay nothing. MEASURED (medians of 5):
+    nbody        1.199 -> 0.921  (10.7x -> 8.3x Rust)
+    matmul       0.825 -> 0.568  (1.25x -> 0.86x = BEATS RUST, matches clang/Go)
+    fannkuch     0.977 -> 0.872  (4.8x -> 4.4x)
+    binary_trees 5.53  -> 4.97   (alloc-bound; modest)
+    fib/mandelbrot unchanged (no array access -- expected signature).
+  Cumulative since 06-11: nbody 16.8x->8.3x, binary_trees 11.6x->6.4x, matmul 1.9x->0.86x,
+  fannkuch 6.8x->4.4x. BENCHMARKS.md updated (06-14 refresh, auditable deltas).
+  GATES: parity 55/55, bootstrap HELD 989ba174 (runtime change; emitted codegen unchanged).
+  NEXT speed levers: bounds-check elision in provably-safe loops; inline array_get via LTO
+  (#17 MSVC /LTCG); scalar-replace small fixed arrays; fib call overhead.

@@ -201,6 +201,11 @@ unsafe fn null_panic() -> ! {
 #[no_mangle]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn kryos_array_get(arr: *const KryosArray, idx: i64) -> i64 {
+    // The hang-trap is a debug-only watchdog (env `KRYOS_HANG_TRAP`). Even
+    // when disabled it costs a relaxed atomic load + branch on EVERY element
+    // read, which dominates array-heavy inner loops (nbody/matmul/fannkuch).
+    // Gate it behind a default-off feature so release builds pay nothing here.
+    #[cfg(feature = "hang-trap")]
     crate::fault::hang_tick();
     if arr.is_null() {
         null_panic();

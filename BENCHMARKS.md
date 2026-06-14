@@ -3,37 +3,39 @@
 Measured medians from [`benchmarks/measure.py`](./benchmarks/measure.py).
 Reproduce with `python benchmarks/measure.py` — the tables below are
 generated from `benchmarks/results.json`, never hand-edited.
-Last refresh: **1.0.0-beta.1, 2026-06-13**, Windows 11 x64
+Last refresh: **1.0.0-beta.1, 2026-06-14**, Windows 11 x64
 (rustc 1.95, clang 19 -O2, go 1.x, CPython 3.14).
 
-> **2026-06-13 refresh:** a pooled box/buffer allocator (per-thread
-> size-class freelists) plus a codegen pass that hoists loop-body `alloca`s
-> to the entry block improved every allocation- or loop-heavy benchmark by
-> 27–39%. The two benchmarks that neither allocate nor spill in a hot loop
-> (fib, mandelbrot) are unchanged — the expected signature. Old numbers are
-> shown in the deltas below so the win is auditable, not asserted.
+> **2026-06-14 refresh:** the per-element-access hang-trap atomic load was
+> removed from `kryos_array_get` (gated behind a default-off feature). Every
+> array read previously paid a relaxed atomic load + branch; dropping it cut
+> array-heavy benchmarks another 13–31%. **matmul now beats Rust** (0.57s vs
+> 0.66s). Cumulative since 2026-06-11: nbody 16.8x→8.3x, binary_trees
+> 11.6x→6.4x, fannkuch 6.8x→4.4x, matmul 1.9x→0.86x vs Rust. The two
+> non-array benchmarks (fib, mandelbrot) are unchanged — the expected
+> signature.
 
-## TL;DR — where Kryos loses, first
+## TL;DR
 
-- **nbody: 10.7x slower than Rust** (was 16.8x). Tight float loops over small
-  arrays are still Kryos's worst *float* case: every element access goes
-  through ARC-managed heap arrays with bounds checks while Rust/clang
-  vectorize a stack-resident struct array. The pooled allocator removed the
-  per-step allocation overhead; the remaining gap is the array-access model.
-- **binary_trees (allocation stress): 7.0x slower than Rust** (was 11.6x),
-  and **still behind CPython** (5.53s vs 1.89s) — the worst benchmark; see
-  its section below. The queued arena/slab fix partially landed (the pool).
-- **fannkuch-redux (canonical, n=10): 4.8x slower than Rust** (was 6.8x);
-  6.2x faster than CPython. The alloca-hoist helped the 3.6M-iteration
-  permutation loop directly.
-- **fib: 2.9x slower than Rust** — pure recursion; no allocation, so
-  unchanged by this refresh. Still behind on call overhead.
-- **matmul: 1.25x slower than Rust** (was 1.9x) — dense float loops; the gap
-  is now small.
-- **mandelbrot: parity (1.03x)** — scalar float arithmetic in registers is
-  the case where the LLVM backend matches Rust/C; nothing for the array
-  model to pay for, and nothing for the allocator to improve.
-- **vs Python: 6–53x faster on compute benchmarks — except binary_trees,
+- **matmul: 0.86x of Rust — Kryos is now FASTER than Rust** on dense 512²
+  float matmul (0.568s vs 0.664s), and matches clang/Go. Dense register-
+  resident float loops are a case the LLVM backend optimizes as well as any.
+- **mandelbrot: parity (1.00x)** — scalar float arithmetic in registers
+  matches Rust/C exactly.
+- **fib: 3.0x slower than Rust** — pure recursion; no arrays, so untouched by
+  the array-access work. Call overhead is the remaining gap.
+- **fannkuch-redux (canonical, n=10): 4.4x slower than Rust** (was 6.8x);
+  7.1x faster than CPython. Hot integer array loops.
+- **binary_trees (allocation stress): 6.4x slower than Rust** (was 11.6x),
+  and still ~2.7x behind CPython — the worst benchmark; allocation-bound (see
+  its section below). The pooled allocator + a null/Option-pointer rep are
+  the remaining levers.
+- **nbody: 8.3x slower than Rust** (was 16.8x). Tight float loops over small
+  arrays remain the worst *float* case: element access still goes through
+  ARC-managed heap arrays with bounds checks while Rust/clang vectorize a
+  stack-resident struct array. Bounds-check elision + vectorization are the
+  remaining levers.
+- **vs Python: 7–62x faster on compute benchmarks — except binary_trees,
   where Python still wins** (allocation stress; see below).
 - **Cranelift (the `kryos run` dev backend) is 1.1–4.7x slower than the LLVM
   backend** — it optimizes compile speed, not runtime. (On binary_trees,
@@ -65,17 +67,17 @@ table is retracted. Current methodology:
 
 ## Results (medians of 5, seconds)
 
-Medians of 5 runs. The `Δ vs prev` column is the change from the
-2026-06-11 numbers (before the pooled allocator + alloca-hoist), so each
-improvement is auditable.
+Medians of 5 runs. The `Δ since 06-11` column is the cumulative change from
+the 2026-06-11 numbers (before the pooled allocator, alloca-hoist, and
+hang-trap removal), so each improvement is auditable.
 
-| Benchmark | kryos LLVM | kryos Cranelift | rust -O | clang -O2 | go | python | kryos/rust | Δ vs prev |
+| Benchmark | kryos LLVM | kryos Cranelift | rust -O | clang -O2 | go | python | kryos/rust | Δ since 06-11 |
 |---|---|---|---|---|---|---|---|---|
-| fib(40) | 1.049 | 4.939 | 0.364 | 0.372 | 0.728 | 16.94 | **2.9x** | — (no alloc) |
-| mandelbrot 1000² ×1000 | 0.390 | 0.422 | 0.380 | 0.375 | 0.419 | 20.22 | **1.03x** | — (scalar) |
-| nbody 2M steps | 1.199 | 1.214 | 0.112 | 0.150 | 0.252 | 47.86 | **10.7x** | 16.8x → 10.7x |
-| matmul 512² | 0.825 | 0.909 | 0.660 | 0.651 | 0.571 | 37.33 | **1.25x** | 1.9x → 1.25x |
-| fannkuch-redux(10)¹ | 0.977 | 1.050 | 0.204 | 0.193 | 0.205 | 6.048 | **4.8x** | 6.8x → 4.8x |
+| fib(40) | 1.058 | 4.976 | 0.348 | 0.352 | 0.717 | 16.96 | **3.0x** | — (no alloc) |
+| mandelbrot 1000² ×1000 | 0.375 | 0.424 | 0.375 | 0.389 | 0.413 | 19.52 | **1.00x** | — (scalar) |
+| nbody 2M steps | 0.921 | 0.951 | 0.112 | 0.150 | 0.252 | 45.53 | **8.3x** | 16.8x → 8.3x |
+| matmul 512² | 0.568 | 0.682 | 0.664 | 0.661 | 0.568 | 35.18 | **0.86x** | 1.9x → **0.86x (beats Rust)** |
+| fannkuch-redux(10)¹ | 0.872 | 0.909 | 0.199 | 0.199 | 0.202 | 6.207 | **4.4x** | 6.8x → 4.4x |
 
 All rows verified output-identical across languages before timing.
 
@@ -94,14 +96,14 @@ The earlier single-tree port was constant-folded by optimizing compilers and
 has been replaced with the canonical many-trees-checksummed form (all five
 ports verified output-identical: checksum 14723759).
 
-| | kryos LLVM | kryos Cranelift | rust -O | clang -O2 | go | python | Δ vs prev |
+| | kryos LLVM | kryos Cranelift | rust -O | clang -O2 | go | python | Δ since 06-11 |
 |---|---|---|---|---|---|---|---|
-| binary_trees d16 | 5.532 | 3.753 | 0.785 | 0.751 | 0.513 | 1.887 | 9.03s → 5.53s |
+| binary_trees d16 | 4.974 | 3.714 | 0.783 | 0.736 | 0.514 | 1.844 | 9.03s → 4.97s |
 
-This remains Kryos's **worst benchmark, stated plainly: 7.0x slower than
-Rust and still ~2.9x slower than CPython** on pure allocation stress — even
-after the 2026-06-13 pooled allocator cut its wall-clock by 39% (9.03s →
-5.53s). Two compounding causes remain: (1) every tree node is a heap box
+This remains Kryos's **worst benchmark, stated plainly: 6.4x slower than
+Rust and still ~2.7x slower than CPython** on pure allocation stress — even
+after the pooled allocator + hang-trap removal cut its wall-clock by 45%
+(9.03s → 4.97s). Two compounding causes remain: (1) every tree node is a heap box
 with refcounted teardown, and (2) Kryos has no null/Option-pointer
 representation for child links, so the port stores children in
 single-element arrays — an extra allocation per child that the C/Rust/Go
@@ -118,11 +120,14 @@ cannot help).
   parity). Its weakness is **array traffic**: Kryos arrays are ARC-managed
   heap objects with bounds checks and no vectorization of access loops yet.
   nbody/matmul-class inner loops pay that on every element.
-- **Landed (2026-06-13):** a pooled box/buffer allocator (per-thread
-  size-class freelists) and a codegen pass hoisting loop-body `alloca`s to
-  the entry block. Together these cut allocation and per-iteration stack
-  overhead, moving nbody 16.8x→10.7x, binary_trees 11.6x→7.0x, matmul
-  1.9x→1.25x, and fannkuch 6.8x→4.8x vs Rust.
+- **Landed (2026-06-11 → 06-14):** (1) a pooled box/buffer allocator
+  (per-thread size-class freelists); (2) a codegen pass hoisting loop-body
+  `alloca`s to the entry block; (3) removal of the per-element-access
+  hang-trap atomic load from `kryos_array_get`. Cumulatively these moved
+  nbody 16.8x→8.3x, binary_trees 11.6x→6.4x, matmul 1.9x→**0.86x (now beats
+  Rust)**, and fannkuch 6.8x→4.4x vs Rust — all without changing emitted
+  codegen for the self-host compiler (bootstrap fixed point held at every
+  step).
 - **Still planned**, in impact order: bounds-check elision in provably-safe
   loops, scalar replacement for small fixed arrays, loop-vectorization hints
   to LLVM, and a null/Option-pointer representation to remove the

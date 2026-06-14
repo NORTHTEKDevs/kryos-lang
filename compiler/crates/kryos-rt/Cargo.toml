@@ -5,3 +5,8 @@ edition.workspace = true
 
 [lib]
 crate-type = ["staticlib", "rlib"]
+
+[features]
+# Debug-only hang-trap watchdog in kryos_array_get (env KRYOS_HANG_TRAP).
+# Off by default so release array reads pay no per-element atomic load.
+hang-trap = []
