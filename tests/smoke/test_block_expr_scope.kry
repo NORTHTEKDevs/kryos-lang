@@ -1,0 +1,43 @@
+// Smoke (async build, Unit 2): a `let` bound inside a `spawn { }` block is
+// in scope for the rest of that block. The type checker used to check the
+// block's statements in a scope, POP it, then re-infer the tail expression
+// outside that scope -> "undefined variable" for any block whose tail
+// referenced a block-local. That broke `spawn { let x = await foo(); use x }`,
+// the idiom for running async work concurrently on a real OS thread. The
+// tail type is now captured while the block scope is still live.
+//
+// (Deterministic single-task form; the parallel-interleaving behaviour is
+// demonstrated manually, not asserted here, since thread ordering is
+// nondeterministic.)
+
+use std::datetime::{sleep_millis}
+
+async fn work(id: i64) -> i64 {
+    return id * 100
+}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    // The regression: a local bound from an await, used later in the SAME
+    // spawn block. Was "undefined variable" at type-check before the fix.
+    spawn {
+        let r = await work(2)
+        let doubled = r + r
+        expect(r == 200, "spawn-block awaited local in scope")
+        expect(doubled == 400, "spawn-block second local in scope")
+    }
+    // A plain (non-async) spawn block with locals also must scope correctly.
+    spawn {
+        let a = 5
+        let b = a + 1
+        expect(b == 6, "spawn-block plain locals in scope")
+    }
+    sleep_millis(80)
+    println("spawn block scope OK")
+}

@@ -2650,15 +2650,25 @@ impl TypeChecker {
             // Block expression — type is the type of the last expression.
             Expr::Block { block, .. } => {
                 self.env.push_scope();
-                for stmt in &block.stmts {
+                // The block's type is its tail expression's type, computed
+                // WHILE the block scope is still live -- locals bound earlier
+                // in the block (e.g. `{ let a = 5; a + 1 }`) must be in scope
+                // for the tail. (Previously the tail was re-inferred AFTER
+                // popping the scope, so a tail referencing a block-local
+                // failed with "undefined variable" -- which also broke
+                // `spawn { let x = ...; use x }`.)
+                let mut block_ty = Type::Void;
+                let last_idx = block.stmts.len().wrapping_sub(1);
+                for (i, stmt) in block.stmts.iter().enumerate() {
                     self.check_stmt(stmt);
+                    if i == last_idx {
+                        if let Stmt::Expr { expr, .. } = stmt {
+                            block_ty = self.infer_expr(expr);
+                        }
+                    }
                 }
                 self.env.pop_scope();
-                // Block type is Void unless last stmt is an expression.
-                if let Some(Stmt::Expr { expr, .. }) = block.stmts.last() {
-                    return self.infer_expr(expr);
-                }
-                Type::Void
+                block_ty
             }
 
             // Comptime block — type is the type of the last expression.

@@ -5814,3 +5814,28 @@ SHIFTS:
   REMAINING async units: U2 LLVM poll-fn codegen parity (Cranelift has ~1000 lines, LLVM
   none); U3 spawn-async surface + executor run; U4 true await suspension/interleaving
   (the deep cooperative-scheduler part: await currently = direct synchronous call).
+
+  ---
+  step:    254 (session 11 -- 2026-06-14 "ASYNC build Unit 2: REAL concurrent async on threads")
+  date:    2026-06-14
+  KEY DISCOVERY: the cooperative async executor (kryos_async_spawn/run in kryos-rt) is
+  UNREACHABLE from Kryos source -- no syntax maps to it; it's dead code. The split-vs-
+  synchronous-wrapper models contradict; nothing was validated end-to-end. BUT Kryos has
+  REAL parallelism via `spawn` (OS threads) + channels. The achievable, coherent, HONEST
+  async-concurrency model: `await foo()` returns the correct value (Unit 1) + `spawn { ...
+  await ... }` runs async work concurrently on a real thread.
+  BLOCKER found + FIXED: a `let` inside ANY block EXPRESSION (incl. spawn blocks) was
+  "undefined variable" -- check.rs Expr::Block checked stmts in a scope, POPPED it, then
+  RE-inferred the tail expr OUTSIDE the scope. Fixed: capture the tail type while the
+  scope is live. This unblocked `spawn { let x = await foo(); use x }`.
+  RESULT: real concurrent async PROVEN on BOTH backends -- two spawned async tasks
+  (sleep 120ms vs 40ms) complete in parallel (task 2 prints before task 1). Not the
+  single-threaded cooperative executor; real OS-thread parallelism via the proven spawn
+  machinery.
+  GATES: parity 55/55, conf 6/6, examples PASS, bootstrap HELD 989ba174 (checker change
+  doesn't alter self-host MIR output), kryos-types green. New smoke test_block_expr_scope
+  (spawn-block awaited+plain locals, both backends).
+  SEPARATE PRE-EXISTING BUG (NOT regressed, NOT async): block-expression-as-a-VALUE
+  (`let x = { ...; tail }`) fails AOT codegen (emits `getelementptr ptr <i64>`); was
+  already broken before my change (`let x = {5+1}` fails AOT too); infer_expr_type has no
+  MIR Block arm. Out of async scope; logged for a future fix.
