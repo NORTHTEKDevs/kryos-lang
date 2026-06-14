@@ -36,7 +36,14 @@ the corresponding **linker + sysroot** to be installed on your host.
 | `aarch64-pc-windows-msvc` | Windows on ARM | MSVC ARM toolchain |
 | `x86_64-apple-darwin` | macOS Intel | `cctools` + macOS SDK |
 | `aarch64-apple-darwin` | macOS Apple Silicon | `cctools` + macOS SDK |
-| `wasm32-unknown-unknown` | Standalone WebAssembly | `wasm-ld` (bundled with `lld`) |
+| `wasm32-unknown-unknown` | Standalone WebAssembly (**experimental v0.1**, limited feature subset) | `wasm-ld` (bundled with `lld`) |
+
+> **`wasm32-unknown-unknown` is experimental (v0.1), not on par with the
+> native targets above.** The WASM backend supports integer/float
+> arithmetic, booleans, basic loops, recursion, string literals, and arrays,
+> but not structs, enums, tuples, maps, closures, `match`, `to_string()`,
+> string interpolation, or any `std` module. WASI is not supported (the
+> JS-host contract only). Use it for previews, not production.
 
 You can also pass any arbitrary LLVM triple — it'll be forwarded as-is.
 This is useful for embedded targets like `riscv64gc-unknown-linux-gnu`.

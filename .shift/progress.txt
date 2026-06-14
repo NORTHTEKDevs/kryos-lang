@@ -5731,3 +5731,27 @@ SHIFTS:
   next: honesty doc batch (WASM experimental, capability deny-by-default retraction,
      CLAUDE.md gotcha #18, README module count, chan/sync caveats), then generic impl
      blocks (#6), then capability checker module-scope codes (#7).
+
+  ---
+  step:    249 (session 11 -- 2026-06-13 "honesty batch: docs stop overclaiming")
+  date:    2026-06-13
+  The finish-map's #1 recommendation was "fix the honesty gap first." Did the
+  highest-impact, VERIFIED corrections (each fact re-checked, not taken on the
+  agents' word -- one agent claim was WRONG):
+  - docs/10-capabilities.md: "Deny by Default" RETRACTED. The checker enforces
+    annotations OPT-IN; an UNannotated function is unconstrained (verified by the
+    passing test builtin_file_write_without_annotation_passes). Reframed as "opt-in
+    enforcement; deny-by-default needs an unimplemented --strict-capabilities mode."
+  - docs/deploy/README.md, docs/18-cross-compilation.md, docs/STABILITY.md: WASM is
+    now labeled EXPERIMENTAL v0.1 everywhere (was presented as a production Cloudflare
+    Workers target). Listed the unsupported features (structs/enums/match/to_string/
+    string-interp/closures/std). Added a Tier 3 (experimental) section to STABILITY.
+  - CLAUDE.md gotcha #18: f64->i64 out-of-range cast was documented "undefined on AOT";
+    VERIFIED both backends now SATURATE (1e300->i64::MAX, NaN->0). Corrected.
+  REJECTED one honesty action after verification: the stdlib agent (which STALLED at
+  2017s per the workflow log) claimed "README says 61 modules, only 30 exist -> correct
+  it." Actual count is 65 .kry modules, so "61" is roughly right -- "correcting" to 30
+  would have made the README LESS accurate. Did not touch it.
+  GATE: docs-examples 54/54 (docs-only; no rebuild/bootstrap needed).
+  next: generic impl blocks (#6, type checker + MIR + monomorphization, careful,
+  bootstrap-sensitive); capability checker module-scope codes (#7).

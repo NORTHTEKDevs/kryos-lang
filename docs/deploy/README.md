@@ -21,9 +21,18 @@ kryos build --release -g src/main.kry
 # Strip the binary (smallest size; loses panic file/line info)
 strip target/release/myapp
 
-# WASM (for Cloudflare Workers, fastly Compute, etc.)
+# WASM (EXPERIMENTAL v0.1 -- see caveat below)
 kryos build --release --backend wasm src/main.kry
 ```
+
+> **The WASM backend is experimental (v0.1) and not production-ready.** It
+> compiles integer/float arithmetic, booleans, basic loops, recursion,
+> string literals, and arrays, but **does not yet support** structs, enums,
+> tuples, maps, closures/higher-order functions, `match`, `to_string()`,
+> string interpolation, channels/spawn/actors, or any `std` module. Most
+> real programs (including typical Cloudflare Workers handlers) use several
+> of these and will fail at codegen time. Ship native binaries for
+> production; treat WASM as a preview. See `docs/18-cross-compilation.md`.
 
 ## Cross-compilation
 

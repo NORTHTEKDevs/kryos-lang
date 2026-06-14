@@ -6,18 +6,35 @@ Capabilities are Kryos's security model. Every function declares exactly what sy
 
 This is the opposite of how most languages work. In JavaScript or Go, any function can open a file, make a network request, or call `eval`. You only find out about unauthorized access when something goes wrong in production. Kryos inverts that: you see every capability a program uses before you run it.
 
-## The Core Principle: Deny by Default
+## The model: opt-in enforcement (deny-by-default is planned)
 
-A function with no `@capabilities` annotation has access to pure computation and nothing else. It can do math, manipulate strings, build data structures, call other pure functions. It cannot touch the filesystem, the network, the GPU, or anything outside the program's memory.
+> **Current behavior, stated honestly:** enforcement is **opt-in per
+> function**. A function that *carries* a `@capabilities(...)` annotation is
+> checked against it: it may only use builtins/stdlib whose required
+> capability is in its declared set, and a function it calls may not exceed
+> its set (attenuation). A function with **no** annotation is **not**
+> constrained today -- it may call `file_read`, `http_get`, or `exec`
+> without error. The "deny-by-default" end state below (where an *un*annotated
+> function is restricted to pure computation) requires a strict mode
+> (`--strict-capabilities`) that is **not yet implemented**.
+
+The intended end state is deny-by-default: a function with no `@capabilities`
+annotation would have access to pure computation and nothing else -- math,
+string manipulation, data structures, other pure functions -- and could not
+touch the filesystem, the network, the GPU, or anything outside the program's
+memory unless it declared the capability.
 
 ```
-// This function has no capabilities -- pure computation only
+// Under strict mode (planned): this function would be pure-computation only.
 fn square(x: i32) -> i32 {
     return x * x
 }
 ```
 
-You can call `println` without any capabilities (it is classified as pure output). But `file_read`, `http_get`, `exec` -- those all require explicit capability declarations.
+`println` is classified as pure output and needs no capability. Under strict
+mode, `file_read`, `http_get`, `exec` would each require an explicit
+declaration on the calling function; today they require one only if the
+function is already annotated.
 
 ## Declaring Capabilities
 

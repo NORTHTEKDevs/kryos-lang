@@ -115,6 +115,17 @@ If `edition` is omitted from `kryos.toml`, the compiler treats the project as
 See `docs/18-cross-compilation.md` for the current list and the
 `--target` flag.
 
+### Tier 3 (experimental — not production-ready)
+
+- **`wasm32-unknown-unknown`** — the WASM backend is **experimental (v0.1)**.
+  It is exercised by a `wasm-smoke` CI job over a deliberately limited set of
+  example programs. It supports integer/float arithmetic, booleans, basic
+  loops, recursion, string literals, and arrays, but **not** structs, enums,
+  tuples, maps, closures, `match`, `to_string()`, string interpolation, or
+  any `std` module. WASI is not supported. Do not treat it as a stable
+  deployment target; see `docs/18-cross-compilation.md` for the full feature
+  matrix.
+
 ## Reporting breakage
 
 If a non-major release breaks something that compiled before, that is a bug.
