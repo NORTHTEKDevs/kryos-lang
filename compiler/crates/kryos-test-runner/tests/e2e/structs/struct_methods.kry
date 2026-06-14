@@ -1,4 +1,4 @@
-// Test: struct with impl methods (skipped — self.field access not yet resolved by type checker)
+// Test: struct with impl methods (type-checks + compiles on both backends)
 struct Counter {
     value: i32,
 }

@@ -1,4 +1,4 @@
-// Test: shared references (skipped — field access through &T not yet resolved)
+// Test: shared references (type-checks + compiles on both backends)
 struct Data {
     value: i32,
 }

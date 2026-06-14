@@ -5781,3 +5781,19 @@ SHIFTS:
   97 suites green. CLAUDE.md #17 updated.
   next: #7 capability module-scope codes (small/safe); #9 type aliases in params; #3 WASM
   neg/to_string; #10 async (XL, document).
+
+  ---
+  step:    251 (session 11 -- 2026-06-13 "verify #9 type aliases + de-lie 10 stale e2e comments")
+  date:    2026-06-13
+  Finish-plan #9 (type aliases in param positions) was ALREADY WORKING -- verified i64/str/
+  f64 aliases in param+return+let on both backends (test_type_alias smoke added). The
+  "skipped" was a stale PROSE comment, not a real // skip marker. Investigated all 10 e2e
+  files the audit flagged as "skipped": NONE has a real `// skip` -- all are stale prose
+  ("not yet in type checker") on files that ALREADY compile clean in the passing e2e suite.
+  Spot-verified struct-method self.field, generic fn, type alias all run correctly. Rewrote
+  all 10 first-line comments to stop lying about the language's capability (enum-data,
+  option-pattern, extern-ffi, generics, lambda, shared-ref, pub-struct, struct-methods,
+  trait-impl, type-alias). Pure comment/test changes; no compiler code touched.
+  GATES: type_alias smoke both backends; e2e suite 1/1 (all files still compile clean).
+  (Another verify-before-acting win: the audit's "10 skipped tests" were not skipped.)
+  next: #7 capability module-scope codes; async honest-doc (#10).

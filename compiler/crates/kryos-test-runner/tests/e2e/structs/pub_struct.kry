@@ -1,4 +1,4 @@
-// Test: public struct with generics (skipped — generic type params not yet resolved)
+// Test: public struct with generics (type-checks + compiles on both backends)
 pub struct Pair<A, B> {
     first: A,
     second: B,

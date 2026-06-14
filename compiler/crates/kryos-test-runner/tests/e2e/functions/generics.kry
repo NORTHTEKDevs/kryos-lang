@@ -1,4 +1,4 @@
-// Test: generic function (skipped — type checker does not yet resolve generic type params)
+// Test: generic function (type-checks + compiles on both backends)
 fn identity<T>(x: T) -> T {
     return x
 }

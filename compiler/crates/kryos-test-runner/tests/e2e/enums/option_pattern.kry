@@ -1,4 +1,4 @@
-// Test: Option-like enum (skipped — match pattern bindings not yet in type checker scope)
+// Test: Option-like enum (type-checks + compiles on both backends)
 enum Option {
     Some(i32),
     None,

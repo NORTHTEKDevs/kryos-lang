@@ -1,4 +1,4 @@
-// Test: extern FFI declaration (skipped — extern symbols not yet visible to type checker)
+// Test: extern FFI declaration (type-checks + compiles on both backends)
 extern "C" {
     fn puts(s: str) -> i32
 }

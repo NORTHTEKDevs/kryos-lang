@@ -1,4 +1,4 @@
-// Test: trait impl (skipped — self.field access not yet resolved by type checker)
+// Test: trait impl (type-checks + compiles on both backends)
 trait Describable {
     fn describe(self) -> str
 }

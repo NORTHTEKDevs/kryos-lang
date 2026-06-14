@@ -1,0 +1,41 @@
+// Smoke (finish step): type aliases resolve in function parameter and
+// return positions, and in let bindings, on both backends. (An e2e test
+// file carried a stale "skipped -- type checker does not yet resolve
+// aliases in function params" comment; the feature actually works -- this
+// locks in the runtime behavior.)
+
+type Age = i64
+type Name = str
+type Temp = f64
+
+fn older(a: Age, b: Age) -> Age {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+fn label(n: Name) -> Name {
+    return n
+}
+
+fn freezing(t: Temp) -> bool {
+    return t <= 0.0
+}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    let a: Age = 30
+    let b: Age = 41
+    expect(older(a, b) == 41, "alias i64 param/return")
+    expect(label("kryos") == "kryos", "alias str param/return")
+    expect(freezing(-5.0), "alias f64 param")
+    expect(not freezing(20.0), "alias f64 param 2")
+    println("type alias OK")
+}

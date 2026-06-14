@@ -1,4 +1,4 @@
-// Test: type aliases (skipped — type checker does not yet resolve aliases in function params)
+// Test: type aliases (type-checks + compiles on both backends)
 type Age = i32
 type Name = str
 

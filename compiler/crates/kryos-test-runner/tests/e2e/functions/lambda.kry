@@ -1,4 +1,4 @@
-// Test: lambda (skipped — type checker doesn't resolve lambda return types yet)
+// Test: lambda (type-checks + compiles on both backends)
 fn apply(f: fn(i32) -> i32, x: i32) -> i32 {
     return f(x)
 }

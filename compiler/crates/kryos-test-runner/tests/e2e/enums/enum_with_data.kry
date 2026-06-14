@@ -1,4 +1,4 @@
-// Test: enum variants with data (skipped — match pattern bindings not yet in type checker scope)
+// Test: enum variants with data (type-checks + compiles on both backends)
 enum Shape {
     Circle(f64),
     Rectangle(f64, f64),
