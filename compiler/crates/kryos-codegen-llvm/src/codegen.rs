@@ -1250,6 +1250,34 @@ impl LlvmCodegen {
         self.emit_line("  %v = load i64, ptr %elemp");
         self.emit_line("  ret i64 %v");
         self.emit_line("}");
+
+        // Inlined array-write fast path, mirroring the read helper. `arr[i] = v`
+        // lowers to a call to kryos_array_set; the LLVM backend redirects it
+        // here so the store is inlined (no COW -- array_set never copies; only
+        // push does). The value is the raw i64 slot (floats already bitcast).
+        self.emit_line(
+            "define internal void @__kryos_array_set_inline(ptr %a, i64 %i, i64 %v) alwaysinline {",
+        );
+        self.emit_line("entry:");
+        self.emit_line("  %isnull = icmp eq ptr %a, null");
+        self.emit_line("  br i1 %isnull, label %nullp, label %chk");
+        self.emit_line("nullp:");
+        self.emit_line("  call void @kryos_array_null_panic()");
+        self.emit_line("  unreachable");
+        self.emit_line("chk:");
+        self.emit_line("  %len = load i64, ptr %a");
+        self.emit_line("  %oob = icmp uge i64 %i, %len");
+        self.emit_line("  br i1 %oob, label %oobp, label %st");
+        self.emit_line("oobp:");
+        self.emit_line("  call void @kryos_array_oob_panic(i64 %i, i64 %len)");
+        self.emit_line("  unreachable");
+        self.emit_line("st:");
+        self.emit_line("  %dptr = getelementptr i64, ptr %a, i64 4");
+        self.emit_line("  %data = load ptr, ptr %dptr");
+        self.emit_line("  %elemp = getelementptr i64, ptr %data, i64 %i");
+        self.emit_line("  store i64 %v, ptr %elemp");
+        self.emit_line("  ret void");
+        self.emit_line("}");
         self.emit_blank();
     }
 
@@ -3764,6 +3792,14 @@ impl LlvmCodegen {
                     match fname.as_str() {
                         "exit" => {
                             self.emit_line(&format!("  call void @exit({arg_list})"));
+                        }
+                        // Inlined array write: redirect to the alwaysinline helper,
+                        // reusing the already-coerced (ptr, i64, i64) arg_list (the
+                        // value is the raw i64 slot -- floats already bitcast above).
+                        "kryos_array_set" => {
+                            self.emit_line(&format!(
+                                "  call void @__kryos_array_set_inline({arg_list})"
+                            ));
                         }
                         "len" => {
                             let arg = if !args.is_empty() {

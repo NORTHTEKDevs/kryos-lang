@@ -5883,3 +5883,24 @@ SHIFTS:
   so ZERO realized bootstrap risk (the sha didn't even move). BENCHMARKS.md = 06-14 (2 steps).
   NEXT speed levers (smaller): inline arr[i] WRITE (array_set) too; vectorization hints for
   nbody; fib call overhead; binary_trees null/Option-ptr rep (drops array-children alloc).
+
+  ---
+  step:    258 (session 11 -- 2026-06-14 "SPEED #3: inline arr[i]=v write -> fannkuch near parity")
+  date:    2026-06-14
+  Inlined the array WRITE path. `arr[i]=v` lowers (shared MIR) to Call{kryos_array_set} ->
+  can't rename in MIR (Cranelift would break), so intercepted in the LLVM RValue::Call
+  emission: after the generic arg-coercion builds arg_list (ptr,i64,i64 -- float vals
+  already bitcast), a `kryos_array_set` case emits `call void @__kryos_array_set_inline`
+  (new alwaysinline preamble helper: null+uge-bounds+store, no COW -- array_set never
+  copies). Name-swap reuses the coerced arg_list => ZERO re-coercion risk.
+  MEASURED (medians of 5): **fannkuch 0.479->0.221 (2.3x->1.09x = NEAR PARITY with Rust)**,
+  nbody 0.302->0.205 (2.8x->1.83x), binary_trees 4.93 (alloc-bound, unchanged). Correctness:
+  array write sum=14 both backends; OOB still panics.
+  **FINAL SESSION SPEED STANDING vs Rust: matmul 0.93x(beats), mandelbrot 1.00x(parity),
+  fannkuch 1.09x(near parity), nbody 1.83x, fib 2.9x(recursion), binary_trees 6.3x(alloc).
+  4 of 6 at/within 1.1x of Rust; 13-87x faster than CPython.** From session start: nbody
+  16.8x->1.8x, fannkuch 6.8x->1.1x, matmul 1.9x->0.93x, binary_trees 11.6x->6.3x.
+  GATES: parity 55/55, conf 6/6, examples PASS, **BOOTSTRAP HELD 989ba174** (LLVM-only;
+  Cranelift bootstrap unaffected -- zero realized risk again). codegen-llvm tests green.
+  REMAINING smaller levers: nbody vectorization (the ARC-heap-array vs stack-struct gap);
+  fib call overhead; binary_trees null/Option-ptr rep (drop array-children alloc).
