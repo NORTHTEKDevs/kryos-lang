@@ -1,0 +1,39 @@
+// Smoke test for std::probable calibration (CalibrationTracker + ece).
+// Acceptance criteria (project 10):
+//   - perfectly calibrated predictor: ECE in [0.0, 0.05]
+//   - overconfident predictor:        ECE in [0.20, 0.35]
+use std::probable::{calibration_tracker, add_sample, ece}
+
+fn main() {
+    // Perfectly calibrated: 100 predictions at confidence 0.7, 70 correct.
+    // Stated confidence == empirical accuracy, so ECE should be ~0.0.
+    let mut tracker = calibration_tracker(10)
+    let mut i = 0
+    while i < 100 {
+        let is_correct = (i % 10) < 7
+        tracker = add_sample(tracker, 0.7, is_correct)
+        i = i + 1
+    }
+    let error = ece(tracker)
+    println("ECE (expect near 0.0): " + to_string(error))
+    if error > 0.05 {
+        throw "ECE too high: " + to_string(error) + " expected < 0.05"
+    }
+    println("PASS: ECE within expected range")
+
+    // Overconfident: 100 predictions at confidence 0.9, only 60 correct.
+    // |0.9 - 0.6| = 0.3 over a single bin with weight 1.0 -> ECE ~0.30.
+    let mut oc_tracker = calibration_tracker(10)
+    let mut j = 0
+    while j < 100 {
+        let is_correct = (j % 10) < 6
+        oc_tracker = add_sample(oc_tracker, 0.9, is_correct)
+        j = j + 1
+    }
+    let oc_error = ece(oc_tracker)
+    println("Overconfident ECE (expect ~0.30): " + to_string(oc_error))
+    if oc_error < 0.20 {
+        throw "Overconfident ECE too low: " + to_string(oc_error) + " expected >= 0.20"
+    }
+    println("PASS: overconfident ECE detected")
+}

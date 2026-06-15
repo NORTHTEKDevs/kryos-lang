@@ -1,0 +1,136 @@
+// Adversarial test for std::probable calibration (CalibrationTracker + ece).
+// Covers cases the smoke test does NOT: empty tracker, multi-bin weighted sum,
+// the confidence==1.0 last-bin boundary, confidence==0.0 first bin, clamping,
+// the bins<2 clamp, the confidence==0.6 float-binning regression, and NaN.
+// Self-checking: exits non-zero on any failure.
+use std::probable::{probable, calibration_tracker, add_sample, add_probable_sample, ece, calibration_summary}
+
+fn approx(got: f64, want: f64, what: str) {
+    let mut d = got - want
+    if d < 0.0 { d = 0.0 - d }
+    if d > 0.000000001 {
+        println("FAIL: {what}: got " + to_string(got) + " want " + to_string(want))
+        exit(1)
+    }
+}
+
+fn main() {
+    // 1. Empty tracker -> 0.0 (n == 0 guard).
+    let empty = calibration_tracker(10)
+    approx(ece(empty), 0.0, "empty tracker is 0.0")
+
+    // 2. Multi-bin weighted sum: 60 @ 0.3 (30 correct, acc 0.5) + 40 @ 0.9
+    //    (all correct, acc 1.0) -> 0.6*0.2 + 0.4*0.1 = 0.16.
+    let mut mb = calibration_tracker(10)
+    let mut k = 0
+    while k < 60 {
+        mb = add_sample(mb, 0.3, k < 30)
+        k = k + 1
+    }
+    let mut m = 0
+    while m < 40 {
+        mb = add_sample(mb, 0.9, true)
+        m = m + 1
+    }
+    approx(ece(mb), 0.16, "multi-bin weighted ECE = 0.16")
+
+    // 3. confidence == 1.0 must land in the LAST bin. 100 @ 1.0, 50 correct
+    //    -> |1.0 - 0.5| = 0.5.
+    let mut hi = calibration_tracker(10)
+    let mut h = 0
+    while h < 100 {
+        hi = add_sample(hi, 1.0, h < 50)
+        h = h + 1
+    }
+    approx(ece(hi), 0.5, "confidence 1.0 lands in last bin, ECE = 0.5")
+
+    // 4. confidence == 0.0 lands in the FIRST bin. 100 @ 0.0, 0 correct -> 0.0.
+    let mut lo = calibration_tracker(10)
+    let mut l = 0
+    while l < 100 {
+        lo = add_sample(lo, 0.0, false)
+        l = l + 1
+    }
+    approx(ece(lo), 0.0, "confidence 0.0 lands in first bin, ECE = 0.0")
+
+    // 5. Clamping: confidence 1.5 clamps to 1.0. 100 @ 1.5, 50 correct -> 0.5.
+    let mut cl = calibration_tracker(10)
+    let mut c = 0
+    while c < 100 {
+        cl = add_sample(cl, 1.5, c < 50)
+        c = c + 1
+    }
+    approx(ece(cl), 0.5, "confidence 1.5 clamps to 1.0")
+
+    // 6. bins < 2 clamps to 2. 100 @ 0.7 (bin 1), 70 correct -> ECE ~0.0.
+    let mut tb = calibration_tracker(0)
+    let mut t = 0
+    while t < 100 {
+        tb = add_sample(tb, 0.7, (t % 10) < 7)
+        t = t + 1
+    }
+    approx(ece(tb), 0.0, "bins clamped to 2, calibrated -> 0.0")
+
+    // 7. REGRESSION: confidence 0.6 with 10 bins must be binned, not dropped
+    //    by a float-boundary gap. 100 @ 0.6, all wrong -> ECE 0.6.
+    let mut sixed = calibration_tracker(10)
+    let mut x = 0
+    while x < 100 {
+        sixed = add_sample(sixed, 0.6, false)
+        x = x + 1
+    }
+    approx(ece(sixed), 0.6, "confidence 0.6 is binned, not dropped (ECE 0.6)")
+
+    // 8. REGRESSION: a NaN confidence maps to 0.0, never poisons the sum.
+    //    100 NaN, all correct -> treated as 0.0 confidence but always right
+    //    -> |0.0 - 1.0| = 1.0. Must be 1.0, never NaN.
+    let nan = sqrt(0.0 - 1.0)
+    let mut nant = calibration_tracker(10)
+    let mut y = 0
+    while y < 100 {
+        nant = add_sample(nant, nan, true)
+        y = y + 1
+    }
+    let ne = ece(nant)
+    if ne != ne {
+        println("FAIL: NaN sample poisoned ECE (got NaN)")
+        exit(1)
+    }
+    approx(ne, 1.0, "NaN confidence maps to 0.0, ECE = 1.0 (not NaN)")
+
+    // 9. add_probable_sample: feeds Probable<T>.confidence into the tracker.
+    //    100 @ probable(_, 0.9), 60 correct -> same as add_sample(0.9) -> 0.30.
+    let mut pt = calibration_tracker(10)
+    let mut p = 0
+    while p < 100 {
+        let pred = probable(0.0, 0.9)
+        pt = add_probable_sample(pt, pred, p < 60)
+        p = p + 1
+    }
+    approx(ece(pt), 0.30, "add_probable_sample uses Probable.confidence -> ECE 0.30")
+
+    // 10. calibration_summary: human-readable report. 100 @ 0.9, 60 correct.
+    //     Must contain the sample count, the ECE, and a per-bin line (n=100).
+    let mut sm = calibration_tracker(10)
+    let mut q = 0
+    while q < 100 {
+        sm = add_sample(sm, 0.9, q < 60)
+        q = q + 1
+    }
+    let report = calibration_summary(sm)
+    println(report)
+    if not contains(report, "100 samples") {
+        println("FAIL: summary missing sample count")
+        exit(1)
+    }
+    if not contains(report, "ECE=") {
+        println("FAIL: summary missing ECE")
+        exit(1)
+    }
+    if not contains(report, "n=100") {
+        println("FAIL: summary missing per-bin count")
+        exit(1)
+    }
+
+    println("calibration adversarial verification: PASS")
+}

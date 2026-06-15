@@ -1,0 +1,72 @@
+// cap_emit.kry -- emit @capabilities declarations into MCP tool JSON.
+//
+// This is the bridge between the Kryos compiler's @capabilities annotation
+// and the MCP wire protocol. The compiler enforces @capabilities at build
+// time (see tools.kry); these helpers SURFACE the same capability set to the
+// MCP host inside the tools/list response, so a host can show the user what a
+// tool may touch BEFORE they call it.
+//
+// Honest limitation (today): the Kryos compiler does not expose annotation
+// values as a runtime reflection API, so the capability strings are passed
+// explicitly as a parallel [str] argument that MIRRORS the @capabilities
+// annotation on the tool function. The developer keeps them in sync by hand.
+// See README "Honest gaps" and Risk 2.
+
+// --- JSON Schema property helpers (shared with the MCP plumbing) -------------
+
+fn prop_string() -> i64 { return json_object(["type"], [json_string("string")]) }
+fn prop_number() -> i64 { return json_object(["type"], [json_string("number")]) }
+
+// Build a JSON Schema "object" node from parallel property arrays + required.
+fn schema(prop_names: [str], prop_nodes: [i64], required: [str]) -> i64 {
+  let req_nodes: [i64] = []
+  let mut i: i64 = 0
+  while i < len(required) {
+    push(req_nodes, json_string(required[i]))
+    i = i + 1
+  }
+  let props: i64 = json_object(prop_names, prop_nodes)
+  return json_object(
+    ["type", "properties", "required"],
+    [json_string("object"), props, json_array(req_nodes)]
+  )
+}
+
+// --- Capability emission -----------------------------------------------------
+
+// Build the JSON array node ["cap", ...] from a [str] of capability names.
+fn caps_node(caps: [str]) -> i64 {
+  let nodes: [i64] = []
+  let mut i: i64 = 0
+  while i < len(caps) {
+    push(nodes, json_string(caps[i]))
+    i = i + 1
+  }
+  return json_array(nodes)
+}
+
+// Human-readable "net, compute" form for the description suffix.
+// An MCP host that does not understand the kryos_capabilities field still
+// shows the suffix to the user as plain text.
+fn caps_to_str(caps: [str]) -> str {
+  if len(caps) == 0 { return "compute" }
+  let mut s: str = caps[0]
+  let mut i: i64 = 1
+  while i < len(caps) {
+    s = s + ", " + caps[i]
+    i = i + 1
+  }
+  return s
+}
+
+// tool_def, extended with a machine-readable kryos_capabilities array AND a
+// human-readable "[caps: ...]" suffix appended to the description.
+// `caps` MUST mirror the function's @capabilities(...) annotation.
+fn tool_def_governed(name: str, description: str, schema_node: i64, caps: [str]) -> i64 {
+  let cap_str: str = caps_to_str(caps)
+  let full_desc: str = description + " [caps: " + cap_str + "]"
+  return json_object(
+    ["name", "description", "inputSchema", "kryos_capabilities"],
+    [json_string(name), json_string(full_desc), schema_node, caps_node(caps)]
+  )
+}

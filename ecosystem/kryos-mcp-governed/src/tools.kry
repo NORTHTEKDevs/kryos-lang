@@ -1,0 +1,84 @@
+// tools.kry -- the tool implementations. THIS IS THE FILE YOU EDIT to add tools.
+//
+// Every tool function carries an @capabilities(...) annotation. The Kryos
+// compiler enforces it: a tool annotated @capabilities(net) that calls a
+// builtin outside {net} fails to compile (error[E-CAP-BUILTIN]). The SAME
+// capability set is mirrored into the tools/list JSON by cap_emit.kry and
+// checked against the server allowlist by cap_check.kry.
+//
+// PROOF the enforcement is real: add `file_write("/tmp/x", "y")` inside
+// tool_fetch (declared @capabilities(net) only) and run `kryos build` -- it is
+// rejected with: builtin `file_write` requires `io` capability.
+
+// --- tool-result builders ----------------------------------------------------
+
+fn text_content(text: str) -> i64 {
+  let item: i64 = json_object(["type", "text"], [json_string("text"), json_string(text)])
+  return json_object(["content"], [json_array([item])])
+}
+
+fn err_content(message: str) -> i64 {
+  let item: i64 = json_object(["type", "text"], [json_string("text"), json_string(message)])
+  return json_object(
+    ["content", "isError"],
+    [json_array([item]), json_bool(true)]
+  )
+}
+
+// --- tools -------------------------------------------------------------------
+
+// Pure computation -- touches no external resource. Declares `compute`.
+@capabilities(compute)
+fn tool_add(args_node: i64) -> i64 {
+  let a_n: i64 = json_get(args_node, "a")
+  let b_n: i64 = json_get(args_node, "b")
+  if a_n <= 0 or b_n <= 0 { return err_content("missing 'a' or 'b'") }
+  let a: f64 = json_to_float(a_n)
+  let b: f64 = json_to_float(b_n)
+  return text_content(to_string(a + b))
+}
+
+// Network access. GENUINELY uses `net`: http2_get requires the `net`
+// capability (verified), so this body would NOT compile under
+// @capabilities(compute) -- the net claim is real, not over-declared:
+//   error[E-CAP-BUILTIN]: builtin `http2_get` requires `net` capability
+// (see README "Proof the enforcement is real").
+//
+// Calling this tool performs a real outbound HTTP/2 (ALPN h2, HTTP/1.1
+// fallback) GET. tools/list does not execute tool bodies, so listing is
+// offline; only an actual tools/call on `fetch` reaches the network. Windows
+// TLS note: see README Risk 4.
+@capabilities(net)
+fn tool_fetch(args_node: i64) -> i64 {
+  let url_n: i64 = json_get(args_node, "url")
+  if url_n <= 0 { return err_content("missing 'url'") }
+  let url: str = json_to_str(url_n)
+  let body: str = http2_get(url)
+  return text_content(body)
+}
+
+// LLM-powered summarization. Declares `net` (outbound to the model API) plus a
+// @budget. Stacking @capabilities + @budget compiles (verified).
+//
+// MVP ships a deterministic stub so the tool is callable offline. The REAL
+// implementation reads the API key with env_get(...) and calls std::llm; note
+// that env_get requires the `process` capability, so the production annotation
+// is @capabilities(net, process) -- a correction to the original spec sketch,
+// which declared only `net` while calling env_get (that would not compile).
+@capabilities(net)
+@budget(tokens=2000, calls=1)
+fn tool_summarize(args_node: i64) -> i64 {
+  let text_n: i64 = json_get(args_node, "text")
+  if text_n <= 0 { return err_content("missing 'text'") }
+  let text: str = json_to_str(text_n)
+  return text_content("[stub summary] " + text)
+}
+
+// --- dispatch ----------------------------------------------------------------
+
+fn call_tool(name: str, args_node: i64) -> i64 {
+  if name == "add"       { return tool_add(args_node) }
+  if name == "fetch"     { return tool_fetch(args_node) }
+  if name == "summarize" { return tool_summarize(args_node) }
+  return err_content("unknown tool: " + name)
+}

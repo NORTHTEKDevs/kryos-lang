@@ -26,6 +26,7 @@ pub mod watch_cmd;
 pub mod doc;
 pub mod explain;
 pub mod fmt;
+pub mod caps_badge;
 pub mod lsp;
 pub mod pkg;
 pub mod repl;

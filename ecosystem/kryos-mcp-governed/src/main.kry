@@ -1,0 +1,168 @@
+// kryos-mcp-governed -- a capability-verified MCP server.
+//
+// Speaks JSON-RPC 2.0 over stdio per the Model Context Protocol. Forked from
+// NORTHTEKDevs/kryos-mcp-template; the governance layer adds three things:
+//
+//   1. Each tool's @capabilities(...) annotation (enforced by the Kryos
+//      compiler -- see src/tools.kry) is MIRRORED into the tools/list response
+//      as a machine-readable "kryos_capabilities" array + a "[caps: ...]"
+//      description suffix (see src/cap_emit.kry).
+//   2. At startup the server checks every tool's declared caps against a
+//      server allowlist (KRYOS_MCP_CAPS) and WARNs (stderr) on any excess
+//      (see src/cap_check.kry).
+//   3. KRYOS_MCP_STRICT=1 turns the startup WARN into a hard non-zero exit.
+//
+// All diagnostics go to STDERR; STDOUT carries only JSON-RPC.
+
+use std::os::{exit}
+use cap_emit
+use cap_check
+use tools
+
+// =============================================================
+// Tool registry. The capability list passed to tool_def_governed and to
+// tool_cap MUST mirror the @capabilities(...) annotation on the matching
+// function in src/tools.kry. Keeping these three in sync is manual today
+// (see README "Honest gaps" / Risk 2).
+// =============================================================
+
+fn list_tools_result() -> i64 {
+  let add_schema: i64 = schema(["a", "b"], [prop_number(), prop_number()], ["a", "b"])
+  let fetch_schema: i64 = schema(["url"], [prop_string()], ["url"])
+  let sum_schema: i64 = schema(["text"], [prop_string()], ["text"])
+
+  let tool_defs: [i64] = [
+    tool_def_governed("add",       "Add two numbers",                  add_schema,   ["compute"]),
+    tool_def_governed("fetch",     "Fetch a URL and return the body",  fetch_schema, ["net"]),
+    tool_def_governed("summarize", "Summarize text (LLM)",             sum_schema,   ["net"]),
+  ]
+  return json_object(["tools"], [json_array(tool_defs)])
+}
+
+// The per-tool declared capabilities, mirrored from src/tools.kry annotations.
+fn tool_registry() -> [ToolCapRecord] {
+  return [
+    tool_cap("add",       ["compute"]),
+    tool_cap("fetch",     ["net"]),
+    tool_cap("summarize", ["net"]),
+  ]
+}
+
+// =============================================================
+// Server capability policy + startup allowlist check.
+// =============================================================
+
+// The server's allowed capability surface. Override with KRYOS_MCP_CAPS
+// (comma-separated, e.g. "net,compute"). Default: net + compute.
+fn server_policy() -> ServerPolicy {
+  let env_caps: str = env_get("KRYOS_MCP_CAPS")
+  if len(env_caps) > 0 {
+    return ServerPolicy { allowed_caps: split_csv(env_caps) }
+  }
+  return ServerPolicy { allowed_caps: ["net", "compute"] }
+}
+
+// Build the registry, run the allowlist check, and enforce strict mode.
+// Soft mode (default): WARN per violation, then continue.
+// Strict mode (KRYOS_MCP_STRICT=1): exit non-zero if any violation.
+fn startup_check() {
+  let policy: ServerPolicy = server_policy()
+  let records: [ToolCapRecord] = tool_registry()
+  let violations: i64 = check_tools(records, policy)
+  if violations > 0 {
+    let strict: str = env_get("KRYOS_MCP_STRICT")
+    if len(strict) > 0 {
+      eprintln("FATAL: " + to_string(violations) + " tool capability violation(s) exceed the server allowlist (strict mode)")
+      exit(1)
+    }
+    eprintln("WARN: " + to_string(violations) + " tool capability violation(s); continuing in soft mode")
+  }
+}
+
+// =============================================================
+// JSON-RPC plumbing (from the template; unchanged except dispatch targets).
+// =============================================================
+
+let mut SHUTDOWN: i64 = 0
+
+fn make_error(id: i64, code: i64, message: str) -> str {
+  let resp: i64 = json_object(
+    ["jsonrpc", "id", "error"],
+    [
+      json_string("2.0"),
+      json_number(id as f64),
+      json_object(["code", "message"], [json_number(code as f64), json_string(message)])
+    ]
+  )
+  return json_stringify(resp)
+}
+
+fn make_result(id: i64, result_node: i64) -> str {
+  let resp: i64 = json_object(
+    ["jsonrpc", "id", "result"],
+    [json_string("2.0"), json_number(id as f64), result_node]
+  )
+  return json_stringify(resp)
+}
+
+fn handle_message(line: str) -> str {
+  let req: i64 = json_parse(line)
+  if req <= 0 { return make_error(0, -32700, "parse error") }
+  let method_n: i64 = json_get(req, "method")
+  if method_n <= 0 { return "" }
+  let method: str = json_to_str(method_n)
+  let id_n: i64 = json_get(req, "id")
+  let mut id: i64 = 0
+  if id_n > 0 { id = json_to_float(id_n) as i64 }
+
+  if id_n <= 0 {
+    if method == "notifications/initialized" { return "" }
+    if method == "exit" {
+      SHUTDOWN = 1
+      return ""
+    }
+    return ""
+  }
+
+  if method == "initialize" {
+    let server_info: i64 = json_object(
+      ["name", "version"],
+      [json_string("kryos-mcp-governed"), json_string("0.1.0")]
+    )
+    let capabilities: i64 = json_object(["tools"], [json_object([], [])])
+    let result: i64 = json_object(
+      ["protocolVersion", "serverInfo", "capabilities"],
+      [json_string("2024-11-05"), server_info, capabilities]
+    )
+    return make_result(id, result)
+  }
+
+  if method == "tools/list" { return make_result(id, list_tools_result()) }
+
+  if method == "tools/call" {
+    let params: i64 = json_get(req, "params")
+    if params <= 0 { return make_error(id, -32602, "missing params") }
+    let name_n: i64 = json_get(params, "name")
+    if name_n <= 0 { return make_error(id, -32602, "missing tool name") }
+    let name: str = json_to_str(name_n)
+    let args_node: i64 = json_get(params, "arguments")
+    return make_result(id, call_tool(name, args_node))
+  }
+
+  if method == "shutdown" {
+    SHUTDOWN = 1
+    return make_result(id, json_object([], []))
+  }
+
+  return make_error(id, -32601, "method not found: " + method)
+}
+
+fn main() {
+  startup_check()
+  while SHUTDOWN == 0 {
+    let line: str = read_line()
+    if len(line) == 0 { break }
+    let resp: str = handle_message(line)
+    if len(resp) > 0 { println(resp) }
+  }
+}
