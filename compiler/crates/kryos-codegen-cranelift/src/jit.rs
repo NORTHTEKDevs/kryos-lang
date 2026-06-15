@@ -132,6 +132,10 @@ impl JitCompiler {
             "kryos_string_clone",
             kryos_rt::string::kryos_string_clone as *const u8,
         );
+        jit_builder.symbol(
+            "kryos_string_retain",
+            kryos_rt::string::kryos_string_retain as *const u8,
+        );
 
         // Array operations
         jit_builder.symbol(
@@ -209,6 +213,10 @@ impl JitCompiler {
         jit_builder.symbol(
             "kryos_map_clone",
             kryos_rt::map::kryos_map_clone as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_map_retain",
+            kryos_rt::map::kryos_map_retain as *const u8,
         );
 
         // Exception handling
@@ -1832,6 +1840,7 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_string_find", "kryos_string_find", sig(2));
     decl!("kryos_string_free", "kryos_string_free", sig(1));
     decl!("kryos_string_clone", "kryos_string_clone", sig(1));
+    decl!("kryos_string_retain", "kryos_string_retain", sig(1));
 
     // --- Array runtime ---
     decl!("kryos_array_new", "kryos_array_new", sig(2));
@@ -1853,6 +1862,7 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_map_len", "kryos_map_len", sig(1));
     decl!("kryos_map_free", "kryos_map_free", sig(1));
     decl!("kryos_map_clone", "kryos_map_clone", sig(1));
+    decl!("kryos_map_retain", "kryos_map_retain", sig(1));
     decl!("kryos_map_has", "kryos_map_has", sig(2));
     decl!("kryos_map_has_str", "kryos_map_has_str", sig(2));
     decl!("kryos_map_delete", "kryos_map_delete", sig(2));

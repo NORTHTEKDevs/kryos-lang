@@ -51,7 +51,10 @@ struct LowerCtx {
     global_values: [i32],
     // Top-level char_from(int) string globals (CHR_LBRACE, CHR_RBRACE).
     global_str_names: [str],
-    global_str_values: [str]
+    global_str_values: [str],
+    // Enum definitions (variant name -> tag index), for variant construction
+    // and match. Set from the module after ctx_new; empty by default.
+    enum_defs: [MirEnumDef]
 }
 
 // ===================================================================
@@ -66,6 +69,7 @@ fn ctx_new(func: MirFunction, ret_ty: MirType, struct_defs: [MirStructDef], fn_s
     let empty_gv: [i32] = []
     let empty_gsn: [str] = []
     let empty_gsv: [str] = []
+    let empty_enums: [MirEnumDef] = []
     return LowerCtx {
         func: func,
         current_block: 0,
@@ -82,8 +86,45 @@ fn ctx_new(func: MirFunction, ret_ty: MirType, struct_defs: [MirStructDef], fn_s
         global_names: empty_gn,
         global_values: empty_gv,
         global_str_names: empty_gsn,
-        global_str_values: empty_gsv
+        global_str_values: empty_gsv,
+        enum_defs: empty_enums
     }
+}
+
+// Look up an enum variant by name across all enum defs. Returns the variant's
+// tag (its index in the enum), or -1 if `name` is not an enum variant. Enum
+// variant names are globally unique in practice (Circle, Rectangle, ...).
+fn ctx_enum_variant_tag(ctx: LowerCtx, name: str) -> i32 {
+    let mut i = 0
+    while i < len(ctx.enum_defs) {
+        let ed: MirEnumDef = ctx.enum_defs[i]
+        let mut j = 0
+        while j < len(ed.variant_names) {
+            if ed.variant_names[j] == name {
+                return j
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// Enum name owning a variant, or "" if unknown.
+fn ctx_enum_name_of_variant(ctx: LowerCtx, name: str) -> str {
+    let mut i = 0
+    while i < len(ctx.enum_defs) {
+        let ed: MirEnumDef = ctx.enum_defs[i]
+        let mut j = 0
+        while j < len(ed.variant_names) {
+            if ed.variant_names[j] == name {
+                return ed.name
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return ""
 }
 
 // Return type of a user-defined function by name (ANY if unknown). Lets
@@ -1088,6 +1129,17 @@ fn lower_fn_call(ctx: LowerCtx, e: Expr) -> Operand {
             push(call_args, cloned)
         }
 
+        // Enum variant construction: `Circle(5)` is parsed as a call, but the
+        // callee names an enum variant. Build an enum object {tag, payloads...}
+        // via rv_enum_variant instead of a (nonexistent) function call.
+        let vtag = ctx_enum_variant_tag(ctx, fn_name)
+        if vtag >= 0 {
+            let ename2 = ctx_enum_name_of_variant(ctx, fn_name)
+            let et = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
+            ctx_emit(ctx, inst_assign(et, rv_enum_variant(ename2, vtag, call_args)))
+            return op_local(et)
+        }
+
         // Map to runtime name
         let runtime_name = builtin_runtime_name(fn_name)
 
@@ -1225,6 +1277,26 @@ fn lower_range_call(ctx: LowerCtx, e: Expr) -> Operand {
 fn lower_method_call(ctx: LowerCtx, e: Expr) -> Operand {
     if len(e.left) == 0 {
         return op_none()
+    }
+
+    // Enum variant construction via `EnumName.Variant(args)` (parsed as a method
+    // call). Build an enum object {tag, payloads...} rather than calling a
+    // nonexistent method. The receiver names the enum; the method is the variant.
+    let mvtag = ctx_enum_variant_tag(ctx, e.name)
+    if mvtag >= 0 and e.left[0].kind == EXPR_IDENT and e.left[0].name == ctx_enum_name_of_variant(ctx, e.name) {
+        let mut payload_args: [Operand] = []
+        for i in range(0, len(e.args)) {
+            let pa: Operand = lower_expr(ctx, e.args[i])
+            let pac = Operand {
+                is_local: pa.is_local, local_id: pa.local_id,
+                const_kind: pa.const_kind, int_val: pa.int_val,
+                float_val: pa.float_val, bool_val: pa.bool_val, str_val: pa.str_val
+            }
+            push(payload_args, pac)
+        }
+        let et3 = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
+        ctx_emit(ctx, inst_assign(et3, rv_enum_variant(ctx_enum_name_of_variant(ctx, e.name), mvtag, payload_args)))
+        return op_local(et3)
     }
 
     let receiver_op: Operand = lower_expr(ctx, e.left[0])
@@ -1594,11 +1666,12 @@ fn lower_pattern_check(ctx: LowerCtx, subject: Operand, pat: Pattern) -> Operand
     if pat.kind == PAT_ENUM {
         let tag_op_t = ctx_alloc_temp(ctx, mir_ty_i64())
         ctx_emit(ctx, inst_assign(tag_op_t, rv_enum_tag(subject)))
-        // We need the expected variant index -- for now, use string comparison
-        let variant_name_op: Operand = op_str(pat.variant)
+        // The variant's tag is its index in the enum def. Compare the subject's
+        // tag to that index directly (the old kryos_enum_tag_matches stub by
+        // NAME was never implemented / linked).
+        let vtag2 = ctx_enum_variant_tag(ctx, pat.variant)
         let t = ctx_alloc_temp(ctx, mir_ty_bool())
-        let check_args: [Operand] = [op_local(tag_op_t), variant_name_op]
-        ctx_emit(ctx, inst_assign(t, rv_call("kryos_enum_tag_matches", check_args)))
+        ctx_emit(ctx, inst_assign(t, rv_binop(MIR_EQ, op_local(tag_op_t), op_int(vtag2))))
         return op_local(t)
     }
 
@@ -1710,6 +1783,7 @@ fn lower_lambda(ctx: LowerCtx, e: Expr) -> Operand {
 
     // Create a sub-context for the lambda body
     let mut lambda_ctx: LowerCtx = ctx_new(lambda_func, ret_ty, ctx.struct_defs, ctx.fn_sig_names, ctx.fn_sig_rets)
+    lambda_ctx.enum_defs = ctx.enum_defs
 
     // Register params in lambda context
     for i in range(0, len(lambda_func.params)) {
@@ -2610,6 +2684,122 @@ fn lower_decl(module: MirModule, d: Decl, tc: TypeChecker) {
 // Function lowering
 // ===================================================================
 
+// Lower a branch body (a list of statements) whose tail value is the
+// value of the branch, assigning that value into `result`. Used by
+// lower_if_value so an `if`/`elif`/`else` used in value position (tail
+// return) yields the right operand. Mirrors the tail-expr handling in
+// lower_function but targets a caller-supplied result local.
+fn lower_branch_value(ctx: LowerCtx, stmts: [Stmt], result: i32) {
+    let n = len(stmts)
+    if n == 0 {
+        ctx_emit(ctx, inst_assign(result, rv_use(op_none())))
+        return
+    }
+    for i in range(0, n - 1) {
+        lower_stmt(ctx, stmts[i])
+    }
+    let last = stmts[n - 1]
+    if last.kind == STMT_EXPR and len(last.expr) > 0 {
+        let v: Operand = lower_expr(ctx, last.expr[0])
+        if not block_has_terminator(ctx, ctx.current_block) {
+            ctx_emit(ctx, inst_assign(result, rv_use(v)))
+        }
+    } elif last.kind == STMT_IF {
+        let v: Operand = lower_if_value(ctx, last)
+        if not block_has_terminator(ctx, ctx.current_block) {
+            ctx_emit(ctx, inst_assign(result, rv_use(v)))
+        }
+    } else {
+        lower_stmt(ctx, last)
+    }
+}
+
+// Lower an `if` statement in value position, returning an operand that
+// holds the value of whichever branch is taken. Structurally identical
+// to lower_if_stmt (incl. elif/else chains) but each branch body is
+// lowered via lower_branch_value into a shared result local.
+fn lower_if_value(ctx: LowerCtx, s: Stmt) -> Operand {
+    let result = ctx_alloc_temp(ctx, mir_ty_simple(MIR_TY_ANY))
+    if len(s.condition) == 0 {
+        return op_local(result)
+    }
+
+    let merge_bb = ctx_alloc_block(ctx)
+    let raw_cond_op: Operand = lower_expr(ctx, s.condition[0])
+    let cond_op = Operand {
+        is_local: raw_cond_op.is_local, local_id: raw_cond_op.local_id,
+        const_kind: raw_cond_op.const_kind, int_val: raw_cond_op.int_val,
+        float_val: raw_cond_op.float_val, bool_val: raw_cond_op.bool_val,
+        str_val: raw_cond_op.str_val
+    }
+
+    let then_bb = ctx_alloc_block(ctx)
+    let num_elifs = len(s.elif_conditions)
+    let has_else = len(s.else_block) > 0
+
+    let mut false_target = merge_bb
+    if num_elifs > 0 {
+        false_target = ctx_alloc_block(ctx)
+    } elif has_else {
+        false_target = ctx_alloc_block(ctx)
+    }
+
+    ctx_set_term(ctx, term_branch(cond_op, then_bb, false_target))
+
+    ctx_switch_block(ctx, then_bb)
+    lower_branch_value(ctx, s.then_block, result)
+    if not block_has_terminator(ctx, ctx.current_block) {
+        ctx_set_term(ctx, term_goto(merge_bb))
+    }
+
+    if num_elifs > 0 {
+        let mut current_elif_check = false_target
+        for i in range(0, num_elifs) {
+            ctx_switch_block(ctx, current_elif_check)
+            let raw_elif_cond: Operand = lower_expr(ctx, s.elif_conditions[i])
+            let elif_cond = Operand {
+                is_local: raw_elif_cond.is_local, local_id: raw_elif_cond.local_id,
+                const_kind: raw_elif_cond.const_kind, int_val: raw_elif_cond.int_val,
+                float_val: raw_elif_cond.float_val, bool_val: raw_elif_cond.bool_val,
+                str_val: raw_elif_cond.str_val
+            }
+            let elif_body_bb = ctx_alloc_block(ctx)
+            let mut next_false = merge_bb
+            if i + 1 < num_elifs {
+                next_false = ctx_alloc_block(ctx)
+            } elif has_else {
+                next_false = ctx_alloc_block(ctx)
+            }
+            ctx_set_term(ctx, term_branch(elif_cond, elif_body_bb, next_false))
+            ctx_switch_block(ctx, elif_body_bb)
+            if i < len(s.elif_blocks) {
+                lower_branch_value(ctx, s.elif_blocks[i], result)
+            }
+            if not block_has_terminator(ctx, ctx.current_block) {
+                ctx_set_term(ctx, term_goto(merge_bb))
+            }
+            if i + 1 < num_elifs {
+                current_elif_check = next_false
+            } elif has_else {
+                ctx_switch_block(ctx, next_false)
+                lower_branch_value(ctx, s.else_block, result)
+                if not block_has_terminator(ctx, ctx.current_block) {
+                    ctx_set_term(ctx, term_goto(merge_bb))
+                }
+            }
+        }
+    } elif has_else {
+        ctx_switch_block(ctx, false_target)
+        lower_branch_value(ctx, s.else_block, result)
+        if not block_has_terminator(ctx, ctx.current_block) {
+            ctx_set_term(ctx, term_goto(merge_bb))
+        }
+    }
+
+    ctx_switch_block(ctx, merge_bb)
+    return op_local(result)
+}
+
 fn lower_function(module: MirModule, d: Decl, tc: TypeChecker) {
     // Determine return type
     let mut ret_ty: MirType = mir_ty_void()
@@ -2632,6 +2822,7 @@ fn lower_function(module: MirModule, d: Decl, tc: TypeChecker) {
 
     // Create lowering context
     let mut ctx: LowerCtx = ctx_new(func, ret_ty, module.struct_defs, module.fn_sig_names, module.fn_sig_rets)
+    ctx.enum_defs = module.enum_defs
     ctx.global_names = module.global_names
     ctx.global_values = module.global_values
     ctx.global_str_names = module.global_str_names
@@ -2642,9 +2833,37 @@ fn lower_function(module: MirModule, d: Decl, tc: TypeChecker) {
         ctx_define_local(ctx, func.params[i].name, func.params[i].local_id)
     }
 
-    // Lower function body
-    for i in range(0, len(d.fn_body)) {
-        lower_stmt(ctx, d.fn_body[i])
+    // Lower function body. For a non-void function, a trailing bare
+    // expression statement (e.g. a tail `match`, block, or other value
+    // expression with no explicit `return`) is the implicit return
+    // value -- lower it as an expression and return its result instead
+    // of discarding the value (lower_stmt drops STMT_EXPR results).
+    let nbody = len(d.fn_body)
+    for i in range(0, nbody) {
+        let stmt = d.fn_body[i]
+        let mut handled = false
+        if i == nbody - 1 {
+            if ret_ty.kind != MIR_TY_VOID {
+                if not block_has_terminator(ctx, ctx.current_block) {
+                    if stmt.kind == STMT_EXPR and len(stmt.expr) > 0 {
+                        let tail_op: Operand = lower_expr(ctx, stmt.expr[0])
+                        if not block_has_terminator(ctx, ctx.current_block) {
+                            ctx_set_term(ctx, term_return(tail_op))
+                        }
+                        handled = true
+                    } elif stmt.kind == STMT_IF {
+                        let tail_if: Operand = lower_if_value(ctx, stmt)
+                        if not block_has_terminator(ctx, ctx.current_block) {
+                            ctx_set_term(ctx, term_return(tail_if))
+                        }
+                        handled = true
+                    }
+                }
+            }
+        }
+        if not handled {
+            lower_stmt(ctx, stmt)
+        }
     }
 
     // If last block has no terminator, add return void
@@ -2756,6 +2975,7 @@ fn lower_impl(module: MirModule, d: Decl, tc: TypeChecker) {
 
         // Create context and register params
         let mut ctx: LowerCtx = ctx_new(func, ret_ty, module.struct_defs, module.fn_sig_names, module.fn_sig_rets)
+        ctx.enum_defs = module.enum_defs
         ctx.global_names = module.global_names
         ctx.global_values = module.global_values
         ctx.global_str_names = module.global_str_names
@@ -2764,9 +2984,34 @@ fn lower_impl(module: MirModule, d: Decl, tc: TypeChecker) {
             ctx_define_local(ctx, func.params[j].name, func.params[j].local_id)
         }
 
-        // Lower method body
-        for j in range(0, len(method.fn_body)) {
-            lower_stmt(ctx, method.fn_body[j])
+        // Lower method body. Trailing bare expression is the implicit
+        // return value for a non-void method (see lower_function).
+        let mbody = len(method.fn_body)
+        for j in range(0, mbody) {
+            let mstmt = method.fn_body[j]
+            let mut mhandled = false
+            if j == mbody - 1 {
+                if ret_ty.kind != MIR_TY_VOID {
+                    if not block_has_terminator(ctx, ctx.current_block) {
+                        if mstmt.kind == STMT_EXPR and len(mstmt.expr) > 0 {
+                            let mtail: Operand = lower_expr(ctx, mstmt.expr[0])
+                            if not block_has_terminator(ctx, ctx.current_block) {
+                                ctx_set_term(ctx, term_return(mtail))
+                            }
+                            mhandled = true
+                        } elif mstmt.kind == STMT_IF {
+                            let mtailif: Operand = lower_if_value(ctx, mstmt)
+                            if not block_has_terminator(ctx, ctx.current_block) {
+                                ctx_set_term(ctx, term_return(mtailif))
+                            }
+                            mhandled = true
+                        }
+                    }
+                }
+            }
+            if not mhandled {
+                lower_stmt(ctx, mstmt)
+            }
         }
 
         // Add terminator if needed

@@ -164,7 +164,10 @@ impl Agent {
     fn status(self: Agent) -> str {
         let state_names = ["CREATED", "RUNNING", "PAUSED", "COMPLETED", "FAILED", "TERMINATED"]
         let alignment_names = ["STRICT", "STANDARD", "MINIMAL", "UNRESTRICTED"]
-        return "Agent: " + self.name + "\n" + "Goal: " + self.goal + "\n" + "State: " + state_names[self.state] + "\n" + "Alignment: " + alignment_names[self.alignment] + "\n" + "Actions: " + to_string(self.action_count) + "\n" + "Total cost: $" + to_string(self.total_cost) + "\n" + "Tools: " + to_string(len(self.tools))
+        // Cast f64 total_cost to micro-USD (i64) to avoid to_string(f64) which
+        // is unsupported in the Cranelift JIT backend.
+        let cost_int: i64 = (self.total_cost * 1000000.0) as i64
+        return "Agent: " + self.name + "\n" + "Goal: " + self.goal + "\n" + "State: " + state_names[self.state] + "\n" + "Alignment: " + alignment_names[self.alignment] + "\n" + "Actions: " + to_string(self.action_count) + "\n" + "Total cost: $" + to_string(cost_int) + "e-6\n" + "Tools: " + to_string(len(self.tools))
     }
 }
 
