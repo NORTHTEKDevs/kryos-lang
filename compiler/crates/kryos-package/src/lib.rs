@@ -3,6 +3,7 @@
 
 #![allow(clippy::should_implement_trait, clippy::too_many_arguments)]
 
+pub mod caps;
 pub mod fetch;
 pub mod lock;
 pub mod manifest;
@@ -11,6 +12,7 @@ pub mod resolve;
 pub mod semver;
 pub mod sha256;
 
+pub use caps::CapsBadge;
 pub use lock::{LockEntry, LockFile};
 pub use manifest::{BuildConfig, CapabilitiesConfig, DepSpec, Manifest, PackageInfo};
 pub use registry::{RegistryClient, RegistryConfig, RegistryEntry};

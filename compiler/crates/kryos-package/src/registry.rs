@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::caps::CapsBadge;
 use crate::manifest::Manifest;
 use crate::semver::Version;
 
@@ -40,6 +41,9 @@ pub struct RegistryEntry {
     pub checksum: String,
     pub dependencies: HashMap<String, String>,
     pub download_url: String,
+    /// Capability badge (project 05). `None` for entries published before
+    /// capability badging, or entries whose source carried no annotations.
+    pub capabilities: Option<CapsBadge>,
 }
 
 /// Package tarball metadata for publishing.
@@ -49,6 +53,8 @@ pub struct PublishPackage {
     pub version: Version,
     pub tarball_path: PathBuf,
     pub manifest: Manifest,
+    /// Capability badge read from `target/caps.json` at pack time (project 05).
+    pub caps_badge: Option<CapsBadge>,
 }
 
 /// Create a publishable tarball from a project directory.
@@ -113,12 +119,25 @@ pub fn pack(project_dir: &Path) -> Result<PublishPackage, String> {
     std::fs::write(&tarball_path, &listing)
         .map_err(|e| format!("failed to write package listing: {e}"))?;
 
+    // Embed the capability badge if `kryos manifest --badge` wrote one to
+    // target/caps.json before packing. Absent badge -> None (backward compatible).
+    let caps_badge = read_caps_badge(project_dir);
+
     Ok(PublishPackage {
         name,
         version,
         tarball_path,
         manifest,
+        caps_badge,
     })
+}
+
+/// Read a capability badge from `<project_dir>/target/caps.json` if present.
+/// Returns `None` if the file is missing or not a valid `CapsBadge`.
+pub fn read_caps_badge(project_dir: &Path) -> Option<CapsBadge> {
+    let path = project_dir.join("target").join("caps.json");
+    let text = std::fs::read_to_string(path).ok()?;
+    CapsBadge::from_json(&text)
 }
 
 /// Generate a registry index entry JSON for a package.
@@ -150,14 +169,22 @@ pub fn generate_index_entry(pkg: &PublishPackage) -> String {
         Err(_) => "sha256:unavailable".to_string(),
     };
 
+    // Embed the capability badge (project 05) as a `"capabilities"` object when
+    // present. Omitted entirely when absent, so old tooling and pre-badging
+    // entries remain byte-compatible.
+    let caps_field = match &pkg.caps_badge {
+        Some(b) => format!(",\n  \"capabilities\": {}", b.to_json()),
+        None => String::new(),
+    };
+
     format!(
         r#"{{
   "name": "{}",
   "version": "{}",
   "dependencies": {},
-  "checksum": "{}"
+  "checksum": "{}"{}
 }}"#,
-        pkg.name, pkg.version, deps_json, checksum
+        pkg.name, pkg.version, deps_json, checksum, caps_field
     )
 }
 
@@ -314,12 +341,20 @@ fn parse_index_entry(json: &str, name: &str) -> Option<RegistryEntry> {
         deps = extract_deps_object(json, "deps");
     }
 
+    // Optional capability badge (project 05). Parsed with serde_json so the
+    // nested object is read robustly; absent/invalid -> None (backward compatible).
+    let capabilities = serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|v| v.get("capabilities").cloned())
+        .and_then(|c| serde_json::from_value::<CapsBadge>(c).ok());
+
     Some(RegistryEntry {
         name: name.to_string(),
         version,
         checksum,
         dependencies: deps,
         download_url,
+        capabilities,
     })
 }
 
@@ -505,6 +540,7 @@ mod tests {
             version: "0.1.0".parse().unwrap(),
             tarball_path: tarball_path.clone(),
             manifest,
+            caps_badge: None,
         };
         let entry = generate_index_entry(&pkg);
         let expected = format!("sha256:{}", crate::sha256::sha256_hex(body));
@@ -518,5 +554,62 @@ mod tests {
         assert!(entry.contains("\"version\": \"0.1.0\""));
         assert!(entry.contains("\"dependencies\": {}"));
         let _ = std::fs::remove_file(&tarball_path);
+    }
+
+    #[test]
+    fn generate_and_parse_entry_with_caps_round_trips() {
+        use crate::caps::CapsBadge;
+        use crate::manifest::PackageInfo;
+        let badge = CapsBadge::from_caps(vec!["net".into(), "ffi".into()], 2, 3, vec![]);
+        let manifest = Manifest {
+            package: PackageInfo {
+                name: "native-plugin".into(),
+                version: "0.1.0".into(),
+                edition: "2026".into(),
+                description: None,
+                authors: vec![],
+                license: None,
+                repository: None,
+            },
+            dependencies: Default::default(),
+            build: Default::default(),
+            capabilities: Default::default(),
+        };
+        let pkg = PublishPackage {
+            name: "native-plugin".into(),
+            version: "0.1.0".parse().unwrap(),
+            tarball_path: std::env::temp_dir().join("does-not-exist-native-plugin.tar.gz"),
+            manifest,
+            caps_badge: Some(badge.clone()),
+        };
+        let entry = generate_index_entry(&pkg);
+        assert!(entry.contains("\"capabilities\""), "entry must embed badge:\n{entry}");
+        assert!(entry.contains("ffi"));
+
+        // Parse it back (generate_index_entry emits a single multi-line object;
+        // serde_json reads the capabilities sub-object regardless of newlines).
+        let parsed = parse_index_entry(&entry, "native-plugin").expect("must parse");
+        let caps = parsed.capabilities.expect("badge must round-trip");
+        assert_eq!(caps, badge);
+        assert_eq!(caps.dangerous, vec!["ffi"]);
+        assert_eq!(caps.annotation_coverage_pct, 66);
+    }
+
+    #[test]
+    fn parse_entry_without_caps_yields_none() {
+        // Canonical pre-badging entry — no "capabilities" key.
+        let line = r#"{"name": "http-router", "version": "0.1.0", "dependencies": {}, "checksum": "sha256:176df653ffa02096dfc3c486afb553040fed2e7e9d00270b3b0ae127a3e99469"}"#;
+        let entry = parse_index_entry(line, "http-router").expect("must parse");
+        assert!(entry.capabilities.is_none());
+    }
+
+    #[test]
+    fn parse_single_line_entry_with_caps() {
+        let line = r#"{"name": "http-client", "version": "0.3.1", "dependencies": {}, "checksum": "sha256:0000", "capabilities": {"schema":"kryos-caps/1","capabilities":["net"],"dangerous":[],"annotation_coverage_pct":80,"inferred_uncovered":[]}}"#;
+        let entry = parse_index_entry(line, "http-client").expect("must parse");
+        let caps = entry.capabilities.expect("badge present");
+        assert_eq!(caps.capabilities, vec!["net"]);
+        assert_eq!(caps.annotation_coverage_pct, 80);
+        assert!(!caps.is_dangerous());
     }
 }
