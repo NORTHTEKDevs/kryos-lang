@@ -1119,6 +1119,7 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_global_set(i64, i64)");
         self.emit_line("declare i64 @kryos_http2_get_ks(i64)");
         self.emit_line("declare i64 @kryos_http2_post_ks(i64, i64)");
+        self.emit_line("declare i64 @kryos_http2_request_ks(i64, i64, i64, i64)");
         self.emit_line("declare i64 @kryos_https_get_ks(i64)");
         self.emit_line("declare i64 @kryos_map_delete(i64, i64)");
         self.emit_line("declare i64 @kryos_map_delete_str(i64, i64)");
@@ -4902,6 +4903,15 @@ impl LlvmCodegen {
                                 "read_line" => "kryos_builtin_read_line",
                                 "http_get" => "kryos_builtin_http_get",
                                 "http_request" => "kryos_http_request_ks",
+                                // HTTP/2 + HTTPS clients: declared as kryos_*_ks
+                                // runtime symbols but previously absent from this
+                                // call-site map, so the LLVM backend emitted bare
+                                // @http2_get / @https_get -> "undefined value" at
+                                // link time (Cranelift had them, AOT did not).
+                                "https_get" => "kryos_https_get_ks",
+                                "http2_get" => "kryos_http2_get_ks",
+                                "http2_post" => "kryos_http2_post_ks",
+                                "http2_request" => "kryos_http2_request_ks",
                                 "parse_int" => "kryos_builtin_parse_int",
                                 "parse_float" => "kryos_builtin_parse_float",
                                 // int() / float() coercion builtins. Cranelift
