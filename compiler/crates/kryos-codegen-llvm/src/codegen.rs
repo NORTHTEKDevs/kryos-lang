@@ -7383,6 +7383,18 @@ impl LlvmCodegen {
                 let max = self.enum_max_fields(name);
                 self.enum_llvm_type(name, max)
             }
+            // An unresolved generic type parameter (e.g. the `T` left in a
+            // partially monomorphized struct like `Probable___T`) is not a real
+            // struct or enum. Erase it to the i64 ABI slot rather than emitting
+            // `%T`, which LLVM treats as an opaque (unsized) named type and then
+            // rejects as a GEP base ("base element of getelementptr must be
+            // sized"). Generic payload slots are i64-sized under the erased ABI.
+            MirType::Struct(name)
+                if !self.struct_defs.contains_key(name)
+                    && !self.enum_defs.contains_key(name) =>
+            {
+                "i64".to_string()
+            }
             _ => mir_type_to_llvm(ty),
         }
     }
