@@ -1,0 +1,107 @@
+// ============================================================
+// audit.kry -- core EU AI Act Annex IV audit-record builder
+//
+// audit_record(...) assembles the full compliance JSON object from a
+// decision value + its lineage + cost + capability surface + IDs.
+// audit_tracked(t, ...) is the one-call convenience wrapper that pulls
+// lineage/source/source_description straight off a Tracked<T> value.
+//
+// Provenance comes from the value itself, not a side-channel log: the
+// lineage array IS the Tracked value's history.
+// ============================================================
+
+use std::cost
+use std::tracked
+use std::datetime
+use cost_summary
+use schema
+
+// Capability surface ([str]) -> JSON array handle. Empty list -> [].
+@capabilities()
+fn caps_to_json(caps: [str]) -> i64 {
+    let mut items: [i64] = []
+    let mut i = 0
+    while i < len(caps) {
+        items = push(items, json_string(caps[i]))
+        i = i + 1
+    }
+    return json_array(items)
+}
+
+// Lineage ([LineageEntry]) -> JSON array handle. Each entry is numbered by
+// its position (step), so the array is an ordered, gap-free audit trail.
+@capabilities()
+fn lineage_to_json(lineage: [LineageEntry]) -> i64 {
+    let mut items: [i64] = []
+    let mut i = 0
+    while i < len(lineage) {
+        let entry = lineage[i]
+        let keys = ["step", "operation", "description", "timestamp"]
+        let vals = [
+            json_number(i as f64),
+            json_string(entry.operation),
+            json_string(entry.description),
+            json_number(entry.timestamp as f64)
+        ]
+        items = push(items, json_object(keys, vals))
+        i = i + 1
+    }
+    return json_array(items)
+}
+
+// Core builder. `decision` is the already-stringified decision value.
+// `confidence`: pass a value < 0.0 (e.g. -1.0) to omit the field; pass
+// 0.0-1.0 to include it. Returns a compact JSON string.
+@capabilities()
+fn audit_record(decision: str, lineage: [LineageEntry], source: str, source_desc: str, cost: ComputeCost, caps: [str], confidence: f64, system_id: str, user_id: str) -> str {
+    let now = timestamp()
+
+    let decision_obj = json_object(
+        ["value", "source", "source_description"],
+        [json_string(decision), json_string(source), json_string(source_desc)]
+    )
+
+    let lineage_arr = lineage_to_json(lineage)
+    let caps_arr = caps_to_json(caps)
+    let cost_obj = cost_to_json(cost)
+    let annex_obj = annex_iv_fields(lineage, cost, confidence)
+
+    let mut keys = ["schema_version", "generated_at", "system_id", "user_id", "decision", "lineage", "capability_surface", "cost", "annex_iv"]
+    let mut vals = [
+        json_string(annex_iv_schema_version()),
+        json_number(now as f64),
+        json_string(system_id),
+        json_string(user_id),
+        decision_obj,
+        lineage_arr,
+        caps_arr,
+        cost_obj,
+        annex_obj
+    ]
+
+    if confidence >= 0.0 {
+        keys = push(keys, "confidence")
+        vals = push(vals, json_number(confidence))
+    }
+
+    return json_stringify(json_object(keys, vals))
+}
+
+// Convenience entrypoint -- build the record directly from a Tracked<str>.
+//
+// The decision value is read FAITHFULLY. The parameter is a concrete
+// Tracked<str>, not a generic Tracked<T>: a concrete instantiation keeps the
+// field's real type, so "{t.value}" yields the literal decision string, and
+// the function compiles on BOTH backends (kryos run JIT and kryos build
+// --release LLVM AOT). A generic Tracked<T> here would erase value to an i64
+// slot (opaque pointer) and break AOT codegen.
+//
+// Decisions are naturally string labels ("approved", "denied", "flagged").
+// For a non-string decision, stringify it at the source --
+// tracked_source(to_string(score), ...) -- or call audit_record(...) with an
+// explicit decision string.
+@capabilities()
+fn audit_tracked(t: Tracked<str>, cost: ComputeCost, caps: [str], confidence: f64, system_id: str, user_id: str) -> str {
+    let decision = "{t.value}"
+    return audit_record(decision, t.lineage, t.source, t.source_description, cost, caps, confidence, system_id, user_id)
+}
