@@ -1408,6 +1408,62 @@ fn test_len_builtin_returns_zero() {
 }
 
 #[test]
+fn test_http2_get_builtin_links_to_runtime_symbol() {
+    // Regression: http2_get / http2_post / http2_request / https_get were
+    // declared as kryos_*_ks runtime symbols but absent from the LLVM
+    // call-site name map, so the AOT backend emitted a bare `@http2_get`
+    // (undefined value -> clang link failure). Cranelift had the mapping;
+    // LLVM did not. This guards the LLVM call site against regressing.
+    let module = module_with(MirFunction {
+        name: "fetch".into(),
+        params: vec![MirParam {
+            local: LocalId(0),
+            ty: MirType::I64,
+        }],
+        ret_ty: MirType::I64,
+        locals: vec![
+            MirLocal {
+                id: LocalId(0),
+                name: Some("url".into()),
+                ty: MirType::I64,
+                mutable: false,
+            },
+            MirLocal {
+                id: LocalId(1),
+                name: None,
+                ty: MirType::I64,
+                mutable: false,
+            },
+        ],
+        blocks: vec![BasicBlock {
+            id: BlockId(0),
+            instructions: vec![Instruction::Assign {
+                dest: LocalId(1),
+                value: RValue::Call {
+                    func: "http2_get".into(),
+                    args: vec![Operand::Local(LocalId(0))],
+                },
+            }],
+            terminator: Terminator::Return(Some(Operand::Local(LocalId(1)))),
+        }],
+        attributes: MirAttributes::default(),
+        source_file: None,
+        source_line: 0,
+    });
+
+    let ir = emit_module(&module, &EmitOptions::default()).unwrap();
+    // http2_get must route to the runtime symbol, not a bare @http2_get.
+    assert!(
+        ir.contains("@kryos_http2_get_ks"),
+        "http2_get should call kryos_http2_get_ks:\n{ir}"
+    );
+    assert!(
+        !ir.contains("@http2_get("),
+        "http2_get must not emit an external call to @http2_get:\n{ir}"
+    );
+}
+
+#[test]
 fn test_to_string_builtin_returns_input() {
     let module = module_with(MirFunction {
         name: "stringify".into(),
