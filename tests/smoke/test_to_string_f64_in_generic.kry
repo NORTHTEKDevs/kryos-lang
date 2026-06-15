@@ -1,0 +1,44 @@
+// Regression: to_string(f64) of a CONCRETE f64 parameter inside a GENERIC
+// function, exercised under the eager-compile path (`kryos test`).
+//
+// Symptom (pre-fix): the monomorphized generic (e.g. fmt_conf___str) routed
+// to_string(confidence) to kryos_builtin_to_string (i64 signature) even though
+// the SSA value is f64, failing the Cranelift verifier:
+//     "arg 0 (vN) has type f64, expected i64"
+// is_float_operand() saw the erased MIR local type and returned false. The
+// codegen to_string dispatch fix also checks the actual SSA value type
+// (val_ssa_ty.is_float()), routing the f64 value to kryos_f64_to_string.
+//
+// `kryos run` was never affected (reachability compilation keeps the f64
+// type); the bug only appeared under `kryos test` (eager compilation of every
+// monomorphization). Once the dispatch fix is built into the binary, plain
+// `kryos test` on this file goes green. The main() driver proves the logic via
+// `kryos run` in the meantime.
+//
+// Found while building ecosystem/kryos-audit-trail (std::tracked.inference
+// builds "confidence=" + to_string(confidence), which any inference() user
+// pulls into eager compilation under kryos test).
+
+fn fmt_conf<T>(value: T, confidence: f64) -> str {
+    return "confidence=" + to_string(confidence)
+}
+
+fn fmt_interp<T>(value: T, c: f64) -> str {
+    return "c={c}"
+}
+
+@test
+fn test_f64_to_string_concat_in_generic() {
+    assert(fmt_conf("approved", 0.91) == "confidence=0.91", "f64 to_string via + concat in a generic fn")
+}
+
+@test
+fn test_f64_to_string_interp_in_generic() {
+    assert(fmt_interp("x", 0.5) == "c=0.5", "f64 to_string via interpolation in a generic fn")
+}
+
+fn main() {
+    assert(fmt_conf("approved", 0.91) == "confidence=0.91", "concat path")
+    assert(fmt_interp("x", 0.5) == "c=0.5", "interp path")
+    println("to_string(f64)-in-generic regression: OK via kryos run")
+}
