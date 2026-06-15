@@ -38,25 +38,23 @@ fn tool_add(args_node: i64) -> i64 {
   return text_content(to_string(a + b))
 }
 
-// Network access. Declares `net` -- the intended surface for the real URL
-// fetch. The MVP ships a STUB body (hardcoded string) so no outbound access is
-// needed for local testing, matching the build plan.
-//
-// `net` here is the DECLARED surface, not yet exercised by the stub. That the
-// net capability is GENUINELY enforced (not cosmetic) is proven separately and
-// reproducibly: a function that calls the net builtin `http2_get` fails to
-// compile under @capabilities(compute) with
+// Network access. GENUINELY uses `net`: http2_get requires the `net`
+// capability (verified), so this body would NOT compile under
+// @capabilities(compute) -- the net claim is real, not over-declared:
 //   error[E-CAP-BUILTIN]: builtin `http2_get` requires `net` capability
-// (see README "Proof the enforcement is real"). To make THIS tool exercise net
-// on the Cranelift backend, replace the stub line with `http2_get(url)` and run
-// with `kryos run` -- note the LLVM release backend currently does not link
-// http2_get (a compiler gap; the stub keeps `kryos build --release` working).
+// (see README "Proof the enforcement is real").
+//
+// Calling this tool performs a real outbound HTTP/2 (ALPN h2, HTTP/1.1
+// fallback) GET. tools/list does not execute tool bodies, so listing is
+// offline; only an actual tools/call on `fetch` reaches the network. Windows
+// TLS note: see README Risk 4.
 @capabilities(net)
 fn tool_fetch(args_node: i64) -> i64 {
   let url_n: i64 = json_get(args_node, "url")
   if url_n <= 0 { return err_content("missing 'url'") }
   let url: str = json_to_str(url_n)
-  return text_content("[stub] would fetch " + url + " (declares cap: net)")
+  let body: str = http2_get(url)
+  return text_content(body)
 }
 
 // LLM-powered summarization. Declares `net` (outbound to the model API) plus a
