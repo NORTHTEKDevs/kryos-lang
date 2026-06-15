@@ -3,7 +3,7 @@
 // the confidence==1.0 last-bin boundary, confidence==0.0 first bin, clamping,
 // the bins<2 clamp, the confidence==0.6 float-binning regression, and NaN.
 // Self-checking: exits non-zero on any failure.
-use std::probable::{calibration_tracker, add_sample, ece}
+use std::probable::{probable, calibration_tracker, add_sample, add_probable_sample, ece, calibration_summary}
 
 fn approx(got: f64, want: f64, what: str) {
     let mut d = got - want
@@ -97,6 +97,40 @@ fn main() {
         exit(1)
     }
     approx(ne, 1.0, "NaN confidence maps to 0.0, ECE = 1.0 (not NaN)")
+
+    // 9. add_probable_sample: feeds Probable<T>.confidence into the tracker.
+    //    100 @ probable(_, 0.9), 60 correct -> same as add_sample(0.9) -> 0.30.
+    let mut pt = calibration_tracker(10)
+    let mut p = 0
+    while p < 100 {
+        let pred = probable(0.0, 0.9)
+        pt = add_probable_sample(pt, pred, p < 60)
+        p = p + 1
+    }
+    approx(ece(pt), 0.30, "add_probable_sample uses Probable.confidence -> ECE 0.30")
+
+    // 10. calibration_summary: human-readable report. 100 @ 0.9, 60 correct.
+    //     Must contain the sample count, the ECE, and a per-bin line (n=100).
+    let mut sm = calibration_tracker(10)
+    let mut q = 0
+    while q < 100 {
+        sm = add_sample(sm, 0.9, q < 60)
+        q = q + 1
+    }
+    let report = calibration_summary(sm)
+    println(report)
+    if not contains(report, "100 samples") {
+        println("FAIL: summary missing sample count")
+        exit(1)
+    }
+    if not contains(report, "ECE=") {
+        println("FAIL: summary missing ECE")
+        exit(1)
+    }
+    if not contains(report, "n=100") {
+        println("FAIL: summary missing per-bin count")
+        exit(1)
+    }
 
     println("calibration adversarial verification: PASS")
 }
