@@ -1,0 +1,8 @@
+[package]
+name = "kryos-audit-trail"
+version = "0.1.0"
+description = "EU AI Act Annex IV compliance reporter for Kryos Tracked<T> values"
+license = "MIT"
+
+[capabilities]
+allowed = ["compute", "io"]

@@ -1,0 +1,42 @@
+// ============================================================
+// audit_stream.kry -- batch audit for a pipeline run.
+//
+// audit_stream emits ONE JSON object containing a `records` array (a full
+// Annex IV record per decision) plus a run summary (schema_version,
+// generated_at, system_id, record_count). All records share the run-level
+// metadata (cost / caps / confidence / system_id / user_id). For per-decision
+// cost attribution, call audit_tracked() on each decision individually.
+//
+// Composes via audit_record_handle (from audit.kry), which returns the record
+// as a JSON object handle so the records can be arrayed without re-parsing.
+// ============================================================
+
+use std::tracked
+use std::cost
+use std::datetime
+use audit
+
+@capabilities()
+fn audit_stream(decisions: [Tracked<str>], cost: ComputeCost, caps: [str], confidence: f64, system_id: str, user_id: str) -> str {
+    let mut records: [i64] = []
+    let mut i = 0
+    while i < len(decisions) {
+        let d = decisions[i]
+        let h = audit_record_handle("{d.value}", d.lineage, d.source, d.source_description, cost, caps, confidence, system_id, user_id)
+        records = push(records, h)
+        i = i + 1
+    }
+
+    let now = timestamp()
+    let obj = json_object(
+        ["schema_version", "generated_at", "system_id", "record_count", "records"],
+        [
+            json_string("eu-ai-act-annex-iv-stream-v1"),
+            json_number(now as f64),
+            json_string(system_id),
+            json_number(len(decisions) as f64),
+            json_array(records)
+        ]
+    )
+    return json_stringify(obj)
+}

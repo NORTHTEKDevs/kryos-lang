@@ -1,0 +1,87 @@
+// ============================================================
+// test_postmvp.kry -- tests for the post-MVP features:
+//   audit_stream, read_caps_sidecar, audit_validate, audit_redact.
+//
+//   kryos run tests/test_postmvp.kry   (see RUNNER NOTE in test_audit.kry --
+//   the @test functions need the upstream to_string(f64) codegen fix; the
+//   main() driver runs the assertions now via reachability compilation.)
+//
+// caps.json fixtures are written with json_stringify (Kryos string literals do
+// not support \" escapes, so JSON content is built with the json builtins).
+// ============================================================
+
+use std::tracked
+use std::cost
+use audit
+use audit_stream
+use caps_sidecar
+use validate
+
+fn sample() -> Tracked<str> {
+    return annotate(inference(tracked_source("applicant", "form_upload", "raw loan app"), "underwriting-v2", "approved", 0.91), "compliance_review", "fair lending ok")
+}
+
+@test
+fn test_stream_batches_records() {
+    let mut ds: [Tracked<str>] = []
+    ds = push(ds, sample())
+    ds = push(ds, annotate(tracked_source("applicant2", "form_upload", "raw2"), "human_review", "ok"))
+    let nc: [str] = []
+    let out = audit_stream(ds, cost_zero(), nc, 0.91, "loan-v2", "user-1")
+    let parsed = json_parse(out)
+    assert(json_to_int(json_get(parsed, "record_count")) == 2, "stream reports record_count=2")
+    let recs = json_get(parsed, "records")
+    assert(json_length(recs) == 2, "records array has 2 entries")
+    let r0 = json_get_index(recs, 0)
+    assert(json_to_str(json_get(json_get(r0, "decision"), "value")) == "approved", "record 0 decision.value faithful")
+}
+
+@test
+fn test_caps_sidecar_array_object_and_missing() {
+    file_write("caps_arr.json", json_stringify(json_array([json_string("net"), json_string("db")])))
+    let a = read_caps_sidecar("caps_arr.json")
+    assert(len(a) == 2, "array-form badge -> 2 caps")
+    assert(a[0] == "net", "array-form first cap is net")
+    file_write("caps_obj.json", json_stringify(json_object(["capabilities"], [json_array([json_string("io")])])))
+    let o = read_caps_sidecar("caps_obj.json")
+    assert(len(o) == 1, "object-form badge -> 1 cap")
+    assert(o[0] == "io", "object-form cap is io")
+    assert(len(read_caps_sidecar("definitely_absent_file.json")) == 0, "missing file -> empty surface")
+}
+
+@test
+fn test_validate_clean_and_missing() {
+    let nc: [str] = []
+    let rec = audit_tracked(sample(), cost_zero(), nc, 0.91, "sys", "usr")
+    assert(len(audit_validate(rec)) == 0, "complete record validates clean")
+    let broken = json_stringify(json_object(["schema_version"], [json_string("x")]))
+    let miss = audit_validate(broken)
+    assert(len(miss) > 0, "broken record reports missing fields")
+    assert(contains_field(miss, "annex_iv"), "annex_iv reported missing")
+}
+
+@test
+fn test_redact_nullifies_named_field() {
+    let nc: [str] = []
+    let rec = audit_tracked(sample(), cost_zero(), nc, 0.91, "sys", "user-secret")
+    let redacted = audit_redact(rec, ["user_id"])
+    // json_parse consumes the string (str is a move type), so all assertions
+    // read the parsed handle (json handles are reusable).
+    let parsed = json_parse(redacted)
+    assert(json_is_null(json_get(parsed, "user_id")), "user_id is nullified")
+    assert(json_to_str(json_get(parsed, "system_id")) == "sys", "system_id preserved")
+    assert(not json_is_null(json_get(parsed, "decision")), "decision preserved")
+    assert(not json_is_null(json_get(parsed, "annex_iv")), "annex_iv preserved (still structurally valid)")
+}
+
+fn main() {
+    test_stream_batches_records()
+    println("PASS test_stream_batches_records")
+    test_caps_sidecar_array_object_and_missing()
+    println("PASS test_caps_sidecar_array_object_and_missing")
+    test_validate_clean_and_missing()
+    println("PASS test_validate_clean_and_missing")
+    test_redact_nullifies_named_field()
+    println("PASS test_redact_nullifies_named_field")
+    println("4/4 post-MVP tests passed")
+}

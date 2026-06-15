@@ -1,0 +1,57 @@
+// ============================================================
+// caps_sidecar.kry -- read a capability-surface "badge" sidecar (caps.json).
+//
+// The badge is the UNIONED capability surface a package declares -- the
+// machine-readable artifact project 05 publishes, and what an audit record's
+// `capability_surface` should reflect. read_caps_sidecar accepts either a bare
+// JSON array of capability strings (["net","db"]) or an object wrapping one
+// ({"capabilities":["net","db"]}), and returns [] for a missing/empty/malformed
+// file.
+//
+// It is deliberately NOT a reader for the per-function `kryos manifest --caps`
+// output (kryos-manifest-v1): that nests capabilities under dynamic
+// function-name keys, which the native json builtins cannot enumerate. Project
+// 05 unions that manifest into the flat badge this reader consumes.
+//
+// This is the one IO-touching helper in the library (it reads a file), hence
+// @capabilities(io). The core record builders stay pure -- the caller opts into
+// io only by calling this, then feeds the result to audit_tracked's caps param.
+// ============================================================
+
+// Collect a JSON-array-of-strings handle into a [str].
+@capabilities()
+fn collect_str_array(arr: i64) -> [str] {
+    let mut out: [str] = []
+    let n = json_length(arr)
+    let mut i = 0
+    while i < n {
+        out = push(out, json_to_str(json_get_index(arr, i)))
+        i = i + 1
+    }
+    return out
+}
+
+@capabilities(io)
+fn read_caps_sidecar(path: str) -> [str] {
+    let empty: [str] = []
+    if file_exists(path) == 0 {
+        return empty
+    }
+    let content = file_read(path)
+    if len(content) == 0 {
+        return empty
+    }
+    let parsed = json_parse(content)
+    let t = json_type(parsed)
+    if t == "array" {
+        return collect_str_array(parsed)
+    }
+    if t == "object" {
+        let caps = json_get(parsed, "capabilities")
+        if json_type(caps) == "array" {
+            return collect_str_array(caps)
+        }
+        return empty
+    }
+    return empty
+}
