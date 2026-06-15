@@ -1,0 +1,4 @@
+@capabilities(net)
+fn fetch(url: str) -> i64 {
+    return http_get(url)
+}

@@ -1,0 +1,20 @@
+{
+  "schema": "kryos-manifest-v1",
+  "source": "tests/manifest/multi_cap.kry",
+  "functions": {
+    "digest": {
+      "capabilities": [
+        "crypto"
+      ],
+      "annotated": true
+    },
+    "sync_files": {
+      "capabilities": [
+        "io",
+        "net"
+      ],
+      "annotated": true
+    }
+  },
+  "unannotated_count": 1
+}

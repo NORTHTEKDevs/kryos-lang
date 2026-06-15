@@ -32,4 +32,7 @@ kryos-ast.workspace = true
 kryos-lexer.workspace = true
 kryos-parser.workspace = true
 kryos-rt.workspace = true
+kryos-capabilities.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 clap.workspace = true

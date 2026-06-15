@@ -1,0 +1,4 @@
+@capabilities(all)
+fn god_mode() -> i64 {
+    return 0
+}

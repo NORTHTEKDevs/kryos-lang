@@ -2,6 +2,7 @@
 
 pub mod audit_cmd;
 pub mod bench_cmd;
+pub mod manifest_cmd;
 pub mod bindgen;
 pub mod build;
 pub mod changelog_cmd;

@@ -1244,6 +1244,7 @@ dependencies = [
  "clap",
  "kryos-ast",
  "kryos-bindgen",
+ "kryos-capabilities",
  "kryos-codegen-cranelift",
  "kryos-codegen-llvm",
  "kryos-codegen-wasm",
@@ -1258,6 +1259,8 @@ dependencies = [
  "kryos-parser",
  "kryos-rt",
  "kryos-test-runner",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

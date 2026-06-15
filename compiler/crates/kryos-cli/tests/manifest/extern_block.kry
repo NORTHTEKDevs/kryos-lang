@@ -1,0 +1,8 @@
+extern {
+    fn c_compute(x: i64) -> i64
+}
+
+@capabilities(ffi)
+fn call_native(x: i64) -> i64 {
+    return c_compute(x)
+}

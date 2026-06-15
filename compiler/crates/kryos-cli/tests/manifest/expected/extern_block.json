@@ -1,0 +1,13 @@
+{
+  "schema": "kryos-manifest-v1",
+  "source": "tests/manifest/extern_block.kry",
+  "functions": {
+    "call_native": {
+      "capabilities": [
+        "ffi"
+      ],
+      "annotated": true
+    }
+  },
+  "unannotated_count": 0
+}
