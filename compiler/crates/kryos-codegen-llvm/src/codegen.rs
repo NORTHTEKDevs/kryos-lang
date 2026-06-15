@@ -4428,6 +4428,34 @@ impl LlvmCodegen {
                                 ));
                             }
                         }
+                        "sqrt"
+                            if args.len() == 1
+                                && !self.func_param_types.contains_key("sqrt") =>
+                        {
+                            // sqrt builtin -> the LLVM intrinsic, which lowers to a
+                            // single hardware sqrt (vsqrtsd) instead of a libm call.
+                            // Identical IEEE-754 semantics to libm sqrt (NOT
+                            // fast-math), so it matches what rustc -O / clang -O2
+                            // emit and keeps the benchmark comparison fair.
+                            let a_ty = self.operand_type(&args[0], func);
+                            let a_val = self.operand_to_llvm(&args[0], func);
+                            let a = self.coerce_value(&a_val, &a_ty, "double");
+                            if is_mutable {
+                                let tmp = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {tmp} = call double @llvm.sqrt.f64(double {a})"
+                                ));
+                                self.emit_line(&format!(
+                                    "  store double {tmp}, ptr %_{}.addr",
+                                    dest.0
+                                ));
+                            } else {
+                                self.emit_line(&format!(
+                                    "  %_{} = call double @llvm.sqrt.f64(double {a})",
+                                    dest.0
+                                ));
+                            }
+                        }
                         "pow" if args.len() == 2 && !self.func_param_types.contains_key("pow") => {
                             // Float power builtin -> @kryos_fpow (declared; same
                             // runtime the `**` operator uses). Was emitting a bare
