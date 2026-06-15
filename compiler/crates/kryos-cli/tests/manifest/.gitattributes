@@ -1,0 +1,5 @@
+# Golden snapshots + fixtures are compared (modulo EOL) against the binary's LF
+# output. Pin them to LF so Windows autocrlf checkout does not rewrite them and
+# break the exact-match tests.
+*.json text eol=lf
+*.kry  text eol=lf

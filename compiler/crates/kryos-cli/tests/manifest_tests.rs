@@ -20,10 +20,16 @@ fn run_full(args: &[&str]) -> (String, String, i32) {
     (stdout, stderr, out.status.code().unwrap_or(-1))
 }
 
+/// Normalize line endings before comparing: Windows `autocrlf` can check out the
+/// golden `.json` files as CRLF while the binary always emits LF.
+fn norm(s: &str) -> String {
+    s.replace("\r\n", "\n").trim_end().to_string()
+}
+
 fn assert_golden(fixture: &str, golden: &str) {
     let (stdout, code) = run(&["manifest", "--caps", fixture]);
     assert_eq!(code, 0, "exit code for {fixture}");
-    assert_eq!(stdout.trim_end(), golden.trim_end(), "golden mismatch for {fixture}");
+    assert_eq!(norm(&stdout), norm(golden), "golden mismatch for {fixture}");
 }
 
 #[test]
@@ -149,7 +155,7 @@ fn manifest_output_flag_writes_file() {
     assert!(stdout.trim().is_empty(), "stdout should be empty when --output is set");
     let content = std::fs::read_to_string(&out_path).expect("output file should exist");
     let golden = include_str!("manifest/expected/net_only.json");
-    assert_eq!(content.trim_end(), golden.trim_end());
+    assert_eq!(norm(&content), norm(golden));
 }
 
 #[test]
