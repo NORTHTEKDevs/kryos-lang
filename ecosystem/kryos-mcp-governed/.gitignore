@@ -1,0 +1,13 @@
+# build artifacts
+*.exe
+*.exp
+*.lib
+*.pdb
+*.o
+*.ll
+*.wasm
+target/
+kryos.lock
+# scratch
+_probe/
+/tmp/

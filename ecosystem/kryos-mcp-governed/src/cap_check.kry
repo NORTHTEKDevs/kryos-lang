@@ -1,0 +1,93 @@
+// cap_check.kry -- startup capability allowlist enforcement.
+//
+// At startup the server compares each tool's declared capabilities against a
+// server-level allowlist (the "policy"). Any tool that declares a capability
+// outside the allowlist is reported. In soft mode (default) this is a WARN on
+// stderr and the server continues; in strict mode (KRYOS_MCP_STRICT=1) the
+// caller exits non-zero. All diagnostics go to STDERR so the JSON-RPC stdout
+// stream stays clean.
+
+// The declared capability surface of the whole server.
+struct ServerPolicy {
+  allowed_caps: [str],
+}
+
+// Per-tool capability record assembled at startup. Mirrors the @capabilities
+// annotation on the corresponding tool function.
+struct ToolCapRecord {
+  tool_name: str,
+  declared_caps: [str],
+}
+
+fn tool_cap(name: str, caps: [str]) -> ToolCapRecord {
+  return ToolCapRecord { tool_name: name, declared_caps: caps }
+}
+
+// Is `cap` granted by the allowlist? "all" grants everything.
+fn cap_allowed(cap: str, allowed: [str]) -> bool {
+  let mut i: i64 = 0
+  while i < len(allowed) {
+    if allowed[i] == cap or allowed[i] == "all" { return true }
+    i = i + 1
+  }
+  return false
+}
+
+// Walk the tool registry; emit a WARN (stderr) for every (tool, cap) pair that
+// exceeds the allowlist. Returns the number of violations (0 == clean).
+fn check_tools(records: [ToolCapRecord], policy: ServerPolicy) -> i64 {
+  let mut violations: i64 = 0
+  let mut i: i64 = 0
+  while i < len(records) {
+    let rec: ToolCapRecord = records[i]
+    let mut j: i64 = 0
+    while j < len(rec.declared_caps) {
+      let cap: str = rec.declared_caps[j]
+      if not cap_allowed(cap, policy.allowed_caps) {
+        eprintln("WARN: tool '" + rec.tool_name + "' declares cap '" + cap + "' not in server allowlist")
+        violations = violations + 1
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  return violations
+}
+
+fn is_ws(c: str) -> bool {
+  let code: i64 = char_code(c)
+  return code == 32 or code == 9 or code == 13 or code == 10
+}
+
+// Trim ASCII whitespace from both ends. Relies on short-circuit `and` so the
+// index check guards the bounds before s[..] is read.
+fn trim_ws(s: str) -> str {
+  let n: i64 = len(s)
+  let mut a: i64 = 0
+  while a < n and is_ws(s[a]) { a = a + 1 }
+  let mut b: i64 = n
+  while b > a and is_ws(s[b - 1]) { b = b - 1 }
+  return substr(s, a, b)
+}
+
+// Split a comma-separated capability list into [str]. Hand-rolled over the
+// string builtins (substr / indexing) so it does not depend on std::string,
+// which keeps the local-module resolver simple. Each field is whitespace-
+// trimmed (so "net, compute" works) and empty fields are dropped.
+fn split_csv(s: str) -> [str] {
+  let out: [str] = []
+  let n: i64 = len(s)
+  let mut start: i64 = 0
+  let mut i: i64 = 0
+  while i < n {
+    if s[i] == "," {
+      let field: str = trim_ws(substr(s, start, i))
+      if len(field) > 0 { push(out, field) }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  let last: str = trim_ws(substr(s, start, n))
+  if len(last) > 0 { push(out, last) }
+  return out
+}
