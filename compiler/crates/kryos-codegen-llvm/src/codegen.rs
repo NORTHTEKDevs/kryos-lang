@@ -4458,6 +4458,21 @@ impl LlvmCodegen {
                                     || actual.starts_with('%')
                                     || actual.starts_with('[')
                                 {
+                                    // FIX: clone heap (str/array/map) fields of a @copy
+                                    // struct element before boxing it into the array so the
+                                    // array owns its own references. Without this a later
+                                    // scope-exit free of the source local's strings dangles
+                                    // the pushed struct's fields (e.g. a ToolResult.content
+                                    // pushed in a loop -> empty `"content":` on the wire).
+                                    let v = if actual.starts_with('%') {
+                                        if let Operand::Local(eid) = &args[1] {
+                                            self.maybe_deep_copy_struct_fields(&v, *eid, func, &actual)
+                                        } else {
+                                            v
+                                        }
+                                    } else {
+                                        v
+                                    };
                                     // Aggregate element (enum/tuple/struct): box on the
                                     // heap and push the pointer as i64, mirroring the
                                     // array-literal element path. The matching `a[i]`
