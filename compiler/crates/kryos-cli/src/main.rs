@@ -534,6 +534,27 @@ enum PkgAction {
     /// Package and publish to the registry
     Publish,
 
+    /// Show the capability badge of a package's latest registry version
+    Show {
+        /// Package name
+        name: String,
+    },
+
+    /// Audit capability escalation between the two latest registry versions
+    Audit {
+        /// Package name
+        name: String,
+        /// Fail on ANY new capability, not just dangerous ones (ffi/process)
+        #[arg(long)]
+        strict: bool,
+    },
+
+    /// Generate a capability badge (target/caps.json) for a project
+    Badge {
+        /// Project path (default: current directory)
+        path: Option<String>,
+    },
+
     /// Search the registry for packages
     Search {
         /// Search query (substring match)
@@ -831,6 +852,9 @@ fn main() {
             PkgAction::Install => commands::pkg::install(),
             PkgAction::Lock => commands::pkg::lock(),
             PkgAction::Publish => commands::pkg::publish(),
+            PkgAction::Show { name } => commands::caps_badge::show(&name),
+            PkgAction::Audit { name, strict } => commands::caps_badge::audit(&name, strict),
+            PkgAction::Badge { path } => commands::caps_badge::badge(path.as_deref()),
             PkgAction::Search { query } => commands::pkg::search(&query),
             PkgAction::Info { name } => commands::pkg::info(&name),
             PkgAction::Sync => commands::pkg::sync(),
