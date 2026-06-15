@@ -171,12 +171,20 @@ wrinkle: the Cranelift dev backend still beats the LLVM release backend here
 - **Landed earlier (2026-06-11 -> 06-14 first pass):** pooled box/buffer
   allocator; alloca-hoist; hang-trap atomic removal; inlined `arr[i]`
   read/write; dead post-call exception-check elision.
-- **Still planned**, in impact order: for binary_trees (6.13x), a heap-pointer
-  type (Kryos has no real `Box`) or arena/bump allocator with bulk free for
-  tree-scoped lifetimes - both larger changes with self-host risk; for nbody's
-  residual 1.33x, fair loop unroll/vectorize hints; a liveness-gated consuming
+- **Still planned**, in impact order: for binary_trees (6.13x), a single-heap-
+  allocation child link instead of the current `[Tree]` (array header + data +
+  struct box = ~3 allocations per child). Kryos has no real `Box`; the existing
+  `Shared<T>` (Rc-like, lowered via ArcAlloc) is the closest primitive but is
+  only partially surfaced - `shared T` does not unify with `Shared<T>` and
+  field access does not auto-deref through it, so completing it (deref +
+  unification + a nullable/`Option<Shared<T>>` leaf) is a type-checker change
+  with broad blast radius; the alternative is an arena/bump allocator with bulk
+  free for the short-lived trees. Both are larger, self-host-risky changes
+  deferred to a dedicated, fully-gated effort. Also: for nbody's residual
+  1.33x, fair loop unroll/vectorize hints; and a liveness-gated consuming
   string-append intrinsic (the sound version of the reverted fast path). Each
-  that touches MIR lowering must preserve the self-host bootstrap fixed point.
+  that touches MIR lowering or the type checker must preserve the self-host
+  bootstrap fixed point, so none ships without that gate.
 - The Cranelift column exists for honesty about `kryos run`: it is the
   development backend; ship binaries with `kryos build --release`.
 
