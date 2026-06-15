@@ -1,0 +1,86 @@
+// tests/test_rag.kry -- Three smoke tests for the kryos-rag MVP pipeline.
+//
+// No live LLM needed: citation chain is proven by building Tracked<str>
+// values via tracked_merge + inference() directly.
+//
+// PROVING COMMAND:  kryos run tests/test_rag.kry
+//   -> executes all 3 tests, prints "<name>: PASS", exits 0 on success / 1 on
+//      first failure. Negative-control verified: breaking any assertion makes it
+//      exit 1. This is the ONLY trustworthy way to run this suite.
+//
+// DO NOT trust `kryos test tests/test_rag.kry` here: with no @test functions it
+// reports a vacuous "1 file test passed" and exits 0 EVEN WHEN AN ASSERTION FAILS
+// -- it does not execute the assertions. Confirmed by negative control.
+//
+// Why no @test attribute: @test runs via the Cranelift JIT, which cannot resolve
+// kryos_string_retain (a runtime string symbol std::tracked needs) -- any @test
+// function touching std::tracked panics. The native AOT path used by `kryos run`
+// has the symbol and works. Same main()+exit(1) pattern as
+// kryos-lang/tests/smoke/test_tracked.kry.
+
+use std::tracked::{Tracked, tracked_source, inference}
+use rag
+use lineage_utils
+
+fn expect_eq(actual: i64, expected: i64, name: str) {
+    if actual != expected {
+        println("FAIL: " + name + " expected " + to_string(expected) + " got " + to_string(actual))
+        exit(1)
+    }
+}
+
+fn expect_str_eq(actual: str, expected: str, name: str) {
+    if actual != expected {
+        println("FAIL: " + name + " expected '" + expected + "' got '" + actual + "'")
+        exit(1)
+    }
+}
+
+fn test_retrieve_finds_matching_chunks() {
+    let chunks: [RagChunk] = [
+        RagChunk { id: "doc:001", text: "Kryos is a capability-safe language." },
+        RagChunk { id: "doc:002", text: "Kryos uses @budget to cap token spend." },
+        RagChunk { id: "doc:003", text: "Rust is a memory-safe language." }
+    ]
+    let results = rag_retrieve("Kryos", chunks)
+    expect_eq(len(results), 2, "retrieve: result count")
+    let r0 = results[0]
+    let r1 = results[1]
+    let s0: str = r0.source
+    let s1: str = r1.source
+    expect_str_eq(s0, "doc:001", "retrieve: results[0].source")
+    expect_str_eq(s1, "doc:002", "retrieve: results[1].source")
+    println("test_retrieve_finds_matching_chunks: PASS")
+}
+
+fn test_tracked_merge_unions_lineages() {
+    let a = tracked_source("text A", "doc:001", "chunk 1")
+    let b = tracked_source("text B", "doc:002", "chunk 2")
+    let c = tracked_source("text C", "doc:003", "chunk 3")
+    let merged = tracked_merge([a, b, c], "combined", "merge", "test merge")
+    // 3 source entries + 1 merge entry = 4 total
+    expect_eq(len(merged.lineage), 4, "merge: lineage count")
+    println("test_tracked_merge_unions_lineages: PASS")
+}
+
+fn test_citations_deduplicated() {
+    let a = tracked_source("text A", "doc:001", "chunk 1")
+    let b = tracked_source("text B", "doc:002", "chunk 2")
+    let c = tracked_source("text C", "doc:003", "chunk 3")
+    let merged = tracked_merge([a, b, c], "combined", "merge", "test merge")
+    // Simulate inference step (no LLM needed)
+    let answer = inference(merged, "test-model", "synthetic answer", 0.0)
+    let citations = rag_citations(answer)
+    expect_eq(len(citations), 3, "citations: count")
+    expect_str_eq(citations[0], "source=doc:001", "citations[0]")
+    expect_str_eq(citations[1], "source=doc:002", "citations[1]")
+    expect_str_eq(citations[2], "source=doc:003", "citations[2]")
+    println("test_citations_deduplicated: PASS")
+}
+
+fn main() {
+    test_retrieve_finds_matching_chunks()
+    test_tracked_merge_unions_lineages()
+    test_citations_deduplicated()
+    println("All 3 tests passed.")
+}

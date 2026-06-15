@@ -1,0 +1,29 @@
+// rag_llm.kry -- LLM-dependent RAG function: rag_answer.
+// Separated from rag.kry so tests that don't need a live LLM can import
+// rag.kry without pulling in std::llm / std::cost.
+
+use std::tracked::{Tracked, LineageEntry, tracked_source, inference}
+use std::llm::{LlmConfig, chat, user}
+use lineage_utils
+
+/// Answer a question using retrieved chunks; merges lineages; records inference.
+@capabilities(net)
+@budget(tokens = 4000, calls = 1)
+fn rag_answer(cfg: LlmConfig, tracked_chunks: [Tracked<str>], question: str) -> Tracked<str> {
+    if len(tracked_chunks) == 0 {
+        throw "rag error: no chunks retrieved; cannot answer"
+    }
+    let mut context = ""
+    let mut i = 0
+    while i < len(tracked_chunks) {
+        context = context + tracked_chunks[i].value + "\n\n"
+        i = i + 1
+    }
+    let merged = tracked_merge(tracked_chunks, context, "merge",
+        "RAG context from " + to_string(len(tracked_chunks)) + " chunks")
+    let prompt = "Answer using ONLY the provided context.\n\nContext:\n" + context +
+                 "\n\nQuestion: " + question
+    let response = chat(cfg, [user(prompt)])
+    let answer = inference(merged, cfg.model, response.text, 0.0)
+    return answer
+}

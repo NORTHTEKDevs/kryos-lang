@@ -1,0 +1,64 @@
+// lineage_utils.kry -- tracked_merge and tracked_to_citation utilities.
+// Project 02 is not on disk; these are implemented inline here.
+
+use std::tracked::{Tracked, LineageEntry, tracked_source, inference}
+
+/// Union the lineage arrays of N Tracked<str> values, append a merge entry,
+/// and return a new Tracked<str> with new_value as the wrapped value.
+fn tracked_merge(sources: [Tracked<str>], new_value: str, operation: str, description: str) -> Tracked<str> {
+    let mut combined_lineage: [LineageEntry] = []
+    let mut i = 0
+    while i < len(sources) {
+        let s = sources[i]
+        let mut j = 0
+        while j < len(s.lineage) {
+            combined_lineage = push(combined_lineage, s.lineage[j])
+            j = j + 1
+        }
+        i = i + 1
+    }
+    let merge_entry = LineageEntry {
+        operation: operation,
+        description: description,
+        timestamp: time_now(),
+        metadata: "merged=" + to_string(len(sources)) + " sources"
+    }
+    combined_lineage = push(combined_lineage, merge_entry)
+    let first_source = sources[0]
+    return Tracked {
+        value: new_value,
+        lineage: combined_lineage,
+        source: first_source.source,
+        source_description: description
+    }
+}
+
+/// Return deduplicated list of source IDs from a Tracked<str>'s lineage.
+/// Deduplicates by entry.metadata (tracked_source sets metadata = "source=" + source).
+/// Returns citation strings in first-encounter order.
+fn tracked_to_citation(t: Tracked<str>) -> [str] {
+    let mut seen: [str] = []
+    let mut result: [str] = []
+    let mut i = 0
+    while i < len(t.lineage) {
+        let entry = t.lineage[i]
+        if entry.operation == "source" {
+            let src = entry.metadata
+            let mut found = false
+            let mut j = 0
+            while j < len(seen) {
+                if seen[j] == src {
+                    found = true
+                }
+                j = j + 1
+            }
+            if not found {
+                seen = push(seen, src)
+                result = push(result, src)
+            }
+        }
+        i = i + 1
+    }
+    return result
+}
+

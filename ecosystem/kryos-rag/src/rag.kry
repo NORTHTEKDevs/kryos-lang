@@ -1,0 +1,33 @@
+// rag.kry -- Core RAG pipeline: retrieval types and pure functions.
+// LLM-dependent rag_answer lives in rag_llm.kry to allow the test suite
+// to run without triggering std::llm/std::cost JIT issues on this toolchain.
+
+use std::tracked::{Tracked, tracked_source}
+use lineage_utils
+
+struct RagChunk {
+    id: str,
+    text: str
+}
+
+/// Retrieve chunks that contain the query string (keyword match).
+/// Wraps each matching chunk in tracked_source so lineage is established.
+@capabilities(io)
+fn rag_retrieve(query: str, chunks: [RagChunk]) -> [Tracked<str>] {
+    let mut results: [Tracked<str>] = []
+    let mut i = 0
+    while i < len(chunks) {
+        let c = chunks[i]
+        if contains(c.text, query) {
+            let t = tracked_source(c.text, c.id, "retrieved chunk for query: " + query)
+            results = push(results, t)
+        }
+        i = i + 1
+    }
+    return results
+}
+
+/// Return the deduplicated citation list for an answer.
+fn rag_citations(answer: Tracked<str>) -> [str] {
+    return tracked_to_citation(answer)
+}
