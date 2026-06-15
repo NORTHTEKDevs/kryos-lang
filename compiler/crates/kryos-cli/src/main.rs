@@ -345,6 +345,33 @@ enum Commands {
         format: String,
     },
 
+    /// Emit a per-function capability manifest for a Kryos source tree
+    Manifest {
+        /// Source file or project directory. Default: current directory.
+        #[arg(value_name = "PATH")]
+        path: Option<String>,
+
+        /// Emit the capability manifest (currently the only manifest type).
+        #[arg(long)]
+        caps: bool,
+
+        /// Output format: json (default) or pretty.
+        #[arg(long, value_name = "FORMAT", default_value = "json")]
+        format: String,
+
+        /// Include unannotated functions as capabilities=[] in the output.
+        #[arg(long)]
+        strict: bool,
+
+        /// Write manifest to FILE instead of stdout.
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<String>,
+
+        /// Exit 1 if any function has one of these capabilities (comma-separated).
+        #[arg(long, value_delimiter = ',', value_name = "CAP")]
+        deny: Vec<String>,
+    },
+
     /// Run `@bench`-annotated micro-benchmarks
     Bench {
         /// Filter bench names by substring (positional).
@@ -744,6 +771,16 @@ fn main() {
             commands::audit_cmd::execute(commands::audit_cmd::AuditOptions {
                 path,
                 format,
+            })
+        }
+
+        Commands::Manifest { path, caps: _, format, strict, output, deny } => {
+            commands::manifest_cmd::execute(commands::manifest_cmd::ManifestOptions {
+                path,
+                format,
+                strict,
+                output,
+                deny,
             })
         }
 

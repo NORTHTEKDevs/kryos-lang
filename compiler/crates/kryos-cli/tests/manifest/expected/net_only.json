@@ -1,0 +1,13 @@
+{
+  "schema": "kryos-manifest-v1",
+  "source": "tests/manifest/net_only.kry",
+  "functions": {
+    "fetch": {
+      "capabilities": [
+        "net"
+      ],
+      "annotated": true
+    }
+  },
+  "unannotated_count": 0
+}

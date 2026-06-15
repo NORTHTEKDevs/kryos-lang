@@ -1,0 +1,15 @@
+@capabilities(net, io)
+fn sync_files(url: str, path: str) -> i64 {
+    let data = http_get(url)
+    file_write(path, data)
+    return 0
+}
+
+@capabilities(crypto)
+fn digest(data: str) -> str {
+    return sha256(data)
+}
+
+fn helper(x: i64) -> i64 {
+    return x + 1
+}

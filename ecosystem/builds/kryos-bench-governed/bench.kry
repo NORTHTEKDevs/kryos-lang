@@ -1,0 +1,323 @@
+// bench.kry -- kryos-bench-governed
+// A budget-bounded LLM benchmark harness. The token/call ceiling is the
+// @budget attribute on run_benchmark, enforced by the runtime BEFORE each
+// chat() request fires (pre-call refusal). A buggy loop cannot overspend:
+// the ceiling is a language property, not a convention a counter could skip.
+//
+// Run offline (no creds): prints the ceiling + cases, sends nothing, exits 0.
+//   kryos run bench.kry
+// Run live:
+//   OPENAI_API_KEY=sk-...                     kryos run bench.kry
+//   ANTHROPIC_API_KEY=sk-ant-...              kryos run bench.kry
+//   BENCH_BASE_URL=http://127.0.0.1:11434/v1  kryos run bench.kry   (any OpenAI-compatible server)
+
+use std::llm::{LlmConfig, Message, openai_config, anthropic_config, with_base_url, with_max_tokens, system, user, chat}
+use std::probable::{Probable, probable, with_source}
+use std::cost::{ComputeCost}
+use std::tracked::{Tracked, tracked_source, inference, explain}
+use std::fmt::{float_fixed, percent}
+
+// ---------------------------------------------------------------------------
+// Why this MVP has no ensemble / majority_vote path:
+// std::probable::majority_vote() decides consensus with EXACT string equality
+// (the source compares `pj.value == pi.value`). That is fine for short factual
+// or classification answers, but it does NOT do semantic matching. For
+// open-ended generation (e.g. "name three primary colors") two equally-correct
+// answers that differ in wording would never reach consensus. This MVP runs a
+// single inference per case. Do NOT add an ensemble path here and claim
+// semantic agreement -- it would be exact-string voting only. A real ensemble
+// needs a semantic judge call or embeddings, which is post-MVP.
+// ---------------------------------------------------------------------------
+
+@copy
+struct BenchCase {
+    case_id: str,
+    prompt: str,
+    expected: str,    // "" means no ground truth (open-ended)
+    category: str
+}
+
+// NOT @copy: holds Probable<str>, ComputeCost, and Tracked<str>, all of which
+// are heap-bearing / non-copy. BenchResult is moved, never copied.
+struct BenchResult {
+    case_id: str,
+    answer: Probable<str>,
+    cost: ComputeCost,
+    latency_ms: i64,
+    audit: Tracked<str>
+}
+
+@copy
+struct RunScore {
+    n_cases: i64,
+    n_correct: i64,
+    accuracy: f64,
+    avg_confidence: f64,
+    ece: f64,                // expected calibration error (2-bucket), lower is better
+    total_tokens: i64,
+    total_calls: i64,
+    total_latency_ms: i64
+}
+
+// Heuristic confidence from string matching -- NOT a calibrated probability.
+//   no ground truth -> 0.8   (open-ended)
+//   exact match      -> 1.0
+//   substring match  -> 0.85
+//   otherwise        -> 0.3
+fn infer_confidence(reply: str, expected: str) -> f64 {
+    if len(expected) == 0 {
+        return 0.8
+    }
+    if reply == expected {
+        return 1.0
+    }
+    if contains(reply, expected) {
+        return 0.85
+    }
+    return 0.3
+}
+
+// Evaluate a single case. Calls chat() once; wraps the reply in a Probable<str>,
+// records a ComputeCost receipt, and builds a Tracked<str> audit trail
+// (source entry + inference entry = 2 lineage entries).
+// time_now() is whole-second granularity, so sub-second latencies read as 0.
+@capabilities(net, time)
+fn evaluate_case(cfg: LlmConfig, c: BenchCase, sys_prompt: str) -> BenchResult {
+    let t0 = time_now()
+    let msgs: [Message] = [system(sys_prompt), user(c.prompt)]
+    let resp = chat(cfg, msgs)           // pre-call @budget check fires inside chat()
+    let t1 = time_now()
+    let latency = t1 - t0
+
+    let conf = infer_confidence(resp.text, c.expected)
+    let answer = with_source(probable(resp.text, conf), cfg.model)
+
+    let used = ComputeCost {
+        wall_time_ms: (latency as f64),
+        tokens_used: resp.input_tokens + resp.output_tokens,
+        api_calls: 1,
+        money_usd: 0.0,
+        energy_kwh: 0.0
+    }
+
+    let mut audit = tracked_source(c.prompt, "user", "benchmark case " + c.case_id)
+    audit = inference(audit, cfg.model, resp.text, conf)
+
+    return BenchResult {
+        case_id: c.case_id,
+        answer: answer,
+        cost: used,
+        latency_ms: latency,
+        audit: audit
+    }
+}
+
+// The budget ceiling is enforced around the ENTIRE run by the @budget frame.
+// A buggy loop that generated 10000 cases still could not exceed 50000 tokens
+// or 100 calls: every chat() pre-checks the call ceiling before its HTTP request.
+// NOTE: the two literals below (50000 / 100) are mirrored in main() for the
+// offline message -- if you change them, change both places.
+@budget(tokens = 50000, calls = 100)
+@capabilities(net, time)
+fn run_benchmark(cfg: LlmConfig, cases: [BenchCase], sys_prompt: str) -> [BenchResult] {
+    let mut results: [BenchResult] = []
+    for c in cases {
+        let result = evaluate_case(cfg, c, sys_prompt)
+        results = push(results, result)
+    }
+    return results
+}
+
+// Accuracy + average confidence + a simplified 2-bucket ECE.
+// A case counts as correct when its answer scores >= 0.85 on infer_confidence
+// against ground truth; open-ended cases (no expected) score 0.8 and so count
+// as not-correct here -- an honest limitation of a string-match heuristic.
+fn score_run(results: [BenchResult], cases: [BenchCase]) -> RunScore {
+    let n = len(results)
+    if n == 0 {
+        return RunScore { n_cases: 0, n_correct: 0, accuracy: 0.0, avg_confidence: 0.0, ece: 0.0, total_tokens: 0, total_calls: 0, total_latency_ms: 0 }
+    }
+    let mut correct = 0
+    let mut conf_sum = 0.0
+    let mut token_sum = 0
+    let mut call_sum = 0
+    let mut lat_sum = 0
+    // ECE over two buckets: confident (>= 0.7) vs uncertain (< 0.7). Each bucket's
+    // calibration error is |mean confidence in bucket - accuracy in bucket|, weighted
+    // by the bucket's share of cases. (Full ECE uses 10 deciles; 2 buckets for the MVP.)
+    let mut hi_n = 0
+    let mut hi_correct = 0
+    let mut hi_conf_sum = 0.0
+    let mut lo_n = 0
+    let mut lo_correct = 0
+    let mut lo_conf_sum = 0.0
+    let mut i = 0
+    while i < n {
+        let r = results[i]
+        let c = cases[i]
+        let is_correct_val = infer_confidence(r.answer.value, c.expected) >= 0.85
+        if is_correct_val {
+            correct = correct + 1
+        }
+        conf_sum = conf_sum + r.answer.confidence
+        token_sum = token_sum + r.cost.tokens_used
+        call_sum = call_sum + r.cost.api_calls
+        lat_sum = lat_sum + r.latency_ms
+        if r.answer.confidence >= 0.7 {
+            hi_n = hi_n + 1
+            hi_conf_sum = hi_conf_sum + r.answer.confidence
+            if is_correct_val {
+                hi_correct = hi_correct + 1
+            }
+        } else {
+            lo_n = lo_n + 1
+            lo_conf_sum = lo_conf_sum + r.answer.confidence
+            if is_correct_val {
+                lo_correct = lo_correct + 1
+            }
+        }
+        i = i + 1
+    }
+    let acc = (correct as f64) / (n as f64)
+    let avg_conf = conf_sum / (n as f64)
+    let mut ece = 0.0
+    if hi_n > 0 {
+        let hi_acc = (hi_correct as f64) / (hi_n as f64)
+        let hi_conf_avg = hi_conf_sum / (hi_n as f64)
+        ece = ece + ((hi_n as f64) / (n as f64)) * abs(hi_conf_avg - hi_acc)
+    }
+    if lo_n > 0 {
+        let lo_acc = (lo_correct as f64) / (lo_n as f64)
+        let lo_conf_avg = lo_conf_sum / (lo_n as f64)
+        ece = ece + ((lo_n as f64) / (n as f64)) * abs(lo_conf_avg - lo_acc)
+    }
+    return RunScore {
+        n_cases: n,
+        n_correct: correct,
+        accuracy: acc,
+        avg_confidence: avg_conf,
+        ece: ece,
+        total_tokens: token_sum,
+        total_calls: call_sum,
+        total_latency_ms: lat_sum
+    }
+}
+
+fn format_report(results: [BenchResult], score: RunScore) -> str {
+    let mut out = "=== kryos-bench-governed run report ===\n"
+    out = out + "(confidence is a string-match heuristic, not a calibrated probability)\n\n"
+    out = out + "Cases:         " + to_string(score.n_cases) + "\n"
+    out = out + "Correct:       " + to_string(score.n_correct) + "\n"
+    out = out + "Accuracy:      " + percent(score.accuracy, 1) + "\n"
+    out = out + "Avg conf:      " + float_fixed(score.avg_confidence, 3) + "\n"
+    out = out + "ECE (2-bucket):" + float_fixed(score.ece, 3) + "\n"
+    out = out + "Total tokens:  " + to_string(score.total_tokens) + "\n"
+    out = out + "Total calls:   " + to_string(score.total_calls) + "\n"
+    out = out + "Total time(s): " + to_string(score.total_latency_ms) + "\n"
+    out = out + "\nPer-case results:\n"
+    for r in results {
+        out = out + "  [" + r.case_id + "] conf=" + float_fixed(r.answer.confidence, 2) + " tokens=" + to_string(r.cost.tokens_used) + " time=" + to_string(r.latency_ms) + "s\n"
+        out = out + "    -> " + r.answer.value + "\n"
+    }
+    return out
+}
+
+fn print_offline(cases: [BenchCase], budget_tokens: i64, budget_calls: i64) {
+    println("=== kryos-bench-governed (offline / dry-run mode) ===")
+    println("")
+    println("No credentials found. Set one of:")
+    println("  OPENAI_API_KEY     -> OpenAI (gpt-4o-mini)")
+    println("  ANTHROPIC_API_KEY  -> Anthropic (claude-haiku-4-5)")
+    println("  BENCH_BASE_URL     -> any OpenAI-compatible endpoint (Ollama, vLLM, LM Studio)")
+    println("")
+    println("Budget ceiling enforced by @budget on run_benchmark (checked before any request fires):")
+    println("  max tokens: " + to_string(budget_tokens))
+    println("  max calls:  " + to_string(budget_calls))
+    println("")
+    println("Cases that WOULD run (" + to_string(len(cases)) + "):")
+    for c in cases {
+        let mut exp = c.expected
+        if len(exp) == 0 {
+            exp = "(open-ended, no ground truth)"
+        }
+        println("  [" + c.case_id + "] " + c.category + " :: " + c.prompt + "  -> expected: " + exp)
+    }
+    println("")
+    println("No request sent. Exiting 0.")
+}
+
+fn main() {
+    // Mirror of the @budget(tokens=50000, calls=100) attribute on run_benchmark,
+    // used only to print the ceiling in offline mode (attributes take literals).
+    let budget_tokens = 50000
+    let budget_calls = 100
+
+    let openai_key = env_get("OPENAI_API_KEY")
+    let anth_key = env_get("ANTHROPIC_API_KEY")
+    let base_url = env_get("BENCH_BASE_URL")
+    let model_override = env_get("BENCH_MODEL")    // optional: pin a specific model id
+
+    let sys_prompt = "Answer concisely. One short sentence maximum."
+
+    // Inline MVP cases. No JSON loader (out of MVP scope).
+    let cases: [BenchCase] = [
+        BenchCase { case_id: "01", prompt: "What is the capital of France? Reply with just the city name.", expected: "Paris", category: "geography" },
+        BenchCase { case_id: "02", prompt: "What is 2 + 2? Reply with just the number.", expected: "4", category: "math" },
+        BenchCase { case_id: "03", prompt: "Which planet is known as the Red Planet? Reply with just the planet name.", expected: "Mars", category: "science" },
+        BenchCase { case_id: "04", prompt: "Name three primary colors.", expected: "", category: "open" }
+    ]
+
+    // Offline / dry-run: no credentials of any kind -> print ceiling + cases, exit 0.
+    if len(openai_key) == 0 and len(anth_key) == 0 and len(base_url) == 0 {
+        print_offline(cases, budget_tokens, budget_calls)
+        return
+    }
+
+    // Provider selection: explicit BENCH_BASE_URL (local OpenAI-compatible server)
+    // wins, then Anthropic, then OpenAI. BENCH_MODEL overrides the model id.
+    let mut model = "gpt-4o-mini"
+    if len(base_url) > 0 {
+        model = "llama3.2:3b"
+    } elif len(anth_key) > 0 {
+        model = "claude-haiku-4-5"
+    }
+    if len(model_override) > 0 {
+        model = model_override
+    }
+
+    let mut cfg = openai_config(openai_key, model)
+    if len(base_url) > 0 {
+        cfg = with_base_url(openai_config(openai_key, model), base_url)
+    } elif len(anth_key) > 0 {
+        cfg = anthropic_config(anth_key, model)
+    }
+    cfg = with_max_tokens(cfg, 256)
+
+    // The @budget frame on run_benchmark is the ceiling. If it is hit, chat()
+    // throws BEFORE sending the request; we catch it here to show pre-call refusal.
+    try {
+        let results = run_benchmark(cfg, cases, sys_prompt)
+        let score = score_run(results, cases)
+        println(format_report(results, score))
+
+        // Provenance demo: the audit lineage lives on the value itself, not in a
+        // side-channel log. tracked_source + inference => 2 lineage entries.
+        if len(results) > 0 {
+            let r0 = results[0]
+            println("=== audit trail for case " + r0.case_id + " (explain) ===")
+            println(explain(r0.audit))
+        }
+    } catch e {
+        if contains(e, "@budget") {
+            // Expected when the ceiling is hit (e.g. the @budget(calls=1) demo).
+            println("")
+            println("=== BUDGET ENFORCEMENT TRIGGERED (pre-call refusal) ===")
+            println(e)
+            println("The refused call never touched the network. This ceiling is a")
+            println("language property (@budget), not a counter the loop could skip.")
+            return
+        }
+        println("benchmark error: " + e)
+        exit(1)
+    }
+}

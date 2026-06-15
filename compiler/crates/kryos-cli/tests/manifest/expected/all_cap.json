@@ -1,0 +1,13 @@
+{
+  "schema": "kryos-manifest-v1",
+  "source": "tests/manifest/all_cap.kry",
+  "functions": {
+    "god_mode": {
+      "capabilities": [
+        "all"
+      ],
+      "annotated": true
+    }
+  },
+  "unannotated_count": 0
+}

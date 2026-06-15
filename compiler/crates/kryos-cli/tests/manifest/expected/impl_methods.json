@@ -1,0 +1,19 @@
+{
+  "schema": "kryos-manifest-v1",
+  "source": "tests/manifest/impl_methods.kry",
+  "functions": {
+    "Vault::sign": {
+      "capabilities": [
+        "crypto"
+      ],
+      "annotated": true
+    },
+    "save": {
+      "capabilities": [
+        "io"
+      ],
+      "annotated": true
+    }
+  },
+  "unannotated_count": 1
+}

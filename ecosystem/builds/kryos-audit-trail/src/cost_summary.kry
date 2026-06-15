@@ -1,0 +1,30 @@
+// ============================================================
+// cost_summary.kry -- ComputeCost -> JSON
+//
+// Maps the language-level std::cost.ComputeCost struct onto the
+// "Resource consumption" field of the EU AI Act Annex IV record.
+//
+// JSON is built with the native json_* builtins (json_object, json_string,
+// json_number, ...). Those builtins are global -- no `use std::json` is
+// needed -- and a JSON value is represented as an i64 handle, exactly as
+// the standard library itself does it (see compiler/stdlib/tracked.kry).
+// ============================================================
+
+use std::cost
+
+// Map a ComputeCost to a JSON object handle.
+// Integer fields (tokens_used, api_calls) are widened to f64 because the
+// json_number builtin takes an f64; json_stringify renders integral f64
+// values without a decimal point, so they print as plain integers.
+@capabilities()
+fn cost_to_json(c: ComputeCost) -> i64 {
+    let keys = ["wall_time_ms", "tokens_used", "api_calls", "money_usd", "energy_kwh"]
+    let vals = [
+        json_number(c.wall_time_ms),
+        json_number(c.tokens_used as f64),
+        json_number(c.api_calls as f64),
+        json_number(c.money_usd),
+        json_number(c.energy_kwh)
+    ]
+    return json_object(keys, vals)
+}

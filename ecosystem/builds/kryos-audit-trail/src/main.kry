@@ -1,0 +1,42 @@
+// ============================================================
+// main.kry -- loan-approval demo
+//
+// Builds a Tracked decision through ingestion -> scoring -> model
+// inference -> human compliance review, attaches an accumulated cost,
+// then emits the EU AI Act Annex IV audit record.
+//
+//   kryos run src/main.kry | python3 -m json.tool
+// ============================================================
+
+use std::tracked
+use std::cost
+use audit
+
+fn main() {
+    // Build a tracked decision value. Each step appends to the lineage
+    // causally -- the audit trail is the value's own history.
+    let raw = tracked_source("applicant_data", "form_upload", "raw loan application from web form")
+    let scored = transform(raw, "fico:712", "credit_score", "FICO v4 scoring model")
+    let inferred = inference(scored, "underwriting-model-v2", "approved", 0.91)
+    let reviewed = annotate(inferred, "compliance_review", "fair lending check passed by loan officer")
+
+    // Accumulated cost for the pipeline run.
+    let total_cost = ComputeCost {
+        wall_time_ms: 450.0,
+        tokens_used: 1200,
+        api_calls: 2,
+        money_usd: 0.024,
+        energy_kwh: 0.0003
+    }
+
+    let record = audit_tracked(
+        reviewed,
+        total_cost,
+        ["net", "db"],
+        0.91,
+        "loan-approval-v2",
+        "user-8821"
+    )
+
+    println(record)
+}

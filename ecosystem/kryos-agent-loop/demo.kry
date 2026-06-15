@@ -1,0 +1,90 @@
+// demo.kry -- Caller pattern for chat_tools_governed.
+//
+// Requires ANTHROPIC_API_KEY to be set.
+// Run: kryos run demo.kry
+//
+// This file demonstrates the canonical usage of the kryos-agent-loop library:
+//   1. Build the LlmConfig and tool definitions.
+//   2. Call chat_tools_governed with a dispatch function and an Agent.
+//   3. Print the result and checkpoint the audit trail.
+
+use std::cost
+use std::agent
+use std::llm
+use src::lib::{GovernedResult, chat_tools_governed, agent_checkpoint}
+
+// ---------------------------------------------------------------------------
+// Tool: calc
+// ---------------------------------------------------------------------------
+
+fn calc(args_json: str) -> str {
+    let node = json_parse(args_json)
+    let a = json_to_float(json_get(node, "a"))
+    let b = json_to_float(json_get(node, "b"))
+    let op = json_to_str(json_get(node, "op"))
+    if op == "add" { return to_string(a + b) }
+    if op == "sub" { return to_string(a - b) }
+    if op == "mul" { return to_string(a * b) }
+    if op == "div" {
+        if b == 0.0 { return "error: division by zero" }
+        return to_string(a / b)
+    }
+    return "error: unknown op " + op
+}
+
+fn dispatch(name: str, args_json: str) -> str {
+    if name == "calc" { return calc(args_json) }
+    return "error: unknown tool " + name
+}
+
+fn calc_schema() -> str {
+    return json_stringify(json_object(
+        ["type", "properties", "required"],
+        [json_string("object"),
+         json_object(["a", "b", "op"], [
+             json_object(["type"], [json_string("number")]),
+             json_object(["type"], [json_string("number")]),
+             json_object(["type", "description"], [json_string("string"), json_string("add, sub, mul, or div")])
+         ]),
+         json_array([json_string("a"), json_string("b"), json_string("op")])]))
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+@capabilities(net, io, process)
+@budget(tokens = 40000, calls = 10)
+fn main() {
+    let api_key = env_get("ANTHROPIC_API_KEY")
+    let cfg = with_max_tokens(anthropic_config(api_key, "claude-sonnet-4-6"), 1024)
+
+    let tools = [tool("calc", "Exact arithmetic: add/sub/mul/div two numbers. Use for ALL math.", calc_schema())]
+    let msgs = [system("You are a precise analyst. Use calc for all math."),
+                user("What is 23% of 4400?")]
+
+    let ag = agent_with_alignment("analyst", "answer numeric questions", ALIGNMENT_STANDARD)
+
+    let result = chat_tools_governed(cfg, msgs, tools, dispatch, ag, 8)
+
+    println("Answer: " + result.final_turn.text)
+    println("Steps:  " + to_string(result.steps))
+    println("Tokens: " + to_string(result.total_cost.tokens_used))
+    println("Audit entries: " + to_string(len(result.agent.audit_trail)))
+
+    println("")
+    println("=== Audit Trail ===")
+    for entry in result.agent.audit_trail {
+        println(to_string(entry.id) + "\t"
+              + entry.entry_type + "\t"
+              + entry.description + "\t"
+              + to_string(entry.success) + "\t"
+              + to_string(entry.timestamp) + "\t"
+              + to_string(entry.cost_usd) + "\t"
+              + to_string(entry.latency_ms))
+    }
+
+    agent_checkpoint(result.agent, "/tmp/audit.tsv")
+    println("")
+    println("Audit trail written to /tmp/audit.tsv")
+}

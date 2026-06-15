@@ -1,0 +1,6 @@
+{
+  "schema": "kryos-manifest-v1",
+  "source": "tests/manifest/no_caps.kry",
+  "functions": {},
+  "unannotated_count": 2
+}

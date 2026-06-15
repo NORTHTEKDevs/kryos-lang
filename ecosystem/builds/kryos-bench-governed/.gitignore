@@ -1,0 +1,13 @@
+# Kryos build artifacts
+target/
+*.exe
+*.pdb
+*.o
+*.ll
+*.wasm
+kryos.lock
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp

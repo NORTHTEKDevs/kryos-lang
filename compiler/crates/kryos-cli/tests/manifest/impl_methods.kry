@@ -1,0 +1,20 @@
+struct Vault {
+    secret: str
+}
+
+impl Vault {
+    @capabilities(crypto)
+    fn sign(self: Vault, data: str) -> str {
+        return hmac_sha256(self.secret + data)
+    }
+
+    fn name(self: Vault) -> str {
+        return "vault"
+    }
+}
+
+@capabilities(io)
+fn save(path: str, data: str) -> i64 {
+    file_write(path, data)
+    return 0
+}
