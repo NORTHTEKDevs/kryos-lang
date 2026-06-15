@@ -1,0 +1,150 @@
+// ============================================================
+// std.agent_bridge -- Governance bridges across tracked, cost,
+// probable, and llm. Five functions that let an agent ask, of a
+// specific value: what did it cost, where did it come from, how
+// much budget is left, and which candidates clear a confidence bar.
+// No new structs, no compiler changes -- pure stdlib glue.
+// ============================================================
+
+use std::tracked::{Tracked, LineageEntry}
+// cost_zero/cost_add are pulled because importing std::cost includes its
+// impl blocks (CostTracker.record references cost_add); the resolver
+// requires those module-local helpers to be named explicitly.
+use std::cost::{ComputeCost, cost_zero, cost_add}
+use std::probable::{Probable, is_confident}
+
+// Runtime hooks for the active @budget frame (also declared in llm.kry;
+// re-declared here so agent_bridge is usable without importing std::llm).
+extern {
+    fn kryos_budget_active() -> i64
+    fn kryos_budget_remaining_tokens() -> i64
+    fn kryos_budget_remaining_calls() -> i64
+}
+
+/// Attach a ComputeCost receipt to a Tracked value as a lineage entry.
+fn tracked_cost<T>(t: Tracked<T>, cost: ComputeCost, description: str) -> Tracked<T> {
+    let meta = "tokens=" + to_string(cost.tokens_used) +
+               " calls=" + to_string(cost.api_calls) +
+               " usd=" + to_string(cost.money_usd) +
+               " ms=" + to_string(cost.wall_time_ms)
+    let entry = LineageEntry {
+        operation: "cost",
+        description: description,
+        timestamp: time_now(),
+        metadata: meta
+    }
+    let mut new_lineage = t.lineage
+    new_lineage = push(new_lineage, entry)
+    return Tracked {
+        value: t.value,
+        lineage: new_lineage,
+        source: t.source,
+        source_description: t.source_description
+    }
+}
+
+/// Merge N Tracked<str> chunks into one Tracked<T>: concatenate all
+/// lineages, dedupe sources (first wins, stable), record the merge.
+fn tracked_merge<T>(sources: [Tracked<str>], new_val: T) -> Tracked<T> {
+    let mut merged_lineage: [LineageEntry] = []
+    let mut seen_sources: [str] = []
+    let mut primary_source = ""
+    let mut primary_desc = ""
+    let mut i = 0
+    while i < len(sources) {
+        let s = sources[i]
+        let mut j = 0
+        while j < len(s.lineage) {
+            let e = s.lineage[j]
+            let copied = LineageEntry {
+                operation: e.operation,
+                description: e.description,
+                timestamp: e.timestamp,
+                metadata: e.metadata
+            }
+            merged_lineage = push(merged_lineage, copied)
+            j = j + 1
+        }
+        let mut already = false
+        let mut k = 0
+        while k < len(seen_sources) {
+            if seen_sources[k] == s.source {
+                already = true
+            }
+            k = k + 1
+        }
+        if not already {
+            seen_sources = push(seen_sources, s.source)
+            if i == 0 {
+                primary_source = s.source
+                primary_desc = s.source_description
+            }
+        }
+        i = i + 1
+    }
+    let merge_entry = LineageEntry {
+        operation: "merge",
+        description: "merged " + to_string(len(sources)) + " sources",
+        timestamp: time_now(),
+        metadata: "source_count=" + to_string(len(seen_sources))
+    }
+    merged_lineage = push(merged_lineage, merge_entry)
+    return Tracked {
+        value: new_val,
+        lineage: merged_lineage,
+        source: primary_source,
+        source_description: primary_desc
+    }
+}
+
+/// Extract a deduplicated source list from a Tracked value's lineage.
+fn tracked_to_citation<T>(t: Tracked<T>) -> [str] {
+    let mut sources: [str] = []
+    if t.source != "" {
+        sources = push(sources, t.source)
+    }
+    let mut i = 0
+    while i < len(t.lineage) {
+        let entry = t.lineage[i]
+        if entry.operation == "source" {
+            let prefix = "source="
+            if contains(entry.metadata, prefix) {
+                let src = substr(entry.metadata, len(prefix), len(entry.metadata))
+                let mut found = false
+                let mut j = 0
+                while j < len(sources) {
+                    if sources[j] == src {
+                        found = true
+                    }
+                    j = j + 1
+                }
+                if not found {
+                    sources = push(sources, src)
+                }
+            }
+        }
+        i = i + 1
+    }
+    return sources
+}
+
+/// (tokens_remaining, calls_remaining) for the active budget frame,
+/// or (-1, -1) when no frame is active. Uses the same runtime hooks
+/// that llm.chat() calls internally; safe to call with no frame active.
+fn budget_remaining() -> (i64, i64) {
+    if kryos_budget_active() == 0 {
+        return (-1, -1)
+    }
+    return (kryos_budget_remaining_tokens(), kryos_budget_remaining_calls())
+}
+
+/// Keep only ensemble members at or above the confidence threshold.
+fn filter_confident<T>(ensemble: [Probable<T>], threshold: f64) -> [Probable<T>] {
+    let mut out: [Probable<T>] = []
+    for p in ensemble {
+        if is_confident(p, threshold) {
+            out = push(out, p)
+        }
+    }
+    return out
+}

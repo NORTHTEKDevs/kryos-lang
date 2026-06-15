@@ -1,0 +1,78 @@
+// assert is used for str equality: assert_eq compares via `any` (erased to
+// i64/pointer) so identical strings with distinct allocations compare unequal.
+use std::test::{assert, assert_eq, assert_true}
+use std::tracked::{Tracked, tracked_source}
+use std::cost::{ComputeCost, cost_zero, cost_add}
+use std::probable::{Probable, probable, is_confident}
+use std::agent_bridge::{tracked_cost, tracked_merge, tracked_to_citation, budget_remaining, filter_confident}
+
+fn test_tracked_cost_appends_lineage() {
+    let t = tracked_source("hello", "doc-1", "user document")
+    let cost = ComputeCost {
+        wall_time_ms: 120.0,
+        tokens_used: 500,
+        api_calls: 1,
+        money_usd: 0.002,
+        energy_kwh: 0.0
+    }
+    let with_cost = tracked_cost(t, cost, "summarize call")
+    let last = with_cost.lineage[len(with_cost.lineage) - 1]
+    assert(last.operation == "cost", "last entry op is cost")
+    assert_true(contains(last.metadata, "tokens=500"))
+    assert_true(contains(last.metadata, "usd=0.002"))
+}
+
+fn test_tracked_merge_deduplicates_sources() {
+    let a = tracked_source("chunk A", "doc-1", "intro")
+    let b = tracked_source("chunk B", "doc-1", "body")
+    let c = tracked_source("chunk C", "doc-2", "appendix")
+    let merged: Tracked<str> = tracked_merge([a, b, c], "synthesized answer")
+    let cites = tracked_to_citation(merged)
+    assert_eq(len(cites), 2, "two unique sources")
+    assert(cites[0] == "doc-1", "first cite doc-1")
+    assert(cites[1] == "doc-2", "second cite doc-2")
+}
+
+fn test_tracked_to_citation_single_source() {
+    let t = tracked_source("fact", "arxiv:2401.00001", "paper")
+    let cites = tracked_to_citation(t)
+    assert_eq(len(cites), 1, "one cite")
+    assert(cites[0] == "arxiv:2401.00001", "cite matches")
+}
+
+fn test_budget_remaining_no_frame() {
+    let (toks, calls) = budget_remaining()
+    assert_eq(toks, -1, "no frame tokens -1")
+    assert_eq(calls, -1, "no frame calls -1")
+}
+
+fn test_filter_confident_basic() {
+    let ensemble: [Probable<str>] = [
+        probable("cat", 0.9),
+        probable("dog", 0.4),
+        probable("bird", 0.7),
+        probable("fish", 0.2)
+    ]
+    let high = filter_confident(ensemble, 0.6)
+    assert_eq(len(high), 2, "two pass threshold")
+    let h0 = high[0]
+    let h1 = high[1]
+    assert(h0.value == "cat", "first is cat")
+    assert(h1.value == "bird", "second is bird")
+}
+
+fn test_filter_confident_empty_result() {
+    let ensemble: [Probable<str>] = [probable("x", 0.1), probable("y", 0.2)]
+    let out = filter_confident(ensemble, 0.9)
+    assert_eq(len(out), 0, "none pass")
+}
+
+fn main() {
+    test_tracked_cost_appends_lineage()
+    test_tracked_merge_deduplicates_sources()
+    test_tracked_to_citation_single_source()
+    test_budget_remaining_no_frame()
+    test_filter_confident_basic()
+    test_filter_confident_empty_result()
+    println("all agent_bridge tests passed")
+}
