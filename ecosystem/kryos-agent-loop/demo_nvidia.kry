@@ -3,10 +3,10 @@
 // NVIDIA's endpoint (https://integrate.api.nvidia.com/v1) is OpenAI-wire
 // compatible (vLLM backend), so the library's openai path works unchanged.
 //
-// Build + run (LLVM AOT; the Cranelift JIT is currently regressed on
-// to_string(f64) in the toolchain, so prefer --release here):
-//   kryos build --release demo_nvidia.kry -o demo_nvidia.exe
-//   NVIDIA_API_KEY=nvapi-... ./demo_nvidia.exe
+// Run (both JIT and AOT work as of the codegen-llvm array-push fix on master):
+//   NVIDIA_API_KEY=nvapi-... kryos run demo_nvidia.kry
+//   kryos build --release demo_nvidia.kry -o demo_nvidia.exe && NVIDIA_API_KEY=... ./demo_nvidia.exe
+// Set NVIDIA_BASE_URL to override the endpoint (defaults to integrate.api.nvidia.com).
 
 use std::cost
 use std::agent
