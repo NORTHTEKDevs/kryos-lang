@@ -1,0 +1,9 @@
+[package]
+name = "kryos-rag"
+version = "0.1.0"
+edition = "2026"
+description = "RAG pipeline with built-in citation lineage via Tracked<str>."
+authors = ["NORTHTEK <info@northtek.io>"]
+license = "Apache-2.0"
+
+[dependencies]

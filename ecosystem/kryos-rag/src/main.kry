@@ -1,0 +1,55 @@
+// src/main.kry -- Live demo: RAG pipeline with citation lineage.
+//
+// Provider-flexible: set NVIDIA_API_KEY (NVIDIA NIM, OpenAI-compatible) or
+// ANTHROPIC_API_KEY. With neither set it prints a notice and exits 0.
+// Run: kryos run src/main.kry
+
+use std::tracked::{Tracked, tracked_source, inference, explain}
+use std::llm::{LlmConfig, openai_config, anthropic_config, with_base_url, with_max_tokens, chat, user}
+use lineage_utils
+use rag
+use rag_llm
+
+@capabilities(net, io, process)
+fn main() {
+    let nv = env_get("NVIDIA_API_KEY")
+    let an = env_get("ANTHROPIC_API_KEY")
+
+    let mut cfg = anthropic_config("", "")
+    if nv != "" {
+        // NVIDIA NIM is OpenAI-compatible: openai_config + base_url override.
+        cfg = with_max_tokens(with_base_url(openai_config(nv, "meta/llama-3.1-8b-instruct"), "https://integrate.api.nvidia.com/v1"), 512)
+    } elif an != "" {
+        cfg = with_max_tokens(anthropic_config(an, "claude-haiku-4-5"), 512)
+    } else {
+        println("Set NVIDIA_API_KEY (or ANTHROPIC_API_KEY) to run the live demo.")
+        println("kryos-rag: ok (no API key -- skipping live demo)")
+        return
+    }
+
+    let corpus: [RagChunk] = [
+        RagChunk { id: "doc:001", text: "Kryos is a capability-safe programming language." },
+        RagChunk { id: "doc:002", text: "Every Kryos function declares its capability set with @capabilities." },
+        RagChunk { id: "doc:003", text: "The @budget attribute caps token and API call spend at compile time." }
+    ]
+
+    // "capability" matches doc:001 (capability-safe) and doc:002 (capability set),
+    // so the answer's lineage merges TWO chunks -- the point of the library.
+    let query = "capability"
+    let retrieved = rag_retrieve(query, corpus)
+    println("Retrieved " + to_string(len(retrieved)) + " chunks for query: " + query)
+
+    let answer = rag_answer(cfg, retrieved, "What does @capabilities do in Kryos?")
+    println("Answer: " + answer.value)
+
+    let citations = rag_citations(answer)
+    println("Citations (" + to_string(len(citations)) + "):")
+    let mut i = 0
+    while i < len(citations) {
+        println("  - " + citations[i])
+        i = i + 1
+    }
+
+    println("Full lineage:")
+    println(explain(answer))
+}

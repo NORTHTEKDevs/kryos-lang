@@ -352,11 +352,21 @@ pub extern "C" fn kryos_http_request_ks(
     );
 
     let result_buf: Option<Vec<u8>> = if scheme == "https" {
-        #[cfg(feature = "tls")]
+        #[cfg(feature = "http2")]
+        {
+            // Prefer reqwest's blocking client for HTTPS: it handles HTTP/1.1,
+            // h2, chunked transfer, and (critically) servers that close without
+            // a TLS close_notify on POST. The hand-rolled rustls client below
+            // returns a fast `None` on those POSTs (read_to_end -> UnexpectedEof),
+            // which surfaced as bogus "transport failure" on every LLM chat call.
+            let eff_method = if method.is_empty() { "GET" } else { method };
+            crate::http2::https_request_wire(eff_method, url, headers, body, timeout)
+        }
+        #[cfg(all(feature = "tls", not(feature = "http2")))]
         {
             do_https_request(&host, port, &request, timeout)
         }
-        #[cfg(not(feature = "tls"))]
+        #[cfg(all(not(feature = "tls"), not(feature = "http2")))]
         {
             None
         }
@@ -420,7 +430,7 @@ fn do_http_request(
     Some(buf)
 }
 
-#[cfg(feature = "tls")]
+#[cfg(all(feature = "tls", not(feature = "http2")))]
 fn ensure_crypto_provider() {
     use std::sync::Once;
     static INIT: Once = Once::new();
@@ -431,7 +441,7 @@ fn ensure_crypto_provider() {
     });
 }
 
-#[cfg(feature = "tls")]
+#[cfg(all(feature = "tls", not(feature = "http2")))]
 fn do_https_request(
     host: &str,
     port: u16,
