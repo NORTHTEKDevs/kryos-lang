@@ -101,6 +101,64 @@ pub fn http2_request(method: &str, url: &str, headers: &str, body: &str) -> Stri
     format!("{status}\n{resp_headers}\n{resp_body}")
 }
 
+/// Perform an HTTPS request via reqwest and return the response as raw HTTP
+/// wire bytes (`"HTTP/1.1 {status}\r\n{headers}\r\n\r\n{body}"`) so the existing
+/// `split_status_headers_body` parser in bindings.rs can consume it unchanged.
+/// Returns `None` only on a genuine transport failure. Honors `timeout` per call.
+#[cfg(feature = "http2")]
+pub fn https_request_wire(
+    method: &str,
+    url: &str,
+    headers: &str,
+    body: &str,
+    timeout: std::time::Duration,
+) -> Option<Vec<u8>> {
+    use reqwest::header::{HeaderName, HeaderValue};
+
+    let client = Client::builder()
+        .user_agent("kryos/1.6")
+        .timeout(timeout)
+        .build()
+        .ok()?;
+
+    let req_method = reqwest::Method::from_bytes(method.as_bytes()).unwrap_or(reqwest::Method::GET);
+    let mut builder = client.request(req_method, url).body(body.to_string());
+
+    for line in headers.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(colon_pos) = line.find(':') {
+            let name = line[..colon_pos].trim();
+            let value = line[colon_pos + 1..].trim();
+            if let (Ok(hname), Ok(hval)) = (
+                HeaderName::from_bytes(name.as_bytes()),
+                HeaderValue::from_str(value),
+            ) {
+                builder = builder.header(hname, hval);
+            }
+        }
+    }
+
+    let resp = builder.send().ok()?;
+    let status = resp.status().as_u16();
+
+    let mut head = format!("HTTP/1.1 {status} OK\r\n");
+    for (name, value) in resp.headers() {
+        head.push_str(name.as_str());
+        head.push_str(": ");
+        head.push_str(value.to_str().unwrap_or(""));
+        head.push_str("\r\n");
+    }
+    head.push_str("\r\n");
+
+    let body_bytes = resp.bytes().ok()?;
+    let mut out = head.into_bytes();
+    out.extend_from_slice(&body_bytes);
+    Some(out)
+}
+
 // Stubs when http2 feature is disabled
 #[cfg(not(feature = "http2"))]
 pub fn http2_get(_url: &str) -> String {
