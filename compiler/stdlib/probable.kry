@@ -7,12 +7,32 @@
 // `impl` blocks are not yet supported by the checker.
 //
 //   use std::probable::{Probable, probable, certain, or_else}
+//   use std::probable::{CalibrationSample, CalibrationTracker, calibration_tracker, add_sample, ece}
 //
 //   let guess: Probable<f64> = probable(0.82, 0.65)
 //   let safe = or_else(guess, 0.0)
 // ============================================================
 
 use std::math::{log2}
+
+// ----- Calibration: measure whether confidence values are accurate -----
+// CalibrationSample records one (stated confidence, was-correct) outcome.
+// CalibrationTracker accumulates samples; ece() computes Expected
+// Calibration Error, turning a Probable<T>'s confidence into a measured
+// quantity rather than a programmer assertion. ECE assumes a classification
+// setting where `correct` is well-defined (a known label / ground truth);
+// on open-ended generation it measures the judge, not the generator.
+
+@copy
+struct CalibrationSample {
+    predicted: f64,
+    correct: bool,
+}
+
+struct CalibrationTracker {
+    samples: [CalibrationSample],
+    bins: i64,
+}
 
 struct Probable<T> {
     value: T,
@@ -146,4 +166,87 @@ fn majority_vote<T>(predictions: [Probable<T>]) -> Probable<T> {
         conf = best_sum / total
     }
     return Probable { value: winner.value, confidence: conf, source: winner.source }
+}
+
+/// Create a new CalibrationTracker with a given number of confidence bins.
+/// bins = 10 gives deciles (0.0-0.1, 0.1-0.2, ..., 0.9-1.0). Clamped to >= 2.
+fn calibration_tracker(bins: i64) -> CalibrationTracker {
+    let mut b = bins
+    if b < 2 { b = 2 }
+    return CalibrationTracker { samples: [], bins: b }
+}
+
+/// Record one prediction outcome: the stated confidence (typically taken from
+/// Probable<T>.confidence) and whether the prediction was actually correct.
+/// Confidence is clamped to [0.0, 1.0]; NaN is treated as 0.0. Returns a new
+/// tracker -- the module's operations are functional/immutable, avoiding the
+/// alias caveats in gotcha 23. Note: accumulating n samples via a
+/// `t = add_sample(t, ..)` loop reallocates the array each call, so building a
+/// tracker of n samples costs O(n^2) total -- fine for hundreds to a few
+/// thousand; batch differently for very large n.
+fn add_sample(tracker: CalibrationTracker, confidence: f64, correct: bool) -> CalibrationTracker {
+    let mut c = confidence
+    // NaN fails every comparison, so it slips past the range clamps below and
+    // would then bin to index 0 (NaN as i64 == 0), poisoning the ECE sum. Map
+    // it to 0.0 -- a NaN confidence is an upstream error; treat it as none.
+    if c != c { c = 0.0 }
+    if c < 0.0 { c = 0.0 }
+    if c > 1.0 { c = 1.0 }
+    let sample = CalibrationSample { predicted: c, correct: correct }
+    return CalibrationTracker {
+        samples: push(tracker.samples, sample),
+        bins: tracker.bins
+    }
+}
+
+/// Expected Calibration Error over all recorded samples. Returns a value in
+/// [0.0, 1.0]: lower is better, 0.0 is perfectly calibrated. Returns 0.0 when
+/// no samples have been recorded.
+///
+/// ECE = sum over bins of (bin's share of samples) * |avg confidence in bin
+/// - accuracy in bin|. A sample with confidence p is placed in bin
+/// floor(p * bins), clamped to the last bin so p == 1.0 is included.
+fn ece(tracker: CalibrationTracker) -> f64 {
+    let n = len(tracker.samples)
+    if n == 0 {
+        return 0.0
+    }
+    let mut total_ece = 0.0
+    let mut b = 0
+    while b < tracker.bins {
+        let mut bin_count = 0
+        let mut bin_correct = 0
+        let mut bin_conf_sum = 0.0
+        let mut i = 0
+        while i < n {
+            let s = tracker.samples[i]
+            // Bin index = floor(predicted * bins), clamped to the last bin so
+            // confidence == 1.0 (which maps to `bins`) lands in [bins-1].
+            // Computing the index directly avoids the float drift between a
+            // separate lo = b*width and hi = lo+width pair, which left a 1-ULP
+            // gap that silently dropped values such as 0.6 with 10 bins.
+            // NaN never reaches here: add_sample maps NaN to 0.0.
+            let mut idx = (s.predicted * (tracker.bins as f64)) as i64
+            if idx < 0 { idx = 0 }
+            if idx >= tracker.bins { idx = tracker.bins - 1 }
+            if idx == b {
+                bin_count = bin_count + 1
+                bin_conf_sum = bin_conf_sum + s.predicted
+                if s.correct { bin_correct = bin_correct + 1 }
+            }
+            i = i + 1
+        }
+        if bin_count > 0 {
+            let avg_conf = bin_conf_sum / (bin_count as f64)
+            let acc = (bin_correct as f64) / (bin_count as f64)
+            let weight = (bin_count as f64) / (n as f64)
+            // Inline abs (the builtin would work -- std::math abs is not
+            // imported here -- but inlining avoids any future shadowing risk).
+            let mut abs_diff = avg_conf - acc
+            if abs_diff < 0.0 { abs_diff = 0.0 - abs_diff }
+            total_ece = total_ece + weight * abs_diff
+        }
+        b = b + 1
+    }
+    return total_ece
 }
