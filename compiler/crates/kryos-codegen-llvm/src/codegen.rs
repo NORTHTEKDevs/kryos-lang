@@ -98,6 +98,11 @@ pub struct LlvmCodegen {
     /// Metadata id for the !DILocation that's reused inside the current
     /// function. Re-emitted per function so the scope matches the DISubprogram.
     current_fn_loc_md: Option<u32>,
+    /// Set of local IDs in the current function that are safe to stack-promote:
+    /// fixed-size array literals that never escape (no pass-to-call, no return,
+    /// no store-into-aggregate, no AddrOf, etc.).  Cleared and recomputed per
+    /// function by `compute_stackable_locals`.
+    stackable_locals: HashSet<u32>,
 }
 
 impl LlvmCodegen {
@@ -128,6 +133,7 @@ impl LlvmCodegen {
             emitted_function_lines: Vec::new(),
             current_fn_dbg_md: None,
             current_fn_loc_md: None,
+            stackable_locals: HashSet::new(),
         }
     }
 
@@ -2299,9 +2305,58 @@ impl LlvmCodegen {
                 Self::collect_operand(index, acc);
             }
             RValue::Cast { operand, .. } => Self::collect_operand(operand, acc),
-            // Variants that don't reference operands are ignored (constants,
-            // closures, ranges, addr-of etc. — best-effort coverage).
-            _ => {}
+            // The variants below MUST be enumerated exhaustively: the escape
+            // analysis in `compute_stackable_locals` treats "not referenced by
+            // this rvalue" as "does not escape here". A missing operand-bearing
+            // arm would let an array escape (into a map / enum / closure / &ref)
+            // undetected and be wrongly stack-promoted -> use-after-return UB.
+            // No blanket `_` arm: a future RValue variant must fail to compile
+            // until it is handled here.
+            RValue::Map(pairs) => {
+                for (k, v) in pairs {
+                    Self::collect_operand(k, acc);
+                    Self::collect_operand(v, acc);
+                }
+            }
+            RValue::EnumVariant { fields, .. } => {
+                for op in fields {
+                    Self::collect_operand(op, acc);
+                }
+            }
+            RValue::EnumTag { operand } => Self::collect_operand(operand, acc),
+            RValue::EnumPayload { operand, .. } => Self::collect_operand(operand, acc),
+            RValue::Closure { captures, .. } => {
+                for op in captures {
+                    Self::collect_operand(op, acc);
+                }
+            }
+            RValue::ArcAlloc { inner } => Self::collect_operand(inner, acc),
+            RValue::Deref { operand } => Self::collect_operand(operand, acc),
+            RValue::AddrOf { local, .. } => {
+                acc.insert(local.0);
+            }
+            RValue::Range { start, end, .. } => {
+                if let Some(s) = start {
+                    Self::collect_operand(s, acc);
+                }
+                if let Some(e) = end {
+                    Self::collect_operand(e, acc);
+                }
+            }
+            RValue::Comptime(inner) => Self::collect_rvalue_locals(inner, acc),
+            RValue::MakeTraitObject { value, .. } => Self::collect_operand(value, acc),
+            RValue::VtableCall { object, args, .. } => {
+                Self::collect_operand(object, acc);
+                for op in args {
+                    Self::collect_operand(op, acc);
+                }
+            }
+            // Operand-free variants (no locals referenced).
+            RValue::ConstInt(_)
+            | RValue::ConstFloat(_)
+            | RValue::ConstBool(_)
+            | RValue::ConstString(_)
+            | RValue::ConstNone => {}
         }
     }
 
@@ -2365,7 +2420,172 @@ impl LlvmCodegen {
         }
     }
 
+    /// Compute the set of locals that are safe to stack-promote.
+    ///
+    /// A local L is stackable iff ALL of:
+    ///   1. MirType::Array(_, Some(n)) with n <= 64.
+    ///   2. Assigned exactly once via RValue::Array literal.
+    ///   3. Every reference to L in any instruction is one of the strictly
+    ///      allowed forms (see body). Any other reference = escape = not stackable.
+    ///   4. No terminator references L.
+    fn compute_stackable_locals(func: &MirFunction) -> HashSet<u32> {
+        // Step 1: find candidates — fixed-size array locals with n <= 64
+        // that are assigned exactly once with an Array literal.
+        let mut candidates: HashSet<u32> = HashSet::new();
+        // Track size n for each candidate.
+        let mut cand_sizes: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
+
+        // First pass: find singly-assigned Array-literal locals of fixed size.
+        let mut assign_count: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        let mut is_array_literal: std::collections::HashMap<u32, bool> = std::collections::HashMap::new();
+
+        for block in &func.blocks {
+            for inst in &block.instructions {
+                if let Instruction::Assign { dest, value: RValue::Array(_) } = inst {
+                    *assign_count.entry(dest.0).or_insert(0) += 1;
+                    is_array_literal.insert(dest.0, true);
+                } else if let Instruction::Assign { dest, .. } = inst {
+                    *assign_count.entry(dest.0).or_insert(0) += 1;
+                }
+            }
+        }
+
+        for local in &func.locals {
+            let id = local.id.0;
+            // Must be fixed-size array type.
+            let n = match &local.ty {
+                MirType::Array(_, Some(n)) if *n <= 64 => *n,
+                _ => continue,
+            };
+            // Must be assigned exactly once with an Array literal.
+            if assign_count.get(&id).copied() != Some(1) {
+                continue;
+            }
+            if !is_array_literal.get(&id).copied().unwrap_or(false) {
+                continue;
+            }
+            candidates.insert(id);
+            cand_sizes.insert(id, n);
+        }
+
+        if candidates.is_empty() {
+            return HashSet::new();
+        }
+
+        // Step 2: scan every instruction for references to each candidate.
+        // For each reference, check it is in an allowed position; otherwise
+        // remove the candidate from the stackable set.
+        let mut disqualified: HashSet<u32> = HashSet::new();
+
+        for block in &func.blocks {
+            for inst in &block.instructions {
+                // Collect ALL locals referenced by this instruction.
+                let mut refs: HashSet<u32> = HashSet::new();
+                Self::collect_operand_locals(inst, &mut refs);
+
+                // For each candidate that appears in this instruction, verify
+                // the instruction is in one of the strictly allowed forms.
+                for &cand in refs.iter().filter(|id| candidates.contains(*id)) {
+                    if disqualified.contains(&cand) {
+                        continue;
+                    }
+                    let allowed = Self::is_allowed_array_use(inst, cand);
+                    if !allowed {
+                        disqualified.insert(cand);
+                    }
+                }
+            }
+            // No terminator may reference a candidate.
+            let mut term_refs: HashSet<u32> = HashSet::new();
+            Self::collect_terminator_locals(&block.terminator, &mut term_refs);
+            for &cand in term_refs.iter().filter(|id| candidates.contains(*id)) {
+                disqualified.insert(cand);
+            }
+        }
+
+        candidates
+            .into_iter()
+            .filter(|id| !disqualified.contains(id))
+            .collect()
+    }
+
+    /// Returns true if `inst` references local `cand` only in an allowed
+    /// position for a stack-promoted array.  The allowed positions are:
+    ///   - The defining `Assign { dest: cand, value: Array(_) }`
+    ///   - Index read: `Assign { _, RValue::Index { object: Local(cand), index } }`
+    ///     where index != cand.
+    ///   - Array set: `Assign { _, RValue::Call { func: "kryos_array_set",
+    ///     args: [Local(cand), idx, val] } }` where idx != cand and val != cand.
+    ///   - Len: `Assign { _, RValue::Call { func: "len" | "kryos_array_len",
+    ///     args: [Local(cand)] } }`
+    ///   - Drop: `Instruction::Drop { local: cand }`
+    ///   - ArcRetain/ArcRelease: `{ ptr: cand }`
+    fn is_allowed_array_use(inst: &Instruction, cand: u32) -> bool {
+        match inst {
+            // Defining assignment: allowed.
+            Instruction::Assign {
+                dest,
+                value: RValue::Array(_),
+            } if dest.0 == cand => true,
+
+            // Index read: allowed only if cand is the object, not the index.
+            Instruction::Assign {
+                value: RValue::Index { object, index },
+                ..
+            } => {
+                // cand must appear only as object, not as index.
+                let obj_is_cand = matches!(object, Operand::Local(id) if id.0 == cand);
+                let idx_is_cand = matches!(index, Operand::Local(id) if id.0 == cand);
+                // If cand is referenced here, it must be the object only.
+                obj_is_cand && !idx_is_cand
+            }
+
+            // kryos_array_set: allowed only if cand is args[0].
+            Instruction::Assign {
+                value: RValue::Call { func, args },
+                ..
+            } if func == "kryos_array_set" => {
+                // args[0] must be cand; args[1] and args[2] must not be cand.
+                let arg0_is_cand = args
+                    .first()
+                    .map(|a| matches!(a, Operand::Local(id) if id.0 == cand))
+                    .unwrap_or(false);
+                let other_args_cand = args
+                    .iter()
+                    .skip(1)
+                    .any(|a| matches!(a, Operand::Local(id) if id.0 == cand));
+                arg0_is_cand && !other_args_cand
+            }
+
+            // len / kryos_array_len: allowed if the single arg is cand.
+            Instruction::Assign {
+                value: RValue::Call { func, args },
+                ..
+            } if func == "len" || func == "kryos_array_len" => {
+                args.len() == 1
+                    && matches!(args[0], Operand::Local(id) if id.0 == cand)
+            }
+
+            // Drop: allowed (we suppress the free).
+            Instruction::Drop { local } if local.0 == cand => true,
+
+            // ArcRetain/ArcRelease: allowed (we suppress).
+            Instruction::ArcRetain { ptr } | Instruction::ArcRelease { ptr }
+                if ptr.0 == cand =>
+            {
+                true
+            }
+
+            // Any other instruction that references cand = escape.
+            _ => false,
+        }
+    }
+
     fn emit_function_as(&mut self, func: &MirFunction, name: &str) -> Result<(), CodegenError> {
+        // Compute stack-promotable locals before any emission so we can gate
+        // on `self.stackable_locals` inside emit_aggregate_array, Drop, etc.
+        self.stackable_locals = Self::compute_stackable_locals(func);
+
         let fn_text_start = self.output.len();
         self.cur_fn_has_mir_exception_checks = func.blocks.iter().any(|bb| {
             bb.instructions.iter().any(|inst| {
@@ -2563,6 +2783,35 @@ impl LlvmCodegen {
                 if ty != "void" {
                     self.emit_line(&format!("  %_{}.addr = alloca {ty}", local.id.0));
                 }
+            }
+        }
+        // Emit stack header + data allocas for stack-promotable array locals.
+        // Layout mirrors the heap KryosArray header so the existing inline
+        // get/set helpers work unchanged:
+        //   { i64 len, i64 cap, i64 elem_size, i64 ref_count, ptr data }
+        // elem_size is always 8 (all Kryos values are i64-sized slots).
+        // ref_count is set to 1_000_000 so an accidental arc_release is a
+        // no-op decrement; but we also suppress Drop/ArcRelease for these
+        // locals, so the sentinel should never be hit in practice.
+        {
+            // Collect stackable locals in stable order for deterministic IR.
+            let mut stack_locals: Vec<(u32, u64)> = Vec::new();
+            for local in &func.locals {
+                if let MirType::Array(_, Some(n)) = &local.ty {
+                    if self.stackable_locals.contains(&local.id.0) {
+                        stack_locals.push((local.id.0, *n));
+                    }
+                }
+            }
+            for (id, n) in stack_locals {
+                // Emit: %_N.stk_hdr = alloca { i64, i64, i64, i64, ptr }
+                //        %_N.stk_dat = alloca [n x i64]
+                self.emit_line(&format!(
+                    "  %_{id}.stk_hdr = alloca {{ i64, i64, i64, i64, ptr }}"
+                ));
+                self.emit_line(&format!(
+                    "  %_{id}.stk_dat = alloca [{n} x i64]"
+                ));
             }
         }
         // For aggregate (byval) params: load the aggregate from the byval ptr
@@ -2839,12 +3088,23 @@ impl LlvmCodegen {
                 }
             }
             Instruction::ArcRetain { ptr } => {
-                self.emit_line(&format!("  call void @kryos_arc_retain(ptr %_{})", ptr.0));
+                // Stack-promoted arrays must not be retain'd (they are not refcounted).
+                if !self.stackable_locals.contains(&ptr.0) {
+                    self.emit_line(&format!("  call void @kryos_arc_retain(ptr %_{})", ptr.0));
+                }
             }
             Instruction::ArcRelease { ptr } => {
-                self.emit_line(&format!("  call void @kryos_arc_release(ptr %_{})", ptr.0));
+                // Stack-promoted arrays must not be release'd (they are stack memory).
+                if !self.stackable_locals.contains(&ptr.0) {
+                    self.emit_line(&format!("  call void @kryos_arc_release(ptr %_{})", ptr.0));
+                }
             }
             Instruction::Drop { local } => {
+                // Stack-promoted arrays are freed by unwinding the stack frame;
+                // do NOT call kryos_array_free on them.
+                if self.stackable_locals.contains(&local.0) {
+                    return Ok(());
+                }
                 let local_ty = func
                     .locals
                     .iter()
@@ -6297,6 +6557,87 @@ impl LlvmCodegen {
         func: &MirFunction,
         is_mutable: bool,
     ) -> Result<(), CodegenError> {
+        // Stack-promotion path: if this local is stackable, initialise the
+        // pre-allocated header + data arrays on the stack instead of calling
+        // kryos_array_new.  The allocas were emitted in the entry block above.
+        //
+        // Header layout (matches KryosArray ABI):
+        //   field 0: i64 len      = n
+        //   field 1: i64 cap      = n
+        //   field 2: i64 elem_size = 8
+        //   field 3: i64 ref_count = 1_000_000  (sentinel; frees are suppressed)
+        //   field 4: ptr data     = ptr to %_N.stk_dat
+        if dest_ty == "ptr" && self.stackable_locals.contains(&dest.0) {
+            let n = elems.len() as i64;
+            let hdr = format!("%_{}.stk_hdr", dest.0);
+            let dat = format!("%_{}.stk_dat", dest.0);
+
+            // Store header fields.
+            // Field 0: len
+            let p0 = self.next_temp();
+            self.emit_line(&format!("  {p0} = getelementptr {{ i64, i64, i64, i64, ptr }}, ptr {hdr}, i32 0, i32 0"));
+            self.emit_line(&format!("  store i64 {n}, ptr {p0}"));
+            // Field 1: cap
+            let p1 = self.next_temp();
+            self.emit_line(&format!("  {p1} = getelementptr {{ i64, i64, i64, i64, ptr }}, ptr {hdr}, i32 0, i32 1"));
+            self.emit_line(&format!("  store i64 {n}, ptr {p1}"));
+            // Field 2: elem_size = 8
+            let p2 = self.next_temp();
+            self.emit_line(&format!("  {p2} = getelementptr {{ i64, i64, i64, i64, ptr }}, ptr {hdr}, i32 0, i32 2"));
+            self.emit_line(&format!("  store i64 8, ptr {p2}"));
+            // Field 3: ref_count = 1_000_000 (sentinel)
+            let p3 = self.next_temp();
+            self.emit_line(&format!("  {p3} = getelementptr {{ i64, i64, i64, i64, ptr }}, ptr {hdr}, i32 0, i32 3"));
+            self.emit_line(&format!("  store i64 1000000, ptr {p3}"));
+            // Field 4: data = ptr to data array
+            let p4 = self.next_temp();
+            self.emit_line(&format!("  {p4} = getelementptr {{ i64, i64, i64, i64, ptr }}, ptr {hdr}, i32 0, i32 4"));
+            // Get a ptr to element 0 of the data array.
+            let dat_ptr = self.next_temp();
+            self.emit_line(&format!("  {dat_ptr} = getelementptr [{n} x i64], ptr {dat}, i32 0, i32 0"));
+            self.emit_line(&format!("  store ptr {dat_ptr}, ptr {p4}"));
+
+            // Store each element into the data array.
+            for (i, elem) in elems.iter().enumerate() {
+                let elem_val = self.operand_to_llvm(elem, func);
+                let elem_ty = self.operand_type(elem, func);
+                // Convert element to i64 (same logic as the heap path).
+                let as_i64 = if elem_ty == "i64" {
+                    elem_val
+                } else if elem_ty == "ptr" {
+                    let t = self.next_temp();
+                    self.emit_line(&format!("  {t} = ptrtoint ptr {elem_val} to i64"));
+                    t
+                } else if elem_ty == "double" {
+                    let t = self.next_temp();
+                    self.emit_line(&format!("  {t} = bitcast double {elem_val} to i64"));
+                    t
+                } else if elem_ty == "i1" || elem_ty == "i8" || elem_ty == "i16" || elem_ty == "i32" {
+                    let t = self.next_temp();
+                    self.emit_line(&format!("  {t} = sext {elem_ty} {elem_val} to i64"));
+                    t
+                } else {
+                    elem_val
+                };
+                let slot = self.next_temp();
+                self.emit_line(&format!(
+                    "  {slot} = getelementptr [{n} x i64], ptr {dat}, i32 0, i32 {i}"
+                ));
+                self.emit_line(&format!("  store i64 {as_i64}, ptr {slot}"));
+            }
+
+            // Produce the local value = pointer to the header.
+            if is_mutable {
+                self.emit_line(&format!("  store ptr {hdr}, ptr %_{}.addr", dest.0));
+            } else {
+                self.emit_line(&format!(
+                    "  %_{} = getelementptr i8, ptr {hdr}, i64 0",
+                    dest.0
+                ));
+            }
+            return Ok(());
+        }
+
         // Heap arrays (dest_ty == "ptr"): allocate via kryos_array_new + push each elem.
         if dest_ty == "ptr" && !elems.is_empty() {
             let arr_tmp = self.next_temp();

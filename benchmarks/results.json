@@ -1,8 +1,8 @@
 {
   "floors": {
-    "kryos (native exe)": 0.0054714000002604735,
-    "rust (native exe)": 0.005046499999934895,
-    "python interpreter": 0.044439799999963725
+    "kryos (native exe)": 0.004925000001094304,
+    "rust (native exe)": 0.005138100001204293,
+    "python interpreter": 0.04441439999936847
   },
   "runs": 5,
   "timeout_s": 180,
@@ -10,261 +10,261 @@
     "fib": {
       "kryos-llvm": {
         "status": "ok",
-        "median_s": 0.349,
-        "min_s": 0.3462,
-        "max_s": 0.3537
+        "median_s": 0.3513,
+        "min_s": 0.3437,
+        "max_s": 0.3615
       },
       "kryos-cranelift": {
         "status": "ok",
-        "median_s": 4.9472,
-        "min_s": 4.8335,
-        "max_s": 5.1978
+        "median_s": 5.0407,
+        "min_s": 4.9418,
+        "max_s": 5.1624
       },
       "rust -O": {
         "status": "ok",
-        "median_s": 0.348,
-        "min_s": 0.3464,
-        "max_s": 0.3602
+        "median_s": 0.3478,
+        "min_s": 0.3404,
+        "max_s": 0.3643
       },
       "clang -O2": {
         "status": "ok",
-        "median_s": 0.3492,
-        "min_s": 0.3411,
-        "max_s": 0.3593
+        "median_s": 0.3428,
+        "min_s": 0.3417,
+        "max_s": 0.3579
       },
       "go": {
         "status": "ok",
-        "median_s": 0.7063,
-        "min_s": 0.7032,
-        "max_s": 0.7069
+        "median_s": 0.7088,
+        "min_s": 0.7074,
+        "max_s": 0.7097
       },
       "python": {
         "status": "ok",
-        "median_s": 16.9862,
-        "min_s": 16.8155,
-        "max_s": 17.0791
+        "median_s": 17.0964,
+        "min_s": 16.9241,
+        "max_s": 17.1256
       }
     },
     "mandelbrot": {
       "kryos-llvm": {
         "status": "ok",
-        "median_s": 0.369,
-        "min_s": 0.3684,
-        "max_s": 0.3818
+        "median_s": 0.3698,
+        "min_s": 0.3681,
+        "max_s": 0.3733
       },
       "kryos-cranelift": {
         "status": "ok",
-        "median_s": 0.4195,
-        "min_s": 0.4191,
-        "max_s": 0.4227
+        "median_s": 0.4141,
+        "min_s": 0.4136,
+        "max_s": 0.4254
       },
       "rust -O": {
         "status": "ok",
-        "median_s": 0.3683,
-        "min_s": 0.3666,
-        "max_s": 0.3717
+        "median_s": 0.3698,
+        "min_s": 0.3675,
+        "max_s": 0.3727
       },
       "clang -O2": {
         "status": "ok",
-        "median_s": 0.3676,
-        "min_s": 0.3668,
-        "max_s": 0.3686
+        "median_s": 0.3688,
+        "min_s": 0.3653,
+        "max_s": 0.3701
       },
       "go": {
         "status": "ok",
-        "median_s": 0.3772,
-        "min_s": 0.3748,
-        "max_s": 0.3926
+        "median_s": 0.3766,
+        "min_s": 0.3762,
+        "max_s": 0.3773
       },
       "python": {
         "status": "ok",
-        "median_s": 19.8426,
-        "min_s": 19.7,
-        "max_s": 21.9638
+        "median_s": 19.9034,
+        "min_s": 19.8124,
+        "max_s": 19.9292
       }
     },
     "nbody": {
       "kryos-llvm": {
         "status": "ok",
-        "median_s": 0.2023,
-        "min_s": 0.1989,
-        "max_s": 0.2058
+        "median_s": 0.1417,
+        "min_s": 0.1397,
+        "max_s": 0.1422
       },
       "kryos-cranelift": {
         "status": "ok",
-        "median_s": 0.9404,
-        "min_s": 0.9288,
+        "median_s": 0.9406,
+        "min_s": 0.915,
         "max_s": 0.942
       },
       "rust -O": {
         "status": "ok",
-        "median_s": 0.1067,
-        "min_s": 0.1062,
-        "max_s": 0.1077
+        "median_s": 0.1062,
+        "min_s": 0.1052,
+        "max_s": 0.108
       },
       "clang -O2": {
         "status": "ok",
-        "median_s": 0.1482,
-        "min_s": 0.1477,
-        "max_s": 0.1503
+        "median_s": 0.1476,
+        "min_s": 0.1456,
+        "max_s": 0.1481
       },
       "go": {
         "status": "ok",
-        "median_s": 0.2482,
-        "min_s": 0.2478,
-        "max_s": 0.2498
+        "median_s": 0.2452,
+        "min_s": 0.2446,
+        "max_s": 0.2465
       },
       "python": {
         "status": "ok",
-        "median_s": 47.8834,
-        "min_s": 43.612,
-        "max_s": 52.5413
+        "median_s": 48.2192,
+        "min_s": 45.2076,
+        "max_s": 53.0676
       }
     },
     "binary_trees": {
       "kryos-llvm": {
         "status": "ok",
-        "median_s": 4.6872,
-        "min_s": 4.5907,
-        "max_s": 4.7867
+        "median_s": 4.6753,
+        "min_s": 4.5658,
+        "max_s": 4.6868
       },
       "kryos-cranelift": {
         "status": "ok",
-        "median_s": 3.546,
-        "min_s": 3.4986,
-        "max_s": 3.6401
+        "median_s": 3.6404,
+        "min_s": 3.5417,
+        "max_s": 3.6761
       },
       "rust -O": {
         "status": "ok",
-        "median_s": 0.7683,
-        "min_s": 0.7426,
-        "max_s": 0.7721
+        "median_s": 0.7633,
+        "min_s": 0.7386,
+        "max_s": 0.7712
       },
       "clang -O2": {
         "status": "ok",
-        "median_s": 0.6898,
-        "min_s": 0.6818,
-        "max_s": 0.7314
+        "median_s": 0.7015,
+        "min_s": 0.6865,
+        "max_s": 0.7073
       },
       "go": {
         "status": "ok",
-        "median_s": 0.4898,
-        "min_s": 0.4869,
-        "max_s": 0.4918
+        "median_s": 0.4874,
+        "min_s": 0.4853,
+        "max_s": 0.4965
       },
       "python": {
         "status": "ok",
-        "median_s": 1.8189,
-        "min_s": 1.7625,
-        "max_s": 1.8465
+        "median_s": 1.8058,
+        "min_s": 1.7891,
+        "max_s": 1.8882
       }
     },
     "fannkuch": {
       "kryos-llvm": {
         "status": "ok",
-        "median_s": 0.1984,
-        "min_s": 0.1959,
-        "max_s": 0.2005
+        "median_s": 0.1977,
+        "min_s": 0.1954,
+        "max_s": 0.1984
       },
       "kryos-cranelift": {
         "status": "ok",
-        "median_s": 0.9195,
-        "min_s": 0.8877,
-        "max_s": 0.9332
+        "median_s": 0.9326,
+        "min_s": 0.9056,
+        "max_s": 0.982
       },
       "rust -O": {
         "status": "ok",
-        "median_s": 0.1956,
-        "min_s": 0.1953,
-        "max_s": 0.1967
+        "median_s": 0.1954,
+        "min_s": 0.1916,
+        "max_s": 0.2083
       },
       "clang -O2": {
         "status": "ok",
         "median_s": 0.1872,
-        "min_s": 0.1813,
-        "max_s": 0.189
+        "min_s": 0.1836,
+        "max_s": 0.1984
       },
       "go": {
         "status": "ok",
-        "median_s": 0.1956,
-        "min_s": 0.1914,
-        "max_s": 0.199
+        "median_s": 0.1991,
+        "min_s": 0.1906,
+        "max_s": 0.1996
       },
       "python": {
         "status": "ok",
-        "median_s": 6.1266,
-        "min_s": 5.9507,
-        "max_s": 6.2286
+        "median_s": 6.0113,
+        "min_s": 5.9907,
+        "max_s": 6.0545
       }
     },
     "matmul": {
       "kryos-llvm": {
         "status": "ok",
-        "median_s": 0.623,
-        "min_s": 0.6208,
-        "max_s": 0.6254
+        "median_s": 0.6181,
+        "min_s": 0.6029,
+        "max_s": 0.6196
       },
       "kryos-cranelift": {
         "status": "ok",
-        "median_s": 0.6382,
-        "min_s": 0.6293,
-        "max_s": 0.6577
+        "median_s": 0.648,
+        "min_s": 0.6265,
+        "max_s": 0.6616
       },
       "rust -O": {
         "status": "ok",
-        "median_s": 0.6518,
-        "min_s": 0.6332,
-        "max_s": 0.6572
+        "median_s": 0.6568,
+        "min_s": 0.6392,
+        "max_s": 0.6598
       },
       "clang -O2": {
         "status": "ok",
-        "median_s": 0.6507,
-        "min_s": 0.6466,
-        "max_s": 0.6626
+        "median_s": 0.654,
+        "min_s": 0.6329,
+        "max_s": 0.6568
       },
       "go": {
         "status": "ok",
-        "median_s": 0.5631,
-        "min_s": 0.562,
-        "max_s": 0.5661
+        "median_s": 0.5657,
+        "min_s": 0.563,
+        "max_s": 0.5687
       },
       "python": {
         "status": "ok",
-        "median_s": 36.9012,
-        "min_s": 34.445,
-        "max_s": 37.8943
+        "median_s": 35.2529,
+        "min_s": 32.2804,
+        "max_s": 39.4975
       }
     },
     "hashmap": {
       "kryos-llvm": {
         "status": "ok",
-        "median_s": 0.0811,
-        "min_s": 0.0806,
-        "max_s": 0.0837
+        "median_s": 0.0837,
+        "min_s": 0.0813,
+        "max_s": 0.0841
       },
       "kryos-cranelift": {
         "status": "ok",
-        "median_s": 0.0864,
-        "min_s": 0.0849,
-        "max_s": 0.0875
+        "median_s": 0.0862,
+        "min_s": 0.0847,
+        "max_s": 0.0881
       },
       "rust -O": {
         "status": "ok",
-        "median_s": 0.1175,
-        "min_s": 0.1164,
-        "max_s": 0.1348
+        "median_s": 0.1233,
+        "min_s": 0.117,
+        "max_s": 0.1303
       },
       "go": {
         "status": "ok",
-        "median_s": 0.1225,
-        "min_s": 0.1213,
-        "max_s": 0.139
+        "median_s": 0.1293,
+        "min_s": 0.1209,
+        "max_s": 0.1374
       },
       "python": {
         "status": "ok",
-        "median_s": 0.2228,
-        "min_s": 0.2201,
-        "max_s": 0.2252
+        "median_s": 0.2171,
+        "min_s": 0.2142,
+        "max_s": 0.2194
       }
     }
   }
