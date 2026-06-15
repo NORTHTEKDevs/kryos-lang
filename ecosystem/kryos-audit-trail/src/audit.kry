@@ -49,11 +49,13 @@ fn lineage_to_json(lineage: [LineageEntry]) -> i64 {
     return json_array(items)
 }
 
-// Core builder. `decision` is the already-stringified decision value.
-// `confidence`: pass a value < 0.0 (e.g. -1.0) to omit the field; pass
-// 0.0-1.0 to include it. Returns a compact JSON string.
+// Build the audit record as a JSON object HANDLE (i64) -- the assembled
+// object before stringification. audit_record() wraps this with
+// json_stringify; audit_stream() collects many handles into one array.
+// `decision` is the already-stringified decision value. `confidence`: pass a
+// value < 0.0 (e.g. -1.0) to omit the field; pass 0.0-1.0 to include it.
 @capabilities()
-fn audit_record(decision: str, lineage: [LineageEntry], source: str, source_desc: str, cost: ComputeCost, caps: [str], confidence: f64, system_id: str, user_id: str) -> str {
+fn audit_record_handle(decision: str, lineage: [LineageEntry], source: str, source_desc: str, cost: ComputeCost, caps: [str], confidence: f64, system_id: str, user_id: str) -> i64 {
     let now = timestamp()
 
     let decision_obj = json_object(
@@ -84,7 +86,13 @@ fn audit_record(decision: str, lineage: [LineageEntry], source: str, source_desc
         vals = push(vals, json_number(confidence))
     }
 
-    return json_stringify(json_object(keys, vals))
+    return json_object(keys, vals)
+}
+
+// Core builder. Returns the compact JSON string of one audit record.
+@capabilities()
+fn audit_record(decision: str, lineage: [LineageEntry], source: str, source_desc: str, cost: ComputeCost, caps: [str], confidence: f64, system_id: str, user_id: str) -> str {
+    return json_stringify(audit_record_handle(decision, lineage, source, source_desc, cost, caps, confidence, system_id, user_id))
 }
 
 // Convenience entrypoint -- build the record directly from a Tracked<str>.

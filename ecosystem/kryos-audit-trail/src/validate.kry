@@ -1,0 +1,91 @@
+// ============================================================
+// validate.kry -- post-hoc record validation + GDPR redaction.
+//
+// audit_validate(record_json) -> [str]   : missing required fields ([] = valid)
+// audit_redact(record_json, fields) -> str: copy with named top-level fields
+//                                           nullified (GDPR right-to-erasure)
+//
+// Both are pure (@capabilities()) -- they operate on JSON strings, no IO.
+// A missing key reads back as a JSON null via json_get, so json_is_null is the
+// presence test (the native json builtins return null, not an error, on a
+// missing key).
+// ============================================================
+
+// Does the string array `arr` contain `s`? (Named to avoid the builtin
+// `contains`, which is substring search over a single string.)
+@capabilities()
+fn contains_field(arr: [str], s: str) -> bool {
+    let mut i = 0
+    while i < len(arr) {
+        if arr[i] == s {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// Returns the list of required Annex IV fields absent from the record
+// ([] = valid). Checks the nine top-level fields and, when annex_iv is
+// present, its five derived sub-fields (reported as "annex_iv.<name>").
+@capabilities()
+fn audit_validate(record_json: str) -> [str] {
+    let mut missing: [str] = []
+    let parsed = json_parse(record_json)
+
+    let required = ["schema_version", "generated_at", "system_id", "user_id", "decision", "lineage", "capability_surface", "cost", "annex_iv"]
+    let mut i = 0
+    while i < len(required) {
+        if json_is_null(json_get(parsed, required[i])) {
+            missing = push(missing, required[i])
+        }
+        i = i + 1
+    }
+
+    let annex = json_get(parsed, "annex_iv")
+    if json_is_null(annex) {
+        return missing
+    }
+    let annex_required = ["traceability", "human_oversight_recorded", "data_lineage_steps", "model_identified", "cost_metered"]
+    let mut j = 0
+    while j < len(annex_required) {
+        if json_is_null(json_get(annex, annex_required[j])) {
+            missing = push(missing, "annex_iv." + annex_required[j])
+        }
+        j = j + 1
+    }
+    return missing
+}
+
+// GDPR right-to-erasure: return a copy of the record with the named TOP-LEVEL
+// fields nullified. Rebuilds the object over the fixed Annex IV key set (the
+// native json builtins cannot enumerate arbitrary object keys, but the
+// record's top-level schema is known). Absent fields are skipped; listed
+// fields become JSON null; all others are preserved verbatim.
+//
+// Nested redaction (e.g. decision.value alone) is out of MVP scope -- nullify
+// the whole "decision" object instead.
+@capabilities()
+fn audit_redact(record_json: str, fields_to_nullify: [str]) -> str {
+    let parsed = json_parse(record_json)
+    let schema_keys = ["schema_version", "generated_at", "system_id", "user_id", "decision", "lineage", "capability_surface", "cost", "annex_iv", "confidence"]
+    let mut keys: [str] = []
+    let mut vals: [i64] = []
+    let mut i = 0
+    while i < len(schema_keys) {
+        let k = schema_keys[i]
+        let v = json_get(parsed, k)
+        if not json_is_null(v) {
+            // Single unconditional push avoids a conditional-move warning on
+            // the json handle: choose the value first, then push once.
+            let mut pv = v
+            if contains_field(fields_to_nullify, k) {
+                pv = json_null()
+            }
+            keys = push(keys, k)
+            vals = push(vals, pv)
+        }
+        i = i + 1
+    }
+    return json_stringify(json_object(keys, vals))
+}
