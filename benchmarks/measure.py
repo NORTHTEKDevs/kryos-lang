@@ -55,9 +55,24 @@ def find_clang():
     return None
 
 
+def find_clangpp():
+    c = shutil.which("clang++")
+    if c:
+        return c
+    for cand in [r"C:\Program Files\LLVM\bin\clang++.exe", r"C:\Program Files (x86)\LLVM\bin\clang++.exe"]:
+        if Path(cand).exists():
+            return cand
+    return None
+
+
 CLANG = find_clang()
+CLANGPP = find_clangpp()
 RUSTC = shutil.which("rustc")
 GO = shutil.which("go")
+# Mojo (Modular) — optional; only measured if a `mojo` toolchain is on PATH.
+# Not available on every host (e.g. Windows without WSL+Modular). When absent
+# the column is simply omitted rather than fabricated.
+MOJO = shutil.which("mojo")
 PYTHON = sys.executable
 
 
@@ -94,11 +109,23 @@ def build_all():
             if r.returncode == 0:
                 targets["rust -O"] = [str(out)]
         # C via clang -O2
-        if CLANG:
+        if CLANG and (HERE / "c" / f"{b}.c").exists():
             out = BIN / f"{b}_c{EXE}"
             r = subprocess.run([CLANG, "-O2", str(HERE / "c" / f"{b}.c"), "-o", str(out)], capture_output=True)
             if r.returncode == 0:
                 targets["clang -O2"] = [str(out)]
+        # C++ via clang++ -O2 (idiomatic: std::vector / std::unordered_map / new-delete)
+        if CLANGPP and (HERE / "cpp" / f"{b}.cpp").exists():
+            out = BIN / f"{b}_cpp{EXE}"
+            r = subprocess.run([CLANGPP, "-O2", "-std=c++17", str(HERE / "cpp" / f"{b}.cpp"), "-o", str(out)], capture_output=True)
+            if r.returncode == 0:
+                targets["clang++ -O2"] = [str(out)]
+        # Mojo (optional; only if toolchain present)
+        if MOJO and (HERE / "mojo" / f"{b}.mojo").exists():
+            out = BIN / f"{b}_mojo{EXE}"
+            r = subprocess.run([MOJO, "build", str(HERE / "mojo" / f"{b}.mojo"), "-o", str(out)], capture_output=True)
+            if r.returncode == 0:
+                targets["mojo"] = [str(out)]
         # Go
         if GO and (HERE / "go" / f"{b}.go").exists():
             out = BIN / f"{b}_go{EXE}"
@@ -191,7 +218,7 @@ def main():
 
     # Markdown table generated from the same data.
     lines = []
-    langs_order = ["kryos-llvm", "kryos-cranelift", "rust -O", "clang -O2", "go", "python"]
+    langs_order = ["kryos-llvm", "kryos-cranelift", "rust -O", "clang -O2", "clang++ -O2", "mojo", "go", "python"]
     lines.append("| Benchmark | " + " | ".join(langs_order) + " | kryos-llvm / rust |")
     lines.append("|---" * (len(langs_order) + 2) + "|")
     for b in BENCHES:
