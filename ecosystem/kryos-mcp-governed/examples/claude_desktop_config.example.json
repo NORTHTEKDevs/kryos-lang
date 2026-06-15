@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "kryos-governed": {
+      "command": "C:\\Users\\Krist\\projects\\active\\kryos-mcp-governed\\kryos-mcp-governed.exe",
+      "env": {
+        "KRYOS_MCP_CAPS": "net,compute",
+        "ANTHROPIC_API_KEY": "sk-ant-...optional, only needed once summarize calls a real model..."
+      }
+    }
+  }
+}
