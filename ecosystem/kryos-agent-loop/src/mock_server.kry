@@ -1,0 +1,98 @@
+// mock_server.kry -- Stateless OpenAI-wire-format mock on port 8723.
+//
+// Serves POST /v1/chat/completions indefinitely.
+// Branches on request body content (stateless, safe for sequential tests):
+//
+//   Body contains "tool_call_id"  ->  final text response (model done)
+//   Otherwise                     ->  tool-call response  (model calls calc)
+//
+// The mock returns the two JSON shapes that chat_tools/_parse_openai_turn
+// expects. Tests point their LlmConfig at:
+//   with_base_url(openai_config("", "mock"), "http://127.0.0.1:8723/v1")
+//
+// Start BEFORE running kryos test:
+//   kryos run src/mock_server.kry
+// The server loops forever; kill it after the test suite completes.
+//
+// Implementation: raw TCP (tcp_listen/accept/recv/send/close) to avoid
+// the std::http add_route push-without-assign bug and spawn closure
+// capture issues with the router struct.
+
+// --- Hardcoded response bodies -----------------------------------------------
+//
+// Kryos string escape rules:
+//   \"  ->  literal double-quote
+//   \{  ->  literal { (prevents string interpolation)
+//   \}  ->  literal }
+//   \\  ->  literal backslash (needed to produce \" in the output string)
+//
+// TOOL-CALL response: model requests one call to "calc".
+// The "arguments" value is itself a JSON string containing a JSON object,
+// so its braces/quotes need one extra layer of escaping inside the outer
+// Kryos string literal.
+let TOOL_CALL_RESP: str = "\{\"model\":\"mock\",\"usage\":\{\"prompt_tokens\":40,\"completion_tokens\":12\},\"choices\":[\{\"message\":\{\"content\":null,\"tool_calls\":[\{\"id\":\"call_1\",\"type\":\"function\",\"function\":\{\"name\":\"calc\",\"arguments\":\"\{\\\"a\\\":4400,\\\"b\\\":0.23,\\\"op\\\":\\\"mul\\\"\}\"\}\}]\}\}]\}"
+
+// FINAL response: model returns plain text, no further tool calls.
+let FINAL_RESP: str = "\{\"model\":\"mock\",\"usage\":\{\"prompt_tokens\":50,\"completion_tokens\":8\},\"choices\":[\{\"message\":\{\"content\":\"23% of 4400 is 1012.0\"\}\}]\}"
+
+// --- HTTP response builder ---------------------------------------------------
+//
+// Produces a minimal HTTP/1.1 200 response with JSON content type.
+
+fn build_response(body: str) -> str {
+    let clen = to_string(len(body))
+    return "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + clen + "\r\nConnection: close\r\n\r\n" + body
+}
+
+// --- Extract HTTP request body -----------------------------------------------
+//
+// A raw HTTP request is header-section \r\n\r\n body.
+// Scan for the double CRLF and return everything after it.
+
+fn extract_body(raw: str) -> str {
+    let slen = len(raw)
+    let needle = "\r\n\r\n"
+    let nlen = 4
+    let limit = slen - nlen
+    let mut i = 0
+    while i <= limit {
+        if substr(raw, i, i + nlen) == needle {
+            return substr(raw, i + nlen, slen)
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// --- Entry point -------------------------------------------------------------
+//
+// Synchronous accept loop -- one request at a time, no spawn.
+// Sequential is fine because the test suite runs tests one after another
+// and each chat_tools / continue_with_tool_results call is blocking.
+
+@capabilities(net)
+fn main() {
+    let listener = tcp_listen("0.0.0.0", 8723)
+    if listener == -1 {
+        println("mock_server: failed to bind port 8723")
+        return
+    }
+    println("mock_server: listening on 0.0.0.0:8723")
+    while true {
+        let conn = tcp_accept(listener)
+        if conn == -1 {
+            continue
+        }
+        let raw = tcp_recv(conn, 65536)
+        let body = extract_body(raw)
+        let mut resp_body: str = ""
+        if contains(body, "tool_call_id") {
+            resp_body = FINAL_RESP
+        } else {
+            resp_body = TOOL_CALL_RESP
+        }
+        let resp = build_response(resp_body)
+        tcp_send(conn, resp)
+        tcp_close(conn)
+    }
+}

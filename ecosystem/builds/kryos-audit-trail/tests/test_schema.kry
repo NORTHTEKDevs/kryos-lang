@@ -1,0 +1,98 @@
+// ============================================================
+// test_schema.kry -- direct unit tests for the schema + cost helpers.
+//
+//   kryos run tests/test_schema.kry      (see RUNNER NOTE in test_audit.kry)
+//
+// These exercise annex_iv_fields() and cost_to_json() in isolation by
+// constructing LineageEntry values directly, so the heuristics are tested
+// without going through the full audit_record() assembly.
+// ============================================================
+
+use std::tracked
+use std::cost
+use schema
+use cost_summary
+
+// Build a bare lineage entry with a given operation name.
+fn mk(op: str) -> LineageEntry {
+    return LineageEntry { operation: op, description: "d", timestamp: 0, metadata: "" }
+}
+
+@test
+fn test_annex_empty_is_fail() {
+    let empty: [LineageEntry] = []
+    let s = json_stringify(annex_iv_fields(empty, cost_zero(), -1.0))
+    assert(contains(s, "FAIL: no lineage recorded"), "empty lineage must FAIL traceability")
+    assert(contains(s, "\"data_lineage_steps\":0"), "empty lineage must report 0 steps")
+    assert(contains(s, "\"human_oversight_recorded\":false"), "no review -> no human oversight")
+    assert(contains(s, "\"model_identified\":false"), "no inference -> no model")
+}
+
+@test
+fn test_annex_review_and_model() {
+    let mut lin: [LineageEntry] = []
+    lin = push(lin, mk("source"))
+    lin = push(lin, mk("inference"))
+    lin = push(lin, mk("compliance_review"))
+    let s = json_stringify(annex_iv_fields(lin, cost_zero(), -1.0))
+    assert(contains(s, "\"traceability\":\"PASS\""), "non-empty lineage must PASS")
+    assert(contains(s, "\"data_lineage_steps\":3"), "must report 3 steps")
+    assert(contains(s, "\"human_oversight_recorded\":true"), "compliance_review -> human oversight")
+    assert(contains(s, "\"model_identified\":true"), "inference -> model identified")
+}
+
+@test
+fn test_human_keyword_variants() {
+    // "oversight" and "human" should also trip the heuristic, not just "review".
+    let mut a: [LineageEntry] = []
+    a = push(a, mk("manual_oversight"))
+    assert(contains(json_stringify(annex_iv_fields(a, cost_zero(), -1.0)), "\"human_oversight_recorded\":true"), "oversight keyword")
+    let mut b: [LineageEntry] = []
+    b = push(b, mk("human_signoff"))
+    assert(contains(json_stringify(annex_iv_fields(b, cost_zero(), -1.0)), "\"human_oversight_recorded\":true"), "human keyword")
+}
+
+@test
+fn test_cost_metered_heuristic() {
+    let mut lin: [LineageEntry] = []
+    lin = push(lin, mk("source"))
+    let zero = json_stringify(annex_iv_fields(lin, cost_zero(), -1.0))
+    assert(contains(zero, "\"cost_metered\":false"), "zero cost -> not metered")
+    let c = ComputeCost { wall_time_ms: 1.0, tokens_used: 10, api_calls: 1, money_usd: 0.0, energy_kwh: 0.0 }
+    let metered = json_stringify(annex_iv_fields(lin, c, -1.0))
+    assert(contains(metered, "\"cost_metered\":true"), "tokens used -> metered")
+    // energy-only (on-prem GPU): no money, no tokens, but real consumption.
+    let energy_only = ComputeCost { wall_time_ms: 30000.0, tokens_used: 0, api_calls: 0, money_usd: 0.0, energy_kwh: 0.5 }
+    assert(contains(json_stringify(annex_iv_fields(lin, energy_only, -1.0)), "\"cost_metered\":true"), "energy_kwh alone -> metered")
+    // api-calls-only.
+    let api_only = ComputeCost { wall_time_ms: 0.0, tokens_used: 0, api_calls: 100, money_usd: 0.0, energy_kwh: 0.0 }
+    assert(contains(json_stringify(annex_iv_fields(lin, api_only, -1.0)), "\"cost_metered\":true"), "api_calls alone -> metered")
+    // wall_time alone must NOT flip metering (incidental latency only).
+    let time_only = ComputeCost { wall_time_ms: 9999.0, tokens_used: 0, api_calls: 0, money_usd: 0.0, energy_kwh: 0.0 }
+    assert(contains(json_stringify(annex_iv_fields(lin, time_only, -1.0)), "\"cost_metered\":false"), "wall_time alone -> not metered")
+}
+
+@test
+fn test_cost_to_json_maps_fields() {
+    let c = ComputeCost { wall_time_ms: 450.0, tokens_used: 1200, api_calls: 2, money_usd: 0.024, energy_kwh: 0.0003 }
+    let s = json_stringify(cost_to_json(c))
+    assert(contains(s, "\"wall_time_ms\":450"), "wall_time_ms mapped")
+    assert(contains(s, "\"tokens_used\":1200"), "tokens_used mapped")
+    assert(contains(s, "\"api_calls\":2"), "api_calls mapped")
+    assert(contains(s, "\"money_usd\":0.024"), "money_usd mapped")
+    assert(contains(s, "\"energy_kwh\":0.0003"), "energy_kwh mapped")
+}
+
+fn main() {
+    test_annex_empty_is_fail()
+    println("PASS test_annex_empty_is_fail")
+    test_annex_review_and_model()
+    println("PASS test_annex_review_and_model")
+    test_human_keyword_variants()
+    println("PASS test_human_keyword_variants")
+    test_cost_metered_heuristic()
+    println("PASS test_cost_metered_heuristic")
+    test_cost_to_json_maps_fields()
+    println("PASS test_cost_to_json_maps_fields")
+    println("5/5 schema tests passed")
+}

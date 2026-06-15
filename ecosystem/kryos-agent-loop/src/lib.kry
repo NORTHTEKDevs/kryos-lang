@@ -1,0 +1,207 @@
+use std::cost::{ComputeCost, cost_zero, cost_add}
+use std::agent
+use std::llm
+
+// The result of one governed multi-turn run.
+struct GovernedResult {
+    final_turn: ToolTurn,
+    agent: Agent,
+    total_cost: ComputeCost,
+    steps: i64
+}
+
+// Returns true if the given tool name appears in agent.tools.
+// agent.tools is [AgentTool]; AgentTool.name is the registered name.
+fn _tool_registered(ag: Agent, name: str) -> bool {
+    for t in ag.tools {
+        if t.name == name {
+            return true
+        }
+    }
+    return false
+}
+
+// Governed multi-turn tool loop.
+//
+// Runs chat_tools / continue_with_tool_results in a loop, dispatching tool
+// calls through dispatch_fn, populating ag.audit_trail with model_call and
+// tool_call entries, accumulating ComputeCost, and enforcing alignment in
+// STRICT mode.
+//
+// Budget: 100 000 tokens / 50 model calls across the entire loop.
+// Capabilities: net (required for LLM HTTP calls).
+//
+// NOTE: if the caller also annotates their function with @budget, BOTH frames
+// are active simultaneously and both are decremented per call. The tighter
+// limit wins. See kryos-rt/src/budget.rs for frame semantics.
+//
+// IMPORT ORDER: std::cost must be imported before std::llm. std::llm
+// internally imports std::cost partially; placing std::cost first ensures
+// cost_zero and cost_add are visible at the use-site.
+@capabilities(net)
+@budget(tokens = 100000, calls = 50)
+fn chat_tools_governed(cfg: LlmConfig, messages: [Message], tools: [ToolDef], dispatch_fn: fn(str, str) -> str, agent: Agent, max_steps: i64) -> GovernedResult {
+    let mut ag = agent
+    ag.state = STATE_RUNNING
+    let mut total = cost_zero()
+    let mut steps = 0
+    let mut next_id: i64 = 0
+
+    // First model turn
+    let mut turn = chat_tools(cfg, messages, tools)
+    steps = steps + 1
+    total = cost_add(total, ComputeCost {
+        wall_time_ms: 0.0,
+        tokens_used: turn.input_tokens + turn.output_tokens,
+        api_calls: 1,
+        money_usd: 0.0,
+        energy_kwh: 0.0
+    })
+
+    // Audit: initial model call
+    next_id = next_id + 1
+    ag.audit_trail = push(ag.audit_trail, AuditEntry {
+        id: next_id,
+        entry_type: "model_call",
+        description: "turn 1: " + to_string(turn.output_tokens) + " output tokens",
+        success: true,
+        timestamp: time_now_secs(),
+        cost_usd: 0.0,
+        latency_ms: 0.0
+    })
+
+    // Tool loop
+    while not turn.done and steps < max_steps {
+
+        // Alignment check (STRICT mode only): refuse any unregistered tool.
+        if ag.alignment == ALIGNMENT_STRICT {
+            for call in turn.tool_calls {
+                if not _tool_registered(ag, call.name) {
+                    next_id = next_id + 1
+                    ag.audit_trail = push(ag.audit_trail, AuditEntry {
+                        id: next_id,
+                        entry_type: "alignment_block",
+                        description: "STRICT: refused tool " + call.name + " (not in agent.tools)",
+                        success: false,
+                        timestamp: time_now_secs(),
+                        cost_usd: 0.0,
+                        latency_ms: 0.0
+                    })
+                    ag.state = STATE_FAILED
+                    ag.total_cost = total.money_usd
+                    ag.action_count = steps
+                    return GovernedResult {
+                        final_turn: turn,
+                        agent: ag,
+                        total_cost: total,
+                        steps: steps
+                    }
+                }
+            }
+        }
+
+        // Dispatch each tool call requested by the model.
+        // results is re-declared each iteration (push returns a new array).
+        let mut results: [ToolResult] = []
+        for call in turn.tool_calls {
+            let t0: i64 = time_now_millis()
+            let output = dispatch_fn(call.name, call.arguments_json)
+            let latency_ms: f64 = (time_now_millis() - t0) as f64
+
+            results = push(results, tool_result(call.id, output))
+
+            next_id = next_id + 1
+            ag.audit_trail = push(ag.audit_trail, AuditEntry {
+                id: next_id,
+                entry_type: "tool_call",
+                description: call.name + "(" + call.arguments_json + ") -> " + output,
+                success: not contains(output, "error:"),
+                timestamp: time_now_secs(),
+                cost_usd: 0.0,
+                latency_ms: latency_ms
+            })
+        }
+
+        // Continue the conversation with tool results
+        turn = continue_with_tool_results(cfg, messages, tools, turn.assistant_raw, results)
+        steps = steps + 1
+        total = cost_add(total, ComputeCost {
+            wall_time_ms: 0.0,
+            tokens_used: turn.input_tokens + turn.output_tokens,
+            api_calls: 1,
+            money_usd: 0.0,
+            energy_kwh: 0.0
+        })
+
+        next_id = next_id + 1
+        ag.audit_trail = push(ag.audit_trail, AuditEntry {
+            id: next_id,
+            entry_type: "model_call",
+            description: "continuation turn " + to_string(steps) + ": " + to_string(turn.output_tokens) + " tokens",
+            success: true,
+            timestamp: time_now_secs(),
+            cost_usd: 0.0,
+            latency_ms: 0.0
+        })
+    }
+
+    // Set the terminal state HONESTLY. The loop can exit two ways:
+    //   - turn.done == true  -> the model finished -> COMPLETED
+    //   - steps >= max_steps with turn.done == false -> halted mid-task.
+    // A governed loop must never report COMPLETED for an unfinished run.
+    if turn.done {
+        ag.state = STATE_COMPLETED
+    } else {
+        next_id = next_id + 1
+        ag.audit_trail = push(ag.audit_trail, AuditEntry {
+            id: next_id,
+            entry_type: "max_steps",
+            description: "halted: reached max_steps (" + to_string(max_steps) + ") before model finished",
+            success: false,
+            timestamp: time_now_secs(),
+            cost_usd: 0.0,
+            latency_ms: 0.0
+        })
+        ag.state = STATE_FAILED
+    }
+    ag.total_cost = total.money_usd
+    ag.action_count = steps
+
+    return GovernedResult {
+        final_turn: turn,
+        agent: ag,
+        total_cost: total,
+        steps: steps
+    }
+}
+
+// Serialize an agent's audit trail to a TSV file for persistence.
+// Format per line: id\tentry_type\tdescription\tsuccess\ttimestamp\tcost_usd\tlatency_ms
+// One line per AuditEntry, terminated with \n.
+// NOTE: file_write does not create parent directories; the caller must ensure
+// the directory exists.
+@capabilities(io)
+fn agent_checkpoint(ag: Agent, path: str) {
+    let mut lines: [str] = []
+    for entry in ag.audit_trail {
+        // Cast f64 fields to i64 before calling to_string to avoid the
+        // Cranelift JIT limitation with to_string(f64_struct_field) in
+        // function bodies compiled by kryos test. cost_usd is always 0.0;
+        // latency_ms is whole milliseconds (sub-ms truncated by cast).
+        let cost_int: i64 = entry.cost_usd as i64
+        let lat_int: i64 = entry.latency_ms as i64
+        let line = to_string(entry.id) + "\t"
+                 + entry.entry_type + "\t"
+                 + entry.description + "\t"
+                 + to_string(entry.success) + "\t"
+                 + to_string(entry.timestamp) + "\t"
+                 + to_string(cost_int) + "\t"
+                 + to_string(lat_int)
+        lines = push(lines, line)
+    }
+    let mut out = ""
+    for l in lines {
+        out = out + l + "\n"
+    }
+    file_write(path, out)
+}

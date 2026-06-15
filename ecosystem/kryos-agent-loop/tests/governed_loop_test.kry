@@ -1,0 +1,208 @@
+// governed_loop_test.kry -- Integration tests for chat_tools_governed.
+//
+// Requires the mock server running BEFORE this file is tested:
+//   kryos run src/mock_server.kry &
+//   kryos test tests/governed_loop_test.kry
+//   kill %1
+//
+// The mock server listens on 127.0.0.1:8723 and serves two response shapes:
+//   Body lacks "tool_call_id"  -> tool-call response (model requests calc)
+//   Body contains "tool_call_id" -> final text response (done)
+
+use std::cost::{ComputeCost, cost_zero, cost_add}
+use std::agent
+use std::llm
+use lib::{GovernedResult, chat_tools_governed, agent_checkpoint}
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+fn mock_cfg() -> LlmConfig {
+    return with_base_url(openai_config("", "mock"), "http://127.0.0.1:8723/v1")
+}
+
+fn calc_dispatch(name: str, args_json: str) -> str {
+    if name == "calc" {
+        let node = json_parse(args_json)
+        let a = json_to_float(json_get(node, "a"))
+        let b = json_to_float(json_get(node, "b"))
+        let op = json_to_str(json_get(node, "op"))
+        // to_string(f64) is unsupported in the Cranelift JIT used by kryos test.
+        // Cast the result to i64 (whole number) before stringifying. This is fine
+        // for the mock-server integration tests which do not parse the tool result.
+        if op == "add" { return to_string((a + b) as i64) }
+        if op == "sub" { return to_string((a - b) as i64) }
+        if op == "mul" { return to_string((a * b) as i64) }
+        if op == "div" {
+            if b == 0.0 { return "error: division by zero" }
+            return to_string((a / b) as i64)
+        }
+        return "error: unknown op " + op
+    }
+    return "error: unknown tool " + name
+}
+
+fn calc_schema() -> str {
+    return json_stringify(json_object(
+        ["type", "properties", "required"],
+        [json_string("object"),
+         json_object(["a", "b", "op"], [
+             json_object(["type"], [json_string("number")]),
+             json_object(["type"], [json_string("number")]),
+             json_object(["type", "description"], [json_string("string"), json_string("add, sub, mul, or div")])
+         ]),
+         json_array([json_string("a"), json_string("b"), json_string("op")])]))
+}
+
+fn make_tools() -> [ToolDef] {
+    return [tool("calc", "Exact arithmetic: add/sub/mul/div two numbers.", calc_schema())]
+}
+
+fn make_msgs() -> [Message] {
+    return [system("You are a precise analyst. Use calc for all math."),
+            user("What is 23% of 4400?")]
+}
+
+// ---------------------------------------------------------------------------
+// Test 1: two-turn loop populates audit trail correctly
+// ---------------------------------------------------------------------------
+
+@test
+fn test_two_turn_loop_populates_audit_trail() {
+    let cfg = mock_cfg()
+    let tools = make_tools()
+    let msgs = make_msgs()
+    let ag = agent_with_alignment("analyst", "answer numeric questions", ALIGNMENT_STANDARD)
+
+    let result = chat_tools_governed(cfg, msgs, tools, calc_dispatch, ag, 8)
+
+    assert(result.steps == 2, "expected 2 model calls (one tool call round)")
+    assert(len(result.agent.audit_trail) == 3,
+           "expected 3 audit entries: model_call, tool_call, model_call")
+    assert(result.final_turn.done, "loop should have terminated with done=true")
+    assert(result.total_cost.tokens_used > 0, "tokens_used must be positive")
+    assert(result.total_cost.api_calls == 2, "expected 2 api_calls in ComputeCost")
+
+    // Verify entry types in order
+    let e0 = result.agent.audit_trail[0]
+    let e1 = result.agent.audit_trail[1]
+    let e2 = result.agent.audit_trail[2]
+    assert(e0.entry_type == "model_call", "first entry must be model_call")
+    assert(e1.entry_type == "tool_call",  "second entry must be tool_call")
+    assert(e2.entry_type == "model_call", "third entry must be model_call")
+}
+
+// ---------------------------------------------------------------------------
+// Test 2: @budget exhaustion throws with the right message
+// ---------------------------------------------------------------------------
+
+// This wrapper has a 1-call budget. chat_tools_governed itself has a 50-call
+// budget. Both frames are active simultaneously; kryos_budget_try_call
+// decrements all active frames. After the first model call the outer frame
+// hits 0, so the second model call inside the governed loop throws.
+@capabilities(net)
+@budget(tokens = 200000, calls = 1)
+fn one_shot_governed(cfg: LlmConfig, msgs: [Message], tools: [ToolDef]) -> str {
+    let ag = agent_with_alignment("analyst", "test", ALIGNMENT_STANDARD)
+    let mut caught = false
+    let mut err_msg = ""
+    try {
+        // This will make 2 model calls; the second should throw because
+        // the outer @budget(calls=1) frame is exhausted after the first.
+        let result = chat_tools_governed(cfg, msgs, tools, calc_dispatch, ag, 8)
+        return "FAIL: no throw, final=" + result.final_turn.text
+    } catch e {
+        caught = true
+        err_msg = e
+    }
+    if not caught {
+        return "FAIL: exception was not caught"
+    }
+    return err_msg
+}
+
+@test
+fn test_budget_exhausted_throws() {
+    let cfg = mock_cfg()
+    let tools = make_tools()
+    let msgs = make_msgs()
+
+    let err = one_shot_governed(cfg, msgs, tools)
+    assert(contains(err, "@budget"), "error must mention @budget, got: " + err)
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: STRICT alignment blocks unregistered tool
+// ---------------------------------------------------------------------------
+
+@test
+fn test_strict_alignment_blocks_unregistered_tool() {
+    let cfg = mock_cfg()
+    // The LLM tools list contains calc so the request payload will include it,
+    // but the agent's own tools list is EMPTY -- strict alignment must block it.
+    let llm_tools = make_tools()
+    let msgs = make_msgs()
+
+    // Agent has ALIGNMENT_STRICT and no registered tools.
+    let ag = agent_with_alignment("strict-bot", "refuse unknown tools", ALIGNMENT_STRICT)
+
+    let result = chat_tools_governed(cfg, msgs, llm_tools, calc_dispatch, ag, 8)
+
+    assert(result.agent.state == STATE_FAILED,
+           "agent must be STATE_FAILED when STRICT blocks a tool")
+
+    // Find the alignment_block entry
+    let mut found_block = false
+    for entry in result.agent.audit_trail {
+        if entry.entry_type == "alignment_block" {
+            found_block = true
+        }
+    }
+    assert(found_block, "audit trail must contain an alignment_block entry")
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: agent_checkpoint writes a readable TSV file
+// ---------------------------------------------------------------------------
+
+@test
+fn test_agent_checkpoint_writes_file() {
+    let cfg = mock_cfg()
+    let tools = make_tools()
+    let msgs = make_msgs()
+    let ag = agent_with_alignment("checkpoint-bot", "write audit", ALIGNMENT_STANDARD)
+
+    let result = chat_tools_governed(cfg, msgs, tools, calc_dispatch, ag, 8)
+
+    let tmp_path = "/tmp/governed_loop_audit_test.tsv"
+    agent_checkpoint(result.agent, tmp_path)
+
+    assert(file_exists(tmp_path) == 1, "checkpoint file must exist at " + tmp_path)
+
+    let content = file_read(tmp_path)
+    assert(contains(content, "tool_call"), "checkpoint must contain 'tool_call' entry")
+    assert(contains(content, "model_call"), "checkpoint must contain 'model_call' entry")
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: max_steps halt must NOT be reported as COMPLETED
+// ---------------------------------------------------------------------------
+
+@test
+fn test_max_steps_halts_without_false_completion() {
+    let cfg = mock_cfg()
+    let tools = make_tools()
+    let msgs = make_msgs()
+    let ag = agent_with_alignment("capped", "answer numeric questions", ALIGNMENT_STANDARD)
+
+    // max_steps = 1: only the first model turn runs. The model still wants a
+    // tool (mock returns a tool call), so the loop halts WITHOUT a finished
+    // answer. A governed loop must report this honestly, not as COMPLETED.
+    let result = chat_tools_governed(cfg, msgs, tools, calc_dispatch, ag, 1)
+
+    assert(result.steps == 1, "expected exactly 1 model call")
+    assert(not result.final_turn.done, "final turn must not be done (model still wanted a tool)")
+    assert(result.agent.state == STATE_FAILED,
+           "agent must be STATE_FAILED (not COMPLETED) when halted by max_steps")
+}
