@@ -4300,6 +4300,8 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             match inner_ty {
                 MirType::Ref { inner, .. } => *inner,
                 MirType::Ptr(inner) => *inner,
+                // Deref of shared<T> (arc-managed pointer) yields T.
+                MirType::Shared(inner) => *inner,
                 _ => MirType::I64,
             }
         }
@@ -4307,9 +4309,11 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
         ast::Expr::FieldAccess { object, field, .. } => {
             // Resolve the object's type, then look up the field in struct_defs.
             let obj_ty = infer_expr_type(ctx, object);
-            // Auto-deref: if the object is a reference to a struct, dereference first.
+            // Auto-deref: if the object is a reference or shared pointer to a struct,
+            // dereference first.
             let resolved_ty = match &obj_ty {
                 MirType::Ref { inner, .. } => inner.as_ref().clone(),
+                MirType::Shared(inner) => inner.as_ref().clone(),
                 other => other.clone(),
             };
             if let MirType::Struct(name) = &resolved_ty {
@@ -5584,12 +5588,23 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 }
             }
 
-            // Auto-deref: if the object is a reference, dereference it first.
+            // Auto-deref: if the object is a reference or shared pointer, dereference first.
             let obj = if matches!(obj_ty, MirType::Ref { .. }) {
                 let deref_temp = ctx.alloc_temp(match &obj_ty {
                     MirType::Ref { inner, .. } => *inner.clone(),
                     _ => MirType::I64,
                 });
+                ctx.emit(Instruction::Assign {
+                    dest: deref_temp,
+                    value: RValue::Deref { operand: obj },
+                });
+                Operand::Local(deref_temp)
+            } else if let MirType::Shared(inner) = &obj_ty {
+                // Shared<T> auto-deref: emit a Deref so the LLVM backend loads the
+                // struct inline from the arc block, and the Cranelift backend loads
+                // the struct pointer stored at offset 0 of the arc block.
+                let inner_ty = *inner.clone();
+                let deref_temp = ctx.alloc_temp(inner_ty);
                 ctx.emit(Instruction::Assign {
                     dest: deref_temp,
                     value: RValue::Deref { operand: obj },

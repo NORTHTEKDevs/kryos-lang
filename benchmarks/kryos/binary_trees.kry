@@ -1,26 +1,39 @@
 // Benchmark: binary trees (canonical allocation-stress shape).
 // Builds and checksums many short-lived trees plus one long-lived tree --
 // the Benchmarks Game form that optimizing compilers cannot constant-fold.
+//
+// Representation: each child link is Option<shared Tree>, giving one arc
+// allocation per child instead of the three allocations (array header +
+// data buffer + boxed struct) of the original [Tree] encoding.  Leaves
+// use None() so they pay zero child allocations.
+
+use std::option::{Option}
 
 struct Tree {
-    left: [Tree],
-    right: [Tree],
+    left: Option<shared Tree>,
+    right: Option<shared Tree>,
 }
 
 fn make(depth: i64) -> Tree {
     if depth == 0 {
-        let l: [Tree] = []
-        let r: [Tree] = []
-        return Tree { left: l, right: r }
+        return Tree { left: None(), right: None() }
     }
-    return Tree { left: [make(depth - 1)], right: [make(depth - 1)] }
+    return Tree {
+        left: Some(shared make(depth - 1)),
+        right: Some(shared make(depth - 1)),
+    }
 }
 
 fn check(t: Tree) -> i64 {
-    if len(t.left) == 0 {
-        return 1
+    match t.left {
+        Option.None => return 1,
+        Option.Some(s) => {
+            match t.right {
+                Option.None => return 1,
+                Option.Some(r) => return 1 + check(*s) + check(*r),
+            }
+        },
     }
-    return 1 + check(t.left[0]) + check(t.right[0])
 }
 
 fn main() {

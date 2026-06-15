@@ -6,8 +6,8 @@
 use std::collections::{HashMap, HashSet};
 
 use kryos_mir::ir::{
-    BasicBlock, Constant, EnumVariantDef, Instruction, LocalId, MirBinOp, MirFunction, MirModule,
-    MirModuleHeader, MirType, MirUnOp, Operand, RValue, Terminator,
+    BasicBlock, Constant, EnumVariantDef, Instruction, LocalId, MirAttributes, MirBinOp,
+    MirFunction, MirModule, MirModuleHeader, MirType, MirUnOp, Operand, RValue, Terminator,
 };
 
 use crate::{CodegenError, EmitOptions};
@@ -301,6 +301,7 @@ impl LlvmCodegen {
         // Emit type drop helpers for struct/enum types with heap-owning fields.
         // These enable array element drop to recursively clean up nested fields.
         self.emit_type_drop_helpers();
+        self.emit_arc_drop_helpers();
 
         // Emit C-compatible main() wrapper if needed.
         if has_void_main {
@@ -445,6 +446,7 @@ impl LlvmCodegen {
         self.emit_closure_thunks();
         self.emit_vtable_thunks();
         self.emit_type_drop_helpers();
+        self.emit_arc_drop_helpers();
         if has_void_main {
             self.emit_main_wrapper();
         }
@@ -2041,6 +2043,50 @@ impl LlvmCodegen {
             self.emit_line(&format!("  br label %{merge_label}"));
             self.emit_line(&format!("{merge_label}:"));
             self.emit_line("  call void @kryos_free(ptr %ptr)");
+            self.emit_line("  ret void");
+            self.emit_line("}");
+            self.emit_blank();
+        }
+    }
+
+    /// Emit per-struct "arc drop" helpers: `__kryos_arc_drop_<Struct>(ptr)`
+    /// drops the struct's heap-owning fields (recursively releasing `Shared`
+    /// children, dropping inline `Option<Shared>` payloads, etc.) WITHOUT
+    /// freeing the struct allocation itself. These are registered as the
+    /// `drop_fn` on `shared <struct>` arc blocks via `kryos_arc_set_drop`, so
+    /// `kryos_arc_release` recurses: releasing a tree's root cascades through
+    /// its children. (Distinct from `__kryos_drop_<Struct>`, which ALSO frees
+    /// the struct box and is used for heap-boxed array elements -- reusing that
+    /// here would double-free, since arc_release frees the block afterward.)
+    /// Only emitted/used by code that uses `shared <struct>`; the self-host
+    /// compiler does not, so this path cannot affect the bootstrap.
+    fn emit_arc_drop_helpers(&mut self) {
+        let dummy = MirFunction {
+            name: String::new(),
+            params: Vec::new(),
+            ret_ty: MirType::I64,
+            blocks: Vec::new(),
+            locals: Vec::new(),
+            attributes: MirAttributes::default(),
+            source_file: None,
+            source_line: 0,
+        };
+        let names: Vec<String> = self
+            .struct_defs
+            .keys()
+            .filter(|n| n.as_str() != "Map")
+            .cloned()
+            .collect();
+        for name in names {
+            let drop_name = format!("__kryos_arc_drop_{name}");
+            self.emit_line(&format!("define internal void @{drop_name}(ptr %ptr) {{"));
+            self.emit_line("entry:");
+            // emit_struct_drop drops the fields (no free); for @copy structs it
+            // is a no-op-equivalent (shallow shared fields), which is correct
+            // here since we never want to free the inline arc payload's box.
+            if !self.copy_structs.contains(&name) {
+                self.emit_struct_drop("%ptr", &name, &dummy);
+            }
             self.emit_line("  ret void");
             self.emit_line("}");
             self.emit_blank();
@@ -5412,64 +5458,104 @@ impl LlvmCodegen {
 
             // ----- ARC alloc -----
             RValue::ArcAlloc { inner } => {
-                // Matches the Cranelift backend semantics: allocate 8 bytes of
-                // ARC-managed memory and store the inner value at offset 0.
+                // Allocate ARC-managed memory and store the inner value at offset 0.
+                // For aggregate types (struct/tuple/enum that are not ptr/i64), we
+                // allocate sizeof(T) bytes so the value is stored inline in the arc
+                // block.  Scalar types (i64, ptr, double, …) continue to use the
+                // existing 8-byte-slot approach (ptr-to-data model).
                 let inner_val = self.operand_to_llvm(inner, func);
                 let inner_ty = self.operand_type(inner, func);
 
-                // Allocate via kryos_arc_alloc(size, align) -> ptr.
                 let target_name = if is_mutable {
                     self.next_temp()
                 } else {
                     format!("%_{}", dest.0)
                 };
-                self.emit_line(&format!(
-                    "  {target_name} = call ptr @kryos_arc_alloc(i64 8, i64 8)"
-                ));
-                self.track_type(&target_name, "ptr");
 
-                // Store the inner value at offset 0.
-                // - i64/i32/i8/bool: store directly as i64
-                // - double: bitcast to i64 then store
-                // - ptr: store as ptr
-                // - void/unknown: store i64 0 (best-effort)
-                let (store_ty, store_val) = match inner_ty.as_str() {
-                    "i64" => ("i64".to_string(), inner_val.clone()),
-                    "i32" => {
-                        let t = self.next_temp();
-                        self.emit_line(&format!(
-                            "  {t} = sext i32 {inner_val} to i64"
-                        ));
-                        ("i64".to_string(), t)
+                // Detect aggregate inner types (named structs like %Tree, or
+                // literal struct/array types { … } / [ … ]).
+                let is_aggregate = inner_ty.starts_with('%')
+                    || inner_ty.starts_with('{')
+                    || inner_ty.starts_with('[');
+
+                if is_aggregate {
+                    // Allocate sizeof(T) via the getelementptr-null size-of trick.
+                    let size_ptr = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {size_ptr} = getelementptr {inner_ty}, ptr null, i32 1"
+                    ));
+                    let size_i64 = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {size_i64} = ptrtoint ptr {size_ptr} to i64"
+                    ));
+                    self.emit_line(&format!(
+                        "  {target_name} = call ptr @kryos_arc_alloc(i64 {size_i64}, i64 8)"
+                    ));
+                    self.track_type(&target_name, "ptr");
+                    // Store the aggregate inline at offset 0 of the arc block.
+                    self.emit_line(&format!(
+                        "  store {inner_ty} {inner_val}, ptr {target_name}"
+                    ));
+                    // Register the per-type arc drop function so
+                    // kryos_arc_release recurses into Shared children
+                    // (recursive refcounted teardown of e.g. a tree).
+                    if let Some(sname) = inner_ty.strip_prefix('%') {
+                        if self.struct_defs.contains_key(sname) {
+                            self.emit_line(&format!(
+                                "  call void @kryos_arc_set_drop(ptr {target_name}, ptr @__kryos_arc_drop_{sname})"
+                            ));
+                        }
                     }
-                    "i8" => {
-                        let t = self.next_temp();
-                        self.emit_line(&format!(
-                            "  {t} = sext i8 {inner_val} to i64"
-                        ));
-                        ("i64".to_string(), t)
-                    }
-                    "i1" => {
-                        let t = self.next_temp();
-                        self.emit_line(&format!(
-                            "  {t} = zext i1 {inner_val} to i64"
-                        ));
-                        ("i64".to_string(), t)
-                    }
-                    "double" => {
-                        let t = self.next_temp();
-                        self.emit_line(&format!(
-                            "  {t} = bitcast double {inner_val} to i64"
-                        ));
-                        ("i64".to_string(), t)
-                    }
-                    "ptr" => ("ptr".to_string(), inner_val.clone()),
-                    "void" => ("i64".to_string(), "0".to_string()),
-                    other => (other.to_string(), inner_val.clone()),
-                };
-                self.emit_line(&format!(
-                    "  store {store_ty} {store_val}, ptr {target_name}"
-                ));
+                } else {
+                    // Scalar / pointer value: allocate an 8-byte slot.
+                    self.emit_line(&format!(
+                        "  {target_name} = call ptr @kryos_arc_alloc(i64 8, i64 8)"
+                    ));
+                    self.track_type(&target_name, "ptr");
+
+                    // Store the inner value at offset 0.
+                    // - i64/i32/i8/bool: store directly as i64
+                    // - double: bitcast to i64 then store
+                    // - ptr: store as ptr
+                    // - void/unknown: store i64 0 (best-effort)
+                    let (store_ty, store_val) = match inner_ty.as_str() {
+                        "i64" => ("i64".to_string(), inner_val.clone()),
+                        "i32" => {
+                            let t = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {t} = sext i32 {inner_val} to i64"
+                            ));
+                            ("i64".to_string(), t)
+                        }
+                        "i8" => {
+                            let t = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {t} = sext i8 {inner_val} to i64"
+                            ));
+                            ("i64".to_string(), t)
+                        }
+                        "i1" => {
+                            let t = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {t} = zext i1 {inner_val} to i64"
+                            ));
+                            ("i64".to_string(), t)
+                        }
+                        "double" => {
+                            let t = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {t} = bitcast double {inner_val} to i64"
+                            ));
+                            ("i64".to_string(), t)
+                        }
+                        "ptr" => ("ptr".to_string(), inner_val.clone()),
+                        "void" => ("i64".to_string(), "0".to_string()),
+                        other => (other.to_string(), inner_val.clone()),
+                    };
+                    self.emit_line(&format!(
+                        "  store {store_ty} {store_val}, ptr {target_name}"
+                    ));
+                }
 
                 if is_mutable {
                     self.emit_line(&format!("  store ptr {target_name}, ptr %_{}.addr", dest.0));
@@ -7869,6 +7955,11 @@ impl LlvmCodegen {
     /// Emit drop logic for a struct value: recursively free heap-allocated
     /// fields (strings, arrays, maps, enums, nested structs), then free the
     /// struct pointer itself.
+    ///
+    /// `val` is a `ptr` pointing to the struct in memory.
+    /// We use struct-indexed GEP (`getelementptr %S, ptr val, i32 0, i32 idx`)
+    /// so that multi-word fields (e.g. inline enums = 16 bytes) are addressed
+    /// at the correct byte offset regardless of field size.
     #[allow(clippy::collapsible_match)]
     fn emit_struct_drop(&mut self, val: &str, struct_name: &str, _func: &MirFunction) {
         let struct_def = match self.struct_defs.get(struct_name).cloned() {
@@ -7876,13 +7967,17 @@ impl LlvmCodegen {
             None => return,
         };
 
+        // Use struct-indexed GEP so that variable-size fields (enums, tuples)
+        // are accessed at the correct byte offset rather than at an i64 stride.
+        let llvm_struct_ty = format!("%{struct_name}");
+
         for (field_idx, (_field_name, field_ty)) in struct_def.iter().enumerate() {
             match field_ty {
                 MirType::Str => {
                     let gep = self.next_temp();
                     let fv = self.next_temp();
                     self.emit_line(&format!(
-                        "  {gep} = getelementptr i64, ptr {val}, i32 {field_idx}"
+                        "  {gep} = getelementptr {llvm_struct_ty}, ptr {val}, i32 0, i32 {field_idx}"
                     ));
                     self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                     self.emit_line(&format!("  call void @kryos_string_free(ptr {fv})"));
@@ -7891,7 +7986,7 @@ impl LlvmCodegen {
                     let gep = self.next_temp();
                     let fv = self.next_temp();
                     self.emit_line(&format!(
-                        "  {gep} = getelementptr i64, ptr {val}, i32 {field_idx}"
+                        "  {gep} = getelementptr {llvm_struct_ty}, ptr {val}, i32 0, i32 {field_idx}"
                     ));
                     self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                     let et = inner_elem.as_ref().clone();
@@ -7901,7 +7996,7 @@ impl LlvmCodegen {
                     let gep = self.next_temp();
                     let fv = self.next_temp();
                     self.emit_line(&format!(
-                        "  {gep} = getelementptr i64, ptr {val}, i32 {field_idx}"
+                        "  {gep} = getelementptr {llvm_struct_ty}, ptr {val}, i32 0, i32 {field_idx}"
                     ));
                     self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                     self.emit_line(&format!("  call void @kryos_arc_release(ptr {fv})"));
@@ -7910,7 +8005,7 @@ impl LlvmCodegen {
                     let gep = self.next_temp();
                     let fv = self.next_temp();
                     self.emit_line(&format!(
-                        "  {gep} = getelementptr i64, ptr {val}, i32 {field_idx}"
+                        "  {gep} = getelementptr {llvm_struct_ty}, ptr {val}, i32 0, i32 {field_idx}"
                     ));
                     self.emit_line(&format!("  {fv} = load i64, ptr {gep}"));
                     self.emit_line(&format!("  call void @kryos_map_free(i64 {fv})"));
@@ -7923,7 +8018,7 @@ impl LlvmCodegen {
                         let gep = self.next_temp();
                         let fv = self.next_temp();
                         self.emit_line(&format!(
-                            "  {gep} = getelementptr i64, ptr {val}, i32 {field_idx}"
+                            "  {gep} = getelementptr {llvm_struct_ty}, ptr {val}, i32 0, i32 {field_idx}"
                         ));
                         self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                         let inner = inner_name.clone();
@@ -7932,20 +8027,24 @@ impl LlvmCodegen {
                     }
                 }
                 MirType::Enum(inner_name) => {
+                    // Enum fields in structs are INLINE (not heap-allocated).
+                    // The struct-indexed GEP gives a ptr to the inline enum.
+                    // Use emit_enum_drop_payload (which drops payload WITHOUT
+                    // freeing the buffer, since it's stack-allocated).
                     let gep = self.next_temp();
-                    let fv = self.next_temp();
                     self.emit_line(&format!(
-                        "  {gep} = getelementptr i64, ptr {val}, i32 {field_idx}"
+                        "  {gep} = getelementptr {llvm_struct_ty}, ptr {val}, i32 0, i32 {field_idx}"
                     ));
-                    self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                     let inner = inner_name.clone();
-                    self.emit_enum_drop(&fv, &inner, _func);
+                    self.emit_enum_drop_payload(&gep, &inner, _func);
                 }
                 MirType::Shared(_) => {
+                    // Shared<T> fields: the struct field holds a ptr to the arc block.
+                    // Load that ptr and release the arc reference.
                     let gep = self.next_temp();
                     let fv = self.next_temp();
                     self.emit_line(&format!(
-                        "  {gep} = getelementptr i64, ptr {val}, i32 {field_idx}"
+                        "  {gep} = getelementptr {llvm_struct_ty}, ptr {val}, i32 0, i32 {field_idx}"
                     ));
                     self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                     self.emit_line(&format!("  call void @kryos_arc_release(ptr {fv})"));

@@ -1584,6 +1584,24 @@ impl TypeChecker {
                             Type::Error
                         }
                     }
+                    // Auto-deref through shared (Rc-like) pointer.
+                    Type::Shared { inner } => {
+                        if let Type::Struct { name, generics } = inner.as_ref() {
+                            if let Some(fty) = self.env.lookup_field(name, field) {
+                                let fty = fty.clone();
+                                self.substitute_struct_generics(name, generics, &fty)
+                            } else {
+                                self.error(format!("no field `{field}` on type `{name}`"), *span);
+                                Type::Error
+                            }
+                        } else {
+                            self.error(
+                                format!("cannot access field `{field}` on type `{obj_ty}`"),
+                                *span,
+                            );
+                            Type::Error
+                        }
+                    }
                     // Enum variant access: Color.Red resolves to the enum type.
                     Type::Enum { name, generics } => {
                         if let Some(edef) = self.env.lookup_enum(name) {
