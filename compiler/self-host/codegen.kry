@@ -653,6 +653,9 @@ fn cg_emit_rvalue(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32
             x86_mov_reg_mem(buf, dest_reg, obj_reg, payload_off)
         }
 
+    } elif rv.kind == RV_ENUM_VARIANT {
+        cg_emit_enum_variant(ctx, ra, rv, dest_reg)
+
     } elif rv.kind == RV_STRING_CONCAT {
         // Call runtime string concat
         cg_emit_string_concat(ctx, ra, rv, dest_reg)
@@ -1341,6 +1344,61 @@ fn cg_emit_struct_lit(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg:
         i = i + 1
     }
     // Restore the struct pointer into dest_reg.
+    x86_pop_reg(buf, dest_reg)
+}
+
+// ===================================================================
+// Enum variant — allocate {tag, payloads...} and fill
+// Layout matches RV_ENUM_TAG (tag @0) and RV_ENUM_PAYLOAD ((i+1)*8).
+// ===================================================================
+
+fn cg_emit_enum_variant(ctx: CodegenCtx, ra: RegAllocResult, rv: RValue, dest_reg: i32) {
+    let buf = ctx.text_buf
+    let n_pay = len(rv.enum_fields)
+    let size = (n_pay + 1) * 8
+    let is_win = ctx.target_os == "windows"
+    let r_arg0: i32 = if is_win { REG_RCX } else { REG_RDI }
+    let r_arg1: i32 = if is_win { REG_RDX } else { REG_RSI }
+    let shadow: i32 = if is_win { 32 } else { 0 }
+    x86_mov_reg_imm32(buf, r_arg0, size)
+    x86_mov_reg_imm32(buf, r_arg1, 8)
+    if shadow > 0 {
+        x86_sub_reg_imm32(buf, REG_RSP, shadow)
+    }
+    push(ctx.relocations, LinkerReloc {
+        offset: buf_len(buf) + 1,
+        symbol_name: "kryos_alloc",
+        rel_type: LREL_PC32,
+        addend: -4
+    })
+    x86_call_rel32(buf, 0)
+    if shadow > 0 {
+        x86_add_reg_imm32(buf, REG_RSP, shadow)
+    }
+    // RAX = enum obj ptr; save it across the payload fills (a payload load may
+    // CALL the runtime and clobber RAX). R11 is reserved scratch.
+    x86_push_reg(buf, REG_RAX)
+    // Tag (variant index) at offset 0.
+    x86_mov_reg_imm32(buf, REG_R10, rv.variant_idx)
+    x86_mov_reg_mem(buf, REG_R11, REG_RSP, 0)
+    x86_mov_mem_reg(buf, REG_R11, 0, REG_R10)
+    // Payloads at offsets (i+1)*8.
+    let mut i = 0
+    while i < n_pay {
+        if shadow > 0 {
+            x86_sub_reg_imm32(buf, REG_RSP, 8)
+        }
+        let pay_reg = cg_load_operand(ctx, ra, rv.enum_fields[i], REG_R10)
+        if pay_reg != REG_R10 {
+            x86_mov_reg_reg(buf, REG_R10, pay_reg)
+        }
+        if shadow > 0 {
+            x86_add_reg_imm32(buf, REG_RSP, 8)
+        }
+        x86_mov_reg_mem(buf, REG_R11, REG_RSP, 0)
+        x86_mov_mem_reg(buf, REG_R11, (i + 1) * 8, REG_R10)
+        i = i + 1
+    }
     x86_pop_reg(buf, dest_reg)
 }
 

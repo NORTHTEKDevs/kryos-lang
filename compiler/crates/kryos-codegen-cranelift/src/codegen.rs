@@ -3605,7 +3605,14 @@ fn translate_rvalue<M: Module>(
                     return Ok(Some(val));
                 }
                 let val = translate_operand(&args[0], builder, translator, module)?;
-                if is_float_operand(&args[0], &translator.mir_func.locals) {
+                // Check the actual SSA value type in addition to the MIR local
+                // type. When a function returns f64 (e.g. json_to_float) and the
+                // MIR local isn't propagated as F64, is_float_operand returns
+                // false but the SSA value is still typed as f64 -- calling
+                // kryos_builtin_to_string (i64 sig) then fails the Cranelift
+                // verifier. Detect the SSA type here as a safety net.
+                let val_ssa_ty = builder.func.dfg.value_type(val);
+                if is_float_operand(&args[0], &translator.mir_func.locals) || val_ssa_ty.is_float() {
                     let f64_ref = ensure_func_ref_with_args(
                         "kryos_f64_to_string",
                         builder,

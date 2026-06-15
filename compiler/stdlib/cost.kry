@@ -37,7 +37,12 @@ fn cost_add(a: ComputeCost, b: ComputeCost) -> ComputeCost {
 
 impl ComputeCost {
     fn to_string(self: ComputeCost) -> str {
-        return "Cost(time=" + to_string(self.wall_time_ms) + "ms, tokens=" + to_string(self.tokens_used) + ", cost=$" + to_string(self.money_usd) + ", api_calls=" + to_string(self.api_calls) + ")"
+        // Cast f64 fields to i64 before to_string: Cranelift JIT only supports
+        // to_string(i64). wall_time_ms is truncated to whole ms; money_usd is
+        // scaled to micro-USD (6 decimal places) to preserve precision.
+        let wall_int: i64 = self.wall_time_ms as i64
+        let money_int: i64 = (self.money_usd * 1000000.0) as i64
+        return "Cost(time=" + to_string(wall_int) + "ms, tokens=" + to_string(self.tokens_used) + ", cost=$" + to_string(money_int) + "e-6, api_calls=" + to_string(self.api_calls) + ")"
     }
 }
 
@@ -86,13 +91,16 @@ impl Budget {
     }
 
     // Charge against the budget. Throws BudgetExceeded if over.
+    // NOTE: to_string(f64) is unsupported in the Cranelift JIT. Cast f64 USD
+    // fields to micro-USD (i64) before stringifying.
     fn charge(self: Budget, cost: ComputeCost) -> Budget {
         let new_usd = self.spent_usd + cost.money_usd
         let new_tokens = self.spent_tokens + cost.tokens_used
         let new_calls = self.spent_api_calls + cost.api_calls
 
         if new_usd > self.max_usd {
-            throw "BudgetExceeded: USD limit ($" + to_string(self.max_usd) + ") exceeded"
+            let max_usd_int: i64 = (self.max_usd * 1000000.0) as i64
+            throw "BudgetExceeded: USD limit ($" + to_string(max_usd_int) + "e-6) exceeded"
         }
         if new_tokens > self.max_tokens {
             throw "BudgetExceeded: token limit (" + to_string(self.max_tokens) + ") exceeded"
@@ -112,8 +120,12 @@ impl Budget {
     }
 
     // Status report.
+    // NOTE: to_string(f64) is unsupported in the Cranelift JIT. Cast f64 USD
+    // fields to micro-USD (i64) before stringifying.
     fn status(self: Budget) -> str {
-        return "Budget: $" + to_string(self.spent_usd) + " / $" + to_string(self.max_usd) + "\n" +
+        let spent_int: i64 = (self.spent_usd * 1000000.0) as i64
+        let max_int: i64 = (self.max_usd * 1000000.0) as i64
+        return "Budget: $" + to_string(spent_int) + "e-6 / $" + to_string(max_int) + "e-6\n" +
                "Tokens: " + to_string(self.spent_tokens) + " / " + to_string(self.max_tokens) + "\n" +
                "API calls: " + to_string(self.spent_api_calls) + " / " + to_string(self.max_api_calls)
     }

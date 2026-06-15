@@ -851,7 +851,16 @@ fn term_empty(k: i32) -> Terminator {
 
 fn term_return(val: Operand) -> Terminator {
     let mut t: Terminator = term_empty(TERM_RETURN)
-    t.ret_val = [val]
+    // Deep-clone val to break share-on-clone aliasing (see term_branch):
+    // storing the operand by reference let a later op_* allocation mutate
+    // the returned value (e.g. a tail `match` result _1 read back as _0).
+    let clone = Operand {
+        is_local: val.is_local, local_id: val.local_id,
+        const_kind: val.const_kind, int_val: val.int_val,
+        float_val: val.float_val, bool_val: val.bool_val,
+        str_val: val.str_val
+    }
+    t.ret_val = [clone]
     return t
 }
 
@@ -882,7 +891,13 @@ fn term_branch(cond_op: Operand, then_bb: i32, else_bb: i32) -> Terminator {
 
 fn term_switch(val: Operand, targets: [i32], blocks: [i32], default_bb: i32) -> Terminator {
     let mut t: Terminator = term_empty(TERM_SWITCH)
-    t.switch_val = [val]
+    let clone = Operand {
+        is_local: val.is_local, local_id: val.local_id,
+        const_kind: val.const_kind, int_val: val.int_val,
+        float_val: val.float_val, bool_val: val.bool_val,
+        str_val: val.str_val
+    }
+    t.switch_val = [clone]
     t.switch_targets = targets
     t.switch_blocks = blocks
     t.default_block = default_bb
