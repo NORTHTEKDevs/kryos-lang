@@ -1,0 +1,156 @@
+// ============================================================
+// demo_greet.kry -- a two-subcommand CLI built on kryos-cli-args.
+//
+// The point of this demo is the capability asymmetry the spec is named for:
+//
+//   greet say   [--shout] [--name NAME] <message>
+//       pure parsing + string assembly. Reads nothing from the environment.
+//       Its handler cmd_say is @capabilities() -- pure compute.
+//
+//   greet whoami
+//       reads the USER environment variable via env_get, which the compiler
+//       maps to the `process` capability. Its handler cmd_whoami is therefore
+//       @capabilities(process). It cannot pretend to be pure: env_get forces
+//       the annotation.
+//
+// Run `kryos manifest --caps demo_greet.kry` and you get a per-function
+// capability map showing cmd_say with [] and cmd_whoami with [process] -- the
+// "what can this subcommand touch" question answered by the compiler, not by
+// documentation.
+//
+//   kryos run demo_greet.kry -- say hello --name Ada --shout
+//   kryos run demo_greet.kry -- whoami
+//   kryos run demo_greet.kry -- --help
+// ============================================================
+
+use spec
+use parse
+use extract
+use help
+
+// Build the say subcommand: a --shout switch, a --name value flag, and a
+// required <message> positional.
+@capabilities()
+fn build_say() -> Command {
+    let mut c = command("say", "print a greeting")
+    c = command_flag(c, flag_bool("shout", "upper-case the greeting"))
+    c = command_flag(c, flag_value("name", "world", "who to greet"))
+    c = command_positional(c, positional("message", true, "the greeting body"))
+    return c
+}
+
+// Build the whoami subcommand: no flags, no positionals.
+@capabilities()
+fn build_whoami() -> Command {
+    return command("whoami", "print the current OS user from $USER")
+}
+
+// Assemble the whole CLI: a root summary plus the two subcommands.
+@capabilities()
+fn build_cli() -> CliSpec {
+    let root = command("greet", "a tiny greeting CLI")
+    let mut subs: [Command] = []
+    subs = push(subs, build_say())
+    subs = push(subs, build_whoami())
+    return cli(root, subs)
+}
+
+// Crude ASCII upper-case for the --shout path. Pure compute.
+@capabilities()
+fn shout_text(s: str) -> str {
+    let mut up = ""
+    let mut j = 0
+    while j < len(s) {
+        let ch = substr(s, j, j + 1)
+        let cc = char_code(ch)
+        if cc >= 97 && cc <= 122 {
+            up = up + char_from(cc - 32)
+        } else {
+            up = up + ch
+        }
+        j = j + 1
+    }
+    return up
+}
+
+// Single-byte ASCII char from a code point. Pure compute helper.
+@capabilities()
+fn char_from(code: i64) -> str {
+    let alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    if code >= 65 && code <= 90 {
+        return substr(alpha, code - 65, code - 64)
+    }
+    return "?"
+}
+
+// The `say` handler. Pure compute: it only reads the parsed result and assembles
+// a string. No env, no IO beyond println (which is capability-free).
+@capabilities()
+fn cmd_say(cmd: Command, res: ParseResult) -> i64 {
+    if !res.ok {
+        println("error: " + res.error)
+        return 2
+    }
+    let name = get_str(res, cmd, "name")
+    let message = positional_at(res, 0, "")
+    let greeting = "Hello " + name + ", " + message
+    if get_bool(res, cmd, "shout") {
+        println(shout_text(greeting))
+    } else {
+        println(greeting)
+    }
+    return 0
+}
+
+// The `whoami` handler. Reads the USER env var -> requires `process`. The
+// compiler will reject @capabilities() here because env_get forces process.
+@capabilities(process)
+fn cmd_whoami() -> i64 {
+    let mut who = env_get("USER")
+    if len(who) == 0 {
+        who = env_get("USERNAME")
+    }
+    if len(who) == 0 {
+        who = "unknown"
+    }
+    println("you are: " + who)
+    return 0
+}
+
+fn main() {
+    let spec_cli = build_cli()
+    let argv = args()
+    // argv[0] is the program path; user tokens start at index 1.
+    if len(argv) < 2 {
+        print(help_cli("greet", spec_cli))
+        return
+    }
+    let sub = argv[1]
+    if sub == "--help" || sub == "-h" {
+        print(help_cli("greet", spec_cli))
+        return
+    }
+    let idx = find_sub(spec_cli, sub)
+    if idx < 0 {
+        println("error: unknown command: " + sub)
+        print(help_cli("greet", spec_cli))
+        return
+    }
+    let cmd = spec_cli.subs[idx]
+    // Slice argv from index 2 onward (after program + subcommand).
+    let mut rest: [str] = []
+    let mut i = 2
+    while i < len(argv) {
+        rest = push(rest, argv[i])
+        i = i + 1
+    }
+    if sub == "say" {
+        let res = parse_command(cmd, rest)
+        let _ = cmd_say(cmd, res)
+        return
+    }
+    if sub == "whoami" {
+        let _ = cmd_whoami()
+        return
+    }
+}

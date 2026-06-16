@@ -1,0 +1,78 @@
+// ============================================================
+// help.kry -- --help text generation.
+//
+// Renders a usage block for a CliSpec or a single Command from the same
+// declarative data the parser uses, so the help can never drift from the
+// accepted flags. Pure string assembly, no IO -- the caller prints the result
+// (println is capability-free). All @capabilities().
+// ============================================================
+
+use spec
+
+// One line per flag: "  --long <value>   help" or "  --long           help".
+@capabilities()
+fn render_flags(cmd: Command) -> str {
+    let mut out = ""
+    let mut i = 0
+    while i < len(cmd.flags) {
+        let f = cmd.flags[i]
+        if f.takes_value {
+            out = out + "  --" + f.long + " <value>   " + f.help + " (default: " + f.default_val + ")\n"
+        } else {
+            out = out + "  --" + f.long + "           " + f.help + "\n"
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// One line per positional: "  <name>   help" with a (required) tag.
+@capabilities()
+fn render_positionals(cmd: Command) -> str {
+    let mut out = ""
+    let mut i = 0
+    while i < len(cmd.positionals) {
+        let a = cmd.positionals[i]
+        if a.required {
+            out = out + "  <" + a.name + ">   " + a.help + " (required)\n"
+        } else {
+            out = out + "  [" + a.name + "]   " + a.help + "\n"
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Full help for a single command (used for `<prog> <sub> --help`).
+@capabilities()
+fn help_command(prog: str, cmd: Command) -> str {
+    let mut out = "Usage: " + prog + " " + cmd.name + " [flags] [args]\n\n"
+    out = out + cmd.summary + "\n"
+    if len(cmd.flags) > 0 {
+        out = out + "\nFlags:\n" + render_flags(cmd)
+    }
+    if len(cmd.positionals) > 0 {
+        out = out + "\nArguments:\n" + render_positionals(cmd)
+    }
+    return out
+}
+
+// Top-level help: program usage, root flags, and the subcommand list.
+@capabilities()
+fn help_cli(prog: str, spec_cli: CliSpec) -> str {
+    let mut out = "Usage: " + prog + " [command] [flags] [args]\n\n"
+    out = out + spec_cli.root.summary + "\n"
+    if len(spec_cli.root.flags) > 0 {
+        out = out + "\nFlags:\n" + render_flags(spec_cli.root)
+    }
+    if len(spec_cli.subs) > 0 {
+        out = out + "\nCommands:\n"
+        let mut i = 0
+        while i < len(spec_cli.subs) {
+            let c = spec_cli.subs[i]
+            out = out + "  " + c.name + "   " + c.summary + "\n"
+            i = i + 1
+        }
+    }
+    return out
+}

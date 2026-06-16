@@ -1,0 +1,8 @@
+[package]
+name = "kryos-cli-args"
+version = "0.1.0"
+description = "Declarative CLI argument parser whose parsing core is pure compute, so kryos manifest --caps yields a per-subcommand capability map for free"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["process"]

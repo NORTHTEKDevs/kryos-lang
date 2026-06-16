@@ -1,0 +1,118 @@
+// ============================================================
+// spec.kry -- the declarative builder data model.
+//
+// A CLI is described as data, not behaviour: a top-level Command (its own
+// flags and positionals) plus zero or more Subcommands. Building a spec is
+// pure value construction -- no IO, no env, no args() read -- so everything in
+// this file is @capabilities() (empty: pure compute). The whole point of the
+// library is that the parsing core stays in the `compute` capability bucket;
+// reading the environment is the caller's choice and forces `process` on the
+// caller, never on us.
+//
+// Data shapes (all fields scalar or str or array-of-struct, per the AOT
+// struct-layout rules -- no tuple/enum fields mid-struct):
+//
+//   FlagSpec   : one --long option. takes_value=false means a boolean switch.
+//   ArgSpec    : one positional argument, in declaration order.
+//   Command    : a name + its flags + its positionals + a one-line summary.
+//   CliSpec    : the whole program: a top-level Command plus [Command] subs.
+// ============================================================
+
+// A single --long flag. `takes_value=false` is a boolean switch whose presence
+// flips it to "true"; `takes_value=true` consumes the next argv token as its
+// string value. `default_val` is returned by the typed getters when the flag
+// was not supplied.
+struct FlagSpec {
+    long: str,
+    takes_value: bool,
+    default_val: str,
+    help: str,
+}
+
+// A positional argument. Order in the [ArgSpec] array is the order on the
+// command line. `required` positionals missing from argv produce a parse error.
+struct ArgSpec {
+    name: str,
+    required: bool,
+    help: str,
+}
+
+// One command surface: either the top-level program or a named subcommand.
+struct Command {
+    name: str,
+    flags: [FlagSpec],
+    positionals: [ArgSpec],
+    summary: str,
+}
+
+// The full CLI description. `root` carries the program name and any global
+// flags/positionals; `subs` is the (possibly empty) list of subcommands.
+struct CliSpec {
+    root: Command,
+    subs: [Command],
+}
+
+// ---- builder helpers -----------------------------------------------------
+
+// A boolean switch flag (--verbose). Absent => "false", present => "true".
+@capabilities()
+fn flag_bool(long: str, help: str) -> FlagSpec {
+    return FlagSpec { long: long, takes_value: false, default_val: "false", help: help }
+}
+
+// A value flag (--output FILE) with a default used when the flag is absent.
+@capabilities()
+fn flag_value(long: str, default_val: str, help: str) -> FlagSpec {
+    return FlagSpec { long: long, takes_value: true, default_val: default_val, help: help }
+}
+
+// A positional argument.
+@capabilities()
+fn positional(name: str, required: bool, help: str) -> ArgSpec {
+    return ArgSpec { name: name, required: required, help: help }
+}
+
+// An empty command with just a name + summary; add flags/positionals by
+// rebuilding it with command_flag / command_positional.
+@capabilities()
+fn command(name: str, summary: str) -> Command {
+    let no_flags: [FlagSpec] = []
+    let no_pos: [ArgSpec] = []
+    return Command { name: name, flags: no_flags, positionals: no_pos, summary: summary }
+}
+
+// Return a copy of `cmd` with `f` appended to its flags. Builder style: chain
+// these to assemble a command without mutation.
+@capabilities()
+fn command_flag(cmd: Command, f: FlagSpec) -> Command {
+    let flags2 = push(cmd.flags, f)
+    return Command { name: cmd.name, flags: flags2, positionals: cmd.positionals, summary: cmd.summary }
+}
+
+// Return a copy of `cmd` with `a` appended to its positionals.
+@capabilities()
+fn command_positional(cmd: Command, a: ArgSpec) -> Command {
+    let pos2 = push(cmd.positionals, a)
+    return Command { name: cmd.name, flags: cmd.flags, positionals: pos2, summary: cmd.summary }
+}
+
+// Assemble the top-level spec from a root command and a list of subcommands.
+// Pass an empty [Command] for a flat (no-subcommand) CLI.
+@capabilities()
+fn cli(root: Command, subs: [Command]) -> CliSpec {
+    return CliSpec { root: root, subs: subs }
+}
+
+// Look up a subcommand by name. Returns its index in `spec.subs`, or -1 if no
+// subcommand matches (the flat / root-only case).
+@capabilities()
+fn find_sub(spec: CliSpec, name: str) -> i64 {
+    let mut i = 0
+    while i < len(spec.subs) {
+        if spec.subs[i].name == name {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}

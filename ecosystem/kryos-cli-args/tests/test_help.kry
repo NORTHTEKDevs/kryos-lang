@@ -1,0 +1,67 @@
+// ============================================================
+// test_help.kry -- help-generation and spec-lookup tests.
+//
+//   kryos test --path ecosystem/kryos-cli-args
+//   kryos run  tests/test_help.kry
+//
+// Asserts that help text derived from the spec contains the usage line,
+// declared flags, and subcommand names, and that find_sub resolves names. Pure
+// compute. The `contains(haystack, needle)` builtin does the substring checks
+// so the assertions survive cosmetic spacing changes in the renderer.
+// ============================================================
+
+use spec
+use help
+
+@capabilities()
+fn fixture_cli() -> CliSpec {
+    let mut say = command("say", "print a greeting")
+    say = command_flag(say, flag_value("name", "world", "who to greet"))
+    say = command_positional(say, positional("message", true, "the body"))
+    let whoami = command("whoami", "print the current OS user")
+    let root = command("greet", "a tiny greeting CLI")
+    let mut subs: [Command] = []
+    subs = push(subs, say)
+    subs = push(subs, whoami)
+    return cli(root, subs)
+}
+
+@test
+fn test_cli_help_lists_subcommands() {
+    let spec_cli = fixture_cli()
+    let text = help_cli("greet", spec_cli)
+    assert(contains(text, "Usage: greet"), "help should have a usage line")
+    assert(contains(text, "say"), "help should list the say subcommand")
+    assert(contains(text, "whoami"), "help should list the whoami subcommand")
+    assert(contains(text, "a tiny greeting CLI"), "help should show the root summary")
+}
+
+@test
+fn test_command_help_shows_flags_and_args() {
+    let spec_cli = fixture_cli()
+    let say = spec_cli.subs[0]
+    let text = help_command("greet", say)
+    assert(contains(text, "Usage: greet say"), "per-command usage line")
+    assert(contains(text, "--name"), "should show the --name flag")
+    assert(contains(text, "default: world"), "should show the flag default")
+    assert(contains(text, "<message>"), "should show the required positional")
+    assert(contains(text, "(required)"), "should tag the required positional")
+}
+
+@test
+fn test_find_sub_resolves_and_misses() {
+    let spec_cli = fixture_cli()
+    assert(find_sub(spec_cli, "say") == 0, "say is index 0")
+    assert(find_sub(spec_cli, "whoami") == 1, "whoami is index 1")
+    assert(find_sub(spec_cli, "nope") == -1, "unknown subcommand is -1")
+}
+
+fn main() {
+    test_cli_help_lists_subcommands()
+    println("PASS test_cli_help_lists_subcommands")
+    test_command_help_shows_flags_and_args()
+    println("PASS test_command_help_shows_flags_and_args")
+    test_find_sub_resolves_and_misses()
+    println("PASS test_find_sub_resolves_and_misses")
+    println("3/3 help tests passed")
+}

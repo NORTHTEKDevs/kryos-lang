@@ -1,0 +1,123 @@
+// ============================================================
+// parse.kry -- the pure parsing core.
+//
+// parse_command takes a Command spec plus a SLICE of argv (the tokens after
+// the program name and, if any, the subcommand token) and returns a
+// ParseResult. It reads no environment and calls no IO -- the only inputs are
+// the spec and the string slice handed in -- so it is @capabilities() (pure
+// compute). The caller decides where the argv slice comes from; calling the
+// args() builtin to obtain it is itself capability-free, but a handler that
+// later reads env_get is forced to declare `process`. That asymmetry is the
+// whole pitch: the parser never escalates the caller's capability surface.
+//
+// ParseResult carries:
+//   ok          : true if parsing succeeded (no unknown flag, no missing
+//                 required positional, no value-flag missing its value).
+//   error       : a fixed message string when ok=false (empty otherwise).
+//   flag_vals   : map<str,str> long-name -> value. Boolean switches map to
+//                 "true" when present; value flags map to the supplied value.
+//                 Flags absent from argv are NOT inserted (the typed getters
+//                 fall back to the spec default).
+//   positionals : the positional tokens, in order.
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+use spec
+
+struct ParseResult {
+    ok: bool,
+    error: str,
+    flag_vals: map<str, str>,
+    positionals: [str],
+}
+
+// Find the FlagSpec for a given long name in `cmd`. Returns index or -1.
+@capabilities()
+fn flag_index(cmd: Command, long: str) -> i64 {
+    let mut i = 0
+    while i < len(cmd.flags) {
+        if cmd.flags[i].long == long {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// Strip a leading "--" from `token`. Caller checks is_flag first.
+@capabilities()
+fn flag_name_of(token: str) -> str {
+    return substr(token, 2, len(token))
+}
+
+// Is `token` a long flag (starts with "--" and has at least one more char)?
+@capabilities()
+fn is_flag(token: str) -> bool {
+    if len(token) < 3 {
+        return false
+    }
+    return substr(token, 0, 2) == "--"
+}
+
+// Build a failed result with a fixed error message. Fixed strings only -- a
+// re-matched enum binding would trip E0300, and tests assert on exact text.
+@capabilities()
+fn parse_fail(msg: str) -> ParseResult {
+    let empty: map<str, str> = {}
+    let no_pos: [str] = []
+    return ParseResult { ok: false, error: msg, flag_vals: empty, positionals: no_pos }
+}
+
+// Parse `argv` (the slice after program-name and subcommand) against `cmd`.
+//
+// Recognised forms:
+//   --switch                 boolean flag, sets value "true"
+//   --opt value              value flag, consumes the following token
+//   plain-token              positional argument, in order
+//
+// Errors (ok=false): unknown --flag, a value flag at end of argv with no
+// value, or fewer positionals than the spec's required count.
+@capabilities()
+fn parse_command(cmd: Command, argv: [str]) -> ParseResult {
+    let mut vals: map<str, str> = {}
+    let mut positionals: [str] = []
+    let mut i = 0
+    let n = len(argv)
+    while i < n {
+        let token = argv[i]
+        if is_flag(token) {
+            let name = flag_name_of(token)
+            let fi = flag_index(cmd, name)
+            if fi < 0 {
+                return parse_fail("unknown flag: --" + name)
+            }
+            let spec_flag = cmd.flags[fi]
+            if spec_flag.takes_value {
+                if i + 1 >= n {
+                    return parse_fail("flag --" + name + " requires a value")
+                }
+                vals[name] = argv[i + 1]
+                i = i + 2
+            } else {
+                vals[name] = "true"
+                i = i + 1
+            }
+        } else {
+            positionals = push(positionals, token)
+            i = i + 1
+        }
+    }
+    // Required-positional check: count required entries in the spec.
+    let mut need = 0
+    let mut k = 0
+    while k < len(cmd.positionals) {
+        if cmd.positionals[k].required {
+            need = need + 1
+        }
+        k = k + 1
+    }
+    if len(positionals) < need {
+        return parse_fail("missing required positional argument")
+    }
+    return ParseResult { ok: true, error: "", flag_vals: vals, positionals: positionals }
+}

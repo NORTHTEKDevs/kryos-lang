@@ -1,0 +1,59 @@
+// ============================================================
+// extract.kry -- typed extraction with spec-driven defaults.
+//
+// Once parse_command has produced a ParseResult, these getters pull values out
+// by long-name with the right type. A flag that was not supplied on the
+// command line falls back to its FlagSpec.default_val from the Command, so the
+// caller never has to special-case "absent". All pure compute.
+//
+//   get_str(res, cmd, "output")   -> the string value or the flag's default
+//   get_int(res, cmd, "count")    -> parse_int of the above
+//   get_bool(res, cmd, "verbose") -> true iff value == "true"
+//
+// Positionals are read by index with positional_at (with a fallback string).
+// ============================================================
+
+use parse
+use spec
+
+// The default_val declared for `long` in `cmd`, or "" if there is no such flag.
+@capabilities()
+fn flag_default(cmd: Command, long: str) -> str {
+    let fi = flag_index(cmd, long)
+    if fi < 0 {
+        return ""
+    }
+    return cmd.flags[fi].default_val
+}
+
+// String value of `long`: the parsed value if present, else the spec default.
+@capabilities()
+fn get_str(res: ParseResult, cmd: Command, long: str) -> str {
+    if contains(res.flag_vals, long) {
+        return res.flag_vals[long]
+    }
+    return flag_default(cmd, long)
+}
+
+// Integer value of `long`, via parse_int over get_str.
+@capabilities()
+fn get_int(res: ParseResult, cmd: Command, long: str) -> i64 {
+    return parse_int(get_str(res, cmd, long))
+}
+
+// Boolean value of `long`: true exactly when the resolved string is "true".
+// Boolean switches store "true" when present and default "false" when absent,
+// so a bare --verbose reads as true and an omitted one as false.
+@capabilities()
+fn get_bool(res: ParseResult, cmd: Command, long: str) -> bool {
+    return get_str(res, cmd, long) == "true"
+}
+
+// The positional at `idx`, or `fallback` if there are fewer positionals.
+@capabilities()
+fn positional_at(res: ParseResult, idx: i64, fallback: str) -> str {
+    if idx < 0 || idx >= len(res.positionals) {
+        return fallback
+    }
+    return res.positionals[idx]
+}

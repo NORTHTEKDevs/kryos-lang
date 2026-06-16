@@ -1,0 +1,100 @@
+// ============================================================
+// test_parse.kry -- parsing-core tests.
+//
+//   kryos test --path ecosystem/kryos-cli-args
+//   kryos run  tests/test_parse.kry        (drives the same assertions)
+//
+// These exercise parse_command + the typed getters on a fixed Command spec.
+// Everything here is pure compute -- no IO, no env -- so the tests run the same
+// regardless of CWD. The main() at the bottom mirrors the house style so
+// `kryos run` on this file also proves the assertions.
+// ============================================================
+
+use spec
+use parse
+use extract
+
+// A say-like command reused across the tests: --shout switch, --name value
+// flag (default "world"), required <message> positional.
+@capabilities()
+fn fixture_cmd() -> Command {
+    let mut c = command("say", "print a greeting")
+    c = command_flag(c, flag_bool("shout", "upper-case"))
+    c = command_flag(c, flag_value("name", "world", "who to greet"))
+    c = command_positional(c, positional("message", true, "the body"))
+    return c
+}
+
+@test
+fn test_value_flag_and_positional() {
+    let cmd = fixture_cmd()
+    let argv: [str] = ["--name", "Ada", "hello"]
+    let res = parse_command(cmd, argv)
+    assert(res.ok, "parse should succeed")
+    assert(get_str(res, cmd, "name") == "Ada", "name should be Ada")
+    assert(positional_at(res, 0, "") == "hello", "positional 0 should be hello")
+    // --shout absent => default false.
+    assert(!get_bool(res, cmd, "shout"), "shout default should be false")
+}
+
+@test
+fn test_default_when_flag_absent() {
+    let cmd = fixture_cmd()
+    let argv: [str] = ["hi"]
+    let res = parse_command(cmd, argv)
+    assert(res.ok, "parse should succeed")
+    // --name omitted => spec default "world".
+    assert(get_str(res, cmd, "name") == "world", "name should fall back to default")
+}
+
+@test
+fn test_bool_switch_sets_true() {
+    let cmd = fixture_cmd()
+    let argv: [str] = ["--shout", "yo"]
+    let res = parse_command(cmd, argv)
+    assert(res.ok, "parse should succeed")
+    assert(get_bool(res, cmd, "shout"), "shout present should read true")
+}
+
+@test
+fn test_unknown_flag_is_error() {
+    let cmd = fixture_cmd()
+    let argv: [str] = ["--bogus", "x"]
+    let res = parse_command(cmd, argv)
+    assert(!res.ok, "unknown flag must fail")
+    assert(res.error == "unknown flag: --bogus", "error text should name the flag")
+}
+
+@test
+fn test_missing_required_positional_is_error() {
+    let cmd = fixture_cmd()
+    let argv: [str] = ["--name", "Ada"]
+    let res = parse_command(cmd, argv)
+    assert(!res.ok, "missing required positional must fail")
+    assert(res.error == "missing required positional argument", "error text should be fixed")
+}
+
+@test
+fn test_value_flag_missing_value_is_error() {
+    let cmd = fixture_cmd()
+    let argv: [str] = ["hi", "--name"]
+    let res = parse_command(cmd, argv)
+    assert(!res.ok, "value flag at end with no value must fail")
+    assert(res.error == "flag --name requires a value", "error text should be fixed")
+}
+
+fn main() {
+    test_value_flag_and_positional()
+    println("PASS test_value_flag_and_positional")
+    test_default_when_flag_absent()
+    println("PASS test_default_when_flag_absent")
+    test_bool_switch_sets_true()
+    println("PASS test_bool_switch_sets_true")
+    test_unknown_flag_is_error()
+    println("PASS test_unknown_flag_is_error")
+    test_missing_required_positional_is_error()
+    println("PASS test_missing_required_positional_is_error")
+    test_value_flag_missing_value_is_error()
+    println("PASS test_value_flag_missing_value_is_error")
+    println("6/6 parse tests passed")
+}
