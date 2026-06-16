@@ -1,0 +1,61 @@
+// ============================================================
+// report.kry -- format a [FnChange] list as a Markdown table
+// suitable for PR comments.
+//
+// render_caps   -- "[io, net]" or "[]"
+// render_kind   -- "WIDENED", "NARROWED", etc.
+// markdown_table -- full markdown table as a str (includes header)
+//
+// All functions are pure compute (@capabilities()).
+// ============================================================
+
+use diff
+
+// Render a capability list as "[cap1, cap2]" or "[]".
+@capabilities()
+fn render_caps(caps: [str]) -> str {
+    if len(caps) == 0 {
+        return "[]"
+    }
+    let mut out: str = "["
+    let mut i = 0
+    while i < len(caps) {
+        if i > 0 {
+            out = out + ", "
+        }
+        out = out + caps[i]
+        i = i + 1
+    }
+    return out + "]"
+}
+
+// Render a ChangeKind as its uppercase label.
+@capabilities()
+fn render_kind(k: ChangeKind) -> str {
+    match k {
+        ChangeKind::Added    => return "ADDED",
+        ChangeKind::Removed  => return "REMOVED",
+        ChangeKind::Widened  => return "WIDENED",
+        ChangeKind::Narrowed => return "NARROWED",
+    }
+}
+
+// Build a Markdown table from a list of changes.
+// Returns "No capability changes detected.\n" when changes is empty.
+@capabilities()
+fn markdown_table(changes: [FnChange]) -> str {
+    if len(changes) == 0 {
+        return "No capability changes detected.\n"
+    }
+    let mut out: str = "| Function | Change | Base Caps | Head Caps |\n"
+    out = out + "|----------|--------|-----------|----------|\n"
+    let mut i = 0
+    while i < len(changes) {
+        let ch = changes[i]
+        out = out + "| " + ch.fn_name + " | " + render_kind(ch.kind)
+        out = out + " | " + render_caps(ch.base_caps)
+        out = out + " | " + render_caps(ch.head_caps) + " |\n"
+        i = i + 1
+    }
+    return out
+}

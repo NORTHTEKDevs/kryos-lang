@@ -1,0 +1,349 @@
+// ============================================================
+// test_capdiff.kry -- tests for diff logic and report formatting.
+//
+//   kryos test --path ecosystem/kryos-capdiff
+//   kryos run  tests/test_capdiff.kry        (same assertions via main())
+//
+// All tests are pure compute: no file IO.
+// FnEntry fixtures are constructed directly (avoids embedded JSON brace issues).
+//
+// Coverage:
+//   - diff_entries: Widened, Narrowed, Added, Removed classification
+//   - has_dangerous_widening: detects ffi/process escalation
+//   - render_caps / render_kind / markdown_table: output formatting
+//   - unchanged tree produces no changes (exits-0 path)
+//   - parse_manifest: schema validation via char_from-built JSON
+// ============================================================
+
+use manifest
+use diff
+use report
+
+// ---- fixture FnEntry builders -------------------------------------------
+
+// base: foo=[], bar=[io], baz=[io, net]
+@capabilities()
+fn fixture_base() -> [FnEntry] {
+    let mut entries: [FnEntry] = []
+    entries = push(entries, FnEntry { name: "foo", caps: [] })
+    let bar_caps: [str] = ["io"]
+    entries = push(entries, FnEntry { name: "bar", caps: bar_caps })
+    let baz_caps: [str] = ["io", "net"]
+    entries = push(entries, FnEntry { name: "baz", caps: baz_caps })
+    return entries
+}
+
+// head: foo=[process] (widened+dangerous), baz=[io] (narrowed), qux=[] (added), bar removed
+@capabilities()
+fn fixture_head() -> [FnEntry] {
+    let mut entries: [FnEntry] = []
+    let foo_caps: [str] = ["process"]
+    entries = push(entries, FnEntry { name: "foo", caps: foo_caps })
+    let baz_caps: [str] = ["io"]
+    entries = push(entries, FnEntry { name: "baz", caps: baz_caps })
+    entries = push(entries, FnEntry { name: "qux", caps: [] })
+    return entries
+}
+
+// unchanged: two pure/io functions -- base == head
+@capabilities()
+fn fixture_unchanged() -> [FnEntry] {
+    let mut entries: [FnEntry] = []
+    entries = push(entries, FnEntry { name: "pure_fn", caps: [] })
+    let io_caps: [str] = ["io"]
+    entries = push(entries, FnEntry { name: "io_fn", caps: io_caps })
+    return entries
+}
+
+// minimal spec scenario: fn foo gains process
+@capabilities()
+fn fixture_foo_base() -> [FnEntry] {
+    let mut entries: [FnEntry] = []
+    entries = push(entries, FnEntry { name: "foo", caps: [] })
+    return entries
+}
+
+@capabilities()
+fn fixture_foo_head() -> [FnEntry] {
+    let mut entries: [FnEntry] = []
+    let caps: [str] = ["process"]
+    entries = push(entries, FnEntry { name: "foo", caps: caps })
+    return entries
+}
+
+// Build a kryos-manifest-v1 JSON for a single function using char_from for braces.
+// Used to test parse_manifest without embedded JSON brace escaping.
+@capabilities()
+fn make_manifest_json(fn_name: str, cap_list: str) -> str {
+    let ob = char_from(123)
+    let cb = char_from(125)
+    return ob + "\"schema\":\"kryos-manifest-v1\",\"files\":[" +
+        ob + "\"source\":\"src.kry\",\"functions\":" +
+        ob + "\"" + fn_name + "\":" +
+        ob + "\"capabilities\":[" + cap_list + "],\"annotated\":true" + cb +
+        cb + ",\"unannotated_count\":0" + cb + "]" + cb
+}
+
+// ---- parse_manifest tests -----------------------------------------------
+
+@test
+fn test_parse_manifest_extracts_function() {
+    let json = make_manifest_json("foo", "")
+    let entries = parse_manifest(json)
+    assert(len(entries) == 1, "manifest with one fn should yield 1 entry, got " + to_string(len(entries)))
+    assert(entries[0].name == "foo", "function name should be foo, got " + entries[0].name)
+    assert(len(entries[0].caps) == 0, "foo should have 0 caps, got " + to_string(len(entries[0].caps)))
+}
+
+@test
+fn test_parse_manifest_reads_caps() {
+    let json = make_manifest_json("bar", "\"io\"")
+    let entries = parse_manifest(json)
+    assert(len(entries) == 1, "should have 1 entry")
+    assert(len(entries[0].caps) == 1, "bar should have 1 cap, got " + to_string(len(entries[0].caps)))
+    assert(entries[0].caps[0] == "io", "cap should be io, got " + entries[0].caps[0])
+}
+
+@test
+fn test_parse_manifest_rejects_wrong_schema() {
+    let ob = char_from(123)
+    let cb = char_from(125)
+    let bad = ob + "\"schema\":\"wrong\",\"files\":[]" + cb
+    let mut threw = false
+    try {
+        parse_manifest(bad)
+    } catch e {
+        threw = true
+        assert(contains(e, "unsupported manifest schema"), "error should mention schema, got: " + e)
+    }
+    assert(threw, "wrong schema should throw")
+}
+
+// ---- diff_entries tests -------------------------------------------------
+
+@test
+fn test_diff_detects_widened() {
+    let changes = diff_entries(fixture_foo_base(), fixture_foo_head())
+    assert(len(changes) == 1, "should be 1 change (widened foo), got " + to_string(len(changes)))
+    match changes[0].kind {
+        ChangeKind::Widened => {},
+        _ => assert(false, "change kind should be Widened"),
+    }
+    assert(changes[0].fn_name == "foo", "widened fn should be foo")
+}
+
+@test
+fn test_diff_detects_removed() {
+    let changes = diff_entries(fixture_base(), fixture_head())
+    let mut found = false
+    for ch in changes {
+        match ch.kind {
+            ChangeKind::Removed => {
+                if ch.fn_name == "bar" { found = true }
+            },
+            _ => {}
+        }
+    }
+    assert(found, "bar should be classified as Removed")
+}
+
+@test
+fn test_diff_detects_narrowed() {
+    let changes = diff_entries(fixture_base(), fixture_head())
+    let mut found = false
+    for ch in changes {
+        match ch.kind {
+            ChangeKind::Narrowed => {
+                if ch.fn_name == "baz" { found = true }
+            },
+            _ => {}
+        }
+    }
+    assert(found, "baz should be classified as Narrowed")
+}
+
+@test
+fn test_diff_detects_added() {
+    let changes = diff_entries(fixture_base(), fixture_head())
+    let mut found = false
+    for ch in changes {
+        match ch.kind {
+            ChangeKind::Added => {
+                if ch.fn_name == "qux" { found = true }
+            },
+            _ => {}
+        }
+    }
+    assert(found, "qux should be classified as Added")
+}
+
+@test
+fn test_diff_unchanged_tree_is_empty() {
+    let unchanged = fixture_unchanged()
+    let changes = diff_entries(unchanged, unchanged)
+    assert(len(changes) == 0, "identical base and head should yield no changes, got " + to_string(len(changes)))
+}
+
+@test
+fn test_diff_unchanged_foo_is_empty() {
+    let base = fixture_foo_base()
+    let changes = diff_entries(base, base)
+    assert(len(changes) == 0, "same foo in base and head should yield no changes, got " + to_string(len(changes)))
+}
+
+// ---- has_dangerous_widening tests ---------------------------------------
+
+@test
+fn test_dangerous_widening_detected() {
+    let changes = diff_entries(fixture_foo_base(), fixture_foo_head())
+    let dangerous: [str] = ["ffi", "process"]
+    assert(has_dangerous_widening(changes, dangerous), "foo gaining process should be dangerous")
+}
+
+@test
+fn test_no_dangerous_widening_on_unchanged_tree() {
+    let unchanged = fixture_unchanged()
+    let changes = diff_entries(unchanged, unchanged)
+    let dangerous: [str] = ["ffi", "process"]
+    assert(!has_dangerous_widening(changes, dangerous), "unchanged tree must have no dangerous widening")
+}
+
+@test
+fn test_narrowing_is_not_dangerous() {
+    let changes = diff_entries(fixture_base(), fixture_head())
+    // Extract only narrowed changes.
+    let mut narrowed: [FnChange] = []
+    for ch in changes {
+        match ch.kind {
+            ChangeKind::Narrowed => { narrowed = push(narrowed, ch) },
+            _ => {}
+        }
+    }
+    let dangerous: [str] = ["ffi", "process"]
+    assert(!has_dangerous_widening(narrowed, dangerous), "narrowing should not be dangerous")
+}
+
+@test
+fn test_added_with_no_caps_is_not_dangerous() {
+    let changes = diff_entries(fixture_base(), fixture_head())
+    // Extract only Added changes (qux has [] caps).
+    let mut added: [FnChange] = []
+    for ch in changes {
+        match ch.kind {
+            ChangeKind::Added => { added = push(added, ch) },
+            _ => {}
+        }
+    }
+    let dangerous: [str] = ["ffi", "process"]
+    assert(!has_dangerous_widening(added, dangerous), "added fn with no caps should not be dangerous")
+}
+
+// ---- report / formatting tests ------------------------------------------
+
+@test
+fn test_render_caps_empty() {
+    let caps: [str] = []
+    assert(render_caps(caps) == "[]", "empty caps should render as [], got " + render_caps(caps))
+}
+
+@test
+fn test_render_caps_single() {
+    let caps: [str] = ["process"]
+    assert(render_caps(caps) == "[process]", "single cap should render as [process], got " + render_caps(caps))
+}
+
+@test
+fn test_render_caps_multiple() {
+    let caps: [str] = ["io", "net"]
+    assert(render_caps(caps) == "[io, net]", "two caps should render as [io, net], got " + render_caps(caps))
+}
+
+@test
+fn test_markdown_table_empty_changes() {
+    let no_changes: [FnChange] = []
+    let t = markdown_table(no_changes)
+    assert(contains(t, "No capability changes"), "empty changes should say no changes, got: " + t)
+}
+
+@test
+fn test_markdown_table_contains_widened_row() {
+    let changes = diff_entries(fixture_foo_base(), fixture_foo_head())
+    let t = markdown_table(changes)
+    assert(contains(t, "Function"), "table should have Function header")
+    assert(contains(t, "WIDENED"), "table should show WIDENED for foo, got: " + t)
+    assert(contains(t, "foo"), "table should name the foo function, got: " + t)
+    assert(contains(t, "[process]"), "table should show [process] as head caps, got: " + t)
+}
+
+@test
+fn test_markdown_table_shows_all_change_kinds() {
+    let changes = diff_entries(fixture_base(), fixture_head())
+    let t = markdown_table(changes)
+    assert(contains(t, "WIDENED"), "table should show WIDENED, got: " + t)
+    assert(contains(t, "REMOVED"), "table should show REMOVED, got: " + t)
+    assert(contains(t, "NARROWED"), "table should show NARROWED, got: " + t)
+    assert(contains(t, "ADDED"), "table should show ADDED, got: " + t)
+}
+
+// ---- main driver (also run by `kryos run tests/test_capdiff.kry`) --------
+
+fn main() {
+    test_parse_manifest_extracts_function()
+    println("PASS test_parse_manifest_extracts_function")
+
+    test_parse_manifest_reads_caps()
+    println("PASS test_parse_manifest_reads_caps")
+
+    test_parse_manifest_rejects_wrong_schema()
+    println("PASS test_parse_manifest_rejects_wrong_schema")
+
+    test_diff_detects_widened()
+    println("PASS test_diff_detects_widened")
+
+    test_diff_detects_removed()
+    println("PASS test_diff_detects_removed")
+
+    test_diff_detects_narrowed()
+    println("PASS test_diff_detects_narrowed")
+
+    test_diff_detects_added()
+    println("PASS test_diff_detects_added")
+
+    test_diff_unchanged_tree_is_empty()
+    println("PASS test_diff_unchanged_tree_is_empty")
+
+    test_diff_unchanged_foo_is_empty()
+    println("PASS test_diff_unchanged_foo_is_empty")
+
+    test_dangerous_widening_detected()
+    println("PASS test_dangerous_widening_detected")
+
+    test_no_dangerous_widening_on_unchanged_tree()
+    println("PASS test_no_dangerous_widening_on_unchanged_tree")
+
+    test_narrowing_is_not_dangerous()
+    println("PASS test_narrowing_is_not_dangerous")
+
+    test_added_with_no_caps_is_not_dangerous()
+    println("PASS test_added_with_no_caps_is_not_dangerous")
+
+    test_render_caps_empty()
+    println("PASS test_render_caps_empty")
+
+    test_render_caps_single()
+    println("PASS test_render_caps_single")
+
+    test_render_caps_multiple()
+    println("PASS test_render_caps_multiple")
+
+    test_markdown_table_empty_changes()
+    println("PASS test_markdown_table_empty_changes")
+
+    test_markdown_table_contains_widened_row()
+    println("PASS test_markdown_table_contains_widened_row")
+
+    test_markdown_table_shows_all_change_kinds()
+    println("PASS test_markdown_table_shows_all_change_kinds")
+
+    println("19/19 capdiff tests passed")
+}

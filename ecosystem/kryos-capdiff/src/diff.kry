@@ -1,0 +1,186 @@
+// ============================================================
+// diff.kry -- diff two flat [FnEntry] lists (base vs head) and
+// classify each function change.
+//
+// Change kinds:
+//   Added   -- function appears in head but not in base
+//   Removed -- function appears in base but not in head
+//   Widened -- function exists in both; head gained capabilities
+//   Narrowed -- function exists in both; head lost capabilities
+//
+// Unchanged functions are not emitted.
+//
+// has_dangerous_widening checks whether any Widened change
+// gained a capability from a caller-supplied "dangerous" set
+// (default: ffi, process).
+// ============================================================
+
+use manifest
+
+enum ChangeKind {
+    Added,
+    Removed,
+    Widened,
+    Narrowed,
+}
+
+struct FnChange {
+    fn_name: str,
+    kind: ChangeKind,
+    base_caps: [str],
+    head_caps: [str],
+}
+
+// Return the index of the FnEntry with name == `name`, or -1 if absent.
+@capabilities()
+fn find_fn(entries: [FnEntry], name: str) -> i64 {
+    let mut i = 0
+    while i < len(entries) {
+        if entries[i].name == name {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// True if `caps` contains the string `cap`.
+@capabilities()
+fn caps_contains(caps: [str], cap: str) -> bool {
+    for c in caps {
+        if c == cap {
+            return true
+        }
+    }
+    return false
+}
+
+// Capabilities in `head` that are not in `base` (newly gained).
+@capabilities()
+fn caps_gained(base: [str], head: [str]) -> [str] {
+    let mut gained: [str] = []
+    for c in head {
+        if !caps_contains(base, c) {
+            gained = push(gained, c)
+        }
+    }
+    return gained
+}
+
+// Capabilities in `base` that are not in `head` (newly lost).
+@capabilities()
+fn caps_lost(base: [str], head: [str]) -> [str] {
+    let mut lost: [str] = []
+    for c in base {
+        if !caps_contains(head, c) {
+            lost = push(lost, c)
+        }
+    }
+    return lost
+}
+
+// True if any element of `a` appears in `b`.
+@capabilities()
+fn intersects(a: [str], b: [str]) -> bool {
+    for c in a {
+        if caps_contains(b, c) {
+            return true
+        }
+    }
+    return false
+}
+
+// Diff base against head and return all non-trivial changes.
+// Unchanged functions produce no entry.
+@capabilities()
+fn diff_entries(base: [FnEntry], head: [FnEntry]) -> [FnChange] {
+    let mut changes: [FnChange] = []
+
+    // Pass 1: walk base to find Removed, Widened, Narrowed.
+    let mut i = 0
+    while i < len(base) {
+        let base_fn = base[i]
+        let hi = find_fn(head, base_fn.name)
+        if hi < 0 {
+            changes = push(changes, FnChange {
+                fn_name: base_fn.name,
+                kind: ChangeKind.Removed,
+                base_caps: base_fn.caps,
+                head_caps: [],
+            })
+        } else {
+            let head_fn = head[hi]
+            let gained = caps_gained(base_fn.caps, head_fn.caps)
+            let lost = caps_lost(base_fn.caps, head_fn.caps)
+            if len(gained) > 0 {
+                changes = push(changes, FnChange {
+                    fn_name: base_fn.name,
+                    kind: ChangeKind.Widened,
+                    base_caps: base_fn.caps,
+                    head_caps: head_fn.caps,
+                })
+            } elif len(lost) > 0 {
+                changes = push(changes, FnChange {
+                    fn_name: base_fn.name,
+                    kind: ChangeKind.Narrowed,
+                    base_caps: base_fn.caps,
+                    head_caps: head_fn.caps,
+                })
+            }
+        }
+        i = i + 1
+    }
+
+    // Pass 2: walk head to find Added (functions not in base).
+    let mut j = 0
+    while j < len(head) {
+        let head_fn = head[j]
+        let bi = find_fn(base, head_fn.name)
+        if bi < 0 {
+            changes = push(changes, FnChange {
+                fn_name: head_fn.name,
+                kind: ChangeKind.Added,
+                base_caps: [],
+                head_caps: head_fn.caps,
+            })
+        }
+        j = j + 1
+    }
+
+    return changes
+}
+
+// True if any Widened change gained a capability from `dangerous`.
+@capabilities()
+fn has_dangerous_widening(changes: [FnChange], dangerous: [str]) -> bool {
+    for ch in changes {
+        match ch.kind {
+            ChangeKind::Widened => {
+                let gained = caps_gained(ch.base_caps, ch.head_caps)
+                if intersects(gained, dangerous) {
+                    return true
+                }
+            },
+            _ => {}
+        }
+    }
+    return false
+}
+
+// Collect the names of all Widened functions that gained a dangerous cap.
+@capabilities()
+fn dangerous_widened_fns(changes: [FnChange], dangerous: [str]) -> [str] {
+    let mut fns: [str] = []
+    for ch in changes {
+        match ch.kind {
+            ChangeKind::Widened => {
+                let gained = caps_gained(ch.base_caps, ch.head_caps)
+                if intersects(gained, dangerous) {
+                    fns = push(fns, ch.fn_name)
+                }
+            },
+            _ => {}
+        }
+    }
+    return fns
+}

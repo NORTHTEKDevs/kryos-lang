@@ -1,0 +1,8 @@
+[package]
+name = "kryos-capdiff"
+version = "0.1.0"
+description = "CI gate that diffs two kryos-manifest-v1 files and fails on capability escalation into ffi or process"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["io", "process"]

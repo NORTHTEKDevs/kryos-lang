@@ -1,0 +1,19 @@
+{
+  "schema": "kryos-manifest-v1",
+  "files": [
+    {
+      "source": "src/lib.kry",
+      "functions": {
+        "foo": {
+          "capabilities": [],
+          "annotated": true
+        },
+        "helper": {
+          "capabilities": [],
+          "annotated": true
+        }
+      },
+      "unannotated_count": 0
+    }
+  ]
+}

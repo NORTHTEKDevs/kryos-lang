@@ -1,0 +1,210 @@
+// ============================================================
+// manifest.kry -- parse a kryos-manifest-v1 JSON file into a
+// flat list of FnEntry values (function name + capability set).
+//
+// Uses a hand-rolled string scanner rather than std::json because
+// std::json's _format_number has a Cranelift JIT verifier bug that
+// causes all @test functions to fail at JIT compile time -- exactly
+// the approach taken by kryos-plugin-sandbox/src/sidecar.kry.
+//
+// The manifest JSON shape (from `kryos manifest --caps`):
+//   {
+//     "schema": "kryos-manifest-v1",
+//     "files": [
+//       {
+//         "source": "<path>",
+//         "functions": {
+//           "<fn_name>": { "capabilities": ["io"], "annotated": true }
+//         },
+//         "unannotated_count": 0
+//       }
+//     ]
+//   }
+//
+// Algorithm:
+//   1. Verify the "schema" value is "kryos-manifest-v1".
+//   2. Scan for every "capabilities": [ ... ] occurrence.
+//      For each one, backtrack to find the enclosing function name
+//      (the quoted key immediately before ": {").
+//   3. Extract the capability strings from the [ ... ] array.
+//
+// Function names in Kryos are ASCII identifiers; source paths and
+// capability names contain no JSON structural characters.  The scanner
+// is therefore safe for all manifest files the compiler actually emits.
+// ============================================================
+
+struct FnEntry {
+    name: str,
+    caps: [str],
+}
+
+// Return the single-byte string at position i in s.
+@capabilities()
+fn _ch(s: str, i: i64) -> str {
+    return substr(s, i, i + 1)
+}
+
+// Forward search: index of the first occurrence of needle at or after from.
+// Returns -1 if not found.
+@capabilities()
+fn _index_from(s: str, needle: str, from: i64) -> i64 {
+    let n = len(s)
+    let m = len(needle)
+    if m == 0 {
+        return from
+    }
+    let mut i = from
+    while i + m <= n {
+        if substr(s, i, i + m) == needle {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// Backward search: index of the last occurrence of needle strictly before `before`.
+// Returns -1 if not found.
+@capabilities()
+fn _rindex_before(s: str, needle: str, before: i64) -> i64 {
+    let m = len(needle)
+    let mut i = before - m
+    while i >= 0 {
+        if substr(s, i, i + m) == needle {
+            return i
+        }
+        i = i - 1
+    }
+    return -1
+}
+
+// Find the matching ] for the [ at position `open`, tracking nesting depth.
+// Skips over JSON string literals (so a ] inside "foo]bar" does not match).
+@capabilities()
+fn _find_close_bracket(s: str, open: i64) -> i64 {
+    let n = len(s)
+    let mut depth = 1
+    let mut i = open + 1
+    while i < n && depth > 0 {
+        let c = _ch(s, i)
+        if c == "[" {
+            depth = depth + 1
+            i = i + 1
+        } elif c == "]" {
+            depth = depth - 1
+            i = i + 1
+        } elif c == "\"" {
+            i = i + 1
+            while i < n && _ch(s, i) != "\"" {
+                if _ch(s, i) == "\\" {
+                    i = i + 1
+                }
+                i = i + 1
+            }
+            i = i + 1
+        } else {
+            i = i + 1
+        }
+    }
+    return i - 1
+}
+
+// Extract double-quoted strings from the region s[start..end).
+// Handles simple escape sequences (skips the escaped character).
+@capabilities()
+fn _extract_strings(s: str, start: i64, end: i64) -> [str] {
+    let mut out: [str] = []
+    let mut i = start
+    while i < end {
+        if _ch(s, i) == "\"" {
+            let mut j = i + 1
+            while j < end {
+                if _ch(s, j) == "\\" {
+                    j = j + 2
+                } elif _ch(s, j) == "\"" {
+                    break
+                } else {
+                    j = j + 1
+                }
+            }
+            out = push(out, substr(s, i + 1, j))
+            i = j + 1
+        } else {
+            i = i + 1
+        }
+    }
+    return out
+}
+
+// Parse a kryos-manifest-v1 JSON string into a flat list of FnEntry values.
+// Throws on missing or wrong schema.
+@capabilities()
+fn parse_manifest(content: str) -> [FnEntry] {
+    // Verify schema field.
+    let schema_key = "\"schema\":"
+    let sk_at = _index_from(content, schema_key, 0)
+    if sk_at < 0 {
+        throw "capdiff: missing 'schema' field in manifest"
+    }
+    let sq_open = _index_from(content, "\"", sk_at + len(schema_key))
+    if sq_open < 0 {
+        throw "capdiff: malformed schema value"
+    }
+    let sq_close = _index_from(content, "\"", sq_open + 1)
+    let schema = substr(content, sq_open + 1, sq_close)
+    if schema != "kryos-manifest-v1" {
+        throw "capdiff: unsupported manifest schema '" + schema + "' (expected kryos-manifest-v1)"
+    }
+
+    // Scan for every "capabilities": occurrence and backtrack to the function name.
+    let cap_key = "\"capabilities\":"
+    let cap_key_len = len(cap_key)
+    let n = len(content)
+    let mut entries: [FnEntry] = []
+    let mut pos = 0
+
+    while pos < n {
+        let cap_at = _index_from(content, cap_key, pos)
+        if cap_at < 0 {
+            break
+        }
+
+        // Find the opening '[' of the capabilities array.
+        let arr_open = _index_from(content, "[", cap_at + cap_key_len)
+        if arr_open < 0 {
+            break
+        }
+
+        // Find the matching ']'.
+        let arr_close = _find_close_bracket(content, arr_open)
+
+        // Extract capability strings.
+        let caps = _extract_strings(content, arr_open + 1, arr_close)
+
+        // Backtrack to find the enclosing function name.
+        // The pattern is:  "fn_name": {  ...  "capabilities": [...]
+        //                             ^--- fn_open
+        // The nearest '{' before cap_at is the function object's open brace.
+        let fn_open = _rindex_before(content, "{{", cap_at)
+        if fn_open >= 0 {
+            // Find the closing '"' of the function name key (immediately before ': {').
+            let fn_name_close = _rindex_before(content, "\"", fn_open)
+            if fn_name_close >= 0 {
+                // Find the opening '"' of the function name key.
+                let fn_name_open = _rindex_before(content, "\"", fn_name_close)
+                if fn_name_open >= 0 {
+                    let fn_name = substr(content, fn_name_open + 1, fn_name_close)
+                    // Only accept valid function names (not JSON structural keys).
+                    if fn_name != "schema" && fn_name != "source" && fn_name != "functions" &&
+                            fn_name != "files" && fn_name != "annotated" {
+                        entries = push(entries, FnEntry { name: fn_name, caps: caps })
+                    }
+                }
+            }
+        }
+
+        pos = arr_close + 1
+    }
+
+    return entries
+}

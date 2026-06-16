@@ -1,0 +1,94 @@
+// ============================================================
+// main.kry -- kryos-capdiff entry point.
+//
+// Usage:
+//   kryos run ecosystem/kryos-capdiff -- <base.json> <head.json> [--dangerous cap1,cap2]
+//   kryos build --release ecosystem/kryos-capdiff && ./kryos-capdiff base.json head.json
+//
+// Reads two kryos-manifest-v1 JSON files (produced by `kryos manifest --caps`),
+// diffs their per-function capability sets, prints a Markdown table to stdout,
+// and exits 1 if any function widened into the dangerous capability set.
+//
+// Default dangerous set: ffi, process.
+// Override with: --dangerous ffi,process,net
+// ============================================================
+
+use std::string::{split}
+use std::process::{exit}
+use manifest
+use diff
+use report
+
+fn main() {
+    let argv = args()
+    // argv[0] is the program path; user tokens start at index 1.
+    if len(argv) < 3 {
+        println("usage: kryos-capdiff <base.json> <head.json> [--dangerous cap1,cap2]")
+        println("")
+        println("  base.json   kryos-manifest-v1 JSON at the PR base ref")
+        println("  head.json   kryos-manifest-v1 JSON at the PR head ref")
+        println("  --dangerous comma-separated capability names that trigger exit 1 on widening")
+        println("              (default: ffi,process)")
+        return
+    }
+
+    let base_path = argv[1]
+    let head_path = argv[2]
+
+    // Default dangerous set.
+    let mut dangerous: [str] = ["ffi", "process"]
+
+    // Parse optional --dangerous flag.
+    let mut i = 3
+    while i < len(argv) {
+        if argv[i] == "--dangerous" {
+            if i + 1 < len(argv) {
+                dangerous = split(argv[i + 1], ",")
+                i = i + 2
+            } else {
+                println("error: --dangerous requires a value")
+                exit(2)
+            }
+        } else {
+            i = i + 1
+        }
+    }
+
+    // Read and parse both manifests.
+    let base_text = file_read(base_path)
+    let head_text = file_read(head_path)
+
+    let base_entries = parse_manifest(base_text)
+    let head_entries = parse_manifest(head_text)
+
+    // Compute changes.
+    let changes = diff_entries(base_entries, head_entries)
+
+    // Print Markdown table.
+    print(markdown_table(changes))
+
+    // Exit 1 if any dangerous widening detected.
+    if has_dangerous_widening(changes, dangerous) {
+        let bad_fns = dangerous_widened_fns(changes, dangerous)
+        let mut msg: str = "FAIL: capability escalation into ["
+        let mut k = 0
+        while k < len(dangerous) {
+            if k > 0 {
+                msg = msg + ", "
+            }
+            msg = msg + dangerous[k]
+            k = k + 1
+        }
+        msg = msg + "] detected in: "
+        let mut m = 0
+        while m < len(bad_fns) {
+            if m > 0 {
+                msg = msg + ", "
+            }
+            msg = msg + bad_fns[m]
+            m = m + 1
+        }
+        println(msg)
+        exit(1)
+    }
+}
