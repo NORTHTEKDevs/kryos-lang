@@ -30,8 +30,45 @@ pub fn inlay_hints(source: &str, line_start: u32, line_end: u32) -> Value {
 
     push_let_type_hints(source, &tokens, line_start, line_end, &mut out);
     push_call_param_hints(source, &tokens, line_start, line_end, &signatures, &mut out);
+    push_capability_hints(source, &module, line_start, line_end, &mut out);
 
     Value::Array(out)
+}
+
+/// Emit a capability-surface hint on each top-level `fn` declaration whose body
+/// uses capability-gated builtins (e.g. `caps: io, net`). Reuses the compiler's
+/// capability model via `crate::cap_surface`. Pure functions get no hint.
+fn push_capability_hints(
+    source: &str,
+    module: &kryos_ast::Module,
+    line_start: u32,
+    line_end: u32,
+    out: &mut Vec<Value>,
+) {
+    const HINT_KIND_CAPABILITY: u8 = 1; // rendered as a Type-kind hint
+    for decl in &module.declarations {
+        if let kryos_ast::Decl::Function {
+            body: Some(body), ..
+        } = decl
+        {
+            let caps = crate::cap_surface::function_caps(body);
+            if caps.is_empty() {
+                continue;
+            }
+            let label = crate::cap_surface::caps_label(&caps);
+            // Anchor the hint just before the body's opening brace.
+            let (ln, col) = offset_to_line_col(source, body.span.start as usize);
+            if (line_start..=line_end).contains(&ln) {
+                out.push(json!({
+                    "position": { "line": ln, "character": col },
+                    "label": format!("caps: {label} "),
+                    "kind": HINT_KIND_CAPABILITY,
+                    "paddingLeft": true,
+                    "paddingRight": false,
+                }));
+            }
+        }
+    }
 }
 
 fn push_let_type_hints(

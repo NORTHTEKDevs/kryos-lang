@@ -96,6 +96,9 @@ pub fn check_source(source: &str, file_uri: &str) -> (Vec<Value>, kryos_errors::
     let mut all_diags = kryos_types::type_check(&module);
     all_diags.extend(kryos_ownership::analyze_ownership(&module).errors);
     all_diags.extend(kryos_capabilities::check_capabilities(&module, false));
+    // Surface functions that --strict-capabilities would reject (unannotated
+    // functions that use capability-gated builtins) as warnings.
+    all_diags.extend(crate::cap_surface::strict_mode_warnings(&module));
 
     let lsp_diags: Vec<Value> = all_diags
         .iter()
