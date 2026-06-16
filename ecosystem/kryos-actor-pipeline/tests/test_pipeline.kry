@@ -1,0 +1,141 @@
+// ============================================================
+// test_pipeline.kry -- the multi-threaded end-to-end pipeline gate.
+//
+//   kryos run ecosystem/kryos-actor-pipeline/tests/test_pipeline.kry
+//
+// This file is driven by `kryos run` (the same JIT path `kryos test` uses for
+// "file tests"), NOT by the @test harness: the @test harness's JIT currently
+// miscompiles `spawn` closures (see test_units.kry / README). Every scenario
+// here spawns real OS-thread stages, so it must run on the main path. The
+// `assert`s below are the real gates; on success the file prints PASS lines and
+// exits 0. Under `kryos test` it also compiles cleanly as a "file test".
+//
+// Coverage maps onto the spec's done criteria:
+//   - a 3-stage pipeline processes N items end to end          (end_to_end)
+//   - output is correctly ordered (FIFO through the chain)      (ordering)
+//   - a single-stage pipeline works (builder degenerate case)   (single_stage)
+// ============================================================
+
+use stage
+use pipeline
+
+// --- Spawned stage fixtures (one OS thread each) ----------------------------
+
+fn t_run_double(in_ch: i64, out_ch: i64) -> i64 {
+    spawn {
+        while true {
+            let v = recv(in_ch)
+            if v == eos() {
+                send(out_ch, eos())
+                break
+            }
+            send(out_ch, v * 2)
+        }
+    }
+    return 0
+}
+
+fn t_run_plus10(in_ch: i64, out_ch: i64) -> i64 {
+    spawn {
+        while true {
+            let v = recv(in_ch)
+            if v == eos() {
+                send(out_ch, eos())
+                break
+            }
+            send(out_ch, v + 10)
+        }
+    }
+    return 0
+}
+
+// Sink fixture: identity forward (the collector).
+fn t_run_collect(in_ch: i64, out_ch: i64) -> i64 {
+    spawn {
+        while true {
+            let v = recv(in_ch)
+            if v == eos() {
+                send(out_ch, eos())
+                break
+            }
+            send(out_ch, v)
+        }
+    }
+    return 0
+}
+
+fn three_stages() -> [Stage] {
+    return [
+        stage_new("double", ["compute"], t_run_double),
+        stage_new("plus10", ["compute"], t_run_plus10),
+        stage_new("collect", ["io"], t_run_collect)
+    ]
+}
+
+// --- Scenarios (real gates, run from main) ----------------------------------
+
+fn scenario_three_stage_end_to_end() {
+    let n = 10
+    let p = pipeline_run(three_stages())
+
+    let mut items: [i64] = []
+    let mut i = 0
+    while i < n {
+        items = push(items, i)
+        i = i + 1
+    }
+    feed(p.head, items)
+
+    let got = drain(p.tail, n)
+    assert(len(got) == n, "expected " + to_string(n) + " results, got " + to_string(len(got)))
+
+    // chain: v -> v*2 -> +10 -> identity, so result[k] == 2*k + 10
+    let mut k = 0
+    while k < n {
+        let expect = (k * 2) + 10
+        assert(got[k] == expect, "result[" + to_string(k) + "] expected " + to_string(expect) + ", got " + to_string(got[k]))
+        k = k + 1
+    }
+}
+
+fn scenario_ordering_preserved() {
+    // One identity stage: a scrambled input must come out in the same order
+    // (each channel has exactly one producer and one consumer -> strict FIFO).
+    let stages: [Stage] = [stage_new("collect", ["io"], t_run_collect)]
+    let p = pipeline_run(stages)
+
+    let input: [i64] = [5, 1, 9, 3, 7, 2, 8]
+    feed(p.head, input)
+    let got = drain(p.tail, 7)
+
+    assert(len(got) == 7, "expected 7, got " + to_string(len(got)))
+    let expect: [i64] = [5, 1, 9, 3, 7, 2, 8]
+    let mut i = 0
+    while i < 7 {
+        assert(got[i] == expect[i], "order broken at " + to_string(i) + ": expected " + to_string(expect[i]) + ", got " + to_string(got[i]))
+        i = i + 1
+    }
+}
+
+fn scenario_single_stage() {
+    let stages: [Stage] = [stage_new("double", ["compute"], t_run_double)]
+    let p = pipeline_run(stages)
+
+    let input: [i64] = [3, 4, 5]
+    feed(p.head, input)
+    let got = drain(p.tail, 3)
+
+    assert(got[0] == 6, "3*2 should be 6, got " + to_string(got[0]))
+    assert(got[1] == 8, "4*2 should be 8, got " + to_string(got[1]))
+    assert(got[2] == 10, "5*2 should be 10, got " + to_string(got[2]))
+}
+
+fn main() {
+    scenario_three_stage_end_to_end()
+    println("PASS scenario_three_stage_end_to_end")
+    scenario_ordering_preserved()
+    println("PASS scenario_ordering_preserved")
+    scenario_single_stage()
+    println("PASS scenario_single_stage")
+    println("3/3 end-to-end pipeline scenarios passed")
+}

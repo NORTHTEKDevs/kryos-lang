@@ -1,0 +1,8 @@
+[package]
+name = "kryos-actor-pipeline"
+version = "0.1.0"
+description = "Typed, capability-attenuated actor pipeline stages: a linear source -> transform -> sink chain where each stage is an OS-thread actor with its own @capabilities, and only the sink carries io"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["compute", "io"]

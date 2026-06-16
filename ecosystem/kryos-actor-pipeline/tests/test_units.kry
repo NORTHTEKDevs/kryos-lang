@@ -1,0 +1,89 @@
+// ============================================================
+// test_units.kry -- @test unit gates for the pure (non-spawn) surface.
+//
+//   kryos test --path ecosystem/kryos-actor-pipeline
+//
+// These run under `kryos test`'s @test harness as real executed gates. They
+// cover everything that does NOT spawn a thread:
+//   - the end-of-stream sentinel is distinct from every real payload
+//   - the capability-set renderer
+//   - Stage metadata (name + declared caps; only the sink carries io)
+//   - feed/drain + channel FIFO ordering, exercised on a single channel
+//
+// The multi-threaded 3-stage end-to-end run lives in test_pipeline.kry and is
+// driven by `kryos run`, NOT here: the @test harness's JIT currently miscompiles
+// `spawn` closures (it leaks the capture count into the closure's argument list:
+// "mismatched argument count ... got 3, expected 2"). `kryos run` and
+// `kryos build --release` compile the same spawn code correctly. See README.
+// ============================================================
+
+use stage
+
+// A spawn-free launcher, used only to populate Stage metadata in tests.
+@capabilities()
+fn noop_run(in_ch: i64, out_ch: i64) -> i64 {
+    return 0
+}
+
+@test
+fn test_eos_is_distinct() {
+    assert(is_eos(eos()), "eos() must satisfy is_eos")
+    assert(!is_eos(0), "0 is a valid payload, not EOS")
+    assert(!is_eos(-1), "-1 is a valid payload, not EOS")
+    assert(!is_eos(9223372036854775807), "i64::MAX is a valid payload, not EOS")
+}
+
+@test
+fn test_caps_render() {
+    assert(caps_render(["compute"]) == "{{compute}}", "single, got " + caps_render(["compute"]))
+    assert(caps_render(["compute", "io"]) == "{{compute, io}}", "two, got " + caps_render(["compute", "io"]))
+    let empty: [str] = []
+    assert(caps_render(empty) == "{{}}", "empty, got " + caps_render(empty))
+}
+
+@test
+fn test_stage_metadata() {
+    // The declared capability set rides along as runtime data, mirroring the
+    // compile-time @capabilities annotation on each launcher.
+    let stages: [Stage] = [
+        stage_new("ingest", ["compute"], noop_run),
+        stage_new("square", ["compute"], noop_run),
+        stage_new("report", ["io"], noop_run)
+    ]
+    assert(len(stages) == 3, "expected 3 stages")
+    assert(stages[0].name == "ingest", "stage 0 name, got " + stages[0].name)
+    assert(caps_render(stages[0].caps) == "{{compute}}", "source caps, got " + caps_render(stages[0].caps))
+    assert(caps_render(stages[1].caps) == "{{compute}}", "transform caps, got " + caps_render(stages[1].caps))
+    // Only the sink carries io.
+    assert(caps_render(stages[2].caps) == "{{io}}", "sink caps, got " + caps_render(stages[2].caps))
+}
+
+@test
+fn test_feed_drain_fifo() {
+    // feed + drain on a single channel (no stages, no spawn) exercises the
+    // EOS protocol and the channel's FIFO ordering directly: items come out
+    // in the exact order they went in.
+    let ch = chan()
+    let input: [i64] = [5, 1, 9, 3, 7]
+    feed(ch, input)
+    let got = drain(ch, 5)
+    assert(len(got) == 5, "expected 5 results, got " + to_string(len(got)))
+    let expect: [i64] = [5, 1, 9, 3, 7]
+    let mut i = 0
+    while i < 5 {
+        assert(got[i] == expect[i], "FIFO broken at " + to_string(i) + ": expected " + to_string(expect[i]) + ", got " + to_string(got[i]))
+        i = i + 1
+    }
+}
+
+fn main() {
+    test_eos_is_distinct()
+    println("PASS test_eos_is_distinct")
+    test_caps_render()
+    println("PASS test_caps_render")
+    test_stage_metadata()
+    println("PASS test_stage_metadata")
+    test_feed_drain_fifo()
+    println("PASS test_feed_drain_fifo")
+    println("4/4 unit tests passed")
+}

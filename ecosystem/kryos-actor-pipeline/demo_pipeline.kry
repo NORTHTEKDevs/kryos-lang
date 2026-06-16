@@ -1,0 +1,133 @@
+// ============================================================
+// demo_pipeline.kry -- the spec's done-criteria scenario, end to end.
+//
+//   kryos run ecosystem/kryos-actor-pipeline/demo_pipeline.kry
+//
+// A 3-stage pipeline source -> transform -> sink. Each stage is an actor
+// (one spawned OS thread) joined by an MPMC channel. Each stage launcher
+// carries its own @capabilities:
+//
+//   run_ingest   @capabilities(compute)   v -> v + 1     (normalize tick to id)
+//   run_square   @capabilities(compute)   v -> v * v     (the transform)
+//   run_report   @capabilities(io)        prints, forwards  (the ONLY io stage)
+//
+// `kryos manifest --caps demo_pipeline.kry` shows only run_report carrying io.
+// ============================================================
+
+use stage
+use pipeline
+
+// --- Stage 0: source / ingest (compute) -------------------------------------
+// Normalize each 0-based tick into a 1-based id. Pure compute; no io.
+@capabilities(compute)
+fn run_ingest(in_ch: i64, out_ch: i64) -> i64 {
+    spawn {
+        while true {
+            let v = recv(in_ch)
+            if v == eos() {
+                send(out_ch, eos())
+                break
+            }
+            send(out_ch, v + 1)
+        }
+    }
+    return 0
+}
+
+// --- Stage 1: transform / square (compute) ----------------------------------
+// Square each id. Pure compute; no io.
+@capabilities(compute)
+fn run_square(in_ch: i64, out_ch: i64) -> i64 {
+    spawn {
+        while true {
+            let v = recv(in_ch)
+            if v == eos() {
+                send(out_ch, eos())
+                break
+            }
+            send(out_ch, v * v)
+        }
+    }
+    return 0
+}
+
+// --- Stage 2: sink / report (io) -- the ONLY stage that touches io -----------
+// Print each result, then forward it so the driver can collect the stream.
+@capabilities(io)
+fn run_report(in_ch: i64, out_ch: i64) -> i64 {
+    spawn {
+        while true {
+            let v = recv(in_ch)
+            if v == eos() {
+                send(out_ch, eos())
+                break
+            }
+            println("  [sink] id^2 = " + to_string(v))
+            send(out_ch, v)
+        }
+    }
+    return 0
+}
+
+fn build_stages() -> [Stage] {
+    return [
+        stage_new("ingest", ["compute"], run_ingest),
+        stage_new("square", ["compute"], run_square),
+        stage_new("report", ["io"], run_report)
+    ]
+}
+
+fn main() {
+    let n = 8
+    println("=== kryos-actor-pipeline: source -> transform -> sink ===")
+    println("")
+
+    let stages = build_stages()
+    print_authority(stages)
+    println("")
+
+    let p = pipeline_run(stages)
+
+    // The driver is the upstream data source: feed ticks 0..n-1, then EOS.
+    let mut items: [i64] = []
+    let mut i = 0
+    while i < n {
+        items = push(items, i)
+        i = i + 1
+    }
+    println("feeding ticks 0.." + to_string(n - 1) + " into the pipeline:")
+    feed(p.head, items)
+
+    // Drain n ordered results from the tail.
+    let got = drain(p.tail, n)
+    println("")
+    println("drained " + to_string(len(got)) + " ordered results:")
+    let mut j = 0
+    let mut line = "  ["
+    while j < len(got) {
+        if j > 0 {
+            line = line + ", "
+        }
+        line = line + to_string(got[j])
+        j = j + 1
+    }
+    println(line + "]")
+
+    // Verify ordering: result[k] must equal (k+1)^2.
+    let mut ok = true
+    let mut k = 0
+    while k < n {
+        let expect = (k + 1) * (k + 1)
+        if got[k] != expect {
+            ok = false
+        }
+        k = k + 1
+    }
+    println("")
+    if ok {
+        println("ordered output verified: result[k] == (k+1)^2 for all k")
+    } else {
+        println("ORDER MISMATCH")
+    }
+    println("=== pipeline drained and joined ===")
+}

@@ -1,0 +1,92 @@
+// ============================================================
+// stage.kry -- the Stage abstraction and the end-of-stream protocol.
+//
+// A pipeline is a linear chain of N stages joined by N+1 channels:
+//
+//     head --[stage 0]--> ch1 --[stage 1]--> ch2 ... --[stage N-1]--> tail
+//
+// Each stage is an actor: a `run` launcher that `spawn`s one OS thread which
+// drains its input channel, applies a transform, and forwards to its output
+// channel. The driver feeds raw items into `head` and drains results from
+// `tail`.
+//
+// Termination ("graceful shutdown") uses an in-band end-of-stream sentinel,
+// `eos()`. The producer sends every item, then one `eos()`; each stage forwards
+// `eos()` downstream and returns; the compiler injects `kryos_spawn_wait_all`
+// at the end of `main`, which joins every stage thread before the process exits.
+//
+// WHY a sentinel and not channel close: the language-level `recv` builtin maps to
+// `kryos_chan_recv_i64`, which returns 0 on a closed-and-empty channel -- the same
+// value a real `0` payload would have. There is no way to distinguish "closed" from
+// "the value 0" through the blocking `recv` surface, and `close_chan` is not a
+// linkable symbol in the current toolchain. An in-band sentinel is the portable,
+// unambiguous shutdown signal. Reserved value: payloads must never equal `eos()`.
+// ============================================================
+
+// The reserved end-of-stream marker (i64::MIN). No data payload may use it.
+@capabilities()
+fn eos() -> i64 {
+    return -9223372036854775808
+}
+
+// Is `v` the end-of-stream marker?
+@capabilities()
+fn is_eos(v: i64) -> bool {
+    return v == eos()
+}
+
+// A pipeline stage: a name, its declared capability set (runtime mirror of the
+// compile-time @capabilities annotation on the launcher), and the `run` launcher
+// that spawns the stage's worker thread given (input channel, output channel).
+struct Stage {
+    name: str,
+    caps: [str],
+    run: fn(i64, i64) -> i64
+}
+
+// Construct a Stage.
+@capabilities()
+fn stage_new(name: str, caps: [str], run: fn(i64, i64) -> i64) -> Stage {
+    return Stage { name: name, caps: caps, run: run }
+}
+
+// Driver helper: push every item onto `ch`, then one end-of-stream marker.
+@capabilities()
+fn feed(ch: i64, items: [i64]) {
+    let mut i = 0
+    while i < len(items) {
+        send(ch, items[i])
+        i = i + 1
+    }
+    send(ch, eos())
+}
+
+// Driver helper: receive exactly `n` results from `ch` (FIFO, in order), then
+// consume the trailing end-of-stream marker the tail stage forwards.
+@capabilities()
+fn drain(ch: i64, n: i64) -> [i64] {
+    let mut out: [i64] = []
+    let mut i = 0
+    while i < n {
+        out = push(out, recv(ch))
+        i = i + 1
+    }
+    let mut _eos = recv(ch)
+    return out
+}
+
+// Render a [str] capability set as "{a, b, c}" for the runtime authority table.
+// `{{` / `}}` escape to a single brace (a bare `{` opens interpolation).
+@capabilities()
+fn caps_render(caps: [str]) -> str {
+    let mut out: str = "{{"
+    let mut i = 0
+    while i < len(caps) {
+        if i > 0 {
+            out = out + ", "
+        }
+        out = out + caps[i]
+        i = i + 1
+    }
+    return out + "}}"
+}

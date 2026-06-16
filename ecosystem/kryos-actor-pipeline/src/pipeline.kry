@@ -1,0 +1,65 @@
+// ============================================================
+// pipeline.kry -- the linear pipeline builder.
+//
+// `pipeline_run(stages)` allocates N+1 channels for N stages, launches each
+// stage's `run` thread between consecutive channels, and returns the head/tail
+// handles so the driver can `feed` raw items and `drain` results.
+//
+//     let p = pipeline_run([stage_a, stage_b, stage_c])
+//     feed(p.head, items)
+//     let results = drain(p.tail, len(items))
+//
+// Capability note: this builder is pure orchestration -- it allocates channels
+// and calls each stage's launcher. The launchers themselves carry the
+// per-stage @capabilities; see the demo. `kryos manifest --caps` reports each
+// launcher's declared authority; only the sink launcher carries `io`.
+//
+// Backpressure note: the underlying channels are UNBOUNDED (a Mutex+VecDeque
+// with no capacity limit). A slow sink cannot slow a fast source -- the queue
+// between them grows without bound. This is fine for finite batches; for an
+// unbounded or bursty source a slow sink can balloon memory. Bounded channels
+// are not implemented in the runtime today; do not rely on backpressure here.
+// ============================================================
+
+use stage
+
+// The wired endpoints of a running pipeline: feed `head`, drain `tail`.
+struct Pipeline {
+    head: i64,
+    tail: i64
+}
+
+// Allocate channels, launch every stage, and return the head/tail handles.
+// For N stages this creates channels c0..cN: stage i reads c[i], writes c[i+1].
+@capabilities()
+fn pipeline_run(stages: [Stage]) -> Pipeline {
+    let n = len(stages)
+    assert(n > 0, "pipeline: need at least one stage")
+
+    let mut chans: [i64] = []
+    let mut i = 0
+    while i <= n {
+        chans = push(chans, chan())
+        i = i + 1
+    }
+
+    i = 0
+    while i < n {
+        let mut _started = stages[i].run(chans[i], chans[i + 1])
+        i = i + 1
+    }
+
+    return Pipeline { head: chans[0], tail: chans[n] }
+}
+
+// Print the declared authority of each stage -- the runtime mirror of the
+// compile-time capability manifest. Demonstrates that the contract is data.
+@capabilities()
+fn print_authority(stages: [Stage]) {
+    println("stage authority contract:")
+    let mut i = 0
+    while i < len(stages) {
+        println("  stage " + to_string(i) + " " + stages[i].name + " -> " + caps_render(stages[i].caps))
+        i = i + 1
+    }
+}
