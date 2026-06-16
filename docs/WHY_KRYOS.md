@@ -80,7 +80,7 @@ fn fetch_and_save(url: str, path: str) {
 // Calling a function that needs 'gpu' from here would be a compile error
 ```
 
-This is deny-by-default: a function with no capability annotation cannot perform I/O, network access, or use hardware accelerators. Supply chain attacks that sneak network calls into utility functions become compile errors.
+Under `--strict-capabilities` (the default for new `kryos new` projects), this is deny-by-default: a function with no capability annotation cannot perform I/O, network access, or use hardware accelerators, so supply-chain attacks that sneak network calls into utility functions become compile errors. Capability checking is not globally deny-by-default outside strict mode.
 
 ### Compile-Time Evaluation
 
@@ -121,17 +121,21 @@ fn main() {
 
 ## Performance
 
-| Benchmark (medians of 5) | Kryos LLVM | Rust -O | clang -O2 | Go | ratio vs Rust |
-|---|---|---|---|---|---|
-| mandelbrot 1000²×1000 | 0.365s | 0.364s | 0.359s | 0.371s | 1.0x |
-| matmul 512² | 1.205s | 0.644s | 0.641s | 0.563s | 1.9x |
-| fib(40) | 1.043s | 0.344s | 0.342s | 0.699s | 3.0x |
-| nbody 2M steps | 1.852s | 0.110s | 0.151s | 0.250s | 16.8x |
+| Benchmark (medians of 5) | Kryos LLVM | Rust -O | ratio vs Rust |
+|---|---|---|---|
+| hashmap 1M+1M | 0.080s | 0.118s | 0.68x (beats Rust) |
+| matmul 512² | 0.618s | 0.653s | 0.95x (beats Rust) |
+| mandelbrot 1000²×1000 | 0.368s | 0.368s | 1.00x |
+| fib(40) | 0.349s | 0.347s | 1.01x |
+| fannkuch-redux(10) | 0.197s | 0.195s | 1.01x |
+| nbody 2M steps | 0.141s | 0.105s | 1.34x (beats clang/clang++ -O2) |
+| binary_trees d16 | 1.098s | 0.759s | 1.45x |
 
-Scalar/register-bound code reaches Rust/C parity; hot loops over arrays pay
-the ARC + bounds-check model today (nbody is the honest worst case). Full
-methodology, spreads, and the retraction of the earlier startup-floor
-tables: [BENCHMARKS.md](../BENCHMARKS.md).
+All 7 benchmarks land within 1.45x of Rust, and Kryos beats Rust outright on
+matmul (0.95x) and hashmap (0.68x). The honest worst case is binary_trees at
+1.45x (Rc-like `Shared` refcount traffic vs Rust's unique-ownership `Box`);
+nbody (1.34x) still beats clang/clang++ -O2. Full methodology, spreads, and
+the per-benchmark analysis: [BENCHMARKS.md](../BENCHMARKS.md).
 
 The compiler applies five MIR-level optimization passes before handing off to the backend:
 
@@ -145,17 +149,17 @@ These optimizations improve debug build performance significantly. Release build
 
 ## Status
 
-Kryos v2.3.0 is a complete, production-capable compiler with:
+Kryos 1.0.0-beta.1 is a feature-complete compiler (beta: one primary author, not yet externally stress-tested) with:
 
 - 21-crate Rust implementation (~50,000 lines)
 - Dual backends: Cranelift (fast dev, ~500ms) and LLVM (optimized release; see BENCHMARKS.md for measured ratios vs Rust/C)
-- 925+ tests, all passing, 0 clippy warnings
+- 1,000+ Rust tests plus a Cranelift/LLVM backend-parity matrix, 0 clippy warnings
 - Self type in traits, associated function syntax (`Type::method()`)
 - @pure CSE/dead-call optimization, @test runner, @copy struct deep-copy on assignment (both backends; param passing documented in gotcha #23)
 - 847 functions across 28 standard library modules (0 stubs)
 - Full toolchain: LSP, formatter, doc generator, package manager, test runner, REPL with persistent state
-- Self-hosting compiler: 19K lines of Kryos implementing the full pipeline, stage-1 verified
-- 3-stage bootstrap: SHA-256 identity proof that stage-1, stage-2, and stage-3 binaries are identical
+- Self-hosting compiler: ~19K lines of Kryos implementing the full pipeline (stage-1 is Cranelift-compiled — a different backend — so it is not byte-identical to later stages)
+- Bootstrap fixed point: SHA-256 proof that stage-2, stage-3, and stage-4 binaries are byte-identical, reached with the ownership and type checkers disabled on the self-host source (`--skip-ownership` / `KRYOS_SKIP_TYPES=1`); see `compiler/self-host/bootstrap-win.sh`. The per-module standalone compile check (`compiler/self-host/test_bootstrap.sh`) currently passes 11/16 modules.
 
 ## Who Is Kryos For?
 

@@ -177,7 +177,7 @@ The decisions still owed:
   author.
 
 These are deployment-time choices, not specification choices, so they
-do not block v2.3.0 of the toolchain.
+do not block 1.0.0-beta.1 of the toolchain.
 
 ## Versioning policy
 

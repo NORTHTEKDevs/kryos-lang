@@ -20,7 +20,8 @@
 set -e
 
 # Override with KRYOS_LANG_DIR if the repo lives elsewhere.
-KLANG="${KRYOS_LANG_DIR:-/c/Users/Krist/projects/active/kryos-lang}/compiler"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+KLANG="${KRYOS_LANG_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}/compiler"
 KB="$KLANG/target/debug/kryos.exe"           # HEAD debug build: `run` uses the Cranelift backend
 RT="$KLANG/target/release/kryos_rt.lib"        # HEAD runtime: exports kryos_budget_*
 SN="$KLANG/target/release/kryos_stdlib_native.lib"

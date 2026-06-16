@@ -19,8 +19,12 @@ Three stages of the bootstrap chain:
   individually verified to compile through stage 1.
 
 The full chain demonstrates that Kryos source can produce a working
-Kryos compiler. As of release 4.43.0-rc.4 (2026-05-20), **16 of 16
-self-host modules** compile reliably through stage 1.
+Kryos compiler. The canonical proof is the byte-identical **fixed point**
+(stage-2 == stage-3 == stage-4, SHA-256), reached with the ownership and
+type checkers disabled on the self-host source (`--skip-ownership` /
+`KRYOS_SKIP_TYPES=1`). The standalone per-module compile check
+(`test_bootstrap.sh`) currently passes **11 of 16** modules; codegen is
+flaky on the rest.
 
 ## Verify it yourself
 
@@ -35,9 +39,13 @@ cargo build --release -j 2
 ./target/release/kryos.exe build self-host/main.kry \
     -o target/bootstrap/kryos-stage1 --skip-ownership
 
-# Verify stage 1 compiles every self-host module
+# Verify the standalone per-module compile check
 bash self-host/test_bootstrap.sh
-# Expected: PASS: 16 / 16
+# Expected: PASS: 11 / 16 (codegen flaky on the rest)
+
+# Verify the byte-identical fixed point (the canonical criterion):
+bash self-host/bootstrap-win.sh
+# Expected: stage-2 == stage-3 == stage-4 (SHA-256)
 ```
 
 For a more rigorous test that runs N times and reports per-module pass
@@ -97,6 +105,12 @@ MSVC dynamic binaries it links. This is generous but the cost is VA
 only — physical memory is committed on demand.
 
 ## Stability
+
+> **Current status (1.0.0-beta.1):** the standalone per-module check
+> (`test_bootstrap.sh`) passes **11/16** — codegen regressed on 5 modules
+> since the characterization below. The byte-identical bootstrap **fixed
+> point** (stage-2 == stage-3 == stage-4, `bootstrap-win.sh`) still holds.
+> The figures below are from release 4.43.0-rc.4 and are kept for history.
 
 Empirical stability over 30-run characterization with release 4.43.0-rc.4:
 

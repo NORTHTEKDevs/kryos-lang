@@ -2,7 +2,7 @@
 
 Cluster: `std.probable` -- Confidence-Aware Values and Uncertainty Propagation
 
-Source verified: `/c/Users/Krist/projects/active/kryos-lang/compiler/stdlib/probable.kry`
+Source verified: `compiler/stdlib/probable.kry`
 Test verified: `tests/smoke/test_probable_generic.kry`
 Usage in production example: `examples/showcase/budget_analyst.kry`
 

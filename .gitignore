@@ -57,3 +57,7 @@ Thumbs.db
 *.map
 .claude/
 test_stdlib.txt
+
+# Internal/scratch state (not for publication)
+docs/ECOSYSTEM-STATE-*.md
+ecosystem/PROMPTS.md

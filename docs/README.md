@@ -70,13 +70,7 @@ kryos run hello.kry
 - [std.process](stdlib/process.md) -- `exec`, `argc`, `argv`, `sleep`, subprocess management
 - [std.datetime](stdlib/datetime.md) -- Date/time operations
 - [std.regex](stdlib/regex.md) -- Regular expressions
-- [std.config](stdlib/config.md) -- Configuration file parsing
-- [std.server](stdlib/server.md) -- HTTP server
-- [std.db](stdlib/db.md) -- Database access
-- [std.email](stdlib/email.md) -- Email sending
-- [std.auth](stdlib/auth.md) -- Authentication
-- [std.stripe](stdlib/stripe.md) -- Stripe payments
-- [std.claude](stdlib/claude.md) -- Claude AI integration
+- [std.db](stdlib/db.md) -- SQLite database access
 
 ### Appendix
 

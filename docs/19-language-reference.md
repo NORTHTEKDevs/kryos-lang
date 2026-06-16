@@ -560,7 +560,7 @@ for the stack-overflow handler details.
 
 ## 13. Conformance checklist
 
-What "implemented" means in v2.3.0:
+What "implemented" means in 1.0.0-beta.1:
 
 | Feature                     | Status              |
 | --------------------------- | ------------------- |

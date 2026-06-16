@@ -4,7 +4,7 @@
 // Open in a browser via the matching wasm_web_runner.html.
 
 fn main() {
-    dom_set_text("title", "Kryos v0.4 web demo")
+    dom_set_text("title", "Kryos 1.0.0-beta.1 web demo")
     dom_set_text("status", "drawing...")
 
     canvas_clear("c")
