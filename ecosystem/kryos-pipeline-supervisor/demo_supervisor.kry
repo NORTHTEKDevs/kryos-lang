@@ -1,0 +1,71 @@
+// ============================================================
+// demo_supervisor.kry -- the supervise() API, narrated. AOT-safe (no spawn).
+//
+//   kryos run demo_supervisor.kry
+//   kryos build --release demo_supervisor.kry && ./demo_supervisor
+//
+// Shows the deterministic supervisor core over a `fn(attempt) -> i64` unit whose
+// abnormal exit is the FAIL sentinel, for both spec scenarios, and prints the
+// hash-chained restart ledger. The spawned-thread version is e2e_spawn.kry.
+// ============================================================
+
+use restart
+use supervisor
+use kryos_cost_ledger::ledger
+use std::cost::{ComputeCost}
+
+// A unit that exits abnormally on attempts 1..k, then exits normally (=> id*100).
+fn flaky(attempt: i64, k: i64) -> i64 {
+    if attempt <= k {
+        return fail_sentinel()
+    }
+    return attempt * 100
+}
+fn flaky_2(attempt: i64) -> i64 { return flaky(attempt, 2) }
+fn always_crash(attempt: i64) -> i64 { return fail_sentinel() }
+
+fn show_ledger(led: [LedgerEntry]) {
+    println("    restart ledger (hash-chained, tamper-evident):")
+    let mut i = 0
+    while i < len(led) {
+        let e = led[i]
+        println("      seq=" + to_string(e.seq)
+            + " failed_attempt=" + to_string(e.tokens_used)
+            + " api_calls=" + to_string(e.api_calls)
+            + " hash=" + e.hash)
+        i = i + 1
+    }
+    println("    ledger_verify = " + to_string(ledger_verify(led)) + " (-1 means clean)")
+}
+
+fn main() {
+    println("=== kryos-pipeline-supervisor: bounded restart supervision ===")
+    println("")
+
+    println("[scenario 1] transiently-failing stage under a 3-restart budget")
+    let a = supervise("ingest", flaky_2, 3)
+    println("  " + a.message)
+    println("  succeeded=" + to_string(a.succeeded)
+        + " attempts=" + to_string(a.attempts)
+        + " restarts=" + to_string(a.restarts))
+    show_ledger(a.ledger)
+    println("")
+
+    println("[scenario 2] permanently-failing stage under a 3-restart budget")
+    let b = supervise("transform", always_crash, 3)
+    println("  " + b.message)
+    println("  succeeded=" + to_string(b.succeeded)
+        + " gave_up=" + to_string(b.gave_up)
+        + " attempts=" + to_string(b.attempts)
+        + " restarts=" + to_string(b.restarts))
+    show_ledger(b.ledger)
+    println("")
+
+    let ok = a.succeeded && (b.succeeded == false) && b.gave_up
+        && (a.restarts == 2) && (b.restarts == 3)
+    if ok {
+        println("=== demo OK: transient recovered (2 restarts); permanent gave up at the 3-restart ceiling ===")
+    } else {
+        println("=== demo MISMATCH ===")
+    }
+}

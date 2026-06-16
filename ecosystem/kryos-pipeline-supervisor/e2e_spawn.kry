@@ -1,0 +1,157 @@
+// ============================================================
+// e2e_spawn.kry -- REAL spawned-actor restart over OS threads + channels.
+//
+//   kryos run e2e_spawn.kry
+//
+// The @test JIT harness miscompiles `spawn {}`, so the spawned-actor proof lives
+// here, gated by `kryos run`. This is the answer to the spec's PRE-BUILD VERIFY:
+// kryos-rt has NO actor link/monitor, and a Kryos `throw` escaping a spawned
+// thread aborts the process -- so a stage CANNOT panic-and-be-caught. Instead a
+// supervised stage signals its abnormal exit IN BAND: the worker sends a FAIL
+// sentinel on a dedicated STATUS channel and returns. The driver-thread supervisor
+// `recv`s that status -- THE observable exit -- and restarts on FAIL, under the
+// same budget window the deterministic core uses.
+//
+// Each restart allocates fresh channels and spawns a new worker; the crashed
+// worker has already returned (it does not block), so `kryos_spawn_wait_all` at
+// the end of main joins cleanly with no hung threads.
+// ============================================================
+
+use restart
+use kryos_cost_ledger::ledger
+use std::cost::{ComputeCost}
+
+// Status-channel protocol (never carries data; results go on out_ch).
+fn status_done() -> i64 { return 1 }
+fn status_fail() -> i64 { return fail_sentinel() }
+
+// A flaky actor stage. It reads its attempt number from `ctrl_ch`, then squares
+// `n` items from `in_ch` into `out_ch`. On attempts <= `crash_below` it signals
+// an abnormal exit (FAIL on `status_ch`) instead of finishing -- a transient crash.
+// All calls inside `spawn` are named fns / builtins (fn-VALUES cannot cross a
+// spawn boundary; named fns can).
+fn run_flaky_stage(in_ch: i64, out_ch: i64, status_ch: i64, ctrl_ch: i64, n: i64, crash_below: i64) -> i64 {
+    spawn {
+        let attempt = recv(ctrl_ch)
+        let mut i = 0
+        let mut crashed = false
+        while i < n {
+            let v = recv(in_ch)
+            if attempt <= crash_below {
+                send(status_ch, status_fail())
+                crashed = true
+                break
+            }
+            send(out_ch, v * v)
+            i = i + 1
+        }
+        if crashed == false {
+            send(status_ch, status_done())
+        }
+    }
+    return 0
+}
+
+fn _restart_cost(failed_attempt: i64) -> ComputeCost {
+    return ComputeCost {
+        wall_time_ms: 0.0, tokens_used: failed_attempt, api_calls: 1,
+        money_usd: 0.0, energy_kwh: 0.0
+    }
+}
+
+// Supervise a spawned flaky stage. Returns 1 on eventual success, 0 on give-up.
+// Prints the restart narrative and the restart ledger summary.
+fn supervise_spawned(name: str, n: i64, crash_below: i64, max_restarts: i64) -> i64 {
+    let depth = budget_open(max_restarts)
+    let mut led = ledger_new()
+    let mut attempt = 1
+    let mut restarts = 0
+    let mut succeeded = false
+    let mut gave_up = false
+
+    println("supervising spawned stage '" + name + "' (restart budget = " + to_string(max_restarts) + ")")
+    loop {
+        // Fresh wiring per stage instance -- an abandoned crashed worker keeps none.
+        let in_ch = chan()
+        let out_ch = chan()
+        let status_ch = chan()
+        let ctrl_ch = chan()
+
+        let mut _started = run_flaky_stage(in_ch, out_ch, status_ch, ctrl_ch, n, crash_below)
+        send(ctrl_ch, attempt)
+        let mut k = 0
+        while k < n {
+            send(in_ch, k + 1)
+            k = k + 1
+        }
+
+        // Observe the stage's exit on the status channel (the in-band monitor).
+        let st = recv(status_ch)
+        if st == status_done() {
+            println("  attempt " + to_string(attempt) + ": stage exited NORMALLY")
+            // Drain the n squared results the healthy worker forwarded.
+            let mut got: [i64] = []
+            let mut d = 0
+            while d < n {
+                got = push(got, recv(out_ch))
+                d = d + 1
+            }
+            println("    results: " + _join(got))
+            succeeded = true
+            break
+        }
+
+        // Abnormal exit observed.
+        println("  attempt " + to_string(attempt) + ": stage CRASHED (FAIL signalled on status channel)")
+        if reserve_restart() == false {
+            println("  restart budget EXHAUSTED -- supervisor gives up (no spin)")
+            gave_up = true
+            break
+        }
+        led = ledger_append(led, _restart_cost(attempt))
+        restarts = restarts + 1
+        println("    -> restart " + to_string(restarts) + " authorized by budget frame; recorded to ledger")
+        attempt = attempt + 1
+    }
+
+    budget_close(depth)
+
+    println("  restarts performed: " + to_string(restarts)
+        + " | ledger entries: " + to_string(len(led))
+        + " | ledger_verify: " + to_string(ledger_verify(led)))
+    if succeeded {
+        println("  RESULT: '" + name + "' recovered after " + to_string(restarts) + " restart(s)")
+        return 1
+    }
+    println("  RESULT: '" + name + "' gave up (gave_up=" + to_string(gave_up) + ")")
+    return 0
+}
+
+fn _join(xs: [i64]) -> str {
+    let mut s = "["
+    let mut i = 0
+    while i < len(xs) {
+        if i > 0 { s = s + ", " }
+        s = s + to_string(xs[i])
+        i = i + 1
+    }
+    return s + "]"
+}
+
+fn main() {
+    println("=== kryos-pipeline-supervisor: spawned-actor restart (real threads) ===")
+    println("")
+    // Transient: crashes on attempts 1-2, recovers on attempt 3, under a 3-restart budget.
+    let a = supervise_spawned("transient", 4, 2, 3)
+    println("")
+    // Permanent: crashes every attempt; trips the restart budget and gives up.
+    let b = supervise_spawned("permanent", 4, 999, 3)
+    println("")
+
+    let ok = (a == 1) && (b == 0)
+    if ok {
+        println("=== e2e PASS: transient recovered; permanent tripped the budget and gave up ===")
+    } else {
+        println("=== e2e FAIL: a=" + to_string(a) + " b=" + to_string(b) + " ===")
+    }
+}

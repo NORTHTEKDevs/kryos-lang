@@ -1,0 +1,14 @@
+[package]
+name = "kryos-pipeline-supervisor"
+version = "0.1.0"
+description = "Budget-bounded restart supervision for actor stages: a crash-looping stage provably cannot exceed its restart budget because the restart ceiling is a language @budget frame, not a hand-rolled counter. One-for-one restart; each restart recorded to a hash-chained cost ledger."
+license = "Apache-2.0"
+
+# The supervisor core is pure compute (restart accounting + ledger hash chain).
+# `io` is for the demo/e2e prints and optional ledger persistence only.
+[capabilities]
+allowed = ["compute", "io"]
+
+[dependencies]
+kryos_cost_ledger = { path = "../kryos-cost-ledger" }
+kryos_actor_pipeline = { path = "../kryos-actor-pipeline" }

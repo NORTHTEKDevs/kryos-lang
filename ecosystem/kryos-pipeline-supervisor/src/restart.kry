@@ -1,0 +1,106 @@
+// ============================================================
+// restart.kry -- the restart-budget primitive and the abnormal-exit signal.
+//
+// THE CEILING IS A LANGUAGE BUDGET FRAME, NOT A COUNTER.
+// ------------------------------------------------------
+// A supervisor opens a restart window by pushing a budget frame whose `calls`
+// axis is the restart ceiling: `budget_open(N)` lowers to the SAME thread-local
+// frame the `@budget(calls = N)` attribute injects (see kryos-rt/src/budget.rs).
+// Every restart must be RESERVED through `reserve_restart()`, which calls the
+// runtime's `kryos_budget_try_call`: it returns 0 (and decrements every active
+// frame) while calls remain, and 1 once the frame is exhausted -- charging
+// nothing. So a crash-looping stage cannot perform an (N+1)th restart: the
+// language refuses the reservation, exactly as a runaway agent cannot exceed
+// its token budget. The supervisor never maintains its own ceiling counter; it
+// asks the frame.
+//
+// WHY a manual push instead of the `@budget(calls = N)` attribute: the
+// attribute only takes a compile-time literal, but a supervisor's restart
+// ceiling is a runtime parameter. `budget_open`/`budget_close` push and pop the
+// identical primitive with a runtime N. `budget_close` uses `kryos_budget_pop_to`,
+// which is self-healing: it truncates the frame stack back to the saved depth, so
+// a leaked inner frame cannot poison a later window on the same thread.
+//
+// ABNORMAL EXIT IS OBSERVED ON THE RESULT, NOT A MONITOR.
+// ------------------------------------------------------
+// kryos-rt has no actor link/monitor primitive, and a Kryos `throw` that escapes
+// a spawned thread aborts the whole process (it cannot be caught across the
+// thread boundary). Per the spec's PRE-BUILD downgrade, a supervised stage
+// therefore signals an abnormal exit IN BAND: its outcome is a value, and the
+// reserved marker `FAIL` (i64::MIN) means "this stage exited abnormally". The
+// driver-thread supervisor reads that value (a return value here; a status-channel
+// recv in the spawn e2e) and restarts on `FAIL`. No payload may equal `FAIL`.
+// ============================================================
+
+extern {
+    fn kryos_budget_push(tokens: i64, calls: i64) -> i64
+    fn kryos_budget_pop_to(depth: i64)
+    fn kryos_budget_try_call() -> i64
+    fn kryos_budget_active() -> i64
+    fn kryos_budget_remaining_calls() -> i64
+}
+
+// The reserved abnormal-exit marker (i64::MIN). A stage that returns this has
+// "crashed"; any other value is a normal result. No payload may equal FAIL.
+@capabilities()
+fn fail_sentinel() -> i64 {
+    return -9223372036854775808
+}
+
+// Did the stage exit abnormally?
+@capabilities()
+fn is_fail(v: i64) -> bool {
+    return v == fail_sentinel()
+}
+
+// Open a restart window of `max_restarts` restarts. Returns the frame depth to
+// hand back to `budget_close`. A negative `max_restarts` means unlimited.
+@capabilities()
+fn budget_open(max_restarts: i64) -> i64 {
+    return kryos_budget_push(-1, max_restarts)
+}
+
+// Close a restart window opened by `budget_open`. Self-healing: pops every
+// frame at or above `depth`, so a leaked inner frame cannot leak across windows.
+@capabilities()
+fn budget_close(depth: i64) {
+    kryos_budget_pop_to(depth)
+}
+
+// Reserve one restart against the active window. Returns true if a restart is
+// permitted (a frame call was consumed), false if the restart budget is
+// exhausted. This is the language-enforced ceiling: the supervisor asks the
+// budget frame whether another restart is allowed; it never counts itself.
+@capabilities()
+fn reserve_restart() -> bool {
+    if kryos_budget_active() == 0 {
+        // No window open -> treat as unlimited (defensive; supervise always opens one).
+        return true
+    }
+    if kryos_budget_try_call() == 1 {
+        return false
+    }
+    return true
+}
+
+// Restarts still permitted in the active window (-1 if no window). For reporting.
+@capabilities()
+fn restarts_remaining() -> i64 {
+    return kryos_budget_remaining_calls()
+}
+
+// Reserve one restart, THROWING "@budget" on exhaustion instead of returning a
+// flag. This is the hard-ceiling form: under a `@budget(calls = N)` attribute
+// (or a `budget_open(N)` window), the (N+1)th reservation throws, so a restart
+// loop driven through this function provably cannot exceed N -- the throw is a
+// language property of the frame, not a check the loop could forget. `supervise`
+// uses the non-throwing `reserve_restart` to fold this into a clean give-up
+// report; callers wanting fail-fast semantics drive their loop through this.
+@capabilities()
+fn reserve_restart_or_throw() {
+    if kryos_budget_active() == 1 {
+        if kryos_budget_try_call() == 1 {
+            throw "@budget: restart budget exhausted -- supervisor refuses further restarts"
+        }
+    }
+}

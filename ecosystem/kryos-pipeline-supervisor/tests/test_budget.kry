@@ -1,0 +1,65 @@
+// ============================================================
+// test_budget.kry -- the restart ceiling is a LANGUAGE @budget frame.
+//
+//   kryos test --path ecosystem/kryos-pipeline-supervisor
+//
+// The headline honesty check (mirrors kryos-resilient-llm's test_budget): prove
+// the `@budget(calls = N)` ATTRIBUTE frame persists across a restart loop, so a
+// crash-looping stage driven through `reserve_restart_or_throw` cannot perform an
+// (N+1)th restart -- the (N+1)th reservation THROWS. The throw is the MIR-injected
+// thread-local frame doing the bounding, not a counter the loop maintains.
+//
+// `supervise` (the library API) folds this same frame into a graceful give-up
+// REPORT via the non-throwing reservation; here we exercise the raw throwing
+// form under the attribute to show the ceiling is language-enforced.
+// ============================================================
+
+use restart
+
+// A restart loop bounded by an ATTRIBUTE frame of 2 restarts. The loop asks for
+// `wanted` restarts; the 3rd reservation finds the frame exhausted and throws.
+// Returns the throw message, or a NO-THROW marker if the loop completed.
+@budget(tokens = 100000, calls = 2)
+fn drive_restarts_under_2budget(wanted: i64) -> str {
+    try {
+        let mut performed = 0
+        while performed < wanted {
+            reserve_restart_or_throw()
+            performed = performed + 1
+        }
+        return "NO THROW: performed=" + to_string(performed)
+    } catch e {
+        return e
+    }
+}
+
+// --- gate: a 4-restart demand under a 2-restart attribute budget throws ------
+@test
+fn test_attribute_budget_frame_spans_restart_loop() {
+    let msg = drive_restarts_under_2budget(4)
+    assert(contains(msg, "@budget"),
+        "exceeding the restart budget MUST throw @budget; got: " + msg)
+    assert(contains(msg, "exhausted"),
+        "the throw is the restart-exhaustion message; got: " + msg)
+}
+
+// --- control: a demand AT the budget completes without throwing -------------
+@test
+fn test_attribute_budget_allows_exactly_n() {
+    let msg = drive_restarts_under_2budget(2)
+    assert(contains(msg, "NO THROW"),
+        "demanding exactly the budget (2) must NOT throw; got: " + msg)
+    assert(contains(msg, "performed=2"),
+        "exactly 2 restarts performed; got: " + msg)
+}
+
+// --- a fresh attribute frame resets each call (no cross-call leak) -----------
+@test
+fn test_attribute_budget_resets_per_call() {
+    let a = drive_restarts_under_2budget(2)
+    assert(contains(a, "NO THROW"), "first call completes at budget; got: " + a)
+    let b = drive_restarts_under_2budget(2)
+    assert(contains(b, "NO THROW"), "second call gets a fresh frame; got: " + b)
+    let c = drive_restarts_under_2budget(3)
+    assert(contains(c, "@budget"), "third call still bounded at 2; got: " + c)
+}
