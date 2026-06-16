@@ -1,0 +1,130 @@
+// ============================================================
+// test_compliance.kry -- executable proof driver
+//
+//   kryos run tests/test_compliance.kry
+//
+// This is a `kryos run` driver (NOT `kryos test`): the generator prints f64
+// costs, and the `kryos test` @test JIT harness mis-compiles to_string(f64)
+// even on unexecuted call sites. Every check runs require(cond, msg), which
+// prints "FAIL: ..." and exits 1 on the first failure; reaching the end and
+// printing the pass summary IS the proof.
+//
+// Sample set: one compliant high-risk action, one high-risk action with its
+// data lineage missing. We assert the violation is flagged on traceability
+// AND human oversight, that the compliant action passes everything, and we
+// assert specific section/field values in both the JSON summary and the
+// markdown.
+// ============================================================
+
+use model
+use findings
+use soc2
+use report
+
+// require() calls exit() on failure, which needs the `process` capability.
+@capabilities(process)
+fn require(cond: bool, msg: str) {
+    if cond {
+        return
+    }
+    println("FAIL: " + msg)
+    exit(1)
+}
+
+// The driver exercises the compute-only library AND can exit(1) via
+// require(), so it declares the union: compute + process.
+@capabilities(compute, process)
+fn main() {
+    let compliant = audit_entry(
+        "loan application approved",
+        "underwriting-model-v2",
+        ["form_upload", "fico:712", "underwriting-model-v2", "compliance_review"],
+        ["net", "db"],
+        1200,
+        0.024,
+        true,
+        true
+    )
+
+    let violation = audit_entry(
+        "loan application denied",
+        "underwriting-model-v2",
+        [],
+        ["net", "db"],
+        1500,
+        0.031,
+        false,
+        true
+    )
+
+    let cf = evaluate(compliant)
+    let vf = evaluate(violation)
+
+    // --- Compliant entry: everything passes -------------------------------
+    require(overall_verdict(cf) == "PASS", "compliant entry must have overall PASS")
+    require(count_failed(cf) == 0, "compliant entry must have zero failed findings")
+    require(count_passed(cf) == 6, "compliant entry must have all 6 findings pass")
+    require(status_for(cf, "Traceability") == "PASS", "compliant: traceability must PASS")
+    require(status_for(cf, "Human oversight") == "PASS", "compliant: human oversight must PASS")
+    require(status_for(cf, "Cost metering") == "PASS", "compliant: cost metering must PASS")
+    require(status_for(cf, "Risk management") == "PASS", "compliant: risk management must PASS")
+
+    // --- Violation entry: missing lineage + no oversight on high risk -----
+    require(overall_verdict(vf) == "FAIL", "violation entry must have overall FAIL")
+    require(status_for(vf, "Traceability") == "FAIL", "violation: empty lineage must FAIL traceability")
+    require(status_for(vf, "Human oversight") == "FAIL", "violation: high-risk + no oversight must FAIL")
+    require(status_for(vf, "Risk management") == "FAIL", "violation: missing safeguard must FAIL risk management")
+    // Findings NOT tied to the two injected violations still pass.
+    require(status_for(vf, "Model identification") == "PASS", "violation: model id is present, should PASS")
+    require(status_for(vf, "Capability surface") == "PASS", "violation: capabilities declared, should PASS")
+    require(status_for(vf, "Cost metering") == "PASS", "violation: cost metered, should PASS")
+    require(count_failed(vf) == 3, "violation entry must have exactly 3 failed findings")
+
+    // --- The traceability FAIL detail must explain the lineage gap --------
+    let mut trace_detail = ""
+    let mut i = 0
+    while i < len(vf) {
+        if vf[i].control == "Traceability" {
+            trace_detail = vf[i].detail
+        }
+        i = i + 1
+    }
+    require(contains(trace_detail, "lineage"), "traceability FAIL detail must mention lineage")
+
+    // --- SOC 2 CC-series mapping is stable --------------------------------
+    require(cc_id_for("Traceability") == "CC2.1", "Traceability must map to CC2.1")
+    require(cc_id_for("Human oversight") == "CC1.3", "Human oversight must map to CC1.3")
+    require(cc_id_for("Capability surface") == "CC6.1", "Capability surface must map to CC6.1")
+    require(cc_id_for("Cost metering") == "CC7.2", "Cost metering must map to CC7.2")
+    require(cc_id_for("Risk management") == "CC3.2", "Risk management must map to CC3.2")
+
+    // --- JSON summary: parse it back and assert fields --------------------
+    let cjson = report_json(compliant, cf)
+    let cparsed = json_parse(cjson)
+    require(json_to_str(json_get(cparsed, "overall")) == "PASS", "compliant JSON overall must be PASS")
+    require(json_to_str(json_get(cparsed, "schema_version")) == "kryos-compliance-v1", "schema_version field must be kryos-compliance-v1")
+    let ccost = json_get(cparsed, "cost")
+    require(json_to_float(json_get(ccost, "tokens")) > 1000.0, "compliant cost.tokens must round-trip > 1000")
+
+    let vjson = report_json(violation, vf)
+    let vparsed = json_parse(vjson)
+    require(json_to_str(json_get(vparsed, "overall")) == "FAIL", "violation JSON overall must be FAIL")
+    require(json_to_float(json_get(vparsed, "failed")) == 3.0, "violation JSON failed count must be 3")
+
+    // --- Markdown: section headers + values present -----------------------
+    let cmd = render_report(compliant, cf)
+    require(contains(cmd, "EU AI Act Annex IV"), "markdown must contain Annex IV section")
+    require(contains(cmd, "SOC 2 Common Criteria Mapping"), "markdown must contain SOC 2 mapping section")
+    require(contains(cmd, "HIGH-RISK"), "markdown must classify the action as HIGH-RISK")
+    require(contains(cmd, "CC2.1"), "markdown SOC 2 table must list CC2.1")
+    require(contains(cmd, "1200"), "markdown must show the metered token count")
+
+    let vmd = render_report(violation, vf)
+    require(contains(vmd, "Overall verdict:** FAIL"), "violation markdown must show overall FAIL")
+
+    println("PASS: compliant entry -> overall PASS, 6/6 findings pass")
+    println("PASS: violation entry -> overall FAIL, traceability + oversight + risk FAIL (3 failed)")
+    println("PASS: SOC 2 CC-series mapping stable (CC2.1/CC1.3/CC6.1/CC7.2/CC3.2)")
+    println("PASS: JSON summary + markdown field assertions")
+    println("ALL CHECKS PASSED")
+}

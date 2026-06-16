@@ -1,0 +1,157 @@
+// ============================================================
+// report.kry -- markdown report + JSON summary generators
+//
+// render_report(e, findings) emits the human-facing markdown: an EU AI Act
+// Annex IV section set (traceability, human oversight, capability/authority
+// surface, cost metering, risk) followed by the SOC 2 CC-series control
+// mapping table and a findings summary.
+//
+// report_json(e, findings) emits the machine-facing JSON summary, built
+// with the native json_* builtins (json_object / json_array / json_string /
+// json_number / json_bool / json_stringify) -- a JSON value is an i64
+// handle, exactly as the standard library represents it.
+// ============================================================
+
+use model
+use findings
+use soc2
+
+// Join a [str] with ", " ("none" when empty).
+@capabilities(compute)
+fn _cm_join(items: [str]) -> str {
+    if len(items) == 0 {
+        return "none"
+    }
+    let mut out = ""
+    let mut i = 0
+    while i < len(items) {
+        if i > 0 {
+            out = out + ", "
+        }
+        out = out + items[i]
+        i = i + 1
+    }
+    return out
+}
+
+// One "- Status: X\n  Detail" block for a finding chosen by control label.
+@capabilities(compute)
+fn _cm_finding_block(findings: [Finding], control: str) -> str {
+    let mut i = 0
+    while i < len(findings) {
+        let f = findings[i]
+        if f.control == control {
+            return "- **Status:** " + f.status + "\n- " + f.detail + "\n"
+        }
+        i = i + 1
+    }
+    return "- **Status:** (not evaluated)\n"
+}
+
+// Full markdown report.
+@capabilities(compute)
+fn render_report(e: AuditEntry, findings: [Finding]) -> str {
+    let verdict = overall_verdict(findings)
+
+    let mut s = "# AI System Compliance Report\n\n"
+    s = s + "**Action:** " + e.action + "\n\n"
+    s = s + "**Model:** " + e.model_id + "\n\n"
+    s = s + "**Risk tier:** " + risk_tier_label(e) + "\n\n"
+    s = s + "**Overall verdict:** " + verdict + "\n\n"
+    s = s + "**Findings:** " + to_string(count_passed(findings)) + " passed, " + to_string(count_failed(findings)) + " failed\n\n"
+
+    s = s + "## EU AI Act Annex IV Technical Documentation\n\n"
+
+    s = s + "### 1. Traceability and Data Lineage\n"
+    s = s + _cm_finding_block(findings, "Traceability")
+    s = s + "- Recorded sources: " + _cm_join(e.sources) + "\n\n"
+
+    s = s + "### 2. Human Oversight (Art. 14)\n"
+    s = s + _cm_finding_block(findings, "Human oversight")
+    s = s + "\n"
+
+    s = s + "### 3. Capability / Authority Surface\n"
+    s = s + _cm_finding_block(findings, "Capability surface")
+    s = s + "- Declared capabilities: " + _cm_join(e.capabilities_used) + "\n\n"
+
+    s = s + "### 4. Resource Consumption and Cost Metering\n"
+    s = s + _cm_finding_block(findings, "Cost metering")
+    s = s + "- Tokens used: " + to_string(e.cost_tokens) + "\n"
+    s = s + "- Cost (USD): $" + to_string(e.cost_usd) + "\n\n"
+
+    s = s + "### 5. Risk Management\n"
+    s = s + _cm_finding_block(findings, "Risk management")
+    s = s + "\n"
+
+    s = s + "## SOC 2 Common Criteria Mapping\n\n"
+    s = s + "| Control | Criterion | Mapped Annex IV concern | Status |\n"
+    s = s + "|---------|-----------|--------------------------|--------|\n"
+    let mut j = 0
+    while j < len(findings) {
+        let f = findings[j]
+        s = s + "| " + cc_id_for(f.control) + " | " + cc_name_for(f.control) + " | " + f.control + " | " + f.status + " |\n"
+        j = j + 1
+    }
+    s = s + "\n"
+
+    s = s + "## Findings Summary\n\n"
+    let mut k = 0
+    while k < len(findings) {
+        let f2 = findings[k]
+        s = s + "- " + f2.status + " - " + f2.control + ": " + f2.detail + "\n"
+        k = k + 1
+    }
+
+    return s
+}
+
+// JSON summary built with the native json_* builtins.
+@capabilities(compute)
+fn report_json(e: AuditEntry, findings: [Finding]) -> str {
+    let mut fitems: [i64] = []
+    let mut i = 0
+    while i < len(findings) {
+        let f = findings[i]
+        fitems = push(fitems, json_object(
+            ["control", "status", "detail"],
+            [json_string(f.control), json_string(f.status), json_string(f.detail)]
+        ))
+        i = i + 1
+    }
+    let findings_arr = json_array(fitems)
+
+    let mut sitems: [i64] = []
+    let mut j = 0
+    while j < len(findings) {
+        let f2 = findings[j]
+        sitems = push(sitems, json_object(
+            ["control", "criterion", "maps_to", "status"],
+            [json_string(cc_id_for(f2.control)), json_string(cc_name_for(f2.control)), json_string(f2.control), json_string(f2.status)]
+        ))
+        j = j + 1
+    }
+    let soc2_arr = json_array(sitems)
+
+    let cost_obj = json_object(
+        ["tokens", "usd"],
+        [json_number(e.cost_tokens as f64), json_number(e.cost_usd)]
+    )
+
+    let top = json_object(
+        ["schema_version", "action", "model_id", "risk_tier", "high_risk", "overall", "passed", "failed", "findings", "soc2_mapping", "cost"],
+        [
+            json_string("kryos-compliance-v1"),
+            json_string(e.action),
+            json_string(e.model_id),
+            json_string(risk_tier_label(e)),
+            json_bool(e.high_risk),
+            json_string(overall_verdict(findings)),
+            json_number(count_passed(findings) as f64),
+            json_number(count_failed(findings) as f64),
+            findings_arr,
+            soc2_arr,
+            cost_obj
+        ]
+    )
+    return json_stringify(top)
+}

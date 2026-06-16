@@ -1,0 +1,11 @@
+[package]
+name = "kryos-compliance"
+version = "0.1.0"
+description = "EU AI Act (Annex IV) + SOC 2 compliance report generator for governed Kryos AI systems"
+license = "Apache-2.0"
+
+# The generator itself is pure-compute: it reads audit entries that are
+# already in memory and emits markdown + JSON. It touches no io/net/process
+# builtins, so the only authority it needs is `compute`.
+[capabilities]
+allowed = ["compute"]

@@ -1,0 +1,67 @@
+// ============================================================
+// soc2.kry -- SOC 2 Common Criteria (CC-series) mapping
+//
+// The same evidence that satisfies an EU AI Act Annex IV concern also
+// satisfies a SOC 2 Trust Services Common Criterion. This module maps each
+// Annex IV finding onto the CC control it supports, so one audit entry
+// produces BOTH report frames. The mapped control inherits the finding's
+// PASS/FAIL status -- a failed Annex IV concern is a failed SOC 2 control.
+//
+// Mapping (control label -> CC id / criterion):
+//   Traceability         -> CC2.1  Quality information / audit trail
+//   Human oversight      -> CC1.3  Management oversight & accountability
+//   Model identification -> CC7.1  System component inventory
+//   Capability surface   -> CC6.1  Logical access / least privilege
+//   Cost metering        -> CC7.2  System monitoring & anomaly detection
+//   Risk management      -> CC3.2  Risk identification & assessment
+// ============================================================
+
+use findings
+
+// CC id for an Annex IV finding control label ("" if unmapped).
+@capabilities(compute)
+fn cc_id_for(control: str) -> str {
+    if control == "Traceability" {
+        return "CC2.1"
+    }
+    if control == "Human oversight" {
+        return "CC1.3"
+    }
+    if control == "Model identification" {
+        return "CC7.1"
+    }
+    if control == "Capability surface" {
+        return "CC6.1"
+    }
+    if control == "Cost metering" {
+        return "CC7.2"
+    }
+    if control == "Risk management" {
+        return "CC3.2"
+    }
+    return ""
+}
+
+// Human-readable name of the CC criterion for a control label.
+@capabilities(compute)
+fn cc_name_for(control: str) -> str {
+    if control == "Traceability" {
+        return "Quality information / audit trail"
+    }
+    if control == "Human oversight" {
+        return "Management oversight & accountability"
+    }
+    if control == "Model identification" {
+        return "System component inventory"
+    }
+    if control == "Capability surface" {
+        return "Logical access / least privilege"
+    }
+    if control == "Cost metering" {
+        return "System monitoring & anomaly detection"
+    }
+    if control == "Risk management" {
+        return "Risk identification & assessment"
+    }
+    return "Unmapped"
+}

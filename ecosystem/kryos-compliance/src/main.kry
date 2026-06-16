@@ -1,0 +1,60 @@
+// ============================================================
+// main.kry -- compliance report demo
+//
+// Builds two governed AI actions -- one fully compliant, one with its data
+// lineage missing -- and emits an EU AI Act Annex IV + SOC 2 markdown
+// report plus a JSON summary for each.
+//
+//   kryos run src/main.kry
+//
+// main() is intentionally unannotated: it is a driver, not part of the
+// capability-checked library surface.
+// ============================================================
+
+use model
+use findings
+use report
+
+@capabilities(compute)
+fn main() {
+    // A compliant high-risk loan-approval decision: full lineage, bounded
+    // capability surface, metered cost, human in the loop.
+    let compliant = audit_entry(
+        "loan application approved",
+        "underwriting-model-v2",
+        ["form_upload", "fico:712", "underwriting-model-v2", "compliance_review"],
+        ["net", "db"],
+        1200,
+        0.024,
+        true,
+        true
+    )
+
+    // A non-compliant high-risk decision: NO recorded lineage and NO human
+    // oversight -- two Annex IV violations.
+    let violation = audit_entry(
+        "loan application denied",
+        "underwriting-model-v2",
+        [],
+        ["net", "db"],
+        1500,
+        0.031,
+        false,
+        true
+    )
+
+    let cf = evaluate(compliant)
+    let vf = evaluate(violation)
+
+    println(render_report(compliant, cf))
+    println("```json")
+    println(report_json(compliant, cf))
+    println("```")
+    println("")
+    println("================================================================")
+    println("")
+    println(render_report(violation, vf))
+    println("```json")
+    println(report_json(violation, vf))
+    println("```")
+}

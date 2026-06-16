@@ -1,0 +1,160 @@
+// ============================================================
+// findings.kry -- PASS/FAIL compliance findings
+//
+// Each finding maps one EU AI Act Annex IV concern onto a binary, machine-
+// checkable verdict over a single AuditEntry. A Finding carries the concern
+// label (`control`), the verdict (`status` = "PASS" | "FAIL"), and a human-
+// readable `detail`.
+//
+// Two findings are hard gates per the build spec:
+//   - Traceability FAILs when the entry has no recorded lineage (sources).
+//   - Human oversight FAILs when a HIGH-RISK action ran with no human in
+//     the loop (EU AI Act Art. 14).
+// The rest (model identification, capability/authority surface, cost
+// metering, risk management) follow the same shape.
+// ============================================================
+
+use model
+
+struct Finding {
+    control: str,
+    status: str,
+    detail: str,
+}
+
+@capabilities(compute)
+fn status_pass() -> str {
+    return "PASS"
+}
+
+@capabilities(compute)
+fn status_fail() -> str {
+    return "FAIL"
+}
+
+// Annex IV: traceability + data lineage. A decision with zero recorded
+// sources cannot be reconstructed or audited, so it FAILs outright.
+@capabilities(compute)
+fn finding_traceability(e: AuditEntry) -> Finding {
+    if len(e.sources) == 0 {
+        return Finding { control: "Traceability", status: status_fail(), detail: "no data lineage recorded: the decision cannot be reconstructed from its sources" }
+    }
+    return Finding { control: "Traceability", status: status_pass(), detail: "data lineage recorded across " + to_string(len(e.sources)) + " source(s)" }
+}
+
+// Annex IV / Art. 14: human oversight. Mandatory for HIGH-RISK actions; a
+// high-risk action with no human in the loop FAILs. For limited-risk
+// actions oversight is recorded but not required.
+@capabilities(compute)
+fn finding_oversight(e: AuditEntry) -> Finding {
+    if e.high_risk {
+        if e.human_oversight {
+            return Finding { control: "Human oversight", status: status_pass(), detail: "high-risk action carried documented human oversight (Art. 14)" }
+        }
+        return Finding { control: "Human oversight", status: status_fail(), detail: "high-risk action ran with NO human oversight (Art. 14 violation)" }
+    }
+    if e.human_oversight {
+        return Finding { control: "Human oversight", status: status_pass(), detail: "human oversight present (not mandatory at this risk tier)" }
+    }
+    return Finding { control: "Human oversight", status: status_pass(), detail: "human oversight not mandated for limited-risk actions" }
+}
+
+// Annex IV: identification of the AI system / model that produced the
+// decision. An unidentified model breaks accountability.
+@capabilities(compute)
+fn finding_model(e: AuditEntry) -> Finding {
+    if len(e.model_id) == 0 {
+        return Finding { control: "Model identification", status: status_fail(), detail: "no model identifier recorded for the decision" }
+    }
+    return Finding { control: "Model identification", status: status_pass(), detail: "decision attributed to model '" + e.model_id + "'" }
+}
+
+// Annex IV / capability authority: the declared capability surface the
+// system exercised. An empty surface means the system's authority was
+// never bounded or declared.
+@capabilities(compute)
+fn finding_capabilities(e: AuditEntry) -> Finding {
+    if len(e.capabilities_used) == 0 {
+        return Finding { control: "Capability surface", status: status_fail(), detail: "no capability/authority surface declared for the action" }
+    }
+    return Finding { control: "Capability surface", status: status_pass(), detail: "authority bounded to " + to_string(len(e.capabilities_used)) + " declared capability(ies)" }
+}
+
+// Annex IV: resource consumption. Compute/cost must be metered. A run that
+// recorded neither tokens nor spend has no resource accounting.
+@capabilities(compute)
+fn finding_cost(e: AuditEntry) -> Finding {
+    if e.cost_tokens > 0 or e.cost_usd > 0.0 {
+        return Finding { control: "Cost metering", status: status_pass(), detail: "resource consumption metered: " + to_string(e.cost_tokens) + " tokens, $" + to_string(e.cost_usd) }
+    }
+    return Finding { control: "Cost metering", status: status_fail(), detail: "no resource consumption metered for the action" }
+}
+
+// Risk management: a high-risk action is only well-managed when its
+// mandated safeguards (lineage + human oversight) are both present.
+@capabilities(compute)
+fn finding_risk(e: AuditEntry) -> Finding {
+    if e.high_risk == false {
+        return Finding { control: "Risk management", status: status_pass(), detail: "limited-risk action; baseline safeguards apply" }
+    }
+    if len(e.sources) > 0 and e.human_oversight {
+        return Finding { control: "Risk management", status: status_pass(), detail: "high-risk action with lineage and human oversight in place" }
+    }
+    return Finding { control: "Risk management", status: status_fail(), detail: "high-risk action missing a mandated safeguard (lineage and/or human oversight)" }
+}
+
+// Run every finding over an entry, in report order.
+@capabilities(compute)
+fn evaluate(e: AuditEntry) -> [Finding] {
+    let mut out: [Finding] = []
+    out = push(out, finding_traceability(e))
+    out = push(out, finding_oversight(e))
+    out = push(out, finding_model(e))
+    out = push(out, finding_capabilities(e))
+    out = push(out, finding_cost(e))
+    out = push(out, finding_risk(e))
+    return out
+}
+
+// Count of FAIL findings.
+@capabilities(compute)
+fn count_failed(findings: [Finding]) -> i64 {
+    let mut n = 0
+    let mut i = 0
+    while i < len(findings) {
+        if findings[i].status == status_fail() {
+            n = n + 1
+        }
+        i = i + 1
+    }
+    return n
+}
+
+// Count of PASS findings.
+@capabilities(compute)
+fn count_passed(findings: [Finding]) -> i64 {
+    return len(findings) - count_failed(findings)
+}
+
+// Overall verdict: PASS only if every finding passed.
+@capabilities(compute)
+fn overall_verdict(findings: [Finding]) -> str {
+    if count_failed(findings) == 0 {
+        return status_pass()
+    }
+    return status_fail()
+}
+
+// Look up a finding by its control label; returns the matching status, or
+// "" if no such finding is present.
+@capabilities(compute)
+fn status_for(findings: [Finding], control: str) -> str {
+    let mut i = 0
+    while i < len(findings) {
+        if findings[i].control == control {
+            return findings[i].status
+        }
+        i = i + 1
+    }
+    return ""
+}

@@ -1,0 +1,53 @@
+// ============================================================
+// model.kry -- the audit-entry data model
+//
+// An AuditEntry is one governed AI action as it would be recorded by the
+// kryos-audit-trail concept: WHAT the system did, WHERE its inputs came
+// from (lineage / sources), WHICH capabilities it exercised, HOW MUCH it
+// cost, WHETHER a human was in the loop, and WHICH model produced it.
+//
+// The compliance generator never invents these facts -- it reads them off
+// the entry. Provenance is the value's own history, not a side channel.
+//
+// Field-order note: the heap fields (str / [str]) come first and the plain
+// scalars (i64 / f64 / bool) trail them. There are no tuple/enum fields, so
+// the entry is safe to read on both backends (CLAUDE.md gotcha #21); this
+// generator is driven on the Cranelift JIT (`kryos run`) because it prints
+// f64 costs.
+// ============================================================
+
+struct AuditEntry {
+    action: str,
+    model_id: str,
+    sources: [str],
+    capabilities_used: [str],
+    cost_tokens: i64,
+    cost_usd: f64,
+    human_oversight: bool,
+    high_risk: bool,
+}
+
+// Construct an audit entry. A thin literal wrapper -- kept so callers get a
+// stable, named constructor instead of repeating the struct literal.
+@capabilities(compute)
+fn audit_entry(action: str, model_id: str, sources: [str], capabilities_used: [str], cost_tokens: i64, cost_usd: f64, human_oversight: bool, high_risk: bool) -> AuditEntry {
+    return AuditEntry {
+        action: action,
+        model_id: model_id,
+        sources: sources,
+        capabilities_used: capabilities_used,
+        cost_tokens: cost_tokens,
+        cost_usd: cost_usd,
+        human_oversight: human_oversight,
+        high_risk: high_risk
+    }
+}
+
+// Risk-tier label for the EU AI Act classification line.
+@capabilities(compute)
+fn risk_tier_label(e: AuditEntry) -> str {
+    if e.high_risk {
+        return "HIGH-RISK (EU AI Act Annex III)"
+    }
+    return "Limited risk"
+}
