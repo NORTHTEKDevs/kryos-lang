@@ -1,0 +1,18 @@
+// NEGATIVE fixture -- this MUST FAIL to compile.
+//
+// expect-error: E0505
+//
+// It claims compute-only authority (@capabilities()) but calls file_write,
+// which is gated behind `io`. The Kryos compiler rejects it with E0505. That
+// rejection is exactly what makes csvlib.caps.json trustworthy: a library that
+// COMPILES cannot have an export whose declared capabilities understate what it
+// actually does. The authority header is verified, not asserted.
+//
+// Kept outside tests/ so `kryos test` does not try (and fail) to compile it;
+// build/build.sh runs `kryos check` on it and asserts the E0505 rejection.
+
+@capabilities()
+fn mislabeled_export(ptr: i64) -> i64 {
+    file_write("should_not_compile.txt", "data")
+    return ptr
+}

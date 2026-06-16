@@ -1,0 +1,10 @@
+{
+  "library": "csvlib",
+  "abi": "c",
+  "schema": "kryos-capi-caps-v1",
+  "exports": {
+    "csv_field_count": { "capabilities": [], "verified": true },
+    "csv_row_count": { "capabilities": [], "verified": true },
+    "csv_to_json_file": { "capabilities": ["io"], "verified": true }
+  }
+}

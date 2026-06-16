@@ -1,0 +1,95 @@
+// ============================================================
+// consumer.kry -- the capability-aware host that loads the demo DLL.
+//
+//   kryos run consumer.kry <caps.json> <dll-path> <allow-set-csv>
+//
+// This is the wedge in action. Before binding any exported C symbol, the host
+// reads the export's compiler-verified authority from <lib>.caps.json and
+// compares it to its own allow-set:
+//
+//   - declared caps are a subset of the allow-set  -> bind via ffi.sym + call it
+//   - the export needs more than the host allows    -> REFUSE to bind, name the excess
+//
+// cbindgen emits a header that says nothing about authority. Here the host can
+// reason about "what can this export touch" before it ever dlopens a symbol.
+//
+// Run it under a compute-only allow-set and the io export (csv_to_json_file) is
+// refused while the two compute exports run; widen the allow-set to {compute,io}
+// and all three run.
+// ============================================================
+
+use std::ffi::{open, sym, call1, call2, cstr, close}
+use capset
+use manifest
+
+// A built-in CSV sample so the demo is self-contained. 3 fields, 2 data rows.
+@capabilities()
+fn _sample_csv() -> str {
+    return "name,age,city\nAlice,30,NYC\nBob,25,LA"
+}
+
+// Decide and announce whether `symbol` may be bound under `allow`. The decision
+// is made purely from the caps.json authority header -- no dlopen yet.
+@capabilities()
+fn may_bind(caps_json: str, symbol: str, allow: [str]) -> bool {
+    let declared: [str] = symbol_caps(caps_json, symbol)
+    let excess: [str] = caps_excess(declared, allow)
+    if len(excess) > 0 {
+        println("REFUSE  " + symbol + "  requires=" + caps_render(declared) + "  excess=" + caps_render(excess))
+        return false
+    }
+    println("ALLOW   " + symbol + "  requires=" + caps_render(declared))
+    return true
+}
+
+fn main() {
+    let a: [str] = args()
+    if len(a) < 4 {
+        println("usage: consumer <caps.json> <dll-path> <allow-set-csv>")
+        println("  e.g. consumer dist/csvlib.caps.json dist/csvlib.dll compute")
+        return
+    }
+    let caps_path: str = a[1]
+    let dll_path: str = a[2]
+    let allow: [str] = parse_set(a[3])
+
+    let caps_json: str = file_read(caps_path)
+    println("host allow-set = " + caps_render(allow))
+    println("----------------------------------------------------------")
+
+    let lib: i64 = open(dll_path)
+    if lib == 0 {
+        println("FATAL: could not load " + dll_path)
+        return
+    }
+
+    // Root the source strings in locals so the C pointers from cstr() stay
+    // valid (cstr borrows the bytes of a live Kryos string) for every call.
+    let sample: str = _sample_csv()
+    let csvptr: i64 = cstr(sample)
+    let outpath: str = "dist/csvlib_out.json"
+    let outptr: i64 = cstr(outpath)
+
+    // compute export #1
+    if may_bind(caps_json, "csv_field_count", allow) {
+        let fp1: i64 = sym(lib, "csv_field_count")
+        println("  -> csv_field_count = " + to_string(call1(fp1, csvptr)))
+    }
+
+    // compute export #2
+    if may_bind(caps_json, "csv_row_count", allow) {
+        let fp2: i64 = sym(lib, "csv_row_count")
+        println("  -> csv_row_count = " + to_string(call1(fp2, csvptr)))
+    }
+
+    // io export
+    if may_bind(caps_json, "csv_to_json_file", allow) {
+        let fp3: i64 = sym(lib, "csv_to_json_file")
+        let n: i64 = call2(fp3, csvptr, outptr)
+        println("  -> csv_to_json_file wrote " + to_string(n) + " bytes to " + outpath)
+    }
+
+    close(lib)
+    println("----------------------------------------------------------")
+    println("done")
+}

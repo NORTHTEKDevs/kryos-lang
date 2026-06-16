@@ -1,0 +1,86 @@
+// ============================================================
+// test_capi.kry -- pure-logic tests for the capability policy + manifest.
+//
+//   kryos test --path ecosystem/kryos-capi
+//   kryos run  ecosystem/kryos-capi/tests/test_capi.kry
+//
+// These cover the spec's done-criteria that do NOT require the built DLL:
+//   - <lib>.caps.json labels a pure export compute ([]) and an io export ["io"]
+//   - the bind policy refuses a symbol whose declared caps exceed the allow-set
+//   - the policy admits a compute-only symbol under any allow-set
+// The DLL-loading half (actually calling the exports) is driven by build.sh.
+// ============================================================
+
+use capset
+use manifest
+
+// Read the committed caps.json fixture (shape matches gen_caps output).
+// Unannotated on purpose: it performs file IO and is a test fixture loader.
+fn _fixture() -> str {
+    return file_read("tests/fixture_caps.json")
+}
+
+@test
+fn test_subset_and_excess() {
+    // A compute-only export ([]) is a subset of every allow-set -> always binds.
+    assert(is_subset_of([], ["compute"]), "compute-only export must bind under any allow-set")
+    assert(len(caps_excess([], ["compute"])) == 0, "empty declared set has no excess")
+
+    // An io export under a compute-only grant has io as excess -> refused.
+    assert(!is_subset_of(["io"], ["compute"]), "io export must not be a subset of compute-only")
+    assert(caps_render(caps_excess(["io"], ["compute"])) == "{{io}}", "excess over compute must be {{io}}")
+
+    // Within-grant: io export binds under {compute, io}.
+    assert(is_subset_of(["io"], ["compute", "io"]), "io export binds under compute+io grant")
+
+    // The "all" wildcard subsumes every concrete capability.
+    assert(is_subset_of(["io", "net", "process"], ["all"]), "all wildcard must subsume everything")
+}
+
+@test
+fn test_parse_set() {
+    let s: [str] = parse_set("compute, io")
+    assert(len(s) == 2, "two caps parsed")
+    assert(s[0] == "compute", "first is compute")
+    assert(s[1] == "io", "second is io (trimmed)")
+    assert(len(parse_set("")) == 0, "empty string is deny-all")
+    assert(len(parse_set("  ")) == 0, "whitespace-only is deny-all")
+}
+
+@test
+fn test_manifest_labels() {
+    let caps: str = _fixture()
+    // Pure exports are labelled compute-only ([]).
+    assert(len(symbol_caps(caps, "csv_field_count")) == 0, "csv_field_count must be compute-only")
+    assert(len(symbol_caps(caps, "csv_row_count")) == 0, "csv_row_count must be compute-only")
+    // The io export is labelled ["io"].
+    let io_caps: [str] = symbol_caps(caps, "csv_to_json_file")
+    assert(len(io_caps) == 1, "csv_to_json_file declares exactly one capability")
+    assert(io_caps[0] == "io", "csv_to_json_file is labelled io")
+}
+
+@test
+fn test_bind_policy() {
+    let caps: str = _fixture()
+
+    // Under a compute-only allow-set: compute exports bind, io export refused.
+    let allow_compute: [str] = ["compute"]
+    assert(is_subset_of(symbol_caps(caps, "csv_field_count"), allow_compute), "field_count binds under compute")
+    assert(!is_subset_of(symbol_caps(caps, "csv_to_json_file"), allow_compute), "json_file refused under compute")
+
+    // Widen to {compute, io}: the io export now binds.
+    let allow_io: [str] = ["compute", "io"]
+    assert(is_subset_of(symbol_caps(caps, "csv_to_json_file"), allow_io), "json_file binds under compute+io")
+}
+
+fn main() {
+    test_subset_and_excess()
+    println("PASS test_subset_and_excess")
+    test_parse_set()
+    println("PASS test_parse_set")
+    test_manifest_labels()
+    println("PASS test_manifest_labels")
+    test_bind_policy()
+    println("PASS test_bind_policy")
+    println("4/4 capi logic tests passed")
+}

@@ -1,0 +1,10 @@
+# Build artifacts produced by build/build.sh (all regenerable).
+dist/
+*.ll
+*.obj
+*.o
+*.exe
+*.pdb
+*.dll
+kryos.lock
+target/

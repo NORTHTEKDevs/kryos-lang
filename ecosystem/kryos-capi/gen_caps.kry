@@ -1,0 +1,79 @@
+// ============================================================
+// gen_caps.kry -- the manifest half of the build wrapper.
+//
+//   kryos run gen_caps.kry <raw-manifest.json> <exports-csv> <out.caps.json> <libname>
+//
+// Reads the raw `kryos manifest --caps` output (which is keyed by EVERY
+// annotated function) and re-emits a curated <lib>.caps.json keyed ONLY by the
+// exported C symbols. `verified: true` records that the export's declared
+// capability set was checked by the compiler against its real builtin usage
+// (the library would not have compiled otherwise).
+//
+// This is intentionally written in Kryos -- the authority header is produced by
+// the same toolchain that verified it, not bolted on by an external script.
+// ============================================================
+
+use std::json::{parse, get, to_array, to_str, json_object, json_string, json_array, json_bool, stringify, JsonValue}
+use capset
+
+// Look up the declared capabilities of `symbol` in the raw manifest JSON
+// (shape: { "functions": { name: { "capabilities": [...], "annotated": bool } } }).
+@capabilities()
+fn _caps_for(raw: str, symbol: str) -> [str] {
+    let fns: JsonValue = get(parse(raw), "functions")
+    let entry: JsonValue = get(fns, symbol)
+    let arr: [JsonValue] = to_array(get(entry, "capabilities"))
+    let mut out: [str] = []
+    let mut i: i64 = 0
+    while i < len(arr) {
+        out = push(out, to_str(arr[i]))
+        i = i + 1
+    }
+    return out
+}
+
+@capabilities()
+fn _caps_to_json(caps: [str]) -> JsonValue {
+    let mut jcaps: [JsonValue] = []
+    let mut k: i64 = 0
+    while k < len(caps) {
+        jcaps = push(jcaps, json_string(caps[k]))
+        k = k + 1
+    }
+    return json_array(jcaps)
+}
+
+fn main() {
+    let a: [str] = args()
+    if len(a) < 5 {
+        println("usage: gen_caps <raw-manifest.json> <exports-csv> <out.caps.json> <libname>")
+        return
+    }
+    let raw: str = file_read(a[1])
+    let exports: [str] = parse_set(a[2])
+    let outpath: str = a[3]
+    let libname: str = a[4]
+
+    let mut symkeys: [str] = []
+    let mut symvals: [JsonValue] = []
+    let mut i: i64 = 0
+    while i < len(exports) {
+        let symname: str = exports[i]
+        let caps: [str] = _caps_for(raw, symname)
+        let entry: JsonValue = json_object(
+            ["capabilities", "verified"],
+            [_caps_to_json(caps), json_bool(true)]
+        )
+        symkeys = push(symkeys, symname)
+        symvals = push(symvals, entry)
+        i = i + 1
+    }
+
+    let exports_obj: JsonValue = json_object(symkeys, symvals)
+    let root: JsonValue = json_object(
+        ["library", "abi", "schema", "exports"],
+        [json_string(libname), json_string("c"), json_string("kryos-capi-caps-v1"), exports_obj]
+    )
+    file_write(outpath, stringify(root))
+    println("gen_caps: wrote " + outpath + " (" + to_string(len(symkeys)) + " exports)")
+}

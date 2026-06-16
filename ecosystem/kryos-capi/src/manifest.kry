@@ -1,0 +1,37 @@
+// ============================================================
+// manifest.kry -- read a <lib>.caps.json companion manifest.
+//
+// The build wrapper emits a caps file shaped as:
+//
+//   {
+//     "library": "csvlib",
+//     "abi": "c",
+//     "schema": "kryos-capi-caps-v1",
+//     "exports": {
+//       "csv_field_count":  { "capabilities": [],     "verified": true },
+//       "csv_to_json_file": { "capabilities": ["io"], "verified": true }
+//     }
+//   }
+//
+// keyed by exported C symbol. symbol_caps() returns the declared (and
+// compiler-verified) capability set for one export -- the authority a host must
+// already hold to be allowed to bind it. [] means compute-only (no authority).
+// ============================================================
+
+use std::json::{parse, get, to_array, to_str, JsonValue}
+
+// Declared capabilities for the exported C symbol `symbol`, read from a
+// caps.json string. Returns [] for a compute-only export.
+@capabilities()
+fn symbol_caps(caps_json: str, symbol: str) -> [str] {
+    let exports: JsonValue = get(parse(caps_json), "exports")
+    let entry: JsonValue = get(exports, symbol)
+    let arr: [JsonValue] = to_array(get(entry, "capabilities"))
+    let mut out: [str] = []
+    let mut i: i64 = 0
+    while i < len(arr) {
+        out = push(out, to_str(arr[i]))
+        i = i + 1
+    }
+    return out
+}

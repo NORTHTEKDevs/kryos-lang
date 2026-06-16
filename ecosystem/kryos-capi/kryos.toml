@@ -1,0 +1,8 @@
+[package]
+name = "kryos-capi"
+version = "0.1.0"
+description = "Capability-typed C ABI exports: build a .dll/.so whose every exported C entry point ships a compiler-verified capability manifest (lib.caps.json), and a consumer that refuses to bind an export exceeding its allow-set"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["compute", "io", "ffi"]

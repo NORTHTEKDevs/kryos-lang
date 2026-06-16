@@ -1,0 +1,124 @@
+// ============================================================
+// csvlib.kry -- the demo library that becomes the capability-typed C ABI DLL.
+//
+// Every function below is compiled to a plain (un-mangled) C symbol. The three
+// exported entry points each carry a `@capabilities(...)` annotation that the
+// Kryos compiler VERIFIES against the builtins the function actually calls:
+//
+//   csv_field_count   @capabilities()    -> compute-only (no authority)
+//   csv_row_count     @capabilities()    -> compute-only (no authority)
+//   csv_to_json_file  @capabilities(io)  -> touches the filesystem (file_write)
+//
+// Because the compiler rejects an `@capabilities()` function that calls a
+// gated builtin (E0505), a clean build is proof the labels are honest. The
+// build wrapper turns these verified labels into <lib>.caps.json so a C /
+// Python / Go host can read "this export is compute-only" BEFORE it dlopens.
+//
+// FFI is i64-marshalled (kryos stdlib/ffi.kry: max arity 6, i64/f64 only), so
+// the exports take C string pointers (i64) and return ints. Inside, from_ptr
+// rebuilds a Kryos string from the caller's `*const u8` (NUL-terminated).
+// ============================================================
+
+use std::ffi::{from_ptr}
+use std::string::{split, split_lines, join, replace}
+
+// ---- exported C-ABI entry points (i64 in / i64 out) ----
+
+// Number of comma-separated fields in the CSV header (first line).
+// Pure string work: stays `compute`.
+@capabilities()
+fn csv_field_count(ptr: i64) -> i64 {
+    let s: str = from_ptr(ptr, 0 - 1)
+    let lines: [str] = split_lines(s)
+    if len(lines) == 0 {
+        return 0
+    }
+    return len(split(lines[0], ","))
+}
+
+// Number of data rows (lines after the header). Pure string work: `compute`.
+@capabilities()
+fn csv_row_count(ptr: i64) -> i64 {
+    let s: str = from_ptr(ptr, 0 - 1)
+    let lines: [str] = split_lines(s)
+    let n: i64 = len(lines)
+    if n <= 1 {
+        return 0
+    }
+    return n - 1
+}
+
+// Transform CSV (csv_ptr) into a JSON array of row objects and WRITE it to the
+// file named by path_ptr. file_write is gated behind `io`, so the compiler
+// forces this function to declare `@capabilities(io)` -- and the caps manifest
+// reflects that. Returns the number of JSON bytes written.
+@capabilities(io)
+fn csv_to_json_file(csv_ptr: i64, path_ptr: i64) -> i64 {
+    let csv: str = from_ptr(csv_ptr, 0 - 1)
+    let path: str = from_ptr(path_ptr, 0 - 1)
+    let json: str = _csv_to_json(csv)
+    file_write(path, json)
+    return len(json)
+}
+
+// ---- internal helpers (pure compute; not exported) ----
+
+// Minimal JSON string escaping: backslash then double-quote.
+@capabilities()
+fn _esc(s: str) -> str {
+    let a: str = replace(s, "\\", "\\\\")
+    return replace(a, "\"", "\\\"")
+}
+
+// Wrap `s` in double quotes, escaping its contents. `"\""` is a literal quote.
+@capabilities()
+fn _qstr(s: str) -> str {
+    let q: str = "\""
+    return q + _esc(s) + q
+}
+
+// Build a JSON array of objects from CSV text, using the header row as keys.
+//
+// Built by plain string concatenation rather than std::json's JsonValue tree:
+// under the LLVM/AOT backend (which the DLL is compiled with), storing
+// json_object/json_string results in a [JsonValue] and stringifying them later
+// loses the heap payloads (the values come back empty / out-of-bounds). Pure
+// `str` concatenation round-trips identically on both backends. `{{`/`}}` are
+// the escape for literal braces (a bare `{` opens string interpolation).
+@capabilities()
+fn _csv_to_json(csv: str) -> str {
+    let lines: [str] = split_lines(csv)
+    if len(lines) == 0 {
+        return "[]"
+    }
+    let header: [str] = split(lines[0], ",")
+    let mut rows: [str] = []
+    let mut i: i64 = 1
+    while i < len(lines) {
+        if len(lines[i]) > 0 {
+            let cells: [str] = split(lines[i], ",")
+            let mut pairs: [str] = []
+            let mut j: i64 = 0
+            while j < len(header) {
+                let mut v: str = ""
+                if j < len(cells) {
+                    v = cells[j]
+                }
+                pairs = push(pairs, _qstr(header[j]) + ":" + _qstr(v))
+                j = j + 1
+            }
+            rows = push(rows, "{{" + join(pairs, ",") + "}}")
+        }
+        i = i + 1
+    }
+    return "[" + join(rows, ",") + "]"
+}
+
+// A trivial main so the file is runnable / testable on its own. It is NOT one
+// of the exported C symbols (the build wrapper only dllexports the three above).
+fn main() {
+    println("csvlib: a capability-typed C-ABI demo library")
+    println("  csv_field_count(ptr) -> i64        [compute]")
+    println("  csv_row_count(ptr) -> i64          [compute]")
+    println("  csv_to_json_file(ptr, ptr) -> i64  [io]")
+}
