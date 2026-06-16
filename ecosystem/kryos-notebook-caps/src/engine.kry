@@ -1,0 +1,149 @@
+// ============================================================
+// engine.kry -- notebook execution engine (importable, no main()).
+//
+// A notebook is a markdown file with fenced ```kryos cells. Cells execute in
+// order, sharing one main() scope (the repl accumulation model), so a `let`
+// in cell 1 is visible in cell 2. For each cell we:
+//   1. badge it -- `kryos check --strict-capabilities` on the accumulated
+//      program, attributing each E0505 diagnostic to its cell by line range;
+//   2. execute it -- re-run the accumulated program with `kryos run` and
+//      recover this cell's incremental stdout via a prefix diff.
+// --pure-only executes only compute-badged cells and marks the rest skipped.
+//
+// PERFORMANCE: this is the accumulate-and-recompile-per-cell model. Badging is
+// a single check; execution re-runs the growing program once per executed
+// cell, so wall time is O(n^2) in cell count. Fine for human-sized notebooks,
+// deliberately so (incremental recompute is out of MVP scope). io/net cells
+// also re-run their side effects on each later cell's pass -- another reason
+// --pure-only is the safe sharing mode.
+//
+// This module spawns subprocesses (std::process) and touches the filesystem,
+// so it runs via `kryos run` / a built binary, NOT the `kryos test` JIT (which
+// does not expose the ptr_read_i64 builtin Command.run needs). The CLI lives
+// in notebook.kry; tests import THIS module so they never collide on main().
+// ============================================================
+
+use std::process::{command}
+use std::string::{split_lines, starts_with, trim, trim_start, join, find}
+use cells
+use program
+use badge
+use render
+
+struct RunResult {
+    ok: bool,
+    stdout: str,
+    stderr: str,
+}
+
+// Resolve the kryos binary: $KRYOS, else "kryos" on PATH.
+@capabilities(process)
+fn kryos_bin() -> str {
+    let v = env_get("KRYOS")
+    if len(v) > 0 {
+        return v
+    }
+    return "kryos"
+}
+
+// A writable temp directory (cross-platform).
+@capabilities(process)
+fn temp_dir() -> str {
+    let t = env_get("TEMP")
+    if len(t) > 0 {
+        return t
+    }
+    let t2 = env_get("TMP")
+    if len(t2) > 0 {
+        return t2
+    }
+    let t3 = env_get("TMPDIR")
+    if len(t3) > 0 {
+        return t3
+    }
+    return "/tmp"
+}
+
+// Write content to a named temp file and return its full path.
+@capabilities(process, io)
+fn write_temp(name: str, content: str) -> str {
+    let path = temp_dir() + "/" + name
+    file_write(path, content)
+    return path
+}
+
+// Run `kryos check --strict-capabilities` on source; return its diagnostics.
+@capabilities(process, io)
+fn check_strict(source: str) -> str {
+    let path = write_temp("kryos_nb_badge.kry", source)
+    let mut cmd = command(kryos_bin())
+    cmd = cmd.arg("check")
+    cmd = cmd.arg("--strict-capabilities")
+    cmd = cmd.arg(path)
+    let r = cmd.run()
+    return r.stdout + r.stderr
+}
+
+// Run `kryos run` on source; capture stdout/stderr and success.
+@capabilities(process, io)
+fn run_source(source: str) -> RunResult {
+    let path = write_temp("kryos_nb_run.kry", source)
+    let mut cmd = command(kryos_bin())
+    cmd = cmd.arg("run")
+    cmd = cmd.arg(path)
+    let r = cmd.run()
+    return RunResult { ok: r.success, stdout: r.stdout, stderr: r.stderr }
+}
+
+// Compute the capability badge of every cell in one strict-capabilities pass.
+@capabilities(process, io)
+fn badges_for(cells: [str]) -> [Badge] {
+    let built = build_full_program(cells)
+    let diag = check_strict(built.source)
+    let hits = parse_cap_hits(diag)
+    return compute_badges(hits, built.starts, built.ends, len(cells))
+}
+
+// Execute the notebook and return its results as parallel, index-aligned
+// arrays (NotebookRun). Outputs are carried in flat [str] arrays rather than an
+// array of structs -- see NotebookRun's note for the AOT reason.
+@capabilities(process, io)
+fn run_notebook(md: str, pure_only: bool) -> NotebookRun {
+    let segs = parse_segments(md)
+    let cells = code_cells(segs)
+    let badges = badges_for(cells)
+
+    let mut codes: [str] = []
+    let mut labels: [str] = []
+    let mut outputs: [str] = []
+    let mut skips: [bool] = []
+    let mut errors: [str] = []
+
+    let mut executed: [str] = []
+    let mut prev = ""
+    let mut i = 0
+    while i < len(cells) {
+        codes = push(codes, cells[i])
+        labels = push(labels, badge_label(badges[i]))
+        if pure_only and not badge_is_pure(badges[i]) {
+            outputs = push(outputs, "")
+            skips = push(skips, true)
+            errors = push(errors, "")
+        } else {
+            executed = push(executed, cells[i])
+            let r = run_source(build_program(executed))
+            if r.ok {
+                outputs = push(outputs, strip_prefix(r.stdout, prev))
+                prev = r.stdout
+                errors = push(errors, "")
+            } else {
+                outputs = push(outputs, "")
+                errors = push(errors, r.stderr)
+            }
+            skips = push(skips, false)
+        }
+        i = i + 1
+    }
+
+    return NotebookRun { codes: codes, badges: labels, outputs: outputs, skips: skips, errors: errors }
+}

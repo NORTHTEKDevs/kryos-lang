@@ -1,0 +1,97 @@
+// ============================================================
+// test_cells.kry -- unit tests for markdown cell extraction (PURE).
+//
+//   kryos test --path ecosystem/kryos-notebook-caps/tests
+//   kryos run  tests/test_cells.kry
+// ============================================================
+
+use std::string::{split_lines, starts_with, trim, trim_start, join}
+use cells
+
+// A small notebook: prose, a pure cell, prose, an io cell, a non-kryos
+// fenced block (must NOT be treated as a cell).
+fn sample_md() -> str {
+    let lines: [str] = [
+        "# Demo notebook",
+        "",
+        "First a pure cell:",
+        "",
+        "```kryos",
+        "let n: i64 = 21",
+        "println(to_string(n))",
+        "```",
+        "",
+        "Then an io cell:",
+        "",
+        "```kryos",
+        "file_write(\"out.txt\", \"hi\")",
+        "```",
+        "",
+        "A shell block, not executable:",
+        "",
+        "```bash",
+        "echo hello",
+        "```",
+    ]
+    return join(lines, "\n")
+}
+
+@test
+fn test_two_code_cells_extracted() {
+    let segs = parse_segments(sample_md())
+    let cells = code_cells(segs)
+    assert(len(cells) == 2, "expected exactly 2 kryos cells, got " + to_string(len(cells)))
+}
+
+@test
+fn test_cell_bodies_are_exact() {
+    let cells = code_cells(parse_segments(sample_md()))
+    assert(cells[0] == "let n: i64 = 21\nprintln(to_string(n))", "cell 0 body mismatch: [" + cells[0] + "]")
+    assert(cells[1] == "file_write(\"out.txt\", \"hi\")", "cell 1 body mismatch: [" + cells[1] + "]")
+}
+
+@test
+fn test_bash_block_is_prose_not_cell() {
+    let segs = parse_segments(sample_md())
+    // The ```bash block stays prose, so still only 2 code segments.
+    let mut code_segs = 0
+    let mut i = 0
+    while i < len(segs) {
+        if segs[i].is_code {
+            code_segs = code_segs + 1
+        }
+        i = i + 1
+    }
+    assert(code_segs == 2, "bash block must not be a code cell; got " + to_string(code_segs) + " code segments")
+}
+
+@test
+fn test_segment_order_and_indices() {
+    let segs = parse_segments(sample_md())
+    // First segment is prose, contains the title.
+    assert(!segs[0].is_code, "first segment should be prose")
+    assert(contains(segs[0].text, "# Demo notebook"), "prose should contain the title")
+    // Code cells carry ascending 0-based indices.
+    let mut seen = 0
+    let mut i = 0
+    while i < len(segs) {
+        if segs[i].is_code {
+            assert(segs[i].cell_index == seen, "code cell index out of order at " + to_string(i))
+            seen = seen + 1
+        }
+        i = i + 1
+    }
+    assert(seen == 2, "should have seen 2 indexed code cells")
+}
+
+fn main() {
+    test_two_code_cells_extracted()
+    println("PASS test_two_code_cells_extracted")
+    test_cell_bodies_are_exact()
+    println("PASS test_cell_bodies_are_exact")
+    test_bash_block_is_prose_not_cell()
+    println("PASS test_bash_block_is_prose_not_cell")
+    test_segment_order_and_indices()
+    println("PASS test_segment_order_and_indices")
+    println("4/4 cells tests passed")
+}

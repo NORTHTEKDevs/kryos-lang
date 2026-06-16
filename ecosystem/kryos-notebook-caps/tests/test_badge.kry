@@ -1,0 +1,95 @@
+// ============================================================
+// test_badge.kry -- unit tests for diagnostic parsing + cap attribution (PURE).
+//
+//   kryos test --path ecosystem/kryos-notebook-caps/tests
+//   kryos run  tests/test_badge.kry
+//
+// Uses a hand-written (colour-free) facsimile of strict-capabilities output.
+// The real ANSI-coloured path is exercised end-to-end by the integration test.
+// ============================================================
+
+use std::string::{find, split_lines, join, trim, trim_start, starts_with}
+use program
+use badge
+
+// Two E0505 hits: io at line 4, net at line 6, plus noise lines.
+fn sample_diagnostics() -> str {
+    let lines: [str] = [
+        "error[E0505]: builtin `file_write` requires `io` capability",
+        " --> /tmp/prog.kry:4:5",
+        "  4 |     file_write(\"a\", \"b\")",
+        "   |     ^^^ requires `io`",
+        "error[E0505]: builtin `http2_get` requires `net` capability",
+        " --> /tmp/prog.kry:6:21",
+        "   |     ^^^ requires `net`",
+        "error: check failed: 2 errors, 0 warnings",
+    ]
+    return join(lines, "\n")
+}
+
+@test
+fn test_parse_two_hits() {
+    let hits = parse_cap_hits(sample_diagnostics())
+    assert(len(hits) == 2, "expected 2 hits, got " + to_string(len(hits)))
+    assert(hits[0].line == 4, "hit0 line should be 4, got " + to_string(hits[0].line))
+    assert(hits[0].cap == "io", "hit0 cap should be io, got " + hits[0].cap)
+    assert(hits[1].line == 6, "hit1 line should be 6, got " + to_string(hits[1].line))
+    assert(hits[1].cap == "net", "hit1 cap should be net, got " + hits[1].cap)
+}
+
+@test
+fn test_windows_path_line_number() {
+    // A Windows path carries its own drive colon; the line must still parse.
+    let diag = "error[E0505]: builtin `file_write` requires `io` capability\n --> C:/Users/x/AppData/Local/Temp/prog.kry:7:5\n"
+    let hits = parse_cap_hits(diag)
+    assert(len(hits) == 1, "expected 1 hit from windows path")
+    assert(hits[0].line == 7, "windows line should be 7, got " + to_string(hits[0].line))
+    assert(hits[0].cap == "io", "windows cap should be io")
+}
+
+@test
+fn test_attribution_to_cells() {
+    // cell 0 owns lines 2..4, cell 1 owns lines 5..7.
+    let starts: [i64] = [2, 5]
+    let ends: [i64] = [4, 7]
+    let hits = parse_cap_hits(sample_diagnostics())
+    let badges = compute_badges(hits, starts, ends, 2)
+    assert(len(badges) == 2, "expected 2 badges")
+    assert(badge_has(badges[0], "io"), "cell 0 must badge io")
+    assert(!badge_is_pure(badges[0]), "cell 0 is not pure")
+    assert(badge_has(badges[1], "net"), "cell 1 must badge net")
+}
+
+@test
+fn test_pure_cell_normalises_to_compute() {
+    // No hits in cell 0's range -> compute (pure).
+    let starts: [i64] = [2]
+    let ends: [i64] = [3]
+    let badges = compute_badges([], starts, ends, 1)
+    assert(badge_is_pure(badges[0]), "no hits => pure compute")
+    assert(badge_label(badges[0]) == "[compute]", "label should be [compute], got " + badge_label(badges[0]))
+}
+
+@test
+fn test_multi_cap_label_ordered() {
+    // A single cell range covering both hits -> [io, net] in canonical order.
+    let starts: [i64] = [2]
+    let ends: [i64] = [9]
+    let hits = parse_cap_hits(sample_diagnostics())
+    let badges = compute_badges(hits, starts, ends, 1)
+    assert(badge_label(badges[0]) == "[io, net]", "label should be [io, net], got " + badge_label(badges[0]))
+}
+
+fn main() {
+    test_parse_two_hits()
+    println("PASS test_parse_two_hits")
+    test_windows_path_line_number()
+    println("PASS test_windows_path_line_number")
+    test_attribution_to_cells()
+    println("PASS test_attribution_to_cells")
+    test_pure_cell_normalises_to_compute()
+    println("PASS test_pure_cell_normalises_to_compute")
+    test_multi_cap_label_ordered()
+    println("PASS test_multi_cap_label_ordered")
+    println("5/5 badge tests passed")
+}

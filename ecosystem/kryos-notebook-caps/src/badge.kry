@@ -1,0 +1,168 @@
+// ============================================================
+// badge.kry -- turn `kryos check --strict-capabilities` diagnostics into
+// per-cell capability badges (PURE compute).
+//
+// strict-capabilities is deny-by-default: it emits one E0505 diagnostic for
+// every capability-gated builtin call an unannotated function makes, naming
+// both the required capability and the source line. We parse those (line,
+// cap) pairs and attribute each to the cell whose generated line range
+// contains it (see program.kry). A cell with no gated calls is `compute`
+// (pure) -- the badge that pure-only mode is willing to execute.
+//
+// The parser is colour-agnostic: the meaningful tokens ("[E0505]",
+// "requires `cap`", ":line:col") are contiguous in the output, with ANSI
+// escapes only at their boundaries, so substring anchoring is unaffected.
+// ============================================================
+
+use std::string::{find, split_lines, join, trim}
+use program
+
+struct CapHit {
+    line: i64,
+    cap: str,
+}
+
+struct Badge {
+    caps: [str],
+}
+
+// Return the slice of `s` between the first `open_tok` and the next
+// `close_tok` after it, or "" if either is absent.
+fn extract_between(s: str, open_tok: str, close_tok: str) -> str {
+    let i = find(s, open_tok)
+    if i < 0 {
+        return ""
+    }
+    let rest = substr(s, i + len(open_tok), len(s))
+    let j = find(rest, close_tok)
+    if j < 0 {
+        return ""
+    }
+    return substr(rest, 0, j)
+}
+
+// Extract the LINE from a `--> path:LINE:COL` diagnostic line. The path may
+// contain its own colon (Windows `C:/...`), so we take the second-to-last
+// colon-separated field.
+fn arrow_line_number(line: str) -> i64 {
+    let i = find(line, "-->")
+    if i < 0 {
+        return -1
+    }
+    let rest = substr(line, i + 3, len(line))
+    let parts = split_on(rest, ":")
+    if len(parts) < 2 {
+        return -1
+    }
+    let field = trim(parts[len(parts) - 2])
+    return parse_int(field)
+}
+
+// split on a single-character delimiter (avoids importing std::string::split,
+// whose name would collide across the flat module namespace with helpers here).
+fn split_on(s: str, delim: str) -> [str] {
+    let mut out: [str] = []
+    let mut cur = ""
+    let mut i = 0
+    while i < len(s) {
+        let ch = substr(s, i, i + 1)
+        if ch == delim {
+            out = push(out, cur)
+            cur = ""
+        } else {
+            cur = cur + ch
+        }
+        i = i + 1
+    }
+    out = push(out, cur)
+    return out
+}
+
+// Parse all (line, cap) hits from a strict-capabilities run's diagnostics.
+fn parse_cap_hits(diagnostics: str) -> [CapHit] {
+    let lines = split_lines(diagnostics)
+    let mut hits: [CapHit] = []
+    let mut pending = ""
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i]
+        if contains(line, "[E0505]") and contains(line, "requires `") {
+            pending = extract_between(line, "requires `", "`")
+        } elif len(pending) > 0 and contains(line, "-->") {
+            let ln = arrow_line_number(line)
+            if ln >= 0 {
+                hits = push(hits, CapHit { line: ln, cap: pending })
+            }
+            pending = ""
+        }
+        i = i + 1
+    }
+    return hits
+}
+
+// Canonical capability ordering for stable badge rendering (compute is
+// implicit/pure and handled separately).
+fn canonical_order() -> [str] {
+    return ["crypto", "db", "env", "ffi", "io", "net", "process", "term", "time"]
+}
+
+// Order a cap set into canonical order, appending any unknown caps as-is.
+fn order_caps(caps: [str]) -> [str] {
+    let order = canonical_order()
+    let mut out: [str] = []
+    let mut i = 0
+    while i < len(order) {
+        if contains_str(caps, order[i]) {
+            out = push(out, order[i])
+        }
+        i = i + 1
+    }
+    let mut k = 0
+    while k < len(caps) {
+        if not contains_str(out, caps[k]) {
+            out = push(out, caps[k])
+        }
+        k = k + 1
+    }
+    return out
+}
+
+// Build a badge per cell by attributing each hit to its owning cell range.
+// An empty cap set normalises to ["compute"] (pure).
+fn compute_badges(hits: [CapHit], starts: [i64], ends: [i64], n_cells: i64) -> [Badge] {
+    let mut badges: [Badge] = []
+    let mut i = 0
+    while i < n_cells {
+        let mut caps: [str] = []
+        let mut h = 0
+        while h < len(hits) {
+            if cell_for_line(starts, ends, hits[h].line) == i {
+                if not contains_str(caps, hits[h].cap) {
+                    caps = push(caps, hits[h].cap)
+                }
+            }
+            h = h + 1
+        }
+        if len(caps) == 0 {
+            caps = push(caps, "compute")
+        }
+        badges = push(badges, Badge { caps: order_caps(caps) })
+        i = i + 1
+    }
+    return badges
+}
+
+// Render a badge as "[io]" / "[compute]" / "[io, net]".
+fn badge_label(b: Badge) -> str {
+    return "[" + join(b.caps, ", ") + "]"
+}
+
+// True if the badge is exactly the pure compute badge.
+fn badge_is_pure(b: Badge) -> bool {
+    return len(b.caps) == 1 and b.caps[0] == "compute"
+}
+
+// True if the badge declares `cap`.
+fn badge_has(b: Badge, cap: str) -> bool {
+    return contains_str(b.caps, cap)
+}

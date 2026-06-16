@@ -1,0 +1,69 @@
+// ============================================================
+// demo_notebook.kry -- interactive demo of kryos-notebook-caps.
+//
+//   kryos run ecosystem/kryos-notebook-caps/demo_notebook.kry
+//
+// Builds a small notebook in memory and renders it twice: once normally
+// (every cell runs, badges shown) and once with --pure-only (the io cell is
+// skipped, so its filesystem write never happens). This is the whole pitch:
+// a shared notebook is self-describing about which cells touch disk/net, and
+// the safe subset can run without the dangerous cells.
+//
+// Spawns `kryos` subprocesses, so run it with `kryos run`, not `kryos test`.
+// Set $KRYOS to the toolchain binary if `kryos` is not on PATH.
+// ============================================================
+
+use std::string::{split_lines, starts_with, trim, trim_start, join, find}
+use cells
+use program
+use badge
+use render
+use engine
+
+// A three-cell notebook: pure -> io -> pure, threading `n` throughout.
+fn demo_md() -> str {
+    let lines: [str] = [
+        "# capability-badged notebook",
+        "",
+        "Cell 0 is pure compute -- it defines `n`:",
+        "",
+        "```kryos",
+        "let n: i64 = 21",
+        "println(\"n = \" + to_string(n))",
+        "```",
+        "",
+        "Cell 1 writes a file (io) and reads `n` from cell 0 (threaded state):",
+        "",
+        "```kryos",
+        "file_write(\"kryos_nb_demo_artifact.txt\", \"n is \" + to_string(n))",
+        "println(\"wrote artifact\")",
+        "```",
+        "",
+        "Cell 2 is pure again and still sees `n`:",
+        "",
+        "```kryos",
+        "println(\"double = \" + to_string(n * 2))",
+        "```",
+    ]
+    return join(lines, "\n")
+}
+
+@capabilities(process, io)
+fn main() {
+    let md = demo_md()
+    let segs = parse_segments(md)
+
+    println("============================================================")
+    println(" FULL RUN -- every cell executes; badges annotate each one")
+    println("============================================================")
+    let full = run_notebook(md, false)
+    println(render_notebook(segs, full))
+
+    println("")
+    println("============================================================")
+    println(" PURE-ONLY -- only [compute] cells run; the [io] cell is")
+    println(" skipped, so its file write never happens")
+    println("============================================================")
+    let pure = run_notebook(md, true)
+    println(render_notebook(segs, pure))
+}

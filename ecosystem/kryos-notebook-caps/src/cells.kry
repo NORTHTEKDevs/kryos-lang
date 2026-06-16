@@ -1,0 +1,106 @@
+// ============================================================
+// cells.kry -- markdown notebook parsing (PURE compute).
+//
+// A notebook is an ordinary markdown file. Fenced code blocks tagged
+// `kryos` are executable cells; everything else (prose, other fenced
+// blocks like ```bash) is preserved verbatim as a prose segment so the
+// rendered output notebook stays faithful to the source.
+//
+// parse_segments splits the document into an ordered list of Segments;
+// code_cells projects out just the executable cell sources in order.
+// No IO, no process: this whole module is compute and is exercised by
+// `kryos test --path tests`.
+// ============================================================
+
+use std::string::{split_lines, starts_with, trim, trim_start, join}
+
+// One ordered piece of the document.
+//   is_code == false -> prose (markdown kept verbatim, text is the joined lines)
+//   is_code == true  -> an executable ```kryos cell (text is the cell source)
+// cell_index is -1 for prose, else the 0-based index among code cells.
+struct Segment {
+    is_code: bool,
+    text: str,
+    cell_index: i64,
+}
+
+// True if the trimmed line begins a fence (```), open or close.
+fn is_fence_line(line: str) -> bool {
+    return starts_with(trim_start(line), "```")
+}
+
+// The language tag of a fence line ("```kryos" -> "kryos", "```" -> "").
+fn fence_lang(line: str) -> str {
+    let t = trim(line)
+    let n = len(t)
+    let mut i = 0
+    while i < n and substr(t, i, i + 1) == "`" {
+        i = i + 1
+    }
+    return trim(substr(t, i, n))
+}
+
+// Split a markdown document into ordered prose/code segments.
+fn parse_segments(md: str) -> [Segment] {
+    let lines = split_lines(md)
+    let mut segments: [Segment] = []
+    let mut prose: [str] = []
+    let mut code: [str] = []
+    let mut mode = 0           // 0 prose, 1 kryos cell, 2 other fenced block
+    let mut cell_count = 0
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i]
+        if mode == 0 {
+            if is_fence_line(line) {
+                if fence_lang(line) == "kryos" {
+                    if len(prose) > 0 {
+                        segments = push(segments, Segment { is_code: false, text: join(prose, "\n"), cell_index: -1 })
+                        prose = []
+                    }
+                    code = []
+                    mode = 1
+                } else {
+                    prose = push(prose, line)
+                    mode = 2
+                }
+            } else {
+                prose = push(prose, line)
+            }
+        } elif mode == 1 {
+            if is_fence_line(line) {
+                segments = push(segments, Segment { is_code: true, text: join(code, "\n"), cell_index: cell_count })
+                cell_count = cell_count + 1
+                mode = 0
+            } else {
+                code = push(code, line)
+            }
+        } else {
+            prose = push(prose, line)
+            if is_fence_line(line) {
+                mode = 0
+            }
+        }
+        i = i + 1
+    }
+    // Flush any trailing buffers (lenient about an unterminated document).
+    if mode == 1 {
+        segments = push(segments, Segment { is_code: true, text: join(code, "\n"), cell_index: cell_count })
+    } elif len(prose) > 0 {
+        segments = push(segments, Segment { is_code: false, text: join(prose, "\n"), cell_index: -1 })
+    }
+    return segments
+}
+
+// Project out just the executable cell sources, in document order.
+fn code_cells(segments: [Segment]) -> [str] {
+    let mut cells: [str] = []
+    let mut i = 0
+    while i < len(segments) {
+        if segments[i].is_code {
+            cells = push(cells, segments[i].text)
+        }
+        i = i + 1
+    }
+    return cells
+}

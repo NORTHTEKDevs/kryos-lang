@@ -1,0 +1,8 @@
+[package]
+name = "kryos-notebook-caps"
+version = "0.1.0"
+description = "Capability-badged literate-execution notebook: runs markdown ```kryos cells in order with threaded state, and renders each cell with its compiler-verified capability badge. A --pure-only mode executes only compute-badged cells."
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["compute", "io", "process"]

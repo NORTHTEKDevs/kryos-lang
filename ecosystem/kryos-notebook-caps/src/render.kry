@@ -1,0 +1,115 @@
+// ============================================================
+// render.kry -- render the executed notebook back to markdown (PURE).
+//
+// Prose segments are emitted verbatim. Each executable cell is rendered with
+// its capability badge, the original source, and either its captured stdout,
+// a run/compile error, or a "skipped" note for pure-only mode. The result is
+// a self-describing markdown document: a reader can see, per cell, exactly
+// which capabilities that cell's code is allowed to touch.
+// ============================================================
+
+use std::string::{join}
+use cells
+
+struct RenderCell {
+    index: i64,
+    code: str,
+    badge: str,
+    output: str,
+    skipped: bool,
+    error: str,
+}
+
+// Constructor for a single cell's render data.
+fn make_render_cell(index: i64, code: str, badge: str, output: str, skipped: bool, error: str) -> RenderCell {
+    return RenderCell {
+        index: index,
+        code: code,
+        badge: badge,
+        output: output,
+        skipped: skipped,
+        error: error,
+    }
+}
+
+// The engine's results as parallel, index-aligned arrays (one entry per code
+// cell). Carrying outputs in flat [str] arrays -- rather than inside an array
+// of RenderCell -- is deliberate: on the LLVM/AOT backend, computed (substr-
+// derived) strings stored into struct fields of an array element were dropped,
+// whereas flat [str] arrays round-trip correctly. render_notebook materialises
+// one RenderCell at a time (a single local value, which is AOT-safe).
+struct NotebookRun {
+    codes: [str],
+    badges: [str],
+    outputs: [str],
+    skips: [bool],
+    errors: [str],
+}
+
+// Number of code cells in a run.
+fn nb_count(run: NotebookRun) -> i64 {
+    return len(run.codes)
+}
+
+// Strip a single trailing newline so fenced output blocks have no blank tail.
+fn trim_trailing_newline(s: str) -> str {
+    let n = len(s)
+    if n > 0 and substr(s, n - 1, n) == "\n" {
+        return substr(s, 0, n - 1)
+    }
+    return s
+}
+
+// A fenced code block with the given language tag.
+fn fence(lang: str, body: str) -> str {
+    return "```" + lang + "\n" + body + "\n```"
+}
+
+// Render a single executable cell.
+fn render_cell(rc: RenderCell) -> str {
+    let mut parts: [str] = []
+    if rc.skipped {
+        parts = push(parts, "**Cell " + to_string(rc.index) + "** badge `" + rc.badge + "` -- _skipped (pure-only)_")
+        parts = push(parts, "")
+        parts = push(parts, fence("kryos", rc.code))
+        return join(parts, "\n")
+    }
+
+    parts = push(parts, "**Cell " + to_string(rc.index) + "** badge `" + rc.badge + "`")
+    parts = push(parts, "")
+    parts = push(parts, fence("kryos", rc.code))
+    parts = push(parts, "")
+
+    if len(rc.error) > 0 {
+        parts = push(parts, "Error:")
+        parts = push(parts, "")
+        parts = push(parts, fence("text", trim_trailing_newline(rc.error)))
+    } elif len(rc.output) > 0 {
+        parts = push(parts, "Output:")
+        parts = push(parts, "")
+        parts = push(parts, fence("text", trim_trailing_newline(rc.output)))
+    } else {
+        parts = push(parts, "_(no output)_")
+    }
+    return join(parts, "\n")
+}
+
+// Render the whole notebook: prose verbatim, cells annotated in document order.
+// Each cell's RenderCell is built as a single local value from the run's
+// parallel arrays, never stored in an array (see NotebookRun's note).
+fn render_notebook(segments: [Segment], run: NotebookRun) -> str {
+    let mut blocks: [str] = []
+    let mut i = 0
+    while i < len(segments) {
+        let s = segments[i]
+        if s.is_code {
+            let idx = s.cell_index
+            let rc = make_render_cell(idx, run.codes[idx], run.badges[idx], run.outputs[idx], run.skips[idx], run.errors[idx])
+            blocks = push(blocks, render_cell(rc))
+        } else {
+            blocks = push(blocks, s.text)
+        }
+        i = i + 1
+    }
+    return join(blocks, "\n\n")
+}

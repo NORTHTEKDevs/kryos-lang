@@ -1,0 +1,75 @@
+// ============================================================
+// test_notebook.kry -- end-to-end integration tests.
+//
+//   kryos run ecosystem/kryos-notebook-caps/integration/test_notebook.kry
+//
+// Drives the real subprocess pipeline (kryos check --strict-capabilities for
+// badging + kryos run for execution) against integration/fixtures/demo.md.
+// Run via `kryos run` from the PROJECT ROOT, not `kryos test`: Command.run
+// needs the ptr_read_i64 builtin the test JIT does not expose, and the
+// relative fixture path is resolved from the root.
+//
+// Covers every spec done-criterion:
+//   - each cell gets a correct badge (pure -> compute, file_write -> io)
+//   - threaded state: `n` from cell 0 is visible in cells 1 and 2
+//   - --pure-only executes exactly the compute cells and skips the io one
+// ============================================================
+
+use std::process::{command}
+use std::string::{split_lines, starts_with, trim, trim_start, join, find}
+use cells
+use program
+use badge
+use render
+use engine
+
+fn fixture() -> str {
+    return "ecosystem/kryos-notebook-caps/integration/fixtures/demo.md"
+}
+
+@capabilities(process, io)
+fn test_full_run_badges_and_threads() {
+    let md = file_read(fixture())
+    let run = run_notebook(md, false)
+    assert(nb_count(run) == 3, "expected 3 cells, got " + to_string(nb_count(run)))
+
+    // Badges: cell 0 pure compute, cell 1 io, cell 2 pure compute.
+    assert(run.badges[0] == "[compute]", "cell 0 should badge [compute], got " + run.badges[0])
+    assert(contains(run.badges[1], "io"), "cell 1 should badge io, got " + run.badges[1])
+    assert(run.badges[1] != "[compute]", "cell 1 must NOT be pure, got " + run.badges[1])
+    assert(run.badges[2] == "[compute]", "cell 2 should badge [compute], got " + run.badges[2])
+
+    // Per-cell captured output (prefix-diffed from the accumulated run).
+    assert(contains(run.outputs[0], "n = 21"), "cell 0 output should show n = 21, got [" + run.outputs[0] + "]")
+    assert(contains(run.outputs[1], "wrote artifact"), "cell 1 output should confirm the write, got [" + run.outputs[1] + "]")
+    // Threaded state: cell 2 sees n=21 from cell 0, so n*2 == 42.
+    assert(contains(run.outputs[2], "double = 42"), "cell 2 must see threaded n (double=42), got [" + run.outputs[2] + "]")
+
+    // The prefix diff must not bleed earlier cells' output into a later cell.
+    assert(!contains(run.outputs[2], "n = 21"), "cell 2 output must not repeat cell 0's line")
+}
+
+@capabilities(process, io)
+fn test_pure_only_runs_compute_skips_io() {
+    let md = file_read(fixture())
+    let run = run_notebook(md, true)
+    assert(nb_count(run) == 3, "expected 3 cells in pure-only, got " + to_string(nb_count(run)))
+
+    // The two pure cells run; the io cell is skipped.
+    assert(!run.skips[0], "cell 0 (pure) must run")
+    assert(contains(run.outputs[0], "n = 21"), "cell 0 output expected, got [" + run.outputs[0] + "]")
+    assert(run.skips[1], "cell 1 (io) must be skipped under --pure-only")
+    assert(run.outputs[1] == "", "skipped cell 1 must have no output, got [" + run.outputs[1] + "]")
+    assert(!run.skips[2], "cell 2 (pure) must run")
+
+    // Threaded state survives the skip: cell 2 still sees n from cell 0.
+    assert(contains(run.outputs[2], "double = 42"), "cell 2 must still see threaded n (double=42), got [" + run.outputs[2] + "]")
+}
+
+fn main() {
+    test_full_run_badges_and_threads()
+    println("PASS test_full_run_badges_and_threads")
+    test_pure_only_runs_compute_skips_io()
+    println("PASS test_pure_only_runs_compute_skips_io")
+    println("2/2 notebook integration tests passed")
+}

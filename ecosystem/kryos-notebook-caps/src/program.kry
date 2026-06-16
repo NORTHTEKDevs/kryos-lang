@@ -1,0 +1,122 @@
+// ============================================================
+// program.kry -- assemble runnable Kryos source from notebook cells (PURE).
+//
+// The repl accumulation model: cell bodies are statements that share one
+// `main()` scope, so a `let` in cell 1 is visible in cell 2. Lines that
+// start with `use ` are hoisted above `main` (declarations cannot live
+// inside a function body) and de-duplicated.
+//
+// build_full_program also records, per cell, the 1-based [start, end] line
+// range its body occupies in the generated source. The badge module maps
+// each `kryos check --strict-capabilities` diagnostic (which carries a line
+// number) back onto the owning cell via that range.
+// ============================================================
+
+use std::string::{split_lines, starts_with, trim, trim_start, join}
+
+struct BuiltProgram {
+    source: str,
+    starts: [i64],
+    ends: [i64],
+}
+
+// True if a raw cell line is a `use ...` import (to be hoisted).
+fn is_use_line(line: str) -> bool {
+    return starts_with(trim_start(line), "use ")
+}
+
+// Linear membership test (there is no set type in the MVP std).
+fn contains_str(arr: [str], needle: str) -> bool {
+    let mut i = 0
+    while i < len(arr) {
+        if arr[i] == needle {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// Assemble the accumulated program for `cells` and record each cell's body
+// line range. A cell whose lines are all `use` imports gets an empty range
+// (end < start), which simply never matches a diagnostic line.
+fn build_full_program(cells: [str]) -> BuiltProgram {
+    // Pass 1: collect unique `use` lines in first-seen order.
+    let mut uses: [str] = []
+    let mut ci = 0
+    while ci < len(cells) {
+        let clines = split_lines(cells[ci])
+        let mut li = 0
+        while li < len(clines) {
+            if is_use_line(clines[li]) {
+                let u = trim(clines[li])
+                if not contains_str(uses, u) {
+                    uses = push(uses, u)
+                }
+            }
+            li = li + 1
+        }
+        ci = ci + 1
+    }
+
+    // Pass 2: emit hoisted uses, then main(), tracking per-cell ranges.
+    let mut lines: [str] = []
+    let mut ui = 0
+    while ui < len(uses) {
+        lines = push(lines, uses[ui])
+        ui = ui + 1
+    }
+    lines = push(lines, "fn main() {{")
+
+    let mut starts: [i64] = []
+    let mut ends: [i64] = []
+    let mut cj = 0
+    while cj < len(cells) {
+        let start = len(lines) + 1
+        let blines = split_lines(cells[cj])
+        let mut bi = 0
+        while bi < len(blines) {
+            if not is_use_line(blines[bi]) {
+                lines = push(lines, "    " + blines[bi])
+            }
+            bi = bi + 1
+        }
+        starts = push(starts, start)
+        ends = push(ends, len(lines))
+        cj = cj + 1
+    }
+    lines = push(lines, "}}")
+
+    return BuiltProgram { source: join(lines, "\n"), starts: starts, ends: ends }
+}
+
+// The runnable source for an ordered subset of cells (no range tracking).
+fn build_program(cells: [str]) -> str {
+    let built = build_full_program(cells)
+    return built.source
+}
+
+// Index of the cell owning `line`, or -1 if none.
+fn cell_for_line(starts: [i64], ends: [i64], line: i64) -> i64 {
+    let mut i = 0
+    while i < len(starts) {
+        if line >= starts[i] and line <= ends[i] {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// Remove `prefix` from the front of `full` (the prefix-diff used to recover
+// a single cell's incremental stdout). Defensive: returns `full` unchanged
+// if it does not actually start with `prefix`.
+fn strip_prefix(full: str, prefix: str) -> str {
+    if len(prefix) == 0 {
+        return full
+    }
+    if starts_with(full, prefix) {
+        return substr(full, len(prefix), len(full))
+    }
+    return full
+}

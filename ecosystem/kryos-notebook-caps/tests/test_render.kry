@@ -1,0 +1,83 @@
+// ============================================================
+// test_render.kry -- unit tests for output-notebook rendering (PURE).
+//
+//   kryos test --path ecosystem/kryos-notebook-caps/tests
+//   kryos run  tests/test_render.kry
+// ============================================================
+
+use std::string::{split_lines, starts_with, trim, trim_start, join}
+use cells
+use render
+
+fn demo_md() -> str {
+    let lines: [str] = [
+        "Intro prose.",
+        "",
+        "```kryos",
+        "println(\"hi\")",
+        "```",
+        "",
+        "```kryos",
+        "file_write(\"out.txt\", \"x\")",
+        "```",
+    ]
+    return join(lines, "\n")
+}
+
+@test
+fn test_renders_prose_and_badges() {
+    let segs = parse_segments(demo_md())
+    let run = NotebookRun {
+        codes: ["println(\"hi\")", "file_write(\"out.txt\", \"x\")"],
+        badges: ["[compute]", "[io]"],
+        outputs: ["hi\n", ""],
+        skips: [false, true],
+        errors: ["", ""],
+    }
+    let out = render_notebook(segs, run)
+    assert(contains(out, "Intro prose."), "prose must be preserved")
+    assert(contains(out, "badge `[compute]`"), "cell 0 badge must render")
+    assert(contains(out, "badge `[io]`"), "cell 1 badge must render")
+    assert(contains(out, "skipped (pure-only)"), "skipped cell must be marked")
+    assert(contains(out, "hi"), "captured output must render")
+}
+
+@test
+fn test_output_block_present_for_executed_cell() {
+    let segs = parse_segments(demo_md())
+    let run = NotebookRun {
+        codes: ["println(\"hi\")", "x"],
+        badges: ["[compute]", "[compute]"],
+        outputs: ["hi\n", ""],
+        skips: [false, false],
+        errors: ["", ""],
+    }
+    let out = render_notebook(segs, run)
+    assert(contains(out, "Output:"), "executed cell with output shows an Output section")
+    assert(contains(out, "_(no output)_"), "executed cell without output shows no-output marker")
+}
+
+@test
+fn test_error_block_renders() {
+    let segs = parse_segments(demo_md())
+    let run = NotebookRun {
+        codes: ["boom()", "x"],
+        badges: ["[compute]", "[compute]"],
+        outputs: ["", ""],
+        skips: [false, false],
+        errors: ["undefined variable boom", ""],
+    }
+    let out = render_notebook(segs, run)
+    assert(contains(out, "Error:"), "errored cell shows an Error section")
+    assert(contains(out, "undefined variable boom"), "error text must render")
+}
+
+fn main() {
+    test_renders_prose_and_badges()
+    println("PASS test_renders_prose_and_badges")
+    test_output_block_present_for_executed_cell()
+    println("PASS test_output_block_present_for_executed_cell")
+    test_error_block_renders()
+    println("PASS test_error_block_renders")
+    println("3/3 render tests passed")
+}

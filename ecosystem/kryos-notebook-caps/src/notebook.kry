@@ -1,0 +1,82 @@
+// ============================================================
+// notebook.kry -- kryos-notebook-caps CLI entry point.
+//
+//   kryos-notebook-caps [--pure-only] [-o <out.md>] <notebook.md>
+//
+// Reads a markdown notebook, runs every ```kryos cell through the engine, and
+// renders an output notebook annotated with each cell's capability badge and
+// its captured output. --pure-only executes only compute-badged cells.
+//
+// All execution logic lives in engine.kry so the integration tests can import
+// it without colliding on main(). Run via `kryos run` or build a binary:
+//   kryos build --release src/notebook.kry -o kryos-notebook-caps
+// ============================================================
+
+use std::string::{split_lines, starts_with, trim, trim_start, join, find}
+use cells
+use program
+use badge
+use render
+use engine
+
+fn print_help() {
+    println("kryos-notebook-caps -- capability-badged literate notebook")
+    println("")
+    println("usage:")
+    println("  kryos-notebook-caps [--pure-only] [-o <out.md>] <notebook.md>")
+    println("")
+    println("options:")
+    println("  --pure-only    execute only compute-badged cells; mark the rest skipped")
+    println("  -o, --out <f>  write the rendered notebook to <f> (default: stdout)")
+    println("  -h, --help     show this help")
+}
+
+@capabilities(process, io)
+fn main() {
+    let a = args()
+    let mut pure_only = false
+    let mut out_path = ""
+    let mut nb = ""
+    let mut i = 1
+    while i < len(a) {
+        if a[i] == "--pure-only" {
+            pure_only = true
+            i = i + 1
+        } elif a[i] == "-o" or a[i] == "--out" {
+            if i + 1 < len(a) {
+                out_path = a[i + 1]
+                i = i + 2
+            } else {
+                println("error: -o requires an argument")
+                return
+            }
+        } elif a[i] == "-h" or a[i] == "--help" {
+            print_help()
+            return
+        } else {
+            nb = a[i]
+            i = i + 1
+        }
+    }
+
+    if len(nb) == 0 {
+        print_help()
+        return
+    }
+    if file_exists(nb) == 0 {
+        println("error: notebook not found: " + nb)
+        return
+    }
+
+    let md = file_read(nb)
+    let run = run_notebook(md, pure_only)
+    let segs = parse_segments(md)
+    let rendered = render_notebook(segs, run)
+
+    if len(out_path) > 0 {
+        file_write(out_path, rendered)
+        println("wrote " + out_path)
+    } else {
+        println(rendered)
+    }
+}

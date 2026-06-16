@@ -1,0 +1,82 @@
+// ============================================================
+// test_program.kry -- unit tests for program assembly + line ranges (PURE).
+//
+//   kryos test --path ecosystem/kryos-notebook-caps/tests
+//   kryos run  tests/test_program.kry
+// ============================================================
+
+use std::string::{split_lines, starts_with, trim, trim_start, join}
+use program
+
+@test
+fn test_main_wraps_bodies() {
+    let cells: [str] = ["let n: i64 = 21", "println(to_string(n))"]
+    let built = build_full_program(cells)
+    assert(contains(built.source, "fn main() {{"), "source must open main")
+    assert(contains(built.source, "let n: i64 = 21"), "cell 0 body must appear")
+    assert(contains(built.source, "println(to_string(n))"), "cell 1 body must appear")
+}
+
+@test
+fn test_line_ranges_point_at_the_right_cell() {
+    // cell 0: one body line; cell 1: two body lines.
+    let cells: [str] = ["file_write(\"a\", \"b\")", "let x: i64 = 1\nfile_read(\"c\")"]
+    let built = build_full_program(cells)
+    // No use lines, so layout is:
+    //   1: fn main() {
+    //   2: cell 0 line 1            -> cell 0 range [2,2]
+    //   3: cell 1 line 1
+    //   4: cell 1 line 2            -> cell 1 range [3,4]
+    //   5: }
+    assert(built.starts[0] == 2, "cell0 start should be 2, got " + to_string(built.starts[0]))
+    assert(built.ends[0] == 2, "cell0 end should be 2, got " + to_string(built.ends[0]))
+    assert(built.starts[1] == 3, "cell1 start should be 3, got " + to_string(built.starts[1]))
+    assert(built.ends[1] == 4, "cell1 end should be 4, got " + to_string(built.ends[1]))
+    assert(cell_for_line(built.starts, built.ends, 2) == 0, "line 2 -> cell 0")
+    assert(cell_for_line(built.starts, built.ends, 4) == 1, "line 4 -> cell 1")
+    assert(cell_for_line(built.starts, built.ends, 1) == -1, "line 1 (main header) -> no cell")
+    assert(cell_for_line(built.starts, built.ends, 5) == -1, "line 5 (close brace) -> no cell")
+}
+
+@test
+fn test_use_lines_hoisted_and_deduped() {
+    // Both cells import std::string::{find}; only one hoisted use should appear,
+    // above main, and the cell ranges should skip the use line.
+    let cells: [str] = [
+        "use std::string::{{find}}\nlet i: i64 = find(\"ab\", \"b\")",
+        "use std::string::{{find}}\nlet j: i64 = find(\"cd\", \"d\")",
+    ]
+    let built = build_full_program(cells)
+    let lines = split_lines(built.source)
+    assert(lines[0] == "use std::string::{{find}}", "first line should be the hoisted use, got [" + lines[0] + "]")
+    assert(lines[1] == "fn main() {{", "second line should open main, got [" + lines[1] + "]")
+    // Only one occurrence of the use across the whole source.
+    let mut count = 0
+    let mut i = 0
+    while i < len(lines) {
+        if lines[i] == "use std::string::{{find}}" {
+            count = count + 1
+        }
+        i = i + 1
+    }
+    assert(count == 1, "use line must be de-duplicated, found " + to_string(count))
+}
+
+@test
+fn test_strip_prefix() {
+    assert(strip_prefix("ab\ncd\n", "ab\n") == "cd\n", "should drop the prefix")
+    assert(strip_prefix("xyz", "") == "xyz", "empty prefix returns whole")
+    assert(strip_prefix("hello", "world") == "hello", "non-matching prefix returns whole")
+}
+
+fn main() {
+    test_main_wraps_bodies()
+    println("PASS test_main_wraps_bodies")
+    test_line_ranges_point_at_the_right_cell()
+    println("PASS test_line_ranges_point_at_the_right_cell")
+    test_use_lines_hoisted_and_deduped()
+    println("PASS test_use_lines_hoisted_and_deduped")
+    test_strip_prefix()
+    println("PASS test_strip_prefix")
+    println("4/4 program tests passed")
+}
