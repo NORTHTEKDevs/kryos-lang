@@ -1,0 +1,63 @@
+// ============================================================
+// demo_fix.kry -- demonstrate --fix mode end to end on disk.
+//
+//   kryos run ecosystem/kryos-policy/demo_fix.kry
+//
+// --fix rewrites the [capabilities] allowed list to the computed minimum: the
+// exact set of capabilities the code actually uses, sorted. This demo takes the
+// over-declared fixture (allowed = ["compute", "io", "net"] but the code uses
+// only io), writes a working copy into the temp dir, runs the fix, and prints
+// the before/after allowed lines plus the re-verified verdict.
+//
+// The fixed copy is written next to the source tree (a *.fixed.toml sibling) so
+// the demo needs only the io capability; a real CLI --fix would overwrite the
+// kryos.toml in place.
+// ============================================================
+
+use caps
+use manifest
+use toml
+use policy
+
+@capabilities(io)
+fn main() {
+    let base = "ecosystem/kryos-policy/tests/fixtures/over_declared"
+    let toml_path = base + "/kryos.toml"
+    let manifest_path = base + "/caps.manifest"
+
+    if file_exists(toml_path) == 0 || file_exists(manifest_path) == 0 {
+        println("fixture not found; run from the repo root")
+        return
+    }
+
+    let original = file_read(toml_path)
+    let actual = read_actual_caps(manifest_path)
+    let declared_before = parse_declared_caps(original)
+
+    println("--fix demo on the over-declared fixture")
+    println("")
+    println("before: allowed = " + caps_render_array(declared_before))
+    println("computed surface: " + caps_render_array(actual))
+
+    let verdict_before = check_policy(actual, declared_before)
+    println("verdict before: " + verdict_message(verdict_before))
+
+    // Compute the minimal allowlist and rewrite into a working copy in temp.
+    let minimal = minimal_allowed(actual)
+    let result = rewrite_allowed(original, minimal)
+    if !result.found {
+        println("no allowed line to fix")
+        return
+    }
+
+    let out_path = base + "/kryos.fixed.toml"
+    file_write(out_path, result.text)
+    println("")
+    println("wrote fixed manifest to " + out_path)
+
+    // Re-read the fixed file and re-verify: should now be an exact match.
+    let declared_after = parse_declared_caps(file_read(out_path))
+    println("after:  allowed = " + caps_render_array(declared_after))
+    let verdict_after = check_policy(actual, declared_after)
+    println("verdict after:  " + verdict_message(verdict_after))
+}

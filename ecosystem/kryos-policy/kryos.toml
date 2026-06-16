@@ -1,0 +1,8 @@
+[package]
+name = "kryos-policy"
+version = "0.1.0"
+description = "Manifest-level capability-contract linter: verify a package's compiler-computed capability surface is a subset of what kryos.toml declares"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["io"]

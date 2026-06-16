@@ -1,0 +1,8 @@
+[package]
+name = "fixture-under-declared"
+version = "0.1.0"
+description = "Code computes capabilities the allowlist does not grant (contract violation)"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["io"]

@@ -1,0 +1,4 @@
+fn fetch: [net]
+fn read_config: [io]
+fn run_tool: [process]
+unannotated: 0

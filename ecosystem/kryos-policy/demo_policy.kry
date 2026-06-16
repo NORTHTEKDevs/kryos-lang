@@ -1,0 +1,57 @@
+// ============================================================
+// demo_policy.kry -- run the capability-contract linter over the fixtures.
+//
+//   kryos run ecosystem/kryos-policy/demo_policy.kry
+//
+// For each fixture package it reads the declared allowlist from kryos.toml and
+// the compiler-computed surface from caps.manifest (produced earlier by
+// `kryos manifest --caps --format pretty <pkg>/src -o caps.manifest`), then
+// prints the verdict. The under-declared fixture is the one that fails the
+// contract; the demo also shows what --fix would write for the over-declared
+// package.
+//
+// Paths are relative to the repository root, the directory `kryos run` is
+// invoked from in CI. If a fixture is not found the demo prints a clear note
+// rather than crashing, so it is robust to being run from elsewhere.
+// ============================================================
+
+use caps
+use manifest
+use toml
+use policy
+
+@capabilities(io)
+fn report(name: str, dir: str) {
+    let toml_path = dir + "/kryos.toml"
+    let manifest_path = dir + "/caps.manifest"
+    println("--- " + name + " (" + dir + ") ---")
+    if file_exists(toml_path) == 0 || file_exists(manifest_path) == 0 {
+        println("  (fixture not found; run from the repo root)")
+        return
+    }
+    let declared = read_declared_caps(toml_path)
+    let actual = read_actual_caps(manifest_path)
+    println("  declared: " + caps_render_array(declared))
+    println("  actual:   " + caps_render_array(actual))
+    let v = check_policy(actual, declared)
+    println("  verdict:  " + verdict_message(v))
+    if verdict_is_failure(v) {
+        println("  status:   FAIL (exit non-zero in CI)")
+    } else {
+        println("  status:   ok")
+    }
+    let minimal = minimal_allowed(actual)
+    println("  --fix would write: allowed = " + caps_render_array(minimal))
+}
+
+@capabilities(io)
+fn main() {
+    println("kryos-policy: manifest capability-contract linter")
+    println("")
+    let base = "ecosystem/kryos-policy/tests/fixtures"
+    report("exact", base + "/exact")
+    println("")
+    report("over-declared", base + "/over_declared")
+    println("")
+    report("under-declared", base + "/under_declared")
+}

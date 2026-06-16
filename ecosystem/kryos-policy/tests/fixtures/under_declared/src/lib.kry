@@ -1,0 +1,24 @@
+// Fixture: an UNDER-declared package -- the contract violation this linter
+// exists to catch. The code's computed surface is {io, net, process}, but
+// kryos.toml declares only ["io"]. The excess {net, process} is exactly what
+// the linter must report and fail on.
+//
+// The capabilities are pinned with explicit @capabilities annotations so the
+// computed manifest is unambiguous and independent of stdlib wiring.
+
+@capabilities(io)
+fn read_config(path: str) -> str {
+    return file_read(path)
+}
+
+@capabilities(net)
+fn fetch(url: str) -> str {
+    // Stands in for an HTTP fetch; the annotation is what the manifest reads.
+    return "fetched:" + url
+}
+
+@capabilities(process)
+fn run_tool(name: str) -> i64 {
+    // Stands in for spawning a subprocess.
+    return len(name)
+}

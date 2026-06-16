@@ -1,0 +1,8 @@
+// Fixture: an over-declared package. The code touches only io, but kryos.toml
+// declares ["compute", "io", "net"]. This passes the subset contract (safe) but
+// is not minimal -- --fix tightens the allowlist down to ["io"].
+
+@capabilities(io)
+fn save(path: str, body: str) {
+    file_write(path, body)
+}

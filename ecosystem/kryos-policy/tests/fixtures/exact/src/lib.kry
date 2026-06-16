@@ -1,0 +1,16 @@
+// Fixture: a package whose declared allowlist exactly matches its computed
+// surface. The only capability touched is io (file_read), and kryos.toml
+// declares exactly ["io"].
+
+@capabilities(io)
+fn load(path: str) -> str {
+    if file_exists(path) == 0 {
+        return ""
+    }
+    return file_read(path)
+}
+
+@capabilities()
+fn upper_count(s: str) -> i64 {
+    return len(s)
+}

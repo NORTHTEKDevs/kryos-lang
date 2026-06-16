@@ -1,0 +1,133 @@
+// ============================================================
+// test_policy.kry -- MVP tests for the capability-contract linter.
+//
+//   kryos test --path ecosystem/kryos-policy
+//   kryos run  ecosystem/kryos-policy/tests/test_policy.kry   (same assertions)
+//
+// Each test drives the linter pipeline (parse manifest -> parse toml ->
+// check_policy -> minimal_allowed/rewrite) on in-string inputs that mirror the
+// committed fixtures, so the tests pass regardless of the runner's CWD.
+// ============================================================
+
+use caps
+use manifest
+use toml
+use policy
+
+// The pretty-format manifest text for the under-declared fixture: surface is
+// {io, net, process}.
+@capabilities()
+fn under_manifest() -> str {
+    return "fn fetch: [net]\nfn read_config: [io]\nfn run_tool: [process]\nunannotated: 0\n"
+}
+
+@test
+fn test_under_declared_fails_listing_excess() {
+    let actual = parse_actual_caps(under_manifest())
+    // Declared allowlist grants only io.
+    let declared = parse_declared_caps("[capabilities]\nallowed = [\"io\"]\n")
+    assert(len(actual) == 3, "surface should be io, net, process")
+    let v = check_policy(actual, declared)
+    assert(verdict_is_failure(v), "under-declared package must fail the contract")
+    match v {
+        Verdict::UnderDeclared(excess) => {
+            assert(len(excess) == 2, "two excess caps expected")
+            // caps_excess preserves actual order: net then process (io is granted).
+            assert(excess[0] == "net", "first excess should be net")
+            assert(excess[1] == "process", "second excess should be process")
+        },
+        _ => assert(false, "expected UnderDeclared verdict"),
+    }
+}
+
+@test
+fn test_over_declared_passes_and_fix_minimizes() {
+    let actual = parse_actual_caps("fn save: [io]\nunannotated: 0\n")
+    let declared = parse_declared_caps("allowed = [\"compute\", \"io\", \"net\"]\n")
+    let v = check_policy(actual, declared)
+    // Over-declaration is safe (subset holds) so it is NOT a hard failure...
+    assert(!verdict_is_failure(v), "over-declared is within the subset contract")
+    match v {
+        Verdict::OverDeclared(unused) => {
+            assert(len(unused) == 2, "compute and net are unused")
+            assert(unused[0] == "compute", "first unused should be compute")
+            assert(unused[1] == "net", "second unused should be net")
+        },
+        _ => assert(false, "expected OverDeclared verdict"),
+    }
+    // ...but --fix tightens the allowlist to the computed minimum.
+    let minimal = minimal_allowed(actual)
+    assert(len(minimal) == 1, "minimal allowlist is just [io]")
+    assert(minimal[0] == "io", "minimal cap should be io")
+    assert(caps_render_array(minimal) == "[\"io\"]", "rendered minimal array")
+}
+
+@test
+fn test_exact_match_passes() {
+    let actual = parse_actual_caps("fn load: [io]\nfn pure_helper: []\nunannotated: 0\n")
+    let declared = parse_declared_caps("allowed = [\"io\"]\n")
+    let v = check_policy(actual, declared)
+    assert(!verdict_is_failure(v), "exact match must pass")
+    match v {
+        Verdict::Pass => assert(true, "ok"),
+        _ => assert(false, "expected Pass verdict"),
+    }
+}
+
+@test
+fn test_fix_rewrites_allowed_line_in_place() {
+    // A realistic kryos.toml; --fix must replace only the array, preserving the
+    // [package] block, comments, and the [capabilities] header.
+    let toml = "[package]\nname = \"p\"\n\n[capabilities]\nallowed = [\"compute\", \"io\", \"net\"]\n"
+    let actual = parse_actual_caps("fn save: [io]\nunannotated: 0\n")
+    let minimal = minimal_allowed(actual)
+    let result = rewrite_allowed(toml, minimal)
+    assert(result.found, "allowed line should be found and rewritten")
+    assert(contains(result.text, "allowed = [\"io\"]"), "allowed line should be minimized")
+    assert(!contains(result.text, "compute"), "compute should be removed")
+    assert(!contains(result.text, "net"), "net should be removed")
+    assert(contains(result.text, "[package]"), "package block preserved")
+    assert(contains(result.text, "[capabilities]"), "capabilities header preserved")
+    // Re-parsing the rewritten file yields the minimal set.
+    let reparsed = parse_declared_caps(result.text)
+    assert(len(reparsed) == 1 && reparsed[0] == "io", "rewritten file declares exactly [io]")
+}
+
+@test
+fn test_wildcard_all_grants_everything() {
+    // A declared "all" wildcard grants every computed capability: no excess.
+    let actual = parse_actual_caps("fn a: [io]\nfn b: [net]\nfn c: [process]\nunannotated: 0\n")
+    let declared = parse_declared_caps("allowed = [\"all\"]\n")
+    let v = check_policy(actual, declared)
+    assert(!verdict_is_failure(v), "all wildcard grants every capability")
+    assert(caps_is_subset(actual, declared), "subset under all wildcard")
+}
+
+@test
+fn test_empty_surface_is_within_any_allowlist() {
+    // A package that computes no capabilities (all pure functions) satisfies any
+    // allowlist, and its minimal allowlist is empty.
+    let actual = parse_actual_caps("fn pure_a: []\nfn pure_b: []\nunannotated: 0\n")
+    assert(len(actual) == 0, "no capabilities computed")
+    let declared = parse_declared_caps("allowed = [\"io\"]\n")
+    let v = check_policy(actual, declared)
+    // io is declared but unused -> over-declared, not a failure.
+    assert(!verdict_is_failure(v), "empty surface never violates the contract")
+    assert(len(minimal_allowed(actual)) == 0, "minimal allowlist is empty")
+}
+
+fn main() {
+    test_under_declared_fails_listing_excess()
+    println("PASS test_under_declared_fails_listing_excess")
+    test_over_declared_passes_and_fix_minimizes()
+    println("PASS test_over_declared_passes_and_fix_minimizes")
+    test_exact_match_passes()
+    println("PASS test_exact_match_passes")
+    test_fix_rewrites_allowed_line_in_place()
+    println("PASS test_fix_rewrites_allowed_line_in_place")
+    test_wildcard_all_grants_everything()
+    println("PASS test_wildcard_all_grants_everything")
+    test_empty_surface_is_within_any_allowlist()
+    println("PASS test_empty_surface_is_within_any_allowlist")
+    println("6/6 policy tests passed")
+}

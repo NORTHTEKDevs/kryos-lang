@@ -1,0 +1,141 @@
+// ============================================================
+// caps.kry -- capability-set primitives for the manifest policy linter.
+//
+// A capability set is modeled as a [str] of capability names (e.g.
+// ["compute", "io", "net"]). The package manifest declares an allowlist; the
+// compiler computes the actual surface. The policy contract is exactly
+// CapabilitySet::is_subset_of applied at the package boundary:
+//
+//     actual is_subset_of declared   ->   package is within policy
+//
+// "all" in the declared allowlist is a wildcard that grants every capability,
+// mirroring Capability::All in the compiler's kryos-capabilities crate.
+//
+// Everything here is pure (no IO); @capabilities() with empty parens documents
+// that and keeps these helpers callable from any scope.
+// ============================================================
+
+// Does the declared allowlist grant `cap`? A literal "all" entry is a wildcard.
+@capabilities()
+fn caps_allows(declared: [str], cap: str) -> bool {
+    for d in declared {
+        if d == cap || d == "all" {
+            return true
+        }
+    }
+    return false
+}
+
+// Is `cap` already present in `set`? Used to dedup unions.
+@capabilities()
+fn caps_member(set: [str], cap: str) -> bool {
+    for c in set {
+        if c == cap {
+            return true
+        }
+    }
+    return false
+}
+
+// The capabilities in `actual` that `declared` does NOT grant. An empty result
+// means actual is a subset of declared and the package is within policy.
+@capabilities()
+fn caps_excess(actual: [str], declared: [str]) -> [str] {
+    let mut excess: [str] = []
+    for cap in actual {
+        if !caps_allows(declared, cap) && !caps_member(excess, cap) {
+            excess = push(excess, cap)
+        }
+    }
+    return excess
+}
+
+// True iff every member of `actual` is granted by `declared` (subset test).
+@capabilities()
+fn caps_is_subset(actual: [str], declared: [str]) -> bool {
+    return len(caps_excess(actual, declared)) == 0
+}
+
+// The declared entries that are NOT used by any actual capability. These are
+// over-declarations: harmless for safety, but --fix removes them to produce the
+// minimal allowlist. A "all" wildcard is reported as unused only when actual is
+// empty (otherwise it is doing real work).
+@capabilities()
+fn caps_unused(actual: [str], declared: [str]) -> [str] {
+    let mut unused: [str] = []
+    for d in declared {
+        if d == "all" {
+            if len(actual) == 0 {
+                unused = push(unused, d)
+            }
+        } elif !caps_member(actual, d) && !caps_member(unused, d) {
+            unused = push(unused, d)
+        }
+    }
+    return unused
+}
+
+// Insert `cap` into `set` keeping the set sorted and free of duplicates. Stable
+// lexicographic order makes the computed minimum deterministic, so --fix output
+// and test assertions do not depend on traversal order.
+@capabilities()
+fn caps_insert_sorted(set: [str], cap: str) -> [str] {
+    if caps_member(set, cap) {
+        return set
+    }
+    let mut out: [str] = []
+    let mut inserted = false
+    for c in set {
+        if !inserted && cap < c {
+            out = push(out, cap)
+            inserted = true
+        }
+        out = push(out, c)
+    }
+    if !inserted {
+        out = push(out, cap)
+    }
+    return out
+}
+
+// Normalize a capability set: sorted, de-duplicated. Used to render the
+// computed minimum allowlist deterministically.
+@capabilities()
+fn caps_normalize(set: [str]) -> [str] {
+    let mut out: [str] = []
+    for c in set {
+        out = caps_insert_sorted(out, c)
+    }
+    return out
+}
+
+// Render a capability set as a TOML-style inline array: ["a", "b"].
+@capabilities()
+fn caps_render_array(set: [str]) -> str {
+    let mut out: str = "["
+    let mut first = true
+    for c in set {
+        if !first {
+            out = out + ", "
+        }
+        out = out + "\"" + c + "\""
+        first = false
+    }
+    return out + "]"
+}
+
+// Render a capability set as a comma-joined plain list: a, b, c. Used in
+// diagnostics ("excess capabilities: net, process").
+@capabilities()
+fn caps_join(set: [str], sep: str) -> str {
+    let mut out: str = ""
+    let mut first = true
+    for c in set {
+        if !first {
+            out = out + sep
+        }
+        out = out + c
+        first = false
+    }
+    return out
+}

@@ -1,0 +1,156 @@
+// ============================================================
+// manifest.kry -- consume the compiler's computed capability manifest.
+//
+// The policy linter does not re-implement capability inference; it consumes the
+// authoritative output of the compiler. Produce it once with:
+//
+//     kryos manifest --caps --format pretty <package>/src -o caps.manifest
+//
+// The pretty format is line-oriented:
+//
+//     <file>.kry:
+//     fn caps_allows: []
+//     fn read_cap_sidecar: [io]
+//     fn handler: [io, net]
+//     unannotated: 0
+//
+// parse_actual_caps reads such text and returns the UNION of every bracketed
+// capability across every function -- the package's actual capability surface.
+// Function lines are "fn <name>: [<comma-separated caps>]"; file-header and
+// "unannotated:" lines are ignored.
+//
+// This module is pure string processing; @capabilities() keeps it callable
+// anywhere. read_manifest_file is the one IO helper.
+// ============================================================
+
+use std::string::{split_lines}
+use caps
+
+// Trim ASCII spaces and tabs from both ends of `s`.
+@capabilities()
+fn trim(s: str) -> str {
+    let n = len(s)
+    let mut start = 0
+    while start < n {
+        let c = substr(s, start, start + 1)
+        if c == " " || c == "\t" || c == "\r" {
+            start = start + 1
+        } else {
+            break
+        }
+    }
+    let mut end = n
+    while end > start {
+        let c = substr(s, end - 1, end)
+        if c == " " || c == "\t" || c == "\r" {
+            end = end - 1
+        } else {
+            break
+        }
+    }
+    return substr(s, start, end)
+}
+
+// Index of the first occurrence of `needle` in `s`, or -1.
+@capabilities()
+fn index_of(s: str, needle: str) -> i64 {
+    let n = len(s)
+    let m = len(needle)
+    if m == 0 {
+        return 0
+    }
+    let mut i = 0
+    while i + m <= n {
+        if substr(s, i, i + m) == needle {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// Strip one layer of surrounding double quotes from `s`, if present. TOML
+// arrays quote their entries (["io"]); the manifest pretty format does not
+// ([io]). Stripping here lets one splitter serve both.
+@capabilities()
+fn unquote(s: str) -> str {
+    let n = len(s)
+    if n >= 2 && substr(s, 0, 1) == "\"" && substr(s, n - 1, n) == "\"" {
+        return substr(s, 1, n - 1)
+    }
+    return s
+}
+
+// Split the inside of a "[...]" capability list on commas, trim each entry,
+// strip surrounding quotes, and drop empties. "[]" yields the empty array.
+@capabilities()
+fn split_caps(inner: str) -> [str] {
+    let mut out: [str] = []
+    let trimmed = trim(inner)
+    if len(trimmed) == 0 {
+        return out
+    }
+    let n = len(trimmed)
+    let mut start = 0
+    let mut i = 0
+    while i <= n {
+        let at_end = i == n
+        let is_comma = !at_end && substr(trimmed, i, i + 1) == ","
+        if at_end || is_comma {
+            let piece = unquote(trim(substr(trimmed, start, i)))
+            if len(piece) > 0 {
+                out = push(out, piece)
+            }
+            start = i + 1
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Extract the capabilities listed in one manifest line. A function line has the
+// shape "fn <name>: [<caps>]". Returns the empty array for non-function lines
+// or lines with no bracketed list.
+@capabilities()
+fn caps_in_line(line: str) -> [str] {
+    let open = index_of(line, "[")
+    if open < 0 {
+        return []
+    }
+    let rest = substr(line, open + 1, len(line))
+    let close = index_of(rest, "]")
+    if close < 0 {
+        return []
+    }
+    return split_caps(substr(rest, 0, close))
+}
+
+// Parse the full pretty manifest text into the union capability set of the
+// package -- sorted and de-duplicated.
+@capabilities()
+fn parse_actual_caps(manifest_text: str) -> [str] {
+    let mut union: [str] = []
+    let lines = split_lines(manifest_text)
+    for line in lines {
+        let t = trim(line)
+        // Only "fn ...: [..]" lines carry capability data.
+        if len(t) >= 3 && substr(t, 0, 3) == "fn " {
+            let caps = caps_in_line(t)
+            for c in caps {
+                union = caps_insert_sorted(union, c)
+            }
+        }
+    }
+    return union
+}
+
+// Read a manifest file from disk and parse it. Returns the actual capability
+// surface, or an empty set if the file is missing or empty.
+@capabilities(io)
+fn read_actual_caps(manifest_path: str) -> [str] {
+    if file_exists(manifest_path) == 0 {
+        return []
+    }
+    let content = file_read(manifest_path)
+    return parse_actual_caps(content)
+}

@@ -1,0 +1,8 @@
+[package]
+name = "fixture-over-declared"
+version = "0.1.0"
+description = "Allowlist grants capabilities the code never uses"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["compute", "io", "net"]

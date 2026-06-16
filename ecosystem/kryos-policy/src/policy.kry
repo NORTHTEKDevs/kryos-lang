@@ -1,0 +1,73 @@
+// ============================================================
+// policy.kry -- the manifest-level capability contract check.
+//
+// The contract: a package's ACTUAL capability surface (computed by the
+// compiler, via `kryos manifest --caps`) must be a SUBSET of the allowlist it
+// DECLARES in kryos.toml. A package that declares ["compute"] but whose code
+// computes "net" violates the contract -- it under-declares its surface.
+//
+// check_policy compares the two sets and returns a Verdict:
+//   - Pass        : actual is a subset of declared (and exactly equal)
+//   - OverDeclared: subset holds, but declared lists caps the code never uses.
+//                   Safe, but not minimal; --fix tightens it.
+//   - UnderDeclared: actual contains caps the allowlist does not grant. This is
+//                    the failure the linter exists to catch; carries the excess.
+//
+// minimal_allowed computes what the allowlist SHOULD be: the normalized actual
+// surface (sorted, de-duplicated). That is what --fix writes back.
+// ============================================================
+
+use caps
+
+enum Verdict {
+    Pass,
+    OverDeclared([str]),
+    UnderDeclared([str]),
+}
+
+// Compare actual vs declared and produce a verdict. Under-declaration takes
+// precedence over over-declaration: if the code uses a forbidden cap, that is
+// the failure to report even if other declared caps are unused.
+@capabilities()
+fn check_policy(actual: [str], declared: [str]) -> Verdict {
+    let excess = caps_excess(actual, declared)
+    if len(excess) > 0 {
+        return Verdict.UnderDeclared(excess)
+    }
+    let unused = caps_unused(actual, declared)
+    if len(unused) > 0 {
+        return Verdict.OverDeclared(unused)
+    }
+    return Verdict.Pass
+}
+
+// The minimal correct allowlist: the actual surface, normalized. This is what a
+// declared list should contain so that it is both sufficient (a superset of
+// actual) and minimal (no unused entries).
+@capabilities()
+fn minimal_allowed(actual: [str]) -> [str] {
+    return caps_normalize(actual)
+}
+
+// True iff the verdict is a hard failure (the linter should exit non-zero).
+@capabilities()
+fn verdict_is_failure(v: Verdict) -> bool {
+    match v {
+        Verdict.UnderDeclared(_) => return true,
+        Verdict.OverDeclared(_) => return false,
+        Verdict.Pass => return false,
+    }
+}
+
+// Human-readable one-line summary of a verdict.
+@capabilities()
+fn verdict_message(v: Verdict) -> str {
+    match v {
+        Verdict.Pass =>
+            return "OK: declared allowlist exactly matches the computed surface",
+        Verdict.OverDeclared(unused) =>
+            return "OVER-DECLARED: allowlist grants unused capabilities: " + caps_join(unused, ", "),
+        Verdict.UnderDeclared(excess) =>
+            return "VIOLATION: code uses capabilities not in the allowlist: " + caps_join(excess, ", "),
+    }
+}

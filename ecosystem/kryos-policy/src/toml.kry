@@ -1,0 +1,112 @@
+// ============================================================
+// toml.kry -- minimal reader/writer for the [capabilities] allowed list.
+//
+// kryos.toml declares the policy:
+//
+//     [capabilities]
+//     allowed = ["compute", "io"]
+//
+// We do NOT parse general TOML. We locate the `allowed = [ ... ]` assignment
+// (single-line; the array may not span lines) and:
+//   - read_declared_caps: return the declared capability names
+//   - rewrite_allowed:    replace just the array contents, preserving every
+//                         other byte of the file (used by --fix)
+//
+// If there is no [capabilities] section or no `allowed =` key, read returns the
+// empty set and rewrite returns the input unchanged with a flag so callers can
+// report "nothing to fix". Pure string processing except the two IO helpers.
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+use std::string::{split_lines}
+use caps
+use manifest
+
+// The result of a rewrite: the new file text and whether an `allowed =` line
+// was actually found and replaced.
+struct RewriteResult {
+    text: str,
+    found: bool,
+}
+
+// Find the start byte of the `allowed` key's assignment, or -1. We match a line
+// whose trimmed form begins with "allowed" followed by spaces and "=". This is
+// section-agnostic: kryos.toml has exactly one `allowed =`, under
+// [capabilities], so scanning the whole file is unambiguous for the MVP.
+@capabilities()
+fn find_allowed_line(content: str) -> i64 {
+    let lines = split_lines(content)
+    let mut offset = 0
+    for line in lines {
+        let t = trim(line)
+        if len(t) >= 7 && substr(t, 0, 7) == "allowed" {
+            let after = trim(substr(t, 7, len(t)))
+            if len(after) >= 1 && substr(after, 0, 1) == "=" {
+                return offset
+            }
+        }
+        // +1 for the newline split_lines stripped.
+        offset = offset + len(line) + 1
+    }
+    return -1
+}
+
+// Read the declared capabilities from the kryos.toml text. Empty set if there
+// is no allowed list.
+@capabilities()
+fn parse_declared_caps(content: str) -> [str] {
+    let line_start = find_allowed_line(content)
+    if line_start < 0 {
+        return []
+    }
+    let from_line = substr(content, line_start, len(content))
+    let open = index_of(from_line, "[")
+    if open < 0 {
+        return []
+    }
+    let after_open = substr(from_line, open + 1, len(from_line))
+    let close = index_of(after_open, "]")
+    if close < 0 {
+        return []
+    }
+    return split_caps(substr(after_open, 0, close))
+}
+
+// Rewrite the `allowed = [...]` array contents to `new_caps`, preserving the
+// indentation, the key, and everything before and after the array on that line
+// and in the file. Returns found=false (text unchanged) if there is no
+// allowed list to rewrite.
+@capabilities()
+fn rewrite_allowed(content: str, new_caps: [str]) -> RewriteResult {
+    let line_start = find_allowed_line(content)
+    if line_start < 0 {
+        return RewriteResult { text: content, found: false }
+    }
+    let before = substr(content, 0, line_start)
+    let from_line = substr(content, line_start, len(content))
+    let open = index_of(from_line, "[")
+    if open < 0 {
+        return RewriteResult { text: content, found: false }
+    }
+    let after_open = substr(from_line, open + 1, len(from_line))
+    let close_rel = index_of(after_open, "]")
+    if close_rel < 0 {
+        return RewriteResult { text: content, found: false }
+    }
+    // Absolute close index within from_line is (open + 1 + close_rel).
+    let close_abs = open + 1 + close_rel
+    let line_prefix = substr(from_line, 0, open)
+    let line_suffix = substr(from_line, close_abs + 1, len(from_line))
+    let rendered = caps_render_array(new_caps)
+    let new_line = line_prefix + rendered + line_suffix
+    return RewriteResult { text: before + new_line, found: true }
+}
+
+// Read declared caps from a kryos.toml on disk. Empty if missing.
+@capabilities(io)
+fn read_declared_caps(toml_path: str) -> [str] {
+    if file_exists(toml_path) == 0 {
+        return []
+    }
+    return parse_declared_caps(file_read(toml_path))
+}
