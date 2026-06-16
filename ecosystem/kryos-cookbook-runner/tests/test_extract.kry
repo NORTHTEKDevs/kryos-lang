@@ -1,0 +1,132 @@
+// ============================================================
+// test_extract.kry -- unit tests for the extract module.
+//
+//   kryos test --path ecosystem/kryos-cookbook-runner/tests
+//   kryos run  tests/test_extract.kry
+//
+// All tests are pure compute; no IO, no process spawning.
+// ============================================================
+
+use extract
+
+@test
+fn test_single_block() {
+    let src = "# Title\n\n```kryos\nfn main() { println(x) }\n```\n"
+    let blocks = extract_blocks(src)
+    assert(len(blocks) == 1, "expected 1 block, got " + to_string(len(blocks)))
+    assert(blocks[0].content == "fn main() { println(x) }", "content mismatch")
+    assert(blocks[0].line_num == 3, "line_num should be 3, got " + to_string(blocks[0].line_num))
+}
+
+@test
+fn test_two_blocks() {
+    let src = "```kryos\nblock one\n```\nsome prose\n```kryos\nblock two\n```\n"
+    let blocks = extract_blocks(src)
+    assert(len(blocks) == 2, "expected 2 blocks, got " + to_string(len(blocks)))
+    assert(blocks[0].content == "block one", "block 0 content mismatch: " + blocks[0].content)
+    assert(blocks[1].content == "block two", "block 1 content mismatch: " + blocks[1].content)
+}
+
+@test
+fn test_multiline_block() {
+    let src = "```kryos\nline1\nline2\nline3\n```\n"
+    let blocks = extract_blocks(src)
+    assert(len(blocks) == 1, "expected 1 block")
+    assert(blocks[0].content == "line1\nline2\nline3", "multiline content mismatch: " + blocks[0].content)
+}
+
+@test
+fn test_no_kryos_blocks() {
+    let src = "# Title\n\nJust prose, no code blocks.\n"
+    let blocks = extract_blocks(src)
+    assert(len(blocks) == 0, "expected 0 blocks, got " + to_string(len(blocks)))
+}
+
+@test
+fn test_other_fence_ignored() {
+    let src = "```rust\nlet x = 1\n```\n```kryos\nlet y = 2\n```\n"
+    let blocks = extract_blocks(src)
+    assert(len(blocks) == 1, "expected 1 kryos block, got " + to_string(len(blocks)))
+    assert(blocks[0].content == "let y = 2", "content mismatch")
+}
+
+@test
+fn test_line_num_first_block() {
+    // Opening fence is on line 1 (1-based), so line_num == 1.
+    let src = "```kryos\ncontent\n```\n"
+    let blocks = extract_blocks(src)
+    assert(blocks[0].line_num == 1, "line_num of first block should be 1, got " + to_string(blocks[0].line_num))
+}
+
+@test
+fn test_line_num_second_block() {
+    // First block on line 1, second block further down.
+    let src = "```kryos\nA\n```\nprose line\n```kryos\nB\n```\n"
+    let blocks = extract_blocks(src)
+    assert(len(blocks) == 2, "expected 2 blocks")
+    assert(blocks[0].line_num == 1, "first block on line 1, got " + to_string(blocks[0].line_num))
+    assert(blocks[1].line_num == 5, "second block on line 5, got " + to_string(blocks[1].line_num))
+}
+
+@test
+fn test_is_kryos_fence_variants() {
+    assert(is_kryos_fence("```kryos"), "bare fence should match")
+    assert(is_kryos_fence("```kryos "), "trailing space should match")
+    assert(!is_kryos_fence("```rust"), "rust fence must not match")
+    assert(!is_kryos_fence("```"), "bare close fence must not match")
+    assert(!is_kryos_fence(""), "empty line must not match")
+}
+
+@test
+fn test_is_close_fence() {
+    assert(is_close_fence("```"), "bare backticks should be close fence")
+    assert(is_close_fence("``` "), "with trailing space should still close")
+    assert(!is_close_fence("```kryos"), "opening fence must not close")
+    assert(!is_close_fence(""), "empty line must not close")
+}
+
+@test
+fn test_lines_join_empty() {
+    let parts: [str] = []
+    assert(lines_join(parts) == "", "empty array should join to empty string")
+}
+
+@test
+fn test_lines_join_single() {
+    let parts: [str] = ["hello"]
+    assert(lines_join(parts) == "hello", "single element should not add newline")
+}
+
+@test
+fn test_lines_join_multi() {
+    let parts: [str] = ["a", "b", "c"]
+    assert(lines_join(parts) == "a\nb\nc", "multi-element join mismatch")
+}
+
+fn main() {
+    test_single_block()
+    println("PASS test_single_block")
+    test_two_blocks()
+    println("PASS test_two_blocks")
+    test_multiline_block()
+    println("PASS test_multiline_block")
+    test_no_kryos_blocks()
+    println("PASS test_no_kryos_blocks")
+    test_other_fence_ignored()
+    println("PASS test_other_fence_ignored")
+    test_line_num_first_block()
+    println("PASS test_line_num_first_block")
+    test_line_num_second_block()
+    println("PASS test_line_num_second_block")
+    test_is_kryos_fence_variants()
+    println("PASS test_is_kryos_fence_variants")
+    test_is_close_fence()
+    println("PASS test_is_close_fence")
+    test_lines_join_empty()
+    println("PASS test_lines_join_empty")
+    test_lines_join_single()
+    println("PASS test_lines_join_single")
+    test_lines_join_multi()
+    println("PASS test_lines_join_multi")
+    println("12/12 extract tests passed")
+}

@@ -1,0 +1,127 @@
+// ============================================================
+// extract.kry -- extract fenced ```kryos blocks from Markdown.
+//
+// Pure compute; no IO, no imports.  Scans markdown source line by
+// line for triple-backtick kryos fences and returns one CodeBlock
+// per region, in document order.
+//
+// Opening fence: a line whose trimmed form starts with "```kryos".
+// Closing fence: a line whose trimmed form is exactly "```".
+//
+// Standard fences only; nested backtick fences are not supported
+// (spec constraint: "constrain to standard fences").
+// ============================================================
+
+struct CodeBlock {
+    content: str,
+    line_num: i64,
+}
+
+// Split a string into lines, handling \n and \r\n.
+@capabilities()
+fn split_lines_str(s: str) -> [str] {
+    let mut lines: [str] = []
+    let mut cur: str = ""
+    let mut i = 0
+    while i < len(s) {
+        let c = s[i]
+        if c == "\n" {
+            lines = push(lines, cur)
+            cur = ""
+        } elif c != "\r" {
+            cur = cur + c
+        }
+        i = i + 1
+    }
+    if len(cur) > 0 {
+        lines = push(lines, cur)
+    }
+    return lines
+}
+
+// Trim leading and trailing spaces, tabs, and carriage returns.
+@capabilities()
+fn str_trim_ws(s: str) -> str {
+    let n = len(s)
+    let mut start = 0
+    while start < n {
+        let c = s[start]
+        if c != " " && c != "\t" && c != "\r" {
+            break
+        }
+        start = start + 1
+    }
+    let mut end = n
+    while end > start {
+        let c = s[end - 1]
+        if c != " " && c != "\t" && c != "\r" {
+            break
+        }
+        end = end - 1
+    }
+    return substr(s, start, end)
+}
+
+// True when the trimmed line opens a kryos fence (```kryos...).
+@capabilities()
+fn is_kryos_fence(line: str) -> bool {
+    let t = str_trim_ws(line)
+    if len(t) < 8 {
+        return false
+    }
+    return substr(t, 0, 8) == "```kryos"
+}
+
+// True when the trimmed line is a bare closing fence (``` alone).
+@capabilities()
+fn is_close_fence(line: str) -> bool {
+    return str_trim_ws(line) == "```"
+}
+
+// Join a [str] array with newlines between elements.
+@capabilities()
+fn lines_join(parts: [str]) -> str {
+    let mut out: str = ""
+    let mut i = 0
+    while i < len(parts) {
+        if i > 0 {
+            out = out + "\n"
+        }
+        out = out + parts[i]
+        i = i + 1
+    }
+    return out
+}
+
+// Extract all ```kryos ... ``` blocks from markdown source.
+// Each CodeBlock carries the joined content and the 1-based line
+// number of its opening fence (useful for rewrite mode).
+@capabilities()
+fn extract_blocks(src: str) -> [CodeBlock] {
+    let lines = split_lines_str(src)
+    let mut blocks: [CodeBlock] = []
+    let mut in_block = false
+    let mut body_lines: [str] = []
+    let mut start_line = 0
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i]
+        if !in_block {
+            if is_kryos_fence(line) {
+                in_block = true
+                body_lines = []
+                start_line = i + 1
+            }
+        } else {
+            if is_close_fence(line) {
+                let content = lines_join(body_lines)
+                blocks = push(blocks, CodeBlock { content: content, line_num: start_line })
+                in_block = false
+            } else {
+                body_lines = push(body_lines, line)
+            }
+        }
+        i = i + 1
+    }
+    return blocks
+}

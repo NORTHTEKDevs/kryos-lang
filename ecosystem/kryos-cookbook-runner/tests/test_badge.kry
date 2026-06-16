@@ -1,0 +1,172 @@
+// ============================================================
+// test_badge.kry -- unit tests for the badge module.
+//
+//   kryos test --path ecosystem/kryos-cookbook-runner/tests
+//   kryos run  tests/test_badge.kry
+//
+// All tests are pure compute; no IO, no process spawning.
+// ============================================================
+
+use badge
+
+// ---------------------------------------------------------------------------
+// caps_from_manifest
+// ---------------------------------------------------------------------------
+
+@test
+fn test_pure_annotated_no_caps() {
+    let manifest = "fn main: []\nunannotated: 0\n"
+    let caps = caps_from_manifest(manifest)
+    assert(len(caps) == 0, "annotated pure fn must yield 0 caps, got " + to_string(len(caps)))
+}
+
+@test
+fn test_single_cap() {
+    let manifest = "fn main: [io]\nunannotated: 0\n"
+    let caps = caps_from_manifest(manifest)
+    assert(len(caps) == 1, "expected 1 cap, got " + to_string(len(caps)))
+    assert(caps[0] == "io", "cap should be io, got " + caps[0])
+}
+
+@test
+fn test_multiple_caps_one_fn() {
+    let manifest = "fn fetch: [io, net]\nunannotated: 0\n"
+    let caps = caps_from_manifest(manifest)
+    assert(len(caps) == 2, "expected 2 caps, got " + to_string(len(caps)))
+    assert(cap_in_list("io", caps), "io must be in caps")
+    assert(cap_in_list("net", caps), "net must be in caps")
+}
+
+@test
+fn test_union_across_functions() {
+    let manifest = "fn write_data: [io]\nfn fetch_url: [net]\nfn main: []\nunannotated: 0\n"
+    let caps = caps_from_manifest(manifest)
+    assert(len(caps) == 2, "union must have 2 unique caps, got " + to_string(len(caps)))
+    assert(cap_in_list("io", caps), "io must be in union")
+    assert(cap_in_list("net", caps), "net must be in union")
+}
+
+@test
+fn test_duplicate_caps_deduplicated() {
+    let manifest = "fn a: [io]\nfn b: [io]\nunannotated: 0\n"
+    let caps = caps_from_manifest(manifest)
+    assert(len(caps) == 1, "duplicate caps must be deduplicated, got " + to_string(len(caps)))
+    assert(caps[0] == "io", "dedup result should be io")
+}
+
+@test
+fn test_unannotated_only_line_ignored() {
+    let manifest = "unannotated: 3\n"
+    let caps = caps_from_manifest(manifest)
+    assert(len(caps) == 0, "unannotated-only manifest must yield 0 caps")
+}
+
+@test
+fn test_empty_manifest() {
+    let caps = caps_from_manifest("")
+    assert(len(caps) == 0, "empty manifest must yield 0 caps")
+}
+
+// ---------------------------------------------------------------------------
+// render_badge
+// ---------------------------------------------------------------------------
+
+@test
+fn test_render_badge_empty_is_compute() {
+    let empty: [str] = []
+    assert(render_badge(empty) == "compute", "empty caps must render as compute")
+}
+
+@test
+fn test_render_badge_single() {
+    let caps: [str] = ["io"]
+    assert(render_badge(caps) == "io", "single cap must render bare")
+}
+
+@test
+fn test_render_badge_multiple() {
+    let caps: [str] = ["io", "net"]
+    assert(render_badge(caps) == "io, net", "multi-cap must be comma-space separated")
+}
+
+// ---------------------------------------------------------------------------
+// badge_str_find
+// ---------------------------------------------------------------------------
+
+@test
+fn test_find_existing_char() {
+    assert(badge_str_find("abc", "b") == 1, "find 'b' in 'abc' should be 1")
+}
+
+@test
+fn test_find_missing_char() {
+    assert(badge_str_find("abc", "z") == -1, "find 'z' in 'abc' should be -1")
+}
+
+@test
+fn test_find_first_occurrence() {
+    assert(badge_str_find("[io, net]", "[") == 0, "[ at position 0")
+    assert(badge_str_find("[io, net]", "]") == 8, "] at position 8")
+}
+
+// ---------------------------------------------------------------------------
+// badge_split_caps
+// ---------------------------------------------------------------------------
+
+@test
+fn test_split_caps_single() {
+    let parts = badge_split_caps("io")
+    assert(len(parts) == 1, "single cap: expected 1 part, got " + to_string(len(parts)))
+    assert(parts[0] == "io", "single cap value must be io")
+}
+
+@test
+fn test_split_caps_two() {
+    let parts = badge_split_caps("io, net")
+    assert(len(parts) == 2, "two caps: expected 2 parts, got " + to_string(len(parts)))
+    assert(parts[0] == "io", "first cap must be io")
+    assert(parts[1] == "net", "second cap must be net")
+}
+
+@test
+fn test_split_caps_three() {
+    let parts = badge_split_caps("io, net, crypto")
+    assert(len(parts) == 3, "three caps: expected 3 parts, got " + to_string(len(parts)))
+    assert(parts[2] == "crypto", "third cap must be crypto")
+}
+
+fn main() {
+    test_pure_annotated_no_caps()
+    println("PASS test_pure_annotated_no_caps")
+    test_single_cap()
+    println("PASS test_single_cap")
+    test_multiple_caps_one_fn()
+    println("PASS test_multiple_caps_one_fn")
+    test_union_across_functions()
+    println("PASS test_union_across_functions")
+    test_duplicate_caps_deduplicated()
+    println("PASS test_duplicate_caps_deduplicated")
+    test_unannotated_only_line_ignored()
+    println("PASS test_unannotated_only_line_ignored")
+    test_empty_manifest()
+    println("PASS test_empty_manifest")
+    test_render_badge_empty_is_compute()
+    println("PASS test_render_badge_empty_is_compute")
+    test_render_badge_single()
+    println("PASS test_render_badge_single")
+    test_render_badge_multiple()
+    println("PASS test_render_badge_multiple")
+    test_find_existing_char()
+    println("PASS test_find_existing_char")
+    test_find_missing_char()
+    println("PASS test_find_missing_char")
+    test_find_first_occurrence()
+    println("PASS test_find_first_occurrence")
+    test_split_caps_single()
+    println("PASS test_split_caps_single")
+    test_split_caps_two()
+    println("PASS test_split_caps_two")
+    test_split_caps_three()
+    println("PASS test_split_caps_three")
+    println("16/16 badge tests passed")
+}

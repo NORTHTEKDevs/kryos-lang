@@ -1,0 +1,139 @@
+// ============================================================
+// badge.kry -- derive a capability badge from manifest pretty output.
+//
+// Parses the output of `kryos manifest --caps --format pretty`:
+//
+//   fn main: []
+//   fn fetch: [io, net]
+//   unannotated: 0
+//
+// Takes the union of all capabilities across annotated functions
+// and renders a short badge string. "compute" means no additional
+// capabilities beyond pure computation.  Pure compute; no IO.
+// ============================================================
+
+// Split a string into lines (manual, no imports needed).
+@capabilities()
+fn badge_split_lines(s: str) -> [str] {
+    let mut lines: [str] = []
+    let mut cur: str = ""
+    let mut i = 0
+    while i < len(s) {
+        let c = s[i]
+        if c == "\n" {
+            lines = push(lines, cur)
+            cur = ""
+        } elif c != "\r" {
+            cur = cur + c
+        }
+        i = i + 1
+    }
+    if len(cur) > 0 {
+        lines = push(lines, cur)
+    }
+    return lines
+}
+
+// Find the first occurrence of a single character in s. Returns -1 if absent.
+@capabilities()
+fn badge_str_find(s: str, ch: str) -> i64 {
+    let mut i = 0
+    while i < len(s) {
+        if s[i] == ch {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// Split s on the two-character separator ", ".  A trailing element is always
+// included even if it follows no separator.
+@capabilities()
+fn badge_split_caps(s: str) -> [str] {
+    let mut parts: [str] = []
+    let mut cur: str = ""
+    let n = len(s)
+    let mut i = 0
+    while i < n {
+        if i + 1 < n && s[i] == "," && s[i + 1] == " " {
+            if len(cur) > 0 {
+                parts = push(parts, cur)
+            }
+            cur = ""
+            i = i + 2
+        } else {
+            cur = cur + s[i]
+            i = i + 1
+        }
+    }
+    if len(cur) > 0 {
+        parts = push(parts, cur)
+    }
+    return parts
+}
+
+// True if cap already exists in the list.
+@capabilities()
+fn cap_in_list(cap: str, list: [str]) -> bool {
+    let mut i = 0
+    while i < len(list) {
+        if list[i] == cap {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// Extract the union of all capabilities from manifest pretty output.
+// Lines of interest look like: "fn some_name: [cap1, cap2]"
+@capabilities()
+fn caps_from_manifest(manifest_pretty: str) -> [str] {
+    let lines = badge_split_lines(manifest_pretty)
+    let mut all_caps: [str] = []
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i]
+        // Only process "fn ..." lines.
+        if len(line) >= 3 && substr(line, 0, 3) == "fn " {
+            let lb = badge_str_find(line, "[")
+            let rb = badge_str_find(line, "]")
+            if lb >= 0 && rb > lb {
+                let inside = substr(line, lb + 1, rb)
+                if len(inside) > 0 {
+                    let parts = badge_split_caps(inside)
+                    let mut j = 0
+                    while j < len(parts) {
+                        let cap = parts[j]
+                        if len(cap) > 0 && !cap_in_list(cap, all_caps) {
+                            all_caps = push(all_caps, cap)
+                        }
+                        j = j + 1
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return all_caps
+}
+
+// Render a capability list as a badge string.
+// An empty list means pure compute; render it as "compute".
+@capabilities()
+fn render_badge(caps: [str]) -> str {
+    if len(caps) == 0 {
+        return "compute"
+    }
+    let mut out: str = ""
+    let mut i = 0
+    while i < len(caps) {
+        if i > 0 {
+            out = out + ", "
+        }
+        out = out + caps[i]
+        i = i + 1
+    }
+    return out
+}

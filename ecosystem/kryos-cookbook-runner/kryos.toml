@@ -1,0 +1,8 @@
+[package]
+name = "kryos-cookbook-runner"
+version = "0.1.0"
+description = "Extract, compile-check, and capability-badge fenced Kryos examples from Markdown docs. Keeps documentation examples runnable and annotated."
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["process", "io"]

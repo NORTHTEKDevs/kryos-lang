@@ -1,0 +1,138 @@
+// ============================================================
+// test_runner.kry -- integration tests for kryos-cookbook-runner.
+//
+// These tests spawn the kryos binary, so they MUST be run with:
+//
+//   kryos run ecosystem/kryos-cookbook-runner/integration/test_runner.kry
+//
+// (NOT kryos test, which cannot expose the ptr_read_i64 intrinsic
+//  needed by std::process Command.run().)
+//
+// All paths are relative to the kryos-lang project root.
+// ============================================================
+
+use std::process::{command, exit}
+
+// Resolve the kryos binary path.
+@capabilities(process)
+fn kryos_bin() -> str {
+    let v = env_get("KRYOS")
+    if len(v) > 0 {
+        return v
+    }
+    return "kryos"
+}
+
+// Run the cookbook runner on a markdown file.  Returns the CommandResult.
+@capabilities(process)
+fn run_cookbook(md_path: str) -> str {
+    let bin = kryos_bin()
+    let result = command(bin)
+        .arg("run")
+        .arg("ecosystem/kryos-cookbook-runner/src/runner.kry")
+        .arg(md_path)
+        .run()
+    return result.stdout + result.stderr
+}
+
+// Run cookbook runner, capturing exit_code and combined output.
+@capabilities(process)
+fn run_cookbook_full(md_path: str) -> i64 {
+    let bin = kryos_bin()
+    let result = command(bin)
+        .arg("run")
+        .arg("ecosystem/kryos-cookbook-runner/src/runner.kry")
+        .arg(md_path)
+        .run()
+    print(result.stdout)
+    if len(result.stderr) > 0 {
+        print(result.stderr)
+    }
+    return result.exit_code
+}
+
+@test
+@capabilities(process)
+fn test_passing_block_reports_pass() {
+    let output = run_cookbook("ecosystem/kryos-cookbook-runner/tests/fixtures/sample.md")
+    assert(contains(output, "PASS"), "at least one block must report PASS, got: " + output)
+}
+
+@test
+@capabilities(process)
+fn test_failing_block_reported() {
+    let output = run_cookbook("ecosystem/kryos-cookbook-runner/tests/fixtures/sample.md")
+    assert(contains(output, "FAIL"), "the type-error block must report FAIL, got: " + output)
+}
+
+@test
+@capabilities(process)
+fn test_passing_block_has_badge() {
+    let output = run_cookbook("ecosystem/kryos-cookbook-runner/tests/fixtures/sample.md")
+    assert(contains(output, "badge:"), "passing blocks must include a badge, got: " + output)
+}
+
+@test
+@capabilities(process)
+fn test_pure_block_gets_compute_badge() {
+    let output = run_cookbook("ecosystem/kryos-cookbook-runner/tests/fixtures/sample.md")
+    assert(contains(output, "badge: compute"), "pure block must get badge: compute, got: " + output)
+}
+
+@test
+@capabilities(process)
+fn test_io_block_gets_io_badge() {
+    let output = run_cookbook("ecosystem/kryos-cookbook-runner/tests/fixtures/sample.md")
+    assert(contains(output, "badge: io"), "io-annotated block must get badge: io, got: " + output)
+}
+
+@test
+@capabilities(process)
+fn test_exit_nonzero_on_failure() {
+    let bin = kryos_bin()
+    let result = command(bin)
+        .arg("run")
+        .arg("ecosystem/kryos-cookbook-runner/src/runner.kry")
+        .arg("ecosystem/kryos-cookbook-runner/tests/fixtures/sample.md")
+        .run()
+    assert(!result.success, "runner must exit non-zero when a block fails")
+}
+
+@test
+@capabilities(process, io)
+fn test_no_blocks_exits_zero() {
+    // Write a temp markdown with no kryos blocks, run on it.
+    let bin = kryos_bin()
+    let t = env_get("TEMP")
+    let mut tmp = "/tmp"
+    if len(t) > 0 {
+        tmp = t
+    }
+    let no_blocks_md = tmp + "/ck-no-blocks.md"
+    file_write(no_blocks_md, "# Just prose\n\nNo code blocks here.\n")
+    let result = command(bin)
+        .arg("run")
+        .arg("ecosystem/kryos-cookbook-runner/src/runner.kry")
+        .arg(no_blocks_md)
+        .run()
+    assert(result.success, "runner with no kryos blocks must exit 0, got: " + result.stderr)
+    assert(contains(result.stdout, "no"), "must report no blocks found")
+}
+
+fn main() {
+    test_passing_block_reports_pass()
+    println("PASS test_passing_block_reports_pass")
+    test_failing_block_reported()
+    println("PASS test_failing_block_reported")
+    test_passing_block_has_badge()
+    println("PASS test_passing_block_has_badge")
+    test_pure_block_gets_compute_badge()
+    println("PASS test_pure_block_gets_compute_badge")
+    test_io_block_gets_io_badge()
+    println("PASS test_io_block_gets_io_badge")
+    test_exit_nonzero_on_failure()
+    println("PASS test_exit_nonzero_on_failure")
+    test_no_blocks_exits_zero()
+    println("PASS test_no_blocks_exits_zero")
+    println("7/7 integration tests passed")
+}

@@ -1,0 +1,189 @@
+// ============================================================
+// runner.kry -- kryos-cookbook-runner entry point.
+//
+// Usage:
+//   kryos run src/runner.kry <file.md> [--rewrite]
+//
+// For each fenced ```kryos block in <file.md>, the runner:
+//   1. Writes the block content to a temp file.
+//   2. Runs `kryos check` -- reports PASS or FAIL with stderr.
+//   3. Runs `kryos manifest --caps --format pretty` -- derives badge.
+//   4. Prints a one-line summary per block.
+//
+// With --rewrite, inserts a <!-- @badge: <badge> --> comment above
+// each passing block and writes the result back to <file.md>.
+//
+// Exit codes:
+//   0  all blocks compiled successfully
+//   1  one or more blocks failed (or usage error)
+//
+// Set $KRYOS to the kryos binary path; falls back to "kryos".
+// ============================================================
+
+use std::process::{command, exit}
+use extract
+use badge
+
+@capabilities(process, io, env)
+fn main() {
+    let a = args()
+
+    // Resolve kryos binary.
+    let kryos_env = env_get("KRYOS")
+    let mut bin: str = "kryos"
+    if len(kryos_env) > 0 {
+        bin = kryos_env
+    }
+
+    // Parse arguments.
+    let mut md_file: str = ""
+    let mut rewrite_mode = false
+    let mut i = 1
+    while i < len(a) {
+        if a[i] == "--rewrite" {
+            rewrite_mode = true
+        } elif a[i] == "--help" || a[i] == "-h" {
+            print_usage()
+            exit(0)
+        } else {
+            md_file = a[i]
+        }
+        i = i + 1
+    }
+
+    if len(md_file) == 0 {
+        println("cookbook-runner: error: no markdown file specified")
+        print_usage()
+        exit(1)
+    }
+
+    if file_exists(md_file) == 0 {
+        println("cookbook-runner: error: file not found: " + md_file)
+        exit(1)
+    }
+
+    // Read markdown and extract kryos blocks.
+    let src = file_read(md_file)
+    let blocks = extract_blocks(src)
+
+    if len(blocks) == 0 {
+        println("cookbook-runner: no ```kryos blocks found in " + md_file)
+        exit(0)
+    }
+
+    // Get temp directory.
+    let tmp = runner_temp_dir()
+
+    // Run each block and collect badges.
+    let mut all_pass = true
+    let mut collected_badges: [str] = []
+    let mut bi = 0
+    while bi < len(blocks) {
+        let block = blocks[bi]
+        let tmp_path = tmp + "/ck-block-" + to_string(bi) + ".kry"
+
+        // Write the block to a temp file.
+        file_write(tmp_path, block.content)
+
+        // kryos check: compile and type-check only.
+        let check_res = command(bin).arg("check").arg(tmp_path).run()
+        let label = "Example " + to_string(bi + 1) + " (line " + to_string(block.line_num) + ")"
+
+        if !check_res.success {
+            println(label + ": FAIL")
+            // Print each stderr line indented.
+            let err_lines = split_lines_str(check_res.stderr)
+            let mut li = 0
+            while li < len(err_lines) {
+                if len(err_lines[li]) > 0 {
+                    println("  " + err_lines[li])
+                }
+                li = li + 1
+            }
+            all_pass = false
+            collected_badges = push(collected_badges, "FAIL")
+        } else {
+            // Derive capability badge from manifest.
+            let manifest_res = command(bin)
+                .arg("manifest")
+                .arg("--caps")
+                .arg("--format")
+                .arg("pretty")
+                .arg(tmp_path)
+                .run()
+            let caps = caps_from_manifest(manifest_res.stdout)
+            let badge_str = render_badge(caps)
+            println(label + ": PASS  badge: " + badge_str)
+            collected_badges = push(collected_badges, badge_str)
+        }
+
+        bi = bi + 1
+    }
+
+    // Rewrite mode: insert badge comments into the original markdown.
+    if rewrite_mode {
+        let rewritten = rewrite_markdown(src, blocks, collected_badges)
+        file_write(md_file, rewritten)
+        println("cookbook-runner: wrote badge comments to " + md_file)
+    }
+
+    if !all_pass {
+        exit(1)
+    }
+}
+
+@capabilities()
+fn print_usage() {
+    println("usage: kryos run src/runner.kry <file.md> [--rewrite]")
+    println("")
+    println("  <file.md>   Markdown file with ```kryos blocks")
+    println("  --rewrite   Insert <!-- @badge: ... --> comments in-place")
+    println("")
+    println("exit 0: all blocks passed  exit 1: any block failed or usage error")
+    println("set $$KRYOS to override the kryos binary path")
+}
+
+// Get a temp directory to use for writing extracted block files.
+@capabilities(process)
+fn runner_temp_dir() -> str {
+    let t = env_get("TEMP")
+    if len(t) > 0 {
+        return t
+    }
+    let t2 = env_get("TMP")
+    if len(t2) > 0 {
+        return t2
+    }
+    let t3 = env_get("TMPDIR")
+    if len(t3) > 0 {
+        return t3
+    }
+    return "/tmp"
+}
+
+// Rebuild the markdown source with a <!-- @badge: ... --> comment inserted
+// immediately before each opening ```kryos fence (only for passing blocks).
+@capabilities()
+fn rewrite_markdown(src: str, blocks: [CodeBlock], badges: [str]) -> str {
+    let lines = split_lines_str(src)
+    let mut out: [str] = []
+    let mut block_idx = 0
+    let mut li = 0
+    while li < len(lines) {
+        let line = lines[li]
+        // If this line is the opening fence of the next unprocessed block,
+        // insert the badge comment before it (skip for FAIL blocks).
+        if block_idx < len(blocks) {
+            if blocks[block_idx].line_num == li + 1 {
+                let badge_str = badges[block_idx]
+                if badge_str != "FAIL" {
+                    out = push(out, "<!-- @badge: " + badge_str + " -->")
+                }
+                block_idx = block_idx + 1
+            }
+        }
+        out = push(out, line)
+        li = li + 1
+    }
+    return lines_join(out)
+}
