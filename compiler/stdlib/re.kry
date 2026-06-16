@@ -11,6 +11,9 @@
 extern {
     fn kryos_regex_new(pattern_ptr: i64, pattern_len: i64) -> i64
     fn kryos_regex_is_match(re: i64, text_ptr: i64, text_len: i64) -> i32
+    // Single-pass match: writes byte-offset start to *out_start and byte length
+    // to *out_len. Returns 1 on match, 0 on no-match, -1 on error.
+    fn kryos_regex_find(re: i64, text_ptr: i64, text_len: i64, out_start: i64, out_len: i64) -> i32
     fn kryos_regex_drop(re: i64) -> i32
 }
 
@@ -53,38 +56,35 @@ impl Regex {
     }
 
     // Find the first match of the pattern in the text.
-    // Returns a Match struct.  Uses a linear scan since the native FFI
-    // only provides is_match -- we progressively try substrings.
+    // Returns a Match struct.  Uses the native single-pass kryos_regex_find,
+    // which writes the byte-offset start and length into a small out-param
+    // buffer -- O(n), not the old O(n^2) substring scan.
     fn find(self: Regex, text: str) -> Match {
         if self.dropped {
             throw "re error: find on dropped regex"
         }
-        let text_len = len(text)
-
-        // Try each starting position
-        let mut start = 0
-        while start < text_len {
-            // Try each ending position from the smallest possible match
-            let mut end = start + 1
-            while end <= text_len {
-                let candidate = substr(text, start, end)
-                let result = kryos_regex_is_match(self.handle, str_to_ptr(candidate), len(candidate))
-                if result == 1 {
-                    // Found a match -- now try to find the shortest at this start
-                    // (already found since we scan end from start+1 up)
-                    return Match {
-                        text: candidate,
-                        start: start,
-                        end: end,
-                        found: true
-                    }
-                }
-                end = end + 1
-            }
-            start = start + 1
+        // 16 bytes = two i64 out-param slots: [0]=start, [1]=len.
+        let buf = alloc(16)
+        let r = kryos_regex_find(self.handle, str_to_ptr(text), len(text), buf, buf + 8)
+        if r < 0 {
+            free_bytes(buf, 16)
+            throw "re error: find failed for pattern: " + self.pattern
         }
-
-        return Match { text: "", start: 0, end: 0, found: false }
+        if r == 0 {
+            free_bytes(buf, 16)
+            return Match { text: "", start: 0, end: 0, found: false }
+        }
+        let start: i64 = ptr_read_i64(buf, 0)
+        let length: i64 = ptr_read_i64(buf, 1)
+        free_bytes(buf, 16)
+        let mend: i64 = start + length
+        let matched = substr(text, start, mend)
+        return Match {
+            text: matched,
+            start: start,
+            end: mend,
+            found: true
+        }
     }
 
     // Find all non-overlapping matches in the text.

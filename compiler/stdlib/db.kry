@@ -36,6 +36,14 @@ extern {
     fn kryos_db_col_text_len(cursor: i64, col: i32) -> i64
     fn kryos_db_col_text_copy(cursor: i64, col: i32, buf: i64, buf_len: i64) -> i64
     fn kryos_db_finalize(cursor: i64) -> i32
+    // Prepared statements with parameter binding (SQL-injection-safe).
+    fn kryos_db_stmt_prepare(conn: i64, sql_ptr: i64, sql_len: i64) -> i64
+    fn kryos_db_bind_text(stmt: i64, idx: i64, val_ptr: i64, val_len: i64) -> i32
+    fn kryos_db_bind_int(stmt: i64, idx: i64, val: i64) -> i32
+    fn kryos_db_bind_null(stmt: i64, idx: i64) -> i32
+    fn kryos_db_stmt_execute(stmt: i64) -> i64
+    fn kryos_db_stmt_query(stmt: i64) -> i64
+    fn kryos_db_stmt_finalize(stmt: i64) -> i32
 }
 
 // --- Connection struct -------------------------------------------------------
@@ -49,6 +57,16 @@ struct Connection {
 struct Cursor {
     handle: i64,
     done: bool
+}
+
+// --- Prepared statement struct -----------------------------------------------
+
+// A prepared statement with parameter placeholders (?1, ?2, ...).  Bind values
+// with bind_text/bind_int/bind_null, then run stmt_execute (DML) or
+// stmt_query (SELECT).  Bound values are passed as data, never spliced into the
+// SQL text, so they are immune to SQL injection.
+struct Stmt {
+    handle: i64
 }
 
 // --- Connection API ----------------------------------------------------------
@@ -105,6 +123,81 @@ fn query(conn: Connection, sql: str) -> Cursor {
         throw "db error: query failed: " + sql
     }
     return Cursor { handle: h, done: false }
+}
+
+// --- Prepared statements (parameterized queries) ----------------------------
+
+// Compile a SQL statement with placeholders (?1, ?2, ...).  Returns a Stmt
+// handle; bind values then run with stmt_execute or stmt_query.  Throws on
+// an unknown connection.
+//
+//   let s = db::prepare(conn, "INSERT INTO users (name) VALUES (?1)")
+//   db::bind_text(s, 1, untrusted_input)   // stored as data, not SQL
+//   db::stmt_execute(s)
+//   db::stmt_finalize(s)
+@capabilities(db)
+fn prepare(conn: Connection, sql: str) -> Stmt {
+    let h = kryos_db_stmt_prepare(conn.handle, str_to_ptr(sql), len(sql))
+    if h < 0 {
+        throw "db error: prepare failed: " + sql
+    }
+    return Stmt { handle: h }
+}
+
+// Bind a text value to 1-based parameter index `idx`.  The value is stored as
+// data and never interpreted as SQL.
+@capabilities(db)
+fn bind_text(stmt: Stmt, idx: i64, val: str) {
+    let r = kryos_db_bind_text(stmt.handle, idx, str_to_ptr(val), len(val))
+    if r < 0 {
+        throw "db error: bind_text failed at index " + to_string(idx)
+    }
+}
+
+// Bind an integer value to 1-based parameter index `idx`.
+@capabilities(db)
+fn bind_int(stmt: Stmt, idx: i64, val: i64) {
+    let r = kryos_db_bind_int(stmt.handle, idx, val)
+    if r < 0 {
+        throw "db error: bind_int failed at index " + to_string(idx)
+    }
+}
+
+// Bind SQL NULL to 1-based parameter index `idx`.
+@capabilities(db)
+fn bind_null(stmt: Stmt, idx: i64) {
+    let r = kryos_db_bind_null(stmt.handle, idx)
+    if r < 0 {
+        throw "db error: bind_null failed at index " + to_string(idx)
+    }
+}
+
+// Execute a bound DDL/DML statement (INSERT/UPDATE/DELETE).  Returns rows
+// changed.  Throws on SQL error.
+@capabilities(db)
+fn stmt_execute(stmt: Stmt) -> i64 {
+    let n = kryos_db_stmt_execute(stmt.handle)
+    if n < 0 {
+        throw "db error: prepared execute failed"
+    }
+    return n
+}
+
+// Execute a bound SELECT and return a Cursor over the result rows.  Read it
+// with step() / col_int() / col_text() and release it with finalize().
+@capabilities(db)
+fn stmt_query(stmt: Stmt) -> Cursor {
+    let h = kryos_db_stmt_query(stmt.handle)
+    if h < 0 {
+        throw "db error: prepared query failed"
+    }
+    return Cursor { handle: h, done: false }
+}
+
+// Free a prepared statement and release its memory.
+@capabilities(db)
+fn stmt_finalize(stmt: Stmt) {
+    kryos_db_stmt_finalize(stmt.handle)
 }
 
 // Advance the cursor to the next row.
