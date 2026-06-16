@@ -1,0 +1,119 @@
+// ============================================================
+// runner.kry -- kryos-sandbox-runner entry point.
+//
+// Usage:
+//   kryos-sandbox-runner [--allow <policy>] <file.kry>
+//
+// Before executing <file.kry> with `kryos run`, this driver runs
+// `kryos manifest --caps --strict --deny <deny_list>`.  If any
+// function in the file declares a capability outside the allow set,
+// the runner refuses with exit code 2 and a clear message.
+// A clean manifest causes the runner to exec `kryos run <file>`.
+//
+// Policies (--allow):
+//   pure         -- compute only (default)
+//   net-readonly -- compute + net + time
+//   all          -- no enforcement (manifest still runs, nothing denied)
+//   <caps>       -- comma-separated cap list, e.g. "compute,net"
+//
+// Exit codes:
+//   0  -- program ran and exited 0
+//   1  -- usage error or compilation failure in the target program
+//   2  -- policy refusal (capability surface exceeds allow set)
+//   N  -- whatever kryos run returned (other program exit codes pass through)
+//
+// Limitation: the static manifest is only as strong as the
+// @capabilities annotations in the target file.  Unannotated
+// functions that call io builtins are not caught.  Annotate the
+// source or use --strict-capabilities when compiling to enforce.
+// ============================================================
+
+use std::process::{command, exit}
+use policy
+
+@capabilities(process, env)
+fn main() {
+    let a = args()
+
+    // Resolve kryos binary: $KRYOS env var, then fall back to "kryos".
+    let kryos_env = env_get("KRYOS")
+    let mut bin: str = "kryos"
+    if len(kryos_env) > 0 {
+        bin = kryos_env
+    }
+
+    // Parse arguments: [--allow <policy>] <file.kry>
+    let mut allow_str: str = "pure"
+    let mut file: str = ""
+    let mut i = 1
+    while i < len(a) {
+        if a[i] == "--allow" {
+            if i + 1 < len(a) {
+                allow_str = a[i + 1]
+                i = i + 2
+            } else {
+                println("error: --allow requires an argument")
+                exit(1)
+            }
+        } elif a[i] == "--help" || a[i] == "-h" {
+            println("usage: kryos-sandbox-runner [--allow <policy>] <file.kry>")
+            println("")
+            println("policies:")
+            println("  pure         compute only (default)")
+            println("  net-readonly compute + net + time")
+            println("  all          no enforcement")
+            println("  <caps>       comma-separated caps, e.g. compute,net")
+            println("")
+            println("exit codes:")
+            println("  0  program ran and exited 0")
+            println("  1  usage error")
+            println("  2  policy refusal")
+            println("  N  program exit code (passed through)")
+            exit(0)
+        } else {
+            file = a[i]
+            i = i + 1
+        }
+    }
+
+    if len(file) == 0 {
+        println("usage: kryos-sandbox-runner [--allow <policy>] <file.kry>")
+        println("run with --help for details")
+        exit(1)
+    }
+
+    // Resolve policy preset to an allow set and compute what to deny.
+    let allow_caps = resolve_policy(allow_str)
+    let deny_caps = compute_deny(allow_caps)
+
+    // Build the manifest command.
+    let mut mcmd = command(bin)
+    mcmd = mcmd.arg("manifest")
+    mcmd = mcmd.arg("--caps")
+    mcmd = mcmd.arg("--strict")
+    if len(deny_caps) > 0 {
+        mcmd = mcmd.arg("--deny")
+        mcmd = mcmd.arg(caps_join(deny_caps))
+    }
+    mcmd = mcmd.arg(file)
+
+    let mresult = mcmd.run()
+
+    if !mresult.success {
+        println("sandbox-runner: REFUSED " + file)
+        println("  policy : " + allow_str + " (allow=" + caps_render(allow_caps) + ")")
+        println("  reason : " + mresult.stderr)
+        exit(2)
+    }
+
+    // Manifest clean -- run the program.
+    let mut rcmd = command(bin)
+    rcmd = rcmd.arg("run")
+    rcmd = rcmd.arg(file)
+    let rresult = rcmd.run()
+    print(rresult.stdout)
+    if len(rresult.stderr) > 0 {
+        print(rresult.stderr)
+    }
+    exit(rresult.exit_code as i32)
+}

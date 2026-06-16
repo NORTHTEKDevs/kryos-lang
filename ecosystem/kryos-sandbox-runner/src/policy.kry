@@ -1,0 +1,120 @@
+// ============================================================
+// policy.kry -- capability policy for kryos-sandbox-runner.
+//
+// Maps policy presets and custom allow-sets to a deny list that is
+// passed to `kryos manifest --deny`.  Everything here is pure
+// compute (@capabilities() with empty parens) so it is callable
+// from both the runner and the test suite without side effects.
+//
+// Policy presets:
+//   pure         -- compute only (default)
+//   net-readonly -- compute + net + time
+//   all          -- every capability (no enforcement; useful in tests)
+// Custom: a comma-separated list of cap names, e.g. "compute,net".
+// ============================================================
+
+// The 10 concrete capability names in the Kryos compiler taxonomy.
+// Mirrors Capability in compiler/crates/kryos-capabilities/src/model.rs.
+@capabilities()
+fn all_caps() -> [str] {
+    return ["net", "io", "ffi", "compute", "crypto", "process", "env", "term", "db", "time"]
+}
+
+// Resolve a policy name or comma-separated cap list to a [str] allow set.
+@capabilities()
+fn resolve_policy(policy: str) -> [str] {
+    if policy == "pure" {
+        return ["compute"]
+    }
+    if policy == "net-readonly" {
+        return ["compute", "net", "time"]
+    }
+    if policy == "all" {
+        return all_caps()
+    }
+    return split_caps(policy)
+}
+
+// Is `cap` present in `set`?
+@capabilities()
+fn cap_in_set(cap: str, set: [str]) -> bool {
+    let mut i = 0
+    while i < len(set) {
+        if set[i] == cap {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// Returns caps in all_caps() that are NOT in allow_set.
+// These are the caps that `kryos manifest --deny` will reject.
+@capabilities()
+fn compute_deny(allow_set: [str]) -> [str] {
+    let all = all_caps()
+    let mut deny: [str] = []
+    let mut i = 0
+    while i < len(all) {
+        if !cap_in_set(all[i], allow_set) {
+            deny = push(deny, all[i])
+        }
+        i = i + 1
+    }
+    return deny
+}
+
+// Join a [str] capability set with commas (for the --deny argument).
+@capabilities()
+fn caps_join(caps: [str]) -> str {
+    let mut out: str = ""
+    let mut i = 0
+    while i < len(caps) {
+        if i > 0 {
+            out = out + ","
+        }
+        out = out + caps[i]
+        i = i + 1
+    }
+    return out
+}
+
+// Render a [str] capability set as {a, b, c} for human-readable messages.
+// Uses {{ / }} to escape to literal braces (bare { opens interpolation).
+@capabilities()
+fn caps_render(caps: [str]) -> str {
+    let mut out: str = "{{"
+    let mut i = 0
+    while i < len(caps) {
+        if i > 0 {
+            out = out + ", "
+        }
+        out = out + caps[i]
+        i = i + 1
+    }
+    return out + "}}"
+}
+
+// Split a comma-separated capability string into a [str].
+@capabilities()
+fn split_caps(s: str) -> [str] {
+    let mut result: [str] = []
+    let mut current: str = ""
+    let mut i = 0
+    while i < len(s) {
+        let ch = s[i]
+        if ch == "," {
+            if len(current) > 0 {
+                result = push(result, current)
+                current = ""
+            }
+        } else {
+            current = current + ch
+        }
+        i = i + 1
+    }
+    if len(current) > 0 {
+        result = push(result, current)
+    }
+    return result
+}

@@ -1,0 +1,7 @@
+// pure_program.kry -- test fixture: compute-only, @capabilities() annotated.
+// Under the "pure" policy, this program must be ALLOWED and must print "42".
+@capabilities()
+fn main() {
+    let sum = 40 + 2
+    println(to_string(sum))
+}

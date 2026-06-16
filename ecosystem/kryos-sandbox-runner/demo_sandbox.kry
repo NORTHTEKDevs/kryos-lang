@@ -1,0 +1,83 @@
+// ============================================================
+// demo_sandbox.kry -- demonstrates kryos-sandbox-runner behaviour.
+//
+// Run with:
+//   kryos run ecosystem/kryos-sandbox-runner/demo_sandbox.kry
+//
+// This demo calls the same manifest+run logic the runner uses, so
+// you see the enforcement in action without needing to build the
+// kryos-sandbox-runner binary.
+// ============================================================
+
+use std::process::{command, exit}
+use policy
+
+@capabilities(process, env)
+fn check_and_run(label: str, policy_name: str, file: str) {
+    let bin_env = env_get("KRYOS")
+    let mut bin: str = "kryos"
+    if len(bin_env) > 0 {
+        bin = bin_env
+    }
+
+    let allow_caps = resolve_policy(policy_name)
+    let deny_caps = compute_deny(allow_caps)
+
+    println("--- " + label + " ---")
+    println("file   : " + file)
+    println("policy : " + policy_name + " (allow=" + caps_render(allow_caps) + ")")
+
+    let mut mcmd = command(bin)
+    mcmd = mcmd.arg("manifest")
+    mcmd = mcmd.arg("--caps")
+    mcmd = mcmd.arg("--strict")
+    if len(deny_caps) > 0 {
+        mcmd = mcmd.arg("--deny")
+        mcmd = mcmd.arg(caps_join(deny_caps))
+    }
+    mcmd = mcmd.arg(file)
+    let mresult = mcmd.run()
+
+    if !mresult.success {
+        println("result : REFUSED (exit 2)")
+        println("reason : " + mresult.stderr)
+        return
+    }
+
+    let mut rcmd = command(bin)
+    rcmd = rcmd.arg("run")
+    rcmd = rcmd.arg(file)
+    let rresult = rcmd.run()
+    println("result : ALLOWED (exit " + to_string(rresult.exit_code) + ")")
+    println("output : " + rresult.stdout)
+}
+
+@capabilities(process, env)
+fn main() {
+    println("kryos-sandbox-runner demo")
+    println("=========================")
+    println("")
+
+    check_and_run(
+        "1. io program under pure policy -- should REFUSE",
+        "pure",
+        "ecosystem/kryos-sandbox-runner/tests/fixtures/io_program.kry"
+    )
+    println("")
+
+    check_and_run(
+        "2. compute program under pure policy -- should ALLOW",
+        "pure",
+        "ecosystem/kryos-sandbox-runner/tests/fixtures/pure_program.kry"
+    )
+    println("")
+
+    check_and_run(
+        "3. io program under all policy -- should ALLOW",
+        "all",
+        "ecosystem/kryos-sandbox-runner/tests/fixtures/io_program.kry"
+    )
+    println("")
+
+    println("demo complete.")
+}

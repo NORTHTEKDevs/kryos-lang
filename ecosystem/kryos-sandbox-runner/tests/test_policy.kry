@@ -1,0 +1,179 @@
+// ============================================================
+// test_policy.kry -- unit tests for the policy module.
+//
+//   kryos test --path ecosystem/kryos-sandbox-runner
+//   kryos run  tests/test_policy.kry
+//
+// All tests are pure compute; no process spawning.
+// ============================================================
+
+use policy
+
+// ---------------------------------------------------------------------------
+// resolve_policy
+// ---------------------------------------------------------------------------
+
+@test
+fn test_pure_preset_allows_only_compute() {
+    let caps = resolve_policy("pure")
+    assert(len(caps) == 1, "pure must allow exactly 1 cap, got " + to_string(len(caps)))
+    assert(caps[0] == "compute", "pure must allow compute, got " + caps[0])
+}
+
+@test
+fn test_net_readonly_preset() {
+    let caps = resolve_policy("net-readonly")
+    assert(cap_in_set("compute", caps), "net-readonly must allow compute")
+    assert(cap_in_set("net", caps), "net-readonly must allow net")
+    assert(cap_in_set("time", caps), "net-readonly must allow time")
+    assert(!cap_in_set("io", caps), "net-readonly must not allow io")
+    assert(!cap_in_set("ffi", caps), "net-readonly must not allow ffi")
+}
+
+@test
+fn test_all_preset_allows_every_cap() {
+    let caps = resolve_policy("all")
+    let known = all_caps()
+    assert(len(caps) == len(known), "all must return all " + to_string(len(known)) + " caps")
+    let mut i = 0
+    while i < len(known) {
+        assert(cap_in_set(known[i], caps), "all must include " + known[i])
+        i = i + 1
+    }
+}
+
+@test
+fn test_custom_comma_separated_policy() {
+    let caps = resolve_policy("compute,net")
+    assert(len(caps) == 2, "2-cap list must yield 2, got " + to_string(len(caps)))
+    assert(cap_in_set("compute", caps), "must include compute")
+    assert(cap_in_set("net", caps), "must include net")
+    assert(!cap_in_set("io", caps), "must not include io")
+}
+
+// ---------------------------------------------------------------------------
+// compute_deny
+// ---------------------------------------------------------------------------
+
+@test
+fn test_deny_under_pure_excludes_compute() {
+    let deny = compute_deny(resolve_policy("pure"))
+    // 10 total caps - 1 allowed = 9 denied
+    assert(len(deny) == 9, "pure deny list must have 9 caps, got " + to_string(len(deny)))
+    assert(!cap_in_set("compute", deny), "compute must NOT be in the deny list for pure")
+    assert(cap_in_set("io", deny), "io must be denied under pure")
+    assert(cap_in_set("net", deny), "net must be denied under pure")
+    assert(cap_in_set("ffi", deny), "ffi must be denied under pure")
+}
+
+@test
+fn test_deny_under_net_readonly() {
+    let deny = compute_deny(resolve_policy("net-readonly"))
+    // 10 - 3 (compute, net, time) = 7 denied
+    assert(len(deny) == 7, "net-readonly deny list must have 7 caps, got " + to_string(len(deny)))
+    assert(!cap_in_set("compute", deny), "compute must NOT be denied under net-readonly")
+    assert(!cap_in_set("net", deny), "net must NOT be denied under net-readonly")
+    assert(!cap_in_set("time", deny), "time must NOT be denied under net-readonly")
+    assert(cap_in_set("io", deny), "io must be denied under net-readonly")
+}
+
+@test
+fn test_deny_under_all_is_empty() {
+    let deny = compute_deny(resolve_policy("all"))
+    assert(len(deny) == 0, "deny list for 'all' must be empty, got " + to_string(len(deny)))
+}
+
+// ---------------------------------------------------------------------------
+// caps_join
+// ---------------------------------------------------------------------------
+
+@test
+fn test_caps_join_single() {
+    assert(caps_join(["compute"]) == "compute", "single cap join should be bare name")
+}
+
+@test
+fn test_caps_join_multiple() {
+    let joined = caps_join(["net", "io", "ffi"])
+    assert(joined == "net,io,ffi", "multi-cap join must be comma-separated, got " + joined)
+}
+
+@test
+fn test_caps_join_empty() {
+    assert(caps_join([]) == "", "empty caps join must be empty string")
+}
+
+// ---------------------------------------------------------------------------
+// caps_render
+// ---------------------------------------------------------------------------
+
+@test
+fn test_caps_render_braces() {
+    let rendered = caps_render(["compute"])
+    assert(rendered == "{{compute}}", "single cap render must be {compute}, got " + rendered)
+}
+
+@test
+fn test_caps_render_multi() {
+    let rendered = caps_render(["net", "compute"])
+    assert(rendered == "{{net, compute}}", "multi-cap render must be {{net, compute}}, got " + rendered)
+}
+
+@test
+fn test_caps_render_empty() {
+    assert(caps_render([]) == "{{}}", "empty render must be {{}}")
+}
+
+// ---------------------------------------------------------------------------
+// split_caps
+// ---------------------------------------------------------------------------
+
+@test
+fn test_split_caps_single() {
+    let parts = split_caps("compute")
+    assert(len(parts) == 1, "single cap must split to 1")
+    assert(parts[0] == "compute", "must be compute")
+}
+
+@test
+fn test_split_caps_multiple() {
+    let parts = split_caps("compute,net,io")
+    assert(len(parts) == 3, "3-element list must split to 3, got " + to_string(len(parts)))
+    assert(parts[0] == "compute", "parts[0] must be compute")
+    assert(parts[1] == "net", "parts[1] must be net")
+    assert(parts[2] == "io", "parts[2] must be io")
+}
+
+fn main() {
+    test_pure_preset_allows_only_compute()
+    println("PASS test_pure_preset_allows_only_compute")
+    test_net_readonly_preset()
+    println("PASS test_net_readonly_preset")
+    test_all_preset_allows_every_cap()
+    println("PASS test_all_preset_allows_every_cap")
+    test_custom_comma_separated_policy()
+    println("PASS test_custom_comma_separated_policy")
+    test_deny_under_pure_excludes_compute()
+    println("PASS test_deny_under_pure_excludes_compute")
+    test_deny_under_net_readonly()
+    println("PASS test_deny_under_net_readonly")
+    test_deny_under_all_is_empty()
+    println("PASS test_deny_under_all_is_empty")
+    test_caps_join_single()
+    println("PASS test_caps_join_single")
+    test_caps_join_multiple()
+    println("PASS test_caps_join_multiple")
+    test_caps_join_empty()
+    println("PASS test_caps_join_empty")
+    test_caps_render_braces()
+    println("PASS test_caps_render_braces")
+    test_caps_render_multi()
+    println("PASS test_caps_render_multi")
+    test_caps_render_empty()
+    println("PASS test_caps_render_empty")
+    test_split_caps_single()
+    println("PASS test_split_caps_single")
+    test_split_caps_multiple()
+    println("PASS test_split_caps_multiple")
+    println("16/16 policy tests passed")
+}

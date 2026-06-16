@@ -1,0 +1,8 @@
+// io_program.kry -- test fixture: annotated with @capabilities(io).
+// Under the "pure" policy, this program must be REFUSED by the sandbox runner
+// because io is not in the pure allow set (compute only).
+@capabilities(io)
+fn main() {
+    file_write("sandbox_test_out.txt", "hello from io_program")
+    println("io program ran")
+}

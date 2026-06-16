@@ -1,0 +1,108 @@
+// ============================================================
+// test_manifest.kry -- integration tests that invoke `kryos manifest`
+// on the fixture files and verify the sandbox enforcement.
+//
+//   kryos test --path ecosystem/kryos-sandbox-runner
+//   kryos run  tests/test_manifest.kry
+//
+// These tests exercise the manifest+policy path without requiring a
+// pre-built kryos-sandbox-runner binary.  They use the same --deny
+// logic that runner.kry uses.
+//
+// Run from the project root (which kryos test does by default).
+// ============================================================
+
+use std::process::{command}
+use policy
+
+// Get the kryos binary path: $KRYOS env var, then fall back to "kryos".
+@capabilities(process)
+fn kryos_bin() -> str {
+    let v = env_get("KRYOS")
+    if len(v) > 0 {
+        return v
+    }
+    return "kryos"
+}
+
+// Run `kryos manifest --caps --strict [--deny <deny>] <file>` and return
+// whether the manifest passed (exit 0 = clean, exit 1 = policy violated).
+@capabilities(process)
+fn check_policy(policy_name: str, fixture: str) -> bool {
+    let allow_caps = resolve_policy(policy_name)
+    let deny_caps = compute_deny(allow_caps)
+    let bin = kryos_bin()
+
+    let mut cmd = command(bin)
+    cmd = cmd.arg("manifest")
+    cmd = cmd.arg("--caps")
+    cmd = cmd.arg("--strict")
+    if len(deny_caps) > 0 {
+        cmd = cmd.arg("--deny")
+        cmd = cmd.arg(caps_join(deny_caps))
+    }
+    cmd = cmd.arg(fixture)
+    let result = cmd.run()
+    return result.success
+}
+
+@test
+@capabilities(process)
+fn test_io_program_refused_under_pure() {
+    let allowed = check_policy("pure", "ecosystem/kryos-sandbox-runner/tests/fixtures/io_program.kry")
+    assert(!allowed, "io_program.kry must be REFUSED under pure policy (io is not in {compute})")
+}
+
+@test
+@capabilities(process)
+fn test_pure_program_passes_pure_policy() {
+    let allowed = check_policy("pure", "ecosystem/kryos-sandbox-runner/tests/fixtures/pure_program.kry")
+    assert(allowed, "pure_program.kry must be ALLOWED under pure policy")
+}
+
+@test
+@capabilities(process)
+fn test_pure_program_passes_all_policy() {
+    let allowed = check_policy("all", "ecosystem/kryos-sandbox-runner/tests/fixtures/pure_program.kry")
+    assert(allowed, "pure_program.kry must be ALLOWED under all policy")
+}
+
+@test
+@capabilities(process)
+fn test_io_program_allowed_under_all() {
+    let allowed = check_policy("all", "ecosystem/kryos-sandbox-runner/tests/fixtures/io_program.kry")
+    assert(allowed, "io_program.kry must be ALLOWED under all policy (no enforcement)")
+}
+
+@test
+@capabilities(process)
+fn test_io_program_refused_under_net_readonly() {
+    let allowed = check_policy("net-readonly", "ecosystem/kryos-sandbox-runner/tests/fixtures/io_program.kry")
+    assert(!allowed, "io_program.kry must be REFUSED under net-readonly (io not in compute+net+time)")
+}
+
+// Verify that a pure program actually produces the expected output.
+@capabilities(process)
+fn test_pure_program_output() {
+    let bin = kryos_bin()
+    let result = command(bin).arg("run").arg("ecosystem/kryos-sandbox-runner/tests/fixtures/pure_program.kry").run()
+    assert(result.success, "pure_program.kry must run successfully, got: " + result.stderr)
+    // Output contains "42\n" (println adds newline).
+    assert(contains(result.stdout, "42"), "pure_program.kry must print 42, got: " + result.stdout)
+}
+
+fn main() {
+    test_io_program_refused_under_pure()
+    println("PASS test_io_program_refused_under_pure")
+    test_pure_program_passes_pure_policy()
+    println("PASS test_pure_program_passes_pure_policy")
+    test_pure_program_passes_all_policy()
+    println("PASS test_pure_program_passes_all_policy")
+    test_io_program_allowed_under_all()
+    println("PASS test_io_program_allowed_under_all")
+    test_io_program_refused_under_net_readonly()
+    println("PASS test_io_program_refused_under_net_readonly")
+    test_pure_program_output()
+    println("PASS test_pure_program_output")
+    println("6/6 manifest integration tests passed")
+}

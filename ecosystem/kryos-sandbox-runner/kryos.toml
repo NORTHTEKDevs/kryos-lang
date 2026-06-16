@@ -1,0 +1,8 @@
+[package]
+name = "kryos-sandbox-runner"
+version = "0.1.0"
+description = "Pre-execution capability sandbox: runs `kryos manifest --caps` before `kryos run` and refuses if the program's capability surface exceeds the policy (default: pure/compute-only)."
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["process", "env"]
