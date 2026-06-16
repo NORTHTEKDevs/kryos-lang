@@ -1,0 +1,107 @@
+use json_line
+
+use redact
+
+@capabilities
+fn level_debug() -> str {
+    return "debug"
+}
+
+@capabilities
+fn level_info() -> str {
+    return "info"
+}
+
+@capabilities
+fn level_warn() -> str {
+    return "warn"
+}
+
+@capabilities
+fn level_error() -> str {
+    return "error"
+}
+
+@capabilities
+fn fields_to_members(fields: [(str, str)]) -> str {
+    let mut out: str = ""
+    let mut i = 0
+    while i < len(fields) {
+        let f = fields[i]
+        let safe = redact_value(f.0, f.1)
+        out = out + "," + json_member(f.0, safe)
+        i = i + 1
+    }
+    return out
+}
+
+@capabilities
+fn render_record(
+    level: str,
+    msg: str,
+    fields: [(str, str)],
+    cap_tag: str
+) -> str {
+    let mut out: str = "{{"
+    out = out + json_member("level", level)
+    out = out + "," + json_member("msg", msg)
+    if len(cap_tag) > 0 {
+        out = out + "," + json_member("cap_tag", cap_tag)
+    }
+    out = out + fields_to_members(fields)
+    out = out + "}}"
+    return out
+}
+
+@capabilities
+fn emit_line(level: str, msg: str, fields: [(str, str)]) -> str {
+    return render_record(level, msg, fields, "")
+}
+
+@capabilities
+fn emit_line_tagged(
+    level: str,
+    msg: str,
+    fields: [(str, str)],
+    cap_tag: str
+) -> str {
+    return render_record(level, msg, fields, cap_tag)
+}
+
+@capabilities
+fn debug(msg: str, fields: [(str, str)]) -> str {
+    return emit_line(level_debug(), msg, fields)
+}
+
+@capabilities
+fn info(msg: str, fields: [(str, str)]) -> str {
+    return emit_line(level_info(), msg, fields)
+}
+
+@capabilities
+fn warn(msg: str, fields: [(str, str)]) -> str {
+    return emit_line(level_warn(), msg, fields)
+}
+
+@capabilities
+fn error(msg: str, fields: [(str, str)]) -> str {
+    return emit_line(level_error(), msg, fields)
+}
+
+@capabilities(io)
+fn log_to_file(
+    path: str,
+    level: str,
+    msg: str,
+    fields: [(str, str)],
+    cap_tag: str
+) -> i64 {
+    let line = render_record(level, msg, fields, cap_tag) + "\n"
+    let mut existing: str = ""
+    if file_exists(path) == 1 {
+        existing = file_read(path)
+    }
+    let combined = existing + line
+    file_write(path, combined)
+    return len(combined)
+}

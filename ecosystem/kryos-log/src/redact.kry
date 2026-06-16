@@ -1,0 +1,129 @@
+@capabilities
+fn redaction_placeholder() -> str {
+    return "[REDACTED]"
+}
+
+@capabilities
+fn to_lower(s: str) -> str {
+    let mut out: str = ""
+    let mut i = 0
+    while i < len(s) {
+        let c = substr(s, i, i + 1)
+        let code = char_code(c)
+        if code >= 65 and code <= 90 {
+            out = out + substr("abcdefghijklmnopqrstuvwxyz", code - 65, code - 65 + 1)
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out
+}
+
+@capabilities
+fn contains_ci(hay: str, needle: str) -> bool {
+    return contains(to_lower(hay), needle)
+}
+
+@capabilities
+fn key_is_sensitive(key: str) -> bool {
+    let k = to_lower(key)
+    if contains(k, "password") {
+        return true
+    }
+    if contains(k, "passwd") {
+        return true
+    }
+    if contains(k, "secret") {
+        return true
+    }
+    if contains(k, "token") {
+        return true
+    }
+    if contains(k, "api_key") {
+        return true
+    }
+    if contains(k, "apikey") {
+        return true
+    }
+    if contains(k, "authorization") {
+        return true
+    }
+    if contains(k, "auth_token") {
+        return true
+    }
+    if contains(k, "private_key") {
+        return true
+    }
+    if contains(k, "credential") {
+        return true
+    }
+    if contains(k, "session_id") {
+        return true
+    }
+    return false
+}
+
+@capabilities
+fn count_non_wordish(s: str) -> i64 {
+    let mut n = 0
+    let mut i = 0
+    while i < len(s) {
+        let code = char_code(substr(s, i, i + 1))
+        let is_digit = code >= 48 and code <= 57
+        let is_upper = code >= 65 and code <= 90
+        let is_lower = code >= 97 and code <= 122
+        let is_punct = code == 45 or code == 95 or code == 46
+        if is_digit or is_upper or is_lower or is_punct {
+        } else {
+            n = n + 1
+        }
+        i = i + 1
+    }
+    return n
+}
+
+@capabilities
+fn value_is_secret_shaped(value: str) -> bool {
+    let v = value
+    if contains_ci(v, "bearer ") {
+        return true
+    }
+    if contains_ci(v, "basic ") {
+        return true
+    }
+    if len(v) >= 6 and to_lower(substr(v, 0, 3)) == "sk-" {
+        return true
+    }
+    if len(v) >= 8 and to_lower(substr(v, 0, 8)) == "sk_live_" {
+        return true
+    }
+    if len(v) >= 8 and to_lower(substr(v, 0, 8)) == "sk_test_" {
+        return true
+    }
+    if len(v) >= 20 {
+        let mut dots = 0
+        let mut i = 0
+        while i < len(v) {
+            if substr(v, i, i + 1) == "." {
+                dots = dots + 1
+            }
+            i = i + 1
+        }
+        if dots == 2 and count_non_wordish(v) == 0 {
+            return true
+        }
+    }
+    return false
+}
+
+@capabilities
+fn redact_value(key: str, value: str) -> str {
+    if key_is_sensitive(key) {
+        return redaction_placeholder()
+    }
+    if value_is_secret_shaped(value) {
+        return redaction_placeholder()
+    }
+    return value
+}

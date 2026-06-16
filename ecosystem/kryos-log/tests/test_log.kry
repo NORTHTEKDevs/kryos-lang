@@ -1,0 +1,87 @@
+use std::string::{find}
+
+use json_line
+
+use redact
+
+use cap_tag
+
+use log
+
+@capabilities
+fn has(hay: str, needle: str) -> bool {
+    return find(hay, needle) >= 0
+}
+
+@test
+fn test_info_serializes_to_json_line() {
+    let fields = [("user", "alice"), ("action", "login")]
+    let line = info("user signed in", fields)
+    assert(has(line, "\"level\":\"info\""), "level member present")
+    assert(has(line, "\"msg\":\"user signed in\""), "msg member present")
+    assert(has(line, "\"user\":\"alice\""), "user field present")
+    assert(has(line, "\"action\":\"login\""), "action field present")
+    assert(char_code(substr(line, 0, 1)) == 123, "starts with open brace")
+    assert(not has(line, "\n"), "single line, no newline")
+}
+
+@test
+fn test_special_chars_are_escaped() {
+    let fields = [("note", "he said \"hi\"\nbye")]
+    let line = info("msg", fields)
+    assert(has(line, "he said \\\"hi\\\""), "quote escaped in value")
+    assert(has(line, "bye"), "value content preserved")
+    assert(not has(line, "\n"), "record has no raw newline")
+}
+
+@test
+fn test_sensitive_key_is_redacted() {
+    let fields = [("username", "bob"), ("password", "hunter2")]
+    let line = info("auth", fields)
+    assert(has(line, "\"username\":\"bob\""), "non-sensitive field kept")
+    assert(has(line, "\"password\":\"[REDACTED]\""), "password value redacted")
+    assert(not has(line, "hunter2"), "secret value never reaches output")
+}
+
+@test
+fn test_secret_shaped_value_is_redacted() {
+    let fields = [("header", "Bearer abc123def456")]
+    let line = info("request", fields)
+    assert(has(line, "\"header\":\"[REDACTED]\""), "bearer value redacted by shape")
+    assert(not has(line, "abc123def456"), "token body not leaked")
+}
+
+@test
+fn test_cap_tag_from_sidecar_serializes() {
+    let sidecar = "t_log.caps.json"
+    file_write(sidecar, "{{\"version\":1,\"declared\":[\"compute\",\"io\"]}}")
+    let tag = cap_tag_from_sidecar(sidecar)
+    assert(tag == "compute,io", "tag joined from declared array, got " + tag)
+    let line = emit_line_tagged("info", "tagged record", [("k", "v")], tag)
+    assert(has(line, "\"cap_tag\":\"compute,io\""), "cap_tag member serialized")
+    assert(has(line, "\"k\":\"v\""), "ordinary field still present")
+}
+
+@test
+fn test_missing_sidecar_yields_empty_tag() {
+    let tag = cap_tag_from_sidecar("t_does_not_exist.caps.json")
+    assert(tag == "", "missing sidecar -> empty tag")
+    let line = emit_line_tagged("info", "no tag", [], tag)
+    assert(not has(line, "cap_tag"), "empty tag omits the member")
+}
+
+fn main() {
+    test_info_serializes_to_json_line()
+    println("PASS test_info_serializes_to_json_line")
+    test_special_chars_are_escaped()
+    println("PASS test_special_chars_are_escaped")
+    test_sensitive_key_is_redacted()
+    println("PASS test_sensitive_key_is_redacted")
+    test_secret_shaped_value_is_redacted()
+    println("PASS test_secret_shaped_value_is_redacted")
+    test_cap_tag_from_sidecar_serializes()
+    println("PASS test_cap_tag_from_sidecar_serializes")
+    test_missing_sidecar_yields_empty_tag()
+    println("PASS test_missing_sidecar_yields_empty_tag")
+    println("6/6 kryos-log tests passed")
+}

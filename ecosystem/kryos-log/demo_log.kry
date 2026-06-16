@@ -1,0 +1,34 @@
+use json_line
+
+use redact
+
+use cap_tag
+
+use log
+
+@capabilities(io)
+fn main() {
+    println("== in-memory sink (stdout) ==")
+    println(info("service started", [("port", "8080"), ("env", "prod")]))
+    println(info("user authenticated", [("user", "alice"), ("password", "hunter2"), ("authorization", "Bearer eyJabc.def.ghi")]))
+    println(warn("disk almost full", [("used_pct", "92"), ("mount", "/var")]))
+    println(error("upstream timeout", [("service", "billing"), ("after_ms", "5000")]))
+    println("")
+    println("== capability tag from a sidecar caps.json ==")
+    let sidecar = "demo_log.caps.json"
+    file_write(sidecar, "{{\"version\":1,\"declared\":[\"compute\",\"io\",\"net\"]}}")
+    let tag = cap_tag_from_sidecar(sidecar)
+    println("derived cap_tag: " + tag)
+    println(emit_line_tagged("info", "request handled", [("route", "/charge")], tag))
+    println("")
+    println("== file sink (ndjson) ==")
+    let logfile = "demo_log.ndjson"
+    if file_exists(logfile) == 1 {
+        file_write(logfile, "")
+    }
+    let n1 = log_to_file(logfile, "info", "line one", [("seq", "1")], tag)
+    let n2 = log_to_file(logfile, "info", "line two", [("seq", "2")], "")
+    println("wrote " + to_string(n2) + " bytes total to " + logfile)
+    println("--- file contents ---")
+    print(file_read(logfile))
+}

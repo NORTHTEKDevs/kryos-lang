@@ -1,0 +1,102 @@
+use std::result::{Result, Ok, Err}
+
+@capabilities
+fn cch(s: str, i: i64) -> str {
+    return substr(s, i, i + 1)
+}
+
+@capabilities
+fn cindex_from(s: str, needle: str, from: i64) -> i64 {
+    let n = len(s)
+    let m = len(needle)
+    if m == 0 {
+        return from
+    }
+    let mut i = from
+    while i + m <= n {
+        if substr(s, i, i + m) == needle {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+@capabilities
+fn cextract_quoted(s: str, start: i64, end: i64) -> [str] {
+    let mut out: [str] = []
+    let mut i = start
+    while i < end {
+        if cch(s, i) == "\"" {
+            let mut j = i + 1
+            while j < end and cch(s, j) != "\"" {
+                j = j + 1
+            }
+            out = push(out, substr(s, i + 1, j))
+            i = j + 1
+        } else {
+            i = i + 1
+        }
+    }
+    return out
+}
+
+@capabilities
+fn cap_parse_declared(content: str) -> Result<[str], str> {
+    let key_at = cindex_from(content, "\"declared\"", 0)
+    if key_at < 0 {
+        return Err("no \"declared\" key")
+    }
+    let open = cindex_from(content, "[", key_at)
+    if open < 0 {
+        return Err("no array after \"declared\"")
+    }
+    let close = cindex_from(content, "]", open)
+    if close < 0 {
+        return Err("unterminated declared array")
+    }
+    return Ok(cextract_quoted(content, open + 1, close))
+}
+
+@capabilities
+fn join_commas(items: [str]) -> str {
+    let mut out: str = ""
+    let mut i = 0
+    while i < len(items) {
+        if i > 0 {
+            out = out + ","
+        }
+        out = out + items[i]
+        i = i + 1
+    }
+    return out
+}
+
+@capabilities
+fn cap_tag_from_declared(caps: [str]) -> str {
+    return join_commas(caps)
+}
+
+@capabilities
+fn cap_tag_from_json(content: str) -> str {
+    match cap_parse_declared(content) {
+        Result::Ok(caps) => {
+        return join_commas(caps)
+    }
+        Result::Err(e) => {
+        return ""
+    }
+    }
+}
+
+@capabilities(io)
+fn cap_tag_from_sidecar(sidecar_path: str) -> str {
+    if file_exists(sidecar_path) == 0 {
+        return ""
+    }
+    let content = file_read(sidecar_path)
+    if len(content) == 0 {
+        return ""
+    }
+    return cap_tag_from_json(content)
+}

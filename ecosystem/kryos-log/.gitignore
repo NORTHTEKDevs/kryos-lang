@@ -1,0 +1,4 @@
+# Runtime artifacts produced by the demo and tests.
+*.ndjson
+demo_log.caps.json
+t_log.caps.json

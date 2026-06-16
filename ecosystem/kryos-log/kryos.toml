@@ -1,0 +1,8 @@
+[package]
+name = "kryos-log"
+version = "0.1.0"
+description = "Structured, capability-tagged JSON-line logging for Kryos"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["compute", "io"]

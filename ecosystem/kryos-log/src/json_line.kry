@@ -1,0 +1,68 @@
+@capabilities
+fn at(s: str, i: i64) -> str {
+    return substr(s, i, i + 1)
+}
+
+@capabilities
+fn hex2(b: i64) -> str {
+    let digits = "0123456789abcdef"
+    let hi = b / 16 % 16
+    let lo = b % 16
+    return at(digits, hi) + at(digits, lo)
+}
+
+@capabilities
+fn json_escape(s: str) -> str {
+    let mut out: str = ""
+    let mut i = 0
+    let n = len(s)
+    while i < n {
+        let c = at(s, i)
+        let code = char_code(c)
+        if c == "\"" {
+            out = out + "\\\""
+        } elif c == "\\" {
+            out = out + "\\\\"
+        } elif code == 8 {
+            out = out + "\\b"
+        } elif code == 12 {
+            out = out + "\\f"
+        } elif code == 10 {
+            out = out + "\\n"
+        } elif code == 13 {
+            out = out + "\\r"
+        } elif code == 9 {
+            out = out + "\\t"
+        } elif code < 32 {
+            out = out + "\\u00" + hex2(code)
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out
+}
+
+@capabilities
+fn json_str(s: str) -> str {
+    return "\"" + json_escape(s) + "\""
+}
+
+@capabilities
+fn json_member(key: str, value: str) -> str {
+    return json_str(key) + ":" + json_str(value)
+}
+
+@capabilities
+fn json_str_array(items: [str]) -> str {
+    let mut out: str = "["
+    let mut i = 0
+    while i < len(items) {
+        if i > 0 {
+            out = out + ","
+        }
+        out = out + json_str(items[i])
+        i = i + 1
+    }
+    return out + "]"
+}
