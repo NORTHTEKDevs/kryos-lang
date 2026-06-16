@@ -18,7 +18,7 @@ Targets Linux x86_64, Windows x86_64 MSVC, macOS x86_64/aarch64, and `wasm32-unk
 1. **No semicolons.** Line breaks terminate statements. To wrap a long expression, end the line with `(`, `[`, `{`, `,`, or a binary operator.
 2. **Block comments `/* ... */` work and nest.** Line comments are `//`, doc comments `///`. (The self-host compiler source under `compiler/self-host/` avoids block comments by convention, but the language supports them.)
 3. **No `null` / `nil` keyword.** Use `Option<T>` from `std::option` for nullable values.
-4. **String interpolation works:** `"hello {name}"` (the delimiter is `{ }`, NOT `${ }`). `+` concatenation also works; cast numerics with `to_string(x)` when concatenating.
+4. **String interpolation works in EVERY string literal:** `"hello {name}"` (delimiter is `{ }`, NOT `${ }`). Unlike Python/Rust where only an `f"..."`/`format!` string interpolates, **ALL Kryos strings interpolate**, so a bare `{` in any string opens an interpolation. To put a **literal brace** in a string you MUST double it (`{{`, `}}`) or backslash-escape it (`\{`, `\}`). This bites JSON, code-gen, and set notation: `"{\"a\":1}"` FAILS to parse (the `{` opens an interpolation) — write `"{{\"a\":1}}"`, or build the string with `+` (`"{" + "\"a\":1" + "}"`). `+` concatenation also works generally; cast numerics with `to_string(x)` when concatenating.
 5. **`let` is immutable, `let mut` is mutable.** Same as Rust.
 6. **Type annotations on top-level `let` and on function params are required.** Local `let` inside a function can infer.
 7. **Functions return the last expression** only if there's no trailing newline after it. Prefer explicit `return`.
@@ -303,7 +303,7 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `
 
 ## Gotchas Claude needs to know
 
-1. **String interpolation works:** `"hello {name}"` (braces, not `${}`). `+` concatenation also works; numbers need `to_string()` when concatenated.
+1. **String interpolation works in EVERY string:** `"hello {name}"` (braces, not `${}`). ALL strings interpolate, so a literal brace needs doubling/escaping: `{{` `}}` or `\{` `\}`. JSON/code-gen: `"{\"a\":1}"` FAILS; use `"{{\"a\":1}}"` or build with `+`. `+` concatenation also works; numbers need `to_string()` when concatenated. (Map key membership is `contains(m, k)` for str- AND int-keyed maps.)
 2. **`if let`, `while let`, and `let ... else` all work.** e.g. `if let Foo.Bar(x) = v { ... } else { ... }`, `while let Foo.Bar(v) = next() { ... }`, and `let Foo.Bar(x) = v else { return }`. They desugar to `match`. For `let ... else`, the binding pattern must be a refutable enum pattern (`Enum.Variant(..)`); the `else` block runs on a non-match and its bindings are in scope for the rest of the enclosing block.
 3. **Both `elif` and `else if` work** (`else if` is accepted as an alias). The self-host source uses `elif` by convention.
 4. **No `null`.** Use `Option<T>` from `std::option`.

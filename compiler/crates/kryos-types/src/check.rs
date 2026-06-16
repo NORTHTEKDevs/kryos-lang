@@ -4119,18 +4119,21 @@ pub fn type_check_with_lambda_params(
 
     // ── String utility builtins ────────────────────────────────────
 
-    // contains(haystack: str, needle: str) -> bool
+    // contains(haystack, needle) -> bool
     checker.env.define_function(FunctionSig {
         name: "contains".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
-        // haystack is lenient (Type::Error) so `contains` works on both a str
-        // (substring search) and a str-keyed map (key membership). MIR lowering
+        // BOTH params are lenient (Type::Error): contains works on a str
+        // (substring search, needle: str), a str-keyed map (key membership,
+        // needle: str), AND an int-keyed map (key membership, needle: i64).
+        // The needle was previously hard-typed to str, which rejected the
+        // documented `contains(m, k)` on map<i64, _> with E0100. MIR lowering
         // dispatches to kryos_map_has[_str] vs kryos_builtin_contains by the
-        // first arg's type. Mirrors map_has.
+        // first arg's type (and the map's KEY type), so leniency here is safe.
         params: vec![
             ("haystack".to_string(), Type::Error),
-            ("needle".to_string(), Type::Str),
+            ("needle".to_string(), Type::Error),
         ],
         ret: Type::Bool,
     });

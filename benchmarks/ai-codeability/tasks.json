@@ -1,0 +1,23 @@
+[
+  {"name": "fizzbuzz", "tier": "easy", "spec": "Print FizzBuzz for the integers 1 through 15 inclusive, one value per line: print the number, but 'Fizz' for multiples of 3, 'Buzz' for multiples of 5, and 'FizzBuzz' for multiples of both.", "expected": "1\n2\nFizz\n4\nBuzz\nFizz\n7\n8\nFizz\nBuzz\n11\nFizz\n13\n14\nFizzBuzz"},
+  {"name": "fibonacci", "tier": "easy", "spec": "Print the first 10 Fibonacci numbers starting from 0 and 1, space-separated on one line.", "expected": "0 1 1 2 3 5 8 13 21 34"},
+  {"name": "reverse_words", "tier": "easy", "spec": "Reverse the order of the words in the string \"the quick brown fox\" and print the result, words space-separated on one line.", "expected": "fox brown quick the"},
+  {"name": "count_vowels", "tier": "easy", "spec": "Count the number of vowels (a, e, i, o, u) in the string \"programming language\" and print just the count.", "expected": "7"},
+  {"name": "primes_under_30", "tier": "easy", "spec": "Print all prime numbers strictly less than 30, comma-separated (no spaces) on one line.", "expected": "2,3,5,7,11,13,17,19,23,29"},
+  {"name": "sum_digits", "tier": "easy", "spec": "Compute the sum of the decimal digits of the integer 12345 and print just the sum.", "expected": "15"},
+  {"name": "run_length_encode", "tier": "easy", "spec": "Run-length encode the string \"aaabbbcccd\": for each run of a repeated character, output the character followed by the run length. Print the encoded string.", "expected": "a3b3c3d1"},
+  {"name": "balanced_parens", "tier": "easy", "spec": "Determine whether the parentheses in the string \"((()))\" are balanced. Print exactly 'true' or 'false' (lowercase).", "expected": "true"},
+  {"name": "max_in_list", "tier": "easy", "spec": "Find the maximum value in the list [3, 7, 2, 9, 4, 9, 1] and print just that value.", "expected": "9"},
+  {"name": "caesar_cipher", "tier": "easy", "spec": "Apply a Caesar cipher with shift +1 to the lowercase string \"abc\" (each letter advances by one, no wraparound needed here) and print the result.", "expected": "bcd"},
+  {"name": "factorial", "tier": "easy", "spec": "Compute the factorial of 6 and print just the result.", "expected": "720"},
+  {"name": "dedup_sort", "tier": "easy", "spec": "Take the list [5, 3, 5, 1, 3, 2], remove duplicates, sort ascending, and print the values space-separated on one line.", "expected": "1 2 3 5"},
+
+  {"name": "word_freq", "tier": "hard", "spec": "Given the string \"the cat sat on the mat the cat\", find the single most frequent word and print it followed by a space and its count, e.g. \"word 3\".", "expected": "the 3"},
+  {"name": "roman_numeral", "tier": "hard", "spec": "Convert the integer 1994 to a Roman numeral and print it (uppercase, standard subtractive notation).", "expected": "MCMXCIV"},
+  {"name": "bracket_match", "tier": "hard", "spec": "Check whether the brackets in the string \"([{}({})])\" are correctly balanced and nested, considering three bracket types: () [] {}. Print exactly 'true' or 'false'.", "expected": "true"},
+  {"name": "json_sum", "tier": "hard", "spec": "Parse the JSON object string {\"a\":10,\"b\":20,\"c\":30} and print the sum of its integer values.", "expected": "60"},
+  {"name": "caesar_wrap", "tier": "hard", "spec": "Apply a Caesar cipher with shift +3 to the lowercase string \"xyz\", wrapping around the alphabet (z wraps to c). Print the result.", "expected": "abc"},
+  {"name": "expr_eval", "tier": "hard", "spec": "Evaluate the arithmetic expression \"2+3*4-1\" respecting operator precedence (multiplication before addition/subtraction) and print the integer result.", "expected": "13"},
+  {"name": "bank_balance", "tier": "hard", "spec": "Start with a balance of 100. Apply these operations in order, but REJECT (skip) any withdrawal that would make the balance negative: deposit 50, withdraw 30, withdraw 200, deposit 20. Print the final balance.", "expected": "140"},
+  {"name": "histogram", "tier": "hard", "spec": "Given the list [1, 3, 3, 2, 1, 3], count occurrences of each value and print them sorted by value as 'value:count' pairs joined by commas, e.g. '1:2,2:1,3:3'.", "expected": "1:2,2:1,3:3"}
+]
