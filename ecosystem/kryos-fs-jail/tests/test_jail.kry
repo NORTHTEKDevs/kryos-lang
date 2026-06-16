@@ -1,0 +1,302 @@
+// ============================================================
+// test_jail.kry -- tests for the path-scoped filesystem jail.
+//
+//   kryos test --path ecosystem/kryos-fs-jail
+//   kryos run  tests/test_jail.kry        (also runs IO round-trip tests)
+//
+// @test functions cover the pure-compute security invariants:
+//   - ".." segment in any position is rejected
+//   - absolute paths are rejected
+//   - valid relative paths resolve correctly
+//   - jail_list enforces the same validation
+//
+// main() additionally runs the IO round-trip (write then read back), which
+// requires a real filesystem and is not part of `kryos test`.
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+use jail
+
+// ---- helpers ---------------------------------------------------------------
+
+// Get a writable temp directory without process capability bleeding into tests.
+fn get_temp() -> str {
+    let t = env_get("TEMP")
+    if len(t) > 0 { return t }
+    let t2 = env_get("TMP")
+    if len(t2) > 0 { return t2 }
+    let t3 = env_get("TMPDIR")
+    if len(t3) > 0 { return t3 }
+    return "/tmp"
+}
+
+// ---- pure-compute @test functions ------------------------------------------
+
+@test
+fn test_dotdot_single_rejected() {
+    let j = jail("/srv/data")
+    let r: Result<str, str> = jail_resolve(j, "..")
+    match r {
+        Result::Ok(_) => assert(false, "bare .. must be rejected"),
+        Result::Err(e) => assert(contains(e, "traversal"), "error must mention traversal, got: " + e),
+    }
+}
+
+@test
+fn test_dotdot_prefix_rejected() {
+    let j = jail("/srv/data")
+    let r: Result<str, str> = jail_resolve(j, "../../etc/passwd")
+    match r {
+        Result::Ok(_) => assert(false, "../../etc/passwd must be rejected"),
+        Result::Err(e) => assert(contains(e, "traversal"), "error must mention traversal, got: " + e),
+    }
+}
+
+@test
+fn test_dotdot_embedded_rejected() {
+    let j = jail("/srv/data")
+    let r: Result<str, str> = jail_resolve(j, "subdir/../../../etc/passwd")
+    match r {
+        Result::Ok(_) => assert(false, "embedded .. must be rejected"),
+        Result::Err(e) => assert(contains(e, "traversal"), "error must mention traversal, got: " + e),
+    }
+}
+
+@test
+fn test_dotdot_trailing_rejected() {
+    let j = jail("/srv/data")
+    let r: Result<str, str> = jail_resolve(j, "subdir/..")
+    match r {
+        Result::Ok(_) => assert(false, "trailing .. must be rejected"),
+        Result::Err(e) => assert(contains(e, "traversal"), "error must mention traversal, got: " + e),
+    }
+}
+
+@test
+fn test_absolute_unix_rejected() {
+    let j = jail("/srv/data")
+    let r: Result<str, str> = jail_resolve(j, "/etc/passwd")
+    match r {
+        Result::Ok(_) => assert(false, "/etc/passwd must be rejected"),
+        Result::Err(e) => assert(contains(e, "absolute"), "error must mention absolute, got: " + e),
+    }
+}
+
+@test
+fn test_absolute_windows_rejected() {
+    let j = jail("C:/srv/data")
+    let r: Result<str, str> = jail_resolve(j, "C:/Windows/System32/config/SAM")
+    match r {
+        Result::Ok(_) => assert(false, "Windows absolute path must be rejected"),
+        Result::Err(e) => assert(contains(e, "absolute"), "error must mention absolute, got: " + e),
+    }
+}
+
+@test
+fn test_valid_simple_resolves() {
+    let j = jail("/srv/data")
+    let r: Result<str, str> = jail_resolve(j, "hello.txt")
+    match r {
+        Result::Err(e) => assert(false, "valid path must resolve, got: " + e),
+        Result::Ok(abs) => assert(abs == "/srv/data/hello.txt", "expected /srv/data/hello.txt got " + abs),
+    }
+}
+
+@test
+fn test_valid_nested_resolves() {
+    let j = jail("/srv/data")
+    let r: Result<str, str> = jail_resolve(j, "subdir/notes/readme.txt")
+    match r {
+        Result::Err(e) => assert(false, "nested valid path must resolve, got: " + e),
+        Result::Ok(abs) => assert(abs == "/srv/data/subdir/notes/readme.txt", "unexpected abs: " + abs),
+    }
+}
+
+@test
+fn test_empty_relpath_resolves_to_root() {
+    let j = jail("/srv/data")
+    let r: Result<str, str> = jail_resolve(j, "")
+    match r {
+        Result::Err(e) => assert(false, "empty relpath must resolve to root, got: " + e),
+        Result::Ok(abs) => assert(abs == "/srv/data", "empty relpath should give root, got: " + abs),
+    }
+}
+
+@test
+fn test_backslash_root_normalized() {
+    let j = jail("C:\\srv\\data")
+    let r: Result<str, str> = jail_resolve(j, "foo/bar.txt")
+    match r {
+        Result::Err(e) => assert(false, "Windows-root jail must resolve, got: " + e),
+        Result::Ok(abs) => assert(abs == "C:/srv/data/foo/bar.txt", "expected C:/srv/data/foo/bar.txt got " + abs),
+    }
+}
+
+@test
+fn test_trailing_slash_in_root_stripped() {
+    let j = jail("/srv/data/")
+    let r: Result<str, str> = jail_resolve(j, "foo.txt")
+    match r {
+        Result::Err(e) => assert(false, "trailing-slash root must resolve, got: " + e),
+        Result::Ok(abs) => assert(abs == "/srv/data/foo.txt", "trailing slash must be stripped, got: " + abs),
+    }
+}
+
+@test
+fn test_list_dotdot_rejected() {
+    let j = jail("/srv/data")
+    let r: Result<[str], str> = jail_list(j, "../../etc")
+    match r {
+        Result::Ok(_) => assert(false, "list .. escape must be rejected"),
+        Result::Err(e) => assert(contains(e, "traversal"), "list error must mention traversal, got: " + e),
+    }
+}
+
+@test
+fn test_list_valid_returns_empty() {
+    let j = jail("/srv/data")
+    let r: Result<[str], str> = jail_list(j, "subdir")
+    match r {
+        Result::Err(e) => assert(false, "valid list path must not error, got: " + e),
+        Result::Ok(entries) => assert(len(entries) == 0, "list stub returns empty array"),
+    }
+}
+
+// ---- IO round-trip (main() only, not @test) --------------------------------
+
+fn test_io_roundtrip() {
+    let root = get_temp() + "/kryos-jail-test"
+    create_dir(root)
+    let j = jail(root)
+
+    // Write a file inside the jail.
+    match jail_write(j, "hello.txt", "round-trip content") {
+        Result::Err(e) => {
+            println("FAIL test_io_roundtrip: write failed: " + e)
+            return
+        }
+        Result::Ok(_) => {}
+    }
+
+    // Read it back.
+    match jail_read(j, "hello.txt") {
+        Result::Err(e) => {
+            println("FAIL test_io_roundtrip: read failed: " + e)
+            return
+        }
+        Result::Ok(content) => {
+            if content == "round-trip content" {
+                println("PASS test_io_roundtrip")
+            } else {
+                println("FAIL test_io_roundtrip: expected 'round-trip content' got '" + content + "'")
+            }
+        }
+    }
+}
+
+fn test_io_subdir_roundtrip() {
+    let root = get_temp() + "/kryos-jail-test"
+    create_dir(root)
+    let j = jail(root)
+
+    // Create a subdirectory inside the jail.
+    match jail_mkdir(j, "notes") {
+        Result::Err(e) => {
+            println("FAIL test_io_subdir_roundtrip: mkdir failed: " + e)
+            return
+        }
+        Result::Ok(_) => {}
+    }
+
+    // Write a file inside that subdirectory.
+    match jail_write(j, "notes/readme.txt", "subdir content") {
+        Result::Err(e) => {
+            println("FAIL test_io_subdir_roundtrip: write failed: " + e)
+            return
+        }
+        Result::Ok(_) => {}
+    }
+
+    // Confirm it exists.
+    match jail_exists(j, "notes/readme.txt") {
+        Result::Err(e) => {
+            println("FAIL test_io_subdir_roundtrip: exists check failed: " + e)
+            return
+        }
+        Result::Ok(yes) => {
+            if !yes {
+                println("FAIL test_io_subdir_roundtrip: file should exist after write")
+                return
+            }
+        }
+    }
+
+    // Read it back.
+    match jail_read(j, "notes/readme.txt") {
+        Result::Err(e) => {
+            println("FAIL test_io_subdir_roundtrip: read failed: " + e)
+            return
+        }
+        Result::Ok(content) => {
+            if content == "subdir content" {
+                println("PASS test_io_subdir_roundtrip")
+            } else {
+                println("FAIL test_io_subdir_roundtrip: expected 'subdir content' got '" + content + "'")
+            }
+        }
+    }
+}
+
+fn test_io_escape_blocked_at_read() {
+    let root = get_temp() + "/kryos-jail-test"
+    create_dir(root)
+    let j = jail(root)
+
+    match jail_read(j, "../../etc/passwd") {
+        Result::Ok(_) => println("FAIL test_io_escape_blocked_at_read: escape must be blocked"),
+        Result::Err(e) => {
+            if contains(e, "traversal") {
+                println("PASS test_io_escape_blocked_at_read")
+            } else {
+                println("FAIL test_io_escape_blocked_at_read: unexpected error: " + e)
+            }
+        }
+    }
+}
+
+fn main() {
+    // Pure-compute tests (mirrors what kryos test runs).
+    test_dotdot_single_rejected()
+    println("PASS test_dotdot_single_rejected")
+    test_dotdot_prefix_rejected()
+    println("PASS test_dotdot_prefix_rejected")
+    test_dotdot_embedded_rejected()
+    println("PASS test_dotdot_embedded_rejected")
+    test_dotdot_trailing_rejected()
+    println("PASS test_dotdot_trailing_rejected")
+    test_absolute_unix_rejected()
+    println("PASS test_absolute_unix_rejected")
+    test_absolute_windows_rejected()
+    println("PASS test_absolute_windows_rejected")
+    test_valid_simple_resolves()
+    println("PASS test_valid_simple_resolves")
+    test_valid_nested_resolves()
+    println("PASS test_valid_nested_resolves")
+    test_empty_relpath_resolves_to_root()
+    println("PASS test_empty_relpath_resolves_to_root")
+    test_backslash_root_normalized()
+    println("PASS test_backslash_root_normalized")
+    test_trailing_slash_in_root_stripped()
+    println("PASS test_trailing_slash_in_root_stripped")
+    test_list_dotdot_rejected()
+    println("PASS test_list_dotdot_rejected")
+    test_list_valid_returns_empty()
+    println("PASS test_list_valid_returns_empty")
+
+    // IO round-trip tests (require real filesystem).
+    test_io_roundtrip()
+    test_io_subdir_roundtrip()
+    test_io_escape_blocked_at_read()
+
+    println("all jail tests complete")
+}

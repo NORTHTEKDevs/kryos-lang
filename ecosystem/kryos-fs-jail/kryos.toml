@@ -1,0 +1,8 @@
+[package]
+name = "kryos-fs-jail"
+version = "0.1.0"
+description = "Path-scoped filesystem jail: pure-compute path validation with @capabilities(io) enforcement, blocking .. traversal and absolute-path escapes"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["io", "process"]

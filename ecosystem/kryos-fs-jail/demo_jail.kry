@@ -1,0 +1,73 @@
+// ============================================================
+// demo_jail.kry -- demonstration of the kryos-fs-jail library.
+//
+//   kryos run ecosystem/kryos-fs-jail/demo_jail.kry
+//
+// Shows the Jail API in action: write inside the jail, read back,
+// and observe that escape attempts are blocked.
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+use jail
+
+fn temp_dir() -> str {
+    let t = env_get("TEMP")
+    if len(t) > 0 { return t }
+    let t2 = env_get("TMP")
+    if len(t2) > 0 { return t2 }
+    let t3 = env_get("TMPDIR")
+    if len(t3) > 0 { return t3 }
+    return "/tmp"
+}
+
+fn show_result(label: str, r: Result<str, str>) {
+    match r {
+        Result::Ok(v) => println("  OK  " + label + " -> " + v),
+        Result::Err(e) => println(" ERR  " + label + " -> " + e),
+    }
+}
+
+fn main() {
+    let root = temp_dir() + "/kryos-jail-demo"
+    create_dir(root)
+    let j = jail(root)
+
+    println("=== kryos-fs-jail demo (root: " + root + ") ===")
+    println("")
+
+    // Write files inside the jail.
+    println("-- writes --")
+    show_result("write hello.txt", jail_write(j, "hello.txt", "Hello from inside the jail!"))
+    match jail_mkdir(j, "notes") {
+        Result::Ok(_) => println("  OK  mkdir notes")
+        Result::Err(e) => println(" ERR  mkdir notes -> " + e)
+    }
+    show_result("write notes/readme.txt", jail_write(j, "notes/readme.txt", "sub-directory content"))
+
+    println("")
+    println("-- reads --")
+    show_result("read hello.txt", jail_read(j, "hello.txt"))
+    show_result("read notes/readme.txt", jail_read(j, "notes/readme.txt"))
+    show_result("read missing.txt (not found)", jail_read(j, "missing.txt"))
+
+    println("")
+    println("-- escape attempts (all must ERR) --")
+    show_result("read ../../etc/passwd", jail_read(j, "../../etc/passwd"))
+    show_result("read ../sibling/secret", jail_read(j, "../sibling/secret"))
+    show_result("read /etc/passwd (absolute)", jail_read(j, "/etc/passwd"))
+    show_result("write ../../tmp/evil.sh (escape write)", jail_write(j, "../../tmp/evil.sh", "bad"))
+
+    println("")
+    println("-- list validation --")
+    match jail_list(j, "../../etc") {
+        Result::Ok(_) => println("  BUG list escape must be blocked!"),
+        Result::Err(e) => println("  OK  list escape blocked: " + e),
+    }
+    match jail_list(j, "notes") {
+        Result::Ok(entries) => println("  OK  list notes returned " + to_string(len(entries)) + " entries (stub)"),
+        Result::Err(e) => println(" ERR  list notes -> " + e),
+    }
+
+    println("")
+    println("demo complete.")
+}

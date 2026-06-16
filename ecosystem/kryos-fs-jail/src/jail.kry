@@ -1,0 +1,186 @@
+// ============================================================
+// jail.kry -- path-scoped filesystem jail.
+//
+// A Jail roots all filesystem operations under a declared directory.
+// Path validation is pure compute (@capabilities()): ".." segments
+// and absolute paths are rejected before any IO reaches the filesystem.
+// Only the leaf functions that call file_read / file_write / file_exists /
+// create_dir carry @capabilities(io).
+//
+// Public API:
+//   jail(root)                              -> Jail
+//   jail_resolve(j, relpath)               -> Result<str, str>    (pure)
+//   jail_read(j, relpath)                  -> Result<str, str>    (io)
+//   jail_write(j, relpath, data)           -> Result<str, str>    (io)
+//   jail_exists(j, relpath)               -> Result<bool, str>   (io)
+//   jail_mkdir(j, relpath)                -> Result<str, str>    (io)
+//   jail_list(j, relpath)                 -> Result<[str], str>  (pure*)
+//
+// * jail_list validates the path but returns an empty list: there is no
+//   list_dir builtin. The security invariant holds -- escape attempts are
+//   blocked. Full listing requires std::fs::list_dir on a release build.
+//
+// Known limitation (documented in spec):
+//   Without OS-level realpath, symlink escapes are possible on a hostile FS.
+//   This library MUST NOT be presented as a security boundary against symlink
+//   attacks. It enforces path-string rules, not OS-level containment.
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+
+struct Jail {
+    root: str,
+}
+
+// Convert backslashes to forward slashes.
+@capabilities()
+fn to_fwd(p: str) -> str {
+    let n = len(p)
+    let mut out = ""
+    let mut i = 0
+    while i < n {
+        if p[i] == "\\" {
+            out = out + "/"
+        } else {
+            out = out + p[i]
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Strip trailing slashes from `p`, but preserve a lone root "/".
+@capabilities()
+fn strip_trailing_slash(p: str) -> str {
+    let mut n = len(p)
+    while n > 1 and p[n - 1] == "/" {
+        n = n - 1
+    }
+    return substr(p, 0, n)
+}
+
+// True if `p` looks like an absolute path.
+// Detects: Unix "/foo", Windows "C:/foo", Windows "C:\foo".
+@capabilities()
+fn is_abs_path(p: str) -> bool {
+    let n = len(p)
+    if n == 0 { return false }
+    if p[0] == "/" { return true }
+    if p[0] == "\\" { return true }
+    if n >= 2 {
+        if p[1] == ":" { return true }
+    }
+    return false
+}
+
+// True if any segment in `relpath` (forward-slash normalized) is exactly "..".
+// Handles leading, trailing, and internal ".." segments.
+@capabilities()
+fn has_dotdot(relpath: str) -> bool {
+    let n = len(relpath)
+    if n == 0 { return false }
+    let mut start = 0
+    let mut i = 0
+    while i < n {
+        if relpath[i] == "/" {
+            if i > start {
+                let seg = substr(relpath, start, i)
+                if seg == ".." {
+                    return true
+                }
+            }
+            start = i + 1
+        }
+        i = i + 1
+    }
+    // Check the last segment (after the last slash, or the whole path).
+    if start < n {
+        let seg = substr(relpath, start, n)
+        if seg == ".." {
+            return true
+        }
+    }
+    return false
+}
+
+// Construct a Jail rooted at `root`.
+// Normalizes to forward slashes and strips trailing slashes so that
+// prefix checks in jail_resolve work correctly.
+@capabilities()
+fn jail(root: str) -> Jail {
+    let normalized = strip_trailing_slash(to_fwd(root))
+    return Jail { root: normalized }
+}
+
+// Validate `relpath` against the jail and return the absolute path if safe.
+// Pure compute: no IO.
+//
+// Rejects with Err if:
+//   - relpath is absolute (starts with / or a Windows drive letter)
+//   - relpath contains a ".." segment
+//
+// On success, returns Ok(root + "/" + relpath) or Ok(root) for empty relpath.
+@capabilities()
+fn jail_resolve(j: Jail, relpath: str) -> Result<str, str> {
+    let normed = to_fwd(relpath)
+    if is_abs_path(normed) {
+        return Err("jail: absolute path not allowed: " + relpath)
+    }
+    if has_dotdot(normed) {
+        return Err("jail: path traversal (..) not allowed: " + relpath)
+    }
+    if len(normed) == 0 {
+        return Ok(j.root)
+    }
+    return Ok(j.root + "/" + normed)
+}
+
+// Read the file at `relpath` within the jail.
+// Returns Err if the path is unsafe or the file does not exist.
+@capabilities(io)
+fn jail_read(j: Jail, relpath: str) -> Result<str, str> {
+    let abs = jail_resolve(j, relpath)?
+    if file_exists(abs) == 0 {
+        return Err("jail: file not found: " + relpath)
+    }
+    return Ok(file_read(abs))
+}
+
+// Write `data` to `relpath` within the jail.
+// Parent directory must already exist (use jail_mkdir first if needed).
+// Returns Err if the path is unsafe.
+@capabilities(io)
+fn jail_write(j: Jail, relpath: str, data: str) -> Result<str, str> {
+    let abs = jail_resolve(j, relpath)?
+    file_write(abs, data)
+    return Ok("ok")
+}
+
+// Check if `relpath` exists within the jail.
+// Returns Err if the path is unsafe.
+@capabilities(io)
+fn jail_exists(j: Jail, relpath: str) -> Result<bool, str> {
+    let abs = jail_resolve(j, relpath)?
+    return Ok(file_exists(abs) == 1)
+}
+
+// Create the directory at `relpath` within the jail.
+// Returns Err if the path is unsafe.
+@capabilities(io)
+fn jail_mkdir(j: Jail, relpath: str) -> Result<str, str> {
+    let abs = jail_resolve(j, relpath)?
+    create_dir(abs)
+    return Ok("ok")
+}
+
+// Validate `relpath` for listing and return Ok([]) on success.
+// NOTE: Returns an empty list because there is no list_dir builtin.
+// Path validation runs normally -- escape attempts are blocked.
+// For real listing, call std::fs::list_dir(abs) on a release build,
+// where `abs = jail_resolve(j, relpath)`.
+@capabilities()
+fn jail_list(j: Jail, relpath: str) -> Result<[str], str> {
+    let _abs = jail_resolve(j, relpath)?
+    let empty: [str] = []
+    return Ok(empty)
+}
