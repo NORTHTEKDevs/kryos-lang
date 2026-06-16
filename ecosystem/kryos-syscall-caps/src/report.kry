@@ -1,0 +1,125 @@
+// ============================================================
+// report.kry -- read the declared manifest and render an AuditReport.
+//
+// The declared capability set is read from a small JSON sidecar with the shape
+//   {"version":1,"declared":["io"]}
+// (the same flat-badge convention kryos-plugin-sandbox and kryos-audit-trail
+// use). We hand-scan it rather than depend on std::json being linked for every
+// target -- the format is fixed and small. read_manifest returns [] for a
+// missing/empty/malformed file; the caller decides whether an empty declared
+// set is itself a finding.
+//
+// render(report, declared) produces the human-readable strace-style summary the
+// CLI prints: the observed set, the declared set, and any observed-not-declared
+// violations, ending in a verdict line.
+// ============================================================
+
+use diff
+
+@capabilities()
+fn rch(s: str, i: i64) -> str {
+    return substr(s, i, i + 1)
+}
+
+@capabilities()
+fn index_from(s: str, needle: str, from: i64) -> i64 {
+    let n = len(s)
+    let m = len(needle)
+    if m == 0 {
+        return from
+    }
+    let mut i = from
+    while i + m <= n {
+        if substr(s, i, i + m) == needle {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// Pull the double-quoted strings inside the byte range [start, end).
+@capabilities()
+fn extract_quoted(s: str, start: i64, end: i64) -> [str] {
+    let mut out: [str] = []
+    let mut i = start
+    while i < end {
+        if rch(s, i) == "\"" {
+            let mut j = i + 1
+            while j < end && rch(s, j) != "\"" {
+                j = j + 1
+            }
+            out = push(out, substr(s, i + 1, j))
+            i = j + 1
+        } else {
+            i = i + 1
+        }
+    }
+    return out
+}
+
+// Parse the declared array out of a manifest string.
+@capabilities()
+fn parse_declared(content: str) -> [str] {
+    let empty: [str] = []
+    let key_at = index_from(content, "\"declared\"", 0)
+    if key_at < 0 {
+        return empty
+    }
+    let open = index_from(content, "[", key_at)
+    if open < 0 {
+        return empty
+    }
+    let close = index_from(content, "]", open)
+    if close < 0 {
+        return empty
+    }
+    return extract_quoted(content, open + 1, close)
+}
+
+// Read the declared capability set from a manifest file. [] on any problem.
+@capabilities(io)
+fn read_manifest(path: str) -> [str] {
+    let empty: [str] = []
+    if file_exists(path) == 0 {
+        return empty
+    }
+    let content = file_read(path)
+    if len(content) == 0 {
+        return empty
+    }
+    return parse_declared(content)
+}
+
+@capabilities()
+fn join_caps(caps: [str]) -> str {
+    if len(caps) == 0 {
+        return "(none)"
+    }
+    let mut out = ""
+    let mut first = true
+    for c in caps {
+        if first {
+            out = c
+            first = false
+        } else {
+            out = out + ", " + c
+        }
+    }
+    return out
+}
+
+// Render the strace-style audit summary for an AuditReport.
+@capabilities()
+fn render(report: AuditReport, declared: [str]) -> str {
+    let mut s = "syscall-caps audit\n"
+    s = s + "  observed: " + join_caps(report.observed) + "\n"
+    s = s + "  declared: " + join_caps(declared) + "\n"
+    if report.ok {
+        s = s + "  verdict: OK (observed is a subset of declared)"
+    } else {
+        s = s + "  undeclared: " + join_caps(report.undeclared) + "\n"
+        s = s + "  verdict: VIOLATION (ran capability classes the manifest did not declare)"
+    }
+    return s
+}

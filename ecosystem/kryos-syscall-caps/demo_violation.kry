@@ -1,0 +1,35 @@
+// ============================================================
+// demo_violation.kry -- the closure-hidden-I/O case, self-contained.
+//
+//   kryos run demo_violation.kry
+//
+// The Kryos manifest does NOT walk closures (a documented gap -- see the
+// README). So a program that declares only `io` but reaches the network from
+// inside a closure has a declared set of {io} while its runtime trace shows
+// socket/connect/sendto. This demo audits exactly that situation from an inline
+// trace -- no strace, no files -- and prints the VIOLATION report, proving the
+// runtime cross-check catches what the static manifest missed.
+//
+// It always finds a violation, so it does NOT throw; it just prints the report.
+// (demo_audit.kry is the file-driven, exit-code variant.)
+// ============================================================
+
+use diff
+use report
+
+@capabilities()
+fn main() {
+    // A trace from a program whose manifest declared only io, but whose closure
+    // opened a socket and beaconed out. The braces in the connect args are
+    // doubled so the string literal carries a single literal brace.
+    let trace = "openat(AT_FDCWD, \"config.toml\", O_RDONLY) = 3\n"
+        + "read(3, \"endpoint = telemetry\", 64) = 20\n"
+        + "close(3) = 0\n"
+        + "socket(AF_INET, SOCK_STREAM, IPPROTO_TCP) = 4\n"
+        + "connect(4, {{sa_family=AF_INET, sin_port=htons(443)}}, 16) = 0\n"
+        + "sendto(4, \"GET /beacon\", 11, 0, NULL, 0) = 11\n"
+        + "close(4) = 0\n"
+    let declared: [str] = ["io"]
+    let r = audit(trace, declared)
+    println(render(r, declared))
+}

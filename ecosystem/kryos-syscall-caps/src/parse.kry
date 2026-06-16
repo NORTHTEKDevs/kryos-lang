@@ -1,0 +1,123 @@
+// ============================================================
+// parse.kry -- extract syscall names from `strace -f` text output.
+//
+// We parse the trace as a string rather than shelling out to strace, so the
+// library is testable without strace installed (the demo shells out; the tests
+// feed committed fixture text). A strace line, with `-f`, looks like:
+//
+//   openat(AT_FDCWD, "/etc/passwd", O_RDONLY) = 3
+//   1234  connect(3, {sa_family=AF_INET, ...}, 16) = 0
+//   [pid  1235] execve("/bin/ls", ["ls"], 0x..) = 0
+//   1234  <... read resumed>"data", 8) = 8
+//   1234  read(3, "data"...  <unfinished ...>
+//   --- SIGCHLD {si_signo=SIGCHLD, ...} ---
+//   1234  +++ exited with 0 +++
+//
+// syscall_name_of(line) returns the syscall name on a line, or "" if the line
+// carries no syscall (signal lines, exit lines, resumed-call continuations).
+// We intentionally skip "<... NAME resumed>" lines: the matching call already
+// emitted its name on the "<unfinished ...>" line, so counting both would
+// double-count. The unfinished line still yields its name (text before the
+// '(' is intact), so no call is lost.
+// ============================================================
+
+use std::string::{split_lines}
+
+@capabilities()
+fn ch(s: str, i: i64) -> str {
+    return substr(s, i, i + 1)
+}
+
+@capabilities()
+fn is_ident_char(c: str) -> bool {
+    return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z")
+        || (c >= "0" && c <= "9") || c == "_"
+}
+
+// Skip a leading "[pid  N] " prefix or a bare "N " PID column, plus any
+// surrounding spaces, returning the index of the first non-PID, non-space char.
+@capabilities()
+fn skip_pid_prefix(line: str, start: i64) -> i64 {
+    let n = len(line)
+    let mut i = start
+    // Skip leading spaces.
+    while i < n && ch(line, i) == " " {
+        i = i + 1
+    }
+    // "[pid  1234] " form: skip to and past the closing ']'.
+    if i < n && ch(line, i) == "[" {
+        while i < n && ch(line, i) != "]" {
+            i = i + 1
+        }
+        if i < n {
+            i = i + 1
+        }
+        while i < n && ch(line, i) == " " {
+            i = i + 1
+        }
+        return i
+    }
+    // Bare "1234  " PID column: skip leading digits then spaces.
+    let mut j = i
+    while j < n && ch(line, j) >= "0" && ch(line, j) <= "9" {
+        j = j + 1
+    }
+    if j > i && j < n && ch(line, j) == " " {
+        i = j
+        while i < n && ch(line, i) == " " {
+            i = i + 1
+        }
+    }
+    return i
+}
+
+// Pull the syscall name out of a single trace line; "" if none.
+@capabilities()
+fn syscall_name_of(line: str) -> str {
+    let n = len(line)
+    if n == 0 {
+        return ""
+    }
+    let mut i = skip_pid_prefix(line, 0)
+    if i >= n {
+        return ""
+    }
+    let first = ch(line, i)
+    // Signal lines (--- ... ---), exit lines (+++ ... +++).
+    if first == "-" || first == "+" {
+        return ""
+    }
+    // Resumed-call continuation: "<... read resumed>". Skip -- already counted.
+    if first == "<" {
+        return ""
+    }
+    // Read the identifier up to the '(' that opens the argument list.
+    let mut j = i
+    while j < n && is_ident_char(ch(line, j)) {
+        j = j + 1
+    }
+    if j == i {
+        return ""
+    }
+    // A genuine syscall is immediately followed by '('. Guards against stray
+    // lines like a bare number or "restart_syscall".
+    if j < n && ch(line, j) == "(" {
+        return substr(line, i, j)
+    }
+    return ""
+}
+
+// Parse a whole strace trace into the list of syscall names it contains
+// (in order, with duplicates -- the diff engine de-dupes into a set).
+@capabilities()
+fn parse_syscalls(trace: str) -> [str] {
+    let mut out: [str] = []
+    let lines = split_lines(trace)
+    for line in lines {
+        let name = syscall_name_of(line)
+        if len(name) > 0 {
+            out = push(out, name)
+        }
+    }
+    return out
+}

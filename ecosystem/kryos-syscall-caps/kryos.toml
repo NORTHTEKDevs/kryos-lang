@@ -1,0 +1,8 @@
+[package]
+name = "kryos-syscall-caps"
+version = "0.1.0"
+description = "strace-style audit: bucket observed Linux syscalls into Kryos capability classes and diff them against the declared manifest"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["io"]

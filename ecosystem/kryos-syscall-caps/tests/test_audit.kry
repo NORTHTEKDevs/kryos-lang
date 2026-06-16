@@ -1,0 +1,131 @@
+// ============================================================
+// test_audit.kry -- the MVP audit tests.
+//
+//   kryos test --path ecosystem/kryos-syscall-caps
+//   kryos run  tests/test_audit.kry          (drives the same assertions)
+//
+// Each test feeds an inline strace-style trace (the fixtures under
+// tests/fixtures/ document the same shapes on disk, but inlining keeps the
+// tests independent of the directory the runner executes from). The cases:
+//   1. honest program: observed io is a subset of declared io        -> ok
+//   2. closure-hidden net: declared io only, but the trace shows net  -> VIOLATION
+//      (this is the manifest's documented closure-blindness, surfaced at runtime)
+//   3. parser robustness: -f PID columns, [pid] prefixes, unfinished/
+//      resumed continuations, signal and exit lines all parse correctly
+//   4. process-spawn bucketing: execve/clone -> process
+//   5. read_manifest round-trips a declared set off disk (the one io test)
+// ============================================================
+
+use taxonomy
+use parse
+use diff
+use report
+
+@capabilities()
+fn set_has(set: [str], x: str) -> bool {
+    for e in set {
+        if e == x {
+            return true
+        }
+    }
+    return false
+}
+
+// 1. The honest program reads and writes files only. Declared = io. observed
+//    should be {io}, undeclared empty, ok true.
+@test
+fn test_honest_within_declared() {
+    let trace = "openat(AT_FDCWD, \"input.txt\", O_RDONLY) = 3\n"
+        + "read(3, \"hi\", 2) = 2\n"
+        + "write(4, \"out\", 3) = 3\n"
+        + "close(3) = 0\n"
+    let declared: [str] = ["io"]
+    let r = audit(trace, declared)
+    assert(set_has(r.observed, "io"), "should observe io")
+    assert(len(r.observed) == 1, "should observe exactly one class")
+    assert(len(r.undeclared) == 0, "honest program has no undeclared caps")
+    assert(r.ok, "honest program must pass the audit")
+}
+
+// 2. Declared io only, but a closure issued socket/connect/sendto -> net is
+//    observed-not-declared. This is the headline finding: the static manifest
+//    does not walk closures, so net never appeared in `declared`, yet the
+//    runtime trace proves it happened.
+@test
+fn test_closure_hidden_net_is_caught() {
+    let trace = "openat(AT_FDCWD, \"config.toml\", O_RDONLY) = 3\n"
+        + "socket(AF_INET, SOCK_STREAM, IPPROTO_TCP) = 4\n"
+        + "connect(4, {{sa_family=AF_INET, sin_port=htons(443)}}, 16) = 0\n"
+        + "sendto(4, \"GET /\", 5, 0, NULL, 0) = 5\n"
+    let declared: [str] = ["io"]
+    let r = audit(trace, declared)
+    assert(set_has(r.observed, "io"), "should still observe io")
+    assert(set_has(r.observed, "net"), "should observe net from the closure")
+    assert(!r.ok, "undeclared net must fail the audit")
+    assert(len(r.undeclared) == 1, "exactly one undeclared class")
+    assert(r.undeclared[0] == "net", "the undeclared class is net")
+}
+
+// 3. The parser must survive real `strace -f` noise: a bare PID column, a
+//    [pid N] prefix, an unfinished/resumed split, and signal/exit lines.
+@test
+fn test_parser_handles_strace_f_noise() {
+    let trace = "12001 openat(AT_FDCWD, \"f\", O_RDONLY) = 3\n"
+        + "[pid 12002] connect(4, {{...}}, 16) = 0\n"
+        + "12001 read(3, \"x\"...  <unfinished ...>\n"
+        + "12001 <... read resumed>\"x\", 1) = 1\n"
+        + "--- SIGCHLD {{si_signo=SIGCHLD}} ---\n"
+        + "12001 +++ exited with 0 +++\n"
+    let names = parse_syscalls(trace)
+    // openat, connect, read (from the unfinished line) -- the resumed line is
+    // intentionally NOT re-counted, and signal/exit lines yield nothing.
+    assert(len(names) == 3, "expected 3 syscalls, got " + to_string(len(names)))
+    assert(names[0] == "openat", "first is openat")
+    assert(names[1] == "connect", "second is connect")
+    assert(names[2] == "read", "third is read (from the unfinished line)")
+}
+
+// 4. Process-creation syscalls bucket to `process`; a declared set without it
+//    flags the violation, while declaring it (or "all") passes.
+@test
+fn test_process_spawn_bucketing() {
+    let trace = "clone(child_stack=NULL, flags=CLONE_VM) = 12010\n"
+        + "[pid 12010] execve(\"/bin/sh\", [\"sh\"], 0x0) = 0\n"
+    assert(classify("execve") == "process", "execve -> process")
+    assert(classify("clone") == "process", "clone -> process")
+    let denied = audit(trace, ["io"])
+    assert(!denied.ok, "spawning under an io-only manifest is a violation")
+    assert(set_has(denied.undeclared, "process"), "process flagged as undeclared")
+    let allowed = audit(trace, ["process"])
+    assert(allowed.ok, "declaring process passes")
+    let wild = audit(trace, ["all"])
+    assert(wild.ok, "the all wildcard grants every class")
+}
+
+// 5. read_manifest round-trips a declared set written to disk. This is the one
+//    io-touching test; it writes its own sidecar in the CWD so it is portable.
+@test
+fn test_read_manifest_roundtrip() {
+    let path = "t_manifest.caps.json"
+    file_write(path, "{{\"version\":1,\"declared\":[\"io\",\"net\"]}}")
+    let declared = read_manifest(path)
+    assert(len(declared) == 2, "two declared caps")
+    assert(set_has(declared, "io"), "io declared")
+    assert(set_has(declared, "net"), "net declared")
+    let missing = read_manifest("does_not_exist.caps.json")
+    assert(len(missing) == 0, "missing manifest -> empty declared set")
+}
+
+fn main() {
+    test_honest_within_declared()
+    println("PASS test_honest_within_declared")
+    test_closure_hidden_net_is_caught()
+    println("PASS test_closure_hidden_net_is_caught")
+    test_parser_handles_strace_f_noise()
+    println("PASS test_parser_handles_strace_f_noise")
+    test_process_spawn_bucketing()
+    println("PASS test_process_spawn_bucketing")
+    test_read_manifest_roundtrip()
+    println("PASS test_read_manifest_roundtrip")
+    println("5/5 audit tests passed")
+}

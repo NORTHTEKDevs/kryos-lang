@@ -1,0 +1,57 @@
+// ============================================================
+// demo_audit.kry -- audit a captured strace against a declared manifest.
+//
+//   kryos run demo_audit.kry <trace-file> <manifest.caps.json>
+//
+// With no arguments it audits the committed honest fixture against its io-only
+// manifest (so `kryos test --path` exercises it cleanly without strace). The
+// exit-code contract mirrors the spec:
+//   exit 0  -- observed capability set is a subset of declared (clean)
+//   exit 1  -- the program exercised a capability class the manifest did not
+//              declare (observed-not-declared)
+//
+// This demo reads a PRE-CAPTURED trace. To capture one on Linux:
+//
+//   strace -f -e trace=%network,%file,%process -o trace.txt -- ./your_prog
+//   kryos run demo_audit.kry trace.txt your_prog.caps.json
+//
+// strace is Linux-only and not assumed present here; the file-driven path is
+// what the tests and this demo use. See demo_violation.kry for the
+// closure-hidden-net case that returns exit 1.
+// ============================================================
+
+use std::process::{exit}
+use diff
+use report
+
+// Returns the audit verdict as an exit code: 0 clean, 1 violation, 2 bad input.
+@capabilities(io)
+fn run_audit(trace_path: str, manifest_path: str) -> i64 {
+    if file_exists(trace_path) == 0 {
+        println("error: trace file not found: " + trace_path)
+        return 2
+    }
+    let trace = file_read(trace_path)
+    let declared = read_manifest(manifest_path)
+    let r = audit(trace, declared)
+    println(render(r, declared))
+    if r.ok {
+        return 0
+    }
+    return 1
+}
+
+@capabilities(io, process)
+fn main() {
+    let argv = args()
+    let mut trace_path = "tests/fixtures/honest.strace"
+    let mut manifest_path = "tests/fixtures/honest.caps.json"
+    if len(argv) >= 3 {
+        trace_path = argv[1]
+        manifest_path = argv[2]
+    }
+    let code = run_audit(trace_path, manifest_path)
+    // exit(0) is reached for the default honest fixture, so `kryos test --path`
+    // (which runs this with no args) sees a clean exit.
+    exit(code as i32)
+}

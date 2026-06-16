@@ -1,0 +1,14 @@
+execve("./honest", ["./honest"], 0x7ffd00000000 /* 30 vars */) = 0
+brk(NULL)                               = 0x55c000001000
+arch_prctl(ARCH_SET_FS, 0x7f0000000000) = 0
+mmap(NULL, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f0000001000
+openat(AT_FDCWD, "input.txt", O_RDONLY) = 3
+fstat(3, {st_mode=S_IFREG|0644, st_size=42, ...}) = 0
+read(3, "hello from the honest program\n", 42) = 42
+close(3)                                = 0
+openat(AT_FDCWD, "output.txt", O_WRONLY|O_CREAT|O_TRUNC, 0644) = 4
+write(4, "processed: hello\n", 17)      = 17
+close(4)                                = 0
+write(1, "done\n", 5)                   = 5
+exit_group(0)                           = ?
++++ exited with 0 +++

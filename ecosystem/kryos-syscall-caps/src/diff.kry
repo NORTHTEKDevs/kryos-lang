@@ -1,0 +1,120 @@
+// ============================================================
+// diff.kry -- bucket a syscall trace into a capability set and diff it against
+// the declared manifest.
+//
+// This is the wedge the spec describes: Kryos has a compiler-computed per-
+// function capability map (the declared manifest, unioned to a flat set) AND a
+// single native binary. strace tells us which syscalls the binary actually
+// issued. We bucket those into capability classes (taxonomy.classify) and ask:
+// did the program perform any capability class that NO annotated function
+// declared? That observed-not-declared set is the audit finding -- a runtime
+// cross-check that the static capability claim held.
+//
+// Because the manifest does NOT walk closures (a documented gap -- see
+// /home/user/workspace/prebuild-verification.md and the README), an effect
+// hidden behind a closure is absent from the declared set but still shows up
+// as a syscall at runtime. So this diff DETECTS closure-hidden effects: that
+// is the whole point of the violation fixture.
+//
+// observed_caps(trace)               -> the capability set the trace exhibits
+// undeclared(observed, declared)     -> observed \ declared (the violations)
+// audit(trace, declared) -> AuditReport { observed, undeclared, ok }
+// ============================================================
+
+use taxonomy
+use parse
+
+struct AuditReport {
+    observed: [str],
+    undeclared: [str],
+    ok: bool,
+}
+
+@capabilities()
+fn set_contains(set: [str], x: str) -> bool {
+    for e in set {
+        if e == x {
+            return true
+        }
+    }
+    return false
+}
+
+// Append x to set only if absent (keeps the list a set).
+@capabilities()
+fn set_add(set: [str], x: str) -> [str] {
+    if set_contains(set, x) {
+        return set
+    }
+    return push(set, x)
+}
+
+// The deduplicated capability set a trace exhibits. Unmapped syscalls
+// (classify -> "") contribute nothing.
+//
+// One subtlety: every traced program begins with the kernel/loader exec'ing the
+// binary's own image, so the FIRST execve/execveat in the trace is the program
+// being launched -- not a process-spawn the program itself issued. Counting it
+// would mark every program as using `process`. We skip exactly the first exec;
+// any later exec (a child the program spawned) still buckets to `process`.
+@capabilities()
+fn is_exec(name: str) -> bool {
+    return name == "execve" || name == "execveat"
+}
+
+@capabilities()
+fn observed_caps(trace: str) -> [str] {
+    let names = parse_syscalls(trace)
+    let mut caps: [str] = []
+    let mut self_exec_seen = false
+    for name in names {
+        if is_exec(name) && !self_exec_seen {
+            self_exec_seen = true
+        } else {
+            let cap = classify(name)
+            if len(cap) > 0 {
+                caps = set_add(caps, cap)
+            }
+        }
+    }
+    return caps
+}
+
+// Does the declared set grant `cap`? "all" is the wildcard, matching the
+// compiler's Capability::All variant.
+@capabilities()
+fn declared_grants(declared: [str], cap: str) -> bool {
+    for d in declared {
+        if d == cap || d == "all" {
+            return true
+        }
+    }
+    return false
+}
+
+// observed \ declared: capability classes the program exercised at runtime that
+// the manifest did not declare. An empty result means observed is a subset of
+// declared and the static claim held.
+@capabilities()
+fn undeclared(observed: [str], declared: [str]) -> [str] {
+    let mut out: [str] = []
+    for cap in observed {
+        if !declared_grants(declared, cap) {
+            out = set_add(out, cap)
+        }
+    }
+    return out
+}
+
+// Run the full audit: parse, bucket, diff. ok is true iff observed is a subset
+// of declared (no undeclared capability classes).
+@capabilities()
+fn audit(trace: str, declared: [str]) -> AuditReport {
+    let observed = observed_caps(trace)
+    let missing = undeclared(observed, declared)
+    return AuditReport {
+        observed: observed,
+        undeclared: missing,
+        ok: len(missing) == 0,
+    }
+}

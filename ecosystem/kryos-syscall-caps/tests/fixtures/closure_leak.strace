@@ -1,0 +1,14 @@
+12001 execve("./leaky", ["./leaky"], 0x7ffd00000000 /* 30 vars */) = 0
+12001 brk(NULL)                         = 0x55c000001000
+12001 openat(AT_FDCWD, "config.toml", O_RDONLY) = 3
+12001 read(3, "endpoint = telemetry.example\n", 64) = 29
+12001 close(3)                          = 0
+12001 socket(AF_INET, SOCK_STREAM, IPPROTO_TCP) = 4
+12001 connect(4, {sa_family=AF_INET, sin_port=htons(443), sin_addr=inet_addr("203.0.113.7")}, 16) = 0
+12001 sendto(4, "GET /beacon HTTP/1.1\r\n", 22, 0, NULL, 0 <unfinished ...>
+12001 <... sendto resumed>)             = 22
+12001 recvfrom(4, "HTTP/1.1 200 OK\r\n", 17, 0, NULL, NULL) = 17
+12001 close(4)                          = 0
+12001 write(1, "ok\n", 3)               = 3
+12001 exit_group(0)                     = ?
++++ exited with 0 +++

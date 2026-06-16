@@ -1,0 +1,100 @@
+// ============================================================
+// taxonomy.kry -- map a Linux syscall name to a Kryos capability class.
+//
+// Kryos's compiler computes a per-function capability set drawn from an
+// 11-variant taxonomy (net, io, ffi, compute, crypto, process, env, term,
+// db, time, all -- see compiler/crates/kryos-capabilities/src/model.rs).
+// strace observes raw syscalls at the OS boundary but has no notion of those
+// classes. This module is the bridge: it buckets a syscall name into the
+// capability that a Kryos function would have needed to issue it.
+//
+// The bucketing is deliberately conservative and APPROXIMATE. A few honest
+// caveats, documented here and in the README:
+//   - openat("/etc/resolv.conf") is really part of `net` (DNS), but at the
+//     syscall layer it looks like `io`. We bucket by syscall name only, not by
+//     path, so DNS file reads land in `io`. This is a known false-attribution.
+//   - `env` (getenv) and `compute`/`crypto`/`db`/`term` are largely userspace
+//     or library concerns with no dedicated syscall, so they are not derivable
+//     from a syscall trace. classify() returns "" (unmapped) for anything we
+//     cannot confidently bucket; the diff engine treats "" as "ignore".
+//
+// classify(name) returns one of: "net", "io", "process", "time", or "" when
+// the syscall carries no capability signal (e.g. mmap, brk, rt_sigaction).
+// ============================================================
+
+@capabilities()
+fn in_list(names: [str], name: str) -> bool {
+    for n in names {
+        if n == name {
+            return true
+        }
+    }
+    return false
+}
+
+// Socket / connection family -> net.
+@capabilities()
+fn is_net_syscall(name: str) -> bool {
+    let net_calls: [str] = [
+        "socket", "socketpair", "connect", "bind", "listen", "accept",
+        "accept4", "sendto", "recvfrom", "sendmsg", "recvmsg", "sendmmsg",
+        "recvmmsg", "getsockname", "getpeername", "getsockopt", "setsockopt",
+        "shutdown"
+    ]
+    return in_list(net_calls, name)
+}
+
+// File / descriptor I/O -> io.
+@capabilities()
+fn is_io_syscall(name: str) -> bool {
+    let io_calls: [str] = [
+        "open", "openat", "creat", "read", "pread64", "readv", "write",
+        "pwrite64", "writev", "close", "lseek", "stat", "fstat", "lstat",
+        "newfstatat", "statx", "access", "faccessat", "getdents", "getdents64",
+        "mkdir", "mkdirat", "rmdir", "unlink", "unlinkat", "rename",
+        "renameat", "renameat2", "fcntl", "ftruncate", "truncate", "fsync",
+        "fdatasync", "readlink", "readlinkat", "chmod", "fchmod", "chown",
+        "fchown", "dup", "dup2", "dup3", "pipe", "pipe2"
+    ]
+    return in_list(io_calls, name)
+}
+
+// Process creation / control -> process.
+@capabilities()
+fn is_process_syscall(name: str) -> bool {
+    let proc_calls: [str] = [
+        "execve", "execveat", "fork", "vfork", "clone", "clone3", "wait4",
+        "waitid", "kill", "tgkill", "tkill"
+    ]
+    return in_list(proc_calls, name)
+}
+
+// Clock / sleep -> time.
+@capabilities()
+fn is_time_syscall(name: str) -> bool {
+    let time_calls: [str] = [
+        "clock_gettime", "gettimeofday", "clock_nanosleep", "nanosleep",
+        "time", "clock_getres"
+    ]
+    return in_list(time_calls, name)
+}
+
+// Bucket a syscall name into a capability class, or "" if it carries no
+// capability signal. Checked most-specific-first; net before io so that a
+// hypothetical overlap resolves toward the narrower class.
+@capabilities()
+fn classify(name: str) -> str {
+    if is_net_syscall(name) {
+        return "net"
+    }
+    if is_process_syscall(name) {
+        return "process"
+    }
+    if is_io_syscall(name) {
+        return "io"
+    }
+    if is_time_syscall(name) {
+        return "time"
+    }
+    return ""
+}
