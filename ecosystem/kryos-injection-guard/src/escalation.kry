@@ -1,0 +1,117 @@
+// ============================================================
+// escalation.kry -- the novel core of this tool.
+//
+// Untrusted input / tool output is scanned for phrases that imply the agent
+// should USE a system capability (write a file -> io, curl -> net, exec a
+// shell -> process, ...). Any requested capability that is NOT in the agent's
+// declared @capabilities surface is an ESCALATION: the input is trying to make
+// the agent reach beyond the authority it was granted.
+//
+// All phrases are lowercase; callers pass already-lowercased text.
+// ============================================================
+
+use text
+
+struct CapRule {
+    phrase: str,
+    cap: str,
+}
+
+// The keyword -> capability table. Phrases are substrings matched
+// case-insensitively against lowercased input. Deliberately broad: a guard
+// prefers a false positive (one extra review) over a missed escalation.
+@capabilities(compute)
+fn cap_rules() -> [CapRule] {
+    let mut r: [CapRule] = []
+
+    // io -- filesystem reads/writes.
+    r = push(r, CapRule { phrase: "write file", cap: "io" })
+    r = push(r, CapRule { phrase: "read file", cap: "io" })
+    r = push(r, CapRule { phrase: "delete file", cap: "io" })
+    r = push(r, CapRule { phrase: "file_write", cap: "io" })
+    r = push(r, CapRule { phrase: "fopen", cap: "io" })
+    r = push(r, CapRule { phrase: "open(", cap: "io" })
+    r = push(r, CapRule { phrase: "save to disk", cap: "io" })
+    r = push(r, CapRule { phrase: "/etc/passwd", cap: "io" })
+
+    // net -- outbound network / exfiltration.
+    r = push(r, CapRule { phrase: "curl", cap: "net" })
+    r = push(r, CapRule { phrase: "wget", cap: "net" })
+    r = push(r, CapRule { phrase: "http", cap: "net" })
+    r = push(r, CapRule { phrase: "fetch(", cap: "net" })
+    r = push(r, CapRule { phrase: "exfiltrate", cap: "net" })
+    r = push(r, CapRule { phrase: "upload", cap: "net" })
+    r = push(r, CapRule { phrase: "download", cap: "net" })
+
+    // process -- arbitrary command / subprocess execution.
+    r = push(r, CapRule { phrase: "exec", cap: "process" })
+    r = push(r, CapRule { phrase: "shell", cap: "process" })
+    r = push(r, CapRule { phrase: "subprocess", cap: "process" })
+    r = push(r, CapRule { phrase: "spawn", cap: "process" })
+    r = push(r, CapRule { phrase: "system(", cap: "process" })
+    r = push(r, CapRule { phrase: "os.system", cap: "process" })
+    r = push(r, CapRule { phrase: "/bin/sh", cap: "process" })
+    r = push(r, CapRule { phrase: "powershell", cap: "process" })
+
+    // ffi -- loading native code / dynamic libraries.
+    r = push(r, CapRule { phrase: "dlopen", cap: "ffi" })
+    r = push(r, CapRule { phrase: "loadlibrary", cap: "ffi" })
+
+    return r
+}
+
+// True if `x` is in `xs`.
+@capabilities(compute)
+fn caps_list_contains(xs: [str], x: str) -> bool {
+    for c in xs {
+        if c == x {
+            return true
+        }
+    }
+    return false
+}
+
+// The deduped set of capabilities the (lowercased) text appears to request.
+@capabilities(compute)
+fn requested_caps(text_lower: str) -> [str] {
+    let rules = cap_rules()
+    let mut out: [str] = []
+    for r in rules {
+        if mentions(text_lower, r.phrase) {
+            if !caps_list_contains(out, r.cap) {
+                out = push(out, r.cap)
+            }
+        }
+    }
+    return out
+}
+
+// Requested capabilities that are NOT in the declared surface -- the escalations.
+@capabilities(compute)
+fn escalating_caps(declared: [str], text_lower: str) -> [str] {
+    let req = requested_caps(text_lower)
+    let mut out: [str] = []
+    for c in req {
+        if !caps_list_contains(declared, c) {
+            out = push(out, c)
+        }
+    }
+    return out
+}
+
+// Severity of an escalation into `cap`: process/ffi (arbitrary code) is
+// critical; everything else (net exfiltration, io) is high.
+@capabilities(compute)
+fn cap_severity(cap: str) -> str {
+    if cap == "process" || cap == "ffi" {
+        return "critical"
+    }
+    return "high"
+}
+
+// Human-readable reason for an escalation into `cap`.
+@capabilities(compute)
+fn escalation_reason(cap: str, declared: [str]) -> str {
+    return "capability escalation: untrusted input requests '" + cap +
+        "' which is outside the declared surface " + render_cap_list(declared)
+}

@@ -1,0 +1,49 @@
+// ============================================================
+// guard.kry -- the public entry point.
+//
+//   guard(declared_caps, untrusted_text) -> Verdict
+//
+// Combines two independent signals over the untrusted text:
+//   1. capability escalation -- a request to use a capability outside the
+//      declared @capabilities surface (the novel, high/critical signal);
+//   2. classic prompt-injection heuristics (medium).
+// The Verdict carries every reason and the highest severity among them.
+// ============================================================
+
+use text
+use verdict
+use escalation
+use injection
+
+// Inspect untrusted text against an agent's declared capability surface.
+//
+//   declared_caps   the agent's @capabilities, e.g. ["io"]
+//   untrusted_text  attacker-controlled input or tool output
+//
+// Returns a Verdict: flagged + the list of reasons + a rolled-up severity.
+@capabilities(compute)
+fn guard(declared_caps: [str], untrusted_text: str) -> Verdict {
+    let lower = to_lower_ascii(untrusted_text)
+    let mut reasons: [str] = []
+    let mut sev: str = "none"
+
+    // 1. Capability escalation -- the defining check.
+    let esc = escalating_caps(declared_caps, lower)
+    for cap in esc {
+        reasons = push(reasons, escalation_reason(cap, declared_caps))
+        sev = max_severity(sev, cap_severity(cap))
+    }
+
+    // 2. Classic prompt-injection heuristics.
+    let inj = injection_hits(lower)
+    for r in inj {
+        reasons = push(reasons, r)
+        sev = max_severity(sev, "medium")
+    }
+
+    let flagged = len(reasons) > 0
+    if !flagged {
+        sev = "none"
+    }
+    return Verdict { flagged: flagged, reasons: reasons, severity: sev }
+}

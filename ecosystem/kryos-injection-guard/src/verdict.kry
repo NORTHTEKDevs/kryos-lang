@@ -1,0 +1,57 @@
+// ============================================================
+// verdict.kry -- the Verdict value the guard returns, plus a small severity
+// lattice used to roll many findings up into one headline severity.
+//
+// Severity scale (low to high):
+//   none < low < medium < high < critical
+// Classic injection phrases are medium; a capability escalation is high;
+// an escalation into `process` or `ffi` (arbitrary code / native execution)
+// is critical.
+// ============================================================
+
+struct Verdict {
+    flagged: bool,
+    reasons: [str],
+    severity: str,
+}
+
+// Map a severity name to an ordinal. Unknown names rank as none (0).
+@capabilities(compute)
+fn severity_rank(s: str) -> i64 {
+    if s == "critical" {
+        return 4
+    } elif s == "high" {
+        return 3
+    } elif s == "medium" {
+        return 2
+    } elif s == "low" {
+        return 1
+    }
+    return 0
+}
+
+// Inverse of severity_rank.
+@capabilities(compute)
+fn severity_name(r: i64) -> str {
+    if r >= 4 {
+        return "critical"
+    } elif r == 3 {
+        return "high"
+    } elif r == 2 {
+        return "medium"
+    } elif r == 1 {
+        return "low"
+    }
+    return "none"
+}
+
+// The higher of two severities by rank.
+@capabilities(compute)
+fn max_severity(a: str, b: str) -> str {
+    let ra = severity_rank(a)
+    let rb = severity_rank(b)
+    if ra >= rb {
+        return severity_name(ra)
+    }
+    return severity_name(rb)
+}

@@ -1,0 +1,12 @@
+[package]
+name = "kryos-injection-guard"
+version = "0.1.0"
+description = "Capability-aware prompt-injection / tool-escalation detector: flags untrusted text that tries to make an agent use capabilities outside its declared @capabilities surface"
+license = "Apache-2.0"
+
+# The entire detector is pure compute -- it inspects strings and arrays and
+# never touches IO, the network, the filesystem, or a process. `kryos check
+# --strict-capabilities` over src/ is the headline proof: a guard that decides
+# whether OTHER code is escalating capabilities cannot itself escalate.
+[capabilities]
+allowed = ["compute"]

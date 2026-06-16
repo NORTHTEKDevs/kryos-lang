@@ -1,0 +1,73 @@
+// ============================================================
+// injection.kry -- classic prompt-injection heuristics.
+//
+// These catch the well-known social-engineering patterns that try to override
+// the agent's instructions or extract its system prompt, independent of any
+// capability request. Each matched phrase yields one reason. Phrases are
+// lowercase; callers pass already-lowercased text.
+// ============================================================
+
+use text
+
+struct InjRule {
+    phrase: str,
+    label: str,
+}
+
+// The injection-phrase table. `label` is what surfaces in a reason.
+@capabilities(compute)
+fn injection_rules() -> [InjRule] {
+    let mut r: [InjRule] = []
+
+    // Instruction-override.
+    r = push(r, InjRule { phrase: "ignore previous instructions", label: "classic injection: 'ignore previous instructions'" })
+    r = push(r, InjRule { phrase: "ignore all previous", label: "classic injection: 'ignore all previous ...'" })
+    r = push(r, InjRule { phrase: "ignore the above", label: "classic injection: 'ignore the above'" })
+    r = push(r, InjRule { phrase: "disregard previous", label: "classic injection: 'disregard previous ...'" })
+    r = push(r, InjRule { phrase: "disregard the above", label: "classic injection: 'disregard the above'" })
+    r = push(r, InjRule { phrase: "forget your instructions", label: "classic injection: 'forget your instructions'" })
+    r = push(r, InjRule { phrase: "override your", label: "instruction override: 'override your ...'" })
+    r = push(r, InjRule { phrase: "new instructions:", label: "instruction override: 'new instructions:'" })
+
+    // Role / persona override.
+    r = push(r, InjRule { phrase: "you are now", label: "role override: 'you are now ...'" })
+    r = push(r, InjRule { phrase: "you're now", label: "role override: \"you're now ...\"" })
+    r = push(r, InjRule { phrase: "act as", label: "role override: 'act as ...'" })
+    r = push(r, InjRule { phrase: "pretend to be", label: "role override: 'pretend to be ...'" })
+    r = push(r, InjRule { phrase: "developer mode", label: "jailbreak: 'developer mode'" })
+    r = push(r, InjRule { phrase: "do anything now", label: "jailbreak: 'do anything now' (DAN)" })
+
+    // System-prompt extraction.
+    r = push(r, InjRule { phrase: "system prompt", label: "system-prompt probe: 'system prompt'" })
+    r = push(r, InjRule { phrase: "reveal your", label: "system-prompt probe: 'reveal your ...'" })
+    r = push(r, InjRule { phrase: "print your instructions", label: "system-prompt probe: 'print your instructions'" })
+    r = push(r, InjRule { phrase: "repeat the words above", label: "system-prompt probe: 'repeat the words above'" })
+
+    return r
+}
+
+// True if `x` is already in `xs`.
+@capabilities(compute)
+fn labels_contains(xs: [str], x: str) -> bool {
+    for c in xs {
+        if c == x {
+            return true
+        }
+    }
+    return false
+}
+
+// Deduped labels for every injection phrase found in the (lowercased) text.
+@capabilities(compute)
+fn injection_hits(text_lower: str) -> [str] {
+    let rules = injection_rules()
+    let mut out: [str] = []
+    for r in rules {
+        if mentions(text_lower, r.phrase) {
+            if !labels_contains(out, r.label) {
+                out = push(out, r.label)
+            }
+        }
+    }
+    return out
+}

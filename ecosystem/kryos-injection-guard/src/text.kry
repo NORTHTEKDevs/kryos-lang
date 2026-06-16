@@ -1,0 +1,50 @@
+// ============================================================
+// text.kry -- tiny, dependency-free ASCII text helpers.
+//
+// The guard normalises untrusted input to lowercase ONCE and then does
+// case-folded substring checks against lowercase keyword tables. We implement
+// lowercasing over the documented builtins (substr / char_code / char_from)
+// rather than importing std::string, so the whole detector depends only on
+// global builtins -- nothing it calls can require a capability beyond compute.
+// ============================================================
+
+// Lowercase every ASCII A-Z byte; leave all other bytes untouched.
+@capabilities(compute)
+fn to_lower_ascii(s: str) -> str {
+    let mut out: str = ""
+    let mut i = 0
+    let n = len(s)
+    while i < n {
+        let ch = substr(s, i, i + 1)
+        let code = char_code(ch)
+        if code >= 65 && code <= 90 {
+            out = out + char_from(code + 32)
+        } else {
+            out = out + ch
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// True if `needle` (already lowercase) occurs in `haystack_lower`.
+// Thin, intention-revealing wrapper over the contains builtin.
+@capabilities(compute)
+fn mentions(haystack_lower: str, needle_lower: str) -> bool {
+    return contains(haystack_lower, needle_lower)
+}
+
+// Render a [str] as "[a, b, c]" for human-readable reasons.
+@capabilities(compute)
+fn render_cap_list(caps: [str]) -> str {
+    let mut s: str = "["
+    let mut i = 0
+    while i < len(caps) {
+        if i > 0 {
+            s = s + ", "
+        }
+        s = s + caps[i]
+        i = i + 1
+    }
+    return s + "]"
+}
