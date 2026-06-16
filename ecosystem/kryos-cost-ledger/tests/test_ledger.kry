@@ -1,0 +1,230 @@
+// ============================================================
+// test_ledger.kry -- tests for kryos-cost-ledger.
+//
+//   kryos test --path ecosystem/kryos-cost-ledger
+//   kryos run  tests/test_ledger.kry          (standalone)
+//
+// Coverage maps directly onto the spec's done criteria:
+//   - empty ledger verifies clean                     (baseline)
+//   - append produces a valid, connected chain        (chain)
+//   - mutating an entry's hash breaks verify at that seq   (tamper-hash)
+//   - mutating a cost field breaks verify at that seq      (tamper-field)
+//   - prev_hash is the genesis hash on the first entry     (genesis)
+//   - JSON serialization produces one line per entry       (jsonlines)
+// ============================================================
+
+use std::cost::{ComputeCost}
+use ledger
+
+// Build a ComputeCost with the given token/call count; wall_time_ms is set
+// via a f64 literal (0.0) so no i64->f64 cast is needed here.
+fn make_cost(tokens: i64, calls: i64) -> ComputeCost {
+    return ComputeCost {
+        wall_time_ms: 0.0,
+        tokens_used: tokens,
+        api_calls: calls,
+        money_usd: 0.0,
+        energy_kwh: 0.0,
+    }
+}
+
+// Rebuild a [LedgerEntry] with the entry at `idx` replaced by `replacement`.
+// Used by tamper tests to splice a modified entry into the chain.
+fn splice(ledger_arr: [LedgerEntry], idx: i64, replacement: LedgerEntry) -> [LedgerEntry] {
+    let mut result: [LedgerEntry] = []
+    let mut i = 0
+    while i < len(ledger_arr) {
+        if i == idx {
+            result = push(result, replacement)
+        } else {
+            result = push(result, ledger_arr[i])
+        }
+        i = i + 1
+    }
+    return result
+}
+
+// --- Tests -------------------------------------------------------------------
+
+@test
+fn test_empty_ledger_verifies() {
+    let ledger_arr = ledger_new()
+    let result = ledger_verify(ledger_arr)
+    assert(result == -1, "empty ledger must verify clean, got " + to_string(result))
+}
+
+@test
+fn test_single_entry_verifies() {
+    let mut ledger_arr = ledger_new()
+    ledger_arr = ledger_append(ledger_arr, make_cost(100, 1))
+    let result = ledger_verify(ledger_arr)
+    assert(result == -1, "single-entry ledger must verify clean, got " + to_string(result))
+}
+
+@test
+fn test_first_entry_genesis_prev_hash() {
+    let mut ledger_arr = ledger_new()
+    ledger_arr = ledger_append(ledger_arr, make_cost(50, 1))
+    let entry = ledger_arr[0]
+    assert(entry.prev_hash == genesis_hash(),
+        "first entry prev_hash must be genesis, got " + entry.prev_hash)
+    assert(entry.seq == 0, "first entry seq must be 0, got " + to_string(entry.seq))
+}
+
+@test
+fn test_append_produces_connected_chain() {
+    let mut ledger_arr = ledger_new()
+    ledger_arr = ledger_append(ledger_arr, make_cost(100, 1))
+    ledger_arr = ledger_append(ledger_arr, make_cost(200, 2))
+    ledger_arr = ledger_append(ledger_arr, make_cost(300, 3))
+
+    // Each entry's prev_hash must match the preceding entry's hash.
+    assert(ledger_arr[1].prev_hash == ledger_arr[0].hash,
+        "entry 1 prev_hash must match entry 0 hash")
+    assert(ledger_arr[2].prev_hash == ledger_arr[1].hash,
+        "entry 2 prev_hash must match entry 1 hash")
+
+    // Sequence numbers must be monotone.
+    assert(ledger_arr[0].seq == 0, "seq[0] must be 0")
+    assert(ledger_arr[1].seq == 1, "seq[1] must be 1")
+    assert(ledger_arr[2].seq == 2, "seq[2] must be 2")
+
+    // Full verify must pass.
+    let result = ledger_verify(ledger_arr)
+    assert(result == -1, "three-entry ledger must verify clean, got " + to_string(result))
+}
+
+@test
+fn test_tamper_hash_detected_at_correct_seq() {
+    let mut ledger_arr = ledger_new()
+    ledger_arr = ledger_append(ledger_arr, make_cost(100, 1))
+    ledger_arr = ledger_append(ledger_arr, make_cost(200, 2))
+    ledger_arr = ledger_append(ledger_arr, make_cost(300, 3))
+
+    // Verify clean first.
+    assert(ledger_verify(ledger_arr) == -1, "baseline must be clean")
+
+    // Tamper: replace entry 1's hash with garbage. The self-hash check fails at seq 1.
+    let e1 = ledger_arr[1]
+    let tampered_e1 = LedgerEntry {
+        seq: e1.seq,
+        tokens_used: e1.tokens_used,
+        api_calls: e1.api_calls,
+        wall_ms: e1.wall_ms,
+        prev_hash: e1.prev_hash,
+        hash: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    }
+    let tampered = splice(ledger_arr, 1, tampered_e1)
+
+    let broken = ledger_verify(tampered)
+    assert(broken == 1,
+        "tampered hash at seq 1 must be flagged at seq 1, got " + to_string(broken))
+}
+
+@test
+fn test_tamper_field_detected_at_correct_seq() {
+    let mut ledger_arr = ledger_new()
+    ledger_arr = ledger_append(ledger_arr, make_cost(100, 1))
+    ledger_arr = ledger_append(ledger_arr, make_cost(200, 2))
+    ledger_arr = ledger_append(ledger_arr, make_cost(300, 3))
+
+    // Tamper: change tokens_used in entry 1 but keep the original hash intact.
+    // The recomputed hash won't match the stored hash -> broken at seq 1.
+    let e1 = ledger_arr[1]
+    let tampered_e1 = LedgerEntry {
+        seq: e1.seq,
+        tokens_used: 9999,  // altered cost field
+        api_calls: e1.api_calls,
+        wall_ms: e1.wall_ms,
+        prev_hash: e1.prev_hash,
+        hash: e1.hash,      // original hash kept (but now wrong)
+    }
+    let tampered = splice(ledger_arr, 1, tampered_e1)
+
+    let broken = ledger_verify(tampered)
+    assert(broken == 1,
+        "tampered cost field at seq 1 must be flagged at seq 1, got " + to_string(broken))
+}
+
+@test
+fn test_tamper_first_entry_detected_at_seq_0() {
+    let mut ledger_arr = ledger_new()
+    ledger_arr = ledger_append(ledger_arr, make_cost(100, 1))
+    ledger_arr = ledger_append(ledger_arr, make_cost(200, 2))
+
+    let e0 = ledger_arr[0]
+    let tampered_e0 = LedgerEntry {
+        seq: e0.seq,
+        tokens_used: 42,  // altered
+        api_calls: e0.api_calls,
+        wall_ms: e0.wall_ms,
+        prev_hash: e0.prev_hash,
+        hash: e0.hash,
+    }
+    let tampered = splice(ledger_arr, 0, tampered_e0)
+
+    let broken = ledger_verify(tampered)
+    assert(broken == 0,
+        "tampered first entry must be flagged at seq 0, got " + to_string(broken))
+}
+
+@test
+fn test_record_cost_bridge() {
+    // record_cost is a bridge alias for ledger_append; verify it produces
+    // the same result.
+    let mut ledger_arr = ledger_new()
+    ledger_arr = record_cost(ledger_arr, make_cost(50, 1))
+    ledger_arr = record_cost(ledger_arr, make_cost(75, 2))
+    let result = ledger_verify(ledger_arr)
+    assert(result == -1, "record_cost bridge must produce a valid chain, got " + to_string(result))
+    assert(len(ledger_arr) == 2, "two record_cost calls must yield two entries, got " + to_string(len(ledger_arr)))
+}
+
+@test
+fn test_jsonlines_one_line_per_entry() {
+    let mut ledger_arr = ledger_new()
+    ledger_arr = ledger_append(ledger_arr, make_cost(10, 1))
+    ledger_arr = ledger_append(ledger_arr, make_cost(20, 2))
+    let jl = ledger_to_jsonlines(ledger_arr)
+    // Two entries -> exactly one newline separating them.
+    assert(contains(jl, "\n"), "two-entry jsonlines must contain a newline")
+    // Check key names are present (avoid embedding \" in assert strings).
+    assert(contains(jl, "seq"), "jsonlines must contain seq key")
+    assert(contains(jl, "tokens_used"), "jsonlines must contain tokens_used key")
+    assert(contains(jl, "prev_hash"), "jsonlines must contain prev_hash key")
+    assert(contains(jl, "hash"), "jsonlines must contain hash key")
+    // Check token values are present as substrings.
+    assert(contains(jl, ":10,"), "first entry tokens_used value must be 10")
+    assert(contains(jl, ":20,"), "second entry tokens_used value must be 20")
+}
+
+fn main() {
+    test_empty_ledger_verifies()
+    println("PASS test_empty_ledger_verifies")
+
+    test_single_entry_verifies()
+    println("PASS test_single_entry_verifies")
+
+    test_first_entry_genesis_prev_hash()
+    println("PASS test_first_entry_genesis_prev_hash")
+
+    test_append_produces_connected_chain()
+    println("PASS test_append_produces_connected_chain")
+
+    test_tamper_hash_detected_at_correct_seq()
+    println("PASS test_tamper_hash_detected_at_correct_seq")
+
+    test_tamper_field_detected_at_correct_seq()
+    println("PASS test_tamper_field_detected_at_correct_seq")
+
+    test_tamper_first_entry_detected_at_seq_0()
+    println("PASS test_tamper_first_entry_detected_at_seq_0")
+
+    test_record_cost_bridge()
+    println("PASS test_record_cost_bridge")
+
+    test_jsonlines_one_line_per_entry()
+    println("PASS test_jsonlines_one_line_per_entry")
+
+    println("9/9 ledger tests passed")
+}

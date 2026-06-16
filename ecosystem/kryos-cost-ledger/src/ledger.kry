@@ -1,0 +1,177 @@
+// ============================================================
+// ledger.kry -- append-only hash-chained spend ledger.
+//
+// Each LedgerEntry records a ComputeCost snapshot plus a
+// polynomial hash of the previous entry's canonical payload,
+// forming a hash chain. Any post-hoc field mutation (tokens,
+// seq, hashes) breaks verify() at the first altered entry.
+//
+// Hash algorithm note: std::crypto::sha256 requires `ptr_byte_at`,
+// a low-level builtin that is not available in the Cranelift JIT
+// backend used by `kryos test`. This module uses `entry_hash`,
+// a pure-Kryos polynomial hash (djb2-style, mod 10^9+7) instead.
+// This is tamper-EVIDENT but NOT cryptographically secure.
+// The spec explicitly allows this fallback: "if [sha256] is not
+// available, use whatever hash it does expose and name it honestly."
+//
+// Design notes:
+//   - Cost fields are stored as i64 (tokens_used, api_calls, wall_ms)
+//     because to_string(f64) is not supported in the Cranelift JIT backend.
+//     wall_time_ms from ComputeCost is truncated to whole milliseconds.
+//     money_usd and energy_kwh are always 0.0 per spec and are not hashed.
+//   - The ledger is a plain [LedgerEntry] threaded by value (rebind at
+//     call site: `ledger = ledger_append(ledger, cost)`).
+// ============================================================
+
+use std::cost::{ComputeCost}
+
+// A single entry in the hash-chained spend ledger.
+struct LedgerEntry {
+    seq: i64,
+    tokens_used: i64,
+    api_calls: i64,
+    wall_ms: i64,
+    prev_hash: str,
+    hash: str,
+}
+
+// Create an empty ledger.
+fn ledger_new() -> [LedgerEntry] {
+    return []
+}
+
+// The genesis prev_hash used for the very first entry (no predecessor).
+fn genesis_hash() -> str {
+    return "0000000000000000000000000000000000000000000000000000000000000000"
+}
+
+// Pure-Kryos polynomial hash over a string. Uses p=31, m=10^9+7.
+// Max intermediate value before mod: (10^9+6)*31 + 127 ≈ 3.1*10^10,
+// safely within i64 range (max 9.2*10^18). No FFI, works in JIT.
+// Output is a decimal string. Tamper-evident; NOT cryptographically secure.
+fn entry_hash(s: str) -> str {
+    let p = 31
+    let m = 1000000007
+    let mut h: i64 = 0
+    let mut i = 0
+    while i < len(s) {
+        h = (h * p + char_code(s[i])) % m
+        i = i + 1
+    }
+    return to_string(h)
+}
+
+// Canonical payload string for an entry. The hash of this is the entry hash.
+// Format: "seq|tokens|calls|wall_ms|prev_hash"
+fn _payload(seq: i64, tokens: i64, calls: i64, wall_ms: i64, prev_hash: str) -> str {
+    return to_string(seq) + "|"
+        + to_string(tokens) + "|"
+        + to_string(calls) + "|"
+        + to_string(wall_ms) + "|"
+        + prev_hash
+}
+
+// Compute the hash over an entry's payload fields.
+fn _entry_hash(seq: i64, tokens: i64, calls: i64, wall_ms: i64, prev_hash: str) -> str {
+    return entry_hash(_payload(seq, tokens, calls, wall_ms, prev_hash))
+}
+
+// Append one ComputeCost to the ledger. Returns the updated ledger.
+// Thread it at the call site: `ledger = ledger_append(ledger, cost)`.
+//
+// The usd and energy fields of ComputeCost are 0.0 per spec and are not
+// tracked; only tokens, api_calls, and wall_time_ms (truncated to i64) are.
+fn ledger_append(ledger: [LedgerEntry], cost: ComputeCost) -> [LedgerEntry] {
+    let seq = len(ledger)
+    let mut prev = genesis_hash()
+    if seq > 0 {
+        prev = ledger[seq - 1].hash
+    }
+    let tokens = cost.tokens_used
+    let calls = cost.api_calls
+    let wall_ms = cost.wall_time_ms as i64
+    let h = _entry_hash(seq, tokens, calls, wall_ms, prev)
+    let entry = LedgerEntry {
+        seq: seq,
+        tokens_used: tokens,
+        api_calls: calls,
+        wall_ms: wall_ms,
+        prev_hash: prev,
+        hash: h,
+    }
+    return push(ledger, entry)
+}
+
+// Bridge: record a ComputeCost event from any source (BudgetedChat,
+// CostTracker, etc.). Alias for ledger_append; exists so callers can
+// express intent without knowing the chain mechanics.
+fn record_cost(ledger: [LedgerEntry], cost: ComputeCost) -> [LedgerEntry] {
+    return ledger_append(ledger, cost)
+}
+
+// Verify the hash chain. Walks every entry and:
+//   1. Checks prev_hash matches the preceding entry's hash.
+//   2. Recomputes the entry's own hash and checks it matches.
+//
+// Returns -1 if the ledger is clean, or the seq index of the first
+// broken link (the minimum tampered entry the verifier can detect).
+fn ledger_verify(ledger: [LedgerEntry]) -> i64 {
+    let mut i = 0
+    while i < len(ledger) {
+        let entry = ledger[i]
+        // (1) prev_hash pointer
+        let mut expected_prev = genesis_hash()
+        if i > 0 {
+            expected_prev = ledger[i - 1].hash
+        }
+        if entry.prev_hash != expected_prev {
+            return i
+        }
+        // (2) self-hash
+        let expected = _entry_hash(
+            entry.seq, entry.tokens_used, entry.api_calls,
+            entry.wall_ms, entry.prev_hash)
+        if entry.hash != expected {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// --- JSON-line serialization -------------------------------------------------
+// One JSON object per line; fields are all i64 or str (no f64 in output).
+//
+// Note: "{{" in a Kryos string literal produces a literal { character.
+// "{"  would trigger interpolation mode and leave the string unclosed.
+
+fn _entry_to_jsonline(e: LedgerEntry) -> str {
+    let q = "\""
+    return "{{" + q + "seq" + q + ":" + to_string(e.seq)
+        + "," + q + "tokens_used" + q + ":" + to_string(e.tokens_used)
+        + "," + q + "api_calls" + q + ":" + to_string(e.api_calls)
+        + "," + q + "wall_ms" + q + ":" + to_string(e.wall_ms)
+        + "," + q + "prev_hash" + q + ":" + q + e.prev_hash + q
+        + "," + q + "hash" + q + ":" + q + e.hash + q
+        + "}"
+}
+
+// Serialize the entire ledger to a newline-separated JSON-lines string.
+fn ledger_to_jsonlines(ledger: [LedgerEntry]) -> str {
+    let mut out = ""
+    let mut i = 0
+    while i < len(ledger) {
+        if i > 0 {
+            out = out + "\n"
+        }
+        out = out + _entry_to_jsonline(ledger[i])
+        i = i + 1
+    }
+    return out
+}
+
+// Persist the ledger to disk as JSON lines.
+@capabilities(io)
+fn ledger_save(path: str, ledger: [LedgerEntry]) {
+    file_write(path, ledger_to_jsonlines(ledger))
+}

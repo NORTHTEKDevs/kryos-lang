@@ -1,0 +1,85 @@
+// demo_ledger.kry -- end-to-end walkthrough for kryos-cost-ledger.
+//
+// No network required. Demonstrates:
+//   1. Building a ledger from three simulated turns.
+//   2. Verifying the clean chain (-1).
+//   3. Tampering entry 1 and re-verifying (breaks at seq 1).
+//   4. Printing the JSON-lines representation.
+//
+// Run: kryos run ecosystem/kryos-cost-ledger/demo_ledger.kry
+
+use std::cost::{ComputeCost}
+use ledger
+
+fn make_cost(tokens: i64, calls: i64) -> ComputeCost {
+    return ComputeCost {
+        wall_time_ms: 0.0,
+        tokens_used: tokens,
+        api_calls: calls,
+        money_usd: 0.0,
+        energy_kwh: 0.0,
+    }
+}
+
+fn main() {
+    println("=== kryos-cost-ledger demo ===")
+    println("")
+
+    // Build a 3-entry ledger.
+    let mut l = ledger_new()
+    l = record_cost(l, make_cost(120, 1))   // turn 0: 120 tokens
+    l = record_cost(l, make_cost(350, 2))   // turn 1: 350 tokens
+    l = record_cost(l, make_cost(85, 1))    // turn 2:  85 tokens
+
+    println("Ledger: " + to_string(len(l)) + " entries")
+    println("")
+
+    // Print the chain.
+    let mut i = 0
+    while i < len(l) {
+        let e = l[i]
+        println("  [" + to_string(e.seq) + "] tokens=" + to_string(e.tokens_used)
+            + " calls=" + to_string(e.api_calls)
+            + " hash=" + e.hash)
+        i = i + 1
+    }
+    println("")
+
+    // Verify the clean chain.
+    let result = ledger_verify(l)
+    if result == -1 {
+        println("verify: CLEAN (-1)")
+    } else {
+        println("verify: BROKEN at seq " + to_string(result))
+    }
+    println("")
+
+    // Tamper: replace entry 1's hash with garbage.
+    let e0 = l[0]
+    let e1 = l[1]
+    let e2 = l[2]
+    let tampered_e1 = LedgerEntry {
+        seq: e1.seq,
+        tokens_used: e1.tokens_used,
+        api_calls: e1.api_calls,
+        wall_ms: e1.wall_ms,
+        prev_hash: e1.prev_hash,
+        hash: "tampered_hash_value",
+    }
+    let mut tampered: [LedgerEntry] = []
+    tampered = push(tampered, e0)
+    tampered = push(tampered, tampered_e1)
+    tampered = push(tampered, e2)
+
+    let broken = ledger_verify(tampered)
+    if broken == -1 {
+        println("tampered verify: CLEAN (unexpected!)")
+    } else {
+        println("tampered verify: BROKEN at seq " + to_string(broken) + " (expected 1)")
+    }
+    println("")
+
+    // JSON-lines output.
+    println("JSON-lines:")
+    println(ledger_to_jsonlines(l))
+}

@@ -1,0 +1,8 @@
+[package]
+name = "kryos-cost-ledger"
+version = "0.1.0"
+description = "Append-only hash-chained spend ledger for agents: each LedgerEntry carries a ComputeCost snapshot and a polynomial hash over the prior chain, making spend tampering detectable"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["compute", "io"]
