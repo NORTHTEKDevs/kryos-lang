@@ -1,0 +1,66 @@
+// ============================================================
+// audit_bridge.kry -- bridge an assembled prompt's lineage into the
+// kryos-audit-trail JSON shape.
+//
+// to_audit_record() emits a compact JSON object matching audit-trail's
+// lineage layout: a `value`/`source`/`source_description` decision block
+// and a `lineage` array of {step, operation, description, timestamp}
+// entries -- the same ordered, gap-free shape audit_record() in
+// kryos-audit-trail produces. This lets a prompt's provenance flow into an
+// Annex IV technical-doc record without re-deriving anything: the lineage
+// IS the array.
+//
+// We build the JSON shape directly via the json_* builtins rather than
+// importing the audit-trail crate, so this stays a leaf dependency on
+// std::tracked only. The field names mirror audit-trail/SCHEMA.md.
+// ============================================================
+
+use std::tracked
+
+// Lineage [LineageEntry] -> JSON array handle, numbered by position so the
+// trail is ordered and gap-free (same convention as audit-trail).
+fn _lineage_to_json(lineage: [LineageEntry]) -> i64 {
+    let mut items: [i64] = []
+    let mut i = 0
+    while i < len(lineage) {
+        let e = lineage[i]
+        let keys = ["step", "operation", "description", "timestamp", "metadata"]
+        let vals = [
+            json_number(i as f64),
+            json_string(e.operation),
+            json_string(e.description),
+            json_number(e.timestamp as f64),
+            json_string(e.metadata)
+        ]
+        items = push(items, json_object(keys, vals))
+        i = i + 1
+    }
+    return json_array(items)
+}
+
+/// Build the audit record JSON object handle for an assembled prompt. The
+/// `kind` tag ("prompt") distinguishes a prompt-lineage record from a
+/// decision record in a mixed audit stream.
+fn audit_record_handle(t: Tracked<str>, system_id: str, user_id: str) -> i64 {
+    let prompt_obj = json_object(
+        ["value", "source", "source_description"],
+        [json_string("{t.value}"), json_string(t.source), json_string(t.source_description)]
+    )
+    let lineage_arr = _lineage_to_json(t.lineage)
+    let keys = ["schema_version", "kind", "system_id", "user_id", "prompt", "lineage"]
+    let vals = [
+        json_string("prompt-lineage/0.1.0"),
+        json_string("prompt"),
+        json_string(system_id),
+        json_string(user_id),
+        prompt_obj,
+        lineage_arr
+    ]
+    return json_object(keys, vals)
+}
+
+/// Compact JSON string of the prompt-lineage audit record. This is the
+/// public bridge into kryos-audit-trail's JSON shape.
+fn to_audit_record(t: Tracked<str>, system_id: str, user_id: str) -> str {
+    return json_stringify(audit_record_handle(t, system_id, user_id))
+}

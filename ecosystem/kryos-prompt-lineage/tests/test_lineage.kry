@@ -1,0 +1,117 @@
+// ============================================================
+// test_lineage.kry -- lineage completeness tests for prompt assembly.
+//
+//   kryos test --path ecosystem/kryos-prompt-lineage
+//   kryos run tests/test_lineage.kry      (driver, same assertions)
+//
+// These tests assert the core MVP property: an assembled prompt's lineage
+// names the template AND every bound variable, with no gaps. They build
+// only on tracked_source + the prompt-lineage library (no inference()),
+// so they run clean under `kryos test`'s eager JIT path. See README
+// "Testing notes" for why inference() is avoided.
+// ============================================================
+
+use std::tracked
+use lineage
+use audit_bridge
+
+// Helper: count lineage entries with a given operation.
+fn _count_op(t: Tracked<str>, op: str) -> i64 {
+    let mut n = 0
+    let mut i = 0
+    while i < len(t.lineage) {
+        if t.lineage[i].operation == op {
+            n = n + 1
+        }
+        i = i + 1
+    }
+    return n
+}
+
+@test
+fn test_every_variable_recorded() {
+    let a = tracked_source("Alice", "form", "name field")
+    let b = tracked_source("Bob", "form", "manager field")
+    let tmpl = template("user", "Hi {{name}}, your manager is {{mgr}}.")
+    let prompt = assemble(bind(bind(tmpl, "name", a), "mgr", b))
+    // One bind entry per bound variable.
+    assert(bound_count(prompt) == 2, "two variables must produce two bind entries")
+    // Plus exactly one template source entry at the head.
+    assert(_count_op(prompt, "source") == 1, "exactly one template source entry")
+    // Total lineage = 1 source + 2 binds.
+    assert(len(prompt.lineage) == 3, "lineage must be source + 2 binds, gap-free")
+}
+
+@test
+fn test_substitution_is_applied_and_complete() {
+    let v = tracked_source("Paris", "kb", "capital lookup")
+    let tmpl = template("user", "The capital is {{city}}.")
+    let prompt = assemble(bind(tmpl, "city", v))
+    assert(prompt.value == "The capital is Paris.", "hole must be filled with bound value")
+    assert(has_unfilled_holes(prompt) == false, "no holes may remain after binding")
+}
+
+@test
+fn test_unfilled_hole_is_detected() {
+    let v = tracked_source("Paris", "kb", "capital lookup")
+    let tmpl = template("user", "{{city}} is in {{country}}.")
+    // Only bind one of the two holes.
+    let prompt = assemble(bind(tmpl, "city", v))
+    assert(has_unfilled_holes(prompt) == true, "an unbound hole must be detected")
+    assert(bound_count(prompt) == 1, "only the bound variable is recorded")
+}
+
+@test
+fn test_binding_metadata_names_variable_and_source() {
+    let v = tracked_source("Paris", "geo-db", "lookup")
+    let tmpl = template("user", "Answer: {{ans}}")
+    let prompt = assemble(bind(tmpl, "ans", v))
+    // The bind entry's metadata must name both the variable and its source.
+    let mut found = false
+    let mut i = 0
+    while i < len(prompt.lineage) {
+        let e = prompt.lineage[i]
+        if e.operation == "bind" {
+            if contains(e.metadata, "var=ans") {
+                if contains(e.metadata, "source=geo-db") {
+                    found = true
+                }
+            }
+        }
+        i = i + 1
+    }
+    assert(found, "bind metadata must carry var name and fragment source")
+}
+
+@test
+fn test_audit_record_carries_full_lineage() {
+    let a = tracked_source("Alice", "form", "name field")
+    let tmpl = template("system", "User is {{name}}.")
+    let prompt = assemble(bind(tmpl, "name", a))
+    let record = to_audit_record(prompt, "sys-x", "user-y")
+    let parsed = json_parse(record)
+    // The audit record's lineage array must have the same entry count as
+    // the Tracked value -- nothing dropped in the bridge.
+    let lineage = json_get(parsed, "lineage")
+    assert(json_length(lineage) == len(prompt.lineage), "audit lineage must not drop entries")
+    assert(json_length(lineage) == 2, "source + one bind = two entries")
+    // kind tag identifies this as a prompt record.
+    let kind = json_to_str(json_get(parsed, "kind"))
+    assert(kind == "prompt", "audit record must be tagged kind=prompt")
+}
+
+// Driver: `kryos run tests/test_lineage.kry`. Mirrors the audit-trail
+// belt-and-suspenders pattern -- any failed assertion throws and aborts.
+fn main() {
+    test_every_variable_recorded()
+    println("PASS test_every_variable_recorded")
+    test_substitution_is_applied_and_complete()
+    println("PASS test_substitution_is_applied_and_complete")
+    test_unfilled_hole_is_detected()
+    println("PASS test_unfilled_hole_is_detected")
+    test_binding_metadata_names_variable_and_source()
+    println("PASS test_binding_metadata_names_variable_and_source")
+    test_audit_record_carries_full_lineage()
+    println("PASS test_audit_record_carries_full_lineage")
+    println("5/5 tests passed")
+}

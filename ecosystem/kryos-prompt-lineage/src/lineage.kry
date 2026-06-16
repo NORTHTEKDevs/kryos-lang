@@ -1,0 +1,161 @@
+// ============================================================
+// lineage.kry -- prompt assembly as Tracked<str>.
+//
+// A PromptTemplate carries a raw template string with {name} holes and an
+// ordered list of bindings (name -> Tracked<str> value). assemble() fills
+// every hole and returns a Tracked<str> whose lineage records:
+//   1. the template itself (the "template" source entry), and
+//   2. one "bind" entry per substituted variable, carrying the variable
+//      name and the bound value's own source in the entry metadata.
+//
+// The point: the assembled prompt string remembers its parts. explain()
+// (from std::tracked) on the result lists the template plus every bound
+// variable, so "what produced this prompt" is answerable from the value
+// itself -- not a side log. LangChain prompt templates discard this.
+//
+// Tracked<T> propagation is manual in Kryos (no compiler warning on a
+// dropped lineage), so every function here threads lineage explicitly:
+// transform() is used (never a raw rebuild) so the chain never breaks.
+// ============================================================
+
+use std::tracked
+use std::string::{replace, find}
+
+// One template variable binding: the hole name and the tracked value put
+// into it. Kept as a plain struct so a [Binding] array threads cleanly
+// through the template builder on both backends.
+struct Binding {
+    name: str,
+    value: str,
+    source: str,
+    source_description: str
+}
+
+// A prompt template plus its accumulated bindings. `text` holds the raw
+// "{name}"-hole string; `role` labels the fragment (e.g. "system",
+// "user") so a multi-part prompt keeps each piece distinct in lineage.
+struct PromptTemplate {
+    text: str,
+    role: str,
+    bindings: [Binding]
+}
+
+/// Start a template. `role` is a free label ("system", "user", ...). Holes
+/// are written with Kryos `{name}` syntax in `text`.
+fn template(role: str, text: str) -> PromptTemplate {
+    let empty: [Binding] = []
+    return PromptTemplate {
+        text: text,
+        role: role,
+        bindings: empty
+    }
+}
+
+/// Bind a Tracked<str> value to the `{name}` hole. The bound value's source
+/// and source_description are pulled off the Tracked value so they land in
+/// the assembled lineage -- the provenance of each fragment is preserved.
+fn bind(tmpl: PromptTemplate, name: str, value: Tracked<str>) -> PromptTemplate {
+    let b = Binding {
+        name: name,
+        value: "{value.value}",
+        source: value.source,
+        source_description: value.source_description
+    }
+    let mut bs = tmpl.bindings
+    bs = push(bs, b)
+    return PromptTemplate {
+        text: tmpl.text,
+        role: tmpl.role,
+        bindings: bs
+    }
+}
+
+/// Bind a plain literal (no upstream Tracked value). Recorded with a
+/// "literal" source so the lineage still names where the text came from.
+fn bind_literal(tmpl: PromptTemplate, name: str, value: str) -> PromptTemplate {
+    let b = Binding {
+        name: name,
+        value: value,
+        source: "literal",
+        source_description: "inline literal"
+    }
+    let mut bs = tmpl.bindings
+    bs = push(bs, b)
+    return PromptTemplate {
+        text: tmpl.text,
+        role: tmpl.role,
+        bindings: bs
+    }
+}
+
+// Replace every "{name}" occurrence in `text` with `val`.
+fn _fill_hole(text: str, name: str, val: str) -> str {
+    let hole = "{{" + name + "}}"
+    return replace(text, hole, val)
+}
+
+/// Assemble the template into a Tracked<str>. The returned value's lineage
+/// starts with a "template" source entry (operation "source"), then one
+/// "bind" entry per binding -- each carrying the variable name and the
+/// fragment source in metadata. The final value is the filled string.
+fn assemble(tmpl: PromptTemplate) -> Tracked<str> {
+    // Seed the lineage with the template as the source. The "source"
+    // operation makes this discoverable by audit-trail traceability checks
+    // and by tracked_to_citation.
+    let desc = "template role=" + tmpl.role
+    let mut t: Tracked<str> = tracked_source(tmpl.text, "template:" + tmpl.role, desc)
+
+    let mut filled = tmpl.text
+    let mut i = 0
+    while i < len(tmpl.bindings) {
+        let b = tmpl.bindings[i]
+        filled = _fill_hole(filled, b.name, b.value)
+        t = _bind_step(t, filled, b)
+        i = i + 1
+    }
+    return t
+}
+
+// Append one "bind" lineage entry recording the variable name, the value's
+// source, and its source description -- all in a single entry whose
+// metadata is machine-readable ("var=<name> source=<src>"). The value is
+// advanced to the partially-filled string, so the lineage is causal: each
+// step shows the prompt after that substitution.
+fn _bind_step(t: Tracked<str>, new_value: str, b: Binding) -> Tracked<str> {
+    let meta = "var=" + b.name + " source=" + b.source
+    let step_desc = "bind {{" + b.name + "}} <- " + b.source_description
+    let entry = LineageEntry {
+        operation: "bind",
+        description: step_desc,
+        timestamp: time_now(),
+        metadata: meta
+    }
+    let mut new_lineage = t.lineage
+    new_lineage = push(new_lineage, entry)
+    return Tracked {
+        value: new_value,
+        lineage: new_lineage,
+        source: t.source,
+        source_description: t.source_description
+    }
+}
+
+/// Count how many bind steps a Tracked prompt recorded -- one per variable
+/// substituted. Useful for "every variable is accounted for" assertions.
+fn bound_count(t: Tracked<str>) -> i64 {
+    let mut n = 0
+    let mut i = 0
+    while i < len(t.lineage) {
+        if t.lineage[i].operation == "bind" {
+            n = n + 1
+        }
+        i = i + 1
+    }
+    return n
+}
+
+/// True if the assembled prompt still has an unfilled "{...}" hole. A
+/// caller can assert this is false before sending the prompt to a model.
+fn has_unfilled_holes(t: Tracked<str>) -> bool {
+    return find(t.value, "{{") >= 0
+}

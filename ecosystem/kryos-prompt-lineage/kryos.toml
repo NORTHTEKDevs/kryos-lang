@@ -1,0 +1,8 @@
+[package]
+name = "kryos-prompt-lineage"
+version = "0.1.0"
+description = "Assemble prompts as Tracked<str> so explain(output) shows the full prompt provenance: which template, which variables, which sources."
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["compute"]

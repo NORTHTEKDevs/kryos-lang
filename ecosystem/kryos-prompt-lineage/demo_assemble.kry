@@ -1,0 +1,72 @@
+// ============================================================
+// demo_assemble.kry -- assemble a system+user prompt from tracked
+// fragments, call a mock model, then explain() the output.
+//
+//   kryos run demo_assemble.kry
+//
+// The point of the demo: the model OUTPUT is itself a Tracked<str> whose
+// lineage reaches all the way back through the assembled prompt to each
+// bound fragment's source. explain(answer) shows the full chain -- which
+// template, which variables, which system message produced this output --
+// not just "here is a string". That is the prompt-provenance property.
+// ============================================================
+
+use std::tracked
+use lineage
+use audit_bridge
+
+// Mock model call. A real call would go through std::llm.chat(); here we
+// fake the response but keep the lineage honest: the answer is a transform
+// of the prompt, so explain(answer) carries the entire prompt assembly.
+fn mock_model(prompt: Tracked<str>, model: str, answer: str) -> Tracked<str> {
+    return transform(prompt, answer, "model_call", "mock model: " + model)
+}
+
+fn main() {
+    // Each fragment arrives as a Tracked<str> with its own provenance.
+    let policy = tracked_source(
+        "You are a meticulous travel assistant. Cite only verified facts.",
+        "system-policy-v3",
+        "system message from the policy registry"
+    )
+    let topic = tracked_source(
+        "France",
+        "user-form",
+        "country field submitted by the end user"
+    )
+    let style = tracked_source(
+        "one sentence",
+        "ui-preset:concise",
+        "answer-length preset chosen in the UI"
+    )
+
+    // Build a system+user prompt with three holes.
+    let tmpl = template(
+        "chat",
+        "[system] {{policy}}\n[user] In {{style}}, what is the capital of {{country}}?"
+    )
+    let bound = bind(bind(bind(tmpl, "policy", policy), "style", style), "country", topic)
+
+    let prompt = assemble(bound)
+
+    println("=== assembled prompt ===")
+    println(prompt.value)
+    println("")
+    println("unfilled holes remaining: " + to_string(has_unfilled_holes(prompt)))
+    println("variables bound: " + to_string(bound_count(prompt)))
+    println("")
+
+    // Mock the model. The answer's lineage extends the prompt's lineage.
+    let answer = mock_model(prompt, "claude-mock-1", "The capital of France is Paris.")
+
+    println("=== model answer ===")
+    println(answer.value)
+    println("")
+
+    println("=== explain(answer) -- full prompt provenance ===")
+    println(explain(answer))
+    println("")
+
+    println("=== audit record (kryos-audit-trail JSON shape) ===")
+    println(to_audit_record(answer, "travel-assistant-v1", "user-4471"))
+}

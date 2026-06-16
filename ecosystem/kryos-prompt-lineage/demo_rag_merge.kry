@@ -1,0 +1,69 @@
+// ============================================================
+// demo_rag_merge.kry -- compose prompt lineage with retrieved-context
+// citations via tracked_merge.
+//
+//   kryos run demo_rag_merge.kry
+//
+// kryos-rag tracks retrieval citations. This shows the two lineages
+// joining: two retrieved chunks (each a Tracked<str> with its own source)
+// are tracked_merge'd into one context fragment, that fragment is bound
+// into the prompt, and the assembled prompt's lineage carries BOTH the
+// retrieval citations and the prompt-assembly steps. tracked_to_citation
+// recovers the original source list from the merged lineage.
+// ============================================================
+
+use std::tracked
+use std::agent_bridge::{tracked_merge, tracked_to_citation}
+use lineage
+
+fn main() {
+    // Two retrieved chunks, each with its own provenance (as kryos-rag
+    // would produce them).
+    let chunk_a = tracked_source(
+        "Paris has been the capital of France since 987 AD.",
+        "doc:wikipedia/France",
+        "retrieved passage, rank 1"
+    )
+    let chunk_b = tracked_source(
+        "France is a country in Western Europe.",
+        "doc:worldbank/FR",
+        "retrieved passage, rank 2"
+    )
+
+    // Merge the retrieved chunks into one context value. tracked_merge
+    // concatenates both lineages and dedupes the sources.
+    let chunks: [Tracked<str>] = [chunk_a, chunk_b]
+    let context = tracked_merge(chunks, "Paris has been the capital of France since 987 AD. France is a country in Western Europe.")
+
+    println("=== merged retrieval context ===")
+    println(context.value)
+    println("citations from merge: ")
+    let cites = tracked_to_citation(context)
+    let mut i = 0
+    while i < len(cites) {
+        println("  - " + cites[i])
+        i = i + 1
+    }
+    println("")
+
+    // Bind the merged context into a prompt. The assembled prompt's
+    // lineage now contains the retrieval citations AND the bind steps.
+    let question = tracked_source("What is the capital of France?", "user-form", "end-user question")
+    let tmpl = template("chat", "Context:\n{{context}}\n\nQuestion: {{question}}")
+    let bound = bind(bind(tmpl, "context", context), "question", question)
+    let prompt = assemble(bound)
+
+    println("=== assembled prompt ===")
+    println(prompt.value)
+    println("")
+
+    println("=== prompt lineage (retrieval + assembly combined) ===")
+    let mut j = 0
+    while j < len(prompt.lineage) {
+        let e = prompt.lineage[j]
+        println("  " + to_string(j) + ". [" + e.operation + "] " + e.description)
+        j = j + 1
+    }
+    println("")
+    println("total lineage steps: " + to_string(len(prompt.lineage)))
+}
