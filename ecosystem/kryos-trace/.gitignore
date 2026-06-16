@@ -1,0 +1,4 @@
+# Runtime artifacts produced by the demo and tests.
+*.otlp.jsonl
+demo_trace.caps.json
+t_trace_manifest.caps.json

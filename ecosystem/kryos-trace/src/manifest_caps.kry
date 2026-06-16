@@ -1,0 +1,234 @@
+// ============================================================
+// manifest_caps.kry -- derive span capability tags from a
+// `kryos manifest --caps` sidecar.
+//
+// `kryos manifest --caps <src>` emits JSON of the shape:
+//
+//   {
+//     "schema": "kryos-manifest-v1",
+//     "functions": {
+//       "chat_tools_governed": { "capabilities": ["net"], "annotated": true },
+//       "agent_checkpoint":    { "capabilities": ["io"],  "annotated": true }
+//     },
+//     "unannotated_count": 1
+//   }
+//
+// A span's cap_tag is the capability surface in effect for that span. We source
+// it from this manifest rather than letting the caller invent a string -- the
+// tag is then grounded in what the compiler actually inferred for the code the
+// span wraps. Two derivations:
+//   - caps_for_function(json, name): the caps of one traced function
+//   - caps_union(json):              the whole module's capability surface
+//
+// This is a small text scanner over the manifest, not a general JSON parser:
+// it leans only on the always-available string builtins so no JSON runtime is
+// linked (the same discipline kryos-log uses for its sidecar reader).
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+
+@capabilities
+fn _ch(s: str, i: i64) -> str {
+    return substr(s, i, i + 1)
+}
+
+// First index of `needle` in `s` at or after `from`, or -1.
+@capabilities
+fn _index_from(s: str, needle: str, from: i64) -> i64 {
+    let n = len(s)
+    let m = len(needle)
+    if m == 0 {
+        return from
+    }
+    let mut i = from
+    while i + m <= n {
+        if substr(s, i, i + m) == needle {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// Extract the bare contents of every "..." between [start, end).
+@capabilities
+fn _extract_quoted(s: str, start: i64, end: i64) -> [str] {
+    let mut out: [str] = []
+    let mut i = start
+    while i < end {
+        if _ch(s, i) == "\"" {
+            let mut j = i + 1
+            while j < end and _ch(s, j) != "\"" {
+                j = j + 1
+            }
+            out = push(out, substr(s, i + 1, j))
+            i = j + 1
+        } else {
+            i = i + 1
+        }
+    }
+    return out
+}
+
+// Join strings with commas.
+@capabilities
+fn _join(items: [str]) -> str {
+    let mut out: str = ""
+    let mut i = 0
+    while i < len(items) {
+        if i > 0 {
+            out = out + ","
+        }
+        out = out + items[i]
+        i = i + 1
+    }
+    return out
+}
+
+@capabilities
+fn _contains_str(items: [str], v: str) -> bool {
+    let mut i = 0
+    while i < len(items) {
+        if items[i] == v {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// Append v to items only if not already present (preserves first-seen order).
+@capabilities
+fn _add_unique(items: [str], v: str) -> [str] {
+    if _contains_str(items, v) {
+        return items
+    }
+    return push(items, v)
+}
+
+// The capabilities array that immediately follows position `from`. Returns the
+// joined caps string, or "" if no "capabilities" block is found after `from`.
+@capabilities
+fn _caps_after(json: str, from: i64) -> str {
+    let key = _index_from(json, "\"capabilities\"", from)
+    if key < 0 {
+        return ""
+    }
+    let open = _index_from(json, "[", key)
+    if open < 0 {
+        return ""
+    }
+    let close = _index_from(json, "]", open)
+    if close < 0 {
+        return ""
+    }
+    return _join(_extract_quoted(json, open + 1, close))
+}
+
+// Caps declared for one function in the manifest, as a compact tag
+// ("net", "io", "compute,io", ...). Empty string if the function is absent or
+// has no capabilities block.
+@capabilities
+fn caps_for_function(json: str, fn_name: str) -> str {
+    let key = _index_from(json, "\"" + fn_name + "\"", 0)
+    if key < 0 {
+        return ""
+    }
+    return _caps_after(json, key)
+}
+
+// The union of every function's capabilities -- the module's whole capability
+// surface, de-duplicated and joined in first-seen order.
+@capabilities
+fn caps_union(json: str) -> str {
+    let mut acc: [str] = []
+    let mut pos = 0
+    let n = len(json)
+    while pos < n {
+        let key = _index_from(json, "\"capabilities\"", pos)
+        if key < 0 {
+            pos = n
+        } else {
+            let open = _index_from(json, "[", key)
+            let close = _index_from(json, "]", open)
+            if open < 0 or close < 0 {
+                pos = n
+            } else {
+                let caps = _extract_quoted(json, open + 1, close)
+                let mut k = 0
+                while k < len(caps) {
+                    acc = _add_unique(acc, caps[k])
+                    k = k + 1
+                }
+                pos = close + 1
+            }
+        }
+    }
+    return _join(acc)
+}
+
+// Read a manifest sidecar file and return one function's cap tag.
+@capabilities(io)
+fn caps_for_function_from_file(path: str, fn_name: str) -> str {
+    if file_exists(path) == 0 {
+        return ""
+    }
+    let content = file_read(path)
+    if len(content) == 0 {
+        return ""
+    }
+    return caps_for_function(content, fn_name)
+}
+
+// Read a manifest sidecar file and return the module's union cap tag.
+@capabilities(io)
+fn caps_union_from_file(path: str) -> str {
+    if file_exists(path) == 0 {
+        return ""
+    }
+    let content = file_read(path)
+    if len(content) == 0 {
+        return ""
+    }
+    return caps_union(content)
+}
+
+// Split a compact cap tag ("compute,io") back into its parts. Empty tag -> [].
+@capabilities
+fn cap_tag_parts(tag: str) -> [str] {
+    let mut out: [str] = []
+    if len(tag) == 0 {
+        return out
+    }
+    let mut start = 0
+    let n = len(tag)
+    let mut i = 0
+    while i < n {
+        if _ch(tag, i) == "," {
+            out = push(out, substr(tag, start, i))
+            start = i + 1
+        }
+        i = i + 1
+    }
+    out = push(out, substr(tag, start, n))
+    return out
+}
+
+// True if every capability in `child_tag` is also present in `parent_tag`.
+// Used to detect capability ESCALATION: a child span tagged with authority the
+// enclosing (authorized) span does not declare. This is the structural check
+// OpenTelemetry cannot express -- a trace that answers "did this span exceed
+// its authorized capability surface".
+@capabilities
+fn caps_subset_of(child_tag: str, parent_tag: str) -> bool {
+    let child = cap_tag_parts(child_tag)
+    let parent = cap_tag_parts(parent_tag)
+    let mut i = 0
+    while i < len(child) {
+        if not _contains_str(parent, child[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}

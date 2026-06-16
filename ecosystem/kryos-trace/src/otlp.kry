@@ -1,0 +1,210 @@
+// ============================================================
+// otlp.kry -- export a tracer's spans as OTLP-shaped JSON lines.
+//
+// One JSON object per span, one span per line (the ndjson convention, so the
+// output streams to a file or stdout sink with no collector). The shape mirrors
+// the OpenTelemetry OTLP/JSON `Span` object closely enough to be recognizable:
+//
+//   {"traceId":"...32hex...","spanId":"...16hex...","parentSpanId":"...16hex...",
+//    "name":"llm-call",
+//    "attributes":[
+//      {"key":"kryos.cap_tag","value":{"stringValue":"net"}},
+//      {"key":"kryos.cost.tokens","value":{"intValue":"100"}},
+//      {"key":"kryos.cost.api_calls","value":{"intValue":"1"}},
+//      {"key":"kryos.cost.wall_ms","value":{"intValue":"30"}},
+//      {"key":"kryos.cost.money_micro_usd","value":{"intValue":"0"}},
+//      {"key":"kryos.cost.scope","value":{"stringValue":"own"}}]}
+//
+// It is OTLP-SHAPED, not full OTLP: no resource/scope envelope, no live
+// gRPC/HTTP export, no W3C traceparent propagation, no sampling. Those are out
+// of scope for the MVP (see README). The differentiators OTel lacks -- the
+// capability tag and the enforced ComputeCost -- ride in as attributes.
+//
+// Cost is emitted as integers only (tokens, api_calls, wall_ms, money_micro_usd):
+// we never stringify an f64 (unsupported in the Cranelift JIT). wall_time_ms is
+// truncated to whole ms; money_usd is scaled to micro-USD.
+// ============================================================
+
+use span
+
+@capabilities
+fn _ech(s: str, i: i64) -> str {
+    return substr(s, i, i + 1)
+}
+
+@capabilities
+fn _hex2(b: i64) -> str {
+    let digits = "0123456789abcdef"
+    let hi = b / 16 % 16
+    let lo = b % 16
+    return substr(digits, hi, hi + 1) + substr(digits, lo, lo + 1)
+}
+
+// JSON-escape a string value (quotes, backslash, control chars).
+@capabilities
+fn json_escape(s: str) -> str {
+    let mut out: str = ""
+    let mut i = 0
+    let n = len(s)
+    while i < n {
+        let c = _ech(s, i)
+        let code = char_code(c)
+        if c == "\"" {
+            out = out + "\\\""
+        } elif c == "\\" {
+            out = out + "\\\\"
+        } elif code == 8 {
+            out = out + "\\b"
+        } elif code == 12 {
+            out = out + "\\f"
+        } elif code == 10 {
+            out = out + "\\n"
+        } elif code == 13 {
+            out = out + "\\r"
+        } elif code == 9 {
+            out = out + "\\t"
+        } elif code < 32 {
+            out = out + "\\u00" + _hex2(code)
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out
+}
+
+@capabilities
+fn _qstr(s: str) -> str {
+    return "\"" + json_escape(s) + "\""
+}
+
+// An 8-byte (16 hex char) span id from an integer. Span id 0 maps to the OTLP
+// span id 0000000000000001 (OTLP forbids an all-zero id); a parent of -1 yields
+// the empty parentSpanId required for a root span.
+@capabilities
+fn _span_hex(id: i64) -> str {
+    if id < 0 {
+        return ""
+    }
+    let v = id + 1
+    let mut out: str = ""
+    let mut shift = 56
+    while shift >= 0 {
+        let byte = v / _pow2(shift) % 256
+        out = out + _hex2(byte)
+        shift = shift - 8
+    }
+    return out
+}
+
+@capabilities
+fn _pow2(bits: i64) -> i64 {
+    let mut r = 1
+    let mut i = 0
+    while i < bits {
+        r = r * 2
+        i = i + 1
+    }
+    return r
+}
+
+// A 16-byte (32 hex char) trace id from an integer trace number.
+@capabilities
+fn _trace_hex(trace_no: i64) -> str {
+    let lo = _span_hex(trace_no)
+    return "00000000000000ff" + lo
+}
+
+@capabilities
+fn _attr_int(key: str, v: i64) -> str {
+    return "{{" + _qstr(key) + ":{{" + _qstr("intValue") + ":" + _qstr(to_string(v)) + "}}}}"
+}
+
+@capabilities
+fn _attr_str(key: str, v: str) -> str {
+    return "{{" + _qstr(key) + ":{{" + _qstr("stringValue") + ":" + _qstr(v) + "}}}}"
+}
+
+// Render one span to an OTLP-shaped JSON object on a single line. The four cost
+// scalars (already i64; pulled from the span's i64 accessors) are passed in
+// directly so no ComputeCost struct crosses the module boundary. `scope` is
+// "own" or "subtree".
+@capabilities
+fn span_to_otlp_scalars(
+    trace_no: i64,
+    s: Span,
+    tokens: i64,
+    api_calls: i64,
+    wall_ms: i64,
+    money_micro: i64,
+    scope: str
+) -> str {
+    let mut out: str = "{{"
+    out = out + _qstr("traceId") + ":" + _qstr(_trace_hex(trace_no))
+    out = out + "," + _qstr("spanId") + ":" + _qstr(_span_hex(s.id))
+    out = out + "," + _qstr("parentSpanId") + ":" + _qstr(_span_hex(s.parent_id))
+    out = out + "," + _qstr("name") + ":" + _qstr(s.name)
+    out = out + "," + _qstr("attributes") + ":["
+    out = out + _attr_str("kryos.cap_tag", s.cap_tag)
+    out = out + "," + _attr_int("kryos.cost.tokens", tokens)
+    out = out + "," + _attr_int("kryos.cost.api_calls", api_calls)
+    out = out + "," + _attr_int("kryos.cost.wall_ms", wall_ms)
+    out = out + "," + _attr_int("kryos.cost.money_micro_usd", money_micro)
+    out = out + "," + _attr_str("kryos.cost.scope", scope)
+    out = out + "]"
+    out = out + "}}"
+    return out
+}
+
+// Serialize the whole tracer to OTLP JSON lines, one span per line, using each
+// span's OWN cost. Spans appear in start order. trace_no labels the trace.
+@capabilities
+fn tracer_to_otlp(spans: [Span], trace_no: i64) -> str {
+    let mut out: str = ""
+    let mut i = 0
+    while i < len(spans) {
+        if i > 0 {
+            out = out + "\n"
+        }
+        out = out + span_to_otlp_scalars(
+            trace_no, spans[i],
+            span_own_tokens(spans, i),
+            span_own_api_calls(spans, i),
+            span_own_wall_ms(spans, i),
+            span_own_money_micro(spans, i),
+            "own")
+        i = i + 1
+    }
+    return out
+}
+
+// Serialize the tracer using each span's SUBTREE (rolled-up) cost instead of
+// its own cost -- the view that answers "what did this span and everything it
+// called cost".
+@capabilities
+fn tracer_to_otlp_subtree(spans: [Span], trace_no: i64) -> str {
+    let mut out: str = ""
+    let mut i = 0
+    while i < len(spans) {
+        if i > 0 {
+            out = out + "\n"
+        }
+        out = out + span_to_otlp_scalars(
+            trace_no, spans[i],
+            span_subtree_tokens(spans, i),
+            span_subtree_api_calls(spans, i),
+            span_subtree_wall_ms(spans, i),
+            span_subtree_money_micro(spans, i),
+            "subtree")
+        i = i + 1
+    }
+    return out
+}
+
+// Write the OTLP JSON lines (own-cost view) to a file sink.
+@capabilities(io)
+fn tracer_export_file(path: str, spans: [Span], trace_no: i64) -> i64 {
+    let body = tracer_to_otlp(spans, trace_no) + "\n"
+    file_write(path, body)
+    return len(body)
+}

@@ -1,0 +1,8 @@
+[package]
+name = "kryos-trace"
+version = "0.1.0"
+description = "Capability-scoped, cost-aware distributed tracing for Kryos: spans carry the capability surface in effect and the ComputeCost accrued within them, exported as OTLP-shaped JSON lines"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["compute", "io"]

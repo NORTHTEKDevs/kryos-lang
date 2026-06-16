@@ -1,0 +1,19 @@
+{
+  "schema": "kryos-manifest-v1",
+  "source": "ecosystem/kryos-agent-loop/src/lib.kry",
+  "functions": {
+    "agent_checkpoint": {
+      "capabilities": [
+        "io"
+      ],
+      "annotated": true
+    },
+    "chat_tools_governed": {
+      "capabilities": [
+        "net"
+      ],
+      "annotated": true
+    }
+  },
+  "unannotated_count": 1
+}

@@ -1,0 +1,193 @@
+// demo_trace.kry -- end-to-end walkthrough for kryos-trace.
+//
+// No network required. It TRACES the structure of one governed agent loop --
+// the `chat_tools_governed` loop from the merged kryos-agent-loop -- and shows
+// the cost accrued per span. The loop itself is simulated (a real run needs the
+// `net` capability and a live LLM); what matters here is the trace: nested
+// spans, each carrying the capability surface in effect and its ComputeCost,
+// with the subtree cost rolling up to the root.
+//
+// The span shape mirrors what chat_tools_governed does per step:
+//   chat_tools_governed            (net)   -- the governed loop (root)
+//     step-1                       (net)
+//       llm-call                   (net)   -- one model round-trip, 1 api_call
+//       tool:get_weather           (net)   -- a tool the model called
+//     step-2                       (net)
+//       llm-call                   (net)
+//     checkpoint                   (io)    -- agent_checkpoint writes the trace
+//
+// Capability tags are sourced from a `kryos manifest --caps` sidecar (the same
+// manifest kryos emits for kryos-agent-loop), not invented at the call site.
+//
+// Run: kryos run ecosystem/kryos-trace/demo_trace.kry
+
+use std::cost::{ComputeCost}
+use span
+use manifest_caps
+use otlp
+
+// A writable temp dir, so the demo never drops artifacts in the repo when it
+// runs as a `kryos test` file test. (Run standalone, the paths are printed.)
+fn temp_dir() -> str {
+    let t: str = env_get("TEMP")
+    if len(t) > 0 { return t }
+    let t2: str = env_get("TMP")
+    if len(t2) > 0 { return t2 }
+    let t3: str = env_get("TMPDIR")
+    if len(t3) > 0 { return t3 }
+    return "/tmp"
+}
+
+fn cost(tokens: i64, calls: i64, wall: f64, usd: f64) -> ComputeCost {
+    return ComputeCost {
+        wall_time_ms: wall,
+        tokens_used: tokens,
+        api_calls: calls,
+        money_usd: usd,
+        energy_kwh: 0.0,
+    }
+}
+
+// The manifest kryos produces for kryos-agent-loop (regenerate with:
+//   kryos manifest --caps ecosystem/kryos-agent-loop/src/lib.kry > NAME.caps.json
+// ). chat_tools_governed -> net, agent_checkpoint -> io.
+fn write_manifest_sidecar(path: str) {
+    let m = "{{ \"schema\": \"kryos-manifest-v1\", "
+        + "\"source\": \"ecosystem/kryos-agent-loop/src/lib.kry\", "
+        + "\"functions\": {{ "
+        + "\"agent_checkpoint\": {{ \"capabilities\": [\"io\"], \"annotated\": true }}, "
+        + "\"chat_tools_governed\": {{ \"capabilities\": [\"net\"], \"annotated\": true }} "
+        + "}}, \"unannotated_count\": 1 }}"
+    file_write(path, m)
+}
+
+fn pad(s: str, width: i64) -> str {
+    let mut out = s
+    while len(out) < width {
+        out = out + " "
+    }
+    return out
+}
+
+fn print_row(t: [Span], id: i64) {
+    let s = t[id]
+    // Indent by depth (walk parent chain).
+    let mut depth = 0
+    let mut cur = s.parent_id
+    while cur >= 0 {
+        depth = depth + 1
+        cur = t[cur].parent_id
+    }
+    let mut indent = ""
+    let mut d = 0
+    while d < depth {
+        indent = indent + "  "
+        d = d + 1
+    }
+    let label = pad(indent + s.name, 26)
+    let own = "own[tok=" + to_string(span_own_tokens(t, id))
+        + " calls=" + to_string(span_own_api_calls(t, id))
+        + " ms=" + to_string(span_own_wall_ms(t, id))
+        + " $=" + to_string(span_own_money_micro(t, id)) + "e-6]"
+    let sub = "subtree[tok=" + to_string(span_subtree_tokens(t, id))
+        + " calls=" + to_string(span_subtree_api_calls(t, id))
+        + " ms=" + to_string(span_subtree_wall_ms(t, id))
+        + " $=" + to_string(span_subtree_money_micro(t, id)) + "e-6]"
+    println("  " + pad(label, 26) + " cap=" + pad(s.cap_tag, 6) + " " + own + " " + sub)
+}
+
+fn main() {
+    println("=== kryos-trace demo: tracing a chat_tools_governed loop ===")
+    println("")
+
+    // 1. Source capability tags from a kryos manifest --caps sidecar.
+    let manifest = temp_dir() + "/kryos_trace_demo.caps.json"
+    write_manifest_sidecar(manifest)
+    let loop_caps = caps_for_function_from_file(manifest, "chat_tools_governed")
+    let ckpt_caps = caps_for_function_from_file(manifest, "agent_checkpoint")
+    let surface = caps_union_from_file(manifest)
+    println("capability surface (from manifest): " + surface)
+    println("  chat_tools_governed -> " + loop_caps + "   agent_checkpoint -> " + ckpt_caps)
+    println("")
+
+    // 2. Build the trace. Costs are illustrative per-step figures.
+    let mut t = tracer_new()
+
+    t = span_start(t, -1, "chat_tools_governed", loop_caps)   // id 0
+    t = span_add_cost(t, 0, cost(8, 0, 1.0, 0.0))             // loop bookkeeping
+
+    t = span_start(t, 0, "step-1", loop_caps)                 // id 1
+    t = span_start(t, 1, "llm-call", loop_caps)               // id 2
+    t = span_add_cost(t, 2, cost(420, 1, 380.0, 0.002100))    // prompt+completion
+    t = span_end(t, 2)
+    t = span_start(t, 1, "tool:get_weather", loop_caps)       // id 3
+    t = span_add_cost(t, 3, cost(0, 1, 95.0, 0.000000))       // external tool call
+    t = span_end(t, 3)
+    t = span_end(t, 1)
+
+    t = span_start(t, 0, "step-2", loop_caps)                 // id 4
+    t = span_start(t, 4, "llm-call", loop_caps)               // id 5
+    t = span_add_cost(t, 5, cost(180, 1, 240.0, 0.000900))    // final answer
+    t = span_end(t, 5)
+    t = span_end(t, 4)
+
+    t = span_start(t, 0, "checkpoint", ckpt_caps)             // id 6, cap=io
+    t = span_add_cost(t, 6, cost(0, 0, 12.0, 0.000000))       // agent_checkpoint
+    t = span_end(t, 6)
+
+    t = span_end(t, 0)
+
+    // 3. Cost-per-span view.
+    println("cost-per-span (own vs rolled-up subtree):")
+    let mut i = 0
+    while i < len(t) {
+        print_row(t, i)
+        i = i + 1
+    }
+    println("")
+    println("  root subtree total: tokens=" + to_string(span_subtree_tokens(t, 0))
+        + " api_calls=" + to_string(span_subtree_api_calls(t, 0))
+        + " wall_ms=" + to_string(span_subtree_wall_ms(t, 0))
+        + " money=" + to_string(span_subtree_money_micro(t, 0)) + "e-6 USD")
+    println("  (the root subtree equals the sum of every span's own cost)")
+    println("")
+
+    // 4. Capability check: is every span within the loop's authorized surface?
+    println("capability check (does any span exceed the authorized surface '" + surface + "'?):")
+    let mut k = 0
+    let mut escalations = 0
+    while k < len(t) {
+        if not caps_subset_of(t[k].cap_tag, surface) {
+            println("  ESCALATION: span '" + t[k].name + "' uses '" + t[k].cap_tag
+                + "' outside '" + surface + "'")
+            escalations = escalations + 1
+        }
+        k = k + 1
+    }
+    if escalations == 0 {
+        println("  OK: all " + to_string(len(t)) + " spans stay within the authorized capability surface.")
+    }
+    // Demonstrate detection: a hypothetical tool that reaches for 'disk'.
+    let rogue = "disk"
+    if not caps_subset_of(rogue, surface) {
+        println("  (a tool tagged '" + rogue + "' WOULD be flagged: not in '" + surface + "')")
+    }
+    println("")
+
+    // 5. Export OTLP-shaped JSON lines (file sink, no collector).
+    let own_path = temp_dir() + "/demo_trace.otlp.jsonl"
+    let sub_path = temp_dir() + "/demo_trace.subtree.otlp.jsonl"
+    let n = tracer_export_file(own_path, t, 1)
+    file_write(sub_path, tracer_to_otlp_subtree(t, 1) + "\n")
+    println("wrote " + to_string(n) + " bytes of OTLP (own-cost) to " + own_path)
+    println("wrote OTLP (subtree-cost) to " + sub_path)
+    println("")
+    println("--- " + own_path + " (first span) ---")
+    let lines = tracer_to_otlp(t, 1)
+    // Print just the first line for brevity.
+    let mut e = 0
+    while e < len(lines) and substr(lines, e, e + 1) != "\n" {
+        e = e + 1
+    }
+    println(substr(lines, 0, e))
+}

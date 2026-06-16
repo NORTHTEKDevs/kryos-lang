@@ -1,0 +1,277 @@
+// ============================================================
+// span.kry -- capability-scoped, cost-aware tracing spans.
+//
+// A Span is a node in a synchronous call-stack trace. Each span has:
+//   - id           its own identifier (== its index in the tracer array)
+//   - parent_id    the enclosing span's id, or -1 for a root span
+//   - name         a human label ("agent-loop", "llm-call", ...)
+//   - cap_tag      the capability surface in effect for the span, a compact
+//                  comma-joined string sourced from a `kryos manifest --caps`
+//                  sidecar (see manifest_caps.kry)
+//   - cost         the span's OWN ComputeCost (cost accrued directly in the
+//                  span, NOT including its children). The subtree cost is
+//                  computed on demand by summing own + descendants.
+//
+// Context model: scoping is the synchronous call stack, made explicit through
+// parent ids. There is NO implicit/async context propagation -- Kryos has no
+// executor, so cross-task propagation is deliberately out of scope (see README).
+// A caller nests spans by passing the parent's id to span_start.
+//
+// The tracer is a plain [Span] threaded by value and rebound at the call site
+// (`spans = span_start(spans, parent, name, tag)`), the same append-only,
+// id-equals-index discipline kryos-cost-ledger uses for its [LedgerEntry].
+//
+// Cost composes with std::cost::ComputeCost. ComputeCost carries f64 fields
+// (wall_time_ms, money_usd, energy_kwh); we never call to_string on an f64
+// (unsupported in the Cranelift JIT used by `kryos test`) -- the OTLP exporter
+// truncates wall_time_ms to i64 ms and scales money to micro-USD i64.
+// ============================================================
+
+use std::cost::{ComputeCost}
+
+// Local cost helpers. We deliberately do NOT call std::cost::cost_zero /
+// cost_add here: those are defined in std::cost, and when this module is pulled
+// in transitively (the OTLP exporter does `use span`), the cross-module binding
+// of those std functions miscompiles the accumulation under the Cranelift JIT
+// (api_calls reads back as a pointer-shaped garbage value). Building the
+// ComputeCost by literal construction over its fields is exact and stable on
+// both backends, and still composes with std::cost (the type is unchanged).
+@capabilities
+fn _cost_zero() -> ComputeCost {
+    return ComputeCost {
+        wall_time_ms: 0.0,
+        tokens_used: 0,
+        api_calls: 0,
+        money_usd: 0.0,
+        energy_kwh: 0.0,
+    }
+}
+
+@capabilities
+fn _cost_add(a: ComputeCost, b: ComputeCost) -> ComputeCost {
+    return ComputeCost {
+        wall_time_ms: a.wall_time_ms + b.wall_time_ms,
+        tokens_used: a.tokens_used + b.tokens_used,
+        api_calls: a.api_calls + b.api_calls,
+        money_usd: a.money_usd + b.money_usd,
+        energy_kwh: a.energy_kwh + b.energy_kwh,
+    }
+}
+
+// A single span. `cost` (an aggregate field) is declared last by convention.
+struct Span {
+    id: i64,
+    parent_id: i64,
+    name: str,
+    cap_tag: str,
+    open: bool,
+    cost: ComputeCost,
+}
+
+// An empty tracer.
+@capabilities
+fn tracer_new() -> [Span] {
+    return []
+}
+
+// Rebuild `spans` with the span at `idx` replaced by `replacement`.
+@capabilities
+fn _splice(spans: [Span], idx: i64, replacement: Span) -> [Span] {
+    let mut out: [Span] = []
+    let mut i = 0
+    while i < len(spans) {
+        if i == idx {
+            out = push(out, replacement)
+        } else {
+            out = push(out, spans[i])
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Start a new span as a child of `parent_id` (-1 for a root). The new span's
+// id is its index, i.e. len(spans) before the append. Returns the new tracer;
+// read the new id with `last_id(spans)` afterwards. The span opens with a zero
+// own-cost and is marked open until span_end.
+@capabilities
+fn span_start(spans: [Span], parent_id: i64, name: str, cap_tag: str) -> [Span] {
+    let id = len(spans)
+    let s = Span {
+        id: id,
+        parent_id: parent_id,
+        name: name,
+        cap_tag: cap_tag,
+        open: true,
+        cost: _cost_zero(),
+    }
+    return push(spans, s)
+}
+
+// The id of the most recently started span (== len-1). -1 if empty.
+@capabilities
+fn last_id(spans: [Span]) -> i64 {
+    return len(spans) - 1
+}
+
+// Add `delta` to the OWN cost of span `id`. Returns the updated tracer.
+@capabilities
+fn span_add_cost(spans: [Span], id: i64, delta: ComputeCost) -> [Span] {
+    let s = spans[id]
+    let updated = Span {
+        id: s.id,
+        parent_id: s.parent_id,
+        name: s.name,
+        cap_tag: s.cap_tag,
+        open: s.open,
+        cost: _cost_add(s.cost, delta),
+    }
+    return _splice(spans, id, updated)
+}
+
+// Mark span `id` closed. Returns the updated tracer. Closing is idempotent and
+// does not affect cost; it records that the span's synchronous extent ended.
+@capabilities
+fn span_end(spans: [Span], id: i64) -> [Span] {
+    let s = spans[id]
+    let updated = Span {
+        id: s.id,
+        parent_id: s.parent_id,
+        name: s.name,
+        cap_tag: s.cap_tag,
+        open: false,
+        cost: s.cost,
+    }
+    return _splice(spans, id, updated)
+}
+
+// The OWN cost of a span (its directly-attributed cost, excluding children).
+@capabilities
+fn span_own_cost(spans: [Span], id: i64) -> ComputeCost {
+    return spans[id].cost
+}
+
+// True if span `j` is `root` itself or a (transitive) descendant of `root`,
+// following parent_id links up to the root of the forest (-1).
+@capabilities
+fn _is_descendant_or_self(spans: [Span], j: i64, root: i64) -> bool {
+    let mut cur = j
+    while cur >= 0 {
+        if cur == root {
+            return true
+        }
+        cur = spans[cur].parent_id
+    }
+    return false
+}
+
+// The SUBTREE cost of span `id`: its own cost plus the own cost of every
+// descendant. By construction this equals own + the sum of each direct child's
+// subtree cost (the trace's core invariant).
+@capabilities
+fn span_subtree_cost(spans: [Span], id: i64) -> ComputeCost {
+    let mut total = _cost_zero()
+    let mut j = 0
+    while j < len(spans) {
+        if _is_descendant_or_self(spans, j, id) {
+            total = _cost_add(total, spans[j].cost)
+        }
+        j = j + 1
+    }
+    return total
+}
+
+// --- Scalar cost accessors --------------------------------------------------
+// These return plain i64 so they are safe to call ACROSS a module boundary.
+// (Returning a freshly-built ComputeCost struct from this module into another
+// module miscompiles under the Cranelift JIT -- the receiving module reads its
+// scalar fields at the wrong offsets. i64 returns are stable, so the OTLP
+// exporter pulls cost out through these rather than through span_subtree_cost.)
+// wall_ms truncates wall_time_ms to whole ms; money_micro scales money_usd to
+// micro-USD; both avoid stringifying an f64 downstream.
+
+@capabilities
+fn span_own_tokens(spans: [Span], id: i64) -> i64 {
+    return spans[id].cost.tokens_used
+}
+
+@capabilities
+fn span_own_api_calls(spans: [Span], id: i64) -> i64 {
+    return spans[id].cost.api_calls
+}
+
+@capabilities
+fn span_own_wall_ms(spans: [Span], id: i64) -> i64 {
+    return spans[id].cost.wall_time_ms as i64
+}
+
+@capabilities
+fn span_own_money_micro(spans: [Span], id: i64) -> i64 {
+    return (spans[id].cost.money_usd * 1000000.0) as i64
+}
+
+@capabilities
+fn span_subtree_tokens(spans: [Span], id: i64) -> i64 {
+    let mut sum = 0
+    let mut j = 0
+    while j < len(spans) {
+        if _is_descendant_or_self(spans, j, id) {
+            sum = sum + spans[j].cost.tokens_used
+        }
+        j = j + 1
+    }
+    return sum
+}
+
+@capabilities
+fn span_subtree_api_calls(spans: [Span], id: i64) -> i64 {
+    let mut sum = 0
+    let mut j = 0
+    while j < len(spans) {
+        if _is_descendant_or_self(spans, j, id) {
+            sum = sum + spans[j].cost.api_calls
+        }
+        j = j + 1
+    }
+    return sum
+}
+
+@capabilities
+fn span_subtree_wall_ms(spans: [Span], id: i64) -> i64 {
+    let mut sum = 0.0
+    let mut j = 0
+    while j < len(spans) {
+        if _is_descendant_or_self(spans, j, id) {
+            sum = sum + spans[j].cost.wall_time_ms
+        }
+        j = j + 1
+    }
+    return sum as i64
+}
+
+@capabilities
+fn span_subtree_money_micro(spans: [Span], id: i64) -> i64 {
+    let mut sum = 0.0
+    let mut j = 0
+    while j < len(spans) {
+        if _is_descendant_or_self(spans, j, id) {
+            sum = sum + spans[j].cost.money_usd
+        }
+        j = j + 1
+    }
+    return (sum * 1000000.0) as i64
+}
+
+// The ids of the direct children of span `id`, in start order.
+@capabilities
+fn span_children(spans: [Span], id: i64) -> [i64] {
+    let mut out: [i64] = []
+    let mut j = 0
+    while j < len(spans) {
+        if spans[j].parent_id == id {
+            out = push(out, spans[j].id)
+        }
+        j = j + 1
+    }
+    return out
+}

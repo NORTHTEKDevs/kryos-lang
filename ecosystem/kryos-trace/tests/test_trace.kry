@@ -1,0 +1,295 @@
+// ============================================================
+// test_trace.kry -- tests for kryos-trace.
+//
+//   kryos test --path ecosystem/kryos-trace
+//   kryos run  ecosystem/kryos-trace/tests/test_trace.kry   (standalone)
+//
+// Coverage maps onto the spec's done criteria:
+//   - nested spans serialize with correct parent IDs        (parent-ids)
+//   - a span's reported cost == sum of children + own       (cost-rollup)
+//   - cap_tag is sourced from a `kryos manifest --caps` file (cap-tag)
+//   - capability escalation (child caps not in parent) is detectable (escalation)
+//   - OTLP-shaped export: one line per span, ids present    (otlp-shape)
+//   - synchronous scoping only; root has no parent          (root)
+//
+// std::cost symbols used transitively by `span` are re-imported here: the
+// module resolver requires the entry file to declare the std symbols its used
+// modules reference.
+// ============================================================
+
+use std::cost::{ComputeCost}
+use span
+use manifest_caps
+use otlp
+
+// A writable temp dir, so `kryos test` never drops artifacts in the repo cwd.
+fn temp_dir() -> str {
+    let t: str = env_get("TEMP")
+    if len(t) > 0 { return t }
+    let t2: str = env_get("TMP")
+    if len(t2) > 0 { return t2 }
+    let t3: str = env_get("TMPDIR")
+    if len(t3) > 0 { return t3 }
+    return "/tmp"
+}
+
+// Build a ComputeCost; wall_time_ms uses an f64 literal so no i64->f64 cast.
+fn cost(tokens: i64, calls: i64, wall: f64) -> ComputeCost {
+    return ComputeCost {
+        wall_time_ms: wall,
+        tokens_used: tokens,
+        api_calls: calls,
+        money_usd: 0.0,
+        energy_kwh: 0.0,
+    }
+}
+
+// A representative governed-agent trace:
+//   agent-loop (root, own 5 tok / 1 call / 2ms)
+//     |- llm-call    (own 100 tok / 1 call / 30ms)
+//     |- tool-disp   (own 0 tok / 0 call / 1ms)
+//          |- fs-read (own 4 tok / 0 call / 5ms)
+// Subtree totals (own + descendants):
+//   fs-read   :   4 tok / 0 / 5
+//   tool-disp :   4 tok / 0 / 6
+//   llm-call  : 100 tok / 1 / 30
+//   agent-loop: 109 tok / 2 / 38
+fn build_trace() -> [Span] {
+    let mut t = tracer_new()
+    t = span_start(t, -1, "agent-loop", "net")
+    t = span_add_cost(t, 0, cost(5, 1, 2.0))
+
+    t = span_start(t, 0, "llm-call", "net")
+    t = span_add_cost(t, 1, cost(100, 1, 30.0))
+    t = span_end(t, 1)
+
+    t = span_start(t, 0, "tool-dispatch", "io")
+    t = span_add_cost(t, 2, cost(0, 0, 1.0))
+
+    t = span_start(t, 2, "fs-read", "io")
+    t = span_add_cost(t, 3, cost(4, 0, 5.0))
+    t = span_end(t, 3)
+    t = span_end(t, 2)
+    t = span_end(t, 0)
+    return t
+}
+
+@test
+fn test_empty_tracer() {
+    let t = tracer_new()
+    assert(len(t) == 0, "fresh tracer is empty")
+    assert(last_id(t) == -1, "empty tracer last_id is -1")
+}
+
+@test
+fn test_ids_and_parents_are_assigned() {
+    let t = build_trace()
+    assert(len(t) == 4, "four spans started, got " + to_string(len(t)))
+    assert(t[0].id == 0, "root id 0")
+    assert(t[0].parent_id == -1, "root parent is -1 (no enclosing span)")
+    assert(t[1].parent_id == 0, "llm-call parent is root")
+    assert(t[2].parent_id == 0, "tool-dispatch parent is root")
+    assert(t[3].parent_id == 2, "fs-read parent is tool-dispatch")
+}
+
+@test
+fn test_children_listing() {
+    let t = build_trace()
+    let root_kids = span_children(t, 0)
+    assert(len(root_kids) == 2, "root has 2 children, got " + to_string(len(root_kids)))
+    assert(root_kids[0] == 1, "first child is llm-call (id 1)")
+    assert(root_kids[1] == 2, "second child is tool-dispatch (id 2)")
+    let tool_kids = span_children(t, 2)
+    assert(len(tool_kids) == 1, "tool-dispatch has 1 child")
+    assert(tool_kids[0] == 3, "tool-dispatch child is fs-read (id 3)")
+    let leaf_kids = span_children(t, 3)
+    assert(len(leaf_kids) == 0, "fs-read is a leaf")
+}
+
+@test
+fn test_own_cost_attributed_per_span() {
+    let t = build_trace()
+    assert(span_own_tokens(t, 0) == 5, "root own tokens 5")
+    assert(span_own_tokens(t, 1) == 100, "llm-call own tokens 100")
+    assert(span_own_api_calls(t, 1) == 1, "llm-call own api_calls 1")
+    assert(span_own_wall_ms(t, 1) == 30, "llm-call own wall_ms 30")
+    assert(span_own_tokens(t, 3) == 4, "fs-read own tokens 4")
+}
+
+// DONE CRITERION: a span's reported cost equals the sum of its children + own.
+@test
+fn test_subtree_cost_equals_own_plus_children() {
+    let t = build_trace()
+
+    // Leaf subtree == its own cost.
+    assert(span_subtree_tokens(t, 3) == 4, "fs-read subtree == own (4)")
+
+    // tool-dispatch subtree == own(0) + fs-read subtree(4) == 4.
+    assert(span_subtree_tokens(t, 2) == span_own_tokens(t, 2) + span_subtree_tokens(t, 3),
+        "tool-dispatch subtree == own + child subtree")
+    assert(span_subtree_tokens(t, 2) == 4, "tool-dispatch subtree tokens 4")
+    assert(span_subtree_wall_ms(t, 2) == 6, "tool-dispatch subtree wall 1+5=6")
+
+    // root subtree == own(5) + llm-call subtree(100) + tool-dispatch subtree(4).
+    let expected_tokens = span_own_tokens(t, 0)
+        + span_subtree_tokens(t, 1)
+        + span_subtree_tokens(t, 2)
+    assert(span_subtree_tokens(t, 0) == expected_tokens,
+        "root subtree == own + sum of direct children subtrees")
+    assert(span_subtree_tokens(t, 0) == 109,
+        "root subtree tokens 5+100+4=109, got " + to_string(span_subtree_tokens(t, 0)))
+    assert(span_subtree_api_calls(t, 0) == 2,
+        "root subtree api_calls 1+1+0=2, got " + to_string(span_subtree_api_calls(t, 0)))
+    assert(span_subtree_wall_ms(t, 0) == 38,
+        "root subtree wall 2+30+1+5=38, got " + to_string(span_subtree_wall_ms(t, 0)))
+}
+
+@test
+fn test_subtree_cost_struct_view_from_entry() {
+    // span_subtree_cost returns a ComputeCost (usable from an entry/same-module
+    // caller). It must agree with the scalar accessors.
+    let t = build_trace()
+    let sub = span_subtree_cost(t, 0)
+    assert(sub.tokens_used == 109, "struct-view subtree tokens 109")
+    assert(sub.api_calls == 2, "struct-view subtree api_calls 2")
+    let own = span_own_cost(t, 1)
+    assert(own.tokens_used == 100, "struct-view own tokens 100")
+}
+
+@test
+fn test_span_end_does_not_change_cost() {
+    let t = build_trace()
+    let before = span_own_tokens(t, 0)
+    let t2 = span_end(t, 0)
+    assert(span_own_tokens(t2, 0) == before, "closing a span preserves its cost")
+    assert(t2[0].open == false, "root is marked closed")
+}
+
+// DONE CRITERION: nested spans serialize with correct parent IDs.
+@test
+fn test_otlp_parent_ids() {
+    let t = build_trace()
+    let lines = tracer_to_otlp(t, 7)
+    // Root: empty parentSpanId; its own spanId is id+1 in hex.
+    assert(contains(lines, "\"spanId\":\"0000000000000001\""), "root spanId present")
+    assert(contains(lines, "\"name\":\"agent-loop\""), "root name present")
+    // The root line carries an empty parentSpanId.
+    assert(contains(lines, "\"parentSpanId\":\"\""), "root has empty parentSpanId")
+    // fs-read (id 3 -> spanId ...0004) parents tool-dispatch (id 2 -> ...0003).
+    assert(contains(lines, "\"spanId\":\"0000000000000004\""), "fs-read spanId present")
+    assert(contains(lines, "\"parentSpanId\":\"0000000000000003\""), "fs-read parent is tool-dispatch")
+    // llm-call (id 1 -> ...0002) parents root (...0001).
+    assert(contains(lines, "\"parentSpanId\":\"0000000000000001\""), "llm-call parent is root")
+}
+
+@test
+fn test_otlp_one_line_per_span_and_shape() {
+    let t = build_trace()
+    let lines = tracer_to_otlp(t, 1)
+    // 4 spans -> exactly 3 separating newlines.
+    let mut nl = 0
+    let mut i = 0
+    while i < len(lines) {
+        if substr(lines, i, i + 1) == "\n" {
+            nl = nl + 1
+        }
+        i = i + 1
+    }
+    assert(nl == 3, "4 spans -> 3 newlines, got " + to_string(nl))
+    assert(contains(lines, "\"traceId\":\"00000000000000ff0000000000000002\""), "traceId present and shaped")
+    assert(contains(lines, "\"attributes\":["), "attributes array present")
+    assert(contains(lines, "\"kryos.cap_tag\""), "cap_tag attribute present")
+    assert(contains(lines, "\"kryos.cost.tokens\""), "cost.tokens attribute present")
+}
+
+@test
+fn test_otlp_subtree_cost_in_export() {
+    let t = build_trace()
+    let sub = tracer_to_otlp_subtree(t, 1)
+    // The root subtree line must report the rolled-up token total (109).
+    assert(contains(sub, "\"intValue\":\"109\""), "root subtree tokens 109 appear in export")
+    assert(contains(sub, "\"stringValue\":\"subtree\""), "scope marked subtree")
+}
+
+// DONE CRITERION: cap_tag sourced from a `kryos manifest --caps` sidecar.
+@test
+fn test_cap_tag_from_manifest_sidecar() {
+    // A manifest exactly as `kryos manifest --caps` emits it.
+    let manifest = "{{ \"schema\": \"kryos-manifest-v1\", \"functions\": {{ "
+        + "\"chat_tools_governed\": {{ \"capabilities\": [\"net\"], \"annotated\": true }}, "
+        + "\"agent_checkpoint\": {{ \"capabilities\": [\"io\"], \"annotated\": true }} }}, "
+        + "\"unannotated_count\": 1 }}"
+    let path = temp_dir() + "/kryos_trace_t_manifest.caps.json"
+    file_write(path, manifest)
+
+    let net = caps_for_function_from_file(path, "chat_tools_governed")
+    assert(net == "net", "chat_tools_governed cap tag is 'net', got '" + net + "'")
+    let io = caps_for_function_from_file(path, "agent_checkpoint")
+    assert(io == "io", "agent_checkpoint cap tag is 'io', got '" + io + "'")
+    let all = caps_union_from_file(path)
+    // Union preserves first-seen order: net appears first in the file.
+    assert(all == "net,io", "union cap tag is 'net,io', got '" + all + "'")
+}
+
+@test
+fn test_cap_tag_inline_parsing() {
+    let manifest = "{{\"functions\":{{\"f\":{{\"capabilities\":[\"compute\",\"io\",\"net\"]}}}}}}"
+    assert(caps_for_function(manifest, "f") == "compute,io,net", "multi-cap function tag")
+    assert(caps_union(manifest) == "compute,io,net", "union over single function")
+    // Absent function -> empty tag.
+    assert(caps_for_function(manifest, "missing") == "", "absent function -> empty tag")
+}
+
+// DONE/PITCH: a trace can answer "did this span exceed its authorized caps".
+@test
+fn test_capability_escalation_detection() {
+    // A child span tagged with a capability its parent is not authorized for is
+    // an escalation. caps_subset_of(child, parent) is false in that case.
+    assert(caps_subset_of("io", "net,io"), "io is within net,io")
+    assert(caps_subset_of("net,io", "net,io"), "full set is within itself")
+    assert(not caps_subset_of("net", "io"), "net is NOT within io (escalation)")
+    assert(not caps_subset_of("net,disk", "net"), "disk escalates beyond net")
+    assert(caps_subset_of("", "net"), "empty child caps never escalate")
+}
+
+@test
+fn test_cap_tag_parts_roundtrip() {
+    let parts = cap_tag_parts("compute,io,net")
+    assert(len(parts) == 3, "three parts")
+    assert(parts[0] == "compute", "first part compute")
+    assert(parts[2] == "net", "third part net")
+    let empty = cap_tag_parts("")
+    assert(len(empty) == 0, "empty tag -> no parts")
+}
+
+fn main() {
+    test_empty_tracer()
+    println("PASS test_empty_tracer")
+    test_ids_and_parents_are_assigned()
+    println("PASS test_ids_and_parents_are_assigned")
+    test_children_listing()
+    println("PASS test_children_listing")
+    test_own_cost_attributed_per_span()
+    println("PASS test_own_cost_attributed_per_span")
+    test_subtree_cost_equals_own_plus_children()
+    println("PASS test_subtree_cost_equals_own_plus_children")
+    test_subtree_cost_struct_view_from_entry()
+    println("PASS test_subtree_cost_struct_view_from_entry")
+    test_span_end_does_not_change_cost()
+    println("PASS test_span_end_does_not_change_cost")
+    test_otlp_parent_ids()
+    println("PASS test_otlp_parent_ids")
+    test_otlp_one_line_per_span_and_shape()
+    println("PASS test_otlp_one_line_per_span_and_shape")
+    test_otlp_subtree_cost_in_export()
+    println("PASS test_otlp_subtree_cost_in_export")
+    test_cap_tag_from_manifest_sidecar()
+    println("PASS test_cap_tag_from_manifest_sidecar")
+    test_cap_tag_inline_parsing()
+    println("PASS test_cap_tag_inline_parsing")
+    test_capability_escalation_detection()
+    println("PASS test_capability_escalation_detection")
+    test_cap_tag_parts_roundtrip()
+    println("PASS test_cap_tag_parts_roundtrip")
+    println("14/14 kryos-trace tests passed")
+}
