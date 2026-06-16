@@ -1,0 +1,168 @@
+// ============================================================
+// main.kry -- kryos-xcompile-caps CLI entry point.
+//
+// Usage:
+//   kryos-xcompile-caps [--targets t1,t2,...] [--out <dir>] <project>
+//   kryos run src/main.kry [--targets t1,t2,...] [--out <dir>] <project>
+//
+// For each requested triple the tool:
+//   1. Runs `kryos build --release [--target <t>] <project>`
+//   2. Runs `kryos manifest --caps --strict <project>` (source-derived caps)
+//   3. Collects a TargetResult with build outcome + cap set
+//
+// After all targets are processed:
+//   - Writes release-matrix.json (or <out>/release-matrix.json)
+//   - Prints a summary table to stdout
+//   - Exits 0 if cap_stable=true (all caps identical across targets)
+//   - Exits 1 if caps differ across any successfully-manifested target
+//
+// IMPORTANT: cross-compilation requires the target cc/linker/sysroot.
+// On Windows without cross-toolchains only the host and
+// x86_64-pc-windows-msvc link successfully -- other triples will show
+// build_success=false in the matrix but manifest caps are still captured
+// and compared (because caps are source-derived, not binary-derived).
+//
+// Capabilities: io (write matrix JSON), process (invoke kryos sub-commands)
+// ============================================================
+
+use std::process::{command, exit}
+use std::string::{split}
+use matrix
+use caps
+use render
+
+@capabilities(io, process, env)
+fn main() {
+    let a = args()
+
+    // Resolve kryos binary: $KRYOS env var, then "kryos".
+    let kryos_env = env_get("KRYOS")
+    let mut kryos_bin: str = "kryos"
+    if len(kryos_env) > 0 {
+        kryos_bin = kryos_env
+    }
+
+    // Parse arguments.
+    let mut targets_str: str = ""
+    let mut out_dir: str = ""
+    let mut proj: str = ""
+    let mut i = 1
+    while i < len(a) {
+        if a[i] == "--targets" {
+            if i + 1 < len(a) {
+                targets_str = a[i + 1]
+                i = i + 2
+            } else {
+                println("error: --targets requires an argument")
+                exit(1)
+            }
+        } elif a[i] == "--out" {
+            if i + 1 < len(a) {
+                out_dir = a[i + 1]
+                i = i + 2
+            } else {
+                println("error: --out requires an argument")
+                exit(1)
+            }
+        } elif a[i] == "--help" || a[i] == "-h" {
+            println("usage: kryos-xcompile-caps [--targets t1,t2,...] [--out <dir>] <project>")
+            println("")
+            println("options:")
+            println("  --targets  comma-separated target triples (default: host)")
+            println("  --out      output directory for matrix JSON (default: project dir)")
+            println("")
+            println("exit codes:")
+            println("  0  caps are stable across all targets (or single target)")
+            println("  1  caps differ across targets (drift detected)")
+            println("  2  usage error")
+            exit(0)
+        } else {
+            proj = a[i]
+            i = i + 1
+        }
+    }
+
+    if len(proj) == 0 {
+        println("usage: kryos-xcompile-caps [--targets t1,t2,...] [--out <dir>] <project>")
+        println("run with --help for details")
+        exit(2)
+    }
+
+    // Parse target triples.
+    let mut triples: [str] = []
+    if len(targets_str) == 0 {
+        // Default: host only (no --target flag).
+        triples = push(triples, "host")
+    } else {
+        let parts = split(targets_str, ",")
+        for p in parts {
+            if len(p) > 0 {
+                triples = push(triples, p)
+            }
+        }
+    }
+
+    // Set output directory (default: project directory).
+    if len(out_dir) == 0 {
+        out_dir = proj
+    }
+
+    println("xcompile-caps: project=" + proj)
+    println("xcompile-caps: targets=" + to_string(len(triples)))
+
+    // Run build + manifest for each target.
+    let mut results: [TargetResult] = []
+    let mut ti = 0
+    while ti < len(triples) {
+        let triple = triples[ti]
+        let is_host = triple == "host"
+
+        // When the user specifies "host", pass "" as the triple to omit --target.
+        let build_triple = if is_host { "" } else { triple }
+
+        println("  [" + to_string(ti + 1) + "/" + to_string(len(triples)) + "] " + triple + " ...")
+        let r = run_target(kryos_bin, build_triple, is_host, proj, out_dir)
+        let build_status = if r.build_success { "ok" } else { "FAILED" }
+        println("      build: " + build_status + "  caps: " + caps_render(r.caps))
+
+        // Store triple name back (run_target keeps build_triple).
+        let stored = TargetResult {
+            triple: triple,
+            build_success: r.build_success,
+            build_error: r.build_error,
+            binary: r.binary,
+            caps: r.caps,
+            manifest_raw: r.manifest_raw,
+        }
+        results = push(results, stored)
+        ti = ti + 1
+    }
+
+    // Compute cap union and check stability.
+    let mut all_caps: [[str]] = []
+    for r in results {
+        all_caps = push(all_caps, r.caps)
+    }
+    let union_caps = caps_union_all(all_caps)
+    let mut cap_stable = true
+    for r in results {
+        if !caps_equal(r.caps, union_caps) {
+            cap_stable = false
+        }
+    }
+
+    // Write release-matrix.json.
+    let matrix_path = out_dir + "/release-matrix.json"
+    let json_text = render_matrix_json(proj, results, cap_stable, union_caps)
+    file_write(matrix_path, json_text)
+    println("xcompile-caps: wrote " + matrix_path)
+
+    // Report.
+    if cap_stable {
+        println("xcompile-caps: cap_stable=true -- capability surface is identical across all targets")
+    } else {
+        let drift = render_drift_report(results, union_caps)
+        println(drift)
+        exit(1)
+    }
+}

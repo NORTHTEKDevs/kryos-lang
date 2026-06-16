@@ -1,0 +1,16 @@
+// Fixture: stable caps -- only io, same on every target.
+// kryos manifest --caps --strict will report exactly {io} for read_config.
+
+@capabilities(io)
+fn read_config(path: str) -> str {
+    return file_read(path)
+}
+
+@capabilities()
+fn compute(x: i64) -> i64 {
+    return x * 2
+}
+
+fn main() {
+    println("stable fixture")
+}

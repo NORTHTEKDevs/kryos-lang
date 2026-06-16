@@ -1,0 +1,19 @@
+// Fixture: drift source.
+// This file has both io and net annotated.
+// The drift-detection unit test simulates a scenario where target A
+// only sees {io} (e.g. a hypothetical platform-stripped build) while
+// target B sees {io, net}, producing a cap_stable=false result.
+
+@capabilities(io)
+fn read_data(path: str) -> str {
+    return file_read(path)
+}
+
+@capabilities(net)
+fn fetch_remote(url: str) -> str {
+    return "fetched:" + url
+}
+
+fn main() {
+    println("drift fixture")
+}

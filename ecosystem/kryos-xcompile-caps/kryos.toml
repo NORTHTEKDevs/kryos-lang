@@ -1,0 +1,8 @@
+[package]
+name = "kryos-xcompile-caps"
+version = "0.1.0"
+description = "Capability-annotated cross-compilation matrix: build per target triple and assert the capability surface is stable across targets"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["io", "process"]

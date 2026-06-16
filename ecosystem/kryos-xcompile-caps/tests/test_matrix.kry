@@ -1,0 +1,175 @@
+// ============================================================
+// test_matrix.kry -- integration tests for matrix.kry and render.kry.
+//
+// These tests exercise the render and drift-detection logic with
+// synthetic TargetResult values, so they run without invoking
+// subprocess calls (making them fast and hermetic).
+//
+// Run with:
+//   kryos run tests/test_matrix.kry
+// ============================================================
+
+use matrix
+use caps
+use render
+
+// Build a synthetic TargetResult for testing.
+@capabilities()
+fn make_result(triple: str, success: bool, binary: str, target_caps: [str]) -> TargetResult {
+    let empty_caps: [str] = []
+    return TargetResult {
+        triple: triple,
+        build_success: success,
+        build_error: "",
+        binary: binary,
+        caps: target_caps,
+        manifest_raw: "",
+    }
+}
+
+// --------------- render_matrix_json ---------------
+
+@test
+fn test_render_stable_matrix() {
+    let caps_a: [str] = ["io"]
+    let caps_b: [str] = ["io"]
+    let ra = make_result("host", true, "dist/binary-host", caps_a)
+    let rb = make_result("x86_64-pc-windows-msvc", true, "dist/binary-msvc", caps_b)
+    let mut results: [TargetResult] = []
+    results = push(results, ra)
+    results = push(results, rb)
+
+    let union_caps = caps_union_all([caps_a, caps_b])
+    let json_out = render_matrix_json("myproject", results, true, union_caps)
+
+    assert(contains(json_out, "kryos-xcompile-caps-v1"), "schema present in output")
+    assert(contains(json_out, "\"cap_stable\": true"), "cap_stable true in output")
+    assert(contains(json_out, "\"io\""), "io cap in output")
+    assert(contains(json_out, "\"host\""), "host triple in output")
+    assert(contains(json_out, "\"x86_64-pc-windows-msvc\""), "msvc triple in output")
+    assert(contains(json_out, "\"build_success\": true"), "build success in output")
+}
+
+@test
+fn test_render_drift_matrix() {
+    let caps_a: [str] = ["io"]
+    let caps_b: [str] = ["io", "net"]
+    let ra = make_result("target-a", true, "dist/a", caps_a)
+    let rb = make_result("target-b", true, "dist/b", caps_b)
+    let mut results: [TargetResult] = []
+    results = push(results, ra)
+    results = push(results, rb)
+
+    let union_caps = caps_union_all([caps_a, caps_b])
+    let json_out = render_matrix_json("myproject", results, false, union_caps)
+
+    assert(contains(json_out, "\"cap_stable\": false"), "cap_stable false when drift")
+    assert(contains(json_out, "\"net\""), "net cap in union output")
+}
+
+@test
+fn test_render_failed_build() {
+    let caps_a: [str] = ["io"]
+    let ra = TargetResult {
+        triple: "x86_64-unknown-linux-gnu",
+        build_success: false,
+        build_error: "linking failed: no cross linker",
+        binary: "",
+        caps: caps_a,
+        manifest_raw: "",
+    }
+    let mut results: [TargetResult] = []
+    results = push(results, ra)
+
+    let union_caps = caps_union_all([caps_a])
+    let json_out = render_matrix_json("proj", results, true, union_caps)
+
+    assert(contains(json_out, "\"build_success\": false"), "failed build in output")
+    assert(contains(json_out, "\"build_error\""), "build_error key present")
+    assert(!contains(json_out, "\"binary\""), "no binary key on failed build")
+}
+
+// --------------- render_drift_report ---------------
+
+@test
+fn test_drift_report_format() {
+    let caps_a: [str] = ["io"]
+    let caps_b: [str] = ["io", "net"]
+    let ra = make_result("target-a", true, "", caps_a)
+    let rb = make_result("target-b", true, "", caps_b)
+    let mut results: [TargetResult] = []
+    results = push(results, ra)
+    results = push(results, rb)
+    let union_caps: [str] = ["io", "net"]
+
+    let report = render_drift_report(results, union_caps)
+    assert(contains(report, "DRIFT DETECTED"), "drift report says DRIFT DETECTED")
+    assert(contains(report, "DIFF"), "drift report marks differing target as DIFF")
+    assert(contains(report, "  ok"), "drift report marks matching target as ok")
+    assert(contains(report, "target-a"), "target-a in drift report")
+    assert(contains(report, "target-b"), "target-b in drift report")
+}
+
+// --------------- drift detection end-to-end ---------------
+
+@test
+fn test_drift_detection_on_platform_conditional_fixture() {
+    // This test simulates the "platform-@capabilities-branch" fixture:
+    // Target A sees only {io} (stripped or platform-conditional build).
+    // Target B sees {io, net} (full build).
+    // The tool must detect drift and report cap_stable=false.
+
+    let caps_linux: [str] = ["io"]           // hypothetical linux build: io only
+    let caps_windows: [str] = ["io", "net"]  // hypothetical windows build: io + net
+
+    let all_caps: [[str]] = [caps_linux, caps_windows]
+    let union_caps = caps_union_all(all_caps)
+
+    // Stability check: every target must equal the union.
+    let mut cap_stable = true
+    let stable_linux = caps_equal(caps_linux, union_caps)
+    let stable_windows = caps_equal(caps_windows, union_caps)
+    if !stable_linux || !stable_windows {
+        cap_stable = false
+    }
+
+    assert(!cap_stable, "platform-conditional fixture must report drift")
+    assert(!stable_linux, "linux target ({{io}}) differs from union {{io,net}}")
+    assert(stable_windows, "windows target ({{io,net}}) matches union")
+    assert(caps_equal(union_caps, ["io", "net"]) || caps_equal(union_caps, ["net", "io"]),
+        "union should be {{io, net}}")
+}
+
+// --------------- json_escape ---------------
+
+@test
+fn test_json_escape_plain() {
+    let s = "hello world"
+    let e = json_escape(s)
+    assert(e == "hello world", "plain string unchanged, got " + e)
+}
+
+@test
+fn test_json_escape_double_quote() {
+    let s = "\""
+    let e = json_escape(s)
+    assert(e == "\\\"", "double-quote escaped, got " + e)
+}
+
+fn main() {
+    test_render_stable_matrix()
+    println("PASS test_render_stable_matrix")
+    test_render_drift_matrix()
+    println("PASS test_render_drift_matrix")
+    test_render_failed_build()
+    println("PASS test_render_failed_build")
+    test_drift_report_format()
+    println("PASS test_drift_report_format")
+    test_drift_detection_on_platform_conditional_fixture()
+    println("PASS test_drift_detection_on_platform_conditional_fixture")
+    test_json_escape_plain()
+    println("PASS test_json_escape_plain")
+    test_json_escape_double_quote()
+    println("PASS test_json_escape_double_quote")
+    println("7/7 matrix tests passed")
+}

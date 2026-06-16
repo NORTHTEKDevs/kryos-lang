@@ -1,0 +1,8 @@
+[package]
+name = "xcompile-stable-fixture"
+version = "0.1.0"
+description = "Fixture: stable capability surface across all targets (only annotated io)"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["io"]

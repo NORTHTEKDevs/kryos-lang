@@ -1,0 +1,8 @@
+[package]
+name = "xcompile-drift-fixture"
+version = "0.1.0"
+description = "Fixture: simulates per-target capability drift for unit-test purposes"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["io", "net"]

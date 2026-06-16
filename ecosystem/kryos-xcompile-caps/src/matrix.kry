@@ -1,0 +1,141 @@
+// ============================================================
+// matrix.kry -- per-target build + manifest execution.
+//
+// For each requested triple, run:
+//   kryos build --release [--target <t>] <proj> -o <out>
+//   kryos manifest --caps <proj>
+//
+// Then collect the results into a TargetResult for each triple.
+// The manifest is run per-target so the tool remains correct if
+// a future Kryos release supports target-conditional caps.
+// ============================================================
+
+use std::process::{command}
+use manifest
+
+// Result for one target triple.
+struct TargetResult {
+    triple: str,
+    build_success: bool,
+    build_error: str,
+    binary: str,       // path to output binary, or "" if build failed
+    caps: [str],       // flat cap union from manifest --caps
+    manifest_raw: str, // raw manifest JSON (stored for the output matrix)
+}
+
+@capabilities()
+fn target_result_new(triple: str) -> TargetResult {
+    let empty_caps: [str] = []
+    return TargetResult {
+        triple: triple,
+        build_success: false,
+        build_error: "",
+        binary: "",
+        caps: empty_caps,
+        manifest_raw: "",
+    }
+}
+
+// Run `kryos build --release [--target triple] <proj> -o <out>`.
+// Returns (success, binary_path, error_message).
+@capabilities(process)
+fn run_build(kryos_bin: str, triple: str, proj: str, out_path: str) -> TargetResult {
+    let mut r = target_result_new(triple)
+    let mut cmd = command(kryos_bin)
+    cmd = cmd.arg("build")
+    cmd = cmd.arg("--release")
+    if len(triple) > 0 {
+        cmd = cmd.arg("--target")
+        cmd = cmd.arg(triple)
+    }
+    cmd = cmd.arg(proj)
+    cmd = cmd.arg("-o")
+    cmd = cmd.arg(out_path)
+
+    let result = cmd.run()
+
+    if result.success {
+        r = TargetResult {
+            triple: r.triple,
+            build_success: true,
+            build_error: "",
+            binary: out_path,
+            caps: r.caps,
+            manifest_raw: r.manifest_raw,
+        }
+    } else {
+        let err_msg = result.stdout + result.stderr
+        r = TargetResult {
+            triple: r.triple,
+            build_success: false,
+            build_error: err_msg,
+            binary: "",
+            caps: r.caps,
+            manifest_raw: r.manifest_raw,
+        }
+    }
+    return r
+}
+
+// Run `kryos manifest --caps <proj>` and extract the cap union.
+@capabilities(process)
+fn run_manifest(kryos_bin: str, triple: str, proj: str) -> TargetResult {
+    let r = target_result_new(triple)
+    let mut cmd = command(kryos_bin)
+    cmd = cmd.arg("manifest")
+    cmd = cmd.arg("--caps")
+    cmd = cmd.arg("--strict")
+    cmd = cmd.arg(proj)
+
+    let result = cmd.run()
+
+    if result.success {
+        let text = result.stdout
+        let found_caps = parse_manifest_caps(text)
+        return TargetResult {
+            triple: r.triple,
+            build_success: r.build_success,
+            build_error: r.build_error,
+            binary: r.binary,
+            caps: found_caps,
+            manifest_raw: text,
+        }
+    } else {
+        return TargetResult {
+            triple: r.triple,
+            build_success: r.build_success,
+            build_error: r.build_error,
+            binary: r.binary,
+            caps: r.caps,
+            manifest_raw: result.stderr,
+        }
+    }
+}
+
+// Build and manifest one target. Returns the combined TargetResult.
+@capabilities(process)
+fn run_target(kryos_bin: str, triple: str, is_host: bool, proj: str, out_dir: str) -> TargetResult {
+    // Determine output path.
+    let binary_name = if is_host {
+        "binary-host"
+    } else {
+        "binary-" + triple
+    }
+    let binary_path = out_dir + "/" + binary_name
+
+    // Run the build for this triple.
+    let build_r = run_build(kryos_bin, triple, proj, binary_path)
+
+    // Run manifest --caps on the source (regardless of build success).
+    let manifest_r = run_manifest(kryos_bin, triple, proj)
+
+    // Merge: keep build_success and binary from build_r, caps from manifest_r.
+    return TargetResult {
+        triple: build_r.triple,
+        build_success: build_r.build_success,
+        build_error: build_r.build_error,
+        binary: build_r.binary,
+        caps: manifest_r.caps,
+        manifest_raw: manifest_r.manifest_raw,
+    }
+}

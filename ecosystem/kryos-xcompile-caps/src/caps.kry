@@ -1,0 +1,111 @@
+// ============================================================
+// caps.kry -- capability-set utilities for xcompile-caps.
+//
+// Everything here is pure compute; @capabilities() with empty parens
+// documents that and keeps these callable from any context.
+// Mirrors the taxonomy in compiler/crates/kryos-capabilities/src/model.rs.
+// ============================================================
+
+// True if `cap` is already in `set`.
+@capabilities()
+fn caps_member(set: [str], cap: str) -> bool {
+    for c in set {
+        if c == cap {
+            return true
+        }
+    }
+    return false
+}
+
+// Union of two capability sets -- no duplicates.
+@capabilities()
+fn caps_union(a: [str], b: [str]) -> [str] {
+    let mut out: [str] = []
+    for c in a {
+        if !caps_member(out, c) {
+            out = push(out, c)
+        }
+    }
+    for c in b {
+        if !caps_member(out, c) {
+            out = push(out, c)
+        }
+    }
+    return out
+}
+
+// True iff `a` and `b` contain exactly the same caps (order-insensitive).
+@capabilities()
+fn caps_equal(a: [str], b: [str]) -> bool {
+    if len(a) != len(b) {
+        return false
+    }
+    for c in a {
+        if !caps_member(b, c) {
+            return false
+        }
+    }
+    return true
+}
+
+// Union of a list of cap sets.
+@capabilities()
+fn caps_union_all(sets: [[str]]) -> [str] {
+    let mut acc: [str] = []
+    for s in sets {
+        acc = caps_union(acc, s)
+    }
+    return acc
+}
+
+// Render a cap set as a JSON array string (sorted lexicographically for stability).
+@capabilities()
+fn caps_to_json_array(caps: [str]) -> str {
+    // Insertion-sort a copy for stable output.
+    let n = len(caps)
+    let mut sorted: [str] = []
+    let mut i = 0
+    while i < n {
+        sorted = push(sorted, caps[i])
+        i = i + 1
+    }
+    // Bubble sort (small sets).
+    let mut j = 0
+    while j < n {
+        let mut k = 0
+        while k < n - j - 1 {
+            if sorted[k] > sorted[k + 1] {
+                let tmp = sorted[k]
+                sorted[k] = sorted[k + 1]
+                sorted[k + 1] = tmp
+            }
+            k = k + 1
+        }
+        j = j + 1
+    }
+    let mut out: str = "["
+    let mut m = 0
+    while m < len(sorted) {
+        if m > 0 {
+            out = out + ","
+        }
+        out = out + "\"" + sorted[m] + "\""
+        m = m + 1
+    }
+    return out + "]"
+}
+
+// Render a cap set for human-readable messages, e.g. {io, net}.
+@capabilities()
+fn caps_render(caps: [str]) -> str {
+    let mut out: str = "{{"
+    let mut i = 0
+    while i < len(caps) {
+        if i > 0 {
+            out = out + ", "
+        }
+        out = out + caps[i]
+        i = i + 1
+    }
+    return out + "}}"
+}

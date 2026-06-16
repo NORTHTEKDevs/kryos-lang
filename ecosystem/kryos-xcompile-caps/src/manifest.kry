@@ -1,0 +1,73 @@
+// ============================================================
+// manifest.kry -- run `kryos manifest --caps` on a project and
+// extract the flat capability union across all annotated functions.
+//
+// The manifest JSON shape:
+//   single-file: { "schema": "...", "source": "...",
+//                  "functions": { "name": { "capabilities": [...], "annotated": bool } },
+//                  "unannotated_count": N }
+//   project:     { "schema": "...", "files": [...] }  (each file has same shape)
+//
+// We extract ALL capabilities from annotated functions and union them.
+// ============================================================
+
+use std::json::{parse, get, to_str, to_bool, to_array, to_object, is_null, JsonValue}
+use caps
+
+// Parse one "capabilities" JSON array into a [str].
+@capabilities()
+fn extract_caps_array(val: JsonValue) -> [str] {
+    let mut out: [str] = []
+    if is_null(val) {
+        return out
+    }
+    let items = to_array(val)
+    for item in items {
+        let s = to_str(item)
+        out = push(out, s)
+    }
+    return out
+}
+
+// Parse the functions object and accumulate all caps.
+@capabilities()
+fn extract_fns_caps(fns_val: JsonValue) -> [str] {
+    if is_null(fns_val) {
+        let empty: [str] = []
+        return empty
+    }
+    let obj = to_object(fns_val)
+    let vals = obj.1
+    let mut acc: [str] = []
+    for fn_info in vals {
+        let ann_val = get(fn_info, "annotated")
+        if !is_null(ann_val) && to_bool(ann_val) {
+            let fn_caps = extract_caps_array(get(fn_info, "capabilities"))
+            acc = caps_union(acc, fn_caps)
+        }
+    }
+    return acc
+}
+
+// Parse the full manifest JSON text and return the flat capability union.
+@capabilities()
+fn parse_manifest_caps(json_text: str) -> [str] {
+    let root = parse(json_text)
+
+    // Multi-file project shape.
+    let files_val = get(root, "files")
+    if !is_null(files_val) {
+        let files = to_array(files_val)
+        let mut acc: [str] = []
+        for file_val in files {
+            let fns_val = get(file_val, "functions")
+            let file_caps = extract_fns_caps(fns_val)
+            acc = caps_union(acc, file_caps)
+        }
+        return acc
+    }
+
+    // Single-file shape.
+    let fns_val = get(root, "functions")
+    return extract_fns_caps(fns_val)
+}

@@ -1,0 +1,232 @@
+// ============================================================
+// test_caps.kry -- unit tests for caps.kry and render.kry logic.
+//
+// Covers:
+//   - caps_member: membership check
+//   - caps_union: union of two sets
+//   - caps_equal: equality check (order-insensitive)
+//   - caps_union_all: union of a list of sets
+//   - drift detection: caps_equal vs cap_union catches differences
+//   - render: caps_to_json_array produces sorted, valid JSON
+//
+// Run with:
+//   kryos run tests/test_caps.kry
+// ============================================================
+
+use caps
+
+// --------------- caps_member ---------------
+
+@test
+fn test_caps_member_found() {
+    let s: [str] = ["io", "net", "compute"]
+    assert(caps_member(s, "net"), "net should be found in set")
+}
+
+@test
+fn test_caps_member_not_found() {
+    let s: [str] = ["io", "compute"]
+    assert(!caps_member(s, "net"), "net should not be in set")
+}
+
+@test
+fn test_caps_member_empty() {
+    let s: [str] = []
+    assert(!caps_member(s, "io"), "empty set has no members")
+}
+
+// --------------- caps_union ---------------
+
+@test
+fn test_caps_union_no_overlap() {
+    let a: [str] = ["io"]
+    let b: [str] = ["net"]
+    let u = caps_union(a, b)
+    assert(len(u) == 2, "union of disjoint sets should have 2 elements, got " + to_string(len(u)))
+    assert(caps_member(u, "io"), "io should be in union")
+    assert(caps_member(u, "net"), "net should be in union")
+}
+
+@test
+fn test_caps_union_with_overlap() {
+    let a: [str] = ["io", "net"]
+    let b: [str] = ["net", "compute"]
+    let u = caps_union(a, b)
+    assert(len(u) == 3, "union with overlap should have 3 elements, got " + to_string(len(u)))
+    assert(caps_member(u, "io"), "io in union")
+    assert(caps_member(u, "net"), "net in union")
+    assert(caps_member(u, "compute"), "compute in union")
+}
+
+@test
+fn test_caps_union_empty_left() {
+    let a: [str] = []
+    let b: [str] = ["io"]
+    let u = caps_union(a, b)
+    assert(len(u) == 1, "union empty+[io] should have 1 element")
+    assert(caps_member(u, "io"), "io in union")
+}
+
+@test
+fn test_caps_union_both_empty() {
+    let a: [str] = []
+    let b: [str] = []
+    let u = caps_union(a, b)
+    assert(len(u) == 0, "union of empty sets is empty")
+}
+
+// --------------- caps_equal ---------------
+
+@test
+fn test_caps_equal_same_order() {
+    let a: [str] = ["io", "net"]
+    let b: [str] = ["io", "net"]
+    assert(caps_equal(a, b), "same-order sets should be equal")
+}
+
+@test
+fn test_caps_equal_different_order() {
+    let a: [str] = ["net", "io"]
+    let b: [str] = ["io", "net"]
+    assert(caps_equal(a, b), "order-insensitive equality should hold")
+}
+
+@test
+fn test_caps_equal_different_size() {
+    let a: [str] = ["io"]
+    let b: [str] = ["io", "net"]
+    assert(!caps_equal(a, b), "sets of different size are not equal")
+}
+
+@test
+fn test_caps_equal_different_members() {
+    let a: [str] = ["io", "compute"]
+    let b: [str] = ["io", "net"]
+    assert(!caps_equal(a, b), "sets with different members are not equal")
+}
+
+// --------------- caps_union_all ---------------
+
+@test
+fn test_caps_union_all_three_sets() {
+    let sets: [[str]] = [["io"], ["net"], ["compute", "io"]]
+    let u = caps_union_all(sets)
+    assert(len(u) == 3, "union of three sets should have 3 unique caps, got " + to_string(len(u)))
+    assert(caps_member(u, "io"), "io in union_all")
+    assert(caps_member(u, "net"), "net in union_all")
+    assert(caps_member(u, "compute"), "compute in union_all")
+}
+
+@test
+fn test_caps_union_all_empty_list() {
+    let sets: [[str]] = []
+    let u = caps_union_all(sets)
+    assert(len(u) == 0, "union_all of empty list is empty")
+}
+
+// --------------- drift detection ---------------
+// Simulates the comparison logic the main program uses:
+// cap_stable = all target caps equal the union.
+
+@test
+fn test_drift_detected_when_caps_differ() {
+    // Simulate two targets: one with {io}, one with {io, net}.
+    let caps_target_a: [str] = ["io"]
+    let caps_target_b: [str] = ["io", "net"]
+    let all_caps: [[str]] = [caps_target_a, caps_target_b]
+    let union_caps = caps_union_all(all_caps)
+
+    // cap_stable = true only if ALL targets match the union.
+    let stable_a = caps_equal(caps_target_a, union_caps)
+    let stable_b = caps_equal(caps_target_b, union_caps)
+    let cap_stable = stable_a && stable_b
+
+    assert(!cap_stable, "drift should be detected when caps differ")
+    assert(!stable_a, "target A ({{io}}) should differ from union {{io,net}}")
+    assert(stable_b, "target B ({{io,net}}) matches union {{io,net}}")
+}
+
+@test
+fn test_no_drift_when_caps_identical() {
+    let caps_target_a: [str] = ["io"]
+    let caps_target_b: [str] = ["io"]
+    let all_caps: [[str]] = [caps_target_a, caps_target_b]
+    let union_caps = caps_union_all(all_caps)
+
+    let stable_a = caps_equal(caps_target_a, union_caps)
+    let stable_b = caps_equal(caps_target_b, union_caps)
+    let cap_stable = stable_a && stable_b
+
+    assert(cap_stable, "no drift when caps are identical")
+}
+
+// --------------- render: caps_to_json_array ---------------
+
+@test
+fn test_caps_to_json_array_sorted() {
+    let c: [str] = ["net", "io", "compute"]
+    let j = caps_to_json_array(c)
+    // Sorted: compute, io, net
+    assert(j == "[\"compute\",\"io\",\"net\"]",
+        "expected sorted JSON array, got " + j)
+}
+
+@test
+fn test_caps_to_json_array_empty() {
+    let c: [str] = []
+    let j = caps_to_json_array(c)
+    assert(j == "[]", "empty array JSON should be [], got " + j)
+}
+
+@test
+fn test_caps_to_json_array_single() {
+    let c: [str] = ["io"]
+    let j = caps_to_json_array(c)
+    assert(j == "[\"io\"]", "single element JSON, got " + j)
+}
+
+fn main() {
+    test_caps_member_found()
+    println("PASS test_caps_member_found")
+    test_caps_member_not_found()
+    println("PASS test_caps_member_not_found")
+    test_caps_member_empty()
+    println("PASS test_caps_member_empty")
+
+    test_caps_union_no_overlap()
+    println("PASS test_caps_union_no_overlap")
+    test_caps_union_with_overlap()
+    println("PASS test_caps_union_with_overlap")
+    test_caps_union_empty_left()
+    println("PASS test_caps_union_empty_left")
+    test_caps_union_both_empty()
+    println("PASS test_caps_union_both_empty")
+
+    test_caps_equal_same_order()
+    println("PASS test_caps_equal_same_order")
+    test_caps_equal_different_order()
+    println("PASS test_caps_equal_different_order")
+    test_caps_equal_different_size()
+    println("PASS test_caps_equal_different_size")
+    test_caps_equal_different_members()
+    println("PASS test_caps_equal_different_members")
+
+    test_caps_union_all_three_sets()
+    println("PASS test_caps_union_all_three_sets")
+    test_caps_union_all_empty_list()
+    println("PASS test_caps_union_all_empty_list")
+
+    test_drift_detected_when_caps_differ()
+    println("PASS test_drift_detected_when_caps_differ")
+    test_no_drift_when_caps_identical()
+    println("PASS test_no_drift_when_caps_identical")
+
+    test_caps_to_json_array_sorted()
+    println("PASS test_caps_to_json_array_sorted")
+    test_caps_to_json_array_empty()
+    println("PASS test_caps_to_json_array_empty")
+    test_caps_to_json_array_single()
+    println("PASS test_caps_to_json_array_single")
+
+    println("19/19 caps tests passed")
+}

@@ -1,0 +1,114 @@
+// ============================================================
+// render.kry -- produce the release-matrix.json output.
+//
+// JSON output is built with string concatenation. Literal braces in
+// Kryos string literals require {{ (gives {) and }} (gives }).
+// ============================================================
+
+use matrix
+use caps
+
+// Escape a string for JSON embedding (backslash and double-quote).
+@capabilities()
+fn json_escape(s: str) -> str {
+    let n = len(s)
+    let mut out: str = ""
+    let mut i = 0
+    while i < n {
+        let ch = substr(s, i, i + 1)
+        if ch == "\"" {
+            out = out + "\\\""
+        } elif ch == "\\" {
+            out = out + "\\\\"
+        } elif ch == "\n" {
+            out = out + "\\n"
+        } elif ch == "\r" {
+            out = out + "\\r"
+        } else {
+            out = out + ch
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Render a [str] as a JSON array of strings (no extra escaping needed for cap names).
+@capabilities()
+fn render_str_array_raw(arr: [str]) -> str {
+    let mut out: str = "["
+    let mut i = 0
+    while i < len(arr) {
+        if i > 0 {
+            out = out + ","
+        }
+        out = out + "\"" + arr[i] + "\""
+        i = i + 1
+    }
+    return out + "]"
+}
+
+// Render one TargetResult as a JSON object body (caller wraps in triple key).
+@capabilities()
+fn render_target_entry(r: TargetResult) -> str {
+    let open_b = "{{"
+    let close_b = "}}"
+    let mut out: str = "    " + open_b
+    let build_val = if r.build_success { "true" } else { "false" }
+    out = out + "\n      \"build_success\": " + build_val
+    if r.build_success {
+        out = out + ",\n      \"binary\": \"" + json_escape(r.binary) + "\""
+    } else {
+        let first_line = substr(r.build_error, 0, min(len(r.build_error), 120))
+        out = out + ",\n      \"build_error\": \"" + json_escape(first_line) + "\""
+    }
+    out = out + ",\n      \"caps\": " + caps_to_json_array(r.caps)
+    out = out + "\n    " + close_b
+    return out
+}
+
+// Render the full release-matrix.json for all targets.
+@capabilities()
+fn render_matrix_json(
+    proj: str,
+    results: [TargetResult],
+    cap_stable: bool,
+    union_caps: [str]
+) -> str {
+    let open_b = "{{"
+    let close_b = "}}"
+    let stable_val = if cap_stable { "true" } else { "false" }
+
+    let mut out: str = open_b
+    out = out + "\n  \"schema\": \"kryos-xcompile-caps-v1\","
+    out = out + "\n  \"project\": \"" + json_escape(proj) + "\","
+    out = out + "\n  \"cap_stable\": " + stable_val + ","
+    out = out + "\n  \"cap_union\": " + caps_to_json_array(union_caps) + ","
+    out = out + "\n  \"targets\": " + open_b
+
+    let mut i = 0
+    while i < len(results) {
+        let r = results[i]
+        if i > 0 {
+            out = out + ","
+        }
+        out = out + "\n    \"" + json_escape(r.triple) + "\":"
+        out = out + "\n" + render_target_entry(r)
+        i = i + 1
+    }
+
+    out = out + "\n  " + close_b
+    out = out + "\n" + close_b
+    return out
+}
+
+// Render a human-readable drift report for stderr/stdout.
+@capabilities()
+fn render_drift_report(results: [TargetResult], union_caps: [str]) -> str {
+    let mut out: str = "xcompile-caps: DRIFT DETECTED -- capability surface differs across targets"
+    out = out + "\n  union : " + caps_render(union_caps)
+    for r in results {
+        let mark = if caps_equal(r.caps, union_caps) { "  ok" } else { "DIFF" }
+        out = out + "\n  " + mark + "  " + r.triple + " => " + caps_render(r.caps)
+    }
+    return out
+}
