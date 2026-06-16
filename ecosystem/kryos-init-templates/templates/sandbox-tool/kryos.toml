@@ -1,0 +1,8 @@
+[package]
+name = "sandbox-tool"
+version = "0.1.0"
+description = "Pure-compute tool scaffolded by kryos-init-templates. No IO, net, or process."
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["compute"]

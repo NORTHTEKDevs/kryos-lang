@@ -1,0 +1,64 @@
+// ============================================================
+// sandbox-tool: pure-compute project template
+//
+// This template generates NO capability surface beyond compute.
+// The compiler will emit:
+//
+//   fn is_prime:     []
+//   fn primes_up_to: []
+//   fn join_ints:    []
+//   fn main:         []
+//
+// kryos.toml declares: allowed = ["compute"]
+// Policy check: OverDeclared (surface is empty; compute listed as
+// a budget ceiling) -> passes.
+//
+// Replace the prime-sieve logic with your own pure computation.
+// ============================================================
+
+// Return true iff n is a prime number.
+@capabilities()
+fn is_prime(n: i64) -> bool {
+    if n < 2 { return false }
+    let mut i = 2
+    while i * i <= n {
+        if n % i == 0 { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// Collect all primes up to and including `limit`.
+@capabilities()
+fn primes_up_to(limit: i64) -> [i64] {
+    let mut result: [i64] = []
+    let mut n = 2
+    while n <= limit {
+        if is_prime(n) {
+            result = push(result, n)
+        }
+        n = n + 1
+    }
+    return result
+}
+
+// Format a [i64] as a comma-separated string.
+@capabilities()
+fn join_ints(nums: [i64], sep: str) -> str {
+    let mut out: str = ""
+    let mut i = 0
+    while i < len(nums) {
+        if i > 0 { out = out + sep }
+        out = out + to_string(nums[i])
+        i = i + 1
+    }
+    return out
+}
+
+@capabilities()
+fn main() {
+    let limit = 50
+    let p = primes_up_to(limit)
+    println("Primes up to " + to_string(limit) + ": " + join_ints(p, ", "))
+    println("Count: " + to_string(len(p)))
+}

@@ -1,0 +1,8 @@
+[package]
+name = "governed-agent"
+version = "0.1.0"
+description = "Network-enabled agent with @budget ceiling, scaffolded by kryos-init-templates."
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["compute", "net"]

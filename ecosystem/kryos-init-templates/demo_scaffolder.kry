@@ -1,0 +1,59 @@
+// ============================================================
+// demo_scaffolder.kry -- CLI entry point for kryos-init-templates.
+//
+// Usage:
+//   kryos run demo_scaffolder.kry                   (list templates)
+//   kryos run demo_scaffolder.kry <name> <dest>     (scaffold into dest/)
+//
+// Examples:
+//   kryos run demo_scaffolder.kry sandbox-tool my-tool
+//   kryos run demo_scaffolder.kry governed-agent my-agent
+//   kryos run demo_scaffolder.kry mcp-server my-server
+// ============================================================
+
+use caps
+use scaffolder
+
+@capabilities()
+fn print_listing() {
+    let names = template_names()
+    println("kryos-init-templates: available project scaffolds")
+    println("")
+    for n in names {
+        let m = template_meta(n)
+        println("  " + m.name)
+        println("    " + m.description)
+        println("    caps: " + caps_render_array(m.declared_caps))
+        println("")
+    }
+    println("Usage: kryos run demo_scaffolder.kry <template-name> <dest-dir>")
+}
+
+@capabilities(io)
+fn main() {
+    let a = args()
+    if len(a) < 2 {
+        print_listing()
+        return
+    }
+    if len(a) < 3 {
+        println("usage: kryos run demo_scaffolder.kry <template-name> <dest-dir>")
+        return
+    }
+    let name = a[1]
+    let dest = a[2]
+    let templates_root = "templates"
+    let errors = scaffold(name, templates_root, dest)
+    if len(errors) == 0 {
+        println("scaffolded " + name + " -> " + dest)
+        println("Next steps:")
+        println("  cd " + dest)
+        println("  kryos run src/main.kry")
+        println("  kryos test")
+    } else {
+        println("scaffold errors for " + name + ":")
+        for e in errors {
+            println("  " + e)
+        }
+    }
+}

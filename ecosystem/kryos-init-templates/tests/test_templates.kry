@@ -1,0 +1,176 @@
+// ============================================================
+// test_templates.kry -- policy and metadata tests for kryos-init-templates.
+//
+//   kryos test --path ecosystem/kryos-init-templates
+//   kryos run  tests/test_templates.kry        (also checks file existence)
+//
+// @test functions are pure compute: they verify the scaffolder's static
+// metadata and inline policy correctness for each template.
+//
+// Policy correctness: for each template, we know (from analysis) what
+// capability surface the template's code exposes at compile time. We verify
+// that the declared allowlist is a SUPERSET of that surface so the
+// kryos-policy check will pass (OverDeclared or exact match, never
+// UnderDeclared).
+//
+// sandbox-tool:   actual = []       declared = ["compute"]  -> OverDeclared -> PASS
+// governed-agent: actual = ["net"]  declared = ["compute","net"] -> OverDeclared -> PASS
+// mcp-server:     actual = ["io"]   declared = ["compute","io"]  -> OverDeclared -> PASS
+// ============================================================
+
+use caps
+use scaffolder
+
+// ---------------------------------------------------------------------------
+// Template registry tests
+// ---------------------------------------------------------------------------
+
+@test
+fn test_template_count() {
+    let names = template_names()
+    assert(len(names) == 3, "expected 3 templates, got " + to_string(len(names)))
+}
+
+@test
+fn test_template_names_correct() {
+    let names = template_names()
+    assert(names[0] == "sandbox-tool",  "first template should be sandbox-tool")
+    assert(names[1] == "governed-agent", "second template should be governed-agent")
+    assert(names[2] == "mcp-server",    "third template should be mcp-server")
+}
+
+@test
+fn test_unknown_template_returns_empty_caps() {
+    let m = template_meta("no-such-template")
+    assert(len(m.declared_caps) == 0, "unknown template must return empty caps")
+    assert(m.name == "no-such-template", "unknown template preserves name")
+}
+
+// ---------------------------------------------------------------------------
+// Declared caps per template (static metadata)
+// ---------------------------------------------------------------------------
+
+@test
+fn test_sandbox_tool_declares_compute() {
+    let m = template_meta("sandbox-tool")
+    assert(len(m.declared_caps) == 1, "sandbox-tool: expected 1 declared cap")
+    assert(m.declared_caps[0] == "compute", "sandbox-tool: must declare compute")
+}
+
+@test
+fn test_governed_agent_declares_compute_and_net() {
+    let m = template_meta("governed-agent")
+    assert(len(m.declared_caps) == 2, "governed-agent: expected 2 declared caps")
+    assert(caps_member(m.declared_caps, "compute"), "governed-agent: must declare compute")
+    assert(caps_member(m.declared_caps, "net"), "governed-agent: must declare net")
+}
+
+@test
+fn test_mcp_server_declares_compute_and_io() {
+    let m = template_meta("mcp-server")
+    assert(len(m.declared_caps) == 2, "mcp-server: expected 2 declared caps")
+    assert(caps_member(m.declared_caps, "compute"), "mcp-server: must declare compute")
+    assert(caps_member(m.declared_caps, "io"), "mcp-server: must declare io")
+}
+
+// ---------------------------------------------------------------------------
+// Inline policy correctness: declared must be a superset of actual surface.
+//
+// Actual surfaces (from compiler analysis of each template's source):
+//   sandbox-tool:   all functions @capabilities() -> actual = []
+//   governed-agent: fetch_data/@capabilities(net), run_agent/@capabilities(net) -> actual = ["net"]
+//   mcp-server:     handle_line/@capabilities(io), main/@capabilities(io) -> actual = ["io"]
+// ---------------------------------------------------------------------------
+
+@test
+fn test_sandbox_tool_policy_passes() {
+    let m = template_meta("sandbox-tool")
+    // sandbox-tool source has no capability-gated builtins; actual surface is empty.
+    let actual: [str] = []
+    let excess = caps_excess(actual, m.declared_caps)
+    assert(len(excess) == 0,
+        "sandbox-tool: actual surface not within declared caps, excess: " + caps_join(excess, ", "))
+}
+
+@test
+fn test_governed_agent_policy_passes() {
+    let m = template_meta("governed-agent")
+    // governed-agent calls std::http::get (net-gated); actual surface is ["net"].
+    let actual: [str] = ["net"]
+    let excess = caps_excess(actual, m.declared_caps)
+    assert(len(excess) == 0,
+        "governed-agent: actual surface not within declared caps, excess: " + caps_join(excess, ", "))
+}
+
+@test
+fn test_mcp_server_policy_passes() {
+    let m = template_meta("mcp-server")
+    // mcp-server calls std::io::read_line (io-gated); actual surface is ["io"].
+    let actual: [str] = ["io"]
+    let excess = caps_excess(actual, m.declared_caps)
+    assert(len(excess) == 0,
+        "mcp-server: actual surface not within declared caps, excess: " + caps_join(excess, ", "))
+}
+
+// ---------------------------------------------------------------------------
+// Standalone runner (for kryos run tests/test_templates.kry).
+// Also verifies template files exist on disk (io path; not a @test).
+// ---------------------------------------------------------------------------
+
+@capabilities(io)
+fn check_template_files_exist(tmpl_root: str, name: str) -> [str] {
+    let files = template_files()
+    let mut missing: [str] = []
+    for rel in files {
+        let path = tmpl_root + "/" + name + "/" + rel
+        if file_exists(path) == 0 {
+            missing = push(missing, rel)
+        }
+    }
+    return missing
+}
+
+@capabilities(io)
+fn main() {
+    // Run @test functions.
+    test_template_count()
+    println("PASS test_template_count")
+    test_template_names_correct()
+    println("PASS test_template_names_correct")
+    test_unknown_template_returns_empty_caps()
+    println("PASS test_unknown_template_returns_empty_caps")
+    test_sandbox_tool_declares_compute()
+    println("PASS test_sandbox_tool_declares_compute")
+    test_governed_agent_declares_compute_and_net()
+    println("PASS test_governed_agent_declares_compute_and_net")
+    test_mcp_server_declares_compute_and_io()
+    println("PASS test_mcp_server_declares_compute_and_io")
+    test_sandbox_tool_policy_passes()
+    println("PASS test_sandbox_tool_policy_passes")
+    test_governed_agent_policy_passes()
+    println("PASS test_governed_agent_policy_passes")
+    test_mcp_server_policy_passes()
+    println("PASS test_mcp_server_policy_passes")
+    println("9/9 template metadata and policy tests passed")
+    println("")
+
+    // File-existence sweep (io path).
+    let tmpl_root = "ecosystem/kryos-init-templates/templates"
+    let names = template_names()
+    let mut all_present = true
+    for name in names {
+        let missing = check_template_files_exist(tmpl_root, name)
+        if len(missing) > 0 {
+            all_present = false
+            println("MISSING files in " + name + ":")
+            for f in missing {
+                println("  " + f)
+            }
+        } else {
+            println("FILES OK: " + name)
+        }
+    }
+    if all_present {
+        println("All template files present.")
+    }
+}

@@ -1,0 +1,105 @@
+// ============================================================
+// scaffolder.kry -- template registry and file copier.
+//
+// Pure library module (no fn main). The CLI entry point lives in
+// demo_scaffolder.kry at the package root.
+//
+// Three templates:
+//   sandbox-tool   -- compute only
+//   governed-agent -- compute + net, @budget ceiling
+//   mcp-server     -- compute + io, JSON-RPC over stdio
+// ============================================================
+
+use caps
+
+struct TemplateMeta {
+    name: str,
+    description: str,
+    declared_caps: [str],
+}
+
+// All available template names, in canonical order.
+@capabilities()
+fn template_names() -> [str] {
+    return ["sandbox-tool", "governed-agent", "mcp-server"]
+}
+
+// Metadata for a named template. Returns a sentinel with empty caps for unknown names.
+@capabilities()
+fn template_meta(name: str) -> TemplateMeta {
+    if name == "sandbox-tool" {
+        return TemplateMeta {
+            name: "sandbox-tool",
+            description: "Pure-compute tool: no IO, net, or process. Safe for any sandbox.",
+            declared_caps: ["compute"],
+        }
+    }
+    if name == "governed-agent" {
+        return TemplateMeta {
+            name: "governed-agent",
+            description: "Network-enabled agent with @budget ceiling. Declares compute + net.",
+            declared_caps: ["compute", "net"],
+        }
+    }
+    if name == "mcp-server" {
+        return TemplateMeta {
+            name: "mcp-server",
+            description: "MCP JSON-RPC 2.0 server over stdio. Declares compute + io.",
+            declared_caps: ["compute", "io"],
+        }
+    }
+    return TemplateMeta {
+        name: name,
+        description: "unknown template",
+        declared_caps: [],
+    }
+}
+
+// Files shipped inside each template directory (relative to the template root).
+@capabilities()
+fn template_files() -> [str] {
+    return ["kryos.toml", "README.md", "ci.yml", "src/main.kry", "tests/test_main.kry"]
+}
+
+// Copy src to dest. Returns "ok" or an error string.
+@capabilities(io)
+fn copy_file(src_path: str, dest_path: str) -> str {
+    if file_exists(src_path) == 0 {
+        return "source not found: " + src_path
+    }
+    let content = file_read(src_path)
+    file_write(dest_path, content)
+    return "ok"
+}
+
+// Scaffold a named template into dest/, reading files from templates_root/.
+// Returns a list of per-file errors (empty = all written OK).
+@capabilities(io)
+fn scaffold(name: str, templates_root: str, dest: str) -> [str] {
+    let names = template_names()
+    let mut valid = false
+    for n in names {
+        if n == name { valid = true }
+    }
+    if !valid {
+        return ["unknown template: " + name]
+    }
+
+    let src_root = templates_root + "/" + name
+    let files = template_files()
+    let mut errors: [str] = []
+
+    create_dir(dest)
+    create_dir(dest + "/src")
+    create_dir(dest + "/tests")
+
+    for rel in files {
+        let src = src_root + "/" + rel
+        let dst = dest + "/" + rel
+        let r = copy_file(src, dst)
+        if r != "ok" {
+            errors = push(errors, rel + ": " + r)
+        }
+    }
+    return errors
+}

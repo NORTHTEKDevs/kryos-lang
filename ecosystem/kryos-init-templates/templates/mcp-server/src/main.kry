@@ -1,0 +1,187 @@
+// ============================================================
+// mcp-server: compute + io project template
+//
+// A minimal MCP (Model Context Protocol) server that speaks
+// JSON-RPC 2.0 over stdio. The host process sends newline-
+// delimited JSON requests on stdin; this server writes JSON
+// responses to stdout.
+//
+// Capability surface:
+//
+//   fn q:             []   (returns the " character)
+//   fn str_find:      []
+//   fn json_str_val:  []
+//   fn json_id_val:   []
+//   fn make_response: []
+//   fn make_error:    []
+//   fn dispatch:      []
+//   fn handle_line:   [io]   (calls read_line -- io-gated)
+//   fn main:          [io]   (calls handle_line)
+//
+// kryos.toml declares: allowed = ["compute", "io"]
+// Policy: actual = ["io"], declared is a superset -> PASS
+//
+// Note on Kryos strings: { and } are interpolation delimiters.
+// Use {{ for a literal { and }} for a literal }. Use "\"" for
+// a literal " character (Kryos does support \" as an escape only
+// when it is the sole non-delimiter in the string, so for embedded
+// quotes in JSON strings we bind q = "\"" and concatenate).
+//
+// Protocol subset implemented here (MVP):
+//   initialize   -> InitializeResult with serverInfo
+//   tools/list   -> empty tool list (add your tools here)
+//   ping         -> pong
+//   <unknown>    -> JSON-RPC error -32601 (MethodNotFound)
+// ============================================================
+
+use std::io::{read_line}
+
+// ---------------------------------------------------------------------------
+// Minimal JSON helpers (pure compute)
+// ---------------------------------------------------------------------------
+
+// Return the double-quote character as a string.
+@capabilities()
+fn q() -> str {
+    return "\""
+}
+
+// Index of the first occurrence of `needle` in `s`, or -1.
+@capabilities()
+fn str_find(s: str, needle: str) -> i64 {
+    let n = len(s)
+    let m = len(needle)
+    if m == 0 { return 0 }
+    let mut i = 0
+    while i + m <= n {
+        if substr(s, i, i + m) == needle {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// Extract the string value for `key` in a flat JSON object.
+@capabilities()
+fn json_str_val(json: str, key: str) -> str {
+    let qc = q()
+    let needle = qc + key + qc + ":"
+    let ki = str_find(json, needle)
+    if ki < 0 { return "" }
+    let after = substr(json, ki + len(needle), len(json))
+    let at0 = substr(after, 0, 1)
+    let after2 = if len(after) > 0 && at0 == " " {
+        substr(after, 1, len(after))
+    } else {
+        after
+    }
+    if len(after2) == 0 || substr(after2, 0, 1) != qc {
+        return ""
+    }
+    let inner = substr(after2, 1, len(after2))
+    let close = str_find(inner, qc)
+    if close < 0 { return "" }
+    return substr(inner, 0, close)
+}
+
+// Extract the id value from a JSON-RPC request. Returns the raw JSON token
+// (e.g. "42" for numeric, "\"req-1\"" for string, "null" if absent).
+@capabilities()
+fn json_id_val(json: str) -> str {
+    let qc = q()
+    let needle = qc + "id" + qc + ":"
+    let ki = str_find(json, needle)
+    if ki < 0 { return "null" }
+    let after = substr(json, ki + len(needle), len(json))
+    let n = len(after)
+    let mut i = 0
+    while i < n && substr(after, i, i + 1) == " " { i = i + 1 }
+    if i >= n { return "null" }
+    // Quoted string id.
+    if substr(after, i, i + 1) == qc {
+        let inner = substr(after, i + 1, n)
+        let close = str_find(inner, qc)
+        if close < 0 { return "null" }
+        return qc + substr(inner, 0, close) + qc
+    }
+    // Numeric id: collect digit characters.
+    let mut out: str = ""
+    while i < n {
+        let c = substr(after, i, i + 1)
+        if c == "0" || c == "1" || c == "2" || c == "3" || c == "4" ||
+           c == "5" || c == "6" || c == "7" || c == "8" || c == "9" {
+            out = out + c
+        } else {
+            break
+        }
+        i = i + 1
+    }
+    if len(out) == 0 { return "null" }
+    return out
+}
+
+// Build a JSON-RPC 2.0 success response.
+// Note: {{ and }} are Kryos string-literal escapes for { and }.
+@capabilities()
+fn make_response(id: str, result_json: str) -> str {
+    let qc = q()
+    return "{{" + qc + "jsonrpc" + qc + ":" + qc + "2.0" + qc + "," + qc + "id" + qc + ":" + id + "," + qc + "result" + qc + ":" + result_json + "}}"
+}
+
+// Build a JSON-RPC 2.0 error response.
+@capabilities()
+fn make_error(id: str, code: i64, message: str) -> str {
+    let qc = q()
+    let err_obj = "{{" + qc + "code" + qc + ":" + to_string(code) + "," + qc + "message" + qc + ":" + qc + message + qc + "}}"
+    return "{{" + qc + "jsonrpc" + qc + ":" + qc + "2.0" + qc + "," + qc + "id" + qc + ":" + id + "," + qc + "error" + qc + ":" + err_obj + "}}"
+}
+
+// ---------------------------------------------------------------------------
+// Request dispatcher (pure compute)
+// ---------------------------------------------------------------------------
+
+@capabilities()
+fn dispatch(method: str, id: str) -> str {
+    let qc = q()
+    if method == "initialize" {
+        let srv = "{{" + qc + "name" + qc + ":" + qc + "mcp-server" + qc + "," + qc + "version" + qc + ":" + qc + "0.1.0" + qc + "}}"
+        let result = "{{" + qc + "protocolVersion" + qc + ":" + qc + "2024-11-05" + qc + "," + qc + "serverInfo" + qc + ":" + srv + "}}"
+        return make_response(id, result)
+    }
+    if method == "ping" {
+        return make_response(id, "{{}}")
+    }
+    if method == "tools/list" {
+        return make_response(id, "{{" + qc + "tools" + qc + ":[]}}")
+    }
+    return make_error(id, -32601, "MethodNotFound: " + method)
+}
+
+// ---------------------------------------------------------------------------
+// IO layer
+// ---------------------------------------------------------------------------
+
+@capabilities(io)
+fn handle_line(line: str) -> str {
+    if len(line) == 0 { return "" }
+    let method = json_str_val(line, "method")
+    let id = json_id_val(line)
+    if len(method) == 0 {
+        return make_error(id, -32600, "InvalidRequest: missing method")
+    }
+    return dispatch(method, id)
+}
+
+@capabilities(io)
+fn main() {
+    println("mcp-server: listening on stdin (JSON-RPC 2.0)")
+    loop {
+        let line = read_line()
+        if len(line) == 0 { break }
+        let response = handle_line(line)
+        if len(response) > 0 {
+            println(response)
+        }
+    }
+}

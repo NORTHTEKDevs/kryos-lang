@@ -1,0 +1,114 @@
+// ============================================================
+// caps.kry -- capability-set primitives for init-templates.
+//
+// A capability set is a [str] of lowercase names
+// (e.g. ["compute", "io", "net"]). These helpers implement
+// the subset check used by the policy test so test_templates.kry
+// can inline-verify each template's declared/actual caps alignment
+// without reading files from disk.
+//
+// Mirrors the same helpers in kryos-policy/src/caps.kry.
+// Everything here is pure compute.
+// ============================================================
+
+// Is `cap` already present in `set`?
+@capabilities()
+fn caps_member(set: [str], cap: str) -> bool {
+    for c in set {
+        if c == cap {
+            return true
+        }
+    }
+    return false
+}
+
+// Does `declared` grant `cap`? "all" is the wildcard.
+@capabilities()
+fn caps_allows(declared: [str], cap: str) -> bool {
+    for d in declared {
+        if d == cap || d == "all" {
+            return true
+        }
+    }
+    return false
+}
+
+// Capabilities in `actual` that `declared` does NOT grant.
+// Empty result -> actual is within declared (policy passes).
+@capabilities()
+fn caps_excess(actual: [str], declared: [str]) -> [str] {
+    let mut excess: [str] = []
+    for cap in actual {
+        if !caps_allows(declared, cap) && !caps_member(excess, cap) {
+            excess = push(excess, cap)
+        }
+    }
+    return excess
+}
+
+// True iff actual is a subset of declared (no excess caps).
+@capabilities()
+fn caps_is_subset(actual: [str], declared: [str]) -> bool {
+    return len(caps_excess(actual, declared)) == 0
+}
+
+// Insert `cap` into `set` keeping it sorted and de-duplicated.
+@capabilities()
+fn caps_insert_sorted(set: [str], cap: str) -> [str] {
+    if caps_member(set, cap) {
+        return set
+    }
+    let mut out: [str] = []
+    let mut inserted = false
+    for c in set {
+        if !inserted && cap < c {
+            out = push(out, cap)
+            inserted = true
+        }
+        out = push(out, c)
+    }
+    if !inserted {
+        out = push(out, cap)
+    }
+    return out
+}
+
+// Normalize a set: sorted and de-duplicated.
+@capabilities()
+fn caps_normalize(set: [str]) -> [str] {
+    let mut out: [str] = []
+    for c in set {
+        out = caps_insert_sorted(out, c)
+    }
+    return out
+}
+
+// Render as ["a", "b"] TOML-style inline array.
+@capabilities()
+fn caps_render_array(set: [str]) -> str {
+    let mut out: str = "["
+    let mut first = true
+    for c in set {
+        if !first {
+            out = out + ", "
+        }
+        out = out + "\"" + c + "\""
+        first = false
+    }
+    return out + "]"
+}
+
+// Render as comma-joined plain list for diagnostics.
+@capabilities()
+fn caps_join(set: [str], sep: str) -> str {
+    let mut out: str = ""
+    let mut first = true
+    for c in set {
+        if !first {
+            out = out + sep
+        }
+        out = out + c
+        first = false
+    }
+    return out
+}

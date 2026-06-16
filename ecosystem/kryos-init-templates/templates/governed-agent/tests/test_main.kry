@@ -1,0 +1,84 @@
+// ============================================================
+// test_main.kry -- governed-agent template tests.
+//
+//   kryos test --path <dest>/governed-agent
+//   kryos run  tests/test_main.kry
+//
+// Tests cover the pure-compute helpers (word_count, summarize).
+// The net-using fetch_data/run_agent functions are NOT called here
+// so the tests run offline without any network access.
+// ============================================================
+
+@capabilities()
+fn word_count(text: str) -> i64 {
+    let mut count = 0
+    let mut in_word = false
+    let mut i = 0
+    while i < len(text) {
+        let c = substr(text, i, i + 1)
+        let is_ws = c == " " || c == "\n" || c == "\t" || c == "\r"
+        if is_ws {
+            in_word = false
+        } elif !in_word {
+            count = count + 1
+            in_word = true
+        }
+        i = i + 1
+    }
+    return count
+}
+
+@capabilities()
+fn summarize(data: str) -> str {
+    let words = word_count(data)
+    return "words=" + to_string(words) + " bytes=" + to_string(len(data))
+}
+
+// ---------------------------------------------------------------------------
+
+@test
+fn test_word_count_basic() {
+    assert(word_count("hello world") == 2, "two words")
+    assert(word_count("one") == 1, "one word")
+    assert(word_count("") == 0, "empty string")
+}
+
+@test
+fn test_word_count_extra_spaces() {
+    assert(word_count("  a  b  c  ") == 3, "three words despite extra spaces")
+    assert(word_count("   ") == 0, "only whitespace = zero words")
+}
+
+@test
+fn test_word_count_newlines() {
+    assert(word_count("line one\nline two\nline three") == 6, "words across newlines")
+}
+
+@test
+fn test_summarize_format() {
+    let s = summarize("hello world")
+    assert(contains(s, "words=2"), "summarize must include word count")
+    assert(contains(s, "bytes=11"), "summarize must include byte count")
+}
+
+@test
+fn test_summarize_empty() {
+    let s = summarize("")
+    assert(contains(s, "words=0"), "empty: word count is 0")
+    assert(contains(s, "bytes=0"), "empty: byte count is 0")
+}
+
+@capabilities()
+fn main() {
+    test_word_count_basic()
+    println("PASS test_word_count_basic")
+    test_word_count_extra_spaces()
+    println("PASS test_word_count_extra_spaces")
+    test_word_count_newlines()
+    println("PASS test_word_count_newlines")
+    test_summarize_format()
+    println("PASS test_summarize_format")
+    test_summarize_empty()
+    println("PASS test_summarize_empty")
+    println("5/5 governed-agent tests passed")
+}

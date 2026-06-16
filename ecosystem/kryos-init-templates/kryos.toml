@@ -1,0 +1,8 @@
+[package]
+name = "kryos-init-templates"
+version = "0.1.0"
+description = "Capability-scoped project scaffolds: three templates (sandbox-tool, governed-agent, mcp-server) each shipping a kryos.toml with a correct capability allowlist and CI policy check from commit zero"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["compute", "io"]

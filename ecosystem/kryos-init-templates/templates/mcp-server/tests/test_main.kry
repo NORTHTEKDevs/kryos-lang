@@ -1,0 +1,245 @@
+// ============================================================
+// test_main.kry -- mcp-server template tests.
+//
+//   kryos test --path <dest>/mcp-server
+//   kryos run  tests/test_main.kry
+//
+// Tests cover the pure-compute helpers (str_find, json_str_val,
+// json_id_val, make_response, make_error, dispatch).
+// read_line and handle_line are NOT called here so the tests run
+// without any stdin interaction.
+//
+// String escaping note: use "\""  for a literal double quote,
+// use {{ and }} in string literals for literal { and }.
+// ============================================================
+
+// -- helpers (redefined here to avoid fn main() conflict) --
+
+@capabilities()
+fn q() -> str {
+    return "\""
+}
+
+@capabilities()
+fn str_find(s: str, needle: str) -> i64 {
+    let n = len(s)
+    let m = len(needle)
+    if m == 0 { return 0 }
+    let mut i = 0
+    while i + m <= n {
+        if substr(s, i, i + m) == needle {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+@capabilities()
+fn json_str_val(json: str, key: str) -> str {
+    let qc = q()
+    let needle = qc + key + qc + ":"
+    let ki = str_find(json, needle)
+    if ki < 0 { return "" }
+    let after = substr(json, ki + len(needle), len(json))
+    let at0 = substr(after, 0, 1)
+    let after2 = if len(after) > 0 && at0 == " " {
+        substr(after, 1, len(after))
+    } else {
+        after
+    }
+    if len(after2) == 0 || substr(after2, 0, 1) != qc {
+        return ""
+    }
+    let inner = substr(after2, 1, len(after2))
+    let close = str_find(inner, qc)
+    if close < 0 { return "" }
+    return substr(inner, 0, close)
+}
+
+@capabilities()
+fn json_id_val(json: str) -> str {
+    let qc = q()
+    let needle = qc + "id" + qc + ":"
+    let ki = str_find(json, needle)
+    if ki < 0 { return "null" }
+    let after = substr(json, ki + len(needle), len(json))
+    let n = len(after)
+    let mut i = 0
+    while i < n && substr(after, i, i + 1) == " " { i = i + 1 }
+    if i >= n { return "null" }
+    if substr(after, i, i + 1) == qc {
+        let inner = substr(after, i + 1, n)
+        let close = str_find(inner, qc)
+        if close < 0 { return "null" }
+        return qc + substr(inner, 0, close) + qc
+    }
+    let mut out: str = ""
+    while i < n {
+        let c = substr(after, i, i + 1)
+        if c == "0" || c == "1" || c == "2" || c == "3" || c == "4" ||
+           c == "5" || c == "6" || c == "7" || c == "8" || c == "9" {
+            out = out + c
+        } else {
+            break
+        }
+        i = i + 1
+    }
+    if len(out) == 0 { return "null" }
+    return out
+}
+
+@capabilities()
+fn make_response(id: str, result_json: str) -> str {
+    let qc = q()
+    return "{{" + qc + "jsonrpc" + qc + ":" + qc + "2.0" + qc + "," + qc + "id" + qc + ":" + id + "," + qc + "result" + qc + ":" + result_json + "}}"
+}
+
+@capabilities()
+fn make_error(id: str, code: i64, message: str) -> str {
+    let qc = q()
+    let err_obj = "{{" + qc + "code" + qc + ":" + to_string(code) + "," + qc + "message" + qc + ":" + qc + message + qc + "}}"
+    return "{{" + qc + "jsonrpc" + qc + ":" + qc + "2.0" + qc + "," + qc + "id" + qc + ":" + id + "," + qc + "error" + qc + ":" + err_obj + "}}"
+}
+
+@capabilities()
+fn dispatch(method: str, id: str) -> str {
+    let qc = q()
+    if method == "initialize" {
+        let srv = "{{" + qc + "name" + qc + ":" + qc + "mcp-server" + qc + "," + qc + "version" + qc + ":" + qc + "0.1.0" + qc + "}}"
+        let result = "{{" + qc + "protocolVersion" + qc + ":" + qc + "2024-11-05" + qc + "," + qc + "serverInfo" + qc + ":" + srv + "}}"
+        return make_response(id, result)
+    }
+    if method == "ping" {
+        return make_response(id, "{{}}")
+    }
+    if method == "tools/list" {
+        return make_response(id, "{{" + qc + "tools" + qc + ":[]}}")
+    }
+    return make_error(id, -32601, "MethodNotFound: " + method)
+}
+
+// ---------------------------------------------------------------------------
+
+@test
+fn test_str_find_basic() {
+    assert(str_find("hello world", "world") == 6, "found 'world' at 6")
+    assert(str_find("hello", "xyz") == -1, "not found returns -1")
+    assert(str_find("abc", "") == 0, "empty needle returns 0")
+}
+
+@test
+fn test_json_str_val_method() {
+    let qc = q()
+    let req = "{{" + qc + "jsonrpc" + qc + ":" + qc + "2.0" + qc + "," + qc + "method" + qc + ":" + qc + "tools/list" + qc + "," + qc + "id" + qc + ":1}}"
+    let method = json_str_val(req, "method")
+    assert(method == "tools/list", "should extract method field, got " + method)
+}
+
+@test
+fn test_json_str_val_missing() {
+    let qc = q()
+    let json = "{{" + qc + "a" + qc + ":" + qc + "b" + qc + "}}"
+    assert(json_str_val(json, "missing") == "", "absent key returns empty")
+}
+
+@test
+fn test_json_id_numeric() {
+    let qc = q()
+    let req = "{{" + qc + "method" + qc + ":" + qc + "ping" + qc + "," + qc + "id" + qc + ":42}}"
+    let id = json_id_val(req)
+    assert(id == "42", "numeric id should be 42, got " + id)
+}
+
+@test
+fn test_json_id_string() {
+    let qc = q()
+    let req = "{{" + qc + "id" + qc + ":" + qc + "req-1" + qc + "," + qc + "method" + qc + ":" + qc + "ping" + qc + "}}"
+    let id = json_id_val(req)
+    let expected = qc + "req-1" + qc
+    assert(id == expected, "string id should be quoted, got " + id)
+}
+
+@test
+fn test_json_id_absent() {
+    let qc = q()
+    let json = "{{" + qc + "method" + qc + ":" + qc + "ping" + qc + "}}"
+    assert(json_id_val(json) == "null", "absent id is null")
+}
+
+@test
+fn test_make_response_structure() {
+    let qc = q()
+    let result = "{{" + qc + "ok" + qc + ":true}}"
+    let r = make_response("1", result)
+    assert(contains(r, "jsonrpc"), "must include jsonrpc")
+    assert(contains(r, "2.0"), "must include version 2.0")
+    assert(contains(r, "result"), "must include result key")
+    assert(contains(r, "true"), "must include result value")
+}
+
+@test
+fn test_make_error_structure() {
+    let e = make_error("1", -32601, "MethodNotFound")
+    assert(contains(e, "jsonrpc"), "must include jsonrpc")
+    assert(contains(e, "-32601"), "must include error code")
+    assert(contains(e, "MethodNotFound"), "must include error message")
+    assert(contains(e, "error"), "must include error key")
+}
+
+@test
+fn test_dispatch_initialize() {
+    let resp = dispatch("initialize", "1")
+    assert(contains(resp, "protocolVersion"), "initialize must return protocolVersion")
+    assert(contains(resp, "serverInfo"), "initialize must return serverInfo")
+    assert(contains(resp, "2024-11-05"), "must include protocol version string")
+}
+
+@test
+fn test_dispatch_tools_list() {
+    let resp = dispatch("tools/list", "2")
+    assert(contains(resp, "tools"), "tools/list must return tools key")
+    assert(contains(resp, "result"), "tools/list must be in result")
+}
+
+@test
+fn test_dispatch_ping() {
+    let resp = dispatch("ping", "3")
+    assert(contains(resp, "result"), "ping must return result")
+}
+
+@test
+fn test_dispatch_unknown_method() {
+    let resp = dispatch("foo/unknown", "4")
+    assert(contains(resp, "-32601"), "unknown method must return MethodNotFound code")
+    assert(contains(resp, "foo/unknown"), "error must mention the unknown method")
+}
+
+@capabilities()
+fn main() {
+    test_str_find_basic()
+    println("PASS test_str_find_basic")
+    test_json_str_val_method()
+    println("PASS test_json_str_val_method")
+    test_json_str_val_missing()
+    println("PASS test_json_str_val_missing")
+    test_json_id_numeric()
+    println("PASS test_json_id_numeric")
+    test_json_id_string()
+    println("PASS test_json_id_string")
+    test_json_id_absent()
+    println("PASS test_json_id_absent")
+    test_make_response_structure()
+    println("PASS test_make_response_structure")
+    test_make_error_structure()
+    println("PASS test_make_error_structure")
+    test_dispatch_initialize()
+    println("PASS test_dispatch_initialize")
+    test_dispatch_tools_list()
+    println("PASS test_dispatch_tools_list")
+    test_dispatch_ping()
+    println("PASS test_dispatch_ping")
+    test_dispatch_unknown_method()
+    println("PASS test_dispatch_unknown_method")
+    println("12/12 mcp-server tests passed")
+}

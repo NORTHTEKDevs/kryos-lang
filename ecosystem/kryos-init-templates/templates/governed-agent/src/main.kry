@@ -1,0 +1,84 @@
+// ============================================================
+// governed-agent: net + compute project template
+//
+// An agent that fetches remote data and processes it locally.
+// The @budget attribute caps the number of outbound calls, giving
+// the compiler-enforced authority contract: at most N HTTP requests
+// per agent invocation. Replace the URL and processing logic with
+// your own endpoint and parsing.
+//
+// Compiler capability surface:
+//
+//   fn fetch_data: [net]    (calls std::http::get)
+//   fn word_count: []
+//   fn summarize:  []
+//   fn run_agent:  [net]    (calls fetch_data)
+//   fn main:       []       (only calls summarize for offline demo)
+//
+// kryos.toml declares: allowed = ["compute", "net"]
+// Policy check: actual = ["net"], declared is a superset -> PASS
+// ============================================================
+
+use std::http::{get, Response}
+
+// Fetch the body of a URL. Requires net capability.
+@capabilities(net)
+fn fetch_data(url: str) -> str {
+    let resp = get(url)
+    if resp.status != 200 {
+        return ""
+    }
+    return resp.body
+}
+
+// Count words in a string (pure compute).
+@capabilities()
+fn word_count(text: str) -> i64 {
+    let mut count = 0
+    let mut in_word = false
+    let mut i = 0
+    while i < len(text) {
+        let c = substr(text, i, i + 1)
+        let is_ws = c == " " || c == "\n" || c == "\t" || c == "\r"
+        if is_ws {
+            in_word = false
+        } elif !in_word {
+            count = count + 1
+            in_word = true
+        }
+        i = i + 1
+    }
+    return count
+}
+
+// Build a one-line summary of fetched content (pure compute).
+@capabilities()
+fn summarize(data: str) -> str {
+    let words = word_count(data)
+    return "words=" + to_string(words) + " bytes=" + to_string(len(data))
+}
+
+// Governed agent entry: fetches from endpoint and summarizes.
+// @budget limits the number of HTTP calls this function may make per
+// invocation (enforced at runtime by the Kryos budget frame).
+@budget(calls = 3)
+@capabilities(net)
+fn run_agent(endpoint: str) -> str {
+    let data = fetch_data(endpoint)
+    return summarize(data)
+}
+
+// Offline demo: shows the summarize logic without a network call.
+@capabilities()
+fn main() {
+    println("governed-agent: compute + net template")
+    println("Declared capabilities: compute, net")
+    println("@budget(calls = 3) per run_agent invocation")
+    println("")
+    let demo_text = "the quick brown fox jumps over the lazy dog"
+    println("Offline demo with fixed text:")
+    println("  input:   \"" + demo_text + "\"")
+    println("  summary: " + summarize(demo_text))
+    println("")
+    println("To run live: call run_agent(\"https://your-endpoint/data\")")
+}

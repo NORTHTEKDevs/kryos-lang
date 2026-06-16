@@ -1,0 +1,31 @@
+# CI snippet: governed-agent capability policy check.
+# Add this to your .github/workflows/ directory.
+#
+# Two gates:
+#   1. kryos check -- type-checks the source without running it.
+#   2. kryos-policy -- compares the compiler-computed capability surface
+#      against the declared allowlist in kryos.toml. Allowed: compute, net.
+#      Any undeclared capability (e.g. io or process sneaking in) exits non-zero.
+
+name: capability-policy
+
+on: [push, pull_request]
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Type-check
+        run: kryos check src/main.kry
+
+      - name: Compute capability manifest
+        run: kryos manifest --caps --format pretty src -o caps.manifest
+
+      - name: Run capability policy check
+        run: |
+          kryos run \
+            ../kryos-policy/src/policy_check.kry \
+            caps.manifest \
+            kryos.toml
