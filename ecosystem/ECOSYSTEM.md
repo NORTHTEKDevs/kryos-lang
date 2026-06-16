@@ -48,6 +48,18 @@ Plus: budget-aware `std.llm` clients in the stdlib (zero deps), dual backend
 (Cranelift JIT + LLVM AOT, all axes work on both), and an experimental wasm32
 target (not yet struct/stdlib-capable -- do not overstate).
 
+## Repository layout
+
+Each buildable ecosystem project is a standalone Kryos project (its own
+`kryos.toml`) living flat at **`ecosystem/<project-name>/`** -- e.g.
+`ecosystem/kryos-agent-loop/`, `ecosystem/kryos-rag/`,
+`ecosystem/kryos-audit-trail/`, `ecosystem/kryos-bench-governed/`. New projects
+go in the same flat shape (no `builds/` subfolder). Compiler-native features
+(like project 01, a `kryos-cli` subcommand) live under `compiler/`, not
+`ecosystem/`. Shared planning docs: `ecosystem/ECOSYSTEM.md` (this file),
+`ecosystem/projects/` (per-project specs), `ecosystem/unlocks/` (primitive
+analyses).
+
 ## Project roadmap (build order)
 
 10 of 12 are buildable on Kryos **today**; 2 need language work. Build along
@@ -55,7 +67,7 @@ the dependency chain. Each `NN` links to `projects/NN-*.md`.
 
 ### Foundation (build first)
 - **01 kryos-manifest CLI** (truly-novel, S, today) -- **DONE 2026-06-15.**
-  Shipped in the compiler repo (kryos-lang), not as a `builds/` Kryos project,
+  Shipped in the compiler repo (kryos-lang), not as an `ecosystem/` Kryos project,
   because it is a `kryos-cli` Rust subcommand. `kryos manifest --caps <path>`
   serializes the compiler's per-function capability map (`CapabilitySet`) to JSON
   (`kryos-manifest-v1`). Flags: `--format json|pretty`, `--strict`, `--output`,
