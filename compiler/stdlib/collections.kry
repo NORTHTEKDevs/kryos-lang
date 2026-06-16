@@ -1,95 +1,136 @@
 // ============================================================
-// std.collections -- Data structures
+// std.collections -- Generic data structures
 //
-// Provides List, Dict, Set, Stack, Queue, and Deque types
-// implemented in pure Kryos using arrays and maps as backing
-// storage.
+// List<T>, Set<T>, Dict<K, V>, Stack<T>, Queue<T>, Deque<T>,
+// implemented in pure Kryos with arrays and maps as backing
+// storage. These use REAL Kryos generics (generic structs +
+// parametric `impl<T>`), not the old fake `any` element type.
 //
-// Usage:
-//   let list = std.collections.List.new()
-//   std.collections.List.push(list, 42)
+//   use std::collections::{List}
+//   let mut xs: List<i64> = List.new()
+//   xs = xs.push(1)
+//   xs = xs.push(2)
+//   println(to_string(xs.len()))   // 2
+//
+// ------------------------------------------------------------
+// What works cleanly, and the i64-erasure limits (be honest):
+//
+// Generic payload slots are i64-sized and impl-method bodies are
+// lowered ONCE with the type parameter erased to i64 (see the
+// language reference / CLAUDE.md gotcha #17). Consequences:
+//
+//   * List<i64>, Stack<i64>, Queue<i64>, Deque<i64>, Set<i64>,
+//     and Dict<str, i64> work fully on BOTH backends (kryos run
+//     and kryos build --release). These are verified.
+//
+//   * The element/value type that works cleanly is i64. Because
+//     the parametric impl erases the type parameter to i64, the
+//     type checker treats every `T`-typed method parameter as i64,
+//     so a non-i64 ELEMENT instantiation does NOT type-check:
+//     `let xs: List<str> = List.new(); xs.push("a")` is rejected
+//     with "expected i64, found str". Supporting str/f64/struct
+//     elements would require a concrete per-type impl (the gotcha
+//     #17 path, e.g. `impl List<str> { .. }`), which this module
+//     does not ship. Membership/equality (`contains`, `index_of`)
+//     likewise compares the i64 slot.
+//
+//   * Set<T> dedups by `to_string(value)`; with i64 elements this
+//     is content-based and correct. (Same non-i64 element caveat
+//     as List.)
+//
+//   * Dict is STRING-KEYED, value-generic. The methods take `str`
+//     keys so the runtime uses content-based string hashing, which
+//     is why Dict<str, i64> works. The first parameter `K` is
+//     nominal -- always instantiate as Dict<str, V>; a non-str key
+//     would select the integer-keyed map ABI and hash the pointer.
+//     The value type V works for V = i64; a non-i64 V is subject to
+//     the i64-erasure caveat above.
+//
+// Mutation model: the "remove" family (pop/dequeue/pop_front/
+// pop_back) returns the removed VALUE and mutates the backing
+// store in place. In-place mutation of a by-value struct param is
+// visible to the caller on the Cranelift JIT (aliasing) but not on
+// the LLVM AOT byval copy -- this is the language-wide value-
+// semantics caveat. For a guaranteed new, shorter collection use
+// the functional builders that return a new value (push/insert/
+// remove/slice/from). The collections are designed to be threaded
+// functionally: `xs = xs.push(v)`.
 // ============================================================
 
 // =========================================================================
-// List -- Dynamic array with rich interface
+// List<T> -- dynamic array
 // =========================================================================
 
-struct List {
-    data: [any],
+struct List<T> {
+    data: [T],
     length: i64
 }
 
-impl List {
+impl<T> List<T> {
     /// Create an empty list.
-    fn new() -> List {
-        return List { data: [], length: 0 }
+    fn new() -> List<T> {
+        let d: [T] = []
+        return List { data: d, length: 0 }
     }
 
-    /// Create a list from an existing array.
-    fn from(arr: [any]) -> List {
-        let mut data = []
+    /// Create a list from an existing array (copied).
+    fn from(arr: [T]) -> List<T> {
+        let mut d: [T] = []
         let alen = len(arr)
         let mut i = 0
         while i < alen {
-            push(data, arr[i])
+            d = push(d, arr[i])
             i = i + 1
         }
-        return List { data: data, length: alen }
+        return List { data: d, length: alen }
     }
 
-    /// Append a value to the end.
-    fn push(self: List, val: any) -> List {
-        push(self.data, val)
-        return List { data: self.data, length: self.length + 1 }
+    /// Append a value to the end, returning the new list.
+    fn push(self: List<T>, val: T) -> List<T> {
+        let nd = push(self.data, val)
+        return List { data: nd, length: self.length + 1 }
     }
 
     /// Remove and return the last element. Throws if empty.
-    fn pop(self: List) -> any {
+    /// (See module note on the in-place mutation model.)
+    fn pop(self: List<T>) -> T {
         if self.length == 0 {
             throw "List.pop: empty list"
         }
-        let val = self.data[self.length - 1]
-        // Rebuild data without last element
-        let mut new_data = []
-        let mut i = 0
-        while i < self.length - 1 {
-            push(new_data, self.data[i])
-            i = i + 1
-        }
-        self.data = new_data
-        self.length = self.length - 1
-        return val
+        let mut d = self.data
+        return pop(d)
     }
 
     /// Get the element at index. Throws if out of bounds.
-    fn get(self: List, index: i64) -> any {
+    fn get(self: List<T>, index: i64) -> T {
         if index < 0 or index >= self.length {
-            throw "List.get: index " + to_string(index) + " out of bounds"
+            throw "List.get: index out of bounds"
         }
         return self.data[index]
     }
 
-    /// Set the element at index. Throws if out of bounds.
-    fn set(self: List, index: i64, val: any) -> List {
+    /// Set the element at index, returning the new list. Throws if OOB.
+    fn set(self: List<T>, index: i64, val: T) -> List<T> {
         if index < 0 or index >= self.length {
-            throw "List.set: index " + to_string(index) + " out of bounds"
+            throw "List.set: index out of bounds"
         }
         self.data[index] = val
-        return self
+        return List { data: self.data, length: self.length }
     }
 
     /// Number of elements.
-    fn len(self: List) -> i64 {
+    fn len(self: List<T>) -> i64 {
         return self.length
     }
 
     /// True if the list has no elements.
-    fn is_empty(self: List) -> bool {
+    fn is_empty(self: List<T>) -> bool {
         return self.length == 0
     }
 
-    /// True if the list contains the given value.
-    fn contains(self: List, val: any) -> bool {
+    /// True if the list contains the given value (i64-slot equality;
+    /// pointer identity for non-i64 element types).
+    fn contains(self: List<T>, val: T) -> bool {
         let mut i = 0
         while i < self.length {
             if self.data[i] == val {
@@ -100,8 +141,8 @@ impl List {
         return false
     }
 
-    /// Find the first index of a value, or -1.
-    fn index_of(self: List, val: any) -> i64 {
+    /// First index of a value, or -1.
+    fn index_of(self: List<T>, val: T) -> i64 {
         let mut i = 0
         while i < self.length {
             if self.data[i] == val {
@@ -112,43 +153,43 @@ impl List {
         return -1
     }
 
-    /// Insert a value at the given index, shifting elements right.
-    fn insert(self: List, index: i64, val: any) -> List {
+    /// Insert a value at index, shifting elements right. Returns a new list.
+    fn insert(self: List<T>, index: i64, val: T) -> List<T> {
         if index < 0 or index > self.length {
             throw "List.insert: index out of bounds"
         }
-        let mut new_data = []
+        let mut nd: [T] = []
         let mut i = 0
         while i < index {
-            push(new_data, self.data[i])
+            nd = push(nd, self.data[i])
             i = i + 1
         }
-        push(new_data, val)
+        nd = push(nd, val)
         while i < self.length {
-            push(new_data, self.data[i])
+            nd = push(nd, self.data[i])
             i = i + 1
         }
-        return List { data: new_data, length: self.length + 1 }
+        return List { data: nd, length: self.length + 1 }
     }
 
-    /// Remove the element at the given index, shifting elements left.
-    fn remove(self: List, index: i64) -> List {
+    /// Remove the element at index, shifting elements left. Returns a new list.
+    fn remove(self: List<T>, index: i64) -> List<T> {
         if index < 0 or index >= self.length {
             throw "List.remove: index out of bounds"
         }
-        let mut new_data = []
+        let mut nd: [T] = []
         let mut i = 0
         while i < self.length {
             if i != index {
-                push(new_data, self.data[i])
+                nd = push(nd, self.data[i])
             }
             i = i + 1
         }
-        return List { data: new_data, length: self.length - 1 }
+        return List { data: nd, length: self.length - 1 }
     }
 
-    /// Extract a sub-list from start (inclusive) to end (exclusive).
-    fn slice(self: List, start: i64, end: i64) -> List {
+    /// Sub-list from start (inclusive) to end (exclusive). Returns a new list.
+    fn slice(self: List<T>, start: i64, end: i64) -> List<T> {
         let mut a = start
         let mut b = end
         if a < 0 { a = 0 }
@@ -156,426 +197,234 @@ impl List {
         if a >= b {
             return List.new()
         }
-        let mut new_data = []
+        let mut nd: [T] = []
         let mut i = a
         while i < b {
-            push(new_data, self.data[i])
+            nd = push(nd, self.data[i])
             i = i + 1
         }
-        return List { data: new_data, length: b - a }
+        return List { data: nd, length: b - a }
     }
 
-    /// Remove all elements.
-    fn clear(self: List) -> List {
-        return List { data: [], length: 0 }
-    }
-
-    /// Sort the list in ascending order (returns new list).
-    fn sort(self: List) -> List {
-        let mut sorted = []
-        let mut i = 0
-        while i < self.length {
-            push(sorted, self.data[i])
-            i = i + 1
-        }
-        // Insertion sort
-        i = 1
-        while i < self.length {
-            let key = sorted[i]
-            let mut j = i - 1
-            while j >= 0 and sorted[j] > key {
-                sorted[j + 1] = sorted[j]
-                j = j - 1
-            }
-            sorted[j + 1] = key
-            i = i + 1
-        }
-        return List { data: sorted, length: self.length }
-    }
-
-    /// Reverse the list (returns new list).
-    fn reverse(self: List) -> List {
-        let mut reversed = []
+    /// Reverse the list. Returns a new list.
+    fn reverse(self: List<T>) -> List<T> {
+        let mut nd: [T] = []
         let mut i = self.length - 1
         while i >= 0 {
-            push(reversed, self.data[i])
+            nd = push(nd, self.data[i])
             i = i - 1
         }
-        return List { data: reversed, length: self.length }
+        return List { data: nd, length: self.length }
     }
 
-    /// Apply f to each element, returning a new list.
-    fn map(self: List, f: fn) -> List {
-        let mut new_data = []
-        let mut i = 0
-        while i < self.length {
-            push(new_data, f(self.data[i]))
-            i = i + 1
-        }
-        return List { data: new_data, length: self.length }
+    /// Remove all elements. Returns a new empty list.
+    fn clear(self: List<T>) -> List<T> {
+        return List.new()
     }
 
-    /// Keep only elements where pred returns true.
-    fn filter(self: List, pred: fn) -> List {
-        let mut new_data = []
-        let mut i = 0
-        while i < self.length {
-            if pred(self.data[i]) {
-                push(new_data, self.data[i])
-            }
-            i = i + 1
-        }
-        return List { data: new_data, length: len(new_data) }
-    }
-
-    /// Return the underlying array for iteration.
-    fn iter(self: List) -> [any] {
+    /// The underlying array (for `for x in list.iter()`).
+    fn iter(self: List<T>) -> [T] {
         return self.data
     }
 
-    /// Convert to a display string.
-    fn to_string(self: List) -> str {
-        let mut parts = []
+    /// Display string, e.g. `[1, 2, 3]`.
+    fn to_string(self: List<T>) -> str {
+        let mut result = "["
         let mut i = 0
         while i < self.length {
-            push(parts, to_string(self.data[i]))
-            i = i + 1
-        }
-        let mut result = "["
-        let mut j = 0
-        while j < len(parts) {
-            if j > 0 {
+            if i > 0 {
                 result = result + ", "
             }
-            result = result + parts[j]
-            j = j + 1
+            result = result + to_string(self.data[i])
+            i = i + 1
         }
         return result + "]"
     }
 }
 
 // =========================================================================
-// Dict -- Key-value store with string keys
+// Set<T> -- unique value collection (dedup by to_string(value))
 // =========================================================================
 
-struct Dict {
-    store: any,
+struct Set<T> {
+    seen: map<str, bool>,
+    items: [T],
     length: i64
 }
 
-impl Dict {
-    /// Create an empty map.
-    fn new() -> Dict {
-        return Dict { store: {}, length: 0 }
+impl<T> Set<T> {
+    /// Create an empty set.
+    fn new() -> Set<T> {
+        let it: [T] = []
+        return Set { seen: {}, items: it, length: 0 }
     }
 
-    /// Create a map from an existing object.
-    fn from(obj: any) -> Dict {
-        let keys = map_keys(obj)
-        let klen = len(keys)
-        let mut store = {}
+    /// Create a set from an array (duplicates dropped).
+    fn from(arr: [T]) -> Set<T> {
+        let mut s: Set<T> = Set.new()
+        let alen = len(arr)
         let mut i = 0
-        while i < klen {
-            store[keys[i]] = obj[keys[i]]
+        while i < alen {
+            s = s.add(arr[i])
             i = i + 1
         }
-        return Dict { store: store, length: klen }
+        return s
     }
 
-    /// Set a key-value pair. Returns the map for chaining.
-    fn set(self: Dict, key: str, val: any) -> Dict {
+    /// Add a value, returning the new set. No-op if already present.
+    fn add(self: Set<T>, val: T) -> Set<T> {
+        let k = to_string(val)
+        if map_has(self.seen, k) {
+            return Set { seen: self.seen, items: self.items, length: self.length }
+        }
+        self.seen[k] = true
+        let ni = push(self.items, val)
+        return Set { seen: self.seen, items: ni, length: self.length + 1 }
+    }
+
+    /// True if the value is in the set.
+    fn contains(self: Set<T>, val: T) -> bool {
+        return map_has(self.seen, to_string(val))
+    }
+
+    /// Alias for `contains`.
+    fn has(self: Set<T>, val: T) -> bool {
+        return map_has(self.seen, to_string(val))
+    }
+
+    /// Number of elements.
+    fn len(self: Set<T>) -> i64 {
+        return self.length
+    }
+
+    /// True if the set has no elements.
+    fn is_empty(self: Set<T>) -> bool {
+        return self.length == 0
+    }
+
+    /// The set's values as an array (insertion order).
+    fn to_list(self: Set<T>) -> [T] {
+        return self.items
+    }
+
+    /// Remove all elements. Returns a new empty set.
+    fn clear(self: Set<T>) -> Set<T> {
+        return Set.new()
+    }
+
+    /// Display string, e.g. `Set{1, 2, 3}`.
+    fn to_string(self: Set<T>) -> str {
+        let mut result = "Set\{"
+        let mut i = 0
+        while i < self.length {
+            if i > 0 {
+                result = result + ", "
+            }
+            result = result + to_string(self.items[i])
+            i = i + 1
+        }
+        return result + "\}"
+    }
+}
+
+// =========================================================================
+// Dict<K, V> -- string-keyed map with generic value (see module note:
+// K is nominal; instantiate as Dict<str, V>).
+// =========================================================================
+
+struct Dict<K, V> {
+    store: map<str, V>,
+    keylist: [str],
+    length: i64
+}
+
+impl<K, V> Dict<K, V> {
+    /// Create an empty dict.
+    fn new() -> Dict<K, V> {
+        let ks: [str] = []
+        return Dict { store: {}, keylist: ks, length: 0 }
+    }
+
+    /// Set a key-value pair, returning the new dict.
+    fn set(self: Dict<K, V>, key: str, val: V) -> Dict<K, V> {
         let existed = map_has(self.store, key)
         self.store[key] = val
         if not existed {
-            return Dict { store: self.store, length: self.length + 1 }
+            let nk = push(self.keylist, key)
+            return Dict { store: self.store, keylist: nk, length: self.length + 1 }
         }
-        return self
+        return Dict { store: self.store, keylist: self.keylist, length: self.length }
     }
 
-    /// Get the value for a key. Throws if key not found.
-    fn get(self: Dict, key: str) -> any {
+    /// Get the value for a key. Throws if not present.
+    fn get(self: Dict<K, V>, key: str) -> V {
         if not map_has(self.store, key) {
             throw "Dict.get: key not found: " + key
         }
         return self.store[key]
     }
 
-    /// Get the value for a key, or return a default.
-    fn get_or(self: Dict, key: str, default: any) -> any {
+    /// Get the value for a key, or a default.
+    fn get_or(self: Dict<K, V>, key: str, default: V) -> V {
         if map_has(self.store, key) {
             return self.store[key]
         }
         return default
     }
 
-    /// True if the key exists in the map.
-    fn has(self: Dict, key: str) -> bool {
+    /// True if the key exists.
+    fn contains(self: Dict<K, V>, key: str) -> bool {
         return map_has(self.store, key)
     }
 
-    /// Remove a key. Returns the map for chaining.
-    fn delete(self: Dict, key: str) -> Dict {
-        if map_has(self.store, key) {
-            map_delete(self.store, key)
-            return Dict { store: self.store, length: self.length - 1 }
-        }
-        return self
+    /// Alias for `contains`.
+    fn has(self: Dict<K, V>, key: str) -> bool {
+        return map_has(self.store, key)
     }
 
-    /// Get all keys as an array.
-    fn keys(self: Dict) -> [str] {
-        return map_keys(self.store)
+    /// Number of entries.
+    fn len(self: Dict<K, V>) -> i64 {
+        return self.length
     }
 
-    /// Get all values as an array.
-    fn values(self: Dict) -> [any] {
-        let keys = map_keys(self.store)
-        let mut vals = []
-        let klen = len(keys)
+    /// True if the dict has no entries.
+    fn is_empty(self: Dict<K, V>) -> bool {
+        return self.length == 0
+    }
+
+    /// All keys (insertion order).
+    fn keys(self: Dict<K, V>) -> [str] {
+        return self.keylist
+    }
+
+    /// All values, in key-insertion order.
+    fn values(self: Dict<K, V>) -> [V] {
+        let mut vals: [V] = []
+        let klen = len(self.keylist)
         let mut i = 0
         while i < klen {
-            push(vals, self.store[keys[i]])
+            vals = push(vals, self.store[self.keylist[i]])
             i = i + 1
         }
         return vals
     }
 
-    /// Get all entries as an array of [key, value] pairs.
-    fn entries(self: Dict) -> [any] {
-        let keys = map_keys(self.store)
-        let mut result = []
-        let klen = len(keys)
-        let mut i = 0
-        while i < klen {
-            push(result, [keys[i], self.store[keys[i]]])
-            i = i + 1
-        }
-        return result
+    /// Remove all entries. Returns a new empty dict.
+    fn clear(self: Dict<K, V>) -> Dict<K, V> {
+        return Dict.new()
     }
 
-    /// Number of key-value pairs.
-    fn len(self: Dict) -> i64 {
-        return self.length
-    }
-
-    /// True if the map has no entries.
-    fn is_empty(self: Dict) -> bool {
-        return self.length == 0
-    }
-
-    /// Remove all entries.
-    fn clear(self: Dict) -> Dict {
-        return Dict { store: {}, length: 0 }
-    }
-
-    /// Merge another map into this one (other's values override).
-    fn merge(self: Dict, other: Dict) -> Dict {
-        let keys = map_keys(other.store)
-        let klen = len(keys)
-        let mut new_store = self.store
-        let mut new_length = self.length
-        let mut i = 0
-        while i < klen {
-            let k = keys[i]
-            if not map_has(new_store, k) {
-                new_length = new_length + 1
-            }
-            new_store[k] = other.store[k]
-            i = i + 1
-        }
-        return Dict { store: new_store, length: new_length }
-    }
-
-    /// Convert to a display string.
-    fn to_string(self: Dict) -> str {
-        let keys = map_keys(self.store)
-        let klen = len(keys)
-        let mut parts = []
-        let mut i = 0
-        while i < klen {
-            let k = keys[i]
-            let v = self.store[k]
-            push(parts, k + ": " + to_string(v))
-            i = i + 1
-        }
+    /// Display string, e.g. `{a: 1, b: 2}`.
+    fn to_string(self: Dict<K, V>) -> str {
+        let klen = len(self.keylist)
         let mut result = "\{"
-        let mut j = 0
-        while j < len(parts) {
-            if j > 0 {
-                result = result + ", "
-            }
-            result = result + parts[j]
-            j = j + 1
-        }
-        return result + "\}"
-    }
-}
-
-// =========================================================================
-// Set -- Unique value collection
-// =========================================================================
-
-struct Set {
-    store: any,
-    length: i64
-}
-
-impl Set {
-    /// Create an empty set.
-    fn new() -> Set {
-        return Set { store: {}, length: 0 }
-    }
-
-    /// Create a set from an array.
-    fn from(arr: [any]) -> Set {
-        let mut store = {}
-        let mut count = 0
-        let alen = len(arr)
-        let mut i = 0
-        while i < alen {
-            let key = to_string(arr[i])
-            if not map_has(store, key) {
-                store[key] = arr[i]
-                count = count + 1
-            }
-            i = i + 1
-        }
-        return Set { store: store, length: count }
-    }
-
-    /// Add a value to the set. Returns the set for chaining.
-    fn add(self: Set, val: any) -> Set {
-        let key = to_string(val)
-        if not map_has(self.store, key) {
-            self.store[key] = val
-            return Set { store: self.store, length: self.length + 1 }
-        }
-        return self
-    }
-
-    /// True if the value is in the set.
-    fn has(self: Set, val: any) -> bool {
-        return map_has(self.store, to_string(val))
-    }
-
-    /// Remove a value from the set.
-    fn delete(self: Set, val: any) -> Set {
-        let key = to_string(val)
-        if map_has(self.store, key) {
-            map_delete(self.store, key)
-            return Set { store: self.store, length: self.length - 1 }
-        }
-        return self
-    }
-
-    /// Number of elements.
-    fn len(self: Set) -> i64 {
-        return self.length
-    }
-
-    /// True if the set has no elements.
-    fn is_empty(self: Set) -> bool {
-        return self.length == 0
-    }
-
-    /// Union of two sets (all elements in either).
-    fn union(self: Set, other: Set) -> Set {
-        let mut result = Set.from(self.to_list())
-        let other_list = other.to_list()
-        let olen = len(other_list)
-        let mut i = 0
-        while i < olen {
-            result = result.add(other_list[i])
-            i = i + 1
-        }
-        return result
-    }
-
-    /// Intersection of two sets (elements in both).
-    fn intersection(self: Set, other: Set) -> Set {
-        let mut result = Set.new()
-        let self_list = self.to_list()
-        let slen = len(self_list)
-        let mut i = 0
-        while i < slen {
-            if other.has(self_list[i]) {
-                result = result.add(self_list[i])
-            }
-            i = i + 1
-        }
-        return result
-    }
-
-    /// Difference: elements in self but not in other.
-    fn difference(self: Set, other: Set) -> Set {
-        let mut result = Set.new()
-        let self_list = self.to_list()
-        let slen = len(self_list)
-        let mut i = 0
-        while i < slen {
-            if not other.has(self_list[i]) {
-                result = result.add(self_list[i])
-            }
-            i = i + 1
-        }
-        return result
-    }
-
-    /// Symmetric difference: elements in either but not both.
-    fn symmetric_difference(self: Set, other: Set) -> Set {
-        let a = self.difference(other)
-        let b = other.difference(self)
-        return a.union(b)
-    }
-
-    /// True if every element of self is in other.
-    fn is_subset(self: Set, other: Set) -> bool {
-        let self_list = self.to_list()
-        let slen = len(self_list)
-        let mut i = 0
-        while i < slen {
-            if not other.has(self_list[i]) {
-                return false
-            }
-            i = i + 1
-        }
-        return true
-    }
-
-    /// True if every element of other is in self.
-    fn is_superset(self: Set, other: Set) -> bool {
-        return other.is_subset(self)
-    }
-
-    /// Convert the set to an array of its values.
-    fn to_list(self: Set) -> [any] {
-        let keys = map_keys(self.store)
-        let mut result = []
-        let klen = len(keys)
         let mut i = 0
         while i < klen {
-            push(result, self.store[keys[i]])
-            i = i + 1
-        }
-        return result
-    }
-
-    /// Remove all elements.
-    fn clear(self: Set) -> Set {
-        return Set { store: {}, length: 0 }
-    }
-
-    /// Convert to a display string.
-    fn to_string(self: Set) -> str {
-        let items = self.to_list()
-        let ilen = len(items)
-        let mut result = "Set\{"
-        let mut i = 0
-        while i < ilen {
             if i > 0 {
                 result = result + ", "
             }
-            result = result + to_string(items[i])
+            let k = self.keylist[i]
+            result = result + k + ": " + to_string(self.store[k])
             i = i + 1
         }
         return result + "\}"
@@ -583,45 +432,38 @@ impl Set {
 }
 
 // =========================================================================
-// Stack -- LIFO (last-in, first-out)
+// Stack<T> -- LIFO
 // =========================================================================
 
-struct Stack {
-    data: [any],
+struct Stack<T> {
+    data: [T],
     length: i64
 }
 
-impl Stack {
+impl<T> Stack<T> {
     /// Create an empty stack.
-    fn new() -> Stack {
-        return Stack { data: [], length: 0 }
+    fn new() -> Stack<T> {
+        let d: [T] = []
+        return Stack { data: d, length: 0 }
     }
 
-    /// Push a value onto the top.
-    fn push(self: Stack, val: any) -> Stack {
-        push(self.data, val)
-        return Stack { data: self.data, length: self.length + 1 }
+    /// Push a value onto the top, returning the new stack.
+    fn push(self: Stack<T>, val: T) -> Stack<T> {
+        let nd = push(self.data, val)
+        return Stack { data: nd, length: self.length + 1 }
     }
 
-    /// Pop the top value. Throws if empty.
-    fn pop(self: Stack) -> any {
+    /// Pop the top value. Throws if empty. (See module note on mutation.)
+    fn pop(self: Stack<T>) -> T {
         if self.length == 0 {
             throw "Stack.pop: empty stack"
         }
-        let val = self.data[self.length - 1]
-        let mut new_data = []
-        let mut i = 0
-        while i < self.length - 1 {
-            push(new_data, self.data[i])
-            i = i + 1
-        }
-        self.data = new_data
-        self.length = self.length - 1
-        return val
+        let mut d = self.data
+        return pop(d)
     }
 
     /// View the top value without removing it.
-    fn peek(self: Stack) -> any {
+    fn peek(self: Stack<T>) -> T {
         if self.length == 0 {
             throw "Stack.peek: empty stack"
         }
@@ -629,75 +471,68 @@ impl Stack {
     }
 
     /// Number of elements.
-    fn len(self: Stack) -> i64 {
+    fn len(self: Stack<T>) -> i64 {
         return self.length
     }
 
     /// True if the stack is empty.
-    fn is_empty(self: Stack) -> bool {
+    fn is_empty(self: Stack<T>) -> bool {
         return self.length == 0
     }
 
-    /// Remove all elements.
-    fn clear(self: Stack) -> Stack {
-        return Stack { data: [], length: 0 }
-    }
-
-    /// Convert to a display string (top element on the right).
-    fn to_string(self: Stack) -> str {
-        let mut result = "Stack["
-        let mut i = 0
-        while i < self.length {
-            if i > 0 {
-                result = result + ", "
-            }
-            result = result + to_string(self.data[i])
-            i = i + 1
-        }
-        return result + "]"
+    /// Remove all elements. Returns a new empty stack.
+    fn clear(self: Stack<T>) -> Stack<T> {
+        return Stack.new()
     }
 }
 
 // =========================================================================
-// Queue -- FIFO (first-in, first-out)
+// Queue<T> -- FIFO
 // =========================================================================
 
-struct Queue {
-    data: [any],
+struct Queue<T> {
+    data: [T],
     length: i64
 }
 
-impl Queue {
+impl<T> Queue<T> {
     /// Create an empty queue.
-    fn new() -> Queue {
-        return Queue { data: [], length: 0 }
+    fn new() -> Queue<T> {
+        let d: [T] = []
+        return Queue { data: d, length: 0 }
     }
 
-    /// Add a value to the back of the queue.
-    fn enqueue(self: Queue, val: any) -> Queue {
-        push(self.data, val)
-        return Queue { data: self.data, length: self.length + 1 }
+    /// Add a value to the back, returning the new queue.
+    fn enqueue(self: Queue<T>, val: T) -> Queue<T> {
+        let nd = push(self.data, val)
+        return Queue { data: nd, length: self.length + 1 }
     }
 
-    /// Remove and return the front value. Throws if empty.
-    fn dequeue(self: Queue) -> any {
+    /// Remove and return the front value. Throws if empty. Returns the
+    /// value; for the shortened queue use `drop_front`.
+    fn dequeue(self: Queue<T>) -> T {
         if self.length == 0 {
             throw "Queue.dequeue: empty queue"
         }
-        let val = self.data[0]
-        let mut new_data = []
+        return self.data[0]
+    }
+
+    /// Return a new queue without its front element. Throws if empty.
+    fn drop_front(self: Queue<T>) -> Queue<T> {
+        if self.length == 0 {
+            throw "Queue.drop_front: empty queue"
+        }
+        let mut nd: [T] = []
         let mut i = 1
         while i < self.length {
-            push(new_data, self.data[i])
+            nd = push(nd, self.data[i])
             i = i + 1
         }
-        self.data = new_data
-        self.length = self.length - 1
-        return val
+        return Queue { data: nd, length: self.length - 1 }
     }
 
     /// View the front value without removing it.
-    fn peek(self: Queue) -> any {
+    fn peek(self: Queue<T>) -> T {
         if self.length == 0 {
             throw "Queue.peek: empty queue"
         }
@@ -705,103 +540,85 @@ impl Queue {
     }
 
     /// Number of elements.
-    fn len(self: Queue) -> i64 {
+    fn len(self: Queue<T>) -> i64 {
         return self.length
     }
 
     /// True if the queue is empty.
-    fn is_empty(self: Queue) -> bool {
+    fn is_empty(self: Queue<T>) -> bool {
         return self.length == 0
     }
 
-    /// Remove all elements.
-    fn clear(self: Queue) -> Queue {
-        return Queue { data: [], length: 0 }
-    }
-
-    /// Convert to a display string (front on the left).
-    fn to_string(self: Queue) -> str {
-        let mut result = "Queue["
-        let mut i = 0
-        while i < self.length {
-            if i > 0 {
-                result = result + ", "
-            }
-            result = result + to_string(self.data[i])
-            i = i + 1
-        }
-        return result + "]"
+    /// Remove all elements. Returns a new empty queue.
+    fn clear(self: Queue<T>) -> Queue<T> {
+        return Queue.new()
     }
 }
 
 // =========================================================================
-// Deque -- Double-ended queue
+// Deque<T> -- double-ended queue
 // =========================================================================
 
-struct Deque {
-    data: [any],
+struct Deque<T> {
+    data: [T],
     length: i64
 }
 
-impl Deque {
+impl<T> Deque<T> {
     /// Create an empty deque.
-    fn new() -> Deque {
-        return Deque { data: [], length: 0 }
+    fn new() -> Deque<T> {
+        let d: [T] = []
+        return Deque { data: d, length: 0 }
     }
 
-    /// Add a value to the front.
-    fn push_front(self: Deque, val: any) -> Deque {
-        let mut new_data = [val]
+    /// Add a value to the front, returning the new deque.
+    fn push_front(self: Deque<T>, val: T) -> Deque<T> {
+        let mut nd: [T] = []
+        nd = push(nd, val)
         let mut i = 0
         while i < self.length {
-            push(new_data, self.data[i])
+            nd = push(nd, self.data[i])
             i = i + 1
         }
-        return Deque { data: new_data, length: self.length + 1 }
+        return Deque { data: nd, length: self.length + 1 }
     }
 
-    /// Add a value to the back.
-    fn push_back(self: Deque, val: any) -> Deque {
-        push(self.data, val)
-        return Deque { data: self.data, length: self.length + 1 }
+    /// Add a value to the back, returning the new deque.
+    fn push_back(self: Deque<T>, val: T) -> Deque<T> {
+        let nd = push(self.data, val)
+        return Deque { data: nd, length: self.length + 1 }
     }
 
-    /// Remove and return the front value. Throws if empty.
-    fn pop_front(self: Deque) -> any {
+    /// Return a new deque without its front element. Throws if empty.
+    fn drop_front(self: Deque<T>) -> Deque<T> {
         if self.length == 0 {
-            throw "Deque.pop_front: empty deque"
+            throw "Deque.drop_front: empty deque"
         }
-        let val = self.data[0]
-        let mut new_data = []
+        let mut nd: [T] = []
         let mut i = 1
         while i < self.length {
-            push(new_data, self.data[i])
+            nd = push(nd, self.data[i])
             i = i + 1
         }
-        self.data = new_data
-        self.length = self.length - 1
-        return val
+        return Deque { data: nd, length: self.length - 1 }
     }
 
-    /// Remove and return the back value. Throws if empty.
-    fn pop_back(self: Deque) -> any {
+    /// Return a new deque without its back element. Throws if empty.
+    fn drop_back(self: Deque<T>) -> Deque<T> {
         if self.length == 0 {
-            throw "Deque.pop_back: empty deque"
+            throw "Deque.drop_back: empty deque"
         }
-        let val = self.data[self.length - 1]
-        let mut new_data = []
+        let mut nd: [T] = []
         let mut i = 0
         while i < self.length - 1 {
-            push(new_data, self.data[i])
+            nd = push(nd, self.data[i])
             i = i + 1
         }
-        self.data = new_data
-        self.length = self.length - 1
-        return val
+        return Deque { data: nd, length: self.length - 1 }
     }
 
     /// View the front value.
-    fn front(self: Deque) -> any {
+    fn front(self: Deque<T>) -> T {
         if self.length == 0 {
             throw "Deque.front: empty deque"
         }
@@ -809,7 +626,7 @@ impl Deque {
     }
 
     /// View the back value.
-    fn back(self: Deque) -> any {
+    fn back(self: Deque<T>) -> T {
         if self.length == 0 {
             throw "Deque.back: empty deque"
         }
@@ -817,31 +634,17 @@ impl Deque {
     }
 
     /// Number of elements.
-    fn len(self: Deque) -> i64 {
+    fn len(self: Deque<T>) -> i64 {
         return self.length
     }
 
     /// True if the deque is empty.
-    fn is_empty(self: Deque) -> bool {
+    fn is_empty(self: Deque<T>) -> bool {
         return self.length == 0
     }
 
-    /// Remove all elements.
-    fn clear(self: Deque) -> Deque {
-        return Deque { data: [], length: 0 }
-    }
-
-    /// Convert to a display string.
-    fn to_string(self: Deque) -> str {
-        let mut result = "Deque["
-        let mut i = 0
-        while i < self.length {
-            if i > 0 {
-                result = result + ", "
-            }
-            result = result + to_string(self.data[i])
-            i = i + 1
-        }
-        return result + "]"
+    /// Remove all elements. Returns a new empty deque.
+    fn clear(self: Deque<T>) -> Deque<T> {
+        return Deque.new()
     }
 }

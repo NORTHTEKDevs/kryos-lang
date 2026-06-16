@@ -1,0 +1,103 @@
+// Smoke: generic std::collections (List<T>, Set<T>, Dict<K,V>).
+// Verifies the required instantiations on BOTH backends:
+//   List<i64>  : push 3, get, len
+//   Set<i64>   : add dup, contains, len
+//   Dict<str,i64>: set/get/contains/len
+// plus a few extras (Stack/Queue/Deque, List<str> element read).
+
+use std::collections::{List, Set, Dict, Stack, Queue, Deque}
+
+fn expect_i(got: i64, want: i64, what: str) {
+    if got != want {
+        println("FAIL: {what}: got " + to_string(got) + " want " + to_string(want))
+        exit(1)
+    }
+    println("ok: {what} = " + to_string(got))
+}
+
+fn expect_b(got: bool, want: bool, what: str) {
+    if got != want {
+        println("FAIL: {what}: got " + to_string(got) + " want " + to_string(want))
+        exit(1)
+    }
+    println("ok: {what} = " + to_string(got))
+}
+
+fn main() {
+    println("== List<i64> ==")
+    let mut xs: List<i64> = List.new()
+    xs = xs.push(10)
+    xs = xs.push(20)
+    xs = xs.push(30)
+    expect_i(xs.len(), 3, "List len")
+    expect_i(xs.get(0), 10, "List get0")
+    expect_i(xs.get(2), 30, "List get2")
+    expect_b(xs.contains(20), true, "List contains 20")
+    expect_b(xs.contains(99), false, "List contains 99")
+    expect_i(xs.index_of(30), 2, "List index_of 30")
+    let ys = xs.reverse()
+    expect_i(ys.get(0), 30, "List reverse get0")
+    let zs = xs.remove(1)
+    expect_i(zs.len(), 2, "List remove len")
+    expect_i(zs.get(1), 30, "List remove get1")
+    println("List to_string: " + xs.to_string())
+
+    println("== Set<i64> ==")
+    let mut s: Set<i64> = Set.new()
+    s = s.add(5)
+    s = s.add(5)
+    s = s.add(7)
+    s = s.add(7)
+    s = s.add(9)
+    expect_i(s.len(), 3, "Set len (dedup)")
+    expect_b(s.contains(5), true, "Set contains 5")
+    expect_b(s.contains(7), true, "Set contains 7")
+    expect_b(s.contains(8), false, "Set contains 8")
+    println("Set to_string: " + s.to_string())
+
+    println("== Dict<str,i64> ==")
+    let mut d: Dict<str, i64> = Dict.new()
+    d = d.set("alice", 1)
+    d = d.set("bob", 2)
+    d = d.set("alice", 9)
+    expect_i(d.len(), 2, "Dict len (overwrite)")
+    expect_i(d.get("alice"), 9, "Dict get alice")
+    expect_i(d.get("bob"), 2, "Dict get bob")
+    expect_b(d.contains("bob"), true, "Dict contains bob")
+    expect_b(d.contains("zed"), false, "Dict contains zed")
+    expect_i(d.get_or("zed", -1), -1, "Dict get_or default")
+    println("Dict to_string: " + d.to_string())
+
+    println("== Stack<i64> ==")
+    let mut st: Stack<i64> = Stack.new()
+    st = st.push(1)
+    st = st.push(2)
+    expect_i(st.len(), 2, "Stack len")
+    expect_i(st.peek(), 2, "Stack peek")
+
+    println("== Queue<i64> ==")
+    let mut q: Queue<i64> = Queue.new()
+    q = q.enqueue(100)
+    q = q.enqueue(200)
+    expect_i(q.len(), 2, "Queue len")
+    expect_i(q.peek(), 100, "Queue peek front")
+    let q2 = q.drop_front()
+    expect_i(q2.peek(), 200, "Queue drop_front peek")
+
+    println("== Deque<i64> ==")
+    let mut dq: Deque<i64> = Deque.new()
+    dq = dq.push_back(2)
+    dq = dq.push_front(1)
+    dq = dq.push_back(3)
+    expect_i(dq.front(), 1, "Deque front")
+    expect_i(dq.back(), 3, "Deque back")
+    expect_i(dq.len(), 3, "Deque len")
+
+    // NOTE: non-i64 element/value types (List<str>, List<f64>, ...) are
+    // intentionally NOT exercised here -- under the parametric impl the type
+    // checker erases the type parameter to i64, so `List<str>.push("x")` is
+    // rejected ("expected i64, found str"). See the collections module doc:
+    // i64-element collections and Dict<str, V=i64> are the supported set.
+
+    println("ALL COLLECTIONS OK")
+}

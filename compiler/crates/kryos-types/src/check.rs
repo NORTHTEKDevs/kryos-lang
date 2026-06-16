@@ -193,7 +193,14 @@ impl TypeChecker {
                             Type::Error
                         }
                     }
-                    "Map" | "map" => {
+                    // The builtin `Map`/`Set` type sugar only applies when no
+                    // user-defined struct of that name is in scope. This lets
+                    // std::collections ship real generic `Set<T>` / `Map<..>`
+                    // structs that shadow the builtin sugar (the `_` arm below
+                    // resolves them as ordinary user structs). Bare `map<K,V>`
+                    // literals keep working because nobody defines a struct
+                    // named `map`.
+                    "Map" | "map" if self.env.lookup_struct(name).is_none() => {
                         if resolved_args.len() == 2 {
                             Type::Map {
                                 key: Box::new(resolved_args[0].clone()),
@@ -206,7 +213,7 @@ impl TypeChecker {
                     }
                     // chan<T> — channels are opaque i64 handles at runtime.
                     "chan" => Type::I64,
-                    "Set" | "set" => {
+                    "Set" | "set" if self.env.lookup_struct(name).is_none() => {
                         if resolved_args.len() == 1 {
                             Type::Set {
                                 element: Box::new(resolved_args[0].clone()),

@@ -1,6 +1,79 @@
 //! `kryos repl` — interactive read-eval-print loop.
+//!
+//! Line editing, Up/Down history recall, and Tab completion are provided by
+//! `rustyline`. Persistent history is kept in `~/.kryos_history` using the
+//! same plain-line format as before: it is loaded on startup (and seeded into
+//! rustyline so the arrow keys recall prior sessions) and each accepted input
+//! line is appended immediately.
 
-use std::io::{self, BufRead, Write};
+use rustyline::completion::{Completer, Pair};
+use rustyline::error::ReadlineError;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::history::DefaultHistory;
+use rustyline::validate::Validator;
+use rustyline::{Context, Editor, Helper};
+
+/// Kryos keywords + common builtins, offered as Tab completions at the prompt.
+const COMPLETION_WORDS: &[&str] = &[
+    // keywords
+    "fn", "let", "mut", "if", "elif", "else", "while", "for", "loop", "match",
+    "struct", "enum", "impl", "trait", "return", "break", "continue", "in",
+    "use", "pub", "const", "type", "extern", "actor", "throw", "try", "catch",
+    "true", "false", "and", "or", "not", "as",
+    // option/result constructors
+    "Some", "None", "Ok", "Err", "Option", "Result",
+    // common builtins
+    "println", "print", "len", "to_string", "push", "pop", "contains",
+    "parse_int", "parse_float", "args", "env_get", "file_read", "file_write",
+    "file_exists", "create_dir", "substr", "char_code", "sqrt", "pow", "sin",
+    "cos", "abs", "min", "max", "exit",
+    // REPL meta-commands
+    ":help", ":quit", ":type", ":clear", ":reset", ":history", ":history-clear",
+];
+
+/// rustyline `Helper` providing Kryos keyword/builtin Tab completion.
+/// Hinting, highlighting, and validation use the trait defaults.
+struct KryosHelper;
+
+impl Completer for KryosHelper {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &Context<'_>,
+    ) -> Result<(usize, Vec<Pair>), ReadlineError> {
+        // Find the start of the identifier (or `:command`) under the cursor.
+        let start = line[..pos]
+            .char_indices()
+            .rev()
+            .find(|(_, c)| !(c.is_alphanumeric() || *c == '_' || *c == ':'))
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+        let prefix = &line[start..pos];
+        if prefix.is_empty() {
+            return Ok((start, Vec::new()));
+        }
+        let candidates = COMPLETION_WORDS
+            .iter()
+            .filter(|w| w.starts_with(prefix))
+            .map(|w| Pair {
+                display: (*w).to_string(),
+                replacement: (*w).to_string(),
+            })
+            .collect();
+        Ok((start, candidates))
+    }
+}
+
+impl Hinter for KryosHelper {
+    type Hint = String;
+}
+impl Highlighter for KryosHelper {}
+impl Validator for KryosHelper {}
+impl Helper for KryosHelper {}
 
 /// Execute the REPL.
 pub fn execute() -> Result<(), String> {
@@ -9,28 +82,19 @@ pub fn execute() -> Result<(), String> {
         env!("CARGO_PKG_VERSION")
     );
 
-    // Persistent history: load from ~/.kryos_history on startup, append
-    // each accepted input line during the session. Lines starting with `:`
-    // (REPL meta-commands) are recorded too — they're useful context when
-    // re-reading the history.
+    // Persistent history: load from ~/.kryos_history on startup, append each
+    // accepted input line during the session. Lines starting with `:` (REPL
+    // meta-commands) are recorded too — useful context when re-reading.
     let history_path = history_file_path();
     let mut session_history: Vec<String> = read_history(&history_path);
 
-    // Install Ctrl+C handler so the process exits cleanly.
-    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-    {
-        let r = running.clone();
-        if let Err(e) = ctrlc_install(move || {
-            r.store(false, std::sync::atomic::Ordering::SeqCst);
-        }) {
-            eprintln!("warning: could not install Ctrl+C handler: {e}");
-        }
+    let mut rl: Editor<KryosHelper, DefaultHistory> =
+        Editor::new().map_err(|e| e.to_string())?;
+    rl.set_helper(Some(KryosHelper));
+    // Seed rustyline's in-memory history so Up/Down recalls prior sessions.
+    for entry in &session_history {
+        let _ = rl.add_history_entry(entry.as_str());
     }
-
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
-    let mut reader = stdin.lock();
-    let mut line = String::new();
 
     // Accumulated state across REPL inputs.
     // `decl_history` holds top-level items (fn, struct, enum, impl, trait, const).
@@ -39,42 +103,43 @@ pub fn execute() -> Result<(), String> {
     let mut let_history: Vec<String> = Vec::new();
 
     loop {
-        if !running.load(std::sync::atomic::Ordering::SeqCst) {
-            eprintln!("\ninterrupted");
-            break;
-        }
-
-        print!("kryos> ");
-        stdout.flush().map_err(|e| e.to_string())?;
-
-        line.clear();
-        let n = reader.read_line(&mut line).map_err(|e| e.to_string())?;
-        if n == 0 {
-            // EOF
-            eprintln!();
-            break;
-        }
+        let mut line = match rl.readline("kryos> ") {
+            Ok(l) => l,
+            Err(ReadlineError::Interrupted) => {
+                eprintln!("interrupted");
+                break;
+            }
+            Err(ReadlineError::Eof) => {
+                eprintln!();
+                break;
+            }
+            Err(e) => return Err(e.to_string()),
+        };
 
         // Multi-line input: keep reading while brackets are unclosed.
         while bracket_depth(line.trim_end()) > 0 {
-            print!(".... ");
-            stdout.flush().map_err(|e| e.to_string())?;
-            let n2 = reader.read_line(&mut line).map_err(|e| e.to_string())?;
-            if n2 == 0 {
-                break;
+            match rl.readline(".... ") {
+                Ok(more) => {
+                    line.push('\n');
+                    line.push_str(&more);
+                }
+                Err(_) => break,
             }
         }
 
-        let trimmed = line.trim();
+        let trimmed = line.trim().to_string();
         if trimmed.is_empty() {
             continue;
         }
 
-        // Record every accepted input in the persistent history.
-        session_history.push(trimmed.to_string());
-        append_history(&history_path, trimmed);
+        // Record every accepted input in the persistent history (on-disk file
+        // in the original plain-line format, the :history list, and rustyline's
+        // in-memory history for arrow-key recall).
+        session_history.push(trimmed.clone());
+        append_history(&history_path, &trimmed);
+        let _ = rl.add_history_entry(trimmed.as_str());
 
-        match trimmed {
+        match trimmed.as_str() {
             ":quit" | ":q" | ":exit" => break,
             ":help" | ":h" => {
                 println!("Commands:");
@@ -85,6 +150,9 @@ pub fn execute() -> Result<(), String> {
                 println!("  :reset          Clear accumulated definitions");
                 println!("  :history        Show the persistent input history");
                 println!("  :history-clear  Wipe the on-disk history file");
+                println!();
+                println!("Line editing: arrow keys recall history, Tab completes");
+                println!("Kryos keywords and builtins.");
                 println!();
                 println!("Enter any Kryos expression or statement to evaluate.");
             }
@@ -99,13 +167,15 @@ pub fn execute() -> Result<(), String> {
             }
             ":history-clear" => {
                 session_history.clear();
+                let _ = rl.clear_history();
                 let _ = std::fs::remove_file(&history_path);
                 println!("(history cleared)");
             }
             ":clear" => {
                 // ANSI clear screen
                 print!("\x1b[2J\x1b[H");
-                stdout.flush().map_err(|e| e.to_string())?;
+                use std::io::Write as _;
+                let _ = std::io::stdout().flush();
             }
             ":reset" => {
                 decl_history.clear();
@@ -118,7 +188,7 @@ pub fn execute() -> Result<(), String> {
                 let preamble = decl_history.join("\n");
                 let lets = let_history.join("\n");
                 let wrapper = format!(
-                    "{preamble}\nfn __repl_type_check__() {{ {lets}\nlet __result__ = {expr}; }}"
+                    "{preamble}\nfn __repl_type_check__() {{ {lets}\nlet __result__ = {expr}\n}}"
                 );
                 let mut config = kryos_driver::BuildConfig::for_file("<repl>");
                 config.output_type = kryos_driver::OutputType::Mir;
@@ -299,61 +369,6 @@ fn is_assignment_stmt(input: &str) -> bool {
         }
     }
     false
-}
-
-/// Minimal Ctrl+C handler installation.
-///
-/// We avoid pulling in the `ctrlc` crate by using platform-native APIs
-/// directly.
-fn ctrlc_install<F: Fn() + Send + 'static>(handler: F) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        // On Unix, use signal(SIGINT, ...) via std — not available in stable
-        // Rust without libc, so fall back to a thread-based approach.
-        std::thread::spawn(move || {
-            // Block on SIGINT via a simple loop with signal_hook-like behavior.
-            // This is best-effort; the real handler is EOF on stdin.
-            let _ = handler;
-        });
-        Ok(())
-    }
-    #[cfg(windows)]
-    {
-        use std::sync::Once;
-        static INIT: Once = Once::new();
-        // Store the handler in a static.
-        // Safety: we only call this once.
-        static mut HANDLER: Option<Box<dyn Fn() + Send>> = None;
-        INIT.call_once(|| unsafe {
-            HANDLER = Some(Box::new(handler));
-            SetConsoleCtrlHandler(Some(ctrl_handler), 1);
-        });
-        return Ok(());
-
-        unsafe extern "system" fn ctrl_handler(ctrl_type: u32) -> i32 {
-            if ctrl_type == 0 {
-                // CTRL_C_EVENT
-                if let Some(ref h) = HANDLER {
-                    h();
-                }
-                1 // handled
-            } else {
-                0
-            }
-        }
-
-        extern "system" {
-            fn SetConsoleCtrlHandler(
-                handler: Option<unsafe extern "system" fn(u32) -> i32>,
-                add: i32,
-            ) -> i32;
-        }
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = handler;
-        Ok(())
-    }
 }
 
 // ─── Persistent history ──────────────────────────────────────────────────

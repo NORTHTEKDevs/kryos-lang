@@ -1176,6 +1176,10 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_regex_find_end_ks(i64, i64, i64)");
         self.emit_line("declare i64 @kryos_regex_find_ks(i64, i64)");
         self.emit_line("declare i64 @kryos_regex_find_pos_ks(i64, i64, i64)");
+        // Single-pass native find used by std::re find/find_all (out-params for
+        // start+len). Was missing from the LLVM declares, so AOT builds of any
+        // regex program failed with "use of undefined value @kryos_regex_find".
+        self.emit_line("declare i32 @kryos_regex_find(i64, i64, i64, i64, i64)");
         self.emit_line("declare i32 @kryos_regex_is_match(ptr, ptr, i64)");
         self.emit_line("declare ptr @kryos_regex_new(ptr, i64)");
         self.emit_line("declare void @kryos_rt_init()");

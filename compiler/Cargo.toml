@@ -83,6 +83,7 @@ postgres-native-tls = "0.5"
 native-tls = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "http2"] }
 criterion = { version = "0.5", features = ["html_reports"] }
+rustyline = "14"
 
 # Dev profile: reduce debug build RAM from ~48GB by optimizing heavy deps
 [profile.dev]

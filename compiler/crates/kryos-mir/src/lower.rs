@@ -7066,6 +7066,18 @@ fn substitute_type_expr_to_mir(
                 .iter()
                 .map(|a| substitute_type_expr_to_mir(ctx, a, type_map))
                 .collect();
+            // The built-in `map<K, V>` is not a user template, so it must be
+            // reconstructed from the SUBSTITUTED args here. Falling through to
+            // `resolve_type(ty)` would re-resolve the ORIGINAL (unsubstituted)
+            // `map<str, V>` and leak a bare `%V` into the monomorphized struct
+            // def's field type (`store: Map<str, V>`), which then propagated
+            // through every method body and emitted invalid `extractvalue %V`.
+            if name == "map" && concrete.len() == 2 {
+                return MirType::Map {
+                    key: Box::new(concrete[0].clone()),
+                    value: Box::new(concrete[1].clone()),
+                };
+            }
             if ctx.generic_struct_templates.contains_key(name) {
                 return MirType::Struct(monomorphize_struct(ctx, name, &concrete));
             }
@@ -7116,6 +7128,16 @@ fn resolve_struct_literal_name(
         .generic_params
         .iter()
         .map(|gp| {
+            // Find a field whose declared type mentions this param, infer the
+            // type of the corresponding field expression, then structurally
+            // peel the param's concrete binding out of that inferred type. A
+            // param nested inside a constructor (`data: [T]`, `store: map<str,
+            // V>`) MUST be unwrapped: using the whole field type as the binding
+            // mangles `List<i64>` as `List____i64_` (derived from the field type
+            // `[i64]`), while the method's `-> List<T>` return type mangles the
+            // same instantiation as `List___i64`. The mismatch made the LLVM
+            // backend store `undef` into the constructor's sret slot (empty
+            // arrays/maps came back null), and leaked an unsized `%V` for maps.
             template
                 .fields
                 .iter()
@@ -7124,12 +7146,92 @@ fn resolve_struct_literal_name(
                     field_exprs
                         .iter()
                         .find(|(fn_, _)| fn_ == &f.name)
-                        .map(|(_, fexpr)| infer_expr_type(ctx, fexpr))
+                        .and_then(|(_, fexpr)| {
+                            let inferred = infer_expr_type(ctx, fexpr);
+                            extract_param_binding(&f.ty, &inferred, gp)
+                        })
                 })
                 .unwrap_or(MirType::I64)
         })
         .collect();
     monomorphize_struct(ctx, name, &type_args)
+}
+
+/// Structurally extract the concrete binding for one generic param from an
+/// inferred field type. The field's declared `TypeExpr` says WHERE the param
+/// sits (the element of `[T]`, the value of `map<str, V>`, an element of a
+/// tuple, ...); we walk the inferred `MirType` in lock-step and return the
+/// matching component. Returns `None` when the param is absent or the shapes
+/// do not line up, in which case the caller falls back to `i64` (the uniform
+/// erased slot). This keeps the struct-literal mangling identical to the
+/// `-> Type<T>` return-type mangling, which the LLVM backend requires.
+fn extract_param_binding(
+    field_ty: &ast::TypeExpr,
+    inferred: &MirType,
+    param: &str,
+) -> Option<MirType> {
+    match field_ty {
+        ast::TypeExpr::Simple { name, .. } => {
+            if name == param {
+                Some(inferred.clone())
+            } else {
+                None
+            }
+        }
+        ast::TypeExpr::Array { element, .. } => {
+            if let MirType::Array(elem, _) = inferred {
+                extract_param_binding(element, elem, param)
+            } else {
+                None
+            }
+        }
+        ast::TypeExpr::Tuple { elements, .. } => {
+            if let MirType::Tuple(items) = inferred {
+                elements
+                    .iter()
+                    .zip(items.iter())
+                    .find_map(|(te, mt)| extract_param_binding(te, mt, param))
+            } else {
+                None
+            }
+        }
+        ast::TypeExpr::Generic { name, args, .. } => {
+            if name == "map" {
+                if let MirType::Map { key, value } = inferred {
+                    return args
+                        .first()
+                        .and_then(|a| extract_param_binding(a, key, param))
+                        .or_else(|| {
+                            args.get(1)
+                                .and_then(|a| extract_param_binding(a, value, param))
+                        });
+                }
+            }
+            None
+        }
+        ast::TypeExpr::Reference { inner, .. } => {
+            if let MirType::Ref { inner: mi, .. } = inferred {
+                extract_param_binding(inner, mi, param)
+            } else {
+                None
+            }
+        }
+        ast::TypeExpr::Shared { inner, .. } => {
+            if let MirType::Shared(mi) = inferred {
+                extract_param_binding(inner, mi, param)
+            } else {
+                None
+            }
+        }
+        ast::TypeExpr::Pointer { inner, .. } => {
+            if let MirType::Ptr(mi) = inferred {
+                extract_param_binding(inner, mi, param)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Check whether a TypeExpr mentions a particular type parameter name.
