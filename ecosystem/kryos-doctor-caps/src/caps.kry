@@ -1,0 +1,159 @@
+// ============================================================
+// caps.kry -- capability taxonomy and set primitives for kryos-doctor-caps.
+//
+// Mirrors the 10 concrete Capability variants from kryos-capabilities/model.rs
+// and the gated-builtin mapping from required_capability_for_builtin.
+// ============================================================
+
+// All concrete capability names (excluding the "all" wildcard).
+@capabilities()
+fn all_cap_names() -> [str] {
+    return ["compute", "crypto", "db", "env", "ffi", "io", "net", "process", "term", "time"]
+}
+
+// True iff `cap` is a dangerous capability worth highlighting in the report.
+// ffi, process, and net all grant significant ambient authority.
+@capabilities()
+fn is_dangerous_cap(cap: str) -> bool {
+    return cap == "ffi" || cap == "process" || cap == "net"
+}
+
+// Return the capability required by a gated builtin function name.
+// Returns "" if the builtin requires no capability.
+@capabilities()
+fn cap_for_builtin(name: str) -> str {
+    // io: file and filesystem builtins
+    if name == "file_read" || name == "file_write" || name == "read_file" || name == "write_file"
+        || name == "path_exists" || name == "is_file" || name == "is_dir" || name == "create_dir"
+        || name == "remove_file" || name == "remove_dir" || name == "copy_file"
+        || name == "rename_file" || name == "file_size" || name == "file_exists"
+        || name == "list_dir" || name == "walk_dir" {
+        return "io"
+    }
+    // process: environment and subprocess builtins
+    if name == "env_get" || name == "env_set" || name == "exit" || name == "exec"
+        || name == "spawn_process" {
+        return "process"
+    }
+    // net: network and protocol builtins
+    if name == "http_get" || name == "http_post" || name == "http2_get" || name == "http2_post"
+        || name == "http2_request" || name == "tcp_connect" || name == "tcp_listen"
+        || name == "tcp_accept" || name == "tcp_send" || name == "tcp_recv"
+        || name == "pg_connect" || name == "pg_exec" || name == "pg_query" || name == "pg_close"
+        || name == "tls_server_config" || name == "tls_accept" || name == "tls_send"
+        || name == "tls_recv" || name == "tls_close" || name == "uds_connect"
+        || name == "uds_bind" || name == "uds_accept" || name == "uds_send"
+        || name == "uds_recv" || name == "uds_close" || name == "ws_accept_key"
+        || name == "ws_encode_text" || name == "ws_encode_binary" || name == "ws_encode_close"
+        || name == "ws_encode_ping" || name == "ws_encode_pong" || name == "ws_unmask"
+        || name == "ws_read_frame" {
+        return "net"
+    }
+    // term: terminal builtins
+    if name == "term_clear" || name == "term_raw_mode" || name == "term_size" {
+        return "term"
+    }
+    // crypto: cryptographic builtins
+    if name == "sha256" || name == "sha512" || name == "random_bytes" || name == "hmac_sha256" {
+        return "crypto"
+    }
+    // time: timing builtins
+    if name == "time_now" || name == "time_millis" || name == "sleep" {
+        return "time"
+    }
+    return ""
+}
+
+// All gated builtin names (used by the scanner to search function bodies).
+@capabilities()
+fn gated_builtins() -> [str] {
+    return [
+        "file_read", "file_write", "read_file", "write_file",
+        "path_exists", "is_file", "is_dir", "create_dir",
+        "remove_file", "remove_dir", "copy_file", "rename_file",
+        "file_size", "file_exists", "list_dir", "walk_dir",
+        "env_get", "env_set", "exit", "exec", "spawn_process",
+        "http_get", "http_post", "http2_get", "http2_post", "http2_request",
+        "tcp_connect", "tcp_listen", "tcp_accept", "tcp_send", "tcp_recv",
+        "pg_connect", "pg_exec", "pg_query", "pg_close",
+        "tls_server_config", "tls_accept", "tls_send", "tls_recv", "tls_close",
+        "uds_connect", "uds_bind", "uds_accept", "uds_send", "uds_recv", "uds_close",
+        "ws_accept_key", "ws_encode_text", "ws_encode_binary", "ws_encode_close",
+        "ws_encode_ping", "ws_encode_pong", "ws_unmask", "ws_read_frame",
+        "term_clear", "term_raw_mode", "term_size",
+        "sha256", "sha512", "random_bytes", "hmac_sha256",
+        "time_now", "time_millis", "sleep"
+    ]
+}
+
+// --- Cap set helpers ---------------------------------------------------------
+
+@capabilities()
+fn caps_member(set: [str], cap: str) -> bool {
+    for c in set {
+        if c == cap {
+            return true
+        }
+    }
+    return false
+}
+
+@capabilities()
+fn caps_insert_sorted(set: [str], cap: str) -> [str] {
+    if caps_member(set, cap) {
+        return set
+    }
+    let mut out: [str] = []
+    let mut inserted = false
+    for c in set {
+        if !inserted && cap < c {
+            out = push(out, cap)
+            inserted = true
+        }
+        out = push(out, c)
+    }
+    if !inserted {
+        out = push(out, cap)
+    }
+    return out
+}
+
+@capabilities()
+fn caps_join(set: [str], sep: str) -> str {
+    let mut out: str = ""
+    let mut first = true
+    for c in set {
+        if !first {
+            out = out + sep
+        }
+        out = out + c
+        first = false
+    }
+    return out
+}
+
+// Returns elements in `declared` that are not in `actual` (over-declared caps).
+@capabilities()
+fn caps_over(actual: [str], declared: [str]) -> [str] {
+    let mut over: [str] = []
+    for d in declared {
+        if !caps_member(actual, d) && !caps_member(over, d) {
+            over = push(over, d)
+        }
+    }
+    return over
+}
+
+// True iff actual is a strict subset of declared (actual is smaller and fully contained).
+@capabilities()
+fn caps_is_strict_subset(actual: [str], declared: [str]) -> bool {
+    if len(actual) >= len(declared) {
+        return false
+    }
+    for a in actual {
+        if !caps_member(declared, a) {
+            return false
+        }
+    }
+    return true
+}

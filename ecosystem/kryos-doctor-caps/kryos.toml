@@ -1,0 +1,8 @@
+[package]
+name = "kryos-doctor-caps"
+version = "0.1.0"
+description = "Project-wide capability audit report: flags over-declared functions, dangerous callers, and unannotated gated callers using kryos manifest --caps JSON"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["io", "process"]

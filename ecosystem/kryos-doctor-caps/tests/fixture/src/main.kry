@@ -1,0 +1,50 @@
+// fixture/src/main.kry -- mixed-annotation fixture for kryos-doctor-caps.
+//
+// Scenarios:
+//   save_report   : OVER-DECLARED -- declares [io, net] but body only calls file_write (io)
+//   load_config   : CORRECT       -- declares [io], body calls file_read (io)
+//   get_env_var   : CORRECT       -- declares [process], body calls env_get (process)
+//   format_result : CORRECT       -- declares [], body is pure compute
+//   fetch_data    : UNANNOTATED   -- no @capabilities but body calls http_post (net)
+//   compute_only  : CORRECT       -- declares [], pure compute helper
+
+// OVER-DECLARED: declares io and net but only writes a file.
+// kryos-doctor-caps should suggest narrowing to @capabilities(io).
+@capabilities(io, net)
+fn save_report(path: str, data: str) {
+    file_write(path, data)
+}
+
+// Correct: io only, body uses file_read (io).
+@capabilities(io)
+fn load_config(path: str) -> str {
+    return file_read(path)
+}
+
+// Correct: process cap, body uses env_get (process).
+@capabilities(process)
+fn get_env_var(key: str) -> str {
+    return env_get(key)
+}
+
+// Correct: pure compute, no gated builtins.
+@capabilities()
+fn format_result(s: str) -> str {
+    return "result: " + s
+}
+
+// UNANNOTATED gated caller: no @capabilities but calls http_post (net).
+// kryos-doctor-caps should report this as strict-mode would fail.
+fn fetch_data(url: str, payload: str) -> str {
+    return http2_post(url, payload)
+}
+
+// Correct: pure compute, no annotation needed (still correct to annotate empty).
+@capabilities()
+fn compute_only(x: i64) -> i64 {
+    return x * 2
+}
+
+fn main() {
+    println("fixture project -- do not run directly")
+}

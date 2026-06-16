@@ -1,0 +1,59 @@
+// ============================================================
+// main.kry -- CLI entry point for kryos-doctor-caps.
+//
+// Usage: kryos run src/main.kry <manifest.json>
+//   where <manifest.json> was produced by:
+//     kryos manifest --caps --strict --format json <project-path>
+//
+// Capabilities needed:
+//   io      -- to read the manifest JSON and source files
+// ============================================================
+
+use manifest
+use scanner
+use report
+use caps
+
+@capabilities(io)
+fn main() {
+    let a = args()
+    if len(a) < 2 {
+        println("kryos-doctor-caps: capability audit report")
+        println("")
+        println("Usage:")
+        println("  kryos manifest --caps --strict --format json <project> -o caps.json")
+        println("  kryos run src/main.kry caps.json")
+        return
+    }
+
+    let manifest_path = a[1]
+    if file_exists(manifest_path) == 0 {
+        println("error: manifest file not found: " + manifest_path)
+        return
+    }
+
+    let json_text = file_read(manifest_path)
+    let entries = parse_manifest_json(json_text)
+
+    if len(entries) == 0 {
+        println("warning: no files found in manifest")
+        return
+    }
+
+    // For each source file in the manifest, read its text and scan for gated builtins.
+    let mut scans: [FileScan] = []
+    for e in entries {
+        let source_path = e.source
+        let source_text = if file_exists(source_path) == 1 {
+            file_read(source_path)
+        } else {
+            ""
+        }
+        let actual_caps = scan_source_all(source_text, e.fns)
+        let s = file_scan_new(source_path, actual_caps)
+        scans = push(scans, s)
+    }
+
+    let output = render_report(entries, scans)
+    println(output)
+}

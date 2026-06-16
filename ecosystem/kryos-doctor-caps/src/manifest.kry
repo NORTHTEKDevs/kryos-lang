@@ -1,0 +1,151 @@
+// ============================================================
+// manifest.kry -- parse kryos manifest --caps --strict --format json output.
+//
+// The JSON has two shapes:
+//   Project scan:   { "schema": "kryos-manifest-v1", "files": [...] }
+//   Single-file:    { "schema": "kryos-manifest-v1", "source": "...",
+//                     "functions": {...}, "unannotated_count": N }
+//
+// Both are normalized to [FileEntry].  Each FileEntry holds parallel arrays
+// describing the functions in one source file.
+// ============================================================
+
+use std::json::{parse, get, to_str, to_bool, to_array, to_object, is_null, JsonValue}
+
+// One source file's worth of data extracted from the manifest.
+// Parallel arrays: fns[i], fn_caps[i], fn_annotated[i] all describe function i.
+struct FileEntry {
+    source: str,
+    fns: [str],
+    fn_caps: [[str]],
+    fn_annotated: [bool],
+}
+
+@capabilities()
+fn file_entry_new(source: str) -> FileEntry {
+    let empty_fns: [str] = []
+    let empty_caps: [[str]] = []
+    let empty_ann: [bool] = []
+    return FileEntry {
+        source: source,
+        fns: empty_fns,
+        fn_caps: empty_caps,
+        fn_annotated: empty_ann,
+    }
+}
+
+// Append one function to a FileEntry.
+@capabilities()
+fn file_entry_add_fn(e: FileEntry, name: str, caps: [str], annotated: bool) -> FileEntry {
+    return FileEntry {
+        source: e.source,
+        fns: push(e.fns, name),
+        fn_caps: push(e.fn_caps, caps),
+        fn_annotated: push(e.fn_annotated, annotated),
+    }
+}
+
+// Parse the JSON array of capability strings.
+@capabilities()
+fn parse_caps_array(val: JsonValue) -> [str] {
+    let mut out: [str] = []
+    if is_null(val) {
+        return out
+    }
+    let items = to_array(val)
+    for item in items {
+        let s = to_str(item)
+        out = push(out, s)
+    }
+    return out
+}
+
+// Parse one functions JSON object (maps fn_name -> {capabilities, annotated}).
+@capabilities()
+fn parse_functions_obj(entry: FileEntry, fns_val: JsonValue) -> FileEntry {
+    if is_null(fns_val) {
+        return entry
+    }
+    let obj = to_object(fns_val)
+    let keys = obj.0
+    let vals = obj.1
+    let n = len(keys)
+    let mut e = entry
+    let mut i = 0
+    while i < n {
+        let fn_name = keys[i]
+        let fn_info = vals[i]
+        let caps = parse_caps_array(get(fn_info, "capabilities"))
+        let ann_val = get(fn_info, "annotated")
+        let annotated = !is_null(ann_val) && to_bool(ann_val)
+        e = file_entry_add_fn(e, fn_name, caps, annotated)
+        i = i + 1
+    }
+    return e
+}
+
+// Parse one file object from the "files" array.
+@capabilities()
+fn parse_file_obj(file_val: JsonValue) -> FileEntry {
+    let source = to_str(get(file_val, "source"))
+    let entry = file_entry_new(source)
+    let fns_val = get(file_val, "functions")
+    return parse_functions_obj(entry, fns_val)
+}
+
+// Parse the full manifest JSON string into a list of FileEntry.
+// Handles both single-file and multi-file shapes.
+@capabilities()
+fn parse_manifest_json(json_text: str) -> [FileEntry] {
+    let root = parse(json_text)
+    let mut entries: [FileEntry] = []
+
+    // Multi-file shape: has "files" array
+    let files_val = get(root, "files")
+    if !is_null(files_val) {
+        let files = to_array(files_val)
+        for file_val in files {
+            let entry = parse_file_obj(file_val)
+            entries = push(entries, entry)
+        }
+        return entries
+    }
+
+    // Single-file shape: has "source" directly
+    let source_val = get(root, "source")
+    if !is_null(source_val) {
+        let source = to_str(source_val)
+        let mut entry = file_entry_new(source)
+        entry = parse_functions_obj(entry, get(root, "functions"))
+        entries = push(entries, entry)
+        return entries
+    }
+
+    return entries
+}
+
+// Count total functions across all entries.
+@capabilities()
+fn total_fn_count(entries: [FileEntry]) -> i64 {
+    let mut n = 0
+    for e in entries {
+        n = n + len(e.fns)
+    }
+    return n
+}
+
+// Count unannotated functions across all entries.
+@capabilities()
+fn unannotated_fn_count(entries: [FileEntry]) -> i64 {
+    let mut n = 0
+    for e in entries {
+        let mut i = 0
+        while i < len(e.fn_annotated) {
+            if !e.fn_annotated[i] {
+                n = n + 1
+            }
+            i = i + 1
+        }
+    }
+    return n
+}

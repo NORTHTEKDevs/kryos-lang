@@ -1,0 +1,112 @@
+// ============================================================
+// scanner.kry -- lightweight source scanner for gated builtin calls.
+//
+// Given source text and a function name, extracts the function's body and
+// checks which gated builtins are called within it.  Returns the "actual
+// direct" capability set.
+//
+// Note: { and } cannot appear in Kryos string literals (they trigger string
+// interpolation).  open_brace() and close_brace() are used instead.
+// ============================================================
+
+use caps
+
+@capabilities()
+fn open_brace() -> str {
+    return char_from(123)
+}
+
+@capabilities()
+fn close_brace() -> str {
+    return char_from(125)
+}
+
+// Find the byte offset of `needle` in `haystack`, or -1 if not found.
+@capabilities()
+fn str_find(haystack: str, needle: str) -> i64 {
+    let hlen = len(haystack)
+    let nlen = len(needle)
+    if nlen == 0 {
+        return 0
+    }
+    let mut i = 0
+    while i + nlen <= hlen {
+        if substr(haystack, i, i + nlen) == needle {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// Extract the body of function `fn_name` from `source_text`.
+// Finds "fn <fn_name>(" then counts braces to find the matching close.
+// Returns "" if the function is not found.
+@capabilities()
+fn extract_fn_body(source_text: str, fn_name: str) -> str {
+    let target = "fn " + fn_name + "("
+    let idx = str_find(source_text, target)
+    if idx < 0 {
+        return ""
+    }
+    let rest = substr(source_text, idx, len(source_text))
+    let ob = open_brace()
+    let cb = close_brace()
+    let open_idx = str_find(rest, ob)
+    if open_idx < 0 {
+        return ""
+    }
+    let body_start = open_idx + 1
+    let rlen = len(rest)
+    let mut depth = 1
+    let mut i = body_start
+    while i < rlen && depth > 0 {
+        let ch = substr(rest, i, i + 1)
+        if ch == ob {
+            depth = depth + 1
+        } elif ch == cb {
+            depth = depth - 1
+        }
+        i = i + 1
+    }
+    if depth != 0 {
+        return ""
+    }
+    return substr(rest, body_start, i - 1)
+}
+
+// Scan a function body for gated builtin calls and return the set of
+// capabilities actually needed.  A gated builtin name followed by "("
+// in the body text is treated as a call.
+//
+// Limitation: string literals containing "builtin_name(" produce false
+// positives.  This is acceptable for a DX-audit tool.
+@capabilities()
+fn scan_body_caps(body: str) -> [str] {
+    let builtins = gated_builtins()
+    let mut found: [str] = []
+    for b in builtins {
+        let pattern = b + "("
+        if contains(body, pattern) {
+            let cap = cap_for_builtin(b)
+            if cap != "" && !caps_member(found, cap) {
+                found = push(found, cap)
+            }
+        }
+    }
+    return found
+}
+
+// Compute the actual-direct caps for every function listed in `fn_names`
+// by scanning their bodies in `source_text`.
+// Returns parallel array of cap sets, same order as `fn_names`.
+@capabilities()
+fn scan_source_all(source_text: str, fn_names: [str]) -> [[str]] {
+    let mut result: [[str]] = []
+    for name in fn_names {
+        let body = extract_fn_body(source_text, name)
+        let actual = scan_body_caps(body)
+        result = push(result, actual)
+    }
+    return result
+}

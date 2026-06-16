@@ -1,0 +1,8 @@
+[package]
+name = "kryos-doctor-caps-fixture"
+version = "0.1.0"
+description = "Test fixture for kryos-doctor-caps: mixed capability annotations including over-declared and unannotated gated callers"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["io", "net", "process"]

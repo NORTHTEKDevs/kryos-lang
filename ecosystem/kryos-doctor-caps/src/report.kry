@@ -1,0 +1,215 @@
+// ============================================================
+// report.kry -- capability audit report renderer.
+//
+// Consumes the parsed manifest entries plus per-file actual-cap maps and
+// produces a human-readable report with four sections:
+//   1. By Capability: which functions use each cap
+//   2. By Function: each function's declared caps (with dangerous-caller flag)
+//   3. Could Narrow: functions where declared is a strict superset of actual
+//   4. Strict-Mode Would Fail: unannotated functions calling gated builtins
+// ============================================================
+
+use caps
+use manifest
+
+// Holds the actual-cap scan results for one source file.
+// Parallel to FileEntry.fns: actual_caps[i] is the scanned actual for fns[i].
+struct FileScan {
+    source: str,
+    actual_caps: [[str]],
+}
+
+// Build a FileScan from a source text (already scanned) and manifest entry.
+@capabilities()
+fn file_scan_new(source: str, actual_caps: [[str]]) -> FileScan {
+    return FileScan { source: source, actual_caps: actual_caps }
+}
+
+// Render a sorted capability set as [io, net] style.
+@capabilities()
+fn render_caps(caps_set: [str]) -> str {
+    if len(caps_set) == 0 {
+        return "[]"
+    }
+    return "[" + caps_join(caps_set, ", ") + "]"
+}
+
+// Pad `s` with spaces on the right to `width` total characters.
+@capabilities()
+fn pad_right(s: str, width: i64) -> str {
+    let mut out = s
+    let mut i = len(s)
+    while i < width {
+        out = out + " "
+        i = i + 1
+    }
+    return out
+}
+
+// Collect all functions for a given capability across all entries.
+@capabilities()
+fn fns_with_cap(entries: [FileEntry], cap: str) -> [str] {
+    let mut out: [str] = []
+    for e in entries {
+        let mut i = 0
+        while i < len(e.fns) {
+            if caps_member(e.fn_caps[i], cap) {
+                out = push(out, e.fns[i])
+            }
+            i = i + 1
+        }
+    }
+    return out
+}
+
+// Section 1: grouped by capability.
+@capabilities()
+fn render_by_capability(entries: [FileEntry]) -> str {
+    let all_caps = all_cap_names()
+    let mut out = "---- By Capability ----\n"
+    let mut any_found = false
+    for cap in all_caps {
+        let fns = fns_with_cap(entries, cap)
+        if len(fns) > 0 {
+            let flag = if is_dangerous_cap(cap) { " [DANGEROUS]" } else { "" }
+            out = out + "  " + pad_right(cap, 10) + ": " + caps_join(fns, ", ") + flag + "\n"
+            any_found = true
+        }
+    }
+    if !any_found {
+        out = out + "  (no capability-bearing functions found)\n"
+    }
+    return out
+}
+
+// Section 2: by function.
+@capabilities()
+fn render_by_function(entries: [FileEntry]) -> str {
+    let mut out = "---- By Function ----\n"
+    for e in entries {
+        let short_src = e.source
+        out = out + "  [" + short_src + "]\n"
+        let mut i = 0
+        while i < len(e.fns) {
+            let name = e.fns[i]
+            let declared = e.fn_caps[i]
+            let ann = e.fn_annotated[i]
+            let mut flags = ""
+            if !ann {
+                flags = flags + " [unannotated]"
+            }
+            let mut has_danger = false
+            for cap in declared {
+                if is_dangerous_cap(cap) {
+                    has_danger = true
+                }
+            }
+            if has_danger {
+                flags = flags + " ** DANGEROUS CALLER"
+            }
+            let caps_str = if ann { render_caps(declared) } else { "[unannotated]" }
+            out = out + "    " + pad_right(name, 24) + " " + caps_str + flags + "\n"
+            i = i + 1
+        }
+    }
+    return out
+}
+
+// Section 3: could-narrow hints.
+// A function "could narrow" when its declared caps are a strict superset of
+// its actual-direct caps (as found by scanning the function body).
+// Limitation: transitive callgraph is not tracked -- this is declared vs
+// direct-body-builtins only.
+@capabilities()
+fn render_could_narrow(entries: [FileEntry], scans: [FileScan]) -> str {
+    let mut out = "---- Could Narrow ----\n"
+    let mut hint_count = 0
+    let mut file_idx = 0
+    while file_idx < len(entries) {
+        let e = entries[file_idx]
+        let scan = scans[file_idx]
+        let mut i = 0
+        while i < len(e.fns) {
+            let name = e.fns[i]
+            let declared = e.fn_caps[i]
+            let ann = e.fn_annotated[i]
+            // Only check annotated functions with at least one declared cap
+            if ann && len(declared) > 0 {
+                let actual = scan.actual_caps[i]
+                // If actual is a strict subset of declared, we can narrow
+                if caps_is_strict_subset(actual, declared) {
+                    let over = caps_over(actual, declared)
+                    out = out + "  " + name + ": declared " + render_caps(declared)
+                    out = out + " but body only uses " + render_caps(actual) + "\n"
+                    out = out + "           Suggestion: @capabilities("
+                    if len(actual) == 0 {
+                        out = out + ")\n"
+                    } else {
+                        out = out + caps_join(actual, ", ") + ")\n"
+                    }
+                    out = out + "           Over-declared: " + caps_join(over, ", ") + "\n"
+                    hint_count = hint_count + 1
+                }
+            }
+            i = i + 1
+        }
+        file_idx = file_idx + 1
+    }
+    if hint_count == 0 {
+        out = out + "  (no narrowing opportunities found)\n"
+    }
+    return out
+}
+
+// Section 4: unannotated functions that call gated builtins.
+// In --strict-capabilities mode these would be compile errors.
+@capabilities()
+fn render_strict_fail(entries: [FileEntry], scans: [FileScan]) -> str {
+    let mut out = "---- Strict-Mode Would Fail (--strict-capabilities) ----\n"
+    let mut fail_count = 0
+    let mut file_idx = 0
+    while file_idx < len(entries) {
+        let e = entries[file_idx]
+        let scan = scans[file_idx]
+        let mut i = 0
+        while i < len(e.fns) {
+            let name = e.fns[i]
+            let ann = e.fn_annotated[i]
+            let actual = scan.actual_caps[i]
+            // Unannotated function that actually calls gated builtins
+            if !ann && len(actual) > 0 {
+                out = out + "  " + name + ": unannotated but calls " + render_caps(actual) + " builtins\n"
+                out = out + "           Add: @capabilities(" + caps_join(actual, ", ") + ")\n"
+                fail_count = fail_count + 1
+            }
+            i = i + 1
+        }
+        file_idx = file_idx + 1
+    }
+    if fail_count == 0 {
+        out = out + "  (no violations found)\n"
+    }
+    return out
+}
+
+// Render the full audit report.
+@capabilities()
+fn render_report(entries: [FileEntry], scans: [FileScan]) -> str {
+    let total = total_fn_count(entries)
+    let unannotated = unannotated_fn_count(entries)
+    let annotated = total - unannotated
+
+    let mut out = "== kryos-doctor-caps: capability audit report ==\n\n"
+    out = out + "Summary\n"
+    out = out + "  Total functions : " + to_string(total) + "\n"
+    out = out + "  Annotated       : " + to_string(annotated) + "\n"
+    out = out + "  Unannotated     : " + to_string(unannotated) + "\n"
+    out = out + "  Source files    : " + to_string(len(entries)) + "\n\n"
+
+    out = out + render_by_capability(entries) + "\n"
+    out = out + render_by_function(entries) + "\n"
+    out = out + render_could_narrow(entries, scans) + "\n"
+    out = out + render_strict_fail(entries, scans) + "\n"
+
+    return out
+}

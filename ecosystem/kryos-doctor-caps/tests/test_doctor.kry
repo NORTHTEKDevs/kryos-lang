@@ -1,0 +1,410 @@
+// ============================================================
+// test_doctor.kry -- tests for kryos-doctor-caps.
+//
+//   kryos test --path ecosystem/kryos-doctor-caps
+//   kryos run  tests/test_doctor.kry   (drives the same assertions)
+//
+// Note: { and } cannot appear literally in Kryos string literals (they
+// trigger string interpolation).  All embedded JSON and source snippets
+// use ob() = char_from(123) and cb() = char_from(125) instead.
+// ============================================================
+
+use caps
+use manifest
+use scanner
+use report
+
+// ---- String helpers for embedded data -------------------------------------
+
+// Open-brace character (cannot be used literally in strings).
+@capabilities()
+fn ob() -> str {
+    return char_from(123)
+}
+
+// Close-brace character.
+@capabilities()
+fn cb() -> str {
+    return char_from(125)
+}
+
+// Wrap s in double quotes.
+@capabilities()
+fn q(s: str) -> str {
+    return "\"" + s + "\""
+}
+
+// Build one JSON function-entry object:  "name": {"capabilities": caps, "annotated": ann}
+@capabilities()
+fn jfn(name: str, caps_json: str, annotated: bool) -> str {
+    let ann = if annotated { "true" } else { "false" }
+    return q(name) + ":" + ob() +
+        q("capabilities") + ":" + caps_json + "," +
+        q("annotated") + ":" + ann +
+        cb()
+}
+
+// Build the fixture manifest JSON that mirrors what kryos manifest --caps
+// --strict --format json produces for tests/fixture/.
+@capabilities()
+fn fixture_manifest_json() -> str {
+    let schema = q("schema") + ":" + q("kryos-manifest-v1")
+    let source_path = q("source") + ":" + q("/fixture/src/main.kry")
+
+    // Function entries in alphabetical order (as manifest tool emits them).
+    let fns_inner =
+        jfn("compute_only", "[]", true) + "," +
+        jfn("fetch_data",   "[]", false) + "," +
+        jfn("format_result","[]", true) + "," +
+        jfn("get_env_var",  "[" + q("process") + "]", true) + "," +
+        jfn("load_config",  "[" + q("io") + "]", true) + "," +
+        jfn("main",         "[]", false) + "," +
+        jfn("save_report",  "[" + q("io") + "," + q("net") + "]", true)
+
+    let fns_obj = q("functions") + ":" + ob() + fns_inner + cb()
+    let unannotated = q("unannotated_count") + ":2"
+    let file_obj = ob() + source_path + "," + fns_obj + "," + unannotated + cb()
+    let files_arr = q("files") + ":[" + file_obj + "]"
+
+    return ob() + schema + "," + files_arr + cb()
+}
+
+// Build the fixture source text (mirrors tests/fixture/src/main.kry).
+// Uses ob()/cb() because { and } cannot appear in string literals.
+@capabilities()
+fn fixture_source_text() -> str {
+    return "@capabilities(io, net)\n" +
+        "fn save_report(path: str, data: str) " + ob() + "\n" +
+        "    file_write(path, data)\n" +
+        cb() + "\n\n" +
+        "@capabilities(io)\n" +
+        "fn load_config(path: str) -> str " + ob() + "\n" +
+        "    return file_read(path)\n" +
+        cb() + "\n\n" +
+        "@capabilities(process)\n" +
+        "fn get_env_var(key: str) -> str " + ob() + "\n" +
+        "    return env_get(key)\n" +
+        cb() + "\n\n" +
+        "@capabilities()\n" +
+        "fn format_result(s: str) -> str " + ob() + "\n" +
+        "    return s\n" +
+        cb() + "\n\n" +
+        "fn fetch_data(url: str, payload: str) -> str " + ob() + "\n" +
+        "    return http2_post(url, payload)\n" +
+        cb() + "\n\n" +
+        "@capabilities()\n" +
+        "fn compute_only(x: i64) -> i64 " + ob() + "\n" +
+        "    return x * 2\n" +
+        cb() + "\n\n" +
+        "fn main() " + ob() + "\n" +
+        "    println(\"fixture\")\n" +
+        cb() + "\n"
+}
+
+// ---- Capability taxonomy tests ---------------------------------------------
+
+@test
+fn test_cap_for_builtin_io() {
+    assert(cap_for_builtin("file_write") == "io", "file_write should map to io")
+    assert(cap_for_builtin("file_read") == "io", "file_read should map to io")
+    assert(cap_for_builtin("create_dir") == "io", "create_dir should map to io")
+}
+
+@test
+fn test_cap_for_builtin_net() {
+    assert(cap_for_builtin("http_post") == "net", "http_post should map to net")
+    assert(cap_for_builtin("http_get") == "net", "http_get should map to net")
+    assert(cap_for_builtin("tcp_connect") == "net", "tcp_connect should map to net")
+}
+
+@test
+fn test_cap_for_builtin_process() {
+    assert(cap_for_builtin("env_get") == "process", "env_get should map to process")
+    assert(cap_for_builtin("exit") == "process", "exit should map to process")
+}
+
+@test
+fn test_cap_for_builtin_ungated() {
+    assert(cap_for_builtin("println") == "", "println should require no cap")
+    assert(cap_for_builtin("to_string") == "", "to_string should require no cap")
+    assert(cap_for_builtin("len") == "", "len should require no cap")
+}
+
+@test
+fn test_is_dangerous() {
+    assert(is_dangerous_cap("ffi"), "ffi should be dangerous")
+    assert(is_dangerous_cap("process"), "process should be dangerous")
+    assert(is_dangerous_cap("net"), "net should be dangerous")
+    assert(!is_dangerous_cap("io"), "io should not be dangerous")
+    assert(!is_dangerous_cap("compute"), "compute should not be dangerous")
+}
+
+@test
+fn test_caps_is_strict_subset() {
+    let full: [str] = ["io", "net"]
+    let sub: [str] = ["io"]
+    let empty: [str] = []
+    assert(caps_is_strict_subset(sub, full), "io is a strict subset of [io, net]")
+    assert(caps_is_strict_subset(empty, full), "[] is a strict subset of [io, net]")
+    assert(!caps_is_strict_subset(full, full), "equal sets are not strict subsets")
+    assert(!caps_is_strict_subset(full, sub), "[io, net] is not a subset of [io]")
+}
+
+@test
+fn test_caps_over() {
+    let declared: [str] = ["io", "net"]
+    let actual: [str] = ["io"]
+    let over = caps_over(actual, declared)
+    assert(len(over) == 1, "one over-declared cap expected, got " + to_string(len(over)))
+    assert(over[0] == "net", "over-declared cap should be net, got " + over[0])
+}
+
+// ---- Scanner tests ----------------------------------------------------------
+
+@test
+fn test_scanner_extract_body_save_report() {
+    let source = fixture_source_text()
+    let body = extract_fn_body(source, "save_report")
+    assert(len(body) > 0, "save_report body should be non-empty")
+    assert(contains(body, "file_write"), "save_report body should contain file_write")
+    assert(!contains(body, "http2_post"), "save_report body should not contain http2_post")
+}
+
+@test
+fn test_scanner_extract_body_fetch_data() {
+    let source = fixture_source_text()
+    let body = extract_fn_body(source, "fetch_data")
+    assert(len(body) > 0, "fetch_data body should be non-empty")
+    assert(contains(body, "http2_post"), "fetch_data body should contain http2_post")
+}
+
+@test
+fn test_scanner_caps_save_report_io_only() {
+    let source = fixture_source_text()
+    let body = extract_fn_body(source, "save_report")
+    let actual = scan_body_caps(body)
+    assert(len(actual) == 1,
+        "save_report body should need only io, got " + to_string(len(actual)) + " caps")
+    assert(actual[0] == "io",
+        "save_report actual cap should be io, got " + actual[0])
+}
+
+@test
+fn test_scanner_caps_fetch_data_net() {
+    let source = fixture_source_text()
+    let body = extract_fn_body(source, "fetch_data")
+    let actual = scan_body_caps(body)
+    assert(len(actual) == 1,
+        "fetch_data body should need net only, got " + to_string(len(actual)))
+    assert(actual[0] == "net",
+        "fetch_data actual cap should be net, got " + actual[0])
+}
+
+@test
+fn test_scanner_caps_compute_only_empty() {
+    let source = fixture_source_text()
+    let body = extract_fn_body(source, "compute_only")
+    let actual = scan_body_caps(body)
+    assert(len(actual) == 0,
+        "compute_only should need no caps, got " + to_string(len(actual)))
+}
+
+// ---- Manifest parser tests -------------------------------------------------
+
+@test
+fn test_manifest_parse_fn_count() {
+    let entries = parse_manifest_json(fixture_manifest_json())
+    assert(len(entries) == 1, "fixture has 1 source file, got " + to_string(len(entries)))
+    let e = entries[0]
+    assert(len(e.fns) == 7, "fixture has 7 functions, got " + to_string(len(e.fns)))
+}
+
+@test
+fn test_manifest_parse_counts() {
+    let entries = parse_manifest_json(fixture_manifest_json())
+    let total = total_fn_count(entries)
+    let unannotated = unannotated_fn_count(entries)
+    assert(total == 7, "total should be 7, got " + to_string(total))
+    assert(unannotated == 2, "unannotated should be 2, got " + to_string(unannotated))
+}
+
+@test
+fn test_manifest_parse_save_report_caps() {
+    let entries = parse_manifest_json(fixture_manifest_json())
+    let e = entries[0]
+    let mut save_caps: [str] = []
+    let mut save_ann = false
+    let mut i = 0
+    while i < len(e.fns) {
+        if e.fns[i] == "save_report" {
+            save_caps = e.fn_caps[i]
+            save_ann = e.fn_annotated[i]
+        }
+        i = i + 1
+    }
+    assert(save_ann, "save_report should be annotated")
+    assert(len(save_caps) == 2, "save_report should declare 2 caps, got " + to_string(len(save_caps)))
+    assert(caps_member(save_caps, "io"), "save_report should declare io")
+    assert(caps_member(save_caps, "net"), "save_report should declare net")
+}
+
+@test
+fn test_manifest_parse_fetch_data_unannotated() {
+    let entries = parse_manifest_json(fixture_manifest_json())
+    let e = entries[0]
+    let mut fetch_ann = true
+    let mut i = 0
+    while i < len(e.fns) {
+        if e.fns[i] == "fetch_data" {
+            fetch_ann = e.fn_annotated[i]
+        }
+        i = i + 1
+    }
+    assert(!fetch_ann, "fetch_data should be unannotated (annotated: false)")
+}
+
+// ---- Integration report tests ----------------------------------------------
+
+@capabilities()
+fn build_test_entry() -> FileEntry {
+    let io_net: [str] = ["io", "net"]
+    let io_only: [str] = ["io"]
+    let proc_only: [str] = ["process"]
+    let empty: [str] = []
+    let mut e = file_entry_new("/fixture/src/main.kry")
+    e = file_entry_add_fn(e, "save_report",   io_net,    true)
+    e = file_entry_add_fn(e, "load_config",   io_only,   true)
+    e = file_entry_add_fn(e, "get_env_var",   proc_only, true)
+    e = file_entry_add_fn(e, "format_result", empty,     true)
+    e = file_entry_add_fn(e, "fetch_data",    empty,     false)
+    e = file_entry_add_fn(e, "compute_only",  empty,     true)
+    e = file_entry_add_fn(e, "main",          empty,     false)
+    return e
+}
+
+@capabilities()
+fn build_test_scan() -> FileScan {
+    // Actual caps from body scanning.
+    // save_report declares [io, net] but body only calls file_write (io).
+    // fetch_data is unannotated but calls http_post (net).
+    let io_only: [str] = ["io"]
+    let net_only: [str] = ["net"]
+    let proc_only: [str] = ["process"]
+    let empty: [str] = []
+    let mut actual: [[str]] = []
+    actual = push(actual, io_only)   // save_report
+    actual = push(actual, io_only)   // load_config
+    actual = push(actual, proc_only) // get_env_var
+    actual = push(actual, empty)     // format_result
+    actual = push(actual, net_only)  // fetch_data
+    actual = push(actual, empty)     // compute_only
+    actual = push(actual, empty)     // main
+    return file_scan_new("/fixture/src/main.kry", actual)
+}
+
+@test
+fn test_report_could_narrow_save_report() {
+    let mut entries: [FileEntry] = []
+    entries = push(entries, build_test_entry())
+    let mut scans: [FileScan] = []
+    scans = push(scans, build_test_scan())
+    let report_text = render_report(entries, scans)
+    assert(contains(report_text, "Could Narrow"), "report must have Could Narrow section")
+    assert(contains(report_text, "save_report"), "save_report must appear in Could Narrow")
+    assert(contains(report_text, "net"), "over-declared cap net must appear in hint")
+}
+
+@test
+fn test_report_strict_fail_fetch_data() {
+    let mut entries: [FileEntry] = []
+    entries = push(entries, build_test_entry())
+    let mut scans: [FileScan] = []
+    scans = push(scans, build_test_scan())
+    let report_text = render_report(entries, scans)
+    assert(contains(report_text, "Strict-Mode"), "report must have Strict-Mode section")
+    assert(contains(report_text, "fetch_data"), "fetch_data must appear in strict failures")
+}
+
+@test
+fn test_report_dangerous_callers_flagged() {
+    let mut entries: [FileEntry] = []
+    entries = push(entries, build_test_entry())
+    let mut scans: [FileScan] = []
+    scans = push(scans, build_test_scan())
+    let report_text = render_report(entries, scans)
+    assert(contains(report_text, "DANGEROUS CALLER"), "dangerous callers must be flagged")
+}
+
+@test
+fn test_full_pipeline_scanner_to_report() {
+    // Parse the fixture manifest JSON, scan the fixture source text, render
+    // the report, and verify both done criteria pass:
+    //   1. save_report (over-declared: declares net but body only uses io)
+    //   2. fetch_data  (unannotated gated caller: calls http_post without annotation)
+    let entries = parse_manifest_json(fixture_manifest_json())
+    let source = fixture_source_text()
+    let e = entries[0]
+    let actual_caps = scan_source_all(source, e.fns)
+    let s = file_scan_new(e.source, actual_caps)
+    let mut scans: [FileScan] = []
+    scans = push(scans, s)
+    let report_text = render_report(entries, scans)
+
+    // Done criterion 1: over-declared function flagged.
+    assert(contains(report_text, "Could Narrow"),
+        "Could Narrow section must appear in the report")
+    assert(contains(report_text, "save_report"),
+        "save_report must appear as a could-narrow candidate")
+
+    // Done criterion 2: unannotated gated caller flagged.
+    assert(contains(report_text, "Strict-Mode"),
+        "Strict-Mode section must appear in the report")
+    assert(contains(report_text, "fetch_data"),
+        "fetch_data must be listed as a strict-mode violation")
+}
+
+// ---- Entry point for direct execution (kryos run tests/test_doctor.kry) ---
+
+fn main() {
+    test_cap_for_builtin_io()
+    println("PASS test_cap_for_builtin_io")
+    test_cap_for_builtin_net()
+    println("PASS test_cap_for_builtin_net")
+    test_cap_for_builtin_process()
+    println("PASS test_cap_for_builtin_process")
+    test_cap_for_builtin_ungated()
+    println("PASS test_cap_for_builtin_ungated")
+    test_is_dangerous()
+    println("PASS test_is_dangerous")
+    test_caps_is_strict_subset()
+    println("PASS test_caps_is_strict_subset")
+    test_caps_over()
+    println("PASS test_caps_over")
+    test_scanner_extract_body_save_report()
+    println("PASS test_scanner_extract_body_save_report")
+    test_scanner_extract_body_fetch_data()
+    println("PASS test_scanner_extract_body_fetch_data")
+    test_scanner_caps_save_report_io_only()
+    println("PASS test_scanner_caps_save_report_io_only")
+    test_scanner_caps_fetch_data_net()
+    println("PASS test_scanner_caps_fetch_data_net")
+    test_scanner_caps_compute_only_empty()
+    println("PASS test_scanner_caps_compute_only_empty")
+    test_manifest_parse_fn_count()
+    println("PASS test_manifest_parse_fn_count")
+    test_manifest_parse_counts()
+    println("PASS test_manifest_parse_counts")
+    test_manifest_parse_save_report_caps()
+    println("PASS test_manifest_parse_save_report_caps")
+    test_manifest_parse_fetch_data_unannotated()
+    println("PASS test_manifest_parse_fetch_data_unannotated")
+    test_report_could_narrow_save_report()
+    println("PASS test_report_could_narrow_save_report")
+    test_report_strict_fail_fetch_data()
+    println("PASS test_report_strict_fail_fetch_data")
+    test_report_dangerous_callers_flagged()
+    println("PASS test_report_dangerous_callers_flagged")
+    test_full_pipeline_scanner_to_report()
+    println("PASS test_full_pipeline_scanner_to_report")
+    println("20/20 tests passed")
+}
