@@ -1,0 +1,133 @@
+// ============================================================
+// demo_live.kry -- LIVE-mode replay against a local mock model.
+//
+//   kryos run ecosystem/kryos-eval-replay/demo_live.kry
+//
+// Spins up an in-process mock OpenAI-compatible server (50 tokens per call) and
+// runs the live replayer three ways, all bounded by the transcript's own totals:
+//
+//   A) faithful replay under a generous recorded envelope (2 calls / 200 tok):
+//      both live calls fit -> completes; negative token delta.
+//   B) faithful replay under a tight envelope (2 calls / 80 tok): the live model
+//      is more verbose than the recording, so call 2 trips the TOKEN ceiling.
+//   C) a divergent run (3 calls) under the recorded 2-call envelope: the 3rd
+//      call is refused BEFORE it is issued (no extra request hits the wire).
+//
+// Network-free (localhost) but exercises the real std::llm::chat HTTP path.
+// SKIPs cleanly (exit 0) if the port is taken.
+// ============================================================
+
+use std::llm::{LlmConfig, Message, openai_config, with_base_url, with_timeout_ms, user, chat, LlmResponse}
+use std::cost::{ComputeCost}
+use transcript::{Turn, Transcript, mk_turn, total_calls, total_tokens, call_turns, turn_is_call, turn_tokens}
+use replay::{ReplayReport, cost_delta, report_summary}
+use live::{replay_live, replay_live_run}
+
+let PORT = 19237
+
+fn http_response(body: str) -> str {
+    return "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + to_string(len(body)) + "\r\nConnection: close\r\n\r\n" + body
+}
+
+// Mock OpenAI reply: 30 prompt + 20 completion = 50 tokens per call.
+fn mock_body() -> str {
+    return "\{\"model\": \"mock\", \"choices\": [\{\"message\": \{\"content\": \"ok\"\}\}], \"usage\": \{\"prompt_tokens\": 30, \"completion_tokens\": 20\}\}"
+}
+
+fn serve_n(listen_fd: i64, n: i64) {
+    let mut i = 0
+    while i < n {
+        let c = tcp_accept(listen_fd)
+        tcp_recv(c, 65536)
+        tcp_send(c, http_response(mock_body()))
+        tcp_close(c)
+        i = i + 1
+    }
+}
+
+// A 2-call recorded transcript whose recorded token total is `tokens`.
+fn rec_with_budget(tokens: i64) -> Transcript {
+    let half = tokens / 2
+    let rest = tokens - half
+    let turns: [Turn] = [
+        mk_turn("assistant", "first", "recorded-1", "", half, 0),
+        mk_turn("assistant", "second", "recorded-2", "", rest, 0)
+    ]
+    return Transcript { model: "mock", turns: turns }
+}
+
+fn main() {
+    let listen_fd = tcp_listen("127.0.0.1", PORT)
+    if listen_fd < 0 {
+        println("SKIP: could not bind 127.0.0.1:" + to_string(PORT))
+        exit(0)
+    }
+    // A: 2 requests. B: 2 requests (call 2 served, then token check throws).
+    // C: 2 requests (call 3 refused BEFORE the request). Total = 6.
+    spawn {
+        serve_n(listen_fd, 6)
+    }
+    sleep_ms(100)
+    let base = "http://127.0.0.1:" + to_string(PORT)
+    let cfg = with_timeout_ms(with_base_url(openai_config("", "mock"), base), 5000)
+
+    // --- A: generous budget -> faithful live replay completes ----------------
+    let recA = rec_with_budget(200)
+    println("[A] faithful live replay under " + to_string(total_calls(recA)) + " calls / " + to_string(total_tokens(recA)) + " tokens")
+    let rA = replay_live(recA, cfg)
+    println("    " + report_summary(rA))
+    if rA.calls_made == 2 and rA.tokens_used == 100 and rA.delta.tokens_used == -100 {
+        println("    OK: both live calls fit; live used 100 tokens (delta -100)")
+    } else {
+        println("    FAIL: expected 2 calls / 100 tokens / -100 delta")
+        exit(1)
+    }
+
+    // --- B: tight budget -> 2nd call trips the token ceiling -----------------
+    let recB = rec_with_budget(80)
+    println("[B] faithful live replay under " + to_string(total_calls(recB)) + " calls / " + to_string(total_tokens(recB)) + " tokens")
+    let mut tripped = false
+    let mut msgB = ""
+    try {
+        let rB = replay_live(recB, cfg)
+        msgB = "NO THROW: used " + to_string(rB.tokens_used) + " tokens"
+    } catch e {
+        tripped = true
+        msgB = e
+    }
+    if tripped and contains(msgB, "token") {
+        println("    refused: " + msgB)
+        println("    OK: live run halted before exceeding the recorded token envelope")
+    } else {
+        println("    FAIL: " + msgB)
+        exit(1)
+    }
+
+    // --- C: divergent run (3 calls) under a 2-call envelope ------------------
+    let recC = rec_with_budget(500)
+    let divergent: [Turn] = [
+        mk_turn("assistant", "one",   "x", "", 10, 5),
+        mk_turn("assistant", "two",   "x", "", 10, 5),
+        mk_turn("assistant", "three", "x", "", 10, 5)
+    ]
+    println("[C] divergent live run (3 calls) under the recorded " + to_string(total_calls(recC)) + "-call envelope")
+    let mut refusedC = false
+    let mut msgC = ""
+    try {
+        let rC = replay_live_run(recC, divergent, cfg)
+        msgC = "NO THROW: made " + to_string(rC.calls_made) + " calls"
+    } catch e {
+        refusedC = true
+        msgC = e
+    }
+    if refusedC and contains(msgC, "call 3") and contains(msgC, "BEFORE the call") {
+        println("    refused: " + msgC)
+        println("    OK: the 3rd live call was refused BEFORE it hit the wire")
+    } else {
+        println("    FAIL: " + msgC)
+        exit(1)
+    }
+
+    println("live replay demo: PASS")
+    exit(0)
+}

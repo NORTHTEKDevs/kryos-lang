@@ -1,0 +1,9 @@
+{
+  "model": "claude-sonnet-4-6",
+  "turns": [
+    { "role": "user",      "request": "What is 23% of 4400, rounded?", "response": "",                                  "tool": "",     "input_tokens": 0,  "output_tokens": 0 },
+    { "role": "assistant", "request": "",                              "response": "I'll compute that with the calculator.", "tool": "calc", "input_tokens": 58, "output_tokens": 14 },
+    { "role": "tool",      "request": "calc(0.23*4400)",              "response": "1012",                              "tool": "calc", "input_tokens": 0,  "output_tokens": 0 },
+    { "role": "assistant", "request": "",                              "response": "23% of 4400 is 1012.",              "tool": "",     "input_tokens": 71, "output_tokens": 11 }
+  ]
+}

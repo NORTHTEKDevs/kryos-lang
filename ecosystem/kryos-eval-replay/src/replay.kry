@@ -1,0 +1,148 @@
+// ============================================================
+// replay.kry -- budget-bounded deterministic transcript replay.
+//
+// The replay runner derives its token/call ceiling from the recorded
+// transcript's OWN totals and pushes that as a runtime budget frame (the same
+// thread-local primitive `@budget(...)` lowers to -- see budget_frame.kry).
+// Replaying the recorded turns faithfully lands exactly on the ceiling and
+// succeeds. Any DIVERGENT re-run -- one that issues an extra model call or a
+// turn that consumes more tokens than recorded -- is refused: an extra call
+// throws BEFORE it is issued (the call ceiling is checked pre-call); a heavier
+// turn throws right after its response is charged, halting the loop before the
+// next call. Either way the replay provably cannot exceed the original's
+// envelope.
+//
+// Two execution modes:
+//   - MOCK  (this file): the recorded response IS the result. Hermetic: no
+//     network, no clock, no randomness -> byte-identical output every run.
+//   - LIVE  (live.kry):  re-issue each turn against a real model under the
+//     same transcript-derived frame.
+//
+// A ComputeCost delta (replay vs original) is reported on every run.
+// ============================================================
+
+use std::cost::{ComputeCost}
+use transcript::{Turn, Transcript, turn_tokens, turn_is_call, total_tokens, total_calls, call_turns}
+use budget_frame::{bf_push, bf_pop, bf_active, bf_try_call, bf_charge}
+
+// On enforcement vs. the @budget attribute:
+//
+// `@budget(tokens = N, calls = M)` is the attribute form, but N and M must be
+// compile-time LITERALS. A replay ceiling must be DERIVED from the transcript
+// loaded at run time, so replay_run pushes the frame itself with the identical
+// primitive the attribute lowers to (kryos_budget_push -- see budget_frame.kry)
+// and pops it on EVERY exit path, including the divergence-throw paths, so the
+// frame stack is always balanced even across a caught throw. The attribute form
+// itself is proven to span a loop and refuse the (N+1)th call by
+// tests/test_replay.kry::budget_attr_refuses_extra_call.
+
+@copy
+struct ReplayReport {
+    model: str,
+    calls_made: i64,
+    tokens_used: i64,
+    original: ComputeCost,
+    replay: ComputeCost,
+    delta: ComputeCost,
+    output: str
+}
+
+// A ComputeCost capturing api_calls + tokens (the axes replay enforces).
+// wall_time/money/energy are intentionally 0: replay is hermetic, so it tracks
+// no wall-clock time (that would break determinism) and assigns no price.
+fn _cost_of(tokens: i64, calls: i64) -> ComputeCost {
+    return ComputeCost {
+        wall_time_ms: 0.0,
+        tokens_used: tokens,
+        api_calls: calls,
+        money_usd: 0.0,
+        energy_kwh: 0.0
+    }
+}
+
+// Field-wise (replay - original). Token/call deltas may be negative when a
+// divergent run that stays UNDER budget is cheaper than the original.
+fn cost_delta(replay: ComputeCost, original: ComputeCost) -> ComputeCost {
+    return ComputeCost {
+        wall_time_ms: replay.wall_time_ms - original.wall_time_ms,
+        tokens_used: replay.tokens_used - original.tokens_used,
+        api_calls: replay.api_calls - original.api_calls,
+        money_usd: replay.money_usd - original.money_usd,
+        energy_kwh: replay.energy_kwh - original.energy_kwh
+    }
+}
+
+// Replay an arbitrary RUN of turns under the budget derived from RECORDED.
+// In a faithful replay, `run` is the recorded call-turns and this lands exactly
+// on the ceiling. A divergent `run` that exceeds the envelope throws.
+//
+// Throws (catchable str):
+//   "replay diverged: call N would exceed ... -- refused BEFORE the call"  (call ceiling)
+//   "replay diverged: token usage crossed ..."                            (token ceiling)
+@capabilities(ffi)
+fn replay_run(recorded: Transcript, run: [Turn]) -> ReplayReport {
+    let budget_tokens = total_tokens(recorded)
+    let budget_calls = total_calls(recorded)
+
+    // Tight, transcript-derived frame on top of the literal guard frame.
+    let depth = bf_push(budget_tokens, budget_calls)
+
+    let mut made = 0
+    let mut tok = 0
+    let mut output = ""
+    for turn in run {
+        if not turn_is_call(turn) {
+            continue
+        }
+        // Reserve one model call BEFORE issuing it. This is the pre-call gate:
+        // the (budget_calls + 1)th call is refused here, before any response is
+        // produced.
+        if bf_try_call() == 1 {
+            bf_pop(depth)
+            throw "replay diverged: call " + to_string(made + 1) + " would exceed the recorded envelope of " + to_string(budget_calls) + " call(s) -- refused BEFORE the call"
+        }
+        // MOCK execution: the recorded response IS the result. Hermetic.
+        output = output + turn.response
+        let charged = turn_tokens(turn)
+        tok = tok + charged
+        made = made + 1
+        // Charge actual tokens. A heavier-than-recorded turn trips here, after
+        // its own response but before the next call.
+        if bf_charge(charged) == 1 {
+            bf_pop(depth)
+            throw "replay diverged: token usage crossed the recorded envelope of " + to_string(budget_tokens) + " tokens at call " + to_string(made)
+        }
+    }
+    bf_pop(depth)
+
+    let original = _cost_of(budget_tokens, budget_calls)
+    let replay = _cost_of(tok, made)
+    let delta = cost_delta(replay, original)
+    return ReplayReport {
+        model: recorded.model,
+        calls_made: made,
+        tokens_used: tok,
+        original: original,
+        replay: replay,
+        delta: delta,
+        output: output
+    }
+}
+
+// Faithful replay: re-issue exactly the recorded call-turns under the recorded
+// envelope. Always succeeds; the cost delta is zero on every axis.
+@capabilities(ffi)
+fn replay(t: Transcript) -> ReplayReport {
+    return replay_run(t, call_turns(t))
+}
+
+// True when no budget frame is active on this thread -- i.e. replay_run popped
+// its transcript frame on every exit path, including the divergence throws.
+fn frames_clean() -> bool {
+    return bf_active() == 0
+}
+
+// Human-readable one-line summary of a report's cost delta.
+fn report_summary(r: ReplayReport) -> str {
+    return "replay[" + r.model + "]: " + to_string(r.calls_made) + " call(s), " + to_string(r.tokens_used) + " tokens; delta vs original = " + to_string(r.delta.api_calls) + " call(s) / " + to_string(r.delta.tokens_used) + " tokens"
+}

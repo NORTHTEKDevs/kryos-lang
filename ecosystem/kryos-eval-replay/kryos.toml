@@ -1,0 +1,10 @@
+[package]
+name = "kryos-eval-replay"
+version = "0.1.0"
+description = "Deterministic, budget-bounded replay of recorded agent transcripts: the replay runner enforces the original's exact token/call envelope via a runtime @budget frame, so a divergent re-run is refused BEFORE the offending model call and a ComputeCost delta vs the original is reported"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["compute", "io", "ffi", "net"]
+
+[dependencies]

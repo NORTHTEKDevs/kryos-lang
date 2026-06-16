@@ -1,0 +1,158 @@
+// ============================================================
+// transcript.kry -- the recorded-transcript data model + JSON loader.
+//
+// A transcript is an ordered list of TURNS. Each turn is one model call:
+// the request that was sent, the recorded response text, an optional tool
+// name the model invoked, and the recorded token usage (input + output).
+//
+// JSON shape (see fixtures/transcript.json):
+//   {
+//     "model": "claude-sonnet-4-6",
+//     "turns": [
+//       { "role": "user",      "request": "...", "response": "",  "tool": "",     "input_tokens": 0,  "output_tokens": 0 },
+//       { "role": "assistant", "request": "",    "response": "...", "tool": "calc", "input_tokens": 40, "output_tokens": 12 },
+//       ...
+//     ]
+//   }
+//
+// Only turns that recorded a model call (input_tokens + output_tokens > 0, or
+// role == "assistant") count toward the call/token envelope; pure "user" rows
+// are context. We keep the parse permissive: missing fields default to "" / 0.
+//
+// DETERMINISM: no timestamps are read or stored. Replay output depends only on
+// the recorded text + token counts, so it is byte-identical run to run.
+//
+// NOTE: json_parse / json_get / json_get_index / json_to_str / json_to_int /
+// json_length / json_is_null are native builtins (no `use std::json`). We avoid
+// importing the std::json MODULE on purpose: it carries a float formatter
+// (_format_number -> to_string(f64)) that the Cranelift JIT behind `kryos test`
+// cannot lower, which would fail the whole test file even unexecuted.
+// ============================================================
+
+@copy
+struct Turn {
+    index: i64,
+    role: str,
+    request: str,
+    response: str,
+    tool: str,
+    input_tokens: i64,
+    output_tokens: i64
+}
+
+@copy
+struct Transcript {
+    model: str,
+    turns: [Turn]
+}
+
+// Construct a turn in code (index defaults to 0; replay does not depend on it).
+fn mk_turn(role: str, request: str, response: str, tool: str, input_tokens: i64, output_tokens: i64) -> Turn {
+    return Turn {
+        index: 0,
+        role: role,
+        request: request,
+        response: response,
+        tool: tool,
+        input_tokens: input_tokens,
+        output_tokens: output_tokens
+    }
+}
+
+// Tokens consumed by a single turn (input + output).
+fn turn_tokens(t: Turn) -> i64 {
+    return t.input_tokens + t.output_tokens
+}
+
+// A turn counts as a model CALL when it carries an assistant response or any
+// recorded token usage. User/context rows do not consume the call envelope.
+fn turn_is_call(t: Turn) -> bool {
+    return t.role == "assistant" or turn_tokens(t) > 0
+}
+
+// --- JSON helpers (permissive: absent -> default) ----------------------------
+
+fn _str_field(node: i64, key: str, dflt: str) -> str {
+    let v = json_get(node, key)
+    if json_is_null(v) {
+        return dflt
+    }
+    return json_to_str(v)
+}
+
+fn _int_field(node: i64, key: str) -> i64 {
+    let v = json_get(node, key)
+    if json_is_null(v) {
+        return 0
+    }
+    return json_to_int(v)
+}
+
+// Parse a transcript from a JSON string.
+fn parse_transcript(raw: str) -> Transcript {
+    let root = json_parse(raw)
+    let model = _str_field(root, "model", "unknown")
+    let turns_node = json_get(root, "turns")
+    let mut turns: [Turn] = []
+    if json_is_null(turns_node) {
+        return Transcript { model: model, turns: turns }
+    }
+    let n = json_length(turns_node)
+    let mut i = 0
+    while i < n {
+        let tn = json_get_index(turns_node, i)
+        let t = Turn {
+            index: i,
+            role: _str_field(tn, "role", "assistant"),
+            request: _str_field(tn, "request", ""),
+            response: _str_field(tn, "response", ""),
+            tool: _str_field(tn, "tool", ""),
+            input_tokens: _int_field(tn, "input_tokens"),
+            output_tokens: _int_field(tn, "output_tokens")
+        }
+        turns = push(turns, t)
+        i = i + 1
+    }
+    return Transcript { model: model, turns: turns }
+}
+
+// Load + parse a transcript file.
+@capabilities(io)
+fn load_transcript(path: str) -> Transcript {
+    let raw = file_read(path)
+    return parse_transcript(raw)
+}
+
+// --- Derived totals (the replay budget envelope) -----------------------------
+
+// Number of model CALLS recorded (the call ceiling).
+fn total_calls(t: Transcript) -> i64 {
+    let mut c = 0
+    for turn in t.turns {
+        if turn_is_call(turn) {
+            c = c + 1
+        }
+    }
+    return c
+}
+
+// Total tokens recorded across all turns (the token ceiling).
+fn total_tokens(t: Transcript) -> i64 {
+    let mut tok = 0
+    for turn in t.turns {
+        tok = tok + turn_tokens(turn)
+    }
+    return tok
+}
+
+// The subset of turns that are model calls, in order. This is what replay
+// actually re-issues; user/context rows are skipped.
+fn call_turns(t: Transcript) -> [Turn] {
+    let mut out: [Turn] = []
+    for turn in t.turns {
+        if turn_is_call(turn) {
+            out = push(out, turn)
+        }
+    }
+    return out
+}

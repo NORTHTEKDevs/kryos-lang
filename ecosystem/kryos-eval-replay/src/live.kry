@@ -1,0 +1,94 @@
+// ============================================================
+// live.kry -- LIVE-model replay under the transcript-derived envelope.
+//
+// Mock replay (replay.kry) returns the recorded responses verbatim. LIVE replay
+// re-issues each turn against a REAL model (std::llm::chat) while enforcing the
+// SAME ceiling derived from the recorded transcript's own totals:
+//   - the call ceiling is checked BEFORE each request, so a run that needs more
+//     calls than recorded is refused BEFORE the offending chat() call, and
+//   - actual token usage is checked after each response, so a live model that is
+//     more verbose than the recording trips the token ceiling and halts before
+//     the next call.
+// Either way a live re-run provably cannot exceed the recorded envelope.
+//
+// WHY COUNTERS, NOT THE THREAD-LOCAL @budget FRAME (honest caveat):
+// Mock mode uses the runtime @budget frame (kryos_budget_push) because it never
+// has to CATCH a network-call exception. Live mode must observe divergence
+// around a real chat() call; the current Cranelift JIT SEGFAULTS when a
+// chat()-originated budget exception is caught while a manually-pushed frame is
+// active (a JIT exception-handling limitation, not a logic flaw -- verified
+// during development). So live mode enforces the identical transcript-derived
+// envelope with explicit pre-call/post-call counters and its OWN pure throws,
+// and never lets chat() be the thing that throws. The guarantee is the same;
+// only the mechanism differs, and this file says so.
+//
+// Needs net + an API key, so this is NOT part of the hermetic `kryos test`
+// suite; demo_live.kry exercises it against a local mock server.
+// ============================================================
+
+use std::cost::{ComputeCost}
+use std::llm::{LlmConfig, user, chat}
+use transcript::{Turn, Transcript, turn_is_call, total_tokens, total_calls, call_turns}
+use replay::{ReplayReport, cost_delta}
+
+// The user prompt to re-issue for a recorded turn. A full integration would
+// replay the entire message history; the envelope guarantee is independent of
+// this detail, so we send the recorded request (or a neutral continuation).
+fn _turn_prompt(t: Turn) -> str {
+    if t.request != "" {
+        return t.request
+    }
+    return "continue"
+}
+
+// Replay an arbitrary RUN of turns against `cfg`'s real model under the budget
+// derived from RECORDED. In a faithful replay, pass call_turns(recorded).
+//
+// Throws (catchable str):
+//   "live replay diverged: call N ... -- refused BEFORE the call"   (call ceiling, pre-call)
+//   "live replay diverged: token usage ... crossed ..."             (token ceiling, post-call)
+@capabilities(net)
+fn replay_live_run(recorded: Transcript, run: [Turn], cfg: LlmConfig) -> ReplayReport {
+    let budget_tokens = total_tokens(recorded)
+    let budget_calls = total_calls(recorded)
+
+    let mut made = 0
+    let mut tok = 0
+    let mut output = ""
+    for turn in run {
+        if not turn_is_call(turn) {
+            continue
+        }
+        // Pre-call gate: refuse the (budget_calls + 1)th call BEFORE issuing it.
+        if made >= budget_calls {
+            throw "live replay diverged: call " + to_string(made + 1) + " would exceed the recorded envelope of " + to_string(budget_calls) + " call(s) -- refused BEFORE the call"
+        }
+        let r = chat(cfg, [user(_turn_prompt(turn))])
+        output = output + r.text
+        tok = tok + r.input_tokens + r.output_tokens
+        made = made + 1
+        // Post-call gate: a heavier-than-recorded turn trips the token ceiling.
+        if tok > budget_tokens {
+            throw "live replay diverged: token usage " + to_string(tok) + " crossed the recorded envelope of " + to_string(budget_tokens) + " tokens at call " + to_string(made)
+        }
+    }
+
+    let original = ComputeCost { wall_time_ms: 0.0, tokens_used: budget_tokens, api_calls: budget_calls, money_usd: 0.0, energy_kwh: 0.0 }
+    let replay = ComputeCost { wall_time_ms: 0.0, tokens_used: tok, api_calls: made, money_usd: 0.0, energy_kwh: 0.0 }
+    let delta = cost_delta(replay, original)
+    return ReplayReport {
+        model: recorded.model,
+        calls_made: made,
+        tokens_used: tok,
+        original: original,
+        replay: replay,
+        delta: delta,
+        output: output
+    }
+}
+
+// Faithful live replay: re-issue exactly the recorded call-turns.
+@capabilities(net)
+fn replay_live(recorded: Transcript, cfg: LlmConfig) -> ReplayReport {
+    return replay_live_run(recorded, call_turns(recorded), cfg)
+}

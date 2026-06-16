@@ -1,0 +1,75 @@
+// ============================================================
+// demo_replay.kry -- budget-bounded deterministic replay, end to end.
+//
+//   kryos run ecosystem/kryos-eval-replay/demo_replay.kry
+//
+// Scenario 1: faithful replay of a recorded transcript -> cost delta is zero.
+// Scenario 2: a DIVERGENT re-run that makes one extra model call -> refused
+//             BEFORE the offending call (the language-level budget guarantee).
+// Scenario 3: a cheaper divergent run that stays under the envelope -> succeeds
+//             with a negative cost delta.
+//
+// Everything is hermetic: no network, no clock. Output is identical every run.
+// ============================================================
+
+use transcript::{Turn, Transcript, mk_turn, total_calls, total_tokens, call_turns}
+use replay::{ReplayReport, replay, replay_run, report_summary}
+
+// The recorded transcript: a 2-call agent run (assistant turns carry tokens;
+// the user prompt and tool result are context rows that consume no call).
+fn sample() -> Transcript {
+    let turns: [Turn] = [
+        mk_turn("user", "What is 23% of 4400, rounded?", "", "", 0, 0),
+        mk_turn("assistant", "", "I'll compute that with the calculator.", "calc", 58, 14),
+        mk_turn("tool", "calc(0.23*4400)", "1012", "calc", 0, 0),
+        mk_turn("assistant", "", "23% of 4400 is 1012.", "", 71, 11)
+    ]
+    return Transcript { model: "claude-sonnet-4-6", turns: turns }
+}
+
+fn main() {
+    let t = sample()
+    println("recorded envelope: " + to_string(total_calls(t)) + " call(s) / " + to_string(total_tokens(t)) + " tokens")
+    println("")
+
+    // --- Scenario 1: faithful replay -----------------------------------------
+    let r1 = replay(t)
+    println("[1] faithful replay")
+    println("    " + report_summary(r1))
+    println("    output: " + r1.output)
+    if r1.delta.tokens_used == 0 and r1.delta.api_calls == 0 {
+        println("    OK: cost delta is zero vs original")
+    } else {
+        println("    FAIL: expected zero delta")
+    }
+    println("")
+
+    // --- Scenario 2: divergent run, one extra call ---------------------------
+    // Same recorded budget (2 calls), but the run tries a 3rd model call.
+    let divergent: [Turn] = [
+        mk_turn("assistant", "", "I'll compute that with the calculator.", "calc", 58, 14),
+        mk_turn("assistant", "", "23% of 4400 is 1012.", "", 71, 11),
+        mk_turn("assistant", "", "Actually, let me double-check...", "calc", 60, 20)
+    ]
+    println("[2] divergent replay (one extra call) under the recorded 2-call budget")
+    try {
+        let r2 = replay_run(t, divergent)
+        println("    FAIL: divergent run was not refused (" + report_summary(r2) + ")")
+    } catch e {
+        println("    refused: " + e)
+    }
+    println("")
+
+    // --- Scenario 3: cheaper divergent run (under budget) --------------------
+    let cheaper: [Turn] = [
+        mk_turn("assistant", "", "1012.", "", 20, 5)
+    ]
+    println("[3] cheaper divergent replay (1 call, 25 tokens) under the recorded budget")
+    let r3 = replay_run(t, cheaper)
+    println("    " + report_summary(r3))
+    if r3.delta.tokens_used < 0 and r3.delta.api_calls < 0 {
+        println("    OK: stayed under budget; negative cost delta recorded")
+    } else {
+        println("    FAIL: expected negative delta")
+    }
+}

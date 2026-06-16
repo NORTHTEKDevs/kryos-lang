@@ -1,0 +1,200 @@
+// ============================================================
+// test_replay.kry -- kryos-eval-replay test suite (mock / hermetic path).
+//
+//   kryos test --path ecosystem/kryos-eval-replay
+//   kryos run  ecosystem/kryos-eval-replay/tests/test_replay.kry   (same assertions)
+//
+// Everything here is network-free and clock-free: deterministic by construction.
+// ============================================================
+
+use transcript::{Turn, Transcript, mk_turn, parse_transcript, total_calls, total_tokens, call_turns}
+use replay::{ReplayReport, replay, replay_run, cost_delta, frames_clean}
+use budget_frame::{bf_try_call}
+
+// --- Fixtures ----------------------------------------------------------------
+
+// 2 model calls (assistant turns carry tokens); user/tool rows are context.
+// Envelope: 2 calls / 154 tokens (58+14 + 71+11).
+fn sample() -> Transcript {
+    let turns: [Turn] = [
+        mk_turn("user", "What is 23% of 4400?", "", "", 0, 0),
+        mk_turn("assistant", "", "I'll use the calculator.", "calc", 58, 14),
+        mk_turn("tool", "calc(0.23*4400)", "1012", "calc", 0, 0),
+        mk_turn("assistant", "", "23% of 4400 is 1012.", "", 71, 11)
+    ]
+    return Transcript { model: "claude-sonnet-4-6", turns: turns }
+}
+
+// Same envelope as sample(), expressed as JSON, to exercise parse_transcript.
+fn sample_json() -> str {
+    return "\{\"model\": \"claude-sonnet-4-6\", \"turns\": [\{\"role\": \"assistant\", \"response\": \"I'll use the calculator.\", \"tool\": \"calc\", \"input_tokens\": 58, \"output_tokens\": 14\}, \{\"role\": \"assistant\", \"response\": \"23% of 4400 is 1012.\", \"input_tokens\": 71, \"output_tokens\": 11\}]\}"
+}
+
+// --- Tests -------------------------------------------------------------------
+
+@test
+fn parse_transcript_totals() {
+    let t = parse_transcript(sample_json())
+    assert(t.model == "claude-sonnet-4-6", "model should round-trip from JSON")
+    assert(total_calls(t) == 2, "JSON transcript should have 2 model calls")
+    assert(total_tokens(t) == 154, "JSON transcript should total 154 tokens")
+}
+
+@test
+fn faithful_replay_zero_delta() {
+    let t = sample()
+    let r = replay(t)
+    assert(r.calls_made == 2, "faithful replay makes exactly 2 calls")
+    assert(r.tokens_used == 154, "faithful replay uses exactly 154 tokens")
+    assert(r.delta.api_calls == 0, "faithful call delta must be 0")
+    assert(r.delta.tokens_used == 0, "faithful token delta must be 0")
+    assert(r.output == "I'll use the calculator.23% of 4400 is 1012.", "replayed output must match recorded responses in order")
+}
+
+@test
+fn divergent_extra_call_refused_before_call() {
+    let t = sample()
+    // A run that issues a 3rd model call under the recorded 2-call envelope.
+    let divergent: [Turn] = [
+        mk_turn("assistant", "", "a", "", 58, 14),
+        mk_turn("assistant", "", "b", "", 71, 11),
+        mk_turn("assistant", "", "c", "", 60, 20)
+    ]
+    let mut refused = false
+    let mut msg = ""
+    try {
+        let r = replay_run(t, divergent)
+        msg = "NO THROW: made " + to_string(r.calls_made) + " calls"
+    } catch e {
+        refused = true
+        msg = e
+    }
+    assert(refused, "a divergent extra call must be refused; got: " + msg)
+    assert(contains(msg, "call 3"), "must name the offending call (3); got: " + msg)
+    assert(contains(msg, "BEFORE the call"), "must refuse BEFORE the call; got: " + msg)
+    // No frame leaked on the throw path.
+    assert(frames_clean(), "budget frame must be balanced after a caught divergence")
+}
+
+@test
+fn token_divergence_trips_ceiling() {
+    // Recorded: 1 call / 50 tokens. A run that makes 1 call but spends 80 tokens
+    // exceeds the TOKEN envelope (call count is fine).
+    let rec_turns: [Turn] = [mk_turn("assistant", "", "ok", "", 30, 20)]
+    let recorded = Transcript { model: "m", turns: rec_turns }
+    assert(total_tokens(recorded) == 50, "recorded token envelope should be 50")
+
+    let heavy: [Turn] = [mk_turn("assistant", "", "ok", "", 50, 30)]
+    let mut tripped = false
+    let mut msg = ""
+    try {
+        let r = replay_run(recorded, heavy)
+        msg = "NO THROW: used " + to_string(r.tokens_used) + " tokens"
+    } catch e {
+        tripped = true
+        msg = e
+    }
+    assert(tripped, "a heavier-than-recorded turn must trip the token ceiling; got: " + msg)
+    assert(contains(msg, "token"), "error must mention the token envelope; got: " + msg)
+    assert(frames_clean(), "budget frame must be balanced after a token-ceiling trip")
+}
+
+@test
+fn cheaper_run_negative_delta() {
+    let t = sample()
+    let cheaper: [Turn] = [mk_turn("assistant", "", "1012.", "", 20, 5)]
+    let r = replay_run(t, cheaper)
+    assert(r.calls_made == 1, "cheaper run makes 1 call")
+    assert(r.tokens_used == 25, "cheaper run uses 25 tokens")
+    assert(r.delta.api_calls == -1, "call delta should be -1 vs the 2-call original")
+    assert(r.delta.tokens_used == -129, "token delta should be 25-154 = -129")
+}
+
+@test
+fn replay_is_deterministic() {
+    let t = sample()
+    let a = replay(t)
+    let b = replay(t)
+    assert(a.output == b.output, "replay output must be identical across runs")
+    assert(a.tokens_used == b.tokens_used, "replay token cost must be identical across runs")
+    assert(a.calls_made == b.calls_made, "replay call count must be identical across runs")
+}
+
+// --- Literal @budget(...) attribute proof ------------------------------------
+//
+// Proves the ATTRIBUTE form (compile-time-literal ceiling) genuinely spans a
+// loop and refuses the (calls+1)th call -- the same guarantee replay_run gets
+// from the runtime-derived frame. Catches internally so the function returns
+// normally and the attribute's frame is popped (mirrors std::llm one_shot_agent).
+@budget(tokens = 100000, calls = 2)
+fn _attr_loop(n: i64) -> str {
+    let mut made = 0
+    let mut i = 0
+    while i < n {
+        if bf_try_call() == 1 {
+            return "refused at call " + to_string(i + 1) + " after " + to_string(made) + " made"
+        }
+        made = made + 1
+        i = i + 1
+    }
+    return "completed " + to_string(made)
+}
+
+@test
+fn budget_attr_refuses_extra_call() {
+    // calls=2 ceiling: a 3-iteration loop is refused on the 3rd, having made 2.
+    let r = _attr_loop(3)
+    assert(contains(r, "refused at call 3"), "@budget(calls=2) must refuse the 3rd loop call; got: " + r)
+    assert(contains(r, "after 2 made"), "exactly 2 calls before refusal; got: " + r)
+    // Frame popped on return: a fresh invocation gets a fresh 2-call budget.
+    let r2 = _attr_loop(2)
+    assert(contains(r2, "completed 2"), "fresh @budget frame should allow 2 calls; got: " + r2)
+    assert(frames_clean(), "attribute frame must be balanced after return")
+}
+
+// --- house-style main(): kryos run drives the same assertions ----------------
+
+fn _check(name: str, cond: bool) {
+    if cond {
+        println("  ok   " + name)
+    } else {
+        println("  FAIL " + name)
+        exit(1)
+    }
+}
+
+fn main() {
+    let t = sample()
+
+    let pj = parse_transcript(sample_json())
+    _check("parse_transcript totals", total_calls(pj) == 2 and total_tokens(pj) == 154)
+
+    let r = replay(t)
+    _check("faithful replay zero delta", r.delta.api_calls == 0 and r.delta.tokens_used == 0)
+    _check("faithful output", r.output == "I'll use the calculator.23% of 4400 is 1012.")
+
+    let divergent: [Turn] = [
+        mk_turn("assistant", "", "a", "", 58, 14),
+        mk_turn("assistant", "", "b", "", 71, 11),
+        mk_turn("assistant", "", "c", "", 60, 20)
+    ]
+    let mut refused = false
+    try {
+        let bad = replay_run(t, divergent)
+    } catch e {
+        refused = true
+    }
+    _check("divergent extra call refused before call", refused and frames_clean())
+
+    let cheaper: [Turn] = [mk_turn("assistant", "", "1012.", "", 20, 5)]
+    let c = replay_run(t, cheaper)
+    _check("cheaper run negative delta", c.delta.api_calls == -1 and c.delta.tokens_used == -129)
+
+    _check("attribute @budget spans loop", contains(_attr_loop(3), "refused at call 3"))
+
+    let a = replay(t)
+    let b = replay(t)
+    _check("deterministic replay", a.output == b.output and a.tokens_used == b.tokens_used)
+
+    println("all replay checks passed")
+}
