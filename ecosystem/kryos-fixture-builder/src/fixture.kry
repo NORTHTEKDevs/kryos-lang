@@ -1,0 +1,175 @@
+// ============================================================
+// fixture.kry -- typed test data builder.
+//
+// A Fixture is a named bag of key-value fields and string tags, built via
+// composable pure functions. Every builder function is @capabilities(compute):
+// construction can never perform I/O. That guarantee lets the same Fixture
+// value serve as input to both @test (pure) functions and IO-bearing helpers
+// without the builder "infecting" the test's capability set.
+//
+// Typical usage:
+//
+//   let f = fixture_set(fixture_tag(fixture_new("alice"), "admin"),
+//               "email", "alice@example.com")
+//   let email = fixture_get(f, "email")    // "alice@example.com"
+//
+// fixture_to_str serialises the fixture to a deterministic, human-readable
+// string suitable for feeding into assert_golden as the "actual" value.
+// ============================================================
+
+// A Fixture is pure data. All arrays are owned values; field_names and
+// field_values are parallel arrays (index i of each corresponds to the same
+// field). Copy semantics: @copy deep-clones array fields on assignment
+// (CLAUDE.md gotcha #23), so refinement never aliases the original.
+@copy
+struct Fixture {
+    name: str,
+    tags: [str],
+    field_names: [str],
+    field_values: [str],
+}
+
+// Create a Fixture with no tags and no fields.
+@capabilities(compute)
+fn fixture_new(name: str) -> Fixture {
+    let tags: [str] = []
+    let fnames: [str] = []
+    let fvals: [str] = []
+    return Fixture {
+        name: name,
+        tags: tags,
+        field_names: fnames,
+        field_values: fvals,
+    }
+}
+
+// Return a Fixture with `tag` appended. Does not mutate the original.
+// Manual copy of tags array avoids JIT aliasing (CLAUDE.md gotcha #23):
+// push(f.tags, tag) extends the caller's array in-place on the JIT backend.
+@capabilities(compute)
+fn fixture_tag(f: Fixture, tag: str) -> Fixture {
+    let nt = len(f.tags)
+    let mut new_tags: [str] = []
+    let mut i = 0
+    while i < nt {
+        new_tags = push(new_tags, f.tags[i])
+        i = i + 1
+    }
+    new_tags = push(new_tags, tag)
+    return Fixture {
+        name: f.name,
+        tags: new_tags,
+        field_names: f.field_names,
+        field_values: f.field_values,
+    }
+}
+
+// Return a Fixture with field `key` set to `value`. If `key` already exists
+// its value is overwritten; otherwise a new entry is appended.
+@capabilities(compute)
+fn fixture_set(f: Fixture, key: str, value: str) -> Fixture {
+    let n = len(f.field_names)
+    let mut i = 0
+    while i < n {
+        if f.field_names[i] == key {
+            // Overwrite: build new parallel arrays with the updated slot.
+            let mut new_vals: [str] = []
+            let mut j = 0
+            while j < n {
+                if j == i {
+                    new_vals = push(new_vals, value)
+                } else {
+                    new_vals = push(new_vals, f.field_values[j])
+                }
+                j = j + 1
+            }
+            return Fixture {
+                name: f.name,
+                tags: f.tags,
+                field_names: f.field_names,
+                field_values: new_vals,
+            }
+        }
+        i = i + 1
+    }
+    // Append new field. Manual copy avoids JIT aliasing (CLAUDE.md gotcha #23).
+    let mut new_names: [str] = []
+    let mut new_vals2: [str] = []
+    let mut k = 0
+    while k < n {
+        new_names = push(new_names, f.field_names[k])
+        new_vals2 = push(new_vals2, f.field_values[k])
+        k = k + 1
+    }
+    new_names = push(new_names, key)
+    new_vals2 = push(new_vals2, value)
+    return Fixture {
+        name: f.name,
+        tags: f.tags,
+        field_names: new_names,
+        field_values: new_vals2,
+    }
+}
+
+// Look up `key`. Returns "" if the field is not present.
+@capabilities(compute)
+fn fixture_get(f: Fixture, key: str) -> str {
+    let n = len(f.field_names)
+    let mut i = 0
+    while i < n {
+        if f.field_names[i] == key {
+            return f.field_values[i]
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// True if `tag` is present in the fixture's tag list.
+@capabilities(compute)
+fn fixture_has_tag(f: Fixture, tag: str) -> bool {
+    let n = len(f.tags)
+    let mut i = 0
+    while i < n {
+        if f.tags[i] == tag {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// Serialise `f` to a deterministic, sorted, human-readable string.
+// Fields are emitted in declaration order; tags on a single line.
+// This string is stable across runs and suitable for assert_golden.
+@capabilities(compute)
+fn fixture_to_str(f: Fixture) -> str {
+    let mut out = "fixture: " + f.name + "\n"
+    if len(f.tags) > 0 {
+        out = out + "tags:"
+        let mut i = 0
+        while i < len(f.tags) {
+            out = out + " " + f.tags[i]
+            i = i + 1
+        }
+        out = out + "\n"
+    }
+    let mut i = 0
+    while i < len(f.field_names) {
+        out = out + f.field_names[i] + ": " + f.field_values[i] + "\n"
+        i = i + 1
+    }
+    return out
+}
+
+// Count the number of fields in a fixture.
+@capabilities(compute)
+fn fixture_field_count(f: Fixture) -> i64 {
+    return len(f.field_names)
+}
+
+// Count the number of tags in a fixture.
+@capabilities(compute)
+fn fixture_tag_count(f: Fixture) -> i64 {
+    return len(f.tags)
+}

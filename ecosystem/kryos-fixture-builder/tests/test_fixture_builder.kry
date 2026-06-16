@@ -1,0 +1,306 @@
+// ============================================================
+// test_fixture_builder.kry -- tests for the golden-file harness and the
+// typed fixture data builder.
+//
+//   kryos test --path ecosystem/kryos-fixture-builder
+//   kryos run  tests/test_fixture_builder.kry  (also runs IO round-trips)
+//
+// @test functions cover the pure-compute surfaces (spec done criterion:
+//   "The comparison/assertion core is @capabilities(compute)"):
+//   - golden_compare: match, mismatch, diff format
+//   - validate_name: safe names, dotdot, absolute paths, empty
+//   - Fixture: new, set/get, overwrite, tag, to_str
+//
+// main() additionally exercises the IO round-trip (golden read/update) and
+// the jailed-store path. These require a real filesystem and are not part of
+// `kryos test`.
+//
+// Done criteria verified here:
+//   - golden match passes                          (test_golden_compare_match)
+//   - golden mismatch returns a diff               (test_golden_compare_mismatch)
+//   - name validation blocks traversal             (test_validate_name_*)
+//   - fixture builder is pure and composable       (test_fixture_*)
+//   - IO round-trip (match / mismatch / update)    (main)
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+use golden
+use fixture
+
+// ---- pure @test functions --------------------------------------------------
+
+@test
+fn test_golden_compare_match() {
+    let r = golden_compare("Hello, World!\n", "Hello, World!\n")
+    assert(r.matched, "identical strings should match")
+    assert(len(r.diff) == 0, "diff should be empty on match, got: " + r.diff)
+}
+
+@test
+fn test_golden_compare_mismatch() {
+    let r = golden_compare("Hello, World!\n", "Hello, Earth!\n")
+    assert(not r.matched, "different strings should not match")
+    assert(len(r.diff) > 0, "diff should be non-empty on mismatch")
+    assert(contains(r.diff, "- Hello, World!"), "diff should show removed line")
+    assert(contains(r.diff, "+ Hello, Earth!"), "diff should show added line")
+}
+
+@test
+fn test_golden_compare_extra_actual_lines() {
+    let expected = "line1\n"
+    let actual = "line1\nline2\n"
+    let r = golden_compare(expected, actual)
+    assert(not r.matched, "extra actual lines cause mismatch")
+    assert(contains(r.diff, "+ line2"), "diff should show extra actual line")
+}
+
+@test
+fn test_golden_compare_extra_expected_lines() {
+    let expected = "line1\nline2\n"
+    let actual = "line1\n"
+    let r = golden_compare(expected, actual)
+    assert(not r.matched, "extra expected lines cause mismatch")
+    assert(contains(r.diff, "- line2"), "diff should show missing actual line")
+}
+
+@test
+fn test_golden_compare_empty_strings_match() {
+    let r = golden_compare("", "")
+    assert(r.matched, "two empty strings should match")
+}
+
+@test
+fn test_validate_name_ok() {
+    match validate_name("hello") {
+        Result::Ok(n) => assert(n == "hello", "valid name should pass through"),
+        Result::Err(e) => assert(false, "valid name rejected: " + e),
+    }
+    match validate_name("subdir/test") {
+        Result::Ok(_) => { },
+        Result::Err(e) => assert(false, "slash in name rejected: " + e),
+    }
+}
+
+@test
+fn test_validate_name_empty_rejected() {
+    match validate_name("") {
+        Result::Ok(_) => assert(false, "empty name must be rejected"),
+        Result::Err(e) => assert(contains(e, "empty"), "error must mention empty, got: " + e),
+    }
+}
+
+@test
+fn test_validate_name_dotdot_rejected() {
+    match validate_name("../escape") {
+        Result::Ok(_) => assert(false, "../escape must be rejected"),
+        Result::Err(e) => assert(contains(e, ".."), "error must mention .., got: " + e),
+    }
+    match validate_name("safe/../escape") {
+        Result::Ok(_) => assert(false, "embedded .. must be rejected"),
+        Result::Err(e) => assert(contains(e, ".."), "error must mention .., got: " + e),
+    }
+}
+
+@test
+fn test_validate_name_abs_rejected() {
+    match validate_name("/etc/passwd") {
+        Result::Ok(_) => assert(false, "absolute path must be rejected"),
+        Result::Err(e) => assert(contains(e, "relative"), "error must mention relative, got: " + e),
+    }
+}
+
+@test
+fn test_golden_path_format() {
+    let store = golden_store("testdata")
+    let p = golden_path(store, "hello")
+    assert(p == "testdata/hello.golden", "path must be testdata/<name>.golden, got: " + p)
+}
+
+// ---- Fixture builder @test functions ---------------------------------------
+
+@test
+fn test_fixture_new_empty() {
+    let f = fixture_new("alice")
+    assert(f.name == "alice", "fixture name should be alice")
+    assert(fixture_field_count(f) == 0, "new fixture should have 0 fields")
+    assert(fixture_tag_count(f) == 0, "new fixture should have 0 tags")
+}
+
+@test
+fn test_fixture_set_get() {
+    let f = fixture_set(fixture_new("bob"), "email", "bob@example.com")
+    assert(fixture_get(f, "email") == "bob@example.com", "set field should be retrievable")
+    assert(fixture_get(f, "missing") == "", "missing field should return empty string")
+    assert(fixture_field_count(f) == 1, "should have 1 field")
+}
+
+@test
+fn test_fixture_overwrite_field() {
+    let f1 = fixture_set(fixture_new("carol"), "role", "user")
+    let f2 = fixture_set(f1, "role", "admin")
+    assert(fixture_get(f2, "role") == "admin", "overwrite should update field")
+    assert(fixture_field_count(f2) == 1, "overwrite must not add a second entry")
+}
+
+@test
+fn test_fixture_tag() {
+    let f = fixture_tag(fixture_tag(fixture_new("dave"), "admin"), "user")
+    assert(fixture_has_tag(f, "admin"), "admin tag should be present")
+    assert(fixture_has_tag(f, "user"), "user tag should be present")
+    assert(not fixture_has_tag(f, "guest"), "guest tag should not be present")
+    assert(fixture_tag_count(f) == 2, "should have 2 tags")
+}
+
+@test
+fn test_fixture_to_str_format() {
+    let f = fixture_set(
+        fixture_tag(
+            fixture_tag(fixture_new("alice"), "admin"),
+            "user"
+        ),
+        "email", "alice@example.com"
+    )
+    let s = fixture_to_str(f)
+    assert(contains(s, "fixture: alice"), "should have fixture name line")
+    assert(contains(s, "tags: admin user"), "should have tags line")
+    assert(contains(s, "email: alice@example.com"), "should have email field")
+}
+
+@test
+fn test_fixture_to_str_no_tags() {
+    let f = fixture_set(fixture_new("nodoc"), "key", "val")
+    let s = fixture_to_str(f)
+    assert(not contains(s, "tags:"), "no-tag fixture should not have tags line")
+    assert(contains(s, "key: val"), "field should appear")
+}
+
+@test
+fn test_fixture_independence() {
+    // Refining a fixture must not mutate the original (value-threading pattern).
+    let base = fixture_new("base")
+    let derived = fixture_set(base, "x", "1")
+    assert(fixture_get(base, "x") == "", "base must not be mutated by derived")
+    assert(fixture_get(derived, "x") == "1", "derived should have x=1")
+}
+
+// ---- IO round-trip (main only, not @test) ----------------------------------
+
+fn get_temp() -> str {
+    let t = env_get("TEMP")
+    if len(t) > 0 { return t }
+    let t2 = env_get("TMP")
+    if len(t2) > 0 { return t2 }
+    let t3 = env_get("TMPDIR")
+    if len(t3) > 0 { return t3 }
+    return "/tmp"
+}
+
+fn main() {
+    // Run the @test suite first.
+    test_golden_compare_match()
+    println("PASS test_golden_compare_match")
+    test_golden_compare_mismatch()
+    println("PASS test_golden_compare_mismatch")
+    test_golden_compare_extra_actual_lines()
+    println("PASS test_golden_compare_extra_actual_lines")
+    test_golden_compare_extra_expected_lines()
+    println("PASS test_golden_compare_extra_expected_lines")
+    test_golden_compare_empty_strings_match()
+    println("PASS test_golden_compare_empty_strings_match")
+    test_validate_name_ok()
+    println("PASS test_validate_name_ok")
+    test_validate_name_empty_rejected()
+    println("PASS test_validate_name_empty_rejected")
+    test_validate_name_dotdot_rejected()
+    println("PASS test_validate_name_dotdot_rejected")
+    test_validate_name_abs_rejected()
+    println("PASS test_validate_name_abs_rejected")
+    test_golden_path_format()
+    println("PASS test_golden_path_format")
+    test_fixture_new_empty()
+    println("PASS test_fixture_new_empty")
+    test_fixture_set_get()
+    println("PASS test_fixture_set_get")
+    test_fixture_overwrite_field()
+    println("PASS test_fixture_overwrite_field")
+    test_fixture_tag()
+    println("PASS test_fixture_tag")
+    test_fixture_to_str_format()
+    println("PASS test_fixture_to_str_format")
+    test_fixture_to_str_no_tags()
+    println("PASS test_fixture_to_str_no_tags")
+    test_fixture_independence()
+    println("PASS test_fixture_independence")
+
+    // ------------------------------------------------------------------
+    // IO round-trip tests.
+    // ------------------------------------------------------------------
+    let tmp = get_temp() + "/kryos_golden_test"
+    create_dir(tmp)
+
+    // (1) match: commit a golden, assert it matches.
+    let store = golden_store(tmp)
+    match golden_update(store, "io_hello", "Hello, World!\n") {
+        Result::Ok(_) => { },
+        Result::Err(e) => throw "setup: golden_update failed: " + e,
+    }
+    let r_match = assert_golden(store, "io_hello", "Hello, World!\n")
+    assert(r_match.matched, "matching actual should pass")
+    println("PASS io match")
+
+    // (2) mismatch: compare directly (golden_compare is pure, no throw).
+    let r_mismatch = golden_compare("Hello, World!\n", "Goodbye!\n")
+    assert(not r_mismatch.matched, "mismatched actual should fail compare")
+    assert(contains(r_mismatch.diff, "- Hello, World!"), "diff should show expected")
+    assert(contains(r_mismatch.diff, "+ Goodbye!"), "diff should show actual")
+    println("PASS io mismatch diff")
+
+    // (3) mismatch throw: assert_golden throws on mismatch.
+    let mut mismatch_thrown = false
+    try {
+        let _bad = assert_golden(store, "io_hello", "WRONG\n")
+    } catch _e {
+        mismatch_thrown = true
+    }
+    assert(mismatch_thrown, "assert_golden must throw on mismatch")
+    println("PASS io mismatch throw")
+
+    // (4) update: golden_update rewrites the file.
+    match golden_update(store, "io_hello", "Updated content\n") {
+        Result::Ok(_) => { },
+        Result::Err(e) => throw "update failed: " + e,
+    }
+    match golden_read(store, "io_hello") {
+        Result::Ok(content) => {
+            assert(content == "Updated content\n",
+                "updated golden must contain new content, got: " + content)
+        },
+        Result::Err(e) => throw "read after update failed: " + e,
+    }
+    println("PASS io update")
+
+    // (5) committed golden files: verify against pre-committed testdata/.
+    let committed_store = golden_store("testdata")
+    let r_hello = assert_golden(committed_store, "hello", "Hello, World!\n")
+    assert(r_hello.matched, "committed hello golden should match")
+    println("PASS committed hello golden")
+
+    let alice = fixture_set(
+        fixture_tag(fixture_tag(fixture_new("alice"), "admin"), "user"),
+        "email", "alice@example.com"
+    )
+    let r_greeting = assert_golden(committed_store, "greeting", fixture_to_str(alice))
+    assert(r_greeting.matched, "committed greeting golden should match")
+    println("PASS committed greeting golden")
+
+    // (6) jailed store: cannot escape testdata/ via dotdot.
+    let jailed = golden_store_jailed(tmp)
+    match golden_read(jailed, "../escape") {
+        Result::Ok(_) => assert(false, "jail must block .. traversal"),
+        Result::Err(e) => assert(contains(e, "traversal") or contains(e, ".."),
+            "jail error must mention traversal, got: " + e),
+    }
+    println("PASS jailed dotdot blocked")
+
+    println("18/18 fixture-builder tests passed")
+}

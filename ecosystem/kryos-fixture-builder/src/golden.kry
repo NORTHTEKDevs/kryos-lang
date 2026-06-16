@@ -1,0 +1,221 @@
+// ============================================================
+// golden.kry -- hermetic golden-file assertion harness.
+//
+// Capability breakdown (three distinct surfaces):
+//
+//   @capabilities()           -- pure path helpers; no annotations mean no
+//                               capability required, callable by any caller
+//
+//   @capabilities(compute)    -- the comparison core; the only function that
+//                               touches actual output vs expected; proved I/O-free
+//                               by the compiler. `golden_compare` and
+//                               `assert_strings_match` live here.
+//
+//   @capabilities(io)         -- thin leaf functions that reach the filesystem:
+//                               `golden_read`, `golden_update`. They call the
+//                               pure helpers above and the builtins
+//                               file_read / file_write / file_exists.
+//
+//   @capabilities(io, compute, process)
+//                             -- `assert_golden`: orchestrates the full flow.
+//                               Needs process for env_get (update-mode flag),
+//                               io for the file operations, compute to call
+//                               golden_compare. The caller sees one entrypoint.
+//
+// GoldenStore roots all file operations under `testdata/`. When constructed
+// via `golden_store_jailed`, the fs-jail library (project 27) enforces that no
+// path can escape the testdata/ root even if a fixture name contains "..".
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+use std::string::{split_lines}
+use kryos_fs_jail::jail
+
+// ----------------------------------------------------------------------------
+// Data types
+// ----------------------------------------------------------------------------
+
+// Result of comparing actual output against a golden file.
+//   matched -- true if they are byte-for-byte equal
+//   diff    -- empty string when matched; otherwise a unified-style diff
+struct GoldenResult {
+    matched: bool,
+    diff: str,
+}
+
+// Roots golden-file reads and updates under `testdata_dir`.
+// Optionally jailed to prevent fixture names from escaping that root.
+struct GoldenStore {
+    testdata_dir: str,
+    jailed: bool,
+}
+
+// ----------------------------------------------------------------------------
+// Constructors
+// ----------------------------------------------------------------------------
+
+// Build a store rooted at `testdata_dir`.
+@capabilities()
+fn golden_store(testdata_dir: str) -> GoldenStore {
+    return GoldenStore { testdata_dir: testdata_dir, jailed: false }
+}
+
+// Build a store rooted at `testdata_dir` with fs-jail enforcement.
+// All file paths are validated by jail_resolve before reaching the filesystem.
+@capabilities()
+fn golden_store_jailed(testdata_dir: str) -> GoldenStore {
+    return GoldenStore { testdata_dir: testdata_dir, jailed: true }
+}
+
+// ----------------------------------------------------------------------------
+// Pure path helpers (@capabilities() -- no specific capability required)
+// ----------------------------------------------------------------------------
+
+// Resolve `name` to a golden filename: "<testdata_dir>/<name>.golden"
+// Pure -- no filesystem access.
+@capabilities()
+fn golden_path(store: GoldenStore, name: str) -> str {
+    return store.testdata_dir + "/" + name + ".golden"
+}
+
+// Validate a fixture name: must not be empty, must not contain "..", must not
+// start with "/" or contain ":". Returns Err(reason) if unsafe.
+@capabilities()
+fn validate_name(name: str) -> Result<str, str> {
+    let n = len(name)
+    if n == 0 {
+        return Err("golden: fixture name must not be empty")
+    }
+    if name[0] == "/" {
+        return Err("golden: fixture name must be relative, got: " + name)
+    }
+    if contains(name, "..") {
+        return Err("golden: fixture name must not contain '..': " + name)
+    }
+    if contains(name, ":") {
+        return Err("golden: fixture name must not contain ':': " + name)
+    }
+    return Ok(name)
+}
+
+// ----------------------------------------------------------------------------
+// Comparison core (@capabilities(compute) -- the spec's pure assertion surface)
+// ----------------------------------------------------------------------------
+
+// Compare `expected` and `actual` line by line.
+// Returns GoldenResult { matched: true, diff: "" } on equality.
+// On mismatch, diff is a unified-style diff showing:
+//   - lines only in expected are prefixed "- "
+//   + lines only in actual   are prefixed "+ "
+// Shared lines (in order) are omitted; only differences appear in the diff.
+@capabilities(compute)
+fn golden_compare(expected: str, actual: str) -> GoldenResult {
+    if expected == actual {
+        return GoldenResult { matched: true, diff: "" }
+    }
+    let exp_lines = split_lines(expected)
+    let act_lines = split_lines(actual)
+    let ne = len(exp_lines)
+    let na = len(act_lines)
+    let mut diff = ""
+    let mut i = 0
+    let limit = if ne > na { ne } elif na > ne { na } else { ne }
+    while i < limit {
+        if i < ne and i < na {
+            if exp_lines[i] != act_lines[i] {
+                diff = diff + "- " + exp_lines[i] + "\n"
+                diff = diff + "+ " + act_lines[i] + "\n"
+            }
+        } elif i < ne {
+            diff = diff + "- " + exp_lines[i] + "\n"
+        } else {
+            diff = diff + "+ " + act_lines[i] + "\n"
+        }
+        i = i + 1
+    }
+    return GoldenResult { matched: false, diff: diff }
+}
+
+// Assert that `actual` matches `expected`, throwing with a diff on mismatch.
+// Pure -- the caller supplies the strings; no file access occurs here.
+// This is the comparison core the spec designates as @capabilities(compute).
+@capabilities(compute)
+fn assert_strings_match(name: str, expected: str, actual: str) {
+    let r = golden_compare(expected, actual)
+    if not r.matched {
+        throw "golden mismatch for '" + name + "':\n" + r.diff
+    }
+}
+
+// ----------------------------------------------------------------------------
+// IO surface (file reads and updates) -- @capabilities(io)
+// ----------------------------------------------------------------------------
+
+// Read the golden file for `name` from `store.testdata_dir`.
+// Returns Err if the name is invalid or the file does not exist.
+@capabilities(io)
+fn golden_read(store: GoldenStore, name: str) -> Result<str, str> {
+    let v = validate_name(name)?
+    if store.jailed {
+        let j = jail(store.testdata_dir)
+        return jail_read(j, v + ".golden")
+    }
+    let path = golden_path(store, name)
+    if file_exists(path) == 0 {
+        return Err("golden: file not found: " + path
+            + " (run with KRYOS_UPDATE_GOLDENS=1 to create it)")
+    }
+    return Ok(file_read(path))
+}
+
+// Write `actual` to the golden file for `name`, creating or overwriting it.
+// Returns Err if the name is invalid.
+@capabilities(io)
+fn golden_update(store: GoldenStore, name: str, actual: str) -> Result<str, str> {
+    let v = validate_name(name)?
+    if store.jailed {
+        let j = jail(store.testdata_dir)
+        return jail_write(j, v + ".golden", actual)
+    }
+    let path = golden_path(store, name)
+    file_write(path, actual)
+    return Ok(path)
+}
+
+// ----------------------------------------------------------------------------
+// Orchestration entrypoint -- @capabilities(io, compute, process)
+// ----------------------------------------------------------------------------
+
+// Read `name`.golden, compare against `actual`, throw on mismatch.
+// When KRYOS_UPDATE_GOLDENS=1, update the file instead and return matched=true.
+//
+// Needs:
+//   io      -- file_read / file_write / file_exists
+//   compute -- golden_compare (the pure comparison core)
+//   process -- env_get("KRYOS_UPDATE_GOLDENS")
+//
+// Returns the GoldenResult (matched=true if file was updated or equal).
+@capabilities(io, compute, process)
+fn assert_golden(store: GoldenStore, name: str, actual: str) -> GoldenResult {
+    let update_mode = env_get("KRYOS_UPDATE_GOLDENS")
+    if update_mode == "1" {
+        match golden_update(store, name, actual) {
+            Result::Ok(path) => {
+                println("golden: updated " + path)
+                return GoldenResult { matched: true, diff: "" }
+            },
+            Result::Err(e) => throw "golden: update failed for '" + name + "': " + e,
+        }
+    }
+    match golden_read(store, name) {
+        Result::Err(e) => throw "golden: read failed for '" + name + "': " + e,
+        Result::Ok(expected) => {
+            let r = golden_compare(expected, actual)
+            if not r.matched {
+                throw "golden mismatch for '" + name + "':\n" + r.diff
+                    + "\n(run with KRYOS_UPDATE_GOLDENS=1 to update)"
+            }
+            return r
+        },
+    }
+}

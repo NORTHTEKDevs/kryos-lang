@@ -1,0 +1,110 @@
+// ============================================================
+// demo_fixture.kry -- live demo of the golden-file harness and
+// the typed fixture data builder.
+//
+// Run from the project root:
+//   kryos run demo_fixture.kry
+//
+// What this demonstrates:
+//   1. Build typed test data with the Fixture builder (pure, no I/O).
+//   2. Serialize a Fixture to a deterministic string for snapshotting.
+//   3. Write a golden file and assert the next run matches.
+//   4. Show what a mismatch diff looks like.
+//   5. Update mode: rewrite the golden file instead of failing.
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+use golden
+use fixture
+
+fn get_temp() -> str {
+    let t = env_get("TEMP")
+    if len(t) > 0 { return t }
+    let t2 = env_get("TMP")
+    if len(t2) > 0 { return t2 }
+    let t3 = env_get("TMPDIR")
+    if len(t3) > 0 { return t3 }
+    return "/tmp"
+}
+
+fn main() {
+    // --------------------------------------------------------
+    // 1. Build typed test data.
+    // --------------------------------------------------------
+    println("=== Fixture builder ===")
+    let user = fixture_set(
+        fixture_set(
+            fixture_tag(
+                fixture_tag(fixture_new("alice"), "admin"),
+                "active"
+            ),
+            "email", "alice@example.com"
+        ),
+        "role", "superuser"
+    )
+    println("name:  " + user.name)
+    println("email: " + fixture_get(user, "email"))
+    println("role:  " + fixture_get(user, "role"))
+    println("is admin?  " + to_string(fixture_has_tag(user, "admin")))
+    println("is guest?  " + to_string(fixture_has_tag(user, "guest")))
+    println("")
+
+    // --------------------------------------------------------
+    // 2. Serialize for snapshotting.
+    // --------------------------------------------------------
+    println("=== fixture_to_str ===")
+    let serialized = fixture_to_str(user)
+    println(serialized)
+
+    // --------------------------------------------------------
+    // 3. Golden-file round-trip.
+    // --------------------------------------------------------
+    println("=== Golden-file round-trip ===")
+    let tmp = get_temp() + "/kryos_fixture_demo"
+    create_dir(tmp)
+    let store = golden_store(tmp)
+
+    // Write the fixture output as the golden baseline.
+    match golden_update(store, "alice_user", serialized) {
+        Result::Ok(path) => println("wrote golden: " + path),
+        Result::Err(e) => throw "golden_update failed: " + e,
+    }
+
+    // On the next assert_golden call the baseline is on disk.
+    let r = assert_golden(store, "alice_user", serialized)
+    println("assert_golden (match): " + to_string(r.matched))
+    println("")
+
+    // --------------------------------------------------------
+    // 4. Mismatch diff.
+    // --------------------------------------------------------
+    println("=== Mismatch diff ===")
+    let tweaked = fixture_to_str(fixture_set(user, "role", "readonly"))
+    let diff_result = golden_compare(serialized, tweaked)
+    println("matched: " + to_string(diff_result.matched))
+    println("diff:\n" + diff_result.diff)
+
+    // --------------------------------------------------------
+    // 5. Update mode: golden_update rewrites the file.
+    // --------------------------------------------------------
+    println("=== Update mode ===")
+    match golden_update(store, "alice_user", tweaked) {
+        Result::Ok(path) => println("updated golden: " + path),
+        Result::Err(e) => throw "update failed: " + e,
+    }
+    let r2 = assert_golden(store, "alice_user", tweaked)
+    println("assert_golden after update (match): " + to_string(r2.matched))
+    println("")
+
+    // --------------------------------------------------------
+    // 6. Jailed store: dotdot traversal is blocked.
+    // --------------------------------------------------------
+    println("=== Jailed store (path safety) ===")
+    let jailed = golden_store_jailed(tmp)
+    match golden_read(jailed, "../escape") {
+        Result::Ok(_) => println("ERROR: should have been blocked"),
+        Result::Err(e) => println("blocked dotdot escape: " + e),
+    }
+    println("")
+    println("demo complete")
+}

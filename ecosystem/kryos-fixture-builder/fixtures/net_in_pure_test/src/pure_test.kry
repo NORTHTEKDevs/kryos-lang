@@ -1,0 +1,41 @@
+// ============================================================
+// pure_test.kry -- compile-fail fixture.
+//
+// This file compiles successfully in normal mode (kryos check, kryos test):
+// the capability is inferred, and the file is syntactically + type correct.
+//
+// Under --strict-capabilities, it FAILS:
+//
+//   kryos check --strict-capabilities fixtures/net_in_pure_test/src/pure_test.kry
+//
+// Expected errors:
+//   E0505: builtin `http_get` requires `net` capability
+//   E0507: call to `http_get` requires capabilities [net] not granted to caller
+//
+// This is the spec's done criterion: "the network-in-a-pure-test fixture
+// errors under strict mode". In real test suites, annotating a test function
+// @capabilities(compute) and then calling http_get inside it would catch this
+// at compile time instead of requiring network isolation at runtime.
+//
+// The contrast:
+//   Without --strict-capabilities: `kryos test` passes; the test may make
+//   real network calls, silently violating hermeticity.
+//   With --strict-capabilities:    `kryos check` fails with E0505+E0507.
+//   Adding @capabilities(compute): always fails, no flag needed.
+// ============================================================
+
+use std::net::{http_get}
+
+// This function has NO @capabilities annotation. In normal mode, kryos infers
+// the `net` capability and compiles it without error. Under --strict-capabilities,
+// unannotated functions calling net-gated functions are rejected.
+fn test_body_uses_net() -> str {
+    let r = http_get("https://example.com")
+    return r.body
+}
+
+fn main() {
+    println("fixture: test_body_uses_net has no @capabilities annotation")
+    println("run: kryos check --strict-capabilities fixtures/net_in_pure_test/src/pure_test.kry")
+    println("expected: E0505 + E0507 (net capability violation in strict mode)")
+}

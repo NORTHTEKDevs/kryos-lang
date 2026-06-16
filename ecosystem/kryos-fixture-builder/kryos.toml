@@ -1,0 +1,11 @@
+[package]
+name = "kryos-fixture-builder"
+version = "0.1.0"
+description = "Hermetic, capability-pure test data + golden-file harness: @capabilities(compute) assertion core guarantees no I/O during the comparison phase; only the thin io surface touches testdata/"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["compute", "io", "process"]
+
+[dependencies]
+kryos_fs_jail = { path = "../kryos-fs-jail" }

@@ -1,0 +1,8 @@
+[package]
+name = "net-in-pure-test"
+version = "0.1.0"
+description = "Compile-fail fixture: a test body annotated @capabilities(compute) that calls a net function is rejected under --strict-capabilities. Demonstrates that Kryos makes accidental network use in pure tests a compiler error, not a reviewer discipline."
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["compute"]
