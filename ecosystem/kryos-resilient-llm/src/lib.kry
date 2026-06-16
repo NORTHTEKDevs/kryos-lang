@@ -1,0 +1,294 @@
+// ============================================================
+// kryos-resilient-llm -- the certified retry envelope.
+//
+// resilient_chat is a chat client wrapped in three governance axes that no
+// shipping language can put in one signature:
+//
+//   @capabilities(net)   -- provably touches the network and NOTHING else.
+//                           A stray file_write / exec in the body is a
+//                           compile error (see tests/fixtures/leaky_io.kry).
+//   @budget(tokens, calls)-- a runtime frame that SPANS the whole retry loop.
+//                           Retries cannot exceed the ceiling: the (tokens,
+//                           calls) budget is charged on every attempt, across
+//                           the backoff loop, and the frame THROWS on
+//                           exhaustion -- a language property, not a counter
+//                           the loop could forget to check.
+//   Tracked<Probable<str>>-- the answer carries its provenance (every attempt,
+//                           failure, backoff, and the accumulated cost) and a
+//                           confidence that decays with each retry.
+//
+// It fuses the previously-uncombined resilience primitives -- std::circuit
+// (breaker) and std::backoff (exponential) -- with the governance axes
+// (@capabilities, @budget, std::cost, std::tracked, std::probable).
+//
+// IMPORT ORDER: std::cost before std::llm (std::llm imports std::cost
+// partially; placing cost first keeps cost_zero / cost_add visible here).
+// ============================================================
+
+use std::cost::{ComputeCost, cost_zero, cost_add}
+use std::llm::{LlmConfig, LlmResponse, Message, chat}
+use std::circuit::{new_breaker, allow, record_success, record_failure, current_state}
+use std::backoff::{next_delay}
+use std::probable::{Probable, probable}
+use std::tracked::{Tracked, LineageEntry, tracked_source, transform, annotate}
+
+// Breaker states (mirror std::circuit's CLOSED/OPEN/HALF_OPEN, which are
+// module-private there).
+let ST_CLOSED:    i64 = 0
+let ST_OPEN:      i64 = 1
+let ST_HALF_OPEN: i64 = 2
+
+// The full result of running the envelope: the provenance-tracked, confidence
+// -scored answer PLUS the accumulated cost and a breakdown of what happened.
+// The nested Tracked<Probable<str>> field is declared LAST (gotcha 21: keep a
+// nested aggregate field last so AOT field offsets of the scalar fields above
+// it stay correct; the JIT used by `kryos test`/`kryos run` is correct either
+// way).
+struct ResilientOutcome {
+    succeeded: bool,
+    attempts: i64,          // transport invocations that reached the provider
+    failures: i64,          // attempts that threw a retryable error
+    gated: i64,             // attempts skipped because the breaker was OPEN
+    final_breaker_state: i64,
+    cost: ComputeCost,
+    answer: Tracked<Probable<str>>
+}
+
+fn state_name(s: i64) -> str {
+    if s == ST_OPEN { return "OPEN" }
+    if s == ST_HALF_OPEN { return "HALF_OPEN" }
+    return "CLOSED"
+}
+
+fn _empty_response() -> LlmResponse {
+    return LlmResponse { text: "", input_tokens: 0, output_tokens: 0, model: "", status: 0, raw: "" }
+}
+
+// A cost as a one-line, JIT-safe string (to_string(f64) is unsupported on the
+// Cranelift JIT, so wall_time is truncated to whole ms). money/energy are 0.0
+// by design in the MVP -- per-token pricing varies by provider; the axes exist
+// but are not charged.
+fn cost_line(c: ComputeCost) -> str {
+    let wall_int: i64 = c.wall_time_ms as i64
+    return "tokens=" + to_string(c.tokens_used)
+         + " api_calls=" + to_string(c.api_calls)
+         + " backoff_ms=" + to_string(wall_int)
+         + " usd=0 energy=0"
+}
+
+// Convenience accessors over the nested answer (tracked's own explain/to_json
+// stringify the whole Probable<str> via "{...}" interpolation, which renders a
+// struct as a raw pointer -- so we read the fields directly instead).
+fn answer_text(o: ResilientOutcome) -> str {
+    let p: Probable<str> = o.answer.value
+    return p.value
+}
+
+fn answer_confidence(o: ResilientOutcome) -> f64 {
+    let p: Probable<str> = o.answer.value
+    return p.confidence
+}
+
+// Human-readable provenance + cost report, built from explicit field reads.
+fn outcome_explain(o: ResilientOutcome) -> str {
+    let p: Probable<str> = o.answer.value
+    let conf_pct: i64 = (p.confidence * 100.0) as i64
+    let mut out = "resilient-llm outcome\n"
+    out = out + "  result      : "
+    if o.succeeded { out = out + "ANSWER" } else { out = out + "NO ANSWER" }
+    out = out + "\n"
+    out = out + "  text        : " + p.value + "\n"
+    out = out + "  confidence  : " + to_string(conf_pct) + "%\n"
+    out = out + "  attempts    : " + to_string(o.attempts) + "\n"
+    out = out + "  failures    : " + to_string(o.failures) + "\n"
+    out = out + "  gated(open) : " + to_string(o.gated) + "\n"
+    out = out + "  breaker     : " + state_name(o.final_breaker_state) + "\n"
+    out = out + "  cost        : " + cost_line(o.cost) + "\n"
+    out = out + "  lineage     :\n"
+    let mut i = 0
+    while i < len(o.answer.lineage) {
+        let e: LineageEntry = o.answer.lineage[i]
+        out = out + "    " + to_string(i + 1) + ". [" + e.operation + "] " + e.description + "\n"
+        i = i + 1
+    }
+    return out
+}
+
+// ---------------------------------------------------------------------------
+// The resilience engine.
+//
+// `attempt` is the injected transport: fn([Message]) -> LlmResponse. In
+// production it wraps std::llm::chat (see resilient_chat below); in tests a
+// mock stands in so the whole envelope runs offline. Either way the transport
+// participates in the active @budget frame (chat() and the test mocks both
+// charge it), so the budget is enforced regardless of who provides transport.
+//
+// This function is intentionally UN-annotated: it holds no capability of its
+// own and calls only the injected `attempt` plus pure helpers. The governance
+// axes live on the public entry points (resilient_chat / *_metered), which is
+// where @capabilities(net) + @budget are declared and enforced.
+//
+//   max_retries  : extra attempts after the first (so up to max_retries+1).
+//   start_now_ns : logical clock seed; advanced by each backoff so the breaker
+//                  can cool from OPEN to HALF_OPEN deterministically (no real
+//                  sleep -- sleeping needs the `time` capability, which would
+//                  widen the net-only envelope; the schedule is computed and
+//                  accounted as wall_time instead).
+//   base_ms/max_ms: exponential backoff parameters (std::backoff::next_delay).
+// ---------------------------------------------------------------------------
+fn resilient_run(
+    msgs: [Message],
+    attempt: fn([Message]) -> LlmResponse,
+    breaker: [i64],
+    max_retries: i64,
+    start_now_ns: i64,
+    base_ms: i64,
+    max_ms: i64
+) -> ResilientOutcome {
+    let mut now = start_now_ns
+    let mut last_delay_ms = 0
+    let mut attempts = 0
+    let mut failures = 0
+    let mut gated = 0
+    let mut cost = cost_zero()
+    let mut conf = 1.0
+    let mut answer_text_v = ""
+    let mut succeeded = false
+
+    let mut tr: Tracked<Probable<str>> = tracked_source(
+        probable("", 0.0),
+        "kryos-resilient-llm",
+        "envelope opened: max_retries=" + to_string(max_retries) + " base=" + to_string(base_ms) + "ms")
+
+    let mut slot = 0
+    while slot <= max_retries {
+        let gate: bool = allow(breaker, now)
+        if not gate {
+            // Breaker OPEN and not yet cooled: skip the transport, back off,
+            // advance the logical clock toward HALF_OPEN.
+            gated = gated + 1
+            last_delay_ms = next_delay(last_delay_ms, base_ms, max_ms)
+            cost = cost_add(cost, ComputeCost {
+                wall_time_ms: last_delay_ms as f64, tokens_used: 0, api_calls: 0,
+                money_usd: 0.0, energy_kwh: 0.0 })
+            now = now + (last_delay_ms * 1000000)
+            tr = transform(tr, probable(answer_text_v, conf),
+                "circuit_open",
+                "breaker OPEN; skipped transport, backed off " + to_string(last_delay_ms) + "ms")
+            slot = slot + 1
+            continue
+        }
+
+        let mut threw = false
+        let mut err = ""
+        let mut resp = _empty_response()
+        try {
+            resp = attempt(msgs)
+        } catch e {
+            // @budget exhaustion is the HARD ceiling: it is not retryable, so
+            // leave the envelope immediately and let it propagate to the caller.
+            if contains(e, "@budget") {
+                throw e
+            }
+            threw = true
+            err = e
+        }
+        attempts = attempts + 1
+
+        if not threw {
+            record_success(breaker)
+            cost = cost_add(cost, ComputeCost {
+                wall_time_ms: 0.0, tokens_used: resp.input_tokens + resp.output_tokens,
+                api_calls: 1, money_usd: 0.0, energy_kwh: 0.0 })
+            answer_text_v = resp.text
+            succeeded = true
+            tr = transform(tr, probable(resp.text, conf),
+                "model_call",
+                "attempt " + to_string(attempts) + " ok: "
+                  + to_string(resp.input_tokens + resp.output_tokens)
+                  + " tokens; breaker " + state_name(current_state(breaker)))
+            slot = slot + 1
+            break
+        }
+
+        // Retryable failure: trip the breaker, decay confidence, back off.
+        record_failure(breaker)
+        failures = failures + 1
+        conf = conf * 0.6
+        cost = cost_add(cost, ComputeCost {
+            wall_time_ms: 0.0, tokens_used: 0, api_calls: 1,
+            money_usd: 0.0, energy_kwh: 0.0 })
+        last_delay_ms = next_delay(last_delay_ms, base_ms, max_ms)
+        cost = cost_add(cost, ComputeCost {
+            wall_time_ms: last_delay_ms as f64, tokens_used: 0, api_calls: 0,
+            money_usd: 0.0, energy_kwh: 0.0 })
+        now = now + (last_delay_ms * 1000000)
+        tr = transform(tr, probable(answer_text_v, conf),
+            "attempt_failed",
+            "attempt " + to_string(attempts) + " failed: " + err
+              + "; breaker " + state_name(current_state(breaker))
+              + "; backoff " + to_string(last_delay_ms) + "ms")
+        slot = slot + 1
+    }
+
+    if not succeeded {
+        conf = 0.0
+        tr = annotate(tr, "exhausted",
+            "gave up after " + to_string(attempts) + " attempts, "
+              + to_string(failures) + " failures, " + to_string(gated) + " breaker-open skips")
+    }
+
+    // Fold the accumulated cost into the provenance so it travels WITH the
+    // answer, then seal the final confidence-scored value.
+    tr = annotate(tr, "cost", cost_line(cost))
+    let final_p: Probable<str> = probable(answer_text_v, conf)
+    let verdict = if succeeded { "answer accepted" } else { "no answer produced" }
+    tr = transform(tr, final_p, "result", verdict)
+
+    return ResilientOutcome {
+        succeeded: succeeded,
+        attempts: attempts,
+        failures: failures,
+        gated: gated,
+        final_breaker_state: current_state(breaker),
+        cost: cost,
+        answer: tr
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public entry points -- the certified envelope.
+//
+// Both carry @capabilities(net) (the body provably cannot touch fs/process --
+// a file_write here is E0505) and @budget (the frame spans resilient_run's
+// retry loop). The live transport is a closure capturing cfg and calling
+// chat(); the closure inherits this net scope, and chat() charges the budget
+// frame on every attempt.
+// ---------------------------------------------------------------------------
+
+// Headline signature from the spec: returns the provenance-tracked, confidence
+// -scored answer. The accumulated cost is recorded INTO the answer's lineage
+// (the "cost" entry), so it is returned alongside the result; for programmatic
+// access to the ComputeCost struct use resilient_chat_metered.
+@capabilities(net)
+@budget(tokens = 120000, calls = 12)
+fn resilient_chat(cfg: LlmConfig, msgs: [Message], breaker: [i64], max_retries: i64) -> Tracked<Probable<str>> {
+    let attempt = |m| chat(cfg, m)
+    let outcome = resilient_run(msgs, attempt, breaker, max_retries, time_now_millis() * 1000000, 250, 8000)
+    return outcome.answer
+}
+
+// Same envelope, full outcome (cost + counters + breaker state alongside the
+// tracked answer).
+@capabilities(net)
+@budget(tokens = 120000, calls = 12)
+fn resilient_chat_metered(cfg: LlmConfig, msgs: [Message], breaker: [i64], max_retries: i64) -> ResilientOutcome {
+    let attempt = |m| chat(cfg, m)
+    return resilient_run(msgs, attempt, breaker, max_retries, time_now_millis() * 1000000, 250, 8000)
+}
+
+// Convenience breaker constructor (thin wrapper over std::circuit::new_breaker
+// so callers do not need a second import).
+fn resilient_breaker(threshold: i64, reset_nanos: i64) -> [i64] {
+    return new_breaker(threshold, reset_nanos)
+}

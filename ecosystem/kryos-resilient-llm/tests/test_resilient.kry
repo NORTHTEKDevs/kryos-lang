@@ -1,0 +1,213 @@
+// ============================================================
+// test_resilient.kry -- offline tests for the resilience engine.
+//
+//   kryos test --path ecosystem/kryos-resilient-llm
+//   kryos run  ecosystem/kryos-resilient-llm/tests/test_resilient.kry   (same assertions)
+//
+// No network and no credentials: the transport is an injected MOCK that stands
+// in for std::llm::chat. Each mock performs the SAME @budget dance as chat (a
+// pre-charged call, then token usage), so the budget frame is exercised for
+// real -- see test_budget.kry for the exhaustion-across-retries proof.
+//
+// The COMPILE-TIME guarantee (a stray file_write under @capabilities(net) is
+// rejected) is a property of `kryos check`, exercised by
+// tests/fixtures/leaky_io.kry -- a type-checker rejection cannot be asserted
+// from inside a running test, so it is verified at the CLI and pasted into the
+// PR evidence. See the README "Compile-fail fixture" section.
+// ============================================================
+
+// A test that `use lib` must also import every std module lib's bodies touch
+// (the resolver re-resolves lib's function bodies in this file's import scope).
+use std::cost::{ComputeCost, cost_zero, cost_add}
+use std::circuit::{new_breaker, allow, record_success, record_failure, current_state}
+use std::backoff::{next_delay}
+use std::probable::{Probable, probable}
+use std::tracked::{Tracked, LineageEntry, tracked_source, transform, annotate}
+use std::llm::{LlmConfig, LlmResponse, Message, user, chat}
+use lib::{ResilientOutcome, resilient_run, resilient_breaker,
+          answer_text, answer_confidence, outcome_explain, cost_line, state_name}
+
+// --- @budget hooks (same frame std::llm::chat charges) ----------------------
+
+extern {
+    fn kryos_budget_active() -> i64
+    fn kryos_budget_try_call() -> i64
+    fn kryos_budget_charge_tokens(tokens: i64) -> i64
+}
+
+// Charge the active budget frame like chat() does: reserve one call (throws
+// @budget when none remain). A failed transport still consumes the reserved
+// call -- exactly chat()'s behaviour.
+fn _budget_reserve_call() {
+    if kryos_budget_active() == 1 {
+        if kryos_budget_try_call() == 1 {
+            throw "llm error: @budget exhausted: no model calls left"
+        }
+    }
+}
+
+fn _budget_charge(tokens: i64) {
+    if kryos_budget_active() == 1 {
+        let exceeded = kryos_budget_charge_tokens(tokens)
+        if exceeded == 1 {
+            throw "llm error: @budget exceeded: token limit crossed"
+        }
+    }
+}
+
+fn _ok_response() -> LlmResponse {
+    return LlmResponse { text: "the answer is 42", input_tokens: 18, output_tokens: 7, model: "mock", status: 200, raw: "" }
+}
+
+// --- mock transports --------------------------------------------------------
+
+fn mock_always_ok(msgs: [Message]) -> LlmResponse {
+    _budget_reserve_call()
+    let r = _ok_response()
+    _budget_charge(r.input_tokens + r.output_tokens)
+    return r
+}
+
+fn mock_always_fail(msgs: [Message]) -> LlmResponse {
+    _budget_reserve_call()
+    throw "llm error: transport failure reaching mock (network down)"
+}
+
+// Flaky transport: fail the first FAILS_REMAINING calls, then succeed. Reset
+// with mock_reset(n) before each scenario.
+let mut FAILS_REMAINING: i64 = 0
+
+fn mock_reset(n: i64) -> i64 {
+    FAILS_REMAINING = n
+    return FAILS_REMAINING
+}
+
+fn mock_flaky(msgs: [Message]) -> LlmResponse {
+    _budget_reserve_call()
+    if FAILS_REMAINING > 0 {
+        FAILS_REMAINING = FAILS_REMAINING - 1
+        throw "llm error: transport failure reaching mock (network down)"
+    }
+    let r = _ok_response()
+    _budget_charge(r.input_tokens + r.output_tokens)
+    return r
+}
+
+fn msgs() -> [Message] {
+    return [user("What is 6 times 7?")]
+}
+
+// ---------------------------------------------------------------------------
+// Test 1: happy path -- first attempt succeeds, full confidence, cost charged.
+// ---------------------------------------------------------------------------
+@test
+fn test_happy_path_first_try() {
+    let b = resilient_breaker(3, 1000000)
+    let o = resilient_run(msgs(), mock_always_ok, b, 4, 0, 250, 8000)
+
+    assert(o.succeeded, "should succeed on the first attempt")
+    assert(o.attempts == 1, "exactly one transport call")
+    assert(o.failures == 0, "no failures")
+    assert(o.gated == 0, "breaker never opened")
+    assert(o.final_breaker_state == 0, "breaker must be CLOSED")
+    assert(answer_text(o) == "the answer is 42", "answer text must come through")
+    let conf_pct: i64 = (answer_confidence(o) * 100.0) as i64
+    assert(conf_pct == 100, "confidence must be 100% with no retries")
+    assert(o.cost.tokens_used == 25, "tokens (18+7) must be accounted")
+    assert(o.cost.api_calls == 1, "one api call accounted")
+}
+
+// ---------------------------------------------------------------------------
+// Test 2: total failure -- breaker opens, retries exhaust, confidence -> 0.
+// ---------------------------------------------------------------------------
+@test
+fn test_total_failure_opens_breaker() {
+    // threshold 3, large reset so the breaker stays OPEN once tripped.
+    let b = resilient_breaker(3, 1000000000000)
+    let o = resilient_run(msgs(), mock_always_fail, b, 6, 0, 250, 8000)
+
+    assert(not o.succeeded, "all attempts fail -> no success")
+    assert(o.attempts == 3, "3 transport calls before the breaker opened")
+    assert(o.failures == 3, "3 recorded failures")
+    assert(o.gated == 4, "remaining 4 slots gated by the OPEN breaker")
+    assert(o.final_breaker_state == 1, "breaker must be OPEN")
+    let conf_pct: i64 = (answer_confidence(o) * 100.0) as i64
+    assert(conf_pct == 0, "confidence must be 0 on total failure")
+    assert(o.cost.api_calls == 3, "only the 3 reaching calls cost api_calls")
+    assert(o.cost.wall_time_ms > 0.0, "backoff time must be accumulated")
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: recovery -- breaker opens, cools to HALF_OPEN, the next try succeeds.
+// ---------------------------------------------------------------------------
+@test
+fn test_flaky_recovers_through_half_open() {
+    let _ = mock_reset(2)
+    // threshold 2 (opens after 2 failures), tiny reset so the advancing logical
+    // clock cools it to HALF_OPEN before the next attempt.
+    let b = resilient_breaker(2, 1000)
+    let o = resilient_run(msgs(), mock_flaky, b, 6, 0, 250, 8000)
+
+    assert(o.succeeded, "the third attempt must succeed")
+    assert(o.attempts == 3, "two failures then a success = 3 transport calls")
+    assert(o.failures == 2, "two recorded failures before recovery")
+    assert(o.gated == 0, "the breaker half-opened instead of gating")
+    assert(o.final_breaker_state == 0, "a success closes the breaker again")
+    assert(answer_text(o) == "the answer is 42", "recovered answer text")
+    let conf_pct: i64 = (answer_confidence(o) * 100.0) as i64
+    assert(conf_pct >= 30 and conf_pct <= 40, "confidence decays to ~36% after 2 retries")
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: provenance -- the tracked answer records every stage + the cost.
+// ---------------------------------------------------------------------------
+@test
+fn test_provenance_lineage_complete() {
+    let _ = mock_reset(1)
+    let b = resilient_breaker(3, 1000000)
+    let o = resilient_run(msgs(), mock_flaky, b, 4, 0, 250, 8000)
+
+    assert(o.succeeded, "one failure then success")
+    // lineage: source, attempt_failed, model_call, cost, result  (>= 5)
+    assert(len(o.answer.lineage) >= 5, "lineage must record every stage")
+
+    let report = outcome_explain(o)
+    assert(contains(report, "[attempt_failed]"), "lineage shows the failed attempt")
+    assert(contains(report, "[model_call]"), "lineage shows the successful call")
+    assert(contains(report, "[cost]"), "lineage folds in the accumulated cost")
+    assert(contains(report, "[result]"), "lineage seals a final result")
+    assert(contains(report, "tokens=25"), "cost line carries the token total")
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: cost line is JIT-safe and reflects the accumulated cost.
+// ---------------------------------------------------------------------------
+@test
+fn test_cost_line_format() {
+    let b = resilient_breaker(3, 1000000)
+    let o = resilient_run(msgs(), mock_always_ok, b, 4, 0, 250, 8000)
+    let line = cost_line(o.cost)
+    assert(contains(line, "tokens=25"), "cost line shows tokens")
+    assert(contains(line, "api_calls=1"), "cost line shows api calls")
+    assert(contains(line, "usd=0"), "usd axis is 0 by design")
+}
+
+// ---------------------------------------------------------------------------
+// main() drives the same scenarios so `kryos run <this file>` is independent
+// proof (no test harness required).
+// ---------------------------------------------------------------------------
+fn main() {
+    let b1 = resilient_breaker(3, 1000000)
+    let ok = resilient_run(msgs(), mock_always_ok, b1, 4, 0, 250, 8000)
+    println("[happy] " + answer_text(ok) + " conf=" + to_string((answer_confidence(ok) * 100.0) as i64) + "%")
+
+    let b2 = resilient_breaker(3, 1000000000000)
+    let fail = resilient_run(msgs(), mock_always_fail, b2, 6, 0, 250, 8000)
+    println("[fail]  succeeded=" + to_string(fail.succeeded) + " breaker=" + state_name(fail.final_breaker_state) + " gated=" + to_string(fail.gated))
+
+    let _ = mock_reset(2)
+    let b3 = resilient_breaker(2, 1000)
+    let rec = resilient_run(msgs(), mock_flaky, b3, 6, 0, 250, 8000)
+    println("[recov] succeeded=" + to_string(rec.succeeded) + " attempts=" + to_string(rec.attempts) + " conf=" + to_string((answer_confidence(rec) * 100.0) as i64) + "%")
+    print(outcome_explain(rec))
+}

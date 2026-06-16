@@ -1,0 +1,110 @@
+// ============================================================
+// demo.kry -- the certified retry envelope, offline (no creds, no network).
+//
+//   kryos run ecosystem/kryos-resilient-llm/demo.kry
+//
+// Drives resilient_run with a flaky MOCK transport so the whole envelope runs
+// without a provider, and prints the three governance axes in action:
+//
+//   1. @capabilities(net): the real entry points (resilient_chat /
+//      resilient_chat_metered in src/lib.kry) are net-only. A stray file_write
+//      in that body is a compile error -- see fixtures/leaky_io.kry.
+//   2. @budget(tokens, calls): a frame that spans the retry loop. Here a tight
+//      @budget(calls = 2) wrapper proves a 5-retry series cannot exceed it.
+//   3. Tracked<Probable<str>>: the answer carries its provenance (every
+//      attempt, failure, backoff, cost) and a retry-decayed confidence.
+// ============================================================
+
+use std::cost::{ComputeCost, cost_zero, cost_add}
+use std::circuit::{new_breaker, allow, record_success, record_failure, current_state}
+use std::backoff::{next_delay}
+use std::probable::{Probable, probable}
+use std::tracked::{Tracked, LineageEntry, tracked_source, transform, annotate}
+use std::llm::{LlmConfig, LlmResponse, Message, system, user, chat}
+use lib::{ResilientOutcome, resilient_run, resilient_breaker,
+          answer_text, answer_confidence, outcome_explain, state_name}
+
+extern {
+    fn kryos_budget_active() -> i64
+    fn kryos_budget_try_call() -> i64
+    fn kryos_budget_charge_tokens(tokens: i64) -> i64
+}
+
+fn _reserve() {
+    if kryos_budget_active() == 1 {
+        if kryos_budget_try_call() == 1 {
+            throw "llm error: @budget exhausted: no model calls left"
+        }
+    }
+}
+
+let mut FAILS_REMAINING: i64 = 0
+
+fn mock_reset(n: i64) -> i64 {
+    FAILS_REMAINING = n
+    return FAILS_REMAINING
+}
+
+// A flaky provider: fails the first FAILS_REMAINING calls, then answers.
+fn mock_flaky(msgs: [Message]) -> LlmResponse {
+    _reserve()
+    if FAILS_REMAINING > 0 {
+        FAILS_REMAINING = FAILS_REMAINING - 1
+        throw "llm error: transport failure reaching mock (network down)"
+    }
+    if kryos_budget_active() == 1 {
+        let _ = kryos_budget_charge_tokens(25)
+    }
+    return LlmResponse { text: "42", input_tokens: 18, output_tokens: 7, model: "mock-llm", status: 200, raw: "" }
+}
+
+fn mock_always_fail(msgs: [Message]) -> LlmResponse {
+    _reserve()
+    throw "llm error: transport failure reaching mock (network down)"
+}
+
+fn prompt() -> [Message] {
+    return [system("You are a precise calculator."), user("What is 6 times 7?")]
+}
+
+// A tight @budget wrapper proving the frame spans the retry loop. calls = 2,
+// the series wants more -> the 3rd attempt throws @budget.
+@budget(tokens = 100000, calls = 2)
+fn under_tight_budget() -> str {
+    let b = resilient_breaker(20, 1000000000000)
+    try {
+        let o = resilient_run(prompt(), mock_always_fail, b, 5, 0, 250, 8000)
+        return "NO THROW (unexpected): succeeded=" + to_string(o.succeeded)
+    } catch e {
+        return e
+    }
+}
+
+fn main() {
+    println("=== kryos-resilient-llm demo (offline mock) ===\n")
+
+    // Scenario 1: a flaky provider that recovers on the 3rd try.
+    println("--- Scenario 1: flaky provider recovers (breaker + backoff + provenance) ---")
+    let _ = mock_reset(2)
+    let breaker = resilient_breaker(2, 1000)          // opens after 2 fails, cools fast
+    let o = resilient_run(prompt(), mock_flaky, breaker, 6, 0, 250, 8000)
+    print(outcome_explain(o))
+    println("")
+
+    // Scenario 2: total outage -- breaker opens and stays open, confidence -> 0.
+    println("--- Scenario 2: total outage (breaker opens, retries gated, confidence 0) ---")
+    let breaker2 = resilient_breaker(3, 1000000000000)
+    let o2 = resilient_run(prompt(), mock_always_fail, breaker2, 6, 0, 250, 8000)
+    println("  succeeded=" + to_string(o2.succeeded)
+          + " attempts=" + to_string(o2.attempts)
+          + " failures=" + to_string(o2.failures)
+          + " gated=" + to_string(o2.gated)
+          + " breaker=" + state_name(o2.final_breaker_state)
+          + " confidence=" + to_string((answer_confidence(o2) * 100.0) as i64) + "%")
+    println("")
+
+    // Scenario 3: the @budget ceiling cannot be exceeded across retries.
+    println("--- Scenario 3: @budget(calls=2) ceiling spans the retry loop ---")
+    println("  series of up to 6 attempts under a 2-call budget:")
+    println("  -> " + under_tight_budget())
+}

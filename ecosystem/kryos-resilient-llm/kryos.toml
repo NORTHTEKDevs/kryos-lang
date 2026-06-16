@@ -1,0 +1,12 @@
+[package]
+name = "kryos-resilient-llm"
+version = "0.1.0"
+description = "A certified retry envelope for LLM calls: resilient_chat is @capabilities(net) (provably no fs/process), @budget(tokens,calls) whose frame spans the whole backoff loop (retries cannot exceed the ceiling), and returns Tracked<Probable<str>> -- the answer carries its provenance and a retry-decayed confidence. Fuses std::circuit + std::backoff with the governance axes."
+license = "Apache-2.0"
+
+# The envelope touches the network and nothing else. The resilience engine and
+# all provenance/cost bookkeeping are pure compute. No io, no process.
+[capabilities]
+allowed = ["compute", "net"]
+
+[dependencies]

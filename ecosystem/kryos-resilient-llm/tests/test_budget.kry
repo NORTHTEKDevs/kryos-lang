@@ -1,0 +1,144 @@
+// ============================================================
+// test_budget.kry -- the @budget frame spans the retry loop.
+//
+//   kryos test --path ecosystem/kryos-resilient-llm
+//   kryos run  ecosystem/kryos-resilient-llm/tests/test_budget.kry
+//
+// This is the spec's headline honesty check: confirm the @budget(...) frame
+// actually PERSISTS across the while/try retry loop, so a retry series cannot
+// exceed the ceiling. A wrapper annotated @budget(calls = 2) drives
+// resilient_run with an always-failing transport and max_retries = 5; the
+// THIRD attempt's pre-call reservation finds the frame exhausted and THROWS.
+// The throw is a language property (the MIR-injected frame), not a counter the
+// loop could forget to check.
+//
+// Verified mechanism (see kryos-rt/src/budget.rs + kryos-mir lower.rs):
+//   - @budget pushes a frame at function entry, pops at every return.
+//   - The frame is thread-local, so it is live for the whole dynamic extent of
+//     the annotated function -- including loops in functions it calls.
+//   - kryos_budget_try_call decrements EVERY active frame; the tighter wins.
+// ============================================================
+
+use std::cost::{ComputeCost, cost_zero, cost_add}
+use std::circuit::{new_breaker, allow, record_success, record_failure, current_state}
+use std::backoff::{next_delay}
+use std::probable::{Probable, probable}
+use std::tracked::{Tracked, LineageEntry, tracked_source, transform, annotate}
+use std::llm::{LlmConfig, LlmResponse, Message, user, chat}
+use lib::{ResilientOutcome, resilient_run, resilient_breaker, answer_text, answer_confidence}
+
+extern {
+    fn kryos_budget_active() -> i64
+    fn kryos_budget_try_call() -> i64
+    fn kryos_budget_charge_tokens(tokens: i64) -> i64
+}
+
+fn _budget_reserve_call() {
+    if kryos_budget_active() == 1 {
+        if kryos_budget_try_call() == 1 {
+            throw "llm error: @budget exhausted: no model calls left"
+        }
+    }
+}
+
+fn _budget_charge(tokens: i64) {
+    if kryos_budget_active() == 1 {
+        let exceeded = kryos_budget_charge_tokens(tokens)
+        if exceeded == 1 {
+            throw "llm error: @budget exceeded: token limit crossed"
+        }
+    }
+}
+
+fn _ok_response() -> LlmResponse {
+    return LlmResponse { text: "ok", input_tokens: 18, output_tokens: 7, model: "mock", status: 200, raw: "" }
+}
+
+fn mock_always_ok(msgs: [Message]) -> LlmResponse {
+    _budget_reserve_call()
+    let r = _ok_response()
+    _budget_charge(r.input_tokens + r.output_tokens)
+    return r
+}
+
+fn mock_always_fail(msgs: [Message]) -> LlmResponse {
+    _budget_reserve_call()
+    throw "llm error: transport failure reaching mock (network down)"
+}
+
+fn msgs() -> [Message] {
+    return [user("hello")]
+}
+
+// ---------------------------------------------------------------------------
+// CALLS axis: a 2-call budget over a 5-retry series throws on the 3rd attempt.
+// The breaker threshold is high so the breaker does NOT gate before the budget
+// is the thing that stops the loop -- we are isolating the budget ceiling.
+// ---------------------------------------------------------------------------
+@budget(tokens = 100000, calls = 2)
+fn run_under_2call_budget() -> str {
+    let b = resilient_breaker(20, 1000000000000)
+    try {
+        let o = resilient_run(msgs(), mock_always_fail, b, 5, 0, 250, 8000)
+        return "NO THROW: succeeded=" + to_string(o.succeeded) + " attempts=" + to_string(o.attempts)
+    } catch e {
+        return e
+    }
+}
+
+@test
+fn test_call_budget_frame_spans_retry_loop() {
+    let err = run_under_2call_budget()
+    assert(contains(err, "@budget"),
+        "a retry series exceeding the call budget MUST throw @budget; got: " + err)
+    assert(contains(err, "exhausted"),
+        "the throw should be the call-exhaustion message; got: " + err)
+}
+
+// ---------------------------------------------------------------------------
+// TOKENS axis: a 40-token budget shared across two envelopes. The first
+// envelope charges 25 tokens; the second's call would push to 50 > 40, so the
+// post-call token charge throws @budget. Proves the frame ceiling holds across
+// the whole governed region, not just one call.
+// ---------------------------------------------------------------------------
+@budget(tokens = 40, calls = 10)
+fn run_under_40token_budget() -> str {
+    let b1 = resilient_breaker(3, 1000000)
+    try {
+        let o1 = resilient_run(msgs(), mock_always_ok, b1, 2, 0, 250, 8000)
+        let b2 = resilient_breaker(3, 1000000)
+        let o2 = resilient_run(msgs(), mock_always_ok, b2, 2, 0, 250, 8000)
+        return "NO THROW: o1=" + to_string(o1.succeeded) + " o2=" + to_string(o2.succeeded)
+    } catch e {
+        return e
+    }
+}
+
+@test
+fn test_token_budget_frame_is_a_ceiling() {
+    let err = run_under_40token_budget()
+    assert(contains(err, "@budget"),
+        "exceeding the token budget MUST throw @budget; got: " + err)
+}
+
+// ---------------------------------------------------------------------------
+// Control: with a generous budget the same series runs to natural completion
+// (no @budget throw) -- so the throws above are the budget, not some other bug.
+// ---------------------------------------------------------------------------
+@budget(tokens = 100000, calls = 50)
+fn run_under_generous_budget() -> bool {
+    let b = resilient_breaker(3, 1000000)
+    let o = resilient_run(msgs(), mock_always_ok, b, 4, 0, 250, 8000)
+    return o.succeeded
+}
+
+@test
+fn test_generous_budget_completes() {
+    assert(run_under_generous_budget(), "a generous budget must let the call complete normally")
+}
+
+fn main() {
+    println("[2-call budget] " + run_under_2call_budget())
+    println("[40-token budget] " + run_under_40token_budget())
+    println("[generous budget] succeeded=" + to_string(run_under_generous_budget()))
+}

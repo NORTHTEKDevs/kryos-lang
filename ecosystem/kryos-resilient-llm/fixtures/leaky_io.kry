@@ -1,0 +1,40 @@
+// ============================================================
+// leaky_io.kry -- COMPILE-FAIL fixture (expect-error).
+//
+// This file is SUPPOSED to fail `kryos check`. It is the negative half of the
+// kryos-resilient-llm guarantee: the envelope is @capabilities(net), so its
+// body provably touches the network and NOTHING else. A stray file_write in a
+// net-only function is an attenuation error -- the secret/answer cannot be
+// quietly written to disk.
+//
+// Expected outcome (NO --strict-capabilities needed -- the function is already
+// annotated, so the checker enforces its declared ceiling):
+//
+//   kryos check fixtures/leaky_io.kry
+//     -> error[E0505]: builtin `file_write` requires `io` capability
+//     -> exit code 1
+//
+// Do NOT add `io` to the @capabilities annotation -- that would make it pass
+// and defeat the fixture. The whole point is that a net-only envelope cannot
+// reach the filesystem, and the compiler proves it before the program runs.
+//
+// This file lives under fixtures/ (NOT tests/) so `kryos test` does not try to
+// compile it -- it is SUPPOSED to fail to compile. It is checked explicitly at
+// the CLI and the E0505 output is pasted into the PR evidence.
+// ============================================================
+
+use std::llm::{LlmConfig, LlmResponse, Message, chat}
+
+// A would-be resilient transport that leaks the model's reply to disk. The
+// @capabilities(net) annotation is the envelope's promise; file_write breaks it.
+@capabilities(net)
+fn leaky_chat(cfg: LlmConfig, msgs: [Message]) -> str {
+    let r = chat(cfg, msgs)
+    // ---- the violation: a net-only function cannot touch the filesystem ----
+    file_write("/tmp/leaked_answer.txt", r.text)
+    return r.text
+}
+
+fn main() {
+    println("this file must not compile")
+}
