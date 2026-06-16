@@ -432,12 +432,19 @@ fn inject_budget_frames(func: &mut MirFunction, annotations: &[ast::Annotation])
     };
     let mut tokens: i64 = -1;
     let mut calls: i64 = -1;
+    // USD ceiling in micro-dollars (`usd=0.05` -> 50_000). -1 = unlimited.
+    let mut usd_micros: i64 = -1;
     for arg in &ann.args {
         let cleaned: String = arg.chars().filter(|c| !c.is_whitespace()).collect();
         if let Some(v) = cleaned.strip_prefix("tokens=") {
             tokens = v.parse().unwrap_or(-1);
         } else if let Some(v) = cleaned.strip_prefix("calls=") {
             calls = v.parse().unwrap_or(-1);
+        } else if let Some(v) = cleaned.strip_prefix("usd=") {
+            usd_micros = v
+                .parse::<f64>()
+                .map(|d| (d * 1_000_000.0).round() as i64)
+                .unwrap_or(-1);
         }
     }
     if func.blocks.is_empty() {
@@ -465,10 +472,11 @@ fn inject_budget_frames(func: &mut MirFunction, annotations: &[ast::Annotation])
         Instruction::Assign {
             dest: depth,
             value: RValue::Call {
-                func: "kryos_budget_push".into(),
+                func: "kryos_budget_push_usd".into(),
                 args: vec![
                     Operand::Constant(Constant::Int(tokens)),
                     Operand::Constant(Constant::Int(calls)),
+                    Operand::Constant(Constant::Int(usd_micros)),
                 ],
             },
         },

@@ -16,6 +16,8 @@ use std::cell::RefCell;
 struct Frame {
     tokens_left: i64,
     calls_left: i64,
+    /// USD ceiling in micro-dollars (1 USD = 1_000_000). `i64::MAX` = unlimited.
+    usd_micros_left: i64,
 }
 
 thread_local! {
@@ -24,14 +26,24 @@ thread_local! {
 
 /// Push a budget frame. Negative limits mean "unlimited" for that axis.
 /// Returns the depth BEFORE the push, for `kryos_budget_pop_to`.
+/// (USD axis unlimited; see `kryos_budget_push_usd`.)
 #[no_mangle]
 pub extern "C" fn kryos_budget_push(tokens: i64, calls: i64) -> i64 {
+    kryos_budget_push_usd(tokens, calls, -1)
+}
+
+/// Push a budget frame with a USD spend ceiling, in micro-dollars
+/// (`@budget(usd=0.05)` lowers to `usd_micros = 50_000`). Negative limits mean
+/// "unlimited" for that axis. Returns the depth BEFORE the push.
+#[no_mangle]
+pub extern "C" fn kryos_budget_push_usd(tokens: i64, calls: i64, usd_micros: i64) -> i64 {
     FRAMES.with(|f| {
         let mut f = f.borrow_mut();
         let depth = f.len() as i64;
         f.push(Frame {
             tokens_left: if tokens < 0 { i64::MAX } else { tokens },
             calls_left: if calls < 0 { i64::MAX } else { calls },
+            usd_micros_left: if usd_micros < 0 { i64::MAX } else { usd_micros },
         });
         depth
     })
@@ -104,6 +116,33 @@ pub extern "C" fn kryos_budget_remaining_calls() -> i64 {
     FRAMES.with(|f| f.borrow().iter().map(|fr| fr.calls_left).min().unwrap_or(-1))
 }
 
+/// Reserve a USD spend (micro-dollars) against every active frame.
+/// REFUSE-BEFORE-SPEND: if charging `amount_micros` would push ANY active frame
+/// below zero, returns 1 and charges NOTHING — the over-budget spend is refused
+/// before it happens (the marquee "cap your cloud spend in dollars" guarantee).
+/// Otherwise decrements every frame and returns 0.
+#[no_mangle]
+pub extern "C" fn kryos_budget_charge_usd_micros(amount_micros: i64) -> i64 {
+    let amount = amount_micros.max(0);
+    FRAMES.with(|f| {
+        let mut f = f.borrow_mut();
+        if f.iter().any(|fr| fr.usd_micros_left < amount) {
+            return 1;
+        }
+        for fr in f.iter_mut() {
+            fr.usd_micros_left -= amount;
+        }
+        0
+    })
+}
+
+/// Remaining USD (micro-dollars) of the tightest active frame; -1 when no
+/// frame is active.
+#[no_mangle]
+pub extern "C" fn kryos_budget_remaining_usd_micros() -> i64 {
+    FRAMES.with(|f| f.borrow().iter().map(|fr| fr.usd_micros_left).min().unwrap_or(-1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +186,28 @@ mod tests {
         let d = kryos_budget_push(-1, -1);
         assert_eq!(kryos_budget_try_call(), 0);
         assert_eq!(kryos_budget_charge_tokens(1_000_000_000), 0);
+        kryos_budget_pop_to(d);
+    }
+
+    #[test]
+    fn usd_refuse_before_spend() {
+        let d = kryos_budget_push_usd(-1, -1, 50_000); // $0.05 ceiling
+        assert_eq!(kryos_budget_charge_usd_micros(30_000), 0); // $0.03 ok
+        assert_eq!(kryos_budget_remaining_usd_micros(), 20_000);
+        // $0.04 would exceed the remaining $0.02 -> refused, nothing charged.
+        assert_eq!(kryos_budget_charge_usd_micros(40_000), 1);
+        assert_eq!(kryos_budget_remaining_usd_micros(), 20_000); // unchanged
+        // Exactly the remaining amount is allowed.
+        assert_eq!(kryos_budget_charge_usd_micros(20_000), 0);
+        assert_eq!(kryos_budget_remaining_usd_micros(), 0);
+        kryos_budget_pop_to(d);
+        assert_eq!(kryos_budget_remaining_usd_micros(), -1); // no frame
+    }
+
+    #[test]
+    fn usd_unlimited_when_absent() {
+        let d = kryos_budget_push(100, 2); // routes through push_usd, usd unlimited
+        assert_eq!(kryos_budget_charge_usd_micros(999_000_000), 0);
         kryos_budget_pop_to(d);
     }
 }

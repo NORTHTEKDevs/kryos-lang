@@ -959,6 +959,9 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_budget_charge_tokens(i64)");
         self.emit_line("declare i64 @kryos_budget_remaining_tokens()");
         self.emit_line("declare i64 @kryos_budget_remaining_calls()");
+        self.emit_line("declare i64 @kryos_budget_push_usd(i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_budget_charge_usd_micros(i64)");
+        self.emit_line("declare i64 @kryos_budget_remaining_usd_micros()");
         self.emit_line("declare i64 @kryos_string_compare(ptr, ptr)");
         // ---------------------------------------------------------------
         // Auto-generated runtime symbol declarations (Class A' fix).

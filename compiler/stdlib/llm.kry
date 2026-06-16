@@ -35,6 +35,27 @@ extern {
     fn kryos_budget_charge_tokens(tokens: i64) -> i64
     fn kryos_budget_remaining_tokens() -> i64
     fn kryos_budget_remaining_calls() -> i64
+    fn kryos_budget_charge_usd_micros(amount_micros: i64) -> i64
+    fn kryos_budget_remaining_usd_micros() -> i64
+}
+
+// Charge a USD spend against the active `@budget(usd=...)` ceiling.
+// Refuse-before-spend: returns false (and charges nothing) when `amount` would
+// exceed the budget, true when the charge was applied. `amount` is in dollars
+// (e.g. 0.03). Compute it from real usage, e.g. tokens / 1000.0 * price_per_1k.
+fn budget_charge_usd(amount: f64) -> bool {
+    let micros: i64 = (amount * 1000000.0) as i64
+    return kryos_budget_charge_usd_micros(micros) == 0
+}
+
+// Remaining USD on the tightest active `@budget(usd=...)` frame, in dollars.
+// Returns -1.0 when no usd-bearing budget frame is active.
+fn budget_remaining_usd() -> f64 {
+    let micros: i64 = kryos_budget_remaining_usd_micros()
+    if micros < 0 {
+        return -1.0
+    }
+    return (micros as f64) / 1000000.0
 }
 
 @copy

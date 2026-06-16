@@ -264,6 +264,18 @@ impl JitCompiler {
             "kryos_budget_remaining_calls",
             kryos_rt::budget::kryos_budget_remaining_calls as *const u8,
         );
+        jit_builder.symbol(
+            "kryos_budget_push_usd",
+            kryos_rt::budget::kryos_budget_push_usd as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_budget_charge_usd_micros",
+            kryos_rt::budget::kryos_budget_charge_usd_micros as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_budget_remaining_usd_micros",
+            kryos_rt::budget::kryos_budget_remaining_usd_micros as *const u8,
+        );
 
         // ARC drop function registration
         jit_builder.symbol(
@@ -1914,6 +1926,9 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_budget_charge_tokens", "kryos_budget_charge_tokens", sig(1));
     decl!("kryos_budget_remaining_tokens", "kryos_budget_remaining_tokens", sig(0));
     decl!("kryos_budget_remaining_calls", "kryos_budget_remaining_calls", sig(0));
+    decl!("kryos_budget_push_usd", "kryos_budget_push_usd", sig(3));
+    decl!("kryos_budget_charge_usd_micros", "kryos_budget_charge_usd_micros", sig(1));
+    decl!("kryos_budget_remaining_usd_micros", "kryos_budget_remaining_usd_micros", sig(0));
 
     // --- Networking (Kryos-string-handle wrappers) ---
     decl!("kryos_tcp_connect_ks", "kryos_tcp_connect_ks", sig(2));
