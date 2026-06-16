@@ -1,0 +1,52 @@
+// ============================================================
+// loader.kry -- the capability-verified plugin loader.
+//
+// wasm_load_capability_verified is the host entry point. It reads the plugin's
+// declared capability set (from the sidecar, for the MVP), then enforces the
+// host policy: the declared set must be a subset of the allowlist. Any
+// capability the plugin declares but the host does not permit causes rejection
+// with CapabilityViolation.ExceedsAllowed.
+//
+// What the MVP does NOT do (deferred to Part B): parse the .wasm binary, read
+// an embedded custom section, or cross-check the import section against the
+// manifest. The loader returns a PluginHandle on success but does not
+// instantiate or execute the module -- verification, not invocation.
+//
+// Rejection mapping:
+//   no sidecar              -> MissingSection
+//   sidecar present, bad    -> MalformedSection(reason)
+//   declares an excess cap  -> ExceedsAllowed(cap)
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+use caps
+use sidecar
+
+struct PluginHandle {
+    path: str,
+    declared_caps: [str],
+}
+
+@capabilities(io)
+fn wasm_load_capability_verified(
+    path: str,
+    allowed_caps: [str]
+) -> Result<PluginHandle, CapabilityViolation> {
+    let sidecar_result = read_cap_sidecar(path)
+    let declared = match sidecar_result {
+        Result::Ok(c) => c,
+        Result::Err(msg) => {
+            if contains(msg, "missing:") {
+                return Err(CapabilityViolation.MissingSection)
+            }
+            return Err(CapabilityViolation.MalformedSection(msg))
+        },
+    }
+
+    let excess = caps_excess(declared, allowed_caps)
+    if len(excess) > 0 {
+        return Err(CapabilityViolation.ExceedsAllowed(excess[0]))
+    }
+
+    return Ok(PluginHandle { path: path, declared_caps: declared })
+}

@@ -1,0 +1,56 @@
+// ============================================================
+// demo_host.kry -- command-line driver for the plugin loader.
+//
+//   kryos run demo_host.kry <plugin.wasm> <allowed_cap>
+//
+// Builds a single-capability host allowlist from the second argument, then
+// asks the loader to verify the plugin at the first argument. Prints either:
+//
+//   plugin loaded with caps: <comma-separated declared caps>
+//   REJECTED: <CapabilityViolation variant>
+//
+// Examples:
+//   kryos run demo_host.kry tests/fixtures/safe_plugin/plugin.wasm compute
+//     -> plugin loaded with caps: compute
+//   kryos run demo_host.kry tests/fixtures/net_plugin/plugin.wasm compute
+//     -> REJECTED: ExceedsAllowed(net)
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+use caps
+use loader
+
+// Join a [str] with ", " for display.
+@capabilities()
+fn join_caps(caps: [str]) -> str {
+    let mut out = ""
+    let mut first = true
+    for c in caps {
+        if first {
+            out = c
+            first = false
+        } else {
+            out = out + ", " + c
+        }
+    }
+    return out
+}
+
+@capabilities(io)
+fn main() {
+    let argv = args()
+    if len(argv) < 3 {
+        println("usage: demo_host <plugin.wasm> <allowed_cap>")
+        return
+    }
+    let plugin_path = argv[1]
+    let allowed: [str] = [argv[2]]
+
+    let result = wasm_load_capability_verified(plugin_path, allowed)
+    match result {
+        Result::Ok(handle) =>
+            println("plugin loaded with caps: " + join_caps(handle.declared_caps)),
+        Result::Err(v) =>
+            println("REJECTED: " + violation_message(v)),
+    }
+}

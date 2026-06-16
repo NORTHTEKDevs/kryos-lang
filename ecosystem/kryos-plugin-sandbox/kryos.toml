@@ -1,0 +1,8 @@
+[package]
+name = "kryos-plugin-sandbox"
+version = "0.1.0"
+description = "Attenuation-safe WASM plugin host: verify a plugin's declared capability set against the host allowlist before load"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["io"]

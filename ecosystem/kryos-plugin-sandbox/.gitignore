@@ -1,0 +1,21 @@
+# build artifacts
+*.exe
+*.exp
+*.lib
+*.pdb
+*.o
+*.ll
+target/
+kryos.lock
+
+# scratch fixtures written by tests/test_loader.kry at runtime (in the CWD).
+# The committed fixtures under tests/fixtures/ are deliberate and NOT ignored.
+t_safe.wasm
+t_safe.wasm.caps.json
+t_net.wasm
+t_net.wasm.caps.json
+t_nosidecar.wasm
+
+# A parent ecosystem/.gitignore ignores *.wasm; the committed plugin stubs
+# under tests/fixtures/ are intentional, so re-include them explicitly.
+!tests/fixtures/**/plugin.wasm

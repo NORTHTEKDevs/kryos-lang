@@ -1,0 +1,63 @@
+// ============================================================
+// caps.kry -- capability comparison primitives for the plugin host.
+//
+// A plugin declares a capability set (its manifest). The host carries an
+// allowlist (its policy). Loading is permitted only when the declared set is
+// a subset of the allowlist. These helpers implement that subset check plus
+// the CapabilityViolation enum the loader returns on rejection.
+//
+// "all" in the allowlist is a wildcard that grants every capability -- it
+// mirrors the Capability::All variant in the compiler's kryos-capabilities
+// crate, so a host that trusts a plugin fully can allow ["all"].
+//
+// Everything here is pure (no IO); the @capabilities() annotation with empty
+// parens documents that and keeps these helpers callable from any scope.
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+
+enum CapabilityViolation {
+    ExceedsAllowed(str),
+    ImportCapMismatch(str),
+    MissingSection,
+    MalformedSection(str),
+}
+
+// Human-readable rendering of a violation, used by the demo host and tests.
+@capabilities()
+fn violation_message(v: CapabilityViolation) -> str {
+    match v {
+        CapabilityViolation::ExceedsAllowed(cap) =>
+            return "ExceedsAllowed(" + cap + ")",
+        CapabilityViolation::ImportCapMismatch(name) =>
+            return "ImportCapMismatch(" + name + ")",
+        CapabilityViolation::MissingSection =>
+            return "MissingSection",
+        CapabilityViolation::MalformedSection(msg) =>
+            return "MalformedSection(" + msg + ")",
+    }
+}
+
+// Does the allowlist grant `cap`? A literal "all" entry is a wildcard.
+@capabilities()
+fn caps_allows(allowed: [str], cap: str) -> bool {
+    for a in allowed {
+        if a == cap || a == "all" {
+            return true
+        }
+    }
+    return false
+}
+
+// The capabilities in `declared` that the allowlist does NOT grant. An empty
+// result means `declared` is a subset of `allowed` and the plugin may load.
+@capabilities()
+fn caps_excess(declared: [str], allowed: [str]) -> [str] {
+    let mut excess: [str] = []
+    for cap in declared {
+        if !caps_allows(allowed, cap) {
+            excess = push(excess, cap)
+        }
+    }
+    return excess
+}

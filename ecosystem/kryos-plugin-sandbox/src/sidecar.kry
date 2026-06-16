@@ -1,0 +1,104 @@
+// ============================================================
+// sidecar.kry -- read a plugin's declared capability set from its sidecar.
+//
+// For the MVP the capability manifest is NOT yet embedded in the .wasm binary
+// (that is Part B). Instead each plugin carries a sibling JSON file named
+// "<plugin>.caps.json" with the shape:
+//
+//     {"version":1,"declared":["compute"]}
+//
+// We parse it with a hand-written substring scanner rather than std::json:
+// std::json's native backend may not be linked for every target, and the
+// format here is fixed and small enough that a 60-line scanner is more
+// portable than the dependency. The scanner extracts the array that follows
+// the "declared" key and pulls out each double-quoted string.
+//
+// read_cap_sidecar returns:
+//   Err("missing:<path>")   -- no sidecar file (loader maps to MissingSection)
+//   Err("<reason>")         -- file present but unparseable (MalformedSection)
+//   Ok([str])               -- the declared capability names (possibly empty)
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+
+// i-th byte of `s` as a length-1 string.
+@capabilities()
+fn ch(s: str, i: i64) -> str {
+    return substr(s, i, i + 1)
+}
+
+// Index of the first occurrence of `needle` in `s` at or after `from`, or -1.
+@capabilities()
+fn index_from(s: str, needle: str, from: i64) -> i64 {
+    let n = len(s)
+    let m = len(needle)
+    if m == 0 {
+        return from
+    }
+    let mut i = from
+    while i + m <= n {
+        if substr(s, i, i + m) == needle {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// Extract the double-quoted strings inside the byte range [start, end) of `s`.
+// Quotes are required; whitespace and commas between them are ignored. This is
+// only called on the slice between the '[' and ']' of the declared array, so
+// there are no nested structures to worry about.
+@capabilities()
+fn extract_quoted(s: str, start: i64, end: i64) -> [str] {
+    let mut out: [str] = []
+    let mut i = start
+    while i < end {
+        if ch(s, i) == "\"" {
+            let mut j = i + 1
+            while j < end && ch(s, j) != "\"" {
+                j = j + 1
+            }
+            out = push(out, substr(s, i + 1, j))
+            i = j + 1
+        } else {
+            i = i + 1
+        }
+    }
+    return out
+}
+
+// Parse the declared-capabilities array out of a caps.json string. Looks for
+// the "declared" key, then the '[' ... ']' that follows it.
+@capabilities()
+fn parse_declared(content: str) -> Result<[str], str> {
+    let key_at = index_from(content, "\"declared\"", 0)
+    if key_at < 0 {
+        return Err("no \"declared\" key")
+    }
+    let open = index_from(content, "[", key_at)
+    if open < 0 {
+        return Err("no array after \"declared\"")
+    }
+    let close = index_from(content, "]", open)
+    if close < 0 {
+        return Err("unterminated declared array")
+    }
+    let caps = extract_quoted(content, open + 1, close)
+    return Ok(caps)
+}
+
+// Read and parse the sidecar for the plugin at `wasm_path`. This is the one
+// IO-touching helper, hence @capabilities(io).
+@capabilities(io)
+fn read_cap_sidecar(wasm_path: str) -> Result<[str], str> {
+    let sidecar_path = wasm_path + ".caps.json"
+    if file_exists(sidecar_path) == 0 {
+        return Err("missing:" + sidecar_path)
+    }
+    let content = file_read(sidecar_path)
+    if len(content) == 0 {
+        return Err("empty sidecar file")
+    }
+    return parse_declared(content)
+}
