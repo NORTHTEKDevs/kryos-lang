@@ -10,7 +10,8 @@ use std::path::Path;
 use kryos_test_runner::{
     discover_annotated_tests, discover_annotated_tests_in_file, discover_tests,
     discover_tests_in_file, format_report, format_report_json, run_all_with,
-    run_annotated_tests_in_file, run_annotated_tests_with, RunOptions, TestReport, TestResult,
+    run_annotated_tests_in_file, run_annotated_tests_with, Expectation, RunOptions, TestReport,
+    TestResult,
 };
 
 /// Report format selector for `kryos test`.
@@ -105,6 +106,18 @@ pub fn execute(opts: TestOptions) -> Result<(), String> {
         }
     }
 
+    // Drop phantom "file tests" that verify nothing. A `.kry` file with no
+    // `// expect:` / `// run-expect:` / `// expect-error:` directive parses
+    // into an empty `Output` expectation that "passes" merely by compiling —
+    // the documented false-green (see ecosystem/kryos-rag/README.md, where a
+    // file with no @test functions reports a vacuous "1 passed" even when an
+    // assertion fails). Such a file asserts nothing, so it must not count as a
+    // discovered test or keep the exit code green.
+    tests.retain(|t| match &t.expectation {
+        Expectation::Output(lines) => !lines.is_empty(),
+        Expectation::Error(_) | Expectation::RunOutput(_) => true,
+    });
+
     let run_opts = RunOptions {
         nocapture: opts.nocapture,
     };
@@ -130,16 +143,31 @@ pub fn execute(opts: TestOptions) -> Result<(), String> {
     };
 
     if tests.is_empty() && annotated_report.total == 0 {
+        // Nothing was verified. A zero-test invocation must NOT be mistaken
+        // for a pass: warn and return a non-zero exit so CI fails loudly
+        // instead of treating "it compiled" as a green test run.
+        let target = single_file
+            .as_deref()
+            .map(|f| f.display().to_string())
+            .unwrap_or_else(|| test_dir.display().to_string());
+        let noun = if single_file.is_some() {
+            "@test functions"
+        } else {
+            "tests"
+        };
+
         if opts.format == OutputFormat::Json {
-            // Emit a zero-test JSON suite for parser-friendliness.
+            // Still emit a parseable empty suite for tooling, then fail.
             print!("{}", format_report_json(&empty_report()));
-            return Ok(());
+        } else {
+            eprintln!("warning: no {noun} found in `{target}`; nothing was verified");
+            if filter_opt.is_some() {
+                eprintln!("  note: a filter was active and matched nothing");
+            }
         }
-        eprintln!("kryos test: no tests found in `{}`", test_dir.display());
-        if filter_opt.is_some() {
-            eprintln!("  hint: no tests matched the filter");
-        }
-        return Ok(());
+        return Err(format!(
+            "no {noun} discovered in `{target}`; nothing was verified"
+        ));
     }
 
     let total_failed = file_report.failed + annotated_report.failed;
@@ -309,5 +337,36 @@ mod tests {
         assert_eq!(merged.failed, 1);
         assert_eq!(merged.skipped, 0);
         assert_eq!(merged.duration, std::time::Duration::from_millis(15));
+    }
+
+    #[test]
+    fn zero_tests_in_file_returns_error() {
+        // A `.kry` file with no `@test` functions and no `// expect:` directive
+        // must NOT be a vacuous pass: `execute` has to return Err so the CLI
+        // exits non-zero and CI cannot mistake "it compiled" for a green run.
+        // (This path never invokes the compiler — discovery short-circuits on
+        // the absence of `@test`, so the test is fast and hermetic.)
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("kryos_zero_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let file = dir.join("no_tests.kry");
+        {
+            let mut f = std::fs::File::create(&file).expect("create temp .kry");
+            writeln!(f, "fn main() {{").unwrap();
+            writeln!(f, "    println(\"no tests here\")").unwrap();
+            writeln!(f, "}}").unwrap();
+        }
+
+        let result = execute(TestOptions {
+            path: Some(file.to_string_lossy().into_owned()),
+            ..Default::default()
+        });
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            result.is_err(),
+            "a file with zero @test functions must return Err, got: {result:?}"
+        );
     }
 }
