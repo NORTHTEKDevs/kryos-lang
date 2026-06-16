@@ -1,0 +1,97 @@
+// ============================================================
+// test_schema.kry -- schema combinator construction.
+//
+//   kryos test --path ecosystem/kryos-schema
+//
+// Confirms the combinators build the data structure they claim to: the kind
+// tags, the constraint fields set by the refiners, and the recursive children
+// of object/array/optional. Pure data assembly -- no JsonValue, no I/O.
+// ============================================================
+
+use schema
+
+@test
+fn test_leaf_kinds() {
+    assert(str_().kind == "string", "str_ kind")
+    assert(int_().kind == "int", "int_ kind")
+    assert(bool_().kind == "bool", "bool_ kind")
+}
+
+@test
+fn test_bare_leaf_has_no_constraints() {
+    let s = str_()
+    assert(not s.has_min, "no min by default")
+    assert(not s.has_max, "no max by default")
+    assert(len(s.pattern) == 0, "no pattern by default")
+    assert(len(s.str_enum) == 0, "no enum by default")
+}
+
+@test
+fn test_refiners_set_fields() {
+    let s = with_max(with_min(str_(), 2), 8)
+    assert(s.has_min and s.min_val == 2, "with_min sets min")
+    assert(s.has_max and s.max_val == 8, "with_max sets max")
+
+    let p = with_pattern(str_(), "^[a-z]+$")
+    assert(p.pattern == "^[a-z]+$", "with_pattern sets pattern")
+
+    let e = enum_of(str_(), ["a", "b"])
+    assert(len(e.str_enum) == 2, "enum_of sets str_enum")
+
+    let ie = int_enum_of(int_(), [1, 2, 3])
+    assert(len(ie.int_enum) == 3, "int_enum_of sets int_enum")
+}
+
+@test
+fn test_refiners_are_chainable_and_independent() {
+    // Refining a copy must not mutate the source schema.
+    let base = str_()
+    let refined = with_min(base, 5)
+    assert(refined.min_val == 5, "refined has min")
+    assert(not base.has_min, "source schema unchanged by refinement")
+}
+
+@test
+fn test_object_parallel_arrays() {
+    let names: [str] = ["a", "b"]
+    let kids: [Schema] = [str_(), int_()]
+    let o = object(names, kids)
+    assert(o.kind == "object", "object kind")
+    assert(len(o.field_names) == 2, "two field names")
+    assert(o.children[0].kind == "string", "first child schema")
+    assert(o.children[1].kind == "int", "second child schema")
+}
+
+@test
+fn test_array_and_optional_box_their_child() {
+    let a = array(bool_())
+    assert(a.kind == "array", "array kind")
+    assert(len(a.children) == 1, "array boxes one element schema")
+    assert(a.children[0].kind == "bool", "array element schema")
+
+    let opt = optional(str_())
+    assert(opt.kind == "optional", "optional kind")
+    assert(opt.children[0].kind == "string", "optional inner schema")
+}
+
+@test
+fn test_deeply_nested() {
+    // object { items: array(object { id: int }) }
+    let inner = object(["id"], [int_()])
+    let arr = array(inner)
+    let outer = object(["items"], [arr])
+    assert(outer.children[0].kind == "array", "items is array")
+    assert(outer.children[0].children[0].kind == "object", "array of objects")
+    assert(outer.children[0].children[0].children[0].kind == "int", "object has int field")
+}
+
+fn main() {
+    test_leaf_kinds()
+    test_bare_leaf_has_no_constraints()
+    test_refiners_set_fields()
+    test_refiners_are_chainable_and_independent()
+    test_object_parallel_arrays()
+    test_array_and_optional_box_their_child()
+    test_deeply_nested()
+    println("all schema tests passed")
+}

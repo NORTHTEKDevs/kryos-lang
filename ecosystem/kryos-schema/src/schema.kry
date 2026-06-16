@@ -1,0 +1,184 @@
+// ============================================================
+// schema.kry -- schema combinators for capability-pure validation.
+//
+// A `Schema` is plain data: a recursive record describing the shape an input
+// must have. Schemas are BUILT by combinator functions (str_, int_, object,
+// array, optional) and refined by constraint functions (with_min, with_max,
+// with_pattern, enum_of, int_enum_of). Nothing here reads the environment, the
+// filesystem, or the network -- every function is `@capabilities(compute)`, so
+// `kryos manifest --caps` proves the construction surface is I/O-free.
+//
+// The combinators are FREE FUNCTIONS, not methods on a generic impl block.
+// That is deliberate: Kryos's generic-impl ergonomics (CLAUDE.md gotcha #17)
+// make a `Schema<T>` builder awkward, and validation does not need static
+// element types -- the value being checked is a dynamically-typed JsonValue.
+// A single concrete `Schema` record with a `kind` tag sidesteps all of that.
+//
+// `kind` is a string tag rather than an enum so the same value reads cleanly in
+// both schema.kry and validate.kry without sharing a cross-module constant, and
+// so an unknown kind degrades to a clear validation error rather than a panic.
+// ============================================================
+
+// The schema record. Every field is an 8-byte slot (str/bool/i64/array-ptr), so
+// the layout is identical on the Cranelift (JIT) and LLVM (AOT) backends -- no
+// tuple/enum fields that would perturb AOT field offsets (CLAUDE.md gotcha #21).
+//
+// `@copy` gives the refiners value semantics: `let mut out = s` deep-copies on
+// both backends (CLAUDE.md gotcha #23), so refining one schema never mutates
+// another. That lets a caller safely reuse a base schema --
+// `let id = int_(); let a = with_max(id, 10); let b = with_max(id, 99)` -- which
+// is the natural way to use a combinator library.
+//
+//   kind         "string" | "int" | "bool" | "object" | "array" | "optional"
+//   has_min      whether a minimum bound is set (string length / int value)
+//   min_val      the minimum bound (inclusive)
+//   has_max      whether a maximum bound is set (string length / int value)
+//   max_val      the maximum bound (inclusive)
+//   pattern      a regex the string must match; "" means no pattern constraint
+//   str_enum     allowed string values; [] means no enum constraint
+//   int_enum     allowed integer values; [] means no enum constraint
+//   field_names  for "object": the field names, parallel to `children`
+//   children     for "object": each field's schema (parallel to field_names);
+//                for "array"/"optional": a single-element [Schema] holding the
+//                element / inner schema (boxed through an array, the same way
+//                std::json's JsonValue boxes its recursive payload)
+@copy
+struct Schema {
+    kind: str,
+    has_min: bool,
+    min_val: i64,
+    has_max: bool,
+    max_val: i64,
+    pattern: str,
+    str_enum: [str],
+    int_enum: [i64],
+    field_names: [str],
+    children: [Schema],
+}
+
+// Build a bare schema of the given kind with no constraints and no children.
+// Each empty array is its own allocation -- reusing one would move it twice
+// (E0300) since arrays are owned values.
+@capabilities(compute)
+fn _base(kind: str) -> Schema {
+    let se: [str] = []
+    let ie: [i64] = []
+    let fnames: [str] = []
+    let kids: [Schema] = []
+    return Schema {
+        kind: kind,
+        has_min: false,
+        min_val: 0,
+        has_max: false,
+        max_val: 0,
+        pattern: "",
+        str_enum: se,
+        int_enum: ie,
+        field_names: fnames,
+        children: kids,
+    }
+}
+
+// --- Type combinators --------------------------------------------------------
+//
+// Named with a trailing underscore because `int`, `str`, and `bool` collide
+// with built-in cast functions in Kryos's single flat function namespace
+// (naming a function `int` shadows the `int(f64) -> i64` cast that std::json
+// relies on). `object`, `array`, and `optional` are collision-free.
+
+/// A JSON string. Refine with with_min/with_max (length), with_pattern, enum_of.
+@capabilities(compute)
+fn str_() -> Schema {
+    return _base("string")
+}
+
+/// A JSON integer (a whole number; 3.5 is rejected). Refine with
+/// with_min/with_max (value) and int_enum_of.
+@capabilities(compute)
+fn int_() -> Schema {
+    return _base("int")
+}
+
+/// A JSON boolean.
+@capabilities(compute)
+fn bool_() -> Schema {
+    return _base("bool")
+}
+
+/// A JSON object with the given field names and their schemas (parallel arrays).
+/// A field whose schema is `optional(...)` may be absent; any other field is
+/// required.
+@capabilities(compute)
+fn object(names: [str], schemas: [Schema]) -> Schema {
+    let mut s = _base("object")
+    s.field_names = names
+    s.children = schemas
+    return s
+}
+
+/// A JSON array whose every element must satisfy `of`.
+@capabilities(compute)
+fn array(of: Schema) -> Schema {
+    let mut s = _base("array")
+    s.children = push(s.children, of)
+    return s
+}
+
+/// Wraps `inner` so that a null / absent value is accepted; a present non-null
+/// value is still validated against `inner`.
+@capabilities(compute)
+fn optional(inner: Schema) -> Schema {
+    let mut s = _base("optional")
+    s.children = push(s.children, inner)
+    return s
+}
+
+// --- Constraint refiners -----------------------------------------------------
+//
+// Each takes a schema and returns a refined copy. `with_min`/`with_max` are
+// spelled out (not `min`/`max`) because those names are polymorphic built-ins.
+
+/// Set the inclusive minimum: minimum length for a string, minimum value for an
+/// integer.
+@capabilities(compute)
+fn with_min(s: Schema, n: i64) -> Schema {
+    let mut out = s
+    out.has_min = true
+    out.min_val = n
+    return out
+}
+
+/// Set the inclusive maximum: maximum length for a string, maximum value for an
+/// integer.
+@capabilities(compute)
+fn with_max(s: Schema, n: i64) -> Schema {
+    let mut out = s
+    out.has_max = true
+    out.max_val = n
+    return out
+}
+
+/// Require a string to match `p`, a regex compiled via std::re. Pure compute:
+/// std::re's matcher performs no I/O, so this does not widen the capability set.
+@capabilities(compute)
+fn with_pattern(s: Schema, p: str) -> Schema {
+    let mut out = s
+    out.pattern = p
+    return out
+}
+
+/// Restrict a string to one of `vals` (enum membership).
+@capabilities(compute)
+fn enum_of(s: Schema, vals: [str]) -> Schema {
+    let mut out = s
+    out.str_enum = vals
+    return out
+}
+
+/// Restrict an integer to one of `vals` (enum membership).
+@capabilities(compute)
+fn int_enum_of(s: Schema, vals: [i64]) -> Schema {
+    let mut out = s
+    out.int_enum = vals
+    return out
+}

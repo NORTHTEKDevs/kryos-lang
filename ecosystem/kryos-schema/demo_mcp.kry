@@ -1,0 +1,113 @@
+// ============================================================
+// demo_mcp.kry -- validating an MCP tool's input schema end to end.
+//
+//   kryos run ecosystem/kryos-schema/demo_mcp.kry
+//
+// Scenario: an MCP server exposes a `create_user` tool. Before the tool runs,
+// the host must validate the caller-supplied arguments (untrusted input that may
+// have come from an LLM or a remote client). This demo:
+//
+//   1. declares the tool's input schema with the combinators,
+//   2. parses a MALFORMED arguments object (as JSON text, the way a host
+//      receives it) and validates it -- printing EVERY violation at once, not
+//      just the first, so the caller can fix them all in one round-trip,
+//   3. validates a well-formed arguments object -- which passes,
+//   4. shows std::re interop: the same email pattern matches under std::re's
+//      FFI-backed engine too. The validator itself uses the PURE matcher
+//      (rematch.kry), so `kryos manifest --caps` over src/ stays `compute`-only.
+//
+// This file is run with `kryos run` (not `kryos test`), so it may use std::re
+// (FFI) and std::json::parse freely -- neither is on the validator's own path.
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+use std::json::{
+    JsonValue, parse,
+    is_string, is_number, is_bool, is_array, is_object, is_null,
+    to_str, to_int, to_float, to_array, to_object, get,
+}
+use std::re::{is_match}
+use rematch
+use schema
+use validate
+
+// The create_user tool's input schema:
+//   name   string, 2..40 chars
+//   age    integer, 0..130
+//   email  string matching a basic address pattern
+//   role   string, one of admin|user|guest
+//   tags   OPTIONAL array of strings
+@capabilities(compute)
+fn create_user_schema() -> Schema {
+    let names: [str] = ["name", "age", "email", "role", "tags"]
+    let fields: [Schema] = [
+        with_max(with_min(str_(), 2), 40),
+        with_max(with_min(int_(), 0), 130),
+        with_pattern(str_(), "^[a-z]+@[a-z]+\\.[a-z]+$"),
+        enum_of(str_(), ["admin", "user", "guest"]),
+        optional(array(str_())),
+    ]
+    return object(names, fields)
+}
+
+// Print each collected violation on its own line.
+@capabilities(compute)
+fn print_errors(es: [str]) {
+    let mut i = 0
+    while i < len(es) {
+        println("    - " + es[i])
+        i = i + 1
+    }
+}
+
+fn run_case(label: str, raw: str) {
+    println(label)
+    println("  input: " + raw)
+    let value = parse(raw)
+    match validate(create_user_schema(), value) {
+        Ok(_) => println("  RESULT: valid -- tool may run"),
+        Err(es) => {
+            println("  RESULT: rejected with " + to_string(len(es)) + " violation(s):")
+            print_errors(es)
+        }
+    }
+    println("")
+}
+
+fn main() {
+    println("== create_user input validation ==")
+    println("")
+
+    // Malformed: name too short, age over max, email malformed, role not in the
+    // enum. Four independent violations -- all reported together. (tags omitted,
+    // which is fine: it is optional.)
+    run_case(
+        "[1] malformed arguments",
+        "{{\"name\": \"x\", \"age\": 200, \"email\": \"not-an-email\", \"role\": \"wizard\"}}"
+    )
+
+    // Well-formed: every field satisfies its constraints; tags present and valid.
+    run_case(
+        "[2] well-formed arguments",
+        "{{\"name\": \"Alice\", \"age\": 30, \"email\": \"alice@example.com\", \"role\": \"admin\", \"tags\": [\"ops\", \"oncall\"]}}"
+    )
+
+    // std::re interop: the validator used the PURE matcher above. Here is proof
+    // the same pattern decides the same way under std::re's FFI engine -- so you
+    // can inject std::re where you want full PCRE, while the default path keeps
+    // the capability surface honestly compute-only.
+    println("[3] std::re interop check (same email pattern)")
+    let pat = "^[a-z]+@[a-z]+\\.[a-z]+$"
+    let good = "alice@example.com"
+    let bad = "not-an-email"
+    println("  pure rematch:  good=" + _yn(matches(pat, good)) + " bad=" + _yn(matches(pat, bad)))
+    println("  std::re:       good=" + _yn(is_match(pat, good)) + " bad=" + _yn(is_match(pat, bad)))
+}
+
+@capabilities(compute)
+fn _yn(b: bool) -> str {
+    if b {
+        return "match"
+    }
+    return "no"
+}

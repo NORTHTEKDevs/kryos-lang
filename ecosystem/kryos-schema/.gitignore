@@ -1,0 +1,9 @@
+# build artifacts
+*.exe
+*.exp
+*.lib
+*.pdb
+*.o
+*.ll
+target/
+kryos.lock

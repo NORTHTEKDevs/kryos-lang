@@ -1,0 +1,8 @@
+[package]
+name = "kryos-schema"
+version = "0.1.0"
+description = "Capability-pure data validation combinators: a validator whose @capabilities(compute) surface is a static, machine-checkable guarantee it performs no I/O while validating untrusted input"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["compute"]

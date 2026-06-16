@@ -1,0 +1,224 @@
+// ============================================================
+// test_validate.kry -- validation behaviour, including the headline property:
+// a malformed object yields ALL violations in one pass, not just the first.
+//
+//   kryos test --path ecosystem/kryos-schema
+//   kryos run  ecosystem/kryos-schema/tests/test_validate.kry   (same assertions)
+//
+// JsonValues are built with std::json constructors rather than parsed from text
+// so the tests never touch std::json::stringify (its to_string(f64) cannot be
+// JIT-compiled by `kryos test`; see validate.kry header).
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+use std::json::{
+    JsonValue,
+    json_object, json_string, json_number, json_array, json_bool, json_null,
+    is_string, is_number, is_bool, is_array, is_object, is_null,
+    to_str, to_int, to_float, to_array, to_object, get,
+}
+use rematch
+use schema
+use validate
+
+// True if any message in `es` contains `needle` (substring).
+@capabilities(compute)
+fn has_err(es: [str], needle: str) -> bool {
+    let mut i = 0
+    while i < len(es) {
+        if contains(es[i], needle) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// The error list for `v` against `s` (empty when valid).
+@capabilities(compute)
+fn errs_of(s: Schema, v: JsonValue) -> [str] {
+    return collect_errors(s, v, "")
+}
+
+// --- leaf types --------------------------------------------------------------
+
+@test
+fn test_string_ok() {
+    let r = validate(str_(), json_string("hello"))
+    match r {
+        Ok(_) => assert(true, "ok"),
+        Err(es) => assert(false, "expected ok, got " + to_string(len(es)) + " errors"),
+    }
+}
+
+@test
+fn test_string_type_mismatch() {
+    let es = errs_of(str_(), json_number(3.0))
+    assert(len(es) == 1, "exactly one error")
+    assert(has_err(es, "expected string"), "reports type mismatch")
+    assert(has_err(es, "got number"), "names the actual type")
+}
+
+@test
+fn test_string_min_max_length() {
+    let s = with_max(with_min(str_(), 2), 5)
+    let too_short = errs_of(s, json_string("x"))
+    assert(has_err(too_short, "below minimum 2"), "min length enforced")
+    let too_long = errs_of(s, json_string("abcdef"))
+    assert(has_err(too_long, "exceeds maximum 5"), "max length enforced")
+    let ok = errs_of(s, json_string("abc"))
+    assert(len(ok) == 0, "in-range string passes")
+}
+
+@test
+fn test_string_enum() {
+    let s = enum_of(str_(), ["red", "green", "blue"])
+    let bad = errs_of(s, json_string("purple"))
+    assert(has_err(bad, "is not one of"), "enum membership enforced")
+    let good = errs_of(s, json_string("green"))
+    assert(len(good) == 0, "member passes")
+}
+
+@test
+fn test_string_pattern() {
+    // Pure-compute regex via std::re.
+    let s = with_pattern(str_(), "^[a-z]+$")
+    let bad = errs_of(s, json_string("ABC123"))
+    assert(has_err(bad, "does not match pattern"), "regex enforced")
+    let good = errs_of(s, json_string("abc"))
+    assert(len(good) == 0, "matching string passes")
+}
+
+@test
+fn test_int_ok_and_fractional() {
+    let ok = errs_of(int_(), json_number(42.0))
+    assert(len(ok) == 0, "whole number passes int schema")
+    let frac = errs_of(int_(), json_number(3.5))
+    assert(has_err(frac, "fractional"), "fractional number rejected for int")
+}
+
+@test
+fn test_int_range_and_enum() {
+    let s = int_enum_of(with_max(with_min(int_(), 0), 100), [10, 20, 30])
+    let lo = errs_of(s, json_number(-5.0))
+    assert(has_err(lo, "below minimum 0"), "min value enforced")
+    let hi = errs_of(s, json_number(250.0))
+    assert(has_err(hi, "exceeds maximum 100"), "max value enforced")
+    let notmember = errs_of(s, json_number(25.0))
+    assert(has_err(notmember, "is not one of"), "int enum enforced")
+    let good = errs_of(s, json_number(20.0))
+    assert(len(good) == 0, "valid int passes all constraints")
+}
+
+@test
+fn test_bool() {
+    let ok = errs_of(bool_(), json_bool(true))
+    assert(len(ok) == 0, "bool passes")
+    let bad = errs_of(bool_(), json_string("true"))
+    assert(has_err(bad, "expected bool"), "non-bool rejected")
+}
+
+// --- arrays ------------------------------------------------------------------
+
+@test
+fn test_array_of_ints_collects_per_element() {
+    let s = array(int_())
+    let items: [JsonValue] = [json_number(1.0), json_string("two"), json_number(3.5)]
+    let es = errs_of(s, json_array(items))
+    // element 1 is a string, element 2 is fractional -> two distinct errors.
+    assert(len(es) == 2, "one error per bad element, got " + to_string(len(es)))
+    assert(has_err(es, "[1]"), "indexed path for element 1")
+    assert(has_err(es, "[2]"), "indexed path for element 2")
+}
+
+// --- objects: the headline ALL-violations property ---------------------------
+
+// An MCP-tool-shaped input schema: name (2..40), age (0..130), role (enum),
+// tags (optional array of strings).
+@capabilities(compute)
+fn user_schema() -> Schema {
+    let names: [str] = ["name", "age", "role", "tags"]
+    let fields: [Schema] = [
+        with_max(with_min(str_(), 2), 40),
+        with_max(with_min(int_(), 0), 130),
+        enum_of(str_(), ["admin", "user", "guest"]),
+        optional(array(str_())),
+    ]
+    return object(names, fields)
+}
+
+@test
+fn test_object_collects_all_violations() {
+    // name too short, age over max, role not in enum -> THREE errors at once.
+    let names: [str] = ["name", "age", "role"]
+    let vals: [JsonValue] = [json_string("x"), json_number(200.0), json_string("wizard")]
+    let es = errs_of(user_schema(), json_object(names, vals))
+    assert(len(es) == 3, "all three violations collected, got " + to_string(len(es)))
+    assert(has_err(es, "name"), "name violation present")
+    assert(has_err(es, "age"), "age violation present")
+    assert(has_err(es, "role"), "role violation present")
+}
+
+@test
+fn test_object_missing_required_field() {
+    // Only "name" supplied; age and role are required and missing; tags optional.
+    let names: [str] = ["name"]
+    let vals: [JsonValue] = [json_string("Alice")]
+    let es = errs_of(user_schema(), json_object(names, vals))
+    assert(len(es) == 2, "two missing required fields, got " + to_string(len(es)))
+    assert(has_err(es, "age: missing required field"), "age missing reported")
+    assert(has_err(es, "role: missing required field"), "role missing reported")
+}
+
+@test
+fn test_object_optional_absent_ok_and_valid_passes() {
+    // Fully valid, tags omitted (optional) -> zero errors.
+    let names: [str] = ["name", "age", "role"]
+    let vals: [JsonValue] = [json_string("Alice"), json_number(30.0), json_string("admin")]
+    let r = validate(user_schema(), json_object(names, vals))
+    match r {
+        Ok(_) => assert(true, "valid input accepted"),
+        Err(es) => assert(false, "expected ok, got " + to_string(len(es)) + " errors"),
+    }
+}
+
+@test
+fn test_nested_object_path() {
+    // object { addr: object { city: string } } with a non-string city.
+    let inner = object(["city"], [str_()])
+    let outer = object(["addr"], [inner])
+    let bad_inner = json_object(["city"], [json_number(1.0)])
+    let v = json_object(["addr"], [bad_inner])
+    let es = errs_of(outer, v)
+    assert(len(es) == 1, "one nested error")
+    assert(has_err(es, "addr.city"), "dotted path to nested field")
+}
+
+@test
+fn test_optional_present_is_validated() {
+    // tags present but contains a non-string element -> error under tags[0].
+    let names: [str] = ["name", "age", "role", "tags"]
+    let badtags = json_array([json_number(1.0)])
+    let vals: [JsonValue] = [json_string("Alice"), json_number(30.0), json_string("admin"), badtags]
+    let es = errs_of(user_schema(), json_object(names, vals))
+    assert(has_err(es, "tags[0]"), "optional-but-present array element validated")
+}
+
+fn main() {
+    // Allow `kryos run tests/test_validate.kry` to exercise the suite too.
+    test_string_ok()
+    test_string_type_mismatch()
+    test_string_min_max_length()
+    test_string_enum()
+    test_string_pattern()
+    test_int_ok_and_fractional()
+    test_int_range_and_enum()
+    test_bool()
+    test_array_of_ints_collects_per_element()
+    test_object_collects_all_violations()
+    test_object_missing_required_field()
+    test_object_optional_absent_ok_and_valid_passes()
+    test_nested_object_path()
+    test_optional_present_is_validated()
+    println("all validate tests passed")
+}

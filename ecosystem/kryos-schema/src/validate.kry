@@ -1,0 +1,329 @@
+// ============================================================
+// validate.kry -- the capability-pure validator.
+//
+// `validate(schema, value)` checks a std::json JsonValue against a Schema and
+// returns `Result<JsonValue, [str]>`:
+//   - Ok(value)  : the value (unchanged) satisfied every constraint
+//   - Err(errs)  : ALL violations, collected -- never just the first
+//
+// Error aggregation is the whole point of the MVP: a malformed object reports
+// every bad field in one pass, so a tool host can show a user (or an LLM) the
+// complete list to fix rather than a single error per round-trip.
+//
+// Every function is `@capabilities(compute)`. The validator calls std::json
+// accessors (pure pattern matches) and rematch.matches (a PURE Kryos regex
+// matcher -- no FFI; see rematch.kry) and nothing else -- no file_*, no net, no
+// env, no FFI. `kryos manifest --caps` over this tree yields `compute` and
+// nothing more, and that is the honest truth of the call graph, not an artifact
+// of the non-transitive checker: a "validate" step provably cannot exfiltrate
+// the untrusted input it inspects.
+//
+// IMPORTANT (CLAUDE.md / kernel memory): std::json::stringify calls
+// to_string(f64), which the `kryos test` JIT cannot compile, and std::re is
+// FFI-backed (its native symbols do not link under the test JIT). This module
+// imports neither -- only the pure json accessors and the pure matcher -- so
+// `kryos test` can JIT-compile the whole graph.
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+use std::json::{
+    JsonValue,
+    is_string, is_number, is_bool, is_array, is_object, is_null,
+    to_str, to_int, to_float, to_array, get,
+}
+use rematch
+use schema
+
+// --- small helpers -----------------------------------------------------------
+
+// A human label for a location: "value" at the root, otherwise the path.
+@capabilities(compute)
+fn _label(path: str) -> str {
+    if len(path) == 0 {
+        return "value"
+    }
+    return path
+}
+
+// Path to a named object field: "name" at the root, "addr.city" when nested.
+@capabilities(compute)
+fn _field_path(path: str, name: str) -> str {
+    if len(path) == 0 {
+        return name
+    }
+    return path + "." + name
+}
+
+// Path to an array element: "tags[0]".
+@capabilities(compute)
+fn _index_path(path: str, i: i64) -> str {
+    return path + "[" + to_string(i) + "]"
+}
+
+// The JSON type name of a value, for "expected X, got Y" messages.
+@capabilities(compute)
+fn _type_name(v: JsonValue) -> str {
+    if is_null(v) {
+        return "null"
+    }
+    if is_bool(v) {
+        return "bool"
+    }
+    if is_number(v) {
+        return "number"
+    }
+    if is_string(v) {
+        return "string"
+    }
+    if is_array(v) {
+        return "array"
+    }
+    return "object"
+}
+
+// Is `s` present in `arr`?
+@capabilities(compute)
+fn _str_in(arr: [str], s: str) -> bool {
+    let mut i = 0
+    while i < len(arr) {
+        if arr[i] == s {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// Is `n` present in `arr`?
+@capabilities(compute)
+fn _int_in(arr: [i64], n: i64) -> bool {
+    let mut i = 0
+    while i < len(arr) {
+        if arr[i] == n {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// Render a [str] as a, b, c for enum-membership messages.
+@capabilities(compute)
+fn _join_strs(arr: [str]) -> str {
+    let mut out = ""
+    let mut i = 0
+    while i < len(arr) {
+        if i > 0 {
+            out = out + ", "
+        }
+        out = out + arr[i]
+        i = i + 1
+    }
+    return out
+}
+
+// Render a [i64] as 1, 2, 3 for enum-membership messages.
+@capabilities(compute)
+fn _join_ints(arr: [i64]) -> str {
+    let mut out = ""
+    let mut i = 0
+    while i < len(arr) {
+        if i > 0 {
+            out = out + ", "
+        }
+        out = out + to_string(arr[i])
+        i = i + 1
+    }
+    return out
+}
+
+// Append every element of `extra` to `errs` and return the combined list.
+@capabilities(compute)
+fn _extend(errs: [str], extra: [str]) -> [str] {
+    let mut out = errs
+    let mut i = 0
+    while i < len(extra) {
+        out = push(out, extra[i])
+        i = i + 1
+    }
+    return out
+}
+
+// The keys of a JSON object, via a direct enum match. (We avoid std::json's
+// to_object here: it returns a tuple, and destructuring a tuple returned from a
+// function miscompiles on the LLVM/AOT backend -- CLAUDE.md gotcha #21 -- whereas
+// matching the enum variant is correct on both backends.)
+@capabilities(compute)
+fn _object_keys(v: JsonValue) -> [str] {
+    let empty: [str] = []
+    return match v {
+        JsonValue::Object(keys, _) => keys,
+        _ => empty
+    }
+}
+
+// Does this number have no fractional part (i.e. is it a JSON integer)?
+@capabilities(compute)
+fn _is_integral(v: JsonValue) -> bool {
+    let f = to_float(v)
+    let i = to_int(v)
+    return (i as f64) == f
+}
+
+// --- per-kind validation -----------------------------------------------------
+
+@capabilities(compute)
+fn _check_string(s: Schema, value: JsonValue, path: str) -> [str] {
+    let mut errs: [str] = []
+    if not is_string(value) {
+        errs = push(errs, _label(path) + ": expected string, got " + _type_name(value))
+        return errs
+    }
+    let text = to_str(value)
+    let n = len(text)
+    if s.has_min and n < s.min_val {
+        errs = push(errs, _label(path) + ": string length " + to_string(n) + " is below minimum " + to_string(s.min_val))
+    }
+    if s.has_max and n > s.max_val {
+        errs = push(errs, _label(path) + ": string length " + to_string(n) + " exceeds maximum " + to_string(s.max_val))
+    }
+    if len(s.pattern) > 0 {
+        if not matches(s.pattern, text) {
+            errs = push(errs, _label(path) + ": value \"" + text + "\" does not match pattern " + s.pattern)
+        }
+    }
+    if len(s.str_enum) > 0 {
+        if not _str_in(s.str_enum, text) {
+            errs = push(errs, _label(path) + ": value \"" + text + "\" is not one of [" + _join_strs(s.str_enum) + "]")
+        }
+    }
+    return errs
+}
+
+@capabilities(compute)
+fn _check_int(s: Schema, value: JsonValue, path: str) -> [str] {
+    let mut errs: [str] = []
+    if not is_number(value) {
+        errs = push(errs, _label(path) + ": expected int, got " + _type_name(value))
+        return errs
+    }
+    if not _is_integral(value) {
+        errs = push(errs, _label(path) + ": expected integer, got fractional number")
+        return errs
+    }
+    let iv = to_int(value)
+    if s.has_min and iv < s.min_val {
+        errs = push(errs, _label(path) + ": value " + to_string(iv) + " is below minimum " + to_string(s.min_val))
+    }
+    if s.has_max and iv > s.max_val {
+        errs = push(errs, _label(path) + ": value " + to_string(iv) + " exceeds maximum " + to_string(s.max_val))
+    }
+    if len(s.int_enum) > 0 {
+        if not _int_in(s.int_enum, iv) {
+            errs = push(errs, _label(path) + ": value " + to_string(iv) + " is not one of [" + _join_ints(s.int_enum) + "]")
+        }
+    }
+    return errs
+}
+
+@capabilities(compute)
+fn _check_bool(value: JsonValue, path: str) -> [str] {
+    let mut errs: [str] = []
+    if not is_bool(value) {
+        errs = push(errs, _label(path) + ": expected bool, got " + _type_name(value))
+    }
+    return errs
+}
+
+@capabilities(compute)
+fn _check_array(s: Schema, value: JsonValue, path: str) -> [str] {
+    let mut errs: [str] = []
+    if not is_array(value) {
+        errs = push(errs, _label(path) + ": expected array, got " + _type_name(value))
+        return errs
+    }
+    let elem = s.children[0]
+    let items = to_array(value)
+    let mut i = 0
+    while i < len(items) {
+        let sub = collect_errors(elem, items[i], _index_path(path, i))
+        errs = _extend(errs, sub)
+        i = i + 1
+    }
+    return errs
+}
+
+@capabilities(compute)
+fn _check_object(s: Schema, value: JsonValue, path: str) -> [str] {
+    let mut errs: [str] = []
+    if not is_object(value) {
+        errs = push(errs, _label(path) + ": expected object, got " + _type_name(value))
+        return errs
+    }
+    let keys = _object_keys(value)
+    let mut i = 0
+    while i < len(s.field_names) {
+        let fname = s.field_names[i]
+        let fschema = s.children[i]
+        let present = _str_in(keys, fname)
+        if not present {
+            if fschema.kind != "optional" {
+                errs = push(errs, _field_path(path, fname) + ": missing required field")
+            }
+        } else {
+            let fval = get(value, fname)
+            let sub = collect_errors(fschema, fval, _field_path(path, fname))
+            errs = _extend(errs, sub)
+        }
+        i = i + 1
+    }
+    return errs
+}
+
+// --- recursive core ----------------------------------------------------------
+
+/// Collect EVERY validation error for `value` against `s`, prefixing each
+/// message with `path` (use "" at the root). The list is empty iff the value is
+/// valid. This is the engine behind `validate`; call it directly when you want
+/// the raw error list without the Result wrapper.
+@capabilities(compute)
+fn collect_errors(s: Schema, value: JsonValue, path: str) -> [str] {
+    let k = s.kind
+    if k == "optional" {
+        if is_null(value) {
+            let empty: [str] = []
+            return empty
+        }
+        return collect_errors(s.children[0], value, path)
+    }
+    if k == "string" {
+        return _check_string(s, value, path)
+    }
+    if k == "int" {
+        return _check_int(s, value, path)
+    }
+    if k == "bool" {
+        return _check_bool(value, path)
+    }
+    if k == "array" {
+        return _check_array(s, value, path)
+    }
+    if k == "object" {
+        return _check_object(s, value, path)
+    }
+    let bad: [str] = []
+    return push(bad, _label(path) + ": unknown schema kind \"" + k + "\"")
+}
+
+// --- public entry point ------------------------------------------------------
+
+/// Validate `value` against `schema`, collecting ALL violations.
+/// Returns Ok(value) when valid, or Err([message, ...]) listing every error.
+@capabilities(compute)
+fn validate(schema: Schema, value: JsonValue) -> Result<JsonValue, [str]> {
+    let errs = collect_errors(schema, value, "")
+    if len(errs) > 0 {
+        return Err(errs)
+    }
+    return Ok(value)
+}

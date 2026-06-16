@@ -1,0 +1,96 @@
+// ============================================================
+// test_rematch.kry -- the pure regex-subset matcher.
+//
+//   kryos test --path ecosystem/kryos-schema
+//
+// Exercises anchors, classes, ranges, negation, the +/*/? quantifiers, the
+// \d/\w/\s shorthands, and the backtracking that a greedy quantifier needs when
+// it must give characters back for the rest of the pattern to match.
+// ============================================================
+
+use rematch
+
+@capabilities(compute)
+fn yes(pat: str, text: str) {
+    assert(matches(pat, text), "/" + pat + "/ should match \"" + text + "\"")
+}
+
+@capabilities(compute)
+fn no(pat: str, text: str) {
+    assert(not matches(pat, text), "/" + pat + "/ should NOT match \"" + text + "\"")
+}
+
+@test
+fn test_literals_and_anchors() {
+    yes("cat", "the cat sat")
+    no("^cat", "scat")
+    yes("^cat$", "cat")
+    no("^cat$", "cats")
+    yes("^$", "")
+    no("^$", "x")
+}
+
+@test
+fn test_classes_and_ranges() {
+    yes("^[a-z]+$", "abc")
+    no("^[a-z]+$", "abABc")
+    yes("^[A-Za-z0-9_]+$", "Hello_42")
+    yes("^[^0-9]+$", "abcDEF")
+    no("^[^0-9]+$", "abc9")
+}
+
+@test
+fn test_quantifiers() {
+    no("^[a-z]+$", "")            // + needs at least one
+    yes("^a*$", "")              // * allows zero
+    yes("a+", "aaa")
+    no("a+", "")
+    yes("^colou?r$", "color")
+    yes("^colou?r$", "colour")
+    no("^colou?r$", "colouur")
+}
+
+@test
+fn test_backtracking() {
+    // .* is greedy and must give back the trailing 'z'
+    yes("^a.*z$", "az")
+    yes("^a.*z$", "abcz")
+    no("^a.*z$", "abc")
+}
+
+@test
+fn test_shorthands() {
+    yes("^\\d+$", "12345")
+    no("^\\d+$", "12a45")
+    yes("^\\w+\\s\\w+$", "hello world")
+    no("^\\w+\\s\\w+$", "helloworld")
+    yes("^\\d\\d\\d$", "123")
+    no("^\\d\\d\\d$", "12")
+}
+
+@test
+fn test_escapes_and_realistic() {
+    // escaped dot is a literal dot, not "any char"
+    yes("^[a-z]+@[a-z]+\\.[a-z]+$", "bob@example.com")
+    no("^[a-z]+@[a-z]+\\.[a-z]+$", "not-an-email")
+    yes("^-?[0-9]+$", "-42")
+    yes("^-?[0-9]+$", "42")
+    no("^-?[0-9]+$", "--42")
+}
+
+@test
+fn test_unanchored_substring() {
+    yes("[0-9]+", "abc123def")
+    no("[0-9]+", "abcdef")
+}
+
+fn main() {
+    test_literals_and_anchors()
+    test_classes_and_ranges()
+    test_quantifiers()
+    test_backtracking()
+    test_shorthands()
+    test_escapes_and_realistic()
+    test_unanchored_substring()
+    println("all rematch tests passed")
+}

@@ -1,0 +1,258 @@
+// ============================================================
+// rematch.kry -- a pure-Kryos regex-subset matcher.
+//
+// This is the regex engine behind the `with_pattern` constraint. It is written
+// in pure Kryos -- NO FFI, NO std::re -- on purpose: std::re is backed by a
+// native (FFI) regex library, so a validator that called it would not actually
+// be capability-pure; its "compute" manifest would be hiding an FFI dependency
+// behind the non-transitive capability checker. A from-scratch matcher keeps the
+// guarantee honest: the entire validation path is genuinely I/O- and FFI-free,
+// which is the one thing this library exists to promise. (std::re interop is
+// still demonstrated in demo_mcp.kry, run under `kryos run` where FFI links.)
+//
+// It is also why the test suite runs at all: the `kryos test` JIT cannot link
+// std::re's native symbols (str_to_ptr), so any test graph importing std::re
+// dies before a single assertion. A pure matcher is fully JIT-testable.
+//
+// Supported syntax (a deliberately small, well-defined subset; `matches` is
+// UNANCHORED like std::re::is_match, so add ^...$ for a full-string match):
+//   literals          a b c ...
+//   .                 any single character
+//   ^  $              start / end anchors
+//   [abc] [a-z] [^..] character classes, ranges, and negation
+//   *  +  ?           greedy quantifiers (zero+, one+, zero-or-one)
+//   \d \w \s          digit / word / whitespace shorthands (\D \W \S negate)
+//   \. \[ \\ ...       backslash escapes a metacharacter to its literal
+//
+// The algorithm is the classic recursive backtracking matcher (Kernighan/Pike),
+// extended with character-class tokens and the +/? quantifiers. Backtracking is
+// expressed through ordinary recursion, so it is correct for patterns where a
+// greedy quantifier must give back characters to let the rest of the pattern
+// match.
+// ============================================================
+
+// --- character predicates ----------------------------------------------------
+
+@capabilities(compute)
+fn _rm_is_digit(ch: str) -> bool {
+    let c = char_code(ch)
+    return c >= 48 and c <= 57
+}
+
+@capabilities(compute)
+fn _rm_is_word(ch: str) -> bool {
+    let c = char_code(ch)
+    if c >= 48 and c <= 57 {
+        return true
+    }
+    if c >= 65 and c <= 90 {
+        return true
+    }
+    if c >= 97 and c <= 122 {
+        return true
+    }
+    return c == 95
+}
+
+@capabilities(compute)
+fn _rm_is_space(ch: str) -> bool {
+    return ch == " " or ch == "\t" or ch == "\n" or ch == "\r"
+}
+
+// Does an escaped class (\d \w \s and their negations) or escaped literal match?
+@capabilities(compute)
+fn _escaped_matches(esc: str, ch: str) -> bool {
+    if esc == "d" {
+        return _rm_is_digit(ch)
+    }
+    if esc == "w" {
+        return _rm_is_word(ch)
+    }
+    if esc == "s" {
+        return _rm_is_space(ch)
+    }
+    if esc == "D" {
+        return not _rm_is_digit(ch)
+    }
+    if esc == "W" {
+        return not _rm_is_word(ch)
+    }
+    if esc == "S" {
+        return not _rm_is_space(ch)
+    }
+    return esc == ch
+}
+
+// --- token scanning ----------------------------------------------------------
+
+// Byte length of the token starting at `pi` (a literal=1, an escape=2, a class
+// = up to the closing ']' inclusive).
+@capabilities(compute)
+fn _token_len(pat: str, pi: i64) -> i64 {
+    let plen = len(pat)
+    let c = pat[pi]
+    if c == "\\" {
+        return 2
+    }
+    if c == "[" {
+        let mut j = pi + 1
+        if j < plen and pat[j] == "^" {
+            j = j + 1
+        }
+        while j < plen and pat[j] != "]" {
+            if pat[j] == "\\" {
+                j = j + 2
+            } else {
+                j = j + 1
+            }
+        }
+        return (j - pi) + 1
+    }
+    return 1
+}
+
+// Does the character-class token at `start` (pat[start] == '[') match `ch`?
+@capabilities(compute)
+fn _class_matches(pat: str, start: i64, ch: str) -> bool {
+    let plen = len(pat)
+    let mut j = start + 1
+    let mut negate = false
+    if j < plen and pat[j] == "^" {
+        negate = true
+        j = j + 1
+    }
+    let mut matched = false
+    while j < plen and pat[j] != "]" {
+        if pat[j] == "\\" and j + 1 < plen {
+            if _escaped_matches(pat[j + 1], ch) {
+                matched = true
+            }
+            j = j + 2
+        } elif j + 2 < plen and pat[j + 1] == "-" and pat[j + 2] != "]" {
+            let lo = char_code(pat[j])
+            let hi = char_code(pat[j + 2])
+            let cc = char_code(ch)
+            if cc >= lo and cc <= hi {
+                matched = true
+            }
+            j = j + 3
+        } else {
+            if pat[j] == ch {
+                matched = true
+            }
+            j = j + 1
+        }
+    }
+    if negate {
+        return not matched
+    }
+    return matched
+}
+
+// Does the single token at `pi` match the single character `ch`?
+@capabilities(compute)
+fn _token_matches(pat: str, pi: i64, ch: str) -> bool {
+    let c = pat[pi]
+    if c == "\\" {
+        return _escaped_matches(pat[pi + 1], ch)
+    }
+    if c == "." {
+        return true
+    }
+    if c == "[" {
+        return _class_matches(pat, pi, ch)
+    }
+    return c == ch
+}
+
+// --- matching core -----------------------------------------------------------
+
+// Greedy quantifier: match `tok` (the token at tok_pi) at least `min` times from
+// ti, then require the rest of the pattern (from rest_pi) to match -- backing
+// off from the greediest count down to `min` until something fits.
+@capabilities(compute)
+fn _match_quant(pat: str, tok_pi: i64, rest_pi: i64, text: str, ti: i64, min: i64) -> bool {
+    let tlen = len(text)
+    let mut count = 0
+    while ti + count < tlen and _token_matches(pat, tok_pi, text[ti + count]) {
+        count = count + 1
+    }
+    if count < min {
+        return false
+    }
+    let mut k = count
+    let mut result = false
+    let mut done = false
+    while not done {
+        if _match_here(pat, rest_pi, text, ti + k) {
+            result = true
+            done = true
+        } elif k <= min {
+            done = true
+        } else {
+            k = k - 1
+        }
+    }
+    return result
+}
+
+// Match pattern from index `pi` against text from index `ti`.
+@capabilities(compute)
+fn _match_here(pat: str, pi: i64, text: str, ti: i64) -> bool {
+    let plen = len(pat)
+    if pi >= plen {
+        return true
+    }
+    if pat[pi] == "$" and pi + 1 >= plen {
+        return ti >= len(text)
+    }
+    let tok_len = _token_len(pat, pi)
+    let quant_pi = pi + tok_len
+    let mut quant = ""
+    if quant_pi < plen {
+        let q = pat[quant_pi]
+        if q == "*" or q == "+" or q == "?" {
+            quant = q
+        }
+    }
+    if quant == "*" {
+        return _match_quant(pat, pi, quant_pi + 1, text, ti, 0)
+    }
+    if quant == "+" {
+        return _match_quant(pat, pi, quant_pi + 1, text, ti, 1)
+    }
+    if quant == "?" {
+        if ti < len(text) and _token_matches(pat, pi, text[ti]) {
+            if _match_here(pat, quant_pi + 1, text, ti + 1) {
+                return true
+            }
+        }
+        return _match_here(pat, quant_pi + 1, text, ti)
+    }
+    if ti < len(text) and _token_matches(pat, pi, text[ti]) {
+        return _match_here(pat, quant_pi, text, ti + 1)
+    }
+    return false
+}
+
+/// True if `pattern` matches anywhere in `text` (unanchored, like is_match).
+/// Pure compute: no FFI, no I/O.
+@capabilities(compute)
+fn matches(pattern: str, text: str) -> bool {
+    let plen = len(pattern)
+    if plen == 0 {
+        return true
+    }
+    if pattern[0] == "^" {
+        return _match_here(pattern, 1, text, 0)
+    }
+    let tlen = len(text)
+    let mut ti = 0
+    while ti <= tlen {
+        if _match_here(pattern, 0, text, ti) {
+            return true
+        }
+        ti = ti + 1
+    }
+    return false
+}
