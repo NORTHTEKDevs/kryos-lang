@@ -1,0 +1,248 @@
+// ============================================================
+// csv.kry -- RFC-4180-style CSV reader/writer plus a Value bridge.
+//
+// Pure compute. The field-level parse/serialize logic follows std::csv (quoted
+// fields, embedded commas and newlines, doubled-quote "" escapes); it is
+// re-implemented here rather than imported because std::csv and std::json both
+// export a top-level `parse`, and Kryos resolves function names in one flat
+// namespace -- importing both into a project that already uses std::json (via
+// value.kry's JSON bridge) is a duplicate-symbol error. Re-implementing keeps
+// the whole library on a single JSON backend and collision-free.
+//
+// The Value bridge reads a CSV with a header row into an Array of Tables (one
+// per record, keyed by the header) and writes it back, so CSV reaches
+// std::json::JsonValue through the shared Value model for free.
+// ============================================================
+
+use value
+use strutil
+
+@copy
+struct CsvRow {
+    fields: [str]
+}
+
+// --- Reader ------------------------------------------------------------------
+
+/// Parse a CSV document into rows. Recognizes \n and \r\n separators; a quoted
+/// field may contain commas, newlines, and doubled quotes (""). A trailing
+/// newline does not yield an empty final row.
+@capabilities(compute)
+fn parse_csv(input: str) -> [CsvRow] {
+    let mut rows: [CsvRow] = []
+    let mut fields: [str] = []
+    let mut cur = ""
+    let mut in_quotes = false
+    let n = len(input)
+    let mut i = 0
+    let mut row_has_content = false
+
+    while i < n {
+        let c = substr(input, i, i + 1)
+        if in_quotes {
+            if c == "\"" {
+                if i + 1 < n and substr(input, i + 1, i + 2) == "\"" {
+                    cur = cur + "\""
+                    i = i + 2
+                } else {
+                    in_quotes = false
+                    i = i + 1
+                }
+            } else {
+                cur = cur + c
+                i = i + 1
+            }
+        } else {
+            if c == "\"" {
+                in_quotes = true
+                row_has_content = true
+                i = i + 1
+            } elif c == "," {
+                fields = push(fields, cur)
+                cur = ""
+                row_has_content = true
+                i = i + 1
+            } elif c == "\n" or c == "\r" {
+                if c == "\r" and i + 1 < n and substr(input, i + 1, i + 2) == "\n" {
+                    i = i + 2
+                } else {
+                    i = i + 1
+                }
+                if row_has_content or len(cur) > 0 or len(fields) > 0 {
+                    fields = push(fields, cur)
+                    rows = push(rows, CsvRow { fields: fields })
+                    let fresh: [str] = []
+                    fields = fresh
+                    cur = ""
+                    row_has_content = false
+                }
+            } else {
+                cur = cur + c
+                row_has_content = true
+                i = i + 1
+            }
+        }
+    }
+    if row_has_content or len(cur) > 0 or len(fields) > 0 {
+        fields = push(fields, cur)
+        rows = push(rows, CsvRow { fields: fields })
+    }
+    return rows
+}
+
+// --- Writer ------------------------------------------------------------------
+
+@capabilities(compute)
+fn _csv_needs_quote(field: str) -> bool {
+    let n = len(field)
+    let mut i = 0
+    while i < n {
+        let c = substr(field, i, i + 1)
+        if c == "," or c == "\"" or c == "\n" or c == "\r" {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+/// Serialize one record into a CSV line (no trailing newline). Fields are
+/// quoted only when required; embedded quotes are doubled.
+@capabilities(compute)
+fn to_csv_line(fields: [str]) -> str {
+    let mut out = ""
+    let count = len(fields)
+    let mut idx = 0
+    while idx < count {
+        let f = fields[idx]
+        if idx > 0 {
+            out = out + ","
+        }
+        if _csv_needs_quote(f) {
+            let mut quoted = "\""
+            let n = len(f)
+            let mut i = 0
+            while i < n {
+                let c = substr(f, i, i + 1)
+                if c == "\"" {
+                    quoted = quoted + "\"\""
+                } else {
+                    quoted = quoted + c
+                }
+                i = i + 1
+            }
+            out = out + quoted + "\""
+        } else {
+            out = out + f
+        }
+        idx = idx + 1
+    }
+    return out
+}
+
+/// Serialize rows into a CSV document with \n separators and a trailing newline.
+@capabilities(compute)
+fn to_csv(rows: [CsvRow]) -> str {
+    let mut out = ""
+    let n = len(rows)
+    let mut i = 0
+    while i < n {
+        out = out + to_csv_line(rows[i].fields) + "\n"
+        i = i + 1
+    }
+    return out
+}
+
+// --- Value bridge ------------------------------------------------------------
+
+/// Parse a CSV whose first row is a header into an Array of Table Values, one
+/// per data record, each keyed by the header columns. All field values are
+/// strings. A record with fewer fields than the header pads with empty strings;
+/// extra fields beyond the header are dropped.
+@capabilities(compute)
+fn parse_records(input: str) -> Value {
+    let rows = parse_csv(input)
+    let mut items: [Value] = []
+    if len(rows) == 0 {
+        return varr(items)
+    }
+    let header = rows[0].fields
+    let hcount = len(header)
+    let mut r = 1
+    while r < len(rows) {
+        let record = rows[r].fields
+        let mut vals: [Value] = []
+        let mut c = 0
+        while c < hcount {
+            if c < len(record) {
+                vals = push(vals, vstr(record[c]))
+            } else {
+                vals = push(vals, vstr(""))
+            }
+            c = c + 1
+        }
+        items = push(items, vtable(header, vals))
+        r = r + 1
+    }
+    return varr(items)
+}
+
+/// Write an Array of Table Values back to CSV text. The header is taken from the
+/// first record's keys; each record emits its values in that column order.
+/// Scalar values are stringified (strings verbatim, ints/floats/bools rendered,
+/// null as empty).
+@capabilities(compute)
+fn records_to_csv(v: Value) -> str {
+    let items = as_arr(v)
+    if len(items) == 0 {
+        return ""
+    }
+    let header = _csv_keys_of(items[0])
+    let mut out = to_csv_line(header) + "\n"
+    let hcount = len(header)
+    let mut r = 0
+    while r < len(items) {
+        let rec = items[r]
+        let mut fields: [str] = []
+        let mut c = 0
+        while c < hcount {
+            fields = push(fields, _csv_scalar_str(table_get(rec, header[c])))
+            c = c + 1
+        }
+        out = out + to_csv_line(fields) + "\n"
+        r = r + 1
+    }
+    return out
+}
+
+@capabilities(compute)
+fn _csv_keys_of(v: Value) -> [str] {
+    return match v {
+        Value::Table(keys, _) => keys,
+        _ => _csv_throw_keys("csv: records_to_csv expects an array of tables")
+    }
+}
+
+@capabilities(compute)
+fn _csv_throw_keys(msg: str) -> [str] { throw msg }
+
+@capabilities(compute)
+fn _csv_throw_str(msg: str) -> str { throw msg }
+
+@capabilities(compute)
+fn _csv_scalar_str(v: Value) -> str {
+    return match v {
+        Value::Null => "",
+        Value::Bool(b) => _csv_bool(b),
+        Value::Int(i) => to_string(i),
+        Value::Float(f) => _su_float_text(f),
+        Value::Str(s) => s,
+        _ => _csv_throw_str("csv: nested arrays/tables cannot be a CSV field")
+    }
+}
+
+@capabilities(compute)
+fn _csv_bool(b: bool) -> str {
+    if b { return "true" }
+    return "false"
+}

@@ -1,0 +1,377 @@
+// ============================================================
+// value.kry -- the typed Value model shared by the TOML, YAML, and CSV
+// readers, plus a lossless bridge to and from std::json::JsonValue.
+//
+// Every function here is pure: it reads no environment and touches no
+// filesystem, so each carries @capabilities(compute). `kryos manifest --caps`
+// over src/ therefore yields compute (or empty) for the whole library -- a
+// config parser that *cannot* read files or open sockets, proven by the
+// compiler rather than asserted in a README.
+//
+// Value is deliberately richer than JsonValue in one place: it separates
+// Int(i64) from Float(f64). TOML and YAML distinguish integers from floats and
+// the round-trip writers need that distinction, whereas JSON collapses both to
+// a single f64 Number. The bridge maps Int/Float onto JsonValue.Number and
+// classifies a Number back to Int when it is integral, Float otherwise.
+// ============================================================
+
+use std::json::{JsonValue, json_null, json_bool, json_number, json_string, json_array, json_object, parse}
+use strutil
+
+enum Value {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Str(str),
+    Arr([Value]),
+    Table([str], [Value])
+}
+
+// --- Constructors ------------------------------------------------------------
+
+@capabilities(compute)
+fn vnull() -> Value { return Value.Null }
+
+@capabilities(compute)
+fn vbool(b: bool) -> Value { return Value.Bool(b) }
+
+@capabilities(compute)
+fn vint(i: i64) -> Value { return Value.Int(i) }
+
+@capabilities(compute)
+fn vfloat(f: f64) -> Value { return Value.Float(f) }
+
+@capabilities(compute)
+fn vstr(s: str) -> Value { return Value.Str(s) }
+
+@capabilities(compute)
+fn varr(items: [Value]) -> Value { return Value.Arr(items) }
+
+@capabilities(compute)
+fn vtable(keys: [str], values: [Value]) -> Value { return Value.Table(keys, values) }
+
+// --- Type checks -------------------------------------------------------------
+
+@capabilities(compute)
+fn is_null(v: Value) -> bool {
+    return match v {
+        Value::Null => true,
+        _ => false
+    }
+}
+
+@capabilities(compute)
+fn is_table(v: Value) -> bool {
+    return match v {
+        Value::Table(_, _) => true,
+        _ => false
+    }
+}
+
+@capabilities(compute)
+fn is_arr(v: Value) -> bool {
+    return match v {
+        Value::Arr(_) => true,
+        _ => false
+    }
+}
+
+// --- Throw helpers (throw is a statement; wrap as call expressions) ----------
+
+@capabilities(compute)
+fn _throw_value(msg: str) -> Value { throw msg }
+@capabilities(compute)
+fn _throw_str(msg: str) -> str { throw msg }
+@capabilities(compute)
+fn _throw_int(msg: str) -> i64 { throw msg }
+@capabilities(compute)
+fn _throw_float(msg: str) -> f64 { throw msg }
+@capabilities(compute)
+fn _throw_bool(msg: str) -> bool { throw msg }
+@capabilities(compute)
+fn _throw_arr(msg: str) -> [Value] { throw msg }
+
+// --- Typed accessors (throw on a type mismatch) ------------------------------
+
+@capabilities(compute)
+fn as_str(v: Value) -> str {
+    return match v {
+        Value::Str(s) => s,
+        _ => _throw_str("value: not a string")
+    }
+}
+
+@capabilities(compute)
+fn as_int(v: Value) -> i64 {
+    return match v {
+        Value::Int(i) => i,
+        _ => _throw_int("value: not an int")
+    }
+}
+
+@capabilities(compute)
+fn as_float(v: Value) -> f64 {
+    return match v {
+        Value::Float(f) => f,
+        _ => _throw_float("value: not a float")
+    }
+}
+
+@capabilities(compute)
+fn as_bool(v: Value) -> bool {
+    return match v {
+        Value::Bool(b) => b,
+        _ => _throw_bool("value: not a bool")
+    }
+}
+
+@capabilities(compute)
+fn as_arr(v: Value) -> [Value] {
+    return match v {
+        Value::Arr(items) => items,
+        _ => _throw_arr("value: not an array")
+    }
+}
+
+/// Look a key up in a Table Value. Returns Value.Null when absent or when `v`
+/// is not a Table.
+@capabilities(compute)
+fn table_get(v: Value, key: str) -> Value {
+    return match v {
+        Value::Table(keys, values) => _table_lookup(keys, values, key),
+        _ => Value.Null
+    }
+}
+
+@capabilities(compute)
+fn _table_lookup(keys: [str], values: [Value], key: str) -> Value {
+    let n = len(keys)
+    let mut i = 0
+    while i < n {
+        if keys[i] == key {
+            return values[i]
+        }
+        i = i + 1
+    }
+    return Value.Null
+}
+
+/// True if a Table Value contains `key`.
+@capabilities(compute)
+fn table_has(v: Value, key: str) -> bool {
+    return match v {
+        Value::Table(keys, _) => _keys_contain(keys, key),
+        _ => false
+    }
+}
+
+@capabilities(compute)
+fn _keys_contain(keys: [str], key: str) -> bool {
+    let n = len(keys)
+    let mut i = 0
+    while i < n {
+        if keys[i] == key {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// --- Bridge to std::json::JsonValue ------------------------------------------
+
+/// Convert a Value to a JsonValue. Int and Float both become Number; every
+/// other variant maps one-to-one.
+@capabilities(compute)
+fn to_json(v: Value) -> JsonValue {
+    return match v {
+        Value::Null => json_null(),
+        Value::Bool(b) => json_bool(b),
+        Value::Int(i) => json_number((i as f64)),
+        Value::Float(f) => json_number(f),
+        Value::Str(s) => json_string(s),
+        Value::Arr(items) => json_array(_arr_to_json(items)),
+        Value::Table(keys, values) => json_object(keys, _vals_to_json(values))
+    }
+}
+
+@capabilities(compute)
+fn _arr_to_json(items: [Value]) -> [JsonValue] {
+    let mut out: [JsonValue] = []
+    let n = len(items)
+    let mut i = 0
+    while i < n {
+        out = push(out, to_json(items[i]))
+        i = i + 1
+    }
+    return out
+}
+
+@capabilities(compute)
+fn _vals_to_json(values: [Value]) -> [JsonValue] {
+    let mut out: [JsonValue] = []
+    let n = len(values)
+    let mut i = 0
+    while i < n {
+        out = push(out, to_json(values[i]))
+        i = i + 1
+    }
+    return out
+}
+
+/// Convert a JsonValue back into a Value. A Number that is integral (its value
+/// equals its truncation) becomes Int; otherwise Float.
+@capabilities(compute)
+fn from_json(j: JsonValue) -> Value {
+    return match j {
+        JsonValue::Null => Value.Null,
+        JsonValue::Bool(b) => Value.Bool(b),
+        JsonValue::Number(n) => _num_to_value(n),
+        JsonValue::String(s) => Value.Str(s),
+        JsonValue::Array(items) => Value.Arr(_json_to_arr(items)),
+        JsonValue::Object(keys, values) => Value.Table(keys, _json_to_vals(values))
+    }
+}
+
+@capabilities(compute)
+fn _num_to_value(n: f64) -> Value {
+    let truncated = (n as i64)
+    if (truncated as f64) == n {
+        return Value.Int(truncated)
+    }
+    return Value.Float(n)
+}
+
+@capabilities(compute)
+fn _json_to_arr(items: [JsonValue]) -> [Value] {
+    let mut out: [Value] = []
+    let n = len(items)
+    let mut i = 0
+    while i < n {
+        out = push(out, from_json(items[i]))
+        i = i + 1
+    }
+    return out
+}
+
+@capabilities(compute)
+fn _json_to_vals(values: [JsonValue]) -> [Value] {
+    let mut out: [Value] = []
+    let n = len(values)
+    let mut i = 0
+    while i < n {
+        out = push(out, from_json(values[i]))
+        i = i + 1
+    }
+    return out
+}
+
+// --- Convenience: Value <-> JSON text ----------------------------------------
+//
+// to_json_string walks the Value directly rather than calling std::json's
+// `stringify`. Two reasons: (1) importing a local module and std::json in the
+// same file drops the std::json function symbols from scope, so value.kry owns
+// the bridge; (2) std::json::stringify reaches `_format_number`, which renders
+// floats via `to_string(f64)` -- and the `kryos test` harness JIT cannot compile
+// `to_string` on a float. Serializing here, through _su_float_text, keeps the
+// whole library compilable under `kryos test`. The output matches std::json's
+// compact form. from_json_string still uses std::json::parse (its code path
+// never calls to_string on a float).
+
+/// Render a Value as a compact JSON string.
+@capabilities(compute)
+fn to_json_string(v: Value) -> str {
+    return _v_json_text(v)
+}
+
+/// Parse a JSON string into a Value.
+@capabilities(compute)
+fn from_json_string(s: str) -> Value {
+    return from_json(parse(s))
+}
+
+@capabilities(compute)
+fn _v_json_text(v: Value) -> str {
+    return match v {
+        Value::Null => "null",
+        Value::Bool(b) => _v_bool_text(b),
+        Value::Int(i) => to_string(i),
+        Value::Float(f) => _su_float_text(f),
+        Value::Str(s) => _v_escape(s),
+        Value::Arr(items) => _v_arr_text(items),
+        Value::Table(keys, vals) => _v_obj_text(keys, vals)
+    }
+}
+
+@capabilities(compute)
+fn _v_bool_text(b: bool) -> str {
+    if b { return "true" }
+    return "false"
+}
+
+// JSON string escaping: wrap in quotes, escape the control and meta characters.
+@capabilities(compute)
+fn _v_escape(s: str) -> str {
+    let mut out = "\""
+    let n = len(s)
+    let mut i = 0
+    while i < n {
+        let c = substr(s, i, i + 1)
+        if c == "\"" {
+            out = out + "\\\""
+        } elif c == "\\" {
+            out = out + "\\\\"
+        } elif c == "\n" {
+            out = out + "\\n"
+        } elif c == "\r" {
+            out = out + "\\r"
+        } elif c == "\t" {
+            out = out + "\\t"
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out + "\""
+}
+
+@capabilities(compute)
+fn _v_arr_text(items: [Value]) -> str {
+    let n = len(items)
+    if n == 0 {
+        return "[]"
+    }
+    let mut out = "["
+    let mut i = 0
+    while i < n {
+        if i > 0 {
+            out = out + ","
+        }
+        out = out + _v_json_text(items[i])
+        i = i + 1
+    }
+    return out + "]"
+}
+
+@capabilities(compute)
+fn _v_obj_text(keys: [str], vals: [Value]) -> str {
+    let n = len(keys)
+    // 123 == '{', 125 == '}' : built via char_from so the bare braces never open
+    // string interpolation in a literal.
+    let open = char_from(123)
+    let close = char_from(125)
+    if n == 0 {
+        return open + close
+    }
+    let mut out = open
+    let mut i = 0
+    while i < n {
+        if i > 0 {
+            out = out + ","
+        }
+        out = out + _v_escape(keys[i]) + ":" + _v_json_text(vals[i])
+        i = i + 1
+    }
+    return out + close
+}

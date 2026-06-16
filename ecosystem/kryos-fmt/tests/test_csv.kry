@@ -1,0 +1,83 @@
+// ============================================================
+// test_csv.kry -- CSV reader/writer and the Value bridge.
+//
+//   kryos test --path ecosystem/kryos-fmt
+//   kryos run  ecosystem/kryos-fmt/tests/test_csv.kry
+//
+// Pure compute. Quoting/escaping, embedded commas and newlines, and the
+// header-driven Array-of-Tables bridge to the shared Value model.
+// ============================================================
+
+use value
+use csv
+
+@test
+fn test_parse_simple() {
+    let rows = parse_csv("a,b,c\n1,2,3\n")
+    assert(len(rows) == 2, "two rows")
+    assert(rows[0].fields[0] == "a", "header a")
+    assert(rows[1].fields[2] == "3", "cell 3")
+}
+
+@test
+fn test_quoting_round_trip() {
+    // A field with a comma and a quote must survive a serialize/parse round-trip.
+    let fields: [str] = ["plain", "with,comma", "with \"quote\""]
+    let line = to_csv_line(fields)
+    assert(line == "plain,\"with,comma\",\"with \"\"quote\"\"\"", "quoted line form")
+    let rows = parse_csv(line + "\n")
+    assert(rows[0].fields[1] == "with,comma", "comma field decoded")
+    assert(rows[0].fields[2] == "with \"quote\"", "quote field decoded")
+}
+
+@test
+fn test_embedded_newline() {
+    let input = "name,note\n" + "Ada,\"line1\nline2\"\n"
+    let rows = parse_csv(input)
+    assert(len(rows) == 2, "two rows despite embedded newline")
+    assert(rows[1].fields[1] == "line1\nline2", "embedded newline preserved")
+}
+
+@test
+fn test_records_bridge() {
+    let input = "name,role\n" + "Ada,eng\n" + "Bob,ops\n"
+    let v = parse_records(input)
+    let recs = as_arr(v)
+    assert(len(recs) == 2, "two records")
+    assert(as_str(table_get(recs[0], "name")) == "Ada", "rec0 name")
+    assert(as_str(table_get(recs[1], "role")) == "ops", "rec1 role")
+    // bridge onward to JSON via the shared Value model
+    assert(to_json_string(table_get(recs[0], "role")) == "\"eng\"", "record value to json")
+}
+
+@test
+fn test_records_to_csv_round_trip() {
+    let input = "name,role\n" + "Ada,eng\n" + "Bob,ops\n"
+    let v = parse_records(input)
+    let back = records_to_csv(v)
+    assert(back == input, "records -> csv reproduces the input")
+}
+
+@test
+fn test_to_csv_rows() {
+    let r0 = CsvRow { fields: ["a", "b"] }
+    let r1 = CsvRow { fields: ["1", "2"] }
+    let rows: [CsvRow] = [r0, r1]
+    assert(to_csv(rows) == "a,b\n1,2\n", "to_csv joins rows")
+}
+
+fn main() {
+    test_parse_simple()
+    println("PASS test_parse_simple")
+    test_quoting_round_trip()
+    println("PASS test_quoting_round_trip")
+    test_embedded_newline()
+    println("PASS test_embedded_newline")
+    test_records_bridge()
+    println("PASS test_records_bridge")
+    test_records_to_csv_round_trip()
+    println("PASS test_records_to_csv_round_trip")
+    test_to_csv_rows()
+    println("PASS test_to_csv_rows")
+    println("6/6 csv tests passed")
+}

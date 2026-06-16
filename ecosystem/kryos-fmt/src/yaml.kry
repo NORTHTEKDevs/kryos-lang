@@ -1,0 +1,419 @@
+// ============================================================
+// yaml.kry -- a reader for an explicit, deliberately small YAML subset.
+//
+// Pure compute. The subset is drawn HARD (the README states it verbatim) so the
+// grammar does not creep into the YAML tar pit:
+//
+//   SUPPORTED
+//     * block mappings: `key: value`, nested by 2-space-deeper indentation
+//     * block sequences: `- item`, items being scalars, mappings, or nested
+//       blocks; a mapping under a key must be indented deeper than the key
+//     * sequences of mappings: `- key: value` with aligned continuation keys
+//     * scalars: bare, "double"/'single' quoted, integers, floats,
+//       true/false, null (`null` or `~`)
+//     * `#` comments (line and inline) and blank lines
+//     * a single leading `---` / trailing `...` document marker (ignored)
+//
+//   REJECTED with a clear error (never half-supported)
+//     * anchors `&`, aliases `*`, tags `!`
+//     * block scalars `|` `>`
+//     * flow collections `[..]` `{..}`
+//     * merge keys `<<`
+//     * tab characters in indentation
+//
+// There is no YAML writer: round-tripping YAML losslessly is out of the subset.
+// To serialize, bridge to a Value and emit TOML or JSON instead.
+// ============================================================
+
+use value
+use strutil
+
+// Cursor result: the parsed value plus the index of the next unconsumed line.
+// The Value (enum) field is declared LAST so the AOT 8-byte-slot field layout
+// stays correct; tests run on the JIT where this is moot, but it is free to be
+// safe.
+struct YRes {
+    next: i64,
+    value: Value
+}
+
+struct YPair {
+    key: str,
+    next: i64,
+    value: Value
+}
+
+struct YLines {
+    indents: [i64],
+    contents: [str]
+}
+
+// --- Public API --------------------------------------------------------------
+
+/// Parse a YAML document (the supported subset) into a Value. An empty document
+/// yields Value.Null.
+@capabilities(compute)
+fn parse_yaml(input: str) -> Value {
+    let pre = _y_preprocess(input)
+    let n = len(pre.contents)
+    if n == 0 {
+        return Value.Null
+    }
+    let res = _y_parse(pre.contents, pre.indents, 0, n)
+    return res.value
+}
+
+// --- Preprocessing -----------------------------------------------------------
+
+@capabilities(compute)
+fn _y_preprocess(input: str) -> YLines {
+    let raw_lines = _su_split_lines(input)
+    let mut indents: [i64] = []
+    let mut contents: [str] = []
+    let total = len(raw_lines)
+    let mut i = 0
+    while i < total {
+        let line = raw_lines[i]
+        i = i + 1
+        let indent = _y_indent_of(line)
+        let body = _su_trim(_y_strip_comment(substr(line, indent, len(line))))
+        if len(body) == 0 {
+            continue
+        }
+        if body == "---" or body == "..." {
+            continue
+        }
+        indents = push(indents, indent)
+        contents = push(contents, body)
+    }
+    return YLines { indents: indents, contents: contents }
+}
+
+// Count leading spaces; a leading tab is a hard error (YAML forbids tab indent).
+@capabilities(compute)
+fn _y_indent_of(line: str) -> i64 {
+    let n = len(line)
+    let mut i = 0
+    while i < n {
+        let c = substr(line, i, i + 1)
+        if c == " " {
+            i = i + 1
+        } elif c == "\t" {
+            throw "yaml: tab characters are not allowed in indentation"
+        } else {
+            return i
+        }
+    }
+    return i
+}
+
+// Remove an inline `# comment`. A '#' begins a comment only at the start of the
+// content or when preceded by whitespace, and never inside a quoted string.
+@capabilities(compute)
+fn _y_strip_comment(s: str) -> str {
+    let n = len(s)
+    let mut i = 0
+    let mut in_d = false
+    let mut in_s = false
+    while i < n {
+        let c = substr(s, i, i + 1)
+        if in_d {
+            if c == "\"" { in_d = false }
+            i = i + 1
+        } elif in_s {
+            if c == "'" { in_s = false }
+            i = i + 1
+        } else {
+            if c == "\"" {
+                in_d = true
+                i = i + 1
+            } elif c == "'" {
+                in_s = true
+                i = i + 1
+            } elif c == "#" {
+                if i == 0 or _su_is_space(substr(s, i - 1, i)) {
+                    return substr(s, 0, i)
+                }
+                i = i + 1
+            } else {
+                i = i + 1
+            }
+        }
+    }
+    return s
+}
+
+// --- Recursive descent -------------------------------------------------------
+
+@capabilities(compute)
+fn _y_parse(contents: [str], indents: [i64], i: i64, n: i64) -> YRes {
+    let ind = indents[i]
+    if _y_is_item(contents[i]) {
+        return _y_seq(contents, indents, i, n, ind)
+    }
+    return _y_map(contents, indents, i, n, ind)
+}
+
+@capabilities(compute)
+fn _y_is_item(content: str) -> bool {
+    if content == "-" {
+        return true
+    }
+    return _su_starts_with(content, "- ")
+}
+
+// Parse a block mapping: consecutive lines at `ind` that are not sequence items.
+@capabilities(compute)
+fn _y_map(contents: [str], indents: [i64], i: i64, n: i64, ind: i64) -> YRes {
+    let mut keys: [str] = []
+    let mut vals: [Value] = []
+    let mut cur = i
+    while cur < n and indents[cur] == ind and not _y_is_item(contents[cur]) {
+        let pr = _y_one_pair(contents[cur], contents, indents, cur + 1, n, ind)
+        keys = push(keys, pr.key)
+        vals = push(vals, pr.value)
+        cur = pr.next
+    }
+    return YRes { next: cur, value: vtable(keys, vals) }
+}
+
+// Parse a block sequence: consecutive `- ...` lines at `ind`.
+@capabilities(compute)
+fn _y_seq(contents: [str], indents: [i64], i: i64, n: i64, ind: i64) -> YRes {
+    let mut items: [Value] = []
+    let mut cur = i
+    while cur < n and indents[cur] == ind and _y_is_item(contents[cur]) {
+        let after = _y_item_rest(contents[cur])
+        cur = cur + 1
+        if len(after) == 0 {
+            // nested block item, indented deeper than the dash
+            if cur < n and indents[cur] > ind {
+                let child = _y_parse(contents, indents, cur, n)
+                items = push(items, child.value)
+                cur = child.next
+            } else {
+                items = push(items, Value.Null)
+            }
+        } elif _y_find_kv_colon(after) >= 0 {
+            // `- key: value` : a mapping item; continuation keys align at ind+2
+            let res = _y_map_seeded(after, contents, indents, cur, n, ind + 2)
+            items = push(items, res.value)
+            cur = res.next
+        } else {
+            items = push(items, _y_scalar(after))
+        }
+    }
+    return YRes { next: cur, value: varr(items) }
+}
+
+// Build a mapping whose first pair comes from `first_line` (the inline content
+// after a sequence dash) and whose remaining pairs are lines at `ind`.
+@capabilities(compute)
+fn _y_map_seeded(first_line: str, contents: [str], indents: [i64], i: i64, n: i64, ind: i64) -> YRes {
+    let mut keys: [str] = []
+    let mut vals: [Value] = []
+    let pr0 = _y_one_pair(first_line, contents, indents, i, n, ind)
+    keys = push(keys, pr0.key)
+    vals = push(vals, pr0.value)
+    let mut cur = pr0.next
+    while cur < n and indents[cur] == ind and not _y_is_item(contents[cur]) {
+        let pr = _y_one_pair(contents[cur], contents, indents, cur + 1, n, ind)
+        keys = push(keys, pr.key)
+        vals = push(vals, pr.value)
+        cur = pr.next
+    }
+    return YRes { next: cur, value: vtable(keys, vals) }
+}
+
+// Parse one `key: value` pair. `block_start` is the index where a nested block
+// would begin if the value is empty; `ind` is this pair's indentation.
+@capabilities(compute)
+fn _y_one_pair(line: str, contents: [str], indents: [i64], block_start: i64, n: i64, ind: i64) -> YPair {
+    let colon = _y_find_kv_colon(line)
+    if colon < 0 {
+        throw "yaml: expected 'key: value', got: " + line
+    }
+    let key = _y_unquote(_su_trim(substr(line, 0, colon)))
+    if key == "<<" {
+        throw "yaml: merge keys (<<) are not supported in the subset"
+    }
+    let rest = _su_trim(substr(line, colon + 1, len(line)))
+    if len(rest) == 0 {
+        if block_start < n and indents[block_start] > ind {
+            let child = _y_parse(contents, indents, block_start, n)
+            return YPair { key: key, next: child.next, value: child.value }
+        }
+        return YPair { key: key, next: block_start, value: Value.Null }
+    }
+    return YPair { key: key, next: block_start, value: _y_scalar(rest) }
+}
+
+// Content after the leading dash of a sequence item ("- foo" -> "foo").
+@capabilities(compute)
+fn _y_item_rest(line: str) -> str {
+    if line == "-" {
+        return ""
+    }
+    return _su_trim(substr(line, 1, len(line)))
+}
+
+// Index of the ':' that separates a mapping key from its value: the first colon
+// outside quotes that is followed by a space or end of line. -1 if none.
+@capabilities(compute)
+fn _y_find_kv_colon(s: str) -> i64 {
+    let n = len(s)
+    let mut i = 0
+    let mut in_d = false
+    let mut in_s = false
+    while i < n {
+        let c = substr(s, i, i + 1)
+        if in_d {
+            if c == "\"" { in_d = false }
+            i = i + 1
+        } elif in_s {
+            if c == "'" { in_s = false }
+            i = i + 1
+        } else {
+            if c == "\"" {
+                in_d = true
+            } elif c == "'" {
+                in_s = true
+            } elif c == ":" {
+                if i + 1 >= n or substr(s, i + 1, i + 2) == " " {
+                    return i
+                }
+            }
+            i = i + 1
+        }
+    }
+    return -1
+}
+
+// --- Scalars -----------------------------------------------------------------
+
+@capabilities(compute)
+fn _y_scalar(raw: str) -> Value {
+    if len(raw) == 0 {
+        return Value.Str("")
+    }
+    let f = substr(raw, 0, 1)
+    _y_reject_unsupported(f)
+    if f == "\"" {
+        return vstr(_y_dquote(raw))
+    }
+    if f == "'" {
+        return vstr(_y_squote(raw))
+    }
+    if raw == "null" or raw == "~" {
+        return Value.Null
+    }
+    if raw == "true" {
+        return vbool(true)
+    }
+    if raw == "false" {
+        return vbool(false)
+    }
+    if _su_looks_float(raw) {
+        return vfloat(parse_float(raw))
+    }
+    if _su_looks_int(raw) {
+        return vint(parse_int(raw))
+    }
+    return vstr(raw)
+}
+
+@capabilities(compute)
+fn _y_reject_unsupported(f: str) {
+    if f == "&" {
+        throw "yaml: anchors (&) are not supported in the subset"
+    }
+    if f == "*" {
+        throw "yaml: aliases (*) are not supported in the subset"
+    }
+    if f == "!" {
+        throw "yaml: tags (!) are not supported in the subset"
+    }
+    if f == "|" or f == ">" {
+        throw "yaml: block scalars (| and >) are not supported in the subset"
+    }
+    if f == "[" {
+        throw "yaml: flow sequences ([..]) are not supported in the subset"
+    }
+    // 123 == '{' : a bare { in a string literal would open interpolation.
+    if char_code(f) == 123 {
+        throw "yaml: flow mappings are not supported in the subset"
+    }
+}
+
+// Parse a double-quoted scalar with backslash escapes.
+@capabilities(compute)
+fn _y_dquote(s: str) -> str {
+    let n = len(s)
+    let mut out = ""
+    let mut i = 1
+    while i < n {
+        let c = substr(s, i, i + 1)
+        if c == "\"" {
+            return out
+        }
+        if c == "\\" {
+            if i + 1 >= n {
+                throw "yaml: dangling escape in string"
+            }
+            let e = substr(s, i + 1, i + 2)
+            if e == "n" {
+                out = out + "\n"
+            } elif e == "t" {
+                out = out + "\t"
+            } elif e == "r" {
+                out = out + "\r"
+            } elif e == "\"" {
+                out = out + "\""
+            } elif e == "\\" {
+                out = out + "\\"
+            } else {
+                throw "yaml: unsupported escape \\" + e
+            }
+            i = i + 2
+        } else {
+            out = out + c
+            i = i + 1
+        }
+    }
+    throw "yaml: unterminated double-quoted string"
+}
+
+// Parse a single-quoted scalar. The only escape is '' for a literal quote.
+@capabilities(compute)
+fn _y_squote(s: str) -> str {
+    let n = len(s)
+    let mut out = ""
+    let mut i = 1
+    while i < n {
+        let c = substr(s, i, i + 1)
+        if c == "'" {
+            if i + 1 < n and substr(s, i + 1, i + 2) == "'" {
+                out = out + "'"
+                i = i + 2
+            } else {
+                return out
+            }
+        } else {
+            out = out + c
+            i = i + 1
+        }
+    }
+    throw "yaml: unterminated single-quoted string"
+}
+
+@capabilities(compute)
+fn _y_unquote(s: str) -> str {
+    let n = len(s)
+    if n >= 2 and substr(s, 0, 1) == "\"" and substr(s, n - 1, n) == "\"" {
+        return _y_dquote(s)
+    }
+    if n >= 2 and substr(s, 0, 1) == "'" and substr(s, n - 1, n) == "'" {
+        return _y_squote(s)
+    }
+    return s
+}

@@ -1,0 +1,567 @@
+// ============================================================
+// toml.kry -- a TOML reader and writer over the shared Value model.
+//
+// Pure compute: parsing and emitting are string-in / string-out. The supported
+// subset is the one a kryos.toml needs and is drawn explicitly (see README):
+//
+//   * [table] and [dotted.table] headers, arbitrarily nested
+//   * key = value lines with bare keys
+//   * basic "double" and literal 'single' quoted strings
+//   * integers, floats, booleans
+//   * single-line arrays of the above ([a, b, c])
+//   * # line comments and blank lines (dropped on read; the writer regenerates
+//     canonical blank lines between sections)
+//
+// Out of subset, rejected with a clear error: inline tables ({...}), arrays of
+// tables ([[x]]), multi-line arrays, datetimes (kept as strings if quoted).
+//
+// The writer emits a canonical LF form: top-level scalars first, then one blank
+// line before each [section] header. Parsing a canonical document and emitting
+// it reproduces the original byte for byte (the round-trip done-criterion).
+// ============================================================
+
+use value
+use strutil
+
+// --- Public API --------------------------------------------------------------
+
+/// Parse a TOML document into a Table Value. Sections become nested Tables,
+/// keys preserve file order.
+@capabilities(compute)
+fn parse_toml(input: str) -> Value {
+    let lines = _su_split_lines(input)
+    let mut root_keys: [str] = []
+    let mut root_vals: [Value] = []
+    // Path of the table currently being filled (empty = root).
+    let mut path: [str] = []
+
+    let nlines = len(lines)
+    let mut li = 0
+    while li < nlines {
+        let raw = lines[li]
+        li = li + 1
+        let line = _su_trim(raw)
+        if len(line) == 0 {
+            continue
+        }
+        if substr(line, 0, 1) == "#" {
+            continue
+        }
+        if substr(line, 0, 1) == "[" {
+            if len(line) >= 2 and substr(line, 1, 2) == "[" {
+                throw "toml: arrays of tables [[...]] are not supported in the MVP subset"
+            }
+            let close = _su_index_of(line, "]")
+            if close < 0 {
+                throw "toml: unterminated table header: " + line
+            }
+            let header = _su_trim(substr(line, 1, close))
+            path = _split_dotted(header)
+            // Ensure the table exists so empty sections still round-trip.
+            let ensured = _ensure_path(root_keys, root_vals, path)
+            root_keys = ensured.keys
+            root_vals = ensured.vals
+        } else {
+            let eq = _su_index_of(line, "=")
+            if eq < 0 {
+                throw "toml: expected key = value, got: " + line
+            }
+            let key = _su_trim(substr(line, 0, eq))
+            let vstr_raw = _su_trim(substr(line, eq + 1, len(line)))
+            let parsed = _tml_value(vstr_raw)
+            let inserted = _insert_at(root_keys, root_vals, path, _unquote_key(key), parsed)
+            root_keys = inserted.keys
+            root_vals = inserted.vals
+        }
+    }
+    return vtable(root_keys, root_vals)
+}
+
+/// Emit a Table Value as a canonical TOML document (LF line endings, trailing
+/// newline).
+@capabilities(compute)
+fn to_toml(v: Value) -> str {
+    let mut out = ""
+    let pair = _emit_table(v, _su_empty_str_arr(), out, false)
+    return pair.text
+}
+
+// --- Insertion helpers (Tables are (keys, vals) carried by value) ------------
+
+// A pair of parallel arrays returned from the table-mutating helpers. Both
+// fields are arrays, declared together; no trailing scalar field (so the AOT
+// 8-byte-slot field-offset caveat does not bite -- and tests run on the JIT).
+struct KV {
+    keys: [str],
+    vals: [Value]
+}
+
+@capabilities(compute)
+fn _kv(keys: [str], vals: [Value]) -> KV {
+    return KV { keys: keys, vals: vals }
+}
+
+// Insert (key -> val) into the (possibly nested) table named by `path`, within
+// the root table represented by (keys, vals). Returns the updated root arrays.
+@capabilities(compute)
+fn _insert_at(keys: [str], vals: [Value], path: [str], key: str, val: Value) -> KV {
+    if len(path) == 0 {
+        return _set_key(keys, vals, key, val)
+    }
+    let head = path[0]
+    let rest = _su_tail_str(path)
+    let existing = _find(keys, vals, head)
+    let mut sub_keys: [str] = []
+    let mut sub_vals: [Value] = []
+    match existing {
+        Value::Table(ek, ev) => {
+            sub_keys = ek
+            sub_vals = ev
+        }
+        _ => {}
+    }
+    let updated = _insert_at(sub_keys, sub_vals, rest, key, val)
+    return _set_key(keys, vals, head, vtable(updated.keys, updated.vals))
+}
+
+// Ensure the nested table at `path` exists (create empty tables along the way).
+@capabilities(compute)
+fn _ensure_path(keys: [str], vals: [Value], path: [str]) -> KV {
+    if len(path) == 0 {
+        return _kv(keys, vals)
+    }
+    let head = path[0]
+    let rest = _su_tail_str(path)
+    let existing = _find(keys, vals, head)
+    let mut sub_keys: [str] = []
+    let mut sub_vals: [Value] = []
+    match existing {
+        Value::Table(ek, ev) => {
+            sub_keys = ek
+            sub_vals = ev
+        }
+        _ => {}
+    }
+    let ensured = _ensure_path(sub_keys, sub_vals, rest)
+    return _set_key(keys, vals, head, vtable(ensured.keys, ensured.vals))
+}
+
+// Set key=val in a flat (keys, vals) pair, preserving order; append if new.
+// `val` is consumed exactly once (unconditionally) to keep the ownership
+// checker from flagging a conditional move.
+@capabilities(compute)
+fn _set_key(keys: [str], vals: [Value], key: str, val: Value) -> KV {
+    let n = len(keys)
+    let idx = _index_of_key(keys, key)
+    if idx < 0 {
+        return _kv(push(keys, key), push(vals, val))
+    }
+    let mut nv: [Value] = []
+    let mut j = 0
+    while j < idx {
+        nv = push(nv, vals[j])
+        j = j + 1
+    }
+    nv = push(nv, val)
+    let mut k = idx + 1
+    while k < n {
+        nv = push(nv, vals[k])
+        k = k + 1
+    }
+    return _kv(keys, nv)
+}
+
+@capabilities(compute)
+fn _index_of_key(keys: [str], key: str) -> i64 {
+    let n = len(keys)
+    let mut i = 0
+    while i < n {
+        if keys[i] == key {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+@capabilities(compute)
+fn _find(keys: [str], vals: [Value], key: str) -> Value {
+    let n = len(keys)
+    let mut i = 0
+    while i < n {
+        if keys[i] == key {
+            return vals[i]
+        }
+        i = i + 1
+    }
+    return Value.Null
+}
+
+// --- Writer ------------------------------------------------------------------
+
+// Carries the growing output plus whether anything has been written yet (so the
+// first header is not preceded by a blank line).
+struct Emit {
+    text: str,
+    wrote: bool
+}
+
+@capabilities(compute)
+fn _emit_table(v: Value, prefix: [str], text_in: str, wrote_in: bool) -> Emit {
+    let mut keys: [str] = []
+    let mut vals: [Value] = []
+    match v {
+        Value::Table(k, vv) => {
+            keys = k
+            vals = vv
+        }
+        _ => { throw "toml: top-level value must be a table" }
+    }
+    let mut text = text_in
+    let mut wrote = wrote_in
+    let n = len(keys)
+
+    // Pass 1: scalar (non-table) keys at this level.
+    let mut i = 0
+    while i < n {
+        if not is_table(vals[i]) {
+            text = text + keys[i] + " = " + _emit_value(vals[i]) + "\n"
+            wrote = true
+        }
+        i = i + 1
+    }
+
+    // Pass 2: sub-tables. A header is emitted for a child only when the child
+    // has at least one direct scalar key, or is a completely empty table. A
+    // child that holds only further sub-tables is a super-table and is elided:
+    // its descendants emit with the dotted prefix ([a.b] rather than [a] then
+    // [a.b]), which is canonical TOML and keeps the round-trip minimal.
+    let mut j = 0
+    while j < n {
+        if is_table(vals[j]) {
+            let child = vals[j]
+            let header_path = _su_append_str(prefix, keys[j])
+            if _has_scalar(child) or _is_empty_table(child) {
+                if wrote {
+                    text = text + "\n"
+                }
+                text = text + "[" + _join_dotted(header_path) + "]\n"
+                wrote = true
+            }
+            let sub = _emit_table(child, header_path, text, wrote)
+            text = sub.text
+            wrote = sub.wrote
+        }
+        j = j + 1
+    }
+    return Emit { text: text, wrote: wrote }
+}
+
+@capabilities(compute)
+fn _has_scalar(v: Value) -> bool {
+    return match v {
+        Value::Table(_, vals) => _any_non_table(vals),
+        _ => false
+    }
+}
+
+@capabilities(compute)
+fn _any_non_table(vals: [Value]) -> bool {
+    let n = len(vals)
+    let mut i = 0
+    while i < n {
+        if not is_table(vals[i]) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+@capabilities(compute)
+fn _is_empty_table(v: Value) -> bool {
+    return match v {
+        Value::Table(keys, _) => len(keys) == 0,
+        _ => false
+    }
+}
+
+@capabilities(compute)
+fn _emit_value(v: Value) -> str {
+    return match v {
+        Value::Null => "\"\"",
+        Value::Bool(b) => _bool_str(b),
+        Value::Int(i) => to_string(i),
+        Value::Float(f) => _su_float_text(f),
+        Value::Str(s) => _escape_basic(s),
+        Value::Arr(items) => _emit_array(items),
+        Value::Table(_, _) => _throw_emit("toml: inline tables are not supported")
+    }
+}
+
+@capabilities(compute)
+fn _throw_emit(msg: str) -> str { throw msg }
+
+@capabilities(compute)
+fn _emit_array(items: [Value]) -> str {
+    let mut out = "["
+    let n = len(items)
+    let mut i = 0
+    while i < n {
+        if i > 0 {
+            out = out + ", "
+        }
+        out = out + _emit_value(items[i])
+        i = i + 1
+    }
+    return out + "]"
+}
+
+@capabilities(compute)
+fn _bool_str(b: bool) -> str {
+    if b { return "true" }
+    return "false"
+}
+
+// Wrap a string in double quotes, escaping backslash, quote, and control chars.
+@capabilities(compute)
+fn _escape_basic(s: str) -> str {
+    let mut out = "\""
+    let n = len(s)
+    let mut i = 0
+    while i < n {
+        let c = substr(s, i, i + 1)
+        if c == "\\" {
+            out = out + "\\\\"
+        } elif c == "\"" {
+            out = out + "\\\""
+        } elif c == "\n" {
+            out = out + "\\n"
+        } elif c == "\t" {
+            out = out + "\\t"
+        } elif c == "\r" {
+            out = out + "\\r"
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out + "\""
+}
+
+// --- Value parsing -----------------------------------------------------------
+
+@capabilities(compute)
+fn _tml_value(s: str) -> Value {
+    if len(s) == 0 {
+        throw "toml: empty value"
+    }
+    let first = substr(s, 0, 1)
+    if first == "\"" {
+        return vstr(_tml_basic_str(s))
+    }
+    if first == "'" {
+        return vstr(_tml_literal_str(s))
+    }
+    if first == "[" {
+        return _tml_array(s)
+    }
+    if char_code(first) == 123 {
+        // 123 == '{' : an inline table. A bare { in a string literal would open
+        // interpolation, so the character is matched by code, not spelled out.
+        throw "toml: inline tables are not supported in the MVP subset"
+    }
+    // bool / number: take the first whitespace-delimited token (drops a trailing
+    // inline # comment for non-string values).
+    let tok = _su_first_token(s)
+    if tok == "true" {
+        return vbool(true)
+    }
+    if tok == "false" {
+        return vbool(false)
+    }
+    if _su_looks_float(tok) {
+        return vfloat(parse_float(tok))
+    }
+    if _su_looks_int(tok) {
+        return vint(parse_int(tok))
+    }
+    throw "toml: unrecognized value: " + s
+}
+
+// Parse a basic "..." string starting at index 0, honoring backslash escapes.
+@capabilities(compute)
+fn _tml_basic_str(s: str) -> str {
+    let n = len(s)
+    let mut out = ""
+    let mut i = 1
+    while i < n {
+        let c = substr(s, i, i + 1)
+        if c == "\"" {
+            return out
+        }
+        if c == "\\" {
+            if i + 1 >= n {
+                throw "toml: dangling escape in string"
+            }
+            let e = substr(s, i + 1, i + 2)
+            if e == "n" {
+                out = out + "\n"
+            } elif e == "t" {
+                out = out + "\t"
+            } elif e == "r" {
+                out = out + "\r"
+            } elif e == "\"" {
+                out = out + "\""
+            } elif e == "\\" {
+                out = out + "\\"
+            } else {
+                throw "toml: unsupported escape \\" + e
+            }
+            i = i + 2
+        } else {
+            out = out + c
+            i = i + 1
+        }
+    }
+    throw "toml: unterminated basic string"
+}
+
+// Parse a literal '...' string (no escapes).
+@capabilities(compute)
+fn _tml_literal_str(s: str) -> str {
+    let n = len(s)
+    let mut out = ""
+    let mut i = 1
+    while i < n {
+        let c = substr(s, i, i + 1)
+        if c == "'" {
+            return out
+        }
+        out = out + c
+        i = i + 1
+    }
+    throw "toml: unterminated literal string"
+}
+
+// Parse a single-line array [a, b, c], splitting on top-level commas only.
+@capabilities(compute)
+fn _tml_array(s: str) -> Value {
+    let n = len(s)
+    if substr(s, n - 1, n) != "]" {
+        throw "toml: multi-line arrays are not supported in the MVP subset"
+    }
+    let inner = _su_trim(substr(s, 1, n - 1))
+    let mut items: [Value] = []
+    if len(inner) == 0 {
+        return varr(items)
+    }
+    let parts = _split_top_commas(inner)
+    let mut i = 0
+    while i < len(parts) {
+        items = push(items, _tml_value(_su_trim(parts[i])))
+        i = i + 1
+    }
+    return varr(items)
+}
+
+// Split on commas that are not inside a quoted string. Brackets are not nested
+// in the MVP subset (arrays of arrays are unusual in config); a nested [ throws.
+@capabilities(compute)
+fn _split_top_commas(s: str) -> [str] {
+    let mut parts: [str] = []
+    let mut cur = ""
+    let n = len(s)
+    let mut i = 0
+    let mut in_basic = false
+    let mut in_literal = false
+    while i < n {
+        let c = substr(s, i, i + 1)
+        if in_basic {
+            cur = cur + c
+            if c == "\\" and i + 1 < n {
+                cur = cur + substr(s, i + 1, i + 2)
+                i = i + 2
+                continue
+            }
+            if c == "\"" {
+                in_basic = false
+            }
+            i = i + 1
+            continue
+        }
+        if in_literal {
+            cur = cur + c
+            if c == "'" {
+                in_literal = false
+            }
+            i = i + 1
+            continue
+        }
+        if c == "\"" {
+            in_basic = true
+            cur = cur + c
+        } elif c == "'" {
+            in_literal = true
+            cur = cur + c
+        } elif c == "," {
+            parts = push(parts, cur)
+            cur = ""
+        } else {
+            cur = cur + c
+        }
+        i = i + 1
+    }
+    parts = push(parts, cur)
+    return parts
+}
+
+
+@capabilities(compute)
+fn _unquote_key(key: str) -> str {
+    let n = len(key)
+    if n >= 2 and substr(key, 0, 1) == "\"" and substr(key, n - 1, n) == "\"" {
+        return substr(key, 1, n - 1)
+    }
+    if n >= 2 and substr(key, 0, 1) == "'" and substr(key, n - 1, n) == "'" {
+        return substr(key, 1, n - 1)
+    }
+    return key
+}
+
+// Split a dotted header "a.b.c" into ["a","b","c"] (bare keys only in MVP).
+@capabilities(compute)
+fn _split_dotted(s: str) -> [str] {
+    let mut parts: [str] = []
+    let mut cur = ""
+    let n = len(s)
+    let mut i = 0
+    while i < n {
+        let c = substr(s, i, i + 1)
+        if c == "." {
+            parts = push(parts, _su_trim(cur))
+            cur = ""
+        } else {
+            cur = cur + c
+        }
+        i = i + 1
+    }
+    parts = push(parts, _su_trim(cur))
+    return parts
+}
+
+@capabilities(compute)
+fn _join_dotted(parts: [str]) -> str {
+    let mut out = ""
+    let n = len(parts)
+    let mut i = 0
+    while i < n {
+        if i > 0 {
+            out = out + "."
+        }
+        out = out + parts[i]
+        i = i + 1
+    }
+    return out
+}
+

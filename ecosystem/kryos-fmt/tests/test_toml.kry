@@ -1,0 +1,135 @@
+// ============================================================
+// test_toml.kry -- TOML reader/writer and byte-stable round-trip.
+//
+//   kryos test --path ecosystem/kryos-fmt
+//   kryos run  ecosystem/kryos-fmt/tests/test_toml.kry
+//
+// Pure compute. The headline assertion is the round-trip done-criterion: a
+// kryos.toml-shaped document parses and re-emits byte for byte (canonical LF).
+// ============================================================
+
+use value
+use toml
+
+// A kryos.toml-shaped manifest in canonical LF form. to_toml(parse_toml(doc))
+// must reproduce this exactly.
+@capabilities(compute)
+fn manifest_doc() -> str {
+    return "[package]\n" +
+        "name = \"kryos-fmt\"\n" +
+        "version = \"0.1.0\"\n" +
+        "description = \"capability-zero config parsers\"\n" +
+        "license = \"Apache-2.0\"\n" +
+        "\n" +
+        "[capabilities]\n" +
+        "allowed = [\"compute\"]\n"
+}
+
+@test
+fn test_round_trip_byte_stable() {
+    let doc = manifest_doc()
+    let parsed = parse_toml(doc)
+    let emitted = to_toml(parsed)
+    assert(emitted == doc, "kryos.toml round-trip must be byte-stable")
+}
+
+@test
+fn test_parse_values() {
+    let doc = manifest_doc()
+    let t = parse_toml(doc)
+    let pkg = table_get(t, "package")
+    assert(as_str(table_get(pkg, "name")) == "kryos-fmt", "package.name")
+    assert(as_str(table_get(pkg, "version")) == "0.1.0", "package.version")
+    let caps = table_get(t, "capabilities")
+    let allowed = as_arr(table_get(caps, "allowed"))
+    assert(len(allowed) == 1, "one allowed capability")
+    assert(as_str(allowed[0]) == "compute", "allowed[0] == compute")
+}
+
+@test
+fn test_scalar_types() {
+    let doc = "[s]\n" +
+        "i = 42\n" +
+        "neg = -7\n" +
+        "f = 3.5\n" +
+        "yes = true\n" +
+        "no = false\n" +
+        "lit = 'raw\\path'\n"
+    let t = parse_toml(doc)
+    let s = table_get(t, "s")
+    assert(as_int(table_get(s, "i")) == 42, "int 42")
+    assert(as_int(table_get(s, "neg")) == -7, "int -7")
+    assert(as_float(table_get(s, "f")) == 3.5, "float 3.5")
+    assert(as_bool(table_get(s, "yes")), "bool true")
+    assert(!as_bool(table_get(s, "no")), "bool false")
+    // literal string keeps the backslash verbatim
+    assert(as_str(table_get(s, "lit")) == "raw\\path", "literal string verbatim")
+}
+
+@test
+fn test_float_emit() {
+    // Emitting a float must not regress (and must not use to_string(f64)).
+    let doc = "[s]\n" + "ratio = 1.5\n"
+    let t = parse_toml(doc)
+    assert(to_toml(t) == "[s]\nratio = 1.5\n", "float round-trip 1.5")
+}
+
+@test
+fn test_multi_element_array() {
+    let doc = "[x]\n" + "list = [1, 2, 3]\n"
+    let t = parse_toml(doc)
+    let list = as_arr(table_get(table_get(t, "x"), "list"))
+    assert(len(list) == 3, "three elements")
+    assert(as_int(list[1]) == 2, "list[1] == 2")
+    // re-emit uses ", " separators
+    assert(to_toml(t) == "[x]\nlist = [1, 2, 3]\n", "array re-emit canonical")
+}
+
+@test
+fn test_nested_dotted_table() {
+    let doc = "[a.b]\n" + "y = 2\n"
+    let t = parse_toml(doc)
+    let a = table_get(t, "a")
+    let b = table_get(a, "b")
+    assert(as_int(table_get(b, "y")) == 2, "a.b.y == 2")
+    assert(to_toml(t) == "[a.b]\ny = 2\n", "dotted header round-trip")
+}
+
+@test
+fn test_toml_to_json_bridge() {
+    let doc = manifest_doc()
+    let t = parse_toml(doc)
+    let pkg = table_get(t, "package")
+    assert(to_json_string(table_get(pkg, "name")) == "\"kryos-fmt\"", "bridge name to json")
+}
+
+@test
+fn test_reject_inline_table() {
+    let mut threw = false
+    try {
+        let _ = parse_toml("[x]\ny = {{a = 1}}\n")
+    } catch e {
+        threw = true
+    }
+    assert(threw, "inline table must be rejected")
+}
+
+fn main() {
+    test_round_trip_byte_stable()
+    println("PASS test_round_trip_byte_stable")
+    test_parse_values()
+    println("PASS test_parse_values")
+    test_scalar_types()
+    println("PASS test_scalar_types")
+    test_float_emit()
+    println("PASS test_float_emit")
+    test_multi_element_array()
+    println("PASS test_multi_element_array")
+    test_nested_dotted_table()
+    println("PASS test_nested_dotted_table")
+    test_toml_to_json_bridge()
+    println("PASS test_toml_to_json_bridge")
+    test_reject_inline_table()
+    println("PASS test_reject_inline_table")
+    println("8/8 toml tests passed")
+}

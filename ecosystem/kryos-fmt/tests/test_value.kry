@@ -1,0 +1,76 @@
+// ============================================================
+// test_value.kry -- the typed Value model and its JsonValue bridge.
+//
+//   kryos test --path ecosystem/kryos-fmt
+//   kryos run  ecosystem/kryos-fmt/tests/test_value.kry
+//
+// Pure compute: no IO, no env. Asserts the to_json / from_json round-trip and
+// the Int-vs-Float classification that JSON's single Number type erases.
+// ============================================================
+
+use value
+
+@test
+fn test_scalar_bridge() {
+    assert(to_json_string(vint(42)) == "42", "int 42 -> json 42")
+    assert(to_json_string(vstr("hi")) == "\"hi\"", "str -> quoted json")
+    assert(to_json_string(vbool(true)) == "true", "bool -> json true")
+    assert(to_json_string(vnull()) == "null", "null -> json null")
+    // float rendering goes through _su_float_text (never to_string(f64))
+    assert(to_json_string(vfloat(1.5)) == "1.5", "float 1.5 -> json 1.5")
+    assert(to_json_string(vfloat(2.0)) == "2", "integral float -> 2")
+}
+
+@test
+fn test_table_bridge() {
+    let keys: [str] = ["name", "n"]
+    let vals: [Value] = [vstr("kryos"), vint(7)]
+    let t = vtable(keys, vals)
+    // Literal braces in a string literal are escaped by doubling ({{ }}) --
+    // a bare { opens string interpolation in Kryos.
+    assert(to_json_string(t) == "{{\"name\":\"kryos\",\"n\":7}}", "table -> json object")
+    assert(as_str(table_get(t, "name")) == "kryos", "table_get name")
+    assert(as_int(table_get(t, "n")) == 7, "table_get n")
+    assert(is_null(table_get(t, "missing")), "absent key -> Null")
+}
+
+@test
+fn test_array_bridge() {
+    let items: [Value] = [vint(1), vint(2), vint(3)]
+    let a = varr(items)
+    assert(to_json_string(a) == "[1,2,3]", "array -> json array")
+    assert(len(as_arr(a)) == 3, "as_arr length")
+}
+
+@test
+fn test_from_json_int_vs_float() {
+    // JSON Number collapses int and float; from_json reclassifies on integrality.
+    let iv = from_json_string("5")
+    assert(as_int(iv) == 5, "integral Number -> Int")
+    let fv = from_json_string("2.5")
+    assert(as_float(fv) == 2.5, "fractional Number -> Float")
+}
+
+@test
+fn test_round_trip_value_json_value() {
+    let keys: [str] = ["a", "b"]
+    let vals: [Value] = [vint(1), vstr("x")]
+    let original = vtable(keys, vals)
+    let back = from_json(to_json(original))
+    assert(as_int(table_get(back, "a")) == 1, "round-trip a")
+    assert(as_str(table_get(back, "b")) == "x", "round-trip b")
+}
+
+fn main() {
+    test_scalar_bridge()
+    println("PASS test_scalar_bridge")
+    test_table_bridge()
+    println("PASS test_table_bridge")
+    test_array_bridge()
+    println("PASS test_array_bridge")
+    test_from_json_int_vs_float()
+    println("PASS test_from_json_int_vs_float")
+    test_round_trip_value_json_value()
+    println("PASS test_round_trip_value_json_value")
+    println("5/5 value tests passed")
+}

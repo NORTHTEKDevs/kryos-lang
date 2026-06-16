@@ -1,0 +1,245 @@
+// ============================================================
+// strutil.kry -- small pure-compute string helpers shared by the TOML, YAML,
+// and CSV modules.
+//
+// Kryos resolves top-level function names in a single flat namespace across
+// every module loaded into a compilation, so a helper may be defined exactly
+// once project-wide. These live here (prefixed `_su_`) and are imported with
+// `use strutil` rather than copied per parser. All are @capabilities(compute).
+// ============================================================
+
+/// Split into lines on \n, \r\n, or lone \r. A trailing newline does not yield
+/// a final empty line; content with no trailing newline still yields its line.
+@capabilities(compute)
+fn _su_split_lines(s: str) -> [str] {
+    let mut lines: [str] = []
+    let mut cur = ""
+    let n = len(s)
+    let mut i = 0
+    while i < n {
+        let c = substr(s, i, i + 1)
+        if c == "\n" {
+            lines = push(lines, cur)
+            cur = ""
+            i = i + 1
+        } elif c == "\r" {
+            if i + 1 < n and substr(s, i + 1, i + 2) == "\n" {
+                i = i + 2
+            } else {
+                i = i + 1
+            }
+            lines = push(lines, cur)
+            cur = ""
+        } else {
+            cur = cur + c
+            i = i + 1
+        }
+    }
+    if len(cur) > 0 {
+        lines = push(lines, cur)
+    }
+    return lines
+}
+
+@capabilities(compute)
+fn _su_is_space(c: str) -> bool {
+    return c == " " or c == "\t" or c == "\r" or c == "\n"
+}
+
+/// Strip leading and trailing ASCII whitespace.
+@capabilities(compute)
+fn _su_trim(s: str) -> str {
+    let n = len(s)
+    let mut start = 0
+    while start < n and _su_is_space(substr(s, start, start + 1)) {
+        start = start + 1
+    }
+    let mut end = n
+    while end > start and _su_is_space(substr(s, end - 1, end)) {
+        end = end - 1
+    }
+    return substr(s, start, end)
+}
+
+/// First byte index of `needle` in `s`, or -1. Empty needle returns 0.
+@capabilities(compute)
+fn _su_index_of(s: str, needle: str) -> i64 {
+    let n = len(s)
+    let m = len(needle)
+    if m == 0 {
+        return 0
+    }
+    let mut i = 0
+    while i + m <= n {
+        if substr(s, i, i + m) == needle {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+@capabilities(compute)
+fn _su_starts_with(s: str, prefix: str) -> bool {
+    let m = len(prefix)
+    if m > len(s) {
+        return false
+    }
+    return substr(s, 0, m) == prefix
+}
+
+/// The leading non-whitespace token of `s` (everything up to the first space).
+@capabilities(compute)
+fn _su_first_token(s: str) -> str {
+    let n = len(s)
+    let mut i = 0
+    while i < n and not _su_is_space(substr(s, i, i + 1)) {
+        i = i + 1
+    }
+    return substr(s, 0, i)
+}
+
+/// True if `tok` is a plain (optionally signed) base-10 integer.
+@capabilities(compute)
+fn _su_looks_int(tok: str) -> bool {
+    let n = len(tok)
+    if n == 0 {
+        return false
+    }
+    let mut i = 0
+    let f = substr(tok, 0, 1)
+    if f == "-" or f == "+" {
+        i = 1
+    }
+    if i >= n {
+        return false
+    }
+    while i < n {
+        let code = char_code(substr(tok, i, i + 1))
+        if code < 48 or code > 57 {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+/// True if `tok` is numeric and carries a '.', 'e', or 'E' (i.e. a float form).
+@capabilities(compute)
+fn _su_looks_float(tok: str) -> bool {
+    let n = len(tok)
+    if n == 0 {
+        return false
+    }
+    let mut has_dot_or_exp = false
+    let mut saw_digit = false
+    let mut i = 0
+    let f = substr(tok, 0, 1)
+    if f == "-" or f == "+" {
+        i = 1
+    }
+    while i < n {
+        let c = substr(tok, i, i + 1)
+        let code = char_code(c)
+        if code >= 48 and code <= 57 {
+            saw_digit = true
+        } elif c == "." or c == "e" or c == "E" {
+            has_dot_or_exp = true
+        } elif c == "-" or c == "+" {
+            // permitted inside an exponent
+        } else {
+            return false
+        }
+        i = i + 1
+    }
+    return saw_digit and has_dot_or_exp
+}
+
+// --- Number formatting -------------------------------------------------------
+//
+// `to_string` is polymorphic, but the `kryos test` harness JIT declares it with
+// a fixed i64 signature, so `to_string(<f64>)` fails to compile there (every
+// emit path that rendered a float would break). These helpers render numbers
+// using only `to_string(i64)` plus integer arithmetic, so they compile under
+// both `kryos run` and `kryos test`. Floats are rendered to up to 9 fractional
+// digits with trailing zeros trimmed -- enough for config values; documented as
+// approximate in the README.
+
+@capabilities(compute)
+fn _su_int_text(i: i64) -> str {
+    return to_string(i)
+}
+
+/// Render an f64 without calling `to_string` on a float. Integral values print
+/// without a decimal point; fractional values keep up to 9 significant digits.
+@capabilities(compute)
+fn _su_float_text(f: f64) -> str {
+    let neg = f < 0.0
+    let mut af = f
+    if neg {
+        af = -f
+    }
+    let mut ip = (af as i64)
+    let frac = af - (ip as f64)
+    let mut scaled = ((frac * 1000000000.0) + 0.5) as i64
+    if scaled >= 1000000000 {
+        ip = ip + 1
+        scaled = scaled - 1000000000
+    }
+    if scaled == 0 {
+        let whole = to_string(ip)
+        if neg {
+            return "-" + whole
+        }
+        return whole
+    }
+    // Pad the fractional part to 9 digits, then trim trailing zeros.
+    let mut fs = to_string(scaled)
+    while len(fs) < 9 {
+        fs = "0" + fs
+    }
+    let mut end = len(fs)
+    while end > 1 and substr(fs, end - 1, end) == "0" {
+        end = end - 1
+    }
+    let body = to_string(ip) + "." + substr(fs, 0, end)
+    if neg {
+        return "-" + body
+    }
+    return body
+}
+
+// --- [str] helpers -----------------------------------------------------------
+
+@capabilities(compute)
+fn _su_empty_str_arr() -> [str] {
+    let e: [str] = []
+    return e
+}
+
+/// Return a copy of `arr` with `item` appended.
+@capabilities(compute)
+fn _su_append_str(arr: [str], item: str) -> [str] {
+    let mut out: [str] = []
+    let n = len(arr)
+    let mut i = 0
+    while i < n {
+        out = push(out, arr[i])
+        i = i + 1
+    }
+    out = push(out, item)
+    return out
+}
+
+/// Return all but the first element of `arr`.
+@capabilities(compute)
+fn _su_tail_str(arr: [str]) -> [str] {
+    let mut out: [str] = []
+    let n = len(arr)
+    let mut i = 1
+    while i < n {
+        out = push(out, arr[i])
+        i = i + 1
+    }
+    return out
+}

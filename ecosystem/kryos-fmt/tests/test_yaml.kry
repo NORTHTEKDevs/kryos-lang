@@ -1,0 +1,130 @@
+// ============================================================
+// test_yaml.kry -- the YAML subset reader.
+//
+//   kryos test --path ecosystem/kryos-fmt
+//   kryos run  ecosystem/kryos-fmt/tests/test_yaml.kry
+//
+// Pure compute. Exercises mappings, nesting, scalar typing, block sequences,
+// sequences of mappings, comment stripping, and subset rejection.
+// ============================================================
+
+use value
+use yaml
+
+@test
+fn test_flat_mapping_scalar_types() {
+    let doc = "name: kryos-fmt\n" +
+        "count: 7\n" +
+        "ratio: 1.5\n" +
+        "enabled: true\n" +
+        "empty: null\n" +
+        "bare: hello world\n" +
+        "quoted: \"a: b\"\n"
+    let v = parse_yaml(doc)
+    assert(as_str(table_get(v, "name")) == "kryos-fmt", "bare string name")
+    assert(as_int(table_get(v, "count")) == 7, "int 7")
+    assert(as_float(table_get(v, "ratio")) == 1.5, "float 1.5")
+    assert(as_bool(table_get(v, "enabled")), "bool true")
+    assert(is_null(table_get(v, "empty")), "null scalar")
+    assert(as_str(table_get(v, "bare")) == "hello world", "bare string with space")
+    assert(as_str(table_get(v, "quoted")) == "a: b", "quoted value keeps colon")
+}
+
+@test
+fn test_nested_mapping() {
+    let doc = "db:\n" +
+        "  host: localhost\n" +
+        "  port: 5432\n"
+    let v = parse_yaml(doc)
+    let db = table_get(v, "db")
+    assert(as_str(table_get(db, "host")) == "localhost", "db.host")
+    assert(as_int(table_get(db, "port")) == 5432, "db.port")
+}
+
+@test
+fn test_sequence_of_scalars() {
+    let doc = "caps:\n" +
+        "  - compute\n" +
+        "  - io\n"
+    let v = parse_yaml(doc)
+    let caps = as_arr(table_get(v, "caps"))
+    assert(len(caps) == 2, "two caps")
+    assert(as_str(caps[0]) == "compute", "caps[0]")
+    assert(as_str(caps[1]) == "io", "caps[1]")
+}
+
+@test
+fn test_sequence_of_mappings() {
+    let doc = "servers:\n" +
+        "  - name: a\n" +
+        "    port: 8080\n" +
+        "  - name: b\n" +
+        "    port: 9090\n"
+    let v = parse_yaml(doc)
+    let servers = as_arr(table_get(v, "servers"))
+    assert(len(servers) == 2, "two servers")
+    assert(as_str(table_get(servers[0], "name")) == "a", "servers[0].name")
+    assert(as_int(table_get(servers[0], "port")) == 8080, "servers[0].port")
+    assert(as_str(table_get(servers[1], "name")) == "b", "servers[1].name")
+    assert(as_int(table_get(servers[1], "port")) == 9090, "servers[1].port")
+}
+
+@test
+fn test_inline_and_line_comments() {
+    let doc = "# leading comment\n" +
+        "x: 1  # the x value\n" +
+        "y: hello # greeting\n"
+    let v = parse_yaml(doc)
+    assert(as_int(table_get(v, "x")) == 1, "x with inline comment")
+    assert(as_str(table_get(v, "y")) == "hello", "y with inline comment")
+}
+
+@test
+fn test_bridge_to_json() {
+    let doc = "pkg:\n" +
+        "  name: kryos-fmt\n"
+    let v = parse_yaml(doc)
+    assert(to_json_string(table_get(table_get(v, "pkg"), "name")) == "\"kryos-fmt\"", "yaml -> json bridge")
+}
+
+@test
+fn test_reject_anchor() {
+    let mut threw = false
+    try {
+        let _ = parse_yaml("a: &anchor 1\n")
+    } catch e {
+        threw = true
+    }
+    assert(threw, "anchors must be rejected")
+}
+
+@test
+fn test_reject_tab_indent() {
+    let mut threw = false
+    try {
+        let _ = parse_yaml("a:\n\tb: 1\n")
+    } catch e {
+        threw = true
+    }
+    assert(threw, "tab indentation must be rejected")
+}
+
+fn main() {
+    test_flat_mapping_scalar_types()
+    println("PASS test_flat_mapping_scalar_types")
+    test_nested_mapping()
+    println("PASS test_nested_mapping")
+    test_sequence_of_scalars()
+    println("PASS test_sequence_of_scalars")
+    test_sequence_of_mappings()
+    println("PASS test_sequence_of_mappings")
+    test_inline_and_line_comments()
+    println("PASS test_inline_and_line_comments")
+    test_bridge_to_json()
+    println("PASS test_bridge_to_json")
+    test_reject_anchor()
+    println("PASS test_reject_anchor")
+    test_reject_tab_indent()
+    println("PASS test_reject_tab_indent")
+    println("8/8 yaml tests passed")
+}

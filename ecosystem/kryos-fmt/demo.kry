@@ -1,0 +1,66 @@
+// ============================================================
+// demo.kry -- kryos-fmt in one runnable file.
+//
+//   kryos run     ecosystem/kryos-fmt/demo.kry
+//   kryos manifest --caps --format pretty ecosystem/kryos-fmt/demo.kry
+//
+// Every function here is @capabilities(compute): the demo parses TOML, YAML,
+// and CSV held as in-memory strings and bridges each to JSON, reading no file
+// and opening no socket. The manifest proves it -- the parsers structurally
+// cannot do IO, so a config library built on them cannot either.
+// ============================================================
+
+use value
+use toml
+use yaml
+use csv
+
+@capabilities(compute)
+fn demo_toml() {
+    let doc = "[package]\n" +
+        "name = \"kryos-fmt\"\n" +
+        "version = \"0.1.0\"\n" +
+        "\n" +
+        "[capabilities]\n" +
+        "allowed = [\"compute\"]\n"
+    let t = parse_toml(doc)
+    println("TOML round-trip byte-stable: " + _yn(to_toml(t) == doc))
+    let pkg = table_get(t, "package")
+    println("  package.name as JSON: " + to_json_string(table_get(pkg, "name")))
+    println("  capabilities as JSON: " + to_json_string(table_get(t, "capabilities")))
+}
+
+@capabilities(compute)
+fn demo_yaml() {
+    let doc = "service:\n" +
+        "  name: api\n" +
+        "  replicas: 3\n" +
+        "  ports:\n" +
+        "    - 8080\n" +
+        "    - 8443\n"
+    let v = parse_yaml(doc)
+    println("YAML service as JSON: " + to_json_string(table_get(v, "service")))
+}
+
+@capabilities(compute)
+fn demo_csv() {
+    let doc = "name,role\n" +
+        "Ada,eng\n" +
+        "Bob,ops\n"
+    let recs = parse_records(doc)
+    println("CSV records as JSON: " + to_json_string(recs))
+    println("CSV re-emitted:")
+    print(records_to_csv(recs))
+}
+
+@capabilities(compute)
+fn _yn(b: bool) -> str {
+    if b { return "yes" }
+    return "no"
+}
+
+fn main() {
+    demo_toml()
+    demo_yaml()
+    demo_csv()
+}

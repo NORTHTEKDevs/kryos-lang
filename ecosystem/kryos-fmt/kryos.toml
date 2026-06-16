@@ -1,0 +1,8 @@
+[package]
+name = "kryos-fmt"
+version = "0.1.0"
+description = "Capability-zero TOML/YAML/CSV parsers with a typed Value bridge to std::json, proven pure by kryos manifest --caps"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["compute"]
