@@ -1,0 +1,145 @@
+// ============================================================
+// broker.kry -- the capability-attenuated tool dispatcher.
+//
+// A ToolBroker holds a registry of tools. Each tool is a triple:
+//   (name, declared_caps, handler)
+// where declared_caps is the capability set the tool's handler needs to do its
+// job, and handler is a `fn(str) -> str` (single string arg in, string out --
+// the MVP tool ABI).
+//
+// dispatch(broker, agent_grant, name, args) is the enforcement point:
+//   - unknown tool name                -> Err(UnknownTool)
+//   - declared_caps NOT a subset of    -> Err(Refused) with the excess caps
+//     the agent's grant                   listed (least-privilege refusal)
+//   - declared_caps subset of grant    -> Ok(handler(args))
+//
+// This is the runtime analogue of the compiler's subset check: the agent's
+// grant is a CapabilitySet, and a tool whose declared caps are not a subset is
+// refused -- exactly is_subset_of returning false. LangChain-style routers have
+// no per-agent capability budget; here the grant is data and the refusal is a
+// value.
+//
+// Every dispatch (allowed or refused) appends one audit entry to the broker's
+// in-memory log, so a caller can reconstruct what was attempted and why it was
+// refused.
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+use caps
+
+// Parallel-array registry. Index i describes one tool: names[i], decls[i] (its
+// declared capability set), handlers[i]. Parallel arrays avoid a struct field
+// holding a [str] inside a [Tool] (nested aggregate arrays), which keeps the
+// data model portable across both backends.
+struct ToolBroker {
+    names: [str],
+    decls: [[str]],
+    handlers: [fn(str) -> str],
+    audit: [str],
+}
+
+enum DispatchError {
+    UnknownTool(str),
+    Refused(str),
+}
+
+@capabilities()
+fn dispatch_error_message(e: DispatchError) -> str {
+    match e {
+        DispatchError::UnknownTool(name) => return "UnknownTool(" + name + ")",
+        DispatchError::Refused(detail) => return "Refused(" + detail + ")",
+    }
+}
+
+// A fresh broker with no tools registered.
+@capabilities()
+fn broker_new() -> ToolBroker {
+    return ToolBroker {
+        names: [],
+        decls: [],
+        handlers: [],
+        audit: [],
+    }
+}
+
+// Register a tool. Returns the broker with the tool appended (value-threading
+// style: rebind `b = register(b, ...)` at the call site).
+@capabilities()
+fn register(b: ToolBroker, name: str, declared_caps: [str], handler: fn(str) -> str) -> ToolBroker {
+    return ToolBroker {
+        names: push(b.names, name),
+        decls: push(b.decls, declared_caps),
+        handlers: push(b.handlers, handler),
+        audit: b.audit,
+    }
+}
+
+// Index of `name` in the registry, or -1 if absent.
+@capabilities()
+fn tool_index(b: ToolBroker, name: str) -> i64 {
+    let mut i = 0
+    while i < len(b.names) {
+        if b.names[i] == name {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// Append an audit line and return the updated broker.
+@capabilities()
+fn audit_append(b: ToolBroker, line: str) -> ToolBroker {
+    return ToolBroker {
+        names: b.names,
+        decls: b.decls,
+        handlers: b.handlers,
+        audit: push(b.audit, line),
+    }
+}
+
+// The result of a dispatch attempt, bundled with the (possibly updated) broker
+// so the audit log is threaded back to the caller. `outcome` is the dispatch
+// Result; `broker` carries the new audit entry.
+struct DispatchResult {
+    broker: ToolBroker,
+    outcome: Result<str, DispatchError>,
+}
+
+// dispatch enforces least-privilege: it runs the named tool only if the tool's
+// declared capabilities are a subset of `agent_grant`. Either way it records an
+// audit line. The returned DispatchResult carries the updated broker (with the
+// audit entry) and the Result.
+@capabilities()
+fn dispatch(b: ToolBroker, agent_grant: [str], name: str, args: str) -> DispatchResult {
+    let idx = tool_index(b, name)
+    if idx < 0 {
+        let logged = audit_append(b, "REFUSED tool=" + name + " reason=unknown")
+        return DispatchResult {
+            broker: logged,
+            outcome: Err(DispatchError.UnknownTool(name)),
+        }
+    }
+
+    let declared = b.decls[idx]
+    let excess = caps_excess(declared, agent_grant)
+    if len(excess) > 0 {
+        let detail = "tool=" + name + " declares=" + caps_render(declared)
+            + " grant=" + caps_render(agent_grant)
+            + " excess=" + caps_render(excess)
+        let logged = audit_append(b, "REFUSED " + detail)
+        return DispatchResult {
+            broker: logged,
+            outcome: Err(DispatchError.Refused(detail)),
+        }
+    }
+
+    let handler = b.handlers[idx]
+    let output = handler(args)
+    let logged = audit_append(b, "ALLOWED tool=" + name + " declares="
+        + caps_render(declared) + " grant=" + caps_render(agent_grant))
+    return DispatchResult {
+        broker: logged,
+        outcome: Ok(output),
+    }
+}

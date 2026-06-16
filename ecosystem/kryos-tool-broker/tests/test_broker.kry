@@ -1,0 +1,153 @@
+// ============================================================
+// test_broker.kry -- MVP tests for the capability-attenuated tool broker.
+//
+//   kryos test --path ecosystem/kryos-tool-broker
+//   kryos run  tests/test_broker.kry        (drives the same assertions)
+//
+// Coverage maps directly onto the spec's done criteria:
+//   - an in-grant tool runs                                 (allowed path)
+//   - an over-privileged tool is refused with the excess    (refusal path)
+//   - the audit trail records BOTH attempts                 (audit path)
+//   - an unknown tool name is refused                        (registry path)
+//   - attenuation refuses an escalating sub-delegation       (attenuation path)
+//   - the runtime taxonomy matches the compiler's 11 variants
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+use caps
+use broker
+use attenuate
+
+// A trivial tool handler: tag its input so we can assert it actually ran.
+@capabilities()
+fn compute_tool(s: str) -> str {
+    return "computed(" + s + ")"
+}
+
+@capabilities()
+fn net_tool(s: str) -> str {
+    return "fetched(" + s + ")"
+}
+
+// Build a broker with a compute tool and a net tool registered.
+@capabilities()
+fn seed_broker() -> ToolBroker {
+    let mut b = broker_new()
+    b = register(b, "summarize", ["compute"], compute_tool)
+    b = register(b, "fetch_url", ["net"], net_tool)
+    return b
+}
+
+@test
+fn test_in_grant_tool_runs() {
+    let b = seed_broker()
+    // Agent granted compute + io. The compute tool is a subset -> runs.
+    let r = dispatch(b, ["compute", "io"], "summarize", "doc")
+    match r.outcome {
+        Result::Ok(out) => assert(out == "computed(doc)", "handler should run and tag input, got " + out),
+        Result::Err(e) => assert(false, "in-grant tool must run, got " + dispatch_error_message(e)),
+    }
+}
+
+@test
+fn test_over_privileged_tool_is_refused() {
+    let b = seed_broker()
+    // Agent granted only compute. The net tool exceeds the grant -> refused.
+    let r = dispatch(b, ["compute"], "fetch_url", "https://example.com")
+    match r.outcome {
+        Result::Ok(out) => assert(false, "net tool under compute grant must be refused, ran: " + out),
+        Result::Err(e) => match e {
+            DispatchError::Refused(detail) => {
+                assert(contains(detail, "excess={{net}}"), "refusal must name the excess cap net, got " + detail)
+            },
+            DispatchError::UnknownTool(n) => assert(false, "expected Refused, got UnknownTool(" + n + ")"),
+        },
+    }
+}
+
+@test
+fn test_audit_records_both_attempts() {
+    let mut b = seed_broker()
+    // One allowed dispatch, then one refused dispatch; audit should hold both.
+    let r1 = dispatch(b, ["compute"], "summarize", "a")
+    b = r1.broker
+    let r2 = dispatch(b, ["compute"], "fetch_url", "b")
+    b = r2.broker
+
+    assert(len(b.audit) == 2, "audit must record both attempts, got " + to_string(len(b.audit)))
+    assert(contains(b.audit[0], "ALLOWED tool=summarize"), "first entry should be the allowed summarize, got " + b.audit[0])
+    assert(contains(b.audit[1], "REFUSED tool=fetch_url"), "second entry should be the refused fetch_url, got " + b.audit[1])
+}
+
+@test
+fn test_unknown_tool_is_refused() {
+    let b = seed_broker()
+    let r = dispatch(b, ["all"], "does_not_exist", "x")
+    match r.outcome {
+        Result::Ok(out) => assert(false, "unknown tool must be refused, ran: " + out),
+        Result::Err(e) => match e {
+            DispatchError::UnknownTool(name) => assert(name == "does_not_exist", "should name the missing tool, got " + name),
+            DispatchError::Refused(d) => assert(false, "expected UnknownTool, got Refused(" + d + ")"),
+        },
+    }
+    // The refusal is still audited.
+    let logged = r.broker
+    assert(len(logged.audit) == 1, "unknown-tool refusal must be audited")
+}
+
+@test
+fn test_all_grant_runs_any_tool() {
+    let b = seed_broker()
+    // The "all" wildcard grant subsumes every concrete capability.
+    let r = dispatch(b, ["all"], "fetch_url", "u")
+    match r.outcome {
+        Result::Ok(out) => assert(out == "fetched(u)", "all grant should run the net tool, got " + out),
+        Result::Err(e) => assert(false, "all grant must permit any tool, got " + dispatch_error_message(e)),
+    }
+}
+
+@test
+fn test_attenuation_refuses_escalation() {
+    // A meta-tool granted {compute} cannot sub-delegate {net} to a child.
+    match attenuate(["compute"], ["net"]) {
+        Result::Ok(g) => assert(false, "escalating sub-grant must be refused, allowed " + caps_render(g)),
+        Result::Err(excess) => assert(caps_render(excess) == "{{net}}", "excess should be net, got " + caps_render(excess)),
+    }
+    // A narrowing sub-delegation within the grant is permitted.
+    match attenuate(["compute", "net"], ["compute"]) {
+        Result::Ok(g) => assert(caps_render(g) == "{{compute}}", "narrowing should pass, got " + caps_render(g)),
+        Result::Err(excess) => assert(false, "narrowing within grant must be allowed, refused " + caps_render(excess)),
+    }
+    // Clamp drops the escalating request down to what the parent holds.
+    let clamped = attenuate_clamp(["compute", "io"], ["compute", "net"])
+    assert(caps_render(clamped) == "{{compute}}", "clamp should keep only compute, got " + caps_render(clamped))
+}
+
+@test
+fn test_taxonomy_matches_compiler() {
+    // The runtime taxonomy must mirror the 10 concrete Capability variants in
+    // compiler/crates/kryos-capabilities/src/model.rs, plus the "all" wildcard.
+    assert(len(known_capabilities()) == 10, "expected 10 concrete capabilities")
+    assert(is_known_capability("net"), "net must be known")
+    assert(is_known_capability("crypto"), "crypto must be known")
+    assert(is_known_capability("all"), "all wildcard must be known")
+    assert(!is_known_capability("filesystem"), "unknown name must be rejected")
+}
+
+fn main() {
+    test_in_grant_tool_runs()
+    println("PASS test_in_grant_tool_runs")
+    test_over_privileged_tool_is_refused()
+    println("PASS test_over_privileged_tool_is_refused")
+    test_audit_records_both_attempts()
+    println("PASS test_audit_records_both_attempts")
+    test_unknown_tool_is_refused()
+    println("PASS test_unknown_tool_is_refused")
+    test_all_grant_runs_any_tool()
+    println("PASS test_all_grant_runs_any_tool")
+    test_attenuation_refuses_escalation()
+    println("PASS test_attenuation_refuses_escalation")
+    test_taxonomy_matches_compiler()
+    println("PASS test_taxonomy_matches_compiler")
+    println("7/7 broker tests passed")
+}

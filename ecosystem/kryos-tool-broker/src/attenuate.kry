@@ -1,0 +1,45 @@
+// ============================================================
+// attenuate.kry -- sub-delegation within a grant.
+//
+// A tool that itself dispatches to other tools (a "meta-tool") must not be able
+// to hand a sub-tool MORE capability than it was granted. Attenuation is the
+// monotone-narrowing rule: a delegated grant must be a subset of the parent
+// grant. You can drop capabilities on delegation; you can never add them.
+//
+// attenuate(parent_grant, requested):
+//   - requested subset of parent  -> Ok(requested)   (a valid narrowing)
+//   - requested has excess         -> Err(excess caps) (escalation, refused)
+//
+// This mirrors the compiler's attenuation diagnostics (E0503 attenuation /
+// E0504 escalation): a child scope's capability set may only shrink.
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+use caps
+
+// Refuse a delegated grant that escalates beyond the parent. On success returns
+// the requested set (already a subset). On failure returns the excess caps that
+// made it an escalation.
+@capabilities()
+fn attenuate(parent_grant: [str], requested: [str]) -> Result<[str], [str]> {
+    let excess = caps_excess(requested, parent_grant)
+    if len(excess) > 0 {
+        return Err(excess)
+    }
+    return Ok(requested)
+}
+
+// The greatest valid sub-grant: the capabilities common to both sets. Unlike
+// attenuate (which refuses an escalating request), this always succeeds by
+// clamping the request down to what the parent actually holds -- useful when a
+// meta-tool wants "as much of X as I'm allowed to pass on".
+@capabilities()
+fn attenuate_clamp(parent_grant: [str], requested: [str]) -> [str] {
+    let mut out: [str] = []
+    for cap in requested {
+        if caps_allows(parent_grant, cap) {
+            out = push(out, cap)
+        }
+    }
+    return out
+}

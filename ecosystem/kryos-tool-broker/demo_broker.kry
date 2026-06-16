@@ -1,0 +1,92 @@
+// ============================================================
+// demo_broker.kry -- the spec's done-criteria scenario, end to end.
+//
+//   kryos run ecosystem/kryos-tool-broker/demo_broker.kry
+//
+// Registers three tools with distinct declared capabilities, then runs the same
+// turn under two different agent grants:
+//   - a "compute-only" agent: the net tool is REFUSED, the compute tool RUNS
+//   - a "trusted" agent ({compute, net, io}): all three RUN
+// Finally it prints the audit trail, showing both attempts recorded -- exactly
+// the spec's "audit trail records both attempts".
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+use caps
+use broker
+use attenuate
+
+@capabilities()
+fn summarize_tool(s: str) -> str {
+    return "summary<" + s + ">"
+}
+
+@capabilities()
+fn fetch_tool(s: str) -> str {
+    return "body-of(" + s + ")"
+}
+
+@capabilities()
+fn write_report_tool(s: str) -> str {
+    return "wrote report: " + s
+}
+
+@capabilities()
+fn build_broker() -> ToolBroker {
+    let mut b = broker_new()
+    b = register(b, "summarize", ["compute"], summarize_tool)
+    b = register(b, "fetch_url", ["net"], fetch_tool)
+    b = register(b, "write_report", ["io"], write_report_tool)
+    return b
+}
+
+// Run one tool under one grant, print the outcome, return the threaded broker.
+@capabilities()
+fn run_one(b: ToolBroker, grant: [str], name: str, args: str) -> ToolBroker {
+    let r = dispatch(b, grant, name, args)
+    match r.outcome {
+        Result::Ok(out) => println("  ALLOW  " + name + "(" + args + ") -> " + out),
+        Result::Err(e) => println("  REFUSE " + name + "(" + args + ") -> " + dispatch_error_message(e)),
+    }
+    return r.broker
+}
+
+fn main() {
+    let mut b = build_broker()
+    println("registered tools: summarize[compute], fetch_url[net], write_report[io]")
+    println("")
+
+    // --- Turn 1: a least-privilege agent granted only {compute} ---
+    println("agent A grant = " + caps_render(["compute"]))
+    b = run_one(b, ["compute"], "summarize", "the meeting notes")
+    b = run_one(b, ["compute"], "fetch_url", "https://example.com")
+    b = run_one(b, ["compute"], "write_report", "Q3")
+    println("")
+
+    // --- Turn 2: a trusted agent granted {compute, net, io} ---
+    println("agent B grant = " + caps_render(["compute", "net", "io"]))
+    b = run_one(b, ["compute", "net", "io"], "summarize", "the meeting notes")
+    b = run_one(b, ["compute", "net", "io"], "fetch_url", "https://example.com")
+    b = run_one(b, ["compute", "net", "io"], "write_report", "Q3")
+    println("")
+
+    // --- Attenuation: a meta-tool with {compute, io} sub-delegates ---
+    println("attenuation: meta-tool grant = " + caps_render(["compute", "io"]))
+    match attenuate(["compute", "io"], ["io"]) {
+        Result::Ok(g) => println("  delegate " + caps_render(["io"]) + " -> OK (within grant): " + caps_render(g)),
+        Result::Err(x) => println("  delegate " + caps_render(["io"]) + " -> REFUSED escalation: " + caps_render(x)),
+    }
+    match attenuate(["compute", "io"], ["net"]) {
+        Result::Ok(g) => println("  delegate " + caps_render(["net"]) + " -> OK: " + caps_render(g)),
+        Result::Err(x) => println("  delegate " + caps_render(["net"]) + " -> REFUSED escalation, excess " + caps_render(x)),
+    }
+    println("")
+
+    // --- The audit trail: every attempt, allowed or refused ---
+    println("audit trail (" + to_string(len(b.audit)) + " entries):")
+    let mut i = 0
+    while i < len(b.audit) {
+        println("  [" + to_string(i) + "] " + b.audit[i])
+        i = i + 1
+    }
+}

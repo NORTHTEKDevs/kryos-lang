@@ -1,0 +1,8 @@
+[package]
+name = "kryos-tool-broker"
+version = "0.1.0"
+description = "Capability-attenuated tool dispatcher for agents: refuse to dispatch a tool whose declared capabilities exceed the agent's grant"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["compute", "io"]

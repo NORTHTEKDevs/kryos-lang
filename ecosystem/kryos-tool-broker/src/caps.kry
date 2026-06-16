@@ -1,0 +1,89 @@
+// ============================================================
+// caps.kry -- capability-set primitives for the tool broker.
+//
+// Capabilities are a compile-time concept in Kryos (the @capabilities(...)
+// annotation, enforced by the compiler's kryos-capabilities crate). To make a
+// per-agent, per-turn dispatch decision at RUNTIME, the broker re-encodes the
+// taxonomy as plain data: a capability is a lowercase name (str), a capability
+// set is a [str].
+//
+// The 11 names here mirror the Capability enum in
+// compiler/crates/kryos-capabilities/src/model.rs exactly:
+//   net io ffi compute crypto process env term db time   (10 concrete)
+//   all                                                   (wildcard)
+// "all" in a grant is a wildcard that subsumes every concrete capability,
+// matching CapabilitySet::is_subset_of / excess_over in that crate.
+//
+// Everything here is pure (no IO); @capabilities() with empty parens documents
+// that and keeps these callable from any scope.
+// ============================================================
+
+// The 10 concrete capability names recognized by the compiler taxonomy.
+// "all" is handled separately as a wildcard.
+@capabilities()
+fn known_capabilities() -> [str] {
+    return ["net", "io", "ffi", "compute", "crypto", "process", "env", "term", "db", "time"]
+}
+
+// Is `cap` one of the names the compiler taxonomy recognizes (incl. "all")?
+@capabilities()
+fn is_known_capability(cap: str) -> bool {
+    if cap == "all" {
+        return true
+    }
+    for k in known_capabilities() {
+        if k == cap {
+            return true
+        }
+    }
+    return false
+}
+
+// Does `grant` confer `cap`? A literal "all" entry is a wildcard that grants
+// every capability, mirroring Capability::All in the compiler.
+@capabilities()
+fn caps_allows(grant: [str], cap: str) -> bool {
+    for g in grant {
+        if g == cap || g == "all" {
+            return true
+        }
+    }
+    return false
+}
+
+// The capabilities in `declared` that `grant` does NOT confer. An empty result
+// means `declared` is a subset of `grant`. This is the runtime analogue of
+// CapabilitySet::excess_over in compiler/crates/kryos-capabilities/src/model.rs.
+@capabilities()
+fn caps_excess(declared: [str], grant: [str]) -> [str] {
+    let mut excess: [str] = []
+    for cap in declared {
+        if !caps_allows(grant, cap) {
+            excess = push(excess, cap)
+        }
+    }
+    return excess
+}
+
+// True iff `declared` is a subset of `grant` (no excess capabilities). Runtime
+// analogue of CapabilitySet::is_subset_of.
+@capabilities()
+fn is_subset_of(declared: [str], grant: [str]) -> bool {
+    return len(caps_excess(declared, grant)) == 0
+}
+
+// Render a [str] capability set as "{a, b, c}" for messages and audit lines.
+// `{{` / `}}` escape to a single brace (a bare `{` opens interpolation).
+@capabilities()
+fn caps_render(caps: [str]) -> str {
+    let mut out: str = "{{"
+    let mut i = 0
+    while i < len(caps) {
+        if i > 0 {
+            out = out + ", "
+        }
+        out = out + caps[i]
+        i = i + 1
+    }
+    return out + "}}"
+}
