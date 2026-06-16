@@ -1,0 +1,75 @@
+// ============================================================
+// demo_typed.kry -- end-to-end demo of the parse/effect split.
+//
+//   kryos run ecosystem/kryos-typed-config/demo_typed.kry
+//
+// Shows:
+//   1. load_file (io) reads raw text, hands it to the compute parser.
+//   2. A valid config becomes a typed AppConfig; the api_key is a Secret that
+//      redacts safely (never prints the raw value).
+//   3. A malformed config returns EVERY violation in one pass.
+//   4. parse_config (compute) works on text from any source -- here, a literal.
+//
+// main carries `io` because it writes/reads a demo file; the parsing it triggers
+// is compute and could never have done that I/O on its own.
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+use kryos_secrets::secret
+use typed
+use loader
+
+@capabilities(process)
+fn temp_path() -> str {
+    let t: str = env_get("TEMP")
+    if len(t) > 0 { return t + "/kryos_typed_demo.json" }
+    let t2: str = env_get("TMPDIR")
+    if len(t2) > 0 { return t2 + "/kryos_typed_demo.json" }
+    return "/tmp/kryos_typed_demo.json"
+}
+
+@capabilities(io, process, compute)
+fn main() {
+    let path = temp_path()
+    let good = "{{\"host\": \"db.internal\", \"port\": 5432, \"log_level\": \"warn\", \"max_connections\": 200, \"debug\": false, \"api_key\": \"sk-live-7f3a9c2e\"}}"
+    file_write(path, good)
+
+    println("== 1. load_file (io) -> typed AppConfig ==")
+    match load_file(path) {
+        Ok(cfg) => {
+            println("host            = " + cfg.host)
+            println("port            = " + to_string(cfg.port))
+            println("log_level       = " + cfg.log_level)
+            println("max_connections = " + to_string(cfg.max_connections))
+            // The secret never prints raw -- only its label and byte length.
+            println("api_key         = " + redacted(cfg.api_key))
+            // The ONLY way to see the raw value is expose, which runs in this
+            // caller's capability scope (io here, never net).
+            let prefix = expose(cfg.api_key, |raw| substr(raw, 0, 7))
+            println("api_key prefix  = " + prefix + "...")
+        },
+        Err(es) => println("unexpected: " + to_string(len(es)) + " errors"),
+    }
+
+    println("")
+    println("== 2. malformed config -> ALL violations at once ==")
+    let bad = "{{\"host\": \"\", \"port\": 70000, \"log_level\": \"verbose\", \"max_connections\": 0, \"debug\": \"yes\", \"api_key\": \"\"}}"
+    match parse_config(bad) {
+        Ok(_) => println("ERROR: malformed config unexpectedly passed"),
+        Err(es) => {
+            println(to_string(len(es)) + " violations:")
+            let mut i = 0
+            while i < len(es) {
+                println("  - " + es[i])
+                i = i + 1
+            }
+        },
+    }
+
+    println("")
+    println("== 3. malformed JSON -> single syntax error ==")
+    match parse_config("{{not json") {
+        Ok(_) => println("ERROR: bad JSON unexpectedly passed"),
+        Err(es) => println(es[0]),
+    }
+}

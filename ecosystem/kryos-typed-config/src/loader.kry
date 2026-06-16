@@ -1,0 +1,48 @@
+// ============================================================
+// loader.kry -- the EFFECT layer. The ONLY place that touches the outside world.
+//
+// `parse_config` (typed.kry) is compute-only: it can turn TEXT into a typed
+// config but it cannot go and GET the text. That is the whole design -- the
+// authority to read a file or the environment lives here, on a thin, separately
+// annotated surface, and nowhere else:
+//
+//   load_file(path)    @capabilities(io)       -- file_read is gated on `io`
+//   load_env_var(key)  @capabilities(process)  -- env_get is gated on `process`
+//
+// Each reads raw text and hands it straight to the compute parser. `kryos
+// manifest --caps` over THIS file reports io / process (see check_caps.sh, which
+// asserts the split: typed.kry is compute-only, loader.kry carries the effects).
+//
+// Because the capability checker is non-transitive (CLAUDE.md), these functions
+// declare exactly the capability of the builtin they call directly; calling the
+// compute `parse_config` does not widen them.
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+use typed
+
+/// Read a config file and parse+validate it. Requires `io` (file_read). A
+/// missing file is reported as a single error rather than a thrown exception, so
+/// the caller always gets a Result.
+@capabilities(io, compute)
+fn load_file(path: str) -> Result<AppConfig, [str]> {
+    if file_exists(path) == 0 {
+        let missing: [str] = ["config: file not found: " + path]
+        return Err(missing)
+    }
+    let raw = file_read(path)
+    return parse_config(raw)
+}
+
+/// Read config text from environment variable `key` and parse+validate it.
+/// Requires `process` (env_get). An unset/empty variable is reported as a single
+/// error. Useful for 12-factor-style "config in the environment" deployments.
+@capabilities(process, compute)
+fn load_env_var(key: str) -> Result<AppConfig, [str]> {
+    let raw = env_get(key)
+    if len(raw) == 0 {
+        let unset: [str] = ["config: environment variable " + key + " is empty or unset"]
+        return Err(unset)
+    }
+    return parse_config(raw)
+}

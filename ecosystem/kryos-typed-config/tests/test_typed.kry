@@ -1,0 +1,137 @@
+// ============================================================
+// test_typed.kry -- behaviour of the compute parse/validate surface.
+//
+//   kryos test --path ecosystem/kryos-typed-config
+//   kryos run  ecosystem/kryos-typed-config/tests/test_typed.kry   (same asserts)
+//
+// Covers the spec's three runtime done-criteria:
+//   * a VALID config parses into the typed AppConfig (every field correct, the
+//     api_key wrapped as a Secret that redacts safely);
+//   * a MALFORMED config returns ALL violations in one pass, not just the first;
+//   * malformed JSON / a non-object top level each return a clear single error.
+//
+// The COMPILE-TIME guarantees (typed.kry is compute-only; a secret cannot reach
+// a net sink) are CLI properties, asserted by check_caps.sh and the compile-fail
+// fixture tests/fixtures/leak_config.kry -- a type-checker rejection cannot be
+// observed from inside a running test, so it is verified at the CLI and the
+// output pasted into the PR evidence (same pattern as kryos-secrets).
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+use kryos_secrets::secret
+use typed
+
+// True if any message in `es` contains `needle`.
+@capabilities(compute)
+fn has_err(es: [str], needle: str) -> bool {
+    let mut i = 0
+    while i < len(es) {
+        if contains(es[i], needle) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// The error list for raw config text (empty when it parsed Ok).
+@capabilities(compute)
+fn errs_of(raw: str) -> [str] {
+    match parse_config(raw) {
+        Ok(_) => {
+            let empty: [str] = []
+            return empty
+        },
+        Err(es) => return es,
+    }
+}
+
+// A fully valid config document.
+@capabilities(compute)
+fn valid_doc() -> str {
+    return "{{\"host\": \"localhost\", \"port\": 8080, \"log_level\": \"info\", \"max_connections\": 100, \"debug\": true, \"api_key\": \"sk-live-abc123\"}}"
+}
+
+@test
+fn test_valid_parses_to_typed_struct() {
+    match parse_config(valid_doc()) {
+        Ok(cfg) => {
+            assert(cfg.host == "localhost", "host extracted")
+            assert(cfg.port == 8080, "port extracted as int")
+            assert(cfg.log_level == "info", "log_level extracted")
+            assert(cfg.max_connections == 100, "max_connections extracted")
+            assert(cfg.debug == true, "debug extracted as bool")
+            // The secret carries the value but redacts it; never leaks raw.
+            assert(secret_len(cfg.api_key) == 14, "secret length is the raw byte length")
+            assert(!contains(redacted(cfg.api_key), "sk-live-abc123"), "redacted never contains the raw value")
+            assert(expose(cfg.api_key, |raw| raw) == "sk-live-abc123", "expose hands back the raw value")
+        },
+        Err(es) => assert(false, "expected Ok, got " + to_string(len(es)) + " errors"),
+    }
+}
+
+@test
+fn test_malformed_collects_all_violations() {
+    // host empty, port too big, log_level not in enum, max_connections too small,
+    // debug wrong type, api_key empty -> SIX violations at once.
+    let bad = "{{\"host\": \"\", \"port\": 70000, \"log_level\": \"verbose\", \"max_connections\": 0, \"debug\": \"yes\", \"api_key\": \"\"}}"
+    let es = errs_of(bad)
+    assert(len(es) == 6, "all six violations collected, got " + to_string(len(es)))
+    assert(has_err(es, "host"), "host violation present")
+    assert(has_err(es, "port"), "port violation present")
+    assert(has_err(es, "log_level"), "log_level violation present")
+    assert(has_err(es, "max_connections"), "max_connections violation present")
+    assert(has_err(es, "debug"), "debug violation present")
+    assert(has_err(es, "api_key"), "api_key violation present")
+}
+
+@test
+fn test_missing_required_fields_all_reported() {
+    // Only host present; the other five required fields are missing.
+    let doc = "{{\"host\": \"localhost\"}}"
+    let es = errs_of(doc)
+    assert(len(es) == 5, "five missing required fields, got " + to_string(len(es)))
+    assert(has_err(es, "port: missing required field"), "port missing reported")
+    assert(has_err(es, "api_key: missing required field"), "api_key missing reported")
+}
+
+@test
+fn test_malformed_json_single_error() {
+    let es = errs_of("{{not valid json")
+    assert(len(es) == 1, "malformed JSON yields a single syntax error")
+    assert(has_err(es, "invalid JSON"), "syntax error is labelled")
+}
+
+@test
+fn test_non_object_top_level() {
+    // A JSON array, not an object, at the top level.
+    let es = errs_of("[1, 2, 3]")
+    assert(len(es) == 1, "non-object top level yields one error")
+    assert(has_err(es, "expected a JSON object"), "top-level shape error reported")
+}
+
+@test
+fn test_wrong_types_reported_not_panicked() {
+    // port is a string, debug is a number -> type errors, no crash.
+    let doc = "{{\"host\": \"h\", \"port\": \"8080\", \"log_level\": \"info\", \"max_connections\": 10, \"debug\": 1, \"api_key\": \"k\"}}"
+    let es = errs_of(doc)
+    assert(has_err(es, "port"), "string-for-int reported")
+    assert(has_err(es, "debug"), "number-for-bool reported")
+}
+
+@capabilities(compute)
+fn main() {
+    test_valid_parses_to_typed_struct()
+    println("PASS test_valid_parses_to_typed_struct")
+    test_malformed_collects_all_violations()
+    println("PASS test_malformed_collects_all_violations")
+    test_missing_required_fields_all_reported()
+    println("PASS test_missing_required_fields_all_reported")
+    test_malformed_json_single_error()
+    println("PASS test_malformed_json_single_error")
+    test_non_object_top_level()
+    println("PASS test_non_object_top_level")
+    test_wrong_types_reported_not_panicked()
+    println("PASS test_wrong_types_reported_not_panicked")
+    println("6/6 typed-config tests passed")
+}

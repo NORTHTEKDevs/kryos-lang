@@ -1,0 +1,129 @@
+// ============================================================
+// typed.kry -- the PARSE + VALIDATE surface. Pure compute.
+//
+// This module turns raw config TEXT into a typed `AppConfig` (or a list of all
+// validation errors) WITHOUT touching the filesystem, the environment, or the
+// network. Every function here is `@capabilities(compute)`; `kryos manifest
+// --caps --deny io,process,net,...` over this file is the headline proof that
+// "config parsing has no side effects" is a compile-time property, not a
+// promise -- see check_caps.sh.
+//
+// The split that makes this honest:
+//   * typed.kry (this file) : raw str -> JsonValue -> validate -> AppConfig.
+//     Compute only. It receives text; it never goes and gets text.
+//   * loader.kry            : reads the text (file_read = io, env_get = process)
+//     and hands it here. The capabilities live entirely on that thin layer.
+//
+// Reused, not reinvented:
+//   * kryos_schema  -- the Schema combinators and the all-errors validator.
+//   * kryos_secrets -- the opaque Secret handle for the `api_key` field.
+//   * std::json     -- parse(text) -> JsonValue and the pure accessors. parse
+//     performs no I/O (it only scans the string), so it does not widen caps.
+//
+// Honest limitation (spec "Risk"): there is no zod-style inference from schema
+// to static type. The developer writes the `AppConfig` struct AND `app_schema()`
+// by hand and keeps them in agreement. This library lands the AUTHORITY story
+// (provable parse/effect split, no secret leak), not the typing-ergonomics story.
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+// Explicit symbol list, NOT `use std::json::*`. The glob pulls the WHOLE json
+// module into the compilation -- including `stringify` / `_format_number`, which
+// call to_string(f64), which the `kryos test` JIT cannot compile (kernel memory
+// / kryos-schema header). This list is the UNION of the symbols this file uses
+// AND the symbols kryos_schema::validate imports: in Kryos's flat namespace the
+// transitively-loaded validate.kry resolves its json accessors from here, so a
+// complete list lets the cross-package validator resolve while keeping the
+// float-formatting path out of the test JIT.
+use std::json::{
+    JsonValue,
+    parse,
+    json_null,
+    is_string, is_number, is_bool, is_array, is_object, is_null,
+    to_str, to_int, to_bool, to_float, to_array, get,
+}
+use kryos_schema::schema
+use kryos_schema::validate
+use kryos_secrets::secret
+
+// The typed configuration. `api_key` is a Secret, declared LAST: a multi-field
+// struct field can perturb later field offsets on the AOT backend (CLAUDE.md
+// gotcha #21), so the heap-bearing struct field goes at the end.
+struct AppConfig {
+    host: str,
+    port: i64,
+    log_level: str,
+    max_connections: i64,
+    debug: bool,
+    api_key: Secret,
+}
+
+// The schema the raw config must satisfy. Built entirely from kryos_schema's
+// compute combinators -- declaring it touches no I/O.
+//
+//   host             non-empty string
+//   port             1..65535
+//   log_level        one of debug | info | warn | error
+//   max_connections  1..10000
+//   debug            bool
+//   api_key          non-empty string (wrapped into a Secret on extraction)
+@capabilities(compute)
+fn app_schema() -> Schema {
+    let names: [str] = ["host", "port", "log_level", "max_connections", "debug", "api_key"]
+    let fields: [Schema] = [
+        with_min(str_(), 1),
+        with_max(with_min(int_(), 1), 65535),
+        enum_of(str_(), ["debug", "info", "warn", "error"]),
+        with_max(with_min(int_(), 1), 10000),
+        bool_(),
+        with_min(str_(), 1),
+    ]
+    return object(names, fields)
+}
+
+// Build the typed struct from an already-VALIDATED JsonValue object. Called only
+// after `validate` returned Ok, so every field is present and well-typed; the
+// accessors here will not throw. The api_key string is wrapped into a Secret so
+// it can only leave through kryos_secrets' capability-gated `expose`.
+@capabilities(compute)
+fn _extract(v: JsonValue) -> AppConfig {
+    return AppConfig {
+        host: to_str(get(v, "host")),
+        port: to_int(get(v, "port")),
+        log_level: to_str(get(v, "log_level")),
+        max_connections: to_int(get(v, "max_connections")),
+        debug: to_bool(get(v, "debug")),
+        api_key: secret_of(to_str(get(v, "api_key")), "api_key"),
+    }
+}
+
+/// Parse + validate raw config TEXT (JSON) into a typed AppConfig.
+///
+/// Returns Ok(AppConfig) when the text is valid JSON AND satisfies the schema,
+/// or Err([message, ...]) listing EVERY violation (malformed JSON yields a
+/// single syntax error; a structurally-valid-but-wrong object yields all of its
+/// field errors at once). Pure compute: it cannot read a file or the env.
+@capabilities(compute)
+fn parse_config(raw: str) -> Result<AppConfig, [str]> {
+    let mut parsed: JsonValue = json_null()
+    let mut parse_ok = true
+    let mut parse_err = ""
+    try {
+        parsed = parse(raw)
+    } catch e {
+        parse_ok = false
+        parse_err = e
+    }
+    if not parse_ok {
+        let syntax_errs: [str] = ["config: invalid JSON: " + parse_err]
+        return Err(syntax_errs)
+    }
+    if not is_object(parsed) {
+        let shape_errs: [str] = ["config: expected a JSON object at the top level"]
+        return Err(shape_errs)
+    }
+    match validate(app_schema(), parsed) {
+        Ok(v) => return Ok(_extract(v)),
+        Err(es) => return Err(es),
+    }
+}

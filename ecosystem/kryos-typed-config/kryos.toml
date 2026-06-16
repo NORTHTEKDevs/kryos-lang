@@ -1,0 +1,16 @@
+[package]
+name = "kryos-typed-config"
+version = "0.1.0"
+description = "Typed config loader with a provable parse/effect split: the parse+validate surface is @capabilities(compute) (cannot do I/O), only a thin loader reads files/env, and secret fields cannot leak to a net sink under --strict-capabilities"
+license = "Apache-2.0"
+
+# The parse+validate core (src/typed.kry) is pure compute -- `kryos manifest
+# --caps --deny ...` over it is the headline proof that config parsing has no
+# side effects. The loader (src/loader.kry) is the ONLY part that touches IO:
+# load_file reads a file (io) and load_env_var reads the environment (process).
+[capabilities]
+allowed = ["compute", "io", "process"]
+
+[dependencies]
+kryos_schema = { path = "../kryos-schema" }
+kryos_secrets = { path = "../kryos-secrets" }
