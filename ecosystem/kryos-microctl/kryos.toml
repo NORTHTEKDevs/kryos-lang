@@ -1,0 +1,12 @@
+[package]
+name = "kryos-microctl"
+version = "0.1.0"
+description = "Capability-scoped control-plane CLI/daemon scaffold: per-subcommand @capabilities make least-privilege a compiler-checked contract"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["io", "net"]
+
+[dependencies]
+kryos_cli_args = { path = "../kryos-cli-args" }
+kryos_policy = { path = "../kryos-policy" }

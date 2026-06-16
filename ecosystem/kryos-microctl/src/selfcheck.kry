@@ -1,0 +1,218 @@
+// ============================================================
+// selfcheck.kry -- the daemon's startup capability self-audit (dependency-free).
+//
+// "daemon start asserts actual subset of declared." Before binding the socket,
+// serve() calls assert_within_policy(), which enforces the same contract
+// kryos-policy (project 20) checks in CI:
+//
+//   actual capability surface (the union over caps.manifest)
+//        is a SUBSET of
+//   declared allowlist (kryos.toml [capabilities] allowed)
+//
+// If the code has grown a capability the manifest never declared, the daemon
+// REFUSES TO START (throws) rather than serving with an undeclared surface.
+//
+// Why is this re-implemented here instead of importing kryos-policy? Because in
+// this toolchain, linking kryos-policy into the daemon ALSO links std::string,
+// whose `trim` collides with kryos-policy's `trim` in the flat module
+// namespace, and the resulting mis-link segfaults the blocking accept loop
+// after its first request. So the daemon keeps a tiny, self-contained copy of
+// the subset check (builtins only) and kryos-policy stays the CI gate (see
+// README and tests/test_policy_gate.kry). Same contract, two enforcers.
+//
+// It reads two files from the current working directory, so run the daemon from
+// the project root. Reading files is the io capability -> [io].
+//
+// caps.manifest is produced as a build step:
+//   kryos manifest --caps --format pretty src -o caps.manifest
+// ============================================================
+
+// Index of `needle` in `s` at or after `from`, or -1.
+@capabilities()
+fn sc_index_from(s: str, needle: str, from: i64) -> i64 {
+    let n = len(s)
+    let m = len(needle)
+    if m == 0 {
+        return from
+    }
+    let mut i = from
+    while i + m <= n {
+        if substr(s, i, i + m) == needle {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// Strip surrounding spaces, tabs, CR/LF, and double quotes from `tok`.
+@capabilities()
+fn sc_strip(tok: str) -> str {
+    let n = len(tok)
+    let mut a = 0
+    while a < n {
+        let c = substr(tok, a, a + 1)
+        if c == " " || c == "\t" || c == "\r" || c == "\n" || c == "\"" {
+            a = a + 1
+        } else {
+            break
+        }
+    }
+    let mut b = n
+    while b > a {
+        let c = substr(tok, b - 1, b)
+        if c == " " || c == "\t" || c == "\r" || c == "\n" || c == "\"" {
+            b = b - 1
+        } else {
+            break
+        }
+    }
+    return substr(tok, a, b)
+}
+
+// Is `x` already in `set`?
+@capabilities()
+fn sc_member(set: [str], x: str) -> bool {
+    for s in set {
+        if s == x {
+            return true
+        }
+    }
+    return false
+}
+
+// Split `inner` (a comma-separated capability list) and add each non-empty,
+// stripped, de-duplicated token to `set`. "[]" / "" add nothing.
+@capabilities()
+fn sc_add_caps(set: [str], inner: str) -> [str] {
+    let mut out = set
+    let n = len(inner)
+    let mut start = 0
+    let mut i = 0
+    while i <= n {
+        let mut boundary = i == n
+        if !boundary {
+            if substr(inner, i, i + 1) == "," {
+                boundary = true
+            }
+        }
+        if boundary {
+            let tok = sc_strip(substr(inner, start, i))
+            if len(tok) > 0 && !sc_member(out, tok) {
+                out = push(out, tok)
+            }
+            start = i + 1
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Collect every capability inside every "[...]" group in `text` into one set.
+// Used for caps.manifest, where each function line carries a "[...]".
+@capabilities()
+fn sc_collect_brackets(text: str) -> [str] {
+    let mut set: [str] = []
+    let n = len(text)
+    let mut i = 0
+    while i < n {
+        if substr(text, i, i + 1) == "[" {
+            let close = sc_index_from(text, "]", i + 1)
+            if close < 0 {
+                return set
+            }
+            set = sc_add_caps(set, substr(text, i + 1, close))
+            i = close + 1
+        } else {
+            i = i + 1
+        }
+    }
+    return set
+}
+
+// Read the package's actual capability surface from a pretty caps.manifest.
+@capabilities(io)
+fn read_actual_surface(manifest_path: str) -> [str] {
+    if file_exists(manifest_path) == 0 {
+        let empty: [str] = []
+        return empty
+    }
+    return sc_collect_brackets(file_read(manifest_path))
+}
+
+// Read the declared allowlist from kryos.toml's `allowed = [ ... ]` line.
+@capabilities(io)
+fn read_declared_allowlist(toml_path: str) -> [str] {
+    if file_exists(toml_path) == 0 {
+        let empty: [str] = []
+        return empty
+    }
+    let content = file_read(toml_path)
+    let key = sc_index_from(content, "allowed", 0)
+    if key < 0 {
+        let empty: [str] = []
+        return empty
+    }
+    let open = sc_index_from(content, "[", key)
+    if open < 0 {
+        let empty: [str] = []
+        return empty
+    }
+    let close = sc_index_from(content, "]", open + 1)
+    if close < 0 {
+        let empty: [str] = []
+        return empty
+    }
+    let acc: [str] = []
+    return sc_add_caps(acc, substr(content, open + 1, close))
+}
+
+// Does `declared` grant `cap`? A literal "all" entry is a wildcard.
+@capabilities()
+fn sc_allows(declared: [str], cap: str) -> bool {
+    for d in declared {
+        if d == cap || d == "all" {
+            return true
+        }
+    }
+    return false
+}
+
+// Render a capability set as ["a", "b"] for diagnostics.
+@capabilities()
+fn sc_render(set: [str]) -> str {
+    let mut out = "["
+    let mut first = true
+    for c in set {
+        if !first {
+            out = out + ", "
+        }
+        out = out + "\"" + c + "\""
+        first = false
+    }
+    return out + "]"
+}
+
+// Assert the actual surface is within the declared allowlist; throw on a
+// violation so the daemon never starts under-declared.
+@capabilities(io)
+fn assert_within_policy() {
+    let declared = read_declared_allowlist("kryos.toml")
+    let actual = read_actual_surface("caps.manifest")
+    if len(actual) == 0 {
+        println("self-check: WARNING no caps.manifest found -- run `kryos manifest --caps --format pretty src -o caps.manifest`")
+    }
+    let mut excess = ""
+    for cap in actual {
+        if !sc_allows(declared, cap) {
+            if len(excess) > 0 {
+                excess = excess + ", "
+            }
+            excess = excess + cap
+        }
+    }
+    if len(excess) > 0 {
+        throw "kryos-microctl: refusing to start -- capability surface exceeds declared allowlist; excess: " + excess
+    }
+    println("self-check: surface " + sc_render(actual) + " is within declared " + sc_render(declared))
+}

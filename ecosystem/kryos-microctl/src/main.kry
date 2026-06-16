@@ -1,0 +1,82 @@
+// ============================================================
+// main.kry -- the kryos-microctl entry point.
+//
+// Parse argv with kryos-cli-args, find the subcommand, and dispatch to the
+// matching handler. main() is annotated [io, net] because it dispatches into
+// handlers that span both: status/get (net), apply (io), serve (io + net). The
+// per-subcommand split lives in the handlers, where the compiler enforces it.
+//
+//   kryos-microctl status [--addr URL]
+//   kryos-microctl get <key> [--addr URL]
+//   kryos-microctl apply <file> [--out PATH]
+//   kryos-microctl serve [--port N]
+// ============================================================
+
+use kryos_cli_args::spec
+use kryos_cli_args::parse
+use kryos_cli_args::extract
+use kryos_cli_args::help
+use cli
+use client
+use daemon
+use selfcheck
+
+@capabilities(io, net)
+fn main() {
+    let spec_cli = build_cli()
+    let argv = args()
+    // argv[0] is the program path; user tokens start at index 1.
+    if len(argv) < 2 {
+        print(help_cli("kryos-microctl", spec_cli))
+        return
+    }
+    let sub = argv[1]
+    if sub == "--help" || sub == "-h" {
+        print(help_cli("kryos-microctl", spec_cli))
+        return
+    }
+    let idx = find_sub(spec_cli, sub)
+    if idx < 0 {
+        println("error: unknown command: " + sub)
+        print(help_cli("kryos-microctl", spec_cli))
+        return
+    }
+    let cmd = spec_cli.subs[idx]
+    // Slice argv from index 2 onward (after program + subcommand token).
+    let mut rest: [str] = []
+    let mut i = 2
+    while i < len(argv) {
+        rest = push(rest, argv[i])
+        i = i + 1
+    }
+    let res = parse_command(cmd, rest)
+    if !res.ok {
+        println("error: " + res.error)
+        return
+    }
+    if sub == "status" {
+        let addr = get_str(res, cmd, "addr")
+        let _ = cmd_status(addr)
+        return
+    }
+    if sub == "get" {
+        let addr = get_str(res, cmd, "addr")
+        let key = positional_at(res, 0, "")
+        let _ = cmd_get(addr, key)
+        return
+    }
+    if sub == "apply" {
+        let file = positional_at(res, 0, "")
+        let out = get_str(res, cmd, "out")
+        let _ = cmd_apply(file, out)
+        return
+    }
+    if sub == "serve" {
+        let port = get_int(res, cmd, "port")
+        // Daemon-start self-audit: assert the actual capability surface is a
+        // subset of the declared allowlist before binding the socket.
+        assert_within_policy()
+        serve(port)
+        return
+    }
+}

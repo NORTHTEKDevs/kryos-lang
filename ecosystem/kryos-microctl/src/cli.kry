@@ -1,0 +1,72 @@
+// ============================================================
+// cli.kry -- the control-plane CLI surface, described as data.
+//
+// kryos-microctl is built on kryos-cli-args (project 14). The CLI is a value:
+// a root command plus four subcommands. Building it is pure value construction
+// -- no IO, no env, no args() read -- so every function here is
+// @capabilities() (pure compute). The capability surface of the program comes
+// from the *handlers* (client.kry / daemon.kry), never from describing the CLI.
+//
+// Subcommands and their (declared, compiler-checked) capability surfaces:
+//
+//   status            GET the daemon's /status            -> net only
+//   get <key>         GET the daemon's /config?key=<key>  -> net only
+//   apply <file>      render a desired-state file to disk -> io only
+//   serve [--port]    run the blocking control endpoint   -> io + net
+//
+// The split is the whole point: an operator can read off "which subcommand can
+// touch the filesystem" from `kryos manifest --caps`, not from a code-review
+// convention. apply is the only client verb that writes the filesystem.
+// ============================================================
+
+use kryos_cli_args::spec
+
+// status: query the daemon over the network. --addr selects the daemon URL.
+@capabilities()
+fn build_status() -> Command {
+    let mut c = command("status", "query the control-plane daemon's status (net)")
+    c = command_flag(c, flag_value("addr", "http://127.0.0.1:8080", "daemon base URL"))
+    return c
+}
+
+// get: read one config value from the daemon by key (net). The key is a
+// required positional; --addr selects the daemon URL.
+@capabilities()
+fn build_get() -> Command {
+    let mut c = command("get", "read a config value from the daemon by key (net)")
+    c = command_flag(c, flag_value("addr", "http://127.0.0.1:8080", "daemon base URL"))
+    c = command_positional(c, positional("key", true, "config key to read"))
+    return c
+}
+
+// apply: the only filesystem-writing verb (io). Reads a desired-state file and
+// writes a rendered config to --out. No network -- apply never talks to the
+// daemon, so it can never be the path that exfiltrates over the wire.
+@capabilities()
+fn build_apply() -> Command {
+    let mut c = command("apply", "render a desired-state file to local config (io)")
+    c = command_positional(c, positional("file", true, "desired-state file to apply"))
+    c = command_flag(c, flag_value("out", "applied.conf", "target config path to write"))
+    return c
+}
+
+// serve: start the blocking control endpoint (io for the startup self-audit,
+// net for the accept loop). --port selects the bind port.
+@capabilities()
+fn build_serve() -> Command {
+    let mut c = command("serve", "run the control endpoint daemon (io + net)")
+    c = command_flag(c, flag_value("port", "8080", "port to bind"))
+    return c
+}
+
+// Assemble the full CLI: a root summary plus the four subcommands.
+@capabilities()
+fn build_cli() -> CliSpec {
+    let root = command("kryos-microctl", "capability-scoped control-plane CLI")
+    let mut subs: [Command] = []
+    subs = push(subs, build_status())
+    subs = push(subs, build_get())
+    subs = push(subs, build_apply())
+    subs = push(subs, build_serve())
+    return cli(root, subs)
+}

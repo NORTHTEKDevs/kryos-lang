@@ -1,0 +1,39 @@
+src/cli.kry:
+fn build_apply: []
+fn build_cli: []
+fn build_get: []
+fn build_serve: []
+fn build_status: []
+unannotated: 0
+src/client.kry:
+fn cmd_apply: [io]
+fn cmd_get: [net]
+fn cmd_status: [net]
+unannotated: 0
+src/daemon.kry:
+fn serve: [net]
+unannotated: 0
+src/handlers.kry:
+fn config_all: []
+fn config_value: []
+fn dispatch: []
+fn handle_config: []
+fn handle_healthz: []
+fn handle_status: []
+fn query_key: []
+unannotated: 0
+src/main.kry:
+fn main: [io, net]
+unannotated: 0
+src/selfcheck.kry:
+fn assert_within_policy: [io]
+fn read_actual_surface: [io]
+fn read_declared_allowlist: [io]
+fn sc_add_caps: []
+fn sc_allows: []
+fn sc_collect_brackets: []
+fn sc_index_from: []
+fn sc_member: []
+fn sc_render: []
+fn sc_strip: []
+unannotated: 0

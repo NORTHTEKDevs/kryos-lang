@@ -1,0 +1,60 @@
+// ============================================================
+// demo_microctl.kry -- the capability-contract gate, end to end.
+//
+//   kryos run ecosystem/kryos-microctl/demo_microctl.kry
+//
+// Runs kryos-policy (project 20) over two packages using their REAL
+// compiler-computed caps.manifest files:
+//
+//   1. kryos-microctl itself     -> PASS  (surface {io, net} == declared)
+//   2. the over_privileged fixture -> FAIL (declares ["net"], uses io too)
+//
+// (2) is the headline: an artificially over-privileged handler is caught by the
+// gate, not by code review. Paths are relative to the repository root (where CI
+// runs this); each report degrades gracefully if a file is missing.
+// ============================================================
+
+use kryos_policy::caps
+use kryos_policy::manifest
+use kryos_policy::toml
+use kryos_policy::policy
+use std::string::{split_lines}
+
+@capabilities(io)
+fn report(name: str, dir: str) -> bool {
+    let toml_path = dir + "/kryos.toml"
+    let manifest_path = dir + "/caps.manifest"
+    println("--- " + name + " ---")
+    if file_exists(toml_path) == 0 || file_exists(manifest_path) == 0 {
+        println("  (package not found from this CWD; run from the repo root)")
+        return true
+    }
+    let declared = read_declared_caps(toml_path)
+    let actual = read_actual_caps(manifest_path)
+    println("  declared allowlist: " + caps_render_array(declared))
+    println("  computed surface:   " + caps_render_array(actual))
+    let v = check_policy(actual, declared)
+    println("  verdict: " + verdict_message(v))
+    if verdict_is_failure(v) {
+        println("  GATE: FAIL (CI exits non-zero)")
+        return false
+    }
+    println("  GATE: pass")
+    return true
+}
+
+@capabilities(io)
+fn main() {
+    println("kryos-microctl: capability-contract gate (powered by kryos-policy)")
+    println("")
+    let ok1 = report("kryos-microctl (the scaffold)", "ecosystem/kryos-microctl")
+    println("")
+    let ok2 = report("over_privileged fixture", "ecosystem/kryos-microctl/fixtures/over_privileged")
+    println("")
+    if ok1 && !ok2 {
+        println("RESULT: as expected -- the scaffold is within policy; the")
+        println("        over-privileged handler is caught by the gate.")
+    } else {
+        println("RESULT: unexpected verdicts (see above)")
+    }
+}

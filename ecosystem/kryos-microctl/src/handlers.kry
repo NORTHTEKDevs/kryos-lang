@@ -1,0 +1,106 @@
+// ============================================================
+// handlers.kry -- the control endpoint's route handlers + dispatch.
+//
+// Each handler is a pure function of the Request: it reads request fields and
+// assembles a Response from std::http's constructors. No IO, no env, no net --
+// the network lives in the accept loop (daemon.kry), not in the handlers. So
+// every handler is @capabilities() (pure compute) and shows up as [] in the
+// capability manifest. The blast-radius answer "can a request handler touch my
+// disk or open a socket" is "no, by construction".
+//
+// Routes (all GET):
+//   /healthz                 liveness probe       -> "ok"
+//   /status                  daemon status JSON
+//   /config?key=<k>          one config value, or the whole map when key absent
+//
+// NOTE: dispatch is a plain if/elif over the request path calling NAMED
+// handlers directly. We deliberately do NOT use std::http's Router +
+// match_route(route.handler) here: in this toolchain a handler stored as an
+// fn-value in an array-of-struct (Route.handler) does not execute correctly
+// when invoked back out of the array (returns an empty body). Direct dispatch
+// is both robust and, for a fixed control surface, clearer.
+// ============================================================
+
+use std::http
+
+// Liveness probe. Always 200 "ok".
+@capabilities()
+fn handle_healthz(req: Request) -> Response {
+    return text_response(200, "ok\n")
+}
+
+// Daemon status as a small JSON document. Constant for the MVP -- a real
+// control plane would report live state, still as pure compute over in-memory
+// values.
+@capabilities()
+fn handle_status(req: Request) -> Response {
+    return json_response(200, "{{\"status\":\"running\",\"name\":\"kryos-microctl\",\"version\":\"0.1.0\"}}\n")
+}
+
+// The daemon's in-memory config. A real control plane would load this once at
+// startup; for the scaffold it is a fixed map so the handler stays pure.
+@capabilities()
+fn config_value(key: str) -> str {
+    if key == "replicas" { return "3" }
+    if key == "image" { return "kryos-microctl:0.1.0" }
+    if key == "log_level" { return "info" }
+    return ""
+}
+
+// The full config as a JSON object (returned when /config is hit with no key).
+@capabilities()
+fn config_all() -> str {
+    return "{{\"replicas\":\"3\",\"image\":\"kryos-microctl:0.1.0\",\"log_level\":\"info\"}}"
+}
+
+// Extract the value of the `key` query parameter from a raw query string like
+// "key=replicas&x=1". Returns "" if there is no key parameter.
+@capabilities()
+fn query_key(query: str) -> str {
+    let marker = "key="
+    let n = len(query)
+    let m = len(marker)
+    let mut i = 0
+    while i + m <= n {
+        if substr(query, i, i + m) == marker {
+            let start = i + m
+            let mut j = start
+            while j < n && substr(query, j, j + 1) != "&" {
+                j = j + 1
+            }
+            return substr(query, start, j)
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// /config: one value by ?key=, or the whole config map when no key is given.
+@capabilities()
+fn handle_config(req: Request) -> Response {
+    let key = query_key(req.url.query)
+    if len(key) == 0 {
+        return json_response(200, config_all() + "\n")
+    }
+    let val = config_value(key)
+    if len(val) == 0 {
+        return json_response(404, "{{\"error\":\"unknown config key\"}}\n")
+    }
+    return json_response(200, "{{\"" + key + "\":\"" + val + "\"}}\n")
+}
+
+// Route an incoming request to its handler by path. Unknown paths get 404.
+// Pure compute: choosing a handler and calling it touches nothing.
+@capabilities()
+fn dispatch(req: Request) -> Response {
+    if req.url.path == "/healthz" {
+        return handle_healthz(req)
+    }
+    if req.url.path == "/status" {
+        return handle_status(req)
+    }
+    if req.url.path == "/config" {
+        return handle_config(req)
+    }
+    return text_response(404, "not found\n")
+}

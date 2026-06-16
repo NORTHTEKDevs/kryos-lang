@@ -1,0 +1,57 @@
+// ============================================================
+// client.kry -- the operator-facing subcommand handlers.
+//
+// These are the capability witnesses the project is named for. Each carries
+// the MINIMAL @capabilities annotation the compiler will accept, and the
+// compiler enforces it: drop `net` from cmd_status and the direct call to the
+// `net`-annotated std::http::get fails to type-check (E0505).
+//
+//   cmd_status  : [net]  -- only talks to the daemon over HTTP
+//   cmd_get     : [net]  -- only talks to the daemon over HTTP
+//   cmd_apply   : [io]   -- only reads/writes the local filesystem
+//
+// status and get can NEVER touch the filesystem; apply can NEVER open a socket.
+// That separation is not a convention -- it is the compiler-computed surface
+// you can read off `kryos manifest --caps`.
+// ============================================================
+
+use std::http
+
+// status: GET the daemon's /status route and print it. Net only.
+@capabilities(net)
+fn cmd_status(addr: str) -> i64 {
+    let resp = get(addr + "/status")
+    println("status " + to_string(resp.status) + ": " + resp.body)
+    if resp.status == 200 {
+        return 0
+    }
+    return 1
+}
+
+// get: GET the daemon's /config?key=<key> route and print the value. Net only.
+@capabilities(net)
+fn cmd_get(addr: str, key: str) -> i64 {
+    let resp = get(addr + "/config?key=" + key)
+    if resp.status != 200 {
+        println("get: server returned " + to_string(resp.status))
+        return 1
+    }
+    print(resp.body)
+    return 0
+}
+
+// apply: read a desired-state file and write a rendered config to `out`. The
+// ONLY filesystem-writing client verb -- and it has no network capability, so
+// it physically cannot ship the file off the box. Io only.
+@capabilities(io)
+fn cmd_apply(file: str, out: str) -> i64 {
+    if file_exists(file) == 0 {
+        println("apply: desired-state file not found: " + file)
+        return 1
+    }
+    let content = file_read(file)
+    let rendered = "# rendered by kryos-microctl apply\n" + content
+    file_write(out, rendered)
+    println("apply: wrote " + to_string(len(rendered)) + " bytes to " + out)
+    return 0
+}

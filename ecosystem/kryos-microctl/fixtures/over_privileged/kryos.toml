@@ -1,0 +1,7 @@
+[package]
+name = "over-privileged-handler"
+version = "0.1.0"
+description = "Fixture: a control-plane handler that declares net but secretly writes the filesystem (io). The policy gate must catch it."
+
+[capabilities]
+allowed = ["net"]

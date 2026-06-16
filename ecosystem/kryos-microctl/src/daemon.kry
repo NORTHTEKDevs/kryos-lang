@@ -1,0 +1,52 @@
+// ============================================================
+// daemon.kry -- the control endpoint: a blocking accept loop.
+//
+// serve() runs a single-threaded, one-request-per-connection accept loop over
+// the TCP builtins, dispatching each request through handlers.kry. It uses
+// std::http's request parser and response serializer (parse_request /
+// serialize_response / text_response) so the wire format is real HTTP/1.1.
+//
+// The startup capability self-audit ("daemon start asserts actual subset of
+// declared") runs in main.kry's `serve` branch, immediately before serve() is
+// called -- NOT inside this module. Keeping selfcheck out of daemon.kry is
+// deliberate: when daemon.kry imports selfcheck, this toolchain miscompiles the
+// accept loop (it segfaults after the first request). Importing selfcheck from
+// main and calling assert_within_policy() there is functionally identical (the
+// audit still gates daemon start) and compiles to a correct, long-running loop.
+//
+// Why a blocking loop and not std::http::http_serve? The spec scopes serving to
+// a blocking thread-per-conn control plane and puts high-concurrency serving
+// out of scope. std::http::http_serve uses a per-connection `spawn`, which in
+// this toolchain crashes after the first request. A blocking loop is exactly
+// the right shape for a low-traffic control plane, and we do not edit stdlib.
+//
+// Capability surface: tcp_listen/tcp_accept/tcp_recv/tcp_send/tcp_close are the
+// `net` builtins, so serve is [net]. The handlers it calls are all [] (pure).
+// ============================================================
+
+use std::http
+use handlers
+
+// Run the control endpoint on `port`. Blocks forever serving one request per
+// connection. Returns early only if the bind fails.
+@capabilities(net)
+fn serve(port: i64) {
+    let server = tcp_listen("0.0.0.0", port)
+    if server == -1 {
+        println("kryos-microctl: failed to bind 0.0.0.0:" + to_string(port))
+        return
+    }
+    println("kryos-microctl daemon listening on 0.0.0.0:" + to_string(port))
+    println("routes: GET /healthz   GET /status   GET /config?key=<k>")
+    while true {
+        let conn = tcp_accept(server)
+        if conn == -1 {
+            continue
+        }
+        let raw = tcp_recv(conn, 65536)
+        let req = parse_request(raw)
+        let resp = dispatch(req)
+        tcp_send(conn, serialize_response(resp))
+        tcp_close(conn)
+    }
+}

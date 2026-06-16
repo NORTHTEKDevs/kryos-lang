@@ -1,0 +1,55 @@
+// ============================================================
+// test_cli.kry -- the control-plane CLI surface is what we declared.
+//
+//   kryos test --path ecosystem/kryos-microctl
+//
+// Pure compute (builds the spec, inspects it) -- no IO, no env, no http -- so
+// these run the same regardless of CWD and never pull the http_serve spawn into
+// the @test harness.
+// ============================================================
+
+use cli
+use kryos_cli_args::spec
+
+// The CLI exposes exactly the four control verbs: status, get, apply, serve.
+@test
+fn test_subcommands_exist() {
+    let c = build_cli()
+    assert(len(c.subs) == 4)
+    assert(find_sub(c, "status") >= 0)
+    assert(find_sub(c, "get") >= 0)
+    assert(find_sub(c, "apply") >= 0)
+    assert(find_sub(c, "serve") >= 0)
+    assert(find_sub(c, "nonsense") == -1)
+}
+
+// apply takes a required <file> positional (the desired-state file).
+@test
+fn test_apply_requires_file() {
+    let c = build_cli()
+    let apply = c.subs[find_sub(c, "apply")]
+    assert(len(apply.positionals) == 1)
+    assert(apply.positionals[0].name == "file")
+    assert(apply.positionals[0].required)
+}
+
+// get takes a required <key> positional and an --addr flag.
+@test
+fn test_get_shape() {
+    let c = build_cli()
+    let g = c.subs[find_sub(c, "get")]
+    assert(len(g.positionals) == 1)
+    assert(g.positionals[0].name == "key")
+    assert(len(g.flags) == 1)
+    assert(g.flags[0].long == "addr")
+}
+
+// status has an --addr flag defaulting to the local daemon.
+@test
+fn test_status_addr_default() {
+    let c = build_cli()
+    let st = c.subs[find_sub(c, "status")]
+    assert(len(st.flags) == 1)
+    assert(st.flags[0].long == "addr")
+    assert(st.flags[0].default_val == "http://127.0.0.1:8080")
+}

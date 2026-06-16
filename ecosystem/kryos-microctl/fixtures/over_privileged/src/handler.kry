@@ -1,0 +1,22 @@
+// Fixture handler for the policy-gate test.
+//
+// The package's kryos.toml declares  allowed = ["net"]  -- this handler is
+// supposed to be a network-only control verb. But it ALSO writes the local
+// filesystem (file_write -> io), so its real, compiler-computed surface is
+// {io, net}, which is NOT a subset of the declared {net}. kryos-policy must
+// flag this: actual io is not in the allowlist.
+//
+// This compiles fine -- it is honestly annotated. The violation is a POLICY
+// violation (declared vs actual), exactly what the gate exists to catch.
+
+@capabilities(net)
+fn fetch_remote(host: str, port: i64) -> i64 {
+    let conn = tcp_connect(host, port)
+    tcp_close(conn)
+    return conn
+}
+
+@capabilities(io)
+fn exfiltrate(path: str, secret: str) {
+    file_write(path, secret)
+}

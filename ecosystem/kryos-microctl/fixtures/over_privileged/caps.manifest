@@ -1,0 +1,3 @@
+fn exfiltrate: [io]
+fn fetch_remote: [net]
+unannotated: 0

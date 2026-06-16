@@ -1,0 +1,82 @@
+// ============================================================
+// test_policy_gate.kry -- the per-subcommand split and the policy gate.
+//
+//   kryos test --path ecosystem/kryos-microctl
+//
+// Drives kryos-policy (project 20) over manifest text that mirrors the REAL
+// `kryos manifest --caps` output for this package and for the over-privileged
+// fixture. Proves three things the spec asks for:
+//   1. the per-subcommand split is what we claim (status/get net, apply io),
+//   2. the package's union surface is within its declared allowlist,
+//   3. an over-privileged handler FAILS the policy gate (the headline).
+//
+// Pure compute over in-string manifests -- no IO, no http, no spawn -- so it is
+// CWD-independent and safe for the @test harness.
+// ============================================================
+
+use kryos_policy::caps
+use kryos_policy::manifest
+use kryos_policy::policy
+use std::string::{split_lines}
+
+// The real per-subcommand manifest of kryos-microctl (mirrors caps.manifest).
+@capabilities()
+fn microctl_manifest() -> str {
+    return "fn cmd_status: [net]\nfn cmd_get: [net]\nfn cmd_apply: [io]\nfn serve: [net]\nfn assert_within_policy: [io]\nfn main: [io, net]\nunannotated: 0\n"
+}
+
+// (1) Per-subcommand split: status/get are net-only, apply is io-only.
+@test
+fn test_per_subcommand_split() {
+    let st = caps_in_line("fn cmd_status: [net]")
+    assert(len(st) == 1)
+    assert(st[0] == "net")
+
+    let gt = caps_in_line("fn cmd_get: [net]")
+    assert(len(gt) == 1)
+    assert(gt[0] == "net")
+
+    let ap = caps_in_line("fn cmd_apply: [io]")
+    assert(len(ap) == 1)
+    assert(ap[0] == "io")
+}
+
+// (2) The package's union surface {io, net} is within the declared allowlist.
+@test
+fn test_union_within_declared() {
+    let actual = parse_actual_caps(microctl_manifest())
+    assert(len(actual) == 2)
+    assert(caps_member(actual, "io"))
+    assert(caps_member(actual, "net"))
+
+    let declared: [str] = ["io", "net"]
+    let v = check_policy(actual, declared)
+    assert(!verdict_is_failure(v))
+}
+
+// (3a) An over-privileged handler (uses `process`, undeclared) FAILS the gate.
+@test
+fn test_over_privileged_process_fails() {
+    let m = "fn cmd_status: [net]\nfn rogue_handler: [process]\nunannotated: 0\n"
+    let actual = parse_actual_caps(m)
+    let declared: [str] = ["io", "net"]
+    let v = check_policy(actual, declared)
+    assert(verdict_is_failure(v))
+
+    let excess = caps_excess(actual, declared)
+    assert(caps_member(excess, "process"))
+}
+
+// (3b) The committed over_privileged fixture: declares ["net"], actually uses
+// {io, net}. The excess `io` must be flagged.
+@test
+fn test_fixture_io_exceeds_net() {
+    let m = "fn fetch_remote: [net]\nfn exfiltrate: [io]\nunannotated: 0\n"
+    let actual = parse_actual_caps(m)
+    let declared: [str] = ["net"]
+    let v = check_policy(actual, declared)
+    assert(verdict_is_failure(v))
+
+    let excess = caps_excess(actual, declared)
+    assert(caps_member(excess, "io"))
+}
