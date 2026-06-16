@@ -1,0 +1,291 @@
+// ============================================================
+// router.kry -- governance layer over the pure policy engine (routing.kry).
+//
+// This is where the three Kryos governance axes meet a multi-provider LLM
+// router that NO shipping language can express in one signature:
+//
+//   @capabilities(net)   -- governed_route provably touches the network and
+//                           NOTHING else. A stray file_write / env_get in the
+//                           body is a COMPILE error (see fixtures/leaky_route.kry).
+//   @budget(tokens,calls)-- a runtime frame that gates the dispatch. The call
+//                           is reserved against the frame BEFORE any provider
+//                           is contacted; an exhausted budget REFUSES the route
+//                           with no network hit at all (provable: the dispatch
+//                           transport is never invoked). This is the language's
+//                           budget primitive, the same one std::llm::chat charges.
+//   Tracked<str>         -- the answer carries its provenance: the route, the
+//                           selection decision (which provider, under which
+//                           policy and why), the granted capabilities of that
+//                           provider, and the token/cost accounting. "Which
+//                           provider produced this answer" is answerable from
+//                           the value itself, not a side log.
+//
+// Tracked<str> is built by DIRECT struct construction (timestamp 0, a logical
+// order) rather than std::tracked::tracked_source/transform -- those call
+// time_now() internally, which would drag the `time` capability into the
+// net-only envelope under `kryos check --strict-capabilities`. Provenance here
+// needs causal ORDER (the lineage array), not wall-clock time.
+// ============================================================
+
+use std::tracked::{Tracked, LineageEntry}
+use std::llm::{LlmConfig, LlmResponse, Message, user, chat}
+use routing::{Provider, Route, select_provider, route_eligible, eligible_count,
+              supports_all, cost_micro_usd,
+              policy_cheapest, policy_lowest_latency, policy_capability_match}
+
+// Runtime hooks for the @budget frame -- the SAME primitive std::llm::chat
+// charges. Declaring them here (top-level extern is a declaration, not an
+// invocation, so it needs no `ffi` capability) lets the router consult the
+// budget frame directly to refuse BEFORE dispatch.
+extern {
+    fn kryos_budget_active() -> i64
+    fn kryos_budget_try_call() -> i64
+    fn kryos_budget_charge_tokens(tokens: i64) -> i64
+    fn kryos_budget_remaining_tokens() -> i64
+}
+
+// The full result of routing one message.
+//
+//   refused          : true if the route was refused (no eligible provider, or
+//                      the @budget frame was exhausted) -- dispatch did NOT run.
+//   provider_index   : index into the providers table (-1 if none chosen).
+//   provider_name    : the selected provider (empty if none).
+//   reason           : "ok", or the refusal reason.
+//   tokens           : tokens charged (0 if refused).
+//   cost_micro_usd   : cost of those tokens at the provider's rate, micro-USD.
+//   answer           : the provenance-tracked answer. Even a refusal carries a
+//                      lineage explaining why. Declared LAST (nested aggregate
+//                      field -- struct-field convention).
+struct RouteOutcome {
+    refused: bool,
+    provider_index: i64,
+    provider_name: str,
+    reason: str,
+    tokens: i64,
+    cost_micro_usd: i64,
+    answer: Tracked<str>
+}
+
+// --- provenance construction (no time_now; logical order only) --------------
+
+@capabilities()
+fn _entry(op: str, desc: str, meta: str) -> LineageEntry {
+    return LineageEntry { operation: op, description: desc, timestamp: 0, metadata: meta }
+}
+
+@capabilities()
+fn _tracked_new(value: str, source: str, desc: str) -> Tracked<str> {
+    let e = _entry("source", desc, "source=" + source)
+    return Tracked { value: value, lineage: [e], source: source, source_description: desc }
+}
+
+@capabilities()
+fn _tracked_step(t: Tracked<str>, new_value: str, op: str, desc: str, meta: str) -> Tracked<str> {
+    let mut ls = t.lineage
+    ls = push(ls, _entry(op, desc, meta))
+    return Tracked { value: new_value, lineage: ls, source: t.source, source_description: t.source_description }
+}
+
+@capabilities()
+fn _join(xs: [str], sep: str) -> str {
+    let mut out = ""
+    let mut i = 0
+    while i < len(xs) {
+        if i > 0 { out = out + sep }
+        out = out + xs[i]
+        i = i + 1
+    }
+    return out
+}
+
+// --- budget gate (consults the active @budget frame) ------------------------
+
+// Reserve one model call against the active @budget frame, exactly as
+// std::llm::chat does. Returns true when the frame is EXHAUSTED (charging
+// nothing) so the caller can refuse before dispatch. With no frame active it
+// returns false (ungoverned call -- the router still works without @budget).
+@capabilities()
+fn budget_reserve_call() -> bool {
+    if kryos_budget_active() == 1 {
+        if kryos_budget_try_call() == 1 { return true }
+    }
+    return false
+}
+
+// True if dispatching ~est_tokens would cross the frame's remaining token
+// ceiling. Peek-only (charges nothing) -- lets the router refuse on the token
+// axis BEFORE dispatch too, not only the call axis.
+@capabilities()
+fn budget_would_exceed_tokens(est_tokens: i64) -> bool {
+    if kryos_budget_active() == 1 {
+        if est_tokens > kryos_budget_remaining_tokens() { return true }
+    }
+    return false
+}
+
+// Charge actual tokens after a successful dispatch. Returns true if the token
+// ceiling was crossed by this charge.
+@capabilities()
+fn budget_charge(tokens: i64) -> bool {
+    if kryos_budget_active() == 1 {
+        return kryos_budget_charge_tokens(tokens) == 1
+    }
+    return false
+}
+
+// --- the routing engine (transport injected; capability-free) ---------------
+
+// route_run holds no capability of its own: it selects a provider (pure),
+// consults the active @budget frame (free externs), and calls the injected
+// `dispatch` transport (an opaque fn-value). The net authority lives on the
+// PUBLIC entry point (governed_route), whose injected transport is the only
+// thing that touches the network. In tests a mock transport stands in, so the
+// whole engine -- selection, budget gate, provenance -- runs fully offline.
+//
+//   est_tokens : caller's estimate of the dispatch token cost, checked against
+//                the budget's remaining tokens BEFORE dispatch (token-axis
+//                refusal). Pass 0 to skip the pre-check (call-axis only).
+@capabilities()
+fn route_run(
+    providers: [Provider],
+    route: Route,
+    msg: str,
+    est_tokens: i64,
+    dispatch: fn(Provider, str) -> LlmResponse
+) -> RouteOutcome {
+    let idx = select_provider(providers, route)
+    if idx < 0 {
+        let t0 = _tracked_new("", "router:" + route.name,
+            "route '" + route.name + "' policy=" + route.policy)
+        let t1 = _tracked_step(t0, "", "no_provider",
+            "no eligible provider satisfies the route's required features",
+            "policy=" + route.policy + " eligible=0")
+        return RouteOutcome {
+            refused: true, provider_index: -1, provider_name: "",
+            reason: "no eligible provider", tokens: 0, cost_micro_usd: 0, answer: t1
+        }
+    }
+
+    let p = providers[idx]
+
+    // Seed provenance with the route and the selection decision -- this NAMES
+    // the chosen provider and records the policy + its granted capabilities.
+    let mut t = _tracked_new("", "router:" + route.name,
+        "route '" + route.name + "' policy=" + route.policy)
+    t = _tracked_step(t, "", "select",
+        "selected provider '" + p.name + "' under policy " + route.policy,
+        "provider=" + p.name + " caps=" + _join(p.caps, ",")
+          + " micro_usd_per_token=" + to_string((p.cost_per_1k * 1000.0) as i64))
+
+    // ---- BUDGET GATE: reserved BEFORE dispatch ----------------------------
+    // Token axis: would the estimated cost cross the remaining token ceiling?
+    if budget_would_exceed_tokens(est_tokens) {
+        t = _tracked_step(t, "", "refused",
+            "@budget exhausted: estimated " + to_string(est_tokens)
+              + " tokens exceed the remaining ceiling -- refused BEFORE dispatch to '" + p.name + "'",
+            "provider=" + p.name + " gate=budget axis=tokens")
+        return RouteOutcome {
+            refused: true, provider_index: idx, provider_name: p.name,
+            reason: "@budget exhausted: token ceiling would be crossed",
+            tokens: 0, cost_micro_usd: 0, answer: t
+        }
+    }
+    // Call axis: is there a model call left in the frame?
+    if budget_reserve_call() {
+        t = _tracked_step(t, "", "refused",
+            "@budget exhausted: no model calls left -- refused BEFORE dispatch to '" + p.name + "'",
+            "provider=" + p.name + " gate=budget axis=calls")
+        return RouteOutcome {
+            refused: true, provider_index: idx, provider_name: p.name,
+            reason: "@budget exhausted: no model calls left",
+            tokens: 0, cost_micro_usd: 0, answer: t
+        }
+    }
+
+    // ---- DISPATCH to the selected provider --------------------------------
+    let resp = dispatch(p, msg)
+    let used = resp.input_tokens + resp.output_tokens
+    let exceeded = budget_charge(used)
+    let micro = cost_micro_usd(p, used)
+
+    t = _tracked_step(t, resp.text, "dispatch",
+        "provider '" + p.name + "' produced the answer ("
+          + to_string(used) + " tokens, " + to_string(micro) + " micro-USD)",
+        "provider=" + p.name + " model=" + resp.model + " tokens=" + to_string(used))
+
+    let mut reason = "ok"
+    if exceeded {
+        t = _tracked_step(t, resp.text, "budget_exceeded",
+            "answer produced but the token budget ceiling was crossed by this call",
+            "provider=" + p.name)
+        reason = "ok (token ceiling crossed after dispatch)"
+    }
+
+    return RouteOutcome {
+        refused: false, provider_index: idx, provider_name: p.name,
+        reason: reason, tokens: used, cost_micro_usd: micro, answer: t
+    }
+}
+
+// --- public entry point: the certified governed route ----------------------
+
+// The live transport: contact the selected provider. @capabilities(net) -- it
+// is the ONLY thing in the call graph permitted to touch the network. In the
+// MVP the injected cfg already targets the chosen provider's endpoint; a fuller
+// build would rewrite cfg.base_url / model from `p` before the call.
+@capabilities(net)
+fn _dispatch_live(p: Provider, cfg: LlmConfig, msg: str) -> LlmResponse {
+    return chat(cfg, [user(msg)])
+}
+
+/// Route `msg` under a per-route governance envelope.
+///
+/// @capabilities(net): the body provably cannot touch fs/process (a file_write
+/// here is a compile error). @budget(tokens, calls): the frame gates the single
+/// dispatch -- an exhausted budget refuses before the provider is contacted.
+/// Returns the provenance-tracked outcome (the answer's lineage names the
+/// provider that produced it).
+@capabilities(net)
+@budget(tokens = 100000, calls = 8)
+fn governed_route(providers: [Provider], route: Route, cfg: LlmConfig, msg: str, est_tokens: i64) -> RouteOutcome {
+    let dispatch = |p, m| _dispatch_live(p, cfg, m)
+    return route_run(providers, route, msg, est_tokens, dispatch)
+}
+
+// --- explain helpers (read fields directly; no f64 stringification) ---------
+
+/// Human-readable provenance report for a routing outcome.
+@capabilities()
+fn outcome_explain(o: RouteOutcome) -> str {
+    let mut out = "llm-router outcome\n"
+    out = out + "  result    : "
+    if o.refused { out = out + "REFUSED" } else { out = out + "ROUTED" }
+    out = out + "\n"
+    out = out + "  provider  : " + o.provider_name + "\n"
+    out = out + "  reason    : " + o.reason + "\n"
+    out = out + "  tokens    : " + to_string(o.tokens) + "\n"
+    out = out + "  cost      : " + to_string(o.cost_micro_usd) + " micro-USD\n"
+    out = out + "  answer    : " + o.answer.value + "\n"
+    out = out + "  provenance:\n"
+    let mut i = 0
+    while i < len(o.answer.lineage) {
+        let e: LineageEntry = o.answer.lineage[i]
+        out = out + "    " + to_string(i + 1) + ". [" + e.operation + "] " + e.description + "\n"
+        i = i + 1
+    }
+    return out
+}
+
+// True if the answer's provenance names `provider` (in source or any lineage
+// entry's metadata) -- the "which provider produced this" guarantee.
+@capabilities()
+fn provenance_names_provider(o: RouteOutcome, provider: str) -> bool {
+    if contains(o.answer.source, provider) { return true }
+    let needle = "provider=" + provider
+    let mut i = 0
+    while i < len(o.answer.lineage) {
+        if contains(o.answer.lineage[i].metadata, needle) { return true }
+        i = i + 1
+    }
+    return false
+}

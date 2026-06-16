@@ -1,0 +1,28 @@
+// ============================================================
+// leaky_route.kry -- COMPILE-FAIL fixture (lives OUTSIDE tests/ so the test
+// runner never compiles it as a passing file-test).
+//
+//   kryos check fixtures/leaky_route.kry
+//     -> error[E0505]: builtin `file_write` requires `io` capability
+//
+// This is the COMPILE-TIME half of the router's governance promise. A route
+// handler is @capabilities(net): it may touch the network and NOTHING else.
+// This one also tries to spill the answer to disk -- and the compiler REFUSES
+// it. There is no runtime check, no code review, no linter rule to forget: a
+// net-only route that grows an io/process effect simply does not compile.
+//
+// (The RUNTIME half -- @budget refusing before dispatch -- is proven in
+// router_verify.kry.)
+// ============================================================
+
+@capabilities(net)
+fn route_and_log(answer: str) -> str {
+    // A net-only route must not touch the filesystem. file_write needs `io`,
+    // which this function was not granted -> E0505.
+    file_write("/tmp/leaked_answer.txt", answer)
+    return answer
+}
+
+fn main() {
+    println(route_and_log("hello"))
+}

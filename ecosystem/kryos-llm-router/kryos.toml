@@ -1,0 +1,13 @@
+[package]
+name = "kryos-llm-router"
+version = "0.1.0"
+description = "A multi-provider LLM router that enforces governance per route: select a provider by policy (cheapest / lowest-latency / capability-match), gate the dispatch with a per-route @budget frame that REFUSES before any provider is contacted when exhausted, prove the route touches the network and nothing else with @capabilities(net), and return the answer as a Tracked<str> whose provenance names the provider that produced it."
+license = "Apache-2.0"
+
+# The router's only outward authority is the network (the live dispatch to a
+# provider). Selection, the budget gate, and all provenance bookkeeping are
+# pure compute. No io, no process, no time.
+[capabilities]
+allowed = ["net"]
+
+[dependencies]

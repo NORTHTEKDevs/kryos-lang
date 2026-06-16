@@ -1,0 +1,204 @@
+// ============================================================
+// router_verify.kry -- the `kryos run` driver for the GOVERNANCE surface.
+//
+//   kryos run ecosystem/kryos-llm-router/router_verify.kry
+//
+// The pure policy engine is gated by `kryos test` (tests/test_routing.kry).
+// This driver proves the parts that need a live @budget frame and Tracked<str>
+// values -- which the test-harness JIT handles less reliably -- so they are run
+// for real here with explicit asserts that exit(1) on failure (a green run is
+// the proof; see the README for the negative-control demonstration).
+//
+// Everything is OFFLINE: a mock transport that COUNTS its invocations stands in
+// for the network. No real provider is contacted, no API key is read. The
+// budget refusal is proven by showing the mock transport is NEVER invoked once
+// the @budget frame is exhausted -- refused BEFORE dispatch.
+//
+// A file that `use router` must re-import every std module router's bodies
+// touch (the resolver re-resolves those bodies in this file's scope), hence the
+// std::tracked / std::llm imports and the re-declared budget extern block.
+// ============================================================
+
+use std::tracked::{Tracked, LineageEntry}
+use std::llm::{LlmConfig, LlmResponse, Message, user, chat}
+use routing::{Provider, Route, select_provider, route_eligible, eligible_count,
+              supports_all, cost_micro_usd,
+              policy_cheapest, policy_lowest_latency, policy_capability_match}
+use router::{RouteOutcome, route_run, governed_route, outcome_explain,
+             provenance_names_provider, budget_reserve_call,
+             budget_would_exceed_tokens, budget_charge}
+
+extern {
+    fn kryos_budget_active() -> i64
+    fn kryos_budget_try_call() -> i64
+    fn kryos_budget_charge_tokens(tokens: i64) -> i64
+    fn kryos_budget_remaining_tokens() -> i64
+}
+
+// --- assertion harness: print + exit(1) on failure --------------------------
+
+let mut PASS_COUNT: i64 = 0
+
+fn check(cond: bool, msg: str) {
+    if cond {
+        PASS_COUNT = PASS_COUNT + 1
+        println("  ok   " + msg)
+    } else {
+        println("  FAIL " + msg)
+        exit(1)
+    }
+}
+
+// --- mock transport (counts invocations; never touches the network) ---------
+
+let mut DISPATCH_COUNT: i64 = 0
+
+fn mock_dispatch_reset() -> i64 {
+    DISPATCH_COUNT = 0
+    return DISPATCH_COUNT
+}
+
+fn mock_dispatch(p: Provider, msg: str) -> LlmResponse {
+    DISPATCH_COUNT = DISPATCH_COUNT + 1
+    return LlmResponse {
+        text: "answer from " + p.name,
+        input_tokens: 12, output_tokens: 8,
+        model: p.name + "-model", status: 200, raw: ""
+    }
+}
+
+fn providers() -> [Provider] {
+    let alpha = Provider {
+        name: "alpha", cost_per_1k: 0.010, latency_ms: 400,
+        caps: ["net"], supports: ["chat", "json"]
+    }
+    let beta = Provider {
+        name: "beta", cost_per_1k: 0.001, latency_ms: 900,
+        caps: ["net"], supports: ["chat", "json", "tools", "vision"]
+    }
+    let gamma = Provider {
+        name: "gamma", cost_per_1k: 0.005, latency_ms: 120,
+        caps: ["net", "process"], supports: ["chat", "json", "tools"]
+    }
+    return [alpha, beta, gamma]
+}
+
+fn chat_route(policy: str) -> Route {
+    return Route { name: "chat-route", policy: policy, max_cost_per_1k: 0.0, requires: ["chat", "json"] }
+}
+
+// ---------------------------------------------------------------------------
+// CALL-AXIS refusal: a 2-call budget over THREE route_run calls. The third
+// reservation finds the @budget frame exhausted and REFUSES before dispatch.
+// The mock transport must have been invoked exactly twice.
+// ---------------------------------------------------------------------------
+@budget(tokens = 1000000, calls = 2)
+fn drive_call_axis() -> [bool] {
+    let ps = providers()
+    let r = chat_route(policy_cheapest())
+    let o1 = route_run(ps, r, "q1", 0, mock_dispatch)
+    let o2 = route_run(ps, r, "q2", 0, mock_dispatch)
+    let o3 = route_run(ps, r, "q3", 0, mock_dispatch)
+    return [o1.refused, o2.refused, o3.refused]
+}
+
+// Same frame, but capture the third outcome's reason + provenance so the
+// caller can assert the refusal is the @budget one and is recorded in lineage.
+@budget(tokens = 1000000, calls = 2)
+fn drive_call_axis_reason() -> str {
+    let ps = providers()
+    let r = chat_route(policy_cheapest())
+    let _o1 = route_run(ps, r, "q1", 0, mock_dispatch)
+    let _o2 = route_run(ps, r, "q2", 0, mock_dispatch)
+    let o3 = route_run(ps, r, "q3", 0, mock_dispatch)
+    return o3.reason
+}
+
+// ---------------------------------------------------------------------------
+// TOKEN-AXIS refusal: a 30-token budget; an estimated 100-token dispatch would
+// cross the ceiling, so the route is refused before dispatch (call never made).
+// ---------------------------------------------------------------------------
+@budget(tokens = 30, calls = 50)
+fn drive_token_axis() -> bool {
+    let ps = providers()
+    let r = chat_route(policy_cheapest())
+    let o = route_run(ps, r, "big question", 100, mock_dispatch)
+    return o.refused
+}
+
+// ---------------------------------------------------------------------------
+// GENEROUS budget control: the same call runs to completion (dispatch happens,
+// answer + provenance produced). Proves the refusals above are the budget, not
+// some other bug.
+// ---------------------------------------------------------------------------
+@budget(tokens = 1000000, calls = 10)
+fn drive_generous() -> bool {
+    let ps = providers()
+    let r = chat_route(policy_cheapest())
+    let o = route_run(ps, r, "q", 50, mock_dispatch)
+    return o.refused
+}
+
+fn main() {
+    println("== kryos-llm-router governance verification ==")
+
+    // ---- 1. policy selection (the routing decision drives provenance) ------
+    println("[1] policy selection")
+    let ps = providers()
+    let _r0 = mock_dispatch_reset()
+    let cheapest = route_run(ps, chat_route(policy_cheapest()), "q", 0, mock_dispatch)
+    check(cheapest.provider_name == "beta", "cheapest policy routes to beta")
+    let fastest = route_run(ps, chat_route(policy_lowest_latency()), "q", 0, mock_dispatch)
+    check(fastest.provider_name == "gamma", "lowest_latency policy routes to gamma")
+    let tightest = route_run(ps, chat_route(policy_capability_match()), "q", 0, mock_dispatch)
+    check(tightest.provider_name == "alpha", "capability_match policy routes to alpha")
+
+    // ---- 2. Tracked<str> provenance names the producing provider ----------
+    println("[2] provenance lineage names the provider")
+    check(not cheapest.refused, "cheapest route succeeded")
+    check(cheapest.answer.value == "answer from beta", "answer value comes from the selected provider")
+    check(provenance_names_provider(cheapest, "beta"), "provenance NAMES the producing provider (beta)")
+    check(not provenance_names_provider(cheapest, "alpha"), "provenance does NOT name a provider that did not produce it")
+    check(len(cheapest.answer.lineage) >= 3, "lineage records route + select + dispatch (>=3 entries)")
+    let report = outcome_explain(cheapest)
+    check(contains(report, "[select]"), "explain shows the selection step")
+    check(contains(report, "[dispatch]"), "explain shows the dispatch step")
+    check(contains(report, "provider  : beta"), "explain names beta as the provider")
+
+    // ---- 3. @budget CALL-AXIS refusal BEFORE dispatch ----------------------
+    println("[3] @budget call-axis refusal before dispatch")
+    let _r1 = mock_dispatch_reset()
+    let refused = drive_call_axis()
+    check(not refused[0], "1st route under a 2-call budget dispatches")
+    check(not refused[1], "2nd route under a 2-call budget dispatches")
+    check(refused[2], "3rd route is REFUSED (budget exhausted)")
+    check(DISPATCH_COUNT == 2, "transport invoked exactly TWICE -- 3rd refused BEFORE dispatch")
+    let reason = drive_call_axis_reason()
+    check(contains(reason, "@budget"), "refusal reason is the @budget exhaustion")
+    check(contains(reason, "no model calls left"), "refusal is the call-axis exhaustion")
+
+    // ---- 4. @budget TOKEN-AXIS refusal BEFORE dispatch ---------------------
+    println("[4] @budget token-axis refusal before dispatch")
+    let _r2 = mock_dispatch_reset()
+    let tok_refused = drive_token_axis()
+    check(tok_refused, "an over-estimate route is refused on the token axis")
+    check(DISPATCH_COUNT == 0, "transport NEVER invoked -- refused BEFORE dispatch")
+
+    // ---- 5. generous-budget control ----------------------------------------
+    println("[5] generous budget control")
+    let _r3 = mock_dispatch_reset()
+    let gen_refused = drive_generous()
+    check(not gen_refused, "a generous budget lets the route complete")
+    check(DISPATCH_COUNT == 1, "transport invoked once under a generous budget")
+
+    // ---- 6. no eligible provider is refused (not a crash) ------------------
+    println("[6] unroutable request is refused with provenance")
+    let _r4 = mock_dispatch_reset()
+    let unroutable = Route { name: "audio-route", policy: policy_cheapest(), max_cost_per_1k: 0.0, requires: ["audio"] }
+    let none_o = route_run(ps, unroutable, "q", 0, mock_dispatch)
+    check(none_o.refused, "a route no provider supports is refused")
+    check(none_o.provider_name == "", "no provider name on an unroutable refusal")
+    check(DISPATCH_COUNT == 0, "no dispatch for an unroutable request")
+
+    println("== ALL " + to_string(PASS_COUNT) + " CHECKS PASSED ==")
+}

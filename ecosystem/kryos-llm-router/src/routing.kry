@@ -1,0 +1,159 @@
+// ============================================================
+// select.kry -- the policy engine of the router (PURE compute).
+//
+// This module is provider-selection only: structs + the policy that picks a
+// provider for a route. It touches NO capability-gated builtin (no net, io,
+// time, or process), so every function is @capabilities() -- the empty set.
+// That is the honest, provable claim: choosing a provider is pure computation;
+// the network authority lives one layer up, on governed_route (router.kry).
+//
+// Keeping selection in its own capability-free module also makes it directly
+// `kryos test`-able: a pure-compute file with @test functions runs green on
+// the JIT (no Tracked / cost / f64-print to choke the test harness).
+// ============================================================
+
+// A candidate LLM provider in the routing table.
+//
+//   name         : stable identifier, recorded in answer provenance.
+//   cost_per_1k  : USD per 1000 tokens (selection compares this; it is never
+//                  stringified as f64 -- callers convert to integer micro-USD).
+//   latency_ms   : typical end-to-end latency, for the lowest_latency policy.
+//   caps         : the Kryos governance capabilities this provider is GRANTED
+//                  (e.g. ["net"] for a hosted API, ["net","process"] for one
+//                  that executes tools locally). Travels into provenance so the
+//                  answer records the authority under which it was produced.
+//   supports     : the FEATURES the provider can serve (e.g. "chat","tools",
+//                  "vision","json","long_context"). A route's `requires` is
+//                  matched against this set.
+//
+// Array fields are declared last (struct-field convention; harmless on the JIT
+// these run on, and AOT-safe by habit).
+struct Provider {
+    name: str,
+    cost_per_1k: f64,
+    latency_ms: i64,
+    caps: [str],
+    supports: [str]
+}
+
+// A routing request: the policy plus the feature/cost constraints a chosen
+// provider must satisfy.
+//
+//   name             : label for the route, recorded in provenance.
+//   policy           : POLICY_CHEAPEST | POLICY_LOWEST_LATENCY |
+//                      POLICY_CAPABILITY_MATCH.
+//   max_cost_per_1k  : hard ceiling on cost; a provider above it is ineligible.
+//                      Set to 0.0 (or negative) to disable the ceiling.
+//   requires         : features the provider MUST support to be eligible.
+struct Route {
+    name: str,
+    policy: str,
+    max_cost_per_1k: f64,
+    requires: [str]
+}
+
+// Policy identifiers (string constants -- Kryos has no module-scoped enums with
+// payload-free comparison cheaper than these, and strings keep routes readable
+// in config/JSON).
+@capabilities()
+fn policy_cheapest() -> str { return "cheapest" }
+@capabilities()
+fn policy_lowest_latency() -> str { return "lowest_latency" }
+@capabilities()
+fn policy_capability_match() -> str { return "capability_match" }
+
+// True if `needle` is present in `xs`.
+@capabilities()
+fn _list_contains(xs: [str], needle: str) -> bool {
+    let mut i = 0
+    while i < len(xs) {
+        if xs[i] == needle { return true }
+        i = i + 1
+    }
+    return false
+}
+
+// True if every feature in `req` appears in `have` (have superset-of req).
+@capabilities()
+fn supports_all(have: [str], req: [str]) -> bool {
+    let mut i = 0
+    while i < len(req) {
+        if not _list_contains(have, req[i]) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// Is this provider eligible for the route? It must support every required
+// feature and (when a ceiling is set) not exceed the cost cap.
+@capabilities()
+fn route_eligible(p: Provider, route: Route) -> bool {
+    if not supports_all(p.supports, route.requires) { return false }
+    if route.max_cost_per_1k > 0.0 {
+        if p.cost_per_1k > route.max_cost_per_1k { return false }
+    }
+    return true
+}
+
+// Compare provider at index `cand` against the current best (`best`) under the
+// route's policy. Returns true if `cand` should replace `best`. Strict "<"
+// keeps the FIRST provider (registration order) on ties -- deterministic.
+@capabilities()
+fn _is_better(providers: [Provider], cand: i64, best: i64, policy: str) -> bool {
+    let c = providers[cand]
+    let b = providers[best]
+    if policy == "cheapest" {
+        return c.cost_per_1k < b.cost_per_1k
+    }
+    if policy == "lowest_latency" {
+        return c.latency_ms < b.latency_ms
+    }
+    // capability_match: prefer the LEAST over-provisioned eligible provider --
+    // the smallest supported-feature set that still satisfies the route. This
+    // is the governance-flavored policy: grant the route the provider with the
+    // least surplus authority/feature surface that can still do the job.
+    return len(c.supports) < len(b.supports)
+}
+
+/// Select a provider index for the route under its policy, considering only
+/// eligible providers. Returns -1 when no provider satisfies the route.
+@capabilities()
+fn select_provider(providers: [Provider], route: Route) -> i64 {
+    let mut best: i64 = -1
+    let mut i = 0
+    while i < len(providers) {
+        if route_eligible(providers[i], route) {
+            if best < 0 {
+                best = i
+            } elif _is_better(providers, i, best, route.policy) {
+                best = i
+            }
+        }
+        i = i + 1
+    }
+    return best
+}
+
+/// Count how many providers are eligible for a route (diagnostics / tests).
+@capabilities()
+fn eligible_count(providers: [Provider], route: Route) -> i64 {
+    let mut n = 0
+    let mut i = 0
+    while i < len(providers) {
+        if route_eligible(providers[i], route) { n = n + 1 }
+        i = i + 1
+    }
+    return n
+}
+
+// Cost of `tokens` tokens at this provider's rate, as integer micro-USD.
+// cost_per_1k is USD per 1000 tokens, so:
+//   USD       = cost_per_1k * tokens / 1000
+//   micro-USD = USD * 1_000_000 = cost_per_1k * tokens * 1000
+// Result is returned as an i64: to_string(f64) is unsupported on the JIT, so
+// money never leaves this module as a float string.
+@capabilities()
+fn cost_micro_usd(p: Provider, tokens: i64) -> i64 {
+    let micro: f64 = p.cost_per_1k * (tokens as f64) * 1000.0
+    return micro as i64
+}

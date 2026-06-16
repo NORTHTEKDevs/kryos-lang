@@ -1,0 +1,123 @@
+// ============================================================
+// test_routing.kry -- @test gates for the PURE policy engine.
+//
+//   kryos test --path ecosystem/kryos-llm-router/tests
+//
+// routing.kry is capability-free pure compute (no Tracked / cost-struct /
+// f64-print), so the `kryos test` JIT harness runs it green. These tests pin
+// the SELECTION behaviour -- the part the README claims about cheapest /
+// lowest-latency / capability-match and eligibility filtering. The governance
+// surface (Tracked<str> provenance + @budget refusal) needs Tracked values and
+// the budget frame, which the test harness handles less reliably, so it is
+// proven by the `kryos run` driver in router_verify.kry instead.
+// ============================================================
+
+use routing::{Provider, Route, select_provider, route_eligible, eligible_count,
+              supports_all, cost_micro_usd,
+              policy_cheapest, policy_lowest_latency, policy_capability_match}
+
+// Three providers crafted so each policy has a DISTINCT winner on a route that
+// requires only ["chat","json"] (all three eligible):
+//   alpha  -- priciest, but the FEWEST features (2) -> capability_match winner
+//   beta   -- cheapest (0.001) -> cheapest winner
+//   gamma  -- lowest latency (120ms) -> lowest_latency winner
+fn providers() -> [Provider] {
+    let alpha = Provider {
+        name: "alpha", cost_per_1k: 0.010, latency_ms: 400,
+        caps: ["net"], supports: ["chat", "json"]
+    }
+    let beta = Provider {
+        name: "beta", cost_per_1k: 0.001, latency_ms: 900,
+        caps: ["net"], supports: ["chat", "json", "tools", "vision"]
+    }
+    let gamma = Provider {
+        name: "gamma", cost_per_1k: 0.005, latency_ms: 120,
+        caps: ["net", "process"], supports: ["chat", "json", "tools"]
+    }
+    return [alpha, beta, gamma]
+}
+
+fn route(policy: str, max_cost: f64, requires: [str]) -> Route {
+    return Route { name: "chat-route", policy: policy, max_cost_per_1k: max_cost, requires: requires }
+}
+
+// --- policy: cheapest -------------------------------------------------------
+@test
+fn test_cheapest_picks_lowest_cost() {
+    let ps = providers()
+    let idx = select_provider(ps, route(policy_cheapest(), 0.0, ["chat", "json"]))
+    assert(idx == 1, "cheapest must pick beta (index 1, cost 0.001)")
+    assert(ps[idx].name == "beta", "cheapest provider is beta")
+}
+
+// --- policy: lowest latency -------------------------------------------------
+@test
+fn test_lowest_latency_picks_fastest() {
+    let ps = providers()
+    let idx = select_provider(ps, route(policy_lowest_latency(), 0.0, ["chat", "json"]))
+    assert(idx == 2, "lowest_latency must pick gamma (index 2, 120ms)")
+    assert(ps[idx].name == "gamma", "fastest provider is gamma")
+}
+
+// --- policy: capability match (least over-provisioned) ----------------------
+@test
+fn test_capability_match_picks_tightest_fit() {
+    let ps = providers()
+    let idx = select_provider(ps, route(policy_capability_match(), 0.0, ["chat", "json"]))
+    assert(idx == 0, "capability_match must pick alpha (fewest features = 2)")
+    assert(ps[idx].name == "alpha", "tightest-fit provider is alpha")
+}
+
+// --- eligibility: required feature filters the table ------------------------
+@test
+fn test_required_feature_filters() {
+    let ps = providers()
+    // only beta supports "vision"
+    let r = route(policy_cheapest(), 0.0, ["vision"])
+    assert(eligible_count(ps, r) == 1, "exactly one provider supports vision")
+    let idx = select_provider(ps, r)
+    assert(ps[idx].name == "beta", "vision route must pick beta regardless of cost")
+}
+
+// --- eligibility: cost ceiling excludes too-expensive providers -------------
+@test
+fn test_cost_ceiling_excludes() {
+    let ps = providers()
+    // ceiling 0.004 excludes alpha(0.010) and gamma(0.005); only beta(0.001) left
+    let r = route(policy_cheapest(), 0.004, ["chat", "json"])
+    assert(eligible_count(ps, r) == 1, "only beta is under the 0.004 ceiling")
+    let idx = select_provider(ps, r)
+    assert(ps[idx].name == "beta", "ceiling leaves only beta")
+}
+
+// --- no eligible provider returns -1 ----------------------------------------
+@test
+fn test_no_eligible_returns_minus_one() {
+    let ps = providers()
+    let r = route(policy_cheapest(), 0.0, ["audio"])  // nobody supports audio
+    assert(eligible_count(ps, r) == 0, "no provider supports audio")
+    assert(select_provider(ps, r) == -1, "no eligible provider -> -1")
+}
+
+// --- helper correctness -----------------------------------------------------
+@test
+fn test_supports_all_and_cost() {
+    assert(supports_all(["chat", "json", "tools"], ["chat", "tools"]),
+        "superset must satisfy a subset requirement")
+    assert(not supports_all(["chat"], ["chat", "tools"]),
+        "missing a required feature must fail")
+
+    let beta = providers()[1]
+    // 0.001 USD/1k * 100 tokens * 1000 = 100 micro-USD
+    assert(cost_micro_usd(beta, 100) == 100, "beta: 100 tokens = 100 micro-USD")
+    let gamma = providers()[2]
+    // 0.005 * 100 * 1000 = 500 micro-USD
+    assert(cost_micro_usd(gamma, 100) == 500, "gamma: 100 tokens = 500 micro-USD")
+}
+
+fn main() {
+    let ps = providers()
+    println("cheapest        -> " + ps[select_provider(ps, route(policy_cheapest(), 0.0, ["chat", "json"]))].name)
+    println("lowest_latency  -> " + ps[select_provider(ps, route(policy_lowest_latency(), 0.0, ["chat", "json"]))].name)
+    println("capability_match-> " + ps[select_provider(ps, route(policy_capability_match(), 0.0, ["chat", "json"]))].name)
+}
