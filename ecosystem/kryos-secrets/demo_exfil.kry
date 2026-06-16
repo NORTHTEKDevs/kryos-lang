@@ -1,0 +1,62 @@
+// ============================================================
+// demo_exfil.kry -- the capability wedge, runnable end to end.
+//
+//   kryos run demo_exfil.kry
+//   kryos check --strict-capabilities demo_exfil.kry     (0 errors)
+//
+// This file is the LEGITIMATE side of the story: a function that is allowed
+// to ship the secret because it DECLARES `@capabilities(net)`. It runs, and
+// it also passes strict capability checking, because every function on the
+// path from main down to the net sink declares `net`.
+//
+// The ILLEGITIMATE side -- a compute-only function trying to do the same
+// thing -- is the compile-fail fixture in tests/fixtures/leak_compute.kry.
+// Run `kryos check --strict-capabilities tests/fixtures/leak_compute.kry`
+// and the compiler rejects it with E0505 (see that file's header).
+//
+// NOTE: the "send" here is a local stub sink, not a real socket, so the demo
+// is deterministic and offline. The stub still declares @capabilities(net):
+// the guarantee is about the capability a sink REQUIRES, independent of
+// whether the bytes hit a real wire. Swapping the stub body for `http2_post`
+// (also a `net` builtin) would not change the capability surface.
+// ============================================================
+
+use secret
+
+// A stand-in network sink. Declares `net` because shipping a value off-box is
+// a `net`-capability act -- exactly what http2_post / tcp_send are gated on.
+// We don't open a socket in the demo; we just prove the value reached a sink
+// that had to declare the capability to receive it.
+@capabilities(net)
+fn upload(url: str, body: str) -> i64 {
+    // Real code would call http2_post(url, body) here (a `net` builtin).
+    println("  [net] POST " + url + " (" + to_string(len(body)) + " bytes)")
+    return 200
+}
+
+// A `net`-capable handler that is ALLOWED to exfiltrate the secret: it
+// declares `net`, so under strict mode the compiler permits the gated call.
+// The secret is exposed only inside this net-scoped function.
+@capabilities(net)
+fn ship_secret(token: Secret, url: str) -> i64 {
+    return expose_int(token, |raw| upload(url, raw))
+}
+
+@capabilities(net)
+fn main() {
+    let token = secret_of("sk-live-7f3a9c2e", "api_key")
+
+    // Safe to log: redaction only.
+    println("shipping " + redacted(token))
+
+    // Allowed: ship_secret declares `net`, so the secret may leave it.
+    let status = ship_secret(token, "https://api.example.com/ingest")
+    println("status: " + to_string(status))
+
+    println("")
+    println("Why this compiles under --strict-capabilities:")
+    println("  main -> ship_secret -> upload all declare @capabilities(net).")
+    println("  Drop `net` from any of them and the compiler rejects the call")
+    println("  (E0505 on the builtin, E0507 across the function boundary).")
+    println("  See tests/fixtures/leak_compute.kry for the rejected version.")
+}

@@ -1,0 +1,12 @@
+[package]
+name = "kryos-secrets"
+version = "0.1.0"
+description = "A Secret<str> handle whose raw value cannot reach a net/io sink unless the function declared the capability -- accidental exfiltration becomes a compile-time attenuation error under --strict-capabilities"
+license = "Apache-2.0"
+
+# The library core is pure compute: building, redacting, and exposing a secret
+# touches no IO. Reading a secret from the environment needs `process` (that is
+# what env_get is gated on), so the env constructor lives behind @capabilities(process).
+# A function that actually ships a secret over the wire must declare `net`.
+[capabilities]
+allowed = ["compute", "process", "net"]
