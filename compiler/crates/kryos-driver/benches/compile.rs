@@ -534,14 +534,14 @@ fn bench_capabilities(c: &mut Criterion) {
 
     group.bench_function("medium", |b| {
         b.iter(|| {
-            let diags = check_capabilities(black_box(&medium_module));
+            let diags = check_capabilities(black_box(&medium_module), false);
             black_box(diags);
         });
     });
 
     group.bench_function("large_200fn", |b| {
         b.iter(|| {
-            let diags = check_capabilities(black_box(&large_module));
+            let diags = check_capabilities(black_box(&large_module), false);
             black_box(diags);
         });
     });
@@ -639,6 +639,7 @@ fn bench_pipeline(c: &mut Criterion) {
         debug_info: false,
         use_cache: false,
         split_async_awaits: true,
+        strict_capabilities: false,
     };
 
     let mut group = c.benchmark_group("pipeline");

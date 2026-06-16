@@ -67,6 +67,16 @@ pub struct BuildConfig {
     /// Default: true. Can be disabled via `KRYOS_DISABLE_AWAIT_SPLIT=1` for
     /// debugging or to fall back to the pre-split synchronous lowering.
     pub split_async_awaits: bool,
+    /// Deny capability-gated builtins in unannotated functions. When true,
+    /// every function is checked as if it had an explicit `@capabilities(...)`
+    /// annotation (the empty set unless declared), so a missing annotation
+    /// no longer hides a `file_write` or `http_get` call.
+    ///
+    /// Wired to the `--strict-capabilities` flag on `kryos build` and
+    /// `kryos check`. Default: `false` — the self-host bootstrap and existing
+    /// projects depend on opt-in behaviour, so this MUST remain off for any
+    /// default config the compiler itself produces.
+    pub strict_capabilities: bool,
 }
 
 impl BuildConfig {
@@ -85,6 +95,7 @@ impl BuildConfig {
             debug_info: false,
             use_cache: false,
             split_async_awaits: default_split_async_awaits(),
+            strict_capabilities: false,
         }
     }
 
@@ -103,6 +114,7 @@ impl BuildConfig {
             debug_info: false,
             use_cache: false,
             split_async_awaits: default_split_async_awaits(),
+            strict_capabilities: false,
         }
     }
 

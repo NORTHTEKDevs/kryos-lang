@@ -57,6 +57,7 @@ fn compile_valid_source_succeeds() {
     debug_info: false,
     use_cache: false,
     split_async_awaits: true,
+    strict_capabilities: false,
     };
 
     let result = compile_file(&path, &config);
@@ -96,6 +97,7 @@ fn compile_syntax_error_fails() {
     debug_info: false,
     use_cache: false,
     split_async_awaits: true,
+    strict_capabilities: false,
     };
 
     let result = compile_file(&path, &config);
@@ -128,6 +130,7 @@ fn compile_type_error_fails() {
     debug_info: false,
     use_cache: false,
     split_async_awaits: true,
+    strict_capabilities: false,
     };
 
     let result = compile_file(&path, &config);
@@ -253,6 +256,7 @@ fn compile_source_valid() {
     debug_info: false,
     use_cache: false,
     split_async_awaits: true,
+    strict_capabilities: false,
     };
 
     let result = compile_source(VALID_SOURCE, "inline.kry", &config);
@@ -279,6 +283,7 @@ fn compile_source_with_binary_output_no_backend() {
     debug_info: false,
     use_cache: false,
     split_async_awaits: true,
+    strict_capabilities: false,
     };
 
     let result = compile_source(VALID_SOURCE, "inline.kry", &config);
@@ -329,6 +334,7 @@ fn build_config_derive_output_path() {
     debug_info: false,
     use_cache: false,
     split_async_awaits: true,
+    strict_capabilities: false,
     };
 
     let derived = config.derive_output_path();
@@ -350,6 +356,7 @@ fn build_config_derive_output_mir() {
     debug_info: false,
     use_cache: false,
     split_async_awaits: true,
+    strict_capabilities: false,
     };
 
     let derived = config.derive_output_path();
@@ -371,6 +378,7 @@ fn build_config_explicit_output_overrides_derived() {
     debug_info: false,
     use_cache: false,
     split_async_awaits: true,
+    strict_capabilities: false,
     };
 
     let derived = config.derive_output_path();
@@ -421,6 +429,7 @@ fn main() {
     debug_info: false,
     use_cache: false,
     split_async_awaits: true,
+    strict_capabilities: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -484,6 +493,7 @@ fn main() {
     debug_info: false,
     use_cache: false,
     split_async_awaits: true,
+    strict_capabilities: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -545,6 +555,7 @@ fn main() {
     debug_info: false,
     use_cache: false,
     split_async_awaits: true,
+    strict_capabilities: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -626,6 +637,7 @@ fn main() {
     debug_info: false,
     use_cache: false,
     split_async_awaits: true,
+    strict_capabilities: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -735,6 +747,7 @@ fn main() {
     debug_info: false,
     use_cache: false,
     split_async_awaits: true,
+    strict_capabilities: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -798,6 +811,7 @@ fn main() {
     debug_info: false,
     use_cache: false,
     split_async_awaits: true,
+    strict_capabilities: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -854,6 +868,7 @@ fn main() {
     debug_info: false,
     use_cache: false,
     split_async_awaits: true,
+    strict_capabilities: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -1013,6 +1028,7 @@ fn compile_file_with_std_import() {
     debug_info: false,
     use_cache: false,
     split_async_awaits: true,
+    strict_capabilities: false,
     };
 
     let result = compile_file(&main_path, &config);
@@ -1077,6 +1093,7 @@ fn async_function_flagged_as_async_in_mir() {
         debug_info: false,
         use_cache: false,
         split_async_awaits: true,
+        strict_capabilities: false,
     };
 
     let result = compile_file(&path, &config);
@@ -1133,6 +1150,7 @@ fn async_function_compiles_end_to_end() {
         debug_info: false,
         use_cache: false,
         split_async_awaits: true,
+        strict_capabilities: false,
     };
 
     let result = compile_file(&path, &config);
@@ -1166,6 +1184,7 @@ fn main() { let _ = bad(1) }
         debug_info: false,
         use_cache: false,
         split_async_awaits: true,
+        strict_capabilities: false,
     };
 
     let result = compile_file(&path, &config);

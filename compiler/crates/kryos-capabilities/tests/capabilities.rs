@@ -135,7 +135,7 @@ fn function_using_net_without_capability_produces_error() {
         }],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert_eq!(errs.len(), 1);
     assert!(errs[0].message.contains("requires `net` capability"));
@@ -153,7 +153,7 @@ fn function_using_net_with_capability_no_error() {
         }],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert!(errs.is_empty(), "expected no errors, got: {errs:?}");
 }
@@ -169,7 +169,7 @@ fn function_using_io_without_capability_produces_error() {
         }],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert_eq!(errs.len(), 1);
     assert!(errs[0].message.contains("requires `io` capability"));
@@ -200,7 +200,7 @@ fn function_with_all_can_use_any_stdlib() {
         ],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert!(errs.is_empty(), "all should grant everything: {errs:?}");
 }
@@ -231,7 +231,7 @@ fn attenuation_child_subset_of_parent_no_error() {
         span: span(),
     }]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert!(errs.is_empty(), "subset should be valid: {errs:?}");
 }
@@ -256,7 +256,7 @@ fn spawn_with_capability_subset_is_valid() {
         }],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert!(
         errs.is_empty(),
@@ -276,7 +276,7 @@ fn spawn_stdlib_call_exceeding_parent_capabilities_is_error() {
         }],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert_eq!(
         errs.len(),
@@ -309,7 +309,7 @@ fn self_heal_escalation_method_call_detected() {
         }],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     assert!(diags
         .iter()
         .any(|d| d.code.as_deref() == Some("E0504")));
@@ -335,7 +335,7 @@ fn self_heal_escalation_fn_call_detected() {
         }],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     assert!(
         diags
             .iter()
@@ -491,7 +491,7 @@ fn unknown_capability_name_produces_warning() {
         vec![],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     assert_eq!(diags.len(), 1);
     assert!(diags[0].message.contains("banana"));
     assert_eq!(diags[0].code.as_deref(), Some("W-CAP-UNKNOWN"));
@@ -533,7 +533,7 @@ fn multiple_violations_reported() {
         ],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert_eq!(errs.len(), 3, "should report 3 violations: {errs:?}");
 }
@@ -556,7 +556,7 @@ fn mixed_valid_and_invalid_calls() {
         ],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert_eq!(errs.len(), 1);
     assert!(errs[0].message.contains("io"));
@@ -588,7 +588,7 @@ fn escalation_combined_with_capability_violation() {
         ],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert!(errs.len() >= 2, "should have both violations: {errs:?}");
     assert!(errs
@@ -634,7 +634,7 @@ fn builtin_file_write_with_io_capability_passes() {
         }],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert!(errs.is_empty(), "io cap should allow file_write: {errs:?}");
 }
@@ -654,7 +654,7 @@ fn builtin_file_write_with_wrong_capability_fails() {
         }],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert_eq!(
         errs.len(),
@@ -681,7 +681,7 @@ fn builtin_file_write_without_annotation_passes() {
         }],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert!(errs.is_empty(), "no annotation = unconstrained: {errs:?}");
 }
@@ -697,7 +697,7 @@ fn builtin_http_get_with_net_capability_passes() {
         }],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert!(errs.is_empty(), "net cap should allow http_get: {errs:?}");
 }
@@ -713,7 +713,7 @@ fn builtin_http_get_with_io_capability_fails() {
         }],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert_eq!(errs.len(), 1);
     assert!(errs[0].message.contains("http_get"));
@@ -732,7 +732,7 @@ fn builtin_sleep_with_time_capability_passes() {
         }],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert!(errs.is_empty(), "time cap should allow sleep: {errs:?}");
 }
@@ -748,7 +748,7 @@ fn builtin_sha256_with_crypto_capability_passes() {
         }],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert!(errs.is_empty(), "crypto cap should allow sha256: {errs:?}");
 }
@@ -764,7 +764,7 @@ fn builtin_term_clear_with_term_capability_passes() {
         }],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert!(
         errs.is_empty(),
@@ -783,7 +783,7 @@ fn builtin_exec_with_process_capability_passes() {
         }],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert!(errs.is_empty(), "process cap should allow exec: {errs:?}");
 }
@@ -810,7 +810,7 @@ fn builtin_println_requires_no_capability() {
         ],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert!(
         errs.is_empty(),
@@ -847,7 +847,7 @@ fn builtin_all_capability_allows_all_builtins() {
         ],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert!(
         errs.is_empty(),
@@ -877,7 +877,7 @@ fn multiple_builtin_violations_reported() {
         ],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert_eq!(errs.len(), 3, "should have 3 builtin violations: {errs:?}");
     assert!(errs
@@ -911,7 +911,7 @@ fn cross_function_call_with_sufficient_caps_passes() {
         ),
     ]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert!(errs.is_empty(), "a has superset of b's caps: {errs:?}");
 }
@@ -933,7 +933,7 @@ fn cross_function_call_with_insufficient_caps_fails() {
         ),
     ]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert_eq!(errs.len(), 1, "a lacks net for calling b: {errs:?}");
     assert!(errs[0].message.contains("net"));
@@ -956,7 +956,7 @@ fn cross_function_unannotated_caller_skips_check() {
         ),
     ]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert!(
         errs.is_empty(),
@@ -980,7 +980,7 @@ fn cross_function_calling_unannotated_function_passes() {
         ),
     ]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert!(
         errs.is_empty(),
@@ -1008,7 +1008,7 @@ fn cross_function_all_capability_allows_calling_any() {
         ),
     ]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert!(errs.is_empty(), "all cap covers any callee: {errs:?}");
 }
@@ -1033,7 +1033,7 @@ fn builtin_and_stdlib_violations_combined() {
         ],
     )]);
 
-    let diags = check_capabilities(&module);
+    let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);
     assert_eq!(
         errs.len(),

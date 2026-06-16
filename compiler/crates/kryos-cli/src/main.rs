@@ -87,6 +87,14 @@ enum Commands {
         /// Force-disable the cross-build artifact cache.
         #[arg(long)]
         no_cache: bool,
+
+        /// Deny capability-gated builtins in unannotated functions.
+        /// In strict mode, every function is checked as if it had an explicit
+        /// `@capabilities(...)` annotation (the empty set unless declared),
+        /// so a missing annotation no longer hides a `file_write` or
+        /// `http_get` call. Equivalent to deny-by-default.
+        #[arg(long)]
+        strict_capabilities: bool,
     },
 
     /// Compile and run a Kryos file
@@ -116,6 +124,11 @@ enum Commands {
         /// Watch the file/directory and re-check on every save.
         #[arg(long)]
         watch: bool,
+
+        /// Deny capability-gated builtins in unannotated functions.
+        /// See `kryos build --help` for the full description.
+        #[arg(long)]
+        strict_capabilities: bool,
     },
 
     /// Evaluate a one-liner expression (wraps in fn main and runs)
@@ -601,6 +614,7 @@ fn main() {
             debug_info,
             cache,
             no_cache,
+            strict_capabilities,
         } => {
             // --no-lto wins over both --lto and the release-implied LTO default.
             let effective_lto = if no_lto { false } else { lto };
@@ -623,6 +637,7 @@ fn main() {
                 effective_lto,
                 debug_info,
                 effective_cache,
+                strict_capabilities,
             )
         }
 
@@ -638,11 +653,12 @@ fn main() {
             path,
             skip_ownership,
             watch,
+            strict_capabilities,
         } => {
             if watch {
-                commands::check::execute_watch(&path, skip_ownership)
+                commands::check::execute_watch(&path, skip_ownership, strict_capabilities)
             } else {
-                commands::check::execute(&path, skip_ownership)
+                commands::check::execute(&path, skip_ownership, strict_capabilities)
             }
         }
 

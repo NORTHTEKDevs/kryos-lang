@@ -142,7 +142,7 @@ fn run_check_each(root: &Path, members: &[String]) -> Result<(), String> {
     for m in members {
         let path = root.join(m);
         eprintln!("\x1b[1m[check]\x1b[0m {}", m);
-        match super::check::execute(&path.to_string_lossy(), false) {
+        match super::check::execute(&path.to_string_lossy(), false, false) {
             Ok(_) => {}
             Err(e) => {
                 eprintln!("  \x1b[31mfailed\x1b[0m: {e}");

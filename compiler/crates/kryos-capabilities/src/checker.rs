@@ -19,8 +19,16 @@ use crate::model::{
 /// Run the capability checking pass over a module.
 ///
 /// Returns a list of diagnostics (errors/warnings) for any violations found.
-pub fn check_capabilities(module: &Module) -> Vec<Diagnostic> {
-    let mut checker = CapabilityChecker::new();
+///
+/// When `strict` is true, every function is treated as having an explicit
+/// capability annotation — unannotated functions are checked as if declared
+/// with the empty capability set. This is the `--strict-capabilities` mode:
+/// it shifts the system from opt-in documentation to opt-in exemption. Any
+/// call to a capability-gated builtin from an unannotated function becomes
+/// a compile error (E0505) unless the function explicitly declares the
+/// capability via `@capabilities(...)`.
+pub fn check_capabilities(module: &Module, strict: bool) -> Vec<Diagnostic> {
+    let mut checker = CapabilityChecker::new(strict);
     checker.check_module(module);
     checker.diagnostics
 }
@@ -48,14 +56,20 @@ struct CapabilityChecker {
     /// Only populated for functions that have `@capabilities(...)` annotations.
     /// Used for cross-function propagation checks.
     fn_capabilities: HashMap<String, CapabilitySet>,
+    /// Deny-by-default mode. When true, unannotated functions are treated as
+    /// `@capabilities()` — the empty set — so any capability-gated builtin
+    /// call inside them is a compile error (E0505) unless the function adds
+    /// an explicit annotation.
+    strict_mode: bool,
 }
 
 impl CapabilityChecker {
-    fn new() -> Self {
+    fn new(strict_mode: bool) -> Self {
         Self {
             scope_stack: Vec::new(),
             diagnostics: Vec::new(),
             fn_capabilities: HashMap::new(),
+            strict_mode,
         }
     }
 
@@ -199,9 +213,11 @@ impl CapabilityChecker {
         }
 
         // Push this function's scope and check its body.
+        // In strict mode, treat unannotated functions as annotated with the
+        // empty set so builtin and propagation checks fire against them.
         let scope = CapabilityScope {
             capabilities: caps,
-            annotated,
+            annotated: annotated || self.strict_mode,
         };
         self.scope_stack.push(scope);
         if let Some(block) = body {
@@ -242,9 +258,11 @@ impl CapabilityChecker {
         }
 
         // Check each handler under the actor's capability scope.
+        // In strict mode, treat unannotated actors as annotated with the
+        // empty set so builtin and propagation checks fire against them.
         let scope = CapabilityScope {
             capabilities: caps,
-            annotated,
+            annotated: annotated || self.strict_mode,
         };
         self.scope_stack.push(scope);
         for handler in handlers {
@@ -531,10 +549,12 @@ impl CapabilityChecker {
         }
 
         // 2. Check bare builtin function calls (e.g. file_write, http_get).
-        //    Only enforced inside explicitly annotated @capabilities scopes.
+        //    Normally only enforced inside explicitly annotated @capabilities
+        //    scopes; in strict mode every scope is treated as annotated, so
+        //    unannotated callers are also checked against the empty set.
         if segments.len() == 1 {
             if let Some(required_cap) = required_capability_for_builtin(&segments[0]) {
-                if self.has_annotated_scope() {
+                if self.strict_mode || self.has_annotated_scope() {
                     if let Some(caps) = self.current_caps() {
                         if !caps.has(required_cap) {
                             self.diagnostics.push(
@@ -559,9 +579,12 @@ impl CapabilityChecker {
 
         // 3. Cross-function propagation: if calling a known annotated function,
         //    the caller's capabilities must be a superset of the callee's.
+        //    In strict mode unannotated callers are checked too — they hold
+        //    the empty set, so calling any capability-bearing function from
+        //    them is an error unless they declare their own annotation.
         if segments.len() == 1 {
             if let Some(callee_caps) = self.fn_capabilities.get(&segments[0]).cloned() {
-                if self.has_annotated_scope() {
+                if self.strict_mode || self.has_annotated_scope() {
                     if let Some(caller_caps) = self.current_caps() {
                         if !callee_caps.is_subset_of(caller_caps) {
                             let excess = callee_caps.excess_over(caller_caps);
@@ -742,7 +765,7 @@ mod tests {
             declarations: vec![fn_decl("main", vec![], vec![])],
             span: span(),
         };
-        let diags = check_capabilities(&module);
+        let diags = check_capabilities(&module, false);
         assert!(diags.is_empty());
     }
 
@@ -761,7 +784,7 @@ mod tests {
             )],
             span: span(),
         };
-        let diags = check_capabilities(&module);
+        let diags = check_capabilities(&module, false);
         assert!(diags.is_empty(), "expected no errors, got: {diags:?}");
     }
 
@@ -780,7 +803,7 @@ mod tests {
             )],
             span: span(),
         };
-        let diags = check_capabilities(&module);
+        let diags = check_capabilities(&module, false);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("requires `net` capability"));
         assert_eq!(diags[0].code.as_deref(), Some("E0502"));
@@ -816,7 +839,7 @@ mod tests {
             span: span(),
         };
         // This should pass — the actor has `net` and the handler uses nothing.
-        let diags = check_capabilities(&module);
+        let diags = check_capabilities(&module, false);
         assert!(diags.is_empty());
     }
 
@@ -844,7 +867,7 @@ mod tests {
             )],
             span: span(),
         };
-        let diags = check_capabilities(&module);
+        let diags = check_capabilities(&module, false);
         assert!(!diags.is_empty());
         assert!(diags
             .iter()
@@ -874,7 +897,7 @@ mod tests {
             )],
             span: span(),
         };
-        let diags = check_capabilities(&module);
+        let diags = check_capabilities(&module, false);
         assert!(!diags.is_empty());
         assert!(diags
             .iter()
@@ -904,10 +927,123 @@ mod tests {
             declarations: vec![fn_decl("god_mode", vec!["all"], calls)],
             span: span(),
         };
-        let diags = check_capabilities(&module);
+        let diags = check_capabilities(&module, false);
         assert!(
             diags.is_empty(),
             "expected no errors with `all`, got: {diags:?}"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Strict mode tests (--strict-capabilities / deny-by-default).
+    //
+    // These exercise the public `check_capabilities(module, strict)` switch
+    // so the wiring stays end-to-end: pipeline.rs -> check_capabilities
+    // -> CapabilityChecker { strict_mode } -> per-call guard.
+    // -------------------------------------------------------------------
+
+    /// Build a bare-name builtin call expression (e.g. `file_write()`),
+    /// which is what the strict-mode path enforces against.
+    fn builtin_call(name: &str) -> Expr {
+        Expr::FnCall {
+            callee: Box::new(Expr::Identifier {
+                name: name.into(),
+                span: span(),
+            }),
+            args: vec![],
+            span: span(),
+        }
+    }
+
+    #[test]
+    fn strict_unannotated_with_file_write_is_error() {
+        // Unannotated function that calls `file_write` (requires `io`).
+        // In strict mode this must surface E0505 at the call site.
+        let module = Module {
+            name: "test".into(),
+            declarations: vec![fn_decl(
+                "leaks",
+                vec![],
+                vec![Stmt::Expr {
+                    expr: builtin_call("file_write"),
+                    span: span(),
+                }],
+            )],
+            span: span(),
+        };
+        let diags = check_capabilities(&module, true);
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one E0505 error, got: {diags:?}"
+        );
+        assert_eq!(errors[0].code.as_deref(), Some("E0505"));
+        assert!(errors[0].message.contains("file_write"));
+        assert!(errors[0].message.contains("`io`"));
+    }
+
+    #[test]
+    fn nonstrict_unannotated_with_file_write_is_ok() {
+        // Same module as above, but with strict=false — the existing
+        // opt-in behaviour. No errors should be raised.
+        let module = Module {
+            name: "test".into(),
+            declarations: vec![fn_decl(
+                "leaks",
+                vec![],
+                vec![Stmt::Expr {
+                    expr: builtin_call("file_write"),
+                    span: span(),
+                }],
+            )],
+            span: span(),
+        };
+        let diags = check_capabilities(&module, false);
+        assert!(
+            diags.iter().all(|d| !d.is_error()),
+            "non-strict mode must not error on unannotated builtin calls, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn strict_unannotated_with_no_gated_calls_is_ok() {
+        // Unannotated function that touches nothing capability-gated.
+        // Strict mode must NOT error — we only deny gated builtins, not
+        // every function definition.
+        let module = Module {
+            name: "test".into(),
+            declarations: vec![fn_decl("pure", vec![], vec![])],
+            span: span(),
+        };
+        let diags = check_capabilities(&module, true);
+        assert!(
+            diags.iter().all(|d| !d.is_error()),
+            "pure function in strict mode must have no errors, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn strict_annotated_with_matching_cap_is_ok() {
+        // Annotated @capabilities(io) function calling file_write.
+        // Strict mode must accept this — the annotation grants exactly
+        // what the call needs.
+        let module = Module {
+            name: "test".into(),
+            declarations: vec![fn_decl(
+                "writer",
+                vec!["io"],
+                vec![Stmt::Expr {
+                    expr: builtin_call("file_write"),
+                    span: span(),
+                }],
+            )],
+            span: span(),
+        };
+        let diags = check_capabilities(&module, true);
+        assert!(
+            diags.iter().all(|d| !d.is_error()),
+            "annotated function with matching cap must not error in strict mode, got: {diags:?}"
         );
     }
 
@@ -929,7 +1065,7 @@ mod tests {
             }],
             span: span(),
         };
-        let diags = check_capabilities(&module);
+        let diags = check_capabilities(&module, false);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("banana"));
         assert_eq!(diags[0].code.as_deref(), Some("W-CAP-UNKNOWN"));

@@ -64,6 +64,7 @@ fn execute_inner(file: &str, args: &[String], time: bool) -> Result<(), String> 
         debug_info: false,
         use_cache: false,
         split_async_awaits: true,
+        strict_capabilities: false,
     };
 
     // Compile first, then execute.

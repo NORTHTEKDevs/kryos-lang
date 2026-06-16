@@ -25,7 +25,7 @@
 //! ```ignore
 //! use kryos_capabilities::check_capabilities;
 //!
-//! let diagnostics = check_capabilities(&module);
+//! let diagnostics = check_capabilities(&module, false);
 //! for diag in &diagnostics {
 //!     if diag.is_error() {
 //!         // Capability violation found

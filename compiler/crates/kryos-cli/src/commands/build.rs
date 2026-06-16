@@ -20,6 +20,7 @@ pub fn execute(
     lto: bool,
     debug_info: bool,
     use_cache: bool,
+    strict_capabilities: bool,
 ) -> Result<(), String> {
     let mode = if release {
         BuildMode::Release
@@ -51,6 +52,7 @@ pub fn execute(
         debug_info,
         use_cache,
         split_async_awaits: BuildConfig::_split_async_awaits_default(),
+        strict_capabilities,
     };
 
     if verbose {

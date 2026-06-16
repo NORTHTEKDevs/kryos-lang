@@ -23,9 +23,10 @@ pub mod runtime;
 // Re-export key types for convenient use from the CLI and other consumers.
 pub use config::{BuildConfig, BuildMode, OutputType};
 pub use pipeline::{
-    check_file, check_file_with_options, check_project, check_source, compile_file,
-    compile_file_with_backend, compile_project, compile_project_with_backend, compile_source,
-    render_diagnostics, Backend, BackendError, CompileResult,
+    check_file, check_file_with_options, check_file_with_options_full, check_project,
+    check_project_with_options, check_source, compile_file, compile_file_with_backend,
+    compile_project, compile_project_with_backend, compile_source, render_diagnostics, Backend,
+    BackendError, CompileResult,
 };
 
 /// The version of the Kryos compiler.

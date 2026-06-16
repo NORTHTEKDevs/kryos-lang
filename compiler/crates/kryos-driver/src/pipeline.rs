@@ -491,7 +491,10 @@ fn compile_module_impl(
     };
 
     // 7. Capability checking
-    let cap_diags = check_capabilities(&module);
+    //    In strict (deny-by-default) mode, unannotated functions are treated
+    //    as having `@capabilities()` — the empty set — so any gated builtin
+    //    call surfaces E0505. Opt-in via `--strict-capabilities`.
+    let cap_diags = check_capabilities(&module, config.strict_capabilities);
     let has_cap_errors = cap_diags.iter().any(|d| d.is_error());
     diagnostics.extend(cap_diags);
 
@@ -1163,8 +1166,9 @@ pub fn check_file(path: &Path) -> (Vec<Diagnostic>, SourceMap) {
     let ownership = analyze_ownership(&module);
     diagnostics.extend(ownership.errors);
 
-    // Capabilities
-    diagnostics.extend(check_capabilities(&module));
+    // Capabilities (non-strict by default; the strict-mode entry point is
+    // `check_file_with_options` which carries the flag).
+    diagnostics.extend(check_capabilities(&module, false));
 
     (diagnostics, source_map)
 }
@@ -1173,6 +1177,19 @@ pub fn check_file(path: &Path) -> (Vec<Diagnostic>, SourceMap) {
 ///
 /// Returns `(diagnostics, source_map)`.
 pub fn check_file_with_options(path: &Path, skip_ownership: bool) -> (Vec<Diagnostic>, SourceMap) {
+    check_file_with_options_full(path, skip_ownership, false)
+}
+
+/// Check a single file with the full option set, including capability strict
+/// mode. The `strict_capabilities` flag corresponds to the CLI
+/// `--strict-capabilities`: when true, every function is checked as if it had
+/// an explicit `@capabilities(...)` annotation (the empty set unless declared),
+/// so unannotated functions cannot silently call capability-gated builtins.
+pub fn check_file_with_options_full(
+    path: &Path,
+    skip_ownership: bool,
+    strict_capabilities: bool,
+) -> (Vec<Diagnostic>, SourceMap) {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -1234,8 +1251,8 @@ pub fn check_file_with_options(path: &Path, skip_ownership: bool) -> (Vec<Diagno
         diagnostics.extend(ownership.errors);
     }
 
-    // Capabilities
-    diagnostics.extend(check_capabilities(&module));
+    // Capabilities (strict mode opt-in via `--strict-capabilities`).
+    diagnostics.extend(check_capabilities(&module, strict_capabilities));
 
     (diagnostics, source_map)
 }
@@ -1272,14 +1289,24 @@ pub fn check_source(source: &str, file_name: &str) -> (Vec<Diagnostic>, SourceMa
     let ownership = analyze_ownership(&module);
     diagnostics.extend(ownership.errors);
 
-    // Capabilities
-    diagnostics.extend(check_capabilities(&module));
+    // Capabilities (non-strict by default — string-input check has no CLI
+    // surface for the flag; use the file/project entry points to opt in).
+    diagnostics.extend(check_capabilities(&module, false));
 
     (diagnostics, source_map)
 }
 
 /// Check a project directory without producing output.
 pub fn check_project(dir: &Path) -> (Vec<Diagnostic>, SourceMap) {
+    check_project_with_options(dir, false)
+}
+
+/// Check a project directory with options. `strict_capabilities` corresponds
+/// to the CLI `--strict-capabilities` flag.
+pub fn check_project_with_options(
+    dir: &Path,
+    strict_capabilities: bool,
+) -> (Vec<Diagnostic>, SourceMap) {
     let manifest_path = dir.join("kryos.toml");
     if let Err(e) = kryos_package::Manifest::from_file(&manifest_path) {
         return (
@@ -1316,7 +1343,10 @@ pub fn check_project(dir: &Path) -> (Vec<Diagnostic>, SourceMap) {
     let combined_source_map = SourceMap::default();
 
     for file_path in &source_files {
-        let (diags, _sm) = check_file(file_path);
+        // Honour strict mode at the per-file pass so each file in the
+        // project sees the same deny-by-default policy.
+        let (diags, _sm) =
+            check_file_with_options_full(file_path, false, strict_capabilities);
         all_diagnostics.extend(diags);
     }
 

@@ -95,7 +95,7 @@ pub fn check_source(source: &str, file_uri: &str) -> (Vec<Value>, kryos_errors::
     // reported only type errors, hiding moved-value and capability problems).
     let mut all_diags = kryos_types::type_check(&module);
     all_diags.extend(kryos_ownership::analyze_ownership(&module).errors);
-    all_diags.extend(kryos_capabilities::check_capabilities(&module));
+    all_diags.extend(kryos_capabilities::check_capabilities(&module, false));
 
     let lsp_diags: Vec<Value> = all_diags
         .iter()
