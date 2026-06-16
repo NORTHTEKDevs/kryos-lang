@@ -1,0 +1,227 @@
+// ============================================================
+// tape.kry -- the record/replay TAPE: data model, content hashing, and JSON
+// serialization for capability-bounded effect-level record/replay.
+//
+// A TAPE is an ordered list of EVENTS. Each event records ONE capability-bearing
+// builtin call the program made during recording:
+//
+//   cap        -- the capability CLASS the call exercised (the compiler taxonomy
+//                 name: "io" | "process" | "time" | "net"). This is the authority
+//                 axis replay is bounded on.
+//   builtin    -- the shimmed builtin name ("file_read" | "env_get" |
+//                 "time_now" | "http_get").
+//   args_hash  -- a deterministic digest of the call's canonical arguments. Two
+//                 calls match iff their (builtin, args_hash) are equal.
+//   args       -- the human-readable canonical args (kept for messages/audit).
+//   result     -- the recorded result the real call returned (as a str; time_now
+//                 is stringified). On replay this IS the value served.
+//
+// DETERMINISM: the tape stores no timestamps of its own and the hash is a pure
+// function of the bytes of `args`, so a faithful replay is byte-identical run to
+// run. Effect-level replay is deterministic ONLY for single-threaded,
+// effect-driven programs (see README "Determinism boundary").
+//
+// JSON: we PARSE with the native json_* builtins (json_parse/json_get/...), but
+// we SERIALIZE by hand with string concatenation. Building std::json VALUES and
+// stringifying them loses heap payloads under LLVM/AOT and the float formatter
+// cannot lower under the `kryos test` JIT -- hand concatenation sidesteps both.
+// Literal `{`/`}` in a Kryos string open interpolation, so object braces are
+// written escaped as `\{` / `\}` in the source below.
+// ============================================================
+
+@copy
+struct Event {
+    cap: str,
+    builtin: str,
+    args_hash: str,
+    args: str,
+    result: str
+}
+
+@copy
+struct Tape {
+    events: [Event]
+}
+
+// --- Content hashing ---------------------------------------------------------
+//
+// A polynomial rolling hash over the bytes of `s`, mod a ~1e16 prime. Kept
+// strictly inside i64 so the intermediate (h*257 < 2.6e18) never overflows --
+// integer overflow is CHECKED under the debug JIT (`kryos run`/`kryos test`) and
+// would panic. The digest is returned as a decimal string (an opaque token); no
+// hex formatter needed. Equal input bytes -> equal digest, on every backend.
+fn hash_args(s: str) -> str {
+    let p: i64 = 9999999999999937
+    let mut h: i64 = 1125899906842597
+    let n = len(s)
+    let mut i = 0
+    while i < n {
+        let b = char_code(substr(s, i, i + 1))
+        h = (h * 257 + b) % p
+        i = i + 1
+    }
+    return to_string(h)
+}
+
+// --- Construction ------------------------------------------------------------
+
+fn empty_tape() -> Tape {
+    let evs: [Event] = []
+    return Tape { events: evs }
+}
+
+// Build an event, computing its args_hash from the canonical args string.
+fn mk_event(cap: str, builtin: str, args: str, result: str) -> Event {
+    return Event {
+        cap: cap,
+        builtin: builtin,
+        args_hash: hash_args(args),
+        args: args,
+        result: result
+    }
+}
+
+// Append an event, returning a NEW tape (value semantics; the old tape is moved).
+fn tape_append(t: Tape, e: Event) -> Tape {
+    return Tape { events: push(t.events, e) }
+}
+
+fn tape_len(t: Tape) -> i64 {
+    return len(t.events)
+}
+
+// --- Authority envelope ------------------------------------------------------
+//
+// The distinct capability classes the tape recorded, in canonical taxonomy
+// order. This is the AUTHORITY CEILING a replay of the tape may be pinned to:
+// an auditor can assert "this replay's @capabilities are a subset of these".
+// Because the replay engine is itself @capabilities() (pure -- see replay.kry),
+// the replay always sits strictly INSIDE this ceiling.
+fn _tape_has_cap(t: Tape, cap: str) -> bool {
+    for ev in t.events {
+        if ev.cap == cap {
+            return true
+        }
+    }
+    return false
+}
+
+fn tape_capabilities(t: Tape) -> [str] {
+    let order: [str] = ["net", "io", "ffi", "compute", "crypto", "process", "env", "term", "db", "time"]
+    let mut out: [str] = []
+    for c in order {
+        if _tape_has_cap(t, c) {
+            out = push(out, c)
+        }
+    }
+    return out
+}
+
+// Render a [str] capability set as "{a, b, c}" for messages/audit lines.
+// `{{` / `}}` escape to a single literal brace (a bare `{` opens interpolation).
+fn caps_render(caps: [str]) -> str {
+    let mut out: str = "{{"
+    let mut i = 0
+    while i < len(caps) {
+        if i > 0 {
+            out = out + ", "
+        }
+        out = out + caps[i]
+        i = i + 1
+    }
+    return out + "}}"
+}
+
+// --- JSON serialization (hand-built; braces escaped as \{ \}) -----------------
+
+fn _json_escape(s: str) -> str {
+    let mut out = ""
+    let n = len(s)
+    let mut i = 0
+    while i < n {
+        let c = substr(s, i, i + 1)
+        let b = char_code(c)
+        if b == 34 {
+            out = out + "\\\""
+        } elif b == 92 {
+            out = out + "\\\\"
+        } elif b == 10 {
+            out = out + "\\n"
+        } elif b == 13 {
+            out = out + "\\r"
+        } elif b == 9 {
+            out = out + "\\t"
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out
+}
+
+fn event_to_json(e: Event) -> str {
+    return "\{\"cap\":\"" + _json_escape(e.cap)
+        + "\",\"builtin\":\"" + _json_escape(e.builtin)
+        + "\",\"args_hash\":\"" + _json_escape(e.args_hash)
+        + "\",\"args\":\"" + _json_escape(e.args)
+        + "\",\"result\":\"" + _json_escape(e.result) + "\"\}"
+}
+
+fn tape_to_json(t: Tape) -> str {
+    let mut body = ""
+    let mut i = 0
+    while i < len(t.events) {
+        if i > 0 {
+            body = body + ","
+        }
+        body = body + event_to_json(t.events[i])
+        i = i + 1
+    }
+    return "\{\"events\":[" + body + "]\}"
+}
+
+// --- JSON parsing (native json_* builtins; no `use std::json`) ----------------
+
+fn _str_field(node: i64, key: str, dflt: str) -> str {
+    let v = json_get(node, key)
+    if json_is_null(v) {
+        return dflt
+    }
+    return json_to_str(v)
+}
+
+fn parse_tape(raw: str) -> Tape {
+    let root = json_parse(raw)
+    let evs_node = json_get(root, "events")
+    let mut events: [Event] = []
+    if json_is_null(evs_node) {
+        return Tape { events: events }
+    }
+    let n = json_length(evs_node)
+    let mut i = 0
+    while i < n {
+        let en = json_get_index(evs_node, i)
+        let e = Event {
+            cap: _str_field(en, "cap", ""),
+            builtin: _str_field(en, "builtin", ""),
+            args_hash: _str_field(en, "args_hash", ""),
+            args: _str_field(en, "args", ""),
+            result: _str_field(en, "result", "")
+        }
+        events = push(events, e)
+        i = i + 1
+    }
+    return Tape { events: events }
+}
+
+// Load + parse a tape file. The ONLY io in the tape module; replay never touches it.
+@capabilities(io)
+fn load_tape(path: str) -> Tape {
+    return parse_tape(file_read(path))
+}
+
+// Serialize + write a tape file. file_write does NOT create parent dirs.
+@capabilities(io)
+fn save_tape(path: str, t: Tape) {
+    file_write(path, tape_to_json(t))
+}

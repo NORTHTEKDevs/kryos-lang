@@ -1,0 +1,101 @@
+// ============================================================
+// replay.kry -- the REPLAY engine. Serves recorded results for matching calls
+// and REFUSES any capability-bearing call not present in the tape.
+//
+// THE GUARANTEE: every function here is annotated `@capabilities()` -- the EMPTY
+// capability set. The compiler PROVES (E0505 on any violation) that the replay
+// path performs ZERO real effects: no file_read, no env_get, no time_now, no
+// network. A replay can therefore touch NOTHING the original did not -- in fact
+// it touches nothing real at all; it only reads the in-memory tape and compares
+// strings. That is strictly stronger than "bounded to the recorded effect
+// classes": the replay's authority is the empty set, which is a subset of every
+// envelope, including `tape_capabilities(tape)`. See fixtures/replay_escalation_*.
+//
+// MATCHING is ordered by a cursor: the Nth shimmed call during replay must match
+// the Nth recorded event by (builtin, args_hash). Ordered (not set-membership)
+// matching is required so that repeated identical-argument calls -- e.g. two
+// time_now() calls that recorded DIFFERENT instants -- replay in the right order.
+// Any mismatch (wrong builtin, different args) or a call past the end of the tape
+// is a DIVERGENCE: it throws a catchable str naming the offending call, and no
+// result is served (so no unrecorded effect can leak through).
+// ============================================================
+
+use tape::{Tape, Event, hash_args}
+
+@copy
+struct RepState {
+    tape: Tape,
+    cursor: i64
+}
+
+@copy
+struct RepOut {
+    value: str,
+    state: RepState
+}
+
+@capabilities()
+fn replay_start(t: Tape) -> RepState {
+    return RepState { tape: t, cursor: 0 }
+}
+
+// True once every recorded event has been consumed (a faithful replay ends here).
+@capabilities()
+fn replay_done(st: RepState) -> bool {
+    return st.cursor >= len(st.tape.events)
+}
+
+// Core: serve the event at the cursor IFF it matches (builtin, args_hash);
+// otherwise throw a divergence. Pure -- the whole authority story rests on this
+// being @capabilities().
+@capabilities()
+fn _serve(st: RepState, builtin: str, args: str) -> RepOut {
+    if st.cursor >= len(st.tape.events) {
+        throw "replay diverged: unrecorded " + builtin + " call (args=" + args + ") -- the recording holds only " + to_string(len(st.tape.events)) + " event(s); refused (replay performs no new real effects)"
+    }
+    let ev = st.tape.events[st.cursor]
+    if ev.builtin != builtin {
+        throw "replay diverged: unrecorded " + builtin + " call (args=" + args + ") at position " + to_string(st.cursor) + " -- the recording expected a " + ev.builtin + " call there; refused (replay performs no new real effects)"
+    }
+    if ev.args_hash != hash_args(args) {
+        throw "replay diverged: unrecorded " + builtin + " call (args=" + args + ") at position " + to_string(st.cursor) + " -- the recording has " + ev.builtin + "(args=" + ev.args + ") there, a different argument; refused (replay performs no new real effects)"
+    }
+    return RepOut { value: ev.result, state: RepState { tape: st.tape, cursor: st.cursor + 1 } }
+}
+
+// --- Replay shims (mirror the record shims; serve from tape, never real) ------
+
+@capabilities()
+fn rep_file_read(st: RepState, path: str) -> RepOut {
+    return _serve(st, "file_read", path)
+}
+
+@capabilities()
+fn rep_env_get(st: RepState, key: str) -> RepOut {
+    return _serve(st, "env_get", key)
+}
+
+@capabilities()
+fn rep_time_now(st: RepState) -> RepOut {
+    return _serve(st, "time_now", "")
+}
+
+@capabilities()
+fn rep_http_get(st: RepState, url: str) -> RepOut {
+    return _serve(st, "http_get", url)
+}
+
+// Faithful whole-tape replay: re-issue every recorded call in order and return
+// the concatenation of served results. For any tape produced by the record
+// shims this reproduces the original's output byte-for-byte, deterministically.
+@capabilities()
+fn replay_tape(t: Tape) -> str {
+    let mut st = replay_start(t)
+    let mut out = ""
+    for ev in t.events {
+        let o = _serve(st, ev.builtin, ev.args)
+        out = out + o.value
+        st = o.state
+    }
+    return out
+}

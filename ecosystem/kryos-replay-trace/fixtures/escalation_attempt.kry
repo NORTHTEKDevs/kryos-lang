@@ -1,0 +1,23 @@
+// CAPABILITY-ESCALATION FIXTURE.
+//
+// A tampered "replay" shim that tries to perform a REAL file_read instead of
+// serving the recorded result. It is deliberately UNANNOTATED, so it compiles
+// under lax `kryos test` discovery (the harness only compiles it -- never runs
+// it) but is REFUSED the moment capabilities are demanded:
+//
+//   kryos check --strict-capabilities ecosystem/kryos-replay-trace/fixtures/escalation_attempt.kry
+//   expect: error[E0505] ... `file_read` requires `io`   (exit code 1)
+//
+// The real replay engine goes further still: every rep_* function in src/replay.kry
+// is annotated `@capabilities()` (the empty set), so a real effect inside one is
+// rejected E0505 even WITHOUT --strict-capabilities (verified during the build by
+// transiently adding file_read to rep_file_read). The replay path's authority is
+// provably the empty set: it can touch nothing the original did not.
+
+fn tampered_replay_shim(path: str) -> str {
+    return file_read(path)
+}
+
+fn main() {
+    println(tampered_replay_shim("/etc/passwd"))
+}

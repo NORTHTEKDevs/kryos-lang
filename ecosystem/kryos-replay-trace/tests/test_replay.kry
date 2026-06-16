@@ -1,0 +1,226 @@
+// ============================================================
+// test_replay.kry -- kryos-replay-trace test suite.
+//
+//   kryos test --path ecosystem/kryos-replay-trace          (@test gates, JIT)
+//   kryos run  ecosystem/kryos-replay-trace/tests/test_replay.kry   (main(), same checks + a REAL record/replay)
+//
+// The @test gates are hermetic by construction: in-code tapes + the pure http
+// mock, no real file/clock/env, so they are deterministic and JIT-safe (no
+// to_string(f64), no std::re, no spawn). main() additionally drives a REAL
+// record -> JSON -> replay round trip through the io/process/time shims.
+// ============================================================
+
+use tape::{Tape, Event, empty_tape, mk_event, tape_append, tape_len, tape_to_json, parse_tape, tape_capabilities, hash_args}
+use record::{RecOut, rec_file_read, rec_env_get, rec_time_now, rec_http_get, http_get_mock}
+use replay::{RepState, RepOut, replay_start, replay_done, rep_file_read, rep_env_get, rep_time_now, rep_http_get, replay_tape}
+
+// --- Fixtures (in code; no real effects) -------------------------------------
+
+// A tape with all four classes; two time_now events share args ("") but recorded
+// DIFFERENT instants -- exercises ordered (not set-membership) matching.
+fn sample() -> Tape {
+    let mut t = empty_tape()
+    t = tape_append(t, mk_event("io", "file_read", "/cfg", "ALPHA"))
+    t = tape_append(t, mk_event("process", "env_get", "USER", "kristian"))
+    t = tape_append(t, mk_event("time", "time_now", "", "100"))
+    t = tape_append(t, mk_event("time", "time_now", "", "200"))
+    t = tape_append(t, mk_event("net", "http_get", "https://x/y", "BODY"))
+    return t
+}
+
+// --- @test gates -------------------------------------------------------------
+
+@test
+fn exact_byte_replay() {
+    let t = sample()
+    let out = replay_tape(t)
+    assert(out == "ALPHAkristian100200BODY", "whole-tape replay must equal the recorded results concatenated in order; got: " + out)
+}
+
+@test
+fn ordered_matching_repeats() {
+    // Two same-arg time_now calls must serve their DIFFERENT recorded results in
+    // order -- proves the cursor disambiguates by position, not by args alone.
+    let t = sample()
+    let s0 = replay_start(t)
+    let a = rep_file_read(s0, "/cfg")
+    let b = rep_env_get(a.state, "USER")
+    let c = rep_time_now(b.state)
+    let d = rep_time_now(c.state)
+    let e = rep_http_get(d.state, "https://x/y")
+    assert(a.value == "ALPHA", "1st served must be ALPHA; got: " + a.value)
+    assert(c.value == "100", "1st time_now must serve 100; got: " + c.value)
+    assert(d.value == "200", "2nd time_now must serve 200; got: " + d.value)
+    assert(e.value == "BODY", "http_get must serve BODY; got: " + e.value)
+    assert(replay_done(e.state), "every event should be consumed after a faithful replay")
+}
+
+@test
+fn json_round_trip_preserves_specials() {
+    // result with a quote, backslash, newline, tab must survive serialize+parse.
+    let mut t = empty_tape()
+    t = tape_append(t, mk_event("io", "file_read", "C:\\a\\b", "he said \"hi\"\nline2\ttab"))
+    let json = tape_to_json(t)
+    let back = parse_tape(json)
+    assert(tape_len(back) == 1, "round-trip must keep exactly 1 event")
+    let r = replay_tape(back)
+    assert(r == "he said \"hi\"\nline2\ttab", "special chars must round-trip byte-identically; got: " + r)
+}
+
+@test
+fn divergence_unrecorded_args() {
+    let t = sample()
+    let s0 = replay_start(t)
+    let mut refused = false
+    let mut msg = ""
+    try {
+        let bad = rep_file_read(s0, "/etc/shadow")
+        msg = "NO THROW: served " + bad.value
+    } catch e {
+        refused = true
+        msg = e
+    }
+    assert(refused, "an unrecorded file_read (different path) must be refused; got: " + msg)
+    assert(contains(msg, "unrecorded file_read"), "message must name the offending builtin; got: " + msg)
+    assert(contains(msg, "no new real effects"), "message must state the no-new-effects guarantee; got: " + msg)
+}
+
+@test
+fn divergence_wrong_builtin() {
+    // Position 0 recorded a file_read; issuing an env_get there must be refused.
+    let t = sample()
+    let s0 = replay_start(t)
+    let mut refused = false
+    let mut msg = ""
+    try {
+        let bad = rep_env_get(s0, "USER")
+        msg = "NO THROW"
+    } catch e {
+        refused = true
+        msg = e
+    }
+    assert(refused, "a wrong-builtin call at the cursor must be refused; got: " + msg)
+    assert(contains(msg, "expected a file_read call there"), "message must name the expected builtin; got: " + msg)
+}
+
+@test
+fn divergence_past_end() {
+    // A single-event tape; the SECOND call has no recorded event -> refused.
+    let mut t = empty_tape()
+    t = tape_append(t, mk_event("time", "time_now", "", "100"))
+    let s0 = replay_start(t)
+    let a = rep_time_now(s0)
+    let mut refused = false
+    let mut msg = ""
+    try {
+        let b = rep_time_now(a.state)
+        msg = "NO THROW"
+    } catch e {
+        refused = true
+        msg = e
+    }
+    assert(a.value == "100", "first call serves the recorded instant")
+    assert(refused, "a call past the end of the tape must be refused; got: " + msg)
+    assert(contains(msg, "holds only 1 event"), "message must state the recording is exhausted; got: " + msg)
+}
+
+@test
+fn record_mock_roundtrip() {
+    // Record path coverage WITHOUT real effects: the http mock is pure.
+    let mut t = empty_tape()
+    let r1 = rec_http_get(t, "https://a")
+    t = r1.tape
+    let r2 = rec_http_get(t, "https://b")
+    t = r2.tape
+    assert(tape_len(t) == 2, "two recorded http events")
+    let replayed = replay_tape(t)
+    assert(replayed == r1.value + r2.value, "replay of a recorded tape must reproduce the recorded results; got: " + replayed)
+    assert(contains(replayed, "mock-body-for:https://a"), "first mock body present")
+}
+
+@test
+fn authority_ceiling_classes() {
+    let t = sample()
+    let caps = tape_capabilities(t)
+    // canonical order: net, io, ffi, compute, crypto, process, env, term, db, time
+    assert(len(caps) == 4, "sample touches 4 distinct classes; got: " + to_string(len(caps)))
+    assert(caps[0] == "net", "first class (canonical order) is net; got: " + caps[0])
+    assert(caps[1] == "io", "second is io; got: " + caps[1])
+    assert(caps[2] == "process", "third is process; got: " + caps[2])
+    assert(caps[3] == "time", "fourth is time; got: " + caps[3])
+}
+
+@test
+fn deterministic_replay() {
+    let t = sample()
+    let a = replay_tape(t)
+    let b = replay_tape(t)
+    assert(a == b, "replay output must be identical across runs")
+}
+
+@test
+fn hash_is_deterministic_and_args_sensitive() {
+    assert(hash_args("/cfg") == hash_args("/cfg"), "same args -> same digest")
+    assert(hash_args("/cfg") != hash_args("/cfh"), "different args -> different digest (no trivial collision)")
+}
+
+// --- main(): kryos run drives the gates + a REAL record/replay round trip -----
+
+fn _check(name: str, cond: bool) {
+    if cond {
+        println("  ok   " + name)
+    } else {
+        println("  FAIL " + name)
+        exit(1)
+    }
+}
+
+fn _temp_dir() -> str {
+    let t: str = env_get("TEMP")
+    if len(t) > 0 { return t }
+    let t2: str = env_get("TMP")
+    if len(t2) > 0 { return t2 }
+    return "/tmp"
+}
+
+fn main() {
+    let t = sample()
+
+    _check("exact byte replay", replay_tape(t) == "ALPHAkristian100200BODY")
+
+    let json = tape_to_json(t)
+    _check("json round-trip replay equal", replay_tape(parse_tape(json)) == replay_tape(t))
+
+    let s0 = replay_start(t)
+    let a = rep_file_read(s0, "/cfg")
+    let c = rep_time_now(rep_env_get(a.state, "USER").state)
+    _check("ordered matching (1st time_now=100)", c.value == "100")
+
+    let mut refused = false
+    try {
+        let bad = rep_file_read(replay_start(t), "/etc/shadow")
+    } catch e {
+        refused = true
+    }
+    _check("unrecorded file_read refused", refused)
+
+    let caps = tape_capabilities(t)
+    _check("authority ceiling = \{net,io,process,time\}", len(caps) == 4 and caps[0] == "net" and caps[3] == "time")
+
+    // REAL record -> JSON -> replay round trip through the io/process/time shims.
+    let path = _temp_dir() + "/kryos_replay_trace_test.txt"
+    file_write(path, "REAL-PAYLOAD")
+    let mut rt = empty_tape()
+    let g1 = rec_file_read(rt, path)
+    rt = g1.tape
+    let g2 = rec_env_get(rt, "NUMBER_OF_PROCESSORS")
+    rt = g2.tape
+    let g3 = rec_time_now(rt)
+    rt = g3.tape
+    let real_original = g1.value + g2.value + g3.value
+    let real_replay = replay_tape(parse_tape(tape_to_json(rt)))
+    _check("REAL record->json->replay is byte-identical", real_original == real_replay)
+    _check("recorded file payload served on replay", contains(real_replay, "REAL-PAYLOAD"))
+
+    println("all replay-trace checks passed")
+}

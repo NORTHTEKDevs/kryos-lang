@@ -1,0 +1,111 @@
+// ============================================================
+// demo_record_replay.kry -- capability-bounded effect-level record/replay, end
+// to end.
+//
+//   kryos run ecosystem/kryos-replay-trace/demo_record_replay.kry
+//
+// [1] RECORD a short "incident" that touches four capability classes:
+//       file_read (io), env_get (process), time_now (time), http_get (net mock).
+//     The shims log each (call, args_hash, result) to a JSON tape.
+// [2] REPLAY the incident from the tape's JSON. The replay engine is pure
+//     (@capabilities()): it serves the recorded results and performs NO real
+//     effect, so the output is byte-identical to the original.
+// [3] DIVERGENCE: a replay that issues an UNRECORDED file_read is refused BEFORE
+//     any result is served -- it can touch nothing the original did not.
+// [4] The recorded authority ceiling vs. the replay's actual (empty) authority.
+// ============================================================
+
+use tape::{Tape, Event, empty_tape, tape_to_json, parse_tape, tape_capabilities, caps_render, tape_len, mk_event, tape_append, hash_args}
+use record::{RecOut, rec_file_read, rec_env_get, rec_time_now, rec_http_get, http_get_mock}
+use replay::{RepState, RepOut, replay_start, rep_file_read, rep_env_get, rep_time_now, rep_http_get, replay_tape, replay_done}
+
+@capabilities(process)
+fn temp_dir() -> str {
+    let t: str = env_get("TEMP")
+    if len(t) > 0 { return t }
+    let t2: str = env_get("TMP")
+    if len(t2) > 0 { return t2 }
+    let t3: str = env_get("TMPDIR")
+    if len(t3) > 0 { return t3 }
+    return "/tmp"
+}
+
+// Run the recorded session and return the grown tape. Performs the REAL effects.
+@capabilities(io, process, time)
+fn record_incident(path: str) -> Tape {
+    let mut t = empty_tape()
+    let r1 = rec_file_read(t, path)
+    t = r1.tape
+    let r2 = rec_env_get(t, "NUMBER_OF_PROCESSORS")
+    t = r2.tape
+    let r3 = rec_time_now(t)
+    t = r3.tape
+    let r4 = rec_http_get(t, "https://api.example/incident/42")
+    t = r4.tape
+    return t
+}
+
+// The original program's observable output: the concatenation of the results it
+// got from its four capability calls, in order.
+@capabilities(io, process, time)
+fn original_output(path: str) -> str {
+    let a = file_read(path)
+    let b = env_get("NUMBER_OF_PROCESSORS")
+    let c = to_string(time_now())
+    let d = http_get_mock("https://api.example/incident/42")
+    return a + "|" + b + "|" + c + "|" + d
+}
+
+fn main() {
+    let path = temp_dir() + "/kryos_replay_trace_incident.txt"
+    file_write(path, "incident-payload-42")
+
+    println("=== [1] RECORD ===")
+    let tape = record_incident(path)
+    println("recorded " + to_string(tape_len(tape)) + " capability event(s)")
+    let json = tape_to_json(tape)
+    println("tape JSON:")
+    println(json)
+    println("")
+
+    println("=== [2] REPLAY (from the tape's JSON, pure/hermetic) ===")
+    let tape2 = parse_tape(json)
+    let replayed = replay_tape(tape2)
+    // Re-issue the SAME logical calls in order to compose the replayed output
+    // exactly as the original composed it ("a|b|c|d").
+    let st0 = replay_start(tape2)
+    let o1 = rep_file_read(st0, path)
+    let o2 = rep_env_get(o1.state, "NUMBER_OF_PROCESSORS")
+    let o3 = rep_time_now(o2.state)
+    let o4 = rep_http_get(o3.state, "https://api.example/incident/42")
+    let replay_output = o1.value + "|" + o2.value + "|" + o3.value + "|" + o4.value
+
+    let original = original_output(path)
+    println("original output: " + original)
+    println("replay output:   " + replay_output)
+    if original == replay_output {
+        println("OK: replay is byte-identical to the original (served from the tape)")
+    } else {
+        println("FAIL: replay diverged from the original")
+    }
+    println("raw whole-tape replay: " + replayed)
+    println("")
+
+    println("=== [3] DIVERGENCE (an unrecorded file_read is refused) ===")
+    let stf = replay_start(tape2)
+    try {
+        let bad = rep_file_read(stf, "/etc/shadow")
+        println("FAIL: an unrecorded file_read was NOT refused")
+    } catch e {
+        println("refused: " + e)
+    }
+    println("")
+
+    println("=== [4] AUTHORITY CEILING vs. ACTUAL ===")
+    let ceiling = tape_capabilities(tape2)
+    println("recorded effect classes (authority ceiling): " + caps_render(ceiling))
+    println("replay engine actual authority:              \{\} (every replay fn is @capabilities() -- compiler-proven)")
+    println("=> replay authority is the EMPTY set, a subset of the ceiling: it can")
+    println("   touch nothing the original did not. (strictly weaker than rr on")
+    println("   determinism, stronger on the authority bound -- see README.)")
+}

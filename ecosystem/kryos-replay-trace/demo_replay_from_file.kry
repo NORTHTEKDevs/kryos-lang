@@ -1,0 +1,35 @@
+// ============================================================
+// demo_replay_from_file.kry -- replay a persisted tape from disk.
+//
+//   kryos run ecosystem/kryos-replay-trace/demo_replay_from_file.kry
+//   (run from the repo root so the fixtures/ relative path resolves)
+//
+// load_tape (the ONLY io here) reads + parses fixtures/incident_tape.json; the
+// replay itself is pure (@capabilities()). This is the "re-run this incident
+// safely" loop: the recorded incident replays byte-identically with a
+// compiler-proven guarantee it cannot touch anything the original did not.
+// ============================================================
+
+use tape::{Tape, load_tape, tape_len, tape_capabilities, caps_render, hash_args}
+use replay::{RepState, replay_start, rep_file_read, replay_tape}
+
+fn main() {
+    let path = "ecosystem/kryos-replay-trace/fixtures/incident_tape.json"
+    let t = load_tape(path)
+    println("loaded tape: " + to_string(tape_len(t)) + " capability event(s) from " + path)
+    println("authority ceiling (recorded effect classes): " + caps_render(tape_capabilities(t)))
+    println("")
+    println("faithful replay (served from the tape, no real effects):")
+    println(replay_tape(t))
+    println("")
+
+    // A divergent re-run: try to read a file the recording never touched.
+    println("divergent re-run -- read an unrecorded file:")
+    let s0 = replay_start(t)
+    try {
+        let bad = rep_file_read(s0, "/secret/keys.pem")
+        println("  FAIL: unrecorded read was not refused")
+    } catch e {
+        println("  refused: " + e)
+    }
+}

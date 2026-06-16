@@ -1,0 +1,66 @@
+// ============================================================
+// record.kry -- the RECORD shims around a curated set of capability builtins.
+//
+// Each shim performs the REAL effect, then appends an (cap, builtin, args_hash,
+// args, result) event to the tape and returns BOTH the result and the grown
+// tape (RecOut). The tape is threaded by value -- there is no hidden global
+// recorder -- so a recording session is just:
+//
+//     let mut t = empty_tape()
+//     let r1 = rec_file_read(t, path);   t = r1.tape
+//     let r2 = rec_env_get(t, "USER");   t = r2.tape
+//     ...
+//
+// CAPABILITIES: the shims are annotated with the REAL effect they perform, so
+// the compiler's (non-transitive) capability checker pins each one:
+//   rec_file_read -> io       rec_env_get -> process       rec_time_now -> time
+// `env_get` requires `process` (not `env`) in the Kryos taxonomy.
+//
+// http_get is a deterministic MOCK: real network capture is out of scope, so the
+// shim performs no real net effect (it is pure) but labels its event "net" to
+// demonstrate the authority CLASS a real capture would occupy.
+// ============================================================
+
+use tape::{Tape, Event, mk_event, tape_append}
+
+@copy
+struct RecOut {
+    value: str,
+    tape: Tape
+}
+
+// file_read (io): record the file's contents.
+@capabilities(io)
+fn rec_file_read(t: Tape, path: str) -> RecOut {
+    let result = file_read(path)
+    return RecOut { value: result, tape: tape_append(t, mk_event("io", "file_read", path, result)) }
+}
+
+// env_get (process): record an environment variable's value ("" if unset).
+@capabilities(process)
+fn rec_env_get(t: Tape, key: str) -> RecOut {
+    let result = env_get(key)
+    return RecOut { value: result, tape: tape_append(t, mk_event("process", "env_get", key, result)) }
+}
+
+// time_now (time): record the wall clock (Unix seconds), stringified. This is
+// exactly the kind of nondeterminism replay neutralizes: the recorded instant is
+// frozen into the tape and served verbatim on every replay.
+@capabilities(time)
+fn rec_time_now(t: Tape) -> RecOut {
+    let result = to_string(time_now())
+    return RecOut { value: result, tape: tape_append(t, mk_event("time", "time_now", "", result)) }
+}
+
+// A deterministic stand-in for a network GET. No real socket is opened (real
+// capture is out of scope); the response is a pure function of the URL so the
+// recording is reproducible. Classed as "net" on the tape.
+fn http_get_mock(url: str) -> str {
+    return "HTTP/1.1 200 OK\nx-mock: true\n\nmock-body-for:" + url
+}
+
+// http_get (net, MOCKED): record the mock response. Pure -- no capability needed.
+fn rec_http_get(t: Tape, url: str) -> RecOut {
+    let result = http_get_mock(url)
+    return RecOut { value: result, tape: tape_append(t, mk_event("net", "http_get", url, result)) }
+}

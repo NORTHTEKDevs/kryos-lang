@@ -1,0 +1,10 @@
+[package]
+name = "kryos-replay-trace"
+version = "0.1.0"
+description = "Deterministic, capability-bounded effect-level record/replay for debugging: a record shim logs each capability-bearing builtin call (file_read/env_get/time_now/http_get) as (call, args_hash, result) to a JSON tape; the pure replay engine serves the recorded results and refuses any call not in the tape, so a recorded incident replays byte-identically under a compiler-proven empty-authority ceiling -- it can touch nothing the original did not"
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["io", "process", "time", "net", "compute"]
+
+[dependencies]
