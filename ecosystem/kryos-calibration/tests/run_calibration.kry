@@ -1,0 +1,154 @@
+// ============================================================
+// run_calibration.kry -- executable verification driver for kryos-calibration.
+//
+//   kryos run ecosystem/kryos-calibration/tests/run_calibration.kry
+//
+// This is a `kryos run` driver, NOT a `kryos test` suite, on purpose: every
+// metric here produces an f64 (ECE/MCE/Brier) and the driver prints them with
+// to_string(f64), which the `kryos test` JIT cannot compile. So we assert with
+// tolerance and exit(1) on the first failure (the harness's RED signal), and
+// print each passing check so the output is auditable.
+//
+// Fixtures are deterministic and offline -- no clock, no network, no files.
+//   * a PERFECTLY-CALIBRATED set  -> ECE/MCE near 0
+//   * an OVERCONFIDENT set        -> high ECE/MCE; histogram recalibration
+//                                    collapses it back toward 0
+// ============================================================
+
+use calibration::{
+    SampleSet, ReliabilityBin, Recalibrator,
+    new_sampleset, add, count,
+    ece, mce, brier, reliability_curve,
+    fit_histogram, recalibrate, apply_recalibration, recalibrate_probable,
+    metrics_report,
+}
+use std::probable::{Probable}
+
+// --- helpers -----------------------------------------------------------------
+
+@capabilities(process)
+fn check(cond: bool, msg: str) {
+    if not cond {
+        println("FAIL: " + msg)
+        exit(1)
+    }
+    println("  ok: " + msg)
+}
+
+@capabilities(compute)
+fn approx(a: f64, b: f64, tol: f64) -> bool {
+    let mut d = a - b
+    if d < 0.0 { d = 0.0 - d }
+    return d <= tol
+}
+
+// Append n samples all at the same stated confidence, the first k of which are
+// correct. Lets a fixture pin a bin's (mean_conf, accuracy) exactly.
+@capabilities(compute)
+fn add_group(set: SampleSet, conf: f64, k_correct: i64, n: i64) -> SampleSet {
+    let mut s = set
+    let mut i = 0
+    while i < n {
+        let correct = i < k_correct
+        s = add(s, conf, correct)
+        i = i + 1
+    }
+    return s
+}
+
+// --- fixtures ----------------------------------------------------------------
+
+// Each group lands in its own decile bin with mean_conf == accuracy, so ECE = 0.
+@capabilities(compute)
+fn calibrated_fixture() -> SampleSet {
+    let mut s = new_sampleset()
+    s = add_group(s, 0.1, 1, 10)
+    s = add_group(s, 0.3, 3, 10)
+    s = add_group(s, 0.5, 5, 10)
+    s = add_group(s, 0.7, 7, 10)
+    s = add_group(s, 0.9, 9, 10)
+    return s
+}
+
+// Stated 0.9 but only 50% right; stated 0.7 but only 40% right. Heavily
+// overconfident: |conf - acc| is 0.4 and 0.3 in the two occupied bins.
+@capabilities(compute)
+fn overconfident_fixture() -> SampleSet {
+    let mut s = new_sampleset()
+    s = add_group(s, 0.9, 10, 20)
+    s = add_group(s, 0.7, 8, 20)
+    return s
+}
+
+// --- the driver --------------------------------------------------------------
+
+@capabilities(compute, process)
+fn main() {
+    let bins = 10
+
+    println("== perfectly-calibrated fixture ==")
+    let cal = calibrated_fixture()
+    check(count(cal) == 50, "calibrated set collected 50 samples")
+    let cal_ece = ece(cal.samples, bins)
+    let cal_mce = mce(cal.samples, bins)
+    println("  ECE=" + to_string(cal_ece) + " MCE=" + to_string(cal_mce))
+    check(approx(cal_ece, 0.0, 0.000000001), "calibrated ECE is ~0")
+    check(approx(cal_mce, 0.0, 0.000000001), "calibrated MCE is ~0")
+
+    // reliability buckets must partition the samples: sum of bin counts == N.
+    let cal_curve = reliability_curve(cal.samples, bins)
+    let mut cal_bucket_total = 0
+    let mut bi = 0
+    while bi < len(cal_curve) {
+        let b = cal_curve[bi]
+        cal_bucket_total = cal_bucket_total + b.count
+        bi = bi + 1
+    }
+    check(cal_bucket_total == 50, "reliability buckets sum to N (50)")
+
+    println("== overconfident fixture ==")
+    let over = overconfident_fixture()
+    check(count(over) == 40, "overconfident set collected 40 samples")
+    let over_ece = ece(over.samples, bins)
+    let over_mce = mce(over.samples, bins)
+    let over_brier = brier(over.samples)
+    println("  ECE=" + to_string(over_ece) + " MCE=" + to_string(over_mce) + " Brier=" + to_string(over_brier))
+    check(approx(over_ece, 0.35, 0.000001), "overconfident ECE == 0.35")
+    check(approx(over_mce, 0.4, 0.000001), "overconfident MCE == 0.40")
+    check(approx(over_brier, 0.37, 0.000001), "overconfident Brier == 0.37")
+
+    // reliability buckets sum to N on the overconfident set too.
+    let over_curve = reliability_curve(over.samples, bins)
+    let mut over_bucket_total = 0
+    let mut oi = 0
+    while oi < len(over_curve) {
+        let b = over_curve[oi]
+        over_bucket_total = over_bucket_total + b.count
+        oi = oi + 1
+    }
+    check(over_bucket_total == 40, "overconfident reliability buckets sum to N (40)")
+
+    println("== histogram recalibration ==")
+    let rc = fit_histogram(over.samples, bins)
+    // The 0.9 bin had 50% accuracy, the 0.7 bin 40%: recalibration maps each
+    // raw confidence to its bin's empirical accuracy.
+    check(approx(recalibrate(rc, 0.9), 0.5, 0.000001), "recalibrate(0.9) -> 0.5 (bin accuracy)")
+    check(approx(recalibrate(rc, 0.7), 0.4, 0.000001), "recalibrate(0.7) -> 0.4 (bin accuracy)")
+
+    let recal = apply_recalibration(rc, over.samples)
+    let recal_ece = ece(recal, bins)
+    println("  ECE before=" + to_string(over_ece) + " after=" + to_string(recal_ece))
+    check(recal_ece < over_ece, "recalibration lowers ECE on the skewed fixture")
+    check(approx(recal_ece, 0.0, 0.000001), "recalibrated ECE collapses to ~0")
+
+    println("== recalibrate a Probable<T> ==")
+    let p: Probable<str> = Probable { value: "the answer", confidence: 0.9, source: "model" }
+    let q = recalibrate_probable(rc, p)
+    check(q.value == "the answer", "recalibrated Probable keeps its value")
+    check(approx(q.confidence, 0.5, 0.000001), "recalibrated Probable confidence 0.9 -> 0.5")
+
+    println("== report ==")
+    print(metrics_report(over.samples, bins))
+
+    println("ALL CHECKS PASSED")
+}

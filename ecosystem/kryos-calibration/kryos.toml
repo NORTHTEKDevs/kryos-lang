@@ -1,0 +1,13 @@
+[package]
+name = "kryos-calibration"
+version = "0.1.0"
+description = "Probability calibration for the Probable<T> confidence axis: measures whether stated confidence matches empirical accuracy (ECE, MCE, Brier, reliability curve) and recalibrates raw confidence via histogram binning. The metric/recalibration engine (src/calibration.kry) is pure @capabilities(compute) -- it cannot read a file, the env, or the network -- so a calibration report is a provable side-effect-free computation over recorded outcomes."
+license = "Apache-2.0"
+
+# The whole calibration engine is pure compute. The ONLY capability beyond
+# compute is `process`, used solely by the test/verification driver in tests/
+# (assert + exit(1) on failure); no library function performs I/O or networking.
+[capabilities]
+allowed = ["compute", "process"]
+
+[dependencies]

@@ -1,0 +1,328 @@
+// ============================================================
+// calibration.kry -- probability calibration for the Probable<T> confidence axis.
+//
+// A confidence score is only useful if it MEANS something: of the predictions a
+// model states at 0.9 confidence, ~90% should actually be correct. This module
+// measures that gap and corrects it.
+//
+//   collect   add(set, predicted_confidence, was_correct) into a SampleSet
+//   measure   ece / mce / brier / reliability_curve
+//   correct   fit_histogram -> Recalibrator -> recalibrate(raw) / recalibrate_probable(p)
+//
+// EVERY function here is @capabilities(compute): the entire engine is a pure
+// computation over recorded outcomes. It cannot read a file, the environment, or
+// the network -- `kryos check --strict-capabilities` proves it, and `kryos
+// manifest --caps --deny io,net,process,ffi` over this file is the headline:
+// "a calibration report has no side effects" is a compile-time property.
+//
+// Sample type: we REUSE std::probable's `CalibrationSample` rather than declare a
+// parallel one. It is the confidence axis's own sample type, so the same outcomes
+// std::probable.add_sample records flow straight into these richer metrics. Its
+// fields are `predicted` (the stated confidence) and `correct` (was it right);
+// the collector API below keeps the spec's `predicted_confidence` / `was_correct`
+// names at the parameter layer. (A second struct named CalibrationSample would
+// collide -- struct names share one flat namespace once a module is loaded.)
+//
+// Binning convention (shared by every metric and the recalibrator): a confidence
+// p goes in bin floor(p * bins), clamped to the last bin so p == 1.0 is included.
+// The index is computed directly (not via separate lo/hi bounds) to avoid the
+// 1-ULP float gap that can silently drop a value such as 0.6 at 10 bins -- the
+// same fix std::probable.ece() uses.
+// ============================================================
+
+use std::probable::{Probable, CalibrationSample}
+
+// A growable collector of samples. Functional/immutable like std::probable's
+// tracker: add() returns a NEW SampleSet, sidestepping the struct-param aliasing
+// caveats (CLAUDE.md gotcha 23). Building n samples via a `s = add(s, ..)` loop
+// reallocates the array each call (O(n^2) total) -- fine for the hundreds-to-
+// thousands of samples a calibration set holds.
+struct SampleSet {
+    samples: [CalibrationSample],
+}
+
+// One row of a reliability diagram: the bin's nominal [lo, hi) range, the mean
+// stated confidence of the samples in it, their empirical accuracy, and how many
+// there are. Empty bins are returned with count 0 (mean_conf/accuracy 0.0) so
+// the curve always has exactly `bins` rows and the counts partition the samples.
+@copy
+struct ReliabilityBin {
+    lo: f64,
+    hi: f64,
+    mean_conf: f64,
+    accuracy: f64,
+    count: i64,
+}
+
+// A fitted histogram-binning recalibration map: bin_value[i] is the calibrated
+// confidence for any raw confidence that falls in bin i (its empirical accuracy
+// in the training data), or -1.0 for a bin no training sample occupied.
+struct Recalibrator {
+    bins: i64,
+    bin_value: [f64],
+}
+
+// ----- construction ----------------------------------------------------------
+
+/// A fresh, empty sample collector.
+@capabilities(compute)
+fn new_sampleset() -> SampleSet {
+    let empty: [CalibrationSample] = []
+    return SampleSet { samples: empty }
+}
+
+/// Build one sample. Confidence is clamped to [0.0, 1.0]; NaN (which fails every
+/// comparison and would otherwise bin to index 0) is mapped to 0.0.
+@capabilities(compute)
+fn make_sample(predicted_confidence: f64, was_correct: bool) -> CalibrationSample {
+    let mut c = predicted_confidence
+    if c != c { c = 0.0 }
+    if c < 0.0 { c = 0.0 }
+    if c > 1.0 { c = 1.0 }
+    return CalibrationSample { predicted: c, correct: was_correct }
+}
+
+/// Record one outcome, returning a new SampleSet (the original is unchanged).
+@capabilities(compute)
+fn add(set: SampleSet, predicted_confidence: f64, was_correct: bool) -> SampleSet {
+    let s = make_sample(predicted_confidence, was_correct)
+    return SampleSet { samples: push(set.samples, s) }
+}
+
+/// Record a Probable<T> outcome directly: pulls confidence from `p` and pairs it
+/// with the caller-supplied `was_correct`. The common case when the confidence
+/// came from a Probable<T> prediction.
+@capabilities(compute)
+fn add_probable<T>(set: SampleSet, p: Probable<T>, was_correct: bool) -> SampleSet {
+    return add(set, p.confidence, was_correct)
+}
+
+/// Number of samples collected.
+@capabilities(compute)
+fn count(set: SampleSet) -> i64 {
+    return len(set.samples)
+}
+
+// ----- binning ---------------------------------------------------------------
+
+// Bin index for a confidence value: floor(conf * bins), clamped to [0, bins-1].
+@capabilities(compute)
+fn _bin_index(conf: f64, bins: i64) -> i64 {
+    let mut idx = (conf * (bins as f64)) as i64
+    if idx < 0 { idx = 0 }
+    if idx >= bins { idx = bins - 1 }
+    return idx
+}
+
+// ----- metrics ---------------------------------------------------------------
+
+/// Reliability curve: one ReliabilityBin per bin (always `bins` rows), each
+/// carrying its sample count, mean stated confidence, and empirical accuracy.
+/// The counts partition the samples (they sum to len(samples)), so this doubles
+/// as the histogram behind ECE/MCE. `bins` is clamped to >= 1.
+@capabilities(compute)
+fn reliability_curve(samples: [CalibrationSample], bins: i64) -> [ReliabilityBin] {
+    let mut nb = bins
+    if nb < 1 { nb = 1 }
+    let width = 1.0 / (nb as f64)
+    let n = len(samples)
+    let mut curve: [ReliabilityBin] = []
+    let mut b = 0
+    while b < nb {
+        let mut bin_count = 0
+        let mut bin_correct = 0
+        let mut bin_conf_sum = 0.0
+        let mut i = 0
+        while i < n {
+            let s = samples[i]
+            if _bin_index(s.predicted, nb) == b {
+                bin_count = bin_count + 1
+                bin_conf_sum = bin_conf_sum + s.predicted
+                if s.correct { bin_correct = bin_correct + 1 }
+            }
+            i = i + 1
+        }
+        let lo = (b as f64) * width
+        let hi = lo + width
+        let mut mean_conf = 0.0
+        let mut accuracy = 0.0
+        if bin_count > 0 {
+            mean_conf = bin_conf_sum / (bin_count as f64)
+            accuracy = (bin_correct as f64) / (bin_count as f64)
+        }
+        let row = ReliabilityBin {
+            lo: lo,
+            hi: hi,
+            mean_conf: mean_conf,
+            accuracy: accuracy,
+            count: bin_count,
+        }
+        curve = push(curve, row)
+        b = b + 1
+    }
+    return curve
+}
+
+/// Expected Calibration Error: the sample-weighted average of |mean_conf -
+/// accuracy| across bins. In [0.0, 1.0]; 0.0 is perfectly calibrated. Returns
+/// 0.0 for an empty sample set.
+@capabilities(compute)
+fn ece(samples: [CalibrationSample], bins: i64) -> f64 {
+    let n = len(samples)
+    if n == 0 { return 0.0 }
+    let curve = reliability_curve(samples, bins)
+    let mut total = 0.0
+    let mut i = 0
+    while i < len(curve) {
+        let b = curve[i]
+        if b.count > 0 {
+            let weight = (b.count as f64) / (n as f64)
+            total = total + weight * _abs(b.mean_conf - b.accuracy)
+        }
+        i = i + 1
+    }
+    return total
+}
+
+/// Maximum Calibration Error: the LARGEST |mean_conf - accuracy| over occupied
+/// bins (worst-case miscalibration, unweighted by bin size). In [0.0, 1.0];
+/// returns 0.0 for an empty sample set.
+@capabilities(compute)
+fn mce(samples: [CalibrationSample], bins: i64) -> f64 {
+    let curve = reliability_curve(samples, bins)
+    let mut worst = 0.0
+    let mut i = 0
+    while i < len(curve) {
+        let b = curve[i]
+        if b.count > 0 {
+            let gap = _abs(b.mean_conf - b.accuracy)
+            if gap > worst { worst = gap }
+        }
+        i = i + 1
+    }
+    return worst
+}
+
+/// Brier score: mean squared error between stated confidence and the 0/1 outcome
+/// (1.0 for a correct prediction, 0.0 otherwise). In [0.0, 1.0]; lower is
+/// better. Unlike ECE it rewards SHARPNESS as well as calibration, so a
+/// perfectly-calibrated-but-uncertain predictor still scores above 0. Returns
+/// 0.0 for an empty sample set.
+@capabilities(compute)
+fn brier(samples: [CalibrationSample]) -> f64 {
+    let n = len(samples)
+    if n == 0 { return 0.0 }
+    let mut total = 0.0
+    let mut i = 0
+    while i < n {
+        let s = samples[i]
+        let mut outcome = 0.0
+        if s.correct { outcome = 1.0 }
+        let diff = s.predicted - outcome
+        total = total + diff * diff
+        i = i + 1
+    }
+    return total / (n as f64)
+}
+
+// ----- recalibration (histogram binning) -------------------------------------
+
+/// Fit a histogram-binning recalibration map: for each bin, the calibrated value
+/// is the empirical accuracy of the training samples that fell in it. Bins with
+/// no training samples are marked -1.0 and pass raw confidence through unchanged
+/// at apply time. `bins` is clamped to >= 1.
+@capabilities(compute)
+fn fit_histogram(samples: [CalibrationSample], bins: i64) -> Recalibrator {
+    let mut nb = bins
+    if nb < 1 { nb = 1 }
+    let curve = reliability_curve(samples, nb)
+    let mut values: [f64] = []
+    let mut b = 0
+    while b < nb {
+        let row = curve[b]
+        if row.count > 0 {
+            values = push(values, row.accuracy)
+        } else {
+            values = push(values, 0.0 - 1.0)
+        }
+        b = b + 1
+    }
+    return Recalibrator { bins: nb, bin_value: values }
+}
+
+/// Map a raw confidence to its calibrated value. Returns the bin's empirical
+/// accuracy from fitting; if the bin was never seen in training, returns the raw
+/// confidence unchanged (no information to correct with). NaN maps to 0.0.
+@capabilities(compute)
+fn recalibrate(rc: Recalibrator, raw_confidence: f64) -> f64 {
+    let mut c = raw_confidence
+    if c != c { c = 0.0 }
+    if c < 0.0 { c = 0.0 }
+    if c > 1.0 { c = 1.0 }
+    let idx = _bin_index(c, rc.bins)
+    let v = rc.bin_value[idx]
+    if v < 0.0 { return c }
+    return v
+}
+
+/// Apply a fitted recalibrator to a whole sample set, returning new samples with
+/// corrected confidences (outcomes unchanged). Recomputing ece() on the result
+/// is the standard "did recalibration help?" check.
+@capabilities(compute)
+fn apply_recalibration(rc: Recalibrator, samples: [CalibrationSample]) -> [CalibrationSample] {
+    let mut out: [CalibrationSample] = []
+    let mut i = 0
+    while i < len(samples) {
+        let s = samples[i]
+        let nc = recalibrate(rc, s.predicted)
+        out = push(out, CalibrationSample { predicted: nc, correct: s.correct })
+        i = i + 1
+    }
+    return out
+}
+
+/// Recalibrate a Probable<T>'s confidence in place: keeps the value and source,
+/// replaces the (raw) confidence with its calibrated estimate. This is the bridge
+/// from a measured calibration map back onto the Probable<T> confidence axis.
+@capabilities(compute)
+fn recalibrate_probable<T>(rc: Recalibrator, p: Probable<T>) -> Probable<T> {
+    let nc = recalibrate(rc, p.confidence)
+    return Probable { value: p.value, confidence: nc, source: p.source }
+}
+
+// ----- reporting -------------------------------------------------------------
+
+/// Human-readable calibration report: sample count, ECE/MCE/Brier, and a per-bin
+/// reliability breakdown (occupied bins only) showing each bin's count, mean
+/// stated confidence, and empirical accuracy -- so a reader sees exactly which
+/// confidence range is miscalibrated and by how much.
+@capabilities(compute)
+fn metrics_report(samples: [CalibrationSample], bins: i64) -> str {
+    let n = len(samples)
+    let mut out = "calibration report: " + to_string(n) + " samples\n"
+    out = out + "  ECE   = " + to_string(ece(samples, bins)) + "\n"
+    out = out + "  MCE   = " + to_string(mce(samples, bins)) + "\n"
+    out = out + "  Brier = " + to_string(brier(samples)) + "\n"
+    out = out + "  reliability (occupied bins):\n"
+    let curve = reliability_curve(samples, bins)
+    let mut i = 0
+    while i < len(curve) {
+        let b = curve[i]
+        if b.count > 0 {
+            out = out + "    [" + to_string(b.lo) + "-" + to_string(b.hi) + "]"
+            out = out + " n=" + to_string(b.count)
+            out = out + " mean_conf=" + to_string(b.mean_conf)
+            out = out + " acc=" + to_string(b.accuracy) + "\n"
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Inline abs over f64 (std::math::abs would shadow the polymorphic builtin and
+// is not imported here; inlining keeps this module dependency-light).
+@capabilities(compute)
+fn _abs(x: f64) -> f64 {
+    if x < 0.0 { return 0.0 - x }
+    return x
+}

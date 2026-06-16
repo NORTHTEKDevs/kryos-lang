@@ -1,0 +1,55 @@
+// ============================================================
+// demo.kry -- kryos-calibration in 30 lines.
+//
+//   kryos run ecosystem/kryos-calibration/demo.kry
+//
+// A model that says "0.9 confident" but is only right half the time is
+// overconfident. We measure that, fit a recalibration map, and correct a live
+// Probable<T> prediction back onto an honest confidence.
+// ============================================================
+
+use calibration::{
+    SampleSet, new_sampleset, add, count,
+    fit_histogram, recalibrate_probable, metrics_report,
+}
+use std::probable::{Probable}
+
+// confidence >= threshold. Inlined rather than imported: a sibling file's
+// `use std::probable::{is_confident}` does not resolve once calibration.kry has
+// already loaded std::probable with a tree-shaken function set (a flat-namespace
+// module-load quirk), so we compute the trivial comparison directly.
+@capabilities(compute)
+fn trust(p: Probable<str>, threshold: f64) -> bool {
+    return p.confidence >= threshold
+}
+
+// Record 12 outcomes from an overconfident "model": it states 0.9 every time,
+// but only 6 of the 12 predictions were actually correct (50% accuracy).
+@capabilities(compute)
+fn collected() -> SampleSet {
+    let mut s = new_sampleset()
+    let mut i = 0
+    while i < 12 {
+        let was_correct = i < 6
+        s = add(s, 0.9, was_correct)
+        i = i + 1
+    }
+    return s
+}
+
+@capabilities(compute)
+fn main() {
+    let s = collected()
+    println("collected " + to_string(count(s)) + " predictions from an overconfident model")
+    print(metrics_report(s.samples, 10))
+
+    // Fit a histogram-binning recalibration map from the observed outcomes.
+    let rc = fit_histogram(s.samples, 10)
+
+    // A fresh prediction arrives stated at 0.9 confidence. The gate at 0.8 would
+    // trust it -- but recalibration knows 0.9-confidence has only been 50% right.
+    let raw: Probable<str> = Probable { value: "ship it", confidence: 0.9, source: "model" }
+    let cal = recalibrate_probable(rc, raw)
+    println("raw   confidence " + to_string(raw.confidence) + " -> trust@0.8? " + to_string(trust(raw, 0.8)))
+    println("calib confidence " + to_string(cal.confidence) + " -> trust@0.8? " + to_string(trust(cal, 0.8)))
+}
