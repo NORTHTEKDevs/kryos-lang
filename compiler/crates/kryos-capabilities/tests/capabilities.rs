@@ -662,7 +662,7 @@ fn builtin_file_write_with_wrong_capability_fails() {
         "net cap should not allow file_write: {errs:?}"
     );
     assert!(errs[0].message.contains("file_write"));
-    assert!(errs[0].message.contains("io"));
+    assert!(errs[0].message.contains("fs:write"));
     assert_eq!(errs[0].code.as_deref(), Some("E0505"));
 }
 
@@ -1046,4 +1046,166 @@ fn builtin_and_stdlib_violations_combined() {
     assert!(errs
         .iter()
         .any(|e| e.code.as_deref() == Some("E0502")));
+}
+
+// ── Sub-capabilities (net:http / net:tcp, fs:read / fs:write) ────────────────
+
+#[test]
+fn subcap_fs_read_rejects_file_write() {
+    // @capabilities(fs:read) fn save() { file_write(...) } — must FAIL (needs fs:write).
+    let module = module_with(vec![fn_decl(
+        "save",
+        vec![ann("capabilities", vec!["fs:read"])],
+        vec![Stmt::Expr {
+            expr: bare_call("file_write", vec![string_arg("out.txt"), string_arg("data")]),
+            span: span(),
+        }],
+    )]);
+
+    let diags = check_capabilities(&module, false);
+    let errs = errors_only(&diags);
+    assert_eq!(errs.len(), 1, "fs:read must not allow file_write: {errs:?}");
+    assert!(errs[0].message.contains("file_write"));
+    assert!(
+        errs[0].message.contains("fs:write"),
+        "error should name the precise sub-cap fs:write: {}",
+        errs[0].message
+    );
+    assert_eq!(errs[0].code.as_deref(), Some("E0505"));
+}
+
+#[test]
+fn subcap_fs_write_allows_file_write() {
+    // @capabilities(fs:write) fn save() { file_write(...) } — must PASS.
+    let module = module_with(vec![fn_decl(
+        "save",
+        vec![ann("capabilities", vec!["fs:write"])],
+        vec![Stmt::Expr {
+            expr: bare_call("file_write", vec![string_arg("out.txt"), string_arg("data")]),
+            span: span(),
+        }],
+    )]);
+
+    let diags = check_capabilities(&module, false);
+    let errs = errors_only(&diags);
+    assert!(errs.is_empty(), "fs:write should allow file_write: {errs:?}");
+}
+
+#[test]
+fn subcap_fs_read_allows_file_read() {
+    let module = module_with(vec![fn_decl(
+        "load",
+        vec![ann("capabilities", vec!["fs:read"])],
+        vec![Stmt::Expr {
+            expr: bare_call("file_read", vec![string_arg("in.txt")]),
+            span: span(),
+        }],
+    )]);
+
+    let diags = check_capabilities(&module, false);
+    let errs = errors_only(&diags);
+    assert!(errs.is_empty(), "fs:read should allow file_read: {errs:?}");
+}
+
+#[test]
+fn subcap_coarse_io_still_allows_file_write_backcompat() {
+    // Back-compat: coarse @capabilities(io) still grants fs:write builtins.
+    let module = module_with(vec![fn_decl(
+        "save",
+        vec![ann("capabilities", vec!["io"])],
+        vec![Stmt::Expr {
+            expr: bare_call("file_write", vec![string_arg("out.txt"), string_arg("data")]),
+            span: span(),
+        }],
+    )]);
+
+    let diags = check_capabilities(&module, false);
+    let errs = errors_only(&diags);
+    assert!(errs.is_empty(), "coarse io must still grant file_write: {errs:?}");
+}
+
+#[test]
+fn subcap_net_http_rejects_tcp_connect() {
+    // @capabilities(net:http) calling tcp_connect must FAIL (needs net:tcp).
+    let module = module_with(vec![fn_decl(
+        "dial",
+        vec![ann("capabilities", vec!["net:http"])],
+        vec![Stmt::Expr {
+            expr: bare_call("tcp_connect", vec![string_arg("host"), string_arg("80")]),
+            span: span(),
+        }],
+    )]);
+
+    let diags = check_capabilities(&module, false);
+    let errs = errors_only(&diags);
+    assert_eq!(errs.len(), 1, "net:http must not allow tcp_connect: {errs:?}");
+    assert!(
+        errs[0].message.contains("net:tcp"),
+        "error should name net:tcp: {}",
+        errs[0].message
+    );
+}
+
+#[test]
+fn subcap_net_http_allows_http_get() {
+    let module = module_with(vec![fn_decl(
+        "fetch",
+        vec![ann("capabilities", vec!["net:http"])],
+        vec![Stmt::Expr {
+            expr: bare_call("http_get", vec![string_arg("https://example.com")]),
+            span: span(),
+        }],
+    )]);
+
+    let diags = check_capabilities(&module, false);
+    let errs = errors_only(&diags);
+    assert!(errs.is_empty(), "net:http should allow http_get: {errs:?}");
+}
+
+#[test]
+fn subcap_coarse_net_covers_subcap_callee() {
+    // caller @capabilities(net) calling callee @capabilities(net:http) — coarse covers sub.
+    let module = module_with(vec![
+        fn_decl(
+            "fetch",
+            vec![ann("capabilities", vec!["net:http"])],
+            vec![Stmt::Expr {
+                expr: bare_call("http_get", vec![string_arg("https://example.com")]),
+                span: span(),
+            }],
+        ),
+        fn_decl(
+            "driver",
+            vec![ann("capabilities", vec!["net"])],
+            vec![Stmt::Expr {
+                expr: bare_call("fetch", vec![]),
+                span: span(),
+            }],
+        ),
+    ]);
+
+    let diags = check_capabilities(&module, false);
+    let errs = errors_only(&diags);
+    assert!(errs.is_empty(), "coarse net caller covers net:http callee: {errs:?}");
+}
+
+#[test]
+fn subcap_sibling_caller_cannot_call_sibling_callee() {
+    // caller @capabilities(net:http) calling callee @capabilities(net:tcp) — must FAIL.
+    let module = module_with(vec![
+        fn_decl("dial", vec![ann("capabilities", vec!["net:tcp"])], vec![]),
+        fn_decl(
+            "driver",
+            vec![ann("capabilities", vec!["net:http"])],
+            vec![Stmt::Expr {
+                expr: bare_call("dial", vec![]),
+                span: span(),
+            }],
+        ),
+    ]);
+
+    let diags = check_capabilities(&module, false);
+    let errs = errors_only(&diags);
+    assert_eq!(errs.len(), 1, "net:http caller lacks net:tcp for callee: {errs:?}");
+    assert_eq!(errs[0].code.as_deref(), Some("E0507"));
 }

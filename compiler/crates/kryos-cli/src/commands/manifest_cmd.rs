@@ -304,7 +304,9 @@ pub fn execute(opts: ManifestOptions) -> Result<(), String> {
             for (fn_key, fn_data) in &fr.functions {
                 if let Some(ref cap_set) = fn_data.cap_set {
                     for &denied in &deny_caps {
-                        if cap_set.has(denied) {
+                        // Overlap, not exact match: denying coarse `net` must trip a
+                        // function declaring only `net:http`, and vice versa.
+                        if cap_set.overlaps_capability(denied) {
                             violations.push((fn_key.clone(), denied.to_string()));
                         }
                     }

@@ -190,6 +190,15 @@ Every function has a capability set inferred from the builtins it calls. If your
 
 For now: just call what you need. The compiler will require a `// capabilities: io, net` annotation on the entry point if you turn on strict mode. See `docs/10-capabilities.md` for the details.
 
+### Sub-capabilities (least-privilege)
+
+Capabilities come in coarse families and finer **sub-capabilities** written `family:scope`:
+
+- `net:http` (HTTP[S] clients/servers) and `net:tcp` (raw TCP/TLS/unix sockets) under coarse `net`.
+- `fs:read` (read/stat) and `fs:write` (write/create/mutate) under coarse `io`/`fs` (both spellings mean the same coarse filesystem cap; `io` is the legacy name).
+
+**Coarse grants all its sub-caps** (back-compat): a function declaring `@capabilities(net)` may call `http_get` (needs `net:http`) and `tcp_connect` (needs `net:tcp`); `@capabilities(io)` may call both `file_read` and `file_write`; `all` grants everything. The reverse does NOT hold: a function declaring only `@capabilities(fs:read)` that calls `file_write` is **rejected** under `--strict-capabilities` (`error[E0505]: builtin \`file_write\` requires \`fs:write\` capability`) — declare `fs:write` (or coarse `io`) instead. Likewise `net:http` does not grant `net:tcp`. Declaring the precise sub-cap is the least-privilege default; declaring the coarse family is the broad escape hatch. Builtin → required cap: `file_read`/`list_dir`/`path_exists` → `fs:read`; `file_write`/`create_dir`/`remove_file` → `fs:write`; `http_get`/`http_post`/`http2_*` → `net:http`; `tcp_*`/`tls_*`/`uds_*` → `net:tcp`.
+
 ## Builtins available everywhere
 
 You do not need to `use` these — they're in the global namespace:

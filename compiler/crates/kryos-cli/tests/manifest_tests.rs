@@ -81,6 +81,28 @@ fn manifest_golden_impl_methods() {
 }
 
 #[test]
+fn manifest_golden_subcap() {
+    // Sub-capabilities surface precisely in the manifest: net:http and fs:read.
+    assert_golden(
+        "tests/manifest/subcap.kry",
+        include_str!("manifest/expected/subcap.json"),
+    );
+}
+
+#[test]
+fn manifest_deny_net_trips_subcap_http() {
+    // `--deny net` must trip a function declaring only `net:http`.
+    let (_, code) = run(&[
+        "manifest",
+        "--caps",
+        "tests/manifest/subcap.kry",
+        "--deny",
+        "net",
+    ]);
+    assert_eq!(code, 1, "deny net must catch net:http");
+}
+
+#[test]
 fn manifest_deny_net_trips() {
     let (_, code) = run(&[
         "manifest",

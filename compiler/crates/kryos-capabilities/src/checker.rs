@@ -532,7 +532,7 @@ impl CapabilityChecker {
         // 1. Check qualified stdlib paths (e.g. std.io.write_file).
         if let Some(required_cap) = required_capability_for_path(&segments) {
             if let Some(caps) = self.current_caps() {
-                if !caps.has(required_cap) {
+                if !caps.satisfies_required(&required_cap) {
                     self.diagnostics.push(
                         Diagnostic::error(format!(
                             "call to `{}` requires `{required_cap}` capability",
@@ -556,7 +556,7 @@ impl CapabilityChecker {
             if let Some(required_cap) = required_capability_for_builtin(&segments[0]) {
                 if self.strict_mode || self.has_annotated_scope() {
                     if let Some(caps) = self.current_caps() {
-                        if !caps.has(required_cap) {
+                        if !caps.satisfies_required(&required_cap) {
                             self.diagnostics.push(
                                 Diagnostic::error(format!(
                                     "builtin `{}` requires `{required_cap}` capability",
@@ -957,7 +957,7 @@ mod tests {
 
     #[test]
     fn strict_unannotated_with_file_write_is_error() {
-        // Unannotated function that calls `file_write` (requires `io`).
+        // Unannotated function that calls `file_write` (requires `fs:write`).
         // In strict mode this must surface E0505 at the call site.
         let module = Module {
             name: "test".into(),
@@ -980,7 +980,7 @@ mod tests {
         );
         assert_eq!(errors[0].code.as_deref(), Some("E0505"));
         assert!(errors[0].message.contains("file_write"));
-        assert!(errors[0].message.contains("`io`"));
+        assert!(errors[0].message.contains("`fs:write`"));
     }
 
     #[test]

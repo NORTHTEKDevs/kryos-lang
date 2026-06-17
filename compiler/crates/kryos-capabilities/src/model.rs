@@ -11,10 +11,19 @@ use kryos_ast::Annotation;
 /// or scope is allowed to do. They cannot be widened at runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Capability {
-    /// Network access (TCP, UDP, DNS).
+    /// Network access (TCP, UDP, DNS). Coarse: grants every `net:*` sub-cap.
     Net,
-    /// File I/O (read, write, seek, stat).
+    /// Network — HTTP(S) client/server only (`net:http`).
+    NetHttp,
+    /// Network — raw TCP / sockets / TLS (`net:tcp`).
+    NetTcp,
+    /// File I/O (read, write, seek, stat). Coarse: grants every `fs:*` sub-cap.
+    /// Spelled `io` (legacy) or `fs`; both map here for back-compat.
     Io,
+    /// Filesystem — read / stat only (`fs:read`).
+    FsRead,
+    /// Filesystem — write / create / mutate (`fs:write`).
+    FsWrite,
     /// Foreign function interface — calling into C, Rust, etc.
     Ffi,
     /// Heavy computation (GPU dispatch, SIMD intrinsics).
@@ -37,10 +46,27 @@ pub enum Capability {
 
 impl Capability {
     /// Parse a capability name (case-insensitive) from an annotation argument.
+    ///
+    /// Sub-capabilities use a `family:scope` form (`net:http`, `fs:write`). The
+    /// coarse families remain valid (`net`, `io`/`fs`) and grant all their
+    /// sub-caps via [`Capability::satisfies`]. `io` and `fs` are aliases for the
+    /// coarse filesystem capability (back-compat: `io` is the legacy spelling).
     pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_ascii_lowercase().as_str() {
+        // Capability names are single tokens, but the annotation tokenizer pads
+        // the `:` sub-scope separator with spaces (`net : http`). Strip all
+        // internal whitespace so both `net:http` and `net : http` parse.
+        let normalized: String = s
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+            .to_ascii_lowercase();
+        match normalized.as_str() {
             "net" => Some(Self::Net),
-            "io" => Some(Self::Io),
+            "net:http" => Some(Self::NetHttp),
+            "net:tcp" => Some(Self::NetTcp),
+            "io" | "fs" => Some(Self::Io),
+            "fs:read" => Some(Self::FsRead),
+            "fs:write" => Some(Self::FsWrite),
             "ffi" => Some(Self::Ffi),
             "compute" => Some(Self::Compute),
             "crypto" => Some(Self::Crypto),
@@ -54,7 +80,8 @@ impl Capability {
         }
     }
 
-    /// All concrete capabilities (excludes `All`).
+    /// All concrete coarse capabilities (excludes `All` and the `*:scope`
+    /// sub-capabilities, which are always implied by their coarse family).
     pub fn all_concrete() -> &'static [Capability] {
         &[
             Self::Net,
@@ -69,13 +96,46 @@ impl Capability {
             Self::Time,
         ]
     }
+
+    /// Whether holding `self` grants (is sufficient for) a `required` capability.
+    ///
+    /// Containment rules:
+    /// - `All` satisfies everything.
+    /// - An exact match satisfies.
+    /// - A coarse family satisfies each of its sub-capabilities
+    ///   (`net` ⊇ `net:http`/`net:tcp`, `io`/`fs` ⊇ `fs:read`/`fs:write`).
+    /// - A sub-capability does NOT satisfy a sibling sub-cap or the coarse
+    ///   family (`fs:read` does not grant `fs:write`, nor full `io`).
+    pub fn satisfies(&self, required: &Capability) -> bool {
+        use Capability::*;
+        if *self == All || self == required {
+            return true;
+        }
+        matches!(
+            (self, required),
+            (Net, NetHttp) | (Net, NetTcp) | (Io, FsRead) | (Io, FsWrite)
+        )
+    }
+
+    /// Whether `self` and `other` share any access — symmetric containment.
+    ///
+    /// Used by the manifest `--deny` gate: denying a coarse family (`net`)
+    /// must trip a function declaring only a sub-cap (`net:http`), and denying
+    /// a sub-cap (`net:tcp`) must trip a function declaring the coarse family.
+    pub fn overlaps(&self, other: &Capability) -> bool {
+        self.satisfies(other) || other.satisfies(self)
+    }
 }
 
 impl fmt::Display for Capability {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
             Self::Net => "net",
+            Self::NetHttp => "net:http",
+            Self::NetTcp => "net:tcp",
             Self::Io => "io",
+            Self::FsRead => "fs:read",
+            Self::FsWrite => "fs:write",
             Self::Ffi => "ffi",
             Self::Compute => "compute",
             Self::Crypto => "crypto",
@@ -126,32 +186,35 @@ impl CapabilitySet {
         Self { capabilities: caps }
     }
 
-    /// Check whether a specific capability is granted.
+    /// Check whether a specific capability is granted by exact match.
     ///
-    /// Returns `true` if the set contains `cap` or contains `All`.
+    /// Returns `true` if the set contains `cap` or contains `All`. This is the
+    /// historical exact-membership test; for sub-capability containment
+    /// (a coarse declaration granting a required sub-cap) use
+    /// [`CapabilitySet::satisfies_required`].
     pub fn has(&self, cap: Capability) -> bool {
         self.capabilities.contains(&Capability::All) || self.capabilities.contains(&cap)
     }
 
-    /// Check whether `self` is a subset of `other`.
-    ///
-    /// If `self` contains `All`, then `other` must also contain `All`.
-    /// Otherwise each capability in `self` must be present in `other`
-    /// (or `other` must contain `All`).
+    /// Check whether this set grants a `required` capability, honouring
+    /// sub-capability containment (e.g. a declared coarse `net` satisfies a
+    /// required `net:http`; `all` satisfies everything).
+    pub fn satisfies_required(&self, required: &Capability) -> bool {
+        self.capabilities.iter().any(|c| c.satisfies(required))
+    }
+
+    /// Whether any declared capability overlaps `cap` (symmetric containment).
+    /// Used by the manifest `--deny` gate so denying `net` also trips `net:http`.
+    pub fn overlaps_capability(&self, cap: Capability) -> bool {
+        self.capabilities.iter().any(|c| c.overlaps(&cap))
+    }
+
+    /// Check whether `self` is a subset of `other`, honouring sub-capability
+    /// containment: every capability in `self` must be satisfied by some
+    /// capability in `other`. A coarse `net` in `other` therefore covers a
+    /// `net:http` in `self`; `all` in `other` covers everything.
     pub fn is_subset_of(&self, other: &CapabilitySet) -> bool {
-        if other.capabilities.contains(&Capability::All) {
-            return true;
-        }
-        for cap in &self.capabilities {
-            if *cap == Capability::All {
-                // self has All but other doesn't — not a subset.
-                return false;
-            }
-            if !other.capabilities.contains(cap) {
-                return false;
-            }
-        }
-        true
+        self.capabilities.iter().all(|c| other.satisfies_required(c))
     }
 
     /// Compute the union of two capability sets.
@@ -189,17 +252,12 @@ impl CapabilitySet {
     ///
     /// Returns the set of capabilities present in `self` but not granted by `other`.
     pub fn excess_over(&self, other: &CapabilitySet) -> Vec<Capability> {
-        if other.capabilities.contains(&Capability::All) {
-            return Vec::new();
-        }
-        let mut excess = Vec::new();
-        for cap in &self.capabilities {
-            if *cap == Capability::All && !other.capabilities.contains(&Capability::All) {
-                excess.push(*cap);
-            } else if *cap != Capability::All && !other.capabilities.contains(cap) {
-                excess.push(*cap);
-            }
-        }
+        let mut excess: Vec<Capability> = self
+            .capabilities
+            .iter()
+            .filter(|c| !other.satisfies_required(c))
+            .copied()
+            .collect();
         excess.sort_by_key(|c| format!("{c}"));
         excess
     }
@@ -229,24 +287,34 @@ pub fn is_escalation_action(name: &str) -> bool {
 /// (e.g. `println`, `print`, `len`, `push`, `to_string`).
 pub fn required_capability_for_builtin(name: &str) -> Option<Capability> {
     match name {
-        // File I/O
-        "file_read" | "file_write" | "read_file" | "write_file" => Some(Capability::Io),
-
-        // Filesystem operations
-        "path_exists" | "is_file" | "is_dir" | "create_dir" | "remove_file" | "remove_dir"
-        | "copy_file" | "rename_file" | "file_size" | "list_dir" | "walk_dir" => {
-            Some(Capability::Io)
+        // Filesystem — read / stat (fs:read)
+        "file_read" | "read_file" => Some(Capability::FsRead),
+        "path_exists" | "is_file" | "is_dir" | "file_size" | "list_dir" | "walk_dir" => {
+            Some(Capability::FsRead)
         }
+
+        // Filesystem — write / create / mutate (fs:write)
+        "file_write" | "write_file" | "create_dir" | "remove_file" | "remove_dir"
+        | "copy_file" | "rename_file" => Some(Capability::FsWrite),
 
         // Process
         "env_get" | "env_set" | "exit" | "exec" | "spawn_process" => Some(Capability::Process),
 
-        // Network
-        "http_get" | "http_post" | "tcp_connect" | "tcp_listen" | "tcp_accept" | "tcp_send"
-        | "tcp_recv" | "tls_server_config" | "tls_accept" | "tls_send" | "tls_recv"
-        | "tls_close" | "pg_connect" | "pg_exec" | "pg_query" | "pg_close"
-        | "http2_get" | "http2_post" | "http2_request"
-        | "uds_connect" | "uds_bind" | "uds_accept" | "uds_send" | "uds_recv" | "uds_close"
+        // Network — HTTP(S) client/server (net:http)
+        "http_get" | "http_post" | "http2_get" | "http2_post" | "http2_request" => {
+            Some(Capability::NetHttp)
+        }
+
+        // Network — raw TCP / sockets / TLS / unix-domain sockets (net:tcp)
+        "tcp_connect" | "tcp_listen" | "tcp_accept" | "tcp_send" | "tcp_recv"
+        | "tls_server_config" | "tls_accept" | "tls_send" | "tls_recv" | "tls_close"
+        | "uds_connect" | "uds_bind" | "uds_accept" | "uds_send" | "uds_recv"
+        | "uds_close" => Some(Capability::NetTcp),
+
+        // Network — postgres wire + websocket framing helpers stay coarse `net`
+        // (pg straddles connect+query; ws_* are pure byte (de)framing used by
+        // net code). A coarse `net` declaration covers all of the above.
+        "pg_connect" | "pg_exec" | "pg_query" | "pg_close"
         | "ws_accept_key" | "ws_encode_text" | "ws_encode_binary" | "ws_encode_close"
         | "ws_encode_ping" | "ws_encode_pong" | "ws_unmask" | "ws_read_frame" => Some(Capability::Net),
 
@@ -273,7 +341,7 @@ pub fn required_capability_for_path(segments: &[String]) -> Option<Capability> {
     }
     match segments[1].as_str() {
         "net" => Some(Capability::Net),
-        "io" => Some(Capability::Io),
+        "io" | "fs" => Some(Capability::Io),
         "ffi" => Some(Capability::Ffi),
         "compute" => Some(Capability::Compute),
         "crypto" => Some(Capability::Crypto),
@@ -451,55 +519,145 @@ mod tests {
     }
 
     #[test]
-    fn builtin_io_functions_require_io() {
+    fn builtin_filesystem_functions_require_fs_subcaps() {
+        // Read / stat ops require fs:read.
         assert_eq!(
             required_capability_for_builtin("file_read"),
-            Some(Capability::Io)
-        );
-        assert_eq!(
-            required_capability_for_builtin("file_write"),
-            Some(Capability::Io)
+            Some(Capability::FsRead)
         );
         assert_eq!(
             required_capability_for_builtin("read_file"),
-            Some(Capability::Io)
-        );
-        assert_eq!(
-            required_capability_for_builtin("write_file"),
-            Some(Capability::Io)
+            Some(Capability::FsRead)
         );
         assert_eq!(
             required_capability_for_builtin("path_exists"),
-            Some(Capability::Io)
+            Some(Capability::FsRead)
         );
         assert_eq!(
             required_capability_for_builtin("list_dir"),
-            Some(Capability::Io)
+            Some(Capability::FsRead)
         );
         assert_eq!(
             required_capability_for_builtin("walk_dir"),
-            Some(Capability::Io)
+            Some(Capability::FsRead)
+        );
+        // Write / mutate ops require fs:write.
+        assert_eq!(
+            required_capability_for_builtin("file_write"),
+            Some(Capability::FsWrite)
+        );
+        assert_eq!(
+            required_capability_for_builtin("write_file"),
+            Some(Capability::FsWrite)
+        );
+        assert_eq!(
+            required_capability_for_builtin("create_dir"),
+            Some(Capability::FsWrite)
+        );
+        assert_eq!(
+            required_capability_for_builtin("remove_file"),
+            Some(Capability::FsWrite)
         );
     }
 
     #[test]
-    fn builtin_net_functions_require_net() {
+    fn builtin_net_functions_require_net_subcaps() {
+        // HTTP ops require net:http.
         assert_eq!(
             required_capability_for_builtin("http_get"),
-            Some(Capability::Net)
+            Some(Capability::NetHttp)
         );
         assert_eq!(
             required_capability_for_builtin("http_post"),
-            Some(Capability::Net)
+            Some(Capability::NetHttp)
         );
+        // Raw socket ops require net:tcp.
         assert_eq!(
             required_capability_for_builtin("tcp_connect"),
-            Some(Capability::Net)
+            Some(Capability::NetTcp)
         );
         assert_eq!(
             required_capability_for_builtin("tcp_listen"),
-            Some(Capability::Net)
+            Some(Capability::NetTcp)
         );
+    }
+
+    #[test]
+    fn parse_subcapability_names() {
+        assert_eq!(Capability::from_str("net:http"), Some(Capability::NetHttp));
+        assert_eq!(Capability::from_str("NET:HTTP"), Some(Capability::NetHttp));
+        assert_eq!(Capability::from_str("net:tcp"), Some(Capability::NetTcp));
+        assert_eq!(Capability::from_str("fs:read"), Some(Capability::FsRead));
+        assert_eq!(Capability::from_str("fs:write"), Some(Capability::FsWrite));
+        // Coarse aliases: both `io` (legacy) and `fs` map to the coarse fs cap.
+        assert_eq!(Capability::from_str("io"), Some(Capability::Io));
+        assert_eq!(Capability::from_str("fs"), Some(Capability::Io));
+        // Unknown scope is rejected.
+        assert_eq!(Capability::from_str("net:bogus"), None);
+        assert_eq!(Capability::from_str("fs:append"), None);
+    }
+
+    #[test]
+    fn subcapability_display() {
+        assert_eq!(Capability::NetHttp.to_string(), "net:http");
+        assert_eq!(Capability::NetTcp.to_string(), "net:tcp");
+        assert_eq!(Capability::FsRead.to_string(), "fs:read");
+        assert_eq!(Capability::FsWrite.to_string(), "fs:write");
+        // Coarse fs still displays as `io` (back-compat with existing manifests).
+        assert_eq!(Capability::Io.to_string(), "io");
+    }
+
+    #[test]
+    fn coarse_satisfies_subcaps_but_not_vice_versa() {
+        // Coarse grants its sub-caps.
+        assert!(Capability::Net.satisfies(&Capability::NetHttp));
+        assert!(Capability::Net.satisfies(&Capability::NetTcp));
+        assert!(Capability::Io.satisfies(&Capability::FsRead));
+        assert!(Capability::Io.satisfies(&Capability::FsWrite));
+        // All grants everything.
+        assert!(Capability::All.satisfies(&Capability::FsWrite));
+        assert!(Capability::All.satisfies(&Capability::NetTcp));
+        // Sub-cap does not grant sibling, nor the coarse family.
+        assert!(!Capability::FsRead.satisfies(&Capability::FsWrite));
+        assert!(!Capability::FsWrite.satisfies(&Capability::FsRead));
+        assert!(!Capability::NetHttp.satisfies(&Capability::NetTcp));
+        assert!(!Capability::NetHttp.satisfies(&Capability::Net));
+        assert!(!Capability::FsRead.satisfies(&Capability::Io));
+        // Exact match satisfies.
+        assert!(Capability::FsWrite.satisfies(&Capability::FsWrite));
+        // Different families never satisfy.
+        assert!(!Capability::Net.satisfies(&Capability::FsRead));
+    }
+
+    #[test]
+    fn capset_satisfies_required_containment() {
+        let io = CapabilitySet::from_annotations(&[make_annotation("capabilities", vec!["io"])]);
+        assert!(io.satisfies_required(&Capability::FsWrite));
+        assert!(io.satisfies_required(&Capability::FsRead));
+
+        let ro =
+            CapabilitySet::from_annotations(&[make_annotation("capabilities", vec!["fs:read"])]);
+        assert!(ro.satisfies_required(&Capability::FsRead));
+        assert!(!ro.satisfies_required(&Capability::FsWrite));
+
+        let net = CapabilitySet::from_annotations(&[make_annotation("capabilities", vec!["net"])]);
+        assert!(net.satisfies_required(&Capability::NetHttp));
+        assert!(net.satisfies_required(&Capability::NetTcp));
+    }
+
+    #[test]
+    fn deny_overlap_is_symmetric_within_family() {
+        // Declaring net:http overlaps a coarse `net` deny.
+        let http =
+            CapabilitySet::from_annotations(&[make_annotation("capabilities", vec!["net:http"])]);
+        assert!(http.overlaps_capability(Capability::Net));
+        // Declaring coarse net overlaps a `net:tcp` deny.
+        let net = CapabilitySet::from_annotations(&[make_annotation("capabilities", vec!["net"])]);
+        assert!(net.overlaps_capability(Capability::NetTcp));
+        // But net:http does not overlap an unrelated fs deny.
+        assert!(!http.overlaps_capability(Capability::Io));
+        // ...and net:http does not overlap a net:tcp deny (disjoint siblings).
+        assert!(!http.overlaps_capability(Capability::NetTcp));
     }
 
     #[test]

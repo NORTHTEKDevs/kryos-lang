@@ -1,5 +1,5 @@
-// expect-error: io
-// A @capabilities(net) function cannot use file_write (which requires io).
+// expect-error: fs:write
+// A @capabilities(net) function cannot use file_write (which requires fs:write).
 
 @capabilities(net)
 fn save_response(body: str) {

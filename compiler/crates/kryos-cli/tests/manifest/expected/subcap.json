@@ -1,0 +1,19 @@
+{
+  "schema": "kryos-manifest-v1",
+  "source": "tests/manifest/subcap.kry",
+  "functions": {
+    "fetch": {
+      "capabilities": [
+        "net:http"
+      ],
+      "annotated": true
+    },
+    "load": {
+      "capabilities": [
+        "fs:read"
+      ],
+      "annotated": true
+    }
+  },
+  "unannotated_count": 0
+}

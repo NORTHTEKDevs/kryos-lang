@@ -1,5 +1,5 @@
-// expect-error: builtin `file_write` requires `io` capability
-// A @capabilities(net) function cannot call file_write (needs io).
+// expect-error: builtin `file_write` requires `fs:write` capability
+// A @capabilities(net) function cannot call file_write (needs fs:write).
 
 @capabilities(net)
 fn bad_save() {

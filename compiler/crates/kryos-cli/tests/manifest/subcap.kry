@@ -1,0 +1,9 @@
+@capabilities(net:http)
+fn fetch(url: str) -> i64 {
+    return http_get(url)
+}
+
+@capabilities(fs:read)
+fn load(path: str) -> str {
+    return file_read(path)
+}
