@@ -1,0 +1,133 @@
+// ============================================================
+// smoke_governed_chat.kry -- Offline smoke test for kryos-llm-structured.
+//
+// PROVING COMMAND: kryos run tests/smoke_governed_chat.kry
+//   Runs from the project root (ecosystem/kryos-llm-structured/).
+//
+// Three cases -- no live LLM needed:
+//   1. validate_and_track with VALID JSON -> Ok, Tracked carries lineage
+//   2. validate_and_track with schema VIOLATIONS -> Err([violation,...])
+//   3. validate_and_track with MALFORMED JSON -> Err (no crash)
+//
+// No @test attributes: std::tracked's kryos_string_retain is not available
+// in the kryos test JIT; use `kryos run` (same pattern as kryos-rag tests).
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+use std::tracked::{Tracked, LineageEntry, tracked_source, inference}
+use std::json::{
+    JsonValue,
+    parse,
+    is_null,
+    is_string, is_number, is_bool, is_array, is_object,
+    to_str, to_int, to_float, to_array, get,
+}
+use kryos_schema::schema::{Schema, str_, int_, bool_, object, array, optional, with_min, with_max, enum_of}
+use kryos_schema::validate::{validate, collect_errors}
+use kryos_schema::rematch
+use llm_structured::{validate_and_track}
+
+// ---- minimal assertion helpers ----------------------------------------------
+
+fn fail(msg: str) {
+    println("FAIL: " + msg)
+    exit(1)
+}
+
+fn expect_true(cond: bool, label: str) {
+    if not cond {
+        fail(label)
+    }
+}
+
+fn has_err_containing(errs: [str], needle: str) -> bool {
+    let mut i = 0
+    while i < len(errs) {
+        if contains(errs[i], needle) {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// ---- shared test schema -----------------------------------------------------
+// A small "response" object: name (str), score (int 0..100), pass (bool).
+
+fn response_schema() -> Schema {
+    let names: [str] = ["name", "score", "pass"]
+    let fields: [Schema] = [
+        with_max(with_min(str_(), 1), 80),
+        with_max(with_min(int_(), 0), 100),
+        bool_(),
+    ]
+    return object(names, fields)
+}
+
+// ---- test 1: valid JSON matching schema -> Ok with lineage ------------------
+
+fn test_valid_json_returns_ok() {
+    let raw = "{{\"name\": \"Alice\", \"score\": 42, \"pass\": true}}"
+    let schema = response_schema()
+    let result = validate_and_track(raw, schema, "test-source")
+    match result {
+        Err(es) => fail("test_valid_json_returns_ok: expected Ok, got Err with " + to_string(len(es)) + " violations: " + es[0]),
+        Ok(t) => {
+            // The tracked value must be the raw JSON.
+            expect_true(t.value == raw, "tracked.value is the raw JSON")
+            // At least 2 lineage entries: source + inference.
+            expect_true(len(t.lineage) >= 2, "lineage has at least 2 entries (source + inference)")
+            // Source field set.
+            expect_true(t.source == "test-source", "tracked.source is 'test-source'")
+            println("test_valid_json_returns_ok: PASS")
+        }
+    }
+}
+
+// ---- test 2: valid JSON failing schema -> Err with violations ---------------
+
+fn test_invalid_json_returns_err() {
+    // score out of range (150 > 100), pass is a string not a bool -> 2 violations.
+    let raw = "{{\"name\": \"Bob\", \"score\": 150, \"pass\": \"yes\"}}"
+    let schema = response_schema()
+    let result = validate_and_track(raw, schema, "test-source")
+    match result {
+        Ok(_) => fail("test_invalid_json_returns_err: expected Err, got Ok"),
+        Err(es) => {
+            expect_true(len(es) >= 1, "at least one violation returned")
+            expect_true(
+                has_err_containing(es, "score") or has_err_containing(es, "pass"),
+                "violations mention score or pass"
+            )
+            println("test_invalid_json_returns_err: PASS (violations: " + to_string(len(es)) + ")")
+        }
+    }
+}
+
+// ---- test 3: malformed JSON -> Err, no crash --------------------------------
+
+fn test_malformed_json_returns_err_not_crash() {
+    let raw = "not valid json !!!"
+    let schema = response_schema()
+    let result = validate_and_track(raw, schema, "test-source")
+    match result {
+        Ok(_) => fail("test_malformed_json_returns_err_not_crash: expected Err, got Ok"),
+        Err(es) => {
+            expect_true(len(es) >= 1, "at least one error returned for malformed JSON")
+            expect_true(
+                has_err_containing(es, "malformed json") or has_err_containing(es, "parse"),
+                "error message mentions malformed/parse"
+            )
+            println("test_malformed_json_returns_err_not_crash: PASS")
+        }
+    }
+}
+
+// ---- main -------------------------------------------------------------------
+
+fn main() {
+    test_valid_json_returns_ok()
+    test_invalid_json_returns_err()
+    test_malformed_json_returns_err_not_crash()
+    println("All 3 smoke tests passed.")
+}

@@ -1,0 +1,108 @@
+// ============================================================
+// llm_structured.kry -- Governed structured-output for Kryos.
+//
+// Provides two public functions:
+//
+//   validate_and_track(raw_json, schema, source) -> Result<Tracked<str>, [str]>
+//     Parse `raw_json`, validate against `schema`, and on success wrap the
+//     raw text in a Tracked<str> carrying an inference lineage entry.
+//     @capabilities(compute) -- no network, fully testable offline.
+//
+//   governed_chat(cfg, messages, schema) -> Result<Tracked<str>, [str]>
+//     Call std::llm chat() (net), then delegate to validate_and_track.
+//     Returns Ok(Tracked<str>) carrying the raw JSON reply with lineage, or
+//     Err(violations) if the reply is not valid JSON or fails the schema.
+//     @capabilities(net) -- only this function touches the wire.
+//
+// Capability split is deliberate and visible: the parse+validate path is
+// @capabilities(compute); only the chat() call needs net. Keep them in
+// separate functions so `kryos manifest --caps` proves the split.
+//
+// Schema is always an EXPLICIT Schema value (from kryos-schema combinators).
+// Compiler reflection / schema-from-generic-type is not attempted.
+// ============================================================
+
+use std::result::{Result, Ok, Err}
+use std::tracked::{Tracked, LineageEntry, tracked_source, inference}
+use std::llm::{LlmConfig, Message, LlmResponse, chat}
+use std::json::{
+    JsonValue,
+    parse,
+    is_null,
+    is_string, is_number, is_bool, is_array, is_object,
+    to_str, to_int, to_float, to_array, get,
+}
+use kryos_schema::schema::{Schema}
+use kryos_schema::validate::{validate}
+
+// ---- helpers ----------------------------------------------------------------
+
+// Build an Err([str]) carrying a single message.
+@capabilities(compute)
+fn _single_err(msg: str) -> Result<Tracked<str>, [str]> {
+    let mut errs: [str] = []
+    errs = push(errs, msg)
+    return Err(errs)
+}
+
+// ---- public API -------------------------------------------------------------
+
+/// Parse `raw_json`, validate it against `schema`, and (on success) return it
+/// wrapped in a Tracked<str> whose lineage records `source` as a data origin
+/// plus an inference step marking the structured-output extraction.
+///
+/// On failure returns Err([violation_message, ...]) where the first element
+/// is "malformed json: ..." for non-parseable input, or the list of schema
+/// violations for parseable-but-invalid input.
+///
+/// @capabilities(compute) -- no I/O; safe to call in tests without a network.
+@capabilities(compute)
+fn validate_and_track(raw_json: str, schema: Schema, source: str) -> Result<Tracked<str>, [str]> {
+    // Step 1: parse. std::json::parse throws on invalid input; catch and convert
+    // to an Err so callers always get a Result, never an uncaught exception.
+    // Initialize with a known-valid JsonValue sentinel so the type is correct
+    // before the try block; the flag tracks whether parse actually succeeded.
+    let mut parse_ok = false
+    let mut parse_err_msg = ""
+    let mut node = parse("null")  // valid sentinel; overwritten in the try block
+    try {
+        node = parse(raw_json)
+        parse_ok = true
+    } catch e {
+        parse_err_msg = "malformed json: " + e
+    }
+    if not parse_ok {
+        return _single_err(parse_err_msg)
+    }
+
+    // Step 2: validate against the explicit schema.
+    let vr = validate(schema, node)
+    match vr {
+        Err(es) => return Err(es),
+        Ok(_) => {
+            // Step 3: wrap the raw JSON text in a Tracked<str> with lineage.
+            let sourced = tracked_source(raw_json, source, "structured-output source: " + source)
+            let tracked = inference(sourced, "kryos-llm-structured", raw_json, 1.0)
+            return Ok(tracked)
+        }
+    }
+}
+
+/// Call `chat(cfg, messages)` to get a raw text reply, then validate the
+/// reply text as JSON against `schema`.
+///
+/// Returns:
+///   Ok(Tracked<str>) -- the raw JSON reply, validated and lineage-tagged.
+///   Err([str])       -- schema violations (or "malformed json") if the
+///                       reply is not valid structured output.
+///
+/// Throws (unwinds) on transport failure or HTTP error (from std::llm::chat).
+///
+/// @capabilities(net) -- the chat() call is the only I/O.
+@capabilities(net)
+@budget(tokens = 4096, calls = 1)
+fn governed_chat(cfg: LlmConfig, messages: [Message], schema: Schema) -> Result<Tracked<str>, [str]> {
+    let response = chat(cfg, messages)
+    let source = "llm:" + cfg.model
+    return validate_and_track(response.text, schema, source)
+}

@@ -1,0 +1,163 @@
+// ============================================================
+// test_require_calibrated.kry -- verification driver for enforce.kry.
+//
+//   kryos run ecosystem/kryos-calibration/tests/test_require_calibrated.kry
+//   -- OR from kryos-calibration/ project root:
+//   kryos run tests/test_require_calibrated.kry
+//
+// Build a SampleSet with deterministic outcomes so every bin has a KNOWN
+// measured accuracy, then exercise require_calibrated for:
+//
+//   PASS:  well-calibrated stated confidence (within tolerance)
+//   THROW: overconfident stated confidence (>15pp above measured)
+//   NEGATIVE-CONTROL: calibrated fixture passes cleanly (no false throws)
+//
+// EXIT 1 on any unexpected outcome; exit 0 with "ALL CHECKS PASSED" otherwise.
+// ============================================================
+
+use calibration::{
+    SampleSet, new_sampleset, add,
+}
+use enforce::{require_calibrated}
+
+// ---- helpers ----------------------------------------------------------------
+
+@capabilities(process)
+fn check(cond: bool, msg: str) {
+    if not cond {
+        println("FAIL: " + msg)
+        exit(1)
+    }
+    println("  ok: " + msg)
+}
+
+// Append n samples all at stated `conf`, the first k correct.
+@capabilities(compute)
+fn add_group(set: SampleSet, conf: f64, k_correct: i64, n: i64) -> SampleSet {
+    let mut s = set
+    let mut i = 0
+    while i < n {
+        let correct = i < k_correct
+        s = add(s, conf, correct)
+        i = i + 1
+    }
+    return s
+}
+
+// ---- fixtures ---------------------------------------------------------------
+
+// Overconfident fixture:
+//   bin for 0.9: 20 samples, 10 correct -> measured accuracy 0.50
+//   bin for 0.7: 20 samples,  8 correct -> measured accuracy 0.40
+// Both bins have measured accuracy far below the stated confidence.
+@capabilities(compute)
+fn overconfident_set() -> SampleSet {
+    let mut s = new_sampleset()
+    s = add_group(s, 0.9, 10, 20)
+    s = add_group(s, 0.7, 8, 20)
+    return s
+}
+
+// Calibrated fixture: stated == measured for every occupied bin.
+//   bin for 0.1: 10 samples, 1 correct  -> accuracy 0.10
+//   bin for 0.3: 10 samples, 3 correct  -> accuracy 0.30
+//   bin for 0.5: 10 samples, 5 correct  -> accuracy 0.50
+//   bin for 0.7: 10 samples, 7 correct  -> accuracy 0.70
+//   bin for 0.9: 10 samples, 9 correct  -> accuracy 0.90
+@capabilities(compute)
+fn calibrated_set() -> SampleSet {
+    let mut s = new_sampleset()
+    s = add_group(s, 0.1, 1, 10)
+    s = add_group(s, 0.3, 3, 10)
+    s = add_group(s, 0.5, 5, 10)
+    s = add_group(s, 0.7, 7, 10)
+    s = add_group(s, 0.9, 9, 10)
+    return s
+}
+
+// ---- main -------------------------------------------------------------------
+
+@capabilities(compute, process)
+fn main() {
+    let bins = 10
+
+    // ----------------------------------------------------------------
+    // 1. WELL-CALIBRATED CASE
+    //    Calibrated fixture, stated 0.9, measured 0.90 -> gap ~0.0
+    //    -> well within tolerance (0.15). Should return value unchanged.
+    // ----------------------------------------------------------------
+    println("== test: well-calibrated confidence passes ==")
+    let cal_set = calibrated_set()
+    let result1: str = require_calibrated(cal_set.samples, bins, 0.9, "correct answer")
+    check(result1 == "correct answer", "well-calibrated 0.9: returns value unchanged")
+
+    // Also test 0.3 on calibrated set: stated 0.3, measured 0.30, gap 0.0.
+    let result2: str = require_calibrated(cal_set.samples, bins, 0.3, "another answer")
+    check(result2 == "another answer", "well-calibrated 0.3: returns value unchanged")
+
+    // ----------------------------------------------------------------
+    // 2. OVERCONFIDENT CASE
+    //    Overconfident fixture. Bin for 0.9 has measured accuracy 0.50.
+    //    Gap = 0.9 - 0.5 = 0.40 >> tolerance 0.15. Should throw.
+    // ----------------------------------------------------------------
+    println("== test: overconfident confidence throws ==")
+    let over_set = overconfident_set()
+    let mut did_throw = false
+    let mut caught_msg: str = ""
+    try {
+        let _ignored: str = require_calibrated(over_set.samples, bins, 0.9, "overconfident claim")
+    } catch e {
+        did_throw = true
+        caught_msg = e
+    }
+    check(did_throw, "overconfident 0.9 -> throws")
+    check(contains(caught_msg, "Overconfident"), "thrown message contains 'Overconfident'")
+    check(contains(caught_msg, "0.9"), "thrown message mentions stated confidence 0.9")
+    check(contains(caught_msg, "0.5"), "thrown message mentions measured accuracy 0.5")
+    println("  caught: " + caught_msg)
+
+    // ----------------------------------------------------------------
+    // 3. BORDERLINE OVERCONFIDENT
+    //    Bin for 0.7 has measured accuracy 0.40. Gap = 0.7 - 0.4 = 0.30 > 0.15.
+    //    Should throw.
+    // ----------------------------------------------------------------
+    println("== test: 0.7 stated vs 0.40 measured throws ==")
+    let mut did_throw2 = false
+    try {
+        let _ignored2: str = require_calibrated(over_set.samples, bins, 0.7, "borderline claim")
+    } catch e2 {
+        did_throw2 = true
+    }
+    check(did_throw2, "overconfident 0.7 -> throws")
+
+    // ----------------------------------------------------------------
+    // 4. NEGATIVE CONTROL
+    //    Calibrated set, state confidence 0.5, measured 0.50 -> gap 0.0.
+    //    Must NOT throw (no false positives).
+    // ----------------------------------------------------------------
+    println("== test: negative control - calibrated 0.5 does not throw ==")
+    let mut neg_threw = false
+    try {
+        let _nc: str = require_calibrated(cal_set.samples, bins, 0.5, "negative control value")
+    } catch _nc_err {
+        neg_threw = true
+    }
+    check(not neg_threw, "negative control: calibrated 0.5 does not throw")
+
+    // ----------------------------------------------------------------
+    // 5. JUST-WITHIN-TOLERANCE
+    //    Calibrated set, bin for 0.9 has accuracy 0.90.
+    //    Stated 1.0: gap = 1.0 - 0.90 = 0.10 < 0.15 tolerance.
+    //    Should NOT throw.
+    // ----------------------------------------------------------------
+    println("== test: stated 1.0, measured 0.90, gap 0.10 within tolerance ==")
+    let mut within_threw = false
+    try {
+        let _wt: str = require_calibrated(cal_set.samples, bins, 1.0, "within tolerance value")
+    } catch _wt_err {
+        within_threw = true
+    }
+    check(not within_threw, "gap 0.10 < 0.15 tolerance: does not throw")
+
+    println("ALL CHECKS PASSED")
+}
