@@ -1739,6 +1739,14 @@ fn lower_block_as_value(ctx: &mut LoweringContext, stmts: &[ast::Stmt], result_l
 }
 
 fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
+    // Debug-line instrumentation: when the DAP debugger is driving this
+    // compilation, mark each statement with its source line so the backend can
+    // emit a `kryos_dbg_line` hook before it. No-op (and zero cost) for normal
+    // builds, where no resolver is installed.
+    if let Some(line) = crate::debug_lines::resolve_debug_line(stmt.span()) {
+        ctx.emit(Instruction::DebugLine(line));
+    }
+
     match stmt {
         ast::Stmt::Let {
             name,

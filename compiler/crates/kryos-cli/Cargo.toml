@@ -26,6 +26,7 @@ kryos-lsp.workspace = true
 kryos-codegen-cranelift.workspace = true
 kryos-codegen-llvm.workspace = true
 kryos-codegen-wasm.workspace = true
+kryos-mir.workspace = true
 kryos-test-runner.workspace = true
 kryos-fmt.workspace = true
 kryos-ast.workspace = true

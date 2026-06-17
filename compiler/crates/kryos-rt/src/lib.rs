@@ -101,6 +101,7 @@ pub mod array;
 pub mod builtins;
 pub mod channel;
 pub mod budget;
+pub mod debug;
 pub mod exception;
 pub mod floatbits;
 pub mod fs;

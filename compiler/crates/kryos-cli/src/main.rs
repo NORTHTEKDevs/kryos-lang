@@ -462,6 +462,9 @@ enum Commands {
     /// Start the language server (LSP)
     Lsp,
 
+    /// Start the source-level debugger (Debug Adapter Protocol over stdio)
+    Dap,
+
     /// Show a long-form explanation for an error code (like `rustc --explain`).
     ///
     /// Pass an error code (e.g. `E0100`) to read its article, or `--list`
@@ -879,6 +882,8 @@ fn main() {
         },
 
         Commands::Lsp => commands::lsp::execute(),
+
+        Commands::Dap => commands::dap::execute(),
 
         Commands::Explain { code, list } => {
             if list {

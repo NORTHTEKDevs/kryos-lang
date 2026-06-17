@@ -146,6 +146,15 @@ impl SourceMap {
         let line_start = file.line_starts[line - 1];
         (line as u32, offset - line_start + 1)
     }
+
+    /// Snapshot the per-file line-start offset tables, indexed by `file_id`.
+    ///
+    /// Used by debug-line instrumentation (the DAP debugger) to map a
+    /// statement's byte-offset span to a 1-based source line at MIR lowering
+    /// time without holding a borrow on the `SourceMap` itself.
+    pub fn line_starts_snapshot(&self) -> Vec<Vec<u32>> {
+        self.files.iter().map(|f| f.line_starts.clone()).collect()
+    }
 }
 
 /// ANSI escape codes for colored terminal output.

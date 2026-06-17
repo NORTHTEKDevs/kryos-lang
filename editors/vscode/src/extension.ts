@@ -1,4 +1,5 @@
-// Kryos VS Code extension — launches `kryos lsp` as the language server.
+// Kryos VS Code extension — launches `kryos lsp` as the language server and
+// `kryos dap` as the source-level debug adapter.
 //
 // Build: `npx tsc -p .` (from the extension root)
 //
@@ -6,6 +7,9 @@
 //   `kryos.serverPath` — path to the kryos binary (default: "kryos" on PATH)
 //   `kryos.serverArgs` — extra args to pass to the server (default: ["lsp"])
 //   `kryos.trace.server` — LSP trace level: "off" | "messages" | "verbose"
+//
+// Debugging: add a launch config of type "kryos" (see launch.sample.json). The
+// adapter is the same kryos binary invoked as `kryos dap`.
 
 import * as vscode from "vscode";
 import {
@@ -57,6 +61,20 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     },
   });
+
+  // Register the "kryos" debug adapter — the same binary invoked as `kryos dap`,
+  // speaking DAP over stdio.
+  const debugFactory: vscode.DebugAdapterDescriptorFactory = {
+    createDebugAdapterDescriptor(): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
+      const dapPath = vscode.workspace
+        .getConfiguration("kryos")
+        .get<string>("serverPath", "kryos");
+      return new vscode.DebugAdapterExecutable(dapPath, ["dap"]);
+    },
+  };
+  context.subscriptions.push(
+    vscode.debug.registerDebugAdapterDescriptorFactory("kryos", debugFactory),
+  );
 }
 
 export function deactivate(): Thenable<void> | undefined {

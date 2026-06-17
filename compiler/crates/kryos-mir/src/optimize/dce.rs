@@ -214,7 +214,7 @@ fn collect_locals_in_instruction(inst: &Instruction, used: &mut HashSet<u32>) {
             collect_locals_in_operand(ptr, used);
             collect_locals_in_operand(value, used);
         }
-        Instruction::Nop => {}
+        Instruction::Nop | Instruction::DebugLine(_) => {}
     }
 }
 

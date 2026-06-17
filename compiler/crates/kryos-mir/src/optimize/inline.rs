@@ -284,6 +284,7 @@ fn remap_instruction(inst: &Instruction, offset: u32) -> Instruction {
             value: remap_operand(value, offset),
         },
         Instruction::Nop => Instruction::Nop,
+        Instruction::DebugLine(line) => Instruction::DebugLine(*line),
     }
 }
 

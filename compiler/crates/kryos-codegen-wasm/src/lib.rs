@@ -1248,7 +1248,7 @@ impl<'a> FnEmitter<'a> {
                     self.wfunc.instruction(&W::LocalSet(dest.0));
                 }
             }
-            Instruction::Nop => {}
+            Instruction::Nop | Instruction::DebugLine(_) => {}
             Instruction::ArcRetain { .. }
             | Instruction::ArcRelease { .. }
             | Instruction::Drop { .. } => {

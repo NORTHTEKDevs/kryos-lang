@@ -2784,6 +2784,14 @@ fn translate_instruction<M: Module>(
             builder.ins().store(MemFlags::new(), val, ptr_val, 0);
         }
         Instruction::Nop => {}
+        Instruction::DebugLine(line) => {
+            // Source-level debugger hook: notify the runtime debug controller
+            // of the line about to execute. Only ever present when the `kryos
+            // dap` path instrumented lowering, so normal builds emit nothing.
+            let dbg_ref = ensure_func_ref_void("kryos_dbg_line", builder, translator, module, 1)?;
+            let line_val = builder.ins().iconst(types::I64, *line as i64);
+            builder.ins().call(dbg_ref, &[line_val]);
+        }
         Instruction::Spawn { func, args } => {
             // Get the function reference and its address as i64.
             let func_ref =

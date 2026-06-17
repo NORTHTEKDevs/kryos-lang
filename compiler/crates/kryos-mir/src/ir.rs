@@ -300,6 +300,13 @@ pub enum Instruction {
     /// No-op placeholder.
     Nop,
 
+    /// Source-line marker for the source-level debugger. Emitted only when
+    /// debug-line instrumentation is active (the `kryos dap` path); normal
+    /// builds never produce this. The Cranelift backend lowers it to a call to
+    /// the `kryos_dbg_line(line)` runtime hook; all other consumers treat it as
+    /// a no-op. `line` is a 1-based source line number.
+    DebugLine(u32),
+
     /// Spawn a function on a new OS thread.
     ///
     /// `func` is the name of the function to call (may be a generated

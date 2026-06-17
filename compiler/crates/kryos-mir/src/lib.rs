@@ -17,6 +17,7 @@
 
 pub mod async_lower;
 pub mod consteval;
+pub mod debug_lines;
 pub mod display;
 pub mod ir;
 pub mod liveness;
@@ -24,6 +25,7 @@ pub mod lower;
 pub mod optimize;
 
 // Re-export key types for convenience.
+pub use debug_lines::{set_debug_line_resolver, DebugLineResolver};
 pub use ir::*;
 pub use lower::{
     lower_function, lower_module, lower_module_with_lambda_params, lower_resolved_type,

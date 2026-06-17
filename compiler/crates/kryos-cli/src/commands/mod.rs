@@ -23,6 +23,7 @@ pub mod profile_cmd;
 pub mod trace_cmd;
 pub mod tree_cmd;
 pub mod watch_cmd;
+pub mod dap;
 pub mod doc;
 pub mod explain;
 pub mod fmt;

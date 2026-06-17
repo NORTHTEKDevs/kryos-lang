@@ -155,42 +155,49 @@ pub extern "C" fn kryos_bool_to_string(value: i64) -> i64 {
 /// Takes the KryosString pointer as i64.
 #[no_mangle]
 pub extern "C" fn kryos_println_str(handle: i64) {
-    if handle == 0 {
-        println!();
+    let body = kryos_str_text(handle).unwrap_or_default();
+    let out = format!("{body}\n");
+    // Under the debugger, route to the output sink so the program's stdout
+    // does not corrupt the DAP protocol stream framed on the real stdout.
+    if crate::debug::sink_write(&out) {
         return;
     }
-    let s = handle as *const crate::string::KryosString;
-    unsafe {
-        let len = (*s).len as usize;
-        let data = (*s).data;
-        if !data.is_null() && len > 0 {
-            let slice = std::slice::from_raw_parts(data, len);
-            if let Ok(text) = std::str::from_utf8(slice) {
-                println!("{}", text);
-            } else {
-                println!("<invalid utf-8>");
-            }
-        } else {
-            println!();
-        }
-    }
+    print!("{out}");
 }
 
 /// Print a KryosString without a newline.
 #[no_mangle]
 pub extern "C" fn kryos_print_str(handle: i64) {
-    if handle == 0 {
+    let Some(text) = kryos_str_text(handle) else {
         return;
+    };
+    if text.is_empty() {
+        return;
+    }
+    if crate::debug::sink_write(&text) {
+        return;
+    }
+    print!("{text}");
+}
+
+/// Read a `KryosString` handle into an owned `String`. Returns `None` for a
+/// null handle; an empty string for an empty/null buffer; `"<invalid utf-8>"`
+/// for non-UTF-8 content (matching the historical print behaviour).
+fn kryos_str_text(handle: i64) -> Option<String> {
+    if handle == 0 {
+        return None;
     }
     let s = handle as *const crate::string::KryosString;
     unsafe {
         let len = (*s).len as usize;
         let data = (*s).data;
-        if !data.is_null() && len > 0 {
-            let slice = std::slice::from_raw_parts(data, len);
-            if let Ok(text) = std::str::from_utf8(slice) {
-                print!("{}", text);
-            }
+        if data.is_null() || len == 0 {
+            return Some(String::new());
+        }
+        let slice = std::slice::from_raw_parts(data, len);
+        match std::str::from_utf8(slice) {
+            Ok(text) => Some(text.to_string()),
+            Err(_) => Some("<invalid utf-8>".to_string()),
         }
     }
 }
@@ -218,13 +225,21 @@ pub extern "C" fn kryos_eprintln_str(handle: i64) {
 /// Print an i64 value followed by a newline.
 #[no_mangle]
 pub extern "C" fn kryos_println_int(value: i64) {
-    println!("{}", value);
+    let out = format!("{value}\n");
+    if crate::debug::sink_write(&out) {
+        return;
+    }
+    print!("{out}");
 }
 
 /// Print an i64 value without a newline.
 #[no_mangle]
 pub extern "C" fn kryos_print_int(value: i64) {
-    print!("{}", value);
+    let out = value.to_string();
+    if crate::debug::sink_write(&out) {
+        return;
+    }
+    print!("{out}");
 }
 
 // ---------------------------------------------------------------------------

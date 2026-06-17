@@ -225,6 +225,34 @@ pub extern "C" fn kryos_trace_exit() {
     }
 }
 
+/// Snapshot the current call stack as `(function_name, line)` pairs, innermost
+/// frame first. Used by the source-level debugger to build DAP `stackTrace`
+/// responses. Must be called on the debuggee thread (the call stack is a
+/// thread-local).
+pub fn snapshot_frames() -> Vec<(String, u32)> {
+    CALL_STACK.with(|stack| {
+        let stack = stack.borrow();
+        stack
+            .iter()
+            .rev()
+            .map(|frame| {
+                let name = if frame.name_ptr.is_null() || frame.name_len == 0 {
+                    "<unknown>".to_string()
+                } else {
+                    unsafe {
+                        std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                            frame.name_ptr,
+                            frame.name_len,
+                        ))
+                        .to_string()
+                    }
+                };
+                (name, frame.line)
+            })
+            .collect()
+    })
+}
+
 /// Format the current call stack as a human-readable string.
 ///
 /// Returns an empty string if the stack is empty.

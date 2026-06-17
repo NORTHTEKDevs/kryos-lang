@@ -1,0 +1,9 @@
+fn main() {
+    let mut counter: i64 = 0
+    let mut i: i64 = 0
+    while i < 5 {
+        counter = counter + i
+        i = i + 1
+    }
+    println("counter=" + to_string(counter))
+}

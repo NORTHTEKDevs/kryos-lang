@@ -512,8 +512,22 @@ fn compile_module_impl(
     }
 
     // 9. MIR lowering
+    //
+    // When the DAP debugger has requested it (debug-line instrumentation),
+    // install a resolver built from this compilation's source map so lowering
+    // can stamp each statement with its source line. Cleared immediately after
+    // lowering so it never leaks into another compilation on this thread.
+    let debug_instrument = kryos_mir::debug_lines::debug_instrument_requested();
+    if debug_instrument {
+        kryos_mir::set_debug_line_resolver(Some(kryos_mir::DebugLineResolver::new(
+            source_map.line_starts_snapshot(),
+        )));
+    }
     let mut mir =
         kryos_mir::lower_module_with_lambda_params(&module, &lambda_param_types, &let_types);
+    if debug_instrument {
+        kryos_mir::set_debug_line_resolver(None);
+    }
 
     // 9a. Populate source_file / source_line on each MIR function from AST spans.
     //     This is what drives accurate panic traces ("file.kry:42" instead of

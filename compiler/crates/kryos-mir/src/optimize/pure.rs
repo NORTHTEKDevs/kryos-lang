@@ -203,7 +203,7 @@ fn collect_inst_reads(inst: &Instruction, used: &mut HashSet<u32>) {
             collect_operand_reads(ptr, used);
             collect_operand_reads(value, used);
         }
-        Instruction::Nop => {}
+        Instruction::Nop | Instruction::DebugLine(_) => {}
     }
 }
 

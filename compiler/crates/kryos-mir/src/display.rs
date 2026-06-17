@@ -123,6 +123,7 @@ impl fmt::Display for Instruction {
                 write!(f, "store_deref(*{ptr} = {value})")
             }
             Instruction::Nop => write!(f, "nop"),
+            Instruction::DebugLine(line) => write!(f, "dbg_line {line}"),
         }
     }
 }

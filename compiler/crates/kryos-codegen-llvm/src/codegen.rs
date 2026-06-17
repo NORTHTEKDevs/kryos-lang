@@ -2179,6 +2179,7 @@ impl LlvmCodegen {
                     }
                     Instruction::Drop { .. }
                     | Instruction::Nop
+                    | Instruction::DebugLine(_)
                     | Instruction::Send { .. }
                     | Instruction::Receive { .. } => {}
                 }
@@ -2458,7 +2459,7 @@ impl LlvmCodegen {
                 acc.insert(state_ptr.0);
                 Self::collect_operand(value, acc);
             }
-            Instruction::Nop => {}
+            Instruction::Nop | Instruction::DebugLine(_) => {}
         }
     }
 
@@ -3271,6 +3272,10 @@ impl LlvmCodegen {
                 self.emit_line(&format!("  store {store_val_ty} {store_val}, ptr {real_ptr}"));
             }
             Instruction::Nop => {}
+            // The source-level debugger runs only on the Cranelift JIT path;
+            // the LLVM (AOT) backend never sees a DebugLine marker, so it is a
+            // no-op here.
+            Instruction::DebugLine(_) => {}
             Instruction::Spawn {
                 func: spawn_fn,
                 args,

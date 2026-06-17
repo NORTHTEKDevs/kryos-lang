@@ -1302,6 +1302,7 @@ dependencies = [
  "kryos-lexer",
  "kryos-linker",
  "kryos-lsp",
+ "kryos-mir",
  "kryos-package",
  "kryos-parser",
  "kryos-rt",

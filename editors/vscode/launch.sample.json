@@ -1,0 +1,14 @@
+{
+  // Sample `.vscode/launch.json` for debugging Kryos programs.
+  // Copy the "configurations" entry into your workspace's .vscode/launch.json.
+  // The adapter is the kryos binary itself, invoked as `kryos dap`.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "kryos",
+      "request": "launch",
+      "name": "Debug current Kryos file",
+      "program": "${file}"
+    }
+  ]
+}

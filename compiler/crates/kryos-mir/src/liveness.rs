@@ -186,7 +186,7 @@ fn inst_defs_uses(inst: &Instruction) -> (Vec<LocalId>, Vec<LocalId>) {
             operand_uses(ptr, &mut uses);
             operand_uses(value, &mut uses);
         }
-        Instruction::Nop => {}
+        Instruction::Nop | Instruction::DebugLine(_) => {}
         Instruction::Spawn { args, .. } => {
             for a in args {
                 operand_uses(a, &mut uses);

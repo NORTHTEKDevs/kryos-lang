@@ -1132,6 +1132,13 @@ impl JitCompiler {
             kryos_rt::trace::kryos_trace_exit as *const u8,
         );
 
+        // Source-level debugger line hook (only referenced by debug-instrumented
+        // code produced under `kryos dap`; harmless to register unconditionally).
+        jit_builder.symbol(
+            "kryos_dbg_line",
+            kryos_rt::debug::kryos_dbg_line as *const u8,
+        );
+
         // Stdlib-native: terminal
         jit_builder.symbol(
             "kryos_term_raw_enable",
