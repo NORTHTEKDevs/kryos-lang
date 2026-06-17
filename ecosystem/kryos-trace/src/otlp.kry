@@ -125,6 +125,26 @@ fn _attr_str(key: str, v: str) -> str {
     return "{{" + _qstr(key) + ":{{" + _qstr("stringValue") + ":" + _qstr(v) + "}}}}"
 }
 
+// OpenTelemetry GenAI semantic-convention attributes for an LLM-call span
+// (gen_ai.system / gen_ai.request.model / gen_ai.usage.{input,output,total}_tokens)
+// PLUS a kryos_governance.* extension carrying the COMPILER-VERIFIED capability
+// surface and the @budget USD ceiling alongside the standard keys. Langfuse,
+// Helicone and Arize ingest gen_ai.* out of the box; no other OTLP emitter can
+// attach governance attributes because no other language proves them at compile
+// time. Returns a comma-joined list of attribute objects to drop into a span's
+// "attributes":[ ... ] array (each object built with the same _attr_* helpers).
+@capabilities
+fn gen_ai_attrs(system: str, model: str, in_tok: i64, out_tok: i64, cap_surface: str, budget_usd_micros: i64) -> str {
+    let mut out = _attr_str("gen_ai.system", system)
+    out = out + "," + _attr_str("gen_ai.request.model", model)
+    out = out + "," + _attr_int("gen_ai.usage.input_tokens", in_tok)
+    out = out + "," + _attr_int("gen_ai.usage.output_tokens", out_tok)
+    out = out + "," + _attr_int("gen_ai.usage.total_tokens", in_tok + out_tok)
+    out = out + "," + _attr_str("kryos_governance.capabilities", cap_surface)
+    out = out + "," + _attr_int("kryos_governance.budget_usd_micros", budget_usd_micros)
+    return out
+}
+
 // Render one span to an OTLP-shaped JSON object on a single line. The four cost
 // scalars (already i64; pulled from the span's i64 accessors) are passed in
 // directly so no ComputeCost struct crosses the module boundary. `scope` is
