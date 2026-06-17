@@ -6,6 +6,25 @@ let ALIGNMENT_MINIMAL = 2
 
 let ALIGNMENT_UNRESTRICTED = 3
 
+// Alignment enforcement (B2): an ALIGNMENT_STRICT agent refuses to invoke tools
+// whose name matches a conservative risky-verb deny-list (mutating or outbound
+// side effects). This makes the `alignment` field BEHAVIORAL rather than
+// advisory. Only STRICT is gated; STANDARD/MINIMAL/UNRESTRICTED allow all tools,
+// so default (STANDARD) agents are unaffected. It is a name-heuristic guardrail,
+// not a sandbox - pair with @capabilities for hard enforcement.
+fn _tool_is_risky(tool_name: str) -> bool {
+    if contains(tool_name, "delete") { return true }
+    if contains(tool_name, "remove") { return true }
+    if contains(tool_name, "write") { return true }
+    if contains(tool_name, "exec") { return true }
+    if contains(tool_name, "spawn") { return true }
+    if contains(tool_name, "pay") { return true }
+    if contains(tool_name, "transfer") { return true }
+    if contains(tool_name, "send") { return true }
+    if contains(tool_name, "email") { return true }
+    return false
+}
+
 let STATE_CREATED = 0
 
 let STATE_RUNNING = 1
@@ -131,6 +150,13 @@ impl Agent {
     }
 
     fn use_tool(self: Agent, tool_name: str, input: str) -> str {
+        // Alignment enforcement: a STRICT agent refuses risky (mutating/outbound)
+        // tools before dispatch. Other alignments allow all registered tools.
+        if self.alignment == ALIGNMENT_STRICT {
+            if _tool_is_risky(tool_name) {
+                throw "alignment violation: STRICT agent `" + self.name + "` refused risky tool `" + tool_name + "`"
+            }
+        }
         let mut i = 0
         while i < len(self.tools) {
             if self.tools[i].name == tool_name {
