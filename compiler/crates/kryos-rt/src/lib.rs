@@ -103,6 +103,7 @@ pub mod channel;
 pub mod budget;
 pub mod debug;
 pub mod exception;
+pub mod executor;
 pub mod floatbits;
 pub mod fs;
 pub mod future;

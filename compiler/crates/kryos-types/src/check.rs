@@ -3225,6 +3225,60 @@ pub fn type_check_with_lambda_params(
         ret: Type::Void,
     });
 
+    // ---------------------------------------------------------------------
+    // Cooperative async executor (real interleaving via await / yield).
+    //   coop_spawn(task) -> i64   register a cooperative task; returns id
+    //   coop_yield()      -> void hand control to the scheduler (await point)
+    //   coop_run()        -> void drive all tasks to completion
+    //   coop_reset()      -> void clear the executor (queue + order log)
+    //   coop_record(s)    -> void append a tag to the order log
+    //   coop_order()      -> str  the recorded interleaving order
+    // ---------------------------------------------------------------------
+    checker.env.define_function(FunctionSig {
+        name: "coop_spawn".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        // The argument is a task expression handled specially at lowering; the
+        // checker accepts any single argument type (Type::Error = wildcard).
+        params: vec![("task".to_string(), Type::Error)],
+        ret: Type::I64,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "coop_yield".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![],
+        ret: Type::Void,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "coop_run".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![],
+        ret: Type::Void,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "coop_reset".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![],
+        ret: Type::Void,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "coop_record".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("tag".to_string(), Type::Str)],
+        ret: Type::Void,
+    });
+    checker.env.define_function(FunctionSig {
+        name: "coop_order".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![],
+        ret: Type::Str,
+    });
+
     // close_chan(ch: chan) -> void — close a channel (further sends panic, recvs drain then 0)
     checker.env.define_function(FunctionSig {
         name: "close_chan".to_string(),

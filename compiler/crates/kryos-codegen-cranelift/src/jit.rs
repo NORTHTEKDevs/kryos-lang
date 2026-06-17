@@ -435,6 +435,32 @@ impl JitCompiler {
             kryos_rt::spawn::kryos_sleep_ms as *const u8,
         );
 
+        // Cooperative async executor (real interleaving via await/yield).
+        jit_builder.symbol(
+            "kryos_coop_spawn",
+            kryos_rt::executor::kryos_coop_spawn as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_coop_yield",
+            kryos_rt::executor::kryos_coop_yield as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_coop_run",
+            kryos_rt::executor::kryos_coop_run as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_coop_record",
+            kryos_rt::executor::kryos_coop_record as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_coop_order",
+            kryos_rt::executor::kryos_coop_order as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_coop_reset",
+            kryos_rt::executor::kryos_coop_reset as *const u8,
+        );
+
         // Tensor runtime
         jit_builder.symbol(
             "kryos_tensor_zeros",
@@ -1915,6 +1941,14 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_spawn_wait_all", "kryos_spawn_wait_all", sig(0));
     decl!("kryos_sleep", "kryos_sleep", sig(1));
     decl!("kryos_sleep_ms", "kryos_sleep_ms", sig(1));
+
+    // --- Cooperative async executor (await/yield interleaving) ---
+    decl!("kryos_coop_spawn", "kryos_coop_spawn", sig(2));
+    decl!("kryos_coop_yield", "kryos_coop_yield", sig(0));
+    decl!("kryos_coop_run", "kryos_coop_run", sig(0));
+    decl!("kryos_coop_record", "kryos_coop_record", sig(1));
+    decl!("kryos_coop_order", "kryos_coop_order", sig(0));
+    decl!("kryos_coop_reset", "kryos_coop_reset", sig(0));
 
     // --- ARC set_drop ---
     decl!("kryos_arc_set_drop", "kryos_arc_set_drop_i64", sig(2));

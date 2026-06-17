@@ -360,3 +360,77 @@ The biggest win: no callback hell, no promise chains, no async/await viral color
 **Trying to return values from spawn.** `spawn` does not return the result of the block. If you need a result, use an actor with a handler that stores the result, then query the actor from the main thread.
 
 **Assuming execution order.** Spawned blocks run concurrently. Their print statements may interleave with the main thread. Never rely on specific ordering between spawned blocks or between a spawned block and the main thread.
+
+## Cooperative async executor (`await` / `coop_*`)
+
+Separate from `spawn` (truly-parallel OS threads), Kryos has a **cooperative**
+executor where multiple tasks make progress *interleaved* and exactly one task
+runs at a time. `await` is a real suspension point: it hands control back to the
+scheduler so another ready task runs, instead of running straight through.
+
+This is the defining difference from the earlier behavior, where `async fn`
+existed but `await` lowered to a plain synchronous call (one task ran to
+completion before the next started). It now genuinely interleaves.
+
+### Surface
+
+| Form | Meaning |
+|------|---------|
+| `coop_spawn(task())` | Register `task` as a cooperative task (runs under the executor, not a parallel OS thread). Accepts a call, a closure, or a block — like `spawn`. |
+| `coop_yield()` | Hand control to the scheduler; the current task resumes on its next turn. |
+| `await e` | Evaluate `e`, then yield to the scheduler (sugar for an explicit yield). On a non-task thread it is a no-op, so a direct async call degrades to synchronous. |
+| `coop_run()` | Drive all registered tasks to completion (round-robin). Call from `main`. |
+| `coop_record(tag)` / `coop_order()` | Append a tag to / read back the executor's order log (handy for tests and proofs). |
+| `coop_reset()` | Clear the executor (queue + order log). |
+
+### Example — real interleaving
+
+```kryos
+async fn task_a() {
+    let mut i = 0
+    while i < 3 {
+        coop_record("A" + to_string(i))
+        await 0          // yields to the scheduler
+        i = i + 1
+    }
+}
+async fn task_b() {
+    let mut i = 0
+    while i < 3 {
+        coop_record("B" + to_string(i))
+        await 0
+        i = i + 1
+    }
+}
+fn main() {
+    coop_reset()
+    coop_spawn(task_a())
+    coop_spawn(task_b())
+    coop_run()
+    println(coop_order())   // "A0 B0 A1 B1 A2 B2"  (interleaved, not "A0 A1 A2 B0 B1 B2")
+}
+```
+
+The two tasks interleave their effects `A,B,A,B,...` because `await`/`coop_yield`
+parks the running task and the scheduler round-robins to the next ready one.
+
+### How it works
+
+`coop_spawn` runs each task body straight-line on its own OS thread, but a
+global **baton** guarantees only one task runs at any instant. `await` /
+`coop_yield` re-queue the current task and hand the baton back to the scheduler
+(`coop_run`), which grants it to the next ready task. No CPS/state-machine
+transform is involved — the suspension is the task thread parking on a condvar.
+Works on all three paths: `kryos run` (JIT), `kryos build` (Cranelift object),
+and `kryos build --release` (LLVM AOT).
+
+### Limits (deferred)
+
+- `coop_spawn` threads at most **one** captured value into a task today; tasks
+  that close over several locals are not yet supported (top-level task fns and
+  zero/one-capture closures are).
+- `await` is a yield point, not a future/result combinator: there is no
+  `await future` that resolves a value across a real suspension — the awaited
+  expression is evaluated eagerly, then the task yields.
+- Task results are not threaded back; communicate via actors/channels or the
+  order log.

@@ -1,0 +1,40 @@
+// Proof: the async/await SUGAR drives real interleaving.
+//
+// Same as interleave_runtime.kry, but the tasks are `async fn`s and the
+// suspension point is the `await` keyword (which now lowers to a cooperative
+// yield) instead of an explicit `coop_yield()` call. Real interleaving =>
+// "A0 B0 A1 B1 A2 B2". Asserts and exit(1)s on failure.
+
+async fn task_a() {
+    let mut i = 0
+    while i < 3 {
+        coop_record("A" + to_string(i))
+        await 0
+        i = i + 1
+    }
+}
+
+async fn task_b() {
+    let mut i = 0
+    while i < 3 {
+        coop_record("B" + to_string(i))
+        await 0
+        i = i + 1
+    }
+}
+
+fn main() {
+    coop_reset()
+    coop_spawn(task_a())
+    coop_spawn(task_b())
+    coop_run()
+
+    let order: str = coop_order()
+    println("order(await): " + order)
+
+    if order != "A0 B0 A1 B1 A2 B2" {
+        println("FAIL: async/await did not interleave; got '" + order + "'")
+        exit(1)
+    }
+    println("PASS: async/await sugar interleaves (await yields control)")
+}

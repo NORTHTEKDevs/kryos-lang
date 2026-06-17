@@ -672,6 +672,12 @@ pub fn lower_module_with_lambda_params(
         ("pop", MirType::I64),
         ("send", MirType::Void),
         ("sleep", MirType::Void),
+        ("coop_yield", MirType::Void),
+        ("coop_run", MirType::Void),
+        ("coop_reset", MirType::Void),
+        ("coop_record", MirType::Void),
+        ("coop_order", MirType::Str),
+        ("coop_spawn", MirType::I64),
         ("close_chan", MirType::Void),
         ("contains", MirType::Bool),
         ("starts_with", MirType::Bool),
@@ -3207,7 +3213,15 @@ fn lower_spawn(ctx: &mut LoweringContext, expr: &ast::Expr) {
 /// 2. Generate a function with captures as parameters
 /// 3. Emit `Spawn { func: "__spawn_N", args: [captures...] }`
 fn lower_spawn_block(ctx: &mut LoweringContext, stmts: &[ast::Stmt]) {
-    let spawn_name = format!("__spawn_{}", ctx.spawn_counter);
+    lower_spawn_block_prefixed(ctx, stmts, "__spawn_");
+}
+
+/// Like [`lower_spawn_block`] but with a configurable wrapper-name prefix.
+/// A `__coopspawn_` prefix signals the codegen to route the emitted `Spawn`
+/// to the cooperative executor (`kryos_coop_spawn`) instead of OS-thread
+/// `kryos_spawn`.
+fn lower_spawn_block_prefixed(ctx: &mut LoweringContext, stmts: &[ast::Stmt], prefix: &str) {
+    let spawn_name = format!("{}{}", prefix, ctx.spawn_counter);
     ctx.spawn_counter += 1;
 
     // Find captured variables from enclosing scope.
@@ -3254,6 +3268,34 @@ fn lower_spawn_block(ctx: &mut LoweringContext, stmts: &[ast::Stmt]) {
         func: spawn_name,
         args: capture_ops,
     });
+}
+
+/// Lower `coop_spawn(taskExpr)` — register a cooperative task with the async
+/// executor. The task body always runs through a generated `__coopspawn_N`
+/// wrapper so codegen can route the `Spawn` to `kryos_coop_spawn` by name
+/// prefix. Inside the task, `await` / `coop_yield()` hand control to the
+/// scheduler so multiple tasks interleave (see `kryos-rt::executor`).
+///
+/// Accepts the same shapes as `spawn`: a function call (`coop_spawn(task())`),
+/// a closure (`coop_spawn(|| { ... })`), or a block.
+fn lower_coop_spawn(ctx: &mut LoweringContext, arg: &ast::Expr) {
+    let stmts: Vec<ast::Stmt> = match arg {
+        ast::Expr::Block { block, .. } => block.stmts.clone(),
+        ast::Expr::Lambda { body, .. } => match body.as_ref() {
+            ast::Expr::Block { block, .. } => block.stmts.clone(),
+            other => vec![ast::Stmt::Expr {
+                expr: other.clone(),
+                span: kryos_errors::Span::DUMMY,
+            }],
+        },
+        // `coop_spawn(task())` and any other expression: run it inside the
+        // wrapper (the FnCall is invoked on the task thread, not eagerly).
+        other => vec![ast::Stmt::Expr {
+            expr: other.clone(),
+            span: kryos_errors::Span::DUMMY,
+        }],
+    };
+    lower_spawn_block_prefixed(ctx, &stmts, "__coopspawn_");
 }
 
 // ---------------------------------------------------------------------------
@@ -5074,6 +5116,15 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 _ => "<closure>".to_string(),
             };
 
+            // Cooperative async executor surface. `coop_spawn(taskExpr)` is a
+            // dedicated form (it must NOT eagerly evaluate its argument), so we
+            // intercept it before the generic call path. It evaluates to the
+            // task id (0 for now — the wrapper machinery doesn't thread it back).
+            if func_name == "coop_spawn" && args.len() == 1 {
+                lower_coop_spawn(ctx, &args[0]);
+                return RValue::Use(Operand::Constant(Constant::Int(0)));
+            }
+
             // Check if this is an actor construction (e.g., `Counter()`).
             if ctx.actor_defs.contains_key(&func_name) {
                 let dispatch_fn = format!("{func_name}__dispatch");
@@ -6109,8 +6160,24 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             RValue::ConstNone
         }
 
-        // Await — for MVP, lower as a direct call (no coroutine transform).
-        ast::Expr::Await { value, .. } => lower_expr_to_rvalue(ctx, value),
+        // Await — real cooperative suspension point. Evaluate the awaited
+        // expression, then hand control to the scheduler via `coop_yield` so
+        // other tasks interleave. On a non-coop thread `kryos_coop_yield` is a
+        // no-op, so a direct (non-spawned) async call degrades to an ordinary
+        // synchronous call (back-compat). This replaces the previous
+        // run-straight-through behavior where `await` was a plain direct call.
+        ast::Expr::Await { value, .. } => {
+            let v = lower_expr_to_operand(ctx, value);
+            let yield_tmp = ctx.alloc_temp(MirType::Void);
+            ctx.emit(Instruction::Assign {
+                dest: yield_tmp,
+                value: RValue::Call {
+                    func: "coop_yield".into(),
+                    args: vec![],
+                },
+            });
+            RValue::Use(v)
+        }
     }
 }
 

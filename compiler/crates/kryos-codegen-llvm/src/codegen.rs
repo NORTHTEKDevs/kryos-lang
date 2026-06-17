@@ -787,6 +787,13 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_spawn(i64, ptr, i64)");
         self.emit_line("declare void @kryos_spawn_wait_all()");
         self.emit_line("declare void @kryos_sleep(i64)");
+        // Cooperative async executor (real interleaving via await/yield).
+        self.emit_line("declare i64 @kryos_coop_spawn(i64, i64)");
+        self.emit_line("declare void @kryos_coop_yield()");
+        self.emit_line("declare void @kryos_coop_run()");
+        self.emit_line("declare void @kryos_coop_reset()");
+        self.emit_line("declare void @kryos_coop_record(ptr)");
+        self.emit_line("declare ptr @kryos_coop_order()");
         // Actor runtime
         self.emit_line("declare i64 @kryos_actor_spawn_i64(i64, i64)");
         self.emit_line("declare i64 @kryos_actor_send_i64(i64, i64)");
@@ -3283,7 +3290,22 @@ impl LlvmCodegen {
                 // Get function pointer.
                 let tmp_fptr = self.next_temp();
                 self.emit_line(&format!("  {tmp_fptr} = ptrtoint ptr @{spawn_fn} to i64"));
-                if args.is_empty() {
+                // Cooperative tasks (from `coop_spawn`, `__coopspawn_` prefix)
+                // route to the cooperative executor so `await`/`coop_yield`
+                // interleave them, instead of `kryos_spawn`'s OS thread.
+                if spawn_fn.starts_with("__coopspawn_") {
+                    let arg0 = if args.is_empty() {
+                        "0".to_string()
+                    } else {
+                        // At most one capture is threaded to a coop task today.
+                        let v = self.operand_to_llvm(&args[0], func);
+                        let vt = self.operand_type(&args[0], func);
+                        self.coerce_value(&v, &vt, "i64")
+                    };
+                    self.emit_line(&format!(
+                        "  call i64 @kryos_coop_spawn(i64 {tmp_fptr}, i64 {arg0})"
+                    ));
+                } else if args.is_empty() {
                     // kryos_spawn(fn_ptr, null, 0)
                     self.emit_line(&format!(
                         "  call i64 @kryos_spawn(i64 {tmp_fptr}, ptr null, i64 0)"
@@ -5029,6 +5051,12 @@ impl LlvmCodegen {
                                 "time_now_millis" => "kryos_time_now_millis",
                                 "sleep_ms" => "kryos_sleep_ms",
                                 "sleep" => "kryos_sleep",
+                                // Cooperative async executor (await/yield interleaving)
+                                "coop_yield" => "kryos_coop_yield",
+                                "coop_run" => "kryos_coop_run",
+                                "coop_reset" => "kryos_coop_reset",
+                                "coop_record" => "kryos_coop_record",
+                                "coop_order" => "kryos_coop_order",
                                 "close_chan" => "kryos_chan_close_i64",
                                 // Regex
                                 "regex_new" => "kryos_regex_new_ks",

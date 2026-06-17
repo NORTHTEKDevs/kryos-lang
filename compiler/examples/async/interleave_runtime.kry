@@ -1,0 +1,48 @@
+// Proof: REAL cooperative interleaving via the Kryos async executor.
+//
+// Two tasks each loop three times: record their tag, then `coop_yield()` to
+// hand control to the scheduler. If the executor truly interleaves them, the
+// recorded order is "A0 B0 A1 B1 A2 B2" (A,B,A,B,...). If `await`/yield ran
+// straight through (the OLD synchronous behavior), it would be the SEQUENTIAL
+// "A0 A1 A2 B0 B1 B2". The program asserts the interleaved order and exit(1)s
+// on failure.
+
+fn task_a() {
+    let mut i = 0
+    while i < 3 {
+        coop_record("A" + to_string(i))
+        coop_yield()
+        i = i + 1
+    }
+}
+
+fn task_b() {
+    let mut i = 0
+    while i < 3 {
+        coop_record("B" + to_string(i))
+        coop_yield()
+        i = i + 1
+    }
+}
+
+fn main() {
+    coop_reset()
+    coop_spawn(task_a())
+    coop_spawn(task_b())
+    coop_run()
+
+    let order: str = coop_order()
+    println("order: " + order)
+
+    let expected: str = "A0 B0 A1 B1 A2 B2"
+    if order != expected {
+        println("FAIL: expected interleaved '" + expected + "' but got '" + order + "'")
+        exit(1)
+    }
+    let sequential: str = "A0 A1 A2 B0 B1 B2"
+    if order == sequential {
+        println("FAIL: tasks ran sequentially (no real suspension)")
+        exit(1)
+    }
+    println("PASS: real cooperative interleaving (await yields, tasks interleave)")
+}
