@@ -1,0 +1,187 @@
+// ============================================================
+// test_pii_guard.kry -- Behaviour tests for kryos-pii-guard.
+//
+// PROVING COMMAND:  kryos run tests/test_pii_guard.kry
+//   (from the kryos-pii-guard project root)
+//   -> prints "PASS <test>" for each, prints summary, exits 0.
+//   -> exits 1 immediately on the first failure.
+//
+// DO NOT use `kryos test` here: @test functions touching std::tracked panic on
+// kryos_string_retain in the JIT. `kryos run` uses the native path which has
+// the symbol.
+//
+// Test plan:
+//   1. scan_pii on SSN text returns non-empty (contains "SSN")
+//   2. guard_text throws "PIILeak:..." on PII text (try/catch verifies the throw)
+//   3. clean text returns a Tracked<str> with a clean-scan lineage entry
+//   negative control: clean string yields zero findings from scan_pii
+// ============================================================
+
+use std::tracked::{Tracked, tracked_source, annotate}
+use pii
+use guard
+
+// ---- helpers ---------------------------------------------------------------
+
+fn fail(msg: str) {
+    println("FAIL: " + msg)
+    exit(1)
+}
+
+fn assert_true(cond: bool, msg: str) {
+    if !cond {
+        fail(msg)
+    }
+}
+
+fn assert_eq_i64(actual: i64, expected: i64, msg: str) {
+    if actual != expected {
+        fail(msg + " expected=" + to_string(expected) + " got=" + to_string(actual))
+    }
+}
+
+fn assert_str_eq(actual: str, expected: str, msg: str) {
+    if actual != expected {
+        fail(msg + " expected='" + expected + "' got='" + actual + "'")
+    }
+}
+
+// True if kinds list contains needle.
+fn kinds_contains(kinds: [str], needle: str) -> bool {
+    let mut i = 0
+    while i < len(kinds) {
+        if kinds[i] == needle {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// True if any lineage entry has the given operation value.
+fn lineage_has_op(t: Tracked<str>, op: str) -> bool {
+    let mut i = 0
+    while i < len(t.lineage) {
+        if t.lineage[i].operation == op {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// ---- test 1: scan_pii on SSN text returns non-empty, contains "SSN" ---------
+
+fn test_ssn_detected() {
+    let kinds = scan_pii("The patient SSN is 123-45-6789 per the record.")
+    assert_true(len(kinds) > 0, "test_ssn_detected: expected non-empty kinds")
+    assert_true(kinds_contains(kinds, "SSN"), "test_ssn_detected: expected 'SSN' in kinds, got len=" + to_string(len(kinds)))
+    println("PASS test_ssn_detected")
+}
+
+// ---- test 2: guard_text throws PIILeak on PII input -------------------------
+
+fn test_guard_throws_on_pii() {
+    let mut threw = false
+    let mut throw_msg = ""
+    try {
+        let _ = guard_text("Patient SSN: 123-45-6789 is confirmed.")
+    } catch e {
+        threw = true
+        throw_msg = e
+    }
+    assert_true(threw, "test_guard_throws_on_pii: expected throw but got clean return")
+    assert_true(contains(throw_msg, "PIILeak"), "test_guard_throws_on_pii: throw msg must contain 'PIILeak', got: " + throw_msg)
+    assert_true(contains(throw_msg, "SSN"), "test_guard_throws_on_pii: throw msg must contain 'SSN', got: " + throw_msg)
+    println("PASS test_guard_throws_on_pii")
+}
+
+// ---- test 3: clean text returns Tracked<str> with clean-scan lineage ---------
+
+fn test_clean_text_returns_tracked() {
+    let text = "The quarterly revenue was $1.2M, up 8% from last year."
+    let t = guard_text(text)
+    assert_str_eq(t.value, text, "test_clean_text_returns_tracked: value mismatch")
+    assert_true(lineage_has_op(t, "pii_scan"), "test_clean_text_returns_tracked: expected 'pii_scan' lineage entry")
+    // The pii_scan description must say "clean"
+    let mut i = 0
+    let mut found_clean = false
+    while i < len(t.lineage) {
+        if t.lineage[i].operation == "pii_scan" {
+            if contains(t.lineage[i].description, "clean") {
+                found_clean = true
+            }
+        }
+        i = i + 1
+    }
+    assert_true(found_clean, "test_clean_text_returns_tracked: pii_scan entry description must mention 'clean'")
+    println("PASS test_clean_text_returns_tracked")
+}
+
+// ---- negative control: clean string yields zero findings --------------------
+
+fn test_negative_control_clean() {
+    let kinds = scan_pii("The quarterly revenue was $1.2M, up 8% from last year.")
+    assert_eq_i64(len(kinds), 0, "test_negative_control_clean: expected 0 kinds")
+    println("PASS test_negative_control_clean")
+}
+
+// ---- additional scanner coverage (card, phone, email, token) ----------------
+
+fn test_card_detected() {
+    let kinds = scan_pii("Charge card 4111111111111111 for the order.")
+    assert_true(kinds_contains(kinds, "CARD"), "test_card_detected: expected CARD")
+    println("PASS test_card_detected")
+}
+
+fn test_phone_detected() {
+    let kinds = scan_pii("Call our office at 907-555-0199 for support.")
+    assert_true(kinds_contains(kinds, "PHONE"), "test_phone_detected: expected PHONE")
+    println("PASS test_phone_detected")
+}
+
+fn test_email_detected() {
+    let kinds = scan_pii("Send the report to alice@example.com today.")
+    assert_true(kinds_contains(kinds, "EMAIL"), "test_email_detected: expected EMAIL")
+    println("PASS test_email_detected")
+}
+
+fn test_token_detected() {
+    let kinds = scan_pii("Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9abcdef")
+    assert_true(kinds_contains(kinds, "TOKEN"), "test_token_detected: expected TOKEN, got " + to_string(len(kinds)))
+    println("PASS test_token_detected")
+}
+
+fn test_multiple_pii_kinds() {
+    // SSN + email in same text
+    let kinds = scan_pii("SSN 123-45-6789 for bob@corp.io is on file.")
+    assert_true(kinds_contains(kinds, "SSN"), "test_multiple_pii_kinds: expected SSN")
+    assert_true(kinds_contains(kinds, "EMAIL"), "test_multiple_pii_kinds: expected EMAIL")
+    println("PASS test_multiple_pii_kinds")
+}
+
+fn test_card_grouped_spaces() {
+    // 4-4-4-4 space-separated card
+    let kinds = scan_pii("Card 4532 0151 1283 0366 was declined.")
+    assert_true(kinds_contains(kinds, "CARD"), "test_card_grouped_spaces: expected CARD")
+    println("PASS test_card_grouped_spaces")
+}
+
+// ---- main -------------------------------------------------------------------
+
+fn main() {
+    // Spec tests
+    test_ssn_detected()
+    test_guard_throws_on_pii()
+    test_clean_text_returns_tracked()
+    test_negative_control_clean()
+    // Coverage
+    test_card_detected()
+    test_phone_detected()
+    test_email_detected()
+    test_token_detected()
+    test_multiple_pii_kinds()
+    test_card_grouped_spaces()
+    println("")
+    println("10/10 pii-guard tests passed")
+}

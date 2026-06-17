@@ -1,0 +1,324 @@
+// ============================================================
+// pii.kry -- Pure PII scanner: no IO, no LLM.
+//
+// scan_pii(text: str) -> [str]
+//   Returns a list of PII kind labels found in `text`.
+//   Uses substring / char_code logic only; does NOT call std::re
+//   (kryos_string_retain issues with @test).
+//
+// PII kinds detected:
+//   "SSN"       ddd-dd-dddd  (exactly 3-2-4 ASCII digits separated by '-')
+//   "CARD"      run of 16 consecutive ASCII digits (with optional spaces every 4)
+//   "PHONE"     US 10-digit forms: (ddd) ddd-dddd or ddd-ddd-dddd
+//   "EMAIL"     token containing '@' with a '.' after the '@'
+//   "TOKEN"     bearer/api-key-like: keyword prefix followed by 20+ non-space chars
+// ============================================================
+
+// True if char_code(c) is an ASCII digit ('0'..'9').
+@capabilities(compute)
+fn is_digit(c: str) -> bool {
+    let code = char_code(c)
+    return code >= 48 and code <= 57
+}
+
+// Count consecutive digit characters starting at position i.
+@capabilities(compute)
+fn count_digits_at(text: str, i: i64) -> i64 {
+    let n = len(text)
+    let mut count = 0
+    let mut pos = i
+    while pos < n {
+        let c = substr(text, pos, pos + 1)
+        if !is_digit(c) {
+            return count
+        }
+        count = count + 1
+        pos = pos + 1
+    }
+    return count
+}
+
+// True if the character at position i is '-'.
+@capabilities(compute)
+fn is_dash_at(text: str, i: i64) -> bool {
+    if i < 0 or i >= len(text) {
+        return false
+    }
+    return substr(text, i, i + 1) == "-"
+}
+
+// True if the character at position i is a space.
+@capabilities(compute)
+fn is_space_at(text: str, i: i64) -> bool {
+    if i < 0 or i >= len(text) {
+        return false
+    }
+    return substr(text, i, i + 1) == " "
+}
+
+// Detect SSN pattern ddd-dd-dddd starting at position i.
+// Returns true if position i starts exactly 3 digits, '-', 2 digits, '-', 4 digits.
+// Also requires that the character before i (if any) is NOT a digit (word boundary).
+@capabilities(compute)
+fn is_ssn_at(text: str, i: i64) -> bool {
+    let n = len(text)
+    // Need at least 11 chars: 3+1+2+1+4
+    if i + 11 > n {
+        return false
+    }
+    // Preceding char must not be a digit (no partial match)
+    if i > 0 {
+        let prev = substr(text, i - 1, i)
+        if is_digit(prev) {
+            return false
+        }
+    }
+    // 3 digits
+    if count_digits_at(text, i) < 3 {
+        return false
+    }
+    if !is_digit(substr(text, i, i + 1)) or !is_digit(substr(text, i + 1, i + 2)) or !is_digit(substr(text, i + 2, i + 3)) {
+        return false
+    }
+    // dash
+    if !is_dash_at(text, i + 3) {
+        return false
+    }
+    // 2 digits
+    if !is_digit(substr(text, i + 4, i + 5)) or !is_digit(substr(text, i + 5, i + 6)) {
+        return false
+    }
+    // dash
+    if !is_dash_at(text, i + 6) {
+        return false
+    }
+    // 4 digits
+    if !is_digit(substr(text, i + 7, i + 8)) or !is_digit(substr(text, i + 8, i + 9)) or !is_digit(substr(text, i + 9, i + 10)) or !is_digit(substr(text, i + 10, i + 11)) {
+        return false
+    }
+    // Trailing char must not be a digit
+    if i + 11 < n {
+        let next = substr(text, i + 11, i + 12)
+        if is_digit(next) {
+            return false
+        }
+    }
+    return true
+}
+
+// Detect a 16-digit card number starting at position i.
+// Accepts plain 16 consecutive digits, or 4-4-4-4 groups separated by spaces or dashes.
+@capabilities(compute)
+fn is_card_at(text: str, i: i64) -> bool {
+    let n = len(text)
+    // Try plain 16 digits (no separator)
+    if i + 16 <= n {
+        // Check preceding char is not digit
+        let pre_ok: bool = i == 0 or !is_digit(substr(text, i - 1, i))
+        if pre_ok and count_digits_at(text, i) >= 16 {
+            // trailing char must not be digit
+            if i + 16 >= n or !is_digit(substr(text, i + 16, i + 17)) {
+                return true
+            }
+        }
+    }
+    // Try 4-4-4-4 with single separator (space or dash) between groups
+    // Pattern length: 4+1+4+1+4+1+4 = 19
+    if i + 19 > n {
+        return false
+    }
+    // Groups: [i..i+4] sep [i+5..i+9] sep [i+10..i+14] sep [i+15..i+19]
+    let sep1 = substr(text, i + 4, i + 5)
+    let sep2 = substr(text, i + 9, i + 10)
+    let sep3 = substr(text, i + 14, i + 15)
+    let is_sep: bool = sep1 == " " or sep1 == "-"
+    if !is_sep {
+        return false
+    }
+    if sep2 != sep1 or sep3 != sep1 {
+        return false
+    }
+    // All four groups must be exactly 4 digits
+    let g1 = count_digits_at(text, i)
+    let g2 = count_digits_at(text, i + 5)
+    let g3 = count_digits_at(text, i + 10)
+    let g4 = count_digits_at(text, i + 15)
+    if g1 < 4 or g2 < 4 or g3 < 4 or g4 < 4 {
+        return false
+    }
+    return true
+}
+
+// Detect US phone at position i.
+// Accepts: ddd-ddd-dddd (11 chars) or (ddd) ddd-dddd (13 chars with space)
+@capabilities(compute)
+fn is_phone_at(text: str, i: i64) -> bool {
+    let n = len(text)
+    // Form 1: ddd-ddd-dddd (12 chars total: 3+1+3+1+4)
+    if i + 12 <= n {
+        let pre_ok: bool = i == 0 or !is_digit(substr(text, i - 1, i))
+        if pre_ok {
+            let d1 = count_digits_at(text, i)
+            let dash1 = is_dash_at(text, i + 3)
+            let d2 = count_digits_at(text, i + 4)
+            let dash2 = is_dash_at(text, i + 7)
+            let d3 = count_digits_at(text, i + 8)
+            if d1 >= 3 and dash1 and d2 >= 3 and dash2 and d3 >= 4 {
+                // trailing must not be digit
+                if i + 12 >= n or !is_digit(substr(text, i + 12, i + 13)) {
+                    return true
+                }
+            }
+        }
+    }
+    // Form 2: (ddd) ddd-dddd (13 chars: 1+3+1+1+3+1+4 = 14)
+    if i + 14 <= n {
+        let open = substr(text, i, i + 1)
+        let close = substr(text, i + 4, i + 5)
+        let space = substr(text, i + 5, i + 6)
+        let dash = is_dash_at(text, i + 9)
+        if open == "(" and count_digits_at(text, i + 1) >= 3 and close == ")" and space == " " and dash {
+            let d2 = count_digits_at(text, i + 6)
+            let d3 = count_digits_at(text, i + 10)
+            if d2 >= 3 and d3 >= 4 {
+                if i + 14 >= n or !is_digit(substr(text, i + 14, i + 15)) {
+                    return true
+                }
+            }
+        }
+    }
+    return false
+}
+
+// Detect an email address starting at or containing position i.
+// Scans for '@' in the text; for each '@', check that there is a '.' after it.
+// We scan the whole text for '@' occurrences and report EMAIL if found.
+// Returns the count of email patterns found (caller just needs >0).
+@capabilities(compute)
+fn count_emails(text: str) -> i64 {
+    let n = len(text)
+    let mut count = 0
+    let mut i = 0
+    while i < n {
+        let c = substr(text, i, i + 1)
+        if c == "@" {
+            // Check there is a '.' somewhere after the '@'
+            let mut j = i + 1
+            let mut found_dot = false
+            while j < n {
+                if substr(text, j, j + 1) == "." {
+                    found_dot = true
+                }
+                // Stop at whitespace
+                if substr(text, j, j + 1) == " " or substr(text, j, j + 1) == "\n" or substr(text, j, j + 1) == "\t" {
+                    j = n
+                }
+                j = j + 1
+            }
+            if found_dot {
+                count = count + 1
+            }
+        }
+        i = i + 1
+    }
+    return count
+}
+
+// Detect bearer/API-key-like tokens.
+// Looks for the keyword prefixes: "bearer ", "api-key ", "apikey ", "token ", "authorization: bearer "
+// followed by at least 20 non-space characters.
+@capabilities(compute)
+fn count_tokens(text: str) -> i64 {
+    let n = len(text)
+    let lower = to_lower_ascii(text)
+    let prefixes: [str] = ["bearer ", "api-key ", "apikey ", "token ", "x-api-key "]
+    let mut count = 0
+    for prefix in prefixes {
+        let plen = len(prefix)
+        let mut i = 0
+        while i <= n - plen {
+            let chunk = substr(lower, i, i + plen)
+            if chunk == prefix {
+                // Count non-space chars after prefix
+                let mut j = i + plen
+                let mut tok_len = 0
+                while j < n {
+                    let ch = substr(text, j, j + 1)
+                    if ch == " " or ch == "\n" or ch == "\t" or ch == "\r" {
+                        j = n
+                    } else {
+                        tok_len = tok_len + 1
+                        j = j + 1
+                    }
+                }
+                if tok_len >= 20 {
+                    count = count + 1
+                }
+            }
+            i = i + 1
+        }
+    }
+    return count
+}
+
+// ASCII lowercase for the token scanner.
+@capabilities(compute)
+fn to_lower_ascii(s: str) -> str {
+    let n = len(s)
+    let mut result = ""
+    let mut i = 0
+    while i < n {
+        let c = substr(s, i, i + 1)
+        let code = char_code(c)
+        if code >= 65 and code <= 90 {
+            // A-Z -> a-z via code arithmetic: build the offset char
+            // We can't reconstruct a str from a char code directly,
+            // so use a lookup table for the 26 letters.
+            let offset = code - 65
+            let letters: [str] = ["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z"]
+            result = result + letters[offset]
+        } else {
+            result = result + c
+        }
+        i = i + 1
+    }
+    return result
+}
+
+// Main scanner: returns the list of PII kind labels present in `text`.
+// Does NOT deduplicate (caller can if needed), but each kind is added at most once.
+@capabilities(compute)
+fn scan_pii(text: str) -> [str] {
+    let n = len(text)
+    let mut kinds: [str] = []
+    let mut found_ssn = false
+    let mut found_card = false
+    let mut found_phone = false
+
+    let mut i = 0
+    while i < n {
+        if !found_ssn and is_ssn_at(text, i) {
+            kinds = push(kinds, "SSN")
+            found_ssn = true
+        }
+        if !found_card and is_card_at(text, i) {
+            kinds = push(kinds, "CARD")
+            found_card = true
+        }
+        if !found_phone and is_phone_at(text, i) {
+            kinds = push(kinds, "PHONE")
+            found_phone = true
+        }
+        i = i + 1
+    }
+
+    // Email and token scans cover the whole text; add at most once each.
+    if count_emails(text) > 0 {
+        kinds = push(kinds, "EMAIL")
+    }
+    if count_tokens(text) > 0 {
+        kinds = push(kinds, "TOKEN")
+    }
+
+    return kinds
+}

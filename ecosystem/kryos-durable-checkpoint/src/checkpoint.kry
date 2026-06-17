@@ -1,0 +1,285 @@
+// ============================================================
+// checkpoint.kry -- crash-safe step journal with hash-chained entries.
+//
+// Each JournalEntry records one agent step: the tool called, its
+// arguments (as JSON string), the result, token telemetry, and a
+// polynomial hash over the prior chain. The hash chain makes
+// post-hoc tampering detectable (journal_verify). Summing
+// tokens_in/tokens_out/api_calls via journal_budget_consumed lets
+// a resumed run reconstruct budget spent so far.
+//
+// Hash algorithm: pure-Kryos polynomial (djb2-style, p=31, m=10^9+7).
+// Tamper-evident but NOT cryptographically secure -- same deliberate
+// choice as kryos-cost-ledger (sha256 requires ptr_byte_at, unavailable
+// in the Cranelift JIT used by `kryos run`).
+//
+// Serialisation: NDJSON (one JSON object per line). Uses manual string
+// building (no std::json import) because importing std::json pulls in
+// _format_number / to_string(f64) which the Cranelift JIT cannot lower.
+// Native json_parse / json_get / json_to_str / json_to_int / json_is_null
+// builtins are used on the load path.
+// ============================================================
+
+// A single step in the crash-safe journal.
+@copy
+struct JournalEntry {
+    step:       i64,
+    tool:       str,
+    args_json:  str,
+    result:     str,
+    tokens_in:  i64,
+    tokens_out: i64,
+    api_calls:  i64,
+    prev_hash:  str,
+    hash:       str,
+}
+
+// --- Hash chain ---------------------------------------------------------------
+
+// Sentinel prev_hash for the very first entry (no predecessor).
+fn _genesis_hash() -> str {
+    return "0000000000000000000000000000000000000000000000000000000000000000"
+}
+
+// Pure-Kryos polynomial hash over a string.
+// p=31, m=10^9+7. Intermediate max: (10^9+6)*31+127 ~ 3.1e10, safe in i64.
+// Returns a decimal string. Tamper-evident; NOT cryptographically secure.
+fn _poly_hash(s: str) -> str {
+    let p: i64 = 31
+    let m: i64 = 1000000007
+    let mut h: i64 = 0
+    let mut i: i64 = 0
+    while i < len(s) {
+        h = (h * p + char_code(s[i])) % m
+        i = i + 1
+    }
+    return to_string(h)
+}
+
+// Canonical payload for hashing: all fields that should be tamper-evident.
+// Format: "step|tool|args_json|result|ti|to|calls|prev_hash"
+fn _entry_payload(step: i64, tool: str, args_json: str, result: str,
+                  ti: i64, to: i64, calls: i64, prev_hash: str) -> str {
+    return to_string(step) + "|"
+        + tool + "|"
+        + args_json + "|"
+        + result + "|"
+        + to_string(ti) + "|"
+        + to_string(to) + "|"
+        + to_string(calls) + "|"
+        + prev_hash
+}
+
+fn _compute_hash(step: i64, tool: str, args_json: str, result: str,
+                 ti: i64, to: i64, calls: i64, prev_hash: str) -> str {
+    return _poly_hash(
+        _entry_payload(step, tool, args_json, result, ti, to, calls, prev_hash)
+    )
+}
+
+// --- Public API ---------------------------------------------------------------
+
+// Create an empty journal.
+fn journal_new() -> [JournalEntry] {
+    return []
+}
+
+// Append one step to the journal. Returns the updated journal (thread by value).
+// Hash is computed deterministically over all payload fields including prev_hash.
+fn checkpoint_step(journal: [JournalEntry], step: i64, tool: str,
+                   args_json: str, result: str,
+                   ti: i64, to: i64, calls: i64) -> [JournalEntry] {
+    let mut prev = _genesis_hash()
+    if len(journal) > 0 {
+        prev = journal[len(journal) - 1].hash
+    }
+    let h = _compute_hash(step, tool, args_json, result, ti, to, calls, prev)
+    let entry = JournalEntry {
+        step:       step,
+        tool:       tool,
+        args_json:  args_json,
+        result:     result,
+        tokens_in:  ti,
+        tokens_out: to,
+        api_calls:  calls,
+        prev_hash:  prev,
+        hash:       h,
+    }
+    return push(journal, entry)
+}
+
+// Re-derive the hash chain from scratch. Returns true if every entry's
+// prev_hash pointer and self-hash are consistent.
+fn journal_verify(journal: [JournalEntry]) -> bool {
+    let mut i: i64 = 0
+    while i < len(journal) {
+        let e = journal[i]
+        // (1) Check prev_hash pointer.
+        let mut expected_prev = _genesis_hash()
+        if i > 0 {
+            expected_prev = journal[i - 1].hash
+        }
+        if e.prev_hash != expected_prev {
+            return false
+        }
+        // (2) Re-derive this entry's hash.
+        let expected_h = _compute_hash(
+            e.step, e.tool, e.args_json, e.result,
+            e.tokens_in, e.tokens_out, e.api_calls, e.prev_hash
+        )
+        if e.hash != expected_h {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// Sum tokens_in, tokens_out, and api_calls across all entries.
+// Returns (total_tokens_in, total_tokens_out, total_api_calls).
+fn journal_budget_consumed(journal: [JournalEntry]) -> (i64, i64, i64) {
+    let mut ti: i64 = 0
+    let mut to: i64 = 0
+    let mut calls: i64 = 0
+    for e in journal {
+        ti = ti + e.tokens_in
+        to = to + e.tokens_out
+        calls = calls + e.api_calls
+    }
+    return (ti, to, calls)
+}
+
+// --- Serialisation ------------------------------------------------------------
+// Manual NDJSON: one JSON object per line.
+// We build strings with + and {{ }} for literal braces to avoid triggering
+// Kryos string interpolation on bare { }.
+
+// Escape a string value for JSON: wrap in quotes, escape inner quotes and
+// backslashes. We do NOT escape every control char -- sufficient for the
+// field values in this context (tool names, JSON-encoded args, hashes).
+fn _json_escape(s: str) -> str {
+    let mut out = "\""
+    let mut i: i64 = 0
+    while i < len(s) {
+        let ch = s[i]
+        if ch == "\\" {
+            out = out + "\\\\"
+        } elif ch == "\"" {
+            out = out + "\\\""
+        } else {
+            out = out + ch
+        }
+        i = i + 1
+    }
+    out = out + "\""
+    return out
+}
+
+fn _entry_to_jsonline(e: JournalEntry) -> str {
+    return "{{\"step\":" + to_string(e.step)
+        + ",\"tool\":" + _json_escape(e.tool)
+        + ",\"args_json\":" + _json_escape(e.args_json)
+        + ",\"result\":" + _json_escape(e.result)
+        + ",\"tokens_in\":" + to_string(e.tokens_in)
+        + ",\"tokens_out\":" + to_string(e.tokens_out)
+        + ",\"api_calls\":" + to_string(e.api_calls)
+        + ",\"prev_hash\":" + _json_escape(e.prev_hash)
+        + ",\"hash\":" + _json_escape(e.hash)
+        + "}"
+}
+
+// Serialize the full journal as NDJSON (one JSON object per line).
+fn journal_to_ndjson(journal: [JournalEntry]) -> str {
+    let mut out = ""
+    let mut i: i64 = 0
+    while i < len(journal) {
+        if i > 0 {
+            out = out + "\n"
+        }
+        out = out + _entry_to_jsonline(journal[i])
+        i = i + 1
+    }
+    return out
+}
+
+// --- Persistence --------------------------------------------------------------
+
+// Write the journal to disk as NDJSON. Parent directory must exist.
+@capabilities(io)
+fn save_journal(path: str, journal: [JournalEntry]) {
+    file_write(path, journal_to_ndjson(journal))
+}
+
+// --- Deserialisation ---------------------------------------------------------
+// Uses native json_parse / json_get / json_to_str / json_to_int / json_is_null
+// builtins (no std::json import needed -- they are always in scope).
+
+fn _str_field(node: i64, key: str, dflt: str) -> str {
+    let v = json_get(node, key)
+    if json_is_null(v) {
+        return dflt
+    }
+    return json_to_str(v)
+}
+
+fn _int_field(node: i64, key: str) -> i64 {
+    let v = json_get(node, key)
+    if json_is_null(v) {
+        return 0
+    }
+    return json_to_int(v)
+}
+
+fn _parse_line(line: str) -> JournalEntry {
+    let node = json_parse(line)
+    return JournalEntry {
+        step:       _int_field(node, "step"),
+        tool:       _str_field(node, "tool", ""),
+        args_json:  _str_field(node, "args_json", ""),
+        result:     _str_field(node, "result", ""),
+        tokens_in:  _int_field(node, "tokens_in"),
+        tokens_out: _int_field(node, "tokens_out"),
+        api_calls:  _int_field(node, "api_calls"),
+        prev_hash:  _str_field(node, "prev_hash", _genesis_hash()),
+        hash:       _str_field(node, "hash", ""),
+    }
+}
+
+// Split a string on newlines. Returns [str].
+// We do this manually to avoid importing std::string in the same file
+// (mixing native-builtin-only and std imports can confuse the resolver
+// in some Cranelift paths).
+fn _split_lines_manual(s: str) -> [str] {
+    let mut lines: [str] = []
+    let mut start: i64 = 0
+    let mut i: i64 = 0
+    let n = len(s)
+    while i < n {
+        let ch = s[i]
+        if ch == "\n" {
+            if i > start {
+                lines = push(lines, substr(s, start, i))
+            }
+            start = i + 1
+        }
+        i = i + 1
+    }
+    if start < n {
+        lines = push(lines, substr(s, start, n))
+    }
+    return lines
+}
+
+// Load a journal from an NDJSON file.
+@capabilities(io)
+fn load_journal(path: str) -> [JournalEntry] {
+    let raw = file_read(path)
+    let lines = _split_lines_manual(raw)
+    let mut journal: [JournalEntry] = []
+    for line in lines {
+        if len(line) > 0 {
+            journal = push(journal, _parse_line(line))
+        }
+    }
+    return journal
+}

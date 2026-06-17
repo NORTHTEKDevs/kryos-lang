@@ -1,0 +1,38 @@
+// ============================================================
+// guard.kry -- Public entry point: guard_text(text) -> Tracked<str>
+//
+// Scans the input text for PII. If PII is found, throws a string
+// "PIILeak: <kinds>" before returning. If clean, wraps the text in a
+// Tracked<str> with a lineage entry recording the clean scan result.
+//
+// No IO, no network, no LLM. Pure compute + std::tracked.
+// ============================================================
+
+use std::tracked::{Tracked, tracked_source, annotate}
+use pii
+
+// Guard a string of model output against PII leakage.
+//
+//   text    plain string (e.g. model completion) to inspect
+//
+// Returns Tracked<str> with a "pii_scan" lineage entry on clean input.
+// Throws "PIILeak: <kinds>" (comma-separated) if PII is detected.
+@capabilities(compute)
+fn guard_text(text: str) -> Tracked<str> {
+    let kinds = scan_pii(text)
+    if len(kinds) > 0 {
+        let mut label = ""
+        let mut i = 0
+        while i < len(kinds) {
+            if i > 0 {
+                label = label + ","
+            }
+            label = label + kinds[i]
+            i = i + 1
+        }
+        throw "PIILeak: " + label
+    }
+    // No PII found -- wrap in tracked with a clean-scan annotation.
+    let t = tracked_source(text, "model-output", "raw model completion")
+    return annotate(t, "pii_scan", "clean: no PII detected")
+}

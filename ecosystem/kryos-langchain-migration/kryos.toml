@@ -1,0 +1,9 @@
+[package]
+name = "kryos-langchain-migration"
+version = "0.1.0"
+edition = "2026"
+description = "Adoption demo: canonical LangChain RAG+tool agent ported to governed Kryos."
+authors = ["NORTHTEK <info@northtek.io>"]
+license = "Apache-2.0"
+
+[dependencies]
