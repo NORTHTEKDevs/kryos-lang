@@ -58,6 +58,43 @@ fn budget_remaining_usd() -> f64 {
     return (micros as f64) / 1000000.0
 }
 
+// Estimate the USD cost of a model call from token counts using a built-in
+// per-model price table (USD per 1,000,000 tokens, input and output rates).
+// Matched by substring so versioned model ids (gpt-4o-2024-..) still resolve.
+// Unknown models fall back to a conservative mid-range rate so a USD budget
+// still bites rather than silently charging $0. This is what makes the
+// `@budget(usd=...)` axis real for chat(): see chat() / chat_within below.
+fn estimate_cost_usd(model: str, in_tok: i64, out_tok: i64) -> f64 {
+    let mut in_rate: f64 = 5.0
+    let mut out_rate: f64 = 15.0
+    if contains(model, "gpt-4o-mini") {
+        in_rate = 0.15
+        out_rate = 0.60
+    } elif contains(model, "gpt-4o") {
+        in_rate = 2.50
+        out_rate = 10.0
+    } elif contains(model, "gpt-4") {
+        in_rate = 30.0
+        out_rate = 60.0
+    } elif contains(model, "o1") {
+        in_rate = 15.0
+        out_rate = 60.0
+    } elif contains(model, "haiku") {
+        in_rate = 0.80
+        out_rate = 4.0
+    } elif contains(model, "sonnet") {
+        in_rate = 3.0
+        out_rate = 15.0
+    } elif contains(model, "opus") {
+        in_rate = 15.0
+        out_rate = 75.0
+    } elif contains(model, "gpt-3.5") {
+        in_rate = 0.50
+        out_rate = 1.50
+    }
+    return ((in_tok as f64) * in_rate + (out_tok as f64) * out_rate) / 1000000.0
+}
+
 @copy
 struct LlmConfig {
     provider: str,
@@ -299,6 +336,16 @@ fn chat(cfg: LlmConfig, messages: [Message]) -> LlmResponse {
         if exceeded == 1 {
             throw "llm error: @budget exceeded: token limit crossed by this call (used " + to_string(parsed.input_tokens + parsed.output_tokens) + " tokens)"
         }
+        // Charge the estimated USD cost against any active @budget(usd=...) frame
+        // (priced from cfg.model). budget_charge_usd returns false (charging
+        // nothing) when there is no usd frame OR when the charge would exceed it.
+        let usd = estimate_cost_usd(cfg.model, parsed.input_tokens, parsed.output_tokens)
+        if kryos_budget_remaining_usd_micros() >= 0 {
+            if budget_charge_usd(usd) == false {
+                let cents = (usd * 100.0) as i64
+                throw "llm error: @budget exceeded: USD limit crossed by this call (estimated ~" + to_string(cents) + " cents at model " + cfg.model + ")"
+            }
+        }
     }
     return parsed
 }
@@ -321,9 +368,8 @@ struct BudgetedChat {
 
 /// chat() guarded by a std::cost Budget. Throws BEFORE the call when the
 /// budget is already exhausted; charges actual usage (input+output tokens,
-/// 1 API call) afterward and returns the updated budget. USD accounting is
-/// intentionally 0.0 here -- per-token pricing varies by provider/model;
-/// charge() a ComputeCost with your own rates if you track dollars.
+/// 1 API call, and estimated USD via the built-in per-model price table -
+/// see estimate_cost_usd) afterward and returns the updated budget.
 @capabilities(net)
 fn chat_within(cfg: LlmConfig, messages: [Message], budget: Budget) -> BudgetedChat {
     if budget.is_exhausted() {
@@ -334,7 +380,7 @@ fn chat_within(cfg: LlmConfig, messages: [Message], budget: Budget) -> BudgetedC
         wall_time_ms: 0.0,
         tokens_used: r.input_tokens + r.output_tokens,
         api_calls: 1,
-        money_usd: 0.0,
+        money_usd: estimate_cost_usd(cfg.model, r.input_tokens, r.output_tokens),
         energy_kwh: 0.0
     }
     let charged = budget.charge(used)
