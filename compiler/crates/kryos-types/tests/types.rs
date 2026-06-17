@@ -348,6 +348,64 @@ fn tracked_value_returned_no_warn() {
 }
 
 #[test]
+fn tracked_value_block_tail_no_warn() {
+    // fn block_tail() -> Tracked {
+    //     let r = { Tracked { value: 1 } }   <- block tail is the block's VALUE, not a discard
+    //     return r
+    // }
+    let diags = check_module(vec![
+        tracked_struct_decl(),
+        Decl::Function {
+            name: "block_tail".to_string(),
+            generics: vec![],
+            params: vec![],
+            ret_ty: Some(TypeExpr::Simple {
+                name: "Tracked".to_string(),
+                span: S,
+            }),
+            body: Some(Block {
+                stmts: vec![
+                    Stmt::Let {
+                        name: "r".to_string(),
+                        mutable: false,
+                        ty: None,
+                        value: Some(Expr::Block {
+                            block: Block {
+                                stmts: vec![Stmt::Expr {
+                                    expr: tracked_literal(),
+                                    span: S,
+                                }],
+                                span: S,
+                            },
+                            span: S,
+                        }),
+                        span: S,
+                        pattern: None,
+                    },
+                    Stmt::Return {
+                        value: Some(Expr::Identifier {
+                            name: "r".to_string(),
+                            span: S,
+                        }),
+                        span: S,
+                    },
+                ],
+                span: S,
+            }),
+            public: false,
+            is_async: false,
+            annotations: vec![],
+            doc_comments: vec![],
+            span: S,
+        },
+    ]);
+    assert!(
+        !diags.iter().any(|d| d.code.as_deref() == Some("W0400")),
+        "Tracked as a value-position block tail must NOT trigger the must-use lint, got: {diags:?}"
+    );
+}
+
+#[test]
 fn check_return_type_mismatch() {
     // fn bad() -> i32 { return "hello" }
     let diags = check_module(vec![Decl::Function {

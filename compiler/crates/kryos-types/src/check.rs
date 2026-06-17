@@ -1217,6 +1217,11 @@ impl TypeChecker {
                 // `return`, so a bare `Stmt::Expr` of Tracked type is always a real
                 // discard, never an implicit return. `tracked_discard(t, reason)`
                 // is the explicit opt-out (it returns the inner, non-Tracked value).
+                //
+                // Known limitation: keyed on the struct NAME only (Type::Struct has no
+                // module origin), so a user struct literally named `Tracked` would also
+                // trip this. Acceptable for v1 -- the name is distinctive and this is a
+                // warning, not an error. A module-origin guard is the proper fix later.
                 if matches!(&ty, Type::Struct { name, .. } if name == "Tracked") {
                     self.diagnostics.push(
                         Diagnostic::warning(
@@ -2702,12 +2707,18 @@ impl TypeChecker {
                 let mut block_ty = Type::Void;
                 let last_idx = block.stmts.len().wrapping_sub(1);
                 for (i, stmt) in block.stmts.iter().enumerate() {
-                    self.check_stmt(stmt);
+                    // A value-position block's tail Stmt::Expr is the block's VALUE,
+                    // not a discard -- infer it directly and bypass check_stmt, so the
+                    // W0400 must-use lint doesn't false-positive on a Tracked tail
+                    // (mirrors infer_block_as_expr). Doing so also avoids the
+                    // double-infer that the previous check_stmt + infer_expr produced.
                     if i == last_idx {
                         if let Stmt::Expr { expr, .. } = stmt {
                             block_ty = self.infer_expr(expr);
+                            continue;
                         }
                     }
+                    self.check_stmt(stmt);
                 }
                 self.env.pop_scope();
                 block_ty
@@ -2716,14 +2727,20 @@ impl TypeChecker {
             // Comptime block — type is the type of the last expression.
             Expr::ComptimeBlock { body, .. } => {
                 self.env.push_scope();
-                for stmt in &body.stmts {
+                let last_idx = body.stmts.len().wrapping_sub(1);
+                let mut ty = Type::Void;
+                for (i, stmt) in body.stmts.iter().enumerate() {
+                    // Tail Stmt::Expr is the block's value, not a discard (see Expr::Block).
+                    if i == last_idx {
+                        if let Stmt::Expr { expr, .. } = stmt {
+                            ty = self.infer_expr(expr);
+                            continue;
+                        }
+                    }
                     self.check_stmt(stmt);
                 }
                 self.env.pop_scope();
-                if let Some(Stmt::Expr { expr, .. }) = body.stmts.last() {
-                    return self.infer_expr(expr);
-                }
-                Type::Void
+                ty
             }
             // Quantum blocks — check body, return void for now.
             Expr::QuantumBlock { body, .. } => {
