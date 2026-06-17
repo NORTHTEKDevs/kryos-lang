@@ -36,6 +36,9 @@ pub const E0303: &str = "E0303"; // use of partially moved value
 // Ownership warnings (W03xx)
 pub const W0300: &str = "W0300"; // conditional move (moved on one branch only)
 
+// Provenance / lineage warnings (W04xx)
+pub const W0400: &str = "W0400"; // tracked value discarded (provenance/lineage lost)
+
 // Capability errors (E05xx)
 pub const E0501: &str = "E0501"; // capability import violation
 pub const E0502: &str = "E0502"; // missing required capability

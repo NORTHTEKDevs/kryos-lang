@@ -247,6 +247,106 @@ fn check_valid_add_function() {
     assert!(diags.is_empty(), "expected no errors, got: {diags:?}");
 }
 
+// ── tracked-guard: must-use lint for Tracked<T> (W0400) ──────────────
+
+/// `struct Tracked { value: i64 }` decl for the must-use tests. The lint keys
+/// on the struct name, so a non-generic stand-in exercises the same path as the
+/// real generic stdlib `Tracked<T>` without depending on generic inference.
+fn tracked_struct_decl() -> Decl {
+    Decl::Struct {
+        name: "Tracked".to_string(),
+        generics: vec![],
+        fields: vec![StructField {
+            name: "value".to_string(),
+            ty: TypeExpr::Simple {
+                name: "i64".to_string(),
+                span: S,
+            },
+            public: true,
+            default: None,
+            span: S,
+        }],
+        public: true,
+        annotations: vec![],
+        doc_comments: vec![],
+        span: S,
+    }
+}
+
+fn tracked_literal() -> Expr {
+    Expr::StructLiteral {
+        name: "Tracked".to_string(),
+        fields: vec![("value".to_string(), Expr::IntLiteral { value: 1, span: S })],
+        span: S,
+    }
+}
+
+#[test]
+fn tracked_value_discarded_warns_w0400() {
+    // fn drop_it() { Tracked { value: 1 } }   <- result discarded -> W0400
+    let diags = check_module(vec![
+        tracked_struct_decl(),
+        Decl::Function {
+            name: "drop_it".to_string(),
+            generics: vec![],
+            params: vec![],
+            ret_ty: Some(TypeExpr::Simple {
+                name: "void".to_string(),
+                span: S,
+            }),
+            body: Some(Block {
+                stmts: vec![Stmt::Expr {
+                    expr: tracked_literal(),
+                    span: S,
+                }],
+                span: S,
+            }),
+            public: false,
+            is_async: false,
+            annotations: vec![],
+            doc_comments: vec![],
+            span: S,
+        },
+    ]);
+    assert!(
+        diags.iter().any(|d| d.code.as_deref() == Some("W0400")),
+        "expected a W0400 must-use warning for the discarded Tracked value, got: {diags:?}"
+    );
+}
+
+#[test]
+fn tracked_value_returned_no_warn() {
+    // fn keep_it() -> Tracked { return Tracked { value: 1 } }  <- returned, not discarded
+    let diags = check_module(vec![
+        tracked_struct_decl(),
+        Decl::Function {
+            name: "keep_it".to_string(),
+            generics: vec![],
+            params: vec![],
+            ret_ty: Some(TypeExpr::Simple {
+                name: "Tracked".to_string(),
+                span: S,
+            }),
+            body: Some(Block {
+                stmts: vec![Stmt::Return {
+                    value: Some(tracked_literal()),
+                    span: S,
+                }],
+                span: S,
+            }),
+            public: false,
+            is_async: false,
+            annotations: vec![],
+            doc_comments: vec![],
+            span: S,
+        },
+    ]);
+    assert!(
+        !diags.iter().any(|d| d.code.as_deref() == Some("W0400")),
+        "returned Tracked value must NOT trigger the must-use lint, got: {diags:?}"
+    );
+}
+
 #[test]
 fn check_return_type_mismatch() {
     // fn bad() -> i32 { return "hello" }

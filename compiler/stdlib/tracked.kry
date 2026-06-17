@@ -103,6 +103,15 @@ Lineage:"
     return result
 }
 
+/// Explicitly discard a tracked value, returning its inner value and recording
+/// (for the reader) why the provenance chain was intentionally broken. This is
+/// the opt-out for the must-use lint (W0400): the compiler warns when a
+/// `Tracked<T>` value is dropped as a statement, since that silently loses the
+/// lineage; route deliberate drops through this function instead.
+fn tracked_discard<T>(t: Tracked<T>, reason: str) -> T {
+    return t.value
+}
+
 /// Export the lineage as JSON (properly escaped via the json builtins).
 fn to_json<T>(t: Tracked<T>) -> str {
     let mut entries: [i64] = []

@@ -1208,8 +1208,25 @@ impl TypeChecker {
                 self.check_block(body);
                 self.env.pop_scope();
             }
-            Stmt::Expr { expr, .. } => {
-                self.infer_expr(expr);
+            Stmt::Expr { expr, span } => {
+                let ty = self.infer_expr(expr);
+                // must-use lint (W0400): discarding a `Tracked<T>` value as a
+                // statement silently drops its provenance/lineage chain. The
+                // tracked stdlib fns are functional (each returns a NEW Tracked),
+                // so ignoring the result loses the audit trail. A non-void fn must
+                // `return`, so a bare `Stmt::Expr` of Tracked type is always a real
+                // discard, never an implicit return. `tracked_discard(t, reason)`
+                // is the explicit opt-out (it returns the inner, non-Tracked value).
+                if matches!(&ty, Type::Struct { name, .. } if name == "Tracked") {
+                    self.diagnostics.push(
+                        Diagnostic::warning(
+                            "tracked value is discarded; its provenance/lineage is lost. \
+                             Use the value, or call `tracked_discard(t, reason)` to drop it explicitly.",
+                        )
+                        .with_label(*span, "tracked value dropped here")
+                        .with_code(kryos_errors::codes::W0400),
+                    );
+                }
             }
             Stmt::Throw { expr, .. } => {
                 self.infer_expr(expr);
