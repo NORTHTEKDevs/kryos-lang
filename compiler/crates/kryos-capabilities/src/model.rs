@@ -228,6 +228,22 @@ impl CapabilitySet {
         }
     }
 
+    /// Narrow the set by removing every capability that overlaps any of the
+    /// `denied` capabilities. Used by `deny!(...)` blocks: denying coarse `net`
+    /// removes `net`, `net:http`, and `net:tcp`; denying a sub-cap `net:http`
+    /// removes `net:http` (and, conservatively, a coarse `net` that overlaps it).
+    /// `all` is removed if anything is denied, since `all` overlaps everything.
+    pub fn without(&self, denied: &[Capability]) -> CapabilitySet {
+        CapabilitySet {
+            capabilities: self
+                .capabilities
+                .iter()
+                .filter(|c| !denied.iter().any(|d| c.overlaps(d)))
+                .copied()
+                .collect(),
+        }
+    }
+
     /// Iterate over the capabilities in this set.
     pub fn iter(&self) -> impl Iterator<Item = &Capability> {
         self.capabilities.iter()

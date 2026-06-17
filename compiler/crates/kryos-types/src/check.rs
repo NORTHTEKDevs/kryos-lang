@@ -1254,6 +1254,13 @@ impl TypeChecker {
                 self.infer_expr(expr);
             }
             Stmt::Break { .. } | Stmt::Continue { .. } | Stmt::Select { .. } => {}
+            // deny!(...) { body } is a compile-time capability-narrowing wrapper;
+            // for type-checking it is just a scoped block of statements.
+            Stmt::DenyBlock { body, .. } => {
+                self.env.push_scope();
+                self.check_block(body);
+                self.env.pop_scope();
+            }
         }
     }
 
@@ -5087,6 +5094,8 @@ fn stmt_returns(stmt: &Stmt) -> bool {
         // An expression statement at the end of a block can serve as an
         // implicit return value (expression-bodied functions).
         Stmt::Expr { .. } => true,
+        // A deny block returns iff its body returns on all paths.
+        Stmt::DenyBlock { body, .. } => block_returns(body),
         _ => false,
     }
 }

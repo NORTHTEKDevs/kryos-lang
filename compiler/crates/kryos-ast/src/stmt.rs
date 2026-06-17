@@ -100,6 +100,14 @@ pub enum Stmt {
         expr: Expr,
         span: Span,
     },
+    /// `deny!(net, ffi) { ... }` — lexically narrows the active capability set
+    /// for the body, removing the denied capabilities. Compile-time only; at
+    /// runtime the body executes exactly as if the wrapper were absent.
+    DenyBlock {
+        denied: Vec<String>,
+        body: Block,
+        span: Span,
+    },
 }
 
 impl Stmt {
@@ -117,7 +125,8 @@ impl Stmt {
             | Self::Spawn { span, .. }
             | Self::Select { span, .. }
             | Self::TryCatch { span, .. }
-            | Self::Throw { span, .. } => *span,
+            | Self::Throw { span, .. }
+            | Self::DenyBlock { span, .. } => *span,
         }
     }
 }

@@ -300,6 +300,38 @@ impl CapabilityChecker {
         }
     }
 
+    /// Check a `deny!(caps) { body }` block. Narrows the active capability set by
+    /// removing the denied capabilities, then checks the body under that narrowed,
+    /// annotated scope so the existing per-call guards (E0505 builtin / E0502
+    /// missing / E0507 propagation) fire on any use of a denied capability.
+    fn check_deny_block(&mut self, denied: &[String], body: &kryos_ast::Block, span: Span) {
+        let denied_caps: Vec<Capability> =
+            denied.iter().filter_map(|s| Capability::from_str(s)).collect();
+        // A deny that names no recognized capability (typo) would silently narrow
+        // nothing — warn rather than no-op.
+        if denied_caps.is_empty() {
+            self.diagnostics.push(
+                Diagnostic::warning(format!(
+                    "deny!({}) names no recognized capability; the block has no effect",
+                    denied.join(", ")
+                ))
+                .with_label(span, "deny block here")
+                .with_code(kryos_errors::codes::W0500),
+            );
+        }
+        let base = self
+            .current_caps()
+            .cloned()
+            .unwrap_or_else(CapabilitySet::empty);
+        let narrowed = base.without(&denied_caps);
+        self.scope_stack.push(CapabilityScope {
+            capabilities: narrowed,
+            annotated: true,
+        });
+        self.check_block(body);
+        self.scope_stack.pop();
+    }
+
     fn check_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let { value, .. } => {
@@ -365,6 +397,9 @@ impl CapabilityChecker {
                     self.check_expr(&branch.channel);
                     self.check_block(&branch.body);
                 }
+            }
+            Stmt::DenyBlock { denied, body, span } => {
+                self.check_deny_block(denied, body, *span);
             }
             Stmt::Break { .. } | Stmt::Continue { .. } => {}
         }
@@ -756,6 +791,61 @@ mod tests {
             doc_comments: vec![],
             span: span(),
         }
+    }
+
+    #[test]
+    fn deny_block_narrows_net_inside_net_fn() {
+        // @capabilities(net) fn guarded() { deny!(net) { http_get() } }
+        // deny removes net inside the block -> http_get (needs net:http) errors E0505.
+        let deny = Stmt::DenyBlock {
+            denied: vec!["net".to_string()],
+            body: Block {
+                stmts: vec![Stmt::Expr {
+                    expr: builtin_call("http_get"),
+                    span: span(),
+                }],
+                span: span(),
+            },
+            span: span(),
+        };
+        let module = Module {
+            name: "test".into(),
+            declarations: vec![fn_decl("guarded", vec!["net"], vec![deny])],
+            span: span(),
+        };
+        let diags = check_capabilities(&module, false);
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("E0505")),
+            "expected E0505 for http_get inside deny!(net), got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn deny_block_allows_non_denied_cap() {
+        // @capabilities(net, io) fn { deny!(net) { file_write() } }
+        // file_write needs fs:write (covered by io); deny!(net) keeps io -> no error.
+        let deny = Stmt::DenyBlock {
+            denied: vec!["net".to_string()],
+            body: Block {
+                stmts: vec![Stmt::Expr {
+                    expr: builtin_call("file_write"),
+                    span: span(),
+                }],
+                span: span(),
+            },
+            span: span(),
+        };
+        let module = Module {
+            name: "test".into(),
+            declarations: vec![fn_decl("guarded", vec!["net", "io"], vec![deny])],
+            span: span(),
+        };
+        let diags = check_capabilities(&module, false);
+        let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+        assert!(
+            errors.is_empty(),
+            "deny!(net) must not break a file_write covered by io, got: {diags:?}"
+        );
     }
 
     #[test]

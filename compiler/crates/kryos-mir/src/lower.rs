@@ -2341,6 +2341,12 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             lower_spawn(ctx, expr);
         }
 
+        ast::Stmt::DenyBlock { body, .. } => {
+            // `deny!(...)` is a compile-time capability-narrowing wrapper; at
+            // runtime it executes its body verbatim.
+            lower_block_stmts(ctx, &body.stmts);
+        }
+
         ast::Stmt::Select {
             branches, timeout, ..
         } => {
@@ -6801,6 +6807,9 @@ fn collect_identifiers_block(
                         ctx,
                     );
                 }
+            }
+            ast::Stmt::DenyBlock { body, .. } => {
+                collect_identifiers_block(&body.stmts, &local_bound, free_vars, seen, ctx);
             }
             // Leaf statements with no sub-expressions.
             ast::Stmt::Return { value: None, .. }

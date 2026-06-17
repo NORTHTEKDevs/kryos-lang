@@ -144,6 +144,7 @@ fn walk_stmt(stmt: &Stmt, set: &mut CapabilitySet) {
                 walk_block(&branch.body, set);
             }
         }
+        Stmt::DenyBlock { body, .. } => walk_block(body, set),
         Stmt::Break { .. } | Stmt::Continue { .. } => {}
     }
 }

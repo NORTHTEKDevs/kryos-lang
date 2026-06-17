@@ -649,6 +649,7 @@ fn collect_idents_in_stmt(s: &Stmt, out: &mut HashSet<String>) {
             collect_idents_in_block(try_block, out);
             collect_idents_in_block(catch_block, out);
         }
+        Stmt::DenyBlock { body, .. } => collect_idents_in_block(body, out),
         Stmt::Break { .. } | Stmt::Continue { .. } => {}
     }
 }

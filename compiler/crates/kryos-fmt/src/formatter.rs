@@ -805,6 +805,16 @@ impl Formatter {
                 self.writeln("}");
             }
 
+            Stmt::DenyBlock { denied, body, .. } => {
+                self.write_indent();
+                self.write("deny!(");
+                self.write(&denied.join(", "));
+                self.writeln(") {");
+                self.fmt_block_body(body);
+                self.write_indent();
+                self.writeln("}");
+            }
+
             Stmt::Break { .. } => {
                 self.write_indent();
                 self.writeln("break");

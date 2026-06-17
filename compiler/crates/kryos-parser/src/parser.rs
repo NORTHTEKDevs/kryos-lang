@@ -1216,6 +1216,15 @@ impl Parser {
                     Some(self.parse_expr_or_assign())
                 }
             }
+            // Contextual keyword: `deny!(caps) { ... }` capability-revocation block.
+            // `deny` lexes as a plain Ident, so disambiguate by the trailing `!`.
+            TokenKind::Ident
+                if self.peek().text == "deny"
+                    && self.pos + 1 < self.tokens.len()
+                    && self.tokens[self.pos + 1].kind == TokenKind::Bang =>
+            {
+                Some(self.parse_deny_block())
+            }
             TokenKind::RBrace => None, // End of block — caller handles
             TokenKind::Semicolon => {
                 let tok = self.advance().clone();
@@ -1563,6 +1572,36 @@ impl Parser {
         let end = expr.span();
         Stmt::Spawn {
             expr,
+            span: start.merge(end),
+        }
+    }
+
+    /// Parse `deny!(cap, cap:sub, ...) { body }` — a lexical capability-revocation
+    /// block. Capability atoms are an ident optionally followed by `:` + sub-cap
+    /// (e.g. `net`, `net:http`, `fs:read`), matching `@capabilities(...)` grammar.
+    fn parse_deny_block(&mut self) -> Stmt {
+        let kw = self.advance().clone(); // `deny`
+        let start = kw.span;
+        self.expect(TokenKind::Bang);
+        self.expect(TokenKind::LParen);
+        let mut denied: Vec<String> = Vec::new();
+        while !self.check(TokenKind::RParen) && !self.at_end() {
+            let (mut name, _) = self.expect_ident();
+            if self.eat(TokenKind::Colon) {
+                let (sub, _) = self.expect_ident();
+                name = format!("{name}:{sub}");
+            }
+            denied.push(name);
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen);
+        let body = self.parse_block();
+        let end = body.span;
+        Stmt::DenyBlock {
+            denied,
+            body,
             span: start.merge(end),
         }
     }

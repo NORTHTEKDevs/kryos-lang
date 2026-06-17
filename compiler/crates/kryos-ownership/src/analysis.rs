@@ -1077,6 +1077,10 @@ impl OwnershipAnalyzer {
                 self.analyze_expr_move(expr);
             }
 
+            Stmt::DenyBlock { body, .. } => {
+                self.analyze_block(body);
+            }
+
             Stmt::Break { .. } | Stmt::Continue { .. } => {}
         }
     }
@@ -1609,6 +1613,11 @@ impl OwnershipAnalyzer {
                     self.collect_captures_stmt(s, locals, out);
                 }
                 for s in &catch_block.stmts {
+                    self.collect_captures_stmt(s, locals, out);
+                }
+            }
+            Stmt::DenyBlock { body, .. } => {
+                for s in &body.stmts {
                     self.collect_captures_stmt(s, locals, out);
                 }
             }
