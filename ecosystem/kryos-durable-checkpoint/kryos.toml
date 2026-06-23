@@ -1,0 +1,8 @@
+[package]
+name = "kryos-durable-checkpoint"
+version = "0.1.0"
+description = "Crash-safe step journal: hash-chained NDJSON checkpoint with tamper detection and budget-resume. Each JournalEntry records a tool call with token/API-call telemetry and a polynomial hash over the prior chain."
+license = "Apache-2.0"
+
+[capabilities]
+allowed = ["compute", "io"]

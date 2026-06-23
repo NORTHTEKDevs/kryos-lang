@@ -1,0 +1,71 @@
+// ============================================================
+// main.kry -- kryos-pii-guard demo entry point.
+//
+//   kryos run ecosystem/kryos-pii-guard
+//
+// Shows guard_text applied to clean and PII-bearing model outputs.
+// No LLM calls -- exercises pure logic only.
+// ============================================================
+
+use std::tracked::{Tracked, tracked_source, annotate, explain}
+use guard
+use pii
+
+@capabilities(compute)
+fn show_scan(label: str, text: str) {
+    println("")
+    println("--- " + label + " ---")
+    println("input: " + text)
+    let kinds = scan_pii(text)
+    if len(kinds) == 0 {
+        println("scan_pii: clean (no PII found)")
+    } else {
+        let mut out = "scan_pii: ["
+        let mut i = 0
+        while i < len(kinds) {
+            if i > 0 { out = out + ", " }
+            out = out + kinds[i]
+            i = i + 1
+        }
+        out = out + "]"
+        println(out)
+    }
+}
+
+@capabilities(compute)
+fn show_guard(label: str, text: str) {
+    println("")
+    println("--- guard: " + label + " ---")
+    println("input: " + text)
+    try {
+        let t = guard_text(text)
+        println("CLEAN -- Tracked value: " + t.value)
+        println("lineage entries: " + to_string(len(t.lineage)))
+        let last = t.lineage[len(t.lineage) - 1]
+        println("last lineage op: " + last.operation + " / " + last.description)
+    } catch e {
+        println("BLOCKED -- threw: " + e)
+    }
+}
+
+@capabilities(compute)
+fn main() {
+    println("kryos-pii-guard demo")
+
+    // Scanner demo
+    show_scan("SSN in text", "Patient SSN: 123-45-6789 found in record.")
+    show_scan("16-digit card", "Card: 4111111111111111 charged.")
+    show_scan("US phone ddd-ddd-dddd", "Call us at 907-555-0199 anytime.")
+    show_scan("email address", "Send results to alice@example.com please.")
+    show_scan("bearer token", "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9abcdefghijklmnop")
+    show_scan("clean text", "The quarterly revenue was $1.2M, up 8% from last year.")
+
+    // Guard demo
+    show_guard("clean model output", "The quarterly revenue was $1.2M, up 8% from last year.")
+    show_guard("SSN leak", "Your SSN 123-45-6789 is on file.")
+    show_guard("card leak", "We charged card 4532 0151 1283 0366 on record.")
+    show_guard("email leak", "Results sent to bob@corp.io automatically.")
+
+    println("")
+    println("demo complete")
+}

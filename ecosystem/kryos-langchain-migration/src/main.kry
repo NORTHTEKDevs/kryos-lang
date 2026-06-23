@@ -1,0 +1,314 @@
+// src/main.kry -- Kryos port of the canonical LangChain RAG+tool agent.
+//
+// Contrast with reference/langchain_rag_tools.py:
+//   * Citation lineage is TYPE-ENFORCED via Tracked<str> -- silent drops
+//     become compile errors (you cannot call rag_citations on a plain str).
+//   * Capability violations are COMPILE errors (E0505) not runtime AuthErrors.
+//   * The dispatch loop budget is COMPILE-TIME (@budget) not a soft hint.
+//   * The calculator tool operates on i64 to avoid to_string(f64) JIT issues.
+//
+// Stub model: no live LLM is called. The "model decision" function
+// stub_model_decision() simulates the agent deciding which tool to call
+// based on the query text -- pure logic, no HTTP.
+//
+// Run: kryos run src/main.kry
+
+use std::tracked::{Tracked, LineageEntry, tracked_source}
+
+// ---------------------------------------------------------------------------
+// Inlined from kryos-rag/src/lineage_utils.kry (no cross-project import path).
+// ---------------------------------------------------------------------------
+
+fn tracked_merge(sources: [Tracked<str>], new_value: str, operation: str, description: str) -> Tracked<str> {
+    let mut combined_lineage: [LineageEntry] = []
+    let mut i = 0
+    while i < len(sources) {
+        let s = sources[i]
+        let mut j = 0
+        while j < len(s.lineage) {
+            combined_lineage = push(combined_lineage, s.lineage[j])
+            j = j + 1
+        }
+        i = i + 1
+    }
+    let merge_entry = LineageEntry {
+        operation: operation,
+        description: description,
+        timestamp: time_now(),
+        metadata: "merged=" + to_string(len(sources)) + " sources"
+    }
+    combined_lineage = push(combined_lineage, merge_entry)
+    let first_source = sources[0]
+    return Tracked {
+        value: new_value,
+        lineage: combined_lineage,
+        source: first_source.source,
+        source_description: description
+    }
+}
+
+fn tracked_to_citation(t: Tracked<str>) -> [str] {
+    let mut seen: [str] = []
+    let mut result: [str] = []
+    let mut i = 0
+    while i < len(t.lineage) {
+        let entry = t.lineage[i]
+        if entry.operation == "source" {
+            let src = entry.metadata
+            let mut found = false
+            let mut j = 0
+            while j < len(seen) {
+                if seen[j] == src {
+                    found = true
+                }
+                j = j + 1
+            }
+            if not found {
+                seen = push(seen, src)
+                result = push(result, src)
+            }
+        }
+        i = i + 1
+    }
+    return result
+}
+
+// Mirror the RagChunk struct from kryos-rag exactly.
+struct RagChunk {
+    id: str,
+    text: str
+}
+
+// A tool call descriptor: which tool + its argument string.
+struct ToolCall {
+    tool_name: str,
+    argument: str
+}
+
+// The "done" sentinel: when the stub model decides no more tools are needed.
+enum ModelDecision {
+    UseTool(ToolCall),
+    Done(str)
+}
+
+// ---------------------------------------------------------------------------
+// Retriever -- mirrors rag_retrieve from kryos-rag exactly.
+// Returns [Tracked<str>] so every chunk carries a citation.
+// ---------------------------------------------------------------------------
+fn retrieve(query: str, chunks: [RagChunk]) -> [Tracked<str>] {
+    let mut results: [Tracked<str>] = []
+    let mut i = 0
+    while i < len(chunks) {
+        let c = chunks[i]
+        if contains(c.text, query) {
+            let t = tracked_source(c.text, c.id, "retrieved chunk for query: " + query)
+            results = push(results, t)
+        }
+        i = i + 1
+    }
+    return results
+}
+
+// ---------------------------------------------------------------------------
+// Calculator tool -- integer arithmetic to avoid to_string(f64) JIT issues.
+// ---------------------------------------------------------------------------
+fn tool_calculator(arg: str) -> str {
+    // Expects arg in the form "a op b" e.g. "4400 * 23 / 100"
+    // Simple two-operand integer dispatch.
+    if contains(arg, " add ") {
+        let idx = 0
+        // Walk to find the operator positions manually.
+        // Use a simpler convention: "N add M"
+        let parts_add = split_on_op(arg, " add ")
+        if parts_add.found {
+            let result = parts_add.left + parts_add.right
+            return to_string(result)
+        }
+    }
+    if contains(arg, " sub ") {
+        let parts_sub = split_on_op(arg, " sub ")
+        if parts_sub.found {
+            let result = parts_sub.left - parts_sub.right
+            return to_string(result)
+        }
+    }
+    if contains(arg, " mul ") {
+        let parts_mul = split_on_op(arg, " mul ")
+        if parts_mul.found {
+            let result = parts_mul.left * parts_mul.right
+            return to_string(result)
+        }
+    }
+    if contains(arg, " div ") {
+        let parts_div = split_on_op(arg, " div ")
+        if parts_div.found {
+            if parts_div.right == 0 {
+                return "error: division by zero"
+            }
+            let result = parts_div.left / parts_div.right
+            return to_string(result)
+        }
+    }
+    return "error: unknown expression: " + arg
+}
+
+// Helper: split "N op M" into two i64 operands.
+struct SplitResult {
+    found: bool,
+    left: i64,
+    right: i64
+}
+
+fn split_on_op(input: str, op: str) -> SplitResult {
+    // Find the op in the string by linear scan.
+    let op_len = len(op)
+    let in_len = len(input)
+    let mut pos = -1
+    let mut i = 0
+    while i <= in_len - op_len {
+        let candidate = substr(input, i, i + op_len)
+        if candidate == op {
+            pos = i
+            i = in_len  // break
+        }
+        i = i + 1
+    }
+    if pos < 0 {
+        return SplitResult { found: false, left: 0, right: 0 }
+    }
+    let left_str = substr(input, 0, pos)
+    let right_str = substr(input, pos + op_len, in_len)
+    let left_val = parse_int(left_str)
+    let right_val = parse_int(right_str)
+    return SplitResult { found: true, left: left_val, right: right_val }
+}
+
+// ---------------------------------------------------------------------------
+// Stub model decision function -- replaces the LLM HTTP call.
+// Simulates a two-step agent:
+//   Step 1: if the query mentions arithmetic, invoke the calculator.
+//   Step 2: return a text answer synthesised from retrieved chunks.
+// ---------------------------------------------------------------------------
+fn stub_model_decision(step: i64, query: str, context: str) -> ModelDecision {
+    if step == 0 {
+        // First turn: if query contains "%" or "percent", call calculator step 1.
+        if contains(query, "%") or contains(query, "percent") {
+            return UseTool(ToolCall {
+                tool_name: "calculator",
+                argument: "4400 mul 23"
+            })
+        }
+        // Otherwise go straight to answering from retrieved context.
+        if len(context) > 0 {
+            return Done("Based on the retrieved knowledge: " + context)
+        }
+        return Done("No relevant context found.")
+    }
+    if step == 1 {
+        // Second turn: divide the intermediate result by 100.
+        if contains(query, "%") or contains(query, "percent") {
+            return UseTool(ToolCall {
+                tool_name: "calculator",
+                argument: "101200 div 100"
+            })
+        }
+    }
+    // Step 2+: model has all tool results; synthesise answer.
+    return Done("Based on the retrieved knowledge and calculations: " + context)
+}
+
+// ---------------------------------------------------------------------------
+// Governed dispatch loop -- mirrors chat_tools_governed from kryos-agent-loop
+// but WITHOUT the live LLM (stub_model_decision replaces chat_tools).
+//
+// @budget(calls = 10) -- the dispatch loop is bounded at COMPILE TIME.
+// Exceeding the budget throws before the loop exceeds it -- runtime guard.
+// ---------------------------------------------------------------------------
+@budget(calls = 10)
+fn governed_dispatch(query: str, retrieved: [Tracked<str>]) -> str {
+    // Build a plain-text context string from the retrieved tracked chunks.
+    let mut context = ""
+    let mut i = 0
+    while i < len(retrieved) {
+        context = context + "[" + retrieved[i].source + "] " + retrieved[i].value + "\n"
+        i = i + 1
+    }
+
+    let mut step = 0
+    let mut accumulated_context = context
+    let max_steps = 5
+
+    while step < max_steps {
+        let decision = stub_model_decision(step, query, accumulated_context)
+        match decision {
+            Done(answer) => {
+                return answer
+            },
+            UseTool(call) => {
+                println("  [tool] " + call.tool_name + "(" + call.argument + ")")
+                let result = dispatch_tool(call.tool_name, call.argument)
+                println("  [tool result] " + result)
+                accumulated_context = accumulated_context + "\ncalculator(" +
+                    call.argument + ") = " + result
+                step = step + 1
+            }
+        }
+    }
+    return "halted: max_steps reached"
+}
+
+// Tool dispatcher -- routes tool_name to the appropriate fn.
+fn dispatch_tool(tool_name: str, argument: str) -> str {
+    if tool_name == "calculator" {
+        return tool_calculator(argument)
+    }
+    return "error: unknown tool " + tool_name
+}
+
+// ---------------------------------------------------------------------------
+// Main -- builds corpus, retrieves, runs governed dispatch loop.
+// ---------------------------------------------------------------------------
+fn main() {
+    let corpus: [RagChunk] = [
+        RagChunk { id: "doc:001", text: "Kryos is a capability-safe programming language." },
+        RagChunk { id: "doc:002", text: "Every Kryos function declares its capability set with @capabilities." },
+        RagChunk { id: "doc:003", text: "The @budget attribute caps token and API call spend at compile time." }
+    ]
+
+    let query = "What does @capabilities do in Kryos? Also, what is 23% of 4400?"
+    println("Query: " + query)
+    println("")
+
+    // Step 1: retrieve relevant chunks (keyword: "capability")
+    let retrieved = retrieve("capability", corpus)
+    println("Retrieved " + to_string(len(retrieved)) + " chunks:")
+    let mut i = 0
+    while i < len(retrieved) {
+        println("  [" + retrieved[i].source + "] " + retrieved[i].value)
+        i = i + 1
+    }
+    println("")
+
+    // Step 2: run the governed dispatch loop (stub model, no LLM calls).
+    println("Running governed dispatch loop...")
+    let answer = governed_dispatch(query, retrieved)
+    println("")
+    println("Answer: " + answer)
+    println("")
+
+    // Step 3: demonstrate citation lineage -- merge retrieved tracked values.
+    // This mirrors how kryos-rag builds the final Tracked<str> answer.
+    if len(retrieved) > 0 {
+        let merged = tracked_merge(retrieved, answer, "inference", "stub model answer")
+        let citations = tracked_to_citation(merged)
+        println("Citations (" + to_string(len(citations)) + "):")
+        let mut j = 0
+        while j < len(citations) {
+            println("  - " + citations[j])
+            j = j + 1
+        }
+    }
+
+    println("")
+    println("kryos-langchain-migration: demo complete")
+}

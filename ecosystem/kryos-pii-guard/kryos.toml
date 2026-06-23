@@ -1,0 +1,10 @@
+[package]
+name = "kryos-pii-guard"
+version = "0.1.0"
+description = "Output-side PII / secret guard: scans model output for SSNs, card numbers, phone numbers, emails, and bearer tokens before the text leaves the agent."
+authors = ["NORTHTEK <info@northtek.io>"]
+license = "Apache-2.0"
+
+# Pure compute: string/character inspection, no IO, net, or process.
+[capabilities]
+allowed = ["compute"]

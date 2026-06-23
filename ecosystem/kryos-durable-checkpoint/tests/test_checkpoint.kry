@@ -1,0 +1,83 @@
+// ============================================================
+// test_checkpoint.kry -- kryos-durable-checkpoint test suite.
+//
+// Run: kryos run ecosystem/kryos-durable-checkpoint/tests/test_checkpoint.kry
+//
+// No network. No live LLM calls. All logic is deterministic.
+// ============================================================
+
+use checkpoint::{JournalEntry, journal_new, checkpoint_step, journal_verify,
+                 journal_budget_consumed}
+
+fn _check(name: str, cond: bool) {
+    if cond {
+        println("  ok   " + name)
+    } else {
+        println("  FAIL " + name)
+        exit(1)
+    }
+}
+
+fn _build_journal() -> [JournalEntry] {
+    let mut j = journal_new()
+    j = checkpoint_step(j, 0, "web_search", "{{\"q\":\"kryos\"}}", "10 results", 120, 45, 1)
+    j = checkpoint_step(j, 1, "file_write",  "{{\"path\":\"out.txt\"}}", "ok", 80, 20, 1)
+    j = checkpoint_step(j, 2, "summarise",   "{{}}", "done", 200, 60, 1)
+    return j
+}
+
+fn main() {
+    println("=== kryos-durable-checkpoint tests ===")
+    println("")
+
+    // --- build a 3-step journal ---
+    let j = _build_journal()
+    _check("journal has 3 entries", len(j) == 3)
+
+    // --- verify clean chain ---
+    _check("journal_verify: clean chain", journal_verify(j) == true)
+
+    // --- tamper: change result of entry 1 ---
+    let e0 = j[0]
+    let e1 = j[1]
+    let e2 = j[2]
+
+    let tampered_e1 = JournalEntry {
+        step:       e1.step,
+        tool:       e1.tool,
+        args_json:  e1.args_json,
+        result:     "TAMPERED",
+        tokens_in:  e1.tokens_in,
+        tokens_out: e1.tokens_out,
+        api_calls:  e1.api_calls,
+        prev_hash:  e1.prev_hash,
+        hash:       e1.hash,
+    }
+    let mut tampered: [JournalEntry] = []
+    tampered = push(tampered, e0)
+    tampered = push(tampered, tampered_e1)
+    tampered = push(tampered, e2)
+
+    _check("journal_verify: tampered chain is false", journal_verify(tampered) == false)
+
+    // --- budget consumed sums correctly ---
+    let budget = journal_budget_consumed(j)
+    let total_ti = budget.0
+    let total_to = budget.1
+    let total_calls = budget.2
+
+    _check("budget consumed tokens_in  == 400", total_ti == 400)
+    _check("budget consumed tokens_out == 125", total_to == 125)
+    _check("budget consumed api_calls  ==   3", total_calls == 3)
+
+    // --- hash chain is deterministic ---
+    let j2 = _build_journal()
+    _check("hash chain is deterministic", j[2].hash == j2[2].hash)
+
+    // --- empty journal verifies ---
+    let empty = journal_new()
+    _check("empty journal verifies", journal_verify(empty) == true)
+
+    println("")
+    println("all checkpoint tests passed")
+}

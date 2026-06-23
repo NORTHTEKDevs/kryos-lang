@@ -1,0 +1,89 @@
+// ============================================================
+// demo.kry -- save -> load -> verify -> resume-budget round trip.
+//
+// Run: kryos run ecosystem/kryos-durable-checkpoint/demo.kry
+//
+// No network. Demonstrates:
+//   1. Build a 3-step journal.
+//   2. Save to a temp file.
+//   3. Load back from the file.
+//   4. Verify the loaded chain.
+//   5. Resume: compute budget already consumed, derive remaining.
+// ============================================================
+
+use checkpoint::{JournalEntry, journal_new, checkpoint_step, save_journal,
+                 load_journal, journal_verify, journal_budget_consumed}
+
+fn temp_dir() -> str {
+    let t: str = env_get("TEMP")
+    if len(t) > 0 { return t }
+    let t2: str = env_get("TMP")
+    if len(t2) > 0 { return t2 }
+    let t3: str = env_get("TMPDIR")
+    if len(t3) > 0 { return t3 }
+    return "/tmp"
+}
+
+fn main() {
+    println("=== kryos-durable-checkpoint demo ===")
+    println("")
+
+    // --- 1. Build a 3-step journal ---
+    let mut j = journal_new()
+    j = checkpoint_step(j, 0, "plan",       "{{\"topic\":\"Kryos\"}}", "outline ready", 150, 55, 1)
+    j = checkpoint_step(j, 1, "web_search", "{{\"q\":\"Kryos lang\"}}", "5 results",    200, 80, 2)
+    j = checkpoint_step(j, 2, "summarise",  "{{}}",                    "summary done",  300, 90, 1)
+
+    println("Built journal: " + to_string(len(j)) + " entries")
+    let mut i: i64 = 0
+    while i < len(j) {
+        let e = j[i]
+        println("  [" + to_string(e.step) + "] tool=" + e.tool
+            + " hash=" + e.hash)
+        i = i + 1
+    }
+    println("")
+
+    // --- 2. Save to temp file ---
+    let path = temp_dir() + "/kryos_checkpoint_demo.ndjson"
+    save_journal(path, j)
+    println("Saved to: " + path)
+    println("")
+
+    // --- 3. Load back ---
+    let loaded = load_journal(path)
+    println("Loaded " + to_string(len(loaded)) + " entries")
+    println("")
+
+    // --- 4. Verify loaded chain ---
+    let ok = journal_verify(loaded)
+    if ok {
+        println("verify: CLEAN (hash chain intact)")
+    } else {
+        println("verify: BROKEN (unexpected!)")
+        exit(1)
+    }
+    println("")
+
+    // --- 5. Resume-budget round trip ---
+    // Simulate total budget for this run.
+    let budget_ti_limit: i64  = 1000
+    let budget_to_limit: i64  = 500
+    let budget_calls_limit: i64 = 10
+
+    let consumed = journal_budget_consumed(loaded)
+    let used_ti    = consumed.0
+    let used_to    = consumed.1
+    let used_calls = consumed.2
+
+    let rem_ti    = budget_ti_limit    - used_ti
+    let rem_to    = budget_to_limit    - used_to
+    let rem_calls = budget_calls_limit - used_calls
+
+    println("Budget consumed (from loaded journal):")
+    println("  tokens_in  used: " + to_string(used_ti)    + "  remaining: " + to_string(rem_ti))
+    println("  tokens_out used: " + to_string(used_to)    + "  remaining: " + to_string(rem_to))
+    println("  api_calls  used: " + to_string(used_calls) + "  remaining: " + to_string(rem_calls))
+    println("")
+    println("demo complete")
+}
