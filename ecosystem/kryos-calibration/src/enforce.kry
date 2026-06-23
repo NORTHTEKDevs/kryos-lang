@@ -1,0 +1,111 @@
+// ============================================================
+// enforce.kry -- runtime overconfidence guard for Probable<T>.
+//
+// require_calibrated(set, bins, stated_confidence, value) -> str
+//
+//   Looks up the EMPIRICAL accuracy of the bin that `stated_confidence` maps
+//   to (using the same bucketing logic as calibration.kry) and throws if the
+//   stated confidence overshoots the measured accuracy by more than
+//   OVERCONFIDENCE_TOLERANCE.
+//
+//   This turns the Probable<T> confidence axis into a checkable claim rather
+//   than a blindly-trusted number: you CANNOT return a value at high stated
+//   confidence without the recorded evidence that such confidence is warranted.
+//
+// Usage (run from kryos-calibration/ project root):
+//   use calibration::{SampleSet, new_sampleset, add}
+//   use enforce::{require_calibrated}
+//   let result: str = require_calibrated(my_set, 10, 0.9, "the answer")
+//
+// Throws (str):
+//   "Overconfident: stated <N> but measured <M>"
+//   when (stated_confidence - measured_accuracy) > OVERCONFIDENCE_TOLERANCE.
+//
+// Empty-bucket handling: a bin with no samples has accuracy 0.0 and count 0;
+// the guard treats it as measured=0.0 and throws for any stated confidence
+// that exceeds 0.15. Pass a non-empty, representative SampleSet.
+// ============================================================
+
+use std::probable::{CalibrationSample}
+
+// How far above the measured accuracy a stated confidence may be.
+// 0.15 = "15 percentage points of slack".
+let OVERCONFIDENCE_TOLERANCE: f64 = 0.15
+
+// ---- bucket struct ----------------------------------------------------------
+
+// One summarised bin: the empirical accuracy and how many samples fell in it.
+// We re-declare only what we need here (avoid cross-src module import issues).
+@copy
+struct EnforceBin {
+    accuracy: f64,
+    count: i64,
+}
+
+// ---- internal helpers -------------------------------------------------------
+
+// The same binning formula used throughout calibration.kry:
+//   floor(conf * bins), clamped to [0, bins-1].
+@capabilities(compute)
+fn _enforce_bin_index(conf: f64, bins: i64) -> i64 {
+    let mut idx = (conf * (bins as f64)) as i64
+    if idx < 0 { idx = 0 }
+    if idx >= bins { idx = bins - 1 }
+    return idx
+}
+
+// Build `bins` EnforceBin summaries from a flat array of CalibrationSample.
+// This mirrors reliability_curve from calibration.kry but returns only the
+// (accuracy, count) pairs needed by the enforcement logic.
+@capabilities(compute)
+fn _build_bins(samples: [CalibrationSample], bins: i64) -> [EnforceBin] {
+    let mut nb = bins
+    if nb < 1 { nb = 1 }
+    let n = len(samples)
+    let mut curve: [EnforceBin] = []
+    let mut b = 0
+    while b < nb {
+        let mut bin_count = 0
+        let mut bin_correct = 0
+        let mut i = 0
+        while i < n {
+            let s = samples[i]
+            if _enforce_bin_index(s.predicted, nb) == b {
+                bin_count = bin_count + 1
+                if s.correct { bin_correct = bin_correct + 1 }
+            }
+            i = i + 1
+        }
+        let mut accuracy = 0.0
+        if bin_count > 0 {
+            accuracy = (bin_correct as f64) / (bin_count as f64)
+        }
+        let row = EnforceBin { accuracy: accuracy, count: bin_count }
+        curve = push(curve, row)
+        b = b + 1
+    }
+    return curve
+}
+
+// ---- public API -------------------------------------------------------------
+
+/// Confidence-reality gate for the Probable<T> pipeline.
+///
+/// `samples` -- the raw [CalibrationSample] slice from a SampleSet.samples.
+/// `bins`    -- number of equal-width bins (e.g. 10 gives deciles).
+/// `stated_confidence` -- the confidence attached to this prediction (0.0-1.0).
+/// `value`   -- the value to return on success.
+///
+/// Returns `value` unchanged when well-calibrated; throws on overconfidence.
+@capabilities(compute)
+fn require_calibrated(samples: [CalibrationSample], bins: i64, stated_confidence: f64, value: str) -> str {
+    let curve = _build_bins(samples, bins)
+    let bidx = _enforce_bin_index(stated_confidence, bins)
+    let row = curve[bidx]
+    let measured: f64 = row.accuracy
+    let gap = stated_confidence - measured
+    if gap > OVERCONFIDENCE_TOLERANCE {
+        throw "Overconfident: stated " + to_string(stated_confidence) + " but measured " + to_string(measured)
+    }
+    return value
+}

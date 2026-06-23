@@ -1,0 +1,9 @@
+[package]
+name = "kryos-llm-structured"
+version = "0.1.0"
+description = "Governed structured-output: LLM chat with explicit schema validation and Tracked<str> lineage. Capability split: validate_and_track is @capabilities(compute); governed_chat adds net."
+authors = ["NORTHTEK <info@northtek.io>"]
+license = "Apache-2.0"
+
+[dependencies]
+kryos_schema = { path = "../kryos-schema" }
