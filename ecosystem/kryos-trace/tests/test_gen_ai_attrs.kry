@@ -1,0 +1,24 @@
+// Tests the OTel GenAI semconv attribute renderer (B4).
+//   kryos run ecosystem/kryos-trace/tests/test_gen_ai_attrs.kry
+use otlp
+
+fn check(cond: bool, msg: str) {
+    if cond { println("PASS " + msg) } else { println("FAIL " + msg) }
+}
+
+fn main() {
+    let a = gen_ai_attrs("openai", "gpt-4o", 1000, 500, "net:http", 7500)
+    check(contains(a, "gen_ai.system"), "has gen_ai.system key")
+    check(contains(a, "openai"), "system value present")
+    check(contains(a, "gen_ai.request.model"), "has request.model key")
+    check(contains(a, "gpt-4o"), "model value present")
+    check(contains(a, "gen_ai.usage.input_tokens"), "has input_tokens key")
+    check(contains(a, "gen_ai.usage.output_tokens"), "has output_tokens key")
+    check(contains(a, "gen_ai.usage.total_tokens"), "has total_tokens key")
+    check(contains(a, "1500"), "total tokens = 1500")
+    check(contains(a, "kryos_governance.capabilities"), "has governance caps key")
+    check(contains(a, "net:http"), "cap surface value present")
+    check(contains(a, "kryos_governance.budget_usd_micros"), "has budget usd key")
+    check(contains(a, "7500"), "budget micros value present")
+    println("DONE")
+}
