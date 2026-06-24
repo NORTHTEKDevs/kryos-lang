@@ -6767,6 +6767,31 @@ impl LlvmCodegen {
                     let t = self.next_temp();
                     self.emit_line(&format!("  {t} = sext {elem_ty} {elem_val} to i64"));
                     t
+                } else if elem_ty.starts_with('{') || elem_ty.starts_with('[') || elem_ty.starts_with('%') {
+                    // Aggregate element (struct/tuple/enum): box on the heap and
+                    // store the pointer as the i64 slot value. Mirrors the heap
+                    // path above and the load side, which unboxes via
+                    // kryos_array_get -> inttoptr -> load <agg>. Without this an
+                    // enum/tuple >8 bytes emitted `store i64 <aggregate>` into an
+                    // 8-byte slot (clang rejected the IR).
+                    let size_ptr = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {size_ptr} = getelementptr {elem_ty}, ptr null, i32 1"
+                    ));
+                    let size_i64 = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {size_i64} = ptrtoint ptr {size_ptr} to i64"
+                    ));
+                    let buf = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {buf} = call ptr @kryos_calloc(i64 1, i64 {size_i64})"
+                    ));
+                    self.emit_line(&format!(
+                        "  store {elem_ty} {elem_val}, ptr {buf}"
+                    ));
+                    let t = self.next_temp();
+                    self.emit_line(&format!("  {t} = ptrtoint ptr {buf} to i64"));
+                    t
                 } else {
                     elem_val
                 };
