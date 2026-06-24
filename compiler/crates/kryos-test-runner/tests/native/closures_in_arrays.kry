@@ -1,0 +1,16 @@
+// Regression: closures stored in an array literal and called via index, i.e.
+// an indirect call through a non-identifier callee `fs[i](x)`. This previously
+// failed to link with `unresolved external symbol <closure>` (the call lowered
+// to a direct call to a bogus name), and after that was fixed the AOT backend
+// silently returned 0 because the call result typed as Void and was discarded.
+// expect-stdout: 11
+// expect-stdout: 13
+// expect-stdout: 20
+
+fn main() {
+    let fs = [|x| x + 1, |x| x + 3]
+    println(to_string(fs[0](10)))   // 11
+    println(to_string(fs[1](10)))   // 13
+    let g = fs[1]
+    println(to_string(g(17)))       // 20
+}

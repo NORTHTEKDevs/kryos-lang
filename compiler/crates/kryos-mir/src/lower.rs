@@ -4530,7 +4530,14 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                     }
                 }
             }
-            MirType::Void
+            // Non-identifier callee (e.g. `arr[i](x)`, `(pick())(x)`): the call
+            // yields the callee's function return type. Fall back to I64 (the
+            // uniform closure-thunk return), NOT Void -- a Void result made the
+            // LLVM backend discard the call result into a dead temp (silent 0).
+            if let MirType::Function { ret, .. } = infer_expr_type(ctx, callee) {
+                return *ret;
+            }
+            MirType::I64
         }
 
         ast::Expr::MethodCall { object, method, .. } => {
@@ -5119,7 +5126,24 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
         ast::Expr::FnCall { callee, args, .. } => {
             let func_name = match callee.as_ref() {
                 ast::Expr::Identifier { name, .. } => name.clone(),
-                _ => "<closure>".to_string(),
+                _ => {
+                    // Callee is an arbitrary expression that evaluates to a
+                    // function value (e.g. `arr[i](x)`, `(pick())(x)`,
+                    // `tbl.field(x)`). Lower it to an operand and emit an
+                    // indirect call through the function pointer. None of the
+                    // identifier-keyed dispatch below (actor / enum-variant /
+                    // generic / map-builtin / direct call) can apply when the
+                    // callee is not a name. Previously this fell through to a
+                    // direct call to the bogus symbol `<closure>`, which the
+                    // linker rejected (LNK2001 unresolved external `<closure>`).
+                    let callee_op = lower_expr_to_operand(ctx, callee);
+                    let mir_args: Vec<Operand> =
+                        args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
+                    return RValue::CallIndirect {
+                        callee: callee_op,
+                        args: mir_args,
+                    };
+                }
             };
 
             // Cooperative async executor surface. `coop_spawn(taskExpr)` is a
