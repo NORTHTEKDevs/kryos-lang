@@ -4139,6 +4139,19 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                         .and_then(|variant| variant.fields.get(field_idx))
                         .cloned()
                         .unwrap_or(MirType::I64);
+                    // lower_type_expr maps every non-builtin named type to
+                    // Struct(name) (it has no context to know which names are
+                    // enums), so a variant whose payload is itself an enum --
+                    // e.g. `Move.Go(Dir)` -- records the field as Struct("Dir").
+                    // Recover the real Enum type here, else the binding `d` is
+                    // typed Struct and a following `match d { Up => .. }` is not
+                    // detected as an enum match: it silently falls through to the
+                    // first arm (and AOT crashes when `d` is passed onward).
+                    // Layout is identical ({i64, ..}); only the type label changes.
+                    let field_type = match field_type {
+                        MirType::Struct(n) if ctx.enum_defs.contains_key(&n) => MirType::Enum(n),
+                        other => other,
+                    };
                     let local = ctx.alloc_local(Some(name.clone()), field_type.clone(), false);
                     // Pre-mark non-copy payload bindings as consumed: they will be
                     // moved into the arm result, not dropped by scope cleanup.

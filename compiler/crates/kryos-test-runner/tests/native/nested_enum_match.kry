@@ -1,0 +1,44 @@
+// Regression: an enum used as another enum's payload (Move.Go(Dir)) must keep
+// its tag through extraction. lower_type_expr maps named types to Struct, so the
+// payload binding `d` from `Go(d)` was typed Struct("Dir") rather than
+// Enum("Dir"); a following `match d { Up => .. }` was then not recognized as an
+// enum match and silently fell through to the first arm (both backends returned
+// "up" for Dir.Down), and passing `d` onward crashed the AOT backend.
+// expect-stdout: down
+// expect-stdout: still
+// expect-stdout: viafn-up
+enum Dir { Up, Down }
+enum Move { Go(Dir), Stay }
+
+fn inner(d: Dir) -> str {
+    match d {
+        Up => return "viafn-up",
+        Down => return "viafn-down",
+    }
+    return "?"
+}
+
+fn desc(m: Move) -> str {
+    match m {
+        Go(d) => match d {
+            Up => return "up",
+            Down => return "down",
+        },
+        Stay => return "still",
+    }
+    return "?"
+}
+
+fn viafn(m: Move) -> str {
+    match m {
+        Go(d) => return inner(d),
+        Stay => return "stay",
+    }
+    return "?"
+}
+
+fn main() {
+    println(desc(Move.Go(Dir.Down)))
+    println(desc(Move.Stay))
+    println(viafn(Move.Go(Dir.Up)))
+}
