@@ -8,7 +8,7 @@
 #
 # Environment variables:
 #   KRYOS_INSTALL_DIR  -- override install prefix (default: %USERPROFILE%\.kryos\bin)
-#   KRYOS_VERSION      -- pin a specific release tag (default: latest)
+#   KRYOS_VERSION      -- pin a specific release tag (default: v1.0.0-beta.1)
 #   GITHUB_TOKEN       -- PAT for downloading release assets from private repos
 #   GH_TOKEN           -- alternative auth env var (gh CLI compatible)
 
@@ -35,23 +35,17 @@ $arch = if ([System.Environment]::Is64BitOperatingSystem) { "x86_64" } else {
     exit 1
 }
 
-# Resolve release tag.
+# Resolve release tag. The default is PINNED rather than GitHub's "latest":
+# the repo carries legacy v2.x/v4.x tags that outrank v1.0.0 semantically, so
+# the releases/latest API resolves to a legacy version. Pin the public default
+# to the 1.0 line; override with KRYOS_VERSION to install any specific tag.
+$DEFAULT_VERSION = "v1.0.0-beta.1"
 if ($env:KRYOS_VERSION) {
     $TAG = $env:KRYOS_VERSION
     Write-Host "Installing pinned version: $TAG"
 } else {
-    try {
-        $rel = if ($AUTH) {
-            Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/releases/latest" -Headers $AUTH -UseBasicParsing
-        } else {
-            Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/releases/latest" -UseBasicParsing
-        }
-        $TAG = $rel.tag_name
-    } catch {
-        Write-Error "Could not determine latest release. If the repo is private, set `$env:GITHUB_TOKEN to a PAT with 'repo' scope."
-        exit 1
-    }
-    Write-Host "Latest release: $TAG"
+    $TAG = $DEFAULT_VERSION
+    Write-Host "Installing default version: $TAG"
 }
 
 $platform = "windows-$arch"

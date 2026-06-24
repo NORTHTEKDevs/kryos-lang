@@ -9,7 +9,7 @@
 #
 # Environment variables:
 #   KRYOS_INSTALL_DIR  -- override install prefix (default: ~/.kryos)
-#   KRYOS_VERSION      -- pin a specific release tag (default: latest)
+#   KRYOS_VERSION      -- pin a specific release tag (default: v1.0.0-beta.1)
 #   GITHUB_TOKEN       -- PAT for downloading release assets from private repos
 #   GH_TOKEN           -- alternative auth env var (gh CLI compatible)
 
@@ -55,19 +55,17 @@ ARTIFACT="kryos-${PLATFORM}-${ARCH}"
 
 echo "Installing Kryos ($PLATFORM-$ARCH)..."
 
-# Resolve release tag.
+# Resolve release tag. The default is PINNED rather than GitHub's "latest":
+# the repo carries legacy v2.x/v4.x tags that outrank v1.0.0 semantically, so
+# the releases/latest API resolves to a legacy version. Pin the public default
+# to the 1.0 line; override with KRYOS_VERSION to install any specific tag.
+DEFAULT_VERSION="v1.0.0-beta.1"
 if [ -n "${KRYOS_VERSION:-}" ]; then
     TAG="$KRYOS_VERSION"
     echo "Installing pinned version: $TAG"
 else
-    TAG=$(curl_auth "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
-        | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
-    if [ -z "$TAG" ]; then
-        echo "Error: could not determine latest release."
-        echo "If the repo is private, set GITHUB_TOKEN or GH_TOKEN to a PAT with 'repo' scope."
-        exit 1
-    fi
-    echo "Latest release: $TAG"
+    TAG="$DEFAULT_VERSION"
+    echo "Installing default version: $TAG"
 fi
 
 # Download release asset. Private repos reject the browser download URL for
