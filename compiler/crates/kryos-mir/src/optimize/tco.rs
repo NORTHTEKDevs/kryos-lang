@@ -17,7 +17,8 @@
 //! 3. Replace the `Return` terminator with `Goto(bb0)`.
 
 use crate::ir::{
-    BasicBlock, BlockId, Instruction, LocalId, MirFunction, MirModule, Operand, RValue, Terminator,
+    BasicBlock, BlockId, Instruction, LocalId, MirFunction, MirLocal, MirModule, MirType, Operand,
+    RValue, Terminator,
 };
 
 // ---------------------------------------------------------------------------
@@ -45,17 +46,86 @@ fn optimize_function(func: &mut MirFunction) {
     // rather than SSA temporaries (which would conflict with the function's
     // entry-block parameter SSA names like %_0).
     let has_tail_call = func.blocks.iter().any(|b| is_tail_self_call(b, &self_name));
-    if has_tail_call {
-        for pl in &param_locals {
-            if let Some(local) = func.locals.iter_mut().find(|l| l.id == *pl) {
-                local.mutable = true;
-            }
+    if !has_tail_call {
+        return;
+    }
+    for pl in &param_locals {
+        if let Some(local) = func.locals.iter_mut().find(|l| l.id == *pl) {
+            local.mutable = true;
         }
     }
 
-    // Iterate over all blocks looking for tail-recursive patterns.
+    // Next free local id for fresh snapshot temporaries (see below).
+    let mut next_id = func
+        .locals
+        .iter()
+        .map(|l| l.id.0)
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(0);
+
     for bi in 0..func.blocks.len() {
-        try_optimize_block(&mut func.blocks[bi], &self_name, &param_locals);
+        if !is_tail_self_call(&func.blocks[bi], &self_name) {
+            continue;
+        }
+        let last_idx = func.blocks[bi].instructions.len() - 1;
+        let call_args = match &func.blocks[bi].instructions[last_idx] {
+            Instruction::Assign {
+                value: RValue::Call { args, .. },
+                ..
+            } => args.clone(),
+            _ => continue,
+        };
+        // Arity must match the parameter list for a 1:1 param reassignment.
+        if call_args.len() != param_locals.len() {
+            continue;
+        }
+
+        // Snapshot every argument into a fresh temporary BEFORE writing any
+        // parameter. Without this, reassigning params in sequence corrupts any
+        // argument that references a parameter reassigned earlier in the list:
+        // e.g. tail-calling `go(b, a, ..)` (a swap) would compute `a = b` then
+        // `b = a` and read the already-overwritten `a`, yielding `b == a`. The
+        // temporaries capture all reads first, so the param writes see the
+        // original values (correct parallel assignment).
+        let mut temps: Vec<LocalId> = Vec::with_capacity(param_locals.len());
+        for pl in &param_locals {
+            let ty = func
+                .locals
+                .iter()
+                .find(|l| l.id == *pl)
+                .map(|l| l.ty.clone())
+                .unwrap_or(MirType::I64);
+            let tid = LocalId(next_id);
+            next_id += 1;
+            func.locals.push(MirLocal {
+                id: tid,
+                name: None,
+                ty,
+                mutable: false,
+            });
+            temps.push(tid);
+        }
+
+        let block = &mut func.blocks[bi];
+        // Remove the tail-call instruction.
+        block.instructions.remove(last_idx);
+        // 1. Capture each argument value into its snapshot temp (all reads).
+        for (temp, arg) in temps.iter().zip(call_args.iter()) {
+            block.instructions.push(Instruction::Assign {
+                dest: *temp,
+                value: RValue::Use(arg.clone()),
+            });
+        }
+        // 2. Copy snapshots into the parameter locals (all writes).
+        for (param, temp) in param_locals.iter().zip(temps.iter()) {
+            block.instructions.push(Instruction::Assign {
+                dest: *param,
+                value: RValue::Use(Operand::Local(*temp)),
+            });
+        }
+        // 3. Loop back to the entry block.
+        block.terminator = Terminator::Goto(BlockId(0));
     }
 }
 
@@ -76,68 +146,6 @@ fn is_tail_self_call(block: &BasicBlock, self_name: &str) -> bool {
             value: RValue::Call { func, .. },
         } if func == self_name && *dest == ret_local
     )
-}
-
-/// Attempt to convert a tail-recursive call in a single block.
-fn try_optimize_block(block: &mut BasicBlock, self_name: &str, param_locals: &[LocalId]) {
-    // The terminator must be `Return(Some(Local(ret_local)))`.
-    let ret_local = match &block.terminator {
-        Terminator::Return(Some(Operand::Local(id))) => *id,
-        _ => return,
-    };
-
-    // The last instruction must assign the return local via a self-call.
-    let last_idx = match block.instructions.len().checked_sub(1) {
-        Some(i) => i,
-        None => return,
-    };
-
-    let (call_args, _call_dest) = match &block.instructions[last_idx] {
-        Instruction::Assign {
-            dest,
-            value: RValue::Call { func, args },
-        } if func == self_name && *dest == ret_local => (args.clone(), *dest),
-        _ => return,
-    };
-
-    // Verify the number of arguments matches parameters.
-    if call_args.len() != param_locals.len() {
-        return;
-    }
-
-    // --- Transform ---
-
-    // Remove the tail call instruction.
-    block.instructions.remove(last_idx);
-
-    // We need to be careful when reassigning parameters: if any argument
-    // references a parameter that we're about to overwrite, we'd get the
-    // wrong value.  To handle this, we first assign all arguments to
-    // temporary copies (using the dest local as scratch space when possible),
-    // then copy from temporaries to parameters.
-    //
-    // For simplicity, we directly assign to parameter locals in reverse
-    // order.  This isn't perfectly correct for all aliasing patterns, but
-    // for the common case of tail recursion (where args are expressions
-    // of the parameters) it works because the MIR lowering typically uses
-    // separate temporaries for intermediate values.
-    //
-    // A fully correct implementation would use fresh temporaries, but that
-    // requires allocating new locals which adds complexity.  We use the
-    // call's destination local as a single scratch when needed.
-
-    // Simple approach: assign arguments directly to parameter locals.
-    // This is correct when arguments don't alias parameters (the common
-    // case after MIR lowering where each sub-expression gets its own temp).
-    for (param, arg) in param_locals.iter().zip(call_args.iter()) {
-        block.instructions.push(Instruction::Assign {
-            dest: *param,
-            value: RValue::Use(arg.clone()),
-        });
-    }
-
-    // Replace the Return terminator with Goto(bb0).
-    block.terminator = Terminator::Goto(BlockId(0));
 }
 
 // ---------------------------------------------------------------------------
@@ -251,17 +259,27 @@ mod tests {
             other => panic!("expected Goto(bb0), got {other:?}"),
         }
 
-        // Should have a parameter assignment: _0 = _1
+        // The arg is snapshotted into a fresh temp first, then copied to the
+        // param: `<temp> = use(_1); _0 = use(<temp>)`.
+        let snapshot_temp = tail_block.instructions.iter().find_map(|i| match i {
+            Instruction::Assign {
+                dest,
+                value: RValue::Use(Operand::Local(src)),
+            } if *src == LocalId(1) => Some(*dest),
+            _ => None,
+        });
+        assert!(snapshot_temp.is_some(), "should snapshot arg into a temp");
+        let temp = snapshot_temp.unwrap();
         let has_param_assign = tail_block.instructions.iter().any(|i| {
             matches!(
                 i,
                 Instruction::Assign {
                     dest: LocalId(0),
-                    value: RValue::Use(Operand::Local(LocalId(1)))
-                }
+                    value: RValue::Use(Operand::Local(s)),
+                } if *s == temp
             )
         });
-        assert!(has_param_assign, "should assign new arg to param local");
+        assert!(has_param_assign, "should assign snapshot temp to param local");
     }
 
     #[test]

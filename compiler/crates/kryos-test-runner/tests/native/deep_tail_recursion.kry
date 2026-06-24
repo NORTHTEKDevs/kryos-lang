@@ -1,0 +1,14 @@
+// Regression: deep tail recursion must not overflow the stack on EITHER
+// backend. Before the fix the JIT (`kryos run`) skipped the TCO pass entirely
+// (optimization was gated behind `--release`), so this overflowed the stack
+// around ~1M depth while `build --release` handled it via TCO. TCO now runs on
+// both paths, and the Cranelift backend routes the resulting bb0 loop header
+// through a separate setup block.
+// expect-stdout: 500000500000
+fn sum_to(n: i64, acc: i64) -> i64 {
+    if n == 0 { return acc }
+    return sum_to(n - 1, acc + n)
+}
+fn main() {
+    println(to_string(sum_to(1000000, 0)))
+}

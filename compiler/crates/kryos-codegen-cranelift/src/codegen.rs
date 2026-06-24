@@ -2376,8 +2376,28 @@ pub fn translate_function<M: Module>(
         translator.variables.insert(local.id.0, var);
     }
 
-    // Append block params for the entry block and initialize param locals.
-    let entry_block = translator.blocks[&0];
+    // The MIR tail-call optimization pass rewrites a self-tail-call into
+    // `Goto(bb0)`, turning the entry block (bb0) into a loop header. Cranelift
+    // forbids the function entry block from having predecessors, so when such a
+    // back-edge exists we bind params + init locals in a dedicated setup block
+    // that falls through to bb0 (mirrors the LLVM backend's separate `entry:`
+    // block). With no back-edge, bb0 stays the entry block exactly as before.
+    let bb0_block = translator.blocks[&0];
+    let entry_id = mir_func.blocks[0].id.0;
+    let has_back_edge_to_entry = mir_func.blocks.iter().skip(1).any(|b| match &b.terminator {
+        Terminator::Goto(t) => t.0 == entry_id,
+        Terminator::Branch {
+            then_block,
+            else_block,
+            ..
+        } => then_block.0 == entry_id || else_block.0 == entry_id,
+        _ => false,
+    });
+    let entry_block = if has_back_edge_to_entry {
+        builder.create_block()
+    } else {
+        bb0_block
+    };
     builder.append_block_params_for_function_params(entry_block);
     builder.switch_to_block(entry_block);
 
@@ -2459,6 +2479,15 @@ pub fn translate_function<M: Module>(
 
     // Emit trace_enter at the start of the function for stack trace support.
     emit_trace_enter(mir_func, builder, &mut translator, module)?;
+
+    // If params/locals were set up in a separate block (because bb0 is a TCO
+    // loop header), fall through into bb0 now and switch to it, so bb0's body
+    // and the tail-call back-edges that target it live in a block that is
+    // allowed to have predecessors.
+    if has_back_edge_to_entry {
+        builder.ins().jump(bb0_block, &[]);
+        builder.switch_to_block(bb0_block);
+    }
 
     // Translate the entry block's instructions (we already switched to it).
     translate_block_body(&mir_func.blocks[0], builder, &mut translator, module)?;

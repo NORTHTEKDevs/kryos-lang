@@ -1,0 +1,16 @@
+// Regression: tail-call optimization must snapshot arguments before
+// reassigning parameters. A swap-style tail call `go(b, a, ..)` references
+// parameter `a` in an argument while `a` itself is reassigned; a naive
+// sequential reassignment computed `a = b` then `b = a` (reading the
+// already-overwritten a), so both ended up equal. Before the fix both
+// backends returned 2 then 2; correct is 1 then 2.
+// expect-stdout: 1
+// expect-stdout: 2
+fn go(a: i64, b: i64, n: i64) -> i64 {
+    if n == 0 { return a }
+    return go(b, a, n - 1)
+}
+fn main() {
+    println(to_string(go(1, 2, 2)))
+    println(to_string(go(1, 2, 3)))
+}

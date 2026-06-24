@@ -644,6 +644,14 @@ fn compile_module_impl(
     //     dead code elimination, tail call optimization, strength reduction.
     if config.mode == crate::config::BuildMode::Release {
         kryos_mir::optimize::optimize(&mut mir);
+    } else {
+        // Tail-call optimization is a correctness/robustness concern, not just a
+        // perf optimization: without it, deep tail recursion overflows the stack
+        // on the JIT/non-release path (`kryos run`) even though `build --release`
+        // handles it. Run TCO alone here (the other, compile-speed-sensitive
+        // passes stay release-only). The Cranelift backend handles the resulting
+        // `Goto(bb0)` loop header via a separate setup block (see translate_function).
+        kryos_mir::optimize::tco::optimize_tail_calls(&mut mir);
     }
 
     if config.verbose {
