@@ -5093,7 +5093,28 @@ impl LlvmCodegen {
                                 .func_ret_types
                                 .get(runtime_fname)
                                 .cloned()
-                                .unwrap_or_else(|| dest_ty.to_string());
+                                .unwrap_or_else(|| {
+                                    // Runtime (C-ABI) functions aren't recorded in
+                                    // func_ret_types and never return a Kryos aggregate
+                                    // BY VALUE. So when the dest is an aggregate, the
+                                    // function must have returned an i64 handle (a boxed
+                                    // pointer) — e.g. kryos_map_get* for a
+                                    // `map<_, Struct>` value, or a channel recv of an
+                                    // aggregate. Treat the return as i64 so the coerce
+                                    // path below unboxes it (inttoptr + load). Falling
+                                    // back to dest_ty emitted `call %Agg @runtime_fn`,
+                                    // mismatching the real i64 return, and reinterpreted
+                                    // the pointer as the struct body -> garbage on AOT.
+                                    // Scalar dests keep the dest_ty fallback (unchanged).
+                                    if dest_ty.starts_with('%')
+                                        || dest_ty.starts_with('{')
+                                        || dest_ty.starts_with('[')
+                                    {
+                                        "i64".to_string()
+                                    } else {
+                                        dest_ty.to_string()
+                                    }
+                                });
                             if dest_ty == "void" || actual_ret_ty == "void" {
                                 self.emit_line(&format!(
                                     "  call void @{runtime_fname}({arg_list})"
@@ -7811,6 +7832,43 @@ impl LlvmCodegen {
                 ));
                 self.emit_line(&format!("  {tmp} = inttoptr i64 {f0} to ptr"));
                 self.track_type(&tmp, "ptr");
+            }
+            ("i64", to) if to.starts_with('%') || to.starts_with('{') => {
+                // i64 -> aggregate: the inverse of the aggregate->i64 box arm
+                // above. A MULTI-FIELD aggregate was boxed (the i64 is a pointer
+                // to a heap copy), so unbox via inttoptr + load. A SINGLE-FIELD
+                // newtype was passed by value (the i64 IS field 0), so rebuild
+                // via insertvalue. Without this arm an i64 produced by a
+                // collection get whose element/value type is an aggregate (e.g.
+                // a `map<_, Struct>` value via kryos_map_get) was used directly
+                // as the aggregate -> garbage on the LLVM backend (the Cranelift
+                // JIT happened to tolerate it). Mirrors the array element read.
+                let nfields: Option<usize> = if let Some(name) = to.strip_prefix('%') {
+                    self.struct_defs.get(name).map(|fields| fields.len())
+                } else {
+                    Some(if to.contains(',') { 2 } else { 1 })
+                };
+                if nfields.map_or(true, |n| n > 1) {
+                    let p = self.next_temp();
+                    self.emit_line(&format!("  {p} = inttoptr i64 {value} to ptr"));
+                    self.emit_line(&format!("  {tmp} = load {to}, ptr {p}"));
+                    self.track_type(&tmp, to);
+                } else {
+                    let f0ty = if let Some(name) = to.strip_prefix('%') {
+                        self.struct_defs
+                            .get(name)
+                            .and_then(|fields| fields.first())
+                            .map(|(_, t)| mir_type_to_llvm(t))
+                            .unwrap_or_else(|| "i64".to_string())
+                    } else {
+                        "i64".to_string()
+                    };
+                    let fv = self.coerce_value(value, "i64", &f0ty);
+                    self.emit_line(&format!(
+                        "  {tmp} = insertvalue {to} undef, {f0ty} {fv}, 0"
+                    ));
+                    self.track_type(&tmp, to);
+                }
             }
             // General integer width change between LLVM iN types not covered by
             // the explicit arms above (e.g. i16<->i64, i128<->i64, i16->i32).

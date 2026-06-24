@@ -1,0 +1,30 @@
+// Regression: map values that are aggregates (struct / tuple / enum) must be
+// unboxed when read back. kryos_map_get returns an i64 (a boxed heap pointer
+// for aggregate values); before the fix the LLVM/AOT backend used that i64
+// directly as the aggregate -> garbage (the Cranelift JIT happened to tolerate
+// it). coerce_value now has the i64 -> aggregate unbox arm (inttoptr + load).
+// expect-stdout: 3
+// expect-stdout: 22
+// expect-stdout: 765
+struct P { x: i64, y: i64 }
+enum Color { Rgb(i64, i64, i64), Clear }
+fn brightness(c: Color) -> i64 {
+    match c {
+        Rgb(r, g, b) => return r + g + b,
+        Clear => return 0,
+    }
+}
+fn main() {
+    let mut ms: map<str, P> = {}
+    ms["a"] = P { x: 3, y: 4 }
+    println(to_string(ms["a"].x))
+
+    let mut mt: map<str, (i64, i64)> = {}
+    mt["k"] = (10, 12)
+    let t = mt["k"]
+    println(to_string(t.0 + t.1))
+
+    let mut mc: map<str, Color> = {}
+    mc["white"] = Color.Rgb(255, 255, 255)
+    println(to_string(brightness(mc["white"])))
+}
