@@ -1,0 +1,14 @@
+// Regression: passing an aggregate (struct) as a closure ARGUMENT. Aggregate
+// params use the byval-pointer ABI (ptr byval(%Agg)), so the closure env-thunk
+// must forward the unboxed pointer as byval to match the closure body's
+// parameter. Previously the thunk loaded the aggregate and passed it BY VALUE
+// (%Agg %v), mismatching the callee's `ptr byval(%Agg)` param and crashing the
+// AOT binary at the call (the Cranelift JIT tolerated it).
+// expect-stdout: 44
+struct Rect { w: i64, h: i64 }
+fn main() {
+    let area = |r: Rect| r.w * r.h
+    let perim = |r: Rect| 2 * (r.w + r.h)
+    let r = Rect { w: 6, h: 4 }
+    println(to_string(area(r) + perim(r)))
+}

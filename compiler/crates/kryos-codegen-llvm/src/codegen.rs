@@ -1576,15 +1576,17 @@ impl LlvmCodegen {
                     || expected_ty.starts_with('%')
                     || expected_ty.starts_with('[')
                 {
-                    // Aggregate param (e.g. a closure `fn(Request) -> ...`): the
-                    // caller boxed it into the i64 slot; unbox (inttoptr + load)
-                    // and pass by value. Without this `call @fn(%Request <i64>)`
-                    // mismatched.
+                    // Aggregate param (e.g. a closure `fn(Rect) -> ...`): the
+                    // underlying function takes it via the byval-pointer ABI
+                    // (`ptr byval(%Agg)`, as emitted for every aggregate param),
+                    // and the caller boxed it into the i64 slot. Forward the
+                    // unboxed pointer directly as byval. Previously this loaded
+                    // the aggregate and passed it BY VALUE (`%Agg %v`), which
+                    // mismatched the callee's `ptr byval(%Agg)` param and
+                    // crashed the AOT binary (the Cranelift JIT tolerated it).
                     let p = self.next_temp();
                     self.emit_line(&format!("  {p} = inttoptr i64 {raw} to ptr"));
-                    let v = self.next_temp();
-                    self.emit_line(&format!("  {v} = load {expected_ty}, ptr {p}"));
-                    call_args.push(format!("{expected_ty} {v}"));
+                    call_args.push(format!("ptr byval({expected_ty}) {p}"));
                 } else {
                     let coerced = self.coerce_value(&raw, "i64", &expected_ty);
                     call_args.push(format!("{expected_ty} {coerced}"));
