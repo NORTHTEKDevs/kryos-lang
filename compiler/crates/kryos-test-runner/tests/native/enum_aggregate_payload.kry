@@ -1,0 +1,34 @@
+// Regression: an enum variant whose payload is an aggregate (struct / enum /
+// tuple) must box the payload with the allocator its drop frees with
+// (kryos_calloc <-> kryos_free), not kryos_arc_alloc_i64. The mismatch left an
+// ARC header in front of the data, so the drop's kryos_free corrupted the heap
+// and the AOT binary aborted at teardown (the Cranelift JIT tolerated it).
+// Covers construct + match-extract + field access + pass-to-fn + nested enum.
+// expect-stdout: 7
+// expect-stdout: 55
+// expect-stdout: 42
+struct P { x: i64, y: i64 }
+enum Bx { Has(P), Empty }
+enum Inner { A(i64), B }
+enum Outer { Wrap(Inner), Nope }
+
+fn getx(b: Bx) -> i64 {
+    match b {
+        Has(p) => return p.x,
+        Empty => return 0,
+    }
+}
+
+fn main() {
+    println(to_string(getx(Bx.Has(P { x: 7, y: 2 }))))
+    let o = Outer.Wrap(Inner.A(55))
+    match o {
+        Wrap(inn) => match inn {
+            A(n) => println(to_string(n)),
+            B => println("b"),
+        },
+        Nope => println("nope"),
+    }
+    let b2 = Bx.Has(P { x: 42, y: 0 })
+    println(to_string(getx(b2)))
+}

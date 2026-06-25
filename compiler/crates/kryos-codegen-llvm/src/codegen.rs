@@ -5712,16 +5712,25 @@ impl LlvmCodegen {
                             self.emit_line(&format!(
                                 "  {size_int} = ptrtoint ptr {size_tmp} to i64"
                             ));
-                            let heap_i64 = self.next_temp();
-                            self.emit_line(&format!(
-                                "  {heap_i64} = call i64 @kryos_arc_alloc_i64(i64 {size_int})"
-                            ));
+                            // Box the aggregate payload with kryos_calloc (NOT
+                            // kryos_arc_alloc_i64): the enum drop helper frees the
+                            // payload pointer with kryos_free, so the allocation
+                            // must come from the matching allocator. arc_alloc'd
+                            // memory carries an ARC header, so kryos_free'ing it
+                            // corrupted the heap -> AOT abort at teardown for any
+                            // enum variant with a struct/enum/tuple payload (the
+                            // Cranelift JIT tolerated the mismatch). Mirrors the
+                            // array-element aggregate boxing path.
                             let heap_ptr = self.next_temp();
                             self.emit_line(&format!(
-                                "  {heap_ptr} = inttoptr i64 {heap_i64} to ptr"
+                                "  {heap_ptr} = call ptr @kryos_calloc(i64 1, i64 {size_int})"
                             ));
                             self.emit_line(&format!(
                                 "  store {val_ty} {val}, ptr {heap_ptr}"
+                            ));
+                            let heap_i64 = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {heap_i64} = ptrtoint ptr {heap_ptr} to i64"
                             ));
                             val = heap_i64;
                         } else if val_ty != "i64" {
