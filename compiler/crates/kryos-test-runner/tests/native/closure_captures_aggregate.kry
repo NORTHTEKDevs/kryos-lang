@@ -1,0 +1,26 @@
+// Regression: a closure capturing an aggregate (struct or enum) boxes the
+// capture into its ARC env slot. That box must use kryos_calloc so the
+// generated closure dropper's kryos_free matches the allocator -- boxing with
+// kryos_arc_alloc_i64 left an ARC header that kryos_free corrupted, aborting
+// the AOT binary at closure teardown (the Cranelift JIT tolerated it).
+// expect-stdout: 10
+// expect-stdout: 42
+struct Point { x: i64, y: i64 }
+enum E { A(i64), B }
+
+fn ev(e: E) -> i64 {
+    match e {
+        A(n) => return n,
+        B => return 0,
+    }
+}
+
+fn main() {
+    let p = Point { x: 3, y: 7 }
+    let get_sum = || p.x + p.y
+    println(to_string(get_sum()))
+
+    let e = E.A(42)
+    let get_e = || ev(e)
+    println(to_string(get_e()))
+}

@@ -5950,6 +5950,48 @@ impl LlvmCodegen {
                                 // cap_val is a ptr -- store as ptr to avoid type mismatch
                                 self.emit_line(&format!("  store ptr {cap_val}, ptr {cap_ptr}"));
                             }
+                            Some(MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)) => {
+                                // Aggregate capture (struct/enum/tuple by value):
+                                // box it into the env slot with kryos_calloc so the
+                                // generated closure dropper's kryos_free matches the
+                                // allocator. The generic `_` branch below boxes via
+                                // coerce_value -> kryos_arc_alloc_i64, whose ARC header
+                                // kryos_free then corrupts -> AOT abort at closure
+                                // teardown (the Cranelift JIT tolerated it). Mirrors the
+                                // enum-payload and array-element aggregate boxing.
+                                let cap_actual = self
+                                    .actual_type(&cap_val)
+                                    .unwrap_or_else(|| "i64".to_string());
+                                if cap_actual.starts_with('%') || cap_actual.starts_with('{') {
+                                    let size_ptr = self.next_temp();
+                                    self.emit_line(&format!(
+                                        "  {size_ptr} = getelementptr {cap_actual}, ptr null, i64 1"
+                                    ));
+                                    let size_i64 = self.next_temp();
+                                    self.emit_line(&format!(
+                                        "  {size_i64} = ptrtoint ptr {size_ptr} to i64"
+                                    ));
+                                    let buf = self.next_temp();
+                                    self.emit_line(&format!(
+                                        "  {buf} = call ptr @kryos_calloc(i64 1, i64 {size_i64})"
+                                    ));
+                                    self.emit_line(&format!(
+                                        "  store {cap_actual} {cap_val}, ptr {buf}"
+                                    ));
+                                    let as_i64 = self.next_temp();
+                                    self.emit_line(&format!(
+                                        "  {as_i64} = ptrtoint ptr {buf} to i64"
+                                    ));
+                                    self.emit_line(&format!("  store i64 {as_i64}, ptr {cap_ptr}"));
+                                } else {
+                                    // Already a boxed handle (i64/ptr): store as i64.
+                                    let coerced =
+                                        self.coerce_value(&cap_val, &cap_actual, "i64");
+                                    self.emit_line(&format!(
+                                        "  store i64 {coerced}, ptr {cap_ptr}"
+                                    ));
+                                }
+                            }
                             _ => {
                                 // If cap_val is a ptr, coerce to i64; otherwise store as-is.
                                 let actual = self
