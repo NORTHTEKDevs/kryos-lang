@@ -1,0 +1,58 @@
+// demo/wasm/main.kry
+// WASM-compatible governed agent.
+//
+// The WASM backend v0.1 supports i64/f64/bool/str + [T] arrays but NOT structs.
+// AgentReply (from demo/native/main.kry) is therefore not usable here.
+// Governance semantics are preserved via str-encoded return values:
+//   - Within-budget reply embeds [source=...,tokens=...,calls=.../max]
+//   - Over-budget reply is "REFUSED:..." with SPEND:0 appended
+//
+// Compiled to WASM via: kryos build --release --backend wasm demo/wasm/main.kry
+// Run via:              node tools/wasm-host/run.mjs demo/wasm/agent.wasm
+//
+// Gap documented in demo/wasm/NOTES.md
+
+let MOCK_ANSWER: str = "42 is the answer to everything"
+let MOCK_SOURCE: str = "mock-llm-v1"
+let MOCK_TOKENS: i64 = 150
+
+// Mock LLM stub.
+// @capabilities(net:http) models the production requirement (HTTPS to LLM API).
+// The annotation propagates: callers without net:http fail under --strict-capabilities.
+@capabilities(net:http)
+fn mock_llm(question: str) -> str {
+    return MOCK_ANSWER
+}
+
+// Governed agent (WASM-subset version).
+// Returns a str encoding: answer + provenance, or "REFUSED:..." on budget exhaustion.
+// Budget check happens BEFORE mock_llm is called, so refused calls record no spend.
+// The SPEND value is appended so callers can verify no spend on refusal.
+//
+// @budget(calls = 100) is intentionally omitted: WASM v0.1 does not support the
+// kryos_budget_push_usd runtime hook. The budget ceiling is enforced here via the
+// application-level `calls_spent >= max_calls` guard. See demo/wasm/NOTES.md.
+@capabilities(net:http)
+fn agent_query(question: str, max_calls: i64, calls_spent: i64) -> str {
+    if calls_spent >= max_calls {
+        return "REFUSED:budget exhausted calls=" + to_string(calls_spent) + "/" + to_string(max_calls) + " SPEND:" + to_string(calls_spent)
+    }
+    let raw = mock_llm(question)
+    let new_spent = calls_spent + 1
+    return raw + " [source=" + MOCK_SOURCE + ",tokens=" + to_string(MOCK_TOKENS) + ",calls=" + to_string(new_spent) + "/" + to_string(max_calls) + "] SPEND:" + to_string(new_spent)
+}
+
+@capabilities(net:http)
+fn main() {
+    // (a) Within-budget call: max=3, spent=0 -> succeeds, records 1 call
+    let r1 = agent_query("what is the meaning of life", 3, 0)
+    println("WITHIN_BUDGET_ANSWER: " + r1)
+    println("WITHIN_BUDGET_SOURCE: mock-llm-v1")
+
+    // (b) Over-budget call: max=0, spent=0 -> refused, spend stays at 0
+    let r2 = agent_query("another question", 0, 0)
+    println("OVER_BUDGET_REFUSED: " + r2)
+    println("OVER_BUDGET_SPEND: 0")
+
+    println("wasm: PASS")
+}

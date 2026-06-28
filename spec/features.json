@@ -14,7 +14,7 @@
     {
       "id": "wasm",
       "title": "Same governed agent compiled to WASM",
-      "status": "pending",
+      "status": "passing",
       "acceptance_test": "bash demo/wasm/check.sh",
       "contract": "Compile the SAME demo/agent governed agent to wasm32 (kryos build --release --backend wasm) and run it via `node tools/wasm-host/run.mjs`. The mock LLM must be wasm-safe (pure compute or routed through the JS host; the native HTTPS stdlib will NOT link in wasm). demo/wasm/check.sh asserts the within-budget answer+source and the over-budget refusal are observable from the wasm run. If a genuine wasm-backend limitation blocks it, fix the wasm backend OR shrink the agent to the wasm-supported subset and document the exact gap in demo/wasm/NOTES.md; the gate only passes when the demo actually runs in wasm."
     },

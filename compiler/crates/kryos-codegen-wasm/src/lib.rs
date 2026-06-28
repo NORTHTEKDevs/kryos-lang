@@ -284,6 +284,8 @@ struct WasmCodegen {
     regex_replace_idx: u32,
     /// `kryos_http_fetch(method_off,method_len, url_off,url_len, body_off,body_len) -> packed`.
     http_fetch_idx: u32,
+    /// `kryos_to_string_i64(v: i64) -> packed_str` — converts i64 to its decimal string.
+    to_string_i64_idx: u32,
 
     /// String literal interning: maps the literal -> (offset, len) in memory.
     string_table: HashMap<String, (u32, u32)>,
@@ -339,6 +341,7 @@ impl WasmCodegen {
             regex_test_idx: 0,
             regex_replace_idx: 0,
             http_fetch_idx: 0,
+            to_string_i64_idx: 0,
             string_table: HashMap::new(),
             // Reserve the first 16 bytes so offset 0 stays sentinel-free.
             string_cursor: 16,
@@ -711,6 +714,13 @@ impl WasmCodegen {
         self.imports.import(env_module, "kryos_http_fetch",
             wasm_encoder::EntityType::Function(self.type_count));
         self.http_fetch_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // to_string_i64(v: i64) -> packed_str  — decimal formatting of an i64
+        self.types.ty().function(vec![ValType::I64], vec![ValType::I64]);
+        self.imports.import(env_module, "kryos_to_string_i64",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.to_string_i64_idx = self.func_count;
         self.func_count += 1; self.type_count += 1;
     }
 
@@ -1680,6 +1690,17 @@ impl<'a> FnEmitter<'a> {
         }
 
         // -------------------------------------------------------------
+        // Built-in: to_string(v) — convert i64/bool/f64 to decimal string
+        // Delegates to host kryos_to_string_i64 which writes the string into
+        // linear memory and returns a packed (offset, len) i64 handle.
+        // -------------------------------------------------------------
+        if func == "to_string" && args.len() == 1 {
+            self.emit_operand(&args[0])?;
+            self.wfunc.instruction(&W::Call(self.cg.to_string_i64_idx));
+            return Ok(());
+        }
+
+        // -------------------------------------------------------------
         // User function call
         // -------------------------------------------------------------
         if let Some(&idx) = self.cg.fn_indices.get(func) {
@@ -1690,7 +1711,7 @@ impl<'a> FnEmitter<'a> {
             Ok(())
         } else {
             Err(WasmCodegenError::unsupported(&format!(
-                "call to `{func}` — supported builtins: println, len, str_concat, array_new/get/set"
+                "call to `{func}` — supported builtins: println, len, str_concat, array_new/get/set, to_string"
             )))
         }
     }
