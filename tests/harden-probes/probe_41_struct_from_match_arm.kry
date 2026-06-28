@@ -1,0 +1,31 @@
+// probe_41: struct value constructed inside match arm and returned
+struct Color { r: i64, g: i64, b: i64 }
+
+enum Preset {
+    Red,
+    Green,
+    Blue,
+    White,
+    Black,
+}
+
+fn preset_color(p: Preset) -> Color {
+    match p {
+        Preset.Red   => return Color { r: 255, g: 0,   b: 0 },
+        Preset.Green => return Color { r: 0,   g: 255, b: 0 },
+        Preset.Blue  => return Color { r: 0,   g: 0,   b: 255 },
+        Preset.White => return Color { r: 255, g: 255, b: 255 },
+        Preset.Black => return Color { r: 0,   g: 0,   b: 0 },
+    }
+}
+
+fn hex(c: Color) -> str {
+    return to_string(c.r) + "," + to_string(c.g) + "," + to_string(c.b)
+}
+
+fn main() {
+    println(hex(preset_color(Preset.Red)))
+    println(hex(preset_color(Preset.Green)))
+    println(hex(preset_color(Preset.White)))
+    println(hex(preset_color(Preset.Black)))
+}

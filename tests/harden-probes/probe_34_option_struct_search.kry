@@ -1,0 +1,33 @@
+// probe_34: Option<struct> returned from array search function + match
+use std::option::{Option, Some, None}
+
+struct Record { id: i64, active: bool }
+
+fn first_active(records: [Record]) -> Option<Record> {
+    let mut i: i64 = 0
+    while i < len(records) {
+        if records[i].active { return Some(records[i]) }
+        i = i + 1
+    }
+    return None()
+}
+
+fn main() {
+    let rs1: [Record] = [
+        Record { id: 1, active: false },
+        Record { id: 2, active: true },
+        Record { id: 3, active: true },
+    ]
+    let rs2: [Record] = [
+        Record { id: 10, active: false },
+        Record { id: 11, active: false },
+    ]
+    match first_active(rs1) {
+        Some(r) => println("found:" + to_string(r.id)),
+        None()  => println("none"),
+    }
+    match first_active(rs2) {
+        Some(r) => println("found:" + to_string(r.id)),
+        None()  => println("none"),
+    }
+}

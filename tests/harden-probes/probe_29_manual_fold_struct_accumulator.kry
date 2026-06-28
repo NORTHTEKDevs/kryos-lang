@@ -1,0 +1,28 @@
+// probe_29: manual fold producing struct result with max tracking (probe_09 uses HOF fold)
+struct Stats { total: i64, count: i64, max: i64 }
+struct Sample { x: i64 }
+
+fn update(acc: Stats, s: Sample) -> Stats {
+    let mut new_max = acc.max
+    if s.x > acc.max { new_max = s.x }
+    return Stats { total: acc.total + s.x, count: acc.count + 1, max: new_max }
+}
+
+fn main() {
+    let samples: [Sample] = [
+        Sample { x: 3 },
+        Sample { x: 7 },
+        Sample { x: 2 },
+        Sample { x: 9 },
+        Sample { x: 4 },
+    ]
+    let mut acc = Stats { total: 0, count: 0, max: 0 }
+    let mut i: i64 = 0
+    while i < len(samples) {
+        acc = update(acc, samples[i])
+        i = i + 1
+    }
+    println(to_string(acc.total))
+    println(to_string(acc.count))
+    println(to_string(acc.max))
+}

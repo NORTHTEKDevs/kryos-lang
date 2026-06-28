@@ -1,0 +1,29 @@
+// probe_43: quad with 4 i64 fields — multiple geometric functions, mutation (avoids nested-aggregate AOT double-free)
+struct Quad { x: i64, y: i64, w: i64, h: i64 }
+
+fn area(q: Quad) -> i64 {
+    return q.w * q.h
+}
+
+fn perimeter(q: Quad) -> i64 {
+    return 2 * (q.w + q.h)
+}
+
+fn center_x(q: Quad) -> i64 {
+    return q.x + q.w / 2
+}
+
+fn fits_inside(q: Quad, outer: Quad) -> bool {
+    return q.w <= outer.w && q.h <= outer.h
+}
+
+fn main() {
+    let r = Quad { x: 0, y: 0, w: 10, h: 5 }
+    println(to_string(area(r)))
+    println(to_string(perimeter(r)))
+    println(to_string(center_x(r)))
+    let small = Quad { x: 0, y: 0, w: 4, h: 3 }
+    let big   = Quad { x: 0, y: 0, w: 20, h: 20 }
+    if fits_inside(r, big)   { println("fits") } else { println("no-fit") }
+    if fits_inside(r, small) { println("fits") } else { println("no-fit") }
+}

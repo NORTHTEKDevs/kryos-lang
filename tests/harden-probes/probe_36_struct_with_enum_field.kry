@@ -1,0 +1,28 @@
+// probe_36: struct with enum-typed field + match on it (tests CLAUDE.md gotcha-21 fix)
+enum Status {
+    Active,
+    Inactive,
+    Pending,
+}
+
+struct Job { id: i64, name: str, status: Status }
+
+fn describe(j: Job) -> str {
+    match j.status {
+        Status.Active   => return j.name + ":active",
+        Status.Inactive => return j.name + ":inactive",
+        Status.Pending  => return j.name + ":pending",
+    }
+}
+
+fn main() {
+    let j1 = Job { id: 1, name: "build",  status: Status.Active }
+    let j2 = Job { id: 2, name: "test",   status: Status.Pending }
+    let j3 = Job { id: 3, name: "deploy", status: Status.Inactive }
+    println(describe(j1))
+    println(describe(j2))
+    println(describe(j3))
+    let mut j4 = Job { id: 4, name: "scan", status: Status.Pending }
+    j4.status = Status.Active
+    println(describe(j4))
+}

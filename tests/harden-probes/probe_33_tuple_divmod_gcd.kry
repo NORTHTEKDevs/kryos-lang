@@ -1,0 +1,19 @@
+// probe_33: tuple-returning function + recursion + destructuring (gcd via divmod)
+fn divmod(a: i64, b: i64) -> (i64, i64) {
+    return (a / b, a % b)
+}
+
+fn gcd(a: i64, b: i64) -> i64 {
+    if b == 0 { return a }
+    let (dummy, r) = divmod(a, b)
+    return gcd(b, r)
+}
+
+fn main() {
+    let (q, r) = divmod(17, 5)
+    println(to_string(q))
+    println(to_string(r))
+    println(to_string(gcd(48, 18)))
+    println(to_string(gcd(100, 75)))
+    println(to_string(gcd(7, 13)))
+}

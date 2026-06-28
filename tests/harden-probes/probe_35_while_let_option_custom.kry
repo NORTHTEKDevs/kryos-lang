@@ -1,0 +1,20 @@
+// probe_35: while let Some with custom Option-returning function (probe_16 has while let on different pattern)
+use std::option::{Option, Some, None}
+
+fn pick(arr: [i64], idx: i64) -> Option<i64> {
+    if idx < 0 { return None() }
+    if idx >= len(arr) { return None() }
+    return Some(arr[idx])
+}
+
+fn main() {
+    let data: [i64] = [5, 10, 15, 20, 25]
+    let mut i: i64 = 0
+    let mut sum: i64 = 0
+    while let Some(v) = pick(data, i) {
+        sum = sum + v
+        i = i + 1
+    }
+    println(to_string(sum))
+    println(to_string(i))
+}

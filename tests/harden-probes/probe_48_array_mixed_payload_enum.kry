@@ -1,0 +1,29 @@
+// probe_48: array of enums with mixed-type payloads (str+i64 pair) + iteration
+enum Message {
+    Text(str),
+    Number(i64),
+    Pair(str, i64),
+}
+
+fn format_msg(m: Message) -> str {
+    match m {
+        Message.Text(s)    => return "text:" + s,
+        Message.Number(n)  => return "num:" + to_string(n),
+        Message.Pair(s, n) => return "pair:" + s + "=" + to_string(n),
+    }
+}
+
+fn main() {
+    let msgs: [Message] = [
+        Message.Text("hello"),
+        Message.Number(42),
+        Message.Pair("x", 99),
+        Message.Text("world"),
+        Message.Pair("score", 100),
+    ]
+    let mut i: i64 = 0
+    while i < len(msgs) {
+        println(format_msg(msgs[i]))
+        i = i + 1
+    }
+}

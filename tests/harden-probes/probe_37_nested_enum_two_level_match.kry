@@ -1,0 +1,33 @@
+// probe_37: nested enum — Outer variant carries Inner enum, two-level match
+enum Inner {
+    A,
+    B(i64),
+}
+
+enum Outer {
+    Wrap(Inner),
+    Raw(i64),
+    Empty,
+}
+
+fn eval_inner(i: Inner) -> i64 {
+    match i {
+        Inner.A    => return 0,
+        Inner.B(n) => return n,
+    }
+}
+
+fn eval(o: Outer) -> i64 {
+    match o {
+        Outer.Wrap(inner) => return eval_inner(inner),
+        Outer.Raw(v)      => return v * 10,
+        Outer.Empty       => return -1,
+    }
+}
+
+fn main() {
+    println(to_string(eval(Outer.Wrap(Inner.A))))
+    println(to_string(eval(Outer.Wrap(Inner.B(7)))))
+    println(to_string(eval(Outer.Raw(5))))
+    println(to_string(eval(Outer.Empty)))
+}

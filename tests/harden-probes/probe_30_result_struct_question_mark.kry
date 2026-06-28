@@ -1,0 +1,30 @@
+// probe_30: Result<struct, str> + ? operator in chain (probe_08 = Ok/Err, probe_19 = ? on i64 result)
+use std::result::{Result, Ok, Err}
+
+struct Config { host: str, port: i64 }
+
+fn parse_port(s: str) -> Result<i64, str> {
+    let n: i64 = parse_int(s)
+    if n <= 0 { return Err("bad port: " + s) }
+    return Ok(n)
+}
+
+fn make_config(host: str, port_str: str) -> Result<Config, str> {
+    let port = parse_port(port_str)?
+    return Ok(Config { host: host, port: port })
+}
+
+fn main() {
+    match make_config("localhost", "8080") {
+        Ok(c)  => println(c.host + ":" + to_string(c.port)),
+        Err(e) => println("err:" + e),
+    }
+    match make_config("example.com", "-1") {
+        Ok(c)  => println(c.host + ":" + to_string(c.port)),
+        Err(e) => println("err:" + e),
+    }
+    match make_config("host2", "443") {
+        Ok(c)  => println(c.host + ":" + to_string(c.port)),
+        Err(e) => println("err:" + e),
+    }
+}

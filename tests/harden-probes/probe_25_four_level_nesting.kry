@@ -1,0 +1,26 @@
+// probe_25: 4-level deep struct nesting + mutation at every level (extends probe_03 3-level)
+struct D { val: i64 }
+struct C { d: D, label: str }
+struct B { c: C, count: i64 }
+struct A { b: B, name: str }
+
+fn main() {
+    let mut root = A {
+        name: "root",
+        b: B {
+            count: 0,
+            c: C {
+                label: "leaf",
+                d: D { val: 1 }
+            }
+        }
+    }
+    root.b.c.d.val = 99
+    root.b.count = 7
+    root.b.c.label = "deep"
+    root.name = "ROOT"
+    println(root.name)
+    println(to_string(root.b.count))
+    println(root.b.c.label)
+    println(to_string(root.b.c.d.val))
+}

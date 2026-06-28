@@ -1,0 +1,29 @@
+// probe_26: enum with 3-field tuple payload — construct + match + extract all 3 (probe_18 has 2-field)
+enum Triple {
+    Rgb(i64, i64, i64),
+    Coord(i64, i64, i64),
+    Empty,
+}
+
+fn show(t: Triple) -> str {
+    match t {
+        Triple.Rgb(r, g, b)   => return "rgb:" + to_string(r) + "," + to_string(g) + "," + to_string(b),
+        Triple.Coord(x, y, z) => return "coord:" + to_string(x) + "," + to_string(y) + "," + to_string(z),
+        Triple.Empty          => return "empty",
+    }
+}
+
+fn main() {
+    println(show(Triple.Rgb(255, 128, 0)))
+    println(show(Triple.Coord(1, 2, 3)))
+    println(show(Triple.Empty))
+    let arr: [Triple] = [
+        Triple.Rgb(10, 20, 30),
+        Triple.Coord(4, 5, 6),
+    ]
+    let mut i: i64 = 0
+    while i < len(arr) {
+        println(show(arr[i]))
+        i = i + 1
+    }
+}

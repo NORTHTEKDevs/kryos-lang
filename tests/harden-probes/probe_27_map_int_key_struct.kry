@@ -1,0 +1,16 @@
+// probe_27: map<i64, struct> mutation + reads (probe_04/24 use str keys; this uses i64 keys)
+struct Item { label: str, value: i64 }
+
+fn main() {
+    let mut m: map<i64, Item> = {}
+    m[1] = Item { label: "one", value: 1 }
+    m[2] = Item { label: "two", value: 2 }
+    m[10] = Item { label: "ten", value: 10 }
+    m[2].value = 99
+    m[1].label = "ONE"
+    println(m[1].label + "=" + to_string(m[1].value))
+    println(m[2].label + "=" + to_string(m[2].value))
+    println(m[10].label + "=" + to_string(m[10].value))
+    println(to_string(contains(m, 10)))
+    println(to_string(contains(m, 99)))
+}

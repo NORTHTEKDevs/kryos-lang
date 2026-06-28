@@ -1,0 +1,19 @@
+// probe_42: recursion with struct carrying a str field (probe_05 uses all-int struct)
+struct Node { name: str, depth: i64 }
+
+fn walk(n: Node, limit: i64) -> Node {
+    if n.depth >= limit { return n }
+    let child = Node { name: n.name + "*", depth: n.depth + 1 }
+    return walk(child, limit)
+}
+
+fn main() {
+    let root = Node { name: "r", depth: 0 }
+    let result = walk(root, 3)
+    println(result.name)
+    println(to_string(result.depth))
+    let mid = Node { name: "m", depth: 2 }
+    let result2 = walk(mid, 5)
+    println(result2.name)
+    println(to_string(result2.depth))
+}

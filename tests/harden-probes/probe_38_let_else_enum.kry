@@ -1,0 +1,18 @@
+// probe_38: let...else destructuring a custom enum variant (probe_16 has let-else on Option/Result)
+enum Cmd {
+    Move(i64, i64),
+    Print(str),
+    Quit,
+}
+
+fn handle_move(cmd: Cmd) -> str {
+    let Cmd.Move(x, y) = cmd else { return "not-move" }
+    return "move:" + to_string(x) + "," + to_string(y)
+}
+
+fn main() {
+    println(handle_move(Cmd.Move(3, 7)))
+    println(handle_move(Cmd.Print("hi")))
+    println(handle_move(Cmd.Quit))
+    println(handle_move(Cmd.Move(0, 0)))
+}

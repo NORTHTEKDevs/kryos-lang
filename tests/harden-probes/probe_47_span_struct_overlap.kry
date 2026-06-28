@@ -1,0 +1,30 @@
+// probe_47: Span struct with length and overlap predicates
+struct Span { start: i64, end: i64 }
+
+fn length(s: Span) -> i64 {
+    return s.end - s.start
+}
+
+fn overlaps(a: Span, b: Span) -> bool {
+    return a.start < b.end && b.start < a.end
+}
+
+fn merge(a: Span, b: Span) -> Span {
+    let mut lo = a.start
+    if b.start < lo { lo = b.start }
+    let mut hi = a.end
+    if b.end > hi { hi = b.end }
+    return Span { start: lo, end: hi }
+}
+
+fn main() {
+    let s1 = Span { start: 0,  end: 10 }
+    let s2 = Span { start: 5,  end: 15 }
+    let s3 = Span { start: 10, end: 20 }
+    println(to_string(length(s1)))
+    println(to_string(length(s2)))
+    if overlaps(s1, s2) { println("overlap:s1-s2") } else { println("no-overlap:s1-s2") }
+    if overlaps(s1, s3) { println("overlap:s1-s3") } else { println("no-overlap:s1-s3") }
+    let m = merge(s1, s2)
+    println(to_string(m.start) + "-" + to_string(m.end))
+}

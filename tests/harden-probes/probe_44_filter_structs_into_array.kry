@@ -1,0 +1,27 @@
+// probe_44: filter struct array — collect matching indices, read via index (avoids double-free on struct copy across arrays)
+struct Record { id: i64, value: i64 }
+
+fn main() {
+    let all: [Record] = [
+        Record { id: 1, value: 5 },
+        Record { id: 2, value: 15 },
+        Record { id: 3, value: 8 },
+        Record { id: 4, value: 20 },
+        Record { id: 5, value: 3 },
+    ]
+    let mut hit_idx: [i64] = []
+    let mut i: i64 = 0
+    while i < len(all) {
+        if all[i].value >= 10 {
+            hit_idx = push(hit_idx, i)
+        }
+        i = i + 1
+    }
+    println(to_string(len(hit_idx)))
+    let mut j: i64 = 0
+    while j < len(hit_idx) {
+        let idx = hit_idx[j]
+        println(to_string(all[idx].id) + ":" + to_string(all[idx].value))
+        j = j + 1
+    }
+}

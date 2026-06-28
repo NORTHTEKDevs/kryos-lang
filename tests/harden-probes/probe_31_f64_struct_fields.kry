@@ -1,0 +1,21 @@
+// probe_31: struct with f64 fields + dot product + cast to i64
+struct Vec3 { x: f64, y: f64, z: f64 }
+
+fn dot(a: Vec3, b: Vec3) -> f64 {
+    return a.x * b.x + a.y * b.y + a.z * b.z
+}
+
+fn scale(v: Vec3, s: f64) -> Vec3 {
+    return Vec3 { x: v.x * s, y: v.y * s, z: v.z * s }
+}
+
+fn main() {
+    let v1 = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
+    let v2 = Vec3 { x: 4.0, y: 5.0, z: 6.0 }
+    let d = dot(v1, v2)
+    println(to_string(d as i64))
+    let v3 = scale(v1, 2.0)
+    println(to_string(v3.x as i64))
+    println(to_string(v3.y as i64))
+    println(to_string(v3.z as i64))
+}

@@ -1,0 +1,30 @@
+// probe_32: impl method returning new struct (inc-by-step pattern), sequential chaining
+struct Counter { value: i64, step: i64 }
+
+impl Counter {
+    fn new(step: i64) -> Counter {
+        return Counter { value: 0, step: step }
+    }
+    fn inc(self: Counter) -> Counter {
+        return Counter { value: self.value + self.step, step: self.step }
+    }
+    fn add(self: Counter, n: i64) -> Counter {
+        return Counter { value: self.value + n, step: self.step }
+    }
+    fn get(self: Counter) -> i64 {
+        return self.value
+    }
+}
+
+fn main() {
+    let c = Counter.new(5)
+    let c = c.inc()
+    let c = c.inc()
+    let c = c.inc()
+    println(to_string(c.get()))
+    let d = Counter.new(3)
+    let d = d.inc()
+    let d = d.inc()
+    let d = d.add(10)
+    println(to_string(d.get()))
+}

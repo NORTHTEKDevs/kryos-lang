@@ -1,0 +1,21 @@
+// probe_28: push-grown array of structs + field mutations (probe_14 uses literal array)
+struct Counter { name: str, n: i64 }
+
+fn main() {
+    let mut cs: [Counter] = []
+    cs = push(cs, Counter { name: "a", n: 0 })
+    cs = push(cs, Counter { name: "b", n: 0 })
+    cs = push(cs, Counter { name: "c", n: 0 })
+    cs[0].n = 10
+    cs[1].n = 20
+    cs[2].n = 30
+    cs[1].name = "B"
+    let mut total: i64 = 0
+    let mut i: i64 = 0
+    while i < len(cs) {
+        println(cs[i].name + "=" + to_string(cs[i].n))
+        total = total + cs[i].n
+        i = i + 1
+    }
+    println(to_string(total))
+}

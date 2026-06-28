@@ -1,0 +1,31 @@
+// probe_45: impl methods that return new struct (builder pattern with shadowed lets)
+struct Builder { name: str, count: i64, active: bool }
+
+impl Builder {
+    fn new(name: str) -> Builder {
+        return Builder { name: name, count: 0, active: true }
+    }
+    fn with_count(self: Builder, n: i64) -> Builder {
+        return Builder { name: self.name, count: n, active: self.active }
+    }
+    fn with_active(self: Builder, a: bool) -> Builder {
+        return Builder { name: self.name, count: self.count, active: a }
+    }
+    fn build_str(self: Builder) -> str {
+        if self.active {
+            return self.name + "(" + to_string(self.count) + "):on"
+        }
+        return self.name + "(" + to_string(self.count) + "):off"
+    }
+}
+
+fn main() {
+    let b1 = Builder.new("worker")
+    let b1 = b1.with_count(5)
+    let b1 = b1.with_active(true)
+    let b2 = Builder.new("server")
+    let b2 = b2.with_count(0)
+    let b2 = b2.with_active(false)
+    println(b1.build_str())
+    println(b2.build_str())
+}

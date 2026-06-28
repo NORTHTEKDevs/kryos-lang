@@ -1,0 +1,20 @@
+// probe_39: build map<str, i64> from a struct array, then read and sum
+struct Entry { name: str, score: i64 }
+
+fn main() {
+    let items: [Entry] = [
+        Entry { name: "alice", score: 80 },
+        Entry { name: "bob",   score: 65 },
+        Entry { name: "carol", score: 90 },
+    ]
+    let mut lookup: map<str, i64> = {}
+    let mut i: i64 = 0
+    while i < len(items) {
+        lookup[items[i].name] = items[i].score
+        i = i + 1
+    }
+    println(to_string(lookup["alice"]))
+    println(to_string(lookup["bob"]))
+    println(to_string(lookup["carol"]))
+    println(to_string(lookup["alice"] + lookup["bob"] + lookup["carol"]))
+}
