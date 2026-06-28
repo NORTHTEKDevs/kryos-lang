@@ -24,7 +24,7 @@ echo "  PASS  cargo-suite"
 
 PROBE_DIR="$ROOT/tests/harden-probes"; mkdir -p "$PROBE_DIR"
 count=$(ls "$PROBE_DIR"/*.kry 2>/dev/null | wc -l)
-TARGET=48
+TARGET=80
 [ "$count" -ge "$TARGET" ] || fail "need >= $TARGET adversarial probes in tests/harden-probes (have $count)"
 
 diverged=0
