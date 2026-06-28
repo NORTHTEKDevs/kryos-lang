@@ -1,0 +1,18 @@
+// probe_11: matching on tuple values, literal + binding elements
+fn classify(x: i64, y: i64) -> str {
+    match (x, y) {
+        (0, 0)   => return "origin",
+        (0, _)   => return "y-axis",
+        (_, 0)   => return "x-axis",
+        (1, 1)   => return "unit-diag",
+        _        => return "other",
+    }
+}
+
+fn main() {
+    println(classify(0, 0))
+    println(classify(0, 5))
+    println(classify(3, 0))
+    println(classify(1, 1))
+    println(classify(2, 3))
+}

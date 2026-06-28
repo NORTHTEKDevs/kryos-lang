@@ -1,0 +1,19 @@
+// probe_14: in-place mutation of struct fields through array elements
+struct Counter { name: str, n: i64 }
+
+fn main() {
+    let mut cs: [Counter] = [
+        Counter { name: "a", n: 0 },
+        Counter { name: "b", n: 0 },
+        Counter { name: "c", n: 0 },
+    ]
+    cs[0].n = 10
+    cs[1].n = 20
+    cs[2].n = 30
+    cs[0].name = "A"
+    let mut i: i64 = 0
+    while i < len(cs) {
+        println(cs[i].name + "=" + to_string(cs[i].n))
+        i = i + 1
+    }
+}

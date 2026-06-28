@@ -1,0 +1,22 @@
+// probe_08: Result<struct, str> — Ok and Err paths
+use std::result::{Result, Ok, Err}
+
+struct Config { host: str, port: i64 }
+
+fn parse_config(valid: i64) -> Result<Config, str> {
+    if valid == 1 {
+        return Ok(Config { host: "localhost", port: 8080 })
+    }
+    return Err("invalid config")
+}
+
+fn main() {
+    match parse_config(1) {
+        Ok(c)  => println(c.host + ":" + to_string(c.port)),
+        Err(e) => println("error:" + e),
+    }
+    match parse_config(0) {
+        Ok(c)  => println(c.host),
+        Err(e) => println("error:" + e),
+    }
+}

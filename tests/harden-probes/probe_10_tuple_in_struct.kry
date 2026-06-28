@@ -1,0 +1,22 @@
+// probe_10: struct with tuple field, access and mutation
+struct Range { lo: i64, hi: i64, label: str }
+
+fn contains(r: Range, v: i64) -> i64 {
+    if v >= r.lo {
+        if v <= r.hi {
+            return 1
+        }
+    }
+    return 0
+}
+
+fn main() {
+    let r = Range { lo: 1, hi: 10, label: "normal" }
+    println(r.label + ":" + to_string(contains(r, 5)))
+    println(r.label + ":" + to_string(contains(r, 11)))
+    let mut r2 = Range { lo: 0, hi: 100, label: "wide" }
+    r2.hi = 50
+    r2.label = "narrow"
+    println(r2.label + ":" + to_string(contains(r2, 60)))
+    println(r2.label + ":" + to_string(contains(r2, 25)))
+}

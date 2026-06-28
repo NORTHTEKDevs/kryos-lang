@@ -1,0 +1,30 @@
+// probe_23: string operations, substr, len, contains, interpolation edge cases
+use std::string::{split_lines}
+
+fn repeat(s: str, n: i64) -> str {
+    let mut result: str = ""
+    let mut i: i64 = 0
+    while i < n {
+        result = result + s
+        i = i + 1
+    }
+    return result
+}
+
+fn main() {
+    let s: str = "hello world"
+    println(to_string(len(s)))
+    println(substr(s, 0, 5))
+    println(substr(s, 6, 11))
+    if contains(s, "world") {
+        println("found")
+    }
+    let rep = repeat("ab", 3)
+    println(rep)
+    let n: i64 = 42
+    let f: f64 = 3.14
+    println("n={n} f={f}")
+    let lines = split_lines("line1\nline2\nline3")
+    println(to_string(len(lines)))
+    println(lines[1])
+}

@@ -1,0 +1,22 @@
+// probe_07: Option<struct> — construct, match, field access
+use std::option::{Option, Some, None}
+
+struct User { name: str, age: i64 }
+
+fn find_user(id: i64) -> Option<User> {
+    if id == 1 {
+        return Some(User { name: "alice", age: 30 })
+    }
+    return None()
+}
+
+fn main() {
+    match find_user(1) {
+        Some(u) => println(u.name + ":" + to_string(u.age)),
+        None()  => println("not found"),
+    }
+    match find_user(99) {
+        Some(u) => println(u.name),
+        None()  => println("not found"),
+    }
+}

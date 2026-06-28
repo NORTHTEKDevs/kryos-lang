@@ -1,0 +1,38 @@
+// probe_12: or-patterns in match arms (literals and bare enum variants, incl exhaustive 2x2)
+enum Color {
+    Red,
+    Green,
+    Blue,
+    Yellow,
+}
+
+fn group(c: Color) -> str {
+    match c {
+        Color.Red | Color.Yellow => return "warm",
+        Color.Green | Color.Blue => return "cool",
+    }
+}
+
+fn day_type(d: i64) -> str {
+    match d {
+        1 | 7   => return "weekend",
+        2 | 3 | 4 | 5 | 6 => return "weekday",
+        _       => return "invalid",
+    }
+}
+
+fn main() {
+    println(group(Color.Red))
+    println(group(Color.Blue))
+    println(group(Color.Yellow))
+    println(day_type(1))
+    println(day_type(3))
+    println(day_type(8))
+    // exhaustive enum match with two or-pattern arms (tests fixed is_enum_match for Or)
+    let c2 = Color.Green
+    let result: str = match c2 {
+        Color.Red | Color.Yellow => "hot",
+        Color.Green | Color.Blue => "cold",
+    }
+    println(result)
+}

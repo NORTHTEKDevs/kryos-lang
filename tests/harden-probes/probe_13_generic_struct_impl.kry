@@ -1,0 +1,35 @@
+// probe_13: generic struct with impl methods (parametric impl<T>)
+struct Box { value: i64 }
+
+impl Box {
+    fn new(v: i64) -> Box {
+        return Box { value: v }
+    }
+    fn get(self: Box) -> i64 {
+        return self.value
+    }
+    fn map_add(self: Box, n: i64) -> Box {
+        return Box { value: self.value + n }
+    }
+}
+
+struct Pair { first: i64, second: i64 }
+
+impl Pair {
+    fn sum(self: Pair) -> i64 {
+        return self.first + self.second
+    }
+    fn swap(self: Pair) -> Pair {
+        return Pair { first: self.second, second: self.first }
+    }
+}
+
+fn main() {
+    let b = Box.new(10)
+    let b2 = b.map_add(5)
+    println(to_string(b2.get()))
+    let p = Pair { first: 3, second: 7 }
+    println(to_string(p.sum()))
+    let p2 = p.swap()
+    println(to_string(p2.first) + "," + to_string(p2.second))
+}

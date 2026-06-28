@@ -1,0 +1,19 @@
+// probe_17: map<str, i64> iteration and mutation, contains check
+fn main() {
+    let mut m: map<str, i64> = {}
+    m["x"] = 10
+    m["y"] = 20
+    m["z"] = 30
+    m["y"] = m["y"] + 5
+    println(to_string(m["x"]))
+    println(to_string(m["y"]))
+    println(to_string(m["z"]))
+    if contains(m, "x") {
+        println("has-x")
+    }
+    if contains(m, "w") {
+        println("has-w")
+    } else {
+        println("no-w")
+    }
+}

@@ -1,0 +1,15 @@
+// probe_06: string interpolation of computed struct fields
+struct Vec2 { x: i64, y: i64 }
+
+fn add_vecs(a: Vec2, b: Vec2) -> Vec2 {
+    return Vec2 { x: a.x + b.x, y: a.y + b.y }
+}
+
+fn main() {
+    let v1 = Vec2 { x: 3, y: 4 }
+    let v2 = Vec2 { x: 1, y: 2 }
+    let sum = add_vecs(v1, v2)
+    println("x={sum.x} y={sum.y}")
+    let label: str = "result"
+    println("{label}: ({sum.x},{sum.y})")
+}

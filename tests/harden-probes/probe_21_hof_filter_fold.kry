@@ -1,0 +1,17 @@
+// probe_21: filter + fold HOFs over arrays, type-inferred closures
+use std::iter::{filter, fold, map}
+
+fn main() {
+    let nums: [i64] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    let evens = filter(nums, |x| x % 2 == 0)
+    let sum_evens = fold(evens, 0, |acc, x| acc + x)
+    println(to_string(sum_evens))
+
+    let odds = filter(nums, |x| x % 2 != 0)
+    let product = fold(odds, 1, |acc, x| acc * x)
+    println(to_string(product))
+
+    let doubled = map(nums, |x| x * 2)
+    let sum_all = fold(doubled, 0, |acc, x| acc + x)
+    println(to_string(sum_all))
+}

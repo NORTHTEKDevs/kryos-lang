@@ -1,0 +1,30 @@
+// probe_18: enum whose payload contains a tuple of values
+enum Event {
+    Click(i64, i64),
+    Key(str),
+    Resize(i64, i64),
+    Quit,
+}
+
+fn describe(e: Event) -> str {
+    match e {
+        Event.Click(x, y) => return "click@" + to_string(x) + "," + to_string(y),
+        Event.Key(k)      => return "key:" + k,
+        Event.Resize(w, h) => return "resize:" + to_string(w) + "x" + to_string(h),
+        Event.Quit        => return "quit",
+    }
+}
+
+fn main() {
+    let events: [Event] = [
+        Event.Click(100, 200),
+        Event.Key("enter"),
+        Event.Resize(800, 600),
+        Event.Quit,
+    ]
+    let mut i: i64 = 0
+    while i < len(events) {
+        println(describe(events[i]))
+        i = i + 1
+    }
+}

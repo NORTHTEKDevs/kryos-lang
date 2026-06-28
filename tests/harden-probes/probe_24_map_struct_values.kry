@@ -1,0 +1,26 @@
+// probe_24: map<str, struct> with aggregate values, insert/read/overwrite
+struct Stats { hits: i64, misses: i64 }
+
+fn hit_rate(s: Stats) -> i64 {
+    let total: i64 = s.hits + s.misses
+    if total == 0 { return 0 }
+    return (s.hits * 100) / total
+}
+
+fn main() {
+    let mut cache: map<str, Stats> = {}
+    cache["a"] = Stats { hits: 8, misses: 2 }
+    cache["b"] = Stats { hits: 3, misses: 7 }
+    cache["c"] = Stats { hits: 5, misses: 5 }
+    println(to_string(hit_rate(cache["a"])))
+    println(to_string(hit_rate(cache["b"])))
+    println(to_string(hit_rate(cache["c"])))
+    // overwrite
+    cache["a"] = Stats { hits: 10, misses: 0 }
+    println(to_string(hit_rate(cache["a"])))
+    if contains(cache, "d") {
+        println("has-d")
+    } else {
+        println("no-d")
+    }
+}

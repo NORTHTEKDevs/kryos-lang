@@ -3721,13 +3721,24 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
         MirType::Enum(name) => Some(name.clone()),
         _ => None,
     };
-    let is_enum_match = arms
-        .iter()
-        .any(|a| matches!(&a.pattern, ast::Pattern::Enum { .. }))
-        || (subj_enum_name.is_some()
-            && arms
-                .iter()
-                .any(|a| matches!(&a.pattern, ast::Pattern::Ident { .. })));
+    let is_enum_match = arms.iter().any(|a| match &a.pattern {
+        ast::Pattern::Enum { .. } => true,
+        // Or-patterns whose alternatives are enum variants must also trigger
+        // tag extraction — otherwise the raw enum pointer is used as the
+        // switch value instead of the loaded discriminant, causing a SIGILL
+        // when comparing a heap address against small integer constants.
+        ast::Pattern::Or { patterns, .. } => {
+            patterns.iter().any(|p| matches!(p, ast::Pattern::Enum { .. }))
+        }
+        _ => false,
+    }) || (subj_enum_name.is_some()
+        && arms.iter().any(|a| match &a.pattern {
+            ast::Pattern::Ident { .. } => true,
+            ast::Pattern::Or { patterns, .. } => {
+                patterns.iter().any(|p| matches!(p, ast::Pattern::Ident { .. }))
+            }
+            _ => false,
+        }));
 
     // For enum matches, extract the tag first and switch on that.
     let switch_op = if is_enum_match {

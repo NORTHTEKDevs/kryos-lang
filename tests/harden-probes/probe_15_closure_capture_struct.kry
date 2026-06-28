@@ -1,0 +1,19 @@
+// probe_15: closures capturing struct values, HOF usage
+use std::iter::{map}
+
+struct Multiplier { factor: i64 }
+
+fn apply_all(arr: [i64], f: fn(i64) -> i64) -> [i64] {
+    return map(arr, f)
+}
+
+fn main() {
+    let m = Multiplier { factor: 3 }
+    let nums: [i64] = [1, 2, 3, 4, 5]
+    let scaled = apply_all(nums, |x| x * m.factor)
+    let mut i: i64 = 0
+    while i < len(scaled) {
+        println(to_string(scaled[i]))
+        i = i + 1
+    }
+}

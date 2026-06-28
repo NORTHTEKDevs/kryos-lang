@@ -1,0 +1,31 @@
+// probe_19: ? operator on Result<T,E>, both Ok and Err paths
+use std::result::{Result, Ok, Err}
+
+fn parse_positive(s: str) -> Result<i64, str> {
+    let n: i64 = parse_int(s)
+    if n <= 0 {
+        return Err("not positive: " + s)
+    }
+    return Ok(n)
+}
+
+fn sum_positives(a: str, b: str) -> Result<i64, str> {
+    let x: i64 = parse_positive(a)?
+    let y: i64 = parse_positive(b)?
+    return Ok(x + y)
+}
+
+fn main() {
+    match sum_positives("3", "4") {
+        Ok(v)  => println("sum=" + to_string(v)),
+        Err(e) => println("err:" + e),
+    }
+    match sum_positives("5", "-1") {
+        Ok(v)  => println("sum=" + to_string(v)),
+        Err(e) => println("err:" + e),
+    }
+    match sum_positives("-2", "7") {
+        Ok(v)  => println("sum=" + to_string(v)),
+        Err(e) => println("err:" + e),
+    }
+}
