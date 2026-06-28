@@ -1,0 +1,75 @@
+// demo/native/main.kry
+// Native Kryos host for the governed agent.
+// Demonstrates compile-time governance: @budget + @capabilities(net:http).
+//
+// Assertions verified by demo/native/check.sh:
+//   (a) Within-budget call returns the answer WITH its source.
+//   (b) Over-budget call is refused BEFORE mock LLM records spend.
+//   (c) neg_cap.kry fails to compile under --strict-capabilities (E0507).
+
+let MOCK_ANSWER: str = "42 is the answer to everything"
+let MOCK_SOURCE: str = "mock-llm-v1"
+let MOCK_TOKENS: i64 = 150
+
+// Mock LLM stub annotated @capabilities(net:http).
+// In production this would call an HTTPS LLM API endpoint.
+// The annotation propagates: callers without net:http fail under
+// --strict-capabilities (E0507 cross-function capability propagation).
+@capabilities(net:http)
+fn mock_llm(question: str) -> str {
+    return MOCK_ANSWER
+}
+
+struct AgentReply {
+    answer: str,
+    source: str,
+    calls_now: i64,
+    refused: bool
+}
+
+// Governed agent: @budget enforces call ceiling; @capabilities propagates.
+@budget(calls = 100)
+@capabilities(net:http)
+fn agent_query(question: str, max_calls: i64, calls_spent: i64) -> AgentReply {
+    if calls_spent >= max_calls {
+        return AgentReply {
+            answer: "REFUSED:budget exhausted calls=" + to_string(calls_spent) + "/" + to_string(max_calls),
+            source: "refusal",
+            calls_now: calls_spent,
+            refused: true
+        }
+    }
+    let raw = mock_llm(question)
+    let new_spent = calls_spent + 1
+    let full = raw + " [source=" + MOCK_SOURCE + ",tokens=" + to_string(MOCK_TOKENS) + ",calls=" + to_string(new_spent) + "/" + to_string(max_calls) + "]"
+    return AgentReply {
+        answer: full,
+        source: MOCK_SOURCE,
+        calls_now: new_spent,
+        refused: false
+    }
+}
+
+@capabilities(net:http)
+fn main() {
+    // (a) Within-budget call: max=3, spent=0 -> succeeds, records 1 call
+    let r1 = agent_query("what is the meaning of life", 3, 0)
+    if r1.refused {
+        throw "FAIL: within-budget call was refused"
+    }
+    println("WITHIN_BUDGET_ANSWER: " + r1.answer)
+    println("WITHIN_BUDGET_SOURCE: " + r1.source)
+
+    // (b) Over-budget call: max=0, spent=0 -> refused, spend stays 0
+    let r2 = agent_query("another question", 0, 0)
+    if not r2.refused {
+        throw "FAIL: over-budget call was not refused"
+    }
+    if r2.calls_now != 0 {
+        throw "FAIL: over-budget call recorded spend, calls_now=" + to_string(r2.calls_now)
+    }
+    println("OVER_BUDGET_REFUSED: " + r2.answer)
+    println("OVER_BUDGET_SPEND: " + to_string(r2.calls_now))
+
+    println("native: PASS")
+}

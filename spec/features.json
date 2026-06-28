@@ -7,7 +7,7 @@
     {
       "id": "native",
       "title": "Governed agent embedded in a native Kryos program",
-      "status": "pending",
+      "status": "passing",
       "acceptance_test": "bash demo/native/check.sh",
       "contract": "START HERE. Build ONE small governed agent in demo/agent/ (reused by all hosts): takes a question, calls a MOCK LLM stub, returns an answer plus its source string. The agent fn is annotated @budget(usd=...) and @capabilities(net:http). First make it run with `kryos run`, then `kryos build --release`. Create demo/native/check.sh that asserts deterministically: (a) a within-budget call returns the answer WITH its source; (b) an over-budget call is refused BEFORE the mock LLM records spend (assert a refusal value / unchanged spend counter); (c) a negative-control .kry where a fn calls the mock LLM WITHOUT declaring net capability FAILS to compile under --strict-capabilities (assert non-zero compile + the E05xx capability error). Commit partial progress each iteration. Read the repo CLAUDE.md for Kryos syntax first."
     },

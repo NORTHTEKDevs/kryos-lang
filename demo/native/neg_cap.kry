@@ -1,0 +1,26 @@
+// neg_cap.kry -- negative capability control test.
+//
+// PURPOSE: prove that --strict-capabilities is enforced.
+// This file MUST fail to compile under:
+//   kryos check --strict-capabilities demo/native/neg_cap.kry
+//
+// Expected error: E0507 on the call to mock_llm inside uncapped_caller.
+// mock_llm is @capabilities(net:http); uncapped_caller declares no capability,
+// so the cross-function propagation check fires.
+
+let MOCK_ANSWER: str = "42"
+
+// Mock LLM requires net:http capability.
+@capabilities(net:http)
+fn mock_llm(question: str) -> str {
+    return MOCK_ANSWER
+}
+
+// Deliberately omits @capabilities(net:http) -- must fail E0507.
+fn uncapped_caller(q: str) -> str {
+    return mock_llm(q)
+}
+
+fn main() {
+    println(uncapped_caller("test"))
+}

@@ -1,0 +1,75 @@
+// demo/agent/agent.kry
+// Governed agent: deterministic mock LLM + budget tracking.
+// This is the canonical agent definition reused by all hosts.
+//
+// Run standalone: kryos run demo/agent/agent.kry
+//
+// Governance properties demonstrated:
+//   @budget(calls = N)   -- compiler-tracked call ceiling (enforced by runtime)
+//   @capabilities(net:http) -- capability annotation; propagates to callers.
+//                           Under --strict-capabilities any caller without this
+//                           declaration fails to compile (E0507).
+
+let MOCK_ANSWER: str = "42 is the answer to everything"
+let MOCK_SOURCE: str = "mock-llm-v1"
+let MOCK_TOKENS: i64 = 150
+
+// Mock LLM stub.
+// @capabilities(net:http) models the real production requirement (HTTPS to LLM API).
+// The annotation propagates to callers: any fn calling this without
+// @capabilities(net:http) fails under --strict-capabilities (E0507).
+@capabilities(net:http)
+fn mock_llm(question: str) -> str {
+    return MOCK_ANSWER
+}
+
+struct AgentReply {
+    answer: str,
+    source: str,
+    calls_now: i64,
+    refused: bool
+}
+
+// Governed agent function.
+// @budget(calls = 100): compile-enforced ceiling on LLM call budget.
+// @capabilities(net:http): required by mock_llm; propagates to all callers.
+@budget(calls = 100)
+@capabilities(net:http)
+fn agent_query(question: str, max_calls: i64, calls_spent: i64) -> AgentReply {
+    // Budget check BEFORE calling mock LLM -- refused calls record no spend.
+    if calls_spent >= max_calls {
+        return AgentReply {
+            answer: "REFUSED:budget exhausted calls=" + to_string(calls_spent) + "/" + to_string(max_calls),
+            source: "refusal",
+            calls_now: calls_spent,
+            refused: true
+        }
+    }
+    let raw = mock_llm(question)
+    let new_spent = calls_spent + 1
+    let full = raw + " [source=" + MOCK_SOURCE + ",tokens=" + to_string(MOCK_TOKENS) + ",calls=" + to_string(new_spent) + "/" + to_string(max_calls) + "]"
+    return AgentReply {
+        answer: full,
+        source: MOCK_SOURCE,
+        calls_now: new_spent,
+        refused: false
+    }
+}
+
+@capabilities(net:http)
+fn main() {
+    println("=== governed agent demo ===")
+
+    // Within-budget call returns answer with provenance.
+    let r1 = agent_query("what is the meaning of life", 3, 0)
+    println("answer: " + r1.answer)
+    println("source: " + r1.source)
+    println("calls_now: " + to_string(r1.calls_now))
+
+    // Over-budget call: refused before spend is recorded.
+    let r2 = agent_query("another question", 0, 0)
+    println("refused: " + r2.answer)
+    println("spend_after_refusal: " + to_string(r2.calls_now))
+
+    println("demo: OK")
+}
