@@ -28,7 +28,7 @@
     {
       "id": "mutation",
       "title": "In-place mutation of aggregates inside collections (deep compiler fix)",
-      "status": "pending",
+      "status": "passing",
       "acceptance_test": "bash demo/mutation/check.sh",
       "contract": "Hard compiler fix; do this only when the embeds are progressing. Fix `arr[i].field = v` and `m[k].field = v` so the mutated element is written back / mutated in place, correct on BOTH backends (kryos run AND kryos build --release), for stack-promoted literal arrays (let mut xs=[..]) AND heap/push-built arrays AND maps. Root cause: lower_nested_field_assign's IndexAccess fallback (compiler/crates/kryos-mir/src/lower.rs) mutates a throwaway copy with no write-back. Correct fix = in-place mutation through the element box pointer (works for stack+heap). A naive kryos_array_set write-back crashes stack arrays - do NOT reintroduce that. demo/mutation/check.sh builds+runs a .kry covering all three cases on both backends and asserts exact values."
     },

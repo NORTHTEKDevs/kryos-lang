@@ -35,5 +35,16 @@ fn main() {
     println("HEAP[1].id=" + to_string(ys[1].id))          // 20  (unchanged)
     println("HEAP[1].score=" + to_string(ys[1].score))    // 66
 
+    // --- Case 3: map values ---
+    let mut m: map<str, Item> = {}
+    m["alpha"] = Item { id: 1, score: 10 }
+    m["beta"] = Item { id: 2, score: 20 }
+    m["alpha"].score = 77
+    m["beta"].id = 99
+    println("MAP[alpha].id=" + to_string(m["alpha"].id))    // 1  (unchanged)
+    println("MAP[alpha].score=" + to_string(m["alpha"].score))  // 77
+    println("MAP[beta].id=" + to_string(m["beta"].id))      // 99
+    println("MAP[beta].score=" + to_string(m["beta"].score))    // 20  (unchanged)
+
     println("mutation: PASS")
 }
