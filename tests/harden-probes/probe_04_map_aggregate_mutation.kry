@@ -1,0 +1,13 @@
+// probe_04: map<str, struct> mutation + field reads after mutation
+struct Score { player: str, pts: i64 }
+
+fn main() {
+    let mut scores: map<str, Score> = {}
+    scores["alice"] = Score { player: "alice", pts: 10 }
+    scores["bob"]   = Score { player: "bob",   pts: 20 }
+    scores["alice"].pts = 99
+    scores["bob"].pts   = 55
+    scores["bob"].player = "BOB"
+    println(scores["alice"].player + "=" + to_string(scores["alice"].pts))
+    println(scores["bob"].player   + "=" + to_string(scores["bob"].pts))
+}

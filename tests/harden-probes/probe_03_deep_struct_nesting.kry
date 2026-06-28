@@ -1,0 +1,22 @@
+// probe_03: deep struct nesting — mutation at a.b.c.field on both backends
+struct Inner { val: i64, tag: str }
+struct Mid { inner: Inner, count: i64 }
+struct Outer { mid: Mid, name: str }
+
+fn main() {
+    let mut o = Outer {
+        name: "root",
+        mid: Mid {
+            count: 1,
+            inner: Inner { val: 10, tag: "x" },
+        },
+    }
+    o.mid.inner.val = 99
+    o.mid.inner.tag = "mutated"
+    o.mid.count = 42
+    o.name = "done"
+    println(o.name)
+    println(to_string(o.mid.count))
+    println(to_string(o.mid.inner.val))
+    println(o.mid.inner.tag)
+}

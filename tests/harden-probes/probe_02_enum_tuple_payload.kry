@@ -1,0 +1,23 @@
+// probe_02: enum with tuple payload — extract, use both fields
+enum Event {
+    Move(i64, i64),
+    Click(i64),
+    Key(str),
+    None,
+}
+
+fn describe(e: Event) -> str {
+    match e {
+        Event.Move(x, y) => return "move(" + to_string(x) + "," + to_string(y) + ")",
+        Event.Click(b)   => return "click(" + to_string(b) + ")",
+        Event.Key(k)     => return "key(" + k + ")",
+        Event.None       => return "none",
+    }
+}
+
+fn main() {
+    println(describe(Event.Move(10, 20)))
+    println(describe(Event.Click(1)))
+    println(describe(Event.Key("a")))
+    println(describe(Event.None))
+}

@@ -7161,12 +7161,35 @@ impl LlvmCodegen {
         // which made the LLVM-built stage-1 emit non-deterministic object code
         // (e.g. a bool/discriminant field read as 0 -> `xor`, nonzero -> `mov`).
         // This was the dominant remaining source of stage-1 codegen non-determinism.
+        // Build a lookup from field name to struct-definition index.
+        // This lets us use the struct-definition order for `insertvalue` indices even
+        // when the literal lists fields in a different order. Without this, a literal
+        // `Outer { name: "x", mid: Mid{..} }` for `struct Outer { mid: Mid, name: str }`
+        // would insert `name` at index 0 (literal order) instead of index 1 (def order),
+        // producing an IR type mismatch that clang rejects.
+        let def_index_of: HashMap<String, usize> = self
+            .struct_defs
+            .get(struct_name)
+            .map(|fs| {
+                fs.iter()
+                    .enumerate()
+                    .map(|(i, (n, _))| (n.clone(), i))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let mut prev = "zeroinitializer".to_string();
-        for (i, (field_name, op)) in fields.iter().enumerate() {
+        for (literal_i, (field_name, op)) in fields.iter().enumerate() {
+            // Use the struct-definition index for insertvalue, falling back to the
+            // literal iteration index only if the field name isn't in the def (shouldn't happen).
+            let def_i = def_index_of
+                .get(field_name.as_str())
+                .copied()
+                .unwrap_or(literal_i);
             let val = self.operand_to_llvm(op, func);
             let actual_ty = self.operand_type(op, func);
             let expected_ty = declared_field_tys
-                .get(i)
+                .get(def_i)
                 .cloned()
                 .unwrap_or_else(|| actual_ty.clone());
             let mut coerced_val = self.coerce_value(&val, &actual_ty, &expected_ty);
@@ -7181,14 +7204,14 @@ impl LlvmCodegen {
             // was immune. Shallow clone (new buffer, shared elements), so no
             // per-element recursion and no O(N^2) blow-up; big collections live
             // in module-globals, not struct fields.
-            if let Some(MirType::Array(_, _)) = field_mir_tys.get(i) {
+            if let Some(MirType::Array(_, _)) = field_mir_tys.get(def_i) {
                 if coerced_val != "null" && coerced_val != "zeroinitializer" {
                     let cl = self.next_temp();
                     self.emit_line(&format!("  {cl} = call ptr @kryos_array_clone(ptr {coerced_val})"));
                     coerced_val = cl;
                 }
             }
-            let this = if i + 1 == fields.len() {
+            let this = if literal_i + 1 == fields.len() {
                 if is_mutable {
                     // Use a temp name; we will store it to the alloca below.
                     self.next_temp()
@@ -7200,10 +7223,10 @@ impl LlvmCodegen {
                 self.next_temp()
             };
             self.emit_line(&format!(
-                "  {this} = insertvalue {dest_ty} {prev}, {expected_ty} {coerced_val}, {i} ; .{field_name}"
+                "  {this} = insertvalue {dest_ty} {prev}, {expected_ty} {coerced_val}, {def_i} ; .{field_name}"
             ));
             // If this was the last field and the local is mutable, store to alloca.
-            if i + 1 == fields.len() && is_mutable {
+            if literal_i + 1 == fields.len() && is_mutable {
                 self.emit_line(&format!("  store {dest_ty} {this}, ptr %_{}.addr", dest.0));
             }
             prev = this;

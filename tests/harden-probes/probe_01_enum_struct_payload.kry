@@ -1,0 +1,33 @@
+// probe_01: enum whose payload is a struct — construct, match, extract fields
+struct Point { x: i64, y: i64 }
+
+enum Shape {
+    Circle(i64),
+    Rect(Point),
+    Empty,
+}
+
+fn area(s: Shape) -> i64 {
+    match s {
+        Shape.Circle(r) => return r * r,
+        Shape.Rect(p)   => return p.x * p.y,
+        Shape.Empty     => return 0,
+    }
+}
+
+fn name(s: Shape) -> str {
+    match s {
+        Shape.Circle(_) => return "circle",
+        Shape.Rect(_)   => return "rect",
+        Shape.Empty     => return "empty",
+    }
+}
+
+fn main() {
+    let c = Shape.Circle(5)
+    let r = Shape.Rect(Point { x: 4, y: 6 })
+    let e = Shape.Empty
+    println(name(c) + ":" + to_string(area(c)))
+    println(name(r) + ":" + to_string(area(r)))
+    println(name(e) + ":" + to_string(area(e)))
+}

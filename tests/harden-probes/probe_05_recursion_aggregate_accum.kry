@@ -1,0 +1,16 @@
+// probe_05: recursion with struct accumulator
+struct Acc { sum: i64, count: i64 }
+
+fn accum(n: i64, a: Acc) -> Acc {
+    if n <= 0 {
+        return a
+    }
+    let next = Acc { sum: a.sum + n, count: a.count + 1 }
+    return accum(n - 1, next)
+}
+
+fn main() {
+    let result = accum(10, Acc { sum: 0, count: 0 })
+    println(to_string(result.sum))
+    println(to_string(result.count))
+}
