@@ -6559,6 +6559,11 @@ impl LlvmCodegen {
         if let Operand::Local(id) = object {
             func.locals.iter().find(|l| l.id == *id).and_then(|l| match &l.ty {
                 MirType::Struct(name) => Some(name.clone()),
+                // Ptr(Struct(name)): box pointer to a named struct (e.g. array element).
+                MirType::Ptr(inner) => match inner.as_ref() {
+                    MirType::Struct(name) => Some(name.clone()),
+                    _ => None,
+                },
                 _ => None,
             })
         } else {
@@ -6580,6 +6585,11 @@ impl LlvmCodegen {
                     .find(|l| l.id == *id)
                     .and_then(|l| match &l.ty {
                         MirType::Struct(name) => Some(name.clone()),
+                        // Ptr(Struct(name)): box pointer to a named struct.
+                        MirType::Ptr(inner) => match inner.as_ref() {
+                            MirType::Struct(name) => Some(name.clone()),
+                            _ => None,
+                        },
                         _ => None,
                     })
             }

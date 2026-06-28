@@ -4872,8 +4872,73 @@ fn lower_nested_field_assign(
             });
             lower_nested_field_assign(ctx, parent, mid_field, Operand::Local(tmp));
         }
-        // Fallback for exotic object expressions (index access etc.):
-        // unchanged pre-existing behavior.
+        // Array/map index: `arr[i].field = v` or `map[k].field = v`.
+        // Array elements are heap-boxed; kryos_array_get returns the box pointer as i64.
+        // If we let lower_expr_to_operand infer the struct element type, the LLVM
+        // backend allocates a local alloca copy of the struct, does the field store
+        // into the copy, and never writes back — the mutation is lost on AOT.
+        // Fix: allocate the temp as Ptr(elem_ty). The LLVM codegen emits
+        //   `inttoptr i64 %raw to ptr` (via the Index dest_ty=="ptr" path),
+        // giving a `ptr`-typed SSA value. StoreField then inttoptr-bypasses the
+        // alloca branch and resolve_struct_name can unwrap Ptr(Struct(name)) to
+        // get the correct struct layout for field-indexed GEP.
+        ast::Expr::IndexAccess {
+            object: coll,
+            index,
+            ..
+        } => {
+            let coll_ty = infer_expr_type(ctx, coll);
+            if let MirType::Array(elem_ty, _) = coll_ty {
+                let arr_op = lower_expr_to_operand(ctx, coll);
+                let idx_op = lower_expr_to_operand(ctx, index);
+                // Ptr(elem_ty) so LLVM emits inttoptr + knows the struct type for GEP.
+                let ptr_ty = MirType::Ptr(elem_ty);
+                let elem_ptr = ctx.alloc_temp(ptr_ty);
+                ctx.emit(Instruction::Assign {
+                    dest: elem_ptr,
+                    value: RValue::Index {
+                        object: arr_op,
+                        index: idx_op,
+                    },
+                });
+                ctx.emit(Instruction::StoreField {
+                    object: Operand::Local(elem_ptr),
+                    field: field.to_string(),
+                    value,
+                });
+            } else {
+                // Map: kryos_map_get returns the element as a box pointer (i64).
+                let coll_ty2 = infer_expr_type(ctx, coll);
+                let map_op = lower_expr_to_operand(ctx, coll);
+                let key_op = lower_expr_to_operand(ctx, index);
+                let idx_ty = infer_expr_type(ctx, index);
+                let get_fn = if idx_ty == MirType::Str {
+                    "kryos_map_get_str"
+                } else {
+                    "kryos_map_get"
+                };
+                // Carry the value type for field resolution, same as the array case.
+                let elem_ty: Box<MirType> = match coll_ty2 {
+                    MirType::Map { value, .. } => value,
+                    _ => Box::new(MirType::I64),
+                };
+                let ptr_ty = MirType::Ptr(elem_ty);
+                let elem_ptr = ctx.alloc_temp(ptr_ty);
+                ctx.emit(Instruction::Assign {
+                    dest: elem_ptr,
+                    value: RValue::Call {
+                        func: get_fn.to_string(),
+                        args: vec![map_op, key_op],
+                    },
+                });
+                ctx.emit(Instruction::StoreField {
+                    object: Operand::Local(elem_ptr),
+                    field: field.to_string(),
+                    value,
+                });
+            }
+        }
+        // Fallback for any other exotic object expression.
         _ => {
             let obj_op = lower_expr_to_operand(ctx, object);
             ctx.emit(Instruction::StoreField {

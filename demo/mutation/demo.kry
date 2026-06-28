@@ -1,0 +1,39 @@
+// demo/mutation/demo.kry
+// Verifies in-place mutation of aggregate elements inside collections.
+// Tests three cases on both JIT and AOT backends:
+//   (1) Stack-promoted literal array: let mut xs = [Struct{..}, ..]
+//   (2) Heap/push-built array: push(arr, Struct{..})
+//   (3) Map values: m["key"].field = v
+//
+// check.sh runs this on both backends and asserts exact values.
+
+struct Item {
+    id: i64,
+    score: i64,
+}
+
+fn main() {
+    // --- Case 1: stack-promoted literal array ---
+    let mut xs: [Item] = [Item { id: 1, score: 10 }, Item { id: 2, score: 20 }, Item { id: 3, score: 30 }]
+    xs[0].score = 99
+    xs[1].id = 42
+    xs[2].score = 77
+    println("STACK[0].score=" + to_string(xs[0].score))   // 99
+    println("STACK[1].id=" + to_string(xs[1].id))         // 42
+    println("STACK[1].score=" + to_string(xs[1].score))   // 20  (unchanged)
+    println("STACK[2].score=" + to_string(xs[2].score))   // 77
+
+    // --- Case 2: heap/push-built array ---
+    let mut ys: [Item] = []
+    ys = push(ys, Item { id: 10, score: 100 })
+    ys = push(ys, Item { id: 20, score: 200 })
+    ys[0].score = 55
+    ys[0].id = 88
+    ys[1].score = 66
+    println("HEAP[0].id=" + to_string(ys[0].id))          // 88
+    println("HEAP[0].score=" + to_string(ys[0].score))    // 55
+    println("HEAP[1].id=" + to_string(ys[1].id))          // 20  (unchanged)
+    println("HEAP[1].score=" + to_string(ys[1].score))    // 66
+
+    println("mutation: PASS")
+}

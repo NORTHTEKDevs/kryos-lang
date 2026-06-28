@@ -2749,6 +2749,8 @@ fn translate_instruction<M: Module>(
             let val = translate_operand(value, builder, translator, module)?;
 
             // Determine the struct type from the object operand.
+            // Also handle Ptr(Struct(name)) — a heap box pointer to a struct
+            // (e.g. an array element returned by kryos_array_get).
             let struct_name = match object {
                 Operand::Local(id) => translator
                     .mir_func
@@ -2757,6 +2759,10 @@ fn translate_instruction<M: Module>(
                     .find(|l| l.id == *id)
                     .and_then(|l| match &l.ty {
                         MirType::Struct(name) => Some(name.clone()),
+                        MirType::Ptr(inner) => match inner.as_ref() {
+                            MirType::Struct(name) => Some(name.clone()),
+                            _ => None,
+                        },
                         _ => None,
                     }),
                 _ => None,

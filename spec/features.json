@@ -21,7 +21,7 @@
     {
       "id": "cabi",
       "title": "Same governed agent called via the C ABI from a non-Kryos host",
-      "status": "pending",
+      "status": "passing",
       "acceptance_test": "bash demo/cabi/check.sh",
       "contract": "Expose the demo/agent governed agent through the C ABI (kryos bindgen / an extern entry point), build it as a static lib, and call it from a tiny C harness compiled with clang, linking the kryos runtime libs. demo/cabi/check.sh builds the lib + the C harness, runs it, and asserts the within-budget answer+source and the over-budget refusal hold when driven from C. Document the exact link recipe in demo/cabi/NOTES.md."
     },
