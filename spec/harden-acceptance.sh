@@ -24,18 +24,19 @@ echo "  PASS  cargo-suite"
 
 PROBE_DIR="$ROOT/tests/harden-probes"; mkdir -p "$PROBE_DIR"
 count=$(ls "$PROBE_DIR"/*.kry 2>/dev/null | wc -l)
-TARGET=24
+TARGET=48
 [ "$count" -ge "$TARGET" ] || fail "need >= $TARGET adversarial probes in tests/harden-probes (have $count)"
 
 diverged=0
 for f in "$PROBE_DIR"/*.kry; do
-  jit=$("$KRYOS" run "$f" 2>&1); jrc=$?
+  jit=$(timeout 20 "$KRYOS" run "$f" 2>&1); jrc=$?
   bin="/tmp/hp_$(basename "$f" .kry).exe"
-  if "$KRYOS" build --release "$f" -o "$bin" >/dev/null 2>&1; then
-    aot=$("$bin" 2>&1); arc=$?; rm -f "$bin"
+  if timeout 150 "$KRYOS" build --release "$f" -o "$bin" >/dev/null 2>&1; then
+    aot=$(timeout 20 "$bin" 2>&1); arc=$?; rm -f "$bin"
   else
     aot="<BUILD-FAILED>"; arc=99
   fi
+  # rc 124 = timeout (hang). Any nonzero rc, or JIT!=AOT, is a divergence.
   if [ "$jrc" -ne 0 ] || [ "$arc" -ne 0 ] || [ "$jit" != "$aot" ]; then
     echo "  DIVERGE $(basename "$f") jit_rc=$jrc aot_rc=$arc"; diverged=1
   fi
