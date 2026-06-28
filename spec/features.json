@@ -1,29 +1,22 @@
 {
   "project": "kryos-lang",
   "goal": "Make Kryos functional and adoptable: prove the governed agent is a portable embeddable unit (native + WASM + C-ABI) carrying its @budget/@capabilities/Tracked guarantees, and close real correctness bugs. Build-plane only.",
-  "ordering": "Work top-to-bottom. Bank the achievable wins first. Never regress the cargo suite.",
-  "mock_llm_rule": "All demos MUST use a deterministic MOCK LLM (a stdlib/local stub that returns a canned answer + a fixed token/cost count). NO live API calls, NO creds, NO spend. The point is to prove governance + portability, not a real model round-trip.",
+  "ordering": "Work top-to-bottom; the list is ordered easiest-first so each iteration can land a real, committed increment. Bank wins. Never regress the cargo suite. Partial progress is fine: commit whatever compiles+improves each iteration, even if the feature's check.sh does not yet pass.",
+  "mock_llm_rule": "All demos MUST use a deterministic MOCK LLM (a tiny stub fn that returns a canned answer + a fixed token/cost count). NO live API calls, NO creds, NO spend. The point is to prove governance + portability, not a real model round-trip.",
   "features": [
-    {
-      "id": "mutation",
-      "title": "In-place mutation of aggregates inside collections",
-      "status": "pending",
-      "acceptance_test": "bash demo/mutation/check.sh",
-      "contract": "Fix `arr[i].field = v` and `m[k].field = v` so the mutated element is written back / mutated in place, correct on BOTH backends (kryos run AND kryos build --release). Must work for stack-promoted literal arrays (let mut xs=[..]) AND heap/push-built arrays AND maps. Root cause is lower_nested_field_assign's IndexAccess fallback (no write-back); the correct fix is in-place mutation through the element box pointer (a naive kryos_array_set write-back crashes stack arrays - do NOT reintroduce that). demo/mutation/check.sh builds+runs a .kry covering all three cases on both backends and asserts exact values."
-    },
     {
       "id": "native",
       "title": "Governed agent embedded in a native Kryos program",
       "status": "pending",
       "acceptance_test": "bash demo/native/check.sh",
-      "contract": "Build ONE governed agent (in demo/agent/, reusable by all three hosts) that takes a question, calls a MOCK LLM, and returns a Tracked<str> answer carrying its source. The agent fn is annotated @budget(usd=...) and @capabilities(net:http). Host it natively (a simple kryos build --release program / request handler is fine; a real HTTPS server is a bonus, not required). demo/native/check.sh must assert, deterministically: (a) a within-budget call returns the answer WITH its source string; (b) an over-budget call is refused BEFORE the mock LLM records any spend (assert the mock's spend counter did not increase / a refusal value is returned); (c) a negative-control .kry where a fn calls the mock LLM WITHOUT declaring net capability FAILS to compile under --strict-capabilities (check.sh asserts non-zero compile exit + the E05xx capability error)."
+      "contract": "START HERE. Build ONE small governed agent in demo/agent/ (reused by all hosts): takes a question, calls a MOCK LLM stub, returns an answer plus its source string. The agent fn is annotated @budget(usd=...) and @capabilities(net:http). First make it run with `kryos run`, then `kryos build --release`. Create demo/native/check.sh that asserts deterministically: (a) a within-budget call returns the answer WITH its source; (b) an over-budget call is refused BEFORE the mock LLM records spend (assert a refusal value / unchanged spend counter); (c) a negative-control .kry where a fn calls the mock LLM WITHOUT declaring net capability FAILS to compile under --strict-capabilities (assert non-zero compile + the E05xx capability error). Commit partial progress each iteration. Read the repo CLAUDE.md for Kryos syntax first."
     },
     {
       "id": "wasm",
       "title": "Same governed agent compiled to WASM",
       "status": "pending",
       "acceptance_test": "bash demo/wasm/check.sh",
-      "contract": "Compile the SAME demo/agent governed agent to wasm32 (kryos build --release --backend wasm) and run it via node tools/wasm-host/run.mjs. The mock LLM must be wasm-safe (pure compute or routed through the JS host; the native HTTPS stdlib will NOT link in wasm). demo/wasm/check.sh asserts the within-budget answer+source and the over-budget refusal are observable from the wasm run. If a genuine wasm-backend limitation blocks this, fix the wasm backend OR shrink the agent to the wasm-supported subset and document the exact gap in demo/wasm/NOTES.md - but the gate only passes when the demo actually runs in wasm."
+      "contract": "Compile the SAME demo/agent governed agent to wasm32 (kryos build --release --backend wasm) and run it via `node tools/wasm-host/run.mjs`. The mock LLM must be wasm-safe (pure compute or routed through the JS host; the native HTTPS stdlib will NOT link in wasm). demo/wasm/check.sh asserts the within-budget answer+source and the over-budget refusal are observable from the wasm run. If a genuine wasm-backend limitation blocks it, fix the wasm backend OR shrink the agent to the wasm-supported subset and document the exact gap in demo/wasm/NOTES.md; the gate only passes when the demo actually runs in wasm."
     },
     {
       "id": "cabi",
@@ -33,11 +26,18 @@
       "contract": "Expose the demo/agent governed agent through the C ABI (kryos bindgen / an extern entry point), build it as a static lib, and call it from a tiny C harness compiled with clang, linking the kryos runtime libs. demo/cabi/check.sh builds the lib + the C harness, runs it, and asserts the within-budget answer+source and the over-budget refusal hold when driven from C. Document the exact link recipe in demo/cabi/NOTES.md."
     },
     {
+      "id": "mutation",
+      "title": "In-place mutation of aggregates inside collections (deep compiler fix)",
+      "status": "pending",
+      "acceptance_test": "bash demo/mutation/check.sh",
+      "contract": "Hard compiler fix; do this only when the embeds are progressing. Fix `arr[i].field = v` and `m[k].field = v` so the mutated element is written back / mutated in place, correct on BOTH backends (kryos run AND kryos build --release), for stack-promoted literal arrays (let mut xs=[..]) AND heap/push-built arrays AND maps. Root cause: lower_nested_field_assign's IndexAccess fallback (compiler/crates/kryos-mir/src/lower.rs) mutates a throwaway copy with no write-back. Correct fix = in-place mutation through the element box pointer (works for stack+heap). A naive kryos_array_set write-back crashes stack arrays - do NOT reintroduce that. demo/mutation/check.sh builds+runs a .kry covering all three cases on both backends and asserts exact values."
+    },
+    {
       "id": "harden",
       "title": "Stretch: ecosystem hardening + adversarial probe round",
       "status": "pending",
       "acceptance_test": "true",
-      "contract": "ONLY after the four above pass. Generate a fresh adversarial probe round (structs/enums/closures/maps/generics/traits through both backends), run on both backends, and fix any JIT-vs-AOT divergence with a regression test added to tests/native/. This is open-ended; it is NOT part of the hard acceptance gate (acceptance_test is `true`), but is the right work once the embeds land."
+      "contract": "ONLY after the four above pass. Generate a fresh adversarial probe round (structs/enums/closures/maps/generics/traits through both backends), run on both backends, fix any JIT-vs-AOT divergence with a regression test in tests/native/. Open-ended; NOT part of the hard gate (acceptance_test is `true`)."
     }
   ]
 }
