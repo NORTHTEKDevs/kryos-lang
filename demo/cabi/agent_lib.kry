@@ -1,0 +1,43 @@
+// demo/cabi/agent_lib.kry
+// C-ABI entry points for the governed agent, using only i64 types.
+//
+// The str ABI (fat pointers) is not portable across the Kryos/C boundary, so
+// the governance semantics are exposed through i64 return codes and stdout:
+//   - agent_query_c returns 1 on success (prints WITHIN_BUDGET_* to stdout)
+//   - agent_query_c returns 0 on refusal (prints OVER_BUDGET_* to stdout)
+//
+// Build recipe: see demo/cabi/NOTES.md
+
+let MOCK_ANSWER: str = "42 is the answer to everything"
+let MOCK_SOURCE: str = "mock-llm-v1"
+let MOCK_TOKENS: i64 = 150
+
+// Mock LLM stub. Pure compute; no actual network call.
+@capabilities(net:http)
+fn mock_llm_internal(question: str) -> str {
+    return MOCK_ANSWER
+}
+
+// C-ABI entry point for the governed agent.
+// Parameters: max_calls (i64), calls_spent (i64)
+// Returns:   1 = within budget (prints WITHIN_BUDGET_ANSWER + WITHIN_BUDGET_SOURCE)
+//            0 = refused (prints OVER_BUDGET_REFUSED + OVER_BUDGET_SPEND)
+//
+// Budget check fires BEFORE the mock LLM, so refused calls record no spend.
+@capabilities(net:http)
+fn agent_query_c(max_calls: i64, calls_spent: i64) -> i64 {
+    if calls_spent >= max_calls {
+        println("OVER_BUDGET_REFUSED: REFUSED:budget exhausted calls=" + to_string(calls_spent) + "/" + to_string(max_calls))
+        println("OVER_BUDGET_SPEND: " + to_string(calls_spent))
+        return 0
+    }
+    let new_spent = calls_spent + 1
+    let answer = mock_llm_internal("question") + " [source=" + MOCK_SOURCE + ",tokens=" + to_string(MOCK_TOKENS) + ",calls=" + to_string(new_spent) + "/" + to_string(max_calls) + "]"
+    println("WITHIN_BUDGET_ANSWER: " + answer)
+    println("WITHIN_BUDGET_SOURCE: " + MOCK_SOURCE)
+    return 1
+}
+
+fn main() {
+    println("agent_lib: loaded (call agent_query_c via C ABI)")
+}
