@@ -3,9 +3,9 @@
   "goal": "WASM round 2: enums land on wasm. Gate: bash spec/wasm-acceptance.sh (now 9 probes incl. p7 enums, p8 Option/Result; p1-p6+p9 already pass).",
   "ordering": "Top-to-bottom. Bank a win per iteration. Never regress native backends, the cargo suite, or already-passing probes. NEVER edit probes/.expect files.",
   "features": [
-    { "id": "enums", "status": "pending", "acceptance_test": "probe p7_enum_basic",
+    { "id": "enums", "status": "passing", "acceptance_test": "probe p7_enum_basic",
       "contract": "Lower enums for wasm as tagged slot records reusing the struct slot-encoding that landed last night (tag word + payload slots, like the native i64-slot layout). Cover: variant construction (bare Circle(2) and qualified Shape.Empty), match with payload binding (Circle(r) => ...), multi-field payloads (Rect(w,h)), nullary variants. The match-on-tag lowering can reuse the scalar Switch lowering from last night." },
-    { "id": "option-result", "status": "pending", "acceptance_test": "probe p8_option_result",
+    { "id": "option-result", "status": "passing", "acceptance_test": "probe p8_option_result",
       "contract": "Make std Option/Result work on wasm: generic enum instantiation (Option___i64 / Result___i64_str monomorphs arrive in MIR like normal enums -- if 'enums' above is general this may be nearly free), Some/Ok/Err/None construction through fn returns, match with payload binding incl. str payloads (err arm concatenates 'err ' + e). Also exercises early return." }
   ]
 }

@@ -175,6 +175,10 @@ fn lower_type(ty: &MirType) -> Result<ValType, WasmCodegenError> {
         // arrays): the host allocates N slots and returns an opaque handle.
         // Field access uses array_get(handle, field_index).
         MirType::Struct(_) => ValType::I64,
+        // Enums are represented as a packed i64 array handle with the same slot
+        // encoding as structs: slot 0 = tag (variant index), slots 1..n = payload
+        // fields. This reuses all the struct infrastructure already in place.
+        MirType::Enum(_) => ValType::I64,
         MirType::Void => {
             // Caller should special-case void; this is a placeholder.
             return Err(WasmCodegenError::new(
@@ -1455,6 +1459,49 @@ impl<'a> FnEmitter<'a> {
                 self.emit_operand(object)?;
                 self.wfunc.instruction(&W::I32Const(field_idx));
                 self.wfunc.instruction(&W::Call(array_get_idx));
+            }
+            // -----------------------------------------------------------------
+            // WASM v2.4: Enum variant construction
+            // Encoding: [tag:i64, field0:i64, field1:i64, ...]
+            //   slot 0 = variant_idx (the tag)
+            //   slots 1..n = payload fields
+            // -----------------------------------------------------------------
+            RValue::EnumVariant { enum_name: _, variant_idx, fields } => {
+                let n_slots = 1 + fields.len();
+                self.wfunc.instruction(&W::I32Const(n_slots as i32));
+                self.wfunc.instruction(&W::Call(self.cg.array_new_idx));
+                let scratch = self.cg_scratch_local();
+                self.wfunc.instruction(&W::LocalSet(scratch));
+                // Store tag at slot 0.
+                self.wfunc.instruction(&W::LocalGet(scratch));
+                self.wfunc.instruction(&W::I32Const(0));
+                self.wfunc.instruction(&W::I64Const(*variant_idx as i64));
+                let array_set_idx = self.cg.array_set_idx;
+                self.wfunc.instruction(&W::Call(array_set_idx));
+                // Store each payload field at slots 1, 2, ...
+                for (i, field_op) in fields.iter().enumerate() {
+                    self.wfunc.instruction(&W::LocalGet(scratch));
+                    self.wfunc.instruction(&W::I32Const((i + 1) as i32));
+                    self.emit_operand(field_op)?;
+                    self.wfunc.instruction(&W::Call(array_set_idx));
+                }
+                self.wfunc.instruction(&W::LocalGet(scratch));
+            }
+            // -----------------------------------------------------------------
+            // WASM v2.4: Enum tag extraction (for Switch dispatch)
+            // -----------------------------------------------------------------
+            RValue::EnumTag { operand } => {
+                self.emit_operand(operand)?;
+                self.wfunc.instruction(&W::I32Const(0));
+                self.wfunc.instruction(&W::Call(self.cg.array_get_idx));
+            }
+            // -----------------------------------------------------------------
+            // WASM v2.4: Enum payload field extraction
+            // -----------------------------------------------------------------
+            RValue::EnumPayload { operand, enum_name: _, variant_idx: _, field_idx } => {
+                self.emit_operand(operand)?;
+                self.wfunc.instruction(&W::I32Const((*field_idx + 1) as i32));
+                self.wfunc.instruction(&W::Call(self.cg.array_get_idx));
             }
             other => {
                 return Err(WasmCodegenError::unsupported(&format!(
