@@ -1080,17 +1080,30 @@ impl<'a> FnEmitter<'a> {
 
     /// Detect: Switch from `header` where one of the arms ends in Goto(header).
     /// Covers `while let Some(v) = expr { ... }` patterns.
+    /// Follows linear Goto chains to handle multi-block body layouts from the compiler.
     fn is_switch_while_header(&self, header: BlockId, targets: &[(i64, BlockId)]) -> bool {
         for (_, body) in targets {
-            let body_idx = match self.id_to_index.get(&body.0) {
-                Some(&i) => i,
-                None => continue,
-            };
-            if matches!(self.func.blocks[body_idx].terminator, Terminator::Goto(b) if b == header) {
+            if self.goto_chain_reaches(*body, header) {
                 return true;
             }
         }
         false
+    }
+
+    /// Returns true if following the linear Goto chain from `start` eventually reaches `target`.
+    fn goto_chain_reaches(&self, start: BlockId, target: BlockId) -> bool {
+        let mut current = start;
+        let mut steps = 0usize;
+        loop {
+            if current == target { return true; }
+            if steps > 32 { return false; } // guard against cycles
+            steps += 1;
+            let idx = match self.id_to_index.get(&current.0) { Some(&i) => i, None => return false };
+            match self.func.blocks[idx].terminator {
+                Terminator::Goto(next) => current = next,
+                _ => return false,
+            }
+        }
     }
 
     /// Emit a Switch-based while loop (e.g. `while let Some(v) = expr`).
@@ -1133,25 +1146,40 @@ impl<'a> FnEmitter<'a> {
         self.wfunc.instruction(&W::I32Eqz);  // i32: 1 if NOT matching → exit
         self.wfunc.instruction(&W::BrIf(1)); // break outer block
 
-        // Body.
-        self.visited[body_idx] = true;
-        let body_block = &self.func.blocks[body_idx];
-        for inst in &body_block.instructions {
-            self.emit_instruction(inst)?;
-        }
-        match &body_block.terminator {
-            Terminator::Goto(b) if *b == header => {
-                self.wfunc.instruction(&W::Br(0)); // continue
+        // Body: follow the Goto chain from body_id until we reach header (back edge).
+        // The compiler may split the body into multiple blocks (e.g. payload-extraction
+        // block + computation block), so we must follow linear Goto chains.
+        let mut current_body = *body_id;
+        loop {
+            let curr_idx = self.block_index(current_body)?;
+            if self.visited[curr_idx] {
+                return Err(WasmCodegenError::unsupported("switch-while body block already visited"));
             }
-            Terminator::Return(value) => {
-                if let Some(op) = value {
-                    self.emit_operand(op)?;
+            self.visited[curr_idx] = true;
+            let instrs = self.func.blocks[curr_idx].instructions.clone();
+            for inst in &instrs {
+                self.emit_instruction(inst)?;
+            }
+            let term = self.func.blocks[curr_idx].terminator.clone();
+            match term {
+                Terminator::Goto(b) if b == header => {
+                    self.wfunc.instruction(&W::Br(0)); // continue loop
+                    break;
                 }
-                self.wfunc.instruction(&W::Return);
+                Terminator::Goto(next) => {
+                    current_body = next; // follow chain
+                }
+                Terminator::Return(ref v) => {
+                    if let Some(op) = v.as_ref() {
+                        self.emit_operand(op)?;
+                    }
+                    self.wfunc.instruction(&W::Return);
+                    break;
+                }
+                _ => return Err(WasmCodegenError::unsupported(
+                    "switch-while body must end in Goto(header) or Return",
+                )),
             }
-            _ => return Err(WasmCodegenError::unsupported(
-                "switch-while body must end in Goto(header) or Return",
-            )),
         }
 
         self.wfunc.instruction(&W::End); // end loop
@@ -1479,8 +1507,27 @@ impl<'a> FnEmitter<'a> {
                 self.emit_call(func, args)?;
             }
             RValue::Cast { operand, ty } => {
+                let src_ty = self.operand_ty(operand).unwrap_or(MirType::I64);
                 self.emit_operand(operand)?;
-                self.emit_cast(ty)?;
+                // f64/f32 source requires explicit truncation to integer.
+                if matches!(src_ty, MirType::F64 | MirType::F32) {
+                    if matches!(src_ty, MirType::F32) {
+                        self.wfunc.instruction(&W::F64PromoteF32);
+                    }
+                    match ty {
+                        MirType::I64 | MirType::U64 => {
+                            self.wfunc.instruction(&W::I64TruncF64S);
+                        }
+                        MirType::I32 | MirType::U32 => {
+                            self.wfunc.instruction(&W::I32TruncF64S);
+                            self.wfunc.instruction(&W::I64ExtendI32S);
+                        }
+                        MirType::F64 => { /* f32->f64 already promoted, f64->f64 no-op */ }
+                        _ => { self.emit_cast(ty)?; }
+                    }
+                } else {
+                    self.emit_cast(ty)?;
+                }
             }
             // -------------------------------------------------------------
             // WASM v0.3: Array literal — `[a, b, c]`
@@ -1837,12 +1884,24 @@ impl<'a> FnEmitter<'a> {
         }
 
         // -------------------------------------------------------------
-        // Built-in: len(s) — length of a string (high 32 bits of packed i64)
+        // Built-in: len(s/arr) — string or array length
+        // Strings: high 32 bits of packed i64 (offset|len encoding).
+        // Arrays: opaque i64 handles — call host kryos_array_length.
         // -------------------------------------------------------------
         if func == "len" && args.len() == 1 {
+            let ty = self.operand_ty(&args[0]).unwrap_or(MirType::Str);
             self.emit_operand(&args[0])?;
-            self.wfunc.instruction(&W::I64Const(32));
-            self.wfunc.instruction(&W::I64ShrU);
+            match ty {
+                MirType::Array(_, _) => {
+                    let idx = self.cg.array_length_idx;
+                    self.wfunc.instruction(&W::Call(idx));
+                    self.wfunc.instruction(&W::I64ExtendI32U);
+                }
+                _ => {
+                    self.wfunc.instruction(&W::I64Const(32));
+                    self.wfunc.instruction(&W::I64ShrU);
+                }
+            }
             return Ok(());
         }
 
