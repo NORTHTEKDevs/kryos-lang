@@ -1,0 +1,79 @@
+// ecosystem/kryos-embed/hosts/node/agent_wasm.kry
+//
+// Parameterizable governed agent compiled to WASM for the Node host.
+//
+// Adapts demo/wasm/main.kry into a reusable export:
+//   agent_query(question: str, budget_cents: i64) -> str
+//
+// Protocol (proven in demo/wasm/):
+//   - Within-budget: "<answer> [source=<src>,tokens=<n>,calls=<spent>/<max>] SPEND:<spent>"
+//   - Over-budget:   "REFUSED:budget_exhausted budget_cents=<b> < required=<c> SPEND:0"
+//
+// WASM backend v0.1 constraints (see demo/wasm/NOTES.md):
+//   - No structs -- governance metadata encoded in return str
+//   - No @budget annotation -- application-level guard used instead
+//   - to_string(i64) works via kryos_to_string_i64 host import
+//
+// Build: kryos build --release --backend wasm agent_wasm.kry -o dist/kryos_embed_agent.wasm
+// Run:   node hosts/node/kryos-agent.mjs (via ask() binding)
+//        node tools/wasm-host/run.mjs dist/kryos_embed_agent.wasm  (standalone)
+
+// ---- mock LLM constants ----
+let MOCK_ANSWER: str = "42 is the answer to everything"
+let MOCK_SOURCE: str = "mock-llm-v1"
+let MOCK_TOKENS: i64 = 150
+let MOCK_COST_CENTS: i64 = 3
+
+// ---- mock LLM stub (deterministic, zero network) ----
+// @capabilities(net:http) models the production requirement.
+// The annotation propagates: callers without net:http fail under --strict-capabilities.
+@capabilities(net:http)
+fn mock_llm(question: str) -> str {
+    return MOCK_ANSWER
+}
+
+// ---- governed agent export ----
+//
+// Enforces a budget gate BEFORE calling the mock LLM.
+// budget_cents: maximum authorized spend for this call (in cents)
+// calls_spent:  number of mock-LLM calls already made in this session
+// max_calls:    session call ceiling (pass 0 to reject all calls)
+//
+// Returns a str encoding governance metadata:
+//   Success: "<answer> [source=<src>,tokens=<n>,calls=<new>/<max>] SPEND:<new_cents>"
+//   Refusal: "REFUSED:budget_exhausted budget_cents=<b> < required=<c> SPEND:0"
+//
+// Over-budget calls record SPEND:0 (mock LLM never called).
+@capabilities(net:http)
+fn agent_query(question: str, budget_cents: i64, calls_spent: i64, max_calls: i64) -> str {
+    // Budget gate: reject if per-call cost exceeds authorized budget
+    if budget_cents < MOCK_COST_CENTS {
+        let reason: str = "budget_cents=" + to_string(budget_cents) + " < required=" + to_string(MOCK_COST_CENTS)
+        return "REFUSED:budget_exhausted " + reason + " SPEND:0"
+    }
+    // Call ceiling gate: reject if session cap reached
+    if calls_spent >= max_calls && max_calls >= 0 {
+        let reason: str = "calls=" + to_string(calls_spent) + "/" + to_string(max_calls)
+        return "REFUSED:calls_exhausted " + reason + " SPEND:0"
+    }
+    let raw: str = mock_llm(question)
+    let new_spent: i64 = calls_spent + 1
+    let new_cents: i64 = new_spent * MOCK_COST_CENTS
+    return raw + " [source=" + MOCK_SOURCE + ",tokens=" + to_string(MOCK_TOKENS) + ",calls=" + to_string(new_spent) + "/" + to_string(max_calls) + "] SPEND:" + to_string(new_cents)
+}
+
+// ---- standalone main for run.mjs smoke test ----
+@capabilities(net:http)
+fn main() {
+    // (a) Within-budget: budget_cents=5, cost=3 -> answered
+    let r1: str = agent_query("what is the meaning of life", 5, 0, 10)
+    println("WITHIN_BUDGET_ANSWER: " + r1)
+    println("WITHIN_BUDGET_SOURCE: mock-llm-v1")
+
+    // (b) Over-budget: budget_cents=1, cost=3 -> refused, SPEND:0
+    let r2: str = agent_query("another question", 1, 0, 10)
+    println("OVER_BUDGET_REFUSED: " + r2)
+    println("OVER_BUDGET_SPEND: 0")
+
+    println("wasm: PASS")
+}

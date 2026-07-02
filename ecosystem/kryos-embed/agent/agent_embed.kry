@@ -1,0 +1,238 @@
+// ecosystem/kryos-embed/agent/agent_embed.kry
+//
+// Governed Kryos agent as a Windows DLL with a JSON protocol.
+// C-ABI exports (all i64 signatures):
+//   agent_call(req_ptr: i64, req_len: i64) -> i64
+//   agent_response_len() -> i64
+//
+// Request JSON:  {"question": str, "budget_cents": int}
+// Response JSON: {"answered": 0|1, "answer": str, "source": str,
+//                 "spend_cents": int, "reason": str}
+//
+// Governance: budget gate fires BEFORE mock LLM; refused calls record no spend.
+// Mock LLM is pure compute (canned answer + fixed cost). No live API.
+
+use std::ffi::{cstr, from_ptr}
+use std::string::{find}
+
+// ---- constants ----
+
+let MOCK_ANSWER: str = "42 is the answer to everything"
+let MOCK_SOURCE: str = "mock-llm-v1"
+let MOCK_COST_CENTS: i64 = 3
+
+// ---- mutable globals (init 0; assigned inside fns) ----
+
+let mut LAST_RESP_PTR: i64 = 0
+let mut LAST_RESP_LEN: i64 = 0
+let mut TOTAL_SPEND_CENTS: i64 = 0
+
+// ---- literal-brace helpers ----
+// ALL Kryos strings interpolate on {..}, so "}" at end of expression and
+// "{" in any string literal both cause parse errors. Return them from fns.
+
+@capabilities()
+fn open_brace() -> str {
+    // doubled brace produces a single literal brace in the output
+    return "{{"
+}
+
+@capabilities()
+fn close_brace() -> str {
+    return "}}"
+}
+
+@capabilities()
+fn dquote() -> str {
+    return "\""
+}
+
+// ---- JSON helpers ----
+
+@capabilities()
+fn jstr(s: str) -> str {
+    let q: str = dquote()
+    return q + s + q
+}
+
+// Build the response JSON step by step (avoids single-brace string literals).
+@capabilities()
+fn build_response(answered: i64, answer: str, source: str, spend_cents: i64, reason: str) -> str {
+    let q: str = dquote()
+    let co: str = ":"
+    let cm: str = ","
+    let mut r: str = open_brace()
+    r = r + q + "answered" + q + co + to_string(answered) + cm
+    r = r + q + "answer" + q + co + jstr(answer) + cm
+    r = r + q + "source" + q + co + jstr(source) + cm
+    r = r + q + "spend_cents" + q + co + to_string(spend_cents) + cm
+    r = r + q + "reason" + q + co + jstr(reason)
+    r = r + close_brace()
+    return r
+}
+
+// ---- Minimal JSON field extraction ----
+// Flat JSON only. Builds needle by variable concatenation so no literal
+// colon-in-string-expression (which confuses the type annotation parser).
+
+@capabilities()
+fn make_needle(key: str) -> str {
+    let q: str = dquote()
+    let co: str = ":"
+    return q + key + q + co
+}
+
+// Extract a string value for key from flat JSON. Returns "" if not found.
+@capabilities()
+fn json_str_field(json: str, key: str) -> str {
+    let needle: str = make_needle(key)
+    let pos: i64 = find(json, needle)
+    if pos < 0 {
+        return ""
+    }
+    let after: i64 = pos + len(needle)
+    let mut start: i64 = after
+    let mut scanning: i64 = 1
+    while scanning == 1 {
+        if start >= len(json) {
+            scanning = 0
+        } elif substr(json, start, start + 1) == " " {
+            start = start + 1
+        } else {
+            scanning = 0
+        }
+    }
+    if start >= len(json) {
+        return ""
+    }
+    let q: str = dquote()
+    if substr(json, start, start + 1) != q {
+        return ""
+    }
+    let mut end: i64 = start + 1
+    let mut result: str = ""
+    let mut done: i64 = 0
+    let bsl: str = "\\"
+    while done == 0 {
+        if end >= len(json) {
+            done = 1
+        } else {
+            let ch: str = substr(json, end, end + 1)
+            if ch == bsl {
+                if end + 1 < len(json) {
+                    result = result + substr(json, end + 1, end + 2)
+                }
+                end = end + 2
+            } elif ch == q {
+                done = 1
+            } else {
+                result = result + ch
+                end = end + 1
+            }
+        }
+    }
+    return result
+}
+
+// Extract an integer value for key from flat JSON. Returns -1 if not found.
+@capabilities()
+fn json_int_field(json: str, key: str) -> i64 {
+    let needle: str = make_needle(key)
+    let pos: i64 = find(json, needle)
+    if pos < 0 {
+        return 0 - 1
+    }
+    let after: i64 = pos + len(needle)
+    let mut start: i64 = after
+    let mut scanning: i64 = 1
+    while scanning == 1 {
+        if start >= len(json) {
+            scanning = 0
+        } elif substr(json, start, start + 1) == " " {
+            start = start + 1
+        } else {
+            scanning = 0
+        }
+    }
+    if start >= len(json) {
+        return 0 - 1
+    }
+    let mut num_str: str = ""
+    let mut i: i64 = start
+    if substr(json, i, i + 1) == "-" {
+        num_str = "-"
+        i = i + 1
+    }
+    let mut done: i64 = 0
+    while done == 0 {
+        if i >= len(json) {
+            done = 1
+        } else {
+            let code: i64 = char_code(substr(json, i, i + 1))
+            if code >= 48 && code <= 57 {
+                num_str = num_str + substr(json, i, i + 1)
+                i = i + 1
+            } else {
+                done = 1
+            }
+        }
+    }
+    if len(num_str) == 0 {
+        return 0 - 1
+    }
+    return parse_int(num_str)
+}
+
+// ---- mock LLM stub (pure compute, no network) ----
+
+@capabilities()
+fn mock_llm(question: str) -> str {
+    return MOCK_ANSWER
+}
+
+// ---- C-ABI exports ----
+
+// agent_call(req_ptr, req_len) -> resp_ptr
+//
+// Reads JSON request from host memory (req_ptr/req_len), applies budget gate
+// BEFORE calling the mock LLM, writes response JSON to DLL memory, returns ptr.
+// Pass req_len = -1 for NUL-terminated input.
+//
+// Capabilities: ffi -- from_ptr reads host memory; cstr pins the response.
+// mock_llm is pure compute so no net:http capability is needed.
+@capabilities(ffi)
+fn agent_call(req_ptr: i64, req_len: i64) -> i64 {
+    let req: str = from_ptr(req_ptr, req_len)
+    let question: str = json_str_field(req, "question")
+    let budget_cents: i64 = json_int_field(req, "budget_cents")
+
+    // Budget gate fires BEFORE mock LLM; refused calls spend 0
+    if budget_cents < MOCK_COST_CENTS {
+        let reason: str = "budget_cents=" + to_string(budget_cents) + " < required=" + to_string(MOCK_COST_CENTS)
+        let resp: str = build_response(0, "", "", 0, reason)
+        LAST_RESP_LEN = len(resp)
+        LAST_RESP_PTR = cstr(resp)
+        return LAST_RESP_PTR
+    }
+
+    // Budget passes: call mock LLM and record spend
+    let answer: str = mock_llm(question)
+    TOTAL_SPEND_CENTS = TOTAL_SPEND_CENTS + MOCK_COST_CENTS
+    let resp: str = build_response(1, answer, MOCK_SOURCE, MOCK_COST_CENTS, "ok")
+    LAST_RESP_LEN = len(resp)
+    LAST_RESP_PTR = cstr(resp)
+    return LAST_RESP_PTR
+}
+
+// agent_response_len() -> i64
+// Byte length of the last response (excluding NUL terminator).
+@capabilities(ffi)
+fn agent_response_len() -> i64 {
+    return LAST_RESP_LEN
+}
+
+// main required for --emit-llvm entry point (compiler needs one to compile).
+// Not exported as a C symbol; build script only dllexports agent_call + agent_response_len.
+fn main() {
+    println("kryos_embed_agent: DLL ready. Call agent_call() via C ABI.")
+}

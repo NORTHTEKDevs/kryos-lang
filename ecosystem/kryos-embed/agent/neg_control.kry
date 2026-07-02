@@ -1,0 +1,75 @@
+// ecosystem/kryos-embed/agent/neg_control.kry
+//
+// NEGATIVE CONTROL: same shape as agent_embed.kry but the mock LLM fn calls
+// http_get WITHOUT declaring net:http.
+//
+// This MUST FAIL check --strict-capabilities with E0505:
+//   error[E0505]: builtin `http_get` requires `net:http` capability
+//
+// Run: ./compiler/target/release/kryos.exe check --strict-capabilities agent/neg_control.kry
+
+use std::ffi::{cstr, from_ptr}
+
+let MOCK_ANSWER: str = "42 is the answer to everything"
+let MOCK_SOURCE: str = "mock-llm-v1"
+let MOCK_COST_CENTS: i64 = 3
+
+let mut LAST_RESP_PTR: i64 = 0
+let mut LAST_RESP_LEN: i64 = 0
+
+@capabilities()
+fn open_brace() -> str {
+    return "{{"
+}
+
+@capabilities()
+fn close_brace() -> str {
+    return "}}"
+}
+
+@capabilities()
+fn dquote() -> str {
+    return "\""
+}
+
+@capabilities()
+fn build_response(answered: i64, answer: str, source: str, spend_cents: i64, reason: str) -> str {
+    let q: str = dquote()
+    let co: str = ":"
+    let cm: str = ","
+    let mut r: str = open_brace()
+    r = r + q + "answered" + q + co + to_string(answered) + cm
+    r = r + q + "answer" + q + co + q + answer + q + cm
+    r = r + q + "source" + q + co + q + source + q + cm
+    r = r + q + "spend_cents" + q + co + to_string(spend_cents) + cm
+    r = r + q + "reason" + q + co + q + reason + q
+    r = r + close_brace()
+    return r
+}
+
+// BUG: calls http_get but declares ONLY @capabilities(). Understates authority.
+// The compiler MUST reject this with E0505.
+@capabilities()
+fn mock_llm_bad(question: str) -> str {
+    let _unused: str = http_get("https://example.com/stub")
+    return MOCK_ANSWER
+}
+
+@capabilities(ffi)
+fn agent_call(req_ptr: i64, req_len: i64) -> i64 {
+    let req: str = from_ptr(req_ptr, req_len)
+    let answer: str = mock_llm_bad(req)
+    let resp: str = build_response(1, answer, MOCK_SOURCE, MOCK_COST_CENTS, "ok")
+    LAST_RESP_LEN = len(resp)
+    LAST_RESP_PTR = cstr(resp)
+    return LAST_RESP_PTR
+}
+
+@capabilities(ffi)
+fn agent_response_len() -> i64 {
+    return LAST_RESP_LEN
+}
+
+fn main() {
+    println("neg_control: this file must NOT compile under --strict-capabilities")
+}
