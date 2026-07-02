@@ -6,6 +6,7 @@ The top compile errors new Kryos users hit, in rough order of frequency. Every e
 
 ### "expected newline before next statement"
 
+<!-- docs-example: skip -->
 ```kryos
 fn main() { let x = 1; let y = 2 }   //  ERROR
 fn main() {                          //  OK
@@ -51,6 +52,7 @@ Common typos: `int` → `i64`, `float` → `f64`, `string` → `str`, `boolean` 
 
 You referenced a variable that's out of scope or wasn't declared:
 
+<!-- docs-example: skip -->
 ```kryos
 fn main() {
     if condition {

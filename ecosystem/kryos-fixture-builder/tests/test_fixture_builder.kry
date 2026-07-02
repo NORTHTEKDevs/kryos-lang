@@ -280,7 +280,7 @@ fn main() {
     println("PASS io update")
 
     // (5) committed golden files: verify against pre-committed testdata/.
-    let committed_store = golden_store("testdata")
+    let committed_store = golden_store("ecosystem/kryos-fixture-builder/testdata")
     let r_hello = assert_golden(committed_store, "hello", "Hello, World!\n")
     assert(r_hello.matched, "committed hello golden should match")
     println("PASS committed hello golden")

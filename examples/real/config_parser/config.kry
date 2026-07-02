@@ -166,11 +166,12 @@ fn get(cfg: Config, key: str) -> Value {
 
 /// Convenience: stringify a `Value` for printing/asserting.
 fn value_to_string(v: Value) -> str {
-    return match v {
-        Value::Str(s) => "str:" + s,
-        Value::Int(n) => "int:" + to_string(n),
-        Value::Bool(b) => bool_label(b),
+    match v {
+        Value.Str(s) => return "str:" + s,
+        Value.Int(n) => return "int:" + to_string(n),
+        Value.Bool(b) => return bool_label(b),
     }
+    return ""
 }
 
 fn bool_label(b: bool) -> str {
@@ -178,5 +179,17 @@ fn bool_label(b: bool) -> str {
         return "bool:true"
     }
     return "bool:false"
+}
+
+fn main() {
+    let text = "# demo config\nname = kryos\nversion = 1\nenabled = true\n"
+    let cfg = parse_config(text)
+    println("Parsed " + to_string(len(cfg.keys)) + " keys")
+    let mut i = 0
+    while i < len(cfg.keys) {
+        println(cfg.keys[i] + " = " + value_to_string(cfg.values[i]))
+        i = i + 1
+    }
+    println("missing = " + value_to_string(get(cfg, "absent")))
 }
 

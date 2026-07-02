@@ -485,12 +485,15 @@ fn main() {
     println("")
 
     // ==================================================================
-    // 17. Pipeline Operator ( |> )
+    // 17. Function Composition (manual pipe)
     // ==================================================================
-    println("--- 17. Pipeline Operator ---")
+    println("--- 17. Function Composition ---")
 
-    let piped = 5 |> add_ten |> triple
-    println("  5 |> add_ten |> triple = " + to_string(piped))
+    // Note: the |> pipeline operator is defined in the language but triggers
+    // a JIT teardown crash on the Cranelift backend (compiler bug).
+    // We demonstrate the same transformation with direct nested calls.
+    let piped = triple(add_ten(5))
+    println("  triple(add_ten(5)) = " + to_string(piped))
     println("  (5 + 10 = 15, 15 * 3 = 45)")
     println("")
 

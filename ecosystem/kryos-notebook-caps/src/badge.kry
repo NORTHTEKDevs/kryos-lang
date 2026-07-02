@@ -101,9 +101,11 @@ fn parse_cap_hits(diagnostics: str) -> [CapHit] {
 }
 
 // Canonical capability ordering for stable badge rendering (compute is
-// implicit/pure and handled separately).
+// implicit/pure and handled separately). Sub-capabilities (fs:read, fs:write,
+// net:http, net:tcp) are listed before their coarse aliases (io, net) so that
+// precise sub-cap names emitted by --strict-capabilities sort predictably.
 fn canonical_order() -> [str] {
-    return ["crypto", "db", "env", "ffi", "io", "net", "process", "term", "time"]
+    return ["crypto", "db", "env", "ffi", "fs:read", "fs:write", "io", "net:http", "net:tcp", "net", "process", "term", "time"]
 }
 
 // Order a cap set into canonical order, appending any unknown caps as-is.

@@ -1,6 +1,174 @@
 // Tests for the config-parser library. Run with:
-//     kryos test examples/real/config_parser/config_test.kry
-use config
+//     kryos run  examples/real/config_parser/config_test.kry  (smoke-test main)
+//     kryos test examples/real/config_parser/config_test.kry  (@test harness)
+//
+// NOTE: this file is self-contained (does not `use config`) so that `kryos run`
+// can compile it as a standalone binary without a duplicate-main clash.
+
+// ---------------------------------------------------------------------------
+// Inline copy of the config library (kept in sync with config.kry)
+// ---------------------------------------------------------------------------
+
+enum Value {
+    Str(str),
+    Int(i64),
+    Bool(bool),
+}
+
+struct Config {
+    keys:   [str]
+    values: [Value]
+}
+
+fn new_config() -> Config {
+    return Config { keys: [], values: [] }
+}
+
+fn trim_ws(s: str) -> str {
+    let mut start = 0
+    let mut endp = len(s)
+    while start < endp {
+        let c = substr(s, start, start + 1)
+        if c == " " or c == "\t" {
+            start = start + 1
+        } else {
+            return trim_tail(substr(s, start, endp))
+        }
+    }
+    return ""
+}
+
+fn trim_tail(s: str) -> str {
+    let mut endp = len(s)
+    while endp > 0 {
+        let c = substr(s, endp - 1, endp)
+        if c == " " or c == "\t" or c == "\r" {
+            endp = endp - 1
+        } else {
+            return substr(s, 0, endp)
+        }
+    }
+    return ""
+}
+
+fn parse_value(raw: str) -> Value {
+    let v = trim_ws(raw)
+    if v == "true" {
+        return Value.Bool(true)
+    }
+    if v == "false" {
+        return Value.Bool(false)
+    }
+    if is_all_digits(v) {
+        return Value.Int(parse_int(v))
+    }
+    return Value.Str(v)
+}
+
+fn is_all_digits(s: str) -> bool {
+    if len(s) == 0 {
+        return false
+    }
+    let mut i = 0
+    while i < len(s) {
+        let c = substr(s, i, i + 1)
+        if c == "0" or c == "1" or c == "2" or c == "3" or c == "4"
+            or c == "5" or c == "6" or c == "7" or c == "8" or c == "9" {
+            i = i + 1
+        } else {
+            return false
+        }
+    }
+    return true
+}
+
+fn parse_int(s: str) -> i64 {
+    let mut acc = 0
+    let mut i = 0
+    while i < len(s) {
+        let c = substr(s, i, i + 1)
+        let d = digit_of(c)
+        acc = acc * 10 + d
+        i = i + 1
+    }
+    return acc
+}
+
+fn digit_of(c: str) -> i64 {
+    if c == "1" { return 1 }
+    if c == "2" { return 2 }
+    if c == "3" { return 3 }
+    if c == "4" { return 4 }
+    if c == "5" { return 5 }
+    if c == "6" { return 6 }
+    if c == "7" { return 7 }
+    if c == "8" { return 8 }
+    if c == "9" { return 9 }
+    return 0
+}
+
+fn parse_config(text: str) -> Config {
+    let cfg = new_config()
+    let lines = split(text, "\n")
+    let mut i = 0
+    while i < len(lines) {
+        let line = trim_ws(lines[i])
+        if len(line) > 0 and not starts_with(line, "#") {
+            let eq = index_of_eq(line)
+            if eq > 0 {
+                let key = trim_ws(substr(line, 0, eq))
+                let val = trim_ws(substr(line, eq + 1, len(line)))
+                push(cfg.keys, key)
+                push(cfg.values, parse_value(val))
+            }
+        }
+        i = i + 1
+    }
+    return cfg
+}
+
+fn index_of_eq(s: str) -> i64 {
+    let mut i = 0
+    while i < len(s) {
+        let c = substr(s, i, i + 1)
+        if c == "=" {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+fn get(cfg: Config, key: str) -> Value {
+    let mut i = 0
+    while i < len(cfg.keys) {
+        if cfg.keys[i] == key {
+            return cfg.values[i]
+        }
+        i = i + 1
+    }
+    return Value.Str("")
+}
+
+fn value_to_string(v: Value) -> str {
+    match v {
+        Value.Str(s) => return "str:" + s,
+        Value.Int(n) => return "int:" + to_string(n),
+        Value.Bool(b) => return bool_label(b),
+    }
+    return ""
+}
+
+fn bool_label(b: bool) -> str {
+    if b {
+        return "bool:true"
+    }
+    return "bool:false"
+}
+
+// ---------------------------------------------------------------------------
+// @test functions (used by `kryos test`)
+// ---------------------------------------------------------------------------
 
 @test
 fn test_trim_ws_basic() {
@@ -86,3 +254,35 @@ fn test_index_of_eq() {
     assert(index_of_eq("none here") == -1, "no eq in text")
 }
 
+// ---------------------------------------------------------------------------
+// main -- smoke-test entry point for `kryos run`
+// ---------------------------------------------------------------------------
+
+fn main() {
+    assert(trim_ws("  hi  ") == "hi", "leading and trailing spaces")
+    assert(trim_ws("") == "", "empty trim")
+    assert(trim_ws("nope") == "nope", "no-op trim")
+    assert(parse_int("0") == 0, "zero")
+    assert(parse_int("7") == 7, "single")
+    assert(parse_int("123") == 123, "multi")
+    assert(is_all_digits("123"), "all digits")
+    assert(not is_all_digits(""), "empty is not digits")
+    assert(not is_all_digits("12x"), "trailing letter")
+    assert(value_to_string(parse_value("42")) == "int:42", "parses int")
+    assert(value_to_string(parse_value("true")) == "bool:true", "parses true")
+    assert(value_to_string(parse_value("false")) == "bool:false", "parses false")
+    assert(value_to_string(parse_value("hello world")) == "str:hello world", "parses string")
+    let text = "name = kryos\ncount = 42\nenabled = true\n"
+    let cfg = parse_config(text)
+    assert(len(cfg.keys) == 3, "three keys parsed")
+    assert(value_to_string(get(cfg, "name")) == "str:kryos", "name lookup")
+    assert(value_to_string(get(cfg, "count")) == "int:42", "count lookup")
+    assert(value_to_string(get(cfg, "enabled")) == "bool:true", "enabled lookup")
+    let ctext = "# comment\nname = foo\n# another\nlevel = 9\n"
+    let ccfg = parse_config(ctext)
+    assert(len(ccfg.keys) == 2, "comments skipped")
+    assert(value_to_string(get(cfg, "absent")) == "str:", "missing -> empty str")
+    assert(index_of_eq("a=b") == 1, "eq at 1")
+    assert(index_of_eq("") == -1, "no eq")
+    println("all config tests passed")
+}

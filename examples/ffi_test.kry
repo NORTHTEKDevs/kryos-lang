@@ -1,16 +1,15 @@
 // Bare-metal FFI smoke test.
 //
-// We declare libc puts() directly and pass it a raw byte pointer
-// from a Kryos string literal. If this prints "hello from libc",
-// the C ABI is wired correctly.
+// Declares puts() and _getpid() from the C runtime and calls them via the
+// Cranelift JIT. On Windows the CRT exports _getpid; on Linux/macOS the
+// linker resolves it through the getpid compatibility alias.
 
 extern "C" {
     fn puts(s: i64) -> i64
-    fn getpid() -> i64
+    fn _getpid() -> i64
 }
 
 fn main() {
-    let pid = getpid()
-    println("pid:")
-    println(pid)
+    let pid = _getpid()
+    println("pid: " + to_string(pid))
 }

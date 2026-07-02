@@ -143,6 +143,7 @@ fn main() {
 
 ## Async
 
+<!-- docs-example: skip -->
 ```kryos
 use std::net::{http_get}
 

@@ -36,12 +36,24 @@ struct RunResult {
     stderr: str,
 }
 
-// Resolve the kryos binary: $KRYOS, else "kryos" on PATH.
-@capabilities(process)
+// Resolve the kryos binary: $KRYOS, then the repo-relative dev build
+// (compiler/target/release/kryos.exe), then "kryos" on PATH.
+// The dev-build probe lets `kryos run` work from the project root without
+// requiring the user to export KRYOS or put kryos on PATH.
+@capabilities(process, io)
 fn kryos_bin() -> str {
     let v = env_get("KRYOS")
     if len(v) > 0 {
         return v
+    }
+    // Probe the repo-local release build (works when run from project root).
+    let win_path = "compiler/target/release/kryos.exe"
+    if file_exists(win_path) > 0 {
+        return win_path
+    }
+    let unix_path = "compiler/target/release/kryos"
+    if file_exists(unix_path) > 0 {
+        return unix_path
     }
     return "kryos"
 }

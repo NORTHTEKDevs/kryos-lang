@@ -33,9 +33,11 @@ fn test_full_run_badges_and_threads() {
     let run = run_notebook(md, false)
     assert(nb_count(run) == 3, "expected 3 cells, got " + to_string(nb_count(run)))
 
-    // Badges: cell 0 pure compute, cell 1 io, cell 2 pure compute.
+    // Badges: cell 0 pure compute, cell 1 fs:write (file_write builtin), cell 2 pure compute.
+    // --strict-capabilities emits the precise sub-capability (fs:write) rather than the
+    // legacy coarse alias (io), so we check for "write" which appears in both.
     assert(run.badges[0] == "[compute]", "cell 0 should badge [compute], got " + run.badges[0])
-    assert(contains(run.badges[1], "io"), "cell 1 should badge io, got " + run.badges[1])
+    assert(contains(run.badges[1], "write"), "cell 1 should badge fs:write, got " + run.badges[1])
     assert(run.badges[1] != "[compute]", "cell 1 must NOT be pure, got " + run.badges[1])
     assert(run.badges[2] == "[compute]", "cell 2 should badge [compute], got " + run.badges[2])
 

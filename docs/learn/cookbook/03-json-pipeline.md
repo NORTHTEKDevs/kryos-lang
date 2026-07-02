@@ -19,9 +19,15 @@ Save as `pipeline.kry`:
 ```kryos
 use std::json::{parse, get, get_index, to_str, to_int, length}
 
-@capabilities(io)
 fn main() {
-    let body = file_read("users.json")
+    // Inline fixture — in real use replace this block with:
+    //   let body = file_read("users.json")
+    // Kryos strings interpolate { }, so literal braces are doubled: {{ }}
+    let q = "\""
+    let alice = "{{" + q + "name" + q + ":" + q + "alice" + q + "," + q + "age" + q + ":30," + q + "role" + q + ":" + q + "admin" + q + "}}"
+    let bob   = "{{" + q + "name" + q + ":" + q + "bob" + q + "," + q + "age" + q + ":24," + q + "role" + q + ":" + q + "user" + q + "}}"
+    let carol = "{{" + q + "name" + q + ":" + q + "carol" + q + "," + q + "age" + q + ":41," + q + "role" + q + ":" + q + "admin" + q + "}}"
+    let body = "[" + alice + "," + bob + "," + carol + "]"
     let users = parse(body)
 
     let total = length(users)
@@ -49,8 +55,8 @@ fn main() {
     }
     out = out + "]"
 
-    file_write("admins.json", out)
-    println("wrote " + to_string(len(admins_kept)) + " admin records to admins.json")
+    println("admins: " + out)
+    println("wrote " + to_string(len(admins_kept)) + " admin records")
 }
 ```
 

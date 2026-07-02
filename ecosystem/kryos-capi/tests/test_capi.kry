@@ -17,7 +17,7 @@ use manifest
 // Read the committed caps.json fixture (shape matches gen_caps output).
 // Unannotated on purpose: it performs file IO and is a test fixture loader.
 fn _fixture() -> str {
-    return file_read("tests/fixture_caps.json")
+    return file_read("ecosystem/kryos-capi/tests/fixture_caps.json")
 }
 
 @test

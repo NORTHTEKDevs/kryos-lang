@@ -201,3 +201,24 @@ fn dispatch(table: str, method: str, path: str) -> str {
     }
     return "404"
 }
+
+fn main() {
+    // Demonstrate route matching and dispatch.
+    let table = route("GET", "/users/:id", "get_user") + "\n" +
+        route("POST", "/users", "create_user") + "\n" +
+        route("DELETE", "/users/:id", "delete_user")
+
+    let r1 = dispatch(table, "GET", "/users/42")
+    println("GET /users/42 -> " + r1)
+
+    let r2 = dispatch(table, "POST", "/users")
+    println("POST /users -> " + r2)
+
+    let r3 = dispatch(table, "GET", "/notfound")
+    println("GET /notfound -> " + r3)
+
+    // Middleware chain demo
+    let chain = "trim\ntag"
+    let result = run_chain(chain, "  hello  ")
+    println("chain result: " + result)
+}

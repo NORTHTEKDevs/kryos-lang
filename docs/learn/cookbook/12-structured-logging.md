@@ -5,29 +5,27 @@
 ## The program
 
 ```kryos
-use std::log::{log_set_level, log_emit}
+use std::log::{new_level, set_level, emit, DEBUG, INFO}
 
-@capabilities(io)
-fn main() {
-    // Default min-level is 2 (INFO). Set to 1 to see DEBUG.
-    log_set_level(1)
-
-    log_emit(2, "boot", "build=v4.3.0 pid=12345")
-    log_emit(1, "config loaded", "path=/etc/myapp.toml")
-    log_emit(2, "starting workers", "count=4")
-
-    // Simulate work
-    process_request(42)
-    process_request(99)
-
-    log_emit(2, "shutting down", "uptime_secs=3600")
+fn process_request(log: [i64], id: i64) {
+    emit(log, INFO(), "request started", "id=" + to_string(id))
+    // ... do work ...
+    emit(log, INFO(), "request done", "id=" + to_string(id) + " status=200")
 }
 
-@capabilities(io)
-fn process_request(id: i64) {
-    log_emit(2, "request started", "id=" + to_string(id))
-    // ... do work ...
-    log_emit(2, "request done",    "id=" + to_string(id) + " status=200")
+fn main() {
+    // Create a level holder; default min-level is INFO (2). Set to DEBUG (1).
+    let log = new_level()
+    set_level(log, DEBUG())
+
+    emit(log, INFO(), "boot", "build=v4.3.0")
+    emit(log, DEBUG(), "config loaded", "path=/etc/myapp.toml")
+    emit(log, INFO(), "starting workers", "count=4")
+
+    process_request(log, 42)
+    process_request(log, 99)
+
+    emit(log, INFO(), "shutting down", "uptime_secs=3600")
 }
 ```
 

@@ -1,4 +1,7 @@
 // mylib.kry -- A small utility library to demonstrate the Kryos import system.
+//
+// Library functions are defined below. A main() entry point is included so
+// this file can also be run directly with `kryos run examples/mylib.kry`.
 
 /// Double an integer value.
 fn double(x: i64) -> i64 {
@@ -24,4 +27,11 @@ fn sum_to(n: i64) -> i64 {
         i = i + 1
     }
     return total
+}
+
+fn main() {
+    println(greet("Kryos"))
+    println("double(7) = " + to_string(double(7)))
+    println("triple(7) = " + to_string(triple(7)))
+    println("sum_to(10) = " + to_string(sum_to(10)))
 }
