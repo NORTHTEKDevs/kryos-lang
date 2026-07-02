@@ -665,6 +665,11 @@ impl LlvmCodegen {
                 "declare {dst} @llvm.fptosi.sat.{dst}.f32(float)"
             ));
         }
+        // Math intrinsics used by the float builtins (sqrt/pow/abs). Same
+        // LLVM 22+ explicit-declaration requirement as the sat casts above.
+        self.emit_line("declare double @llvm.sqrt.f64(double)");
+        self.emit_line("declare double @llvm.pow.f64(double, double)");
+        self.emit_line("declare double @llvm.fabs.f64(double)");
         self.emit_blank();
     }
 
