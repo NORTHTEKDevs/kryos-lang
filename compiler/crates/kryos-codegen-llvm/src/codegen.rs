@@ -532,7 +532,8 @@ impl LlvmCodegen {
 
         // Per-function DISubprograms + DILocations. Metadata id layout is
         // synchronised with `emit_function_as`:
-        //   per function k (0-indexed): subprogram_id = 100 + 2*k, loc_id = +1
+        //   per function k (0-indexed): subprogram_id = 200 + 2*k, loc_id = +1
+        //   (base 200 clears the fixed TBAA nodes !100-!104)
         let fn_meta: Vec<(String, u32)> = self
             .emitted_function_names
             .iter()
@@ -540,7 +541,7 @@ impl LlvmCodegen {
             .zip(self.emitted_function_lines.iter().copied())
             .collect();
         for (k, (name, line)) in fn_meta.iter().enumerate() {
-            let sub_id = 100 + 2 * k as u32;
+            let sub_id = 200 + 2 * k as u32;
             let loc_id = sub_id + 1;
             self.emit_line(&format!(
                 "!{sub_id} = distinct !DISubprogram(name: \"{name}\", linkageName: \"{name}\", scope: !1, file: !1, line: {line}, type: !4, scopeLine: {line}, spFlags: DISPFlagDefinition, unit: !0)",
@@ -2789,10 +2790,13 @@ impl LlvmCodegen {
                 // forward reference here. Encode as `subprogram_id`.
                 // Layout (matches emit_dwarf_metadata):
                 //   per function k (0-indexed in emitted_function_names):
-                //     subprogram_md_id = 100 + 2*k
-                //     location_md_id   = 100 + 2*k + 1
+                //     subprogram_md_id = 200 + 2*k
+                //     location_md_id   = 200 + 2*k + 1
+                // Base 200: ids !100-!104 are the FIXED TBAA nodes; starting
+                // debug ids at 100 collided with them under -g ("Metadata id
+                // is already used" -- the CodeView smoke failure).
                 let k = self.emitted_function_names.len() - 1;
-                let sub_id = 100 + 2 * k as u32;
+                let sub_id = 200 + 2 * k as u32;
                 let loc_id = sub_id + 1;
                 self.current_fn_dbg_md = Some(sub_id);
                 self.current_fn_loc_md = Some(loc_id);
