@@ -15,6 +15,10 @@ on:
         description: "Release tag whose .vsix to publish"
         default: "v1.0.0-beta.1"
         required: true
+      verify_only:
+        description: "Only verify the stored VSCE_PAT (no publish) -- use after rotating the token"
+        default: "false"
+        required: false
   release:
     types: [published]
 
@@ -22,14 +26,24 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
+      - name: Verify stored PAT only (rotation check)
+        if: ${{ github.event.inputs.verify_only == 'true' }}
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          npx --yes @vscode/vsce verify-pat northtekdevs -p "$VSCE_PAT" \
+            && echo "VSCE_PAT is valid for publisher northtekdevs"
       - name: Resolve tag
+        if: ${{ github.event.inputs.verify_only != 'true' }}
         id: tag
         run: echo "tag=${{ github.event.inputs.tag || github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
       - name: Download .vsix from the release
+        if: ${{ github.event.inputs.verify_only != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release download "${{ steps.tag.outputs.tag }}" -R "${{ github.repository }}" -p "kryos-vscode.vsix"
       - name: Publish to the marketplace
+        if: ${{ github.event.inputs.verify_only != 'true' }}
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
         run: |
