@@ -118,6 +118,10 @@ run_one() {
             > "$tmp_out" 2> "$tmp_err"; then
         llvm_status="FAIL_BUILD"
         llvm_err="$(head -c 4000 "$tmp_err")"
+        # Self-documenting failures: without this, a CI-only FAIL_BUILD is
+        # undebuggable (the classified error text never reached the log).
+        echo "  ----- $name build stderr -----"
+        head -30 "$tmp_err" | sed 's/^/  | /'
     else
       "$exe_path" > "$exe_out" 2>> "$tmp_err"
       rc=$?
