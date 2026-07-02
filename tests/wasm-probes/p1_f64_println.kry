@@ -1,0 +1,4 @@
+fn main() {
+    let f: f64 = 2.5 * 2.0
+    println(to_string(f))
+}

@@ -1,0 +1,6 @@
+fn main() {
+    let mut xs: [i64] = [10, 20, 30]
+    xs = push(xs, 40)
+    println(to_string(xs[0] + xs[3]))
+    println(to_string(len(xs)))
+}

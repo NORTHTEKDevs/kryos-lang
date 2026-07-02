@@ -1,53 +1,43 @@
-# Kryos Night-Shift Spec
+# Night-shift spec: WASM backend expansion
 
-## Goal (human terms)
-Make Kryos **functional and adoptable**. Two thrusts:
-1. **Prove the "governed agent is a portable embeddable unit" architecture**: ONE governed agent
-   (calls a mock LLM, returns a `Tracked<str>` answer, annotated `@budget(usd=)` + `@capabilities(net:http)`)
-   that runs unchanged in three hosts — a native Kryos program, a WASM host, and a non-Kryos host via the
-   C ABI — each keeping the compile-time guarantees.
-2. **Close real correctness bugs**, starting with in-place mutation of aggregates inside collections.
+## Goal
+Close the gap between the wasm backend's explicit subset and everyday Kryos:
+operator string concat, array literal/index/push sugar, match lowering, the
+f64 host-import bug, and (stretch) struct aggregates -- so the same programs
+people write natively compile to wasm or fail for a REASON, not a gap.
+docs/wasm-contract.md describes the verified current subset; update it as
+features land.
 
-## Acceptance check (the only definition of DONE)
-```
-bash spec/night-acceptance.sh
-```
-Exit 0 == done. It runs: compiler build + full cargo suite (must stay green) + `demo/<mutation|native|wasm|cabi>/check.sh`.
-Each milestone's `check.sh` is created by the work and must exit 0. Contracts are in `spec/features.json`.
+## Acceptance check (the only truth)
+`bash spec/wasm-acceptance.sh` -- exit 0 = done.
+It requires: cargo build + FULL cargo suite green (native backends must not
+regress!), and every probe in tests/wasm-probes/ compiling with
+`--backend wasm` and matching its .expect byte-for-byte via
+`node tools/wasm-host/run.mjs`.
 
-## How to make progress each iteration
-- Read `spec/features.json`, pick the FIRST feature whose `status` != "done", and advance it.
-- Build small, verify with the milestone `check.sh`, then run the full acceptance check.
-- A feature is done only when its `check.sh` exits 0 on a fresh run. Update only the `status` field in features.json.
+## Feature order (easiest first -- bank wins each iteration)
+See spec/features.json. Roughly: f64 println fix -> `+` concat operator ->
+array sugar (`[..]`, `arr[i]`, `push`) -> string interpolation -> match
+lowering -> structs in linear memory (stretch).
 
-## Hard rules (safety — do not violate)
-- **Build-plane only.** NEVER run `gh repo edit ... --visibility`, NEVER flip any repo public, NEVER touch
-  GitHub billing, NEVER `git push`. Local commits only (the harness commits for you).
-- **Never weaken the gate.** Do not edit `spec/night-acceptance.sh` to make it pass, do not delete or skip
-  tests, do not `--ignore` failures. Fix the code, not the check.
-- **Mock LLM only.** No live API calls, no API keys, no network spend. The mock is a deterministic stub
-  returning a canned answer + a fixed token/cost number.
-- **Never regress the cargo suite** (currently 70 suites / 1064 tests, 0 failures). If a change reddens it, fix or revert.
-- Do not edit `spec/features.json` except the `status` field. Do not edit this spec.
+## Where the code is
+- Backend: compiler/crates/kryos-codegen-wasm/src/lib.rs (single file; the
+  unsupported-feature gate fn is near line 73; strings are packed
+  (offset,len) i64 handles; arrays are linear-memory via host helpers).
+- Host: tools/wasm-host/run.mjs (host imports live here; the f64 bug is an
+  import typed i64 receiving f64 -- fix BOTH sides coherently).
+- MIR input is the same as the native backends -- the wasm backend maps MIR,
+  it does not re-lower AST. Reuse the native backends' lowering decisions.
 
-## Engineering notes (load-bearing — read before coding)
-- Repo: `~/projects/active/kryos-lang`. Compiler in `compiler/` (Rust, 21 crates, Cranelift + LLVM backends).
-  Build: `cd compiler && cargo build --release -j 4` (ALWAYS `--release`; debug uses ~48GB RAM).
-  Binary: `compiler/target/release/kryos.exe`. Set `KRYOS_STDLIB_DIR=compiler/stdlib` when running it.
-- Two backends: `kryos run <f>` = Cranelift JIT (fast, dev); `kryos build --release <f>` = LLVM AOT (production).
-  Bugs to date were AOT-only aggregate mishandling (boxing/ABI). Prefer verifying BOTH backends for every demo.
-- **Machine hygiene**: `kryostokens.exe` leaks and wedges builds. The acceptance check kills strays first;
-  if a build hangs, `taskkill //F //IM kryostokens.exe //IM kryos.exe //IM clang.exe //IM link.exe` then retry.
-- Kryos syntax gotchas live in the repo `CLAUDE.md` — read it. No semicolons; `elif` not `else if`; closures
-  `|x|`; tuple-variant enums only; annotate `Result<T,E>`/`Option<T>` on signatures; literal braces `{{`/`}}`.
-- The mutation fix root cause: `compiler/crates/kryos-mir/src/lower.rs` `lower_nested_field_assign` — the
-  IndexAccess base hits the `_` fallback (mutates a throwaway copy, no write-back). Correct fix = in-place
-  mutation through the element's box pointer (works for stack + heap). A naive `kryos_array_set` write-back
-  crashes stack-promoted literal arrays — do NOT reintroduce that.
-- Aggregate boxing convention learned this session: enum payloads / closure captures / array elements box
-  with `kryos_calloc` (matching the `kryos_free` drop); closure aggregate ARGS forward as `ptr byval(%Agg)`.
-  Reuse these patterns.
-
-## End every response with exactly one sentinel
-`<promise>NEXT</promise>` (more to do) / `<promise>DONE</promise>` (all gates pass) / `<promise>BLOCKED</promise>:<reason>`.
-DONE is only real if `bash spec/night-acceptance.sh` exits 0.
+## Hard rules
+- NEVER weaken the cargo suite, native tests, or a probe/.expect to pass.
+- NEVER touch spec/, .github/, demo/, ecosystem/ (docs/wasm-contract.md is OK).
+- Build with `cargo build --release -j 4` only. Kill kryostokens.exe strays
+  each iteration (taskkill //F //IM kryostokens.exe).
+- Local commits only; NEVER push. No live network calls.
+- Read repo CLAUDE.md before writing any .kry (no semicolons; elif; string
+  interpolation braces).
+- Partial progress is fine: commit whatever compiles + moves a probe from
+  FAIL to PASS. End every session with <promise>NEXT</promise>,
+  <promise>DONE</promise> (only if the gate exits 0), or
+  <promise>BLOCKED</promise>:<reason>.

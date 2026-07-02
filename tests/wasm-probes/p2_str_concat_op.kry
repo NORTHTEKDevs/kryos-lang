@@ -1,0 +1,5 @@
+fn main() {
+    let s = "hello" + " " + "world"
+    println(s)
+    println(to_string(len(s)))
+}

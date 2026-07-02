@@ -1,43 +1,19 @@
 {
   "project": "kryos-lang",
-  "goal": "Make Kryos functional and adoptable: prove the governed agent is a portable embeddable unit (native + WASM + C-ABI) carrying its @budget/@capabilities/Tracked guarantees, and close real correctness bugs. Build-plane only.",
-  "ordering": "Work top-to-bottom; the list is ordered easiest-first so each iteration can land a real, committed increment. Bank wins. Never regress the cargo suite. Partial progress is fine: commit whatever compiles+improves each iteration, even if the feature's check.sh does not yet pass.",
-  "mock_llm_rule": "All demos MUST use a deterministic MOCK LLM (a tiny stub fn that returns a canned answer + a fixed token/cost count). NO live API calls, NO creds, NO spend. The point is to prove governance + portability, not a real model round-trip.",
+  "goal": "WASM backend expansion: everyday Kryos compiles to wasm. Gate: bash spec/wasm-acceptance.sh (all probes in tests/wasm-probes/ + full cargo suite).",
+  "ordering": "Top-to-bottom, easiest first. Bank a win per iteration. Never regress native backends or weaken probes.",
   "features": [
-    {
-      "id": "native",
-      "title": "Governed agent embedded in a native Kryos program",
-      "status": "passing",
-      "acceptance_test": "bash demo/native/check.sh",
-      "contract": "START HERE. Build ONE small governed agent in demo/agent/ (reused by all hosts): takes a question, calls a MOCK LLM stub, returns an answer plus its source string. The agent fn is annotated @budget(usd=...) and @capabilities(net:http). First make it run with `kryos run`, then `kryos build --release`. Create demo/native/check.sh that asserts deterministically: (a) a within-budget call returns the answer WITH its source; (b) an over-budget call is refused BEFORE the mock LLM records spend (assert a refusal value / unchanged spend counter); (c) a negative-control .kry where a fn calls the mock LLM WITHOUT declaring net capability FAILS to compile under --strict-capabilities (assert non-zero compile + the E05xx capability error). Commit partial progress each iteration. Read the repo CLAUDE.md for Kryos syntax first."
-    },
-    {
-      "id": "wasm",
-      "title": "Same governed agent compiled to WASM",
-      "status": "passing",
-      "acceptance_test": "bash demo/wasm/check.sh",
-      "contract": "Compile the SAME demo/agent governed agent to wasm32 (kryos build --release --backend wasm) and run it via `node tools/wasm-host/run.mjs`. The mock LLM must be wasm-safe (pure compute or routed through the JS host; the native HTTPS stdlib will NOT link in wasm). demo/wasm/check.sh asserts the within-budget answer+source and the over-budget refusal are observable from the wasm run. If a genuine wasm-backend limitation blocks it, fix the wasm backend OR shrink the agent to the wasm-supported subset and document the exact gap in demo/wasm/NOTES.md; the gate only passes when the demo actually runs in wasm."
-    },
-    {
-      "id": "cabi",
-      "title": "Same governed agent called via the C ABI from a non-Kryos host",
-      "status": "passing",
-      "acceptance_test": "bash demo/cabi/check.sh",
-      "contract": "Expose the demo/agent governed agent through the C ABI (kryos bindgen / an extern entry point), build it as a static lib, and call it from a tiny C harness compiled with clang, linking the kryos runtime libs. demo/cabi/check.sh builds the lib + the C harness, runs it, and asserts the within-budget answer+source and the over-budget refusal hold when driven from C. Document the exact link recipe in demo/cabi/NOTES.md."
-    },
-    {
-      "id": "mutation",
-      "title": "In-place mutation of aggregates inside collections (deep compiler fix)",
-      "status": "passing",
-      "acceptance_test": "bash demo/mutation/check.sh",
-      "contract": "Hard compiler fix; do this only when the embeds are progressing. Fix `arr[i].field = v` and `m[k].field = v` so the mutated element is written back / mutated in place, correct on BOTH backends (kryos run AND kryos build --release), for stack-promoted literal arrays (let mut xs=[..]) AND heap/push-built arrays AND maps. Root cause: lower_nested_field_assign's IndexAccess fallback (compiler/crates/kryos-mir/src/lower.rs) mutates a throwaway copy with no write-back. Correct fix = in-place mutation through the element box pointer (works for stack+heap). A naive kryos_array_set write-back crashes stack arrays - do NOT reintroduce that. demo/mutation/check.sh builds+runs a .kry covering all three cases on both backends and asserts exact values."
-    },
-    {
-      "id": "harden",
-      "title": "Harden the compiler: adversarial probe corpus, both backends agree",
-      "status": "pending",
-      "acceptance_test": "bash spec/harden-acceptance.sh",
-      "contract": "The four embed/mutation milestones already PASS. This is now a REAL gate: build an adversarial probe corpus under tests/harden-probes/ that stresses the compiler and proves both backends agree. Each iteration: (1) ADD several NEW small deterministic probes (.kry that prints fixed output) to tests/harden-probes/ targeting UNDER-tested construct COMBINATIONS -- nested generics (Box<Wrap<i64>>), trait objects in arrays/maps, closures stored in maps and returned from match arms, enums whose payload is a struct/tuple/array, map<K, aggregate> mutation + iteration, deep struct nesting (a.b.c.d.field), Option/Result of aggregates through HOFs, channel-send of an aggregate, recursion with aggregate accumulators, string-interp of computed aggregates. (2) Run each on BOTH `kryos run` AND `kryos build --release`. (3) If a probe CRASHES or the two backends DISAGREE, that is a real bug: FIX it in the compiler (compiler/crates/kryos-mir/src/lower.rs, kryos-codegen-llvm/src/codegen.rs, kryos-codegen-cranelift/src/codegen.rs) -- JIT is usually the oracle, AOT usually the offender (allocator/ABI/box-unbox). NEVER delete or weaken a probe to make the gate pass, and NEVER weaken the cargo suite. (4) Commit every iteration. The gate passes at >= 80 probes all agreeing on both backends with the cargo suite green; that is a meaningfully hardened compiler. probe_01..probe_48 already pass; ADD 32 MORE (probe_49+) that are HARDER and more DIVERSE. GUARDRAILS: (a) If your hard probes all PASS, that is a GOOD robustness signal -- keep adding diverse probes, do NOT fabricate failures, and NEVER weaken the cargo suite to pass. (b) OUT OF SCOPE -- do NOT probe or attempt to 'fix' the INTENTIONAL JIT-vs-AOT behaviors documented in CLAUDE.md gotcha #23 (heap-bearing @copy struct-param aliasing; non-@copy struct-param copy semantics), the unsupported struct-style enum variants (gotcha #16), or channel/async-send of aggregates -- the self-host compiler depends on the @copy aliasing and these are deep/manual areas; touching them unattended is forbidden. Stick to PURE-VALUE construct combinations that have a well-defined deterministic result. Allocator convention reminder: aggregate boxing in collections/enum-payloads/closure-captures uses kryos_calloc (matches kryos_free), NOT kryos_arc_alloc_*; closure aggregate args forward as ptr byval(%Agg)."
-    }
+    { "id": "f64-host", "status": "pending", "acceptance_test": "probe p1_f64_println",
+      "contract": "Fix f64 through the host println/to_string path: the wasm module currently traps at instantiation (import typed i64 gets f64). Fix codegen + tools/wasm-host/run.mjs coherently (separate f64 import or bitcast convention). Probe expects '5' from to_string(2.5*2.0) -- match the native backends' f64 formatting (5, not 5.0? verify with kryos run and make .expect-vs-native consistent; if native prints '5' keep expect, else UPDATE the probe .expect to the native output and note it in the commit)." },
+    { "id": "concat-op", "status": "passing", "acceptance_test": "probe p2_str_concat_op",
+      "contract": "VERIFIED PASSING at baseline: plain str+str operator concat (incl. chained) already works. The remaining concat gap is the MIXED arm (non-str parts needing to_string coercion) -- that is the 'interp' feature below." },
+    { "id": "array-sugar", "status": "pending", "acceptance_test": "probe p3_array_sugar",
+      "contract": "Lower array literals, arr[i] indexing (read), and push onto the existing array_new/array_get/array_set linear-memory helpers. push returns the (possibly new) handle like the native backends." },
+    { "id": "interp", "status": "pending", "acceptance_test": "probe p5_string_interp",
+      "contract": "String interpolation ({expr} in literals) -- MIR presents this as StringConcat/format parts; once concat-op works this may be nearly free. Verify i64 exprs inside interpolation." },
+    { "id": "match", "status": "pending", "acceptance_test": "probe p4_match_scalar",
+      "contract": "Lower MIR Switch terminators for wasm (br_table or if-chains). Cover or-patterns (1|2|3) and default arm; str-returning arms exercise concat handles." },
+    { "id": "structs", "status": "pending", "acceptance_test": "probe p6_struct_stretch",
+      "contract": "STRETCH: struct aggregates in linear memory (alloc via host or bump allocator; field offsets like the native i64-slot layout). Only start after all other probes pass. If genuinely too deep for one night, document the exact design in docs/wasm-contract.md roadmap and leave status pending -- do NOT hack a special case for the probe." }
   ]
 }

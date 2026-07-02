@@ -24,7 +24,7 @@ running a probe program on this commit.
 
 | Feature | Error says |
 |---|---|
-| `+` string concatenation (operator form) | `rvalue 'string-concat'` — use the `str_concat` builtin |
+| String interpolation with non-str parts (`"n is {n}"`) | `rvalue 'string-concat'` — plain `str + str` operator concat DOES work; the mixed/interp coercion arm is the gap |
 | `push` / most stdlib builtins | supported builtin list is printed in the error |
 | `match` / `switch` | use if/else chains |
 | structs, enums, tuples, maps | aggregate types not lowered |
