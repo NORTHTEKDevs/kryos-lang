@@ -12,6 +12,7 @@ jobs:
           brew install llvm
           echo "$(brew --prefix llvm)/bin" >> $GITHUB_PATH
       - name: Build (release)
+        working-directory: compiler
         run: cargo build --release -j 2
       - name: Repro failing AOT builds with full stderr
         shell: bash
