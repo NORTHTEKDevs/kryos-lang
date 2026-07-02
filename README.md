@@ -3,10 +3,10 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/badge/release-v1.0.0--beta.1-blue.svg)](CHANGELOG.md)
 [![Targets](https://img.shields.io/badge/targets-native%20%7C%20wasm-purple.svg)](#what-it-targets)
-[![Parity](https://img.shields.io/badge/Cranelift_vs_LLVM-37%2F37-brightgreen.svg)](tests/parity/run_parity.sh)
+[![Parity](https://img.shields.io/badge/Cranelift_vs_LLVM-58%2F58-brightgreen.svg)](tests/parity/run_parity.sh)
 [![Self-host](https://img.shields.io/badge/bootstrap-stage2%3D%3D3%3D%3D4_byte--identical-brightgreen.svg)](compiler/self-host/bootstrap-win.sh)
 [![Stdlib tests](https://img.shields.io/badge/stdlib_tests-63%2F63-brightgreen.svg)](#status)
-[![Warnings](https://img.shields.io/badge/build_warnings-0-brightgreen.svg)](#status)
+[![VS Code](https://img.shields.io/badge/VS_Code-marketplace-blue.svg)](https://marketplace.visualstudio.com/items?itemName=northtekdevs.kryos)
 
 **Kryos is a compiled, general-purpose programming language: memory-safe without lifetime annotations (ARC + move semantics — a Swift-like trade-off, not Rust's borrow checker), with native binaries and the clarity of Go.** It ships a complete toolchain: compiler, formatter, LSP, package manager, debug info, and editor extensions — 30+ subcommands, 15 LSP capabilities, 60+ stdlib modules, and a cookbook of recipes.
 
