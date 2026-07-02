@@ -1,0 +1,28 @@
+use std::option::{Option, Some, None}
+use std::result::{Result, Ok, Err}
+fn find(x: i64) -> Option<i64> {
+    if x > 0 { return Some(x * 10) }
+    return None()
+}
+fn divide(a: i64, b: i64) -> Result<i64, str> {
+    if b == 0 { return Err("div by zero") }
+    return Ok(a / b)
+}
+fn main() {
+    match find(5) {
+        Some(v) => println(to_string(v)),
+        None() => println("none"),
+    }
+    match find(0) {
+        Some(v) => println(to_string(v)),
+        None() => println("none"),
+    }
+    match divide(10, 2) {
+        Ok(v) => println("ok " + to_string(v)),
+        Err(e) => println("err " + e),
+    }
+    match divide(1, 0) {
+        Ok(v) => println("ok " + to_string(v)),
+        Err(e) => println("err " + e),
+    }
+}

@@ -1,0 +1,7 @@
+struct Counter { n: i64, step: i64 }
+fn main() {
+    let mut c = Counter { n: 0, step: 3 }
+    c.n = c.n + c.step
+    c.n = c.n + c.step
+    println(to_string(c.n))
+}
