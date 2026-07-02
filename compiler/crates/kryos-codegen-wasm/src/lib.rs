@@ -171,6 +171,10 @@ fn lower_type(ty: &MirType) -> Result<ValType, WasmCodegenError> {
         // WASM v0.3: arrays are represented as packed i64 pointers, same
         // encoding as strings: low 32 bits = offset, high 32 bits = length.
         MirType::Array(_, _) => ValType::I64,
+        // Structs are represented as a packed i64 array handle (same scheme as
+        // arrays): the host allocates N slots and returns an opaque handle.
+        // Field access uses array_get(handle, field_index).
+        MirType::Struct(_) => ValType::I64,
         MirType::Void => {
             // Caller should special-case void; this is a placeholder.
             return Err(WasmCodegenError::new(
@@ -289,6 +293,10 @@ struct WasmCodegen {
     /// `kryos_to_string_f64(v: f64) -> packed_str` — converts f64 to its decimal string.
     to_string_f64_idx: u32,
 
+    /// Struct definitions: maps struct name -> ordered list of (field_name, field_type).
+    /// Used for field-index resolution when lowering RValue::Struct / RValue::Field.
+    struct_defs: HashMap<String, Vec<(String, MirType)>>,
+
     /// String literal interning: maps the literal -> (offset, len) in memory.
     string_table: HashMap<String, (u32, u32)>,
     /// Next free byte in the data segment.
@@ -345,6 +353,7 @@ impl WasmCodegen {
             http_fetch_idx: 0,
             to_string_i64_idx: 0,
             to_string_f64_idx: 0,
+            struct_defs: HashMap::new(),
             string_table: HashMap::new(),
             // Reserve the first 16 bytes so offset 0 stays sentinel-free.
             string_cursor: 16,
@@ -354,6 +363,9 @@ impl WasmCodegen {
 
     /// Top-level emit.
     fn emit(&mut self, module: &MirModule) -> Result<(), WasmCodegenError> {
+        // 0. Cache struct definitions for field-index lookups during codegen.
+        self.struct_defs = module.struct_defs.clone();
+
         // 1. Register host imports for printing.
         self.register_host_imports();
 
@@ -1272,8 +1284,25 @@ impl<'a> FnEmitter<'a> {
             | Instruction::Drop { .. } => {
                 // In v0.1 we have no heap, so ARC ops are no-ops.
             }
-            Instruction::StoreField { .. }
-            | Instruction::StoreDeref { .. }
+            Instruction::StoreField { object, field, value } => {
+                let struct_name = match self.operand_ty(object) {
+                    Some(MirType::Struct(n)) => n,
+                    _ => return Err(WasmCodegenError::unsupported(
+                        "StoreField on non-struct operand",
+                    )),
+                };
+                let field_name = field.clone();
+                let field_idx = self.cg.struct_defs
+                    .get(&struct_name)
+                    .and_then(|fs| fs.iter().position(|(n, _)| n == &field_name))
+                    .unwrap_or(0) as i32;
+                let array_set_idx = self.cg.array_set_idx;
+                self.emit_operand(object)?;
+                self.wfunc.instruction(&W::I32Const(field_idx));
+                self.emit_operand(value)?;
+                self.wfunc.instruction(&W::Call(array_set_idx));
+            }
+            Instruction::StoreDeref { .. }
             | Instruction::Spawn { .. }
             | Instruction::Send { .. }
             | Instruction::Receive { .. }
@@ -1380,6 +1409,52 @@ impl<'a> FnEmitter<'a> {
                 self.emit_operand(index)?;             // index i64
                 self.wfunc.instruction(&W::I32WrapI64);// -> i32 index
                 self.wfunc.instruction(&W::Call(self.cg.array_get_idx));
+            }
+            // -----------------------------------------------------------------
+            // WASM v0.4: Struct literal — `Foo { a: x, b: y }`
+            // Represent structs as i64 array handles: alloc N slots, fill each.
+            // -----------------------------------------------------------------
+            RValue::Struct { name, fields } => {
+                let n = fields.len() as i32;
+                self.wfunc.instruction(&W::I32Const(n));
+                self.wfunc.instruction(&W::Call(self.cg.array_new_idx));
+                let scratch = self.cg_scratch_local();
+                self.wfunc.instruction(&W::LocalSet(scratch));
+                // Resolve field order from struct_defs for stable slot indices.
+                let struct_name = name.clone();
+                let field_names: Vec<String> = self.cg.struct_defs
+                    .get(&struct_name)
+                    .map(|fs| fs.iter().map(|(n, _)| n.clone()).collect())
+                    .unwrap_or_else(|| fields.iter().map(|(n, _)| n.clone()).collect());
+                let array_set_idx = self.cg.array_set_idx;
+                for (fname, fval) in fields {
+                    let idx = field_names.iter().position(|n| n == fname).unwrap_or(0) as i32;
+                    self.wfunc.instruction(&W::LocalGet(scratch));
+                    self.wfunc.instruction(&W::I32Const(idx));
+                    self.emit_operand(fval)?;
+                    self.wfunc.instruction(&W::Call(array_set_idx));
+                }
+                self.wfunc.instruction(&W::LocalGet(scratch));
+            }
+            // -----------------------------------------------------------------
+            // WASM v0.4: Struct field read — `obj.field`
+            // -----------------------------------------------------------------
+            RValue::Field { object, field } => {
+                let struct_name = match self.operand_ty(object) {
+                    Some(MirType::Struct(n)) => n,
+                    _ => return Err(WasmCodegenError::unsupported(&format!(
+                        "field access `{field}` on non-struct operand"
+                    ))),
+                };
+                let field_name = field.clone();
+                let field_idx = self.cg.struct_defs
+                    .get(&struct_name)
+                    .and_then(|fs| fs.iter().position(|(n, _)| n == &field_name))
+                    .unwrap_or(0) as i32;
+                let array_get_idx = self.cg.array_get_idx;
+                self.emit_operand(object)?;
+                self.wfunc.instruction(&W::I32Const(field_idx));
+                self.wfunc.instruction(&W::Call(array_get_idx));
             }
             other => {
                 return Err(WasmCodegenError::unsupported(&format!(

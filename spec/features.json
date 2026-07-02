@@ -3,17 +3,17 @@
   "goal": "WASM backend expansion: everyday Kryos compiles to wasm. Gate: bash spec/wasm-acceptance.sh (all probes in tests/wasm-probes/ + full cargo suite).",
   "ordering": "Top-to-bottom, easiest first. Bank a win per iteration. Never regress native backends or weaken probes.",
   "features": [
-    { "id": "f64-host", "status": "pending", "acceptance_test": "probe p1_f64_println",
+    { "id": "f64-host", "status": "passing", "acceptance_test": "probe p1_f64_println",
       "contract": "Fix f64 through the host println/to_string path: the wasm module currently traps at instantiation (import typed i64 gets f64). Fix codegen + tools/wasm-host/run.mjs coherently (separate f64 import or bitcast convention). Probe expects '5' from to_string(2.5*2.0) -- match the native backends' f64 formatting (5, not 5.0? verify with kryos run and make .expect-vs-native consistent; if native prints '5' keep expect, else UPDATE the probe .expect to the native output and note it in the commit)." },
     { "id": "concat-op", "status": "passing", "acceptance_test": "probe p2_str_concat_op",
       "contract": "VERIFIED PASSING at baseline: plain str+str operator concat (incl. chained) already works. The remaining concat gap is the MIXED arm (non-str parts needing to_string coercion) -- that is the 'interp' feature below." },
-    { "id": "array-sugar", "status": "pending", "acceptance_test": "probe p3_array_sugar",
+    { "id": "array-sugar", "status": "passing", "acceptance_test": "probe p3_array_sugar",
       "contract": "Lower array literals, arr[i] indexing (read), and push onto the existing array_new/array_get/array_set linear-memory helpers. push returns the (possibly new) handle like the native backends." },
-    { "id": "interp", "status": "pending", "acceptance_test": "probe p5_string_interp",
+    { "id": "interp", "status": "passing", "acceptance_test": "probe p5_string_interp",
       "contract": "String interpolation ({expr} in literals) -- MIR presents this as StringConcat/format parts; once concat-op works this may be nearly free. Verify i64 exprs inside interpolation." },
-    { "id": "match", "status": "pending", "acceptance_test": "probe p4_match_scalar",
+    { "id": "match", "status": "passing", "acceptance_test": "probe p4_match_scalar",
       "contract": "Lower MIR Switch terminators for wasm (br_table or if-chains). Cover or-patterns (1|2|3) and default arm; str-returning arms exercise concat handles." },
-    { "id": "structs", "status": "pending", "acceptance_test": "probe p6_struct_stretch",
+    { "id": "structs", "status": "passing", "acceptance_test": "probe p6_struct_stretch",
       "contract": "STRETCH: struct aggregates in linear memory (alloc via host or bump allocator; field offsets like the native i64-slot layout). Only start after all other probes pass. If genuinely too deep for one night, document the exact design in docs/wasm-contract.md roadmap and leave status pending -- do NOT hack a special case for the probe." }
   ]
 }
