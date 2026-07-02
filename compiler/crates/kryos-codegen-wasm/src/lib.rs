@@ -46,7 +46,7 @@ use kryos_mir::ir::{
 };
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, DataSection, ExportKind, ExportSection, Function,
-    FunctionSection, ImportSection, Instruction as W, MemorySection, MemoryType, Module,
+    FunctionSection, ImportSection, Instruction as W, MemArg, MemorySection, MemoryType, Module,
     TypeSection, ValType,
 };
 
@@ -286,6 +286,8 @@ struct WasmCodegen {
     http_fetch_idx: u32,
     /// `kryos_to_string_i64(v: i64) -> packed_str` — converts i64 to its decimal string.
     to_string_i64_idx: u32,
+    /// `kryos_to_string_f64(v: f64) -> packed_str` — converts f64 to its decimal string.
+    to_string_f64_idx: u32,
 
     /// String literal interning: maps the literal -> (offset, len) in memory.
     string_table: HashMap<String, (u32, u32)>,
@@ -342,6 +344,7 @@ impl WasmCodegen {
             regex_replace_idx: 0,
             http_fetch_idx: 0,
             to_string_i64_idx: 0,
+            to_string_f64_idx: 0,
             string_table: HashMap::new(),
             // Reserve the first 16 bytes so offset 0 stays sentinel-free.
             string_cursor: 16,
@@ -722,6 +725,13 @@ impl WasmCodegen {
             wasm_encoder::EntityType::Function(self.type_count));
         self.to_string_i64_idx = self.func_count;
         self.func_count += 1; self.type_count += 1;
+
+        // to_string_f64(v: f64) -> packed_str  — decimal formatting of an f64
+        self.types.ty().function(vec![ValType::F64], vec![ValType::I64]);
+        self.imports.import(env_module, "kryos_to_string_f64",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.to_string_f64_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
     }
 
     /// Walk the module once to assign function indices and signature indices.
@@ -1023,10 +1033,8 @@ impl<'a> FnEmitter<'a> {
                     self.emit_if_else(&cond, then_block, else_block)?;
                 }
             }
-            Terminator::Switch { .. } => {
-                return Err(WasmCodegenError::unsupported(
-                    "match / switch terminators (use if/else chains in v0.1)",
-                ));
+            Terminator::Switch { value, targets, default } => {
+                self.emit_switch(value, targets, default)?;
             }
             Terminator::Unreachable => {
                 self.wfunc.instruction(&W::Unreachable);
@@ -1306,8 +1314,6 @@ impl<'a> FnEmitter<'a> {
                 self.wfunc.instruction(&W::I64Const(0));
             }
             RValue::BinOp { op, left, right } => {
-                // v0.2: detect string+string concatenation and route to the
-                // host's kryos_string_concat. Otherwise lower as i64 arith.
                 let lty = self.operand_ty(left).unwrap_or(MirType::I64);
                 let rty = self.operand_ty(right).unwrap_or(MirType::I64);
                 if matches!(op, MirBinOp::Add)
@@ -1319,11 +1325,20 @@ impl<'a> FnEmitter<'a> {
                     self.emit_operand(right)?;
                     self.emit_unpack_string();
                     self.wfunc.instruction(&W::Call(self.cg.string_concat_idx));
+                } else if matches!(lty, MirType::F64 | MirType::F32)
+                    || matches!(rty, MirType::F64 | MirType::F32)
+                {
+                    self.emit_operand(left)?;
+                    self.emit_operand(right)?;
+                    self.emit_binop_f64(*op)?;
                 } else {
                     self.emit_operand(left)?;
                     self.emit_operand(right)?;
                     self.emit_binop(*op)?;
                 }
+            }
+            RValue::StringConcat(parts) => {
+                self.emit_string_concat(parts)?;
             }
             RValue::UnOp { op, operand } => {
                 self.emit_operand(operand)?;
@@ -1691,12 +1706,32 @@ impl<'a> FnEmitter<'a> {
 
         // -------------------------------------------------------------
         // Built-in: to_string(v) — convert i64/bool/f64 to decimal string
-        // Delegates to host kryos_to_string_i64 which writes the string into
-        // linear memory and returns a packed (offset, len) i64 handle.
         // -------------------------------------------------------------
         if func == "to_string" && args.len() == 1 {
+            let ty = self.operand_ty(&args[0]).unwrap_or(MirType::I64);
             self.emit_operand(&args[0])?;
-            self.wfunc.instruction(&W::Call(self.cg.to_string_i64_idx));
+            match ty {
+                MirType::F64 => {
+                    self.wfunc.instruction(&W::Call(self.cg.to_string_f64_idx));
+                }
+                MirType::F32 => {
+                    self.wfunc.instruction(&W::F64PromoteF32);
+                    self.wfunc.instruction(&W::Call(self.cg.to_string_f64_idx));
+                }
+                _ => {
+                    self.wfunc.instruction(&W::Call(self.cg.to_string_i64_idx));
+                }
+            }
+            return Ok(());
+        }
+
+        // -------------------------------------------------------------
+        // Built-in: push(arr, value) — append value to array, return new handle
+        // -------------------------------------------------------------
+        if func == "push" && args.len() == 2 {
+            self.emit_operand(&args[0])?; // packed array i64
+            self.emit_operand(&args[1])?; // value i64
+            self.wfunc.instruction(&W::Call(self.cg.array_push_idx));
             return Ok(());
         }
 
@@ -1714,6 +1749,202 @@ impl<'a> FnEmitter<'a> {
                 "call to `{func}` — supported builtins: println, len, str_concat, array_new/get/set, to_string"
             )))
         }
+    }
+
+    /// Emit f64 binary operations.
+    fn emit_binop_f64(&mut self, op: MirBinOp) -> Result<(), WasmCodegenError> {
+        match op {
+            MirBinOp::Add => { self.wfunc.instruction(&W::F64Add); }
+            MirBinOp::Sub => { self.wfunc.instruction(&W::F64Sub); }
+            MirBinOp::Mul => { self.wfunc.instruction(&W::F64Mul); }
+            MirBinOp::Div => { self.wfunc.instruction(&W::F64Div); }
+            MirBinOp::Eq  => { self.wfunc.instruction(&W::F64Eq);  self.wfunc.instruction(&W::I64ExtendI32U); }
+            MirBinOp::Neq => { self.wfunc.instruction(&W::F64Ne);  self.wfunc.instruction(&W::I64ExtendI32U); }
+            MirBinOp::Lt  => { self.wfunc.instruction(&W::F64Lt);  self.wfunc.instruction(&W::I64ExtendI32U); }
+            MirBinOp::Gt  => { self.wfunc.instruction(&W::F64Gt);  self.wfunc.instruction(&W::I64ExtendI32U); }
+            MirBinOp::LtEq => { self.wfunc.instruction(&W::F64Le); self.wfunc.instruction(&W::I64ExtendI32U); }
+            MirBinOp::GtEq => { self.wfunc.instruction(&W::F64Ge); self.wfunc.instruction(&W::I64ExtendI32U); }
+            other => {
+                return Err(WasmCodegenError::unsupported(&format!(
+                    "f64 binary op `{other:?}`"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Emit an operand as a packed str i64 (calling to_string if the type is not Str).
+    fn emit_to_str_packed(&mut self, op: &Operand) -> Result<(), WasmCodegenError> {
+        let ty = self.operand_ty(op).unwrap_or(MirType::I64);
+        self.emit_operand(op)?;
+        match ty {
+            MirType::Str => { /* already packed str */ }
+            MirType::F64 => {
+                self.wfunc.instruction(&W::Call(self.cg.to_string_f64_idx));
+            }
+            MirType::F32 => {
+                self.wfunc.instruction(&W::F64PromoteF32);
+                self.wfunc.instruction(&W::Call(self.cg.to_string_f64_idx));
+            }
+            _ => {
+                self.wfunc.instruction(&W::Call(self.cg.to_string_i64_idx));
+            }
+        }
+        Ok(())
+    }
+
+    /// Emit a StringConcat rvalue (string interpolation: N parts → pairwise concat).
+    fn emit_string_concat(&mut self, parts: &[Operand]) -> Result<(), WasmCodegenError> {
+        if parts.is_empty() {
+            let (off, len) = self.cg.intern_string("");
+            let packed = ((len as u64) << 32) | (off as u64);
+            self.wfunc.instruction(&W::I64Const(packed as i64));
+            return Ok(());
+        }
+        if parts.len() == 1 {
+            return self.emit_to_str_packed(&parts[0]);
+        }
+        // Pairwise left-fold: acc = concat(p0, p1); for p in p2..: acc = concat(acc, p)
+        self.emit_to_str_packed(&parts[0])?;
+        self.emit_unpack_string();
+        self.emit_to_str_packed(&parts[1])?;
+        self.emit_unpack_string();
+        self.wfunc.instruction(&W::Call(self.cg.string_concat_idx));
+        for part in &parts[2..] {
+            // Stack: [packed_acc]
+            self.emit_unpack_string();              // [off_acc, len_acc]
+            self.emit_to_str_packed(part)?;         // [off_acc, len_acc, packed_next]
+            self.emit_unpack_string();              // [off_acc, len_acc, off_next, len_next]
+            self.wfunc.instruction(&W::Call(self.cg.string_concat_idx));
+        }
+        Ok(())
+    }
+
+    /// Emit a Switch terminator as a flat chain of `if` blocks.
+    fn emit_switch(
+        &mut self,
+        value: Operand,
+        targets: Vec<(i64, BlockId)>,
+        default: BlockId,
+    ) -> Result<(), WasmCodegenError> {
+        // Collect unique arm blocks in order of first appearance, grouping
+        // values that map to the same block (or-patterns: 1|2|3 => ...).
+        let mut seen_ids: Vec<u32> = Vec::new();
+        let mut block_vals: HashMap<u32, (BlockId, Vec<i64>)> = HashMap::new();
+        for (val, bid) in &targets {
+            if let Some(entry) = block_vals.get_mut(&bid.0) {
+                entry.1.push(*val);
+            } else {
+                seen_ids.push(bid.0);
+                block_vals.insert(bid.0, (*bid, vec![*val]));
+            }
+        }
+
+        // Detect whether any arm Goto's a join block (vs returning directly).
+        let join = self.find_switch_join(&targets, default);
+
+        // Wrap in a block so Goto(join) arms can break out with `br 1`.
+        if join.is_some() {
+            self.wfunc.instruction(&W::Block(BlockType::Empty));
+        }
+
+        // Emit one `if` block per unique arm.
+        for &bid_u32 in &seen_ids {
+            let (bid, vals) = &block_vals[&bid_u32];
+            self.emit_switch_cond(&value, vals)?;
+            self.wfunc.instruction(&W::If(BlockType::Empty));
+            let arm_idx = self.block_index(*bid)?;
+            if !self.visited[arm_idx] {
+                self.visited[arm_idx] = true;
+                let instrs: Vec<_> = self.func.blocks[arm_idx].instructions.clone();
+                for inst in &instrs {
+                    self.emit_instruction(inst)?;
+                }
+                let term = self.func.blocks[arm_idx].terminator.clone();
+                self.emit_switch_arm_term(&term, join)?;
+            }
+            self.wfunc.instruction(&W::End);
+        }
+
+        // Emit the default arm (always reached if no earlier arm matched).
+        let default_idx = self.block_index(default)?;
+        if !self.visited[default_idx] {
+            self.visited[default_idx] = true;
+            let instrs: Vec<_> = self.func.blocks[default_idx].instructions.clone();
+            for inst in &instrs {
+                self.emit_instruction(inst)?;
+            }
+            let term = self.func.blocks[default_idx].terminator.clone();
+            // Default arm is at depth 0 inside the wrapper block (no nested if),
+            // so Goto(join) just falls through to the wrapper `end`.
+            match term {
+                Terminator::Return(ref v) => {
+                    if let Some(op) = v.as_ref() {
+                        self.emit_operand(op)?;
+                    }
+                    self.wfunc.instruction(&W::Return);
+                }
+                Terminator::Goto(j) if Some(j) == join => { /* fall through */ }
+                _ => { self.wfunc.instruction(&W::Unreachable); }
+            }
+        }
+
+        if join.is_some() {
+            self.wfunc.instruction(&W::End); // end wrapper block
+        }
+
+        if let Some(j) = join {
+            self.emit_block(j)?;
+        }
+        Ok(())
+    }
+
+    /// Emit the terminator for a non-default switch arm (inside an `if` block).
+    fn emit_switch_arm_term(&mut self, term: &Terminator, join: Option<BlockId>) -> Result<(), WasmCodegenError> {
+        match term {
+            Terminator::Return(ref v) => {
+                if let Some(op) = v.as_ref() {
+                    self.emit_operand(op)?;
+                }
+                self.wfunc.instruction(&W::Return);
+            }
+            Terminator::Goto(j) if Some(*j) == join => {
+                // Break out of: if (depth 0) + wrapper block (depth 1).
+                self.wfunc.instruction(&W::Br(1));
+            }
+            _ => { self.wfunc.instruction(&W::Unreachable); }
+        }
+        Ok(())
+    }
+
+    /// Emit the condition for a switch arm: value == vals[0] || value == vals[1] || ...
+    /// Leaves an i32 (0/1) on the stack (WASM comparison ops return i32).
+    fn emit_switch_cond(&mut self, value: &Operand, vals: &[i64]) -> Result<(), WasmCodegenError> {
+        self.emit_operand(value)?;
+        self.wfunc.instruction(&W::I64Const(vals[0]));
+        self.wfunc.instruction(&W::I64Eq);
+        for &v in &vals[1..] {
+            self.emit_operand(value)?;
+            self.wfunc.instruction(&W::I64Const(v));
+            self.wfunc.instruction(&W::I64Eq);
+            self.wfunc.instruction(&W::I32Or);
+        }
+        Ok(())
+    }
+
+    /// Return the join block for a switch: the block that all arms Goto, if any.
+    fn find_switch_join(&self, targets: &[(i64, BlockId)], default: BlockId) -> Option<BlockId> {
+        let default_idx = *self.id_to_index.get(&default.0)?;
+        if let Terminator::Goto(j) = self.func.blocks[default_idx].terminator {
+            return Some(j);
+        }
+        for (_, bid) in targets {
+            let idx = *self.id_to_index.get(&bid.0)?;
+            if let Terminator::Goto(j) = self.func.blocks[idx].terminator {
+                return Some(j);
+            }
+        }
+        None
     }
 
     fn emit_cast(&mut self, ty: &MirType) -> Result<(), WasmCodegenError> {

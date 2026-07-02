@@ -179,8 +179,9 @@ const env = {
     }
   },
 
-  // ---- to_string: convert i64 to its decimal string representation ----
+  // ---- to_string: convert i64/f64 to their decimal string representations ----
   kryos_to_string_i64: (v) => writeStr(typeof v === "bigint" ? v.toString() : String(Math.trunc(Number(v)))),
+  kryos_to_string_f64: (v) => writeStr(String(v)),
 
   // ---- browser-only surface: no-ops / empty results under Node ----
   kryos_dom_set_text: () => {},
