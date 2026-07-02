@@ -81,7 +81,7 @@ const env = {
   // ---- strings ----
   kryos_string_concat: (o1, l1, o2, l2) =>
     writeStr(readStr(o1, l1) + readStr(o2, l2)),
-  kryos_string_length: (off, len) => BigInt(asNum(len)),
+  kryos_string_length: (packed) => unpack(packed)[1],
   kryos_string_slice: (off, len, start, end) => {
     const s = readStr(off, len);
     return writeStr(s.slice(asNum(start), asNum(end)));
@@ -119,7 +119,7 @@ const env = {
       true,
     );
   },
-  kryos_array_length: (packed) => BigInt(unpack(packed)[1]),
+  kryos_array_length: (packed) => unpack(packed)[1],
   kryos_array_push: (packed, value) => {
     // Reallocate len+1 slots, copy, append. Handles are immutable packs.
     const [off, len] = unpack(packed);
