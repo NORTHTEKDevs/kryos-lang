@@ -4,7 +4,31 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [1.0.0-beta.1] — 2026-06-11 — "Honest renumber + honest benchmarks"
+## [1.0.0-beta.1] — 2026-07-01 — "Honest renumber + honest benchmarks"
+
+### Added (launch hardening, 2026-06-28 → 07-01)
+- **kryos-embed** (`ecosystem/kryos-embed/`): deploy a governed Kryos agent
+  inside Python / Go / Node (and C#, recipe) applications — C-ABI DLL + WASM,
+  JSON protocol, compiler-backed authority manifest (`agent.caps.json`),
+  host-side capability gate, budget refusal before spend. `check.sh` PASS 4/0.
+- Governed-agent embed demos: native (`demo/native/`), WASM (`demo/wasm/`),
+  C host (`demo/cabi/` with the full DLL link recipe).
+- 48-probe adversarial cross-backend corpus (`tests/harden-probes/`): JIT and
+  LLVM AOT byte-identical on all probes.
+- `SHOWCASE.md`: index of everything verified working (309-artifact sweep).
+
+### Fixed (launch hardening)
+- In-place mutation of aggregates inside collections (`arr[i].f = v`,
+  `m[k].f = v`) on both backends.
+- `|>` pipeline result-type inference (un-annotated bindings freed the scalar
+  result as a closure env — teardown segfault).
+- `try`/`catch` usable as a value expression (trailing in a non-void fn);
+  catch-binding no longer freed uninitialized on the success path (latent UB
+  in every try/catch); `catch e { e }` no longer returns a freed string.
+- `kryos test`: a `@test` that throws now FAILS with the exception message
+  (previously reported PASS and leaked the exception into the next test).
+- 16 bit-rotted examples/docs/ecosystem artifacts repaired (Windows CRT FFI
+  symbols, missing entry points, fixtures, stale API usage).
 
 ### Changed
 - **Version scheme recalibrated.** Internal versions (through v4.46.0) tracked
