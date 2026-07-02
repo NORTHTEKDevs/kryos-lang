@@ -1,0 +1,19 @@
+// Regression: un-annotated `let x = v |> f` previously inferred x as the RHS
+// callable's Function type instead of its return type, so scope-end drop
+// freed the scalar result as a closure env pointer -- teardown segfault
+// (rc=139) on JIT and AOT. The pipe result must infer as the callable's
+// return type.
+// expect-stdout: 15
+// expect-stdout: 45
+// expect-stdout: pipe = 45
+
+fn add_ten(x: i64) -> i64 { return x + 10 }
+fn triple(x: i64) -> i64 { return x * 3 }
+
+fn main() {
+    let a = 5 |> add_ten
+    println(to_string(a))
+    let piped = 5 |> add_ten |> triple
+    println(to_string(piped))
+    println("pipe = " + to_string(piped))
+}

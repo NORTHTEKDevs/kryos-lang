@@ -1495,7 +1495,8 @@ pub fn lower_function(
     // it is already covered by has_tail_expr. Only `if` needs special handling
     // here because the parser commits to Stmt::If at statement position.
     let has_tail_ctrl = mir_ret_ty != MirType::Void
-        && last_stmt.is_some_and(|s| matches!(s, ast::Stmt::If { .. }));
+        && last_stmt
+            .is_some_and(|s| matches!(s, ast::Stmt::If { .. } | ast::Stmt::TryCatch { .. }));
 
     if has_tail_ctrl && !body.stmts.is_empty() {
         let (init, last) = body.stmts.split_at(body.stmts.len() - 1);
@@ -1679,6 +1680,21 @@ fn lower_block_as_value(ctx: &mut LoweringContext, stmts: &[ast::Stmt], result_l
                 dest: result_local,
                 value: rv,
             });
+            // A bare-identifier tail MOVES the local into the result (Use is
+            // a bit-copy with no retain). Mark the source local dropped so
+            // scope cleanup doesn't free the value the result now owns
+            // (e.g. `catch e { e }` previously returned a freed string).
+            if let ast::Expr::Identifier { name, .. } = expr {
+                if let Some(l) = ctx
+                    .locals
+                    .iter()
+                    .rev()
+                    .find(|l| l.name.as_deref() == Some(name.as_str()))
+                {
+                    let id = l.id.0;
+                    ctx.dropped_locals.insert(id);
+                }
+            }
         }
         ast::Stmt::If {
             condition,
@@ -1737,6 +1753,16 @@ fn lower_block_as_value(ctx: &mut LoweringContext, stmts: &[ast::Stmt], result_l
             } else {
                 ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
             }
+        }
+        ast::Stmt::TryCatch {
+            try_block,
+            catch_name,
+            catch_block,
+            ..
+        } => {
+            // try/catch in value position: both the try tail (Ok payload)
+            // and the catch tail write the result local.
+            lower_try_catch(ctx, try_block, catch_name, catch_block, Some(result_local));
         }
         // For any other statement kind (let, return, etc.), just lower it
         // normally — it doesn't produce a value.
@@ -2275,7 +2301,7 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             catch_block,
             ..
         } => {
-            lower_try_catch(ctx, try_block, catch_name, catch_block);
+            lower_try_catch(ctx, try_block, catch_name, catch_block, None);
         }
 
         ast::Stmt::Throw { expr, .. } => {
@@ -3385,8 +3411,22 @@ fn lower_try_catch(
     try_block: &ast::Block,
     catch_name: &str,
     catch_block: &ast::Block,
+    value_dest: Option<LocalId>,
 ) {
     let result_local = ctx.alloc_temp(MirType::Enum("Result".into()));
+
+    // Declare the catch binding up front and ZERO-INITIALIZE it. The
+    // scope-end drop loop frees every named str local unconditionally in
+    // the merge path; when the try succeeded the binding was previously
+    // an UNINITIALIZED slot, so that drop freed garbage (UB: segfault or
+    // LLVM deleting the caller's tail as unreachable). Null-init makes
+    // the ok-path drop a no-op (kryos_string_free is null-safe) and the
+    // err path overwrites it with the real thrown string.
+    let err_payload = ctx.alloc_local(Some(catch_name.to_string()), MirType::Str, false);
+    ctx.emit(Instruction::Assign {
+        dest: err_payload,
+        value: RValue::Use(Operand::Constant(Constant::Int(0))),
+    });
 
     // Pre-allocate the tag-check block so `throw` can jump to it.
     let check_bb = ctx.alloc_block();
@@ -3406,6 +3446,22 @@ fn lower_try_catch(
             // Wrap last expression in Result::Ok.
             if let ast::Stmt::Expr { expr, .. } = stmt {
                 let val = lower_expr_to_operand(ctx, expr);
+                // Pin a bare constant tail into a typed temp: the LLVM
+                // backend miscompiles EnumVariant("Result") construction
+                // with a Constant payload (AOT segfault on `try { 7 }`);
+                // a Local payload takes the proven path.
+                let val = match val {
+                    Operand::Constant(_) => {
+                        let ty = infer_expr_type(ctx, expr);
+                        let tmp = ctx.alloc_temp(ty);
+                        ctx.emit(Instruction::Assign {
+                            dest: tmp,
+                            value: RValue::Use(val),
+                        });
+                        Operand::Local(tmp)
+                    }
+                    other => other,
+                };
                 // Before wrapping in Ok, check if a cross-function throw
                 // set the thread-local exception during this expression.
                 emit_exception_check(ctx, result_local, check_bb);
@@ -3491,12 +3547,19 @@ fn lower_try_catch(
     ctx.emit(Instruction::Drop {
         local: result_local,
     });
+    // Value position: the try block's tail value (Ok payload) is the result.
+    if let Some(dest) = value_dest {
+        ctx.emit(Instruction::Assign {
+            dest,
+            value: RValue::Use(Operand::Local(ok_payload)),
+        });
+    }
     ctx.finish_block(Terminator::Goto(merge_bb), err_bb);
 
-    // Err path: bind error value to catch_name, execute handler.
-    // The thrown value is stringified at the throw site (see Stmt::Throw),
-    // so the catch binding is a str — matching its static type in check.rs.
-    let err_payload = ctx.alloc_local(Some(catch_name.to_string()), MirType::Str, false);
+    // Err path: bind error value to catch_name (the up-front zero-init
+    // local), execute handler. The thrown value is stringified at the
+    // throw site (see Stmt::Throw), so the binding is a str — matching
+    // its static type in check.rs.
     ctx.emit(Instruction::Assign {
         dest: err_payload,
         value: RValue::EnumPayload {
@@ -3510,7 +3573,12 @@ fn lower_try_catch(
     ctx.emit(Instruction::Drop {
         local: result_local,
     });
-    lower_block_stmts(ctx, &catch_block.stmts);
+    // Value position: the catch block's tail expression is the result.
+    if let Some(dest) = value_dest {
+        lower_block_as_value(ctx, &catch_block.stmts, dest);
+    } else {
+        lower_block_stmts(ctx, &catch_block.stmts);
+    }
     ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
 }
 
@@ -4751,8 +4819,14 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
         }
 
         ast::Expr::PipeExpr { right, .. } => {
-            // The pipe result type is the return type of the RHS function.
-            infer_expr_type(ctx, right)
+            // The pipe result type is the return type of the RHS callable.
+            // The RHS itself types as Function{..}; returning that wholesale
+            // made an un-annotated `let x = v |> f` bind x as a closure, so
+            // scope-end drop freed the scalar result as an env ptr (segfault).
+            match infer_expr_type(ctx, right) {
+                MirType::Function { ret, .. } => *ret,
+                other => other,
+            }
         }
 
         ast::Expr::IndexAccess { object, .. } => {

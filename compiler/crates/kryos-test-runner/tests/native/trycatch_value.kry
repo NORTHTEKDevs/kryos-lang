@@ -1,0 +1,63 @@
+// Regression: a trailing try/catch in a non-void function previously
+// produced no return value (the try's Ok payload was extracted then
+// discarded; the catch tail was lowered as statements), so the function
+// fell off the end -- SIGILL (rc=132) on JIT, segfault (rc=139) on AOT.
+// Both the try tail and the catch tail must become the function's value.
+// expect-stdout: 7
+// expect-stdout: 80
+// expect-stdout: error: port out of range
+// expect-stdout: 8080
+// expect-stdout: 3
+// expect-stdout: 99
+// expect-stdout: boom
+// expect-stdout: ok
+
+fn trivial() -> i64 {
+    try {
+        7
+    } catch e {
+        8
+    }
+}
+
+fn parse_port(s: str) -> i64 {
+    try {
+        let n = parse_int(s)
+        if n < 1 or n > 65535 { throw "port out of range" }
+        n
+    } catch e {
+        println("error: " + e)
+        8080
+    }
+}
+
+fn clamp(x: i64) -> i64 {
+    try {
+        if x > 5 { throw "big" }
+        x
+    } catch e {
+        99
+    }
+}
+
+// Returning the catch binding itself moves it into the result; the moved
+// local must NOT be freed by scope cleanup (previously returned a freed,
+// empty string).
+fn ret_e(x: i64) -> str {
+    try {
+        if x > 0 { throw "boom" }
+        "ok"
+    } catch e {
+        e
+    }
+}
+
+fn main() {
+    println(to_string(trivial()))
+    println(to_string(parse_port("80")))
+    println(to_string(parse_port("999999")))
+    println(to_string(clamp(3)))
+    println(to_string(clamp(9)))
+    println(ret_e(1))
+    println(ret_e(0))
+}
