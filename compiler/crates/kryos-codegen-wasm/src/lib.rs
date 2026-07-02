@@ -1011,6 +1011,8 @@ impl<'a> FnEmitter<'a> {
         } = &self.func.blocks[idx].terminator
         {
             self.is_simple_while_header(block_id, *then_block, *else_block)
+        } else if let Terminator::Switch { targets, .. } = &self.func.blocks[idx].terminator {
+            self.is_switch_while_header(block_id, targets)
         } else {
             false
         };
@@ -1050,7 +1052,11 @@ impl<'a> FnEmitter<'a> {
                 }
             }
             Terminator::Switch { value, targets, default } => {
-                self.emit_switch(value, targets, default)?;
+                if is_while {
+                    self.emit_simple_while_switch(block_id, &value, &targets, default)?;
+                } else {
+                    self.emit_switch(value, targets, default)?;
+                }
             }
             Terminator::Unreachable => {
                 self.wfunc.instruction(&W::Unreachable);
@@ -1070,6 +1076,90 @@ impl<'a> FnEmitter<'a> {
             self.func.blocks[body_idx].terminator,
             Terminator::Goto(b) if b == header
         )
+    }
+
+    /// Detect: Switch from `header` where one of the arms ends in Goto(header).
+    /// Covers `while let Some(v) = expr { ... }` patterns.
+    fn is_switch_while_header(&self, header: BlockId, targets: &[(i64, BlockId)]) -> bool {
+        for (_, body) in targets {
+            let body_idx = match self.id_to_index.get(&body.0) {
+                Some(&i) => i,
+                None => continue,
+            };
+            if matches!(self.func.blocks[body_idx].terminator, Terminator::Goto(b) if b == header) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Emit a Switch-based while loop (e.g. `while let Some(v) = expr`).
+    /// Structure: header has Switch terminator; one arm is the body (ends in Goto(header));
+    /// the default arm is the exit path.
+    fn emit_simple_while_switch(
+        &mut self,
+        header: BlockId,
+        value: &Operand,
+        targets: &[(i64, BlockId)],
+        default: BlockId,
+    ) -> Result<(), WasmCodegenError> {
+        // Find the body arm (the one that loops back to header).
+        let (match_val, body_id) = targets
+            .iter()
+            .find(|(_, bid)| {
+                let idx = match self.id_to_index.get(&bid.0) { Some(&i) => i, None => return false };
+                matches!(self.func.blocks[idx].terminator, Terminator::Goto(b) if b == header)
+            })
+            .ok_or_else(|| WasmCodegenError::new("switch-while: no body arm found"))?;
+
+        let body_idx = self.block_index(*body_id)?;
+        if self.visited[body_idx] {
+            return Err(WasmCodegenError::unsupported("loop body already visited (switch-while)"));
+        }
+
+        self.wfunc.instruction(&W::Block(BlockType::Empty)); // outer: break = exit
+        self.wfunc.instruction(&W::Loop(BlockType::Empty));  // inner: continue
+
+        // Re-run header instructions on each iteration.
+        let header_idx = self.block_index(header)?;
+        for inst in self.func.blocks[header_idx].instructions.clone() {
+            self.emit_instruction(&inst)?;
+        }
+
+        // Condition: if tag != match_val, break out.
+        self.emit_operand(value)?;
+        self.wfunc.instruction(&W::I64Const(*match_val));
+        self.wfunc.instruction(&W::I64Eq);   // i32: 1 if matching variant
+        self.wfunc.instruction(&W::I32Eqz);  // i32: 1 if NOT matching → exit
+        self.wfunc.instruction(&W::BrIf(1)); // break outer block
+
+        // Body.
+        self.visited[body_idx] = true;
+        let body_block = &self.func.blocks[body_idx];
+        for inst in &body_block.instructions {
+            self.emit_instruction(inst)?;
+        }
+        match &body_block.terminator {
+            Terminator::Goto(b) if *b == header => {
+                self.wfunc.instruction(&W::Br(0)); // continue
+            }
+            Terminator::Return(value) => {
+                if let Some(op) = value {
+                    self.emit_operand(op)?;
+                }
+                self.wfunc.instruction(&W::Return);
+            }
+            _ => return Err(WasmCodegenError::unsupported(
+                "switch-while body must end in Goto(header) or Return",
+            )),
+        }
+
+        self.wfunc.instruction(&W::End); // end loop
+        self.wfunc.instruction(&W::End); // end outer block
+
+        // Continue with the exit/default path.
+        self.emit_block(default)?;
+        Ok(())
     }
 
     /// Emit a simple while loop:
@@ -1160,30 +1250,27 @@ impl<'a> FnEmitter<'a> {
         then_block: BlockId,
         else_block: BlockId,
     ) -> Result<(), WasmCodegenError> {
-        // The conservative shape we accept: both arms terminate in either
-        // `Return` or `Goto(join)` where join is the same for both arms.
         let join = find_common_join(self.func, &self.id_to_index, then_block, else_block);
+        // Short-circuit `&&`: the else branch IS the join (e.g. bb_join = return block).
+        // Don't put it inside the wasm `else`; let the then arm fall through to it after `end`.
+        let else_is_join = join.map(|j| j == else_block).unwrap_or(false);
 
-        // Determine block type. For v0.1, since we don't push values across
-        // if/else boundaries, use Empty block type.
         self.emit_operand(cond)?;
-        // cond is i64 in MIR for bools; convert to i32 for `if`.
         self.wfunc.instruction(&W::I32WrapI64);
         self.wfunc.instruction(&W::If(BlockType::Empty));
 
         // then arm
         self.emit_arm(then_block, join)?;
 
-        self.wfunc.instruction(&W::Else);
-
-        // else arm
-        self.emit_arm(else_block, join)?;
+        if !else_is_join {
+            self.wfunc.instruction(&W::Else);
+            self.emit_arm(else_block, join)?;
+        }
 
         self.wfunc.instruction(&W::End);
 
         // Continue with the join block (if any).
         if let Some(j) = join {
-            // Avoid re-emitting if both arms returned.
             let j_idx = self.block_index(j)?;
             if !self.visited[j_idx] {
                 self.emit_block(j)?;
@@ -1249,12 +1336,15 @@ impl<'a> FnEmitter<'a> {
         else_block: BlockId,
         join: Option<BlockId>,
     ) -> Result<(), WasmCodegenError> {
+        let else_is_join = join.map(|j| j == else_block).unwrap_or(false);
         self.emit_operand(cond)?;
         self.wfunc.instruction(&W::I32WrapI64);
         self.wfunc.instruction(&W::If(BlockType::Empty));
         self.emit_arm(then_block, join)?;
-        self.wfunc.instruction(&W::Else);
-        self.emit_arm(else_block, join)?;
+        if !else_is_join {
+            self.wfunc.instruction(&W::Else);
+            self.emit_arm(else_block, join)?;
+        }
         self.wfunc.instruction(&W::End);
         Ok(())
     }
@@ -1296,14 +1386,22 @@ impl<'a> FnEmitter<'a> {
                     )),
                 };
                 let field_name = field.clone();
-                let field_idx = self.cg.struct_defs
+                let (field_idx, field_ty) = self.cg.struct_defs
                     .get(&struct_name)
-                    .and_then(|fs| fs.iter().position(|(n, _)| n == &field_name))
-                    .unwrap_or(0) as i32;
+                    .and_then(|fs| {
+                        fs.iter().enumerate()
+                            .find(|(_, (n, _))| n == &field_name)
+                            .map(|(i, (_, t))| (i as i32, t.clone()))
+                    })
+                    .unwrap_or((0, MirType::I64));
                 let array_set_idx = self.cg.array_set_idx;
                 self.emit_operand(object)?;
                 self.wfunc.instruction(&W::I32Const(field_idx));
                 self.emit_operand(value)?;
+                // f64 fields must be stored as i64 bit-patterns.
+                if matches!(field_ty, MirType::F64) {
+                    self.wfunc.instruction(&W::I64ReinterpretF64);
+                }
                 self.wfunc.instruction(&W::Call(array_set_idx));
             }
             Instruction::StoreDeref { .. }
@@ -1424,18 +1522,25 @@ impl<'a> FnEmitter<'a> {
                 self.wfunc.instruction(&W::Call(self.cg.array_new_idx));
                 let scratch = self.cg_scratch_local();
                 self.wfunc.instruction(&W::LocalSet(scratch));
-                // Resolve field order from struct_defs for stable slot indices.
+                // Resolve field order and types from struct_defs for stable slot indices.
                 let struct_name = name.clone();
-                let field_names: Vec<String> = self.cg.struct_defs
+                let field_defs: Vec<(String, MirType)> = self.cg.struct_defs
                     .get(&struct_name)
-                    .map(|fs| fs.iter().map(|(n, _)| n.clone()).collect())
-                    .unwrap_or_else(|| fields.iter().map(|(n, _)| n.clone()).collect());
+                    .cloned()
+                    .unwrap_or_else(|| fields.iter().map(|(n, _)| (n.clone(), MirType::I64)).collect());
                 let array_set_idx = self.cg.array_set_idx;
                 for (fname, fval) in fields {
-                    let idx = field_names.iter().position(|n| n == fname).unwrap_or(0) as i32;
+                    let (idx, field_ty) = field_defs.iter().enumerate()
+                        .find(|(_, (n, _))| n == fname)
+                        .map(|(i, (_, t))| (i as i32, t.clone()))
+                        .unwrap_or((0, MirType::I64));
                     self.wfunc.instruction(&W::LocalGet(scratch));
                     self.wfunc.instruction(&W::I32Const(idx));
                     self.emit_operand(fval)?;
+                    // f64 fields must be stored as i64 bit-patterns.
+                    if matches!(field_ty, MirType::F64) {
+                        self.wfunc.instruction(&W::I64ReinterpretF64);
+                    }
                     self.wfunc.instruction(&W::Call(array_set_idx));
                 }
                 self.wfunc.instruction(&W::LocalGet(scratch));
@@ -1451,14 +1556,22 @@ impl<'a> FnEmitter<'a> {
                     ))),
                 };
                 let field_name = field.clone();
-                let field_idx = self.cg.struct_defs
+                let (field_idx, field_ty) = self.cg.struct_defs
                     .get(&struct_name)
-                    .and_then(|fs| fs.iter().position(|(n, _)| n == &field_name))
-                    .unwrap_or(0) as i32;
+                    .and_then(|fs| {
+                        fs.iter().enumerate()
+                            .find(|(_, (n, _))| n == &field_name)
+                            .map(|(i, (_, t))| (i as i32, t.clone()))
+                    })
+                    .unwrap_or((0, MirType::I64));
                 let array_get_idx = self.cg.array_get_idx;
                 self.emit_operand(object)?;
                 self.wfunc.instruction(&W::I32Const(field_idx));
                 self.wfunc.instruction(&W::Call(array_get_idx));
+                // f64 fields are stored as their i64 bit-pattern; reinterpret on read.
+                if matches!(field_ty, MirType::F64) {
+                    self.wfunc.instruction(&W::F64ReinterpretI64);
+                }
             }
             // -----------------------------------------------------------------
             // WASM v2.4: Enum variant construction
