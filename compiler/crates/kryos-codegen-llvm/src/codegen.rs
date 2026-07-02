@@ -651,6 +651,21 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_arc_set_drop(ptr, ptr)");
         self.emit_line("declare i64 @kryos_arc_alloc_i64(i64)");
         self.emit_blank();
+        // Saturating float->int cast intrinsics. Older clang auto-declared
+        // known intrinsics when parsing textual IR; LLVM 22+ rejects a call
+        // to an undeclared intrinsic ("use of undefined value") -- this broke
+        // the f64->int cast path on macOS CI (Homebrew clang 22). Declaring
+        // the full matrix is harmless: unused declares are legal IR.
+        self.emit_line("; saturating fp->int cast intrinsics (explicit for LLVM 22+)");
+        for dst in ["i8", "i16", "i32", "i64"] {
+            self.emit_line(&format!(
+                "declare {dst} @llvm.fptosi.sat.{dst}.f64(double)"
+            ));
+            self.emit_line(&format!(
+                "declare {dst} @llvm.fptosi.sat.{dst}.f32(float)"
+            ));
+        }
+        self.emit_blank();
     }
 
     // -----------------------------------------------------------------------
