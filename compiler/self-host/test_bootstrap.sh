@@ -14,8 +14,9 @@
 #   KRYOS_CG_TRACE=1     - print per-function codegen progress
 #
 # Pre-fix baseline:  4/16 modules pass.
-# Current baseline: 11/16 modules pass (codegen flaky -- sometimes 12).
-# Target:           16/16 (full stage-2 compile).
+# 2026-06 baseline: 11/16 modules pass (codegen flaky -- sometimes 12).
+# 2026-07-01:       16/16, stable across 4 consecutive runs (the MIR
+#                   aggregate-lowering fixes landed in launch hardening).
 
 set -u
 cd "$(dirname "$0")/.."
@@ -70,8 +71,8 @@ echo "PASS: $pass / 16    FAIL: $fail / 16"
 [ -n "$failed" ] && echo "Failed:$failed"
 echo ""
 echo "Notes:"
-echo "  - codegen.kry is flaky (heap-sensitive); re-run to see variance."
-echo "  - mir / lower / optimize / regalloc fail deterministically."
+echo "  - 16/16 since 2026-07-01 (stable across repeat runs). If a module"
+echo "    regresses, KRYOS_CG_TRACE=1 shows which function it crashes on."
 echo "  - Use KRYOS_CG_TRACE=1 to see which function each module crashes on."
 echo ""
 exit $([ "$fail" -eq 0 ] && echo 0 || echo 1)
