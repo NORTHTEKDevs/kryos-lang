@@ -1,4 +1,4 @@
-# WebAssembly backend — the supported contract (verified 2026-07-01)
+# WebAssembly backend — the supported contract (verified 2026-07-02)
 
 `kryos build --release --backend wasm` targets `wasm32-unknown-unknown` with a
 **JS host contract** (browser or `node tools/wasm-host/run.mjs`) — not WASI.
@@ -16,34 +16,35 @@ running a probe program on this commit.
 | Closures | capture-by-value, calls verified (`|x| x + n`) |
 | `if` / `elif` / `else`, `while` | full support |
 | `println` / `to_string` of i64 | via host imports |
-| Strings (packed i64 handles) | literals, params/returns, `len(s)`, explicit `str_concat(a, b)` builtin |
-| Arrays of scalars | explicit `array_new` / `array_get` / `array_set` builtins, `len` |
+| Strings (packed i64 handles) | literals, params/returns, `len(s)`, `+` concat (plain and chained), interpolation with i64 parts (`"n is {n}"`) |
+| f64 output | `println(to_string(f))` via a dedicated f64 host import (2026-07-02) |
+| Arrays | literals `[1,2,3]`, indexing `arr[i]`, `push`, `len` — normal syntax, linear-memory backed (2026-07-02) |
+| `match` on scalars | or-patterns (`1 \| 2 \| 3`), default arm, str-returning arms (2026-07-02) |
+| Structs | literals + field access via slot encoding in linear memory (2026-07-02) |
 | Governed-agent embed | the whole `demo/wasm` + `ecosystem/kryos-embed` Node host runs on this subset |
+
+The wasm expansion gate lives at `spec/wasm-acceptance.sh`
+(6 probe programs with exact-output `.expect` files + the full cargo suite);
+it passes green on this commit.
 
 ## Compile-time rejected (use `--backend cranelift` or `llvm`)
 
-| Feature | Error says |
-|---|---|
-| String interpolation with non-str parts (`"n is {n}"`) | `rvalue 'string-concat'` — plain `str + str` operator concat DOES work; the mixed/interp coercion arm is the gap |
-| `push` / most stdlib builtins | supported builtin list is printed in the error |
-| `match` / `switch` | use if/else chains |
-| structs, enums, tuples, maps | aggregate types not lowered |
-| array literals / `arr[i]` sugar | use the explicit array builtins |
+Cross-backend probe corpus status: **7 / 48** of `tests/harden-probes/`
+compile and agree with the JIT on wasm (was 0/48 before the expansion).
+The remaining gaps are aggregate-heavy constructs, all still explicit
+compile errors, never miscompiles:
 
-## Known bugs (tracked)
+- enums (incl. Option/Result) and enum payloads
+- maps
+- struct mutation through collections; aggregate array elements
+- closures capturing structs; higher-order functions over aggregates;
+  currying
+- `?` operator; `if let`; tuple matching
 
-- `println(to_string(f))` on f64 builds but traps at instantiation
-  (host import typed i64 receives f64). Workaround: keep printed values i64.
-- `examples/wasm_strings.kry` / `wasm_arrays.kry` header comments describe
-  `+`-concat and array-literal support ("v0.2/v0.3") that the current gate
-  rejects — treat the table above (probe-verified) as authoritative until the
-  operator lowerings land.
+## Roadmap
 
-## Roadmap (in priority order)
-
-1. Operator lowerings onto the existing primitives (`+` concat → str_concat;
-   array literals / `arr[i]` → array_new/get/set; `push`).
-2. `match` lowering (decision tree → br_table / if-chains).
-3. f64 host-import fix.
-4. Aggregates (structs/enums/tuples) in linear memory — unlocks the full
-   48-probe corpus as a wasm gate.
+1. Enums + Option/Result as tagged slot records (same linear-memory encoding
+   as structs) — unlocks `?`, `if let`, and most of the remaining corpus.
+2. Maps via host-backed handles (mirror the array helpers).
+3. Aggregate element mutation (write-back through slot pointers).
+4. Target: the full 48-probe corpus as the standing wasm gate.
