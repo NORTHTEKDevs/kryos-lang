@@ -227,7 +227,7 @@ The full toolchain. Not a roadmap — actually built and tested:
 - **Concurrency** — `spawn` + channels + actors, all working today (async/await are grammar-only; no executor yet)
 - **WASM stdlib parity** — strings, arrays, JSON, regex, HTTP all callable from Kryos compiled to WebAssembly
 - **Package manager** — `kryos pkg init / add / remove / install / publish / search / outdated`. Lockfile, semver resolution, content-addressed checksums
-- **Editor extensions** — VS Code (marketplace-ready) and Zed (dev-extension)
+- **Editor extensions** — [VS Code (live on the marketplace)](https://marketplace.visualstudio.com/items?itemName=northtekdevs.kryos) and Zed (dev-extension)
 - **REPL, formatter, doc generator, test runner, LSP, C-header bindgen**
 - **Package registry** — full spec + dependency-free reference HTTP server in [tools/registry/](tools/registry/)
 

@@ -56,7 +56,7 @@ Every example file starts with one or more `// expect-stdout: <text>` lines that
 
 ## 4. Editor support
 
-**VS Code** — install the **Kryos** extension from the marketplace, or build the dev extension locally:
+**VS Code** — install the **[Kryos extension](https://marketplace.visualstudio.com/items?itemName=northtekdevs.kryos)** from the marketplace (search "Kryos"), or build the dev extension locally:
 
 ```bash
 cd editors/vscode && npm install && npm run package
