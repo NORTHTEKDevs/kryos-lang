@@ -1,0 +1,25 @@
+name: debug-macos-parity
+on: workflow_dispatch
+jobs:
+  repro:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install LLVM (Homebrew)
+        run: |
+          brew install llvm
+          echo "$(brew --prefix llvm)/bin" >> $GITHUB_PATH
+      - name: Build (release)
+        run: cargo build --release -j 2
+      - name: Repro failing AOT builds with full stderr
+        shell: bash
+        run: |
+          set -x
+          for t in test_budget_attr test_llm_mock test_probable_calibration; do
+            echo "================ $t ================"
+            ./compiler/target/release/kryos build --release --backend llvm \
+              "tests/smoke/$t.kry" -o "/tmp/$t.bin" 2>&1 | tail -60 || true
+          done
+          echo "clang: $(which clang); $(clang --version | head -1)"
