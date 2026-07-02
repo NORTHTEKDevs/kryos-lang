@@ -1,0 +1,3 @@
+# Force LF for test expect files so they match node/kryos output on all platforms
+tests/wasm-probes/*.expect text eol=lf
+tests/harden-probes/*.expect text eol=lf
