@@ -7,6 +7,8 @@
 // the socket — the user calls `parse_request` on bytes and `format_response`
 // on the result.
 
+use std::string::{split_lines}
+
 pub struct Request {
     method: str,
     path: str,

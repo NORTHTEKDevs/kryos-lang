@@ -1,6 +1,6 @@
 // kryos-uuid-pkg — ergonomic v4 UUID helpers.
 
-use std::uuid::{uuid_v4, uuid_parse}
+use std::crypto::{uuid_v4, uuid_parse}
 
 /// Generate a fresh v4 UUID as a canonical hyphenated string.
 pub fn v4() -> str {

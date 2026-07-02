@@ -1,17 +1,11 @@
 // kryos-time-pkg — datetime helpers around std::datetime.
+//
+// The stdlib datetime module exposes: timestamp() -> i64,
+// from_timestamp(i64) -> DateTime, and now_iso() -> str.
+// There are no time_*_utc decomposition helpers in stdlib, so
+// this package builds them on top of from_timestamp and local math.
 
-use std::datetime::{
-    time_now_secs,
-    time_year_utc,
-    time_month_utc,
-    time_day_utc,
-    time_hour_utc,
-    time_minute_utc,
-    time_second_utc,
-    time_weekday_utc,
-    time_format_rfc3339_utc,
-    time_from_ymdhms_utc,
-}
+use std::datetime::{timestamp, from_timestamp}
 
 pub struct UtcDate {
     year: i64,
@@ -23,28 +17,90 @@ pub struct UtcDate {
     weekday: i64,
 }
 
+// Internal: compute the weekday (0=Sun .. 6=Sat) from epoch seconds.
+// Jan 1, 1970 was a Thursday (4). Each full day advances by 1.
+fn _weekday_from_epoch(epoch_secs: i64) -> i64 {
+    let days = epoch_secs / 86400
+    return (days + 4) % 7
+}
+
+// Internal: check whether a year is a leap year.
+fn _tp_is_leap_year(year: i64) -> bool {
+    if year % 400 == 0 { return true }
+    if year % 100 == 0 { return false }
+    if year % 4 == 0 { return true }
+    return false
+}
+
+// Internal: days in a given month (1-based) for a given year.
+fn _tp_days_in_month(month: i64, year: i64) -> i64 {
+    let days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    if month == 2 and _tp_is_leap_year(year) {
+        return 29
+    }
+    return days[month - 1]
+}
+
 /// Current UTC time as a structured breakdown.
 pub fn now_utc() -> UtcDate {
-    let t = time_now_secs()
+    let t = timestamp()
+    let dt = from_timestamp(t)
     return UtcDate {
-        year: time_year_utc(t),
-        month: time_month_utc(t),
-        day: time_day_utc(t),
-        hour: time_hour_utc(t),
-        minute: time_minute_utc(t),
-        second: time_second_utc(t),
-        weekday: time_weekday_utc(t),
+        year: (dt.year as i64),
+        month: (dt.month as i64),
+        day: (dt.day as i64),
+        hour: (dt.hour as i64),
+        minute: (dt.minute as i64),
+        second: (dt.second as i64),
+        weekday: _weekday_from_epoch(t),
     }
 }
 
-/// Current time as an RFC 3339 UTC string.
+/// Current time as an RFC 3339 / ISO 8601 UTC string.
 pub fn now_iso() -> str {
-    return time_format_rfc3339_utc(time_now_secs())
+    let t = timestamp()
+    let dt = from_timestamp(t)
+    let y = _pad2(dt.year as i64)
+    let mo = _pad2(dt.month as i64)
+    let d = _pad2(dt.day as i64)
+    let h = _pad2(dt.hour as i64)
+    let mi = _pad2(dt.minute as i64)
+    let s = _pad2(dt.second as i64)
+    return y + "-" + mo + "-" + d + "T" + h + ":" + mi + ":" + s + "Z"
+}
+
+// Internal: zero-pad a number to at least 2 digits.
+fn _pad2(n: i64) -> str {
+    if n < 10 {
+        return "0" + to_string(n)
+    }
+    return to_string(n)
 }
 
 /// Convert (year, month, day) at 00:00:00 UTC to an epoch-seconds value.
 pub fn ymd_utc(year: i64, month: i64, day: i64) -> i64 {
-    return time_from_ymdhms_utc(year, month, day, 0, 0, 0)
+    return _ymdhms_to_epoch(year, month, day, 0, 0, 0)
+}
+
+// Internal: convert y/m/d h:m:s to Unix epoch seconds (UTC).
+fn _ymdhms_to_epoch(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64) -> i64 {
+    let mut days: i64 = 0
+    let mut y: i64 = 1970
+    while y < year {
+        if _tp_is_leap_year(y) {
+            days = days + 366
+        } else {
+            days = days + 365
+        }
+        y = y + 1
+    }
+    let mut m: i64 = 1
+    while m < month {
+        days = days + _tp_days_in_month(m, year)
+        m = m + 1
+    }
+    days = days + day - 1
+    return days * 86400 + hour * 3600 + minute * 60 + second
 }
 
 /// Difference in days between two epoch-seconds values.
