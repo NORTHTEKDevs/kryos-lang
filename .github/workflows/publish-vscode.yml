@@ -1,0 +1,40 @@
+name: Publish VS Code extension
+# One-time setup (owner):
+#   1. Create the publisher (web, once): https://marketplace.visualstudio.com/manage
+#      -> "Create publisher" -> id: northtekdevs (must match editors/vscode/package.json).
+#   2. Mint a PAT: https://dev.azure.com -> User settings -> Personal access tokens
+#      -> New Token -> Organization: "All accessible organizations",
+#      Scopes: Marketplace -> Manage. Copy it.
+#   3. gh secret set VSCE_PAT -R NORTHTEKDevs/kryos-lang
+# Then run this workflow (Actions tab -> Publish VS Code extension -> Run),
+# or it fires automatically when a release is published.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag whose .vsix to publish"
+        default: "v1.0.0-beta.1"
+        required: true
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: echo "tag=${{ github.event.inputs.tag || github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+      - name: Download .vsix from the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${{ steps.tag.outputs.tag }}" -R "${{ github.repository }}" -p "kryos-vscode.vsix"
+      - name: Publish to the marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "::error::VSCE_PAT secret not set -- see the setup comment at the top of this workflow"
+            exit 1
+          fi
+          npx --yes @vscode/vsce publish --packagePath kryos-vscode.vsix -p "$VSCE_PAT"
